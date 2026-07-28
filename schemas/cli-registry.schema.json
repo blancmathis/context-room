@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://context-room.local/schemas/cli-registry.schema.json",
+  "title": "Context Room CLI registry",
+  "type": "object",
+  "required": ["schemaVersion", "commands", "uiCliParity"],
+  "properties": {
+    "schemaVersion": { "const": "context-room.cli-registry/2" },
+    "commands": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/command" }
+    },
+    "uiCliParity": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/parity" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "argument": {
+      "type": "object",
+      "required": ["name", "kind", "value", "required", "repeatable", "description"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["option", "positional"] },
+        "value": { "type": "string", "minLength": 1 },
+        "required": { "type": "boolean" },
+        "repeatable": { "type": "boolean" },
+        "description": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "command": {
+      "type": "object",
+      "required": ["path", "aliases", "arguments", "scopes", "formats", "mutation", "protocol", "humanDecision", "outputSchema", "handlerKey", "lifecycle", "ui", "exposure", "compatibilityOf", "useWhen", "doNotUseWhen", "tags", "requiredContext", "freshness", "cost", "authority"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "aliases": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "summary": { "type": "string", "minLength": 1 },
+        "arguments": { "type": "array", "items": { "$ref": "#/$defs/argument" } },
+        "scopes": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "formats": { "type": "array", "items": { "enum": ["human", "json", "jsonl"] }, "uniqueItems": true },
+        "mutation": { "enum": ["read-only", "mutating"] },
+        "mutates": { "type": "boolean" },
+        "protocol": { "type": "string" },
+        "humanDecision": { "type": "string" },
+        "outputSchema": { "type": "string" },
+        "handlerKey": { "type": "string", "minLength": 1 },
+        "lifecycle": { "enum": ["current", "planned", "deprecated"] },
+        "ui": { "type": "string" },
+        "exposure": { "enum": ["canonical", "compatibility", "internal"] },
+        "compatibilityOf": { "type": ["string", "null"] },
+        "useWhen": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "doNotUseWhen": { "type": "array", "items": { "type": "string" } },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "requiredContext": { "type": "array", "items": { "type": "string" } },
+        "freshness": { "type": "string", "minLength": 1 },
+        "cost": { "enum": ["low", "medium", "high"] },
+        "authority": { "enum": ["read-only", "local-reversible", "shared-proposal", "human-decision-required", "forbidden-to-agent"] }
+      },
+      "additionalProperties": false
+    },
+    "parity": {
+      "type": "object",
+      "required": ["capability", "ui", "cli", "classification"],
+      "properties": {
+        "capability": { "type": "string", "minLength": 1 },
+        "ui": { "type": ["string", "null"] },
+        "cli": { "type": ["string", "null"] },
+        "classification": { "enum": ["both", "cli-machine-diagnostic", "human-decision-ui-only", "compatibility"] }
+      },
+      "additionalProperties": false
+    }
+  }
+}

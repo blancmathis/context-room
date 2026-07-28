@@ -8,6 +8,7 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
+import { appendContextRoomEvent } from "./event_journal.mjs";
 import { collectInlinePathReferences, parseDocMetadata, renderDocMetadataTemplateValues } from "./doc_metadata.mjs";
 import { parseSimpleYaml, stringifyYaml } from "./yaml_utils.mjs";
 import {
@@ -21,18 +22,47 @@ import {
   listRegisteredSharedRepositories,
   listSharedRepositoryProposals,
   listSharedProposals,
+  importSharedSkills,
+  importSharedInstructions,
+  linkSharedSkillLocation,
   materializeSharedRepositoryReview,
   materializeSharedReview,
+  previewSharedSkillAssignment,
+  previewSharedSkillImport,
+  previewSharedSkillLocation,
+  previewSharedSkillUnassignment,
+  previewSharedInstructionAssignment,
+  previewSharedInstructionImport,
+  previewSharedInstructionUnassignment,
+  proposeSharedInstructionAssignment,
+  proposeSharedInstructionUnassignment,
+  proposeSharedSkillAssignment,
+  proposeSharedSkillUnassignment,
   readSharedProjectConnection,
   readSharedReview,
+  rejectSharedRepositoryProposal,
+  setSharedSkillLocationOverride,
+  setSharedSkillProviderSettings,
   sharedContextStatus,
+  sharedSkillLocationsStatus,
+  sharedInstructionLocationsStatus,
   syncSharedContext,
+  unlinkSharedSkillLocation,
+  reconcileSharedInstructionLocations,
 } from "./shared_context.mjs";
 import {
+  contextHubHostRoot,
   listContextHubProjects,
+  readContextHubAttention,
   readContextHubRegistry,
+  readContextHubSnapshot,
   recordContextHubProjectOpened,
+  removeContextHubReviewSnoozes,
   registerContextHubProject,
+  setContextHubProjectOrder,
+  setContextHubReviewSnoozes,
+  writeContextHubRuntime,
+  writeContextHubSnapshot,
 } from "./context_hub.mjs";
 import {
   CODEX_PROMPT_HIGH_CONTEXT_CONFIRM_TOKENS,
@@ -44,10 +74,51 @@ import {
 
 export { DOC_METADATA_KINDS, DOC_METADATA_STATUSES, parseDocMetadata } from "./doc_metadata.mjs";
 
+export function parseWorkspaceNavigationUrl(input, base = "http://127.0.0.1/") {
+  const url = new URL(String(input || ""), base);
+  const clean = (key, limit = 4_000) => String(url.searchParams.get(key) || "").trim().slice(0, limit);
+  const requestedView = clean("view", 80);
+  return {
+    workspaceId: /^[A-Za-z0-9_-]{8,120}$/.test(clean("workspace", 120)) ? clean("workspace", 120) : "",
+    projectId: clean("project", 240),
+    view: ["hub", "file", "settings", "proposal", "new-doc", "project-manager", "codex-prompts"].includes(requestedView) ? requestedView : "hub",
+    folder: clean("folder"),
+    file: clean("file"),
+    proposal: clean("proposal"),
+    settingsSection: clean("settings", 120),
+  };
+}
+
+export function workspaceReloadCircuitDecision(rawValue, now = Date.now(), windowMs = 5_000) {
+  let timestamps = [];
+  try {
+    const parsed = JSON.parse(String(rawValue || "[]"));
+    if (Array.isArray(parsed)) timestamps = parsed.filter((value) => Number.isFinite(value) && now - value >= 0 && now - value < windowMs);
+  } catch {}
+  const allowed = timestamps.length === 0;
+  return { allowed, value: JSON.stringify(allowed ? [...timestamps, now] : timestamps) };
+}
+
+export function shouldReplaceDuplicatedWorkspaceIdentity({ message, requestedWorkspaceId, clientInstanceId, alreadyResolved = false } = {}) {
+  return !alreadyResolved
+    && message?.type === "workspace-conflict"
+    && message.workspaceId === requestedWorkspaceId
+    && message.requester === clientInstanceId;
+}
+
+export function contextRoomProjectResponseAction({ expectedProjectId = "", responseProjectId = "", globalRoom = true } = {}) {
+  if (!expectedProjectId && responseProjectId) return "initialize";
+  if (!responseProjectId || responseProjectId === expectedProjectId) return "accept";
+  return globalRoom ? "refresh-in-place" : "exceptional-reload";
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const DEFAULT_PORT = 4317;
 const MAX_FILE_BYTES = 750_000;
+const MAX_VISUAL_ASSET_BYTES = 12_000_000;
 const PROJECT_EXPLORER_MAX_FILES = 20000;
+const PROJECT_EXPLORER_PAGE_SIZE = 250;
+const PROJECT_EXPLORER_MAX_PAGE_SIZE = 500;
 const MAX_BATCH_REVIEW_PATHS = 5000;
 const MAX_GIT_HEAD_SNAPSHOT_BYTES = 64_000_000;
 const DELETED_REVIEW_SCAN_CHUNK_PATHS = 250;
@@ -150,7 +221,7 @@ const DEFAULT_STARTUP_HOOKS = {
   ],
 };
 export const FILE_THEME_OPTIONS = [
-  { id: "context-room", label: "Context Room", description: "Default dark theme" },
+  { id: "context-room", label: "Context Room", description: "Adaptive native workbench" },
   { id: "vscode-dark", label: "VS Code Dark", description: "Quiet editor contrast" },
   { id: "github-dark", label: "GitHub Dark", description: "Clear docs contrast" },
   { id: "dracula", label: "Dracula", description: "High color structure" },
@@ -213,11 +284,16 @@ export const VISUAL_DOCUMENT_PATTERNS = Object.freeze([
   ...DIAGRAM_VISUAL_DOCUMENT_PATTERNS,
 ]);
 const DEFAULT_FILE_THEME = "context-room";
-const DEFAULT_APPEARANCE = { fileTheme: DEFAULT_FILE_THEME, autoOpenGitDiff: true, showHiddenFiles: true };
+const DEFAULT_APPEARANCE = { fileTheme: DEFAULT_FILE_THEME, colorMode: "system", autoOpenGitDiff: true, showHiddenFiles: true };
 export const DEFAULT_CODEX_REFERENCE_SHORTCUT = "Mod+Shift+L";
 const DEFAULT_SHORTCUTS = Object.freeze({ codexReference: DEFAULT_CODEX_REFERENCE_SHORTCUT });
+const DEFAULT_SOUNDS = Object.freeze({ enabled: true, volume: 0.35 });
+const DEFAULT_EXPLORER = Object.freeze({ computerRoot: os.homedir() });
 const REPORT_CACHE_TTL_MS = 60_000;
 const FILE_TASK_CACHE_TTL_MS = 30_000;
+const CONTEXT_HUB_PROJECT_SUMMARY_CACHE_TTL_MS = 60_000;
+const CONTEXT_HUB_STATE_CACHE_TTL_MS = 30_000;
+const CONTEXT_HUB_SNAPSHOT_TTL_MS = 30_000;
 const BACKGROUND_REPORT_INVALIDATING_PATHS = new Set([
   "/api/startup-skills/create",
   "/api/startup-skills/delete",
@@ -227,6 +303,8 @@ const BACKGROUND_REPORT_INVALIDATING_PATHS = new Set([
   "/api/startup-hooks/file",
   "/api/settings",
   "/api/watch-rule",
+  "/api/context-hub/project-settings",
+  "/api/context-hub/project-explorer/action",
   "/api/doctor/ack",
   "/api/docqa/review",
   "/api/docqa/review-deletions",
@@ -239,6 +317,7 @@ const BACKGROUND_REPORT_INVALIDATING_PATHS = new Set([
   "/api/files/delete",
   "/api/shared-context/accept",
   "/api/shared-context/refresh",
+  "/api/context-hub/reject",
 ]);
 const BACKGROUND_WATCH_IGNORED_PATHS = new Set([
   COLLAB_SESSION_STATE,
@@ -252,6 +331,9 @@ const backgroundFileTaskCache = new Map();
 const backgroundFileTaskGenerations = new Map();
 const backgroundExplicitInvalidations = new Map();
 const backgroundWorkerPools = new Map();
+const contextHubProjectSummaryCache = new Map();
+const contextHubStateCache = new Map();
+const contextHubSnapshotRefreshes = new Map();
 let backgroundWorkerRequestId = 0;
 export const DEFAULT_MARKDOWN_TEMPLATES = [
   {
@@ -565,8 +647,25 @@ const PROJECT_TEXT_EXTENSIONS = new Set([
   ".cpp",
   ".h",
   ".hpp",
+  ".mmd",
+  ".mermaid",
+  ".puml",
+  ".plantuml",
+  ".dot",
+  ".gv",
+  ".drawio",
   ".Dockerfile",
 ]);
+const PROJECT_VISUAL_ASSET_TYPES = new Map([
+  [".png", "image/png"],
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".gif", "image/gif"],
+  [".webp", "image/webp"],
+  [".avif", "image/avif"],
+  [".svg", "image/svg+xml"],
+]);
+const PROJECT_DIAGRAM_SOURCE_EXTENSIONS = new Set([".mmd", ".mermaid", ".puml", ".plantuml", ".dot", ".gv", ".drawio"]);
 const PROJECT_TEXT_FILENAMES = new Set([
   "Dockerfile",
   "Containerfile",
@@ -773,9 +872,10 @@ export function listExplorerFiles(root = process.cwd(), { externalRoots = [], sh
     const sensitive = isSensitiveProjectFile(rel);
     if (!canRead && !sensitive) continue;
     const allowed = isAllowedMemoryPath(rel, settings);
+    const visualAsset = isProjectVisualAssetFile(rel);
     const safeContent = sensitive
       ? redactedSensitiveFileContent(abs, rel)
-      : allowed && stats.size <= MAX_FILE_BYTES
+      : allowed && !visualAsset && stats.size <= MAX_FILE_BYTES
         ? fs.readFileSync(abs, "utf8")
         : "";
     byPath.set(rel, {
@@ -788,7 +888,7 @@ export function listExplorerFiles(root = process.cwd(), { externalRoots = [], sh
       updatedAt: stats.mtime.toISOString(),
       kind: fileKindForPath(rel),
       summary: sensitive ? sensitiveFileSummary(abs) : summarizeContent(safeContent),
-      readOnly: sensitive || !allowed,
+      readOnly: visualAsset || sensitive || !allowed,
       sensitive,
       redacted: sensitive,
       explorerScope: allowed && !sensitive ? "allowed" : "project",
@@ -841,10 +941,129 @@ export function listExplorerDirectories(root = process.cwd(), { externalRoots = 
   return [...directories].sort((left, right) => left.localeCompare(right, "fr")).map((directoryPath) => ({ path: directoryPath + "/" }));
 }
 
+function normalizedExplorerPageOptions({ cursor = 0, limit = PROJECT_EXPLORER_PAGE_SIZE } = {}) {
+  const offset = Math.max(0, Number.parseInt(String(cursor || "0"), 10) || 0);
+  const pageSize = Math.max(1, Math.min(PROJECT_EXPLORER_MAX_PAGE_SIZE, Number.parseInt(String(limit || PROJECT_EXPLORER_PAGE_SIZE), 10) || PROJECT_EXPLORER_PAGE_SIZE));
+  return { offset, pageSize };
+}
+
+function resolveProjectExplorerDirectory(root, relPath = "") {
+  const normalized = normalizeRelPath(String(relPath || "")).replace(/\/$/, "");
+  if (normalized.startsWith("../") || normalized.includes("/../") || path.isAbsolute(normalized) || normalized.startsWith("~")) {
+    throw sharedRequestError("Explorer directory is outside this project", 400, "context_hub_explorer_path_invalid");
+  }
+  const resolvedRoot = path.resolve(root);
+  const absolute = path.resolve(resolvedRoot, normalized || ".");
+  if (absolute !== resolvedRoot && !absolute.startsWith(`${resolvedRoot}${path.sep}`)) {
+    throw sharedRequestError("Explorer directory is outside this project", 400, "context_hub_explorer_path_invalid");
+  }
+  assertProjectPathContained(resolvedRoot, absolute, { label: normalized || "." });
+  if (!fs.existsSync(absolute) || !fs.statSync(absolute).isDirectory()) {
+    throw sharedRequestError(`Explorer directory not found: ${normalized || "."}`, 404, "context_hub_explorer_directory_not_found");
+  }
+  return { normalized, absolute, resolvedRoot };
+}
+
+function projectExplorerFileMetadata(root, relPath, settings, stats = null) {
+  const normalized = normalizeRelPath(relPath);
+  const absolute = path.join(root, normalized);
+  const fileStats = stats || fs.statSync(absolute);
+  const visualAsset = isProjectVisualAssetFile(normalized);
+  const sensitive = isSensitiveProjectFile(normalized);
+  const allowed = isAllowedMemoryPath(normalized, settings);
+  return {
+    path: normalized,
+    name: path.basename(normalized),
+    type: "file",
+    kind: fileKindForPath(normalized),
+    bytes: fileStats.size,
+    updatedAt: fileStats.mtime.toISOString(),
+    readOnly: visualAsset || sensitive || !allowed || isReadOnlyMemoryPath(normalized, settings),
+    sensitive,
+    redacted: sensitive,
+    watchState: watchStateForPath(normalized, settings),
+    hasChildren: false,
+  };
+}
+
+export function listProjectExplorerPage(root = process.cwd(), { directory = "", query = "", cursor = 0, limit = PROJECT_EXPLORER_PAGE_SIZE, showHiddenFiles = true } = {}) {
+  const settings = effectiveMemoryWebappSettings(root);
+  const { offset, pageSize } = normalizedExplorerPageOptions({ cursor, limit });
+  const needle = String(query || "").trim().toLowerCase();
+  let entries = [];
+  let normalizedDirectory = normalizeRelPath(String(directory || "")).replace(/\/$/, "");
+  if (needle) {
+    normalizedDirectory = "";
+    entries = walkProjectExplorerTextFiles(root, { showHiddenFiles })
+      .filter((relPath) => relPath.toLowerCase().includes(needle))
+      .sort((left, right) => left.localeCompare(right, "en"));
+  } else {
+    const resolved = resolveProjectExplorerDirectory(root, normalizedDirectory);
+    const children = fs.readdirSync(resolved.absolute, { withFileTypes: true });
+    entries = children.flatMap((entry) => {
+      if (PROJECT_EXPLORER_SKIP_DIRS.has(entry.name)) return [];
+      if (!showHiddenFiles && entry.name.startsWith(".")) return [];
+      const relPath = normalizeRelPath(path.relative(resolved.resolvedRoot, path.join(resolved.absolute, entry.name)));
+      if (!relPath || relPath.startsWith("../") || relPath.includes("/../")) return [];
+      if (isBlockedPath(relPath) && !isSensitiveProjectFile(relPath) && !isSafeEnvSamplePath(relPath)) return [];
+      if (entry.isDirectory()) {
+        let hasChildren = false;
+        try { hasChildren = fs.readdirSync(path.join(resolved.absolute, entry.name)).length > 0; } catch {}
+        return [{
+          path: relPath,
+          name: entry.name,
+          type: "directory",
+          kind: "folder",
+          bytes: 0,
+          updatedAt: null,
+          readOnly: false,
+          sensitive: false,
+          redacted: false,
+          watchState: watchStateForPath(relPath + "/", settings),
+          hasChildren,
+        }];
+      }
+      if (!entry.isFile() || (!isProjectTextFile(relPath) && !isProjectVisualAssetFile(relPath))) return [];
+      return [{ path: relPath, name: entry.name, type: "file-candidate" }];
+    }).sort((left, right) => Number(left.type !== "directory") - Number(right.type !== "directory") || left.name.localeCompare(right.name, "en"));
+  }
+  const pageCandidates = entries.slice(offset, offset + pageSize);
+  const page = pageCandidates.flatMap((entry) => {
+    if (entry?.type === "directory") return [entry];
+    const relPath = typeof entry === "string" ? entry : entry.path;
+    try {
+      const metadata = projectExplorerFileMetadata(root, relPath, settings);
+      const maxBytes = isProjectVisualAssetFile(relPath) ? MAX_VISUAL_ASSET_BYTES : MAX_FILE_BYTES;
+      return metadata.bytes <= maxBytes ? [metadata] : [];
+    } catch {
+      return [];
+    }
+  });
+  const nextCursor = offset + pageCandidates.length < entries.length ? String(offset + pageCandidates.length) : null;
+  const revision = hashContent(JSON.stringify({
+    directory: normalizedDirectory,
+    query: needle,
+    showHiddenFiles,
+    watchAllow: settings.watchAllow || [],
+    watchRules: settings.watchRules || [],
+    entries: page.map((entry) => [entry.path, entry.updatedAt, entry.bytes]),
+  }));
+  return {
+    mode: needle ? "search" : "directory",
+    directory: normalizedDirectory,
+    query: String(query || ""),
+    entries: page,
+    total: entries.length,
+    nextCursor,
+    revision,
+  };
+}
+
 export function readMemoryFile(root, relPath) {
   if (isCronJobVirtualPath(relPath)) return readCronJobVirtualFile(relPath);
   if (isCronJobMarkdownPath(relPath)) return readCronJobMarkdownFile(relPath);
   const normalized = normalizeRelPath(relPath);
+  if (isProjectVisualAssetFile(normalized)) return readProjectVisualAsset(root, normalized);
   if (isSensitiveProjectFile(normalized)) return readSensitiveProjectFile(root, normalized);
   const settings = effectiveMemoryWebappSettings(root);
   const allowed = isAllowedMemoryPath(normalized, settings);
@@ -1042,7 +1261,7 @@ function startupSkillNamespaceFolders(abs, folderName, containmentRoot = null) {
 }
 
 function effectiveMemoryWebappSettings(root = process.cwd()) {
-  const settings = withProjectAgentInstructionPaths(root, readMemoryWebappSettings(root));
+  const settings = settingsWithUnifiedReviewPaths(withProjectAgentInstructionPaths(root, readMemoryWebappSettings(root)));
   return withStartupSkillExternalPaths(root, settings);
 }
 
@@ -1940,7 +2159,9 @@ export function writeFolderWatchRule(root = process.cwd(), { path: relPath, mode
   const watchAllow = (settings.watchAllow || []).filter((item) => normalizeRelPath(item).replace(/\/$/, "") !== rulePath.replace(/\/$/, ""));
   const watchRules = sanitizeWatchRules([...(settings.watchRules || []).filter((item) => normalizeWatchRulePath(item.path) !== rulePath), normalizedRule]);
   const saved = writeMemoryWebappSettings(root, { ...settings, watchAllow, watchRules });
-  return { rule: saved.watchRules.find((item) => item.path === rulePath), matchedFiles: normalizedRule.files?.length ?? null, settings: saved };
+  const result = { rule: saved.watchRules.find((item) => item.path === rulePath), matchedFiles: normalizedRule.files?.length ?? null, settings: saved };
+  appendContextRoomEvent("watch-rule.changed", { locationId: path.resolve(root), resource: { path: rulePath }, data: { mode, action: "watch" } });
+  return result;
 }
 
 export function removeFolderWatchRule(root = process.cwd(), { path: relPath } = {}) {
@@ -1952,6 +2173,7 @@ export function removeFolderWatchRule(root = process.cwd(), { path: relPath } = 
   const watchRules = (settings.watchRules || []).filter((item) => normalizeWatchRulePath(item.path) !== rulePath);
   const removed = watchAllow.length !== (settings.watchAllow || []).length || watchRules.length !== (settings.watchRules || []).length;
   const saved = removed ? writeMemoryWebappSettings(root, { ...settings, watchAllow, watchRules }) : settings;
+  if (removed) appendContextRoomEvent("watch-rule.changed", { locationId: path.resolve(root), resource: { path: rulePath }, data: { action: "unwatch" } });
   return { path: rulePath, removed, settings: saved };
 }
 
@@ -2022,7 +2244,9 @@ export function renderExplorerContextMenuMarkup({ targetPath = "", targetKind = 
   const createActions = '<button class="secondary" type="button" data-context-new-file>New file</button>' +
     '<button class="secondary" type="button" data-context-new-folder>New folder</button>';
   const targetActions = normalizedTarget
-    ? '<button class="secondary" type="button" data-context-watch>' + (targetKind === "folder" ? 'Watch options…' : 'Watch') + '</button>' +
+    ? '<button class="secondary" type="button" data-context-watch>' + (targetKind === "folder" ? 'Watch this folder…' : 'Watch this file') + '</button>' +
+      (targetKind === "folder" ? '<button class="secondary" type="button" data-context-inspect-environment>Inspect agent environment</button>' : '') +
+      (targetKind === "folder" ? '<button class="secondary" type="button" data-context-shared-skills>Link this skill location to shared…</button>' : '') +
       createActions +
       '<button class="secondary" type="button" data-context-select>Select</button>' +
       '<button class="secondary danger-action" type="button" data-context-delete>Delete</button>'
@@ -2633,8 +2857,7 @@ function currentGlobalReviewFor(root, relPath, content, resourceState = "present
   const ledger = providedLedger || readGlobalReviewLedger(root);
   const entry = ledger.reviews[globalReviewKeyFor(root, relPath)];
   const contentHash = hashContent(content);
-  const reviewHash = reviewContentHash(content);
-  if (!entry || entry.status !== "verified" || !reviewResourceIdentityMatches(entry, resourceState, resourceVersion) || (entry.contentHash !== contentHash && entry.reviewHash !== reviewHash)) return null;
+  if (!entry || entry.status !== "verified" || !reviewResourceIdentityMatches(entry, resourceState, resourceVersion) || entry.contentHash !== contentHash) return null;
   return {
     ...entry,
     resourceState,
@@ -2736,7 +2959,7 @@ export function writeDocReviewBaselineContent(root, relPath, content, { note = "
   return { path: normalized, ...next };
 }
 
-export function writeDocReviewDecision(root, relPath, { status, note = "", expectedResourceState = null, expectedResourceVersion = null } = {}) {
+export function writeDocReviewDecision(root, relPath, { status, note = "", expectedResourceState = null, expectedResourceVersion = null, expectedContentHash = null } = {}) {
   const file = readReviewTrackedFile(root, relPath);
   const normalized = file.path;
   const allowedStatuses = new Set(["verified", "needs_changes", "snoozed"]);
@@ -2748,11 +2971,21 @@ export function writeDocReviewDecision(root, relPath, { status, note = "", expec
   const resourceVersion = resourceVersionForReviewFile(root, normalized, file, existing);
   if (expectedResourceState && resourceState !== expectedResourceState) throw new Error(`Review target changed before the decision was saved: ${normalized}`);
   if (expectedResourceVersion && resourceVersion !== expectedResourceVersion) throw new Error(`Review target version changed before the decision was saved: ${normalized}`);
+  const currentContentHash = hashContent(file.content);
+  if (expectedContentHash != null && String(expectedContentHash) !== currentContentHash) {
+    const error = new Error(`Review target content changed before the decision was saved: ${normalized}`);
+    error.statusCode = 409;
+    error.code = "review_revision_conflict";
+    error.details = { path: normalized, expectedContentHash: String(expectedContentHash), currentContentHash, resourceState, resourceVersion };
+    throw error;
+  }
   if (status === "unverified") {
     delete state.reviews[normalized];
     writeDocReviewState(root, state);
     writeGlobalReviewDecision(root, normalized, file, { status: "unverified" });
-    return { path: normalized, status: "unverified", note: "", reviewedAt: new Date().toISOString(), contentHash: hashContent(file.content), reviewHash: reviewContentHash(file.content), resourceState, resourceVersion };
+    const result = { path: normalized, status: "unverified", note: "", reviewedAt: new Date().toISOString(), contentHash: hashContent(file.content), reviewHash: reviewContentHash(file.content), resourceState, resourceVersion };
+    appendContextRoomEvent("review.decision", { ...contextRoomEventIdentity(root), resource: { path: normalized }, data: { status: "unverified", resourceState, resourceVersion } });
+    return result;
   }
   const baseline = writeDocReviewBaselineFile(root, normalized, file.content);
   const decision = {
@@ -2771,7 +3004,101 @@ export function writeDocReviewDecision(root, relPath, { status, note = "", expec
   state.reviews[normalized] = decision;
   writeDocReviewState(root, state);
   writeGlobalReviewDecision(root, normalized, file, decision);
-  return { path: normalized, ...decision };
+  const result = { path: normalized, ...decision };
+  appendContextRoomEvent("review.decision", { ...contextRoomEventIdentity(root), resource: { path: normalized }, data: { status, resourceState, resourceVersion } });
+  return result;
+}
+
+function normalizeWorkspaceId(value = "") {
+  const id = String(value || "").trim();
+  return /^[A-Za-z0-9_-]{8,120}$/.test(id) ? id : "";
+}
+
+function sanitizeWorkspacePresence(next = {}) {
+  const workspaceId = normalizeWorkspaceId(next.workspaceId || next.id);
+  if (!workspaceId) throw sharedRequestError("A valid workspaceId is required", 400, "workspace_id_required");
+  return {
+    workspaceId,
+    clientInstanceId: normalizeWorkspaceId(next.clientInstanceId),
+    projectId: shortString(next.projectId, 240) || "",
+    projectTitle: shortString(next.projectTitle, 240) || "",
+    locationId: shortString(next.locationId, 240) || "",
+    worktree: shortString(next.worktree, 500) || "",
+    view: shortString(next.view || next.page, 80) || "home",
+    folder: nullablePath(next.folder),
+    file: nullablePath(next.file || next.openFile),
+    proposal: shortString(next.proposal, 500) || "",
+    visible: next.visible !== false,
+    focused: next.focused === true,
+    url: shortString(next.url, 2000) || "",
+    title: shortString(next.title, 500) || "Context Room",
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function createWorkspaceRegistry({ ttlMs = 20_000 } = {}) {
+  const workspaces = new Map();
+  const commands = new Map();
+  const prune = () => {
+    const cutoff = Date.now() - ttlMs;
+    for (const [workspaceId, workspace] of workspaces) {
+      if (Date.parse(workspace.updatedAt || "") >= cutoff) continue;
+      workspaces.delete(workspaceId);
+      commands.delete(workspaceId);
+    }
+  };
+  return {
+    list(filters = {}) {
+      prune();
+      const query = String(filters.query || "").trim().toLowerCase();
+      return [...workspaces.values()].filter((workspace) => (
+        (!filters.workspaceId || workspace.workspaceId === filters.workspaceId)
+        && (!filters.projectId || workspace.projectId === filters.projectId || workspace.projectTitle.toLowerCase() === String(filters.projectId).toLowerCase())
+        && (!filters.locationId || workspace.locationId === filters.locationId)
+        && (!query || [workspace.projectTitle, workspace.projectId, workspace.locationId, workspace.view, workspace.folder, workspace.file, workspace.proposal, workspace.title].filter(Boolean).join(" ").toLowerCase().includes(query))
+      )).sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
+    },
+    register(next) {
+      const presence = sanitizeWorkspacePresence(next);
+      workspaces.set(presence.workspaceId, presence);
+      prune();
+      return presence;
+    },
+    unregister(workspaceId) {
+      const id = normalizeWorkspaceId(workspaceId);
+      if (!id) return false;
+      commands.delete(id);
+      return workspaces.delete(id);
+    },
+    readCommand(workspaceId) {
+      prune();
+      const id = normalizeWorkspaceId(workspaceId);
+      return id && workspaces.has(id) ? commands.get(id) || null : null;
+    },
+    writeCommand(workspaceId, next = {}) {
+      prune();
+      const id = normalizeWorkspaceId(workspaceId);
+      if (!id || !workspaces.has(id)) throw sharedRequestError(`Unknown or expired workspace: ${workspaceId}`, 404, "workspace_not_found");
+      const action = ["open", "navigate", "scroll", "highlight"].includes(next.action) ? next.action : "navigate";
+      const targetType = next.target?.heading ? "heading" : next.target?.text ? "text" : Number.isFinite(Number(next.target?.percent)) ? "percent" : "";
+      const targetValue = targetType === "heading" ? next.target.heading : targetType === "text" ? next.target.text : targetType === "percent" ? Number(next.target.percent) : null;
+      const command = {
+        workspaceId: id,
+        action,
+        view: ["hub", "home", "settings", "file", "diff"].includes(next.view) ? next.view : null,
+        path: nullablePath(next.path),
+        target: targetType ? { type: targetType, value: targetType === "percent" ? Math.min(100, Math.max(0, targetValue)) : shortString(targetValue, 500) } : null,
+        id: shortString(next.id, 120) || "cmd-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8),
+        createdAt: next.createdAt || new Date().toISOString(),
+      };
+      commands.set(id, command);
+      return command;
+    },
+    clear() {
+      workspaces.clear();
+      commands.clear();
+    },
+  };
 }
 
 function readReviewTrackedFile(root, relPath) {
@@ -2904,6 +3231,11 @@ export function buildAgentReviewQueue(root = process.cwd()) {
       riskScore: item.riskScore,
       issues: item.issues,
       review: item.review || null,
+      startupContext: item.startupContext || null,
+      reviewReason: item.reviewReason || "",
+      resourceState: item.resourceState || "",
+      resourceVersion: item.resourceVersion || "",
+      currentHash: item.currentHash || "",
     })),
     note: "Read-only queue. Human verification must happen in the Context Room webapp.",
   };
@@ -3037,10 +3369,9 @@ function currentReviewFor(root, reviews, relPath, content, resourceState = "pres
   if (review) {
     const baseline = readDocReviewBaseline(root, relPath, review);
     const baselineReviewHash = review.baselineReviewHash || baseline?.reviewHash || null;
-    const semanticCurrent = review.reviewHash === reviewHash || baselineReviewHash === reviewHash;
     const resourceCurrent = reviewResourceIdentityMatches(review, resourceState, resourceVersion);
-    const explicitCurrent = resourceCurrent && (review.contentHash === contentHash || semanticCurrent);
-    const inlineBaselineCurrent = resourceCurrent && !review.status && review.note === "inline review applied" && (review.baselineHash === contentHash || baselineReviewHash === reviewHash);
+    const explicitCurrent = resourceCurrent && review.contentHash === contentHash;
+    const inlineBaselineCurrent = resourceCurrent && review.note === "inline review applied" && review.baselineHash === contentHash;
     let local = {
       ...review,
       resourceState,
@@ -3065,6 +3396,22 @@ function currentReviewFor(root, reviews, relPath, content, resourceState = "pres
     }
   }
   return currentGlobalReviewFor(root, relPath, content, resourceState, resourceVersion, globalReviewLedger);
+}
+
+function explicitCurrentReviewedPaths(root, relPaths, reviewState) {
+  const reviewed = [];
+  const ledger = readGlobalReviewLedger(root);
+  for (const relPath of relPaths) {
+    try {
+      const file = readReviewTrackedFile(root, relPath);
+      const resourceState = resourceStateForReviewFile(file);
+      const existing = reviewState.reviews[relPath] || null;
+      const resourceVersion = resourceVersionForReviewFile(root, relPath, file, existing);
+      const review = currentReviewFor(root, reviewState.reviews, relPath, file.content, resourceState, resourceVersion, ledger);
+      if (review?.status === "verified" && review.current) reviewed.push(relPath);
+    } catch {}
+  }
+  return reviewed;
 }
 
 function hashContent(content) {
@@ -3751,9 +4098,9 @@ export function buildConfigDiagnostics(root = process.cwd(), settings = readMemo
     }
   }
   for (const relPath of settings.reviewPaths || []) {
-    const covered = (settings.allowedPaths || []).some((allowed) => pathMatchesSetting(relPath, allowed) || pathMatchesSetting(allowed, relPath));
-    if (!covered) issues.push({ type: "review_not_allowed", severity: "high", message: `Review path is not covered by allowedPaths: ${relPath}.` });
-    if (projectPathEscapes(relPath)) issues.push({ path: relPath, type: "review_path_symlink_escape", severity: "high", message: `Required-review path escapes the project through a symbolic link while projectOnly is enabled: ${relPath}.` });
+    const covered = (settings.allowedPaths || []).some((allowed) => pathMatchesSetting(relPath, allowed));
+    if (!covered) issues.push({ path: relPath, type: "legacy_review_path_not_allowed", severity: "high", message: `Legacy review path cannot migrate because allowedPaths does not cover it: ${relPath}.` });
+    if (projectPathEscapes(relPath)) issues.push({ path: relPath, type: "legacy_review_path_symlink_escape", severity: "high", message: `Legacy review path cannot migrate because it escapes the project through a symbolic link while projectOnly is enabled: ${relPath}.` });
   }
   const duplicateIds = hubInfo.ids.filter((id, index) => hubInfo.ids.indexOf(id) !== index);
   for (const id of [...new Set(duplicateIds)]) issues.push({ type: "duplicate_hub_id", severity: "medium", message: `Duplicate hub section/card id: ${id}.` });
@@ -3844,7 +4191,6 @@ export function buildContextRoomDoctorReport(root = process.cwd(), options = {})
 function closedDiagnosticSettings() {
   const settings = createDefaultProjectConfig({ allowedPaths: [], watchAllow: [] });
   settings.projectOnly = true;
-  settings.reviewPaths = [];
   settings.hubSections = [];
   settings.customHubCards = [];
   settings.startupContext = { enabled: false, projectOnly: true, fileNames: [], globalPaths: [] };
@@ -3882,6 +4228,8 @@ function emptyDocQaReport() {
       prompts: 0,
       canonical: 0,
     },
+    pendingPaths: [],
+    reviewedPaths: [],
     queue: [],
   };
 }
@@ -4061,6 +4409,15 @@ function invalidateAbsentReviewsForPresentFiles(root, reviewState, files) {
   if (ledgerChanged) writeGlobalReviewLedger(root, ledger);
 }
 
+function reviewReasonFor({ gitStatus = "", resourceState = "present" } = {}) {
+  const status = String(gitStatus || "").trim();
+  if (resourceState === "absent" || status.includes("D")) return "deleted";
+  if (status.includes("R")) return "renamed";
+  if (status === "??" || status.includes("A")) return "added";
+  if (status) return "changed";
+  return "unverified-current";
+}
+
 export function buildDocQaReport(root = process.cwd(), options = {}) {
   const gitStatuses = options.gitStatuses || readGitStatusEntries(root);
   const gitHeadContents = options.gitHeadContents || null;
@@ -4077,23 +4434,22 @@ export function buildDocQaReport(root = process.cwd(), options = {}) {
   const gitQueue = files.map((file) => {
     const classification = classifyDocPath(file.path);
     const gitEntry = inferredRenames.get(file.path) || inferredBaselineRenames.get(file.path) || gitStatuses.get(file.path) || null;
-    const rawGitStatus = gitEntry?.status || "";
-    const reviewRequired = isRequiredReviewPath(file.path, settings);
-    if (!rawGitStatus.trim() && !reviewRequired) return null;
+    if (!isWatchedPath(file.path, settings)) return null;
+    if (resolveExternalPath(file.path)) return null;
     const abs = resolveExternalPath(file.path) || path.join(root, file.path);
     const content = file.exists && fs.existsSync(abs) && file.bytes <= MAX_FILE_BYTES ? fs.readFileSync(abs, "utf8") : "";
     const gitStatus = meaningfulGitStatusForReview(root, file.path, gitEntry, content, reviewState.reviews, gitHeadContents, file.exists === false ? "absent" : "present");
     const resourceState = file.exists === false ? "absent" : "present";
     const resourceVersion = resourceVersionForReviewFile(root, file.path, file, reviewState.reviews[file.path] || null);
     const review = currentReviewFor(root, reviewState.reviews, file.path, content, resourceState, resourceVersion);
-    if (!gitStatus.trim() && !reviewRequired) return null;
+    if (review?.status === "verified" && review.current) return null;
     const metadata = parseDocMetadata(content, file.path);
     const issues = computeDocIssues({ path: file.path, content, gitStatus, metadata });
     const riskScore = riskScoreFor({ classification, issues, gitStatus });
-    return { path: file.path, oldPath: gitEntry?.oldPath || null, inferredRename: Boolean(gitEntry?.inferredRename), label: file.label, summary: file.summary, updatedAt: file.updatedAt, classification, metadata, gitStatus, reviewRequired, issues, riskScore, review, resourceState };
+    const reviewReason = reviewReasonFor({ gitStatus, resourceState });
+    const reviewRequired = reviewReason === "unverified-current";
+    return { path: file.path, oldPath: gitEntry?.oldPath || null, inferredRename: Boolean(gitEntry?.inferredRename), label: file.label, summary: file.summary, updatedAt: file.updatedAt, classification, metadata, gitStatus, reviewReason, reviewRequired, issues, riskScore, review, resourceState, resourceVersion, currentHash: hashContent(content) };
   }).filter(Boolean
-  ).filter((item) => item.gitStatus.trim() || item.reviewRequired
-  ).filter((item) => isWatchedPath(item.path, settings) || item.reviewRequired
   ).filter((item) => !(item.review?.status === "verified" && item.review.current));
   const deletedPage = buildDeletedReviewPage(root, {
     gitStatuses,
@@ -4132,13 +4488,22 @@ export function buildDocQaReport(root = process.cwd(), options = {}) {
   const uniqueStartupSkillQueue = startupSkillQueue.filter((item) => !primaryPaths.has(item.path));
   const queue = [...primaryQueue, ...uniqueStartupSkillQueue]
   .sort((a, b) => compareReviewQueueItems(a, b, settings));
+  let reviewedPaths = [];
+  try {
+    if (fs.existsSync(path.join(path.resolve(root), SHARED_REVIEW_CONFIG))) {
+      const sharedReview = readSharedReview(root);
+      reviewedPaths = explicitCurrentReviewedPaths(root, sharedReview.proposalFiles || [], reviewState);
+    }
+  } catch {
+    reviewedPaths = [];
+  }
   return {
     generatedAt: new Date().toISOString(),
     summary: {
       totalDocs: files.length,
       changedDocs: queue.filter((item) => item.gitStatus.trim()).length,
       needsReview: queue.length,
-      requiredReview: queue.filter((item) => item.reviewRequired && !item.gitStatus.trim()).length,
+      requiredReview: queue.filter((item) => item.reviewReason === "unverified-current").length,
       deletedDocs: deletedQueue.length + externalWatchQueue.filter((item) => item.resourceState === "absent").length + (deletedPage.truncated ? 1 : 0),
       protectedDeletedDocs: deletedQueue.filter((item) => item.protected).length,
       deletedReviewKey: deletedReviewBatchKey(deletedQueue),
@@ -4147,6 +4512,8 @@ export function buildDocQaReport(root = process.cwd(), options = {}) {
       prompts: files.filter((file) => classifyDocPath(file.path).type === "prompt").length,
       canonical: queue.filter((item) => item.metadata.kind === "canonical").length,
     },
+    pendingPaths: queue.map((item) => item.path),
+    reviewedPaths,
     queue: queue.slice(0, 80),
   };
 }
@@ -4229,9 +4596,9 @@ function inferReviewBaselineRenames(root, reviewState, gitStatuses, files, setti
   const currentPaths = new Set(filesByPath.keys());
   const candidates = files.filter((file) => {
     if (!file.exists || file.bytes > MAX_FILE_BYTES) return false;
-    if (!isWatchedPath(file.path, settings) && !isRequiredReviewPath(file.path, settings)) return false;
+    if (!isWatchedPath(file.path, settings)) return false;
     const gitStatus = gitStatuses.get(file.path)?.status || "";
-    return gitStatus === "??" || gitStatus.includes("A") || isRequiredReviewPath(file.path, settings);
+    return gitStatus === "??" || gitStatus.includes("A") || isWatchedPath(file.path, settings);
   });
   const baselinesByExtension = new Map();
   const exactBaselines = new Map();
@@ -4244,7 +4611,7 @@ function inferReviewBaselineRenames(root, reviewState, gitStatuses, files, setti
   for (const oldPath of Object.keys(reviewState.reviews || {})) {
     const normalizedOldPath = normalizeRelPath(oldPath);
     if (!normalizedOldPath || currentPaths.has(normalizedOldPath)) continue;
-    if (!isWatchedPath(normalizedOldPath, settings) && !isRequiredReviewPath(normalizedOldPath, settings)) continue;
+    if (!isWatchedPath(normalizedOldPath, settings)) continue;
     const extension = path.extname(normalizedOldPath).toLowerCase();
     potentialBaselineCountByExtension.set(extension, (potentialBaselineCountByExtension.get(extension) || 0) + 1);
   }
@@ -4258,7 +4625,7 @@ function inferReviewBaselineRenames(root, reviewState, gitStatuses, files, setti
     for (const [oldPath, review] of Object.entries(reviewState.reviews || {})) {
       const normalizedOldPath = normalizeRelPath(oldPath);
       if (!normalizedOldPath || currentPaths.has(normalizedOldPath)) continue;
-      if (!isWatchedPath(normalizedOldPath, settings) && !isRequiredReviewPath(normalizedOldPath, settings)) continue;
+      if (!isWatchedPath(normalizedOldPath, settings)) continue;
       const baseline = readDocReviewBaseline(root, normalizedOldPath, review);
       if (!baseline?.content) continue;
       const extension = path.extname(normalizedOldPath).toLowerCase();
@@ -4374,7 +4741,7 @@ function buildPendingDeletedReviewItems(root, options = {}) {
     .filter((entry) => entry.status.includes("D") && !entry.status.includes("R"))
     .filter((entry) => unmergedOnly ? isUnmergedGitStatus(entry.status) : !isUnmergedGitStatus(entry.status))
     .filter((entry) => !filePaths.has(entry.path))
-    .filter((entry) => isWatchedPath(entry.path, settings) || isRequiredReviewPath(entry.path, settings));
+    .filter((entry) => isWatchedPath(entry.path, settings));
   const providedGitHeadContents = options.gitHeadContents instanceof Map ? options.gitHeadContents : null;
   const hasPossibleRenameAdditions = [...gitStatuses.values()].some((entry) => (entry.status === "??" || entry.status.includes("A")) && filePaths.has(entry.path));
   const renameGitHeadContents = providedGitHeadContents
@@ -4442,7 +4809,8 @@ function buildDeletedReviewQueueItem(root, entry, settings, reviewState, gitHead
   const metadata = parseDocMetadata(content, entry.path);
   const issues = computeDocIssues({ path: entry.path, content, gitStatus: entry.status, metadata });
   const riskScore = riskScoreFor({ classification, issues, gitStatus: entry.status });
-  const reviewRequired = isRequiredReviewPath(entry.path, settings);
+  const reviewReason = "deleted";
+  const reviewRequired = false;
   const resourceVersion = resourceVersions?.get(entry.path) || resourceVersionForReviewFile(root, entry.path, { exists: false }, reviewState.reviews[entry.path] || null);
   const review = currentReviewFor(root, reviewState.reviews, entry.path, "", "absent", resourceVersion, globalReviewLedger);
   const item = {
@@ -4454,6 +4822,7 @@ function buildDeletedReviewQueueItem(root, entry, settings, reviewState, gitHead
     classification,
     metadata,
     gitStatus: entry.status,
+    reviewReason,
     reviewRequired,
     issues,
     riskScore,
@@ -4473,6 +4842,7 @@ function publicDeletedReviewBatchItem(item) {
     protected: Boolean(item.protected),
     contentUnavailable: Boolean(item.contentUnavailable),
     renameInferenceUncertain: Boolean(item.renameInferenceUncertain),
+    reviewReason: item.reviewReason || "deleted",
     reviewRequired: Boolean(item.reviewRequired),
     kind: item.metadata?.kind || "unknown",
     authority: item.classification?.authority || "low",
@@ -4485,7 +4855,7 @@ function deletedReviewBatchKey(items = []) {
     item.resourceVersion || "",
     item.gitStatus || "",
     item.protected ? "protected" : "standard",
-    item.reviewRequired ? "required" : "optional",
+    item.reviewReason || "deleted",
   ].join("\0")).join("\n"));
 }
 
@@ -4769,12 +5139,14 @@ function buildExternalWatchReviewQueue(root, settings, reviewState, files = list
       initialReview: awaitingFirstDecision,
       internalChange: changedSinceBaseline,
       externalWatch: true,
-      reviewRequired: true,
+      reviewReason: awaitingFirstDecision ? "added" : file.exists ? "changed" : "deleted",
+      reviewRequired: false,
       issues,
       riskScore: riskScoreFor({ classification, issues, gitStatus }) + 20,
       review,
       resourceState,
       resourceVersion,
+      currentHash: file.contentHash || hashContent(file.content || ""),
     });
   }
   if (stateChanged) writeDocReviewState(root, reviewState);
@@ -4819,10 +5191,14 @@ function buildStartupContextReviewQueue(root, settings, reviewState, startupFile
       internalChange: changedSinceBaseline,
       initialReview: !existing.status && !changedSinceBaseline,
       startupContext: file.startupContext,
-      reviewRequired: true,
+      reviewReason: changedSinceBaseline ? "changed" : "unverified-current",
+      reviewRequired: !changedSinceBaseline,
       issues,
       riskScore: riskScoreFor({ classification, issues, gitStatus }) + 20,
       review,
+      resourceState,
+      resourceVersion,
+      currentHash: file.contentHash || hashContent(file.content || ""),
     });
   }
   if (stateChanged) writeDocReviewState(root, reviewState);
@@ -4866,10 +5242,14 @@ function buildStartupSkillReviewQueue(root, settings, reviewState) {
         initialReview: !existing.status && !changedSinceBaseline,
         internalChange: changedSinceBaseline,
         startupContext: file.startupContext,
-        reviewRequired: true,
+        reviewReason: changedSinceBaseline ? "changed" : "unverified-current",
+        reviewRequired: !changedSinceBaseline,
         issues,
         riskScore: riskScoreFor({ classification, issues, gitStatus }) + 20,
         review,
+        resourceState,
+        resourceVersion,
+        currentHash: file.contentHash || hashContent(file.content || ""),
       });
     }
   }
@@ -4907,19 +5287,10 @@ function reviewSeverityRank(item) {
   return 2;
 }
 
-function configuredReviewOrderRank(relPath, settings = {}) {
-  const normalized = normalizeRelPath(relPath);
-  const index = (settings.reviewPaths || []).findIndex((pattern) => pathMatchesSetting(normalized, pattern));
-  return index < 0 ? Number.POSITIVE_INFINITY : index;
-}
-
 function compareReviewQueueItems(a, b, settings = {}) {
   const aCritical = a.issues.some((issue) => issue.severity === "critical");
   const bCritical = b.issues.some((issue) => issue.severity === "critical");
   if (aCritical !== bCritical) return aCritical ? -1 : 1;
-  const aConfigured = configuredReviewOrderRank(a.path, settings);
-  const bConfigured = configuredReviewOrderRank(b.path, settings);
-  if (aConfigured !== bConfigured) return aConfigured - bConfigured;
   return reviewSeverityRank(a) - reviewSeverityRank(b)
     || reviewOrderRank(a.path) - reviewOrderRank(b.path)
     || b.riskScore - a.riskScore
@@ -5000,8 +5371,6 @@ export function createDefaultProjectConfig({ title = "Context Room", allowedPath
     readOnlyPaths: [],
     watchAllow: sanitizePathList(watchAllow),
     watchRules: [],
-    reviewPaths: [],
-    reviewAgentInstructions: true,
     integrations: { hermes: false },
     startupContext: { ...DEFAULT_STARTUP_CONTEXT },
     startupSkills: { ...DEFAULT_STARTUP_SKILLS },
@@ -5159,7 +5528,7 @@ export function initializeContextRoomProject(root = process.cwd(), options = {})
     };
     defaults.startupSkills = {
       ...defaults.startupSkills,
-      enabled: inferred.skillRoots.length > 0,
+      enabled: true,
       projectOnly: true,
     };
     defaults.startupHooks = {
@@ -5602,6 +5971,14 @@ export function syncContextRoomAgentContext(root = process.cwd()) {
 
 This file is generated by Context Room. Do not edit it; \`context-room setup\`, \`context-room init\`, and \`context-room start\` refresh it from the installed version.
 
+## Agent CLI Lifecycle
+
+Start each task with \`context-room agent prepare --task "<task>" --format json\`. It resolves the exact registered project, worktree, and folder; shows effective instructions, skills, and hooks; separates accepted documents from same-session proposals; and reports reviews, conflicts, health, and freshness.
+
+Use \`context-room context ask "<question>"\` for accepted project documentation. \`context-room capabilities\` only lists the static installed contract; it never interprets an objective or chooses a command. Only the human can accept or reject files awaiting review.
+
+Context Room never scans the computer for worktrees. Register a location explicitly with the plan-first \`context-room project register\` command or let its own handoff notify the Hub. Agents never accept, reject, or verify file reviews, and they never write directly to shared \`main\`.
+
 ## Set Up This Repository
 
 Fresh initialization discovers project-owned documentation, watches those real paths, and builds hub sections that keep current, target, and record material distinct. Treat that result as a safe first pass, not a substitute for reading the project.
@@ -5822,10 +6199,11 @@ export function readMemoryWebappSettings(root = process.cwd()) {
   return normalizeMemoryWebappSettings(readProjectConfigRaw(projectRoot), { ...defaults, projectOnly: false });
 }
 
-export function writeMemoryWebappSettings(root = process.cwd(), next = {}) {
+export function writeMemoryWebappSettings(root = process.cwd(), next = {}, { migrateLegacyReview = false } = {}) {
   const projectRoot = assertExistingProjectRoot(root);
   validateProjectConfigShape(next, "settings update");
-  const settings = normalizeMemoryWebappSettings(next, readMemoryWebappSettings(projectRoot));
+  let settings = normalizeMemoryWebappSettings(next, readMemoryWebappSettings(projectRoot));
+  if (migrateLegacyReview) settings = settingsWithUnifiedReviewPaths(settings, { stripLegacy: true });
   const settingsPath = path.join(projectRoot, MEMORY_WEBAPP_SETTINGS);
   assertManagedProjectPath(projectRoot, settingsPath, MEMORY_WEBAPP_SETTINGS);
   fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
@@ -5932,15 +6310,17 @@ function validateProjectConfigShape(raw, target = CONFIG_FILE, { requireAllowedP
 
 export function readGlobalContextRoomPreferences(preferencesPath = null) {
   const target = resolveGlobalPreferencesPath(preferencesPath);
-  if (!fs.existsSync(target)) return { appearance: { ...DEFAULT_APPEARANCE }, shortcuts: { ...DEFAULT_SHORTCUTS } };
+  if (!fs.existsSync(target)) return { appearance: { ...DEFAULT_APPEARANCE }, shortcuts: { ...DEFAULT_SHORTCUTS }, sounds: { ...DEFAULT_SOUNDS }, explorer: { ...DEFAULT_EXPLORER } };
   try {
     const parsed = JSON.parse(fs.readFileSync(target, "utf8"));
     return {
       appearance: normalizeAppearanceSettings(parsed.appearance),
       shortcuts: normalizeShortcutSettings(parsed.shortcuts),
+      sounds: normalizeSoundSettings(parsed.sounds),
+      explorer: normalizeExplorerSettings(parsed.explorer),
     };
   } catch {
-    return { appearance: { ...DEFAULT_APPEARANCE }, shortcuts: { ...DEFAULT_SHORTCUTS } };
+    return { appearance: { ...DEFAULT_APPEARANCE }, shortcuts: { ...DEFAULT_SHORTCUTS }, sounds: { ...DEFAULT_SOUNDS }, explorer: { ...DEFAULT_EXPLORER } };
   }
 }
 
@@ -5950,6 +6330,8 @@ export function writeGlobalContextRoomPreferences(next = {}, preferencesPath = n
   const preferences = {
     appearance: normalizeAppearanceSettings({ ...current.appearance, ...(next.appearance || {}) }),
     shortcuts: normalizeShortcutSettings({ ...current.shortcuts, ...(next.shortcuts || {}) }),
+    sounds: normalizeSoundSettings({ ...current.sounds, ...(next.sounds || {}) }),
+    explorer: normalizeExplorerSettings({ ...current.explorer, ...(next.explorer || {}) }),
   };
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, JSON.stringify(preferences, null, 2) + "\n", "utf8");
@@ -5957,12 +6339,14 @@ export function writeGlobalContextRoomPreferences(next = {}, preferencesPath = n
 }
 
 export function readResolvedContextRoomSettings(root = process.cwd(), { preferencesPath = null } = {}) {
-  const projectSettings = readMemoryWebappSettings(root);
+  const projectSettings = settingsWithUnifiedReviewPaths(withProjectAgentInstructionPaths(root, readMemoryWebappSettings(root)), { stripLegacy: true });
   const preferences = readGlobalContextRoomPreferences(preferencesPath);
   return {
     ...projectSettings,
     appearance: preferences.appearance,
     shortcuts: preferences.shortcuts,
+    sounds: preferences.sounds,
+    explorer: preferences.explorer,
     reviewGate: readReviewGateSettings(root),
   };
 }
@@ -6257,7 +6641,7 @@ function normalizeMemoryWebappSettings(raw = {}, base = defaultMemoryWebappSetti
   }
   const customHubCards = flattenHubCards(hubSections).filter((card) => hubCardPaths(card).length > 0).map((card) => ({ ...card, cards: undefined }));
   for (const card of flattenHubCards(hubSections)) hubCards[card.id] = card.enabled !== false;
-  return {
+  const normalized = {
     $schema: String(raw.$schema || base.$schema || CONFIG_SCHEMA_URL),
     title: String(raw.title || base.title || "Context Room").trim() || "Context Room",
     projectOnly: Boolean(raw.projectOnly ?? base.projectOnly ?? false),
@@ -6265,8 +6649,6 @@ function normalizeMemoryWebappSettings(raw = {}, base = defaultMemoryWebappSetti
     readOnlyPaths: sanitizePathList(raw.readOnlyPaths ?? base.readOnlyPaths ?? []),
     watchAllow: sanitizePathList(raw.watchAllow ?? base.watchAllow),
     watchRules: sanitizeWatchRules(raw.watchRules ?? base.watchRules ?? []),
-    reviewPaths: sanitizePathList(raw.reviewPaths ?? base.reviewPaths ?? []),
-    reviewAgentInstructions: Boolean(raw.reviewAgentInstructions ?? base.reviewAgentInstructions ?? true),
     sharedContext: raw.sharedContext && typeof raw.sharedContext === "object" ? { ...raw.sharedContext } : base.sharedContext || null,
     integrations: { hermes: Boolean(raw.integrations?.hermes ?? base.integrations?.hermes ?? false) },
     startupContext: normalizeStartupContextSettings(raw.startupContext ?? base.startupContext),
@@ -6277,16 +6659,39 @@ function normalizeMemoryWebappSettings(raw = {}, base = defaultMemoryWebappSetti
     customHubCards,
     hubSections,
   };
+  if (Object.prototype.hasOwnProperty.call(raw, "reviewPaths") || Object.prototype.hasOwnProperty.call(base, "reviewPaths")) {
+    normalized.reviewPaths = sanitizePathList(raw.reviewPaths ?? base.reviewPaths ?? []);
+  }
+  if (Object.prototype.hasOwnProperty.call(raw, "reviewAgentInstructions") || Object.prototype.hasOwnProperty.call(base, "reviewAgentInstructions")) {
+    normalized.reviewAgentInstructions = Boolean(raw.reviewAgentInstructions ?? base.reviewAgentInstructions ?? true);
+  }
+  return normalized;
 }
 
 function normalizeAppearanceSettings(value = {}) {
   const allowed = new Set(FILE_THEME_OPTIONS.map((theme) => theme.id));
   const fileTheme = String(value.fileTheme || DEFAULT_FILE_THEME).trim();
+  const colorMode = String(value.colorMode || DEFAULT_APPEARANCE.colorMode).trim();
   return {
     fileTheme: allowed.has(fileTheme) ? fileTheme : DEFAULT_FILE_THEME,
+    colorMode: ["system", "light", "dark"].includes(colorMode) ? colorMode : DEFAULT_APPEARANCE.colorMode,
     autoOpenGitDiff: value.autoOpenGitDiff !== false,
     showHiddenFiles: value.showHiddenFiles !== false,
   };
+}
+
+function normalizeSoundSettings(value = {}) {
+  const volume = Number(value.volume);
+  return {
+    enabled: value.enabled !== false,
+    volume: Number.isFinite(volume) ? Math.min(1, Math.max(0, volume)) : DEFAULT_SOUNDS.volume,
+  };
+}
+
+function normalizeExplorerSettings(value = {}) {
+  const raw = String(value.computerRoot || DEFAULT_EXPLORER.computerRoot).trim();
+  const expanded = raw === "~" ? os.homedir() : raw.startsWith("~/") ? path.join(os.homedir(), raw.slice(2)) : raw;
+  return { computerRoot: path.isAbsolute(expanded) ? path.resolve(expanded) : DEFAULT_EXPLORER.computerRoot };
 }
 
 export function normalizeKeyboardShortcut(value, fallback = DEFAULT_CODEX_REFERENCE_SHORTCUT) {
@@ -6665,11 +7070,22 @@ function isWatchedPath(relPath, settings = defaultMemoryWebappSettings()) {
   return Boolean(matchingWatchRule(relPath, settings)?.watched);
 }
 
-function isRequiredReviewPath(relPath, settings = defaultMemoryWebappSettings()) {
-  const normalized = normalizeRelPath(relPath);
-  return (settings.reviewAgentInstructions !== false && (normalized === "AGENTS.md"
-    || normalized.endsWith("/AGENTS.md")))
-    || (settings.reviewPaths || []).some((pattern) => pathMatchesSetting(normalized, pattern));
+function settingsWithUnifiedReviewPaths(settings = defaultMemoryWebappSettings(), { stripLegacy = false } = {}) {
+  const next = {
+    ...settings,
+    watchAllow: sanitizePathList(settings.watchAllow || []),
+    watchRules: sanitizeWatchRules(settings.watchRules || []),
+  };
+  for (const legacyPath of sanitizePathList(settings.reviewPaths || [])) {
+    const covered = (next.allowedPaths || []).some((allowedPath) => pathMatchesSetting(legacyPath, allowedPath));
+    if (!covered || isWatchedPath(legacyPath, next)) continue;
+    next.watchAllow = appendUniquePath(next.watchAllow, legacyPath);
+  }
+  if (stripLegacy) {
+    delete next.reviewPaths;
+    delete next.reviewAgentInstructions;
+  }
+  return next;
 }
 
 function pathMatchesSetting(relPath, pattern) {
@@ -6791,7 +7207,9 @@ function backgroundWorkerKey(root, group) {
 }
 
 function backgroundWorkerGroup(task) {
-  return task === "reports" ? "reports" : "files";
+  if (task === "reports") return "reports";
+  if (task === "context-hub") return "hub";
+  return "files";
 }
 
 function ensureBackgroundWorker(root, group) {
@@ -6885,6 +7303,8 @@ function invalidateBackgroundCaches(root, { explicit = false } = {}) {
   if (explicit) backgroundExplicitInvalidations.set(key, Date.now());
   invalidateBackgroundReports(key);
   invalidateBackgroundFileTasks(key);
+  contextHubProjectSummaryCache.delete(key);
+  contextHubStateCache.delete(key);
 }
 
 function clearBackgroundCacheState(root) {
@@ -6894,6 +7314,8 @@ function clearBackgroundCacheState(root) {
   backgroundReportGenerations.delete(key);
   backgroundFileTaskGenerations.delete(key);
   backgroundExplicitInvalidations.delete(key);
+  contextHubProjectSummaryCache.delete(key);
+  contextHubStateCache.delete(key);
   for (const taskKey of backgroundFileTaskCache.keys()) {
     if (taskKey.startsWith(prefix)) backgroundFileTaskCache.delete(taskKey);
   }
@@ -6901,6 +7323,24 @@ function clearBackgroundCacheState(root) {
 
 export function contextRoomProjectId(root = process.cwd()) {
   return createHash("sha256").update(safeRealPath(path.resolve(root))).digest("hex").slice(0, 24);
+}
+
+function contextRoomEventIdentity(root = process.cwd()) {
+  const resolvedRoot = safeRealPath(path.resolve(root));
+  const registered = readContextHubRegistry({ refreshGit: false }).projects.find((item) => (
+    item?.root && safeRealPath(item.root) === resolvedRoot
+  ));
+  let shared = registered?.shared || null;
+  if (!shared) {
+    try { shared = readSharedProjectConnection(resolvedRoot); } catch { shared = null; }
+  }
+  const fallbackId = contextRoomProjectId(resolvedRoot);
+  return {
+    projectId: String(registered?.logicalProjectId || registered?.id || fallbackId),
+    locationId: String(registered?.id || fallbackId),
+    sharedProjectId: String(shared?.projectId || ""),
+    sharedRepository: String(shared?.repository || ""),
+  };
 }
 
 export async function selectAvailableContextRoomPort(preferredPort = DEFAULT_PORT, { host = "127.0.0.1", allowFallback = true, maxAttempts = 200 } = {}) {
@@ -7018,7 +7458,7 @@ function sharedReviewAllowedPaths(repositoryConfig, projectId) {
   return [`${projectPrefix}/docs/`, `${projectPrefix}/skills/`];
 }
 
-function sharedContextUiState(root) {
+function sharedContextUiState(root, { refreshShared = false } = {}) {
   const reviewPath = path.join(path.resolve(root), SHARED_REVIEW_CONFIG);
   if (fs.existsSync(reviewPath)) {
     const review = readSharedReview(root);
@@ -7037,7 +7477,7 @@ function sharedContextUiState(root) {
       enabled: true,
       mode: "project",
       status,
-      proposals: listSharedProposals(root),
+      proposals: listSharedProposals(root, { refresh: refreshShared }),
     };
   } catch (error) {
     return {
@@ -7050,32 +7490,300 @@ function sharedContextUiState(root) {
   }
 }
 
+function withSharedSkillDiagnostics(root, reports = {}, { refresh = false } = {}) {
+  const sharedSkills = sharedSkillLocationsStatus(root, { refresh });
+  const sharedSkillIssues = sharedSkills.connected ? (sharedSkills.destinations || []).flatMap((destination) => {
+    if (destination.status === "ready") return [];
+    const severity = destination.status === "conflict" || destination.status === "broken" ? "high" : "medium";
+    const message = destination.message || `Shared skill destination is ${destination.status || "not ready"}`;
+    return [{
+      id: `shared-skills:${destination.id}`,
+      severity,
+      category: "startup",
+      path: destination.destination,
+      message: `${message} (${destination.provider} · ${destination.scope})`,
+      acknowledged: false,
+    }];
+  }) : [];
+  return {
+    ...reports,
+    doctor: { ...(reports.doctor || {}), issues: [...(reports.doctor?.issues || []), ...sharedSkillIssues] },
+    sharedSkills,
+  };
+}
+
 function contextHubRepositoryId(repository) {
   return createHash("sha256").update(String(repository || "")).digest("hex").slice(0, 16);
 }
 
+function contextHubProjectPriorityId(project = {}) {
+  if (project.shared?.repository && project.shared?.projectId) {
+    return `shared:${contextHubRepositoryId(project.shared.repository)}:${project.shared.projectId}`;
+  }
+  return `local:${project.logicalProjectId || project.id || project.projectKey || "unknown"}`;
+}
+
+function contextHubReviewRevisionToken(item = {}) {
+  if (item.type === "shared") return item.head ? `shared:${item.head}` : "";
+  const review = item.localReview || item;
+  if (!review.resourceState || !review.currentHash) return "";
+  return `local:${review.resourceState}:${review.resourceVersion || "-"}:${review.currentHash}`;
+}
+
+function contextHubAtomicReviewItems(state = {}) {
+  return (state.items || []).flatMap((item) => {
+    if (item.type === "shared") return [{ ...item, revisionToken: contextHubReviewRevisionToken(item) }];
+    if (item.reviewStatus !== "local_changes") return [];
+    const reviews = item.reviews?.length
+      ? item.reviews
+      : (item.files || []).map((file) => ({ path: file, label: file }));
+    return reviews.map((review) => {
+      const atomic = {
+        ...item,
+        id: item.id + ":worktree:" + (review.worktreeId || item.projectId) + ":file:" + review.path,
+        projectId: review.worktreeId || item.projectId,
+        localFile: review.path,
+        localReview: review,
+      };
+      return { ...atomic, revisionToken: contextHubReviewRevisionToken(atomic) };
+    });
+  });
+}
+
+function contextHubStateWithAttention(state = {}) {
+  const attention = readContextHubAttention();
+  const ranks = new Map(attention.projectOrder.map((id, index) => [id, index]));
+  return {
+    ...state,
+    attention,
+    projects: (state.projects || []).map((project) => {
+      const priorityId = contextHubProjectPriorityId(project);
+      return { ...project, priorityId, priorityRank: ranks.has(priorityId) ? ranks.get(priorityId) : null };
+    }),
+  };
+}
+
+function contextHubSectionCardSummary(card, depth = 0) {
+  const children = depth < 2
+    ? (card.cards || []).slice(0, 24).map((child) => contextHubSectionCardSummary(child, depth + 1))
+    : [];
+  return {
+    id: String(card.id || ""),
+    title: String(card.title || "Untitled"),
+    description: String(card.description || ""),
+    paths: hubCardPaths(card).slice(0, 24),
+    autoChildren: Boolean(card.autoChildren),
+    cards: children,
+  };
+}
+
+function contextHubSectionSummaries(root) {
+  const settings = readMemoryWebappSettings(root);
+  return hubSectionsForRoot(root, settings).slice(0, 32).map((section) => ({
+    id: String(section.id || ""),
+    title: String(section.title || "Section"),
+    description: String(section.description || ""),
+    cards: (section.cards || []).slice(0, 48).map((card) => contextHubSectionCardSummary(card)),
+  }));
+}
+
 function contextHubLocalProjectSummary(project, currentRoot) {
+  const cacheKey = path.resolve(project.root);
+  const cached = contextHubProjectSummaryCache.get(cacheKey);
+  const now = Date.now();
+  if (
+    project.available
+    && cached?.expiresAt > now
+    && cached.available === project.available
+  ) {
+    return {
+      ...project,
+      current: safeRealPath(project.root) === safeRealPath(currentRoot),
+      ...cached.summary,
+    };
+  }
   let queue = [];
   let queueError = "";
+  let hubSections = [];
   if (project.available) {
     try {
       queue = buildAgentReviewQueue(project.root).queue || [];
     } catch (error) {
       queueError = error.message;
     }
+    try {
+      hubSections = contextHubSectionSummaries(project.root);
+    } catch {
+      hubSections = [];
+    }
+  }
+  const summary = {
+    localReviewCount: queue.length,
+    localReviewFiles: queue.map((item) => item.path),
+    localReviews: queue.map((item) => ({
+      path: item.path,
+      label: item.label || path.basename(item.path),
+      resourceState: item.resourceState || "",
+      batchDeletion: item.batchDeletion === true,
+      oldPath: item.oldPath || "",
+      gitStatus: item.gitStatus || "",
+      protected: item.protected === true,
+      reviewReason: item.reviewReason || "",
+      resourceState: item.resourceState || "",
+      resourceVersion: item.resourceVersion || "",
+      currentHash: item.currentHash || "",
+      reviewStatus: item.review?.current ? (item.review.status || "") : "",
+      startupContext: item.startupContext ? {
+        kind: item.startupContext.kind || "",
+        order: item.startupContext.order || "",
+        skillName: item.startupContext.skillName || "",
+      } : null,
+    })),
+    localReviewError: queueError,
+    hubSections,
+  };
+  if (project.available) {
+    contextHubProjectSummaryCache.set(cacheKey, {
+      available: project.available,
+      expiresAt: now + CONTEXT_HUB_PROJECT_SUMMARY_CACHE_TTL_MS,
+      summary,
+    });
   }
   return {
     ...project,
     current: project.available && safeRealPath(project.root) === safeRealPath(currentRoot),
-    localReviewCount: queue.length,
-    localReviewFiles: queue.slice(0, 12).map((item) => item.path),
-    localReviewError: queueError,
+    ...summary,
   };
 }
 
-export function contextHubUiState(root) {
+function contextHubWorktreeLabel(project) {
+  const branch = String(project?.worktree?.branch || "").trim();
+  if (branch) return branch;
+  return path.basename(String(project?.root || "")) || "worktree";
+}
+
+function contextHubGroupedLocalProjects(localProjects = []) {
+  const groups = new Map();
+  for (const project of localProjects) {
+    const logicalId = String(project.logicalProjectId || project.id);
+    if (!groups.has(logicalId)) groups.set(logicalId, []);
+    groups.get(logicalId).push(project);
+  }
+  return [...groups.entries()].map(([logicalProjectId, entries]) => {
+    const worktrees = [...entries].sort((left, right) => (
+      Number(Boolean(right.current)) - Number(Boolean(left.current))
+      || Number(Boolean(right.available)) - Number(Boolean(left.available))
+      || String(right.lastOpenedAt || "").localeCompare(String(left.lastOpenedAt || ""))
+    ));
+    const preferred = worktrees.find((entry) => entry.current)
+      || worktrees.find((entry) => entry.available)
+      || worktrees[0];
+    const shared = preferred.shared || worktrees.find((entry) => entry.shared)?.shared || null;
+    const localReviews = worktrees.flatMap((worktree) => (worktree.localReviews || []).map((review) => ({
+      ...review,
+      worktreeId: worktree.id,
+      worktreeLabel: contextHubWorktreeLabel(worktree),
+      worktreeRoot: worktree.root,
+      worktreeCurrent: Boolean(worktree.current),
+    })));
+    const latestOpenedAt = worktrees.reduce((latest, entry) => (
+      String(entry.lastOpenedAt || "") > latest ? String(entry.lastOpenedAt || "") : latest
+    ), "");
+    return {
+      ...preferred,
+      logicalProjectId,
+      projectKey: `local:${logicalProjectId}`,
+      current: worktrees.some((entry) => entry.current),
+      available: worktrees.some((entry) => entry.available),
+      shared,
+      lastOpenedAt: latestOpenedAt || preferred.lastOpenedAt,
+      worktreeCount: worktrees.length,
+      worktrees: worktrees.map((entry) => ({
+        id: entry.id,
+        root: entry.root,
+        title: entry.title,
+        available: entry.available,
+        current: entry.current,
+        registeredAt: entry.registeredAt,
+        lastOpenedAt: entry.lastOpenedAt,
+        branch: contextHubWorktreeLabel(entry),
+        head: entry.worktree?.head || "",
+        main: entry.worktree?.main === true,
+        localReviewCount: Number(entry.localReviewCount || 0),
+        shared: entry.shared || null,
+      })),
+      localReviewCount: localReviews.length,
+      localReviewFiles: localReviews.map((review) => review.path),
+      localReviews,
+      localReviewError: worktrees.map((entry) => entry.localReviewError).filter(Boolean).join(" · "),
+      hubSections: preferred.hubSections || [],
+    };
+  });
+}
+
+function contextHubLocalWorktree(projects = [], requestedId = "") {
+  for (const project of projects) {
+    if (project.mode === "shared") continue;
+    const worktree = (project.worktrees || []).find((entry) => entry.id === requestedId)
+      || (project.id === requestedId ? {
+        id: project.id,
+        root: project.root,
+        title: project.title,
+        available: project.available,
+        current: project.current,
+        branch: project.worktree?.branch || "",
+      } : null);
+    if (!worktree) continue;
+    return {
+      ...project,
+      ...worktree,
+      projectKey: project.projectKey,
+      logicalProjectId: project.logicalProjectId,
+      worktrees: project.worktrees || [],
+      worktreeCount: project.worktreeCount || 1,
+    };
+  }
+  return null;
+}
+
+function registeredContextHubWorktree(requestedId = "") {
+  const project = listContextHubProjects().find((entry) => entry.id === requestedId);
+  if (!project) return null;
+  return {
+    ...project,
+    projectKey: project.logicalProjectId || project.id,
+    worktrees: [project],
+    worktreeCount: 1,
+  };
+}
+
+function contextHubProjectSettingsResponse(project, { hooks = null, preferencesPath = null } = {}) {
+  const settings = readResolvedContextRoomSettings(project.root, { preferencesPath });
+  const revision = hashContent(JSON.stringify(settings));
+  return {
+    project: {
+      id: project.id,
+      projectKey: project.projectKey,
+      title: project.title,
+      root: project.root,
+      branch: project.worktree?.branch || "",
+    },
+    settings,
+    revision,
+    ...(hooks ? { hooks } : {}),
+  };
+}
+
+export function contextHubUiState(root, { refreshShared = true, refreshGit = false, force = false } = {}) {
   const currentRoot = path.resolve(root);
-  const localProjects = listContextHubProjects().map((project) => contextHubLocalProjectSummary(project, currentRoot));
+  if (force) {
+    contextHubStateCache.delete(currentRoot);
+    contextHubProjectSummaryCache.clear();
+  }
+  const cached = contextHubStateCache.get(currentRoot);
+  if (cached?.expiresAt > Date.now()) return cached.value;
+  const localWorktrees = listContextHubProjects({ refreshGit }).map((project) => contextHubLocalProjectSummary(project, currentRoot));
+  const localProjects = contextHubGroupedLocalProjects(localWorktrees);
   const registry = readContextHubRegistry();
   const repositories = [...new Set([
     ...registry.sharedRepositories.map((entry) => entry.repository),
@@ -7087,7 +7795,7 @@ export function contextHubUiState(root) {
   const repositoryErrors = [];
   for (const repository of repositories) {
     try {
-      const shared = listSharedRepositoryProposals(repository, { allowOffline: true });
+      const shared = listSharedRepositoryProposals(repository, { allowOffline: true, refresh: refreshShared });
       const repositoryId = contextHubRepositoryId(repository);
       sharedRepositories.push({
         id: repositoryId,
@@ -7121,7 +7829,7 @@ export function contextHubUiState(root) {
       : [];
     return {
       ...project,
-      projectKey: `local:${project.id}`,
+      projectKey: project.projectKey,
       mode: project.shared ? "hybrid" : "local",
       sharedTitle: sharedProject?.title || "",
       sharedProposalCount: linkedProposals.length,
@@ -7149,7 +7857,9 @@ export function contextHubUiState(root) {
         sharedProposalCount: proposalCount,
         localReviewCount: 0,
         localReviewFiles: [],
+        localReviews: [],
         localReviewError: "",
+        hubSections: [],
       });
     }
   }
@@ -7169,11 +7879,13 @@ export function contextHubUiState(root) {
       sharedProposalCount: scopedProposals.length,
       localReviewCount: 0,
       localReviewFiles: [],
+      localReviews: [],
       localReviewError: "",
+      hubSections: [],
     });
   }
   const localItems = projects.filter((project) => project.mode !== "shared").map((project) => ({
-    id: `local:${project.id}`,
+    id: project.projectKey,
     type: "local",
     projectKey: project.projectKey,
     projectId: project.id,
@@ -7189,13 +7901,14 @@ export function contextHubUiState(root) {
     available: project.available,
     root: project.root,
     shared: project.shared,
+    reviews: project.localReviews,
   }));
   const items = [...proposals, ...localItems].sort((left, right) => {
     const rank = { updated: 0, ready: 1, local_changes: 1, in_review: 2, accepted: 3, clean: 4, merged: 5, unavailable: 6 };
     const statusRank = (rank[left.reviewStatus] ?? 4) - (rank[right.reviewStatus] ?? 4);
     return statusRank || String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""));
   });
-  return {
+  const value = {
     enabled: true,
     generatedAt: new Date().toISOString(),
     currentProjectId: contextRoomProjectId(currentRoot),
@@ -7207,18 +7920,127 @@ export function contextHubUiState(root) {
     summary: {
       projects: projects.length,
       localProjects: projects.filter((project) => project.mode !== "shared").length,
+      localWorktrees: localWorktrees.length,
       sharedProjects: projects.filter((project) => project.mode !== "local").length,
       sharedRepositories: sharedRepositories.length,
       proposals: proposals.length,
       localReviews: localItems.reduce((total, item) => total + item.fileCount, 0),
     },
   };
+  contextHubStateCache.set(currentRoot, {
+    value,
+    expiresAt: Date.now() + CONTEXT_HUB_STATE_CACHE_TTL_MS,
+  });
+  return value;
 }
 
-function sharedRequestError(message, statusCode = 400, code = "shared_context_request_failed") {
+function contextHubStateWithFreshness(state, { generatedAt = "", refreshing = false } = {}) {
+  const ageMs = generatedAt ? Math.max(0, Date.now() - Date.parse(generatedAt)) : null;
+  return {
+    ...state,
+    freshness: {
+      generatedAt: generatedAt || state.generatedAt || "",
+      ageMs,
+      fresh: Boolean(generatedAt && ageMs <= CONTEXT_HUB_SNAPSHOT_TTL_MS && !refreshing),
+      refreshing: Boolean(refreshing),
+    },
+  };
+}
+
+function minimalContextHubState(root) {
+  const currentRoot = path.resolve(root);
+  const worktrees = listContextHubProjects().map((project) => ({
+    ...project,
+    current: safeRealPath(project.root) === safeRealPath(currentRoot),
+    localReviewCount: 0,
+    localReviewFiles: [],
+    localReviews: [],
+    localReviewError: "",
+    hubSections: [],
+  }));
+  const projects = contextHubGroupedLocalProjects(worktrees);
+  return {
+    enabled: true,
+    generatedAt: "",
+    currentProjectId: contextRoomProjectId(currentRoot),
+    projects,
+    sharedRepositories: readContextHubRegistry().sharedRepositories.map((entry) => ({ repository: entry.repository })),
+    proposals: [],
+    items: [],
+    repositoryErrors: [],
+    summary: {
+      projects: projects.length,
+      localProjects: projects.length,
+      localWorktrees: worktrees.length,
+      sharedProjects: projects.filter((project) => project.mode !== "local").length,
+      sharedRepositories: readContextHubRegistry().sharedRepositories.length,
+      proposals: 0,
+      localReviews: 0,
+    },
+  };
+}
+
+function readFastContextHubState(root) {
+  const snapshot = readContextHubSnapshot();
+  if (!snapshot?.state) return contextHubStateWithAttention(contextHubStateWithFreshness(minimalContextHubState(root), { refreshing: true }));
+  const ageMs = Math.max(0, Date.now() - Date.parse(snapshot.generatedAt));
+  const currentRoot = safeRealPath(root);
+  const state = {
+    ...snapshot.state,
+    currentProjectId: contextRoomProjectId(root),
+    projects: (snapshot.state.projects || []).map((project) => {
+      const worktrees = (project.worktrees || []).map((worktree) => ({ ...worktree, current: safeRealPath(worktree.root) === currentRoot }));
+      return { ...project, current: safeRealPath(project.root) === currentRoot || worktrees.some((worktree) => worktree.current), worktrees };
+    }),
+  };
+  return contextHubStateWithAttention(contextHubStateWithFreshness(state, {
+    generatedAt: snapshot.generatedAt,
+    refreshing: ageMs > CONTEXT_HUB_SNAPSHOT_TTL_MS || contextHubSnapshotRefreshes.has(path.resolve(root)),
+  }));
+}
+
+function markContextHubSnapshotStale() {
+  const snapshot = readContextHubSnapshot();
+  if (snapshot?.state) writeContextHubSnapshot(snapshot.state, { generatedAt: "1970-01-01T00:00:00.000Z" });
+}
+
+function refreshContextHubSnapshot(root, { refreshShared = true, force = false } = {}) {
+  const key = path.resolve(root);
+  const snapshot = readContextHubSnapshot();
+  if (!force && snapshot?.state && Date.now() - Date.parse(snapshot.generatedAt) <= CONTEXT_HUB_SNAPSHOT_TTL_MS) {
+    return Promise.resolve(contextHubStateWithFreshness(snapshot.state, { generatedAt: snapshot.generatedAt, refreshing: false }));
+  }
+  if (!force && contextHubSnapshotRefreshes.has(key)) return contextHubSnapshotRefreshes.get(key);
+  const promise = runBackgroundTask("context-hub", key, { refreshShared, refreshGit: true, force }).then((state) => {
+    writeContextHubSnapshot(state, { generatedAt: state.generatedAt });
+    contextHubStateCache.set(key, { value: state, expiresAt: Date.now() + CONTEXT_HUB_STATE_CACHE_TTL_MS });
+    return contextHubStateWithFreshness(state, { generatedAt: state.generatedAt, refreshing: false });
+  }).finally(() => {
+    if (contextHubSnapshotRefreshes.get(key) === promise) contextHubSnapshotRefreshes.delete(key);
+  });
+  contextHubSnapshotRefreshes.set(key, promise);
+  return promise;
+}
+
+function paginatedContextHubReviews(state, { cursor = 0, limit = 80 } = {}) {
+  const offset = Math.max(0, Number(cursor) || 0);
+  const pageSize = Math.min(250, Math.max(1, Number(limit) || 80));
+  const items = state.items || [];
+  return {
+    generatedAt: state.generatedAt,
+    freshness: state.freshness,
+    attention: state.attention,
+    items: items.slice(offset, offset + pageSize),
+    total: items.length,
+    nextCursor: offset + pageSize < items.length ? offset + pageSize : null,
+  };
+}
+
+function sharedRequestError(message, statusCode = 400, code = "shared_context_request_failed", details = null) {
   const error = new Error(message);
   error.statusCode = statusCode;
   error.code = code;
+  if (details && typeof details === "object") error.details = details;
   return error;
 }
 
@@ -7297,6 +8119,15 @@ function isCodexPromptRequest(req) {
   return new URL(req.url || "/", "http://localhost").pathname.startsWith("/api/codex-prompts");
 }
 
+function isGlobalProjectScopedRequestPath(pathname = "") {
+  return String(pathname).startsWith("/api/")
+    && !String(pathname).startsWith("/api/context-hub")
+    && !String(pathname).startsWith("/api/workspaces")
+    && !String(pathname).startsWith("/api/codex-prompts")
+    && !String(pathname).startsWith("/api/context/")
+    && pathname !== "/api/health";
+}
+
 export function createMemoryServer({
   root = process.cwd(),
   port = DEFAULT_PORT,
@@ -7318,14 +8149,14 @@ export function createMemoryServer({
   }
   const sharedReviewServers = new Set();
   const sharedReviewRooms = new Map();
-  const contextHubProjectServers = new Set();
-  const contextHubProjectRooms = new Map();
+  const workspaceRegistry = createWorkspaceRegistry();
   ensureBackgroundWorker(root, "files");
   void readBackgroundReports(root).catch(() => {});
   const lastSelectedPath = normalizeRelPath(readCollaborationSessionState(root).selectedPath || "");
   if (lastSelectedPath) void readBackgroundFileTask("file-diff", root, { path: lastSelectedPath }).catch(() => {});
   const stopBackgroundWatch = watchBackgroundInputs(root);
   const server = http.createServer(async (req, res) => {
+    const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
     const promptRequest = isCodexPromptRequest(req);
     const requestMutation = !["GET", "HEAD", "OPTIONS"].includes(req.method || "GET");
     const trustedHost = isLoopbackPromptAuthority(req.headers.host, server, port);
@@ -7378,35 +8209,64 @@ export function createMemoryServer({
       });
       return;
     }
+    let requestRoot = root;
+    const requestedTargetProjectId = String(req.headers["x-context-room-target-project"] || "").trim();
+    if (requestedTargetProjectId && isGlobalProjectScopedRequestPath(requestUrl.pathname)) {
+      const targetProject = registeredContextHubWorktree(requestedTargetProjectId);
+      if (!targetProject || targetProject.mode === "shared") {
+        sendJson(res, 404, {
+          error: `Unknown local project: ${requestedTargetProjectId}`,
+          code: "context_hub_project_not_found",
+        });
+        return;
+      }
+      if (!targetProject.available) {
+        sendJson(res, 409, {
+          error: `Local project is unavailable: ${targetProject.root}`,
+          code: "context_hub_project_unavailable",
+        });
+        return;
+      }
+      requestRoot = path.resolve(targetProject.root);
+      res.setHeader("x-context-room-target-project", targetProject.id);
+      ensureBackgroundWorker(requestRoot, "files");
+    }
     try {
-      await routeRequest(req, res, root, globalPreferencesPath, {
+      await routeRequest(req, res, requestRoot, globalPreferencesPath, {
         codexComposerInsert,
         codexReferenceInsert,
         codexPromptCenter,
         promptMutationNonce,
         frameAncestorPorts: trustedFrameAncestorPorts,
-        startSharedReview: async ({ proposal, repository = "" }) => {
-          if (fs.existsSync(path.join(path.resolve(root), SHARED_REVIEW_CONFIG))) {
+        startSharedReview: async ({ proposal, repository = "", expectedHead = "", projectRoot = requestRoot }) => {
+          const sourceRoot = path.resolve(projectRoot || requestRoot);
+          if (fs.existsSync(path.join(sourceRoot, SHARED_REVIEW_CONFIG))) {
             throw sharedRequestError("This Context Room already represents an exact proposal review", 409, "shared_context_review_already_open");
           }
-          const remoteState = repository
-            ? listSharedRepositoryProposals(repository, { allowOffline: false })
-            : { repository: readSharedProjectConnection(root)?.repository || "", proposals: listSharedProposals(root) };
-          const remoteProposal = remoteState.proposals.find((item) => item.branch === proposal);
-          if (!remoteProposal) throw sharedRequestError(`Remote proposal not found: ${proposal}`, 404, "shared_context_proposal_not_found");
-          const reviewRepository = repository || remoteState.repository || remoteProposal.repository;
-          const reviewKey = `${reviewRepository}\0${remoteProposal.branch}@${remoteProposal.head}`;
-          const existing = sharedReviewRooms.get(reviewKey);
+          const reviewRepository = repository || readSharedProjectConnection(sourceRoot)?.repository || "";
+          let reviewHead = expectedHead;
+          if (!reviewHead) {
+            try {
+              const cachedProposals = repository
+                ? listSharedRepositoryProposals(repository, { allowOffline: true, refresh: false }).proposals
+                : listSharedProposals(sourceRoot, { refresh: false });
+              reviewHead = cachedProposals.find((item) => item.branch === proposal)?.head || "";
+            } catch {}
+          }
+          const requestedReviewKey = reviewHead && reviewRepository
+            ? `${reviewRepository}\0${proposal}@${reviewHead}`
+            : "";
+          const existing = requestedReviewKey ? sharedReviewRooms.get(requestedReviewKey) : null;
           if (existing) return existing;
           const result = repository
-            ? materializeSharedRepositoryReview(repository, { proposal })
-            : materializeSharedReview(root, { proposal });
+            ? materializeSharedRepositoryReview(repository, { proposal, expectedHead: reviewHead })
+            : materializeSharedReview(sourceRoot, { proposal, expectedHead: reviewHead });
+          const reviewKey = `${result.metadata.repository}\0${result.metadata.proposal}@${result.metadata.proposalHead}`;
           const allowedPaths = sharedReviewAllowedPaths(result.repositoryConfig, result.metadata.projectId);
           initializeContextRoomProject(result.reviewRoot, {
             title: `Review · ${proposal}`,
             allowedPaths,
             watchAllow: allowedPaths,
-            reviewAgentInstructions: false,
           });
           const reviewPort = await selectAvailableContextRoomPort(DEFAULT_PORT, { allowFallback: true });
           const reviewRoom = createMemoryServer({
@@ -7436,36 +8296,15 @@ export function createMemoryServer({
           if (!project) throw sharedRequestError(`Unknown local project: ${requestedProjectId}`, 404, "context_hub_project_not_found");
           if (!project.available) throw sharedRequestError(`Local project is unavailable: ${project.root}`, 409, "context_hub_project_unavailable");
           recordContextHubProjectOpened(project.id);
-          if (safeRealPath(project.root) === safeRealPath(root)) {
-            return { current: true, project, port, url: "" };
-          }
           if (readSharedProjectConnection(project.root)) syncSharedContext(project.root, { allowOffline: true });
-          const existing = contextHubProjectRooms.get(project.id);
-          if (existing) return existing;
-          const projectPort = await selectAvailableContextRoomPort(DEFAULT_PORT, { allowFallback: true });
-          const projectRoom = createMemoryServer({
-            root: project.root,
-            port: projectPort,
-            globalPreferencesPath,
-            registerInHub: false,
-            frameAncestorPorts: [
-              ...trustedFrameAncestorPorts,
-              contextRoomServerPort(server, port),
-            ],
-          });
-          await listenContextRoomServer(projectRoom.server, projectPort);
-          contextHubProjectServers.add(projectRoom.server);
-          projectRoom.server.once("close", () => contextHubProjectServers.delete(projectRoom.server));
-          const opened = {
-            current: false,
+          return {
+            current: true,
             project,
-            port: projectPort,
-            url: `http://127.0.0.1:${projectPort}`,
+            port,
+            url: `http://127.0.0.1:${contextRoomServerPort(server, port)}`,
           };
-          contextHubProjectRooms.set(project.id, opened);
-          projectRoom.server.once("close", () => contextHubProjectRooms.delete(project.id));
-          return opened;
         },
+        workspaceRegistry,
       });
     } catch (error) {
       sendJson(res, Number(error.statusCode) || 500, {
@@ -7481,14 +8320,92 @@ export function createMemoryServer({
     for (const reviewServer of sharedReviewServers) reviewServer.close();
     sharedReviewServers.clear();
     sharedReviewRooms.clear();
-    for (const projectServer of contextHubProjectServers) projectServer.close();
-    contextHubProjectServers.clear();
-    contextHubProjectRooms.clear();
+    workspaceRegistry.clear();
     stopBackgroundWatch();
     closeBackgroundWorkers(root);
     clearBackgroundCacheState(root);
   });
   return { server, root, port, projectId, promptMutationNonce };
+}
+
+function contextApiTarget(root, url) {
+  const requestedProjectId = String(url.searchParams.get("projectId") || "").trim();
+  const requestedLocationId = String(url.searchParams.get("locationId") || requestedProjectId).trim();
+  const selected = requestedLocationId ? registeredContextHubWorktree(requestedLocationId) : null;
+  if (requestedLocationId && (!selected || selected.mode === "shared")) {
+    throw sharedRequestError(`Unknown local project location: ${requestedLocationId}`, 404, "context_target_not_found");
+  }
+  if (selected && !selected.available) {
+    throw sharedRequestError(`Local project is unavailable: ${selected.root}`, 409, "context_target_unavailable");
+  }
+  const targetRoot = path.resolve(selected?.root || root);
+  const folder = normalizeRelPath(String(url.searchParams.get("folder") || ".").trim() || ".");
+  const provider = String(url.searchParams.get("provider") || "codex").trim().toLowerCase();
+  if (!["codex", "claude-code", "opencode", "all"].includes(provider)) {
+    throw sharedRequestError(`Unsupported context provider: ${provider}`, 400, "context_provider_invalid");
+  }
+  return {
+    root: targetRoot,
+    projectId: String(selected?.logicalProjectId || selected?.projectKey || selected?.id || requestedProjectId || path.basename(targetRoot)),
+    locationId: String(selected?.id || requestedLocationId || path.basename(targetRoot)),
+    folder,
+    provider,
+    selected,
+  };
+}
+
+async function contextApiGraph(root, url) {
+  const target = contextApiTarget(root, url);
+  const [{ buildContextInventory }, { buildContextGraph }] = await Promise.all([
+    import("./context_inventory.mjs"),
+    import("./context_engine.mjs"),
+  ]);
+  const inventory = buildContextInventory({
+    root: target.root,
+    projectId: target.projectId,
+    locationId: target.locationId,
+    folder: target.folder,
+    provider: target.provider,
+  }, {
+    provider: target.provider,
+    folder: target.folder,
+    refreshShared: url.searchParams.get("refresh") !== "0",
+    allowStale: url.searchParams.get("allowStale") === "1",
+  });
+  return buildContextGraph({ coordinate: inventory.coordinate, ...inventory });
+}
+
+async function contextApiResult(root, url, operation) {
+  const graph = await contextApiGraph(root, url);
+  const engine = await import("./context_engine.mjs");
+  if (operation === "graph") return graph;
+  if (operation === "effective") return engine.resolveEffectiveContext(graph);
+  const selector = String(url.searchParams.get("selector") || "").trim();
+  if (!selector) throw sharedRequestError("selector is required", 400, "context_selector_required");
+  if (operation === "trace") return engine.traceContext(graph, selector);
+  if (operation === "impact") {
+    return engine.impactContext(graph, selector, { provider: String(url.searchParams.get("provider") || "") });
+  }
+  throw sharedRequestError(`Unknown context operation: ${operation}`, 400, "context_operation_invalid");
+}
+
+async function proposalContextImpactForApi({ selector, repository }) {
+  const { proposalContextImpact } = await import("./agent_cli.mjs");
+  return proposalContextImpact({ selector, repository });
+}
+
+function assertExpectedContentHash(current, expectedContentHash, displayPath = current?.path || "file") {
+  if (typeof expectedContentHash !== "string") {
+    throw sharedRequestError("expectedContentHash is required", 400, "file_revision_required");
+  }
+  const currentContentHash = String(current?.contentHash || hashContent(current?.content || ""));
+  if (expectedContentHash === currentContentHash) return currentContentHash;
+  throw sharedRequestError(`The file changed before it could be saved: ${displayPath}`, 409, "file_revision_conflict", {
+    path: String(displayPath || current?.path || ""),
+    expectedContentHash,
+    currentContentHash,
+    updatedAt: current?.updatedAt || null,
+  });
 }
 
 async function routeRequest(req, res, root, globalPreferencesPath = null, {
@@ -7499,8 +8416,17 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   frameAncestorPorts = [],
   startSharedReview = null,
   startContextHubProject = null,
+  workspaceRegistry = null,
 } = {}) {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  const sharedSkillsProjectRoot = (requestedProjectId = "") => {
+    const projectId = String(requestedProjectId || "").trim();
+    if (!projectId) return path.resolve(root);
+    const project = registeredContextHubWorktree(projectId);
+    if (!project || project.mode === "shared") throw sharedRequestError(`Unknown local project: ${projectId}`, 404, "context_hub_project_not_found");
+    if (!project.available) throw sharedRequestError(`Local project is unavailable: ${project.root}`, 409, "context_hub_project_unavailable");
+    return path.resolve(project.root);
+  };
 
   if (req.method === "GET" && url.pathname === "/") {
     sendHtml(
@@ -7510,12 +8436,300 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     );
     return;
   }
+  if (req.method === "GET" && url.pathname === "/api/workspaces") {
+    if (!workspaceRegistry) throw sharedRequestError("Workspace registry is unavailable", 503, "workspace_registry_unavailable");
+    const workspaces = workspaceRegistry.list({
+      workspaceId: url.searchParams.get("workspace") || "",
+      projectId: url.searchParams.get("project") || "",
+      locationId: url.searchParams.get("location") || "",
+      query: url.searchParams.get("query") || "",
+    });
+    sendJson(res, 200, { workspaces, ttlMs: 20_000, generatedAt: new Date().toISOString() });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/workspaces/register") {
+    if (!workspaceRegistry) throw sharedRequestError("Workspace registry is unavailable", 503, "workspace_registry_unavailable");
+    const body = await readJsonBody(req);
+    sendJson(res, 200, { workspace: workspaceRegistry.register(body) });
+    return;
+  }
+  if (req.method === "DELETE" && url.pathname === "/api/workspaces/register") {
+    if (!workspaceRegistry) throw sharedRequestError("Workspace registry is unavailable", 503, "workspace_registry_unavailable");
+    const body = await readJsonBody(req);
+    sendJson(res, 200, { removed: workspaceRegistry.unregister(body.workspaceId) });
+    return;
+  }
+  const workspaceCommandMatch = url.pathname.match(/^\/api\/workspaces\/([A-Za-z0-9_-]{8,120})\/command$/);
+  if (workspaceCommandMatch && req.method === "GET") {
+    if (!workspaceRegistry) throw sharedRequestError("Workspace registry is unavailable", 503, "workspace_registry_unavailable");
+    sendJson(res, 200, { command: workspaceRegistry.readCommand(workspaceCommandMatch[1]) });
+    return;
+  }
+  if (workspaceCommandMatch && req.method === "POST") {
+    if (!workspaceRegistry) throw sharedRequestError("Workspace registry is unavailable", 503, "workspace_registry_unavailable");
+    const body = await readJsonBody(req);
+    sendJson(res, 200, { command: workspaceRegistry.writeCommand(workspaceCommandMatch[1], body) });
+    return;
+  }
   if (req.method === "GET" && url.pathname === "/api/shared-context") {
-    sendJson(res, 200, sharedContextUiState(root));
+    sendJson(res, 200, sharedContextUiState(root, { refreshShared: false }));
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/shared-skills/locations") {
+    const projectRoot = sharedSkillsProjectRoot(url.searchParams.get("projectId") || "");
+    sendJson(res, 200, sharedSkillLocationsStatus(projectRoot, { refresh: url.searchParams.get("refresh") !== "0" }));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/shared-skills/locations/preview") {
+    const body = await readJsonBody(req);
+    const projectRoot = sharedSkillsProjectRoot(body.projectId);
+    sendJson(res, 200, previewSharedSkillLocation(projectRoot, body));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/shared-skills/locations/link") {
+    const body = await readJsonBody(req);
+    const projectRoot = sharedSkillsProjectRoot(body.projectId);
+    sendJson(res, 201, linkSharedSkillLocation(projectRoot, body));
+    return;
+  }
+  if (req.method === "DELETE" && url.pathname === "/api/shared-skills/locations/link") {
+    const body = await readJsonBody(req);
+    const projectRoot = sharedSkillsProjectRoot(body.projectId);
+    sendJson(res, 200, unlinkSharedSkillLocation(projectRoot, body));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/shared-skills/locations/override") {
+    const body = await readJsonBody(req);
+    const projectRoot = sharedSkillsProjectRoot(body.projectId);
+    sendJson(res, 200, setSharedSkillLocationOverride(projectRoot, body));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/shared-skills/providers") {
+    const body = await readJsonBody(req);
+    const projectRoot = sharedSkillsProjectRoot(body.projectId);
+    const projectOverrides = body.scope === "project"
+      ? [{ provider: body.provider, state: body.state }]
+      : (body.projectOverrides || []);
+    sendJson(res, 200, setSharedSkillProviderSettings(projectRoot, {
+      providers: body.providers || {},
+      projectOverrides,
+    }));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/shared-skills/assignments/preview") {
+    const body = await readJsonBody(req);
+    const projectRoot = sharedSkillsProjectRoot(body.projectId);
+    sendJson(res, 200, previewSharedSkillAssignment(projectRoot, body));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/shared-skills/assignments") {
+    const body = await readJsonBody(req);
+    const projectRoot = sharedSkillsProjectRoot(body.projectId);
+    sendJson(res, 201, proposeSharedSkillAssignment(projectRoot, body));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/shared-skills/assignments/unassign/preview") {
+    const body = await readJsonBody(req);
+    const projectRoot = sharedSkillsProjectRoot(body.projectId);
+    sendJson(res, 200, previewSharedSkillUnassignment(projectRoot, body));
+    return;
+  }
+  if (req.method === "DELETE" && url.pathname === "/api/shared-skills/assignments") {
+    const body = await readJsonBody(req);
+    const projectRoot = sharedSkillsProjectRoot(body.projectId);
+    sendJson(res, 201, proposeSharedSkillUnassignment(projectRoot, body));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/shared-skills/import/preview") {
+    const body = await readJsonBody(req);
+    const projectRoot = sharedSkillsProjectRoot(body.projectId);
+    sendJson(res, 200, previewSharedSkillImport(projectRoot, body));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/shared-skills/import") {
+    const body = await readJsonBody(req);
+    const projectRoot = sharedSkillsProjectRoot(body.projectId);
+    sendJson(res, 201, importSharedSkills(projectRoot, body));
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/shared-instructions/locations") {
+    const projectRoot = sharedSkillsProjectRoot(url.searchParams.get("projectId") || "");
+    sendJson(res, 200, sharedInstructionLocationsStatus(projectRoot, { refresh: url.searchParams.get("refresh") !== "0" }));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/shared-instructions/assignments/preview") {
+    const body = await readJsonBody(req);
+    sendJson(res, 200, previewSharedInstructionAssignment(sharedSkillsProjectRoot(body.projectId), body));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/shared-instructions/assignments") {
+    const body = await readJsonBody(req);
+    sendJson(res, 201, proposeSharedInstructionAssignment(sharedSkillsProjectRoot(body.projectId), body));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/shared-instructions/assignments/unassign/preview") {
+    const body = await readJsonBody(req);
+    sendJson(res, 200, previewSharedInstructionUnassignment(sharedSkillsProjectRoot(body.projectId), body));
+    return;
+  }
+  if (req.method === "DELETE" && url.pathname === "/api/shared-instructions/assignments") {
+    const body = await readJsonBody(req);
+    sendJson(res, 201, proposeSharedInstructionUnassignment(sharedSkillsProjectRoot(body.projectId), body));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/shared-instructions/import/preview") {
+    const body = await readJsonBody(req);
+    sendJson(res, 200, previewSharedInstructionImport(sharedSkillsProjectRoot(body.projectId), body));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/shared-instructions/import") {
+    const body = await readJsonBody(req);
+    sendJson(res, 201, importSharedInstructions(sharedSkillsProjectRoot(body.projectId), body));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/shared-instructions/reconcile") {
+    const body = await readJsonBody(req);
+    sendJson(res, 200, reconcileSharedInstructionLocations(sharedSkillsProjectRoot(body.projectId), { allowOffline: true }));
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/context/effective") {
+    sendJson(res, 200, await contextApiResult(root, url, "effective"));
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/context/graph") {
+    sendJson(res, 200, await contextApiResult(root, url, "graph"));
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/context/trace") {
+    sendJson(res, 200, await contextApiResult(root, url, "trace"));
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/context/impact") {
+    sendJson(res, 200, await contextApiResult(root, url, "impact"));
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/proposal/context-impact") {
+    const selector = String(url.searchParams.get("selector") || "").trim();
+    const repository = String(url.searchParams.get("repository") || "").trim();
+    if (!selector) throw sharedRequestError("selector is required", 400, "proposal_selector_required");
+    if (!repository) throw sharedRequestError("repository is required", 400, "proposal_repository_required");
+    sendJson(res, 200, await proposalContextImpactForApi({ selector, repository }));
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/context-hub/attention") {
+    sendJson(res, 200, readContextHubAttention());
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/context-hub/project-order") {
+    const body = await readJsonBody(req);
+    const current = readFastContextHubState(root);
+    const allowed = new Set((current.projects || []).map((project) => project.priorityId || contextHubProjectPriorityId(project)));
+    const requested = Array.isArray(body.projectOrder) ? body.projectOrder.map(String) : [];
+    const unknown = requested.filter((id) => !allowed.has(id));
+    if (unknown.length) throw sharedRequestError("Project priority contains unknown projects", 400, "unknown_project_priority", { projectIds: unknown });
+    const attention = setContextHubProjectOrder(requested, { expectedRevision: String(body.expectedRevision || "") });
+    appendContextRoomEvent("settings.changed", { resource: { scope: "device", key: "hub.projectOrder" }, data: { projectCount: attention.projectOrder.length } });
+    sendJson(res, 200, attention);
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/context-hub/reviews/snooze") {
+    const body = await readJsonBody(req);
+    const until = String(body.until || "");
+    if (!Number.isFinite(Date.parse(until)) || Date.parse(until) <= Date.now()) throw sharedRequestError("Snooze deadline must be in the future", 400, "invalid_snooze_deadline");
+    const current = contextHubUiState(root, { refreshShared: true, force: true });
+    const index = new Map(contextHubAtomicReviewItems(current).map((item) => [item.id, item]));
+    const requested = Array.isArray(body.items) ? body.items : [];
+    if (!requested.length) throw sharedRequestError("At least one review is required", 400, "missing_review_items");
+    const entries = requested.map((request) => {
+      const item = index.get(String(request.id || ""));
+      if (!item) throw sharedRequestError("Review is no longer pending", 409, "review_revision_conflict", { reviewId: request.id || "" });
+      if (!item.revisionToken || item.revisionToken !== String(request.revisionToken || "")) {
+        throw sharedRequestError("Review changed before it could be snoozed", 409, "review_revision_conflict", {
+          reviewId: item.id,
+          expectedRevisionToken: String(request.revisionToken || ""),
+          currentRevisionToken: item.revisionToken,
+        });
+      }
+      return { reviewId: item.id, revisionToken: item.revisionToken, until };
+    });
+    const attention = setContextHubReviewSnoozes(entries, { expectedRevision: String(body.expectedRevision || "") });
+    for (const entry of entries) appendContextRoomEvent("review.snoozed", { resource: { reviewId: entry.reviewId }, data: { revisionToken: entry.revisionToken, until: new Date(until).toISOString() } });
+    sendJson(res, 200, { attention, snoozed: entries.length });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/context-hub/reviews/unsnooze") {
+    const body = await readJsonBody(req);
+    const reviewIds = Array.isArray(body.reviewIds) ? body.reviewIds.map(String).filter(Boolean) : [];
+    if (!reviewIds.length) throw sharedRequestError("At least one review is required", 400, "missing_review_items");
+    const attention = removeContextHubReviewSnoozes(reviewIds, { expectedRevision: String(body.expectedRevision || "") });
+    for (const reviewId of reviewIds) appendContextRoomEvent("review.unsnoozed", { resource: { reviewId }, data: {} });
+    sendJson(res, 200, { attention, unsnoozed: reviewIds.length });
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/context-hub") {
-    sendJson(res, 200, contextHubUiState(root));
+    const startedAt = performance.now();
+    const state = readFastContextHubState(root);
+    void refreshContextHubSnapshot(root, { refreshShared: false }).catch(() => {});
+    sendJson(res, 200, state, { headers: { "server-timing": `hub-snapshot;dur=${(performance.now() - startedAt).toFixed(1)}` } });
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/context-hub/catalog") {
+    const startedAt = performance.now();
+    const state = readFastContextHubState(root);
+    void refreshContextHubSnapshot(root, { refreshShared: false }).catch(() => {});
+    sendJson(res, 200, {
+      enabled: state.enabled,
+      generatedAt: state.generatedAt,
+      currentProjectId: state.currentProjectId,
+      projects: (state.projects || []).map((project) => ({
+        id: project.id,
+        projectKey: project.projectKey,
+        logicalProjectId: project.logicalProjectId,
+        title: project.title,
+        mode: project.mode,
+        root: project.root,
+        current: project.current,
+        available: project.available,
+        lastOpenedAt: project.lastOpenedAt,
+        worktree: project.worktree,
+        worktrees: project.worktrees || [],
+        worktreeCount: project.worktreeCount || 0,
+        localReviewCount: project.localReviewCount || 0,
+        sharedProposalCount: project.sharedProposalCount || 0,
+        shared: project.shared || null,
+        sharedTitle: project.sharedTitle || "",
+        priorityId: project.priorityId || contextHubProjectPriorityId(project),
+        priorityRank: Number.isInteger(project.priorityRank) ? project.priorityRank : null,
+      })),
+      attention: state.attention,
+      sharedRepositories: state.sharedRepositories || [],
+      repositoryErrors: state.repositoryErrors || [],
+      summary: state.summary || {},
+      freshness: state.freshness,
+    }, { headers: { "server-timing": `catalog;dur=${(performance.now() - startedAt).toFixed(1)}` } });
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/context-hub/review-queue") {
+    const state = readFastContextHubState(root);
+    void refreshContextHubSnapshot(root, { refreshShared: false }).catch(() => {});
+    sendJson(res, 200, paginatedContextHubReviews(state, {
+      cursor: url.searchParams.get("cursor") || 0,
+      limit: url.searchParams.get("limit") || 80,
+    }));
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/context-hub/sections") {
+    const state = readFastContextHubState(root);
+    void refreshContextHubSnapshot(root, { refreshShared: false }).catch(() => {});
+    sendJson(res, 200, {
+      generatedAt: state.generatedAt,
+      freshness: state.freshness,
+      projects: (state.projects || []).map((project) => ({
+        projectKey: project.projectKey,
+        id: project.id,
+        hubSections: project.hubSections || [],
+      })),
+    });
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/codex-prompts") {
@@ -7557,15 +8771,203 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/context-hub/refresh") {
-    sendJson(res, 200, contextHubUiState(root));
+    contextHubProjectSummaryCache.clear();
+    contextHubStateCache.clear();
+    sendJson(res, 200, contextHubStateWithAttention(await refreshContextHubSnapshot(root, { refreshShared: true, force: true })));
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/context-hub/project-explorer") {
+    const requestedProjectId = String(url.searchParams.get("projectId") || "").trim();
+    if (!requestedProjectId) throw sharedRequestError("projectId is required", 400, "context_hub_project_required");
+    const project = registeredContextHubWorktree(requestedProjectId);
+    if (!project || project.mode === "shared") {
+      throw sharedRequestError(`Unknown local project: ${requestedProjectId}`, 404, "context_hub_project_not_found");
+    }
+    if (!project.available) throw sharedRequestError(`Local project is unavailable: ${project.root}`, 409, "context_hub_project_unavailable");
+    const appearance = readGlobalContextRoomPreferences(globalPreferencesPath).appearance;
+    const showHiddenFiles = appearance.showHiddenFiles !== false;
+    const startedAt = performance.now();
+    const page = listProjectExplorerPage(project.root, {
+      directory: url.searchParams.get("path") || "",
+      query: url.searchParams.get("query") || "",
+      cursor: url.searchParams.get("cursor") || 0,
+      limit: url.searchParams.get("limit") || PROJECT_EXPLORER_PAGE_SIZE,
+      showHiddenFiles,
+    });
+    sendJson(res, 200, {
+      project: { id: project.id, projectKey: project.projectKey, title: project.title, root: project.root },
+      ...page,
+    }, { headers: { "server-timing": `explorer;dur=${(performance.now() - startedAt).toFixed(1)}` } });
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/context-hub/project-inspection") {
+    const requestedProjectId = String(url.searchParams.get("projectId") || "").trim();
+    if (!requestedProjectId) throw sharedRequestError("projectId is required", 400, "context_hub_project_required");
+    const project = registeredContextHubWorktree(requestedProjectId);
+    if (!project || project.mode === "shared") {
+      throw sharedRequestError(`Unknown local project: ${requestedProjectId}`, 404, "context_hub_project_not_found");
+    }
+    if (!project.available) throw sharedRequestError(`Local project is unavailable: ${project.root}`, 409, "context_hub_project_unavailable");
+    const settings = effectiveMemoryWebappSettings(project.root);
+    const reports = await readBackgroundReports(project.root, { force: url.searchParams.get("fresh") === "1" });
+    const enriched = withSharedSkillDiagnostics(project.root, reports, { refresh: url.searchParams.get("fresh") === "1" });
+    let effectiveContext = null;
+    let effectiveContextError = "";
+    try {
+      effectiveContext = await contextApiResult(root, url, "effective");
+    } catch (error) {
+      effectiveContextError = error.message || "Could not resolve the effective context.";
+    }
+    sendJson(res, 200, {
+      project: { id: project.id, projectKey: project.projectKey, title: project.title, root: project.root, branch: project.worktree?.branch || "" },
+      generatedAt: reports.generatedAt,
+      doctor: enriched.doctor,
+      startupContext: reports.startupContext || [],
+      startupSkills: reports.startupSkills || [],
+      startupHooks: reports.startupHooks || [],
+      sharedSkills: enriched.sharedSkills,
+      effectiveContext,
+      effectiveContextError,
+      enabled: {
+        startupContext: settings.startupContext?.enabled !== false,
+        startupSkills: settings.startupSkills?.enabled !== false,
+        startupHooks: settings.startupHooks?.enabled !== false,
+      },
+    });
+    return;
+  }
+  if (["GET", "POST"].includes(req.method) && url.pathname === "/api/context-hub/project-settings") {
+    const body = req.method === "POST" ? await readJsonBody(req) : {};
+    const requestedProjectId = String(req.method === "POST" ? body.projectId : url.searchParams.get("projectId") || "").trim();
+    if (!requestedProjectId) throw sharedRequestError("projectId is required", 400, "context_hub_project_required");
+    const project = registeredContextHubWorktree(requestedProjectId);
+    if (!project || project.mode === "shared") {
+      throw sharedRequestError(`Unknown local project: ${requestedProjectId}`, 404, "context_hub_project_not_found");
+    }
+    if (!project.available) throw sharedRequestError(`Local project is unavailable: ${project.root}`, 409, "context_hub_project_unavailable");
+    let hooks = null;
+    const currentPayload = contextHubProjectSettingsResponse(project, { preferencesPath: globalPreferencesPath });
+    if (req.method === "POST") {
+      if (!body.expectedRevision) {
+        throw sharedRequestError("expectedRevision is required", 400, "context_hub_project_settings_revision_required");
+      }
+      if (body.expectedRevision !== currentPayload.revision) {
+        throw sharedRequestError("Project settings changed before this save", 409, "context_hub_project_settings_stale");
+      }
+      const incoming = body.settings || {};
+      const projectInput = { ...incoming };
+      delete projectInput.appearance;
+      delete projectInput.shortcuts;
+      delete projectInput.sounds;
+      delete projectInput.explorer;
+      const currentSettings = readMemoryWebappSettings(project.root);
+      const nextSettings = normalizeMemoryWebappSettings(projectInput, currentSettings);
+      if (JSON.stringify(nextSettings) !== JSON.stringify(currentSettings) || currentSettings.reviewPaths?.length || Object.prototype.hasOwnProperty.call(currentSettings, "reviewAgentInstructions")) {
+        writeMemoryWebappSettings(project.root, projectInput, { migrateLegacyReview: true });
+      }
+      if (body.reviewGate) {
+        const reviewGate = writeReviewGateSettings(project.root, body.reviewGate);
+        hooks = syncContextRoomGitHooks(project.root, { policy: reviewGate });
+      }
+      contextHubProjectSummaryCache.clear();
+      contextHubStateCache.clear();
+      markContextHubSnapshotStale();
+    }
+    const payload = req.method === "POST" ? contextHubProjectSettingsResponse(project, { hooks, preferencesPath: globalPreferencesPath }) : currentPayload;
+    const etag = `"${payload.revision}"`;
+    if (req.method === "GET" && req.headers["if-none-match"] === etag) {
+      sendNotModified(res, { etag, "server-timing": "settings;dur=0.1" });
+      return;
+    }
+    sendJson(res, 200, payload, { headers: { etag, "server-timing": "settings;dur=0.1" } });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/context-hub/preferences") {
+    const body = await readJsonBody(req);
+    const incoming = body.settings || body;
+    const requestedComputerRoot = normalizeExplorerSettings(incoming.explorer).computerRoot;
+    if (!pathEntryExists(requestedComputerRoot) || !fs.statSync(requestedComputerRoot).isDirectory()) {
+      throw sharedRequestError(`Computer Explorer root is not a folder: ${requestedComputerRoot}`, 400, "context_hub_computer_root_invalid");
+    }
+    const preferences = writeGlobalContextRoomPreferences({ appearance: incoming.appearance, shortcuts: incoming.shortcuts, sounds: incoming.sounds, explorer: incoming.explorer }, globalPreferencesPath);
+    sendJson(res, 200, { preferences });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/context-hub/project-explorer/action") {
+    const body = await readJsonBody(req);
+    const requestedProjectId = String(body.projectId || "").trim();
+    const action = String(body.action || "").trim();
+    if (!requestedProjectId) throw sharedRequestError("projectId is required", 400, "context_hub_project_required");
+    const project = registeredContextHubWorktree(requestedProjectId);
+    if (!project || project.mode === "shared") {
+      throw sharedRequestError(`Unknown local project: ${requestedProjectId}`, 404, "context_hub_project_not_found");
+    }
+    if (!project.available) throw sharedRequestError(`Local project is unavailable: ${project.root}`, 409, "context_hub_project_unavailable");
+    let result;
+    if (action === "watch-file") {
+      const relPath = normalizeRelPath(String(body.path || ""));
+      if (!relPath) throw sharedRequestError("path is required", 400, "context_hub_project_path_required");
+      const settings = readMemoryWebappSettings(project.root);
+      result = { settings: writeMemoryWebappSettings(project.root, { ...settings, watchAllow: appendUniquePath(settings.watchAllow || [], relPath) }) };
+    } else if (action === "watch-folder") {
+      result = writeFolderWatchRule(project.root, { path: body.path, mode: body.mode });
+    } else if (action === "create-markdown") {
+      result = createMarkdownFile(project.root, { path: body.path, title: body.title, applyTemplate: false });
+    } else if (action === "create-folder") {
+      result = createFolder(project.root, { path: body.path });
+    } else if (action === "delete") {
+      result = deleteMemoryPaths(project.root, Array.isArray(body.paths) ? body.paths : []);
+    } else {
+      throw sharedRequestError(`Unknown project Explorer action: ${action}`, 400, "context_hub_project_action_invalid");
+    }
+    contextHubProjectSummaryCache.delete(path.resolve(project.root));
+    contextHubStateCache.clear();
+    markContextHubSnapshotStale();
+    sendJson(res, 200, { action, result });
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/context-hub/computer-explorer") {
+    const preferences = readGlobalContextRoomPreferences(globalPreferencesPath);
+    const configuredRoot = preferences.explorer.computerRoot;
+    if (!pathEntryExists(configuredRoot) || !fs.statSync(configuredRoot).isDirectory()) {
+      throw sharedRequestError(`Computer Explorer root is unavailable: ${configuredRoot}`, 409, "context_hub_computer_root_unavailable");
+    }
+    const requestedPath = String(url.searchParams.get("path") || configuredRoot).trim();
+    const currentPath = path.resolve(requestedPath || configuredRoot);
+    if (!pathEntryExists(currentPath) || !projectPathIsContained(configuredRoot, currentPath) || !fs.statSync(currentPath).isDirectory()) {
+      throw sharedRequestError("Choose a folder inside the configured Computer Explorer root", 403, "context_hub_computer_path_outside_root");
+    }
+    const showHiddenFiles = preferences.appearance.showHiddenFiles !== false;
+    const entries = fs.readdirSync(currentPath, { withFileTypes: true })
+      .filter((entry) => showHiddenFiles || !entry.name.startsWith("."))
+      .map((entry) => {
+        const absolutePath = path.join(currentPath, entry.name);
+        let kind = "other";
+        let bytes = 0;
+        try {
+          const stats = fs.statSync(absolutePath);
+          kind = stats.isDirectory() ? "directory" : stats.isFile() ? "file" : "other";
+          bytes = stats.isFile() ? stats.size : 0;
+        } catch {}
+        return { name: entry.name, path: absolutePath, kind, bytes };
+      })
+      .filter((entry) => entry.kind !== "other")
+      .sort((left, right) => Number(right.kind === "directory") - Number(left.kind === "directory") || left.name.localeCompare(right.name, "fr"));
+    sendJson(res, 200, {
+      root: configuredRoot,
+      current: currentPath,
+      parent: currentPath === path.resolve(configuredRoot) ? "" : path.dirname(currentPath),
+      entries,
+    });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/context-hub/project") {
     const body = await readJsonBody(req);
     const requestedProjectId = String(body.projectId || "").trim();
     if (!requestedProjectId) throw sharedRequestError("projectId is required", 400, "context_hub_project_required");
-    if (!startContextHubProject) throw sharedRequestError("Local project opening is unavailable", 503, "context_hub_project_open_unavailable");
+    if (!startContextHubProject) throw sharedRequestError("Project selection is unavailable", 503, "context_hub_project_open_unavailable");
     const result = await startContextHubProject(requestedProjectId);
+    contextHubStateCache.delete(path.resolve(root));
     sendJson(res, 201, result);
     return;
   }
@@ -7573,15 +8975,91 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     const body = await readJsonBody(req);
     const proposal = String(body.proposal || "").trim();
     const repository = String(body.repository || "").trim();
+    const expectedHead = String(body.expectedHead || "").trim();
     if (!proposal) throw sharedRequestError("proposal is required", 400, "shared_context_proposal_required");
     if (!repository) throw sharedRequestError("repository is required", 400, "shared_context_repository_required");
     if (!startSharedReview) throw sharedRequestError("Shared proposal review is unavailable", 503, "shared_context_review_unavailable");
-    const result = await startSharedReview({ proposal, repository });
+    const result = await startSharedReview({ proposal, repository, expectedHead, projectRoot: root });
     sendJson(res, 201, {
       url: result.url,
       port: result.port,
       reviewRoot: result.reviewRoot,
       review: result.metadata,
+    });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/context-hub/reject") {
+    const body = await readJsonBody(req, { maxBytes: 256_000 });
+    const requested = Array.isArray(body.items) ? body.items : [];
+    if (!requested.length) throw sharedRequestError("At least one review item is required", 400, "context_hub_reject_required");
+    if (requested.length > 200) throw sharedRequestError("At most 200 review items can be rejected at once", 400, "context_hub_reject_limit");
+
+    contextHubStateCache.clear();
+    const hub = contextHubUiState(root);
+    const candidates = new Map();
+    for (const proposal of hub.proposals || []) {
+      candidates.set(proposal.id, { kind: "shared", proposal });
+    }
+    for (const project of hub.projects || []) {
+      if (!project.available || project.mode === "shared") continue;
+      for (const review of project.localReviews || []) {
+        const worktree = (project.worktrees || []).find((entry) => entry.id === review.worktreeId)
+          || (project.id === review.worktreeId ? project : null);
+        if (!worktree) continue;
+        const candidate = { kind: "local", project: { ...project, ...worktree }, review };
+        candidates.set(`${project.projectKey}:worktree:${worktree.id}:file:${review.path}`, candidate);
+        candidates.set(`local:${worktree.id}:file:${review.path}`, candidate);
+      }
+    }
+
+    const normalized = [...new Map(requested.map((item) => {
+      const id = String(item?.id || "").trim();
+      return [id, { id, expectedHead: String(item?.expectedHead || "").trim() }];
+    })).values()];
+    for (const item of normalized) {
+      const candidate = candidates.get(item.id);
+      if (!item.id || !candidate) throw sharedRequestError(`Review item is no longer available: ${item.id || "unknown"}`, 409, "context_hub_reject_stale");
+      if (candidate.kind === "shared" && item.expectedHead !== candidate.proposal.head) {
+        throw sharedRequestError("A selected proposal changed; refresh before rejecting it", 409, "context_hub_reject_stale");
+      }
+      if (candidate.kind === "local" && candidate.review.reviewStatus === "needs_changes") {
+        throw sharedRequestError(`Local review already needs changes: ${candidate.review.path}`, 409, "context_hub_reject_stale");
+      }
+    }
+
+    const rejected = [];
+    const errors = [];
+    for (const item of normalized) {
+      const candidate = candidates.get(item.id);
+      try {
+        if (candidate.kind === "shared") {
+          const result = rejectSharedRepositoryProposal(candidate.proposal.repository, {
+            proposal: candidate.proposal.branch,
+            expectedHead: item.expectedHead,
+          });
+          rejected.push({ id: item.id, kind: "shared", ...result });
+        } else {
+          const result = writeDocReviewDecision(candidate.project.root, candidate.review.path, {
+            status: "needs_changes",
+            note: "Needs changes from the Context Room review queue.",
+          });
+          rejected.push({ id: item.id, kind: "local", projectId: candidate.project.id, ...result });
+        }
+      } catch (error) {
+        errors.push({ id: item.id, kind: candidate.kind, message: error.message });
+      }
+    }
+    contextHubProjectSummaryCache.clear();
+    contextHubStateCache.clear();
+    markContextHubSnapshotStale();
+    sendJson(res, 200, {
+      rejected,
+      errors,
+      summary: {
+        proposals: rejected.filter((item) => item.kind === "shared").length,
+        localReviews: rejected.filter((item) => item.kind === "local").length,
+        failed: errors.length,
+      },
     });
     return;
   }
@@ -7594,9 +9072,10 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   if (req.method === "POST" && url.pathname === "/api/shared-context/review") {
     const body = await readJsonBody(req);
     const proposal = String(body.proposal || "").trim();
+    const expectedHead = String(body.expectedHead || "").trim();
     if (!proposal) throw sharedRequestError("proposal is required", 400, "shared_context_proposal_required");
     if (!startSharedReview) throw sharedRequestError("Shared proposal review is unavailable", 503, "shared_context_review_unavailable");
-    const result = await startSharedReview({ proposal });
+    const result = await startSharedReview({ proposal, expectedHead, projectRoot: root });
     sendJson(res, 201, {
       url: result.url,
       port: result.port,
@@ -7616,8 +9095,11 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       throw sharedRequestError("The reviewed proposal commit does not match this acceptance request", 409, "shared_context_proposal_head_mismatch");
     }
     const report = buildDocQaReport(root);
-    if (report.queue.length) {
-      throw sharedRequestError(`Human review is incomplete: ${report.queue.length} file(s) remain in the review queue`, 409, "shared_context_review_incomplete");
+    const reviewedPaths = new Set(report.reviewedPaths || []);
+    const unreviewedProposalFiles = (review.proposalFiles || []).filter((filePath) => !reviewedPaths.has(filePath));
+    const remainingReviews = unreviewedProposalFiles.length;
+    if (remainingReviews) {
+      throw sharedRequestError(`Human review is incomplete: ${remainingReviews} file(s) remain without current review proof`, 409, "shared_context_review_incomplete");
     }
     let result;
     try {
@@ -7674,6 +9156,8 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
   if (req.method === "POST" && url.pathname === "/api/startup-skills/file") {
     const body = await readJsonBody(req);
+    const current = readStartupSkillFile(root, body.folder, body.skill);
+    assertExpectedContentHash(current, body.expectedContentHash, current.path);
     sendJson(res, 200, writeStartupSkillFile(root, body.folder, body.skill, body.content));
     return;
   }
@@ -7684,6 +9168,8 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
   if (req.method === "POST" && url.pathname === "/api/startup-context/file") {
     const body = await readJsonBody(req);
+    const current = readStartupContextFile(root, body.order);
+    assertExpectedContentHash(current, body.expectedContentHash, current.path);
     sendJson(res, 200, writeStartupContextFile(root, body.order, body.content));
     return;
   }
@@ -7699,6 +9185,8 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
   if (req.method === "POST" && url.pathname === "/api/startup-hooks/file") {
     const body = await readJsonBody(req);
+    const current = readStartupHookFile(root, body.order);
+    assertExpectedContentHash(current, body.expectedContentHash, current.path);
     sendJson(res, 200, writeStartupHookFile(root, body.order, body.content));
     return;
   }
@@ -7713,12 +9201,20 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     const projectInput = { ...incoming };
     delete projectInput.appearance;
     delete projectInput.shortcuts;
-    const projectSettings = writeMemoryWebappSettings(root, projectInput);
-    const preferences = writeGlobalContextRoomPreferences({ appearance: incoming.appearance, shortcuts: incoming.shortcuts }, globalPreferencesPath);
+    delete projectInput.sounds;
+    delete projectInput.explorer;
+    const requestedComputerRoot = normalizeExplorerSettings(incoming.explorer).computerRoot;
+    if (!pathEntryExists(requestedComputerRoot) || !fs.statSync(requestedComputerRoot).isDirectory()) {
+      throw sharedRequestError(`Computer Explorer root is not a folder: ${requestedComputerRoot}`, 400, "context_hub_computer_root_invalid");
+    }
+    const projectSettings = writeMemoryWebappSettings(root, projectInput, { migrateLegacyReview: true });
+    const preferences = writeGlobalContextRoomPreferences({ appearance: incoming.appearance, shortcuts: incoming.shortcuts, sounds: incoming.sounds, explorer: incoming.explorer }, globalPreferencesPath);
     const settings = {
       ...projectSettings,
       appearance: preferences.appearance,
       shortcuts: preferences.shortcuts,
+      sounds: preferences.sounds,
+      explorer: preferences.explorer,
       reviewGate: readReviewGateSettings(root),
     };
     sendJson(res, 200, { settings, hubCards: hubCardsForRoot(root, settings), hubSections: hubSectionsForRoot(root, settings), availableHubCards: settings.customHubCards });
@@ -7742,7 +9238,8 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/reports") {
-    sendJson(res, 200, await readBackgroundReports(root, { force: url.searchParams.get("fresh") === "1" }));
+    const refresh = url.searchParams.get("fresh") === "1";
+    sendJson(res, 200, withSharedSkillDiagnostics(root, await readBackgroundReports(root, { force: refresh }), { refresh }));
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/docqa") {
@@ -7754,7 +9251,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/doctor") {
-    sendJson(res, 200, (await readBackgroundReports(root)).doctor);
+    sendJson(res, 200, withSharedSkillDiagnostics(root, await readBackgroundReports(root), { refresh: false }).doctor);
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/doctor/ack") {
@@ -7877,7 +9374,32 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
   if (req.method === "POST" && url.pathname === "/api/docqa/review") {
     const body = await readJsonBody(req);
-    sendJson(res, 200, writeDocReviewDecision(root, body.path, { status: body.status, note: body.note }));
+    if (typeof body.expectedContentHash !== "string") throw sharedRequestError("expectedContentHash is required", 400, "review_revision_required");
+    const decision = writeDocReviewDecision(root, body.path, {
+      status: body.status,
+      note: body.note,
+      expectedResourceState: body.expectedResourceState,
+      expectedResourceVersion: body.expectedResourceVersion,
+      expectedContentHash: body.expectedContentHash,
+    });
+    let proposalFinalization = null;
+    if (body.status === "verified" && fs.existsSync(path.join(path.resolve(root), SHARED_REVIEW_CONFIG))) {
+      try {
+        const review = readSharedReview(root);
+        const report = buildDocQaReport(root);
+        const reviewedPaths = new Set(report.reviewedPaths || []);
+        const remaining = (review.proposalFiles || []).filter((filePath) => !reviewedPaths.has(filePath));
+        if (!remaining.length) proposalFinalization = acceptSharedReview(root, { message: "Complete reviewed shared proposal" });
+      } catch (error) {
+        proposalFinalization = { accepted: false, blocked: true, error: error.message };
+        appendContextRoomEvent("proposal.finalization-blocked", {
+          locationId: path.resolve(root),
+          resource: { path: decision.path },
+          data: { message: error.message },
+        });
+      }
+    }
+    sendJson(res, 200, { ...decision, proposalFinalization });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/docqa/review-baseline") {
@@ -7907,6 +9429,8 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
   if (req.method === "POST" && url.pathname === "/api/file") {
     const body = await readJsonBody(req);
+    const current = readMemoryFile(root, body.path);
+    assertExpectedContentHash(current, body.expectedContentHash, current.path);
     sendJson(res, 200, writeMemoryFile(root, body.path, body.content));
     return;
   }
@@ -7953,10 +9477,18 @@ function isEditableTextFile(relPath) {
   return isProjectTextFile(relPath);
 }
 
+function isProjectVisualAssetFile(relPath) {
+  return PROJECT_VISUAL_ASSET_TYPES.has(path.extname(normalizeRelPath(String(relPath || ""))).toLowerCase());
+}
+
+function projectVisualAssetMimeType(relPath) {
+  return PROJECT_VISUAL_ASSET_TYPES.get(path.extname(normalizeRelPath(String(relPath || ""))).toLowerCase()) || "application/octet-stream";
+}
+
 function isProjectTextFile(relPath) {
   const normalized = normalizeRelPath(String(relPath || ""));
   const base = path.basename(normalized);
-  const ext = path.extname(base);
+  const ext = path.extname(base).toLowerCase();
   return isSensitiveProjectFile(normalized) || SAFE_ENV_SAMPLE_FILENAMES.has(base) || PROJECT_TEXT_EXTENSIONS.has(ext) || PROJECT_TEXT_FILENAMES.has(base);
 }
 
@@ -7965,6 +9497,8 @@ function fileKindForPath(relPath) {
   const ext = path.extname(normalizeRelPath(String(relPath || ""))).toLowerCase();
   if (ext === ".csv" || ext === ".tsv") return "csv";
   if (ext === ".html" || ext === ".htm") return "html";
+  if (PROJECT_VISUAL_ASSET_TYPES.has(ext)) return ext === ".svg" ? "diagram" : "image";
+  if (PROJECT_DIAGRAM_SOURCE_EXTENSIONS.has(ext)) return "diagram-source";
   if (ext === ".md" || ext === ".mdx" || ext === ".txt") return "markdown";
   return "text";
 }
@@ -7974,13 +9508,13 @@ function isProjectReadableMemoryPath(relPath, root = process.cwd()) {
   if (!normalized || normalized.startsWith("../") || normalized.includes("/../") || path.isAbsolute(normalized)) return false;
   const contextRoomRuntime = normalized.startsWith(CONFIG_DIR + "/");
   if (normalized.startsWith("~") || (isBlockedPath(normalized) && !isSafeEnvSamplePath(normalized)) || (hasSkippedPathSegment(normalized) && !contextRoomRuntime)) return false;
-  if (!isProjectTextFile(normalized)) return false;
+  if (!isProjectTextFile(normalized) && !isProjectVisualAssetFile(normalized)) return false;
   const resolvedRoot = path.resolve(root);
   const abs = path.resolve(resolvedRoot, normalized);
   if (abs === resolvedRoot || !abs.startsWith(`${resolvedRoot}${path.sep}`)) return false;
   if (!projectPathIsContained(resolvedRoot, abs)) return false;
   if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return false;
-  return fs.statSync(abs).size <= MAX_FILE_BYTES;
+  return fs.statSync(abs).size <= (isProjectVisualAssetFile(normalized) ? MAX_VISUAL_ASSET_BYTES : MAX_FILE_BYTES);
 }
 
 function resolveProjectReadableMemoryPath(root, relPath) {
@@ -7989,6 +9523,29 @@ function resolveProjectReadableMemoryPath(root, relPath) {
   const abs = path.resolve(root, normalized);
   assertProjectPathContained(root, abs, { label: relPath });
   return abs;
+}
+
+function readProjectVisualAsset(root, relPath) {
+  const normalized = normalizeRelPath(String(relPath || ""));
+  if (!isProjectVisualAssetFile(normalized)) throw new Error(`Not a visual asset: ${relPath}`);
+  const abs = resolveProjectReadableMemoryPath(root, normalized);
+  const stats = fs.statSync(abs);
+  if (stats.size > MAX_VISUAL_ASSET_BYTES) throw new Error(`Visual asset is too large for context room: ${relPath}`);
+  const bytes = fs.readFileSync(abs);
+  const mimeType = projectVisualAssetMimeType(normalized);
+  return {
+    path: normalized,
+    content: "",
+    dataUrl: `data:${mimeType};base64,${bytes.toString("base64")}`,
+    mimeType,
+    binary: true,
+    exists: true,
+    updatedAt: stats.mtime.toISOString(),
+    bytes: stats.size,
+    chars: 0,
+    contentHash: createHash("sha256").update(bytes).digest("hex"),
+    readOnly: true,
+  };
 }
 
 function isSensitiveProjectFile(relPath) {
@@ -8121,9 +9678,10 @@ function walkProjectExplorerTextFiles(root, { showHiddenFiles = true } = {}) {
       if (isBlockedPath(rel) && !isSensitiveProjectFile(rel) && !isSafeEnvSamplePath(rel)) continue;
       if (entry.isDirectory()) {
         walk(abs);
-      } else if (entry.isFile() && isProjectTextFile(rel)) {
+      } else if (entry.isFile() && (isProjectTextFile(rel) || isProjectVisualAssetFile(rel))) {
         try {
-          if (fs.statSync(abs).size <= MAX_FILE_BYTES) results.push(rel);
+          const maxBytes = isProjectVisualAssetFile(rel) ? MAX_VISUAL_ASSET_BYTES : MAX_FILE_BYTES;
+          if (fs.statSync(abs).size <= maxBytes) results.push(rel);
         } catch {}
       }
     }
@@ -8427,13 +9985,19 @@ async function readJsonBody(req, { maxBytes = Number.POSITIVE_INFINITY } = {}) {
   return value;
 }
 
-function sendJson(res, status, payload) {
+function sendJson(res, status, payload, { headers = {} } = {}) {
   const body = JSON.stringify(payload, null, 2);
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
+    ...headers,
   });
   res.end(body);
+}
+
+function sendNotModified(res, headers = {}) {
+  res.writeHead(304, { "cache-control": "no-store", ...headers });
+  res.end();
 }
 
 function sendHtml(res, body, { frameAncestorPorts = [] } = {}) {
@@ -8527,7 +10091,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       --file-list: #75ccd7;
       --file-marker: #697672;
       --file-hr: rgba(103, 198, 211, 0.3);
-      font-family: "Avenir Next", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     :root[data-file-theme="vscode-dark"] {
       color-scheme: dark;
@@ -8741,18 +10305,15 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     body {
       margin: 0;
       min-height: 100vh;
-      background:
-        radial-gradient(circle at top left, var(--body-glow-1), transparent 30rem),
-        radial-gradient(circle at 80% 20%, var(--body-glow-2), transparent 28rem),
-        var(--bg);
+      background: var(--bg);
       color: var(--text);
       overflow: hidden;
     }
-    body::before, body::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0; }
-    body::before { background-image: radial-gradient(circle, var(--star-dot) 0 1px, transparent 1.6px); background-size: 86px 86px; opacity: var(--star-opacity); animation: starDrift 38s linear infinite; }
-    body::after { background: radial-gradient(circle at 65% 48%, var(--body-glow-3), transparent 22rem), radial-gradient(circle at 30% 74%, var(--body-glow-4), transparent 26rem); animation: nebulaPulse 12s ease-in-out infinite alternate; }
+    body::before, body::after { display: none; }
     .app { position: relative; z-index: 1; display: grid; grid-template-columns: 390px 1fr; height: 100vh; min-height: 0; overflow: hidden; transition: grid-template-columns 260ms ease, opacity 120ms ease; }
     .app.sidebar-collapsed { grid-template-columns: 76px 1fr; }
+    body.global-context-room #singleProjectExplorer,
+    body.focused-review-context-room #globalProjectExplorer { display: none !important; }
     aside { border-right: 1px solid var(--line); padding: var(--space-4) var(--space-5); background: var(--surface-sidebar); backdrop-filter: blur(22px); height: 100vh; min-height: 0; overflow: auto; display: block; transition: padding 260ms ease, background 260ms ease; }
     .app.sidebar-collapsed aside { padding: var(--space-4) var(--space-2); overflow: visible; }
     .app.sidebar-collapsed .sidebar-toggle { position: fixed; left: 16px; top: 16px; z-index: 20; background: var(--surface-floating); }
@@ -8761,8 +10322,58 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .sidebar-toggle:hover { transform: translateY(-1px); background: rgba(139,211,255,0.12); }
     .explorer-open { display: none; border: 1px solid rgba(139,211,255,0.28); border-radius: 14px; background: rgba(255,255,255,0.06); color: var(--text); width: 42px; height: 42px; cursor: pointer; align-items: center; justify-content: center; box-shadow: 0 0 28px rgba(139,211,255,0.12); transition: transform 160ms ease, background 160ms ease; }
     .explorer-open:hover { transform: translateY(-1px); background: rgba(139,211,255,0.12); }
-    .app.sidebar-collapsed .sidebar-copy, .app.sidebar-collapsed .search-row, .app.sidebar-collapsed .watch-filter-row, .app.sidebar-collapsed .selection-bar, .app.sidebar-collapsed .explorer-title, .app.sidebar-collapsed .tree, .app.sidebar-collapsed .hint { opacity: 0; pointer-events: none; transform: translateX(-10px); }
-    .sidebar-copy, .workspace-dock, .search-row, .watch-filter-row, .selection-bar, .explorer-title, .tree, .hint { transition: opacity 180ms ease, transform 180ms ease; }
+    .app.sidebar-collapsed .sidebar-copy, .app.sidebar-collapsed .search-row, .app.sidebar-collapsed .watch-filter-row, .app.sidebar-collapsed .selection-bar, .app.sidebar-collapsed .explorer-title, .app.sidebar-collapsed .tree, .app.sidebar-collapsed .hint, .app.sidebar-collapsed .global-project-explorer { opacity: 0; pointer-events: none; transform: translateX(-10px); }
+    .sidebar-copy, .workspace-dock, .search-row, .watch-filter-row, .selection-bar, .explorer-title, .tree, .hint, .global-project-explorer { transition: opacity 180ms ease, transform 180ms ease; }
+    .global-project-explorer { min-width: 0; display: grid; gap: 10px; margin-top: 12px; }
+    .global-project-explorer[hidden] { display: none !important; }
+    .global-explorer-modes { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; padding: 3px; border: 1px solid var(--line); border-radius: 10px; background: color-mix(in srgb, var(--surface-card) 72%, transparent); }
+    .global-explorer-mode { min-height: 31px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; font-size: 10px; font-weight: 760; }
+    .global-explorer-mode:hover { color: var(--text); }
+    .global-explorer-mode.active { background: var(--surface-card-hover); color: var(--text); box-shadow: 0 2px 9px rgba(0,0,0,0.18); }
+    .global-explorer-scope { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px; min-height: 36px; }
+    .global-explorer-back { width: 31px; height: 31px; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--text-soft); cursor: pointer; }
+    .global-explorer-back:hover { border-color: color-mix(in srgb, var(--accent) 34%, var(--line)); background: var(--surface-card-hover); color: var(--text); }
+    .global-explorer-scope-copy { min-width: 0; display: grid; gap: 2px; }
+    .global-explorer-scope > .global-explorer-scope-copy:only-child { grid-column: 1 / -1; }
+    .global-explorer-scope-copy strong, .global-explorer-scope-copy code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .global-explorer-scope-copy strong { font-size: 12px; }
+    .global-explorer-scope-copy code { color: var(--muted); font-size: 9px; }
+    .context-hub-worktree-switch { grid-column: 1 / -1; min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px; color: var(--muted); font-size: 9px; font-weight: 760; }
+    .context-hub-worktree-switch select { min-width: 0; min-height: 31px; padding: 4px 28px 4px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-card); color: var(--text); font-size: 10px; }
+    .single-project-worktree-switch { margin: 10px 0 2px; }
+    .single-project-worktree-switch .context-hub-worktree-switch { grid-column: auto; }
+    .global-project-explorer-summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 2px; color: var(--muted); font-size: 10px; }
+    .global-project-explorer-summary strong { color: var(--text-soft); font-size: 11px; }
+    .global-project-explorer-list { min-width: 0; display: grid; gap: 4px; }
+    .global-project-row { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--text); cursor: pointer; text-align: left; text-decoration: none; }
+    .global-project-row:hover { border-color: color-mix(in srgb, var(--accent) 24%, var(--line)); background: var(--surface-card-hover); }
+    .global-project-row[aria-current="true"] { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); background: color-mix(in srgb, var(--accent) 9%, var(--surface-card)); }
+    .global-project-row:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 1px; }
+    .global-project-row-main { min-width: 0; display: grid; gap: 4px; }
+    .global-project-row-title { min-width: 0; display: flex; align-items: center; gap: 6px; }
+    .global-project-row-title strong { min-width: 0; overflow: hidden; font-size: 12px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+    .global-project-row-location { min-width: 0; overflow: hidden; color: var(--muted); font: 9px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+    .global-project-row-side { display: grid; justify-items: end; gap: 3px; color: var(--muted); font-size: 9px; white-space: nowrap; }
+    .global-project-row-action { color: var(--accent); font-weight: 780; }
+    .global-project-folder-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .global-project-watch-filters { display: flex; flex-wrap: wrap; gap: 4px; }
+    .global-project-watch-filter { min-height: 25px; padding: 3px 7px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; font-size: 9px; }
+    .global-project-watch-filter:hover { background: var(--surface-card-hover); color: var(--text); }
+    .global-project-watch-filter.active { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--text); }
+    .global-project-folder-tree { min-width: 0; display: grid; gap: 1px; padding: 3px 0 18px; }
+    .global-project-tree-entry { width: 100%; min-width: 0; min-height: 28px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 6px; padding: 4px 7px; border: 0; border-radius: 6px; background: transparent; color: var(--text-soft); cursor: pointer; text-align: left; text-decoration: none; }
+    .global-project-tree-entry:hover { background: var(--surface-card-hover); color: var(--text); }
+    .global-project-tree-entry:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent); outline-offset: -1px; }
+    .global-project-tree-entry[data-kind="file"] { color: var(--muted); }
+    .global-project-tree-entry[data-watch-state="watched"],
+    .global-project-tree-entry[data-watch-state="watched-inherited"] { color: var(--good); }
+    .global-project-tree-name { min-width: 0; overflow: hidden; font-size: 10px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+    .global-project-tree-meta { color: var(--muted); font-size: 9px; }
+    .global-project-folder-state { padding: 20px 8px; color: var(--muted); font-size: 10px; line-height: 1.45; text-align: center; }
+    .global-project-shared-action { min-height: 30px; margin-top: 7px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-card); color: var(--accent); cursor: pointer; font-size: 10px; font-weight: 760; }
+    .computer-explorer-tree { min-width: 0; display: grid; gap: 1px; padding-bottom: 18px; }
+    .computer-explorer-loading { padding: 7px 8px 7px 28px; color: var(--muted); font-size: 9px; }
+    .global-project-explorer-empty { padding: 22px 10px; border: 1px dashed var(--line); border-radius: 9px; color: var(--muted); font-size: 11px; line-height: 1.45; text-align: center; }
     main { padding: var(--page-padding); display: grid; grid-template-rows: 1fr; gap: var(--space-4); min-width: 0; min-height: 0; overflow: hidden; }
     h1 { font-size: 24px; margin: 0 0 6px; letter-spacing: -0.04em; }
     .subtitle { color: var(--muted); line-height: 1.35; font-size: 13px; }
@@ -8858,7 +10469,8 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     @keyframes saveConfirmPulse { 0% { transform: scale(0.985); } 38% { transform: scale(1.025); } 100% { transform: scale(1); } }
     @keyframes saveConfirmShine { to { transform: translateX(125%); } }
     .status { color: var(--muted); font-size: 13px; min-width: 150px; text-align: right; }
-    .editor-shell { min-height: 0; overflow: hidden; position: relative; }
+    .editor-shell { width: 100%; height: 100%; min-height: 0; overflow: hidden; position: relative; }
+    .workspace-page { width: 100%; height: 100%; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
     .workspace-dock { display: inline-flex; max-width: 100%; gap: var(--space-1); align-items: center; flex-wrap: wrap; margin: 0 0 var(--space-3); padding: var(--space-1); border: 1px solid var(--line); border-radius: 16px; background: var(--surface-floating-soft); backdrop-filter: blur(18px); box-shadow: 0 16px 48px rgba(0,0,0,0.22); }
     .dock-button { display: inline-flex; align-items: center; justify-content: center; min-width: var(--control-height); min-height: var(--control-height); border: 1px solid rgba(148,163,184,0.22); border-radius: 12px; background: rgba(255,255,255,0.06); color: var(--text); padding: 0 var(--space-3); font-weight: 850; line-height: 1; white-space: nowrap; cursor: pointer; }
     .workspace-dock .dock-button[hidden] { display: none !important; }
@@ -8867,8 +10479,10 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .dock-button.primary { color: var(--on-accent); border: 0; background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
     .dock-button.diff-dock-button { min-width: auto; margin-left: var(--space-1); padding: 0 var(--space-3); color: var(--label-strong); border-color: color-mix(in srgb, var(--accent) 28%, transparent); background: color-mix(in srgb, var(--accent) 8%, transparent); font-size: 12px; letter-spacing: 0.01em; }
     .dock-button.diff-dock-button.active { color: var(--on-accent); border-color: transparent; background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
+    .proposal-dock-back { color: var(--accent); border-color: transparent; background: transparent; }
+    .proposal-dock-back:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
     .dock-status { display: none; }
-    .docqa-home { height: 100%; padding: var(--page-padding); overflow: auto; position: relative; background: radial-gradient(circle at 18% 0%, var(--body-glow-3), transparent 28rem), var(--surface-wash); scroll-padding-bottom: var(--space-8); }
+    .docqa-home { padding: var(--page-padding); position: relative; background: var(--surface-wash); scroll-padding-bottom: var(--space-8); }
     .docqa-grid { display: grid; grid-template-columns: 1fr; gap: var(--space-5); align-items: start; }
     .docqa-panel { border: 1px solid var(--line); border-radius: 22px; background: var(--panel); box-shadow: var(--shadow); overflow: hidden; }
     .docqa-panel header { padding: var(--panel-header-padding); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; gap: var(--space-3); align-items: baseline; }
@@ -8936,8 +10550,70 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
 	    .context-health-ok { min-height: 30px; padding: 6px 10px; border-radius: 10px; flex: 0 0 auto; }
 	    .context-health-ok-badge { flex: 0 0 auto; color: var(--good); }
 	    .context-health-header-actions { align-items: center; justify-content: flex-end; }
+	    .context-health-header-actions[hidden] { display: none !important; }
 	    .context-health-codex-action { display: inline-flex; align-items: center; gap: 6px; border-color: color-mix(in srgb, var(--accent) 38%, var(--line)); background: color-mix(in srgb, var(--accent) 10%, var(--surface-card)); }
 	    .context-health-codex-action span { color: var(--accent); font-size: 14px; font-weight: 950; line-height: 1; }
+	    .global-project-inspection { gap: 10px; }
+	    .global-project-inspection-summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 4px 2px 8px; }
+	    .global-project-inspection-summary strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+	    .global-project-inspection-summary code { min-width: 0; max-width: 58%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
+	    .global-project-inspection-actions { display: grid; gap: 8px; }
+	    .global-project-inspection-disclosure { border: 1px solid var(--line); border-radius: 12px; background: var(--surface-card); overflow: hidden; }
+	    .global-project-inspection-disclosure[open] { border-color: color-mix(in srgb, var(--accent) 34%, var(--line)); background: color-mix(in srgb, var(--surface-card) 96%, var(--accent) 4%); }
+	    .global-project-inspection-disclosure > summary { list-style: none; padding: 12px 14px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; cursor: pointer; }
+	    .global-project-inspection-disclosure > summary::-webkit-details-marker { display: none; }
+	    .global-project-inspection-disclosure > summary:hover { background: var(--surface-card-hover); }
+	    .global-project-inspection-disclosure > summary:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent); outline-offset: -2px; }
+	    .global-project-inspection-action-copy { min-width: 0; display: grid; gap: 3px; }
+	    .global-project-inspection-action-copy strong { font-size: 13px; }
+	    .global-project-inspection-action-copy span { color: var(--muted); font-size: 11px; line-height: 1.4; }
+	    .global-project-inspection-disclosure-chevron { color: var(--accent); font-size: 15px; line-height: 1; transform: rotate(-90deg); transition: transform 160ms ease; }
+	    .global-project-inspection-disclosure[open] .global-project-inspection-disclosure-chevron { transform: rotate(0deg); }
+	    .global-project-inspection-disclosure-body { display: grid; gap: 10px; padding: 12px 14px 14px; border-top: 1px solid var(--line); }
+	    .global-project-inspection-detail-actions { display: flex; justify-content: flex-end; }
+	    .global-project-inspection-empty { padding: 6px 2px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+	    .global-project-inspection-refresh { min-height: 34px; border: 1px solid var(--line); border-radius: 9px; background: transparent; color: var(--text-soft); padding: 7px 10px; cursor: pointer; font-size: 11px; font-weight: 800; }
+	    .global-project-inspection-refresh:hover { border-color: color-mix(in srgb, var(--accent) 36%, var(--line)); background: var(--surface-card-hover); color: var(--text); }
+	    .global-project-inspection-loading { padding: 24px 2px; color: var(--muted); font-size: 12px; }
+	    .global-project-inspection-groups { display: grid; gap: 10px; }
+	    .global-project-inspection-group { border-top: 1px solid var(--line); padding-top: 2px; }
+	    .global-project-inspection-group > summary { list-style: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 2px; cursor: pointer; }
+	    .global-project-inspection-group > summary::-webkit-details-marker { display: none; }
+	    .global-project-inspection-group > summary strong { font-size: 13px; }
+	    .global-project-inspection-group > summary span { color: var(--muted); font-size: 11px; }
+	    .global-project-inspection-list { display: grid; gap: 6px; max-height: min(46vh, 520px); padding: 2px; overflow: auto; scrollbar-gutter: stable; }
+	    .global-project-inspection-row { min-width: 0; display: grid; gap: 5px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--line) 82%, transparent); border-radius: 9px; background: color-mix(in srgb, var(--surface-card) 78%, transparent); }
+	    .global-project-inspection-row-head { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+	    .global-project-inspection-row strong { min-width: 0; font-size: 12px; overflow-wrap: anywhere; }
+	    .global-project-inspection-kind { flex: 0 0 auto; color: var(--accent); font-size: 9px; font-weight: 850; letter-spacing: 0.04em; }
+	    .global-project-inspection-row span, .global-project-inspection-row p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+	    .global-project-inspection-row code { min-width: 0; color: var(--label-strong); font-size: 10px; overflow-wrap: anywhere; }
+	    .global-project-inspection-row.empty, .global-project-inspection-row.disabled { border-style: dashed; background: transparent; }
+	    .global-project-inspection-row.disabled strong { color: var(--text-soft); }
+	    .global-project-inspection-pills { display: flex; flex-wrap: wrap; gap: 5px; }
+	    .global-project-inspection-pill { border: 1px solid var(--line); border-radius: 999px; background: var(--surface-card); color: var(--label-strong); padding: 4px 7px; font-size: 10px; }
+	    .global-project-inspection-error { padding: 12px; border: 1px solid color-mix(in srgb, var(--danger) 36%, var(--line)); border-radius: 10px; color: var(--danger); font-size: 12px; }
+	    .context-engine-panel[hidden] { display: none !important; }
+	    .context-engine-panel > header { align-items: flex-start; }
+	    .context-engine-target { display: grid; gap: 3px; }
+	    .context-engine-target code { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+	    .context-engine-provider { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 10px; }
+	    .context-engine-provider select { min-height: 32px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-card); color: var(--text); padding: 5px 28px 5px 8px; font-size: 11px; }
+	    .context-engine-summary { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 10px; border-bottom: 1px solid var(--line); }
+	    .context-engine-summary span { padding: 4px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 9px; }
+	    .context-engine-summary [data-state="fresh"] { border-color: color-mix(in srgb, var(--good) 34%, var(--line)); color: var(--good); }
+	    .context-engine-resource-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 2px; }
+	    .context-engine-resource-actions button { min-height: 27px; padding: 4px 7px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--text-soft); cursor: pointer; font-size: 9px; }
+	    .context-engine-resource-actions button:hover { border-color: color-mix(in srgb, var(--accent) 38%, var(--line)); background: var(--surface-card-hover); color: var(--text); }
+	    .context-engine-status { color: var(--muted); font-size: 10px; }
+	    .context-engine-status[data-status="uncertain"],
+	    .context-engine-status[data-status="blocked"],
+	    .context-engine-status[data-status="unverified"] { color: var(--warning); }
+	    .context-engine-status[data-status="disabled"],
+	    .context-engine-status[data-status="shadowed"],
+	    .context-engine-status[data-status="inactive"] { color: var(--muted); }
+	    .context-engine-detail { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+	    .context-engine-detail pre { max-height: 320px; overflow: auto; margin: 8px 0 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-sidebar); color: var(--text-soft); font: 10px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
 	    .docqa-actions { display: flex; gap: 8px; flex-wrap: wrap; }
     .markdown-tools { padding: var(--panel-body-padding); display: grid; gap: var(--space-4); }
     .markdown-create { max-width: 1120px; margin: 0 auto; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--space-4); align-items: start; }
@@ -8959,13 +10635,25 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .path-picker input[id="markdownCreateFileName"] { min-height: var(--control-height); }
     .path-picker-preview { display: flex; align-items: center; gap: 8px; min-width: 0; padding: var(--space-3); border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent); border-radius: 14px; background: rgba(139,211,255,0.06); color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
     .path-picker-preview code { min-width: 0; color: var(--accent); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; text-transform: none; letter-spacing: 0; overflow-wrap: anywhere; }
-    .settings-page { height: 100%; overflow: auto; padding: var(--page-padding); background: radial-gradient(circle at 20% 0%, var(--body-glow-4), transparent 28rem), var(--surface-wash); }
+    .settings-page { padding: var(--page-padding); background: var(--surface-wash); }
     .settings-page .settings-card { max-width: 1240px; margin: 0 auto; }
     .settings-card { box-shadow: var(--shadow); background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(18px); }
     .settings-card header { padding: var(--panel-header-padding); border-bottom: 1px solid var(--line); align-items: center; gap: var(--space-3); }
     .settings-card h2 { font-size: 22px; letter-spacing: -0.04em; }
+    .settings-page-header { position: relative; display: flex; justify-content: space-between; }
+    .settings-search { position: relative; width: min(360px, 42vw); }
+    .settings-search input { width: 100%; min-height: 40px; padding: 9px 38px 9px 13px; border: 1px solid color-mix(in srgb, var(--line) 92%, transparent); border-radius: 8px; background: var(--surface-reader); color: var(--text); font: 13px/1.35 inherit; }
+    .settings-search input:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent); outline-offset: 2px; border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+    .settings-search::after { content: "⌕"; position: absolute; top: 10px; right: 13px; color: var(--muted); font-size: 16px; pointer-events: none; }
+    .settings-search-results { position: absolute; top: calc(100% + 8px); right: 0; z-index: 30; width: min(480px, calc(100vw - 32px)); max-height: min(62vh, 520px); overflow: auto; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-floating); box-shadow: 0 18px 48px rgba(0,0,0,0.34); }
+    .settings-search-result { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; padding: 10px 11px; border: 0; border-radius: 7px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+    .settings-search-result:hover, .settings-search-result[aria-selected="true"] { background: color-mix(in srgb, var(--accent) 11%, transparent); }
+    .settings-search-result strong { min-width: 0; font-size: 13px; line-height: 1.25; }
+    .settings-search-result p { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .settings-search-result-meta { color: var(--accent); font-size: 9px; font-weight: 850; text-transform: uppercase; }
+    .settings-search-empty { padding: 16px; color: var(--muted); font-size: 12px; text-align: center; }
     .settings-panel { padding: 20px; display: grid; gap: 0; }
-    .settings-shell { min-width: 0; min-height: calc(100dvh - 190px); border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow: clip; }
+    .settings-shell { min-width: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow: clip; }
     .settings-tabs { position: sticky; top: 0; z-index: 10; display: flex; min-width: 0; overflow-x: auto; scrollbar-width: thin; border-bottom: 1px solid var(--line); background: var(--surface-floating); }
     .settings-tab { flex: 1 0 128px; min-width: 0; min-height: 52px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 9px 12px; border: 0; border-right: 1px solid var(--line); border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted); text-align: left; cursor: pointer; }
     .settings-tab:last-child { border-right: 0; }
@@ -8975,6 +10663,11 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .settings-tab small { border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; color: var(--muted); font-size: 8px; font-weight: 800; line-height: 1; text-transform: uppercase; }
     .settings-tab[aria-selected="true"] small { border-color: color-mix(in srgb, var(--accent) 35%, transparent); color: var(--accent); }
     .settings-content { min-width: 0; }
+    .settings-action-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-5); padding: var(--space-2) 0; }
+    .settings-action-copy { min-width: 0; display: grid; gap: var(--space-1); }
+    .settings-action-copy strong { color: var(--label-strong); font-size: 13px; line-height: 1.3; }
+    .settings-action-copy p { max-width: 70ch; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .settings-action-row .primary { flex: 0 0 auto; }
     .settings-section { min-width: 0; background: transparent; animation: settingsPanelEnter 180ms ease both; }
     .settings-section[hidden] { display: none; }
     .settings-section-head { display: flex; justify-content: space-between; gap: var(--space-4); align-items: flex-start; padding: var(--space-4) var(--space-5); border-bottom: 1px solid color-mix(in srgb, var(--line) 84%, transparent); background: color-mix(in srgb, var(--surface-floating-soft) 58%, transparent); }
@@ -8984,22 +10677,87 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .settings-section-copy { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.4; }
     .settings-section-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
     .settings-pill { border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent); border-radius: 999px; padding: var(--space-2) var(--space-3); color: var(--label-strong); background: color-mix(in srgb, var(--accent) 9%, transparent); font-size: 11px; font-weight: 850; line-height: 1; white-space: nowrap; }
-    .settings-section-body { padding: var(--space-4) var(--space-5) var(--space-5); display: grid; gap: var(--space-4); }
+    .settings-section-body { padding: var(--space-5); display: grid; gap: var(--space-4); }
     .settings-group { display: grid; gap: var(--space-3); }
     .settings-group + .settings-group { padding-top: var(--space-4); border-top: 1px solid var(--line); }
     .settings-group-title { margin: 0; color: var(--label-strong); font-size: 13px; line-height: 1.2; }
     .settings-input-label { color: var(--muted); font-size: 10px; font-weight: 800; text-transform: uppercase; }
     @keyframes settingsPanelEnter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
     .settings-body-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
+    .project-priority-editor { display: grid; gap: 12px; }
+    .project-priority-search { width: 100%; min-height: 34px; }
+    .project-priority-list { overflow: hidden; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-sidebar); }
+    .project-priority-row { display: grid; grid-template-columns: 20px 28px minmax(0, 1fr) auto; align-items: center; min-height: 48px; gap: 7px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+    .project-priority-row:last-child { border-bottom: 0; }
+    .project-priority-row[draggable="true"] { cursor: grab; }
+    .project-priority-row[draggable="true"]:active { cursor: grabbing; }
+    .project-priority-handle { color: var(--muted); letter-spacing: -3px; }
+    .project-priority-rank { color: var(--muted); font-variant-numeric: tabular-nums; text-align: center; }
+    .project-priority-copy { min-width: 0; display: grid; gap: 2px; }
+    .project-priority-copy strong, .project-priority-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .project-priority-copy small { color: var(--muted); }
+    .project-priority-actions { display: inline-flex; gap: 3px; }
+    .project-priority-actions button { width: 28px; min-height: 28px; padding: 0; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
+    .project-priority-actions button:hover:not(:disabled) { border-color: var(--line); background: var(--surface-card-hover); color: var(--text); }
+    .project-priority-actions button:disabled { opacity: .28; cursor: default; }
+    .settings-concept { display: grid; gap: 7px; max-width: 76ch; padding: 2px 0 var(--space-2); }
+    .settings-concept strong { color: var(--label-strong); font-size: 14px; line-height: 1.35; }
+    .settings-concept p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
+    .settings-disclosure-list { display: grid; gap: 10px; }
+    .settings-disclosure { min-width: 0; border: 1px solid color-mix(in srgb, var(--line) 90%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--surface-card) 90%, transparent); overflow: clip; }
+    .settings-disclosure > summary { list-style: none; min-height: 72px; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px 14px; align-items: center; padding: 14px 16px; cursor: pointer; }
+    .settings-disclosure > summary::-webkit-details-marker { display: none; }
+    .settings-disclosure > summary:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+    .settings-disclosure > summary:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent); outline-offset: -3px; }
+    .settings-disclosure-summary { min-width: 0; display: grid; gap: 4px; }
+    .settings-disclosure-summary strong { color: var(--label-strong); font-size: 14px; line-height: 1.3; }
+    .settings-disclosure-summary span { max-width: 72ch; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .settings-disclosure-status { color: var(--label-strong); font-size: 11px; font-weight: 800; white-space: nowrap; }
+    .settings-disclosure-chevron { color: var(--muted); font-size: 15px; transition: transform 160ms ease; }
+    .settings-disclosure[open] .settings-disclosure-chevron { transform: rotate(90deg); }
+    .settings-disclosure-body { padding: 16px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--surface-reader) 48%, transparent); }
+    .settings-disclosure.is-search-target { animation: settingsSearchTarget 1000ms ease both; }
+    @keyframes settingsSearchTarget { 0%, 100% { border-color: var(--line); } 30% { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent); } }
+    .settings-glossary { display: grid; gap: 8px; margin: 0; }
+    .settings-glossary div { display: grid; grid-template-columns: minmax(110px, 0.25fr) minmax(0, 1fr); gap: 12px; padding-top: 8px; border-top: 1px solid var(--line); }
+    .settings-glossary div:first-child { padding-top: 0; border-top: 0; }
+    .settings-glossary dt { color: var(--label-strong); font-size: 12px; font-weight: 850; }
+    .settings-glossary dd { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .agent-cli-guide { display: grid; gap: var(--space-4); }
+    .agent-cli-capabilities { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-5); }
+    .agent-cli-capabilities section { min-width: 0; }
+    .agent-cli-capabilities h4 { margin: 0 0 var(--space-2); color: var(--label-strong); font-size: 12px; line-height: 1.35; }
+    .agent-cli-capabilities ul { display: grid; gap: 6px; margin: 0; padding-left: 18px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .agent-cli-capabilities code { color: var(--label-strong); }
+    .agent-cli-more { padding-top: var(--space-3); border-top: 1px solid var(--line); }
+    .agent-cli-more > summary { list-style: none; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-3); align-items: center; min-height: 38px; color: var(--label-strong); cursor: pointer; }
+    .agent-cli-more > summary::-webkit-details-marker { display: none; }
+    .agent-cli-more > summary:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 65%, transparent); outline-offset: 3px; border-radius: 8px; }
+    .agent-cli-more-summary { display: grid; gap: 2px; min-width: 0; }
+    .agent-cli-more-summary strong { font-size: 12px; line-height: 1.35; }
+    .agent-cli-more-summary span { color: var(--muted); font-size: 11px; line-height: 1.4; }
+    .agent-cli-more-chevron { color: var(--muted); font-size: 15px; transition: transform 160ms ease; }
+    .agent-cli-more[open] .agent-cli-more-chevron { transform: rotate(90deg); }
+    .agent-cli-more ul { display: grid; gap: 7px; margin: var(--space-3) 0 0; padding: 0 0 0 18px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .agent-cli-more code { color: var(--label-strong); }
+    .agent-cli-handoff { display: grid; gap: var(--space-3); padding-top: var(--space-4); border-top: 1px solid var(--line); }
+    .agent-cli-handoff-head { display: grid; gap: var(--space-1); }
+    .agent-cli-handoff-head strong { color: var(--label-strong); font-size: 13px; }
+    .agent-cli-handoff-head p { max-width: 72ch; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .agent-cli-prompt { margin: 0; padding: var(--space-3); overflow: auto; border-radius: 8px; color: var(--text); background: var(--surface-reader); font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .agent-cli-command { color: var(--accent); font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .settings-empty-state { padding: var(--space-5) 0; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; line-height: 1.55; }
+    .settings-empty-state-detail { display: inline-block; margin-inline-start: 0.45em; }
     .settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); align-items: start; }
     .settings-grid.compact { grid-template-columns: minmax(220px, 0.72fr) minmax(240px, 1fr); }
     .settings-field { display: grid; gap: 8px; min-width: 0; align-content: start; }
-    .settings-field label, .settings-field-title { color: var(--muted); font-size: 11px; font-weight: 850; text-transform: uppercase; letter-spacing: 0.09em; }
+    .settings-field > label:not(.settings-toggle), .settings-field-title { color: var(--label-strong); font-size: 12px; font-weight: 800; text-transform: none; letter-spacing: 0; }
     .settings-field textarea, .settings-field input, .settings-field select { display: block; width: 100%; min-width: 0; padding: var(--space-3); border: 1px solid color-mix(in srgb, var(--line) 92%, transparent); border-radius: 14px; background: color-mix(in srgb, var(--surface-reader) 74%, var(--surface-card)); color: var(--text); font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; box-shadow: inset 0 1px 0 rgba(255,255,255,0.025); }
     .settings-field textarea:focus, .settings-field input:focus, .settings-field select:focus { outline: none; border-color: color-mix(in srgb, var(--accent) 55%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent); }
     .settings-field textarea { min-height: 118px; height: 118px; resize: vertical; }
     .settings-field.large textarea { min-height: 150px; height: 150px; }
     .settings-field-note, .settings-help { margin: -2px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    @media (max-width: 760px) { .agent-cli-capabilities { grid-template-columns: 1fr; gap: var(--space-4); } }
     .watch-rule-list { display: grid; gap: 7px; }
     .watch-rule-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: var(--surface-card); }
     .watch-rule-copy { display: grid; gap: 3px; min-width: 0; }
@@ -9017,6 +10775,20 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .settings-toggle-copy { display: grid; gap: var(--space-1); min-width: 0; }
     .settings-toggle-copy strong { color: var(--label-strong); font-size: 13px; line-height: 1.25; }
     .settings-toggle-copy em { color: var(--muted); font-size: 12px; line-height: 1.35; font-style: normal; }
+    .settings-sound-panel { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(240px, 0.8fr) minmax(280px, 1.2fr); gap: var(--space-4); padding-top: var(--space-4); border-top: 1px solid var(--line); }
+    .settings-sound-controls { display: grid; gap: var(--space-3); align-content: start; }
+    .settings-volume-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-3); align-items: center; }
+    .settings-volume-row input[type="range"] { appearance: none; min-height: 28px; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; cursor: pointer; accent-color: var(--accent); }
+    .settings-volume-row input[type="range"]::-webkit-slider-runnable-track { height: 4px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 32%, var(--line)); }
+    .settings-volume-row input[type="range"]::-webkit-slider-thumb { appearance: none; width: 16px; height: 16px; margin-top: -6px; border: 2px solid var(--surface-reader); border-radius: 50%; background: var(--accent); box-shadow: 0 2px 8px rgba(0,0,0,0.28); }
+    .settings-volume-value { min-width: 4ch; color: var(--label-strong); font: 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: right; }
+    .settings-sound-previews { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
+    .settings-sound-previews .sound-preview-button:last-child:nth-child(odd) { grid-column: 1 / -1; }
+    .sound-preview-button { min-height: 42px; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--space-2); align-items: center; padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--line) 90%, transparent); border-radius: 12px; background: var(--surface-card); color: var(--label-strong); text-align: left; cursor: pointer; }
+    .sound-preview-button:hover { border-color: color-mix(in srgb, var(--accent) 42%, transparent); background: var(--surface-card-hover); }
+    .sound-preview-button:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 65%, transparent); outline-offset: 2px; }
+    .sound-preview-button span:first-child { color: var(--accent); font-size: 12px; }
+    .sound-preview-button span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 800; }
     .review-gate-panel { display: grid; gap: var(--space-3); padding-top: var(--space-4); border-top: 1px solid var(--line); }
     .review-gate-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
     .review-gate-head > div { display: grid; gap: var(--space-1); }
@@ -9071,7 +10843,10 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .template-editor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
     .template-editor .template-body { grid-column: 1 / -1; }
     .template-editor .template-body textarea { min-height: 220px; height: 220px; }
-    .settings-footer { position: sticky; bottom: 0; z-index: 12; display: flex; justify-content: space-between; gap: var(--space-3); align-items: center; margin: 0 calc(var(--space-5) * -1) calc(var(--space-5) * -1); padding: var(--space-4) var(--space-5); color: var(--muted); font-size: 12px; border-top: 1px solid color-mix(in srgb, var(--line) 88%, transparent); background: color-mix(in srgb, var(--surface-floating) 92%, transparent); backdrop-filter: blur(18px); }
+    .settings-footer { position: sticky; bottom: 0; z-index: 12; display: flex; justify-content: space-between; gap: var(--space-3); align-items: center; margin: 0 calc(var(--space-5) * -1) calc(var(--space-5) * -1); padding: var(--space-4) var(--space-5); color: var(--muted); font-size: 12px; border-top: 1px solid color-mix(in srgb, var(--line) 88%, transparent); background: color-mix(in srgb, var(--surface-floating) 94%, transparent); backdrop-filter: blur(18px); }
+    .settings-save-state { display: grid; gap: 2px; }
+    .settings-save-state strong { color: var(--label-strong); font-size: 12px; }
+    .settings-save-state[data-dirty="true"] strong { color: var(--warning); }
     .hub-folders { margin-top: var(--space-4); display: grid; gap: var(--space-6); }
     .hub-breadcrumb { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-bottom: calc(var(--space-2) * -1); padding: var(--space-2) var(--space-3); border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent); border-radius: 18px; background: var(--surface-floating-soft); color: var(--muted); font-size: 12px; font-weight: 800; }
     .hub-crumb { border: 1px solid var(--line); border-radius: 999px; padding: var(--space-2) var(--space-3); background: var(--surface-card); color: var(--label-strong); cursor: pointer; font-weight: 850; }
@@ -9082,6 +10857,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .hub-section:first-child { border-top: 0; padding-top: 0; }
     .hub-section-title { color: var(--muted); font-size: 12px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.13em; }
     .hub-section-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: var(--space-4); align-items: start; }
+    .hub-section[data-empty="true"] .hub-section-grid { min-height: 1px; }
     .hub-folder-card { min-width: 0; border: 1px solid color-mix(in srgb, var(--line) 88%, transparent); border-radius: 22px; padding: 0; min-height: 132px; background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 10%, var(--surface-card)), color-mix(in srgb, var(--accent-2) 6%, var(--surface-card))); color: var(--text); text-align: left; display: grid; gap: 0; box-shadow: 0 18px 54px rgba(0,0,0,0.24); overflow: hidden; }
     .hub-folder-card.navigation { background: linear-gradient(145deg, color-mix(in srgb, var(--accent-2) 13%, var(--surface-card)), color-mix(in srgb, var(--accent) 7%, var(--surface-card))); }
     .hub-folder-card.expanded { grid-column: 1 / -1; border-color: color-mix(in srgb, var(--accent) 38%, transparent); background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 13%, var(--surface-card)), color-mix(in srgb, var(--accent-2) 8%, var(--surface-card))); }
@@ -9155,11 +10931,6 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .startup-skill-create button:hover, .startup-skill-create button:focus-visible { background: rgba(139,211,255,0.14); border-color: rgba(139,211,255,0.36); }
     .startup-skill-create button[data-startup-skill-create-cancel] { color: #ffb7c2; }
     .startup-skill-folder::before { display: none; }
-    .startup-skill-folder.spotlight-active::before, .startup-skill-folder:focus-within::before { opacity: 0; }
-    .launch-card, .review-item, .hub-folder-card, .startup-context-item, .settings-section, .settings-toggle, .settings-theme-preview, .template-editor, .hub-section-editor, .hub-card-editor, .path-picker, .card, .conflict-card { position: relative; isolation: isolate; overflow: hidden; --spotlight-x: 50%; --spotlight-y: 50%; }
-    .launch-card::before, .review-item::before, .hub-folder-card::before, .startup-context-item::before, .settings-section::before, .settings-toggle::before, .settings-theme-preview::before, .template-editor::before, .hub-section-editor::before, .hub-card-editor::before, .path-picker::before, .card::before, .conflict-card::before { content: ""; position: absolute; inset: 0; z-index: 0; border-radius: inherit; pointer-events: none; background: radial-gradient(360px circle at var(--spotlight-x) var(--spotlight-y), rgba(139,211,255,0.18), rgba(182,156,255,0.08) 30%, transparent 62%); opacity: 0; transition: opacity 180ms ease; }
-    .launch-card.spotlight-active::before, .launch-card:focus-within::before, .review-item.spotlight-active::before, .review-item:focus-within::before, .hub-folder-card.spotlight-active::before, .hub-folder-card:focus-within::before, .startup-context-item.spotlight-active::before, .startup-context-item:focus-within::before, .settings-toggle.spotlight-active::before, .settings-toggle:focus-within::before, .settings-theme-preview.spotlight-active::before, .settings-theme-preview:focus-within::before, .template-editor.spotlight-active::before, .template-editor:focus-within::before, .hub-section-editor.spotlight-active::before, .hub-section-editor:focus-within::before, .hub-card-editor.spotlight-active::before, .hub-card-editor:focus-within::before, .path-picker.spotlight-active::before, .path-picker:focus-within::before, .card.spotlight-active::before, .card:focus-within::before, .conflict-card.spotlight-active::before, .conflict-card:focus-within::before { opacity: 1; }
-    .launch-card > *, .review-item > *, .hub-folder-card > *, .startup-context-item > *, .settings-section > *, .settings-toggle > *, .settings-theme-preview > *, .template-editor > *, .hub-section-editor > *, .hub-card-editor > *, .path-picker > *, .card > *, .conflict-card > * { position: relative; z-index: 1; }
     .selection-bar { margin: 6px 0 8px; padding: 5px 6px 5px 10px; border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent); border-radius: 999px; background: var(--surface-floating-soft); display: flex; gap: 8px; align-items: center; justify-content: space-between; box-shadow: 0 10px 28px rgba(0,0,0,0.18); }
     .selection-bar[hidden] { display: none; }
     .selection-summary { min-width: 0; color: var(--label-strong); font-size: 11px; font-weight: 850; letter-spacing: 0.02em; white-space: nowrap; }
@@ -9260,6 +11031,13 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .plain-text-editor { display: block; width: 100%; min-height: 100%; resize: none; border: 0; outline: none; background: var(--file-bg); color: var(--file-fg); padding: 18px 22px; }
     .html-preview-shell { width: 100%; min-height: calc(100vh - 162px); max-height: calc(100vh - 162px); overflow: hidden; background: var(--file-bg); }
     .html-preview-frame { display: block; width: 100%; height: calc(100vh - 162px); min-height: 420px; border: 0; background: var(--file-bg); }
+    .image-preview-shell { min-height: calc(100vh - 162px); display: flex; flex-direction: column; background: var(--file-bg); color: var(--file-fg); }
+    .image-preview-toolbar { min-height: 42px; padding: 7px 10px; border-bottom: 1px solid var(--file-line); display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--file-muted); font: 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .image-preview-toolbar button { min-height: 28px; padding: 4px 9px; border: 1px solid var(--file-line); border-radius: 7px; background: var(--file-header-bg); color: var(--file-fg); font: 700 11px/1 ui-sans-serif, system-ui, sans-serif; }
+    .image-preview-stage { flex: 1 1 auto; min-height: 0; display: grid; place-items: center; overflow: auto; padding: 24px; background: color-mix(in srgb, var(--file-bg) 95%, var(--file-fg) 5%); }
+    .image-preview-stage img { display: block; max-width: 100%; max-height: calc(100vh - 260px); width: auto; height: auto; object-fit: contain; }
+    .image-preview-stage.actual-size { place-items: start; }
+    .image-preview-stage.actual-size img { max-width: none; max-height: none; }
     .markdown-editor-input::selection { background: transparent; color: transparent !important; -webkit-text-fill-color: transparent !important; }
     .markdown-editor-caret { position: absolute; z-index: 4; width: 2px; border-radius: 1px; background: var(--file-h1); pointer-events: none; animation: markdownCaretBlink 1s steps(1, end) infinite; }
     @keyframes markdownCaretBlink { 0%, 48% { opacity: 1; } 49%, 100% { opacity: 0; } }
@@ -9415,8 +11193,6 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .card strong { display: block; font-size: 18px; margin-bottom: 3px; }
     .card span { color: var(--muted); font-size: 12px; }
     .hint { display: none; margin-top: 16px; color: var(--muted); font-size: 13px; line-height: 1.45; }
-    @keyframes starDrift { from { transform: translate3d(0,0,0); } to { transform: translate3d(-86px, -86px, 0); } }
-    @keyframes nebulaPulse { from { opacity: 0.65; transform: scale(1); } to { opacity: 1; transform: scale(1.04); } }
     @keyframes orbitSpin { to { transform: rotate(352deg); } }
     @keyframes orbFloat { from { transform: translateY(0); } to { transform: translateY(12px); } }
     @keyframes fileActionLoadingPulse { from { opacity: 0.38; } to { opacity: 0.72; } }
@@ -9443,7 +11219,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       .sidebar-toggle { width: 40px; height: 40px; }
       main { height: calc(100dvh - 56px); padding: var(--space-3); overflow: hidden; }
       .editor-shell { height: 100%; min-height: 0; border-radius: 18px; }
-      .docqa-home, .settings-page { height: 100%; padding: 12px; overflow: auto; }
+      .docqa-home, .settings-page { padding: 12px; }
       .docqa-panel { border-radius: 18px; }
       .docqa-panel header { padding: var(--space-4); align-items: flex-start; flex-direction: column; }
       .review-summary { width: 100%; }
@@ -9453,6 +11229,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       .review-top { align-items: flex-start; }
       .settings-grid, .hub-card-editor-grid, .template-editor-grid, .markdown-create { grid-template-columns: 1fr; }
       .settings-grid.compact { grid-template-columns: 1fr; }
+      .settings-sound-panel { grid-template-columns: 1fr; }
       .review-gate-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .settings-section-head { flex-direction: column; }
       .settings-section-actions { justify-content: flex-start; width: 100%; }
@@ -9559,17 +11336,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     /* Compact documentation workbench */
     *, *::before, *::after { letter-spacing: 0 !important; }
     body { background: var(--bg); }
-    body::before {
-      background-image:
-        linear-gradient(to right, color-mix(in srgb, var(--line) 46%, transparent) 1px, transparent 1px),
-        linear-gradient(to bottom, color-mix(in srgb, var(--line) 38%, transparent) 1px, transparent 1px);
-      background-size: 32px 32px;
-      opacity: 0.24;
-      animation: workbenchGridDrift 28s linear infinite;
-    }
-    html.ui-scrolling body::before { animation-play-state: paused; }
-    body::after { display: none; }
-    @keyframes workbenchGridDrift { to { transform: translate(-32px, -32px); } }
+    body::before, body::after { display: none; }
     .app { grid-template-columns: 320px minmax(0, 1fr); }
     .app.sidebar-collapsed { grid-template-columns: 56px minmax(0, 1fr); }
     aside { padding: 12px; background: var(--surface-sidebar); backdrop-filter: none; }
@@ -9645,16 +11412,14 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .shared-context-actions .dock-button { min-height: 40px; padding: 0 10px; white-space: nowrap; }
     .shared-context-actions .dock-button[hidden] { display: none !important; }
     .shared-context-actions .dock-button.primary { padding-inline: 13px; }
-    .shared-context-actions #sharedProposalBrowser, .shared-context-actions .shared-context-refresh {
+    .shared-context-actions .shared-context-refresh {
       border-color: transparent; background: transparent; color: var(--muted);
     }
-    .shared-context-actions #sharedProposalBrowser:hover, .shared-context-actions .shared-context-refresh:hover {
+    .shared-context-actions .shared-context-refresh:hover {
       background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--text);
     }
     .shared-context-actions .shared-context-refresh { width: 36px; min-width: 36px; padding: 0; font-size: 17px; }
     .shared-context-actions .dock-button:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent); outline-offset: 2px; }
-    .shared-context-controls[data-mode="review"] { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
-    .shared-context-controls[data-mode="review"] .shared-context-actions { grid-column: 2; }
     @media (max-width: 760px) {
       .shared-context-controls { grid-template-columns: minmax(0, 1fr) auto; align-items: center; padding: 7px; }
       .shared-context-picker { grid-column: 1 / -1; grid-row: 2; }
@@ -9662,30 +11427,321 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     }
     @media (max-width: 500px) {
       .shared-context-controls { grid-template-columns: 1fr; gap: 6px; padding: 7px; }
-      .shared-context-controls[data-mode="review"] { grid-template-columns: 1fr; }
       .shared-context-heading, .shared-context-picker, .shared-context-actions { grid-column: 1; grid-row: auto; }
-      .shared-context-controls[data-mode="review"] .shared-context-actions { grid-column: 1; }
       .shared-context-actions { display: grid; grid-template-columns: minmax(0, 1fr) 36px minmax(0, 1fr); width: 100%; }
       .shared-context-actions .dock-button { min-width: 0; }
       .shared-context-heading { min-height: 36px; padding: 0 5px; }
     }
-    .shared-proposal-workspace { position: fixed; inset: 0; z-index: 80; display: grid; grid-template-rows: auto minmax(0, 1fr); background: var(--bg); color: var(--text); }
+    .shared-proposal-workspace { position: fixed; inset: 0 0 0 320px; z-index: 80; display: grid; grid-template-rows: auto minmax(0, 1fr); background: var(--bg); color: var(--text); }
+    .app.sidebar-collapsed ~ .shared-proposal-workspace { left: 56px; }
+    .shared-proposal-workspace[data-local-project-open="true"] { left: 0; }
     .shared-proposal-workspace[hidden] { display: none !important; }
-    .context-hub-open { color: var(--text); background: color-mix(in srgb, var(--accent) 9%, transparent); }
-    .context-hub-open::before { content: "⌘"; margin-right: 6px; color: var(--accent); font-weight: 800; }
-    .shared-proposal-workspace-head { display: grid; grid-template-columns: auto minmax(190px, .7fr) auto minmax(240px, 1.2fr) minmax(150px, .55fr) minmax(150px, .55fr) auto; align-items: center; gap: 8px; min-height: 68px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--panel-strong); }
+    .shared-proposal-workspace-head { display: grid; grid-template-columns: minmax(170px, .65fr) minmax(240px, 1.35fr) minmax(130px, .48fr) minmax(150px, .55fr) auto auto; align-items: center; gap: 8px; min-height: 68px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--panel-strong); }
     .shared-proposal-workspace-title { min-width: 0; }
     .shared-proposal-workspace-title strong { display: block; font-size: 15px; }
     .shared-proposal-workspace-title span { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; line-height: 1.25; }
-    .context-hub-views { display: inline-flex; align-items: center; min-height: 36px; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-sidebar); }
-    .context-hub-view { min-height: 28px; padding: 0 10px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font-size: 11px; font-weight: 700; cursor: pointer; }
-    .context-hub-view:hover { color: var(--text); }
-    .context-hub-view.active { background: var(--panel-strong); color: var(--text); box-shadow: 0 3px 10px rgba(0,0,0,.18); }
-    .context-hub-view:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent); outline-offset: 2px; }
+    .shared-proposal-workspace-close { min-width: 36px; padding-inline: 10px; }
     .shared-proposal-search { width: 100%; min-width: 0; min-height: 36px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); }
     .shared-proposal-search::placeholder { color: color-mix(in srgb, var(--muted) 92%, var(--text)); }
     .shared-proposal-filter { width: 100%; min-width: 0; min-height: 36px; padding: 6px 28px 6px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); }
+    button.shared-proposal-filter { display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: pointer; text-align: left; }
     .shared-proposal-workspace-body { min-height: 0; display: grid; grid-template-columns: minmax(350px, 430px) minmax(0, 1fr); }
+    /*
+      THESIS: Home is the review-first cockpit; it refuses the metric-dashboard detour.
+      OWN-WORLD: Context Room's restrained dark surfaces, compact rows, cyan focus, and source badges.
+      STORY: review what changed, resume organized project sections, then reach the wider project catalog.
+      FIRST VIEWPORT: actionable reviews fill the top; curated sections begin immediately below.
+      FORM: a task queue followed by project-owned navigation lanes inside the established Operate surface.
+    */
+    .context-hub-home { grid-column: 1 / -1; min-width: 0; min-height: 0; height: 100%; overflow: auto; background: var(--bg); }
+    .context-hub-home[hidden] { display: none !important; }
+    .context-hub-home-inner { width: min(1440px, 100%); margin: 0 auto; padding: clamp(18px, 2.4vw, 34px); }
+    .context-hub-home-intro { display: flex; align-items: end; justify-content: space-between; gap: 24px; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
+    .context-hub-home-title { min-width: 0; }
+    .context-hub-home-title h1 { margin: 0; color: var(--text); font-size: clamp(24px, 2.6vw, 36px); line-height: 1.08; letter-spacing: -0.03em !important; }
+    .context-hub-home-title p { max-width: 70ch; margin: 7px 0 0; color: var(--text-soft); font-size: 12px; line-height: 1.5; }
+    .context-hub-home-summary { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+    .context-hub-home-summary span { display: inline-flex; align-items: center; min-height: 28px; padding: 5px 9px; border-radius: 999px; background: var(--surface-floating-soft); color: var(--muted); font-size: 10px; font-weight: 780; white-space: nowrap; }
+    .context-hub-home-summary strong { margin-right: 4px; color: var(--text); font-size: 12px; }
+    .context-hub-home-section { padding-top: 24px; }
+    .context-hub-home-section + .context-hub-home-section { margin-top: 4px; }
+    .context-hub-home-section-head { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin-bottom: 11px; }
+    .context-hub-home-section-copy h2 { margin: 0; color: var(--text); font-size: 17px; line-height: 1.2; letter-spacing: -0.015em !important; }
+    .context-hub-home-section-copy p { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.4; }
+    .context-hub-home-section-action { min-height: 30px; border: 0; border-radius: 7px; padding: 0 9px; background: transparent; color: var(--accent); cursor: pointer; font-size: 11px; font-weight: 780; }
+    .context-hub-home-section-action:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--text); }
+    .context-hub-home-section-action:focus-visible,
+    .context-hub-review-row:focus-visible,
+    .context-hub-section-link:focus-visible,
+    .context-hub-project-tile:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 2px; }
+    .context-hub-review-card { overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+    .context-hub-review-card-head { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+    .context-hub-review-card-title { min-width: 0; }
+    .context-hub-review-card-title h2 { margin: 0; color: var(--text); font-size: 15px; line-height: 1.25; letter-spacing: -0.015em !important; }
+    .context-hub-review-card-title p { margin: 3px 0 0; color: var(--muted); font-size: 11px; line-height: 1.4; }
+    .context-hub-review-counts { display: flex; align-items: baseline; gap: 14px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+    .context-hub-review-counts strong { margin-right: 4px; color: var(--accent); font-size: 18px; }
+    .context-hub-review-counts span:first-child strong { color: var(--accent-2); }
+    .context-hub-review-toolbar { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(140px, .45fr); gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--surface-card) 72%, transparent); }
+    .context-room-review-toolbar { grid-template-columns: minmax(190px, 1fr) minmax(140px, .45fr) minmax(210px, .7fr); }
+    body.focused-review-context-room .context-room-review-toolbar { grid-template-columns: minmax(140px, .45fr) minmax(210px, 1fr); }
+    .context-room-review-search { width: 100%; min-width: 0; min-height: 32px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-sidebar); color: var(--text); font-size: 11px; }
+    .context-room-review-search::placeholder { color: var(--muted); }
+    .context-room-review-search:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 2px; }
+    .context-hub-review-filter { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px; color: var(--muted); font-size: 10px; font-weight: 760; }
+    .context-hub-review-filter[hidden] { display: none !important; }
+    .context-hub-review-filter select { width: 100%; min-width: 0; min-height: 32px; padding: 5px 26px 5px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-sidebar); color: var(--text); font-size: 11px; }
+    .context-hub-project-trigger { width: 100%; min-width: 0; min-height: 32px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 5px 8px 5px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-sidebar); color: var(--text); cursor: pointer; font-size: 11px; text-align: left; }
+    .context-hub-project-trigger:hover { border-color: color-mix(in srgb, var(--accent) 38%, var(--line)); background: var(--surface-card-hover); }
+    .context-hub-project-trigger:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 2px; }
+    .context-hub-project-trigger-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .context-hub-project-trigger-icon { flex: 0 0 auto; color: var(--muted); font-size: 13px; }
+    .context-hub-project-picker-modal { position: fixed; inset: 0; z-index: 140; display: grid; place-items: center; padding: 20px; }
+    .context-hub-project-picker-modal[hidden] { display: none !important; }
+    .context-hub-project-picker-backdrop { position: absolute; inset: 0; border: 0; background: rgba(2, 6, 23, .72); cursor: default; }
+    .context-hub-project-picker-dialog { position: relative; width: min(680px, 100%); max-height: min(760px, calc(100dvh - 40px)); display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; overflow: hidden; border: 1px solid color-mix(in srgb, var(--line) 82%, var(--accent) 18%); border-radius: 14px; background: var(--panel-strong); box-shadow: 0 26px 80px rgba(0, 0, 0, .48); animation: contextHubProjectPickerIn 180ms cubic-bezier(.22, 1, .36, 1); }
+    @keyframes contextHubProjectPickerIn { from { opacity: .78; transform: translateY(10px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
+    .context-hub-project-picker-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 18px 18px 13px; }
+    .context-hub-project-picker-title { min-width: 0; }
+    .context-hub-project-picker-title h2 { margin: 0; color: var(--text); font-size: 18px; line-height: 1.2; letter-spacing: -.02em !important; }
+    .context-hub-project-picker-title p { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.4; }
+    .context-hub-project-picker-close { width: 30px; min-width: 30px; height: 30px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; font-size: 18px; line-height: 1; }
+    .context-hub-project-picker-close:hover { background: var(--surface-card-hover); color: var(--text); }
+    .context-hub-project-picker-search-wrap { padding: 0 18px 13px; }
+    .context-hub-project-picker-search { width: 100%; min-height: 42px; padding: 9px 12px; border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line)); border-radius: 9px; background: var(--surface-sidebar); color: var(--text); font-size: 13px; }
+    .context-hub-project-picker-search::placeholder { color: var(--muted); }
+    .context-hub-project-picker-search:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 64%, transparent); outline-offset: 2px; }
+    .context-hub-project-picker-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 7px; color: var(--muted); font-size: 10px; line-height: 1.3; }
+    .context-hub-project-picker-status kbd { padding: 2px 5px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--muted); font: 9px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .context-hub-project-picker-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; border-top: 1px solid var(--line); padding: 6px; background: var(--surface-sidebar); }
+    .context-hub-project-picker-option { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 14px; padding: 11px 12px; border: 0; border-radius: 9px; background: transparent; color: var(--text); cursor: pointer; text-align: left; }
+    .context-hub-project-picker-option:hover,
+    .context-hub-project-picker-option[data-active="true"] { background: var(--surface-card-hover); }
+    .context-hub-project-picker-option[aria-selected="true"] { background: color-mix(in srgb, var(--accent) 10%, var(--surface-card-hover)); }
+    .context-hub-project-picker-option:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: -2px; }
+    .context-hub-project-picker-option-main { min-width: 0; }
+    .context-hub-project-picker-option-title { min-width: 0; display: flex; align-items: center; gap: 7px; }
+    .context-hub-project-picker-option-title strong { min-width: 0; overflow: hidden; font-size: 12px; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+    .context-hub-project-picker-option-location { display: block; margin-top: 4px; overflow: hidden; color: var(--muted); font: 9px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+    .context-hub-project-picker-option-meta { align-self: center; color: var(--muted); font-size: 10px; line-height: 1.3; text-align: right; white-space: nowrap; }
+    .context-hub-project-picker-option-check { color: var(--accent); font-size: 14px; font-weight: 800; }
+    .context-hub-project-picker-empty { padding: 34px 20px; color: var(--muted); text-align: center; font-size: 12px; line-height: 1.5; }
+    .context-hub-project-picker-footer { display: flex; justify-content: flex-end; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--panel-strong); }
+    .context-hub-project-picker-manage { min-height: 32px; border: 0; border-radius: 7px; padding: 0 10px; background: transparent; color: var(--accent); cursor: pointer; font-size: 11px; font-weight: 780; }
+    .context-hub-project-picker-manage:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--text); }
+    .context-hub-project-picker-manage:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 2px; }
+    .shared-skills-dialog { width: min(760px, 100%); grid-template-rows: auto minmax(0, 1fr) auto; }
+    .shared-skills-wizard-body { min-height: 0; overflow-y: auto; display: grid; gap: 16px; padding: 16px 18px 20px; border-top: 1px solid var(--line); background: var(--surface-sidebar); }
+    .shared-skills-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .shared-skills-step { display: grid; gap: 3px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); font-size: 10px; }
+    .shared-skills-step strong { color: var(--text-soft); font-size: 11px; }
+    .shared-skills-step.active { border-color: color-mix(in srgb, var(--accent) 52%, var(--line)); background: color-mix(in srgb, var(--accent) 9%, transparent); }
+    .shared-skills-step.active strong { color: var(--text); }
+    .shared-skills-step-copy { display: grid; gap: 4px; max-width: 68ch; }
+    .shared-skills-step-copy strong { color: var(--label-strong); font-size: 14px; }
+    .shared-skills-step-copy p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .shared-skills-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .shared-skills-form .wide { grid-column: 1 / -1; }
+    .shared-skills-form label { display: grid; gap: 6px; color: var(--label-strong); font-size: 11px; font-weight: 800; text-transform: none; letter-spacing: 0; }
+    .shared-skills-form input, .shared-skills-form select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); color: var(--text); }
+    .shared-skills-preview { display: grid; gap: 8px; }
+    .shared-skills-preview-impact { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .shared-skills-preview-impact > div { display: grid; gap: 4px; padding: 11px 12px; border-top: 1px solid var(--line); }
+    .shared-skills-preview-impact strong { font-size: 12px; }
+    .shared-skills-preview-impact span { color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .shared-skills-preview-row, .shared-skills-location-row { display: grid; gap: 5px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-card); }
+    .shared-skills-preview-row.conflict, .shared-skills-location-row.conflict { border-color: color-mix(in srgb, var(--danger) 44%, var(--line)); }
+    .shared-skills-preview-row code, .shared-skills-location-row code { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+    .shared-skills-wizard-footer { display: flex; justify-content: space-between; gap: 10px; padding: 12px 18px; border-top: 1px solid var(--line); background: var(--panel-strong); }
+    .shared-skills-wizard-footer div { display: flex; gap: 8px; }
+    .shared-skills-status-list { display: grid; gap: 8px; }
+    .settings-shared-resource-divider { height: 1px; margin: 28px 0; background: var(--line); }
+    .shared-instructions-concept { margin-top: 0; }
+    .shared-skills-location-head { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+    .shared-skills-location-meta { color: var(--muted); font-size: 11px; }
+    .shared-skills-provider-settings { overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+    .shared-skills-provider-head { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px 16px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--surface-card) 68%, var(--panel)); }
+    .shared-skills-provider-title { display: grid; gap: 3px; min-width: 0; }
+    .shared-skills-provider-title strong { font-size: 13px; letter-spacing: -.01em; }
+    .shared-skills-provider-title span { max-width: 62ch; color: var(--muted); font-size: 10px; line-height: 1.45; }
+    .shared-skills-provider-head button { flex: 0 0 auto; }
+    .shared-skills-provider-columns, .shared-skills-provider-row { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(126px, 150px) minmax(126px, 150px) 104px; align-items: center; gap: 12px; min-width: 0; padding-inline: 16px; }
+    .shared-skills-provider-columns { min-height: 31px; color: var(--muted); font-size: 9px; font-weight: 780; letter-spacing: .035em; }
+    .shared-skills-provider-row { min-height: 62px; border-top: 1px solid var(--line); }
+    .shared-skills-provider-columns + .shared-skills-provider-row { border-top-color: color-mix(in srgb, var(--line) 72%, transparent); }
+    .shared-skills-provider-identity { display: grid; gap: 2px; min-width: 0; }
+    .shared-skills-provider-identity strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    .shared-skills-provider-identity span { color: var(--muted); font-size: 9px; line-height: 1.35; }
+    .shared-skills-provider-row label { display: grid; gap: 4px; min-width: 0; }
+    .shared-skills-provider-field-label { display: none; color: var(--muted); font-size: 9px; font-weight: 760; }
+    .shared-skills-provider-row select { width: 100%; min-height: 34px; padding: 6px 28px 6px 9px; border-color: color-mix(in srgb, var(--line) 82%, transparent); background: var(--surface-sidebar); }
+    .shared-skills-provider-effective { display: inline-flex; align-items: center; justify-content: flex-start; gap: 6px; color: var(--text-soft); font-size: 10px; font-weight: 720; white-space: nowrap; }
+    .shared-skills-provider-effective::before { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 12%, transparent); content: ""; }
+    .shared-skills-provider-effective[data-state="disabled"] { color: var(--muted); }
+    .shared-skills-provider-effective[data-state="disabled"]::before { background: var(--muted); box-shadow: none; }
+    @media (max-width: 780px) {
+      .shared-skills-provider-columns { display: none; }
+      .shared-skills-provider-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px 12px; padding-block: 12px; }
+      .shared-skills-provider-identity { grid-column: 1 / -1; }
+      .shared-skills-provider-field-label { display: block; }
+      .shared-skills-provider-effective { grid-column: 1 / -1; }
+    }
+    .shared-skills-assignment-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
+    .shared-skills-assignment-row > span:last-child { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+    .shared-skills-choice-group, .shared-skills-project-picker, .shared-skills-choice-list { display: grid; gap: 8px; min-width: 0; }
+    .shared-skills-choice-list { max-height: min(280px, 38vh); overflow: auto; padding-inline-end: 3px; }
+    .shared-skills-choice { display: flex !important; grid-template-columns: none !important; align-items: flex-start; gap: 10px !important; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-card); text-transform: none !important; letter-spacing: normal !important; cursor: pointer; }
+    .shared-skills-choice input { width: auto; min-height: 0; margin-top: 3px; }
+    .shared-skills-choice span { display: grid; gap: 2px; min-width: 0; }
+    .shared-skills-choice strong, .shared-skills-choice em { overflow-wrap: anywhere; }
+    .shared-skills-choice em { color: var(--muted); font-size: 10px; font-style: normal; font-weight: 500; }
+    .context-hub-list-limit { padding: 9px 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; line-height: 1.4; }
+    .context-hub-review-list.review-list { max-height: min(36vh, 340px); }
+    .review-item.context-hub-review-row { width: 100%; min-width: 0; }
+    .review-item.context-hub-review-row .review-top { align-items: center; }
+    .context-hub-review-source { min-width: 0; display: flex; align-items: center; gap: 7px; }
+    .context-hub-review-project { min-width: 0; overflow: hidden; color: var(--muted); font-size: 10px; font-weight: 720; text-overflow: ellipsis; white-space: nowrap; }
+    .review-item.context-hub-review-row .review-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .review-item.context-hub-review-row .review-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .context-room-review-selection { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; border-bottom: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line)); background: color-mix(in srgb, var(--accent) 7%, var(--panel)); }
+    .context-room-review-selection[hidden] { display: none !important; }
+    .context-room-review-selection-copy { min-width: 0; display: flex; align-items: baseline; gap: 7px; color: var(--muted); font-size: 10px; }
+    .context-room-review-selection-copy strong { color: var(--text); font-size: 12px; }
+    .context-room-review-selection-actions { display: flex; align-items: center; gap: 6px; }
+    .context-room-review-selection button { min-height: 30px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-sidebar); color: var(--text-soft); cursor: pointer; font-size: 10px; font-weight: 760; white-space: nowrap; }
+    .context-room-review-selection button:hover { border-color: color-mix(in srgb, var(--accent) 38%, var(--line)); background: var(--surface-card-hover); color: var(--text); }
+    .context-room-review-selection button:disabled { opacity: .5; cursor: wait; }
+    .context-room-review-selection .danger-action { background: color-mix(in srgb, var(--danger) 7%, var(--surface-sidebar)); }
+    .context-room-snooze-badge { display: inline-flex; align-items: center; min-height: 20px; padding: 2px 7px; border: 1px solid color-mix(in srgb, var(--warning) 30%, var(--line)); border-radius: 999px; background: color-mix(in srgb, var(--warning) 8%, transparent); color: var(--warning); font-size: 9px; font-weight: 700; white-space: nowrap; }
+    .context-room-review-row-state { display: inline-flex; align-items: center; gap: 7px; }
+    .context-room-review-entry { min-width: 0; display: block; border-bottom: 1px solid var(--line); background: transparent; }
+    .context-room-review-entry:last-child { border-bottom: 0; }
+    .context-room-review-entry[data-selected="true"] { background: color-mix(in srgb, var(--accent) 7%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 34%, transparent); }
+    .context-room-review-entry > .review-item { border-bottom: 0; }
+    .context-room-review-context-menu { z-index: 180; width: min(230px, calc(100vw - 24px)); }
+    .context-room-review-context-menu.snooze-open { width: min(330px, calc(100vw - 24px)); }
+    .context-room-review-context-menu .explorer-context-actions button { text-align: left; }
+    .context-room-snooze-chooser { display: grid; gap: 12px; }
+    .context-room-snooze-help { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
+    .context-room-snooze-presets { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
+    .context-room-snooze-presets button { min-height: 32px; padding: 5px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-sidebar); color: var(--text-soft); cursor: pointer; font-size: 10px; font-weight: 700; }
+    .context-room-snooze-presets button:hover { border-color: color-mix(in srgb, var(--accent) 38%, var(--line)); color: var(--text); }
+    .context-room-snooze-custom { display: grid; grid-template-columns: minmax(72px, .7fr) minmax(112px, 1fr) auto; gap: 6px; align-items: end; }
+    .context-room-snooze-custom label { display: grid; gap: 5px; min-width: 0; color: var(--muted); font-size: 9px; font-weight: 650; }
+    .context-room-snooze-custom input, .context-room-snooze-custom select { width: 100%; min-height: 34px; }
+    .context-room-snooze-exact { border-top: 1px solid var(--line); padding-top: 8px; }
+    .context-room-snooze-exact summary { color: var(--muted); cursor: pointer; font-size: 10px; }
+    .context-room-snooze-exact-fields { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; margin-top: 8px; }
+    .settings-snoozed-tools { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .settings-snoozed-search { width: min(360px, 100%); }
+    .settings-snoozed-list { display: grid; border-top: 1px solid var(--line); }
+    .settings-snoozed-row { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); }
+    .settings-snoozed-row[hidden] { display: none; }
+    .settings-snoozed-copy { min-width: 0; display: grid; gap: 4px; }
+    .settings-snoozed-topline { min-width: 0; display: flex; align-items: center; gap: 7px; }
+    .settings-snoozed-topline strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+    .settings-snoozed-meta { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+    .settings-snoozed-row button { min-height: 30px; white-space: nowrap; }
+    .context-room-review-proposal { position: relative; min-width: 0; overflow: hidden; background: color-mix(in srgb, var(--accent) 3%, transparent); }
+    .context-room-proposal-hitbox { position: absolute; z-index: 0; inset: 0; width: 100%; border: 0; background: transparent; cursor: pointer; }
+    .context-room-proposal-hitbox:hover,
+    .context-room-proposal-hitbox:focus-visible { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+    .context-room-proposal-hitbox:disabled { cursor: progress; }
+    .context-room-proposal-content { position: relative; z-index: 1; min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 12px; padding: 16px 16px 13px 8px; color: var(--text); pointer-events: none; }
+    .context-room-proposal-hitbox:focus-visible,
+    .context-room-review-selection button:focus-visible,
+    .context-room-mode-warning button:focus-visible,
+    .context-room-proposal-description-toggle:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 1px; }
+    .context-room-proposal-stack { position: relative; width: 24px; height: 24px; display: grid; place-items: center; margin-top: 1px; border: 1px solid color-mix(in srgb, var(--accent) 58%, var(--line)); border-radius: 6px; background: color-mix(in srgb, var(--accent) 13%, var(--panel)); color: var(--accent); font-size: 10px; font-weight: 900; }
+    .context-room-proposal-stack::before,
+    .context-room-proposal-stack::after { content: ""; position: absolute; width: 12px; height: 1px; border-radius: 1px; background: color-mix(in srgb, var(--accent) 56%, transparent); }
+    .context-room-proposal-stack::before { top: 4px; }
+    .context-room-proposal-stack::after { bottom: 4px; }
+    .context-room-proposal-copy { min-width: 0; display: grid; gap: 5px; }
+    .context-room-proposal-topline { min-width: 0; display: flex; align-items: center; gap: 7px; }
+    .context-room-proposal-title { overflow: hidden; font-size: 14px; line-height: 1.3; font-weight: 790; text-overflow: ellipsis; white-space: nowrap; }
+    .context-room-proposal-meta { overflow: hidden; color: var(--muted); font-size: 10px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+    .context-room-proposal-description-row { min-width: 0; max-width: 76ch; display: flex; align-items: flex-end; gap: 3px; margin-top: 1px; }
+    .context-room-proposal-description { min-width: 0; display: -webkit-box; overflow: hidden; color: var(--text-soft); font-size: 11px; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+    .context-room-proposal-description[data-expanded="true"] { display: block; overflow: visible; -webkit-line-clamp: unset; }
+    .context-room-proposal-description-toggle { position: relative; z-index: 2; width: 16px; min-width: 16px; height: 16px; display: grid; place-items: center; margin: 0 0 1px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: color-mix(in srgb, var(--muted) 78%, transparent); cursor: pointer; font: 650 10px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; opacity: .8; pointer-events: auto; transition: background 120ms ease, color 120ms ease, opacity 120ms ease; }
+    .context-room-proposal-description-toggle[hidden] { display: none !important; }
+    .context-room-proposal-description-toggle:hover { background: var(--native-hover); color: var(--text); opacity: 1; }
+    .context-room-proposal-preview-files { min-width: 0; display: flex; flex-wrap: wrap; gap: 5px; margin-top: 2px; }
+    .context-room-proposal-file { min-width: 0; max-width: min(360px, 100%); overflow: hidden; padding: 4px 7px; border-radius: 5px; background: color-mix(in srgb, var(--accent) 7%, var(--surface-sidebar)); color: var(--muted); font: 9px/1.25 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+    .context-room-proposal-more { align-self: center; color: var(--muted); font-size: 9px; line-height: 1.35; white-space: nowrap; }
+    .context-room-proposal-state { display: flex; align-items: center; gap: 8px; padding-top: 3px; color: var(--muted); font-size: 10px; white-space: nowrap; }
+    .context-room-proposal-state[data-state="conflict"] { color: var(--danger); }
+    .context-room-proposal-state[data-state="updated"] { color: var(--accent-2); }
+    .context-room-proposal-arrow { color: currentColor; font-size: 13px; }
+    .context-room-proposal-opening-indicator { width: 12px; height: 12px; border: 1.5px solid color-mix(in srgb, var(--accent) 24%, var(--line)); border-top-color: var(--accent); border-radius: 50%; animation: bootSpin 700ms linear infinite; }
+    .proposal-review-page { padding: clamp(18px, 3vw, 38px); background: var(--bg); scroll-padding-block: 24px; }
+    .proposal-review-page[hidden] { display: none !important; }
+    .proposal-review-shell { width: min(980px, 100%); margin: 0 auto; }
+    .proposal-review-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding-bottom: 20px; border-bottom: 1px solid var(--line); }
+    .proposal-review-copy { min-width: 0; }
+    .proposal-review-copy h2 { margin: 0; color: var(--text); font-size: clamp(24px, 3vw, 36px); line-height: 1.08; letter-spacing: -0.03em !important; }
+    .proposal-review-copy p { max-width: 72ch; margin: 9px 0 0; color: var(--text-soft); font-size: 12px; line-height: 1.55; }
+    .proposal-review-progress { flex: 0 0 auto; display: grid; justify-items: end; gap: 3px; padding-top: 3px; color: var(--muted); font-size: 10px; }
+    .proposal-review-progress strong { color: var(--text); font-size: 22px; line-height: 1; letter-spacing: -0.025em; }
+    .proposal-review-meta { display: flex; flex-wrap: wrap; gap: 7px 16px; padding: 13px 0 18px; color: var(--muted); font-size: 10px; line-height: 1.35; }
+    .proposal-review-meta code { color: var(--text-soft); font-size: 9px; }
+    .proposal-review-technical { flex-basis: 100%; }
+    .proposal-review-technical summary { width: fit-content; color: var(--muted); cursor: pointer; font-size: 10px; }
+    .proposal-review-technical div { display: flex; flex-wrap: wrap; gap: 8px 14px; padding-top: 8px; }
+    .proposal-context-impact { flex-basis: 100%; overflow: hidden; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-card); }
+    .proposal-context-impact > summary { width: auto; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 11px; list-style: none; color: var(--text-soft); font-size: 10px; cursor: pointer; }
+    .proposal-context-impact > summary::-webkit-details-marker { display: none; }
+    .proposal-context-impact > summary span { color: var(--muted); }
+    .proposal-context-impact-body { display: grid; gap: 8px; padding: 10px 11px 12px; border-top: 1px solid var(--line); }
+    .proposal-context-impact-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 7px; }
+    .proposal-context-impact-summary div { display: grid; gap: 3px; padding: 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-sidebar); }
+    .proposal-context-impact-summary strong { color: var(--text); font-size: 11px; }
+    .proposal-context-impact-summary span { color: var(--muted); font-size: 9px; line-height: 1.4; }
+    .proposal-context-impact-details { display: grid; gap: 6px; }
+    .proposal-context-impact-details details { border-top: 1px solid var(--line); padding-top: 6px; }
+    .proposal-context-impact-details summary { color: var(--text-soft); font-size: 10px; cursor: pointer; }
+    .proposal-context-impact-list { display: grid; gap: 4px; margin: 6px 0 0; padding: 0; list-style: none; }
+    .proposal-context-impact-list li { min-width: 0; display: flex; align-items: baseline; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 9px; }
+    .proposal-context-impact-list code { min-width: 0; overflow-wrap: anywhere; color: var(--text-soft); }
+    .proposal-context-impact-note { color: var(--warning); font-size: 10px; line-height: 1.45; }
+    .proposal-review-files { overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+    .proposal-review-file { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 14px 16px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; text-align: left; }
+    .proposal-review-file:last-child { border-bottom: 0; }
+    .proposal-review-file:hover { background: var(--surface-card-hover); }
+    .proposal-review-file:focus-visible { position: relative; z-index: 1; outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: -3px; }
+    .proposal-review-file:disabled { cursor: default; opacity: .62; }
+    .proposal-review-file:disabled:hover { background: transparent; }
+    .proposal-review-file-copy { min-width: 0; }
+    .proposal-review-file-copy strong { display: block; overflow: hidden; font-size: 13px; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+    .proposal-review-file-copy code { display: block; overflow: hidden; margin-top: 4px; color: var(--muted); font-size: 9px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+    .proposal-review-file-change { color: var(--muted); font-size: 10px; text-transform: lowercase; }
+    .proposal-review-file-state { min-width: 72px; color: var(--accent-2); font-size: 10px; font-weight: 790; text-align: right; white-space: nowrap; }
+    .proposal-review-file[data-reviewed="true"] .proposal-review-file-state { color: var(--good); }
+    .proposal-review-empty { padding: 28px 18px; color: var(--muted); font-size: 12px; line-height: 1.5; text-align: center; }
+    @media (max-width: 620px) {
+      .proposal-review-head { flex-direction: column; gap: 14px; }
+      .proposal-review-progress { justify-items: start; }
+      .proposal-review-file { grid-template-columns: minmax(0, 1fr) auto; }
+      .proposal-review-file-change { display: none; }
+    }
+    .context-room-mode-warning { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px 18px; padding: 11px 14px; border-bottom: 1px solid color-mix(in srgb, var(--accent-2) 28%, var(--line)); background: color-mix(in srgb, var(--accent-2) 7%, var(--panel)); }
+    .context-room-mode-warning-copy { min-width: 0; }
+    .context-room-mode-warning-copy strong { display: block; color: var(--text); font-size: 11px; line-height: 1.35; }
+    .context-room-mode-warning-copy span { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.4; }
+    .context-room-mode-warning-actions { display: flex; align-items: center; gap: 7px; }
+    .context-room-mode-warning button { min-height: 30px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-sidebar); color: var(--text); cursor: pointer; font-size: 10px; font-weight: 740; white-space: nowrap; }
+    .context-room-mode-warning button:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); background: var(--surface-card-hover); }
+    .context-room-mode-warning button:disabled { opacity: .56; cursor: wait; }
+    .context-hub-home-empty { padding: 18px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .context-hub-home-empty strong { color: var(--good); }
+    .context-hub-project-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px; }
+    .context-hub-project-tile { min-width: 0; min-height: 94px; display: grid; align-content: space-between; gap: 14px; padding: 13px; border: 0; border-radius: 12px; background: var(--surface-card); color: var(--text); text-align: left; cursor: pointer; }
+    .context-hub-project-tile:hover { background: var(--surface-card-hover); }
+    .context-hub-project-tile-top { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 9px; }
+    .context-hub-project-badges { display: inline-flex; align-items: center; justify-content: flex-end; gap: 5px; }
+    .context-hub-project-tile strong { overflow: hidden; font-size: 12px; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+    .context-hub-project-tile-meta { display: flex; flex-wrap: wrap; gap: 5px 11px; color: var(--muted); font-size: 10px; line-height: 1.3; }
     .shared-proposal-list-panel { position: relative; inset: auto; z-index: auto; width: auto; height: auto; min-height: 0; max-height: none; overflow: auto; border-right: 1px solid var(--line); background: var(--surface-sidebar); transform: none; }
     .context-hub-list-status { position: sticky; top: 0; z-index: 2; min-height: 34px; padding: 9px 14px; border-bottom: 1px solid var(--line); background: var(--surface-sidebar); color: var(--muted); font-size: 10px; line-height: 1.4; }
     .context-hub-list-status[data-error="true"] { color: var(--danger); }
@@ -9699,6 +11755,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .shared-proposal-card-top { display: flex; align-items: center; gap: 7px; }
     .context-hub-source { display: inline-flex; align-items: center; min-height: 21px; padding: 2px 7px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); font-size: 9px; line-height: 1.2; font-weight: 800; white-space: nowrap; }
     .context-hub-source[data-source="local"] { background: color-mix(in srgb, var(--good) 13%, transparent); color: color-mix(in srgb, var(--good) 82%, white); }
+    .context-hub-worktree-count, .context-hub-worktree-label { display: inline-flex; align-items: center; min-height: 19px; padding: 2px 6px; border-radius: 6px; background: var(--surface-card); color: var(--muted); font: 700 9px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
     .shared-proposal-project { padding: 2px 6px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); font: 10px/1.25 ui-monospace, SFMono-Regular, Menlo, monospace; }
     .shared-proposal-card-title { display: block; margin-top: 9px; font-size: 14px; line-height: 1.3; font-weight: 720; }
     .shared-proposal-card-description { display: -webkit-box; margin-top: 5px; overflow: hidden; color: var(--text-soft); font-size: 11px; line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
@@ -9768,12 +11825,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .codex-prompt-card-status[data-status="conflict"], .codex-prompt-card-status[data-status="mixed_versions"] { color: var(--danger); }
     .codex-prompt-card-status[data-status="restart_required"], .codex-prompt-card-status[data-status="pending_next_launch"], .codex-prompt-card-status[data-status="loaded_differs"] { color: var(--accent-2); }
     @media (max-width: 900px) {
-      .shared-proposal-workspace-head { grid-template-columns: auto minmax(0, 1fr) auto auto; }
-      .context-hub-views { grid-column: 3; }
-      .shared-proposal-workspace-head > .dock-button:last-child { grid-column: 4; }
-      .shared-proposal-search { grid-column: 1 / 3; }
-      .context-hub-source-filter { grid-column: 3; }
-      #sharedProposalProjectFilter { grid-column: 4; }
+      .shared-proposal-workspace-head { grid-template-columns: minmax(170px, .65fr) minmax(0, 1fr) minmax(130px, .45fr) minmax(150px, .55fr) auto auto; }
       .shared-proposal-workspace-body { grid-template-columns: minmax(280px, 340px) minmax(0, 1fr); }
       .shared-proposal-files { grid-template-columns: 1fr; }
       .codex-prompt-surfaces { grid-template-columns: 1fr; }
@@ -9781,20 +11833,58 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       .codex-prompt-surface textarea { min-height: 220px; }
     }
     @media (max-width: 680px) {
-      .shared-proposal-workspace-head { grid-template-columns: auto minmax(0, 1fr) auto; gap: 7px; padding: 8px; }
-      .context-hub-views { grid-column: 1 / 3; grid-row: 2; }
-      .shared-proposal-workspace-head > .dock-button:last-child { grid-column: 3; grid-row: 1; }
+      .shared-proposal-workspace-head { grid-template-columns: minmax(0, 1fr) auto; gap: 7px; padding: 8px; }
+      .shared-proposal-workspace-close { grid-column: 2; grid-row: 1; }
+      #sharedProposalWorkspaceRefresh { grid-column: 1; grid-row: 2; justify-self: start; }
       .shared-proposal-search { grid-column: 1 / -1; grid-row: 3; }
-      .context-hub-source-filter { grid-column: 1 / 2; grid-row: 4; }
-      #sharedProposalProjectFilter { grid-column: 2 / -1; grid-row: 4; }
+      .context-hub-source-filter { grid-column: 1; grid-row: 4; }
+      #sharedProposalProjectFilter { grid-column: 2; grid-row: 4; }
       .shared-proposal-workspace-body { grid-template-columns: 1fr; grid-template-rows: minmax(230px, 38vh) minmax(0, 1fr); }
       .shared-proposal-list-panel { border-right: 0; border-bottom: 1px solid var(--line); }
       .shared-proposal-overview { padding: 14px 16px 13px; }
       .shared-proposal-overview h2 { font-size: 17px; }
       .shared-proposal-description { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
       .shared-proposal-files { max-height: 56px; }
+      .context-hub-home-inner { padding: 16px 12px 24px; }
+      .context-hub-home-intro { align-items: flex-start; flex-direction: column; gap: 12px; }
+      .context-hub-home-summary { justify-content: flex-start; }
+      .context-hub-review-card-head { align-items: flex-start; flex-direction: column; gap: 8px; }
+      .context-hub-review-toolbar { grid-template-columns: 1fr; }
+      .context-hub-review-filter { grid-template-columns: 52px minmax(0, 1fr); }
+      .context-hub-review-list.review-list { max-height: min(40vh, 320px); }
+      .context-room-review-toolbar { grid-template-columns: 1fr; }
+      .context-room-review-selection { align-items: flex-start; flex-direction: column; }
+      .context-room-review-selection-actions { width: 100%; flex-wrap: wrap; }
+      .context-room-snooze-custom, .context-room-snooze-exact-fields { grid-template-columns: 1fr; }
+      .settings-snoozed-tools { align-items: stretch; flex-direction: column; }
+      .settings-snoozed-row { align-items: start; grid-template-columns: 1fr; }
+      .settings-snoozed-row button { justify-self: start; }
+      .context-room-mode-warning { grid-template-columns: 1fr; }
+      .context-room-mode-warning-actions { flex-wrap: wrap; }
+      .context-room-proposal-content { grid-template-columns: auto minmax(0, 1fr); padding-right: 12px; }
+      .context-room-proposal-state { grid-column: 2; padding-top: 0; }
+      .context-hub-project-grid { grid-template-columns: 1fr; }
+      .context-hub-project-picker-modal { padding: 8px; place-items: end center; }
+      .context-hub-project-picker-dialog { width: 100%; max-height: min(86dvh, 760px); border-radius: 14px 14px 10px 10px; }
+      .context-hub-project-picker-head { padding: 15px 14px 11px; }
+      .context-hub-project-picker-search-wrap { padding: 0 14px 11px; }
+      .context-hub-project-picker-option { grid-template-columns: minmax(0, 1fr); gap: 5px; }
+      .context-hub-project-picker-option-meta { text-align: left; white-space: normal; }
+      .context-hub-project-picker-status > span:last-child { display: none; }
     }
-    .workspace-title { min-width: 0; margin-left: auto; padding: 0 8px; color: var(--muted); font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .context-room-brand { min-width: 0; min-height: 34px; display: inline-flex; align-items: center; gap: 8px; padding: 0 12px 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--label-strong); white-space: nowrap; cursor: pointer; }
+    .context-room-brand:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+    .context-room-brand:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 68%, transparent); outline-offset: -2px; }
+    .context-room-brand-mark { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 3px 10px color-mix(in srgb, var(--accent) 36%, transparent); }
+    .context-room-brand strong { font-size: 12px; line-height: 1.2; font-weight: 820; }
+    .workspace-title { flex: 1 1 auto; min-width: 0; padding: 0 8px; color: var(--muted); font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .workspace-title:empty { display: none; }
+    .workspace-switch {
+      flex: 0 0 auto; min-width: 76px; min-height: 34px; margin: 0 var(--space-1) 0 0; padding: 0 10px 0 12px;
+      border: 0; border-left: 1px solid var(--line); border-radius: 0 6px 6px 0;
+      background: transparent; color: var(--muted); font-size: 11px; font-weight: 760;
+    }
+    .workspace-switch:hover { border-left-color: var(--line); background: color-mix(in srgb, var(--accent) 7%, transparent); color: var(--label-strong); }
     .topbar { border-radius: 8px; box-shadow: none; backdrop-filter: none; }
     .editor-shell { border: 0; border-radius: 0; background: transparent; box-shadow: none; backdrop-filter: none; }
     .docqa-home, .settings-page { padding: 14px; border: 0; background: transparent; box-shadow: none; }
@@ -9856,8 +11946,11 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .settings-page .settings-card { max-width: 1160px; border: 0; background: transparent; }
     .settings-page .settings-card > header { padding: 4px 0 12px; border: 0; }
     .settings-card, .settings-toggle, .settings-theme-preview, .template-editor, .hub-section-editor, .hub-card-editor, .path-picker { border-radius: 8px; box-shadow: none; }
-    .settings-panel { padding: 0; gap: 10px; }
-    .settings-section-head, .settings-section-body { padding: 12px; }
+    .settings-panel { padding: 0; gap: 0; }
+    .settings-shell { border-bottom: 0; border-radius: 10px 10px 0 0; }
+    .settings-section-head { padding: 12px; }
+    .settings-section-body { padding: 12px 12px 20px; }
+    .settings-footer { margin: 0; padding: 14px 12px; border: 1px solid var(--line); border-top-color: color-mix(in srgb, var(--line) 88%, transparent); border-radius: 0 0 10px 10px; }
     .settings-toggle { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; }
     .settings-toggle:last-child { border-bottom: 0; }
     .settings-field textarea, .settings-field input, .settings-field select, .markdown-create .settings-field select { border-radius: 6px; }
@@ -9873,7 +11966,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .file-action:hover { transform: none; }
     .diff-code, .doc-content, .doc-editor { padding: 18px 22px; }
     .diff-panel, .file-panel { height: 100%; min-height: 0; display: flex; flex-direction: column; }
-    .diff-code, .doc-content, .doc-editor, .external-review-doc, .markdown-editor-shell { flex: 1 1 auto; min-height: 0; max-height: none; }
+    .diff-code, .doc-content, .doc-editor, .external-review-doc, .markdown-editor-shell, .image-preview-shell { flex: 1 1 auto; min-height: 0; max-height: none; }
     .doc-content { max-width: 1040px; margin: 0 auto; font-size: 14px; line-height: 1.68; }
     .file-panel .doc-editor.markdown-view, .file-panel .markdown-editor-input { padding-left: 36px; }
     .file-panel .doc-editor.markdown-view .markdown-line { position: relative; }
@@ -9888,6 +11981,8 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     }
     @media (max-width: 980px) {
       .app, .app.sidebar-collapsed { grid-template-columns: 1fr; }
+      .shared-proposal-workspace,
+      .app.sidebar-collapsed ~ .shared-proposal-workspace { left: 0; }
       .app.sidebar-collapsed .workspace-dock { width: 100%; margin: 0; opacity: 1; pointer-events: auto; transform: none; }
       .workspace-dock { margin: 0; }
       main { grid-template-rows: auto minmax(0, 1fr); }
@@ -9898,11 +11993,22 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       main { grid-template-rows: auto minmax(0, 1fr); }
       .workspace-title { display: none; }
       .docqa-home, .settings-page { padding: 8px; }
+      .settings-page-header { align-items: stretch; flex-direction: column; }
+      .settings-search { width: 100%; }
+      .settings-search-results { left: 0; right: auto; width: 100%; }
       .settings-shell { min-height: calc(100dvh - 126px); }
       .settings-tab { flex-basis: 108px; min-height: 46px; padding: 8px 10px; }
       .settings-tab small { display: none; }
+      .settings-action-row { align-items: flex-start; flex-direction: column; }
       .settings-section-head { flex-direction: column; gap: 10px; }
       .settings-section-actions { justify-content: flex-start; }
+      .settings-disclosure > summary { grid-template-columns: minmax(0, 1fr) auto; }
+      .settings-disclosure-status { grid-column: 1; grid-row: 2; justify-self: start; }
+      .settings-disclosure-chevron { grid-column: 2; grid-row: 1 / span 2; }
+      .settings-glossary div { grid-template-columns: 1fr; gap: 4px; }
+      .shared-skills-steps, .shared-skills-preview-impact { grid-template-columns: 1fr; }
+      .shared-skills-form { grid-template-columns: 1fr; }
+      .shared-skills-form .wide { grid-column: auto; }
       .review-gate-head { flex-direction: column; }
       .review-gate-options { grid-template-columns: 1fr; }
       .review-gate-option { min-height: 104px; }
@@ -9919,47 +12025,744 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       .file-panel .doc-editor.markdown-view .markdown-line::before { left: -27px; width: 20px; font-size: 8px; }
       .file-panel header { padding: 8px; }
     }
+    /*
+      QUIET NATIVE WORKBENCH
+      THESIS: one continuous review workbench, never a floating-card dashboard.
+      OWN-WORLD: native split panes, hairlines, system type, calm neutrals, cyan focus.
+      STORY: choose scope, understand the change, make the human file decision.
+      FIRST VIEWPORT: Explorer, 46px title bar, review queue, optional detail.
+      FORM: Codex/Claude desktop shell, Linear density, Creed document review.
+    */
+    :root {
+      --explorer-width: 272px;
+      --inspector-width: 320px;
+      --native-radius-control: 6px;
+      --native-radius-group: 8px;
+      --native-radius-dialog: 10px;
+      --native-titlebar-height: 46px;
+      --native-row-height: 40px;
+      --native-ease: cubic-bezier(.2,.8,.2,1);
+      --native-selection: color-mix(in srgb, var(--accent) 11%, var(--panel));
+      --native-hover: color-mix(in srgb, var(--text) 5%, transparent);
+      --native-focus: color-mix(in srgb, var(--accent) 72%, transparent);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-synthesis: none;
+    }
+    :root[data-file-theme="context-room"][data-color-mode="dark"] {
+      color-scheme: dark;
+      --bg: #101211;
+      --panel: #171918;
+      --panel-strong: #1b1d1c;
+      --line: rgba(245,247,246,.09);
+      --text: #f1f3f1;
+      --text-soft: #d3d6d3;
+      --muted: #929793;
+      --accent: #69c7d4;
+      --accent-2: #8ddbe5;
+      --good: #72c894;
+      --warn: #d8aa62;
+      --danger: #e37b83;
+      --on-accent: #071113;
+      --surface-wash: #101211;
+      --surface-sidebar: #141615;
+      --surface-floating: #1b1d1c;
+      --surface-floating-soft: #191b1a;
+      --surface-card: #191b1a;
+      --surface-card-hover: #202321;
+      --surface-reader: #121413;
+      --label-strong: #f1f3f1;
+      --file-panel-bg: #121413;
+      --file-header-bg: #171918;
+      --file-bg: #121413;
+      --file-fg: #e8ebe8;
+      --file-muted: #919792;
+      --file-line: rgba(245,247,246,.10);
+      --file-h1: #f3f5f3;
+      --file-h2: #dce1dd;
+      --file-h3: #c7d0ca;
+      --file-h4: #aeb9b1;
+      --file-code: #9fd6de;
+      --file-quote: #9fa6a1;
+      --file-list: #86ced8;
+      --file-marker: #777e79;
+      --file-hr: rgba(245,247,246,.12);
+    }
+    :root[data-file-theme="context-room"][data-color-mode="light"] {
+      color-scheme: light;
+      --bg: #f7f8f6;
+      --panel: #ffffff;
+      --panel-strong: #fbfcfa;
+      --line: rgba(28,32,29,.11);
+      --text: #1d211e;
+      --text-soft: #353a36;
+      --muted: #707670;
+      --accent: #197c89;
+      --accent-2: #2594a3;
+      --good: #26784b;
+      --warn: #9a681f;
+      --danger: #b9424d;
+      --on-accent: #ffffff;
+      --surface-wash: #f7f8f6;
+      --surface-sidebar: #f0f2ef;
+      --surface-floating: #ffffff;
+      --surface-floating-soft: #f8f9f7;
+      --surface-card: #f7f8f6;
+      --surface-card-hover: #eef1ee;
+      --surface-reader: #ffffff;
+      --label-strong: #1d211e;
+      --file-panel-bg: #ffffff;
+      --file-header-bg: #f7f8f6;
+      --file-bg: #ffffff;
+      --file-fg: #252a26;
+      --file-muted: #727872;
+      --file-line: rgba(28,32,29,.12);
+      --file-h1: #1d211e;
+      --file-h2: #303631;
+      --file-h3: #485049;
+      --file-h4: #626a63;
+      --file-code: #176d78;
+      --file-quote: #697069;
+      --file-list: #197c89;
+      --file-marker: #929892;
+      --file-hr: rgba(28,32,29,.13);
+    }
+    html, body { width: 100%; height: 100%; }
+    body {
+      background: var(--bg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 13px;
+      line-height: 1.45;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+    body::before, body::after { display: none; animation: none; }
+    strong, b { font-weight: 650; }
+    button, input, select, textarea { font: inherit; }
+    button { letter-spacing: normal; }
+    code, pre, kbd, .workspace-title, .selected-path, .review-path, .global-project-row-location {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .ui-icon-sprite { position: fixed; width: 0; height: 0; overflow: hidden; pointer-events: none; }
+    .ui-icon { width: 16px; height: 16px; display: block; fill: none; stroke: currentColor; stroke-width: 1.55; stroke-linecap: round; stroke-linejoin: round; }
+    .app {
+      z-index: 1;
+      grid-template-columns: var(--explorer-width) minmax(0, 1fr);
+      height: 100dvh;
+      background: var(--bg);
+      transition: grid-template-columns 160ms var(--native-ease), opacity 120ms ease;
+    }
+    .app.sidebar-collapsed { grid-template-columns: 48px minmax(0, 1fr); }
+    aside {
+      position: relative;
+      height: 100dvh;
+      padding: 10px 8px 12px;
+      border-right: 1px solid var(--line);
+      background: var(--surface-sidebar);
+      backdrop-filter: none;
+      overflow: auto;
+      scrollbar-gutter: stable;
+      transition: background 160ms ease;
+    }
+    .app.sidebar-collapsed aside { padding: 7px 5px; overflow: hidden; }
+    .app.sidebar-collapsed .sidebar-head { display: flex; justify-content: center; }
+    .app.sidebar-collapsed .sidebar-toggle { position: static; margin: 0; }
+    .app.sidebar-collapsed .sidebar-copy,
+    .app.sidebar-collapsed .search-row,
+    .app.sidebar-collapsed .watch-filter-row,
+    .app.sidebar-collapsed .selection-bar,
+    .app.sidebar-collapsed .explorer-title,
+    .app.sidebar-collapsed .tree,
+    .app.sidebar-collapsed .hint,
+    .app.sidebar-collapsed .global-project-explorer,
+    .app.sidebar-collapsed #singleProjectWorktreeSwitch { display: none !important; }
+    .explorer-open { display: none !important; }
+    .sidebar-head {
+      min-height: 36px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 0 2px 8px 8px;
+    }
+    .sidebar-copy h1 { margin: 0; font-size: 12px; font-weight: 650; letter-spacing: 0; }
+    .sidebar-toggle, .selection-action, .global-explorer-back {
+      width: 30px;
+      height: 30px;
+      min-width: 30px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      border: 0;
+      border-radius: var(--native-radius-control);
+      background: transparent;
+      color: var(--muted);
+      box-shadow: none;
+      cursor: pointer;
+      transition: background 140ms ease, color 140ms ease;
+    }
+    .sidebar-toggle:hover, .selection-action:hover, .global-explorer-back:hover { transform: none; background: var(--native-hover); color: var(--text); }
+    .sidebar-resizer {
+      position: fixed;
+      z-index: 45;
+      top: 0;
+      left: calc(var(--explorer-width) - 3px);
+      width: 6px;
+      height: 100dvh;
+      cursor: col-resize;
+      touch-action: none;
+    }
+    .sidebar-resizer::after { content: ""; position: absolute; inset: 0 2px; background: transparent; transition: background 120ms ease; }
+    .sidebar-resizer:hover::after, .sidebar-resizer:focus-visible::after, body.workbench-resizing .sidebar-resizer::after { background: var(--accent); }
+    .app.sidebar-collapsed .sidebar-resizer { display: none; }
+    .explorer-edge-trigger { display: none; }
+    @media (min-width: 900px) and (hover: hover) and (pointer: fine) {
+      .app.sidebar-collapsed:not(.explorer-edge-peek) .explorer-edge-trigger {
+        position: fixed;
+        z-index: 59;
+        inset: 0 auto 0 0;
+        display: block;
+        width: 8px;
+        border: 0;
+        background: transparent;
+      }
+      .app.sidebar-collapsed.explorer-edge-peek > aside {
+        position: fixed;
+        z-index: 60;
+        inset: 0 auto 0 0;
+        width: var(--explorer-width);
+        height: 100dvh;
+        padding: 10px 8px 12px;
+        overflow: auto;
+        box-shadow: 18px 0 45px rgba(0,0,0,.22);
+      }
+      .app.sidebar-collapsed.explorer-edge-peek > main { grid-column: 2; }
+      .app.sidebar-collapsed.explorer-edge-peek .sidebar-head { justify-content: space-between; }
+      .app.sidebar-collapsed.explorer-edge-peek .sidebar-toggle { position: static; margin: 0; }
+      .app.sidebar-collapsed.explorer-edge-peek .sidebar-copy,
+      .app.sidebar-collapsed.explorer-edge-peek .explorer-title,
+      .app.sidebar-collapsed.explorer-edge-peek .tree { display: block !important; opacity: 1; pointer-events: auto; transform: none; }
+      .app.sidebar-collapsed.explorer-edge-peek .search-row,
+      .app.sidebar-collapsed.explorer-edge-peek .watch-filter-row,
+      .app.sidebar-collapsed.explorer-edge-peek .selection-bar:not([hidden]) { display: flex !important; opacity: 1; pointer-events: auto; transform: none; }
+      .app.sidebar-collapsed.explorer-edge-peek .global-project-explorer:not([hidden]) { display: block !important; opacity: 1; pointer-events: auto; transform: none; }
+      .app.sidebar-collapsed.explorer-edge-peek #singleProjectWorktreeSwitch:not([hidden]) { display: block !important; }
+    }
+    body.workbench-resizing { cursor: col-resize; user-select: none; }
+    .search-row { gap: 5px; margin: 4px 0 8px; }
+    .search, .context-room-review-search, .settings-search input, .shared-proposal-search,
+    input[type="text"], input[type="search"], select, textarea {
+      min-height: 32px;
+      border: 1px solid var(--line);
+      border-radius: var(--native-radius-control);
+      background: color-mix(in srgb, var(--panel) 78%, transparent);
+      color: var(--text);
+      box-shadow: none;
+    }
+    .search, .context-room-review-search, .settings-search input, .shared-proposal-search { padding: 6px 9px; }
+    input::placeholder, textarea::placeholder { color: color-mix(in srgb, var(--muted) 74%, transparent); }
+    input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible, [tabindex]:focus-visible {
+      outline: 2px solid var(--native-focus);
+      outline-offset: 1px;
+    }
+    .clear-search { min-height: 32px; padding: 0 9px; border: 0; border-radius: var(--native-radius-control); background: transparent; color: var(--muted); }
+    .clear-search:hover { background: var(--native-hover); color: var(--text); }
+    .watch-filter-row, .global-explorer-modes {
+      display: flex;
+      gap: 2px;
+      padding: 2px;
+      border: 0;
+      border-radius: var(--native-radius-group);
+      background: color-mix(in srgb, var(--text) 4%, transparent);
+    }
+    .watch-filter, .global-explorer-mode, .global-project-watch-filter {
+      min-height: 28px;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 550;
+      box-shadow: none;
+    }
+    .watch-filter:hover, .global-explorer-mode:hover, .global-project-watch-filter:hover { background: var(--native-hover); color: var(--text); }
+    .watch-filter.active, .global-explorer-mode.active, .global-project-watch-filter.active {
+      background: var(--panel);
+      color: var(--text);
+      box-shadow: 0 1px 2px rgba(0,0,0,.10);
+    }
+    .explorer-title, .global-project-explorer-summary {
+      min-height: 30px;
+      display: flex;
+      align-items: center;
+      padding: 8px 8px 4px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+    .tree, .global-project-explorer-list, .global-project-folder-tree, .computer-explorer-tree { gap: 1px; }
+    .tree button, .global-project-row, .global-project-tree-entry {
+      min-height: 30px;
+      border: 0;
+      border-radius: var(--native-radius-control);
+      background: transparent;
+      box-shadow: none;
+      transition: background 120ms ease, color 120ms ease;
+    }
+    .tree button:hover, .global-project-row:hover, .global-project-tree-entry:hover { transform: none; background: var(--native-hover); }
+    .tree button.active, .tree button[aria-current="true"], .global-project-row[aria-current="true"] {
+      background: var(--native-selection);
+      box-shadow: none;
+    }
+    .global-project-row { padding: 7px 8px; }
+    .global-project-row-title strong, .global-project-tree-name { font-size: 12px; font-weight: 550; }
+    .global-project-row-location, .global-project-row-side, .global-project-tree-meta { font-size: 9px; }
+    .global-project-explorer-empty { border: 0; background: color-mix(in srgb, var(--text) 3%, transparent); }
+    main {
+      padding: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 0;
+      background: var(--bg);
+    }
+    .workspace-chrome { min-width: 0; display: block; border-bottom: 1px solid var(--line); background: var(--panel-strong); }
+    .workspace-dock {
+      width: 100%;
+      height: var(--native-titlebar-height);
+      display: flex;
+      align-items: center;
+      flex-wrap: nowrap;
+      gap: 2px;
+      margin: 0;
+      padding: 5px 8px;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
+      backdrop-filter: none;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .workspace-dock::-webkit-scrollbar { display: none; }
+    .context-room-brand {
+      min-height: 32px;
+      padding: 0 9px 0 7px;
+      border-radius: var(--native-radius-control);
+      font-weight: 650;
+    }
+    .context-room-brand strong { font-size: 12px; font-weight: 650; }
+    .context-room-brand-mark { width: 6px; height: 6px; flex-basis: 6px; box-shadow: none; }
+    .workspace-switch, .dock-button, .file-action, button.primary, button.secondary {
+      min-width: 32px;
+      min-height: 32px;
+      padding: 0 10px;
+      border: 0;
+      border-radius: var(--native-radius-control);
+      background: transparent;
+      color: var(--text-soft);
+      box-shadow: none;
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1;
+      transition: background 130ms ease, color 130ms ease, opacity 130ms ease;
+    }
+    .workspace-switch { min-width: auto; margin: 0 4px 0 0; border-left: 0; }
+    .workspace-switch:hover, .dock-button:hover, .file-action:hover, button.secondary:hover { transform: none; filter: none; background: var(--native-hover); color: var(--text); }
+    .dock-button.primary, .file-action.primary, button.primary {
+      border: 0;
+      background: var(--accent);
+      color: var(--on-accent);
+    }
+    .dock-button.primary:hover, .file-action.primary:hover, button.primary:hover { transform: none; filter: brightness(.96); background: var(--accent); }
+    .dock-button.diff-dock-button { margin-left: 2px; border: 0; background: transparent; color: var(--muted); }
+    .dock-button.diff-dock-button.active, .mode-toggle button.active { background: var(--native-selection); color: var(--text); }
+    button:disabled, .dock-button:disabled, .file-action:disabled { opacity: .42; cursor: default; }
+    .workspace-title { margin-left: auto; padding: 0 8px; color: var(--muted); font-size: 10px; text-align: right; }
+    .dock-status { color: var(--muted); font-size: 11px; }
+    .shared-context-controls {
+      min-height: 44px;
+      padding: 6px 8px;
+      border-top: 1px solid var(--line);
+      background: var(--panel);
+      box-shadow: none;
+    }
+    .topbar { display: none !important; }
+    .editor-shell { min-height: 0; border: 0; border-radius: 0; background: var(--bg); box-shadow: none; }
+    .workspace-page { scrollbar-gutter: stable; }
+    .docqa-home, .settings-page, .proposal-review-page {
+      padding: 0;
+      background: var(--bg);
+      box-shadow: none;
+    }
+    .docqa-grid, .hub-folders, .settings-card, .proposal-review-shell {
+      width: min(100%, 1420px);
+      margin: 0 auto;
+    }
+    .docqa-grid { display: grid; gap: 0; }
+    .docqa-panel, .settings-card, .proposal-review-shell {
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+    .docqa-panel + .docqa-panel { border-top: 1px solid var(--line); }
+    .docqa-panel > header, .proposal-review-head, .settings-page-header {
+      min-height: 64px;
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-strong);
+    }
+    .docqa-panel h2, .proposal-review-head h2, .settings-page-header h2 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: -.01em; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .review-summary { gap: 12px; }
+    .review-summary-item { display: flex; align-items: baseline; gap: 4px; padding: 0; border: 0; background: transparent; }
+    .review-summary-item strong { font-size: 16px; font-weight: 650; color: var(--text); }
+    .review-summary-item span { color: var(--muted); font-size: 11px; text-transform: none; }
+    .context-hub-review-toolbar, .context-room-review-toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 8;
+      min-height: 48px;
+      display: grid;
+      grid-template-columns: minmax(190px,.7fr) minmax(170px,.55fr) minmax(220px,1fr);
+      align-items: center;
+      gap: 8px;
+      padding: 7px 14px;
+      border-bottom: 1px solid var(--line);
+      background: color-mix(in srgb, var(--panel) 96%, transparent);
+      backdrop-filter: none;
+    }
+    .context-hub-review-filter { gap: 7px; }
+    .context-hub-review-filter > span { color: var(--muted); font-size: 10px; font-weight: 600; }
+    .context-hub-project-trigger, .context-hub-review-filter select { min-height: 32px; border: 1px solid var(--line); border-radius: var(--native-radius-control); background: var(--panel); color: var(--text); }
+    .review-list { max-height: min(52vh, 520px); padding: 0; gap: 0; overflow: auto; }
+    .review-item, .context-room-proposal-row, .context-hub-review-item {
+      min-height: var(--native-row-height);
+      padding: 10px 16px;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
+      transition: background 120ms ease;
+    }
+    .review-item:last-child, .context-room-proposal-row:last-child { border-bottom: 0; }
+    .review-item:hover, .review-item.active, .context-room-proposal-row:hover, .context-room-proposal-row.active {
+      transform: none;
+      background: var(--native-selection);
+      box-shadow: none;
+    }
+    .review-title { font-size: 13px; font-weight: 600; }
+    .review-path { margin-top: 2px; color: var(--muted); font-size: 10px; }
+    .chip, .review-item .chip, .context-room-source-badge, .settings-scope, .settings-pill {
+      border: 0;
+      border-radius: 999px;
+      padding: 2px 6px;
+      background: color-mix(in srgb, var(--text) 6%, transparent);
+      color: var(--muted);
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0;
+      text-transform: none;
+    }
+    .hub-folders { padding: 20px; }
+    .hub-section { gap: 8px; padding: 18px 0 0; border-top: 1px solid var(--line); }
+    .hub-section-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; min-width: 0; }
+    .hub-section-title { color: var(--muted); font-size: 11px; font-weight: 600; text-transform: none; letter-spacing: 0; }
+    .hub-section-origin { min-width: 0; display: flex; align-items: baseline; justify-content: flex-end; gap: 6px; color: var(--muted); font-size: 11px; line-height: 1.35; }
+    .hub-section-origin-label { color: var(--muted); }
+    .hub-section-origin strong { min-width: 0; color: var(--label-strong); font-size: inherit; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .hub-section-origin code { min-width: 0; max-width: 34ch; overflow: hidden; color: var(--muted); font: 10px/1.35 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+    .hub-section-grid { gap: 8px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
+    .hub-folder-card, .hub-folder-card.navigation, .hub-folder-card.expanded, .hub-folder-card.current {
+      min-height: 76px;
+      border: 1px solid var(--line);
+      border-radius: var(--native-radius-group);
+      background: var(--panel);
+      box-shadow: none;
+    }
+    .hub-folder-card:hover { transform: none; background: var(--surface-card-hover); }
+    .hub-folder-card-main, .hub-folder-card.expanded > .hub-folder-card-main { min-height: 76px; padding: 12px; border-radius: var(--native-radius-group); }
+    .hub-folder-card strong { font-size: 13px; font-weight: 600; }
+    .hub-folder-card span { font-size: 11px; }
+    .hub-disclosure, .docqa-disclosure, .global-project-inspection-disclosure {
+      border: 0;
+      border-top: 1px solid var(--line);
+      border-radius: 0;
+      background: transparent;
+    }
+    .hub-disclosure summary, .docqa-disclosure summary, .global-project-inspection-disclosure > summary {
+      min-height: 44px;
+      padding: 10px 16px;
+      background: transparent;
+    }
+    .hub-disclosure summary:hover, .docqa-disclosure summary:hover, .global-project-inspection-disclosure > summary:hover { background: var(--native-hover); }
+    .hub-disclosure-body, .global-project-inspection-disclosure-body { padding: 12px 16px 16px; border-top: 1px solid var(--line); }
+    .startup-context-item { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; }
+    .settings-page .settings-card { max-width: none; }
+    .settings-page-header { display: flex; align-items: center; gap: 20px; }
+    .settings-search { width: min(420px, 42vw); margin-left: auto; }
+    .settings-panel { padding: 0; }
+    .settings-shell { min-width: 0; border: 0; border-radius: 0; background: transparent; overflow: visible; }
+    .settings-tabs {
+      position: sticky;
+      top: 0;
+      z-index: 12;
+      min-height: 44px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-strong);
+    }
+    .settings-tab {
+      flex: 0 0 auto;
+      min-width: 112px;
+      min-height: 44px;
+      display: flex;
+      justify-content: center;
+      gap: 7px;
+      padding: 0 12px;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      border-radius: 0;
+      background: transparent;
+      color: var(--muted);
+    }
+    .settings-tab:hover { background: var(--native-hover); color: var(--text); }
+    .settings-tab[aria-selected="true"] { border-bottom-color: var(--accent); background: transparent; color: var(--text); }
+    .settings-tab strong { font-size: 12px; font-weight: 600; }
+    .settings-tab small { padding: 2px 4px; border: 0; border-radius: 4px; background: color-mix(in srgb, var(--text) 5%, transparent); font-size: 8px; }
+    .settings-content { max-width: 1180px; margin: 0 auto; }
+    .settings-section-head { padding: 18px 20px 14px; border-bottom: 1px solid var(--line); }
+    .settings-section-head h3 { font-size: 18px; font-weight: 650; letter-spacing: -.015em; }
+    .settings-section-body { padding: 0 20px 24px; }
+    .settings-concept { padding: 18px 0; border-bottom: 1px solid var(--line); }
+    .settings-concept strong { font-size: 14px; font-weight: 650; }
+    .settings-concept p { max-width: 76ch; color: var(--muted); }
+    .settings-disclosure-list { gap: 0; }
+    .settings-disclosure {
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+    .settings-disclosure > summary { min-height: 58px; padding: 10px 0; }
+    .settings-disclosure > summary:hover { background: transparent; }
+    .settings-disclosure-copy strong { font-size: 13px; font-weight: 600; }
+    .settings-disclosure-copy span { font-size: 11px; }
+    .settings-disclosure-body { padding: 4px 0 18px; border-top: 0; }
+    .settings-toggle, .settings-theme-preview, .template-editor, .hub-section-editor, .hub-card-editor, .path-picker,
+    .review-gate-panel, .settings-sound-panel {
+      border-radius: var(--native-radius-group);
+      background: color-mix(in srgb, var(--text) 3%, transparent);
+      box-shadow: none;
+    }
+    .settings-toggle { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; }
+    .settings-footer {
+      position: sticky;
+      bottom: 0;
+      z-index: 15;
+      min-height: 58px;
+      margin: 0;
+      padding: 10px 20px;
+      border: 0;
+      border-top: 1px solid var(--line);
+      border-radius: 0;
+      background: color-mix(in srgb, var(--panel-strong) 96%, transparent);
+      box-shadow: none;
+      backdrop-filter: none;
+    }
+    .settings-save-state strong { font-size: 12px; font-weight: 600; }
+    .settings-save-state span { font-size: 10px; }
+    .proposal-review-page { padding: 0; }
+    .proposal-review-shell { max-width: none; }
+    .proposal-review-head { position: sticky; top: 0; z-index: 9; }
+    .proposal-review-copy p { max-width: 72ch; color: var(--muted); }
+    .proposal-review-meta { padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+    .proposal-review-files { display: grid; gap: 0; padding: 0; }
+    .proposal-review-file { min-height: 42px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; box-shadow: none; }
+    .proposal-review-file:hover { transform: none; background: var(--native-hover); }
+    .shared-proposal-workspace {
+      left: var(--explorer-width);
+      background: var(--bg);
+      box-shadow: none;
+    }
+    .app.sidebar-collapsed ~ .shared-proposal-workspace { left: 48px; }
+    .shared-proposal-workspace-head {
+      min-height: var(--native-titlebar-height);
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-strong);
+    }
+    .shared-proposal-workspace-body { grid-template-columns: minmax(300px, 360px) minmax(0, 1fr); }
+    .shared-proposal-list-panel { border-right: 1px solid var(--line); background: var(--surface-sidebar); }
+    .shared-proposal-review-panel { background: var(--bg); }
+    .shared-proposal-card, .shared-proposal-item { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; box-shadow: none; }
+    .diff-panel, .file-panel {
+      border: 0;
+      border-radius: 0;
+      background: var(--file-panel-bg);
+      box-shadow: none;
+    }
+    .diff-panel { border-right: 1px solid var(--file-line); }
+    .diff-header, .file-panel header { min-height: 44px; padding: 6px 10px; border-bottom: 1px solid var(--file-line); background: var(--file-header-bg); }
+    .diff-header strong, .file-panel strong { font-size: 12px; font-weight: 600; }
+    .diff-code, .doc-content, .doc-editor { padding: 24px clamp(20px, 4vw, 64px); }
+    .doc-content { max-width: 76ch; margin: 0 auto; font-size: 16px; line-height: 1.7; }
+    .doc-content h1 { font-size: 30px; font-weight: 700; }
+    .doc-content h2 { margin-top: 1.7em; font-size: 22px; font-weight: 650; }
+    .doc-content h3 { margin-top: 1.5em; font-size: 17px; font-weight: 650; }
+    .markdown-editor-shell { background: var(--file-bg); }
+    .confirm-dialog, .context-hub-project-picker-dialog, .explorer-context-menu, .settings-search-results {
+      border: 1px solid var(--line);
+      border-radius: var(--native-radius-dialog);
+      background: var(--surface-floating);
+      box-shadow: 0 14px 38px rgba(0,0,0,.20);
+      backdrop-filter: none;
+    }
+    .explorer-context-menu button, .settings-search-result, .context-hub-project-picker-option { min-height: 38px; border-radius: var(--native-radius-control); }
+    .launch-card::before, .review-item::before, .hub-folder-card::before, .startup-context-item::before,
+    .settings-toggle::before, .settings-theme-preview::before, .template-editor::before,
+    .hub-section-editor::before, .hub-card-editor::before, .path-picker::before, .card::before, .conflict-card::before { display: none !important; }
+    @media (max-width: 1279px) {
+      .review-workspace { grid-template-columns: 1fr; }
+      .diff-panel { border-right: 0; border-bottom: 1px solid var(--file-line); }
+      .shared-proposal-workspace-body { grid-template-columns: minmax(280px, 330px) minmax(0, 1fr); }
+    }
+    @media (max-width: 899px) {
+      .app, .app.sidebar-collapsed { grid-template-columns: 1fr; }
+      aside {
+        position: fixed;
+        z-index: 60;
+        inset: var(--native-titlebar-height) auto 0 0;
+        width: min(88vw, var(--explorer-width));
+        height: auto;
+        transform: translateX(0);
+        box-shadow: 18px 0 45px rgba(0,0,0,.22);
+      }
+      .app.sidebar-collapsed aside { transform: translateX(-105%); pointer-events: none; }
+      .sidebar-resizer { display: none; }
+      .explorer-open { display: inline-flex !important; position: fixed; z-index: 70; top: 7px; left: 8px; width: 32px; height: 32px; align-items: center; justify-content: center; border: 0; border-radius: var(--native-radius-control); background: transparent; color: var(--text); }
+      .app:not(.sidebar-collapsed) .explorer-open { display: none !important; }
+      .workspace-dock { padding-left: 48px; }
+      .shared-proposal-workspace, .app.sidebar-collapsed ~ .shared-proposal-workspace { left: 0; }
+      .shared-proposal-workspace-body { grid-template-columns: 1fr; grid-template-rows: minmax(220px, 38vh) minmax(0, 1fr); }
+      .context-hub-review-toolbar, .context-room-review-toolbar { grid-template-columns: 1fr 1fr; }
+      .context-room-review-search { grid-column: 1 / -1; }
+    }
+    @media (max-width: 639px) {
+      :root { --native-titlebar-height: 48px; }
+      aside {
+        inset: 0;
+        width: 100vw;
+        max-width: none;
+        height: 100dvh;
+        max-height: none;
+        border-right: 0;
+        box-shadow: none;
+      }
+      .workspace-dock { height: var(--native-titlebar-height); padding-right: 6px; }
+      .context-room-brand strong, .workspace-title, .dock-status { display: none; }
+      .settings-page-header { align-items: stretch; flex-direction: column; gap: 10px; }
+      .settings-search { width: 100%; margin-left: 0; }
+      .settings-tabs { padding: 0 6px; }
+      .settings-tab { min-width: 104px; padding: 0 9px; }
+      .settings-tab small { display: none; }
+      .settings-section-head, .docqa-panel > header, .proposal-review-head { padding: 12px; }
+      .settings-section-body, .hub-folders { padding-inline: 12px; }
+      .settings-footer { padding: 8px 12px; }
+      .context-hub-review-toolbar, .context-room-review-toolbar { grid-template-columns: 1fr; padding: 8px; }
+      .context-room-review-search { grid-column: auto; }
+      .review-item, .context-room-proposal-row { padding: 10px 12px; }
+      .hub-section-heading { align-items: flex-start; flex-direction: column; gap: 3px; }
+      .hub-section-origin { justify-content: flex-start; width: 100%; }
+      .hub-section-origin code { max-width: min(52vw, 28ch); }
+      .hub-section-grid { grid-template-columns: 1fr; }
+      .diff-code, .doc-content, .doc-editor { padding: 18px 16px; }
+      .doc-content { font-size: 15px; }
+      .shared-proposal-workspace-head { grid-template-columns: minmax(0,1fr) auto; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+    }
     body.app-booting .app { visibility: hidden; opacity: 0; pointer-events: none; }
     .boot-screen { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; background: var(--bg); color: var(--muted); }
     .boot-screen-inner { display: flex; align-items: center; gap: 10px; font: 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .boot-recovery { width: min(420px, calc(100vw - 40px)); display: grid; gap: 12px; color: var(--text); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .boot-recovery h2, .boot-recovery p { margin: 0; }
+    .boot-recovery h2 { font-size: 17px; }
+    .boot-recovery p { color: var(--muted); }
+    .boot-recovery button { justify-self: start; min-height: 32px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--accent); color: var(--on-accent); font: 600 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; cursor: pointer; }
     .boot-indicator { width: 16px; height: 16px; border: 2px solid color-mix(in srgb, var(--line) 82%, transparent); border-top-color: var(--accent); border-radius: 50%; animation: bootSpin 700ms linear infinite; }
-    body:not(.app-booting) .boot-screen { display: none; }
+    body:not(.app-booting):not(.app-recovery) .boot-screen { display: none; }
     @keyframes bootSpin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body class="app-booting">
-  <div id="bootScreen" class="boot-screen" role="status"><div class="boot-screen-inner"><span class="boot-indicator" aria-hidden="true"></span><span>Opening Context Room</span></div></div>
+  <svg class="ui-icon-sprite" aria-hidden="true">
+    <symbol id="cr-icon-sidebar" viewBox="0 0 20 20"><rect x="2.5" y="3" width="15" height="14" rx="2.5"></rect><path d="M7 3v14"></path></symbol>
+    <symbol id="cr-icon-close" viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15"></path></symbol>
+    <symbol id="cr-icon-left" viewBox="0 0 20 20"><path d="M12.5 4.5L7 10l5.5 5.5"></path></symbol>
+    <symbol id="cr-icon-right" viewBox="0 0 20 20"><path d="M7.5 4.5L13 10l-5.5 5.5"></path></symbol>
+    <symbol id="cr-icon-refresh" viewBox="0 0 20 20"><path d="M15.5 7A6 6 0 1 0 16 12"></path><path d="M15.5 3.5V7H12"></path></symbol>
+    <symbol id="cr-icon-eye-plus" viewBox="0 0 20 20"><path d="M2.5 10s2.6-4 7.5-4 7.5 4 7.5 4-2.6 4-7.5 4-7.5-4-7.5-4Z"></path><circle cx="10" cy="10" r="1.8"></circle><path d="M15.5 3v4M13.5 5h4"></path></symbol>
+    <symbol id="cr-icon-eye-minus" viewBox="0 0 20 20"><path d="M2.5 10s2.6-4 7.5-4 7.5 4 7.5 4-2.6 4-7.5 4-7.5-4-7.5-4Z"></path><circle cx="10" cy="10" r="1.8"></circle><path d="M13.5 5h4"></path></symbol>
+    <symbol id="cr-icon-trash" viewBox="0 0 20 20"><path d="M4.5 6h11M8 3.5h4M6 6l.7 10h6.6L14 6"></path></symbol>
+  </svg>
+  <div id="bootScreen" class="boot-screen" role="status"><div id="bootScreenContent" class="boot-screen-inner"><span class="boot-indicator" aria-hidden="true"></span><span>Opening Context Room</span></div></div>
   <div class="app">
-    <button id="explorerOpen" class="explorer-open" type="button" title="Open explorer" aria-label="Open explorer">☰</button>
+    <div id="explorerEdgeTrigger" class="explorer-edge-trigger" aria-hidden="true"></div>
+    <button id="explorerOpen" class="explorer-open" type="button" title="Open explorer" aria-label="Open explorer"><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-sidebar"></use></svg></button>
     <aside>
       <div class="sidebar-head">
         <div class="sidebar-copy">
           <h1>Explorer</h1>
         </div>
-        <button id="sidebarToggle" class="sidebar-toggle" type="button" title="Collapse explorer" aria-label="Collapse explorer">☰</button>
+        <button id="sidebarToggle" class="sidebar-toggle" type="button" title="Collapse explorer" aria-label="Collapse explorer"><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-sidebar"></use></svg></button>
       </div>
-      <div class="search-row">
-        <input id="search" class="search" placeholder="Search files..." aria-label="Search files" />
-        <button id="clearSearch" class="clear-search" type="button" title="Show all files">All</button>
+      <div id="singleProjectExplorer">
+        <div id="singleProjectWorktreeSwitch" class="single-project-worktree-switch" hidden></div>
+        <div class="search-row">
+          <input id="search" class="search" placeholder="Search files..." aria-label="Search files" />
+          <button id="clearSearch" class="clear-search" type="button" title="Show all files">All</button>
+        </div>
+        <div class="watch-filter-row" aria-label="Explorer watch filter"><button id="watchFilterAll" class="watch-filter active" type="button" data-watch-filter="all" data-watch-label="all">all</button><button id="watchFilterWatched" class="watch-filter" type="button" data-watch-filter="watched" data-watch-label="watched">watched</button><button id="watchFilterUnwatched" class="watch-filter" type="button" data-watch-filter="unwatched" data-watch-label="not watched">not watched</button></div>
+        <div id="selectionBar" class="selection-bar" hidden><span id="selectionCount" class="selection-summary">0 selected</span><div class="selection-actions"><button id="watchSelected" class="selection-action" type="button" title="Add selected to watch"><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-eye-plus"></use></svg></button><button id="unwatchSelected" class="selection-action" type="button" title="Remove selected from watch"><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-eye-minus"></use></svg></button><button id="clearSelection" class="selection-action" type="button" title="Clear selection"><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-close"></use></svg></button><button id="deleteSelected" class="selection-action danger-action" type="button" title="Delete selection"><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-trash"></use></svg></button></div></div>
+        <div class="explorer-title">Files</div>
+        <div id="files" class="tree"></div>
       </div>
-                  <div class="watch-filter-row" aria-label="Explorer watch filter"><button id="watchFilterAll" class="watch-filter active" type="button" data-watch-filter="all" data-watch-label="all">all</button><button id="watchFilterWatched" class="watch-filter" type="button" data-watch-filter="watched" data-watch-label="watched">watched</button><button id="watchFilterUnwatched" class="watch-filter" type="button" data-watch-filter="unwatched" data-watch-label="not watched">not watched</button></div>
-      <div id="selectionBar" class="selection-bar" hidden><span id="selectionCount" class="selection-summary">0 selected</span><div class="selection-actions"><button id="watchSelected" class="selection-action" type="button" title="Add selected to watch">👁+</button><button id="unwatchSelected" class="selection-action" type="button" title="Remove selected from watch">👁−</button><button id="clearSelection" class="selection-action" type="button" title="clear selection">×</button><button id="deleteSelected" class="selection-action danger-action" type="button" title="delete selection">⌫</button></div></div>
-      <div class="explorer-title">Files</div>
-      <div id="files" class="tree"></div>
+      <div id="globalProjectExplorer" class="global-project-explorer" hidden>
+        <div class="global-explorer-modes" role="group" aria-label="Explorer scope">
+          <button class="global-explorer-mode active" type="button" data-global-explorer-mode="projects">Projects</button>
+          <button class="global-explorer-mode" type="button" data-global-explorer-mode="computer">Computer</button>
+        </div>
+        <div id="globalExplorerScope" class="global-explorer-scope" hidden></div>
+        <div class="search-row">
+          <input id="globalProjectSearch" class="search" placeholder="Search projects..." aria-label="Search projects" />
+          <button id="clearGlobalProjectSearch" class="clear-search" type="button" title="Show all projects">All</button>
+        </div>
+        <div class="global-project-explorer-summary"><strong id="globalExplorerListLabel">Projects</strong><span id="globalProjectCount">Loading…</span></div>
+        <div id="globalProjectList" class="global-project-explorer-list" aria-live="polite"></div>
+      </div>
+      <div id="sidebarResizer" class="sidebar-resizer" role="separator" aria-label="Resize Explorer" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="360" aria-valuenow="272" tabindex="0"></div>
     </aside>
     <main>
       <div class="workspace-chrome">
         <div class="workspace-dock" role="toolbar" aria-label="Workspace navigation">
-          <button id="contextHubOpen" class="dock-button context-hub-open" type="button" title="Open every local project and shared proposal">Workspace</button>
-          <button id="hub" class="dock-button" type="button" title="Open settings">Settings</button>
-          <button id="back" class="dock-button" type="button" title="Previous file" aria-label="Previous file">←</button>
-          <button id="forward" class="dock-button" type="button" title="Next file" aria-label="Next file">→</button>
+          <button id="brandHome" class="context-room-brand" type="button" title="Home" aria-label="Home"><span class="context-room-brand-mark" aria-hidden="true"></span><strong>Context Room</strong></button>
+          <button id="settingsButton" class="dock-button workspace-switch" type="button" title="Open settings">Settings</button>
+          <button id="proposalDockBack" class="dock-button proposal-dock-back" type="button" hidden>← Proposal</button>
+          <button id="back" class="dock-button" type="button" title="Previous file" aria-label="Previous file"><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-left"></use></svg></button>
+          <button id="forward" class="dock-button" type="button" title="Next file" aria-label="Next file"><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-right"></use></svg></button>
           <button id="gitDiffToggle" class="dock-button diff-dock-button" type="button" title="Show Git diff" hidden>Show Git diff</button>
           <button id="reload" class="dock-button" type="button" hidden>Reload</button>
           <button id="verifyCurrent" class="dock-button" type="button" hidden>Verified</button>
           <button id="deleteCurrent" class="dock-button danger-action" type="button" hidden>Delete</button>
           <button id="save" class="dock-button primary" hidden disabled>Save</button>
           <div id="workspaceTitle" class="workspace-title">Context Room</div>
+          <button id="proposalDockAccept" class="dock-button primary" type="button" hidden aria-hidden="true" tabindex="-1">Proposal completion is automatic</button>
           <div id="status" class="dock-status" aria-live="polite">Ready</div>
         </div>
         <div id="sharedContextControls" class="shared-context-controls" hidden>
@@ -9975,10 +12778,8 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
             <select id="sharedProposalSelect" class="shared-context-select" aria-label="Shared context proposal"></select>
           </label>
           <div class="shared-context-actions">
-            <button id="sharedProposalBrowser" class="dock-button" type="button">All proposals</button>
-            <button id="sharedContextRefresh" class="dock-button shared-context-refresh" type="button" title="Refresh shared main and proposals" aria-label="Refresh shared main and proposals">↻</button>
+            <button id="sharedContextRefresh" class="dock-button shared-context-refresh" type="button" title="Refresh shared main and proposals" aria-label="Refresh shared main and proposals"><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-refresh"></use></svg></button>
             <button id="sharedProposalReview" class="dock-button primary" type="button">Open review</button>
-            <button id="sharedProposalAccept" class="dock-button primary" type="button" hidden>Prepare pull request</button>
           </div>
         </div>
       </div>
@@ -9989,16 +12790,57 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
         <div id="meta" class="selected-path"></div>
       </section>
       <section class="editor-shell">
-        <div id="home" class="docqa-home" hidden>
+        <div id="home" class="docqa-home workspace-page" hidden>
           <div class="docqa-grid">
-            <section class="docqa-panel">
+            <section id="reviewQueuePanel" class="docqa-panel">
               <header>
                 <div>
                   <h2 id="reviewQueueHeading" tabindex="-1">Review queue</h2>
+                  <div class="muted">Local files stay atomic. Shared changes stay grouped by proposal.</div>
                 </div>
                 <div id="reviewSummary" class="review-summary" aria-label="review metrics"></div>
               </header>
+              <div class="context-hub-review-toolbar context-room-review-toolbar">
+                <div class="context-hub-review-filter">
+                  <span>Project</span>
+                  <button id="contextRoomReviewProjectFilter" class="context-hub-project-trigger" type="button" data-context-hub-project-picker-trigger="room-home" aria-haspopup="dialog" aria-controls="contextHubProjectPicker" aria-expanded="false">
+                    <span class="context-hub-project-trigger-label">All projects</span>
+                    <span class="context-hub-project-trigger-icon" aria-hidden="true">⌄</span>
+                  </button>
+                </div>
+                <label class="context-hub-review-filter">
+                  <span>Review type</span>
+                  <select id="contextRoomReviewSourceFilter" aria-label="Filter reviews by source">
+                    <option value="all">All review types</option>
+                    <option value="local">Local files</option>
+                    <option value="shared">Shared proposals</option>
+                  </select>
+                </label>
+                <input id="contextRoomReviewSearch" class="context-room-review-search" type="search" placeholder="Search reviews or projects…" aria-label="Search reviews and projects" />
+              </div>
+              <div id="contextRoomReviewSelection" class="context-room-review-selection" role="status" aria-live="polite" hidden></div>
               <div id="reviewQueue" class="review-list"></div>
+              <div id="contextRoomReviewContextMenu" class="explorer-context-menu context-room-review-context-menu" role="menu" hidden></div>
+              <div id="contextRoomReviewLimit" class="context-hub-list-limit" role="status" hidden></div>
+            </section>
+            <section id="contextEnginePanel" class="docqa-panel context-engine-panel" hidden>
+              <header>
+                <div class="context-engine-target">
+                  <h2>Agent environment</h2>
+                  <code id="contextEngineTarget">Choose a folder in Explorer</code>
+                </div>
+                <div class="docqa-actions">
+                  <label class="context-engine-provider">Provider
+                    <select id="contextEngineProvider" aria-label="Inspect agent environment provider">
+                      <option value="codex">Codex</option>
+                      <option value="claude-code">Claude Code</option>
+                      <option value="opencode">OpenCode</option>
+                    </select>
+                  </label>
+                  <button id="contextEngineClose" class="file-action" type="button">Close</button>
+                </div>
+              </header>
+              <div id="contextEngineBody" class="markdown-tools" aria-live="polite"></div>
             </section>
             <section id="contextHealthPanel" class="docqa-panel">
               <header>
@@ -10015,18 +12857,37 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
           </div>
           <div id="hubFolders" class="hub-folders"></div>
         </div>
-        <div id="settingsPage" class="settings-page" hidden>
+        <div id="proposalReviewPage" class="proposal-review-page workspace-page" hidden>
+          <section class="proposal-review-shell" aria-labelledby="proposalReviewTitle">
+            <header class="proposal-review-head">
+              <div class="proposal-review-copy">
+                <h2 id="proposalReviewTitle">Proposal review</h2>
+                <p id="proposalReviewDescription">Review each changed file. The proposal can move forward only when no file remains.</p>
+              </div>
+              <div id="proposalReviewProgress" class="proposal-review-progress" aria-live="polite"></div>
+            </header>
+            <div id="proposalReviewMeta" class="proposal-review-meta"></div>
+            <div id="proposalReviewFiles" class="proposal-review-files"></div>
+          </section>
+        </div>
+        <div id="settingsPage" class="settings-page workspace-page" hidden>
           <section id="settingsCard" class="docqa-panel settings-card">
-            <header>
+            <header class="settings-page-header">
               <div>
                 <h2>Settings</h2>
                 <div class="muted">Project setup and global preferences</div>
+              </div>
+              <div class="settings-search" data-settings-search>
+                <label class="sr-only" for="settingsSearch">Search settings</label>
+                <input id="settingsSearch" type="search" role="combobox" aria-autocomplete="list" autocomplete="off" placeholder="Search settings…" aria-controls="settingsSearchResults" aria-expanded="false" />
+                <div id="settingsSearchResults" class="settings-search-results" role="listbox" aria-label="Settings search results" hidden></div>
+                <div id="settingsSearchStatus" class="sr-only" aria-live="polite"></div>
               </div>
             </header>
             <div id="settingsPanel" class="settings-panel"></div>
           </section>
         </div>
-        <div id="newDocPage" class="settings-page" hidden>
+        <div id="newDocPage" class="settings-page workspace-page" hidden>
           <section class="docqa-panel settings-card">
             <header>
               <div>
@@ -10042,33 +12903,31 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       </section>
     </main>
   </div>
-  <section id="sharedProposalWorkspace" class="shared-proposal-workspace" role="dialog" aria-modal="true" aria-labelledby="sharedProposalWorkspaceHeading" hidden>
+  <section id="sharedProposalWorkspace" class="shared-proposal-workspace" role="region" aria-labelledby="sharedProposalWorkspaceHeading" hidden>
     <header class="shared-proposal-workspace-head">
-      <button id="sharedProposalWorkspaceClose" class="dock-button" type="button">← Context</button>
       <div class="shared-proposal-workspace-title">
-        <strong id="sharedProposalWorkspaceHeading">Context Hub</strong>
+        <strong id="sharedProposalWorkspaceHeading">Context Room</strong>
         <span id="sharedProposalWorkspaceSummary">Local work and shared proposals, together</span>
       </div>
-      <div class="context-hub-views" role="tablist" aria-label="Context Hub view">
-        <button id="contextHubInboxTab" class="context-hub-view active" type="button" role="tab" aria-selected="true" data-context-hub-view="inbox">Inbox</button>
-        <button id="contextHubProjectsTab" class="context-hub-view" type="button" role="tab" aria-selected="false" data-context-hub-view="projects">Projects</button>
-        <button id="contextHubCodexPromptsTab" class="context-hub-view" type="button" role="tab" aria-selected="false" data-context-hub-view="codex-prompts">Codex prompts</button>
-      </div>
-      <input id="sharedProposalSearch" class="shared-proposal-search" type="search" placeholder="Search projects, proposals, files or sessions…" aria-label="Search Context Hub" />
+      <input id="sharedProposalSearch" class="shared-proposal-search" type="search" placeholder="Search projects, proposals, files or sessions…" aria-label="Search Context Room" />
       <select id="contextHubSourceFilter" class="shared-proposal-filter context-hub-source-filter" aria-label="Filter by source">
-        <option value="all">Local + shared</option>
-        <option value="shared">Shared proposals</option>
-        <option value="local">Local projects</option>
+        <option value="all">All sources</option>
+        <option value="shared">Shared</option>
+        <option value="local">Local</option>
       </select>
-      <select id="sharedProposalProjectFilter" class="shared-proposal-filter" aria-label="Filter by project"></select>
+      <button id="sharedProposalProjectFilter" class="shared-proposal-filter context-hub-project-trigger" type="button" data-context-hub-project-picker-trigger="header" aria-haspopup="dialog" aria-controls="contextHubProjectPicker" aria-expanded="false">
+        <span class="context-hub-project-trigger-label" data-context-hub-project-trigger-label>All projects</span>
+        <span class="context-hub-project-trigger-icon" aria-hidden="true">⌄</span>
+      </button>
       <button id="sharedProposalWorkspaceRefresh" class="dock-button" type="button">Refresh</button>
+      <button id="sharedProposalWorkspaceClose" class="dock-button shared-proposal-workspace-close" type="button" aria-label="Close this secondary view">Close</button>
     </header>
     <div class="shared-proposal-workspace-body">
-      <aside class="shared-proposal-list-panel" aria-label="Context Hub items">
+      <aside id="contextHubListPanel" class="shared-proposal-list-panel" aria-label="Context Room items" hidden>
         <div id="contextHubListStatus" class="context-hub-list-status" aria-live="polite"></div>
         <div id="sharedProposalList" class="shared-proposal-list"></div>
       </aside>
-      <section class="shared-proposal-review-panel" aria-label="Selected Context Hub item">
+      <section id="contextHubReviewPanel" class="shared-proposal-review-panel" aria-label="Selected Context Room item" hidden>
         <article id="codexPromptCenter" class="codex-prompt-center" aria-labelledby="codexPromptTitle" hidden>
           <div class="codex-prompt-center-head">
             <div class="codex-prompt-center-title">
@@ -10133,6 +12992,34 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       </section>
     </div>
   </section>
+  <div id="contextHubProjectPicker" class="context-hub-project-picker-modal" hidden>
+    <button class="context-hub-project-picker-backdrop" type="button" tabindex="-1" data-context-hub-project-picker-close aria-label="Close project picker"></button>
+    <section class="context-hub-project-picker-dialog" role="dialog" aria-modal="true" aria-labelledby="contextHubProjectPickerTitle">
+      <header class="context-hub-project-picker-head">
+        <div class="context-hub-project-picker-title">
+          <h2 id="contextHubProjectPickerTitle">Choose a project</h2>
+          <p>Filter the whole Context Room without leaving your current view.</p>
+        </div>
+        <button class="context-hub-project-picker-close" type="button" data-context-hub-project-picker-close aria-label="Close project picker">×</button>
+      </header>
+      <div class="context-hub-project-picker-search-wrap">
+        <input id="contextHubProjectPickerSearch" class="context-hub-project-picker-search" type="search" placeholder="Search by name, path or shared project…" autocomplete="off" aria-label="Search projects" aria-controls="contextHubProjectPickerList" />
+        <div class="context-hub-project-picker-status"><span id="contextHubProjectPickerStatus" aria-live="polite"></span><span><kbd>↑</kbd> <kbd>↓</kbd> navigate · <kbd>↵</kbd> select</span></div>
+      </div>
+      <div id="contextHubProjectPickerList" class="context-hub-project-picker-list" role="listbox" aria-label="Projects"></div>
+      <footer class="context-hub-project-picker-footer">
+        <button id="contextHubManageProjects" class="context-hub-project-picker-manage" type="button">Manage projects…</button>
+      </footer>
+    </section>
+  </div>
+  <div id="sharedSkillsWizard" class="context-hub-project-picker-modal" hidden>
+    <button class="context-hub-project-picker-backdrop" type="button" tabindex="-1" data-shared-skills-close aria-label="Close shared skills assistant"></button>
+    <section class="context-hub-project-picker-dialog shared-skills-dialog" role="dialog" aria-modal="true" aria-labelledby="sharedSkillsWizardTitle">
+      <header class="context-hub-project-picker-head"><div class="context-hub-project-picker-title"><h2 id="sharedSkillsWizardTitle">Shared skills setup</h2><p id="sharedSkillsWizardSubtitle">Choose the reviewed collection, where it should be available, then confirm the exact result.</p></div><button class="context-hub-project-picker-close" type="button" data-shared-skills-close aria-label="Close">×</button></header>
+      <div id="sharedSkillsWizardBody" class="shared-skills-wizard-body"></div>
+      <footer class="shared-skills-wizard-footer"><button id="sharedSkillsWizardBack" class="secondary" type="button">Back</button><div><button class="secondary" type="button" data-shared-skills-close>Cancel</button><button id="sharedSkillsWizardNext" class="primary" type="button">Continue</button></div></footer>
+    </section>
+  </div>
   <div id="explorerContextMenu" class="explorer-context-menu" hidden></div>
 	  <div id="agentToast" class="agent-toast" hidden></div>
   <button id="codexReferencePopover" class="codex-reference-popover" type="button" hidden aria-label="Reference selection in Codex" title="Add a file mention and source lines to the active Codex composer. Nothing is sent.">
@@ -10142,15 +13029,100 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     <kbd class="codex-reference-shortcut" data-codex-reference-shortcut></kbd>
   </button>
 	<script>
-		const state = { root: null, projectId: null, projectReloading: false, files: [], directories: [], startupContextFiles: [], startupSkillFolders: [], startupHookFiles: [], startupHooksHelpOpen: false, startupHookFilter: "all", hubDisclosuresOpen: new Set(), activeStartupSkillExplorer: null, activeStartupContextExplorer: null, startupSkillCreateFolder: null, startupContextContextTarget: null, selectedStartupContext: null, docqa: null, doctor: null, backgroundReportRenderKey: "", contextHealthStatusFilter: "open", contextHealthSeverityFilter: "triggered", contextHealthCategoryFilter: "all", contextHealthRefreshing: false, contextHealthCodexSending: false, settings: null, settingsOpen: false, settingsSection: "review", page: "hub", pendingMarkdown: null, availableHubCards: [], hubFolders: [], hubSections: [], rootHubSections: [], activeHubCardId: null, selectedReview: null, deletionBatchExpanded: false, deletionBatchLoading: false, deletionBatchItems: [], deletionBatchKey: "", deletionBatchReportedCount: 0, deletionBatchError: "", selectedDeletionReviews: new Set(), reviewModePath: null, reviewModeStatus: null, reviewSessions: {}, reviewFinalizationPromise: null, selected: null, selectedReadOnly: false, selectedDiff: null, fileLoadError: null, fileConflict: null, externalChange: null, conflictCompare: false, conflictMergeText: null, conflictMergeKey: "", conflictMergeMode: "auto", diffCollapsed: false, saved: "", savedHash: null, dirty: false, mode: "view", homeView: "root", planetStack: ["root"], filePanel: false, history: [], historyIndex: -1, pathFilters: [], explorerWatchFilter: "all", explorerRenderKey: "", explorerSearchFrame: 0, selectedForDelete: new Set(), selectionRequest: 0, openingFilePath: null, fileContentReadyPath: null, mobileSidebarTouched: false, sessionStateTimer: null, agentCommandTimer: null, lastAgentCommandId: "", pendingAgentCommand: null, agentAnnotations: {}, userActiveAt: 0, userScrollIntentAt: 0, refreshInFlight: false, reportsRefreshInFlight: false, backgroundRefreshTimer: null, filePrefetches: new Map(), prefetchTimer: null, prefetchPath: "", lastDiffRefreshAt: 0, lastReportRefreshAt: 0, lastFullRefreshAt: 0, navigationRestoreAttempted: false, bootStartedAt: Date.now(), bootMilestones: {}, markdownHighlightFrame: 0, markdownHighlightText: "", markdownHighlightLastText: "", docLinkModifierActive: false, expanded: new Set(["data", "automations", "integrations", "skills", "tools", "~", "~/.hermes", "~/.hermes/memories", "~/.hermes/skills"]) };
+		${parseWorkspaceNavigationUrl.toString()}
+		${workspaceReloadCircuitDecision.toString()}
+		${shouldReplaceDuplicatedWorkspaceIdentity.toString()}
+		${contextRoomProjectResponseAction.toString()}
+		const state = { root: null, projectId: null, projectReloading: false, files: [], directories: [], startupContextFiles: [], startupSkillFolders: [], startupHookFiles: [], startupHooksHelpOpen: false, startupHookFilter: "all", hubDisclosuresOpen: new Set(), activeStartupSkillExplorer: null, activeStartupContextExplorer: null, startupSkillCreateFolder: null, startupContextContextTarget: null, selectedStartupContext: null, docqa: null, doctor: null, backgroundReportRenderKey: "", contextHealthStatusFilter: "open", contextHealthSeverityFilter: "triggered", contextHealthCategoryFilter: "all", contextHealthRefreshing: false, contextHealthCodexSending: false, settings: null, settingsOpen: false, settingsSection: "review", settingsDisclosureState: {}, settingsBaselineByGroup: new Map(), settingsDirtyGroups: new Set(), settingsSearchQuery: "", settingsSearchIndex: -1, page: "hub", pendingMarkdown: null, availableHubCards: [], hubFolders: [], hubSections: [], rootHubSections: [], activeHubCardId: null, selectedReview: null, deletionBatchExpanded: false, deletionBatchLoading: false, deletionBatchItems: [], deletionBatchKey: "", deletionBatchReportedCount: 0, deletionBatchError: "", selectedDeletionReviews: new Set(), reviewModePath: null, reviewModeStatus: null, reviewSessions: {}, reviewFinalizationPromise: null, selected: null, selectedReadOnly: false, selectedDiff: null, fileLoadError: null, fileConflict: null, externalChange: null, conflictCompare: false, conflictMergeText: null, conflictMergeKey: "", conflictMergeMode: "auto", diffCollapsed: false, saved: "", savedHash: null, dirty: false, mode: "view", homeView: "root", planetStack: ["root"], filePanel: false, history: [], historyIndex: -1, pathFilters: [], explorerWatchFilter: "all", explorerRenderKey: "", explorerSearchFrame: 0, explorerWidth: 272, explorerStoredCollapsed: null, explorerNavigationOverride: null, explorerEdgePeekCloseTimer: null, inspectorWidth: 320, inspectorOpen: false, focusMode: false, selectedForDelete: new Set(), selectionRequest: 0, openingFilePath: null, fileContentReadyPath: null, sessionStateTimer: null, agentCommandTimer: null, lastAgentCommandId: "", pendingAgentCommand: null, agentAnnotations: {}, userActiveAt: 0, userScrollIntentAt: 0, refreshInFlight: false, reportsRefreshInFlight: false, backgroundRefreshTimer: null, filePrefetches: new Map(), prefetchTimer: null, prefetchPath: "", lastDiffRefreshAt: 0, lastReportRefreshAt: 0, lastFullRefreshAt: 0, navigationRestoreAttempted: false, bootStartedAt: Date.now(), bootMilestones: {}, markdownHighlightFrame: 0, markdownHighlightText: "", markdownHighlightLastText: "", docLinkModifierActive: false, workspaceId: "", workspaceClientInstanceId: "", workspaceChannel: null, workspaceHeartbeatTimer: null, workspaceIdentityReady: false, workspaceSyncedUrl: "", expanded: new Set(["data", "automations", "integrations", "skills", "tools", "~", "~/.hermes", "~/.hermes/memories", "~/.hermes/skills"]) };
+		state.selectedVisualAsset = null;
+		state.imagePreviewActualSize = false;
 		state.sharedContext = null;
 		state.sharedContextBusy = false;
+		state.sharedSkillLocations = new Map();
+		state.sharedInstructionLocations = new Map();
+		state.sharedSkillLocationsController = null;
+		state.sharedSkillsWizard = null;
 		state.contextHub = null;
 		state.contextHubBusy = false;
-		state.contextHubView = "inbox";
+		state.contextHubView = "home";
+		state.contextHubWorkspaceReturn = "home";
 		state.contextHubSource = "all";
+		state.contextRoomSnoozeTimer = null;
+		state.contextRoomSnoozeTargetIds = [];
+		state.settingsSnoozedReviewQuery = "";
+		state.projectPrioritySearch = "";
+		state.projectPriorityBusy = false;
 		state.contextHubSelection = "";
-		state.contextHubProjectRooms = new Map();
+		state.contextHubProjectPickerOpen = false;
+		state.contextHubProjectPickerQuery = "";
+		state.contextHubProjectPickerIndex = 0;
+		state.contextHubProjectPickerReturnFocus = "";
+		state.globalProjectSearch = "";
+		state.globalExplorerMode = "projects";
+		state.globalExplorerProjectKey = "";
+		state.globalProjectWorktreeIds = new Map();
+		state.globalProjectExplorerDetails = new Map();
+		state.globalProjectExplorerLoading = new Set();
+		state.globalProjectExplorerErrors = new Map();
+		state.globalProjectExplorerController = null;
+		state.globalProjectSearchTimer = null;
+		state.globalProjectSettings = new Map();
+		state.globalProjectSettingsLoading = new Set();
+		state.globalProjectSettingsErrors = new Map();
+		state.globalProjectSettingsValidated = new Set();
+		state.globalProjectSettingsController = null;
+		state.globalProjectSelectionGeneration = 0;
+		state.projectSwitchMetrics = null;
+		state.apiTrace = [];
+		state.globalProjectSettingsPrefetchTimer = null;
+		state.globalProjectSettingsPrefetching = new Set();
+		state.globalProjectExpandedFolders = new Set();
+		state.globalProjectWatchFilters = new Map();
+		state.computerExplorer = null;
+		state.computerExplorerFolders = new Map();
+		state.computerExplorerExpandedFolders = new Set();
+		state.computerExplorerLoadingFolders = new Set();
+		state.computerExplorerErrors = new Map();
+		state.globalExplorerContextTarget = null;
+		state.globalInspectionView = "";
+		state.globalInspectionData = new Map();
+		state.globalInspectionLoading = new Set();
+		state.globalInspectionErrors = new Map();
+		state.globalInspectionController = null;
+		state.globalInspectionHealthStatus = "open";
+		state.globalInspectionHealthSeverity = "all";
+		state.globalInspectionHealthCategory = "all";
+		state.contextEngineInspection = null;
+		state.contextEngineResult = null;
+		state.contextEngineDetail = null;
+		state.contextEngineLoading = false;
+		state.contextEngineError = "";
+		state.contextEngineRequest = 0;
+		state.singleStartupProvider = "codex";
+		state.singleStartupEffectiveContext = null;
+		state.singleStartupEffectiveLoading = false;
+		state.singleStartupEffectiveError = "";
+		state.singleStartupEffectiveRequest = 0;
+		state.proposalContextImpact = null;
+		state.proposalContextImpactKey = "";
+		state.proposalContextImpactLoading = false;
+		state.proposalContextImpactError = "";
+		state.contextHubExpandedProposalDescriptions = new Set();
+		state.contextRoomOpeningProposalId = "";
+		state.contextRoomPreparingProposal = null;
+		state.contextRoomPreparedReview = null;
+		state.contextRoomQueuedProposalFile = "";
+		state.contextRoomProposalRequest = 0;
+		state.contextRoomSelectedReviews = new Set();
+		state.contextRoomBulkBusy = false;
+		state.contextHubModePromptBusy = "";
+		state.workspaceNavigationGeneration = 0;
+		state.workspaceApplyingHistory = false;
+		state.workspaceDuplicateResolved = false;
+		state.workspaceIdentityChanges = 0;
+		state.workspaceLastNavigationReason = "boot";
+		state.workspaceBootPhase = "script";
+		state.workspaceIdentityRefreshTimer = null;
 			state.codexPrompts = null;
 			state.codexPromptsBusy = false;
 			state.codexPromptsError = "";
@@ -10166,27 +13138,90 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
 			const CODEX_PROMPT_MAX_BYTES = ${MAX_CODEX_PROMPT_BYTES};
 			const CODEX_PROMPT_MAX_ESTIMATED_TOKENS = ${MAX_CODEX_PROMPT_ESTIMATED_TOKENS};
 			const CODEX_PROMPT_HIGH_CONTEXT_TOKENS = ${CODEX_PROMPT_HIGH_CONTEXT_CONFIRM_TOKENS};
-			state.sharedReviewRooms = new Map();
-		state.sharedReviewKey = "";
 		state.sharedProposalWorkspaceOpen = false;
 		state.sharedProposalSearch = "";
 		state.sharedProposalProject = "";
 		state.sharedProposalSelection = "";
+	const CONTEXT_ROOM_QUERY = new URLSearchParams(window.location.search);
+	const IS_GLOBAL_CONTEXT_ROOM = CONTEXT_ROOM_QUERY.get("hub") === "1";
+	state.activeProjectLocationId = IS_GLOBAL_CONTEXT_ROOM ? String(CONTEXT_ROOM_QUERY.get("project") || "") : "";
+	document.body.classList.toggle("global-context-room", IS_GLOBAL_CONTEXT_ROOM);
+	document.body.classList.toggle("focused-review-context-room", !IS_GLOBAL_CONTEXT_ROOM);
 	const VERIFY_CONFIRM_STORAGE_KEY = "context-room:skip-mark-verified-confirm";
-const NAVIGATION_STATE_STORAGE_PREFIX = "context-room:navigation:";
+const LEGACY_NAVIGATION_STATE_STORAGE_PREFIX = "context-room:navigation:";
+const WORKSPACE_NAVIGATION_STATE_STORAGE_PREFIX = "context-room:workspace-navigation:";
+const WORKSPACE_ID_SESSION_KEY = "context-room:workspace-id";
+const WORKSPACE_CHANNEL_NAME = "context-room:workspaces";
+const WORKSPACE_RELOAD_GUARD_KEY = "context-room:auto-reload-guard:v1";
+const WORKSPACE_BOOT_COUNT_KEY = "context-room:boot-count:v1";
 const AGENT_COMMAND_ACK_STORAGE_PREFIX = "context-room:last-agent-command-id:";
 const AGENT_COMMAND_MAX_AGE_MS = 60_000;
+const CONTEXT_HUB_HOME_REVIEW_LIMIT = 80;
 let codexReferenceFrame = 0;
 let codexReferenceFeedbackTimer = 0;
+let contextRoomAudioContext = null;
+let contextRoomAudioUnlocked = false;
+let contextRoomReverbImpulse = null;
+let contextRoomLastInteractionSoundAt = 0;
+let contextRoomInteractionVariant = 0;
 const FILE_THEMES = ${JSON.stringify(FILE_THEME_OPTIONS)};
 const DEFAULT_FILE_THEME = "${DEFAULT_FILE_THEME}";
 const DEFAULT_CODEX_REFERENCE_SHORTCUT = "${DEFAULT_CODEX_REFERENCE_SHORTCUT}";
+const DEFAULT_COMPUTER_EXPLORER_ROOT = ${JSON.stringify(DEFAULT_EXPLORER.computerRoot)};
 const WATCH_RULE_MODES = ${JSON.stringify(WATCH_RULE_MODES)};
 const WATCH_RULE_MODE_OPTIONS = ${JSON.stringify(WATCH_RULE_MODE_OPTIONS)};
 const CONTEXT_HEALTH_STATUS_OPTIONS = [{ id: "open", label: "Open" }, { id: "all", label: "Open + OK" }, { id: "acknowledged", label: "OK only" }];
 const CONTEXT_HEALTH_SEVERITY_OPTIONS = [{ id: "triggered", label: "Triggered" }, { id: "all", label: "All severities" }, { id: "critical", label: "Critical" }, { id: "high", label: "High" }, { id: "medium", label: "Medium" }, { id: "low", label: "Low" }];
 const CONTEXT_HEALTH_CATEGORY_OPTIONS = [{ id: "all", label: "All areas" }, { id: "configuration", label: "Configuration" }, { id: "documentation", label: "Documentation" }, { id: "references", label: "References" }, { id: "review", label: "Review safety" }, { id: "startup", label: "Startup context" }, { id: "hooks", label: "Hooks" }];
-const SETTINGS_SECTION_IDS = ["review", "startup", "appearance", "templates", "hub"];
+const SETTINGS_SECTION_IDS = ["review", "startup", "shared-skills", "appearance", "templates", "hub", "codex-prompts"];
+const AGENT_CLI_HANDOFF_PROMPT = "Use context-room context ask \"<question>\" for accepted project documentation. context-room capabilities only lists the static installed contract; it never interprets an objective or chooses a command. Never discover unregistered worktrees or write directly to shared main. Only the human can accept or reject files awaiting review.";
+const SETTINGS_DISCLOSURE_IDS = ["review-agent-cli", "review-documents", "review-protection", "startup-context", "startup-skills", "startup-hooks", "shared-how", "shared-providers", "shared-collections", "shared-destinations", "shared-instructions-how", "shared-instructions-collections", "shared-instructions-import", "appearance-theme", "appearance-explorer", "appearance-sounds", "appearance-shortcuts", "templates-list", "hub-project-priority", "hub-sections", "codex-prompts-editor"];
+const SETTINGS_DISCLOSURE_DEFAULTS = {
+  "review-agent-cli": false,
+  "review-documents": true,
+  "review-protection": false,
+  "startup-context": true,
+  "startup-skills": false,
+  "startup-hooks": false,
+  "shared-how": false,
+  "shared-providers": true,
+  "shared-collections": true,
+  "shared-instructions-how": false,
+  "shared-instructions-collections": true,
+  "shared-instructions-import": false,
+  "shared-destinations": false,
+  "appearance-theme": true,
+  "appearance-explorer": false,
+  "appearance-sounds": false,
+  "appearance-shortcuts": false,
+  "templates-list": true,
+  "hub-project-priority": true,
+  "hub-sections": true,
+  "codex-prompts-editor": true,
+};
+const SETTINGS_SEARCH_ITEMS = [
+  { id: "agent-cli-guide", label: "Agent CLI guide", description: "Learn what agents can do and copy a ready-to-send instruction.", section: "review", group: "review-agent-cli", scope: "All rooms", target: "copyAgentCliInstructions", keywords: "agent cli commands help guide prompt copy capabilities boundaries terminal" },
+  { id: "watched-paths", label: "Documents to review", description: "Choose which documents require human verification for every current content version.", section: "review", group: "review-documents", scope: "Project", target: "watchAllow", keywords: "watch watched docs folders files rules queue required verify verification hash" },
+  { id: "snoozed-reviews", label: "Snoozed reviews", description: "Find pending reviews hidden from Home until their chosen return time.", section: "review", group: "review-snoozed", scope: "Device", keywords: "snooze snoozed hidden delayed later return queue pending pause postpone" },
+  { id: "review-protection", label: "Protect Git actions", description: "Block selected Git checkpoints while review is pending.", section: "review", group: "review-protection", scope: "Project", keywords: "commit push pull request merge gate guard hook" },
+  { id: "agent-instructions", label: "Agent instructions", description: "Discover AGENTS.md, CLAUDE.md, and global instruction files.", section: "startup", group: "startup-context", scope: "Project", target: "startupContextEnabled", keywords: "startup context agents claude instructions ancestor global" },
+  { id: "local-skills", label: "Local skill discovery", description: "Find skill folders already installed around this project.", section: "startup", group: "startup-skills", scope: "Project", target: "startupSkillsEnabled", keywords: "startup skills local folders codex skill.md" },
+  { id: "hooks", label: "Hooks and automation", description: "Inspect agent hooks, Git hooks, and hook managers.", section: "startup", group: "startup-hooks", scope: "Project", target: "startupHooksEnabled", keywords: "hooks automation husky lefthook pre-commit lint-staged" },
+  { id: "shared-how", label: "How shared skills work", description: "Understand collections, assignments, and local destinations.", section: "shared-skills", group: "shared-how", scope: "Shared", keywords: "canonical collection assignment destination proposal link copy" },
+  { id: "providers", label: "Provider availability", description: "Control Codex, Claude Code, and OpenCode on this device and project.", section: "shared-skills", group: "shared-providers", scope: "Device + Project", keywords: "provider codex claude opencode enabled disabled override" },
+  { id: "collections", label: "Collections and assignments", description: "Choose where accepted shared skill collections are available.", section: "shared-skills", group: "shared-collections", scope: "Shared", keywords: "skills collections assignments destinations conflicts import" },
+  { id: "shared-instructions", label: "Shared instructions", description: "Share reviewed AGENTS.md, CLAUDE.md, and other Markdown instruction files with projects.", section: "shared-skills", group: "shared-instructions-collections", scope: "Shared", keywords: "agents md claude instructions providers managed links canonical" },
+  { id: "import-shared-instructions", label: "Import shared instructions", description: "Map local instruction files to exact project or provider destinations through a proposal.", section: "shared-skills", group: "shared-instructions-import", scope: "Shared", keywords: "import mapping target project device provider proposal" },
+  { id: "destinations", label: "Local destinations and conflicts", description: "Inspect physical provider folders, managed links, and blocked collisions.", section: "shared-skills", group: "shared-destinations", scope: "Device", keywords: "local physical destinations links conflicts broken provider" },
+  { id: "theme", label: "Theme and reading", description: "Choose the app and document reading theme.", section: "appearance", group: "appearance-theme", scope: "All rooms", target: "fileTheme", keywords: "theme appearance dark light document preview" },
+  { id: "explorer", label: "Explorer and file behavior", description: "Control Git diff behavior, hidden files, and the Computer root.", section: "appearance", group: "appearance-explorer", scope: "All rooms", target: "autoOpenGitDiff", keywords: "explorer computer root hidden files git diff" },
+  { id: "sounds", label: "Interface sounds", description: "Enable sounds, set volume, and preview important cues.", section: "appearance", group: "appearance-sounds", scope: "All rooms", target: "interfaceSoundsEnabled", keywords: "audio sound volume click review conflict" },
+  { id: "shortcut", label: "Keyboard shortcuts", description: "Set the shortcut used to reference selected text in Codex.", section: "appearance", group: "appearance-shortcuts", scope: "All rooms", target: "codexReferenceShortcut", keywords: "keyboard shortcut hotkey reference codex" },
+  { id: "templates", label: "Document templates", description: "Create and edit reusable Markdown document shapes.", section: "templates", group: "templates-list", scope: "Project", keywords: "markdown template new document" },
+  { id: "project-priority", label: "Project priority", description: "Order important projects and their reviews across the global Context Room.", section: "hub", group: "hub-project-priority", scope: "Device", keywords: "hub projects priority importance order ranking reviews" },
+  { id: "hub", label: "Home sections and cards", description: "Arrange the sections and shortcuts shown on Home.", section: "hub", group: "hub-sections", scope: "Project", keywords: "hub home sections cards folders navigation" },
+  { id: "codex-prompts", label: "Codex Prompt Center", description: "Open the advanced device-wide prompt override editor.", section: "codex-prompts", group: "codex-prompts-editor", scope: "All rooms", target: "openCodexPromptCenter", keywords: "prompt overrides restart runtime official effective advanced" },
+];
 const MAIN_FILE_PATHS = new Set([
   "~/.hermes/memories/USER.md",
   "~/.hermes/memories/MEMORY.md",
@@ -10194,6 +13229,190 @@ const MAIN_FILE_PATHS = new Set([
   "memory/USER.md",
   "memory/MEMORY.md",
 ]);
+
+function currentContextRoomSoundSettings(preview = false) {
+  const saved = state.settings?.sounds || { enabled: true, volume: 0.35 };
+  const liveEnabled = el("interfaceSoundsEnabled");
+  const liveVolume = Number(el("interfaceSoundsVolume")?.value) / 100;
+  const volume = Number.isFinite(liveVolume) ? liveVolume : Number(saved.volume);
+  return {
+    enabled: preview || (liveEnabled ? liveEnabled.checked : saved.enabled !== false),
+    volume: Number.isFinite(volume) ? Math.min(1, Math.max(0, volume)) : 0.35,
+  };
+}
+
+function unlockContextRoomAudio() {
+  contextRoomAudioUnlocked = true;
+  const ac = getContextRoomAudioContext();
+  if (ac?.state === "suspended") void ac.resume().catch(() => {});
+}
+
+function getContextRoomAudioContext() {
+  if (!contextRoomAudioUnlocked) return null;
+  if (contextRoomAudioContext) return contextRoomAudioContext;
+  try {
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextCtor) return null;
+    contextRoomAudioContext = new AudioContextCtor({ latencyHint: "interactive" });
+    return contextRoomAudioContext;
+  } catch {
+    return null;
+  }
+}
+
+function contextRoomSoundTone(ac, output, at, options = {}) {
+  const oscillator = ac.createOscillator();
+  const envelope = ac.createGain();
+  const start = at + Number(options.delay || 0);
+  const duration = Math.max(0.025, Number(options.duration || 0.3));
+  const attack = Math.max(0.0015, Number(options.attack || 0.008));
+  const peak = Math.max(0.0002, Number(options.gain || 0.05));
+  oscillator.type = options.type || "sine";
+  oscillator.frequency.setValueAtTime(Number(options.frequency || 440), start);
+  if (options.frequencyTo) oscillator.frequency.exponentialRampToValueAtTime(Number(options.frequencyTo), start + duration * 0.72);
+  envelope.gain.setValueAtTime(0.0001, start);
+  if (options.linearAttack) envelope.gain.linearRampToValueAtTime(peak, start + attack);
+  else envelope.gain.exponentialRampToValueAtTime(peak, start + attack);
+  envelope.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+  oscillator.connect(envelope);
+  envelope.connect(output);
+  oscillator.start(start);
+  oscillator.stop(start + duration + 0.03);
+}
+
+function contextRoomNoiseSource(ac, duration) {
+  const length = Math.max(1, Math.floor(ac.sampleRate * duration));
+  const buffer = ac.createBuffer(1, length, ac.sampleRate);
+  const samples = buffer.getChannelData(0);
+  for (let index = 0; index < samples.length; index += 1) samples[index] = Math.random() * 2 - 1;
+  const source = ac.createBufferSource();
+  source.buffer = buffer;
+  return source;
+}
+
+function contextRoomSoundWhoosh(ac, output, at, options = {}) {
+  const duration = Math.max(0.12, Number(options.duration || 0.3));
+  const source = contextRoomNoiseSource(ac, duration + 0.04);
+  const filter = ac.createBiquadFilter();
+  const envelope = ac.createGain();
+  const start = at + Number(options.delay || 0);
+  filter.type = "bandpass";
+  filter.frequency.setValueAtTime(Number(options.frequency || 3600), start);
+  filter.frequency.exponentialRampToValueAtTime(Number(options.frequencyTo || 900), start + duration);
+  filter.Q.setValueAtTime(Number(options.q || 0.8), start);
+  envelope.gain.setValueAtTime(0.0001, start);
+  envelope.gain.exponentialRampToValueAtTime(Math.max(0.0002, Number(options.gain || 0.015)), start + 0.025);
+  envelope.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+  source.connect(filter);
+  filter.connect(envelope);
+  envelope.connect(output);
+  source.start(start);
+  source.stop(start + duration + 0.03);
+}
+
+function contextRoomReverb(ac) {
+  if (!contextRoomReverbImpulse) {
+    const seconds = 0.68;
+    const length = Math.floor(ac.sampleRate * seconds);
+    contextRoomReverbImpulse = ac.createBuffer(2, length, ac.sampleRate);
+    for (let channel = 0; channel < 2; channel += 1) {
+      const samples = contextRoomReverbImpulse.getChannelData(channel);
+      for (let index = 0; index < samples.length; index += 1) {
+        samples[index] = (Math.random() * 2 - 1) * Math.pow(1 - index / samples.length, 3.8);
+      }
+    }
+  }
+  const convolver = ac.createConvolver();
+  convolver.buffer = contextRoomReverbImpulse;
+  return convolver;
+}
+
+function composeContextRoomSound(cue, ac, output, at) {
+  if (cue === "interaction") {
+    const cents = [0, 2, -2, 1][contextRoomInteractionVariant % 4];
+    const pitch = 2 ** (cents / 1200);
+    contextRoomInteractionVariant += 1;
+    contextRoomSoundTone(ac, output, at, { frequency: 493.88 * pitch, frequencyTo: 392 * pitch, duration: 0.038, gain: 0.045, attack: 0.003, type: "sine", linearAttack: true });
+    contextRoomSoundTone(ac, output, at, { frequency: 246.94 * pitch, frequencyTo: 196 * pitch, delay: 0.001, duration: 0.046, gain: 0.017, attack: 0.004, type: "sine", linearAttack: true });
+    return true;
+  }
+  if (cue === "review-complete") {
+    contextRoomSoundTone(ac, output, at, { frequency: 220, duration: 0.18, gain: 0.024, attack: 0.008, type: "sine" });
+    contextRoomSoundTone(ac, output, at, { frequency: 293.66, delay: 0.055, duration: 0.34, gain: 0.03, attack: 0.028, type: "sine" });
+    contextRoomSoundTone(ac, output, at, { frequency: 110, delay: 0.035, duration: 0.3, gain: 0.012, attack: 0.035, type: "sine" });
+    return true;
+  }
+  if (cue === "all-clear") {
+    [196, 246.94, 329.63].forEach((frequency, index) => {
+      contextRoomSoundTone(ac, output, at, { frequency, delay: index * 0.075, duration: 0.34 - index * 0.025, gain: 0.026 - index * 0.003, attack: 0.012, type: "sine" });
+    });
+    contextRoomSoundTone(ac, output, at, { frequency: 98, delay: 0.12, duration: 0.48, gain: 0.011, attack: 0.09, type: "sine" });
+    return true;
+  }
+  if (cue === "proposal-accepted") {
+    contextRoomSoundWhoosh(ac, output, at, { frequency: 1400, frequencyTo: 420, duration: 0.24, gain: 0.007 });
+    contextRoomSoundTone(ac, output, at, { frequency: 164.81, delay: 0.045, duration: 0.34, gain: 0.018, attack: 0.035, type: "sine" });
+    contextRoomSoundTone(ac, output, at, { frequency: 246.94, delay: 0.11, duration: 0.42, gain: 0.025, attack: 0.04, type: "sine" });
+    contextRoomSoundTone(ac, output, at, { frequency: 329.63, delay: 0.18, duration: 0.46, gain: 0.021, attack: 0.045, type: "sine" });
+    return true;
+  }
+  if (cue === "attention") {
+    contextRoomSoundTone(ac, output, at, { frequency: 196, frequencyTo: 164.81, duration: 0.18, gain: 0.025, attack: 0.01, type: "triangle" });
+    contextRoomSoundTone(ac, output, at, { frequency: 123.47, delay: 0.08, duration: 0.28, gain: 0.024, attack: 0.018, type: "sine" });
+    return true;
+  }
+  return false;
+}
+
+function playContextRoomSound(cue, options = {}) {
+  const preview = options.preview === true;
+  if (preview) unlockContextRoomAudio();
+  const sounds = currentContextRoomSoundSettings(preview);
+  if ((!preview && !sounds.enabled) || sounds.volume <= 0 || !contextRoomAudioUnlocked) return false;
+  const ac = getContextRoomAudioContext();
+  if (!ac) return false;
+  if (ac.state === "suspended") void ac.resume().catch(() => {});
+  const master = ac.createGain();
+  const tone = ac.createBiquadFilter();
+  const start = ac.currentTime + 0.012;
+  const masterGain = cue === "interaction" ? Math.min(1, sounds.volume * 1.35) : sounds.volume;
+  master.gain.setValueAtTime(masterGain, ac.currentTime);
+  tone.type = "lowpass";
+  tone.frequency.setValueAtTime(cue === "interaction" ? 1600 : 2600, ac.currentTime);
+  tone.Q.setValueAtTime(cue === "interaction" ? 0.2 : 0.3, ac.currentTime);
+  master.connect(tone);
+  if (cue === "interaction") {
+    tone.connect(ac.destination);
+    return composeContextRoomSound(cue, ac, master, start);
+  }
+  const dry = ac.createGain();
+  const wet = ac.createGain();
+  const reverb = contextRoomReverb(ac);
+  dry.gain.setValueAtTime(0.94, ac.currentTime);
+  wet.gain.setValueAtTime(0.11, ac.currentTime);
+  tone.connect(dry);
+  dry.connect(ac.destination);
+  tone.connect(reverb);
+  reverb.connect(wet);
+  wet.connect(ac.destination);
+  return composeContextRoomSound(cue, ac, master, start);
+}
+
+function playContextRoomButtonBeat(event) {
+  const button = event?.target?.closest?.("button");
+  if (!button || button.disabled || button.getAttribute("aria-disabled") === "true" || button.closest("[data-sound-preview]")) return false;
+  const now = Date.now();
+  if (now - contextRoomLastInteractionSoundAt < 35) return false;
+  contextRoomLastInteractionSoundAt = now;
+  return playContextRoomSound("interaction");
+}
+
+function updateSoundVolumePreview() {
+  const input = el("interfaceSoundsVolume");
+  const output = el("interfaceSoundsVolumeValue");
+  if (input && output) output.value = String(Math.round(Number(input.value) || 0)) + "%";
+}
+
 const PLANET_GROUPS = {
   hermes: {
     title: "Injected",
@@ -10217,10 +13436,22 @@ const SATELLITE_POSITIONS = [
 const el = (id) => document.getElementById(id);
 
 async function api(path, options) {
+  state.apiTrace.push({ path: String(path).split("?")[0], at: Date.now() });
+  if (state.apiTrace.length > 40) state.apiTrace.splice(0, state.apiTrace.length - 40);
+  document.body.dataset.apiTrace = JSON.stringify(state.apiTrace);
   const attempts = options ? 1 : 3;
   const requestOptions = options ? { cache: "no-store", ...options } : { cache: "no-store" };
   const headers = new Headers(requestOptions.headers || {});
   if (state.projectId) headers.set("x-context-room-project", state.projectId);
+  const requestPathname = new URL(path, window.location.href).pathname;
+  const projectScoped = requestPathname.startsWith("/api/")
+    && !requestPathname.startsWith("/api/context-hub")
+    && !requestPathname.startsWith("/api/codex-prompts")
+    && !requestPathname.startsWith("/api/context/")
+    && requestPathname !== "/api/health";
+  if (IS_GLOBAL_CONTEXT_ROOM && state.activeProjectLocationId && projectScoped) {
+    headers.set("x-context-room-target-project", state.activeProjectLocationId);
+  }
   const method = String(requestOptions.method || "GET").toUpperCase();
   if (
     path.startsWith("/api/codex-prompts")
@@ -10235,15 +13466,22 @@ async function api(path, options) {
     try {
       const res = await fetch(path, requestOptions);
       const responseProjectId = res.headers.get("x-context-room-project") || "";
-      if (state.projectId && responseProjectId && responseProjectId !== state.projectId) {
-        handleContextRoomProjectChange();
-        throw new Error("Context Room project changed; reloading this tab.");
+      const responseAction = contextRoomProjectResponseAction({ expectedProjectId: state.projectId || "", responseProjectId, globalRoom: IS_GLOBAL_CONTEXT_ROOM });
+      if (["refresh-in-place", "exceptional-reload"].includes(responseAction)) {
+        handleContextRoomProjectChange({ responseProjectId, reason: "response-project-mismatch" });
+        const error = new Error("Context Room project changed; this stale response was ignored.");
+        error.code = "context_room_stale_response";
+        throw error;
       }
-      if (!state.projectId && responseProjectId) state.projectId = responseProjectId;
+      if (responseAction === "initialize") state.projectId = responseProjectId;
+      if (res.status === 304) return { __notModified: true, __etag: res.headers.get("etag") || "", __serverTiming: res.headers.get("server-timing") || "" };
       const json = await res.json();
       if (res.status === 409 && ["context_room_project_changed", "context_room_project_identity_required"].includes(json.code)) {
-        handleContextRoomProjectChange();
-        throw new Error(json.error || "Context Room project changed; reloading this tab.");
+        handleContextRoomProjectChange({ responseProjectId: json.projectId || responseProjectId, reason: json.code });
+        const error = new Error(json.error || "Context Room project changed; this stale response was ignored.");
+        error.status = res.status;
+        error.code = json.code;
+        throw error;
       }
       if (!res.ok) {
         const error = new Error(json.error || "request failed");
@@ -10252,6 +13490,7 @@ async function api(path, options) {
         error.details = json.details;
         throw error;
       }
+      json.__serverTiming = res.headers.get("server-timing") || "";
       return json;
     } catch (error) {
       lastError = error;
@@ -10294,6 +13533,7 @@ function contextHubStatusLabel(status, count = 0) {
     clean: "Local queue clear",
     shared_proposals: count + " proposal" + (count === 1 ? "" : "s"),
     shared_clear: "No proposals",
+    verified: "Verified",
     unavailable: "Folder unavailable",
   })[status] || "Available";
 }
@@ -10302,9 +13542,82 @@ function contextHubProjectForItem(item) {
   return (state.contextHub?.projects || []).find((project) => project.projectKey === item?.projectKey) || null;
 }
 
+function currentContextRoomProject() {
+  const hub = state.contextHub || { projects: [] };
+  return (hub.projects || []).find((project) => (
+    project.current
+    || (hub.currentProjectId && project.id === hub.currentProjectId)
+  )) || null;
+}
+
+function contextHubReviewItems() {
+  const hub = state.contextHub || { items: [] };
+  return (hub.items || []).flatMap((item) => {
+    if (item.type === "shared") return [{ ...item, revisionToken: item.head ? "shared:" + item.head : "" }];
+    if (item.reviewStatus !== "local_changes") return [];
+    const reviews = item.reviews?.length
+      ? item.reviews
+      : (item.files || []).map((file) => ({ path: file, label: file, startupContext: null }));
+    return reviews.map((review) => ({
+      ...item,
+      id: item.id + ":worktree:" + (review.worktreeId || item.projectId) + ":file:" + review.path,
+      projectId: review.worktreeId || item.projectId,
+      title: review.label || review.path,
+      description: review.worktreeLabel
+        ? "Local file waiting for review in " + review.worktreeLabel + "."
+        : "Local file waiting for review.",
+      files: [review.path],
+      fileCount: 1,
+      localFile: review.path,
+      localReview: review,
+      revisionToken: review.resourceState && review.currentHash
+        ? "local:" + review.resourceState + ":" + (review.resourceVersion || "-") + ":" + review.currentHash
+        : "",
+    }));
+  });
+}
+
+function contextRoomReviewSnooze(item) {
+  const snooze = state.contextHub?.attention?.snoozes?.[item?.id];
+  if (!snooze || !item?.revisionToken || snooze.revisionToken !== item.revisionToken) return null;
+  return Date.parse(snooze.until) > Date.now() ? snooze : null;
+}
+
+function contextRoomSnoozedReviews() {
+  return contextHubReviewItems().filter((item) => contextRoomReviewSnooze(item));
+}
+
+function formatContextRoomSnoozeTime(until) {
+  const deadline = Date.parse(until || "");
+  if (!Number.isFinite(deadline)) return "later";
+  const remaining = Math.max(0, deadline - Date.now());
+  const minutes = Math.ceil(remaining / 60_000);
+  if (minutes < 60) return "in " + Math.max(1, minutes) + "m";
+  const hours = Math.ceil(remaining / 3_600_000);
+  if (hours < 24) return "in " + hours + "h";
+  const days = Math.ceil(remaining / 86_400_000);
+  if (days <= 7) return "in " + days + "d";
+  return new Date(deadline).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+}
+
+function scheduleContextRoomSnoozeExpiry() {
+  clearTimeout(state.contextRoomSnoozeTimer);
+  state.contextRoomSnoozeTimer = null;
+  const next = contextRoomSnoozedReviews()
+    .map((item) => Date.parse(contextRoomReviewSnooze(item)?.until || ""))
+    .filter((value) => Number.isFinite(value) && value > Date.now())
+    .sort((left, right) => left - right)[0];
+  if (!next) return;
+  state.contextRoomSnoozeTimer = window.setTimeout(() => {
+    state.contextRoomSnoozeTimer = null;
+    if (state.page === "settings") renderSettingsPanel();
+    else renderContextRoomGlobalReviewQueue();
+  }, Math.min(2_147_000_000, Math.max(250, next - Date.now() + 50)));
+}
+
 function contextHubVisibleItems() {
   const hub = state.contextHub || { items: [], projects: [] };
-  if (state.contextHubView === "projects") {
+  if (state.contextHubView === "project-manager") {
     return (hub.projects || []).map((project) => ({
       id: "project:" + project.projectKey,
       type: "project",
@@ -10317,7 +13630,7 @@ function contextHubVisibleItems() {
           ? project.shared?.projectId === "global"
             ? "Global shared context and skills. Every change uses a proposal review."
             : "Shared project without a local folder connected on this computer."
-          : "Local Context Room project.",
+          : "Project with local documentation.",
       files: project.localReviewFiles || [],
       fileCount: project.localReviewCount || 0,
       proposalCount: project.sharedProposalCount || 0,
@@ -10332,12 +13645,12 @@ function contextHubVisibleItems() {
       source: project.mode,
     }));
   }
-  return (hub.items || []).filter((item) => item.type === "shared" || item.reviewStatus !== "clean");
+  return contextHubReviewItems();
 }
 
-function contextHubHideFrames(except = null) {
-  for (const room of state.sharedReviewRooms.values()) room.frame.hidden = room !== except;
-  for (const room of state.contextHubProjectRooms.values()) room.frame.hidden = room !== except;
+function contextHubHideFrames() {
+  const workspace = el("sharedProposalWorkspace");
+  if (workspace) workspace.dataset.localProjectOpen = "false";
 }
 
 function codexPromptTargets() {
@@ -10845,35 +14158,1413 @@ function setSharedProposalWorkspaceOpen(open) {
   }
 }
 
+function normalizedContextRoomView(view = "home") {
+  return ["home", "project-manager", "codex-prompts"].includes(view) ? view : "home";
+}
+
+function openContextRoomView(view = "home", options = {}) {
+  const nextView = normalizedContextRoomView(view);
+  state.contextHubView = nextView;
+  state.contextHubSelection = "";
+  if (nextView !== "home" && options.returnTo) state.contextHubWorkspaceReturn = options.returnTo;
+  if (nextView === "home") {
+    setSharedProposalWorkspaceOpen(false);
+    showHome();
+    renderContextRoomGlobalReviewQueue();
+    return;
+  }
+  setSharedProposalWorkspaceOpen(true);
+  if (nextView === "codex-prompts") {
+    loadCodexPromptCenter().catch((error) => {
+      state.codexPromptsError = error.message;
+      state.codexPromptsErrorScope = "catalog";
+      renderCodexPromptWorkspace();
+    });
+  }
+}
+
+function closeContextRoomSecondaryView() {
+  const returnTo = state.contextHubWorkspaceReturn;
+  state.contextHubWorkspaceReturn = "home";
+  state.contextHubView = "home";
+  setSharedProposalWorkspaceOpen(false);
+  if (returnTo === "settings") showSettingsPage();
+  else showHome();
+}
+
+function contextHubSourceMatches(source) {
+  return state.contextHubSource === "all" || source === state.contextHubSource;
+}
+
+function contextHubProjectMatchesSource(project) {
+  if (state.contextHubSource === "all") return true;
+  if (state.contextHubSource === "local") return project?.mode !== "shared";
+  return project?.mode === "shared" || Boolean(project?.shared);
+}
+
+function contextHubProjectSourceBadges(project) {
+  const badges = [];
+  if (project?.mode !== "shared") badges.push('<span class="context-hub-source" data-source="local">Local</span>');
+  if (project?.mode === "shared" || project?.shared) badges.push('<span class="context-hub-source" data-source="shared">Shared</span>');
+  if (Number(project?.worktreeCount || 0) > 1) badges.push('<span class="context-hub-worktree-count">' + Number(project.worktreeCount) + ' worktrees</span>');
+  return badges.join("");
+}
+
+function contextHubCardSearchText(card) {
+  return [
+    card?.id,
+    card?.title,
+    card?.description,
+    ...(card?.paths || []),
+    ...(card?.cards || []).map(contextHubCardSearchText),
+  ].filter(Boolean).join(" ");
+}
+
+function contextHubProjectSearchText(project) {
+  return [
+    project?.id,
+    project?.projectKey,
+    project?.title,
+    project?.root,
+    project?.sharedTitle,
+    ...(project?.worktrees || []).flatMap((worktree) => [worktree.branch, worktree.root, worktree.head]),
+    ...(project?.hubSections || []).flatMap((section) => [
+      section.id,
+      section.title,
+      section.description,
+      ...(section.cards || []).map(contextHubCardSearchText),
+    ]),
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function contextRoomReviewPriority(item) {
+  if (item.type === "shared" && item.hasConflict) return 0;
+  if (item.type === "shared" && (item.reviewStatus === "updated" || Number(item.mainAdvancedBy || 0) > 0)) return 1;
+  if (item.type === "shared" && ["ready", "in_review"].includes(item.reviewStatus)) return 2;
+  if (item.type !== "shared") return 3;
+  return 4;
+}
+
+function contextHubHomeReviewItems(needle = "", visibility = "active") {
+  const currentProject = IS_GLOBAL_CONTEXT_ROOM ? null : currentContextRoomProject();
+  return contextHubReviewItems()
+    .filter((item) => {
+      if (["clean", "merged", "unavailable"].includes(item.reviewStatus)) return false;
+      const project = contextHubProjectForItem(item);
+      const source = item.type === "shared" ? "shared" : "local";
+      const snoozed = Boolean(contextRoomReviewSnooze(item));
+      return (
+        (IS_GLOBAL_CONTEXT_ROOM
+          ? (!state.sharedProposalProject || item.projectKey === state.sharedProposalProject)
+          : Boolean(currentProject && item.projectKey === currentProject.projectKey))
+        && contextHubSourceMatches(source)
+        && (visibility === "all" || (visibility === "snoozed" ? snoozed : !snoozed))
+        && (!needle || sharedProposalSearchText(item).includes(needle) || contextHubProjectSearchText(project).includes(needle))
+      );
+    })
+    .sort((left, right) => (
+      (Number(Boolean(right.hasConflict)) - Number(Boolean(left.hasConflict)))
+      || ((contextHubProjectForItem(left)?.priorityRank ?? Number.MAX_SAFE_INTEGER) - (contextHubProjectForItem(right)?.priorityRank ?? Number.MAX_SAFE_INTEGER))
+      || (visibility === "snoozed" ? Date.parse(contextRoomReviewSnooze(left)?.until || 0) - Date.parse(contextRoomReviewSnooze(right)?.until || 0) : 0)
+      || contextRoomReviewPriority(left) - contextRoomReviewPriority(right)
+      || String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""))
+    ));
+}
+
+function contextHubProjectPickerLabel(project) {
+  const title = String(project?.title || project?.id || "Untitled project");
+  const location = contextHubProjectPickerLocation(project);
+  if (project?.root) return location ? title + " — " + location : title;
+  const stableSuffix = String(project?.projectKey || project?.id || "").slice(-8);
+  return title + " — " + location + (stableSuffix ? " · " + stableSuffix : "");
+}
+
+function contextHubProjectPickerLocation(project) {
+  if (project?.root) {
+    const location = String(project.root)
+      .replaceAll("\\", "/")
+      .replace(/^\/Users\/[^/]+(?=\/|$)/, "~");
+    return Number(project.worktreeCount || 0) > 1 ? location + " · " + project.worktreeCount + " worktrees" : location;
+  }
+  const sharedLocation = project?.sharedTitle || project?.shared?.projectId || "shared";
+  const repository = String(project?.shared?.repository || "").replace(/\.git$/, "").split(/[/:]/).filter(Boolean).slice(-2).join("/");
+  return repository ? sharedLocation + " · " + repository : sharedLocation;
+}
+
+function contextHubPrioritizedProjects(projects = []) {
+  return [...projects].sort((left, right) => {
+    const leftRanked = Number.isInteger(left?.priorityRank);
+    const rightRanked = Number.isInteger(right?.priorityRank);
+    if (leftRanked !== rightRanked) return leftRanked ? -1 : 1;
+    if (leftRanked && left.priorityRank !== right.priorityRank) return left.priorityRank - right.priorityRank;
+    const currentRank = Number(Boolean(right?.current)) - Number(Boolean(left?.current));
+    if (currentRank) return currentRank;
+    const leftAttention = Number(left?.localReviewCount || 0) + Number(left?.sharedProposalCount || 0);
+    const rightAttention = Number(right?.localReviewCount || 0) + Number(right?.sharedProposalCount || 0);
+    const attentionRank = Number(rightAttention > 0) - Number(leftAttention > 0);
+    if (attentionRank) return attentionRank;
+    const recentRank = String(right?.lastOpenedAt || "").localeCompare(String(left?.lastOpenedAt || ""));
+    if (recentRank) return recentRank;
+    return String(left?.title || left?.id || "").localeCompare(String(right?.title || right?.id || ""), "en");
+  });
+}
+
+function globalProjectExplorerPageKey(project, { directory = "", query = "" } = {}) {
+  return globalProjectExplorerCacheKey(project) + (query ? "::search::" + query : "::directory::" + normalizeUiPath(directory));
+}
+
+function clearGlobalProjectExplorerCache(project) {
+  const prefix = globalProjectExplorerCacheKey(project) + "::";
+  for (const key of state.globalProjectExplorerDetails.keys()) if (key.startsWith(prefix)) state.globalProjectExplorerDetails.delete(key);
+  for (const key of state.globalProjectExplorerErrors.keys()) if (key.startsWith(prefix)) state.globalProjectExplorerErrors.delete(key);
+}
+
+function globalProjectExplorerEntryMatchesFilter(entry, filter) {
+  if (entry.type === "directory" || filter === "all") return true;
+  const watched = Boolean(entry.watchState);
+  return filter === "watched" ? watched : !watched;
+}
+
+function workspaceProjectHref(projectId, filePath = "", { fresh = false } = {}) {
+  const target = new URL(window.location.origin + "/");
+  target.searchParams.set("hub", "1");
+  target.searchParams.set("workspace", state.workspaceId);
+  target.searchParams.set("project", projectId);
+  target.searchParams.set("workspace", fresh ? createWorkspaceId() : state.workspaceId);
+  if (filePath) {
+    target.searchParams.set("view", "file");
+    target.searchParams.set("file", filePath);
+  }
+  return target.toString();
+}
+
+function renderGlobalProjectExplorerPage(project, page, depth = 0, filter = "all") {
+  if (!page) return "";
+  const entries = (page.entries || []).filter((entry) => globalProjectExplorerEntryMatchesFilter(entry, filter)).map((entry) => {
+    if (entry.type === "directory") {
+      const folderId = project.projectKey + "::" + entry.path;
+      const expanded = state.globalProjectExpandedFolders.has(folderId);
+      const childKey = globalProjectExplorerPageKey(project, { directory: entry.path });
+      const child = state.globalProjectExplorerDetails.get(childKey);
+      const loading = state.globalProjectExplorerLoading.has(childKey);
+      const error = state.globalProjectExplorerErrors.get(childKey);
+      return '<button class="global-project-tree-entry" type="button" data-kind="folder" data-global-project-folder="' + escapeHtml(entry.path) + '" data-global-project-key="' + escapeHtml(project.projectKey) + '" style="padding-left:' + (7 + depth * 12) + 'px">'
+        + '<span aria-hidden="true">' + (expanded ? "⌄" : "›") + '</span><span class="global-project-tree-name">' + escapeHtml(entry.name) + '</span><span class="global-project-tree-meta">folder</span></button>'
+        + (expanded && loading ? '<div class="computer-explorer-loading" style="padding-left:' + (28 + depth * 12) + 'px">Opening…</div>' : '')
+        + (expanded && error ? '<div class="computer-explorer-loading" style="padding-left:' + (28 + depth * 12) + 'px">' + escapeHtml(error) + '</div>' : '')
+        + (expanded && child ? renderGlobalProjectExplorerPage(project, child, depth + 1, filter) : "");
+    }
+    const worktree = globalProjectSelectedWorktree(project);
+    return '<a class="global-project-tree-entry" href="' + escapeHtml(workspaceProjectHref(worktree?.id || project.id, entry.path)) + '" data-kind="file" data-watch-state="' + escapeHtml(entry.watchState || "") + '" data-global-project-file="' + escapeHtml(entry.path) + '" data-global-project-key="' + escapeHtml(project.projectKey) + '" style="padding-left:' + (25 + depth * 12) + 'px">'
+      + '<span aria-hidden="true">◇</span><span class="global-project-tree-name" title="' + escapeHtml(entry.path) + '">' + escapeHtml(entry.name || entry.path) + '</span><span class="global-project-tree-meta">' + escapeHtml(entry.watchState ? "watched" : formatExplorerBytes(entry.bytes || 0)) + '</span></a>';
+  }).join("");
+  const more = page.nextCursor == null ? "" : '<button class="global-project-tree-entry" type="button" data-global-project-more="' + escapeHtml(page.nextCursor) + '" data-global-project-path="' + escapeHtml(page.directory || "") + '" data-global-project-query="' + escapeHtml(page.query || "") + '" data-global-project-key="' + escapeHtml(project.projectKey) + '" style="padding-left:' + (25 + depth * 12) + 'px"><span aria-hidden="true">＋</span><span class="global-project-tree-name">Load more</span><span class="global-project-tree-meta">' + Math.max(0, Number(page.total || 0) - (page.entries || []).length) + ' remaining</span></button>';
+  return entries + more;
+}
+
+function contextHubProjectWorktrees(project) {
+  if (Array.isArray(project?.worktrees) && project.worktrees.length) return project.worktrees;
+  return project?.root ? [{ id: project.id, root: project.root, branch: project.worktree?.branch || "", available: project.available, current: project.current }] : [];
+}
+
+function contextHubPreferredWorktree(project, requestedId = "") {
+  const worktrees = contextHubProjectWorktrees(project);
+  return worktrees.find((worktree) => worktree.id === requestedId)
+    || worktrees.find((worktree) => worktree.current)
+    || worktrees.find((worktree) => worktree.available)
+    || worktrees[0]
+    || null;
+}
+
+function globalProjectSelectedWorktree(project) {
+  return contextHubPreferredWorktree(project, state.globalProjectWorktreeIds.get(project?.projectKey) || "");
+}
+
+function globalProjectExplorerCacheKey(project) {
+  const worktree = globalProjectSelectedWorktree(project);
+  return project.projectKey + "::" + (worktree?.id || project.id);
+}
+
+function contextHubWorktreeSelectorMarkup(project, selectedId, attributeName) {
+  const worktrees = contextHubProjectWorktrees(project);
+  if (worktrees.length <= 1) return "";
+  return '<label class="context-hub-worktree-switch"><span>Worktree</span><select ' + attributeName + ' aria-label="Choose worktree">'
+    + worktrees.map((worktree) => '<option value="' + escapeHtml(worktree.id) + '"' + (worktree.id === selectedId ? " selected" : "") + (worktree.available ? "" : " disabled") + '>'
+      + escapeHtml((worktree.branch || String(worktree.root || "").replaceAll("\\", "/").split("/").filter(Boolean).pop() || "worktree") + (worktree.current ? " · current" : "") + (worktree.localReviewCount ? " · " + worktree.localReviewCount + " reviews" : ""))
+      + '</option>').join("")
+    + '</select></label>';
+}
+
+function renderGlobalProjectFolder(project) {
+  if (project.mode === "shared" || !project.root) {
+    return '<div class="global-project-folder-state">This project is shared-only. Browse its files inside a proposal.</div>'
+      + '<button class="global-project-shared-action" type="button" data-global-project-shared="' + escapeHtml(project.projectKey) + '">Show proposals</button>';
+  }
+  const needle = state.globalProjectSearch.trim().toLowerCase();
+  const cacheKey = globalProjectExplorerPageKey(project, { query: needle });
+  if (state.globalProjectExplorerLoading.has(cacheKey)) {
+    return '<div class="global-project-folder-state">Loading project folder…</div>';
+  }
+  const error = state.globalProjectExplorerErrors.get(cacheKey);
+  if (error) return '<div class="global-project-folder-state">' + escapeHtml(error) + '</div>';
+  const details = state.globalProjectExplorerDetails.get(cacheKey);
+  if (!details) return '<div class="global-project-folder-state">Loading project folder…</div>';
+  const filter = state.globalProjectWatchFilters.get(project.projectKey) || "all";
+  const markup = renderGlobalProjectExplorerPage(project, details, 0, filter);
+  const visibleCount = (details.entries || []).filter((entry) => globalProjectExplorerEntryMatchesFilter(entry, filter)).length;
+  return '<div class="global-project-folder-head"><div class="global-project-watch-filters" aria-label="Project watch filter">'
+    + [
+      ["all", "All"],
+      ["watched", "Watched"],
+      ["unwatched", "Not watched"],
+    ].map(([value, label]) => '<button class="global-project-watch-filter' + (filter === value ? " active" : "") + '" type="button" data-global-project-watch-filter="' + value + '" data-global-project-key="' + escapeHtml(project.projectKey) + '">' + label + '</button>').join("")
+    + '</div><span class="global-project-tree-meta">' + visibleCount + (needle ? " results" : " at root") + '</span></div>'
+    + '<div class="global-project-folder-tree">' + (markup || '<div class="global-project-folder-state">No files match this view.</div>') + '</div>';
+}
+
+async function openGlobalProjectExplorer(project) {
+  if (state.page === "settings" && state.settingsDirtyGroups.size && state.globalExplorerProjectKey !== project.projectKey) {
+    setStatus("save or revert the current project settings before selecting another project");
+    return;
+  }
+  state.globalExplorerMode = "project";
+  state.projectSwitchMetrics = { projectKey: project.projectKey, startedAt: performance.now() };
+  state.globalExplorerProjectKey = project.projectKey;
+  state.activeProjectLocationId = globalProjectSelectedWorktree(project)?.id || "";
+  state.globalProjectSearch = "";
+  state.globalInspectionView = "";
+  state.globalProjectSelectionGeneration += 1;
+  state.globalProjectSettingsController?.abort();
+  state.globalProjectExplorerController?.abort();
+  state.sharedSkillLocationsController?.abort();
+  state.globalInspectionController?.abort();
+  state.globalProjectSettingsController = new AbortController();
+  state.globalProjectExplorerController = new AbortController();
+  state.sharedSkillLocationsController = new AbortController();
+  state.globalInspectionController = new AbortController();
+  state.globalProjectSettingsValidated.delete(globalProjectExplorerCacheKey(project));
+  refreshGlobalSettingsScopeFromExplorer();
+  if (state.page === "settings") {
+    void loadGlobalProjectSettings(project).catch((error) => setStatus(error.message));
+    if (state.settingsSection === "shared-skills") {
+      void loadSharedSkillLocations({ projectId: globalProjectSelectedWorktree(project)?.id || "" }).catch((error) => setStatus(error.message));
+    }
+  }
+  renderGlobalProjectExplorer();
+  state.projectSwitchMetrics.selectionVisibleMs = performance.now() - state.projectSwitchMetrics.startedAt;
+  document.body.dataset.projectSwitchMetrics = JSON.stringify(state.projectSwitchMetrics);
+  renderContextHealth();
+  scheduleSessionStatePush();
+  if (project.mode === "shared" || !globalProjectSelectedWorktree(project)?.root) return;
+  await loadGlobalProjectExplorerPage(project);
+}
+
+async function loadGlobalProjectExplorerPage(project, { directory = "", query = "", cursor = "", force = false } = {}) {
+  const worktree = globalProjectSelectedWorktree(project);
+  if (!worktree?.root) return null;
+  const normalizedQuery = String(query || "").trim().toLowerCase();
+  const cacheKey = globalProjectExplorerPageKey(project, { directory, query: normalizedQuery });
+  if (!force && state.globalProjectExplorerDetails.has(cacheKey)) return state.globalProjectExplorerDetails.get(cacheKey);
+  if (state.globalProjectExplorerLoading.has(cacheKey)) return null;
+  const generation = state.globalProjectSelectionGeneration;
+  state.globalProjectExplorerLoading.add(cacheKey);
+  state.globalProjectExplorerErrors.delete(cacheKey);
+  renderGlobalProjectExplorer();
+  try {
+    const params = new URLSearchParams({ projectId: worktree.id, limit: "250" });
+    if (directory) params.set("path", directory);
+    if (normalizedQuery) params.set("query", normalizedQuery);
+    if (cursor !== "") params.set("cursor", cursor);
+    const details = await api("/api/context-hub/project-explorer?" + params, { signal: state.globalProjectExplorerController?.signal });
+    if (generation !== state.globalProjectSelectionGeneration || state.globalExplorerProjectKey !== project.projectKey) return null;
+    if (cursor !== "" && state.globalProjectExplorerDetails.has(cacheKey)) {
+      const previous = state.globalProjectExplorerDetails.get(cacheKey);
+      state.globalProjectExplorerDetails.set(cacheKey, { ...details, entries: [...(previous.entries || []), ...(details.entries || [])] });
+    } else {
+      state.globalProjectExplorerDetails.set(cacheKey, details);
+    }
+    if (!directory && !normalizedQuery && state.projectSwitchMetrics?.projectKey === project.projectKey) {
+      state.projectSwitchMetrics.explorerRootVisibleMs = performance.now() - state.projectSwitchMetrics.startedAt;
+      state.projectSwitchMetrics.explorerServerTiming = details.__serverTiming || "";
+      document.body.dataset.projectSwitchMetrics = JSON.stringify(state.projectSwitchMetrics);
+    }
+    return details;
+  } catch (error) {
+    if (error.name === "AbortError") return null;
+    state.globalProjectExplorerErrors.set(cacheKey, error.message || "Could not load this project folder.");
+    return null;
+  } finally {
+    state.globalProjectExplorerLoading.delete(cacheKey);
+    if (generation === state.globalProjectSelectionGeneration) renderGlobalProjectExplorer();
+  }
+}
+
+function refreshGlobalSettingsScopeFromExplorer() {
+  if (state.page !== "settings") return;
+  if (state.settingsDirtyGroups.size) {
+    setStatus("save or revert the current project settings before changing selection");
+    return;
+  }
+  renderSettingsPanel();
+}
+
+async function loadComputerExplorer(targetPath = "", { expand = false } = {}) {
+  const requestKey = targetPath || "__root__";
+  state.computerExplorerLoadingFolders.add(requestKey);
+  state.computerExplorerErrors.delete(requestKey);
+  renderGlobalProjectExplorer();
+  try {
+    const suffix = targetPath ? "?path=" + encodeURIComponent(targetPath) : "";
+    const snapshot = await api("/api/context-hub/computer-explorer" + suffix);
+    state.computerExplorerFolders.set(snapshot.current, snapshot);
+    if (!targetPath || !state.computerExplorer) state.computerExplorer = snapshot;
+    if (expand) state.computerExplorerExpandedFolders.add(snapshot.current);
+  } catch (error) {
+    state.computerExplorerErrors.set(requestKey, error.message || "Could not open this folder.");
+  } finally {
+    state.computerExplorerLoadingFolders.delete(requestKey);
+    renderGlobalProjectExplorer();
+  }
+}
+
+function renderComputerExplorerNode(snapshot, depth = 0, needle = "") {
+  if (!snapshot) return { markup: "", visibleCount: 0 };
+  let visibleCount = 0;
+  const markup = (snapshot.entries || []).map((entry) => {
+    if (entry.kind === "directory") {
+      const expanded = state.computerExplorerExpandedFolders.has(entry.path);
+      const child = state.computerExplorerFolders.get(entry.path);
+      const childTree = expanded && child ? renderComputerExplorerNode(child, depth + 1, needle) : { markup: "", visibleCount: 0 };
+      const selfMatches = !needle || entry.name.toLowerCase().includes(needle);
+      if (needle && !selfMatches && !childTree.visibleCount) return "";
+      visibleCount += 1 + childTree.visibleCount;
+      const loading = state.computerExplorerLoadingFolders.has(entry.path);
+      const error = state.computerExplorerErrors.get(entry.path);
+      return '<button class="global-project-tree-entry" type="button" data-kind="folder" data-computer-explorer-folder="' + escapeHtml(entry.path) + '" style="padding-left:' + (7 + depth * 12) + 'px">'
+        + '<span aria-hidden="true">' + (expanded ? "⌄" : "›") + '</span><span class="global-project-tree-name">' + escapeHtml(entry.name) + '</span><span class="global-project-tree-meta">folder</span></button>'
+        + (loading ? '<div class="computer-explorer-loading" style="padding-left:' + (28 + depth * 12) + 'px">Opening…</div>' : '')
+        + (error ? '<div class="computer-explorer-loading" style="padding-left:' + (28 + depth * 12) + 'px">' + escapeHtml(error) + '</div>' : '')
+        + (expanded ? childTree.markup : "");
+    }
+    if (needle && !entry.name.toLowerCase().includes(needle)) return "";
+    visibleCount += 1;
+    return '<div class="global-project-tree-entry" data-kind="file" data-computer-explorer-file="' + escapeHtml(entry.path) + '" title="Files outside a project are browse-only" style="padding-left:' + (25 + depth * 12) + 'px"><span aria-hidden="true">◇</span><span class="global-project-tree-name">' + escapeHtml(entry.name) + '</span><span class="global-project-tree-meta">' + escapeHtml(formatExplorerBytes(entry.bytes || 0)) + '</span></div>';
+  }).join("");
+  return { markup, visibleCount };
+}
+
+function renderComputerExplorer() {
+  const snapshot = state.computerExplorer;
+  if (!snapshot) {
+    const error = state.computerExplorerErrors.get("__root__");
+    if (error) return '<div class="global-project-folder-state">' + escapeHtml(error) + '</div>';
+    return '<div class="global-project-folder-state">Loading computer folders…</div>';
+  }
+  const needle = state.globalProjectSearch.trim().toLowerCase();
+  const tree = renderComputerExplorerNode(snapshot, 0, needle);
+  return '<div class="computer-explorer-tree">' + (tree.markup || '<div class="global-project-folder-state">No loaded items match this search.</div>') + '</div>';
+}
+
+function formatExplorerBytes(bytes = 0) {
+  const value = Math.max(0, Number(bytes) || 0);
+  if (value < 1024) return value + " B";
+  if (value < 1024 * 1024) return Math.ceil(value / 1024) + " KB";
+  return (value / (1024 * 1024)).toFixed(value < 10 * 1024 * 1024 ? 1 : 0) + " MB";
+}
+
+function globalExplorerContextProject(target = state.globalExplorerContextTarget) {
+  if (!target?.projectKey) return null;
+  return (state.contextHub?.projects || []).find((project) => project.projectKey === target.projectKey) || null;
+}
+
+function globalExplorerAbsolutePath(target = state.globalExplorerContextTarget) {
+  if (!target?.path) return "";
+  if (target.scope === "computer") return target.path;
+  const project = globalExplorerContextProject(target);
+  return project?.root ? project.root.replace(/\/$/, "") + "/" + normalizeUiPath(target.path) : target.path;
+}
+
+function openGlobalExplorerContextMenu(event, target) {
+  event.preventDefault();
+  event.stopPropagation();
+  hideExplorerContextMenu();
+  state.globalExplorerContextTarget = target;
+  renderGlobalExplorerContextMenu(event.clientX, event.clientY);
+}
+
+function renderGlobalExplorerContextMenu(x, y) {
+  const menu = el("explorerContextMenu");
+  const target = state.globalExplorerContextTarget;
+  if (!menu || !target) return;
+  const project = globalExplorerContextProject(target);
+  const worktree = project ? globalProjectSelectedWorktree(project) : null;
+  const folderReviews = target.scope === "project" && target.kind === "folder" && worktree
+    ? contextRoomReviewsForExplorerPath(worktree.id, target.path, "folder")
+    : [];
+  const absolutePath = globalExplorerAbsolutePath(target);
+  const folderId = target.scope === "project" ? target.projectKey + "::" + target.path : target.path;
+  const expanded = target.kind === "folder" && (target.scope === "project"
+    ? state.globalProjectExpandedFolders.has(folderId)
+    : state.computerExplorerExpandedFolders.has(folderId));
+  const openAction = target.kind === "file" && target.scope === "project"
+    ? '<button class="secondary" type="button" data-global-context-open>Open file</button>'
+    : target.kind === "folder"
+      ? '<button class="secondary" type="button" data-global-context-toggle>' + (expanded ? "Collapse" : "Expand") + "</button>"
+      : "";
+  const projectActions = target.scope === "project" && project
+    ? (target.kind === "file" ? '<button class="secondary" type="button" data-global-context-watch>Watch this file</button>' : '<button class="secondary" type="button" data-global-context-watch>Watch this folder…</button>')
+      + (folderReviews.length ? '<button class="secondary" type="button" data-global-context-snooze-reviews>Snooze reviews… <span class="context-menu-count">' + folderReviews.length + '</span></button>' : '')
+      + (target.kind === "project"
+        ? '<button class="secondary" type="button" data-global-context-priority="top">Move project to top</button>'
+          + '<button class="secondary" type="button" data-global-context-priority="up">Move project up</button>'
+          + '<button class="secondary" type="button" data-global-context-manage-priority>Manage project priority…</button>'
+        : "")
+      + '<button class="secondary" type="button" data-global-context-health title="Review configuration, documentation, hook, and review-safety issues for this project">View Context health</button>'
+      + '<button class="secondary" type="button" data-global-context-startup title="Show the agent instructions, skills, and hooks active for this project">View startup environment</button>'
+      + (target.kind === "folder" ? '<button class="secondary" type="button" data-global-context-inspect title="Resolve the exact instructions, skills, hooks, provider settings, and accepted documents for this folder">Inspect agent environment</button>' : '')
+      + (target.kind === "folder" ? '<button class="secondary" type="button" data-global-context-shared-skills>Link this skill location to shared…</button>' : '')
+      + '<button class="secondary" type="button" data-global-context-new-file>New file</button>'
+      + '<button class="secondary" type="button" data-global-context-new-folder>New folder</button>'
+      + '<button class="secondary" type="button" data-global-context-open-project>Open project</button>'
+      + '<button class="secondary" type="button" data-global-context-open-workspace>Open in new workspace</button>'
+      + '<button class="secondary danger-action" type="button" data-global-context-delete>Delete</button>'
+    : "";
+  const folderDirectory = target.kind === "folder" ? normalizeUiPath(target.path) : parentDirectoryFromUiPath(target.path);
+  menu.innerHTML = '<div class="explorer-context-title"><span>Actions</span><code title="' + escapeHtml(absolutePath) + '">' + escapeHtml(absolutePath) + '</code></div>'
+    + '<div class="explorer-context-actions menu-actions" data-global-context-actions>'
+      + openAction + projectActions
+      + '<button class="secondary" type="button" data-global-context-copy>Copy path</button>'
+    + '</div>'
+    + (target.scope === "project" && project
+      ? '<div class="explorer-context-form" data-global-context-new-file-form hidden>'
+          + '<div class="explorer-context-title"><span>New file</span><code>' + escapeHtml(folderDirectory || "project root") + '</code></div>'
+          + '<label class="explorer-context-label" for="globalContextMarkdownTitle">Name</label>'
+          + '<input id="globalContextMarkdownTitle" placeholder="File name" value="New document" />'
+          + '<div id="globalContextMenuError" class="explorer-context-error" hidden></div>'
+          + '<div class="explorer-context-actions form-actions"><button class="secondary" type="button" data-global-context-cancel>Cancel</button><button class="primary" type="button" data-global-context-create-file>Create</button></div>'
+        + '</div>'
+        + '<div class="explorer-context-form" data-global-context-new-folder-form hidden>'
+          + '<div class="explorer-context-title"><span>New folder</span><code>' + escapeHtml(folderDirectory || "project root") + '</code></div>'
+          + '<label class="explorer-context-label" for="globalContextFolderPath">Path</label>'
+          + '<input id="globalContextFolderPath" placeholder="path/to/folder" value="' + escapeHtml(defaultFolderPathForDirectory(folderDirectory)) + '" />'
+          + '<div class="explorer-context-actions form-actions"><button class="secondary" type="button" data-global-context-cancel>Cancel</button><button class="primary" type="button" data-global-context-create-folder>Create</button></div>'
+        + '</div>'
+        + (target.kind === "folder" ? '<div class="explorer-context-form" data-global-context-watch-form hidden>'
+          + '<div class="explorer-context-title"><span>Watch folder</span><code>' + escapeHtml(target.path) + '</code></div>'
+          + renderWatchModeOptions("globalContextWatchMode", "recursive-live")
+          + '<div class="explorer-context-actions form-actions"><button class="secondary" type="button" data-global-context-cancel>Cancel</button><button class="primary" type="button" data-global-context-apply-watch>Watch</button></div>'
+        + '</div>' : "")
+      : "");
+  menu.hidden = false;
+  menu.style.left = x + "px";
+  menu.style.top = y + "px";
+  clampContextMenuToViewport(menu);
+  menu.querySelector("[data-global-context-open]")?.addEventListener("click", () => {
+    hideExplorerContextMenu();
+    openContextHubProject(project.id, { filePath: target.path }).catch((error) => setStatus(error.message));
+  });
+  menu.querySelector("[data-global-context-toggle]")?.addEventListener("click", () => {
+    hideExplorerContextMenu();
+    toggleGlobalExplorerContextFolder(target);
+  });
+  menu.querySelector("[data-global-context-copy]")?.addEventListener("click", () => copyGlobalExplorerContextPath(absolutePath));
+  menu.querySelector("[data-global-context-open-project]")?.addEventListener("click", () => {
+    hideExplorerContextMenu();
+    const worktree = globalProjectSelectedWorktree(project);
+    openContextHubProject(worktree?.id || project.id).catch((error) => setStatus(error.message));
+  });
+  menu.querySelector("[data-global-context-open-workspace]")?.addEventListener("click", () => {
+    hideExplorerContextMenu();
+    const worktree = globalProjectSelectedWorktree(project);
+    window.open(workspaceProjectHref(worktree?.id || project.id, target.kind === "file" ? target.path : "", { fresh: true }), "_blank", "noopener");
+  });
+  menu.querySelectorAll("[data-global-context-priority]").forEach((button) => button.addEventListener("click", () => {
+    hideExplorerContextMenu();
+    moveProjectPriority(project.priorityId, button.dataset.globalContextPriority);
+  }));
+  menu.querySelector("[data-global-context-manage-priority]")?.addEventListener("click", () => {
+    hideExplorerContextMenu();
+    state.settingsSection = "hub";
+    setSettingsDisclosureOpen("hub-project-priority", true);
+    showSettingsPage();
+    window.requestAnimationFrame(() => document.querySelector('[data-settings-disclosure="hub-project-priority"]')?.scrollIntoView({ block: "start" }));
+  });
+  menu.querySelector("[data-global-context-health]")?.addEventListener("click", () => {
+    hideExplorerContextMenu();
+    openGlobalProjectInspection("health", project);
+  });
+  menu.querySelector("[data-global-context-startup]")?.addEventListener("click", () => {
+    hideExplorerContextMenu();
+    openGlobalProjectInspection("startup", project);
+  });
+  menu.querySelector("[data-global-context-inspect]")?.addEventListener("click", () => {
+    const worktree = globalProjectSelectedWorktree(project);
+    hideExplorerContextMenu();
+    openContextEngineInspection({
+      projectId: worktree?.id || project.id,
+      locationId: worktree?.id || project.id,
+      folder: target.path || ".",
+      provider: "codex",
+      title: project.title || project.id,
+      root: worktree?.root || project.root,
+    }).catch((error) => setStatus(error.message));
+  });
+  menu.querySelector("[data-global-context-shared-skills]")?.addEventListener("click", () => {
+    const worktree = project ? globalProjectSelectedWorktree(project) : null;
+    hideExplorerContextMenu();
+    openSharedSkillsWizard({ mode: "import", sourceDirectory: absolutePath, projectId: worktree?.id || "" }).catch((error) => setStatus(error.message));
+  });
+  menu.querySelector("[data-global-context-watch]")?.addEventListener("click", () => {
+    if (target.kind === "folder") showGlobalExplorerContextForm("watch");
+    else runGlobalProjectExplorerAction("watch-file", { path: target.path }).catch((error) => setStatus(error.message));
+  });
+  menu.querySelector("[data-global-context-snooze-reviews]")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const rect = menu.getBoundingClientRect();
+    openContextRoomSnoozeChooser(folderReviews, { x: rect.left, y: rect.top });
+  });
+  menu.querySelector("[data-global-context-new-file]")?.addEventListener("click", () => showGlobalExplorerContextForm("new-file"));
+  menu.querySelector("[data-global-context-new-folder]")?.addEventListener("click", () => showGlobalExplorerContextForm("new-folder"));
+  menu.querySelector("[data-global-context-delete]")?.addEventListener("click", () => deleteGlobalExplorerContextTarget().catch((error) => setStatus(error.message)));
+  menu.querySelector("[data-global-context-create-file]")?.addEventListener("click", () => createGlobalExplorerMarkdown(folderDirectory).catch(showGlobalExplorerContextError));
+  menu.querySelector("[data-global-context-create-folder]")?.addEventListener("click", () => createGlobalExplorerFolder().catch(showGlobalExplorerContextError));
+  menu.querySelector("[data-global-context-apply-watch]")?.addEventListener("click", () => applyGlobalExplorerFolderWatch().catch(showGlobalExplorerContextError));
+  menu.querySelectorAll("[data-global-context-cancel]").forEach((button) => button.addEventListener("click", hideExplorerContextMenu));
+}
+
+function showGlobalExplorerContextForm(formName) {
+  const menu = el("explorerContextMenu");
+  if (!menu) return;
+  menu.querySelector("[data-global-context-actions]").hidden = true;
+  menu.querySelectorAll("[data-global-context-new-file-form], [data-global-context-new-folder-form], [data-global-context-watch-form]").forEach((form) => { form.hidden = true; });
+  menu.querySelector("[data-global-context-" + formName + "-form]")?.removeAttribute("hidden");
+  menu.querySelector("[data-global-context-" + formName + "-form] input")?.focus();
+  clampContextMenuToViewport(menu);
+}
+
+function showGlobalExplorerContextError(error) {
+  const box = el("globalContextMenuError");
+  if (box) {
+    box.textContent = error?.message || "Action failed";
+    box.hidden = false;
+  }
+  setStatus(error?.message || "Explorer action failed");
+}
+
+async function copyGlobalExplorerContextPath(value) {
+  try {
+    await navigator.clipboard.writeText(value);
+    hideExplorerContextMenu();
+    setStatus("path copied");
+  } catch {
+    setStatus("could not copy path");
+  }
+}
+
+function toggleGlobalExplorerContextFolder(target) {
+  if (target.scope === "computer") {
+    const folderPath = target.path;
+    if (state.computerExplorerExpandedFolders.has(folderPath)) {
+      state.computerExplorerExpandedFolders.delete(folderPath);
+      renderGlobalProjectExplorer();
+    } else if (state.computerExplorerFolders.has(folderPath)) {
+      state.computerExplorerExpandedFolders.add(folderPath);
+      renderGlobalProjectExplorer();
+    } else {
+      loadComputerExplorer(folderPath, { expand: true }).catch((error) => setStatus(error.message));
+    }
+    return;
+  }
+  const folderId = target.projectKey + "::" + target.path;
+  if (state.globalProjectExpandedFolders.has(folderId)) state.globalProjectExpandedFolders.delete(folderId);
+  else {
+    state.globalProjectExpandedFolders.add(folderId);
+    const project = globalExplorerContextProject(target);
+    if (project) void loadGlobalProjectExplorerPage(project, { directory: target.path }).catch((error) => setStatus(error.message));
+  }
+  renderGlobalProjectExplorer();
+}
+
+async function runGlobalProjectExplorerAction(action, payload = {}) {
+  const target = state.globalExplorerContextTarget;
+  const project = globalExplorerContextProject(target);
+  if (!project) throw new Error("This local project is no longer available.");
+  const worktree = globalProjectSelectedWorktree(project);
+  if (!worktree) throw new Error("This project has no available worktree.");
+  const response = await api("/api/context-hub/project-explorer/action", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ projectId: worktree.id, action, ...payload }),
+  });
+  hideExplorerContextMenu();
+  clearGlobalProjectExplorerCache(project);
+  await openGlobalProjectExplorer(project);
+  setStatus(action.replaceAll("-", " ") + " complete");
+  return response;
+}
+
+async function createGlobalExplorerMarkdown(directory) {
+  const title = el("globalContextMarkdownTitle")?.value.trim() || "New document";
+  const relPath = markdownPathFromName(directory, title);
+  await runGlobalProjectExplorerAction("create-markdown", { path: relPath, title });
+}
+
+async function createGlobalExplorerFolder() {
+  const relPath = normalizeUiPath(el("globalContextFolderPath")?.value || "");
+  if (!relPath) throw new Error("New folder path is required");
+  await runGlobalProjectExplorerAction("create-folder", { path: relPath });
+}
+
+async function applyGlobalExplorerFolderWatch() {
+  const target = state.globalExplorerContextTarget;
+  const mode = document.querySelector('input[name="globalContextWatchMode"]:checked')?.value || "recursive-live";
+  await runGlobalProjectExplorerAction("watch-folder", { path: target.path, mode });
+}
+
+async function deleteGlobalExplorerContextTarget() {
+  const target = state.globalExplorerContextTarget;
+  if (!target || target.scope !== "project") return;
+  const selectedPath = target.kind === "folder" ? target.path.replace(/\/$/, "") + "/" : target.path;
+  if (!confirm("Permanently delete this item?\n\n" + selectedPath)) return;
+  await runGlobalProjectExplorerAction("delete", { paths: [selectedPath] });
+}
+
+function renderGlobalProjectExplorer() {
+  const explorer = el("globalProjectExplorer");
+  const scope = el("globalExplorerScope");
+  const listLabel = el("globalExplorerListLabel");
+  const search = el("globalProjectSearch");
+  const count = el("globalProjectCount");
+  const list = el("globalProjectList");
+  if (!explorer || !scope || !listLabel || !search || !count || !list) return;
+  explorer.hidden = !IS_GLOBAL_CONTEXT_ROOM;
+  if (!IS_GLOBAL_CONTEXT_ROOM) return;
+  document.querySelectorAll("[data-global-explorer-mode]").forEach((button) => button.classList.toggle("active", button.dataset.globalExplorerMode === (state.globalExplorerMode === "computer" ? "computer" : "projects")));
+  if (search.value !== state.globalProjectSearch) search.value = state.globalProjectSearch;
+  if (state.globalExplorerMode === "computer") {
+    search.placeholder = "Search explorer...";
+    search.setAttribute("aria-label", "Search computer explorer");
+    const snapshot = state.computerExplorer;
+    scope.hidden = false;
+    scope.innerHTML = '<span class="global-explorer-scope-copy"><strong>Computer</strong><code title="' + escapeHtml(snapshot?.root || state.settings?.explorer?.computerRoot || "") + '">' + escapeHtml(snapshot?.root || state.settings?.explorer?.computerRoot || "") + '</code></span>';
+    listLabel.textContent = "Items";
+    count.textContent = snapshot ? (snapshot.entries || []).length + " at root" : "Loading…";
+    list.innerHTML = renderComputerExplorer();
+    return;
+  }
+  const selectedProject = (state.contextHub?.projects || []).find((project) => project.projectKey === state.globalExplorerProjectKey);
+  if (state.globalExplorerMode === "project" && selectedProject) {
+    const selectedWorktree = globalProjectSelectedWorktree(selectedProject);
+    search.placeholder = "Search files...";
+    search.setAttribute("aria-label", "Search project files");
+    scope.hidden = false;
+    scope.innerHTML = '<button class="global-explorer-back" type="button" data-global-explorer-back aria-label="Back to projects">←</button><span class="global-explorer-scope-copy"><strong>' + escapeHtml(selectedProject.title || selectedProject.id) + '</strong><code title="' + escapeHtml(selectedWorktree?.root || contextHubProjectPickerLocation(selectedProject)) + '">' + escapeHtml(selectedWorktree?.root || contextHubProjectPickerLocation(selectedProject)) + '</code></span>'
+      + contextHubWorktreeSelectorMarkup(selectedProject, selectedWorktree?.id || "", 'data-global-project-worktree="' + escapeHtml(selectedProject.projectKey) + '"');
+    listLabel.textContent = selectedProject.mode === "shared" ? "Shared files" : "Files";
+    count.textContent = selectedProject.mode === "shared" ? "Proposals only" : "Project files";
+    list.innerHTML = renderGlobalProjectFolder(selectedProject);
+    return;
+  }
+  state.globalExplorerMode = "projects";
+  state.globalExplorerProjectKey = "";
+  search.placeholder = "Search projects...";
+  search.setAttribute("aria-label", "Search projects");
+  scope.hidden = true;
+  scope.innerHTML = "";
+  listLabel.textContent = "Projects";
+  const allProjects = contextHubPrioritizedProjects(state.contextHub?.projects || []);
+  const needle = state.globalProjectSearch.trim().toLowerCase();
+  const projects = allProjects.filter((project) => !needle || contextHubProjectSearchText(project).includes(needle));
+  count.textContent = state.contextHub
+    ? projects.length + (needle ? " of " + allProjects.length : "")
+    : "Loading…";
+  list.innerHTML = projects.length
+    ? projects.map((project) => {
+        const local = project.mode !== "shared" && project.available;
+        const reviewCount = Number(project.localReviewCount || 0);
+        const proposalCount = Number(project.sharedProposalCount || 0);
+        const attention = state.contextHub?.freshness?.fresh === false ? "Refreshing…" : [
+          reviewCount ? reviewCount + " review" + (reviewCount === 1 ? "" : "s") : "",
+          proposalCount ? proposalCount + " proposal" + (proposalCount === 1 ? "" : "s") : "",
+        ].filter(Boolean).join(" · ") || "Up to date";
+        const selected = project.projectKey === state.sharedProposalProject;
+        const worktree = globalProjectSelectedWorktree(project);
+        return '<a class="global-project-row" href="' + escapeHtml(workspaceProjectHref(worktree?.id || project.id)) + '" aria-current="' + String(selected) + '" data-global-project-key="' + escapeHtml(project.projectKey) + '">'
+          + '<span class="global-project-row-main"><span class="global-project-row-title"><strong>' + escapeHtml(project.title || project.id) + '</strong>' + contextHubProjectSourceBadges(project) + '</span>'
+          + '<span class="global-project-row-location" title="' + escapeHtml(contextHubProjectPickerLocation(project)) + '">' + escapeHtml(contextHubProjectPickerLocation(project)) + '</span></span>'
+          + '<span class="global-project-row-side"><span>' + escapeHtml(attention) + '</span><span class="global-project-row-action">' + (local ? "Open →" : "Details →") + '</span></span>'
+          + '</a>';
+      }).join("")
+    : state.contextHub
+      ? '<div class="global-project-explorer-empty">No project matches this search.</div>'
+      : '<div class="global-project-explorer-empty">Loading projects…</div>';
+}
+
+function contextHubProjectPickerChoices() {
+  const needle = state.contextHubProjectPickerQuery.trim().toLowerCase();
+  const projects = contextHubPrioritizedProjects(state.contextHub?.projects || [])
+    .filter((project) => !needle || contextHubProjectSearchText(project).includes(needle));
+  return {
+    projects,
+    choices: needle ? projects : [null, ...projects],
+  };
+}
+
+function renderContextHubProjectPicker() {
+  const modal = el("contextHubProjectPicker");
+  const search = el("contextHubProjectPickerSearch");
+  const list = el("contextHubProjectPickerList");
+  const status = el("contextHubProjectPickerStatus");
+  if (!modal || !search || !list || !status) return;
+  modal.hidden = !state.contextHubProjectPickerOpen;
+  if (!state.contextHubProjectPickerOpen) return;
+  if (search.value !== state.contextHubProjectPickerQuery) search.value = state.contextHubProjectPickerQuery;
+  const { projects, choices } = contextHubProjectPickerChoices();
+  state.contextHubProjectPickerIndex = choices.length
+    ? Math.max(0, Math.min(state.contextHubProjectPickerIndex, choices.length - 1))
+    : 0;
+  const totalProjects = state.contextHub?.projects?.length || 0;
+  status.textContent = state.contextHubProjectPickerQuery.trim()
+    ? projects.length + " of " + totalProjects + " projects"
+    : totalProjects + " project" + (totalProjects === 1 ? "" : "s");
+  list.innerHTML = choices.length
+    ? choices.map((project, index) => {
+        const active = index === state.contextHubProjectPickerIndex;
+        const selected = project
+          ? project.projectKey === state.sharedProposalProject
+          : !state.sharedProposalProject;
+        if (!project) {
+          return '<button id="contextHubProjectPickerOption-' + index + '" class="context-hub-project-picker-option" type="button" role="option" aria-selected="' + String(selected) + '" data-active="' + String(active) + '" data-context-hub-project-picker-choice="" data-context-hub-project-picker-index="' + index + '">'
+            + '<span class="context-hub-project-picker-option-main"><span class="context-hub-project-picker-option-title"><strong>All projects</strong></span><span class="context-hub-project-picker-option-location">Remove the project filter and show the complete Context Room.</span></span>'
+            + '<span class="context-hub-project-picker-option-meta">' + totalProjects + ' total' + (selected ? ' <span class="context-hub-project-picker-option-check" aria-hidden="true">✓</span>' : "") + '</span>'
+            + '</button>';
+        }
+        const reviewCount = Number(project.localReviewCount || 0);
+        const proposalCount = Number(project.sharedProposalCount || 0);
+        const meta = [
+          project.current ? "current" : "",
+          reviewCount ? reviewCount + " review" + (reviewCount === 1 ? "" : "s") : "",
+          proposalCount ? proposalCount + " proposal" + (proposalCount === 1 ? "" : "s") : "",
+        ].filter(Boolean).join(" · ") || "no pending review";
+        return '<button id="contextHubProjectPickerOption-' + index + '" class="context-hub-project-picker-option" type="button" role="option" aria-selected="' + String(selected) + '" data-active="' + String(active) + '" data-context-hub-project-picker-choice="' + escapeHtml(project.projectKey) + '" data-context-hub-project-picker-index="' + index + '">'
+          + '<span class="context-hub-project-picker-option-main"><span class="context-hub-project-picker-option-title"><strong>' + escapeHtml(project.title || project.id) + '</strong>' + contextHubProjectSourceBadges(project) + '</span><span class="context-hub-project-picker-option-location" title="' + escapeHtml(contextHubProjectPickerLocation(project)) + '">' + escapeHtml(contextHubProjectPickerLocation(project)) + '</span></span>'
+          + '<span class="context-hub-project-picker-option-meta">' + escapeHtml(meta) + (selected ? ' <span class="context-hub-project-picker-option-check" aria-hidden="true">✓</span>' : "") + '</span>'
+          + '</button>';
+      }).join("")
+    : '<div class="context-hub-project-picker-empty"><strong>No project found.</strong><br />Try a name, folder path, or shared project ID.</div>';
+  const activeId = choices.length ? "contextHubProjectPickerOption-" + state.contextHubProjectPickerIndex : "";
+  if (activeId) search.setAttribute("aria-activedescendant", activeId);
+  else search.removeAttribute("aria-activedescendant");
+  window.requestAnimationFrame(() => el(activeId)?.scrollIntoView({ block: "nearest" }));
+}
+
+function openContextHubProjectPicker(trigger) {
+  state.contextHubProjectPickerOpen = true;
+  state.contextHubProjectPickerQuery = "";
+  state.contextHubProjectPickerReturnFocus = trigger?.dataset.contextHubProjectPickerTrigger || "";
+  document.querySelectorAll("[data-context-hub-project-picker-trigger]").forEach((button) => button.setAttribute("aria-expanded", String(button === trigger)));
+  const projects = contextHubPrioritizedProjects(state.contextHub?.projects || []);
+  const selectedIndex = projects.findIndex((project) => project.projectKey === state.sharedProposalProject);
+  state.contextHubProjectPickerIndex = selectedIndex >= 0 ? selectedIndex + 1 : 0;
+  renderContextHubProjectPicker();
+  window.requestAnimationFrame(() => {
+    const search = el("contextHubProjectPickerSearch");
+    search?.focus();
+    search?.select();
+  });
+}
+
+function closeContextHubProjectPicker({ restoreFocus = true } = {}) {
+  const returnFocus = state.contextHubProjectPickerReturnFocus;
+  state.contextHubProjectPickerOpen = false;
+  state.contextHubProjectPickerQuery = "";
+  state.contextHubProjectPickerIndex = 0;
+  const modal = el("contextHubProjectPicker");
+  if (modal) modal.hidden = true;
+  document.querySelectorAll("[data-context-hub-project-picker-trigger]").forEach((button) => button.setAttribute("aria-expanded", "false"));
+  if (restoreFocus && returnFocus) {
+    window.requestAnimationFrame(() => document.querySelector('[data-context-hub-project-picker-trigger="' + returnFocus + '"]')?.focus());
+  }
+}
+
+function selectContextHubProjectPickerChoice(projectKey = "") {
+  const returnFocus = state.contextHubProjectPickerReturnFocus;
+  closeContextHubProjectPicker({ restoreFocus: false });
+  state.sharedProposalProject = projectKey;
+  state.contextHubSource = "all";
+  state.contextHubSelection = "";
+  renderContextRoomGlobalReviewQueue();
+  renderSharedProposalWorkspace();
+  if (returnFocus) {
+    window.requestAnimationFrame(() => document.querySelector('[data-context-hub-project-picker-trigger="' + returnFocus + '"]')?.focus());
+  }
+}
+
+function contextRoomProposalReviewState(item) {
+  if (item.hasConflict) return { key: "conflict", label: "Conflict" };
+  if (Number(item.mainAdvancedBy || 0) > 0) return { key: "updated", label: "Re-review required" };
+  return {
+    key: item.reviewStatus || "ready",
+    label: contextHubStatusLabel(item.reviewStatus, item.fileCount || 0),
+  };
+}
+
+function contextRoomReviewCanReject(item) {
+  if (!item) return false;
+  if (item.type === "shared") return !["accepted", "merged"].includes(item.reviewStatus);
+  return item.localReview?.reviewStatus !== "needs_changes";
+}
+
+function renderContextRoomReviewRow(item) {
+  const project = contextHubProjectForItem(item);
+  const projectLabel = project?.title || item.projectTitle || item.projectId || item.title || "Project";
+  const active = state.contextHubSelection === item.id ? " active" : "";
+  const selected = state.contextRoomSelectedReviews.has(item.id);
+  const snooze = contextRoomReviewSnooze(item);
+  const snoozeBadge = snooze
+    ? '<span class="context-room-snooze-badge" title="Returns ' + escapeHtml(new Date(snooze.until).toLocaleString()) + '">Snoozed · ' + escapeHtml(formatContextRoomSnoozeTime(snooze.until)) + '</span>'
+    : "";
+  const entryStart = '<div class="context-room-review-entry" data-selected="' + String(selected) + '" data-context-room-review-entry="' + escapeHtml(item.id) + '">';
+  if (item.type === "shared") {
+    const expanded = state.contextHubExpandedProposalDescriptions.has(item.id);
+    const opening = state.contextRoomOpeningProposalId === item.id;
+    const files = Array.isArray(item.files) ? item.files : [];
+    const fileCount = Number(item.fileCount || files.length || 0);
+    const reviewState = contextRoomProposalReviewState(item);
+    const previewFiles = files.slice(0, 4).map((file) =>
+      '<span class="context-room-proposal-file" title="' + escapeHtml(file) + '">' + escapeHtml(file) + '</span>'
+    ).join("");
+    const moreFiles = fileCount > 4
+      ? '<span class="context-room-proposal-more">+' + (fileCount - 4) + ' more</span>'
+      : "";
+    const description = item.description || "Review the files together, then accept or reject the proposal as one shared change.";
+    const descriptionId = "contextRoomProposalDescription-" + item.id.replace(/[^A-Za-z0-9_-]/g, "-");
+    const proposalLabel = item.title || item.branch || projectLabel;
+    return entryStart + '<article class="context-room-review-proposal' + active + '" aria-busy="' + String(opening) + '">'
+      + '<button class="context-room-proposal-hitbox" type="button" data-context-room-review="' + escapeHtml(item.id) + '" aria-label="Open proposal ' + escapeHtml(proposalLabel) + '"' + (opening ? " disabled" : "") + '></button>'
+      + '<div class="context-room-proposal-content">'
+      + '<span class="context-room-proposal-stack" aria-hidden="true">P</span>'
+      + '<span class="context-room-proposal-copy"><span class="context-room-proposal-topline"><span class="context-hub-source" data-source="shared">Proposal</span><span class="context-room-proposal-title">' + escapeHtml(proposalLabel) + '</span></span>'
+      + '<span class="context-room-proposal-meta">' + escapeHtml(projectLabel + " · " + fileCount + " changed file" + (fileCount === 1 ? "" : "s") + " · @" + shortSharedHash(item.head)) + '</span>'
+      + '<span class="context-room-proposal-description-row"><span id="' + escapeHtml(descriptionId) + '" class="context-room-proposal-description" data-context-room-proposal-description="' + escapeHtml(item.id) + '" data-expanded="' + String(expanded) + '">' + escapeHtml(description) + '</span>'
+      + '<button class="context-room-proposal-description-toggle" type="button" data-context-room-proposal-description-toggle="' + escapeHtml(item.id) + '" aria-expanded="' + String(expanded) + '" aria-controls="' + escapeHtml(descriptionId) + '" aria-label="' + (expanded ? "Collapse proposal description" : "Show full proposal description") + '" title="' + (expanded ? "Collapse description" : "Show full description") + '"' + (expanded ? "" : " hidden") + '>' + (expanded ? "−" : "+") + '</button></span>'
+      + '<span class="context-room-proposal-preview-files">' + (previewFiles || '<span class="context-room-proposal-more">No changed files reported.</span>') + moreFiles + '</span></span>'
+      + '<span class="context-room-proposal-state" data-state="' + escapeHtml(reviewState.key) + '">' + snoozeBadge + '<span>' + escapeHtml(opening ? "Opening review…" : reviewState.label) + '</span>' + (opening ? '<span class="context-room-proposal-opening-indicator" aria-hidden="true"></span>' : '<span class="context-room-proposal-arrow" aria-hidden="true">→</span>') + '</span>'
+      + '</div>'
+      + '</article></div>';
+  }
+  const reviewTitle = item.title || item.localFile?.split("/").pop() || item.localFile || projectLabel;
+  const reviewDescription = item.localFile || item.description || "Local file waiting for review.";
+  const localNeedsChanges = item.localReview?.reviewStatus === "needs_changes";
+  const worktreeLabel = item.localReview?.worktreeLabel || "";
+  return entryStart + '<button class="review-item context-hub-review-row' + active + '" type="button" data-context-room-review="' + escapeHtml(item.id) + '">'
+    + '<div class="review-top"><span class="context-hub-review-source"><span class="context-hub-source" data-source="local">Local</span><span class="context-hub-review-project">' + escapeHtml(projectLabel) + '</span>' + (worktreeLabel ? '<span class="context-hub-worktree-label">' + escapeHtml(worktreeLabel) + '</span>' : '') + '</span><span class="context-room-review-row-state">' + snoozeBadge + '<span class="chip high">' + (localNeedsChanges ? "Needs changes" : "Review") + '</span></span></div>'
+    + '<div class="review-title">' + escapeHtml(reviewTitle) + '</div>'
+    + '<div class="review-path" title="' + escapeHtml(reviewDescription) + '">' + escapeHtml(reviewDescription) + '</div>'
+    + '</button></div>';
+}
+
+function contextRoomSelectedReviewItems(ids = state.contextRoomSelectedReviews) {
+  const index = new Map(contextHubReviewItems().map((item) => [item.id, item]));
+  return [...ids].map((id) => index.get(id)).filter(Boolean);
+}
+
+function contextRoomVisibleSelectableReviews() {
+  return contextHubHomeReviewItems(state.sharedProposalSearch.trim().toLowerCase())
+    .slice(0, CONTEXT_HUB_HOME_REVIEW_LIMIT);
+}
+
+function toggleContextRoomReviewSelection(item) {
+  if (!item) return false;
+  if (state.contextRoomSelectedReviews.has(item.id)) state.contextRoomSelectedReviews.delete(item.id);
+  else state.contextRoomSelectedReviews.add(item.id);
+  renderContextRoomGlobalReviewQueue();
+  return true;
+}
+
+function hideContextRoomReviewContextMenu() {
+  const menu = el("contextRoomReviewContextMenu");
+  if (!menu) return;
+  menu.hidden = true;
+  menu.innerHTML = "";
+  menu.classList.remove("snooze-open");
+  state.contextRoomSnoozeTargetIds = [];
+}
+
+function openContextRoomReviewContextMenu(event, item) {
+  event.preventDefault();
+  event.stopPropagation();
+  hideExplorerContextMenu();
+  const menu = el("contextRoomReviewContextMenu");
+  if (!menu) return;
+  const selected = state.contextRoomSelectedReviews.has(item.id);
+  const visible = contextRoomVisibleSelectableReviews();
+  const allVisibleSelected = visible.length > 0
+    && visible.every((candidate) => state.contextRoomSelectedReviews.has(candidate.id));
+  const label = item.title || item.localFile || item.branch || (item.type === "shared" ? "Proposal" : "Local review");
+  const snoozed = Boolean(contextRoomReviewSnooze(item));
+  menu.innerHTML = '<div class="explorer-context-title"><span>Selection</span><code>' + escapeHtml(label) + '</code></div>'
+    + '<div class="explorer-context-actions menu-actions">'
+    + (snoozed
+      ? '<button class="secondary" type="button" role="menuitem" data-context-room-unsnooze="' + escapeHtml(item.id) + '">Return to active queue</button>'
+      : '<button class="secondary" type="button" role="menuitem" data-context-room-snooze-open="' + escapeHtml(item.id) + '">Snooze…</button>')
+    + '<button class="secondary" type="button" role="menuitem" data-context-room-selection-toggle="' + escapeHtml(item.id) + '">' + (selected ? "Remove from selection" : "Select this item") + '</button>'
+    + (visible.length ? '<button class="secondary" type="button" role="menuitem" data-context-room-selection-visible="' + (allVisibleSelected ? "clear" : "select") + '">' + (allVisibleSelected ? "Unselect visible" : "Select all visible") + '</button>' : "")
+    + (state.contextRoomSelectedReviews.size ? '<button class="secondary" type="button" role="menuitem" data-context-room-selection-clear>Clear selection</button>' : "")
+    + '</div>';
+  menu.hidden = false;
+  menu.style.left = event.clientX + "px";
+  menu.style.top = event.clientY + "px";
+  clampContextMenuToViewport(menu);
+  window.requestAnimationFrame(() => menu.querySelector('[role="menuitem"]')?.focus());
+}
+
+function contextRoomSnoozeDeadline(preset) {
+  const durations = { "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000, "1w": 604_800_000 };
+  return new Date(Date.now() + (durations[preset] || durations["1h"])).toISOString();
+}
+
+function contextRoomCustomSnoozeDeadline(value, unit) {
+  const amount = Number(value);
+  const units = { minutes: 60_000, hours: 3_600_000, days: 86_400_000, weeks: 604_800_000 };
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 999 || !units[unit]) return "";
+  return new Date(Date.now() + amount * units[unit]).toISOString();
+}
+
+function contextRoomLocalDateTimeValue(date = new Date()) {
+  const local = new Date(date);
+  local.setMinutes(local.getMinutes() - local.getTimezoneOffset());
+  return local.toISOString().slice(0, 16);
+}
+
+function contextRoomSnoozeTargetItems() {
+  const ids = new Set(state.contextRoomSnoozeTargetIds || []);
+  return contextHubReviewItems().filter((item) => ids.has(item.id) && !contextRoomReviewSnooze(item));
+}
+
+function contextRoomReviewsForExplorerPath(projectId, targetPath, kind = "folder") {
+  const cleanTarget = normalizeUiPath(targetPath || "").replace(/\/$/, "");
+  return contextHubReviewItems().filter((item) => {
+    if (item.type === "shared" || item.projectId !== projectId || contextRoomReviewSnooze(item)) return false;
+    const itemPath = normalizeUiPath(item.localFile || "").replace(/\/$/, "");
+    if (kind === "file") return itemPath === cleanTarget;
+    return !cleanTarget || itemPath === cleanTarget || itemPath.startsWith(cleanTarget + "/");
+  });
+}
+
+function openContextRoomSnoozeChooser(items, { anchor = null, x = null, y = null } = {}) {
+  const targets = items.filter((item) => item?.id && !contextRoomReviewSnooze(item));
+  if (!targets.length) return;
+  hideExplorerContextMenu();
+  const menu = el("contextRoomReviewContextMenu");
+  if (!menu) return;
+  state.contextRoomSnoozeTargetIds = targets.map((item) => item.id);
+  const countLabel = targets.length + " exact review version" + (targets.length === 1 ? "" : "s");
+  const exactDefault = contextRoomLocalDateTimeValue(new Date(Date.now() + 3_600_000));
+  menu.classList.add("snooze-open");
+  menu.innerHTML = '<div class="context-room-snooze-chooser">'
+    + '<div class="explorer-context-title"><span>Snooze ' + (targets.length === 1 ? "review" : targets.length + " reviews") + '</span><code>' + escapeHtml(countLabel) + '</code></div>'
+    + '<p class="context-room-snooze-help">Only the versions currently shown are hidden. Any new version returns to Home immediately.</p>'
+    + '<div class="context-room-snooze-presets" aria-label="Quick snooze durations">'
+      + '<button type="button" data-context-room-snooze-preset="1h">1 hour</button>'
+      + '<button type="button" data-context-room-snooze-preset="4h">4 hours</button>'
+      + '<button type="button" data-context-room-snooze-preset="1d">1 day</button>'
+      + '<button type="button" data-context-room-snooze-preset="1w">1 week</button>'
+    + '</div>'
+    + '<div class="context-room-snooze-custom">'
+      + '<label>Duration<input id="contextRoomSnoozeAmount" type="number" min="1" max="999" step="1" value="1" inputmode="numeric" /></label>'
+      + '<label>Unit<select id="contextRoomSnoozeUnit"><option value="minutes">Minutes</option><option value="hours" selected>Hours</option><option value="days">Days</option><option value="weeks">Weeks</option></select></label>'
+      + '<button class="primary" type="button" data-context-room-snooze-duration>Apply</button>'
+    + '</div>'
+    + '<details class="context-room-snooze-exact"><summary>Choose an exact return time</summary><div class="context-room-snooze-exact-fields"><input id="contextRoomSnoozeUntil" type="datetime-local" min="' + escapeHtml(contextRoomLocalDateTimeValue(new Date(Date.now() + 60_000))) + '" value="' + escapeHtml(exactDefault) + '" /><button class="primary" type="button" data-context-room-snooze-time>Apply</button></div></details>'
+    + '<div class="explorer-context-actions form-actions"><button class="secondary" type="button" data-context-room-snooze-cancel>Cancel</button></div>'
+    + '</div>';
+  menu.hidden = false;
+  const rect = anchor?.getBoundingClientRect?.();
+  menu.style.left = (Number.isFinite(x) ? x : rect ? rect.left : 12) + "px";
+  menu.style.top = (Number.isFinite(y) ? y : rect ? rect.bottom + 6 : 12) + "px";
+  clampContextMenuToViewport(menu);
+  window.requestAnimationFrame(() => menu.querySelector("[data-context-room-snooze-preset]")?.focus());
+}
+
+async function snoozeContextRoomReviews(items, until) {
+  if (!items.length || state.contextRoomBulkBusy) return;
+  state.contextRoomBulkBusy = true;
+  if (state.page === "settings") renderSettingsPanel();
+  else renderContextRoomGlobalReviewQueue();
+  try {
+    const result = await api("/api/context-hub/reviews/snooze", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        until,
+        expectedRevision: state.contextHub?.attention?.revision || "",
+        items: items.map((item) => ({ id: item.id, revisionToken: item.revisionToken })),
+      }),
+    });
+    applyContextHubAttentionState(result.attention);
+    for (const item of items) state.contextRoomSelectedReviews.delete(item.id);
+    workspaceUpdate("catalog-refreshed", { reason: "review-snoozed" });
+    setStatus(items.length + " review" + (items.length === 1 ? "" : "s") + " snoozed " + formatContextRoomSnoozeTime(until));
+  } catch (error) {
+    if (error?.code === "review_revision_conflict" || error?.code === "attention_revision_conflict") void refreshContextHubUi();
+    throw error;
+  } finally {
+    state.contextRoomBulkBusy = false;
+    if (state.page === "settings") renderSettingsPanel();
+    else renderContextRoomGlobalReviewQueue();
+  }
+}
+
+async function unsnoozeContextRoomReviews(items) {
+  if (!items.length || state.contextRoomBulkBusy) return;
+  state.contextRoomBulkBusy = true;
+  if (state.page === "settings") renderSettingsPanel();
+  else renderContextRoomGlobalReviewQueue();
+  try {
+    const result = await api("/api/context-hub/reviews/unsnooze", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        reviewIds: items.map((item) => item.id),
+        expectedRevision: state.contextHub?.attention?.revision || "",
+      }),
+    });
+    applyContextHubAttentionState(result.attention);
+    for (const item of items) state.contextRoomSelectedReviews.delete(item.id);
+    workspaceUpdate("catalog-refreshed", { reason: "review-unsnoozed" });
+    setStatus(items.length + " review" + (items.length === 1 ? "" : "s") + " returned to the active queue");
+  } finally {
+    state.contextRoomBulkBusy = false;
+    if (state.page === "settings") renderSettingsPanel();
+    else renderContextRoomGlobalReviewQueue();
+  }
+}
+
+function renderContextRoomReviewSelection(visibleReviews) {
+  const toolbar = el("contextRoomReviewSelection");
+  if (!toolbar) return;
+  const available = new Map(contextHubReviewItems()
+    .map((item) => [item.id, item]));
+  for (const id of state.contextRoomSelectedReviews) {
+    if (!available.has(id)) state.contextRoomSelectedReviews.delete(id);
+  }
+  const selected = contextRoomSelectedReviewItems();
+  if (!selected.length) {
+    toolbar.hidden = true;
+    toolbar.innerHTML = "";
+    return;
+  }
+  const proposals = selected.filter((item) => item.type === "shared").length;
+  const localReviews = selected.length - proposals;
+  const visibleSelectable = visibleReviews;
+  const allVisibleSelected = visibleSelectable.length > 0
+    && visibleSelectable.every((item) => state.contextRoomSelectedReviews.has(item.id));
+  const disabled = state.contextRoomBulkBusy ? " disabled" : "";
+  const rejectable = selected.filter(contextRoomReviewCanReject);
+  toolbar.hidden = false;
+  toolbar.innerHTML = '<div class="context-room-review-selection-copy"><strong>' + selected.length + ' selected</strong><span>'
+    + [
+      proposals ? proposals + " proposal" + (proposals === 1 ? "" : "s") : "",
+      localReviews ? localReviews + " local file" + (localReviews === 1 ? "" : "s") : "",
+    ].filter(Boolean).join(" · ")
+    + '</span></div><div class="context-room-review-selection-actions">'
+    + '<button type="button" data-context-room-select-visible="' + (allVisibleSelected ? "clear" : "select") + '"' + disabled + '>' + (allVisibleSelected ? "Unselect visible" : "Select visible") + '</button>'
+    + '<button type="button" data-context-room-clear-selection' + disabled + '>Clear</button>'
+    + '<button type="button" data-context-room-snooze-selected' + disabled + '>' + (state.contextRoomBulkBusy ? "Snoozing…" : "Snooze…") + '</button>'
+    + (rejectable.length ? '<button class="danger-action" type="button" data-context-room-reject-selected' + disabled + '>' + (state.contextRoomBulkBusy ? "Rejecting…" : "Reject " + rejectable.length) + '</button>' : "")
+    + '</div>';
+}
+
+function requestContextRoomReviewRejection(ids) {
+  const requestedIds = new Set(ids);
+  const items = contextRoomSelectedReviewItems(requestedIds).filter(contextRoomReviewCanReject);
+  if (!items.length || state.contextRoomBulkBusy) return;
+  const proposals = items.filter((item) => item.type === "shared").length;
+  const localReviews = items.length - proposals;
+  const effects = [
+    proposals ? proposals + " active proposal" + (proposals === 1 ? "" : "s") + " will leave the queue. Each exact Git revision stays archived on a rejected branch." : "",
+    localReviews ? localReviews + " local review" + (localReviews === 1 ? "" : "s") + " will be marked Needs changes. The local files will not be deleted." : "",
+  ].filter(Boolean).join(" ");
+  showConfirmDialog({
+    title: "Reject " + items.length + " selected item" + (items.length === 1 ? "" : "s") + "?",
+    body: effects,
+    confirmLabel: items.length === 1 ? "Reject item" : "Reject selected",
+    onConfirm: () => rejectContextRoomReviews(items).catch((error) => setStatus(error.message)),
+  });
+}
+
+async function rejectContextRoomReviews(items) {
+  if (!items.length || state.contextRoomBulkBusy) return;
+  state.contextRoomBulkBusy = true;
+  renderContextRoomGlobalReviewQueue();
+  setStatus("rejecting " + items.length + " review item" + (items.length === 1 ? "" : "s") + "…");
+  try {
+    const result = await api("/api/context-hub/reject", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        items: items.map((item) => ({
+          id: item.id,
+          expectedHead: item.type === "shared" ? item.head : undefined,
+        })),
+      }),
+    });
+    for (const rejected of result.rejected || []) {
+      state.contextRoomSelectedReviews.delete(rejected.id);
+      state.contextHubExpandedProposalDescriptions.delete(rejected.id);
+      if (state.contextHubSelection === rejected.id) state.contextHubSelection = "";
+    }
+    await refreshContextHubUi();
+    const summary = result.summary || {};
+    const completed = [
+      summary.proposals ? summary.proposals + " proposal" + (summary.proposals === 1 ? "" : "s") + " rejected" : "",
+      summary.localReviews ? summary.localReviews + " local review" + (summary.localReviews === 1 ? "" : "s") + " marked Needs changes" : "",
+    ].filter(Boolean).join(" · ");
+    setStatus((completed || "no review items changed") + (summary.failed ? " · " + summary.failed + " failed" : ""));
+  } finally {
+    state.contextRoomBulkBusy = false;
+    renderContextRoomGlobalReviewQueue();
+  }
+}
+
+function renderContextRoomModeWarning(project) {
+  if (!project || project.mode !== "hybrid") return "";
+  const busy = Boolean(state.contextHubModePromptBusy);
+  const sharedBusy = state.contextHubModePromptBusy === "shared";
+  const localBusy = state.contextHubModePromptBusy === "local";
+  return '<div class="context-room-mode-warning" role="status">'
+    + '<div class="context-room-mode-warning-copy"><strong>Two review flows are active for ' + escapeHtml(project.title || project.id) + '.</strong>'
+    + '<span>Local files and shared proposals can coexist, but duplicate context is easier to miss or review twice. Prefer one documentation source when possible.</span></div>'
+    + '<div class="context-room-mode-warning-actions">'
+    + '<button type="button" data-context-room-mode-prompt="shared" title="Add a migration prompt to the active Codex composer. Nothing is sent."' + (busy ? " disabled" : "") + '><span aria-hidden="true">@</span> ' + (sharedBusy ? "Adding…" : "Keep Shared") + '</button>'
+    + '<button type="button" data-context-room-mode-prompt="local" title="Add a migration prompt to the active Codex composer. Nothing is sent."' + (busy ? " disabled" : "") + '><span aria-hidden="true">@</span> ' + (localBusy ? "Adding…" : "Keep Local") + '</button>'
+    + '</div></div>';
+}
+
+function buildContextRoomModeCodexPrompt(project, preferredMode) {
+  if (!project || !["shared", "local"].includes(preferredMode)) return "";
+  const projectTitle = project.title || project.id || "this project";
+  const projectRoot = project.root || "No local root reported";
+  const sharedRepository = project.shared?.repository || "No shared repository reported";
+  const sharedProjectId = project.shared?.projectId || project.sharedTitle || "No shared project ID reported";
+  const target = preferredMode === "shared"
+    ? [
+        "Make Shared the only Context Room documentation and review source for this project while keeping the local code folder and Hub navigation usable.",
+        "Inventory the effective local documentation, AGENTS.md files, skills, hooks, watch rules, and their shared counterparts. Preserve unique useful context.",
+        "Move any context that must become shared through a shared proposal branch; never write directly to shared main. Leave acceptance to the human review flow.",
+        "Only after the shared proposal is ready, remove local Context Room documentation/watch/review duplication. Do not delete unique project files or unregister the code project merely to hide the warning.",
+      ]
+    : [
+        "Make Local the only Context Room documentation and review source for this project.",
+        "Inventory the effective local documentation, AGENTS.md files, skills, hooks, watch rules, and their shared counterparts. Preserve unique useful context locally before disconnecting anything.",
+        "Disconnect this project from shared-context review without modifying or deleting the shared repository, its main branch, its proposals, or any other project.",
+        "Keep the local Context Room project, Explorer navigation, documentation, skills, hooks, and normal file-by-file review working.",
+      ];
+  return "Simplify the Context Room setup for " + projectTitle + ".\n\n"
+    + "Project root: " + projectRoot + "\n"
+    + "Shared repository: " + sharedRepository + "\n"
+    + "Shared project ID: " + sharedProjectId + "\n\n"
+    + target.map((line) => "- " + line).join("\n")
+    + "\n\nVerify the current repository and Context Room configuration before editing. Make the smallest safe change, preserve unrelated work, run the relevant tests and Context Room doctor, and report any ambiguity or destructive step before taking it.";
+}
+
+async function sendContextRoomModePrompt(preferredMode) {
+  if (state.contextHubModePromptBusy) return;
+  const project = (state.contextHub?.projects || []).find((item) => item.projectKey === state.sharedProposalProject);
+  const prompt = buildContextRoomModeCodexPrompt(project, preferredMode);
+  if (!prompt) {
+    setStatus("choose a mixed local and shared project first");
+    return;
+  }
+  state.contextHubModePromptBusy = preferredMode;
+  renderContextRoomGlobalReviewQueue();
+  setStatus("adding the " + preferredMode + "-only migration prompt to Codex...");
+  try {
+    await api("/api/codex/composer", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: prompt }),
+    });
+    setStatus(preferredMode + "-only migration prompt added to the active Codex composer · review it before sending");
+  } catch (error) {
+    await copyCodexReferenceText(prompt);
+    setStatus((error?.message || "Codex composer bridge unavailable") + " · migration prompt copied instead");
+  } finally {
+    state.contextHubModePromptBusy = "";
+    renderContextRoomGlobalReviewQueue();
+  }
+}
+
+function syncContextRoomProposalDescriptionToggles() {
+  document.querySelectorAll("[data-context-room-proposal-description]").forEach((description) => {
+    const entry = description.closest("[data-context-room-review-entry]");
+    const toggle = entry?.querySelector("[data-context-room-proposal-description-toggle]");
+    if (!toggle) return;
+    const proposalId = description.dataset.contextRoomProposalDescription;
+    const expanded = state.contextHubExpandedProposalDescriptions.has(proposalId);
+    toggle.hidden = !expanded && description.scrollHeight <= description.clientHeight + 1;
+  });
+}
+
+function renderContextRoomGlobalReviewQueue() {
+  renderGlobalProjectExplorer();
+  renderSingleProjectWorktreeSwitch();
+  const queueElement = el("reviewQueue");
+  const summary = el("reviewSummary");
+  const limit = el("contextRoomReviewLimit");
+  const projectFilter = el("contextRoomReviewProjectFilter");
+  const sourceFilter = el("contextRoomReviewSourceFilter");
+  const search = el("contextRoomReviewSearch");
+  if (!queueElement || !summary || !limit || !projectFilter || !sourceFilter || !search) return;
+  const hub = state.contextHub || { projects: [] };
+  const hubReady = Boolean(state.contextHub);
+  const needle = state.sharedProposalSearch.trim().toLowerCase();
+  const reviews = contextHubHomeReviewItems(needle, "active");
+  const activeReviews = contextHubHomeReviewItems(needle, "active");
+  const snoozedReviews = contextHubHomeReviewItems(needle, "snoozed");
+  const s = state.docqa?.summary || {};
+  const groupDeletions = Number(s.deletedDocs || 0) > 1 || state.deletionBatchItems.length > 0;
+  const loadedBatchChanged = state.deletionBatchItems.length && (state.deletionBatchKey !== String(s.deletedReviewKey || "") || state.deletionBatchReportedCount !== Number(s.deletedDocs || 0));
+  const previousDeletionBatch = document.querySelector("[data-review-deletion-batch]");
+  const restoreDeletionBatchFocus = Boolean(loadedBatchChanged && document.activeElement && previousDeletionBatch?.contains(document.activeElement));
+  if (loadedBatchChanged) {
+    state.deletionBatchItems = [];
+    state.deletionBatchReportedCount = 0;
+  }
+  const queue = state.docqa?.queue || [];
+  const currentProjectQueue = groupDeletions ? queue.filter((item) => !isDeletedReviewQueueItem(item)) : queue;
+  const currentProjectPaths = new Set(currentProjectQueue.map((item) => item.path));
+  const currentProject = currentContextRoomProject();
+  const currentProjectHasSnoozedDeletion = Boolean(currentProject && contextHubReviewItems().some((item) => (
+    item.projectId === currentProject.id
+    && isDeletedReviewQueueItem(item.localReview || item)
+    && contextRoomReviewSnooze(item)
+  )));
+  const showDeletionBatch = Boolean(
+    groupDeletions
+    && !currentProjectHasSnoozedDeletion
+    && currentProject
+    && contextHubSourceMatches("local")
+    && (!state.sharedProposalProject || state.sharedProposalProject === currentProject.projectKey)
+    && !needle
+  );
+  const renderedReviews = showDeletionBatch
+    ? reviews.filter((item) => (
+        item.projectId !== currentProject?.id
+        || currentProjectPaths.has(item.localFile)
+        || !isDeletedReviewQueueItem(item.localReview || item)
+      ))
+    : reviews;
+  const visibleReviews = renderedReviews.slice(0, CONTEXT_HUB_HOME_REVIEW_LIMIT);
+  const allPendingReviews = contextHubHomeReviewItems("", "all");
+  const hasUnrepresentedLocalReviews = Number(s.needsReview || 0) > currentProjectQueue.length;
+  const selectedProject = IS_GLOBAL_CONTEXT_ROOM
+    ? (hub.projects || []).find((project) => project.projectKey === state.sharedProposalProject) || null
+    : currentProject;
+  const localReviewCount = reviews.filter((item) => item.type !== "shared").length;
+  const sharedReviewCount = reviews.filter((item) => item.type === "shared").length;
+  const hiddenReviewCount = Math.max(0, renderedReviews.length - visibleReviews.length);
+  const projectLabel = projectFilter.querySelector(".context-hub-project-trigger-label");
+  const projectFilterField = projectFilter.closest(".context-hub-review-filter");
+  if (projectFilterField) projectFilterField.hidden = !IS_GLOBAL_CONTEXT_ROOM;
+  if (projectLabel) projectLabel.textContent = selectedProject?.title || "All projects";
+  projectFilter.title = IS_GLOBAL_CONTEXT_ROOM
+    ? (selectedProject ? contextHubProjectPickerLabel(selectedProject) : "Filter by project")
+    : selectedProject ? contextHubProjectPickerLabel(selectedProject) : "Current project";
+  sourceFilter.value = state.contextHubSource;
+  search.placeholder = IS_GLOBAL_CONTEXT_ROOM ? "Search reviews or projects…" : "Search this project…";
+  if (search.value !== state.sharedProposalSearch) search.value = state.sharedProposalSearch;
+  summary.innerHTML = hubReady
+    ? '<div class="review-summary-item"><strong>' + localReviewCount + '</strong><span>file' + (localReviewCount === 1 ? "" : "s") + '</span></div>'
+      + '<div class="review-summary-item"><strong>' + sharedReviewCount + '</strong><span>proposal' + (sharedReviewCount === 1 ? "" : "s") + '</span></div>'
+    : '<div class="review-summary-item"><strong>…</strong><span>loading reviews</span></div>';
+  queueElement.classList.toggle("batch-open", showDeletionBatch && state.deletionBatchExpanded);
+  const modeWarning = renderContextRoomModeWarning(selectedProject);
+  const queueMarkup = (showDeletionBatch ? renderDeletionReviewBatch(s) : "") + visibleReviews.map(renderContextRoomReviewRow).join("");
+  const emptyQueueCopy = !allPendingReviews.length && !hasUnrepresentedLocalReviews
+    ? IS_GLOBAL_CONTEXT_ROOM
+      ? "Everything is reviewed. New local files and shared proposals will appear here."
+      : "Everything in this project is reviewed."
+    : !activeReviews.length && snoozedReviews.length
+      ? "No active reviews. " + snoozedReviews.length + " snoozed review" + (snoozedReviews.length === 1 ? " remains" : "s remain") + " pending in Settings."
+      : "Review work is still pending. Clear the filters or refresh to show it.";
+  queueElement.innerHTML = modeWarning + (queueMarkup || (hubReady
+    ? '<div class="issue">' + emptyQueueCopy + '</div>'
+    : '<div class="issue">Loading project reviews…</div>'));
+  window.requestAnimationFrame(syncContextRoomProposalDescriptionToggles);
+  renderContextRoomReviewSelection(visibleReviews);
+  if (restoreDeletionBatchFocus) document.querySelector("[data-review-deletion-batch] > summary")?.focus();
+  if (showDeletionBatch) wireDeletionReviewBatch();
+  limit.hidden = hiddenReviewCount === 0;
+  limit.textContent = hiddenReviewCount
+    ? "Showing the first " + visibleReviews.length + " of " + renderedReviews.length + " items. Choose a project or refine the search to narrow the queue."
+    : "";
+  scheduleContextRoomSnoozeExpiry();
+}
+
+function renderSingleProjectWorktreeSwitch() {
+  const container = el("singleProjectWorktreeSwitch");
+  if (!container) return;
+  const project = currentContextRoomProject();
+  const worktrees = contextHubProjectWorktrees(project);
+  container.hidden = IS_GLOBAL_CONTEXT_ROOM || worktrees.length <= 1;
+  if (container.hidden) {
+    container.innerHTML = "";
+    return;
+  }
+  const current = contextHubPreferredWorktree(project, state.projectId);
+  container.innerHTML = contextHubWorktreeSelectorMarkup(project, current?.id || "", 'data-single-project-worktree');
+}
+
 function renderSharedProposalWorkspace() {
+  const listPanel = el("contextHubListPanel");
+  const reviewPanel = el("contextHubReviewPanel");
   const list = el("sharedProposalList");
   const projectFilter = el("sharedProposalProjectFilter");
   const search = el("sharedProposalSearch");
+  const heading = el("sharedProposalWorkspaceHeading");
   const summary = el("sharedProposalWorkspaceSummary");
   const empty = el("sharedProposalReviewEmpty");
   const overview = el("sharedProposalOverview");
-  if (!list || !projectFilter || !search || !summary || !empty || !overview) return;
+  if (!listPanel || !reviewPanel || !list || !projectFilter || !search || !heading || !summary || !empty || !overview) return;
   const hub = state.contextHub || { projects: [], items: [], summary: {}, repositoryErrors: [] };
   const projects = hub.projects || [];
-  projectFilter.innerHTML = '<option value="">All projects</option>'
-    + projects.map((project) => '<option value="' + escapeHtml(project.projectKey) + '">' + escapeHtml(project.title) + '</option>').join("");
-  projectFilter.value = projects.some((project) => project.projectKey === state.sharedProposalProject) ? state.sharedProposalProject : "";
-  state.sharedProposalProject = projectFilter.value;
+  const selectedProject = projects.find((project) => project.projectKey === state.sharedProposalProject) || null;
+  const projectFilterLabel = projectFilter.querySelector("[data-context-hub-project-trigger-label]");
+  if (projectFilterLabel) projectFilterLabel.textContent = selectedProject?.title || "All projects";
+  projectFilter.title = selectedProject ? contextHubProjectPickerLabel(selectedProject) : "Filter by project";
+  if (!selectedProject) state.sharedProposalProject = "";
   if (search.value !== state.sharedProposalSearch) search.value = state.sharedProposalSearch;
   const sourceFilter = el("contextHubSourceFilter");
-  document.querySelectorAll("[data-context-hub-view]").forEach((button) => {
-    const active = button.dataset.contextHubView === state.contextHubView;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-selected", String(active));
-  });
+  const homeMode = state.contextHubView === "home";
   const promptMode = state.contextHubView === "codex-prompts";
+  const projectManagerMode = state.contextHubView === "project-manager";
+  heading.textContent = promptMode
+    ? "Codex prompts"
+    : projectManagerMode
+      ? "Manage projects"
+      : "Review";
+  if (homeMode) {
+    renderContextRoomGlobalReviewQueue();
+    if (state.sharedProposalWorkspaceOpen) setSharedProposalWorkspaceOpen(false);
+    return;
+  }
+  const workspaceHead = document.querySelector(".shared-proposal-workspace-head");
+  if (workspaceHead) workspaceHead.dataset.view = state.contextHubView;
+  listPanel.hidden = false;
+  reviewPanel.hidden = false;
   projectFilter.hidden = promptMode;
   if (sourceFilter) {
     sourceFilter.hidden = promptMode;
     sourceFilter.value = state.contextHubSource;
   }
-  search.placeholder = promptMode ? "Search prompt targets…" : "Search projects, proposals, files or sessions…";
-  search.setAttribute("aria-label", promptMode ? "Search Codex prompt targets" : "Search Context Hub");
+  search.placeholder = promptMode
+    ? "Search prompt targets…"
+    : projectManagerMode
+      ? "Search projects by name or path…"
+      : "Search active reviews…";
+  search.setAttribute("aria-label", promptMode ? "Search Codex prompt targets" : "Search Context Room");
   const promptCenter = el("codexPromptCenter");
   const reviewStage = document.querySelector(".shared-proposal-review-stage");
   if (promptCenter) promptCenter.hidden = !promptMode;
@@ -10885,21 +15576,26 @@ function renderSharedProposalWorkspace() {
     renderCodexPromptWorkspace();
     return;
   }
-  if (reviewStage) reviewStage.hidden = false;
   if (search.value !== state.sharedProposalSearch) search.value = state.sharedProposalSearch;
   const needle = state.sharedProposalSearch.trim().toLowerCase();
   const visible = contextHubVisibleItems().filter((item) => {
-    const source = item.type === "shared" || item.project?.mode === "shared" ? "shared" : item.project?.mode === "hybrid" ? "hybrid" : "local";
+    const project = item.project || contextHubProjectForItem(item);
+    const sourceMatches = item.type === "project"
+      ? contextHubProjectMatchesSource(project)
+      : contextHubSourceMatches(item.type === "shared" ? "shared" : "local");
     return (
     (!state.sharedProposalProject || item.projectKey === state.sharedProposalProject)
-    && (state.contextHubSource === "all" || source === state.contextHubSource || (source === "hybrid" && ["local", "shared"].includes(state.contextHubSource)))
+    && sourceMatches
     && (!needle || sharedProposalSearchText(item).includes(needle))
   );
   });
   if (!visible.some((item) => item.id === state.contextHubSelection)) state.contextHubSelection = visible[0]?.id || "";
   const selected = visible.find((item) => item.id === state.contextHubSelection) || null;
   const hubSummary = hub.summary || {};
-  summary.textContent = (hubSummary.localProjects || 0) + " local · " + (hubSummary.sharedProjects || 0) + " shared · " + (hubSummary.proposals || 0) + " proposal" + (hubSummary.proposals === 1 ? "" : "s");
+  summary.textContent = projectManagerMode
+    ? (hubSummary.projects || projects.length || 0) + " projects · "
+      + (hubSummary.localProjects || 0) + " local · " + (hubSummary.sharedProjects || 0) + " shared"
+    : (hubSummary.localReviews || 0) + " local files · " + (hubSummary.proposals || 0) + " shared proposals";
   const listStatus = el("contextHubListStatus");
   if (listStatus) {
     const errorCount = hub.repositoryErrors?.length || 0;
@@ -10910,11 +15606,10 @@ function renderSharedProposalWorkspace() {
         ? errorCount + " shared repositor" + (errorCount === 1 ? "y could not refresh." : "ies could not refresh.") + " Local projects remain available."
         : visible.length + " item" + (visible.length === 1 ? "" : "s") + " shown";
   }
-  const groups = state.contextHubView === "projects"
+  const groups = projectManagerMode
     ? [
-        ["Local + shared", visible.filter((item) => item.project?.mode === "hybrid")],
-        ["Local", visible.filter((item) => item.project?.mode === "local")],
-        ["Shared", visible.filter((item) => item.project?.mode === "shared")],
+        ["Available locally", visible.filter((item) => item.project?.mode !== "shared")],
+        ["Shared only", visible.filter((item) => item.project?.mode === "shared")],
       ]
     : [
         ["Needs attention", visible.filter((item) => ["updated", "ready", "local_changes"].includes(item.reviewStatus))],
@@ -10922,21 +15617,23 @@ function renderSharedProposalWorkspace() {
         ["Other", visible.filter((item) => !["updated", "ready", "local_changes", "in_review", "accepted"].includes(item.reviewStatus))],
       ];
   const renderItem = (item) => {
-    const key = item.type === "shared" ? sharedProposalKey(item) : "local:" + item.projectId;
-    const opened = item.type === "shared" ? state.sharedReviewRooms.has(key) : state.contextHubProjectRooms.has(key);
+    const project = item.project || contextHubProjectForItem(item);
+    const opening = item.type === "shared" && state.contextRoomOpeningProposalId === item.id;
     const active = state.contextHubSelection === item.id;
-    const author = item.type === "shared" ? (item.author?.name || item.author?.email || "Unknown author") : (item.root || "No local folder connected");
+    const author = item.type === "shared" ? (item.author?.name || item.author?.email || "Unknown author") : (item.localReview?.worktreeRoot || item.root || "No local folder connected");
     const updated = item.updatedAt ? new Date(item.updatedAt).toLocaleString() : "Unknown date";
     const files = Array.isArray(item.files) ? item.files : [];
     const fileCount = Number(item.fileCount || files.length || 0);
     const previewFiles = files.slice(0, 2).map((file) => '<span class="shared-proposal-card-file" title="' + escapeHtml(file) + '">↳ ' + escapeHtml(file) + '</span>').join("");
     const moreFiles = fileCount > 2 ? '<span class="shared-proposal-card-file">+' + (fileCount - 2) + ' more</span>' : '';
-    const source = item.type === "shared" ? "shared" : "local";
-    const sourceLabel = item.type === "shared" ? "Shared proposal" : item.project?.mode === "hybrid" ? "Local + shared" : item.project?.mode === "shared" ? "Shared project" : "Local";
-    const projectLabel = item.type === "shared" ? (item.projectTitle || item.projectId || "global") : (item.project?.title || item.title);
-    const statusLabel = opened ? (item.type === "shared" ? "Review open" : "Project open") : contextHubStatusLabel(item.reviewStatus, item.proposalCount || fileCount);
+    const source = item.type === "shared" || project?.mode === "shared" ? "shared" : "local";
+    const sourceMarkup = item.type === "project"
+      ? contextHubProjectSourceBadges(project)
+      : '<span class="context-hub-source" data-source="' + source + '">' + (item.type === "shared" ? "Shared" : "Local") + '</span>';
+    const projectLabel = item.type === "shared" ? (item.projectTitle || item.projectId || "global") : (project?.title || item.title);
+    const statusLabel = opening ? "Opening review…" : contextHubStatusLabel(item.reviewStatus, item.proposalCount || fileCount);
     return '<button class="shared-proposal-card' + (active ? ' active' : '') + '" data-source="' + source + '" type="button" data-context-hub-item="' + escapeHtml(item.id) + '" title="Inspect ' + escapeHtml(item.title || item.branch) + '">'
-      + '<span class="shared-proposal-card-top"><span class="context-hub-source" data-source="' + source + '">' + escapeHtml(sourceLabel) + '</span><span class="shared-proposal-project">' + escapeHtml(projectLabel) + '</span><span class="shared-proposal-card-state" data-state="' + escapeHtml(item.reviewStatus || "") + '">' + escapeHtml(statusLabel) + '</span></span>'
+      + '<span class="shared-proposal-card-top">' + sourceMarkup + '<span class="shared-proposal-project">' + escapeHtml(projectLabel) + '</span><span class="shared-proposal-card-state" data-state="' + escapeHtml(item.reviewStatus || "") + '">' + escapeHtml(statusLabel) + '</span></span>'
       + '<span class="shared-proposal-card-title">' + escapeHtml(item.title || item.branch || projectLabel) + '</span>'
       + '<span class="shared-proposal-card-description">' + escapeHtml(item.description || "No description supplied for this proposal.") + '</span>'
       + '<span class="shared-proposal-card-files">' + previewFiles + moreFiles + '</span>'
@@ -10957,25 +15654,27 @@ function renderContextHubOverview(item) {
   if (!item) {
     contextHubHideFrames();
     empty.hidden = false;
-    empty.textContent = "No Context Hub item is selected.";
+    empty.textContent = "No Context Room item is selected.";
     return;
   }
   const project = item.project || contextHubProjectForItem(item);
   const source = item.type === "shared" ? "shared" : "local";
-  const key = item.type === "shared" ? sharedProposalKey(item) : "local:" + item.projectId;
-  const room = item.type === "shared" ? state.sharedReviewRooms.get(key) : state.contextHubProjectRooms.get(key);
   const files = Array.isArray(item.files) ? item.files : [];
   const fileCount = Number(item.fileCount || files.length || 0);
-  const author = item.type === "shared" ? (item.author?.name || item.author?.email || "Unknown author") : (item.root || project?.root || "No local folder connected");
+  const author = item.type === "shared" ? (item.author?.name || item.author?.email || "Unknown author") : (item.localReview?.worktreeRoot || item.root || project?.root || "No local folder connected");
   const updated = item.updatedAt ? new Date(item.updatedAt).toLocaleString() : "Unknown date";
-  const session = item.type === "shared" ? (item.sessionId ? "session " + item.sessionId : "no linked session") : "normal local review";
+  const session = item.type === "shared" ? (item.sessionId ? "session " + item.sessionId : "no linked session") : "local file review";
   const sourceBadge = el("contextHubOverviewSource");
   sourceBadge.dataset.source = source;
-  sourceBadge.textContent = item.type === "shared" ? "Shared proposal" : project?.mode === "hybrid" ? "Local + shared" : "Local";
+  sourceBadge.textContent = item.type === "shared" ? "Shared" : "Local";
   el("sharedProposalOverviewProject").textContent = item.type === "shared" ? (item.projectTitle || item.projectId || "global") : (project?.title || item.title);
-  el("sharedProposalOverviewState").textContent = room ? (item.type === "shared" ? "Exact review open" : "Local project open") : contextHubStatusLabel(item.reviewStatus, item.proposalCount || fileCount);
+  el("sharedProposalOverviewState").textContent = item.localFile
+      ? "Ready to review"
+      : contextHubStatusLabel(item.reviewStatus, item.proposalCount || fileCount);
   el("sharedProposalOverviewTitle").textContent = item.title || item.branch;
-  el("sharedProposalOverviewRecapLabel").textContent = item.type === "shared" ? "Agent recap · updated with the latest publish" : "Local project";
+  el("sharedProposalOverviewRecapLabel").textContent = item.type === "shared"
+    ? "Agent recap · updated with the latest publish"
+    : item.localFile ? "Local file" : "Local project";
   el("sharedProposalOverviewDescription").textContent = item.description || (item.type === "shared" ? "No description was supplied for this legacy proposal. Republish it through the CLI to attach an up-to-date description." : "Open the project to work with its normal local files and review queue.");
   el("sharedProposalOverviewMeta").innerHTML = item.type === "shared"
     ? '<span>' + escapeHtml(author + " · " + updated) + '</span><span>' + escapeHtml(item.repositoryName + " · " + item.branch + " · @" + shortSharedHash(item.head)) + '</span><span>' + escapeHtml(session) + '</span>'
@@ -10985,33 +15684,38 @@ function renderContextHubOverview(item) {
     ? '<span>Changes are isolated on a proposal branch.</span><span>Human decisions stay bound to @' + escapeHtml(shortSharedHash(item.head)) + '.</span>'
       + (item.mainAdvancedBy ? '<span>Main advanced by ' + Number(item.mainAdvancedBy) + ' commit' + (Number(item.mainAdvancedBy) === 1 ? '' : 's') + (item.hasConflict === true ? ' · conflict detected' : '') + '.</span>' : '')
     : '<span>Local files use the project review queue directly; no proposal branch is created.</span>'
-      + (project?.mode === "hybrid" ? '<span>Shared docs and skills for this project still use proposals.</span>' : '');
+      + (project?.mode === "hybrid" ? '<span>Shared changes for this project appear separately as proposals.</span>' : '');
   el("sharedProposalFiles").innerHTML = files.length
     ? files.map((file) => '<span class="shared-proposal-file" title="' + escapeHtml(file) + '">' + escapeHtml(file) + '</span>').join("")
     : '<span class="shared-proposal-file">Changed-file details unavailable for this legacy proposal.</span>';
   const openButton = el("sharedProposalOpenReview");
+  const proposalOpening = item.type === "shared" && state.contextRoomOpeningProposalId === item.id;
   openButton.hidden = false;
+  openButton.disabled = proposalOpening;
   openButton.dataset.contextHubAction = item.type === "shared" ? "proposal" : "project";
   openButton.dataset.sharedProposal = item.branch || "";
   openButton.dataset.sharedRepository = item.repository || "";
   openButton.dataset.contextHubProject = item.projectId || project?.id || "";
+  openButton.dataset.contextHubFile = item.localFile || "";
+  openButton.dataset.contextHubReview = item.localFile ? item.id : "";
   if (item.type === "shared") {
-    openButton.textContent = room ? "Resume exact review" : "Open " + fileCount + " file" + (fileCount === 1 ? "" : "s") + " to review";
+    openButton.textContent = proposalOpening ? "Opening review…" : "Open " + fileCount + " file" + (fileCount === 1 ? "" : "s") + " to review";
     el("sharedProposalChangeSummary").textContent = "Bound to @" + shortSharedHash(item.head);
   } else if (project?.mode === "shared" || !item.available && !project?.available) {
     openButton.textContent = "Show this project's proposals";
     openButton.dataset.contextHubAction = "filter-project";
     el("sharedProposalChangeSummary").textContent = "No local folder connected";
   } else {
-    openButton.textContent = room ? "Resume local project" : item.current ? "Return to current project" : "Open local project";
-    el("sharedProposalChangeSummary").textContent = fileCount ? fileCount + " file" + (fileCount === 1 ? "" : "s") + " in the local review queue" : "Local review queue clear";
+    openButton.textContent = item.localFile ? "Review this file" : "Select this project";
+    el("sharedProposalChangeSummary").textContent = item.localFile || (fileCount ? fileCount + " file" + (fileCount === 1 ? "" : "s") + " in the local review queue" : "Local review queue clear");
   }
-  contextHubHideFrames(room || null);
-  state.sharedReviewKey = item.type === "shared" && room ? key : "";
-  empty.hidden = Boolean(room);
-  if (!room) empty.textContent = item.type === "shared"
+  contextHubHideFrames();
+  empty.hidden = false;
+  empty.textContent = item.type === "shared"
     ? "The exact-hash review opens only when you are ready. The overview always reflects the latest published commit."
-    : "Open the local project to edit files and use its normal review queue without creating a proposal.";
+    : item.localFile
+      ? "Open this local file in the global workspace. No proposal is created."
+      : "Select the project in Explorer to edit files and use its local review queue without creating a proposal.";
 }
 
 function selectContextHubItem(itemId) {
@@ -11020,108 +15724,138 @@ function selectContextHubItem(itemId) {
   renderSharedProposalWorkspace();
 }
 
-function activateSharedReviewRoom(key) {
-  const room = state.sharedReviewRooms.get(key);
-  if (!room) return;
-  state.sharedReviewKey = key;
-  const proposal = (state.contextHub?.proposals || []).find((item) => sharedProposalKey(item) === key);
-  if (proposal) state.contextHubSelection = proposal.id;
-  contextHubHideFrames(room);
-  room.frame.hidden = false;
-  el("sharedProposalReviewEmpty").hidden = true;
-  renderSharedProposalWorkspace();
-  setStatus("reviewing " + room.result.review.proposal + " @" + shortSharedHash(room.result.review.proposalHead));
+function contextRoomProposalReviewUrl(url) {
+  const target = new URL(url, window.location.href);
+  target.searchParams.set("returnTo", window.location.href);
+  target.searchParams.set("explorer", isExplorerCollapsed() ? "collapsed" : "expanded");
+  return target.toString();
+}
+
+function contextRoomProposalFileUrl(url, filePath) {
+  const target = new URL(contextRoomProposalReviewUrl(url));
+  target.searchParams.set("file", filePath);
+  return target.toString();
 }
 
 async function openSharedProposal(proposal, repository = "") {
   if (!proposal || state.sharedContextBusy) return;
+  const requestId = ++state.contextRoomProposalRequest;
   const currentRepository = repository || state.sharedContext?.status?.connection?.repository || state.sharedContext?.status?.repository || "";
   const item = (state.contextHub?.proposals || []).find((candidate) => candidate.branch === proposal && (!currentRepository || candidate.repository === currentRepository))
     || (state.sharedContext?.proposals || []).find((candidate) => candidate.branch === proposal);
   if (!item) throw new Error("Proposal is no longer available: " + proposal);
-  setSharedProposalWorkspaceOpen(true);
   state.contextHubSelection = item.id || state.contextHubSelection;
-  const key = sharedProposalKey(item);
-  if (state.sharedReviewRooms.has(key)) {
-    activateSharedReviewRoom(key);
-    return;
-  }
+  state.contextRoomOpeningProposalId = item.id || sharedProposalKey(item);
+  state.contextRoomPreparedReview = null;
+  state.contextRoomQueuedProposalFile = "";
   state.sharedContextBusy = true;
   renderSharedContextControls();
+  renderContextRoomGlobalReviewQueue();
   renderSharedProposalWorkspace();
+  showProposalReview({ preparingItem: item });
   setStatus("materializing exact proposal review...");
   try {
     const result = await api(item.repository ? "/api/context-hub/review" : "/api/shared-context/review", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ proposal, repository: item.repository || undefined }),
+      body: JSON.stringify({ proposal, repository: item.repository || undefined, expectedHead: item.head || undefined }),
     });
-    const resultKey = sharedProposalKey({ repository: item.repository || result.review.repository, branch: result.review.proposal, head: result.review.proposalHead });
-    let room = state.sharedReviewRooms.get(resultKey);
-    if (!room) {
-      const frame = document.createElement("iframe");
-      frame.className = "shared-proposal-frame";
-      frame.title = "Review " + result.review.proposal + " at " + result.review.proposalHead;
-      frame.src = result.url + "/?embedded=1";
-      frame.hidden = true;
-      frame.addEventListener("load", () => setStatus("review ready · " + result.review.proposal + " @" + shortSharedHash(result.review.proposalHead)));
-      el("sharedProposalFrames").append(frame);
-      room = { result, frame };
-      state.sharedReviewRooms.set(resultKey, room);
-    }
-    activateSharedReviewRoom(resultKey);
-  } finally {
+    if (requestId !== state.contextRoomProposalRequest) return;
+    state.contextRoomPreparedReview = result;
+    state.contextRoomOpeningProposalId = "";
     state.sharedContextBusy = false;
     renderSharedContextControls();
+    renderProposalReviewPage();
     renderSharedProposalWorkspace();
+    const queuedFile = state.contextRoomQueuedProposalFile;
+    if (queuedFile) {
+      window.location.assign(contextRoomProposalFileUrl(result.url, queuedFile));
+      return;
+    }
+    setStatus("exact proposal review ready");
+  } catch (error) {
+    if (requestId !== state.contextRoomProposalRequest) return;
+    state.contextRoomOpeningProposalId = "";
+    state.contextRoomPreparingProposal = null;
+    state.contextRoomPreparedReview = null;
+    state.contextRoomQueuedProposalFile = "";
+    state.sharedContextBusy = false;
+    renderSharedContextControls();
+    renderContextRoomGlobalReviewQueue();
+    renderSharedProposalWorkspace();
+    if (state.page === "proposal") showHome();
+    throw error;
   }
 }
 
-async function openContextHubProject(projectId) {
+async function activateContextHubCard(cardId) {
+  const sections = state.rootHubSections || state.hubSections || [];
+  const card = findHubCardById(sections, cardId);
+  if (!card) {
+    openHubPath();
+    return false;
+  }
+  const children = card.cards || [];
+  const paths = folderPaths(card);
+  const directFilePath = hubCardDirectFilePath(paths, children);
+  if (directFilePath) {
+    await selectFile(directFilePath);
+    return true;
+  }
+  if (children.length) {
+    openHubPath(card.id);
+    return true;
+  }
+  if (paths.length) {
+    filterFolders(paths);
+    return true;
+  }
+  openHubPath(card.id);
+  return true;
+}
+
+async function openContextHubLocalReview(reviewTarget) {
+  if (!reviewTarget?.path) return;
+  const startup = reviewTarget.startupContext || null;
+  if (startup?.kind === "startup-skill" || startup?.skillName) {
+    const folder = String(startup.order || "").split(":")[0];
+    const skill = startup.skillName || String(startup.order || "").split(":").slice(1).join(":");
+    await selectStartupSkillFile(folder, skill, { reviewMode: true });
+    return;
+  }
+  if (startup?.kind === "startup-hook") {
+    await selectStartupHookFile(startup.order, { reviewMode: true });
+    return;
+  }
+  if (startup?.order) {
+    await selectStartupContextFile(startup.order, { reviewMode: true });
+    return;
+  }
+  await selectFile(reviewTarget.path, { reviewMode: true, forceReload: true });
+}
+
+async function openContextHubProject(projectId, options = {}) {
   if (!projectId || state.contextHubBusy) return;
-  const project = (state.contextHub?.projects || []).find((item) => item.id === projectId);
+  const project = (state.contextHub?.projects || []).find((item) => item.id === projectId || (item.worktrees || []).some((worktree) => worktree.id === projectId));
   if (!project) throw new Error("Local project is no longer registered.");
-  if (project.current) {
-    setSharedProposalWorkspaceOpen(false);
+  const worktree = contextHubPreferredWorktree(project, projectId);
+  const targetProjectId = worktree?.id || project.id;
+  if (!options.filePath && !options.reviewTarget) {
+    state.globalProjectWorktreeIds.set(project.projectKey, targetProjectId);
+    await openGlobalProjectExplorer(project);
+    setStatus("project selected");
     return;
   }
-  const key = "local:" + project.id;
-  const existing = state.contextHubProjectRooms.get(key);
-  if (existing) {
-    contextHubHideFrames(existing);
-    existing.frame.hidden = false;
-    renderSharedProposalWorkspace();
-    return;
-  }
-  state.contextHubBusy = true;
-  renderSharedProposalWorkspace();
-  setStatus("opening local project…");
-  try {
-    const result = await api("/api/context-hub/project", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ projectId }),
-    });
-    if (result.current) {
-      setSharedProposalWorkspaceOpen(false);
-      return;
-    }
-    const frame = document.createElement("iframe");
-    frame.className = "shared-proposal-frame";
-    frame.title = "Local Context Room · " + result.project.title;
-    frame.src = result.url + "/?embedded=project";
-    frame.hidden = true;
-    frame.addEventListener("load", () => setStatus("local project ready · " + result.project.title));
-    el("sharedProposalFrames").append(frame);
-    const room = { result, frame };
-    state.contextHubProjectRooms.set(key, room);
-    contextHubHideFrames(room);
-    frame.hidden = false;
-    renderSharedProposalWorkspace();
-  } finally {
-    state.contextHubBusy = false;
-    renderSharedProposalWorkspace();
-  }
+  const target = new URL(window.location.origin + "/");
+  target.searchParams.set("hub", "1");
+  target.searchParams.set("project", targetProjectId);
+  const review = options.reviewTarget || (options.filePath ? { path: options.filePath } : null);
+  if (review?.path) target.searchParams.set("file", review.path);
+  if (review?.startupContext?.kind) target.searchParams.set("startupKind", review.startupContext.kind);
+  if (review?.startupContext?.order) target.searchParams.set("startupOrder", review.startupContext.order);
+  if (review?.startupContext?.skillName) target.searchParams.set("startupSkill", review.startupContext.skillName);
+  target.searchParams.set("explorer", isExplorerCollapsed() ? "collapsed" : "expanded");
+  window.location.assign(target.toString());
 }
 
 async function refreshContextHubUi() {
@@ -11137,17 +15871,20 @@ async function refreshContextHubUi() {
   if (state.contextHubBusy) return;
   state.contextHubBusy = true;
   renderSharedProposalWorkspace();
-  setStatus("refreshing Context Hub…");
+  setStatus("refreshing Context Room…");
   try {
     state.contextHub = await api("/api/context-hub/refresh", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: "{}",
     });
+    renderContextRoomGlobalReviewQueue();
     renderSharedProposalWorkspace();
-    setStatus(state.contextHub.repositoryErrors?.length ? "Context Hub refreshed with shared repository warnings" : "Context Hub refreshed");
+    workspaceUpdate("catalog-refreshed");
+    setStatus(state.contextHub.repositoryErrors?.length ? "Context Room refreshed with shared repository warnings" : "Context Room refreshed");
   } finally {
     state.contextHubBusy = false;
+    renderContextRoomGlobalReviewQueue();
     renderSharedProposalWorkspace();
   }
 }
@@ -11156,49 +15893,23 @@ function renderSharedContextControls() {
   const controls = el("sharedContextControls");
   const label = el("sharedContextLabel");
   const select = el("sharedProposalSelect");
-  const browserButton = el("sharedProposalBrowser");
   const refresh = el("sharedContextRefresh");
   const reviewButton = el("sharedProposalReview");
-  const acceptButton = el("sharedProposalAccept");
-  if (!controls || !label || !select || !browserButton || !refresh || !reviewButton || !acceptButton) return;
+  if (!controls || !label || !select || !refresh || !reviewButton) return;
   const shared = state.sharedContext;
-  controls.hidden = !shared?.enabled;
-  if (!shared?.enabled) return;
-  if (shared.mode === "review") {
-    controls.dataset.mode = "review";
-    controls.dataset.online = "true";
-    const review = shared.review || {};
-    const queueCount = state.docqa?.queue?.length || 0;
-    label.textContent = "Review " + (review.proposal || "proposal") + " @" + shortSharedHash(review.proposalHead);
-    label.title = (review.proposal || "") + "\nExact reviewed commit: " + (review.proposalHead || "");
-    select.hidden = true;
-    browserButton.hidden = true;
-    refresh.hidden = true;
-    reviewButton.hidden = true;
-    acceptButton.hidden = false;
-    const delivered = shared.accepted?.accepted ? shared.accepted : null;
-    acceptButton.textContent = delivered
-      ? delivered.pullRequestUrl ? "Open pull request" : "Accepted branch ready"
-      : state.sharedContextBusy ? "Preparing..." : "Prepare pull request";
-    acceptButton.disabled = Boolean(state.sharedContextBusy || (delivered ? !delivered.pullRequestUrl : state.dirty || queueCount));
-    acceptButton.title = shared.accepted
-      ? shared.accepted.pullRequestUrl
-        ? "Open the GitHub pull request for " + shared.accepted.acceptanceBranch
-        : "Accepted branch " + shared.accepted.acceptanceBranch + " is ready for a pull request"
-      : state.dirty
-        ? "Save or discard the current editor changes first"
-        : queueCount
-          ? queueCount + " file(s) still need human review"
-          : "Publish only the accepted review result on a dedicated branch; main stays unchanged until the human merges the pull request";
+  const proposalPreview = state.contextRoomPreparingProposal;
+  renderProposalDockControls();
+  controls.hidden = !shared?.enabled && !proposalPreview;
+  if (!shared?.enabled && !proposalPreview) return;
+  if (shared?.mode === "review" || proposalPreview) {
+    controls.hidden = true;
     return;
   }
   const proposals = Array.isArray(shared.proposals) ? shared.proposals : [];
   const previous = select.value;
   select.hidden = false;
-  browserButton.hidden = false;
   refresh.hidden = false;
   reviewButton.hidden = false;
-  acceptButton.hidden = true;
   const online = shared.status?.online !== false;
   controls.dataset.mode = "project";
   controls.dataset.online = String(online);
@@ -11210,10 +15921,35 @@ function renderSharedContextControls() {
     : '<option value="">No proposals</option>';
   if (proposals.some((item) => item.branch === previous)) select.value = previous;
   reviewButton.disabled = Boolean(state.sharedContextBusy || !select.value);
-  browserButton.disabled = Boolean(state.sharedContextBusy);
-  browserButton.textContent = "Browse all · " + proposals.length;
   refresh.disabled = Boolean(state.sharedContextBusy);
   reviewButton.textContent = state.sharedContextBusy ? "Opening…" : "Open review";
+}
+
+function renderProposalDockControls() {
+  const backButton = el("proposalDockBack");
+  const acceptButton = el("proposalDockAccept");
+  if (!backButton || !acceptButton) return;
+  const shared = state.sharedContext;
+  const preview = state.contextRoomPreparingProposal;
+  const inProposalContext = shared?.mode === "review" || Boolean(preview);
+  const onProposalPage = state.page === "proposal";
+  backButton.hidden = !inProposalContext || onProposalPage;
+  const review = shared?.mode === "review" ? shared.review || {} : preview || {};
+  const delivered = shared?.accepted?.accepted ? shared.accepted : null;
+  const reportedQueueCount = Number(state.docqa?.summary?.needsReview ?? state.docqa?.queue?.length ?? 0);
+  const reviewedPaths = new Set(state.docqa?.reviewedPaths || []);
+  const unprovenProposalCount = shared?.mode === "review"
+    ? (review.proposalFiles || []).filter((filePath) => !reviewedPaths.has(filePath)).length
+    : 0;
+  const queueCount = Math.max(reportedQueueCount, unprovenProposalCount);
+  const previewCount = Array.isArray(preview?.files) ? preview.files.length : 0;
+  acceptButton.hidden = true;
+  acceptButton.disabled = true;
+  acceptButton.title = delivered
+    ? "This exact proposal revision is already in " + (delivered.defaultBranch || review.defaultBranch || "main")
+    : queueCount
+      ? queueCount + " file(s) still need a human decision"
+      : "Context Room finalizes the proposal automatically after the last file decision";
 }
 
 async function refreshSharedContextUi() {
@@ -11229,6 +15965,7 @@ async function refreshSharedContextUi() {
     });
     state.contextHub = await api("/api/context-hub");
     renderSharedContextControls();
+    renderContextRoomGlobalReviewQueue();
     renderSharedProposalWorkspace();
     await loadFiles();
     setStatus(state.sharedContext?.status?.online === false ? "shared context offline · cached snapshot" : "shared context refreshed");
@@ -11243,62 +15980,107 @@ async function openSelectedSharedProposal() {
   await openSharedProposal(proposal);
 }
 
-function sharedReviewIsEmbedded() {
-  return Boolean(new URLSearchParams(window.location.search).get("embedded"));
-}
-
-function openSharedExternalUrl(url) {
-  if (sharedReviewIsEmbedded()) {
-    window.open(url, "_blank", "noopener");
-    return;
-  }
-  window.location.assign(url);
-}
-
-async function acceptCurrentSharedProposal() {
-  const review = state.sharedContext?.review;
-  const delivered = state.sharedContext?.accepted;
-  const queueCount = state.docqa?.queue?.length || 0;
-  if (delivered?.pullRequestUrl) {
-    openSharedExternalUrl(delivered.pullRequestUrl);
-    return;
-  }
-  if (!review || state.sharedContextBusy) return;
-  if (state.dirty) throw new Error("Save or discard the current editor changes before acceptance");
-  if (queueCount) throw new Error(queueCount + " file(s) still need human review");
-  const confirmed = confirm("Prepare a pull request for the reviewed result?\n\nProposal: " + review.proposal + "\nExact commit: " + review.proposalHead + "\n\nOnly the changes still present in this review workspace will be published on an accepted/* branch. " + review.defaultBranch + " will not be changed.");
-  if (!confirmed) return;
-  state.sharedContextBusy = true;
-  renderSharedContextControls();
-  setStatus("preparing accepted branch from latest main...");
+function contextRoomReturnUrl() {
+  const raw = new URLSearchParams(window.location.search).get("returnTo");
+  if (!raw) return "";
   try {
-    const result = await api("/api/shared-context/accept", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ expectedProposalHead: review.proposalHead }),
-    });
-    state.sharedContext = { ...state.sharedContext, accepted: result };
-    setStatus(result.accepted
-      ? "accepted branch ready · main unchanged · @" + shortSharedHash(result.commit)
-      : result.reason || "nothing to accept");
-    if (result.accepted && result.pullRequestUrl && !sharedReviewIsEmbedded()) openSharedExternalUrl(result.pullRequestUrl);
-  } finally {
-    state.sharedContextBusy = false;
-    renderSharedContextControls();
+    const target = new URL(raw);
+    const localHosts = new Set(["127.0.0.1", "localhost", "[::1]"]);
+    if (target.protocol !== "http:" || !localHosts.has(target.hostname)) return "";
+    return target.toString();
+  } catch {
+    return "";
   }
 }
 
-function handleContextRoomProjectChange() {
-  if (state.projectReloading) return;
-  state.projectReloading = true;
-  setStatus("project changed on this port · reloading safely");
+function recordWorkspaceDiagnostic(phase = state.workspaceBootPhase, reason = state.workspaceLastNavigationReason) {
+  state.workspaceBootPhase = phase;
+  state.workspaceLastNavigationReason = reason;
+  document.body.dataset.workspaceDiagnostics = JSON.stringify({
+    phase,
+    lastNavigationReason: reason,
+    bootCount: Number(window.sessionStorage?.getItem(WORKSPACE_BOOT_COUNT_KEY) || 1),
+    identityChanges: state.workspaceIdentityChanges,
+    navigationGeneration: state.workspaceNavigationGeneration,
+    workspaceId: state.workspaceId || "",
+    clientInstanceId: state.workspaceClientInstanceId || "",
+  });
+}
+
+function abortObsoleteWorkspaceRequests() {
+  state.selectionRequest += 1;
+  state.contextRoomProposalRequest += 1;
+  state.contextEngineRequest += 1;
+  state.singleStartupEffectiveRequest += 1;
+  state.globalProjectSelectionGeneration += 1;
+  for (const key of [
+    "globalProjectSettingsController",
+    "globalProjectExplorerController",
+    "sharedSkillLocationsController",
+    "globalInspectionController",
+  ]) {
+    state[key]?.abort?.();
+    state[key] = null;
+  }
+}
+
+function showWorkspaceRecovery(message = "Context Room stopped an automatic reload loop.") {
+  abortObsoleteWorkspaceRequests();
+  document.body.classList.remove("app-booting");
+  document.body.classList.add("app-recovery");
+  const content = el("bootScreenContent");
+  if (content) {
+    content.className = "boot-recovery";
+    content.innerHTML = '<h2>Context Room needs a clean retry</h2><p>' + escapeHtml(message) + '</p><button id="workspaceRecoveryRetry" type="button">Retry once</button>';
+    el("workspaceRecoveryRetry")?.addEventListener("click", () => {
+      window.sessionStorage?.removeItem(WORKSPACE_RELOAD_GUARD_KEY);
+      window.location.reload();
+    }, { once: true });
+  }
+  el("bootScreen")?.setAttribute("aria-hidden", "false");
+  recordWorkspaceDiagnostic("recovery", "reload-circuit-open");
+}
+
+function requestExceptionalWorkspaceReload(reason = "server identity changed") {
+  const decision = workspaceReloadCircuitDecision(window.sessionStorage?.getItem(WORKSPACE_RELOAD_GUARD_KEY));
+  window.sessionStorage?.setItem(WORKSPACE_RELOAD_GUARD_KEY, decision.value);
+  if (!decision.allowed) {
+    showWorkspaceRecovery("The server identity changed again before Context Room could recover. Your browser will not reload automatically.");
+    return false;
+  }
+  recordWorkspaceDiagnostic("exceptional-reload", reason);
   window.location.reload();
+  return true;
+}
+
+function handleContextRoomProjectChange({ responseProjectId = "", reason = "project identity changed" } = {}) {
+  if (IS_GLOBAL_CONTEXT_ROOM) {
+    if (responseProjectId) state.projectId = responseProjectId;
+    abortObsoleteWorkspaceRequests();
+    state.projectReloading = false;
+    setStatus("Project state changed · refreshing this workspace");
+    recordWorkspaceDiagnostic("refreshing", reason);
+    if (!state.workspaceIdentityRefreshTimer) {
+      state.workspaceIdentityRefreshTimer = window.setTimeout(() => {
+        state.workspaceIdentityRefreshTimer = null;
+        loadFiles({ identityRefresh: true }).catch((error) => {
+          setStatus("Project refresh failed · " + error.message);
+          recordWorkspaceDiagnostic("recoverable-error", "identity-refresh-failed");
+        });
+      }, 0);
+    }
+    return false;
+  }
+  if (state.projectReloading) return false;
+  state.projectReloading = true;
+  setStatus("Context Room server changed · retrying once");
+  return requestExceptionalWorkspaceReload(reason);
 }
 
 function prefetchFile(path) {
   if (!path || state.filePrefetches.has(path)) return;
   const filePromise = api("/api/file?path=" + encodeURIComponent(path));
-  const diffPromise = api("/api/file/diff?path=" + encodeURIComponent(path));
+  const diffPromise = isImageDocumentPath(path) ? Promise.resolve(null) : api("/api/file/diff?path=" + encodeURIComponent(path));
   const entry = { filePromise, diffPromise, expiresAt: Date.now() + 8_000 };
   state.filePrefetches.set(path, entry);
   Promise.allSettled([filePromise, diffPromise]).then(() => {
@@ -11316,6 +16098,7 @@ function readFileForOpen(path, { force = false } = {}) {
 }
 
 function readDiffForOpen(path, { force = false } = {}) {
+  if (isImageDocumentPath(path)) return Promise.resolve(null);
   const entry = state.filePrefetches.get(path);
   if (!force && entry && entry.expiresAt > Date.now()) return entry.diffPromise;
   return readSelectedDiff(path);
@@ -11364,11 +16147,25 @@ function normalizeFileThemeId(wanted) {
   return FILE_THEMES.some((theme) => theme.id === wanted) ? wanted : DEFAULT_FILE_THEME;
 }
 
-function applyFileTheme(themeId = currentFileThemeId()) {
+function currentColorModePreference() {
+  const wanted = document.getElementById?.("colorMode")?.value || state.settings?.appearance?.colorMode || "system";
+  return ["system", "light", "dark"].includes(wanted) ? wanted : "system";
+}
+
+function resolvedColorMode(preference = currentColorModePreference()) {
+  if (preference === "light" || preference === "dark") return preference;
+  return globalThis.matchMedia?.("(prefers-color-scheme: light)")?.matches ? "light" : "dark";
+}
+
+function applyFileTheme(themeId = currentFileThemeId(), colorMode = currentColorModePreference()) {
   const clean = normalizeFileThemeId(themeId);
-  const themeChanged = document.documentElement.dataset.fileTheme !== clean || document.documentElement.dataset.appTheme !== clean;
+  const modePreference = ["system", "light", "dark"].includes(colorMode) ? colorMode : "system";
+  const mode = clean === "context-room" ? resolvedColorMode(modePreference) : (clean === "light-plus" ? "light" : "dark");
+  const themeChanged = document.documentElement.dataset.fileTheme !== clean || document.documentElement.dataset.appTheme !== clean || document.documentElement.dataset.colorMode !== mode;
   document.documentElement.dataset.fileTheme = clean;
   document.documentElement.dataset.appTheme = clean;
+  document.documentElement.dataset.colorMode = mode;
+  document.documentElement.dataset.colorPreference = modePreference;
   if (themeChanged && document.querySelector("iframe.html-preview-frame") && isHtmlDocumentPath(state.selected) && state.openingFilePath !== state.selected) {
     const viewState = captureEditorViewState();
     renderViewer();
@@ -11378,7 +16175,7 @@ function applyFileTheme(themeId = currentFileThemeId()) {
 
 function previewSelectedFileTheme() {
   const clean = normalizeFileThemeId(el("fileTheme")?.value || currentFileThemeId());
-  applyFileTheme(clean);
+  applyFileTheme(clean, currentColorModePreference());
   const label = el("settingsThemePreviewName");
   if (label) label.textContent = clean;
 }
@@ -11407,24 +16204,236 @@ function scheduleSessionStatePush() {
   }, 280);
 }
 
+function createWorkspaceId() {
+  return (globalThis.crypto?.randomUUID?.() || (Date.now().toString(36) + "-" + Math.random().toString(36).slice(2))).replace(/[^A-Za-z0-9_-]/g, "-");
+}
+
+function syncWorkspaceUrl() {
+  if (!state.workspaceId || state.workspaceApplyingHistory) return;
+  const url = new URL(window.location.href);
+  url.searchParams.set("hub", "1");
+  url.searchParams.set("workspace", state.workspaceId);
+  const project = state.activeProjectLocationId || "";
+  if (project) url.searchParams.set("project", project);
+  else url.searchParams.delete("project");
+  const view = state.page === "file" && state.selected ? "file" : state.page || "hub";
+  url.searchParams.set("view", view);
+  if (state.selected) url.searchParams.set("file", state.selected);
+  else url.searchParams.delete("file");
+  if (state.pathFilters?.[0]) url.searchParams.set("folder", state.pathFilters[0]);
+  else url.searchParams.delete("folder");
+  if (state.page === "proposal" && state.contextHubSelection) url.searchParams.set("proposal", state.contextHubSelection);
+  else url.searchParams.delete("proposal");
+  if (state.page === "settings") url.searchParams.set("settings", normalizeSettingsSectionId(state.settingsSection));
+  else url.searchParams.delete("settings");
+  if (url.href === window.location.href) {
+    state.workspaceSyncedUrl = url.href;
+    return;
+  }
+  state.workspaceSyncedUrl = url.href;
+  window.history.replaceState(window.history.state, "", url);
+}
+
+async function applyWorkspaceUrlState({ reason = "history", force = false } = {}) {
+  if (!state.workspaceIdentityReady) return false;
+  const target = parseWorkspaceNavigationUrl(window.location.href);
+  if (!force && state.workspaceSyncedUrl === window.location.href) {
+    recordWorkspaceDiagnostic("ready", reason + "-unchanged");
+    return false;
+  }
+  if (state.dirty) {
+    setStatus("Unsaved changes kept · finish or discard them before using Back or Forward");
+    syncWorkspaceUrl();
+    return false;
+  }
+  const generation = ++state.workspaceNavigationGeneration;
+  state.workspaceApplyingHistory = true;
+  state.workspaceLastNavigationReason = reason;
+  abortObsoleteWorkspaceRequests();
+  recordWorkspaceDiagnostic("restoring-navigation", reason);
+  try {
+    const projectChanged = IS_GLOBAL_CONTEXT_ROOM && target.projectId !== state.activeProjectLocationId;
+    if (projectChanged) {
+      state.activeProjectLocationId = target.projectId;
+      state.root = null;
+      state.navigationRestoreAttempted = true;
+      state.globalExplorerProjectKey = "";
+      const project = (state.contextHub?.projects || []).find((item) => item.id === target.projectId || (item.worktrees || []).some((worktree) => worktree.id === target.projectId));
+      if (project) {
+        state.globalExplorerProjectKey = project.projectKey;
+        state.globalExplorerMode = "project";
+        state.globalProjectWorktreeIds.set(project.projectKey, target.projectId);
+      }
+      await loadFiles({ navigation: true });
+      if (generation !== state.workspaceNavigationGeneration) return false;
+    }
+    state.pathFilters = target.folder ? [normalizeUiPath(target.folder)] : [];
+    if (el("search")) el("search").value = folderFilterSearchQuery(state.pathFilters);
+    if (target.view === "settings") {
+      if (SETTINGS_SECTION_IDS.includes(target.settingsSection)) state.settingsSection = target.settingsSection;
+      showSettingsPage();
+    } else if (target.view === "proposal" && target.proposal) {
+      const proposal = (state.contextHub?.proposals || []).find((item) => item.id === target.proposal || item.branch === target.proposal);
+      if (!proposal) throw new Error("This proposal is no longer available.");
+      await openSharedProposal(proposal.branch, proposal.repository || "");
+    } else if (target.view === "file" && target.file) {
+      if (!state.files.some((file) => file.path === target.file)) throw new Error("This file is no longer available in the selected project.");
+      await selectFile(target.file, { pushHistory: false, revealInExplorer: false, forceReload: projectChanged });
+    } else if (["project-manager", "codex-prompts"].includes(target.view)) {
+      openContextRoomView(target.view);
+    } else {
+      showHome();
+    }
+    if (generation !== state.workspaceNavigationGeneration) return false;
+    state.workspaceSyncedUrl = window.location.href;
+    persistNavigationState();
+    publishSessionState().catch(() => {});
+    recordWorkspaceDiagnostic("ready", reason);
+    return true;
+  } catch (error) {
+    if (generation === state.workspaceNavigationGeneration) {
+      setStatus("Navigation could not be restored · " + error.message);
+      recordWorkspaceDiagnostic("recoverable-error", reason + "-failed");
+    }
+    return false;
+  } finally {
+    if (generation === state.workspaceNavigationGeneration) state.workspaceApplyingHistory = false;
+  }
+}
+
+function workspaceSelectedProject() {
+  const projects = state.contextHub?.projects || [];
+  return projects.find((project) => project.id === state.activeProjectLocationId || (project.worktrees || []).some((worktree) => worktree.id === state.activeProjectLocationId))
+    || projects.find((project) => project.projectKey === state.globalExplorerProjectKey)
+    || null;
+}
+
+function updateWorkspaceDocumentTitle() {
+  const project = workspaceSelectedProject();
+  const parts = [];
+  if (state.selected) parts.push(state.selected.split("/").pop());
+  if (project?.title) parts.push(project.title);
+  parts.push("Context Room");
+  document.title = parts.join(" · ");
+}
+
+function workspaceUpdate(event, detail = {}) {
+  state.workspaceChannel?.postMessage({ type: "workspace-update", event, workspaceId: state.workspaceId, locationId: state.activeProjectLocationId || "", path: detail.path || "", at: Date.now() });
+}
+
+async function handleWorkspaceMessage(message = {}) {
+  if (!message || typeof message !== "object") return;
+  if (message.type === "workspace-claim" && message.workspaceId === state.workspaceId && message.requester !== state.workspaceClientInstanceId) {
+    state.workspaceChannel?.postMessage({ type: "workspace-conflict", workspaceId: state.workspaceId, requester: message.requester });
+    return;
+  }
+  if (message.type !== "workspace-update" || message.workspaceId === state.workspaceId) return;
+  if (message.locationId && state.activeProjectLocationId && message.locationId !== state.activeProjectLocationId) return;
+  if (message.event === "file-saved" && message.path === state.selected) {
+    await refreshFromDisk();
+    setStatus(state.dirty ? "Conflict · updated in another workspace" : "Updated in another workspace");
+    return;
+  }
+  if (["review-decided", "settings-saved", "shared-synced", "catalog-refreshed"].includes(message.event)) scheduleBackgroundRefresh();
+}
+
+async function establishWorkspaceIdentity() {
+  if (!state.workspaceClientInstanceId) state.workspaceClientInstanceId = createWorkspaceId();
+  const currentNavigation = parseWorkspaceNavigationUrl(window.location.href);
+  const requested = normalizeUiWorkspaceId(currentNavigation.workspaceId || window.sessionStorage?.getItem(WORKSPACE_ID_SESSION_KEY) || "") || createWorkspaceId();
+  state.workspaceId = requested;
+  const replaceDuplicatedWorkspaceIdentity = () => {
+    if (state.workspaceId !== requested || state.workspaceDuplicateResolved) return;
+    state.workspaceDuplicateResolved = true;
+    const replacement = createWorkspaceId();
+    const oldPrefix = WORKSPACE_NAVIGATION_STATE_STORAGE_PREFIX + requested + ":";
+    const copies = [];
+    for (let index = 0; index < window.sessionStorage.length; index += 1) {
+      const key = window.sessionStorage.key(index);
+      if (key?.startsWith(oldPrefix)) copies.push([key.replace(oldPrefix, WORKSPACE_NAVIGATION_STATE_STORAGE_PREFIX + replacement + ":"), window.sessionStorage.getItem(key)]);
+    }
+    for (const [key, value] of copies) if (value != null) window.sessionStorage.setItem(key, value);
+    state.workspaceId = replacement;
+    state.workspaceIdentityChanges += 1;
+    window.sessionStorage?.setItem(WORKSPACE_ID_SESSION_KEY, replacement);
+    recordWorkspaceDiagnostic("identity-ready", "duplicated-tab");
+    if (state.workspaceIdentityReady) {
+      syncWorkspaceUrl();
+      publishSessionState().catch(() => {});
+    }
+  };
+  if ("BroadcastChannel" in globalThis) {
+    state.workspaceChannel = new BroadcastChannel(WORKSPACE_CHANNEL_NAME);
+    state.workspaceChannel.onmessage = (event) => {
+      const message = event.data || {};
+      if (shouldReplaceDuplicatedWorkspaceIdentity({ message, requestedWorkspaceId: requested, clientInstanceId: state.workspaceClientInstanceId, alreadyResolved: state.workspaceDuplicateResolved })) {
+        replaceDuplicatedWorkspaceIdentity();
+        return;
+      }
+      handleWorkspaceMessage(message).catch(() => {});
+    };
+    state.workspaceChannel.postMessage({ type: "workspace-claim", workspaceId: requested, requester: state.workspaceClientInstanceId });
+  }
+  window.sessionStorage?.setItem(WORKSPACE_ID_SESSION_KEY, state.workspaceId);
+  state.workspaceIdentityReady = true;
+  syncWorkspaceUrl();
+  recordWorkspaceDiagnostic("identity-ready", "workspace-established");
+}
+
+function normalizeUiWorkspaceId(value) {
+  const clean = String(value || "").trim();
+  return /^[A-Za-z0-9_-]{8,120}$/.test(clean) ? clean : "";
+}
+
+function buildWorkspacePresencePayload() {
+  const session = buildSessionStatePayload();
+  const project = workspaceSelectedProject();
+  const worktree = project?.worktrees?.find((entry) => entry.id === state.activeProjectLocationId) || null;
+  return {
+    workspaceId: state.workspaceId,
+    clientInstanceId: state.workspaceClientInstanceId,
+    projectId: project?.id || state.projectId || "",
+    projectTitle: project?.title || "",
+    locationId: state.activeProjectLocationId || "",
+    worktree: worktree?.branch || worktree?.root || "",
+    view: session.view,
+    folder: state.pathFilters?.[0] || "",
+    file: session.selectedPath || "",
+    proposal: state.contextHubSelection || "",
+    visible: document.visibilityState === "visible",
+    focused: document.hasFocus(),
+    url: window.location.href,
+    title: document.title,
+  };
+}
+
+function startWorkspaceHeartbeat() {
+  if (state.workspaceHeartbeatTimer) window.clearInterval(state.workspaceHeartbeatTimer);
+  publishSessionState().catch(() => {});
+  state.workspaceHeartbeatTimer = window.setInterval(() => publishSessionState().catch(() => {}), 5_000);
+}
+
 async function publishSessionState() {
-  await api("/api/session-state", {
+  if (!state.workspaceId) return;
+  await api("/api/workspaces/register", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(buildSessionStatePayload()),
+    body: JSON.stringify(buildWorkspacePresencePayload()),
   });
 }
 
 function navigationStorageKey(root = state.root) {
-  return root ? NAVIGATION_STATE_STORAGE_PREFIX + root : "";
+  return root && state.workspaceId ? WORKSPACE_NAVIGATION_STATE_STORAGE_PREFIX + state.workspaceId + ":" + root : "";
 }
 
 function readPersistedNavigationState(root = state.root) {
   const key = navigationStorageKey(root);
   if (!key) return null;
   try {
-    const raw = JSON.parse(window.localStorage?.getItem(key) || "null");
-    if (!raw || raw.version !== 1) return null;
+    const workspaceRaw = window.sessionStorage?.getItem(key) || "";
+    const legacyRaw = !workspaceRaw ? window.localStorage?.getItem(LEGACY_NAVIGATION_STATE_STORAGE_PREFIX + root) || "" : "";
+    const raw = JSON.parse(workspaceRaw || legacyRaw || "null");
+    if (!raw || ![1, 2, 3, 4].includes(raw.version)) return null;
     if (!raw.root || !raw.projectId) return null;
     if (raw.root !== root) return null;
     if (!state.projectId || raw.projectId !== state.projectId) return null;
@@ -11434,20 +16443,35 @@ function readPersistedNavigationState(root = state.root) {
     const rawSearchText = typeof raw.searchText === "string" ? raw.searchText.slice(0, 300) : "";
     const searchText = rawSearchText === folderFilterSearchQuery(rawPathFilters) ? folderFilterSearchQuery(pathFilters) : rawSearchText;
     return {
-      version: 1,
+      version: raw.version,
       page,
       selectedPath: normalizeUiPath(raw.selectedPath || ""),
       startup: raw.startup && typeof raw.startup === "object" ? raw.startup : null,
       reviewMode: Boolean(raw.reviewMode),
       diffCollapsed: typeof raw.diffCollapsed === "boolean" ? raw.diffCollapsed : null,
       selectedReview: normalizeUiPath(raw.selectedReview || ""),
+      explorerCollapsed: typeof raw.explorerCollapsed === "boolean" ? raw.explorerCollapsed : null,
       explorerFilter: ["all", "watched", "unwatched"].includes(raw.explorerFilter) ? raw.explorerFilter : "all",
       searchText,
       pathFilters,
       activeHubCardId: typeof raw.activeHubCardId === "string" ? raw.activeHubCardId : null,
       settingsSection: SETTINGS_SECTION_IDS.includes(raw.settingsSection) ? raw.settingsSection : "review",
+      settingsDisclosureState: raw.version >= 2 && raw.settingsDisclosureState && typeof raw.settingsDisclosureState === "object"
+        ? Object.fromEntries(Object.entries(raw.settingsDisclosureState).filter(([id, open]) => SETTINGS_DISCLOSURE_IDS.includes(id) && typeof open === "boolean"))
+        : {},
+      paneLayout: raw.version >= 3 && raw.paneLayout && typeof raw.paneLayout === "object" ? {
+        explorerWidth: Math.min(360, Math.max(220, Number(raw.paneLayout.explorerWidth) || 272)),
+        inspectorWidth: Math.min(380, Math.max(300, Number(raw.paneLayout.inspectorWidth) || 320)),
+        inspectorOpen: Boolean(raw.paneLayout.inspectorOpen),
+        focusMode: Boolean(raw.paneLayout.focusMode),
+      } : { explorerWidth: 272, inspectorWidth: 320, inspectorOpen: false, focusMode: false },
       pendingMarkdown: raw.pendingMarkdown && typeof raw.pendingMarkdown === "object" ? raw.pendingMarkdown : null,
       viewState: raw.viewState && typeof raw.viewState === "object" ? raw.viewState : null,
+      history: raw.version >= 4 && Array.isArray(raw.history) ? raw.history.slice(-100) : [],
+      historyIndex: raw.version >= 4 && Number.isInteger(raw.historyIndex) ? raw.historyIndex : -1,
+      activeProjectLocationId: raw.version >= 4 && typeof raw.activeProjectLocationId === "string" ? raw.activeProjectLocationId : "",
+      globalExplorerProjectKey: raw.version >= 4 && typeof raw.globalExplorerProjectKey === "string" ? raw.globalExplorerProjectKey : "",
+      globalExplorerMode: raw.version >= 4 && typeof raw.globalExplorerMode === "string" ? raw.globalExplorerMode : "projects",
     };
   } catch {
     return null;
@@ -11458,8 +16482,9 @@ function persistNavigationState() {
   const key = navigationStorageKey();
   if (!key) return;
   try {
-    window.localStorage?.setItem(key, JSON.stringify({
-      version: 1,
+    window.sessionStorage?.setItem(key, JSON.stringify({
+      version: 4,
+      workspaceId: state.workspaceId,
       root: state.root,
       projectId: state.projectId,
       page: state.page,
@@ -11468,16 +16493,56 @@ function persistNavigationState() {
       reviewMode: Boolean(state.reviewModePath && state.reviewModePath === state.selected),
       diffCollapsed: state.diffCollapsed,
       selectedReview: state.selectedReview || null,
+      explorerCollapsed: state.explorerNavigationOverride === null
+        ? isExplorerCollapsed()
+        : Boolean(state.explorerStoredCollapsed),
       explorerFilter: state.explorerWatchFilter,
       searchText: el("search")?.value || "",
       pathFilters: state.pathFilters || [],
       activeHubCardId: state.activeHubCardId || null,
       settingsSection: normalizeSettingsSectionId(state.settingsSection),
+      settingsDisclosureState: { ...state.settingsDisclosureState },
+      paneLayout: {
+        explorerWidth: state.explorerWidth,
+        inspectorWidth: state.inspectorWidth,
+        inspectorOpen: state.inspectorOpen,
+        focusMode: state.focusMode,
+      },
       pendingMarkdown: state.page === "new-doc" ? state.pendingMarkdown : null,
       viewState: state.selected ? captureEditorViewState() : null,
+      history: state.history.slice(-100),
+      historyIndex: state.historyIndex,
+      activeProjectLocationId: state.activeProjectLocationId || "",
+      globalExplorerProjectKey: state.globalExplorerProjectKey || "",
+      globalExplorerMode: state.globalExplorerMode || "projects",
       updatedAt: new Date().toISOString(),
     }));
+    syncWorkspaceUrl();
+    updateWorkspaceDocumentTitle();
   } catch {}
+}
+
+function restoreExplorerStateAfterInitialLoad() {
+  const persisted = readPersistedNavigationState();
+  const paneLayout = persisted?.paneLayout || {};
+  state.explorerWidth = Math.min(360, Math.max(220, Number(paneLayout.explorerWidth) || 272));
+  state.inspectorWidth = Math.min(380, Math.max(300, Number(paneLayout.inspectorWidth) || 320));
+  state.inspectorOpen = Boolean(paneLayout.inspectorOpen);
+  state.focusMode = Boolean(paneLayout.focusMode);
+  document.documentElement.style.setProperty("--explorer-width", state.explorerWidth + "px");
+  document.documentElement.style.setProperty("--inspector-width", state.inspectorWidth + "px");
+  document.body.classList.toggle("workbench-focus-mode", state.focusMode);
+  const storedCollapsed = typeof persisted?.explorerCollapsed === "boolean"
+    ? persisted.explorerCollapsed
+    : window.matchMedia("(max-width: 980px)").matches;
+  const navigationMode = new URLSearchParams(window.location.search).get("explorer");
+  state.explorerStoredCollapsed = storedCollapsed;
+  state.explorerNavigationOverride = navigationMode === "collapsed"
+    ? true
+    : navigationMode === "expanded"
+      ? false
+      : null;
+  applyExplorerCollapsed(state.explorerNavigationOverride ?? storedCollapsed);
 }
 
 async function restoreNavigationAfterInitialLoad() {
@@ -11490,6 +16555,14 @@ async function restoreNavigationAfterInitialLoad() {
   state.pathFilters = persisted.pathFilters;
   state.activeHubCardId = persisted.activeHubCardId;
   state.settingsSection = persisted.settingsSection;
+  state.settingsDisclosureState = persisted.settingsDisclosureState || {};
+  if (persisted.version >= 4) {
+    state.history = persisted.history || [];
+    state.historyIndex = persisted.historyIndex;
+    state.activeProjectLocationId = persisted.activeProjectLocationId || state.activeProjectLocationId;
+    state.globalExplorerProjectKey = persisted.globalExplorerProjectKey || state.globalExplorerProjectKey;
+    state.globalExplorerMode = persisted.globalExplorerMode || state.globalExplorerMode;
+  }
   el("search").value = persisted.searchText || folderFilterSearchQuery(state.pathFilters);
   if (el("search").value.trim()) expandSearchMatches();
   renderFiles();
@@ -11653,8 +16726,8 @@ function startAgentCommandPolling() {
 }
 
 async function pollAgentCommand() {
-  if (!state.root) return;
-  const data = await api("/api/agent/command");
+  if (!state.root || !state.workspaceId) return;
+  const data = await api("/api/workspaces/" + encodeURIComponent(state.workspaceId) + "/command");
   const command = data.command;
   if (!command?.id || command.id === state.lastAgentCommandId) return;
   if (isStaleAgentCommand(command)) {
@@ -11682,7 +16755,7 @@ function rememberAgentCommandId(id) {
 }
 
 function agentCommandAckStorageKey() {
-  return state.root ? AGENT_COMMAND_ACK_STORAGE_PREFIX + state.root : "";
+  return state.root && state.workspaceId ? AGENT_COMMAND_ACK_STORAGE_PREFIX + state.workspaceId + ":" + state.root : "";
 }
 
 function isStaleAgentCommand(command) {
@@ -12101,7 +17174,6 @@ function wireExplorerTreeEvents() {
     const toggle = target.closest("[data-toggle-folder]");
     if (toggle && holder.contains(toggle)) {
       event.stopPropagation();
-      openSidebarIfCollapsed();
       toggleFolder(toggle.dataset.toggleFolder);
       return;
     }
@@ -12118,7 +17190,6 @@ function wireExplorerTreeEvents() {
       const selectPath = folderButton.dataset.folderPath + "/";
       if (shouldToggleSelection(event)) toggleDeleteSelection(selectPath);
       else {
-        openSidebarIfCollapsed();
         toggleFolder(folderButton.dataset.folderPath);
       }
     }
@@ -12180,10 +17251,16 @@ function renderExplorerContextMenu(x, y) {
   const markdownDirectory = markdownCreateDirectoryForTarget(target);
   const markdownDirectoryLabel = markdownDirectory || "project root";
   const label = target.path || directoryLabel;
+  const folderReviews = target.kind === "folder"
+    ? contextRoomReviewsForExplorerPath(state.projectId, target.path, "folder")
+    : [];
   const createActions = '<button class="secondary" type="button" data-context-new-file>New file</button>' +
     '<button class="secondary" type="button" data-context-new-folder>New folder</button>';
   const targetActions = target.path
-    ? '<button class="secondary" type="button" data-context-watch>' + (target.kind === "folder" ? 'Watch options…' : 'Watch') + '</button>' +
+    ? '<button class="secondary" type="button" data-context-watch>' + (target.kind === "folder" ? 'Watch this folder…' : 'Watch this file') + '</button>' +
+      (folderReviews.length ? '<button class="secondary" type="button" data-context-snooze-reviews>Snooze reviews… <span class="context-menu-count">' + folderReviews.length + '</span></button>' : '') +
+      (target.kind === "folder" ? '<button class="secondary" type="button" data-context-inspect-environment>Inspect agent environment</button>' : '') +
+      (target.kind === "folder" ? '<button class="secondary" type="button" data-context-shared-skills>Link this skill location to shared…</button>' : '') +
       createActions +
       '<button class="secondary" type="button" data-context-select>Select</button>' +
       '<button class="secondary danger-action" type="button" data-context-delete>Delete</button>'
@@ -12217,6 +17294,20 @@ function renderExplorerContextMenu(x, y) {
   menu.style.top = y + "px";
   clampContextMenuToViewport(menu);
   document.querySelector("[data-context-watch]")?.addEventListener("click", () => watchExplorerContextTarget().catch((error) => setStatus(error.message)));
+  document.querySelector("[data-context-snooze-reviews]")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const rect = menu.getBoundingClientRect();
+    openContextRoomSnoozeChooser(folderReviews, { x: rect.left, y: rect.top });
+  });
+  document.querySelector("[data-context-inspect-environment]")?.addEventListener("click", () => {
+    hideExplorerContextMenu();
+    openContextEngineInspection({ folder: target.path || ".", provider: "codex" }).catch((error) => setStatus(error.message));
+  });
+  document.querySelector("[data-context-shared-skills]")?.addEventListener("click", () => {
+    const sourceDirectory = (state.root || '').replace(/\/$/, '') + '/' + normalizeUiPath(target.path);
+    hideExplorerContextMenu();
+    openSharedSkillsWizard({ mode: 'import', sourceDirectory }).catch((error) => setStatus(error.message));
+  });
   document.querySelector("[data-context-new-file]")?.addEventListener("click", showContextNewFileForm);
   document.querySelector("[data-context-new-folder]")?.addEventListener("click", showContextNewFolderForm);
   document.querySelector("[data-context-select]")?.addEventListener("click", selectExplorerContextTarget);
@@ -12461,37 +17552,113 @@ async function createFolderFromContextMenu() {
   setStatus("folder created");
 }
 
-function openSidebarIfCollapsed() {
-  const app = document.querySelector(".app");
-  app?.classList.remove("sidebar-collapsed");
-  if (app && window.matchMedia("(max-width: 980px)").matches) state.mobileSidebarTouched = true;
+function isExplorerCollapsed() {
+  return Boolean(document.querySelector(".app")?.classList.contains("sidebar-collapsed"));
 }
-function syncResponsiveSidebar({ force = false } = {}) {
+
+function applyExplorerCollapsed(collapsed) {
   const app = document.querySelector(".app");
   if (!app) return;
-  const isMobile = window.matchMedia("(max-width: 980px)").matches;
-  const isDrawer = window.matchMedia("(max-width: 640px)").matches;
-  if (isMobile) {
-    if (force || !state.mobileSidebarTouched) app.classList.add("sidebar-collapsed");
-  } else {
-    app.classList.remove("sidebar-collapsed");
-    app.classList.remove("explorer-expanded");
-    state.mobileSidebarTouched = false;
-  }
-  if (!isDrawer || app.classList.contains("sidebar-collapsed")) app.classList.remove("explorer-expanded");
+  setExplorerEdgePeek(false);
+  app.classList.toggle("sidebar-collapsed", Boolean(collapsed));
+  app.classList.toggle(
+    "explorer-expanded",
+    !collapsed && window.matchMedia("(max-width: 640px)").matches,
+  );
   syncSidebarToggleIcon();
 }
 
-function collapseSidebarOnNarrow() {
+function setExplorerCollapsedFromUser(collapsed) {
+  state.explorerNavigationOverride = null;
+  state.explorerStoredCollapsed = Boolean(collapsed);
+  applyExplorerCollapsed(collapsed);
+  persistNavigationState();
+}
+
+function setExplorerEdgePeek(open) {
   const app = document.querySelector(".app");
-  if (window.matchMedia("(max-width: 980px)").matches) app?.classList.add("sidebar-collapsed");
-  app?.classList.remove("explorer-expanded");
+  if (!app) return;
+  clearTimeout(state.explorerEdgePeekCloseTimer);
+  state.explorerEdgePeekCloseTimer = null;
+  app.classList.toggle("explorer-edge-peek", Boolean(open) && isExplorerCollapsed());
+  syncSidebarToggleIcon();
+}
+
+function scheduleExplorerEdgePeekClose() {
+  clearTimeout(state.explorerEdgePeekCloseTimer);
+  state.explorerEdgePeekCloseTimer = window.setTimeout(() => setExplorerEdgePeek(false), 150);
+}
+
+function revealExplorerFromLeftEdge(event) {
+  if (!window.matchMedia("(min-width: 900px) and (hover: hover) and (pointer: fine)").matches) return;
+  const app = document.querySelector(".app");
+  if (app?.classList.contains("explorer-edge-peek")) {
+    if (event.clientX > state.explorerWidth + 12) scheduleExplorerEdgePeekClose();
+    else {
+      clearTimeout(state.explorerEdgePeekCloseTimer);
+      state.explorerEdgePeekCloseTimer = null;
+    }
+    return;
+  }
+  if (event.clientX > 8 || !isExplorerCollapsed()) return;
+  setExplorerEdgePeek(true);
+}
+
+function syncResponsiveSidebar() {
+  const app = document.querySelector(".app");
+  if (!app) return;
+  app.classList.toggle(
+    "explorer-expanded",
+    !isExplorerCollapsed() && window.matchMedia("(max-width: 640px)").matches,
+  );
   syncSidebarToggleIcon();
 }
 
 function syncSidebarToggleIcon() {
   const toggle = el("sidebarToggle");
-  if (toggle) toggle.textContent = window.matchMedia("(max-width: 640px)").matches ? "✕" : "☰";
+  if (!toggle) return;
+  const mobile = window.matchMedia("(max-width: 640px)").matches;
+  const edgePeek = Boolean(document.querySelector(".app")?.classList.contains("explorer-edge-peek"));
+  const use = toggle.querySelector("use");
+  if (use) use.setAttribute("href", mobile ? "#cr-icon-close" : "#cr-icon-sidebar");
+  toggle.title = mobile ? "Close explorer" : edgePeek ? "Keep explorer open" : isExplorerCollapsed() ? "Open explorer" : "Collapse explorer";
+  toggle.setAttribute("aria-label", toggle.title);
+  toggle.setAttribute("aria-expanded", String(edgePeek || !isExplorerCollapsed()));
+}
+
+function setWorkbenchExplorerWidth(value, { persist = false } = {}) {
+  const width = Math.min(360, Math.max(220, Math.round(Number(value) || 272)));
+  state.explorerWidth = width;
+  document.documentElement.style.setProperty("--explorer-width", width + "px");
+  el("sidebarResizer")?.setAttribute("aria-valuenow", String(width));
+  if (persist) persistNavigationState();
+}
+
+function beginSidebarResize(event) {
+  if (isExplorerCollapsed() || window.matchMedia("(max-width: 899px)").matches) return;
+  event.preventDefault();
+  const startX = event.clientX;
+  const startWidth = state.explorerWidth;
+  document.body.classList.add("workbench-resizing");
+  const move = (moveEvent) => setWorkbenchExplorerWidth(startWidth + moveEvent.clientX - startX);
+  const end = () => {
+    document.body.classList.remove("workbench-resizing");
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", end);
+    window.removeEventListener("pointercancel", end);
+    persistNavigationState();
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", end, { once: true });
+  window.addEventListener("pointercancel", end, { once: true });
+}
+
+function resizeSidebarFromKeyboard(event) {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  if (event.key === 'Home') setWorkbenchExplorerWidth(220, { persist: true });
+  else if (event.key === 'End') setWorkbenchExplorerWidth(360, { persist: true });
+  else setWorkbenchExplorerWidth(state.explorerWidth + (event.key === 'ArrowRight' ? 8 : -8), { persist: true });
 }
 
 function toggleDeleteSelection(path) {
@@ -12644,7 +17811,6 @@ function filterFolder(folderPath) {
 }
 
 function filterFolders(folderPaths) {
-  openSidebarIfCollapsed();
   const cleans = folderPaths.map((folderPath) => (folderPath || "").replace(/\/$/, "")).filter(Boolean);
   state.pathFilters = cleans;
   const search = el("search");
@@ -12728,6 +17894,8 @@ function parentFolders(target) {
 }
 
 function iconForPath(filePath) {
+  if (/\.(png|jpe?g|gif|webp|avif)$/i.test(filePath)) return "▧";
+  if (/\.(svg|mmd|mermaid|puml|plantuml|dot|gv|drawio)$/i.test(filePath)) return "⌁";
   if (filePath.endsWith(".csv")) return "▦";
   if (filePath.endsWith(".json") || filePath.endsWith(".jsonl")) return "{}";
   if (filePath.endsWith(".mjs") || filePath.endsWith(".js") || filePath.endsWith(".py")) return "⌘";
@@ -12754,6 +17922,7 @@ function backgroundReportRenderKey(reports = {}) {
     startupContext: reports.startupContext || [],
     startupSkills: reports.startupSkills || [],
     startupHooks: reports.startupHooks || [],
+    sharedSkills: reports.sharedSkills || null,
   });
 }
 
@@ -12766,6 +17935,7 @@ function applyBackgroundReportPayload(reports = {}) {
   state.startupContextFiles = reports.startupContext || state.startupContextFiles;
   state.startupSkillFolders = reports.startupSkills || state.startupSkillFolders;
   state.startupHookFiles = reports.startupHooks || state.startupHookFiles;
+  if (reports.sharedSkills) state.sharedSkillLocations.set("__current__", reports.sharedSkills);
   const queue = state.docqa?.queue || [];
   state.selectedReview = queue.find((item) => item.path === state.selectedReview)?.path || queue.find((item) => item.path === state.reviewModePath)?.path || queue[0]?.path || null;
   return changed;
@@ -12782,6 +17952,9 @@ function renderAfterBackgroundReportPayload() {
     restoreEditorViewState(viewState);
   } else if (state.page === "hub") {
     showHome();
+  } else if (state.page === "proposal") {
+    renderProposalReviewPage();
+    renderSharedContextControls();
   } else if (state.page === "settings") {
     renderSettingsPanel();
     updateActionBanner();
@@ -12799,6 +17972,73 @@ function applyInitialReportsWhenReady(reportsRequest) {
   }).catch(() => scheduleBackgroundRefresh({ forceReports: true }));
 }
 
+function applyInitialContextHubWhenReady(contextHubRequest) {
+  void contextHubRequest.then((contextHub) => {
+    window.requestAnimationFrame(() => {
+      state.contextHub = contextHub;
+      const roomQuery = new URLSearchParams(window.location.search);
+      const requestedProject = (contextHub.projects || []).find((project) => (
+        project.id === roomQuery.get("project")
+        || (project.worktrees || []).some((worktree) => worktree.id === roomQuery.get("project"))
+      ));
+      if (requestedProject) {
+        state.sharedProposalProject = requestedProject.projectKey;
+        state.globalExplorerProjectKey = requestedProject.projectKey;
+        state.globalExplorerMode = "project";
+        state.globalProjectWorktreeIds.set(requestedProject.projectKey, roomQuery.get("project"));
+        void loadGlobalProjectExplorerPage(requestedProject).catch((error) => setStatus(error.message));
+      }
+      renderSharedContextControls();
+      if (state.page === "settings") renderSettingsPanel();
+      renderContextRoomGlobalReviewQueue();
+      renderSharedProposalWorkspace();
+      renderContextHealth();
+      state.bootMilestones.contextHubReady = Date.now() - state.bootStartedAt;
+      if (contextHub.freshness?.refreshing) pollFreshContextHubSnapshot();
+    });
+  }).catch((error) => {
+    setStatus("Context Room opened · project index unavailable: " + error.message);
+  });
+}
+
+async function loadInitialContextHubData() {
+  const catalog = await api("/api/context-hub/catalog");
+  state.contextHub = { ...catalog, proposals: [], items: [] };
+  window.requestAnimationFrame(() => {
+    renderGlobalProjectExplorer();
+    renderContextRoomGlobalReviewQueue();
+  });
+  const [reviews, sections] = await Promise.all([
+    api("/api/context-hub/review-queue?limit=80"),
+    api("/api/context-hub/sections"),
+  ]);
+  const sectionsByProject = new Map((sections.projects || []).map((project) => [project.projectKey, project.hubSections || []]));
+  return {
+    ...catalog,
+    attention: reviews.attention || catalog.attention,
+    freshness: reviews.freshness || catalog.freshness,
+    projects: (catalog.projects || []).map((project) => ({ ...project, hubSections: sectionsByProject.get(project.projectKey) || [] })),
+    proposals: (reviews.items || []).filter((item) => item.type === "shared"),
+    items: reviews.items || [],
+    reviewPage: { total: reviews.total || 0, nextCursor: reviews.nextCursor },
+  };
+}
+
+function pollFreshContextHubSnapshot(attempt = 0) {
+  if (attempt >= 12) return;
+  window.setTimeout(() => {
+    api("/api/context-hub").then((contextHub) => {
+      state.contextHub = contextHub;
+      renderGlobalProjectExplorer();
+      renderContextRoomGlobalReviewQueue();
+      renderSharedProposalWorkspace();
+      renderContextHealth();
+      if (state.page === "settings" && !state.settingsDirtyGroups.size) renderSettingsPanel();
+      if (contextHub.freshness?.refreshing) pollFreshContextHubSnapshot(attempt + 1);
+    }).catch(() => {});
+  }, attempt < 3 ? 400 : 900);
+}
+
 function acceptContextRoomRoot(nextRoot) {
   if (!nextRoot) return;
   if (!state.root) {
@@ -12807,44 +18047,89 @@ function acceptContextRoomRoot(nextRoot) {
     return;
   }
   if (state.root === nextRoot) return;
-  handleContextRoomProjectChange();
-  throw new Error("Context Room root changed; reloading this tab.");
+  if (IS_GLOBAL_CONTEXT_ROOM) {
+    state.root = nextRoot;
+    state.lastAgentCommandId = readLastAgentCommandId();
+    recordWorkspaceDiagnostic("refreshing", "selected-project-root-changed");
+    return;
+  }
+  handleContextRoomProjectChange({ reason: "server-root-changed" });
+  throw new Error("Context Room root changed; this stale response was ignored.");
 }
 
 async function loadFiles(options = {}) {
   setStatus("chargement...");
   if (options.initial) state.bootMilestones.requestsStarted = Date.now() - state.bootStartedAt;
-  const reportsRequest = options.initial ? api("/api/reports") : null;
-  const sharedRequest = options.initial ? api("/api/shared-context") : null;
-  const contextHubRequest = options.initial ? api("/api/context-hub") : null;
+  const reportsRequest = options.initial && !IS_GLOBAL_CONTEXT_ROOM ? api("/api/reports") : null;
+  const sharedRequest = options.initial && !IS_GLOBAL_CONTEXT_ROOM ? api("/api/shared-context") : null;
   const [data, settingsData] = await Promise.all([api(filesApiPath()), api("/api/settings")]);
-  const [sharedData, contextHubData] = await Promise.all([
-    sharedRequest || Promise.resolve(null),
-    contextHubRequest || Promise.resolve(null),
-  ]);
+  const sharedData = await (sharedRequest || Promise.resolve(null));
   if (options.initial) state.bootMilestones.coreDataReady = Date.now() - state.bootStartedAt;
   acceptContextRoomRoot(data.root);
   state.files = data.files;
   state.directories = data.directories || [];
   if (sharedData) state.sharedContext = sharedData;
-  if (contextHubData) state.contextHub = contextHubData;
   applySettingsPayload(settingsData);
   renderSharedContextControls();
-  if (options.initial && sharedReviewIsEmbedded()) el("contextHubOpen").hidden = true;
-  if (options.initial && new URLSearchParams(window.location.search).get("hub") === "1") setSharedProposalWorkspaceOpen(true);
+  if (options.initial) {
+    if (!IS_GLOBAL_CONTEXT_ROOM) void loadSharedSkillLocations().then(() => {
+      if (state.page === "hub") renderHubFolders();
+    }).catch(() => {});
+    const roomQuery = new URLSearchParams(window.location.search);
+    const requestedView = roomQuery.get("view") || "";
+    if (["project-manager", "codex-prompts"].includes(requestedView)) openContextRoomView(requestedView);
+  }
   state.lastFullRefreshAt = Date.now();
   const clearedMissingSelection = reconcileMissingSelectedFile();
   renderFiles();
+  if (options.initial) restoreExplorerStateAfterInitialLoad();
 
   // File restoration and review reports use separate workers, so keep them concurrent.
-  const restoreRequest = restoreNavigationAfterInitialLoad();
+  const initialQuery = options.initial ? new URLSearchParams(window.location.search) : null;
+  const requestedHubCard = initialQuery?.get("hubCard") || "";
+  const requestedReviewFile = initialQuery?.get("file") || "";
+  const requestedStartupKind = initialQuery?.get("startupKind") || "";
+  const requestedStartupOrder = initialQuery?.get("startupOrder") || "";
+  const requestedStartupSkill = initialQuery?.get("startupSkill") || "";
+  const hasRequestedContextHubTarget = Boolean(requestedReviewFile || requestedHubCard || requestedStartupOrder || state.sharedContext?.mode === "review");
+  const restoreRequest = hasRequestedContextHubTarget ? Promise.resolve(false) : restoreNavigationAfterInitialLoad();
   const restored = await restoreRequest;
+  let restoredContextHubTarget = false;
+  if (requestedStartupKind === "startup-skill" && requestedStartupOrder) {
+    const folder = String(requestedStartupOrder).split(":")[0];
+    const skill = requestedStartupSkill || String(requestedStartupOrder).split(":").slice(1).join(":");
+    await selectStartupSkillFile(folder, skill, { reviewMode: true });
+    restoredContextHubTarget = true;
+  } else if (requestedStartupKind === "startup-hook" && requestedStartupOrder) {
+    await selectStartupHookFile(requestedStartupOrder, { reviewMode: true });
+    restoredContextHubTarget = true;
+  } else if (requestedStartupOrder) {
+    await selectStartupContextFile(requestedStartupOrder, { reviewMode: true });
+    restoredContextHubTarget = true;
+  } else if (requestedReviewFile && state.files.some((file) => file.path === requestedReviewFile)) {
+    await selectFile(requestedReviewFile, { pushHistory: false, reviewMode: true, forceReload: true });
+    restoredContextHubTarget = true;
+  } else if (options.initial && state.sharedContext?.mode === "review") {
+    showProposalReview();
+    restoredContextHubTarget = true;
+  } else if (requestedHubCard && findHubCardById(state.rootHubSections || state.hubSections || [], requestedHubCard)) {
+    showHome();
+    await activateContextHubCard(requestedHubCard);
+    restoredContextHubTarget = true;
+  }
   if (options.initial) state.bootMilestones.initialDataReady = Date.now() - state.bootStartedAt;
   if (options.initial) state.bootMilestones.navigationReady = Date.now() - state.bootStartedAt;
 
   if (options.waitForBackground) await refreshBackgroundReports({ forceReports: true });
   else if (reportsRequest) applyInitialReportsWhenReady(reportsRequest);
   else scheduleBackgroundRefresh({ forceReports: true });
+  if (options.initial && state.sharedContext?.mode !== "review") {
+    window.setTimeout(() => applyInitialContextHubWhenReady(loadInitialContextHubData()), 0);
+  }
+  if (restoredContextHubTarget) {
+    scheduleSessionStatePush();
+    return;
+  }
   if (restored) {
     scheduleSessionStatePush();
     return;
@@ -12855,11 +18140,35 @@ async function loadFiles(options = {}) {
 }
 
 function finishInitialBoot() {
+  if (document.body.classList.contains("app-recovery")) return;
   state.bootMilestones.complete = Math.max(0, Date.now() - state.bootStartedAt);
   document.body.dataset.bootMs = String(state.bootMilestones.complete);
   document.body.dataset.bootMilestones = JSON.stringify(state.bootMilestones);
   document.body.classList.remove("app-booting");
   el("bootScreen")?.setAttribute("aria-hidden", "true");
+  recordWorkspaceDiagnostic("ready", state.workspaceLastNavigationReason || "boot-complete");
+}
+
+function initializeWorkspaceDiagnostics() {
+  const previous = Number(window.sessionStorage?.getItem(WORKSPACE_BOOT_COUNT_KEY) || 0);
+  window.sessionStorage?.setItem(WORKSPACE_BOOT_COUNT_KEY, String(previous + 1));
+  recordWorkspaceDiagnostic("boot", "initial-load");
+}
+
+function stopWorkspaceRuntime() {
+  window.clearTimeout(state.sessionStateTimer);
+  window.clearTimeout(state.prefetchTimer);
+  window.clearTimeout(state.backgroundRefreshTimer);
+  window.clearTimeout(state.workspaceIdentityRefreshTimer);
+  window.clearInterval(state.workspaceHeartbeatTimer);
+  window.clearInterval(state.agentCommandTimer);
+  window.clearInterval(state.diskRefreshTimer);
+  window.clearInterval(state.backgroundRefreshInterval);
+  state.workspaceHeartbeatTimer = null;
+  state.agentCommandTimer = null;
+  state.workspaceChannel?.close();
+  state.workspaceChannel = null;
+  abortObsoleteWorkspaceRequests();
 }
 
 function reconcileMissingSelectedFile() {
@@ -12880,6 +18189,8 @@ function clearMissingSelectedFile(stalePath = state.selected) {
   state.fileLoadError = null;
   state.saved = "";
   state.savedHash = null;
+  state.selectedVisualAsset = null;
+  state.imagePreviewActualSize = false;
   state.dirty = false;
   state.mode = "view";
   state.page = "hub";
@@ -12911,12 +18222,13 @@ async function selectFile(path, options = {}) {
   const profilingBoot = document.body.classList.contains("app-booting");
   if (profilingBoot) state.bootMilestones.fileOpenStarted = Date.now() - state.bootStartedAt;
   const previousSelected = state.selected;
-  const explorerWasCollapsed = document.querySelector(".app")?.classList.contains("sidebar-collapsed");
   state.selected = path;
   state.selectedReadOnly = Boolean(state.files.find((item) => item.path === path)?.readOnly);
   state.openingFilePath = path;
   state.fileContentReadyPath = null;
   state.selectedStartupContext = null;
+  state.selectedVisualAsset = null;
+  state.imagePreviewActualSize = false;
   state.activeStartupContextExplorer = null;
   state.reviewModePath = options.reviewMode ? path : null;
   state.reviewModeStatus = options.reviewMode ? reviewStatusForPath(path) : null;
@@ -12931,19 +18243,18 @@ async function selectFile(path, options = {}) {
   state.saved = "";
   state.savedHash = null;
   state.dirty = false;
-  state.mode = "edit";
+  state.mode = isImageDocumentPath(path) ? "view" : "edit";
   state.filePanel = false;
   state.diffCollapsed = !autoOpenGitDiffEnabled();
   if (options.revealInExplorer) {
     state.pathFilters = [];
     el("search").value = "";
-  } else {
-    collapseSidebarOnNarrow();
   }
   for (const folder of parentFolders(path).slice(0, -1)) state.expanded.add(folder);
   document.querySelector(".editor-shell").classList.remove("planet-file-open");
   document.querySelector(".editor-shell").classList.add("file-open");
   el("home").hidden = true;
+  el("proposalReviewPage").hidden = true;
   el("settingsPage").hidden = true;
   el("newDocPage").hidden = true;
   el("viewer").hidden = false;
@@ -12955,7 +18266,7 @@ async function selectFile(path, options = {}) {
   updatePreview();
   if (options.revealInExplorer || !document.querySelector('[data-file-path="' + cssEscape(path) + '"]')) renderFiles();
   else updateExplorerSelectedFile(previousSelected, path);
-  if (options.revealInExplorer && !explorerWasCollapsed) scrollExplorerToPath(path);
+  if (options.revealInExplorer && !isExplorerCollapsed()) scrollExplorerToPath(path);
   renderViewer();
   setStatus("opening...");
 
@@ -12970,11 +18281,13 @@ async function selectFile(path, options = {}) {
     const data = await fileRequest;
     if (profilingBoot) state.bootMilestones.fileDataReady = Date.now() - state.bootStartedAt;
     if (!isCurrentSelection(requestId, path)) return;
-    state.saved = data.content;
+    state.saved = data.content || "";
     state.savedHash = data.contentHash;
     state.selectedReadOnly = Boolean(data.readOnly);
+    state.selectedVisualAsset = data.binary ? data : null;
+    state.mode = data.binary ? "view" : state.mode;
     state.fileLoadError = null;
-    el("editor").value = data.content;
+    el("editor").value = data.content || "";
     await annotationsRequest;
     if (!isCurrentSelection(requestId, path)) return;
     state.fileContentReadyPath = path;
@@ -13020,6 +18333,7 @@ async function selectFile(path, options = {}) {
       state.fileLoadError = { path, message: error.message || "Failed to open file." };
       state.saved = "";
       state.savedHash = null;
+      state.selectedVisualAsset = null;
       el("editor").value = "";
       renderViewer();
       updateHeader();
@@ -13062,10 +18376,10 @@ async function selectStartupContextFile(order, options = {}) {
   state.pendingMarkdown = null;
   state.pathFilters = [];
   el("search").value = "";
-  openSidebarIfCollapsed();
   document.querySelector(".editor-shell").classList.remove("planet-file-open");
   document.querySelector(".editor-shell").classList.add("file-open");
   el("home").hidden = true;
+  el("proposalReviewPage").hidden = true;
   el("settingsPage").hidden = true;
   el("newDocPage").hidden = true;
   el("viewer").hidden = false;
@@ -13137,10 +18451,10 @@ async function selectStartupSkillFile(folderOrder, skillName, options = {}) {
   state.pendingMarkdown = null;
   state.pathFilters = [];
   el("search").value = "";
-  openSidebarIfCollapsed();
   document.querySelector(".editor-shell").classList.remove("planet-file-open");
   document.querySelector(".editor-shell").classList.add("file-open");
   el("home").hidden = true;
+  el("proposalReviewPage").hidden = true;
   el("settingsPage").hidden = true;
   el("newDocPage").hidden = true;
   el("viewer").hidden = false;
@@ -13213,10 +18527,10 @@ async function selectStartupHookFile(order, options = {}) {
   state.pendingMarkdown = null;
   state.pathFilters = [];
   el("search").value = "";
-  openSidebarIfCollapsed();
   document.querySelector(".editor-shell").classList.remove("planet-file-open");
   document.querySelector(".editor-shell").classList.add("file-open");
   el("home").hidden = true;
+  el("proposalReviewPage").hidden = true;
   el("settingsPage").hidden = true;
   el("newDocPage").hidden = true;
   el("viewer").hidden = false;
@@ -13467,6 +18781,7 @@ function showHome() {
   el("impact").textContent = "V1: Git/docs review queue, risk signals, reliability inspector, and direct evidence access.";
   el("meta").textContent = state.docqa ? "audit generated " + new Date(state.docqa.generatedAt).toLocaleTimeString("en-US") : "";
   el("home").hidden = false;
+  el("proposalReviewPage").hidden = true;
   el("settingsPage").hidden = true;
   el("newDocPage").hidden = true;
   el("viewer").hidden = true;
@@ -13486,39 +18801,204 @@ function renderDocQaDashboard() {
   const report = state.docqa;
   if (!report) return;
   renderSharedContextControls();
-  const s = report.summary;
-  el("reviewSummary").innerHTML = renderReviewSummary(s);
-  const queue = report.queue.length ? report.queue : [];
-  const groupDeletions = Number(s.deletedDocs || 0) > 1 || state.deletionBatchItems.length > 0;
-  const loadedBatchChanged = state.deletionBatchItems.length && (state.deletionBatchKey !== String(s.deletedReviewKey || "") || state.deletionBatchReportedCount !== Number(s.deletedDocs || 0));
-  const previousDeletionBatch = document.querySelector("[data-review-deletion-batch]");
-  const restoreDeletionBatchFocus = Boolean(loadedBatchChanged && document.activeElement && previousDeletionBatch?.contains(document.activeElement));
-  if (loadedBatchChanged) {
-    state.deletionBatchItems = [];
-    state.deletionBatchReportedCount = 0;
-  }
-  const visibleQueue = groupDeletions ? queue.filter((item) => !isDeletedReviewQueueItem(item)) : queue;
-  const deletionBatch = groupDeletions ? renderDeletionReviewBatch(s) : "";
-  const regularItems = visibleQueue.map(renderReviewItem).join("");
-  el("reviewQueue").classList.toggle("batch-open", groupDeletions && state.deletionBatchExpanded);
-  el("reviewQueue").innerHTML = (deletionBatch || regularItems)
-    ? deletionBatch + regularItems
-    : '<div class="issue">No watched files changed or created in the current worktree.</div>';
-  document.querySelectorAll("[data-review-path]").forEach((button) => button.addEventListener("click", () => {
-    const item = state.docqa?.queue?.find((entry) => entry.path === button.dataset.reviewPath) || { path: button.dataset.reviewPath, startupContext: button.dataset.startupReviewOrder ? { order: button.dataset.startupReviewOrder } : null };
-    openReviewQueueItem(item).catch((error) => setStatus(error.message));
-  }));
-  if (restoreDeletionBatchFocus) document.querySelector("[data-review-deletion-batch] > summary")?.focus();
-  wireDeletionReviewBatch();
+  renderContextRoomGlobalReviewQueue();
   renderContextHealth();
   renderHubFolders();
+}
+
+function proposalReviewFileEntries() {
+  const preview = state.contextRoomPreparingProposal;
+  const proposalFiles = state.sharedContext?.mode === "review"
+    ? state.sharedContext?.review?.proposalFiles || []
+    : preview?.files || [];
+  const queueByPath = new Map((state.docqa?.queue || []).map((item) => [item.path, item]));
+  const pendingPaths = new Set(state.docqa?.pendingPaths || (state.docqa?.queue || []).map((item) => item.path));
+  const reviewedPaths = new Set(state.docqa?.reviewedPaths || []);
+  return proposalFiles.map((filePath) => {
+    const reviewItem = state.sharedContext?.mode === "review" ? queueByPath.get(filePath) || null : null;
+    const file = state.files.find((candidate) => candidate.path === filePath) || null;
+    return {
+      path: filePath,
+      label: reviewItem?.label || file?.label || filePath.split("/").pop() || filePath,
+      reviewItem,
+      canOpen: preview ? true : Boolean(reviewItem || file),
+      pending: Boolean(preview || pendingPaths.has(filePath) || !reviewedPaths.has(filePath)),
+      reviewed: Boolean(!preview && state.docqa && reviewedPaths.has(filePath)),
+    };
+  });
+}
+
+function renderProposalReviewPage() {
+  const title = el("proposalReviewTitle");
+  const description = el("proposalReviewDescription");
+  const progress = el("proposalReviewProgress");
+  const meta = el("proposalReviewMeta");
+  const files = el("proposalReviewFiles");
+  if (!title || !description || !progress || !meta || !files) return;
+  const preview = state.contextRoomPreparingProposal;
+  const preparing = Boolean(preview && !state.contextRoomPreparedReview);
+  const prepared = Boolean(preview && state.contextRoomPreparedReview);
+  const review = state.sharedContext?.mode === "review" ? state.sharedContext?.review || {} : preview || {};
+  const entries = proposalReviewFileEntries();
+  const reviewReady = !preparing && Boolean(state.docqa);
+  const pending = reviewReady ? entries.filter((entry) => !entry.reviewed).length : entries.length;
+  const reviewed = Math.max(0, entries.length - pending);
+  const impactRepository = review.repository || review.sharedRepository || review.sourceRepository || "";
+  const impactSelector = review.proposal || review.branch || "";
+  const impactKey = impactRepository && impactSelector ? impactRepository + "::" + impactSelector + "::" + (review.proposalHead || review.head || "") : "";
+  title.textContent = review.title || review.proposal || "Proposal review";
+  description.textContent = review.description || "Review every changed file as one proposal. Open a file to inspect and decide its changes.";
+  progress.innerHTML = preparing
+    ? '<strong>Ready</strong><span>Choose a file to begin reviewing · exact review preparing in background</span><span class="context-room-proposal-opening-indicator" aria-hidden="true"></span>'
+    : prepared
+      ? '<strong>Ready</strong><span>Choose a file to begin reviewing</span>'
+    : '<strong>' + pending + '</strong><span>' + (state.docqa ? "file" + (pending === 1 ? "" : "s") + " remaining · " + reviewed + " reviewed" : "loading review state…") + '</span>';
+  meta.innerHTML = '<span>Shared proposal' + (review.projectTitle || review.projectId ? ' · ' + escapeHtml(review.projectTitle || review.projectId) : '') + '</span>'
+    + '<span>' + entries.length + ' changed file' + (entries.length === 1 ? '' : 's') + '</span>'
+    + '<details class="proposal-review-technical"><summary>Git revision details</summary><div><code title="' + escapeHtml(review.proposal || review.branch || "") + '">' + escapeHtml(review.proposal || review.branch || "Proposal") + '</code><code title="' + escapeHtml(review.proposalHead || review.head || "") + '">@' + escapeHtml(shortSharedHash(review.proposalHead || review.head)) + '</code></div></details>'
+    + (impactKey ? renderProposalContextImpactDisclosure({ key: impactKey, repository: impactRepository, selector: impactSelector }) : '');
+  files.innerHTML = entries.length ? entries.map((entry) => {
+    const changeLabel = preview
+      ? "changed"
+      : entry.reviewed
+        ? "reviewed"
+        : entry.reviewItem ? gitStatusLabel(entry.reviewItem.gitStatus, entry.reviewItem.reviewRequired) : "changed";
+    const stateLabel = preview
+      ? state.contextRoomQueuedProposalFile === entry.path ? "Opening…" : "Review"
+      : state.docqa ? (entry.reviewed ? "Reviewed" : "Review") : "Loading…";
+    return '<button class="proposal-review-file" type="button" data-proposal-review-path="' + escapeHtml(entry.path) + '" data-reviewed="' + String(entry.reviewed) + '"' + (entry.canOpen ? '' : ' disabled') + '>'
+      + '<span class="proposal-review-file-copy"><strong>' + escapeHtml(entry.label) + '</strong><code>' + escapeHtml(entry.path) + '</code></span>'
+      + '<span class="proposal-review-file-change">' + escapeHtml(changeLabel) + '</span>'
+      + '<span class="proposal-review-file-state">' + escapeHtml(stateLabel) + '</span>'
+      + '</button>';
+  }).join("") : '<div class="proposal-review-empty">No changed files are available in this exact proposal revision.</div>';
+  meta.querySelector("[data-proposal-context-impact]")?.addEventListener("toggle", (event) => {
+    if (!event.currentTarget.open) return;
+    loadProposalContextImpact({
+      key: event.currentTarget.dataset.proposalContextImpact,
+      repository: event.currentTarget.dataset.proposalRepository,
+      selector: event.currentTarget.dataset.proposalSelector,
+    }).catch((error) => setStatus(error.message));
+  });
+}
+
+function renderProposalContextImpactDisclosure({ key, repository, selector }) {
+  const active = state.proposalContextImpactKey === key;
+  let body = '<div class="proposal-context-impact-note">Open to compare this exact proposal head with the accepted shared branch.</div>';
+  if (active && state.proposalContextImpactLoading) {
+    body = '<div class="global-project-inspection-loading" role="status">Calculating exact context impact…</div>';
+  } else if (active && state.proposalContextImpactError) {
+    body = '<div class="global-project-inspection-error">' + escapeHtml(state.proposalContextImpactError) + '</div>';
+  } else if (active && state.proposalContextImpact) {
+    const impact = state.proposalContextImpact;
+    const consumers = impact.affected?.consumers || [];
+    const skills = impact.affected?.sharedSkills || {};
+    const collectionChanges = skills.collections || [];
+    const assignmentChanges = skills.assignments || [];
+    const providers = skills.providers || [];
+    const destinations = skills.destinations || [];
+    const invalidatedReviews = impact.reviewInvalidation?.reviews || [];
+    const renderChangeList = (items, empty, label) => items.length
+      ? '<ul class="proposal-context-impact-list">' + items.map((item) => '<li><code>' + escapeHtml(item.id || item.path || String(item)) + '</code><span>' + escapeHtml(item.change || label || '') + '</span></li>').join('') + '</ul>'
+      : '<div class="proposal-context-impact-note">' + escapeHtml(empty) + '</div>';
+    const skillDetails = collectionChanges.length || assignmentChanges.length || providers.length || destinations.length
+      ? '<details><summary>Shared Skills delta · ' + (collectionChanges.length + assignmentChanges.length) + ' logical changes</summary>'
+        + renderChangeList(collectionChanges, 'No collection changes.', 'collection')
+        + renderChangeList(assignmentChanges, 'No assignment changes.', 'assignment')
+        + (providers.length ? '<ul class="proposal-context-impact-list">' + providers.map((provider) => '<li><code>' + escapeHtml(provider) + '</code><span>provider affected</span></li>').join('') + '</ul>' : '')
+        + (destinations.length ? '<ul class="proposal-context-impact-list">' + destinations.map((destination) => '<li><code>' + escapeHtml(destination.destination || 'local destination') + '</code><span>' + escapeHtml([destination.provider, destination.scope].filter(Boolean).join(' · ')) + '</span></li>').join('') + '</ul>' : '')
+        + '</details>'
+      : '';
+    const reviewDetails = invalidatedReviews.length
+      ? '<details><summary>Existing reviews invalidated · ' + invalidatedReviews.length + '</summary>'
+        + renderChangeList(invalidatedReviews, 'No existing reviews are invalidated.', 'exact revision changed')
+        + '</details>'
+      : '';
+    body = '<div class="proposal-context-impact-summary">'
+      + '<div><strong>' + Number(impact.changedFiles?.length || 0) + ' changed files</strong><span>' + Number(impact.affected?.documents?.length || 0) + ' documents · ' + Number(impact.affected?.instructions?.length || 0) + ' instructions</span></div>'
+      + '<div><strong>' + consumers.length + ' registered consumers</strong><span>' + [...new Set(consumers.map((item) => item.projectId).filter(Boolean))].length + ' projects or worktrees affected</span></div>'
+      + '<div><strong>' + (collectionChanges.length + assignmentChanges.length) + ' Shared Skills changes</strong><span>' + Number(impact.technicalCollisions?.length || 0) + ' technical collisions</span></div>'
+      + '<div><strong>' + invalidatedReviews.length + ' existing reviews affected</strong><span>' + (impact.needsRebase ? 'Rebase required before review' : 'Based on the accepted revision') + '</span></div>'
+      + '</div>'
+      + '<div class="proposal-context-impact-details">' + skillDetails + reviewDetails + '</div>'
+      + '<div class="proposal-context-impact-note">Semantic conflicts are not evaluated. Review invalidation is exact-revision only.</div>';
+  }
+  return '<details class="proposal-context-impact" data-proposal-context-impact="' + escapeHtml(key) + '" data-proposal-repository="' + escapeHtml(repository) + '" data-proposal-selector="' + escapeHtml(selector) + '"' + (active ? ' open' : '') + '>'
+    + '<summary><strong>Context impact</strong><span>Accepted main → exact proposal head</span></summary>'
+    + '<div class="proposal-context-impact-body">' + body + '</div>'
+    + '</details>';
+}
+
+async function loadProposalContextImpact({ key, repository, selector }) {
+  if (!key || !repository || !selector) return;
+  if (state.proposalContextImpactKey === key && (state.proposalContextImpact || state.proposalContextImpactLoading)) return;
+  state.proposalContextImpactKey = key;
+  state.proposalContextImpact = null;
+  state.proposalContextImpactError = "";
+  state.proposalContextImpactLoading = true;
+  renderProposalReviewPage();
+  try {
+    state.proposalContextImpact = await api("/api/proposal/context-impact?" + new URLSearchParams({ repository, selector }));
+  } catch (error) {
+    state.proposalContextImpactError = error.message || "Could not calculate proposal context impact.";
+  } finally {
+    state.proposalContextImpactLoading = false;
+    renderProposalReviewPage();
+  }
+}
+
+function showProposalReview({ preparingItem = null } = {}) {
+  if (!preparingItem && state.sharedContext?.mode !== "review") {
+    showHome();
+    return;
+  }
+  if (state.dirty && !confirm("You have unsaved changes. Return to the proposal files?")) return;
+  state.page = "proposal";
+  state.contextRoomPreparingProposal = preparingItem;
+  if (!preparingItem && state.sharedContext?.mode === "review") {
+    const proposalUrl = new URL(window.location.href);
+    proposalUrl.searchParams.delete("file");
+    window.history.replaceState(null, "", proposalUrl);
+  }
+  state.openingFilePath = null;
+  state.settingsOpen = false;
+  state.pendingMarkdown = null;
+  state.filePanel = false;
+  state.selected = null;
+  state.selectedReadOnly = false;
+  state.reviewModePath = null;
+  state.reviewModeStatus = null;
+  state.selectedDiff = null;
+  state.dirty = false;
+  el("home").hidden = true;
+  el("proposalReviewPage").hidden = false;
+  el("settingsPage").hidden = true;
+  el("newDocPage").hidden = true;
+  el("viewer").hidden = true;
+  el("editor").hidden = true;
+  document.querySelector(".editor-shell").classList.remove("planet-file-open", "file-open");
+  renderProposalReviewPage();
+  renderSharedContextControls();
+  updateHistoryButtons();
+  updateActionBanner();
+  setStatus("proposal ready");
+  scheduleSessionStatePush();
 }
 
 function renderContextHealth() {
   const holder = el("contextHealth");
   const panel = el("contextHealthPanel");
+  if (IS_GLOBAL_CONTEXT_ROOM) {
+    renderGlobalProjectInspection(panel, holder);
+    return;
+  }
   if (!holder || !state.doctor) return;
   if (panel) panel.hidden = false;
+  const heading = panel?.querySelector("h2");
+  if (heading) heading.textContent = "Context health";
+  const headerActions = panel?.querySelector(".context-health-header-actions");
+  if (headerActions) headerActions.hidden = false;
+  holder.classList.remove("global-project-inspection");
   const refreshButton = el("refreshContextHealth");
   if (refreshButton) {
     refreshButton.disabled = state.contextHealthRefreshing;
@@ -13554,6 +19034,402 @@ function renderContextHealth() {
     renderContextHealth();
   }));
   holder.querySelectorAll("[data-health-ack]").forEach((button) => button.addEventListener("click", () => acknowledgeContextHealthIssueFromPanel(button.dataset.healthAck).catch((error) => setStatus(error.message))));
+}
+
+function renderGlobalProjectInspection(panel = el("contextHealthPanel"), holder = el("contextHealth")) {
+  if (!panel || !holder) return;
+  panel.hidden = false;
+  const headerActions = panel.querySelector(".context-health-header-actions");
+  if (headerActions) headerActions.hidden = true;
+  holder.classList.add("global-project-inspection");
+  const project = state.globalExplorerMode === "project"
+    ? (state.contextHub?.projects || []).find((item) => item.projectKey === state.globalExplorerProjectKey)
+    : null;
+  const worktree = project ? globalProjectSelectedWorktree(project) : null;
+  const heading = panel.querySelector("h2");
+  if (heading) heading.textContent = "Project inspection";
+  if (!project || !worktree?.root || project.mode === "shared") {
+    state.globalInspectionView = "";
+    holder.innerHTML = '<div class="global-project-inspection-empty">Select a project or file in Explorer to view its Context health and startup environment.</div>';
+    return;
+  }
+  const location = worktree.branch || worktree.root;
+  const cacheKey = globalProjectExplorerCacheKey(project);
+  const data = state.globalInspectionData.get(cacheKey);
+  const loading = state.globalInspectionLoading.has(cacheKey);
+  const error = state.globalInspectionErrors.get(cacheKey) || "";
+  holder.innerHTML = '<div class="global-project-inspection-summary"><strong>' + escapeHtml(project.title || project.id) + '</strong><code title="' + escapeHtml(worktree.root) + '">' + escapeHtml(location) + '</code></div>'
+    + '<div class="global-project-inspection-actions">'
+      + renderGlobalInspectionDisclosure("health", "View Context health", "Review configuration, documentation, hooks, and review-safety issues.", project, data, loading, error)
+      + renderGlobalInspectionDisclosure("startup", "View startup environment", "Inspect active agent instructions, skills, and hooks.", project, data, loading, error)
+    + '</div>';
+  wireGlobalProjectInspection(project);
+}
+
+function renderGlobalInspectionDisclosure(view, title, description, project, data, loading, error) {
+  const open = state.globalInspectionView === view;
+  let body = "";
+  if (open) {
+    if (loading && !data) body = '<div class="global-project-inspection-loading" role="status">Analyzing ' + escapeHtml(project.title || project.id) + '…</div>';
+    else if (error && !data) body = '<div class="global-project-inspection-error">' + escapeHtml(error) + '</div>';
+    else if (data) body = view === "health" ? renderGlobalInspectionHealth(data) : renderGlobalInspectionStartup(data);
+    body = '<div class="global-project-inspection-disclosure-body">'
+      + '<div class="global-project-inspection-detail-actions"><button class="global-project-inspection-refresh" type="button" data-global-inspection-refresh>Refresh</button></div>'
+      + body
+      + '</div>';
+  }
+  return '<details class="global-project-inspection-disclosure" data-global-inspection-disclosure="' + escapeHtml(view) + '"' + (open ? ' open' : '') + '>'
+    + '<summary><span class="global-project-inspection-action-copy"><strong>' + escapeHtml(title) + '</strong><span>' + escapeHtml(description) + '</span></span><span class="global-project-inspection-disclosure-chevron" aria-hidden="true">⌄</span></summary>'
+    + body
+    + '</details>';
+}
+
+function globalInspectionIssueMatches(issue) {
+  const statusMatches = state.globalInspectionHealthStatus === "all"
+    || (state.globalInspectionHealthStatus === "acknowledged" ? issue.acknowledged : !issue.acknowledged);
+  const severityMatches = state.globalInspectionHealthSeverity === "all"
+    || (state.globalInspectionHealthSeverity === "triggered" ? ["critical", "high", "medium"].includes(issue.severity) : issue.severity === state.globalInspectionHealthSeverity);
+  const categoryMatches = state.globalInspectionHealthCategory === "all" || (issue.category || "documentation") === state.globalInspectionHealthCategory;
+  return statusMatches && severityMatches && categoryMatches;
+}
+
+function renderGlobalInspectionHealth(data) {
+  const allIssues = data.doctor?.issues || [];
+  const issues = allIssues.filter(globalInspectionIssueMatches);
+  const counts = issues.reduce((acc, issue) => {
+    acc[issue.severity] = (acc[issue.severity] || 0) + 1;
+    return acc;
+  }, {});
+  const countLabel = ["critical", "high", "medium", "low"].filter((severity) => counts[severity]).map((severity) => counts[severity] + " " + severity).join(" · ") || "No matching issue";
+  const rows = issues.length ? issues.map((issue) => {
+    const label = (issue.path ? issue.path + ": " : "") + issue.message;
+    const acknowledgement = issue.acknowledged ? '<span class="chip context-health-ok-badge">OK</span>' : '';
+    return '<div class="issue context-health-issue ' + escapeHtml(issue.severity || "low") + (issue.acknowledged ? ' acknowledged' : '') + '"><div class="context-health-issue-copy"><strong>[' + escapeHtml(issue.severity || "low") + ']</strong> ' + escapeHtml(label) + '</div>' + acknowledgement + '</div>';
+  }).join("") : '<div class="issue">No health issues match these filters.</div>';
+  return '<div class="context-health-controls" aria-label="Context health filters">'
+      + renderContextHealthFilter("status", "State", CONTEXT_HEALTH_STATUS_OPTIONS, state.globalInspectionHealthStatus)
+      + renderContextHealthFilter("severity", "Severity", CONTEXT_HEALTH_SEVERITY_OPTIONS, state.globalInspectionHealthSeverity)
+      + renderContextHealthFilter("category", "Area", CONTEXT_HEALTH_CATEGORY_OPTIONS, state.globalInspectionHealthCategory)
+    + '</div>'
+    + '<div class="context-health-alert"><strong>' + issues.length + ' of ' + allIssues.length + ' issue' + (allIssues.length === 1 ? '' : 's') + ' shown</strong><span>' + escapeHtml(countLabel) + '</span></div>'
+    + '<div class="issue-list compact context-health-issue-list">' + rows + '</div>';
+}
+
+function renderGlobalInspectionStartup(data) {
+  if (data.effectiveContext) {
+    return renderEffectiveContextBody(data.effectiveContext, { embedded: true });
+  }
+  if (data.effectiveContextError) {
+    return '<div class="global-project-inspection-error">' + escapeHtml(data.effectiveContextError) + '</div>';
+  }
+  const contextFiles = data.startupContext || [];
+  const skillFolders = data.startupSkills || [];
+  const hookFiles = data.startupHooks || [];
+  const skillCount = skillFolders.reduce((sum, folder) => sum + Number(folder.skillCount || 0), 0);
+  const sharedSkillDestinations = data.sharedSkills?.connected ? (data.sharedSkills.destinations || []) : [];
+  const sharedSkillCount = sharedSkillDestinations.reduce((sum, destination) => sum + Number(destination.skills?.length || 0), 0);
+  const contextRows = contextFiles.map((file) => {
+    const startup = file.startupContext || {};
+    return renderGlobalInspectionRow({
+      title: startup.fileName || file.label || "Agent instructions",
+      kind: "Context file",
+      path: startup.displayPath || "",
+    });
+  }).join("");
+  const skillRows = skillFolders.map((folder) => renderGlobalInspectionRow({
+    title: (folder.skillCount || 0) + " skills",
+    kind: "Skill folder",
+    path: folder.displayPath || folder.folderName || "skills",
+    pills: folder.skills || [],
+  })).join("") + sharedSkillDestinations.map((destination) => renderGlobalInspectionRow({
+    title: (destination.skills?.length || 0) + " managed skills",
+    kind: destination.status === "ready" ? "Shared collection" : "Shared attention",
+    meta: [data.sharedSkills.repositoryName, destination.collectionId, destination.provider, destination.scope, destination.origin, String(data.sharedSkills.revision || "").slice(0, 12), destination.status].filter(Boolean).join(" · "),
+    description: destination.message || "Linked to the immutable accepted shared snapshot.",
+    path: destination.destination,
+    pills: destination.skills || [],
+  })).join("");
+  const hookRows = hookFiles.map((file) => {
+    const hook = file.startupContext || {};
+    const flags = [hook.sourceLabel || hook.provider || "hook", hook.event || "", hook.tracked ? "tracked" : "untracked", hook.executable ? "executable" : "not executable", hook.readOnly ? "read-only" : "editable"].filter(Boolean).join(" · ");
+    return renderGlobalInspectionRow({
+      title: hook.label || hook.fileName || file.label || "Hook",
+      kind: "Hook",
+      meta: flags,
+      description: hook.description || "Hook file that can affect agent work, commits, or validation.",
+      path: hook.displayPath || "",
+    });
+  }).join("");
+  return '<div class="context-health-alert"><strong>' + contextFiles.length + ' context · ' + (skillCount + sharedSkillCount) + ' skills · ' + hookFiles.length + ' hooks</strong><span>Active for this worktree</span></div>'
+    + '<div class="global-project-inspection-groups">'
+      + renderGlobalInspectionGroup("Startup context", contextFiles.length + " file" + (contextFiles.length === 1 ? "" : "s"), contextRows, data.enabled?.startupContext !== false, "No startup context files found.")
+      + renderGlobalInspectionGroup("Startup skills", (skillCount + sharedSkillCount) + " skill" + (skillCount + sharedSkillCount === 1 ? "" : "s"), skillRows, data.enabled?.startupSkills !== false, "No startup skill folders found.")
+      + renderGlobalInspectionGroup("Startup hooks", hookFiles.length + " hook" + (hookFiles.length === 1 ? "" : "s"), hookRows, data.enabled?.startupHooks !== false, "No startup hooks found.")
+    + '</div>';
+}
+
+function contextEngineQuery(target = state.contextEngineInspection, extra = {}) {
+  const params = new URLSearchParams();
+  if (target?.projectId) params.set("projectId", target.projectId);
+  if (target?.locationId) params.set("locationId", target.locationId);
+  params.set("folder", target?.folder || ".");
+  params.set("provider", target?.provider || "codex");
+  params.set("allowStale", "1");
+  Object.entries(extra).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") params.set(key, String(value));
+  });
+  return params;
+}
+
+function contextEngineEntryCanOpen(entry) {
+  const relPath = normalizeUiPath(entry?.resource?.metadata?.relativePath || "");
+  return Boolean(relPath && !relPath.startsWith("~") && relPath !== ".." && !relPath.startsWith("../") && !pathIsAbsoluteUi(relPath));
+}
+
+function pathIsAbsoluteUi(value = "") {
+  return String(value).startsWith("/") || /^[A-Za-z]:[\\/]/.test(String(value));
+}
+
+function contextEngineResourceRow(entry, { actions = true } = {}) {
+  const resource = entry.resource || {};
+  const application = entry.application || {};
+  const status = application.status || "inactive";
+  const canOpen = contextEngineEntryCanOpen(entry);
+  return '<div class="global-project-inspection-row" data-context-resource="' + escapeHtml(resource.id || "") + '">'
+    + '<div class="global-project-inspection-row-head"><strong>' + escapeHtml(resource.metadata?.name || resource.locator || resource.id || "Context resource") + '</strong><span class="context-engine-status" data-status="' + escapeHtml(status) + '">' + escapeHtml(status) + '</span></div>'
+    + '<span>' + escapeHtml([resource.kind, application.scope, resource.source].filter(Boolean).join(" · ")) + '</span>'
+    + (application.reason ? '<p>' + escapeHtml(application.reason) + '</p>' : '')
+    + (resource.locator ? '<code>' + escapeHtml(resource.locator) + '</code>' : '')
+    + (actions
+      ? '<div class="context-engine-resource-actions">'
+        + (canOpen ? '<button type="button" data-context-resource-open="' + escapeHtml(resource.id) + '">Open resource</button>' : '')
+        + '<button type="button" data-context-resource-trace="' + escapeHtml(resource.id) + '">Trace</button>'
+        + '<button type="button" data-context-resource-impact="' + escapeHtml(resource.id) + '">Show impact</button>'
+      + '</div>'
+      : '')
+    + '</div>';
+}
+
+function renderEffectiveContextGroup(title, entries = [], emptyCopy = "", options = {}) {
+  const rows = entries.map((entry) => contextEngineResourceRow(entry, options)).join("");
+  return '<details class="global-project-inspection-group" open><summary><strong>' + escapeHtml(title) + '</strong><span>' + entries.length + '</span></summary><div class="global-project-inspection-list">'
+    + (rows || '<div class="global-project-inspection-row empty"><strong>Nothing effective</strong><span>' + escapeHtml(emptyCopy) + '</span></div>')
+    + '</div></details>';
+}
+
+function renderEffectiveContextBody(effective, { embedded = false } = {}) {
+  const activeCount = ["instructions", "skills", "hooks", "providerConfigs", "documents"].reduce((sum, key) => sum + Number(effective?.[key]?.length || 0), 0);
+  const inactive = effective?.inactive || [];
+  const summary = '<div class="context-engine-summary">'
+    + '<span data-state="' + escapeHtml(effective?.freshness?.state || "unknown") + '">' + escapeHtml(effective?.freshness?.state || "unknown") + '</span>'
+    + '<span>' + activeCount + ' effective</span>'
+    + '<span>' + inactive.length + ' inactive or blocked</span>'
+    + '<span>' + Number(effective?.proposals?.length || 0) + ' proposal metadata</span>'
+    + '<span>' + Number(effective?.healthIssues?.length || 0) + ' health issues</span>'
+    + '</div>';
+  const groups = '<div class="global-project-inspection-groups">'
+    + renderEffectiveContextGroup("Agent instructions", effective?.instructions || [], "No proven instruction applies to this folder.", { actions: !embedded })
+    + renderEffectiveContextGroup("Skills", effective?.skills || [], "No proven local or accepted shared skill applies.", { actions: !embedded })
+    + renderEffectiveContextGroup("Hooks and automation", effective?.hooks || [], "No proven hook applies. Uncertain discoveries appear below.", { actions: !embedded })
+    + renderEffectiveContextGroup("Provider configuration", effective?.providerConfigs || [], "No recognized provider configuration applies.", { actions: !embedded })
+    + renderEffectiveContextGroup("Accepted documents", effective?.documents || [], "No accepted current document is linked to this coordinate.", { actions: !embedded })
+    + renderEffectiveContextGroup("Inactive, disabled, shadowed, uncertain, or unverified", inactive, "No inactive resources were discovered.", { actions: !embedded })
+    + '</div>';
+  return summary + groups + (embedded ? "" : '<div id="contextEngineDetail" class="context-engine-detail"></div>');
+}
+
+function renderContextEngineInspection() {
+  const panel = el("contextEnginePanel");
+  const body = el("contextEngineBody");
+  const target = state.contextEngineInspection;
+  if (!panel || !body) return;
+  panel.hidden = !target;
+  if (!target) return;
+  el("contextEngineProvider").value = target.provider || "codex";
+  el("contextEngineTarget").textContent = [
+    target.title || target.projectId || "Current project",
+    target.locationId || "",
+    target.folder || ".",
+  ].filter(Boolean).join(" · ");
+  if (state.contextEngineLoading) {
+    body.innerHTML = '<div class="global-project-inspection-loading" role="status">Resolving the exact accepted context…</div>';
+    return;
+  }
+  if (state.contextEngineError) {
+    body.innerHTML = '<div class="global-project-inspection-error">' + escapeHtml(state.contextEngineError) + '</div>';
+    return;
+  }
+  if (!state.contextEngineResult) {
+    body.innerHTML = '<div class="global-project-inspection-empty">Choose a project folder and provider to inspect its agent environment.</div>';
+    return;
+  }
+  body.innerHTML = renderEffectiveContextBody(state.contextEngineResult);
+  wireContextEngineResourceActions(body);
+  renderContextEngineDetail();
+}
+
+function wireContextEngineResourceActions(holder) {
+  holder.querySelectorAll("[data-context-resource-open]").forEach((button) => button.addEventListener("click", () => {
+    const entry = contextEngineAllEntries().find((item) => item.resource?.id === button.dataset.contextResourceOpen);
+    if (!entry || !contextEngineEntryCanOpen(entry)) return;
+    const relPath = normalizeUiPath(entry.resource.metadata.relativePath);
+    const target = state.contextEngineInspection;
+    if (IS_GLOBAL_CONTEXT_ROOM && target?.locationId) {
+      openContextHubProject(target.locationId, { filePath: relPath }).catch((error) => setStatus(error.message));
+    } else {
+      selectFile(relPath, { revealInExplorer: true }).catch((error) => setStatus(error.message));
+    }
+  }));
+  holder.querySelectorAll("[data-context-resource-trace]").forEach((button) => button.addEventListener("click", () => loadContextEngineDetail("trace", button.dataset.contextResourceTrace)));
+  holder.querySelectorAll("[data-context-resource-impact]").forEach((button) => button.addEventListener("click", () => loadContextEngineDetail("impact", button.dataset.contextResourceImpact)));
+}
+
+function contextEngineAllEntries() {
+  const result = state.contextEngineResult || {};
+  return ["instructions", "skills", "hooks", "providerConfigs", "documents", "inactive"].flatMap((key) => result[key] || []);
+}
+
+function renderContextEngineDetail() {
+  const holder = el("contextEngineDetail");
+  if (!holder || !state.contextEngineDetail) return;
+  const detail = state.contextEngineDetail;
+  const text = detail.loading
+    ? "Loading…"
+    : detail.error
+      ? detail.error
+      : JSON.stringify(detail.data, null, 2);
+  holder.innerHTML = '<strong>' + escapeHtml(detail.title || "Context detail") + '</strong><pre>' + escapeHtml(text) + '</pre>';
+  holder.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
+async function loadContextEngineDetail(kind, selector) {
+  state.contextEngineDetail = { title: kind === "trace" ? "Application trace" : "Proven impact", loading: true };
+  renderContextEngineDetail();
+  try {
+    const params = contextEngineQuery(state.contextEngineInspection, { selector });
+    const data = await api("/api/context/" + kind + "?" + params);
+    state.contextEngineDetail = { title: kind === "trace" ? "Application trace" : "Proven impact", data };
+  } catch (error) {
+    state.contextEngineDetail = { title: kind === "trace" ? "Application trace" : "Proven impact", error: error.message };
+  }
+  renderContextEngineDetail();
+}
+
+async function loadContextEngineInspection() {
+  const target = state.contextEngineInspection;
+  if (!target) return;
+  const request = ++state.contextEngineRequest;
+  state.contextEngineLoading = true;
+  state.contextEngineError = "";
+  state.contextEngineDetail = null;
+  renderContextEngineInspection();
+  try {
+    const result = await api("/api/context/effective?" + contextEngineQuery(target));
+    if (request !== state.contextEngineRequest) return;
+    state.contextEngineResult = result;
+  } catch (error) {
+    if (request !== state.contextEngineRequest) return;
+    state.contextEngineResult = null;
+    state.contextEngineError = error.message || "Could not resolve this environment.";
+  } finally {
+    if (request === state.contextEngineRequest) {
+      state.contextEngineLoading = false;
+      renderContextEngineInspection();
+    }
+  }
+}
+
+async function openContextEngineInspection(target = {}) {
+  const selectedProject = IS_GLOBAL_CONTEXT_ROOM
+    ? (state.contextHub?.projects || []).find((item) => item.projectKey === state.globalExplorerProjectKey)
+    : null;
+  const selectedWorktree = selectedProject ? globalProjectSelectedWorktree(selectedProject) : null;
+  state.contextEngineInspection = {
+    projectId: target.projectId || selectedWorktree?.id || "",
+    locationId: target.locationId || selectedWorktree?.id || "",
+    folder: normalizeUiPath(target.folder || ".") || ".",
+    provider: target.provider || "codex",
+    title: target.title || selectedProject?.title || "Current project",
+    root: target.root || selectedWorktree?.root || state.root || "",
+  };
+  showHome();
+  renderContextEngineInspection();
+  el("contextEnginePanel")?.scrollIntoView({ block: "start", behavior: "smooth" });
+  await loadContextEngineInspection();
+}
+
+function renderGlobalInspectionRow({ title, kind, meta = "", description = "", path = "", pills = [] }) {
+  return '<div class="global-project-inspection-row">'
+    + '<div class="global-project-inspection-row-head"><strong>' + escapeHtml(title) + '</strong><span class="global-project-inspection-kind">' + escapeHtml(kind) + '</span></div>'
+    + (meta ? '<span>' + escapeHtml(meta) + '</span>' : '')
+    + (description ? '<p>' + escapeHtml(description) + '</p>' : '')
+    + (path ? '<code>' + escapeHtml(path) + '</code>' : '')
+    + (pills.length ? '<div class="global-project-inspection-pills">' + pills.map((name) => '<span class="global-project-inspection-pill">' + escapeHtml(name) + '</span>').join("") + '</div>' : '')
+    + '</div>';
+}
+
+function renderGlobalInspectionGroup(title, count, rows, enabled, emptyCopy) {
+  const body = enabled
+    ? (rows || '<div class="global-project-inspection-row empty"><strong>Nothing detected</strong><span>' + escapeHtml(emptyCopy) + '</span></div>')
+    : '<div class="global-project-inspection-row disabled"><strong>' + escapeHtml(title) + ' disabled</strong><span>Enable it in this project’s settings to inspect its active files.</span></div>';
+  return '<details class="global-project-inspection-group" open><summary><strong>' + escapeHtml(title) + '</strong><span>' + escapeHtml(enabled ? count : "Disabled") + '</span></summary><div class="global-project-inspection-list">' + body + '</div></details>';
+}
+
+function wireGlobalProjectInspection(project) {
+  const holder = el("contextHealth");
+  holder?.querySelectorAll("[data-global-inspection-disclosure] > summary").forEach((summary) => summary.addEventListener("click", (event) => {
+    event.preventDefault();
+    const view = summary.parentElement?.dataset.globalInspectionDisclosure;
+    if (!["health", "startup"].includes(view)) return;
+    if (state.globalInspectionView === view) {
+      state.globalInspectionView = "";
+      renderContextHealth();
+      return;
+    }
+    openGlobalProjectInspection(view, project);
+  }));
+  holder?.querySelector("[data-global-inspection-refresh]")?.addEventListener("click", () => loadGlobalProjectInspection(project, { force: true }).catch((error) => setStatus(error.message)));
+  holder?.querySelectorAll("[data-health-filter]").forEach((select) => select.addEventListener("change", () => {
+    const field = select.dataset.healthFilter;
+    if (field === "status") state.globalInspectionHealthStatus = select.value;
+    if (field === "severity") state.globalInspectionHealthSeverity = select.value;
+    if (field === "category") state.globalInspectionHealthCategory = select.value;
+    renderContextHealth();
+  }));
+}
+
+function openGlobalProjectInspection(view, project) {
+  if (!project || !["health", "startup"].includes(view)) return;
+  state.globalInspectionView = view;
+  renderContextHealth();
+  loadGlobalProjectInspection(project).catch((error) => setStatus(error.message));
+  window.requestAnimationFrame(() => el("contextHealth")?.querySelector('[data-global-inspection-disclosure="' + view + '"]')?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
+  setStatus(view === "health" ? "Context health open" : "startup environment open");
+}
+
+async function loadGlobalProjectInspection(project, { force = false } = {}) {
+  const worktree = globalProjectSelectedWorktree(project);
+  if (!worktree?.id || !worktree.root) return null;
+  const cacheKey = globalProjectExplorerCacheKey(project);
+  if (!force && state.globalInspectionData.has(cacheKey)) return state.globalInspectionData.get(cacheKey);
+  if (state.globalInspectionLoading.has(cacheKey)) return null;
+  state.globalInspectionLoading.add(cacheKey);
+  state.globalInspectionErrors.delete(cacheKey);
+  renderContextHealth();
+  try {
+    const suffix = force ? "&fresh=1" : "";
+    const data = await api("/api/context-hub/project-inspection?projectId=" + encodeURIComponent(worktree.id) + suffix, { signal: state.globalInspectionController?.signal });
+    state.globalInspectionData.set(cacheKey, data);
+    return data;
+  } catch (error) {
+    if (error.name === "AbortError") return null;
+    state.globalInspectionErrors.set(cacheKey, error.message || "Could not inspect this project.");
+    throw error;
+  } finally {
+    state.globalInspectionLoading.delete(cacheKey);
+    const selected = (state.contextHub?.projects || []).find((item) => item.projectKey === state.globalExplorerProjectKey);
+    if (selected && globalProjectExplorerCacheKey(selected) === cacheKey) renderContextHealth();
+  }
 }
 
 function renderContextHealthFilter(field, label, options, selected) {
@@ -13672,6 +19548,7 @@ function showNewDocPage({ title = "New document", path = "docs/new-document.md",
   el("impact").textContent = "Configure the document before Context Room writes it to disk.";
   el("meta").textContent = directory ? "folder: " + directory : "project root";
   el("home").hidden = true;
+  el("proposalReviewPage").hidden = true;
   el("settingsPage").hidden = true;
   el("newDocPage").hidden = false;
   el("viewer").hidden = true;
@@ -13681,7 +19558,6 @@ function showNewDocPage({ title = "New document", path = "docs/new-document.md",
   renderNewDocPanel();
   updateHistoryButtons();
   updateActionBanner();
-  collapseSidebarOnNarrow();
   scheduleSessionStatePush();
 }
 
@@ -14136,7 +20012,8 @@ async function openNextReviewManually() {
   await waitForReviewFinalizationBeforeNavigation();
   const nextItem = nextReviewItemForManualAdvance();
   if (!nextItem) {
-    goHub();
+    if (state.sharedContext?.mode === "review") showProposalReview();
+    else goHub();
     setStatus("no more docs to review");
     return;
   }
@@ -14184,6 +20061,334 @@ function renderSettingsSection({ id, kicker, title, copy, scope = "Project", pil
   '</section>';
 }
 
+function selectedGlobalSettingsProject() {
+  if (!IS_GLOBAL_CONTEXT_ROOM || state.globalExplorerMode !== "project") return null;
+  return (state.contextHub?.projects || []).find((project) => project.projectKey === state.globalExplorerProjectKey) || null;
+}
+
+function selectedGlobalProjectSettingsContext() {
+  const project = selectedGlobalSettingsProject();
+  const worktree = project ? globalProjectSelectedWorktree(project) : null;
+  const key = project && worktree ? globalProjectExplorerCacheKey(project) : "";
+  return {
+    project,
+    worktree,
+    key,
+    payload: key ? state.globalProjectSettings.get(key) || null : null,
+    loading: Boolean(key && state.globalProjectSettingsLoading.has(key)),
+    error: key ? state.globalProjectSettingsErrors.get(key) || "" : "",
+  };
+}
+
+function activeSettingsForPanel() {
+  const selected = selectedGlobalProjectSettingsContext();
+  if (!IS_GLOBAL_CONTEXT_ROOM || !selected.payload?.settings) return state.settings;
+  return {
+    ...selected.payload.settings,
+    appearance: state.settings.appearance,
+    shortcuts: state.settings.shortcuts,
+    sounds: state.settings.sounds,
+    explorer: state.settings.explorer,
+  };
+}
+
+function renderGlobalProjectSettingsGate(purpose) {
+  const { project, worktree, loading, error } = selectedGlobalProjectSettingsContext();
+  if (!project || !worktree?.root || project.mode === "shared") {
+    return '<div class="settings-empty-state"><strong>Select a local project in the Explorer.</strong><span class="settings-empty-state-detail">' + escapeHtml(purpose) + ' is configured per project. Select its folder and the settings will appear here.</span></div>';
+  }
+  if (error) {
+    return '<div class="settings-empty-state"><strong>Could not load ' + escapeHtml(project.title || project.id) + ' settings.</strong><span class="settings-empty-state-detail">' + escapeHtml(error) + '</span><button class="secondary" type="button" data-retry-global-project-settings>Retry</button></div>';
+  }
+  return '<div class="settings-empty-state"><strong>' + (loading ? 'Loading project settings…' : 'Preparing project settings…') + '</strong><span class="settings-empty-state-detail">' + escapeHtml(purpose) + ' will appear here for ' + escapeHtml(project.title || project.id) + '.</span></div>';
+}
+
+async function loadGlobalProjectSettings(project, { force = false } = {}) {
+  const worktree = project ? globalProjectSelectedWorktree(project) : null;
+  if (!IS_GLOBAL_CONTEXT_ROOM || !project || project.mode === "shared" || !worktree?.root) return null;
+  const key = globalProjectExplorerCacheKey(project);
+  if (state.globalProjectSettingsLoading.has(key)) return null;
+  const cached = state.globalProjectSettings.get(key) || null;
+  const generation = state.globalProjectSelectionGeneration;
+  state.globalProjectSettingsLoading.add(key);
+  state.globalProjectSettingsValidated.delete(key);
+  state.globalProjectSettingsErrors.delete(key);
+  try {
+    const headers = cached?.revision && !force ? { "if-none-match": '"' + cached.revision + '"' } : {};
+    const payload = await api("/api/context-hub/project-settings?projectId=" + encodeURIComponent(worktree.id), {
+      headers,
+      signal: state.globalProjectSettingsController?.signal,
+    });
+    if (generation !== state.globalProjectSelectionGeneration || state.globalExplorerProjectKey !== project.projectKey) return null;
+    if (payload.__notModified && cached) {
+      state.globalProjectSettingsValidated.add(key);
+      if (state.projectSwitchMetrics?.projectKey === project.projectKey) {
+        state.projectSwitchMetrics.settingsWritableMs = performance.now() - state.projectSwitchMetrics.startedAt;
+        state.projectSwitchMetrics.settingsServerTiming = payload.__serverTiming || "";
+        document.body.dataset.projectSwitchMetrics = JSON.stringify(state.projectSwitchMetrics);
+      }
+      return cached;
+    }
+    state.globalProjectSettings.set(key, payload);
+    state.globalProjectSettingsValidated.add(key);
+    if (state.projectSwitchMetrics?.projectKey === project.projectKey) {
+      state.projectSwitchMetrics.settingsWritableMs = performance.now() - state.projectSwitchMetrics.startedAt;
+      state.projectSwitchMetrics.settingsServerTiming = payload.__serverTiming || "";
+      document.body.dataset.projectSwitchMetrics = JSON.stringify(state.projectSwitchMetrics);
+    }
+    return payload;
+  } catch (error) {
+    if (error.name === "AbortError") return null;
+    state.globalProjectSettingsErrors.set(key, error.message || "Project settings are unavailable.");
+    return null;
+  } finally {
+    state.globalProjectSettingsLoading.delete(key);
+    if (generation === state.globalProjectSelectionGeneration && state.page === "settings" && !state.settingsDirtyGroups.size) renderSettingsPanel();
+  }
+}
+
+async function prefetchGlobalProjectSettings(project) {
+  if (!project || project.mode === "shared" || state.globalProjectSettingsPrefetching.size >= 2) return;
+  const worktree = globalProjectSelectedWorktree(project);
+  if (!worktree?.id) return;
+  const key = globalProjectExplorerCacheKey(project);
+  if (state.globalProjectSettings.has(key) || state.globalProjectSettingsPrefetching.has(key)) return;
+  state.globalProjectSettingsPrefetching.add(key);
+  try {
+    const payload = await api("/api/context-hub/project-settings?projectId=" + encodeURIComponent(worktree.id));
+    state.globalProjectSettings.set(key, payload);
+  } catch {
+    // Prefetch is opportunistic and must never affect project navigation.
+  } finally {
+    state.globalProjectSettingsPrefetching.delete(key);
+  }
+}
+
+function globalSettingsReviewCounts() {
+  const items = IS_GLOBAL_CONTEXT_ROOM ? contextHubReviewItems() : [];
+  return {
+    local: items.filter((item) => item.type !== "shared").length,
+    shared: items.filter((item) => item.type === "shared").length,
+    projects: (state.contextHub?.projects || []).length,
+  };
+}
+
+function renderAgentCliGuide() {
+  return '<div class="agent-cli-guide">'
+    + '<div class="agent-cli-capabilities">'
+      + '<section><h4>What your agent can do</h4><ul>'
+        + '<li>Ask one focused question and receive accepted project documentation with provenance.</li>'
+        + '<li>Inspect and explain effective instructions, skills, hooks, paths, reviews, and proposals.</li>'
+        + '<li>Find and read the documentation relevant to its task, with provenance.</li>'
+        + '<li>Keep accepted documentation separate from same-session pending proposals.</li>'
+        + '<li>Classify changes, preview a deterministic handoff, then publish local reviews and shared proposals safely.</li>'
+        + '<li>Navigate to the exact project, file, heading, text, or diff.</li>'
+        + '<li>Leave human-facing annotations and manage explicit folder watch rules.</li>'
+      + '</ul></section>'
+      + '<section><h4>What remains human-owned</h4><ul>'
+        + '<li>Accepting or rejecting each file awaiting review. A shared proposal is complete once every file review is complete; there is no separate proposal decision.</li>'
+      + '</ul></section>'
+    + '</div>'
+    + '<details class="agent-cli-more">'
+      + '<summary><span class="agent-cli-more-summary"><strong>Commands and advanced capabilities</strong><span>Projects, reviews, shared contexts, skills, setup, and maintenance.</span></span><span class="agent-cli-more-chevron" aria-hidden="true">›</span></summary>'
+      + '<ul>'
+        + '<li><code>context ask</code> retrieves accepted project documentation with provenance.</li>'
+        + '<li><code>project current|list|search|register|open|recent</code> resolves explicit worktree locations without scanning the computer.</li>'
+        + '<li><code>review list|show|diff|open|annotate</code> exposes file reviews without decision commands.</li>'
+        + '<li>Open the global Hub, list registered projects and proposals, and focus the correct project or proposal.</li>'
+        + '<li>Sync a shared context and create, update, or publish documentation and skill proposals for file-by-file review.</li>'
+        + '<li>Inspect shared skill status, manage assignments, and link accepted skills to Codex, Claude Code, OpenCode, or a custom folder.</li>'
+        + '<li>Initialize or connect Context Room, diagnose it with <code>doctor</code>, run Git guards, install hooks, and update registered rooms when explicitly requested.</li>'
+      + '</ul>'
+    + '</details>'
+    + '<div class="agent-cli-handoff">'
+      + '<div class="agent-cli-handoff-head"><strong>Give this to your agent</strong><p>Paste these instructions into any coding agent. It can then inspect the installed CLI for the complete, current command set.</p></div>'
+      + '<pre class="agent-cli-prompt" data-agent-cli-prompt>' + escapeHtml(AGENT_CLI_HANDOFF_PROMPT) + '</pre>'
+      + '<div class="settings-body-toolbar"><code class="agent-cli-command">context-room context ask "&lt;question&gt;" --root .</code><button id="copyAgentCliInstructions" class="secondary" type="button" data-copy-agent-cli-prompt>Copy instructions</button></div>'
+    + '</div>'
+  + '</div>';
+}
+
+function settingsDisclosureIsOpen(id) {
+  if (Object.prototype.hasOwnProperty.call(state.settingsDisclosureState || {}, id)) return state.settingsDisclosureState[id];
+  return SETTINGS_DISCLOSURE_DEFAULTS[id] !== false;
+}
+
+function renderSettingsDisclosure({ id, title, copy, status = "", scope = "", body = "", trackDirty = false } = {}) {
+  const safeId = SETTINGS_DISCLOSURE_IDS.includes(id) ? id : slugifyUiId(id || title);
+  const open = settingsDisclosureIsOpen(safeId) ? " open" : "";
+  const dirtyGroup = trackDirty ? ' data-settings-dirty-group="' + escapeHtml(safeId) + '"' : "";
+  return '<details id="settings-group-' + escapeHtml(safeId) + '" class="settings-disclosure" data-settings-disclosure="' + escapeHtml(safeId) + '"' + dirtyGroup + open + '>'
+    + '<summary><span class="settings-disclosure-summary"><strong>' + escapeHtml(title) + '</strong><span>' + escapeHtml(copy) + '</span></span>'
+    + '<span class="settings-disclosure-status">' + escapeHtml([status, scope].filter(Boolean).join(" · ")) + '</span><span class="settings-disclosure-chevron" aria-hidden="true">›</span></summary>'
+    + '<div class="settings-disclosure-body">' + body + '</div></details>';
+}
+
+function wireSettingsDisclosures(root) {
+  root.querySelectorAll("[data-settings-disclosure]").forEach((details) => details.addEventListener("toggle", () => {
+    state.settingsDisclosureState[details.dataset.settingsDisclosure] = details.open;
+    scheduleSessionStatePush();
+  }));
+}
+
+function settingsGroupSignature(group) {
+  return JSON.stringify([...group.querySelectorAll("input, select, textarea")].map((control, index) => ({
+    key: control.id || control.name || control.dataset.shortcut || index,
+    type: control.type || control.tagName,
+    value: control.type === "checkbox" || control.type === "radio" ? control.checked : control.dataset.shortcut ?? control.value,
+  })));
+}
+
+function updateSettingsSaveState() {
+  const count = state.settingsDirtyGroups.size;
+  const holder = el("settingsSaveState");
+  const button = el("saveSettings");
+  if (holder) {
+    holder.dataset.dirty = String(count > 0);
+    holder.innerHTML = count
+      ? '<strong>Unsaved changes</strong><span>' + count + ' setting group' + (count === 1 ? '' : 's') + ' changed</span>'
+      : '<strong>All changes saved</strong><span>Project settings and global preferences are up to date.</span>';
+  }
+  const selected = selectedGlobalProjectSettingsContext();
+  const validating = Boolean(selected.key && selected.payload && !state.globalProjectSettingsValidated.has(selected.key));
+  if (button) button.disabled = count === 0 || validating;
+}
+
+function refreshSettingsDirtyGroup(group) {
+  const id = group?.dataset.settingsDirtyGroup;
+  if (!id || !state.settingsBaselineByGroup.has(id)) return;
+  if (settingsGroupSignature(group) === state.settingsBaselineByGroup.get(id)) state.settingsDirtyGroups.delete(id);
+  else state.settingsDirtyGroups.add(id);
+  updateSettingsSaveState();
+}
+
+function wireSettingsDirtyTracking(root) {
+  state.settingsBaselineByGroup = new Map();
+  state.settingsDirtyGroups.clear();
+  root.querySelectorAll("[data-settings-dirty-group]").forEach((group) => state.settingsBaselineByGroup.set(group.dataset.settingsDirtyGroup, settingsGroupSignature(group)));
+  const refreshFromEvent = (event) => {
+    const group = event.target.closest?.("[data-settings-dirty-group]");
+    if (group) refreshSettingsDirtyGroup(group);
+  };
+  root.addEventListener("input", refreshFromEvent);
+  root.addEventListener("change", refreshFromEvent);
+  root.addEventListener("click", (event) => {
+    const group = event.target.closest?.("[data-settings-dirty-group]");
+    if (group) requestAnimationFrame(() => refreshSettingsDirtyGroup(group));
+  });
+  updateSettingsSaveState();
+}
+
+function normalizedSettingsSearch(value) {
+  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function matchingSettingsSearchItems(query) {
+  const terms = normalizedSettingsSearch(query).split(" ").filter(Boolean);
+  if (!terms.length) return [];
+  return SETTINGS_SEARCH_ITEMS.map((item) => {
+    const haystack = normalizedSettingsSearch([item.label, item.description, item.section, item.scope, item.keywords].join(" "));
+    if (!terms.every((term) => haystack.includes(term))) return null;
+    const label = normalizedSettingsSearch(item.label);
+    const score = terms.reduce((total, term) => total + (label.startsWith(term) ? 5 : label.includes(term) ? 3 : 1), 0);
+    return { ...item, score };
+  }).filter(Boolean).sort((a, b) => b.score - a.score || a.label.localeCompare(b.label)).slice(0, 8);
+}
+
+function renderSettingsSearchResults() {
+  const input = el("settingsSearch");
+  const results = el("settingsSearchResults");
+  const status = el("settingsSearchStatus");
+  if (!input || !results) return;
+  const items = matchingSettingsSearchItems(state.settingsSearchQuery);
+  state.settingsSearchIndex = items.length ? Math.max(0, Math.min(state.settingsSearchIndex, items.length - 1)) : -1;
+  results.hidden = !state.settingsSearchQuery;
+  input.setAttribute("aria-expanded", String(Boolean(state.settingsSearchQuery)));
+  if (!state.settingsSearchQuery) {
+    results.innerHTML = "";
+    input.removeAttribute("aria-activedescendant");
+    if (status) status.textContent = "";
+    return;
+  }
+  results.innerHTML = items.length
+    ? items.map((item, index) => '<button id="settings-search-result-' + escapeHtml(item.id) + '" class="settings-search-result" type="button" role="option" aria-selected="' + String(index === state.settingsSearchIndex) + '" data-settings-search-result="' + escapeHtml(item.id) + '"><strong>' + escapeHtml(item.label) + '</strong><span class="settings-search-result-meta">' + escapeHtml(item.section.replaceAll("-", " ") + ' · ' + item.scope) + '</span><p>' + escapeHtml(item.description) + '</p></button>').join("")
+    : '<div class="settings-search-empty">No settings found. Try a familiar word such as “skills”, “review”, or “sound”.</div>';
+  if (items.length) input.setAttribute("aria-activedescendant", "settings-search-result-" + items[state.settingsSearchIndex].id);
+  else input.removeAttribute("aria-activedescendant");
+  if (status) status.textContent = items.length + " setting result" + (items.length === 1 ? "" : "s");
+}
+
+function openSettingsSearchItem(itemId) {
+  const item = SETTINGS_SEARCH_ITEMS.find((candidate) => candidate.id === itemId);
+  if (!item) return;
+  activateSettingsSection(item.section, { resetScroll: false });
+  const disclosure = document.querySelector('[data-settings-disclosure="' + item.group + '"]');
+  if (disclosure) {
+    disclosure.open = true;
+    state.settingsDisclosureState[item.group] = true;
+    disclosure.classList.remove("is-search-target");
+    requestAnimationFrame(() => disclosure.classList.add("is-search-target"));
+  }
+  const target = item.target ? el(item.target) : disclosure?.querySelector("summary");
+  requestAnimationFrame(() => {
+    target?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
+    target?.focus({ preventScroll: true });
+  });
+  el("settingsSearchResults").hidden = true;
+  el("settingsSearch").setAttribute("aria-expanded", "false");
+  el("settingsSearch").removeAttribute("aria-activedescendant");
+  scheduleSessionStatePush();
+}
+
+function wireSettingsSearch() {
+  const input = el("settingsSearch");
+  const results = el("settingsSearchResults");
+  if (!input || !results) return;
+  input.value = state.settingsSearchQuery;
+  if (input.dataset.wired === "true") {
+    renderSettingsSearchResults();
+    return;
+  }
+  input.dataset.wired = "true";
+  input.addEventListener("input", () => {
+    state.settingsSearchQuery = input.value;
+    state.settingsSearchIndex = 0;
+    renderSettingsSearchResults();
+  });
+  input.addEventListener("keydown", (event) => {
+    const items = matchingSettingsSearchItems(state.settingsSearchQuery);
+    if (event.key === "Escape") {
+      results.hidden = true;
+      input.setAttribute("aria-expanded", "false");
+      input.removeAttribute("aria-activedescendant");
+      return;
+    }
+    if (!items.length) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      state.settingsSearchIndex = (state.settingsSearchIndex + direction + items.length) % items.length;
+      renderSettingsSearchResults();
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      openSettingsSearchItem(items[Math.max(0, state.settingsSearchIndex)]?.id);
+    }
+  });
+  input.addEventListener("focus", renderSettingsSearchResults);
+  results.addEventListener("mousedown", (event) => event.preventDefault());
+  results.addEventListener("click", (event) => openSettingsSearchItem(event.target.closest("[data-settings-search-result]")?.dataset.settingsSearchResult));
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest("[data-settings-search]")) {
+      results.hidden = true;
+      input.setAttribute("aria-expanded", "false");
+      input.removeAttribute("aria-activedescendant");
+    }
+  });
+  renderSettingsSearchResults();
+}
+
 function activateSettingsSection(sectionId, options = {}) {
   const next = normalizeSettingsSectionId(sectionId);
   state.settingsSection = next;
@@ -14195,6 +20400,12 @@ function activateSettingsSection(sectionId, options = {}) {
   document.querySelectorAll("[data-settings-section-panel]").forEach((panel) => {
     panel.hidden = panel.dataset.settingsSectionPanel !== next;
   });
+  if (next === "shared-skills") {
+    const selected = selectedGlobalProjectSettingsContext();
+    const projectId = selected.worktree?.id || "";
+    const cacheKey = projectId || "__current__";
+    if (!state.sharedSkillLocations.has(cacheKey)) void loadSharedSkillLocations({ projectId }).catch((error) => setStatus(error.message));
+  }
   if (options.resetScroll !== false) el("settingsPage").scrollTop = 0;
   if (options.focus) document.querySelector('[data-settings-section-target="' + next + '"]')?.focus();
   scheduleSessionStatePush();
@@ -14447,6 +20658,15 @@ async function copyCodexReferenceText(text) {
   if (!copied) throw new Error("Clipboard copy failed.");
 }
 
+async function copyAgentCliInstructions(button) {
+  const prompt = button?.closest("[data-settings-disclosure]")?.querySelector("[data-agent-cli-prompt]")?.textContent || AGENT_CLI_HANDOFF_PROMPT;
+  await copyCodexReferenceText(prompt);
+  const previous = button.textContent;
+  button.textContent = "Copied";
+  setStatus("Agent CLI instructions copied");
+  window.setTimeout(() => { if (button.isConnected) button.textContent = previous; }, 1_800);
+}
+
 async function referenceCodexSelectionInCurrentTask() {
   const reference = collectCodexReferenceSelection();
   if (!reference) {
@@ -14475,11 +20695,156 @@ async function referenceCodexSelectionInCurrentTask() {
   }
 }
 
+function applyContextHubAttentionState(attention) {
+  if (!state.contextHub || !attention) return;
+  state.contextHub.attention = attention;
+  const ranks = new Map((attention.projectOrder || []).map((id, index) => [id, index]));
+  state.contextHub.projects = (state.contextHub.projects || []).map((project) => ({
+    ...project,
+    priorityRank: ranks.has(project.priorityId) ? ranks.get(project.priorityId) : null,
+  }));
+}
+
+function projectPriorityProjects() {
+  return contextHubPrioritizedProjects(state.contextHub?.projects || []);
+}
+
+function renderProjectPrioritySettings() {
+  const allProjects = projectPriorityProjects();
+  const needle = state.projectPrioritySearch.trim().toLowerCase();
+  const projects = allProjects.filter((project) => !needle || contextHubProjectSearchText(project).includes(needle));
+  const rows = projects.map((project) => {
+    const rank = allProjects.findIndex((item) => item.priorityId === project.priorityId);
+    const disabled = state.projectPriorityBusy ? " disabled" : "";
+    return '<div class="project-priority-row" draggable="true" data-project-priority-id="' + escapeHtml(project.priorityId || "") + '">'
+      + '<span class="project-priority-handle" aria-hidden="true">⋮⋮</span>'
+      + '<span class="project-priority-rank">' + (rank + 1) + '</span>'
+      + '<span class="project-priority-copy"><strong>' + escapeHtml(project.title || project.id) + '</strong><small>' + escapeHtml(contextHubProjectPickerLocation(project)) + '</small></span>'
+      + '<span class="project-priority-actions">'
+      + '<button type="button" data-project-priority-action="top" title="Move to top"' + (rank <= 0 ? " disabled" : disabled) + '>⇡</button>'
+      + '<button type="button" data-project-priority-action="up" title="Move up"' + (rank <= 0 ? " disabled" : disabled) + '>↑</button>'
+      + '<button type="button" data-project-priority-action="down" title="Move down"' + (rank >= allProjects.length - 1 ? " disabled" : disabled) + '>↓</button>'
+      + '<button type="button" data-project-priority-action="bottom" title="Move to bottom"' + (rank >= allProjects.length - 1 ? " disabled" : disabled) + '>⇣</button>'
+      + '</span></div>';
+  }).join("");
+  return '<div class="project-priority-editor">'
+    + '<div class="settings-body-toolbar"><span>Projects, worktrees, and their reviews follow this device-wide order.</span><button class="secondary" type="button" data-project-priority-reset' + (state.projectPriorityBusy ? " disabled" : "") + '>Reset automatic order</button></div>'
+    + '<input class="project-priority-search" type="search" value="' + escapeHtml(state.projectPrioritySearch) + '" placeholder="Search projects…" aria-label="Search projects to prioritize" />'
+    + '<div class="project-priority-list">' + (rows || '<div class="settings-empty-state">No project matches this search.</div>') + '</div>'
+    + '<p class="settings-help">Conflicts still surface first for safety. Changing this order never changes documentation, reviews, or shared Git history.</p>'
+    + '</div>';
+}
+
+async function saveProjectPriorityOrder(projectOrder) {
+  if (state.projectPriorityBusy) return;
+  state.projectPriorityBusy = true;
+  renderSettingsPanel();
+  try {
+    const attention = await api("/api/context-hub/project-order", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectOrder, expectedRevision: state.contextHub?.attention?.revision || "" }),
+    });
+    applyContextHubAttentionState(attention);
+    workspaceUpdate("catalog-refreshed");
+    setStatus(projectOrder.length ? "project priority updated" : "automatic project ordering restored");
+  } finally {
+    state.projectPriorityBusy = false;
+    renderGlobalProjectExplorer();
+    renderContextRoomGlobalReviewQueue();
+    renderSettingsPanel();
+  }
+}
+
+function moveProjectPriority(priorityId, action, explicitBefore = "") {
+  const order = projectPriorityProjects().map((project) => project.priorityId).filter(Boolean);
+  const index = order.indexOf(priorityId);
+  if (index < 0) return;
+  order.splice(index, 1);
+  let nextIndex = action === "top" ? 0
+    : action === "bottom" ? order.length
+      : action === "up" ? Math.max(0, index - 1)
+        : action === "down" ? Math.min(order.length, index + 1)
+          : explicitBefore ? Math.max(0, order.indexOf(explicitBefore))
+            : index;
+  if (explicitBefore && order.indexOf(explicitBefore) < 0) nextIndex = order.length;
+  order.splice(nextIndex, 0, priorityId);
+  saveProjectPriorityOrder(order).catch((error) => setStatus(error.message));
+}
+
+function wireProjectPrioritySettings(root) {
+  const search = root.querySelector(".project-priority-search");
+  search?.addEventListener("input", (event) => {
+    state.projectPrioritySearch = event.target.value;
+    renderSettingsPanel();
+    window.requestAnimationFrame(() => {
+      const next = document.querySelector(".project-priority-search");
+      next?.focus();
+      next?.setSelectionRange(next.value.length, next.value.length);
+    });
+  });
+  root.querySelector("[data-project-priority-reset]")?.addEventListener("click", () => saveProjectPriorityOrder([]).catch((error) => setStatus(error.message)));
+  root.querySelectorAll("[data-project-priority-action]").forEach((button) => button.addEventListener("click", () => {
+    const row = button.closest("[data-project-priority-id]");
+    moveProjectPriority(row?.dataset.projectPriorityId || "", button.dataset.projectPriorityAction);
+  }));
+  let dragged = "";
+  root.querySelectorAll("[data-project-priority-id]").forEach((row) => {
+    row.addEventListener("dragstart", (event) => { dragged = row.dataset.projectPriorityId || ""; event.dataTransfer.effectAllowed = "move"; });
+    row.addEventListener("dragover", (event) => { if (dragged && dragged !== row.dataset.projectPriorityId) event.preventDefault(); });
+    row.addEventListener("drop", (event) => { event.preventDefault(); if (dragged) moveProjectPriority(dragged, "before", row.dataset.projectPriorityId || ""); });
+  });
+}
+
+function renderSnoozedReviewSettings() {
+  const reviews = contextRoomSnoozedReviews();
+  const rows = reviews.map((item) => {
+    const project = contextHubProjectForItem(item);
+    const projectLabel = project?.title || item.projectTitle || item.projectId || "Project";
+    const title = item.title || item.localFile?.split("/").pop() || item.branch || "Review";
+    const detail = item.localFile || item.description || (item.type === "shared" ? "Shared proposal" : "Local review");
+    const snooze = contextRoomReviewSnooze(item);
+    const search = [projectLabel, title, detail, item.type].filter(Boolean).join(" ").toLowerCase();
+    const returns = snooze?.until ? new Date(snooze.until).toLocaleString() : "Later";
+    return '<div class="settings-snoozed-row" data-settings-snoozed-row data-settings-snoozed-search="' + escapeHtml(search) + '">'
+      + '<div class="settings-snoozed-copy"><div class="settings-snoozed-topline"><span class="context-hub-source" data-source="' + (item.type === "shared" ? "shared" : "local") + '">' + (item.type === "shared" ? "Proposal" : "Local") + '</span><strong>' + escapeHtml(title) + '</strong></div>'
+      + '<span>' + escapeHtml(projectLabel) + ' · ' + escapeHtml(detail) + '</span><small>Returns ' + escapeHtml(returns) + '</small></div>'
+      + '<button class="secondary" type="button" data-settings-unsnooze-review="' + escapeHtml(item.id) + '">Return now</button></div>';
+  }).join("");
+  return '<div class="settings-snoozed-tools"><label class="settings-snoozed-search" for="settingsSnoozedReviewSearch"><span>Search snoozed reviews</span><input id="settingsSnoozedReviewSearch" type="search" value="' + escapeHtml(state.settingsSnoozedReviewQuery || "") + '" placeholder="Search by project, file, or proposal…" /></label><span>' + reviews.length + ' pending</span></div>'
+    + '<div class="settings-snoozed-list">' + (rows || '<div class="settings-empty-state">No snoozed reviews. Snoozing hides only the exact version you saw; a new version returns to Home immediately.</div>') + '<div class="settings-empty-state" data-settings-snoozed-empty hidden>No snoozed reviews match this search.</div></div>';
+}
+
+function wireSnoozedReviewSettings(root) {
+  const search = root.querySelector("#settingsSnoozedReviewSearch");
+  const filter = () => {
+    const query = (search?.value || "").trim().toLowerCase();
+    state.settingsSnoozedReviewQuery = search?.value || "";
+    let visible = 0;
+    root.querySelectorAll("[data-settings-snoozed-row]").forEach((row) => {
+      row.hidden = Boolean(query && !row.dataset.settingsSnoozedSearch.includes(query));
+      if (!row.hidden) visible += 1;
+    });
+    const empty = root.querySelector("[data-settings-snoozed-empty]");
+    if (empty) empty.hidden = !query || visible > 0;
+  };
+  search?.addEventListener("input", filter);
+  filter();
+  root.querySelectorAll("[data-settings-unsnooze-review]").forEach((button) => button.addEventListener("click", () => {
+    const item = contextHubReviewItems().find((candidate) => candidate.id === button.dataset.settingsUnsnoozeReview);
+    if (item) unsnoozeContextRoomReviews([item]).catch((error) => setStatus(error.message));
+  }));
+}
+
 function renderSettingsPanel() {
   const holder = el("settingsPanel");
   if (!holder || !state.settings) return;
-  const watchAllow = (state.settings.watchAllow || []).join("\n");
-  const watchRules = state.settings.watchRules || [];
+  const selectedSettings = selectedGlobalProjectSettingsContext();
+  const settings = activeSettingsForPanel();
+  const showGlobalProjectPicker = IS_GLOBAL_CONTEXT_ROOM && !selectedSettings.payload?.settings;
+  const selectedProjectPill = IS_GLOBAL_CONTEXT_ROOM && selectedSettings.project ? selectedSettings.project.title || selectedSettings.project.id : "";
+  const watchAllow = (settings.watchAllow || []).join("\n");
+  const watchRules = settings.watchRules || [];
   const watchRulesMarkup = watchRules.length
     ? '<div class="watch-rule-list">' + watchRules.map((rule) => {
         const option = WATCH_RULE_MODE_OPTIONS.find((item) => item.id === rule.mode);
@@ -14487,49 +20852,81 @@ function renderSettingsPanel() {
         return '<div class="watch-rule-row"><span class="watch-rule-copy"><strong>' + escapeHtml(option?.label || rule.mode) + '</strong><code>' + escapeHtml(rule.path) + '</code><small>' + escapeHtml(snapshot) + '</small></span><button class="selection-action danger-action" type="button" data-remove-watch-rule="' + escapeHtml(rule.path) + '" title="Remove folder watch rule">×</button></div>';
       }).join("") + '</div>'
     : '<span class="settings-field-note">No explicit folder mode rules. Legacy watched folders remain recursive and live.</span>';
-  const reviewPaths = (state.settings.reviewPaths || []).join("\n");
-  const reviewGateOperations = state.settings.reviewGate?.operations || [];
-  const startupContext = state.settings.startupContext || { enabled: false, fileNames: ["AGENTS.md", "CLAUDE.md"], globalPaths: [] };
+  const reviewGateOperations = settings.reviewGate?.operations || [];
+  const startupContext = settings.startupContext || { enabled: false, fileNames: ["AGENTS.md", "CLAUDE.md"], globalPaths: [] };
   const startupFileNames = (startupContext.fileNames || []).join("\n");
   const startupGlobalPaths = (startupContext.globalPaths || []).join("\n");
-  const startupSkills = state.settings.startupSkills || { enabled: true, folderNames: [".codex/skills", "skills"] };
+  const startupSkills = settings.startupSkills || { enabled: true, folderNames: [".codex/skills", "skills"] };
   const startupSkillFolderNames = (startupSkills.folderNames || []).join("\n");
-  const startupHooks = state.settings.startupHooks || { enabled: true, editable: false, agentHooks: true, codexHooks: true, gitHooks: true, hookManagers: true, fileNames: ["pre-commit", "pre-push", "commit-msg", "prepare-commit-msg"], agentHookSources: [{ id: "codex", label: "Codex", paths: [".codex/hooks.json"] }], agentHookPaths: [".codex/hooks.json"], codexPaths: [".codex/hooks.json"], managerPaths: [".husky/", "lefthook.yml", ".pre-commit-config.yaml", "lint-staged.config.js", "package.json"] };
+  const startupHooks = settings.startupHooks || { enabled: true, editable: false, agentHooks: true, codexHooks: true, gitHooks: true, hookManagers: true, fileNames: ["pre-commit", "pre-push", "commit-msg", "prepare-commit-msg"], agentHookSources: [{ id: "codex", label: "Codex", paths: [".codex/hooks.json"] }], agentHookPaths: [".codex/hooks.json"], codexPaths: [".codex/hooks.json"], managerPaths: [".husky/", "lefthook.yml", ".pre-commit-config.yaml", "lint-staged.config.js", "package.json"] };
   const startupHookFileNames = (startupHooks.fileNames || []).join("\n");
   const startupAgentHookSources = formatAgentHookSourcesForTextarea(startupHooks.agentHookSources, startupHooks.agentHookPaths || startupHooks.codexPaths || []);
   const startupHookManagerPaths = (startupHooks.managerPaths || []).join("\n");
-  const appearance = state.settings.appearance || { fileTheme: DEFAULT_FILE_THEME, autoOpenGitDiff: true, showHiddenFiles: true };
-  const shortcuts = state.settings.shortcuts || { codexReference: DEFAULT_CODEX_REFERENCE_SHORTCUT };
-  const markdownTemplates = state.settings.markdownTemplates || [];
-  const sections = state.settings.hubSections?.length ? state.settings.hubSections : [{ id: "main", title: "Main", cards: state.settings.customHubCards || state.availableHubCards || [] }];
-  const watchCount = (state.settings.watchAllow || []).length + watchRules.length;
-  const reviewPathCount = (state.settings.reviewPaths || []).length;
+  const appearance = settings.appearance || { ...DEFAULT_APPEARANCE };
+  const shortcuts = settings.shortcuts || { codexReference: DEFAULT_CODEX_REFERENCE_SHORTCUT };
+  const sounds = settings.sounds || { enabled: true, volume: 0.35 };
+  const explorer = settings.explorer || { computerRoot: "" };
+  const soundVolumePercent = Math.round(Math.min(1, Math.max(0, Number(sounds.volume) || 0)) * 100);
+  const markdownTemplates = settings.markdownTemplates || [];
+  const sections = Array.isArray(settings.hubSections) ? settings.hubSections : [];
+  const sharedSkillsStatus = sharedSkillLocationsForSettings();
+  const watchCount = (settings.watchAllow || []).length + watchRules.length;
   const reviewGateCount = reviewGateOperations.length;
   const startupContextCount = (startupContext.fileNames || []).length + (startupContext.globalPaths || []).length;
   const startupSkillFolderCount = (startupSkills.folderNames || []).length;
   const startupHookNameCount = (startupHooks.fileNames || []).length;
   const startupAgentHookCount = (startupHooks.agentHookSources || []).length || (startupHooks.agentHookPaths || startupHooks.codexPaths || []).length;
   const startupHookManagerCount = (startupHooks.managerPaths || []).length;
+  const globalReviewCounts = globalSettingsReviewCounts();
+  const agentCliGuideDisclosure = renderSettingsDisclosure({ id: "review-agent-cli", title: "Agent CLI guide", copy: "Learn what agents can do and copy a ready-to-send instruction.", status: "Ready to share", scope: "All rooms", body: renderAgentCliGuide() });
+  const snoozedReviewDisclosure = renderSettingsDisclosure({ id: "review-snoozed", title: "Snoozed reviews", copy: "Find pending reviews hidden from Home until their chosen return time.", status: contextRoomSnoozedReviews().length + " snoozed", scope: "Device", body: renderSnoozedReviewSettings() });
+  const globalReviewBody = '<div class="settings-concept"><strong>Review stays human-owned.</strong><p>Your agent retrieves accepted documentation with <code>context ask</code>. <code>capabilities</code> is only a static command inventory and never chooses an operation. Human file decisions remain yours.</p><p>Home combines review work from every registered project. Each watched document stays in review until a person verifies its current content; proposals remain grouped shared reviews.</p></div><div class="settings-disclosure-list">'
+    + agentCliGuideDisclosure
+    + snoozedReviewDisclosure
+    + renderSettingsDisclosure({ id: "review-documents", title: "Documents to review", copy: "See the aggregate queue, then select one project to choose its watched documents.", status: globalReviewCounts.local + " local files", scope: "All projects", body: renderGlobalProjectSettingsGate("Watched documents and folder modes") })
+    + renderSettingsDisclosure({ id: "review-protection", title: "Protect Git actions", copy: "Configure owner-controlled Git gates in the project where its hooks run.", status: "Project-specific", scope: "Owner control", body: renderGlobalProjectSettingsGate("Git-action protection") })
+    + '</div>';
+  const globalStartupBody = '<div class="settings-concept"><strong>Startup follows one selected project and worktree.</strong><p>A global room never combines unrelated agent instructions, local skills, or hooks into one startup environment.</p></div><div class="settings-disclosure-list">'
+    + renderSettingsDisclosure({ id: "startup-context", title: "Agent instructions", copy: "Configure files such as AGENTS.md for one project.", status: "Project-specific", scope: "Project", body: renderGlobalProjectSettingsGate("Agent instruction discovery") })
+    + renderSettingsDisclosure({ id: "startup-skills", title: "Local skill discovery", copy: "Configure locally installed skill folders for one project.", status: "Project-specific", scope: "Project", body: renderGlobalProjectSettingsGate("Local skill discovery") })
+    + renderSettingsDisclosure({ id: "startup-hooks", title: "Hooks and automation", copy: "Configure executable sources for one project and worktree.", status: "Project-specific", scope: "Project", body: renderGlobalProjectSettingsGate("Hook and automation discovery") })
+    + '</div>';
+  const projectPriorityDisclosure = renderSettingsDisclosure({
+    id: "hub-project-priority",
+    title: "Project priority",
+    copy: "Order the projects and review work that should appear first across this device.",
+    status: (state.contextHub?.attention?.projectOrder?.length || 0) ? state.contextHub.attention.projectOrder.length + " ranked" : "Automatic",
+    scope: "Device",
+    body: renderProjectPrioritySettings(),
+  });
   holder.innerHTML = '<div class="settings-shell">' +
   renderSettingsTabs([
     { id: "review", label: "Review", scope: "Project" },
     { id: "startup", label: "Startup", scope: "Project" },
+    { id: "shared-skills", label: "Shared resources", scope: "Shared" },
     { id: "appearance", label: "Appearance", scope: "Global" },
     { id: "templates", label: "Templates", scope: "Project" },
-    { id: "hub", label: "Hub", scope: "Project" },
+    { id: "hub", label: "Hub", scope: "Device + Project" },
+    { id: "codex-prompts", label: "Codex prompts", scope: "Global" },
   ]) + '<div class="settings-content">' +
   renderSettingsSection({
     id: "review",
     kicker: "Review",
-    title: "Watched docs",
-    copy: "Changed files listed here require human review before handoff.",
-    pills: [watchCount + " watched", reviewPathCount + " required", reviewGateCount + " gates"],
-    body: '<div class="settings-grid">' +
-      '<div class="settings-field large"><label for="watchAllow">Simple watched folders/files</label><span class="settings-field-note">One path per line. Folder entries here use the recursive current-and-future default.</span><textarea id="watchAllow" placeholder="docs/&#10;website/docs/">' + escapeHtml(watchAllow) + '</textarea></div>' +
-      '<div class="settings-field large"><label for="reviewPaths">Required review files</label><span class="settings-field-note">Important files that stay in review until verified, even without a Git diff.</span><textarea id="reviewPaths" placeholder="AGENTS.md&#10;docs/INDEX.md">' + escapeHtml(reviewPaths) + '</textarea></div>' +
-      '<div class="settings-field large"><label>Folder watch modes</label><span class="settings-field-note">Choose or replace these modes from the Explorer or agent CLI.</span>' + watchRulesMarkup + '</div>' +
-    '</div>' +
-    '<div class="review-gate-panel"><div class="review-gate-head"><div><h4>Block Git operations while review is pending</h4><p>Select one or several checkpoints. This local owner policy is kept outside project config and is not writable through the agent CLI.</p></div><span class="review-gate-owner">Owner control</span></div>' +
+    title: showGlobalProjectPicker ? "Global review overview" : "Review rules",
+    copy: showGlobalProjectPicker ? "Understand the aggregate queue, then select one project in Explorer to change its review rules here." : "Choose what enters the queue and which Git actions wait for human review.",
+    scope: showGlobalProjectPicker ? "All projects" : "Project",
+    pills: showGlobalProjectPicker ? [globalReviewCounts.local + " local files", globalReviewCounts.shared + " proposals", globalReviewCounts.projects + " projects"] : [selectedProjectPill, watchCount + " watched", reviewGateCount + " gates"].filter(Boolean),
+    body: showGlobalProjectPicker ? globalReviewBody : '<div class="settings-concept"><strong>Every watched version needs human verification.</strong><p>A document remains in the queue until its current content hash is verified. Git adds a diff when available, but never decides whether the document is already reviewed.</p></div><div class="settings-disclosure-list">' +
+    agentCliGuideDisclosure +
+    snoozedReviewDisclosure +
+    renderSettingsDisclosure({ id: "review-documents", title: "Documents to review", copy: "Choose files and folders whose current versions require human verification.", status: watchCount + " watched", scope: "Project", trackDirty: true, body:
+      '<div class="settings-grid">' +
+        '<div class="settings-field large"><label for="watchAllow">Watched documents and folders</label><span class="settings-field-note">One path per line. Every current content version stays in review until a person verifies it. Folder entries use the recursive current-and-future default.</span><textarea id="watchAllow" placeholder="docs/&#10;website/docs/">' + escapeHtml(watchAllow) + '</textarea></div>' +
+        '<div class="settings-field large"><label>Folder watch modes</label><span class="settings-field-note">Your agent can manage these rules itself through the Context Room CLI with <code>context-room agent watch</code> and <code>context-room agent unwatch</code>. Human verification remains yours.</span>' + watchRulesMarkup + '</div>' +
+      '</div>'
+    }) +
+    renderSettingsDisclosure({ id: "review-protection", title: "Protect Git actions", copy: "Pause selected Git checkpoints while documentation review is pending.", status: reviewGateCount ? reviewGateCount + " active" : "Optional", scope: "Owner control", trackDirty: true, body:
+    '<div class="review-gate-panel"><div class="review-gate-head"><div><h4>Block Git operations while review is pending</h4><p>This local owner policy stays outside project config and cannot be changed through the agent CLI.</p></div><span class="review-gate-owner">Advanced</span></div>' +
       '<div class="review-gate-options" role="group" aria-label="Git operations blocked by pending review">' +
         '<label class="review-gate-option"><input type="checkbox" data-review-gate-operation value="commit" ' + (reviewGateOperations.includes("commit") ? 'checked' : '') + ' /><span class="review-gate-kind">Local hook</span><strong>Commit</strong><em>Blocks before a commit is created.</em><span class="review-gate-check" aria-hidden="true">✓</span></label>' +
         '<label class="review-gate-option"><input type="checkbox" data-review-gate-operation value="push" ' + (reviewGateOperations.includes("push") ? 'checked' : '') + ' /><span class="review-gate-kind">Local hook</span><strong>Push</strong><em>Allows local commits, then blocks code leaving the clone.</em><span class="review-gate-check" aria-hidden="true">✓</span></label>' +
@@ -14537,69 +20934,207 @@ function renderSettingsPanel() {
         '<label class="review-gate-option"><input type="checkbox" data-review-gate-operation value="merge" ' + (reviewGateOperations.includes("merge") ? 'checked' : '') + ' /><span class="review-gate-kind">Local + hosted</span><strong>Merge</strong><em>Blocks local merge commits; hosted merges need a required check.</em><span class="review-gate-check" aria-hidden="true">✓</span></label>' +
       '</div>' +
       '<p class="review-gate-provider-note">Git has no local hook for creating a pull request, and hosted merges do not run local hooks. Wire <code>context-room guard --operation pull-request --profile strict</code> or <code>--operation merge --profile strict</code> into the provider and require that check.</p>' +
-    '</div>',
+    '</div>'
+    }) + '</div>',
   }) +
   renderSettingsSection({
     id: "startup",
     kicker: "Startup",
-    title: "Injected context scanners",
-    copy: "Files, skill folders, and hook files discovered around this Context Room root.",
+    title: "Agent startup environment",
+    copy: "Control which instructions, local skills, and executable hooks Context Room discovers for this project.",
     pills: [startupContextCount + " names", startupSkillFolderCount + " folders", startupHookNameCount + " git names", startupAgentHookCount + " agent paths", startupHookManagerCount + " managers"],
-    body: '<div class="settings-group"><h4 class="settings-group-title">Agent context</h4><div class="settings-grid">' +
-      '<div class="settings-field"><label class="settings-toggle" for="startupContextEnabled"><input id="startupContextEnabled" type="checkbox" ' + (startupContext.enabled ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Startup context</strong><em>List ancestor and global agent instruction files.</em></span></label><span class="settings-input-label">Ancestor filenames</span><textarea id="startupContextFileNames" placeholder="one ancestor filename per line">' + escapeHtml(startupFileNames) + '</textarea><span class="settings-input-label">Global instruction paths</span><textarea id="startupContextGlobalPaths" placeholder="one global path per line">' + escapeHtml(startupGlobalPaths) + '</textarea></div>' +
-      '<div class="settings-field"><label class="settings-toggle" for="startupSkillsEnabled"><input id="startupSkillsEnabled" type="checkbox" ' + (startupSkills.enabled !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Startup skills</strong><em>List global skill folders visible to agents.</em></span></label><span class="settings-input-label">Skill folder names</span><textarea id="startupSkillFolderNames" placeholder="one folder path per line">' + escapeHtml(startupSkillFolderNames) + '</textarea></div>' +
-    '</div></div><div class="settings-group"><h4 class="settings-group-title">Hooks</h4><div class="settings-grid">' +
+    body: showGlobalProjectPicker ? globalStartupBody : '<div class="settings-concept"><strong>Startup describes what can affect an agent before work begins.</strong><p>Local skill discovery finds folders already installed around the project. Shared skills are different: they keep reviewed canonical skills in a shared context and link accepted versions into provider folders.</p></div><div class="settings-disclosure-list">' +
+    renderSettingsDisclosure({ id: "startup-context", title: "Agent instructions", copy: "Find instruction files such as AGENTS.md and CLAUDE.md before an agent starts work.", status: startupContext.enabled ? startupContextCount + " configured" : "Disabled", scope: "Project", trackDirty: true, body:
+      '<div class="settings-field"><label class="settings-toggle" for="startupContextEnabled"><input id="startupContextEnabled" type="checkbox" ' + (startupContext.enabled ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Discover startup instructions</strong><em>Include configured ancestor filenames and global instruction paths.</em></span></label><span class="settings-input-label">Ancestor filenames</span><textarea id="startupContextFileNames" placeholder="one ancestor filename per line">' + escapeHtml(startupFileNames) + '</textarea><span class="settings-input-label">Global instruction paths</span><textarea id="startupContextGlobalPaths" placeholder="one global path per line">' + escapeHtml(startupGlobalPaths) + '</textarea></div>'
+    }) +
+    renderSettingsDisclosure({ id: "startup-skills", title: "Local skill discovery", copy: "Find skill folders that already exist around this project.", status: startupSkills.enabled !== false ? startupSkillFolderCount + " folders" : "Disabled", scope: "Project", trackDirty: true, body:
+      '<div class="settings-field"><label class="settings-toggle" for="startupSkillsEnabled"><input id="startupSkillsEnabled" type="checkbox" ' + (startupSkills.enabled !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Discover local skills</strong><em>List skill folders visible to agents without managing or copying them.</em></span></label><span class="settings-input-label">Skill folder names</span><textarea id="startupSkillFolderNames" placeholder="one folder path per line">' + escapeHtml(startupSkillFolderNames) + '</textarea><p class="settings-help">Need one reviewed version shared across a team or multiple projects? Use the Shared resources tab instead.</p></div>'
+    }) +
+    renderSettingsDisclosure({ id: "startup-hooks", title: "Hooks and automation", copy: "Inspect executable sources that can affect agents, commits, and validation.", status: startupHooks.enabled !== false ? startupHookNameCount + startupAgentHookCount + startupHookManagerCount + " sources" : "Disabled", scope: "Project", trackDirty: true, body:
+    '<div class="settings-grid">' +
       '<div class="settings-field"><label class="settings-toggle" for="startupHooksEnabled"><input id="startupHooksEnabled" type="checkbox" ' + (startupHooks.enabled !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Startup hooks</strong><em>List hook files that can affect agents and commits.</em></span></label><span class="settings-input-label">Git hook filenames</span><textarea id="startupHookFileNames" placeholder="one hook filename per line">' + escapeHtml(startupHookFileNames) + '</textarea></div>' +
       '<div class="settings-field"><label class="settings-toggle" for="startupHooksEditable"><input id="startupHooksEditable" type="checkbox" ' + (startupHooks.editable ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Edit hooks</strong><em>Off by default because hooks execute code.</em></span></label><span class="settings-input-label">Hook manager paths</span><textarea id="startupHookManagerPaths" placeholder="one hook manager path per line">' + escapeHtml(startupHookManagerPaths) + '</textarea></div>' +
       '<div class="settings-field"><label class="settings-toggle" for="startupAgentHooks"><input id="startupAgentHooks" type="checkbox" ' + (startupHooks.agentHooks !== false && startupHooks.codexHooks !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Agent hook sources</strong><em>Choose which AI coding systems Context Room should show.</em></span></label><span class="settings-field-note">One source per line: <code>Name | config path | plugin folder</code>. Delete a line to hide that system.</span><textarea id="startupAgentHookSources" placeholder="Codex | .codex/hooks.json&#10;My Agent | .my-agent/hooks.json | .my-agent/plugins/">' + escapeHtml(startupAgentHookSources) + '</textarea></div>' +
       '<div class="settings-field"><label class="settings-toggle" for="startupGitHooks"><input id="startupGitHooks" type="checkbox" ' + (startupHooks.gitHooks !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Git hooks</strong><em>Scan .git/hooks and core.hooksPath.</em></span></label></div>' +
       '<div class="settings-field"><label class="settings-toggle" for="startupHookManagers"><input id="startupHookManagers" type="checkbox" ' + (startupHooks.hookManagers !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Hook managers</strong><em>Scan Husky, Lefthook, pre-commit, lint-staged, and package hooks.</em></span></label></div>' +
-    '</div></div>',
+    '</div><p class="review-gate-provider-note">Hooks can execute code. Context Room keeps hook editing off until the project owner enables it explicitly.</p>'
+    }) + '</div>',
+  }) +
+  renderSettingsSection({
+    id: "shared-skills",
+    kicker: "Shared contexts",
+    title: "Shared resources",
+    copy: "Keep reviewed skills and agent instructions canonical in a shared context, then expose accepted versions through managed links.",
+    pills: sharedSkillsStatus?.connected ? [(sharedSkillsStatus.collections || []).length + " skill collections", (sharedInstructionLocationsForSettings()?.collections || []).length + " instruction collections", (sharedSkillsStatus.conflicts || []).length + " skill conflicts"] : [],
+    body: renderSharedSkillLocationsSettings(sharedSkillsStatus) + renderSharedInstructionLocationsSettings(sharedInstructionLocationsForSettings()),
   }) +
   renderSettingsSection({
     id: "appearance",
     kicker: "Appearance",
-    title: "Theme, files, and shortcuts",
-    copy: "Shared by every Context Room on this computer.",
+    title: "Interface preferences",
+    copy: "Personal preferences shared by every Context Room on this computer.",
     scope: "All rooms",
-    body: '<div class="settings-grid compact">' +
-      '<div class="settings-field"><label for="fileTheme">App theme</label><select id="fileTheme">' + renderFileThemeOptions(appearance.fileTheme) + '</select></div>' +
-      '<div class="settings-field"><label class="settings-toggle" for="autoOpenGitDiff"><input id="autoOpenGitDiff" type="checkbox" ' + (appearance.autoOpenGitDiff !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Auto-open Git diff</strong><em>Leave off to open the diff manually.</em></span></label></div>' +
-      '<div class="settings-field"><label class="settings-toggle" for="showHiddenFiles"><input id="showHiddenFiles" type="checkbox" ' + (appearance.showHiddenFiles !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Show hidden files</strong><em>Display safe dotfiles and .context-room in every explorer.</em></span></label></div>' +
-      '<div class="settings-field"><label for="codexReferenceShortcut">Reference in Codex shortcut</label><span class="settings-field-note">Select text in a file, then use this shortcut. Nothing is sent.</span><div class="shortcut-recorder"><input id="codexReferenceShortcut" type="text" readonly data-shortcut="' + escapeHtml(shortcuts.codexReference || "") + '" value="' + escapeHtml(formatShortcutForPlatform(shortcuts.codexReference || "Disabled")) + '" aria-describedby="codexReferenceShortcutHelp" /><button id="clearCodexReferenceShortcut" class="secondary" type="button">Clear</button></div><span id="codexReferenceShortcutHelp" class="settings-field-note">Click the field, then press a modifier and a key.</span></div>' +
-    '</div>' + renderSettingsThemePreview(appearance.fileTheme),
+    body: '<div class="settings-concept"><strong>These preferences belong to you, not to a project.</strong><p>They stay local to this computer and apply consistently across every Context Room.</p></div><div class="settings-disclosure-list">' +
+    renderSettingsDisclosure({ id: "appearance-theme", title: "Theme and reading", copy: "Choose the app theme and preview how documents will look.", status: appearance.fileTheme === "context-room" ? "Context Room · " + (appearance.colorMode || "system") : appearance.fileTheme || DEFAULT_FILE_THEME, scope: "All rooms", trackDirty: true, body:
+      '<div class="settings-grid compact"><div class="settings-field"><label for="fileTheme">App theme</label><select id="fileTheme">' + renderFileThemeOptions(appearance.fileTheme) + '</select></div>' +
+      '<div class="settings-field"><label for="colorMode">Context Room appearance</label><select id="colorMode"><option value="system" ' + ((appearance.colorMode || "system") === "system" ? "selected" : "") + '>Follow system</option><option value="light" ' + (appearance.colorMode === "light" ? "selected" : "") + '>Light</option><option value="dark" ' + (appearance.colorMode === "dark" ? "selected" : "") + '>Dark</option></select><span class="settings-field-note">This mode applies to the Context Room theme. Explicit editor themes keep their own light or dark palette.</span></div></div>' + renderSettingsThemePreview(appearance.fileTheme)
+    }) +
+    renderSettingsDisclosure({ id: "appearance-explorer", title: "Explorer and file behavior", copy: "Control hidden files, Git diff behavior, and the folder available through Computer mode.", status: appearance.showHiddenFiles !== false ? "Hidden files visible" : "Hidden files hidden", scope: "All rooms", trackDirty: true, body:
+      '<div class="settings-grid compact"><div class="settings-field"><label class="settings-toggle" for="autoOpenGitDiff"><input id="autoOpenGitDiff" type="checkbox" ' + (appearance.autoOpenGitDiff !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Auto-open Git diff</strong><em>Turn this off to open the diff manually.</em></span></label></div>' +
+      '<div class="settings-field"><label class="settings-toggle" for="showHiddenFiles"><input id="showHiddenFiles" type="checkbox" ' + (appearance.showHiddenFiles !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Show hidden files</strong><em>Display safe dotfiles and .context-room in every Explorer.</em></span></label></div>' +
+      '<div class="settings-field"><label for="computerExplorerRoot">Computer Explorer root</label><span class="settings-field-note">Computer mode can browse this folder and everything inside it. Use an absolute path or ~/…</span><input id="computerExplorerRoot" type="text" value="' + escapeHtml(explorer.computerRoot || "") + '" placeholder="' + escapeHtml(DEFAULT_COMPUTER_EXPLORER_ROOT) + '" /></div></div>'
+    }) +
+    renderSettingsDisclosure({ id: "appearance-sounds", title: "Interface sounds", copy: "Use quiet feedback for frequent actions and deeper cues for important outcomes.", status: sounds.enabled !== false ? soundVolumePercent + "% volume" : "Muted", scope: "All rooms", trackDirty: true, body:
+      '<div class="settings-sound-panel">' +
+        '<div class="settings-sound-controls">' +
+          '<label class="settings-toggle" for="interfaceSoundsEnabled"><input id="interfaceSoundsEnabled" type="checkbox" ' + (sounds.enabled !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Interface sounds</strong><em>A soft, compact click responds to buttons; deeper cues mark important outcomes.</em></span></label>' +
+          '<div class="settings-field"><label for="interfaceSoundsVolume">Volume</label><div class="settings-volume-row"><input id="interfaceSoundsVolume" type="range" min="0" max="100" step="5" value="' + soundVolumePercent + '" aria-describedby="interfaceSoundsVolumeHelp" /><output id="interfaceSoundsVolumeValue" class="settings-volume-value" for="interfaceSoundsVolume">' + soundVolumePercent + '%</output></div><span id="interfaceSoundsVolumeHelp" class="settings-field-note">Applies to every Context Room on this computer.</span></div>' +
+        '</div>' +
+        '<div class="settings-field"><span class="settings-field-title">Preview the sound palette</span><span class="settings-field-note">Previews work even while interface sounds are muted.</span><div class="settings-sound-previews">' +
+          '<button class="sound-preview-button" type="button" data-sound-preview="interaction"><span aria-hidden="true">▶</span><span>Button click</span></button>' +
+          '<button class="sound-preview-button" type="button" data-sound-preview="review-complete"><span aria-hidden="true">▶</span><span>Review complete</span></button>' +
+          '<button class="sound-preview-button" type="button" data-sound-preview="all-clear"><span aria-hidden="true">▶</span><span>All clear</span></button>' +
+          '<button class="sound-preview-button" type="button" data-sound-preview="proposal-accepted"><span aria-hidden="true">▶</span><span>Proposal accepted</span></button>' +
+          '<button class="sound-preview-button" type="button" data-sound-preview="attention"><span aria-hidden="true">▶</span><span>Conflict attention</span></button>' +
+        '</div></div>' +
+      '</div>'
+    }) +
+    renderSettingsDisclosure({ id: "appearance-shortcuts", title: "Keyboard shortcuts", copy: "Reference selected document text in Codex without sending it automatically.", status: shortcuts.codexReference ? formatShortcutForPlatform(shortcuts.codexReference) : "Disabled", scope: "All rooms", trackDirty: true, body:
+      '<div class="settings-field"><label for="codexReferenceShortcut">Reference in Codex shortcut</label><span class="settings-field-note">Select text in a file, then use this shortcut. Nothing is sent until you choose what to do in Codex.</span><div class="shortcut-recorder"><input id="codexReferenceShortcut" type="text" readonly data-shortcut="' + escapeHtml(shortcuts.codexReference || "") + '" value="' + escapeHtml(formatShortcutForPlatform(shortcuts.codexReference || "Disabled")) + '" aria-describedby="codexReferenceShortcutHelp" /><button id="clearCodexReferenceShortcut" class="secondary" type="button">Clear shortcut</button></div><span id="codexReferenceShortcutHelp" class="settings-field-note">Focus the field, then press a modifier and a key.</span></div>'
+    }) + '</div>',
   }) +
   renderSettingsSection({
     id: "templates",
     kicker: "Templates",
-    title: "Markdown document templates",
-    copy: "Reusable shapes for new documentation files.",
-    pills: [markdownTemplates.length + " templates"],
-    body: '<div class="settings-body-toolbar"><span>Open a template only when you need to edit its fields.</span><button id="addMarkdownTemplate" class="secondary" type="button">+ template</button></div>' +
-      '<div class="hub-card-options settings-editor-list" id="markdownTemplateEditors">' + markdownTemplates.map((template) => renderMarkdownTemplateEditor(template, false)).join("") + '</div>',
+    title: showGlobalProjectPicker ? "Project document templates" : "Markdown document templates",
+    copy: showGlobalProjectPicker ? "Templates belong to one project and stay out of the global Hub host." : "Reusable shapes for new documentation files.",
+    pills: showGlobalProjectPicker ? ["Project-specific"] : [selectedProjectPill, markdownTemplates.length + " templates"].filter(Boolean),
+    body: showGlobalProjectPicker ? '<div class="settings-concept"><strong>Templates are project-owned.</strong><p>Select the project whose new documents should use them.</p></div><div class="settings-disclosure-list">' + renderSettingsDisclosure({ id: "templates-list", title: "Document templates", copy: "Create, enable, and edit reusable Markdown starting points inside one project.", status: "Project-specific", scope: "Project", body: renderGlobalProjectSettingsGate("Markdown document templates") }) + '</div>' : '<div class="settings-concept"><strong>Templates keep new documentation consistent.</strong><p>Each template is a reusable starting shape. Open one only when you need to edit its fields.</p></div><div class="settings-disclosure-list">' +
+      renderSettingsDisclosure({ id: "templates-list", title: "Document templates", copy: "Create, enable, and edit reusable Markdown starting points.", status: markdownTemplates.length + " templates", scope: "Project", trackDirty: true, body: '<div class="settings-body-toolbar"><span>Disabled templates stay saved but do not appear when creating a document.</span><button id="addMarkdownTemplate" class="secondary" type="button">Add template</button></div><div class="hub-card-options settings-editor-list" id="markdownTemplateEditors">' + markdownTemplates.map((template) => renderMarkdownTemplateEditor(template, false)).join("") + '</div>' }) + '</div>',
   }) +
   renderSettingsSection({
     id: "hub",
     kicker: "Hub",
-    title: "Sections and cards",
-    copy: "Controls the cards shown on the first screen.",
-    pills: [sections.length + " sections"],
-    body: '<div class="settings-body-toolbar"><span>Open a section or card only when changing its routing.</span><button id="addHubSection" class="secondary" type="button">+ section</button></div>' +
-      '<div class="hub-card-options settings-editor-list" id="hubSectionEditors">' + sections.map((section) => renderHubSectionEditor(section, false)).join("") + '</div>',
+    title: "Hub organization",
+    copy: "Prioritize projects across the device and arrange the selected project's Home sections.",
+    pills: [state.contextHub?.projects?.length + " projects", showGlobalProjectPicker ? "Select a project for sections" : selectedProjectPill, !showGlobalProjectPicker ? sections.length + " sections" : ""].filter(Boolean),
+    body: '<div class="settings-concept"><strong>Priority is device-wide; sections remain project-owned.</strong><p>Project order controls where projects and their reviews appear. Home sections still belong to the selected project.</p></div><div class="settings-disclosure-list">'
+      + projectPriorityDisclosure
+      + (showGlobalProjectPicker
+        ? renderSettingsDisclosure({ id: "hub-sections", title: "Home sections and cards", copy: "Arrange the links and separators shown below one project's review queue.", status: "Project-specific", scope: "Project", body: renderGlobalProjectSettingsGate("Home sections and cards") })
+        : renderSettingsDisclosure({ id: "hub-sections", title: "Home sections and cards", copy: "Arrange the project links and separators shown below the review queue.", status: sections.length + " sections", scope: "Project", trackDirty: true, body: '<div class="settings-body-toolbar"><span>Right-click a section in Settings to remove it from Home.</span><button id="addHubSection" class="secondary" type="button">Add section</button></div>' + (!sections.length ? '<div class="settings-empty-state">No Home sections yet. Add one to create a labeled separator or a group of project links.</div>' : '') + '<div class="hub-card-options settings-editor-list" id="hubSectionEditors">' + sections.map((section) => renderHubSectionEditor(section, false)).join("") + '</div>' }))
+      + '</div>',
+  }) +
+  renderSettingsSection({
+    id: "codex-prompts",
+    kicker: "Codex prompts",
+    title: "Codex Prompt Center",
+    copy: "Advanced device-wide prompt overrides published by the installed Codex runtime.",
+    scope: "All rooms",
+    body: '<div class="settings-concept"><strong>Prompt overrides belong to Codex on this device, not to a Context Room project.</strong><p>The dedicated editor keeps official content, saved overrides, and the version currently loaded by running Codex processes separate.</p></div><div class="settings-disclosure-list">' + renderSettingsDisclosure({ id: "codex-prompts-editor", title: "Advanced prompt editor", copy: "Compare official, effective-after-restart, and currently loaded prompt content.", status: "Device-wide", scope: "All rooms", body: '<div class="settings-action-row"><div class="settings-action-copy"><strong>Open the dedicated editor</strong><p>Saved overrides become effective after a new Codex process starts. Existing processes continue using the prompt version they already loaded.</p></div><button id="openCodexPromptCenter" class="primary" type="button">Open Prompt Center</button></div>' }) + '</div>',
   }) +
   '</div></div>' +
-  '<div class="settings-footer"><span>Project setup stays in this room. Appearance and shortcuts apply to all rooms.</span><div class="docqa-actions"><button id="saveSettings" class="primary" type="button">Save settings</button></div></div>';
+  '<div class="settings-footer"><span id="settingsSaveState" class="settings-save-state" data-dirty="false"><strong>All changes saved</strong><span>Project settings and global preferences are up to date.</span></span><div class="docqa-actions"><button id="saveSettings" class="primary" type="button" disabled>Save settings</button></div></div>';
   wireSettingsTabs(holder);
+  wireSettingsDisclosures(holder);
+  wireSnoozedReviewSettings(holder);
+  wireSettingsSearch();
   activateSettingsSection(state.settingsSection, { resetScroll: false });
   wireHubSettingsButtons(holder);
+  wireProjectPrioritySettings(holder);
   wireMarkdownTemplateButtons(holder);
   el("addMarkdownTemplate")?.addEventListener("click", addMarkdownTemplateEditor);
   el("addHubSection")?.addEventListener("click", addHubSectionEditor);
   el("fileTheme")?.addEventListener("change", previewSelectedFileTheme);
+  el("colorMode")?.addEventListener("change", previewSelectedFileTheme);
+  el("interfaceSoundsVolume")?.addEventListener("input", updateSoundVolumePreview);
+  el("openCodexPromptCenter")?.addEventListener("click", () => {
+    state.codexPromptSearch = "";
+    openContextRoomView("codex-prompts", { returnTo: "settings" });
+  });
+  holder.querySelectorAll("[data-copy-agent-cli-prompt]").forEach((button) => button.addEventListener("click", () => copyAgentCliInstructions(button).catch((error) => setStatus(error.message))));
+  holder.querySelectorAll("[data-sound-preview]").forEach((button) => button.addEventListener("click", () => playContextRoomSound(button.dataset.soundPreview, { preview: true })));
+  holder.querySelectorAll("[data-retry-global-project-settings]").forEach((button) => button.addEventListener("click", () => {
+    const project = selectedGlobalSettingsProject();
+    if (project) loadGlobalProjectSettings(project, { force: true }).catch((error) => setStatus(error.message));
+  }));
+  wireSharedSkillLocationsSettingsActions(holder);
+  const selectedContext = selectedGlobalProjectSettingsContext();
+  if (selectedContext.key && selectedContext.payload && !state.globalProjectSettingsValidated.has(selectedContext.key)) {
+    holder.querySelectorAll('[data-settings-section-panel="review"] input, [data-settings-section-panel="review"] select, [data-settings-section-panel="review"] textarea, [data-settings-section-panel="review"] button, [data-settings-section-panel="startup"] input, [data-settings-section-panel="startup"] select, [data-settings-section-panel="startup"] textarea, [data-settings-section-panel="startup"] button, [data-settings-section-panel="templates"] input, [data-settings-section-panel="templates"] select, [data-settings-section-panel="templates"] textarea, [data-settings-section-panel="templates"] button, [data-settings-section-panel="hub"] input:not(.project-priority-search), [data-settings-section-panel="hub"] select, [data-settings-section-panel="hub"] textarea, [data-settings-section-panel="hub"] button:not([data-project-priority-action]):not([data-project-priority-reset])').forEach((control) => { control.disabled = true; });
+  }
   wireShortcutRecorder();
   holder.querySelectorAll("[data-remove-watch-rule]").forEach((button) => button.addEventListener("click", () => removeWatchRuleFromSettings(button.dataset.removeWatchRule).catch((error) => setStatus(error.message))));
   previewSelectedFileTheme();
+  wireSettingsDirtyTracking(holder);
   el("saveSettings")?.addEventListener("click", () => saveSettings().catch((error) => setStatus(error.message)));
+}
+
+function wireSharedSkillLocationsSettingsActions(root) {
+  root.querySelectorAll("[data-shared-skills-use]").forEach((button) => button.addEventListener("click", () => openSharedSkillsWizard({ mode: "assign", collectionId: button.dataset.sharedSkillsUse }).catch((error) => setStatus(error.message))));
+  root.querySelectorAll("[data-shared-skills-edit]").forEach((button) => button.addEventListener("click", () => openSharedSkillsWizard({ mode: "assign", assignmentId: button.dataset.sharedSkillsEdit, collectionId: button.dataset.sharedSkillsCollection }).catch((error) => setStatus(error.message))));
+  root.querySelectorAll("[data-shared-skills-local-link]").forEach((button) => button.addEventListener("click", () => openSharedSkillsWizard({ mode: "link", assignmentId: button.dataset.sharedSkillsLocalLink, collectionId: button.dataset.sharedSkillsCollection }).catch((error) => setStatus(error.message))));
+  root.querySelectorAll("[data-shared-skills-unassign]").forEach((button) => button.addEventListener("click", () => unassignSharedSkillsFromSettings(button.dataset.sharedSkillsUnassign).catch((error) => setStatus(error.message))));
+  root.querySelectorAll("[data-shared-skills-local-toggle]").forEach((button) => button.addEventListener("click", () => updateSharedSkillLocalOverride(button.dataset.sharedSkillsLocalToggle, { disabled: button.dataset.disabled !== "true" }).catch((error) => setStatus(error.message))));
+  root.querySelectorAll("[data-shared-skills-local-exclude]").forEach((button) => button.addEventListener("click", () => editSharedSkillLocalExclusions(button.dataset.sharedSkillsLocalExclude).catch((error) => setStatus(error.message))));
+  root.querySelectorAll("[data-shared-skills-unlink]").forEach((button) => button.addEventListener("click", () => unlinkSharedSkillDestination(button.dataset.sharedSkillsUnlink).catch((error) => setStatus(error.message))));
+  root.querySelector("[data-shared-skills-import]")?.addEventListener("click", () => openSharedSkillsWizard({ mode: "import" }).catch((error) => setStatus(error.message)));
+  root.querySelector("[data-shared-provider-apply]")?.addEventListener("click", () => applySharedSkillProviderSettings().catch((error) => setStatus(error.message)));
+}
+
+async function updateSharedSkillLocalOverride(assignmentId, patch = {}) {
+  const selection = sharedSkillsProjectSelection();
+  const status = sharedSkillLocationsForSettings();
+  const current = (status?.destinations || []).find((item) => item.assignmentId === assignmentId)?.localOverride || { disabled: false, exclude: [] };
+  await api('/api/shared-skills/locations/override', {
+    method: 'POST',
+    body: JSON.stringify({ projectId: selection.projectId, assignmentId, disabled: patch.disabled ?? current.disabled, exclude: patch.exclude ?? current.exclude ?? [] }),
+  });
+  await loadSharedSkillLocations({ refresh: true, projectId: selection.projectId });
+  setStatus(patch.disabled ? 'shared skill assignment disabled locally' : 'shared skill assignment enabled locally');
+}
+
+async function editSharedSkillLocalExclusions(assignmentId) {
+  const status = sharedSkillLocationsForSettings();
+  const current = (status?.destinations || []).find((item) => item.assignmentId === assignmentId)?.localOverride || { disabled: false, exclude: [] };
+  const value = prompt("Exclude skills on this device (one name per line or comma-separated):", (current.exclude || []).join("\\n"));
+  if (value == null) return;
+  const exclude = [...new Set(value.split(/[\\n,]/).map((item) => item.trim()).filter(Boolean))];
+  await updateSharedSkillLocalOverride(assignmentId, { disabled: current.disabled, exclude });
+}
+
+async function unlinkSharedSkillDestination(id) {
+  const selection = sharedSkillsProjectSelection();
+  if (!confirm("Remove this managed local destination? Unmanaged files remain untouched.")) return;
+  await api('/api/shared-skills/locations/link', {
+    method: 'DELETE',
+    body: JSON.stringify({ projectId: selection.projectId, id }),
+  });
+  await loadSharedSkillLocations({ refresh: true, projectId: selection.projectId });
+  setStatus('local skill destination unlinked');
+}
+
+async function applySharedSkillProviderSettings() {
+  const selection = sharedSkillsProjectSelection();
+  if (IS_GLOBAL_CONTEXT_ROOM && !selection.projectId) throw new Error("Choose a project before changing provider availability");
+  const globalProviders = Object.fromEntries([...document.querySelectorAll('[data-shared-provider-global]')].map((input) => [input.dataset.sharedProviderGlobal, input.value]));
+  const projectOverrides = [...document.querySelectorAll('[data-shared-provider-project]')].map((input) => ({ provider: input.dataset.sharedProviderProject, state: input.value }));
+  setStatus("applying provider preferences...");
+  await api('/api/shared-skills/providers', {
+    method: 'POST',
+    body: JSON.stringify({ projectId: selection.projectId, providers: globalProviders, projectOverrides }),
+  });
+  await loadSharedSkillLocations({ refresh: true, projectId: selection.projectId });
+  setStatus("provider preferences applied");
+}
+
+async function unassignSharedSkillsFromSettings(assignmentId) {
+  const selection = sharedSkillsProjectSelection();
+  const preview = await api('/api/shared-skills/assignments/unassign/preview', { method: 'POST', body: JSON.stringify({ projectId: selection.projectId, assignmentId }) });
+  if (!confirm('Create a skills proposal to remove assignment ' + preview.assignment.id + '? Local unmanaged files will not be deleted.')) return;
+  await api('/api/shared-skills/assignments', { method: 'DELETE', body: JSON.stringify({ projectId: selection.projectId, assignmentId, title: 'Unassign ' + preview.assignment.collectionId + ' skills', description: 'Remove the shared skill assignment without deleting local unmanaged content.' }) });
+  await loadSharedSkillLocations({ refresh: true, projectId: selection.projectId });
+  setStatus('skills proposal created');
 }
 
 function wireShortcutRecorder() {
@@ -14666,7 +21201,7 @@ function renderHubSectionEditor(section, open = false) {
   const cards = section.cards || [];
   return '<details class="hub-section-editor" data-hub-section-editor data-section-id="' + escapeHtml(id) + '" ' + (open ? 'open' : '') + '>' +
     '<summary class="hub-section-editor-summary"><span>' + escapeHtml(section.title || "Section") + '</span><code>' + cards.length + ' cards</code></summary>' +
-    '<div class="hub-section-editor-head"><div class="settings-field"><label>Section name</label><input data-section-title value="' + escapeHtml(section.title || "Section") + '" placeholder="Section name" /></div><button class="secondary" type="button" data-add-root-card>+ card</button><button class="selection-action danger-action" type="button" data-remove-section title="remove this section">×</button></div>' +
+    '<div class="hub-section-editor-head"><div class="settings-field"><label>Section name</label><input data-section-title value="' + escapeHtml(section.title || "Section") + '" placeholder="Section name" /></div><button class="secondary" type="button" data-add-root-card>+ card</button><button class="secondary danger-action" type="button" data-remove-section title="Remove this section">Delete section</button></div>' +
     '<div class="hub-card-options" data-section-cards>' + cards.map((card) => renderHubCardEditor(card, 0, false)).join("") + '</div>' +
   '</details>';
 }
@@ -14692,6 +21227,31 @@ function wireHubSettingsButtons(root) {
   root.querySelectorAll("[data-remove-section]").forEach((button) => button.addEventListener("click", () => button.closest(".hub-section-editor")?.remove()));
   root.querySelectorAll("[data-add-root-card]").forEach((button) => button.addEventListener("click", () => addHubCardEditor(button.closest(".hub-section-editor")?.querySelector("[data-section-cards]"))));
   root.querySelectorAll("[data-add-child-card]").forEach((button) => button.addEventListener("click", () => addHubCardEditor(button.closest(".hub-card-editor")?.querySelector("[data-card-children]"))));
+  root.querySelectorAll(".hub-section-editor-summary").forEach((summary) => summary.addEventListener("contextmenu", (event) => openHubSectionSettingsContextMenu(event, summary.closest(".hub-section-editor"))));
+}
+
+function openHubSectionSettingsContextMenu(event, section) {
+  if (!section) return;
+  event.preventDefault();
+  event.stopPropagation();
+  hideContextRoomReviewContextMenu();
+  hideExplorerContextMenu();
+  const menu = el("explorerContextMenu");
+  if (!menu) return;
+  const title = section.querySelector("[data-section-title]")?.value.trim()
+    || section.querySelector(".hub-section-editor-summary span")?.textContent.trim()
+    || "Section";
+  menu.innerHTML = '<div class="explorer-context-target"><strong>Section</strong><code>' + escapeHtml(title) + '</code></div>' +
+    '<div class="explorer-context-actions"><button class="danger-action" type="button" role="menuitem" data-settings-delete-section>Delete section</button></div>';
+  menu.style.left = event.clientX + "px";
+  menu.style.top = event.clientY + "px";
+  menu.hidden = false;
+  clampContextMenuToViewport(menu);
+  menu.querySelector("[data-settings-delete-section]")?.addEventListener("click", () => {
+    section.remove();
+    hideExplorerContextMenu();
+    setStatus("section removed from settings · save to apply");
+  });
 }
 
 function addHubSectionEditor() {
@@ -14711,6 +21271,18 @@ function addHubCardEditor(holder) {
 
 async function removeWatchRuleFromSettings(relPath) {
   if (!relPath) return;
+  if (IS_GLOBAL_CONTEXT_ROOM && selectedGlobalProjectSettingsContext().payload?.settings) {
+    const button = [...document.querySelectorAll("[data-remove-watch-rule]")].find((item) => item.dataset.removeWatchRule === relPath);
+    const group = button?.closest("[data-settings-dirty-group]");
+    button?.closest(".watch-rule-row")?.remove();
+    if (group) refreshSettingsDirtyGroup(group);
+    const selected = selectedGlobalProjectSettingsContext();
+    const nextRules = (selected.payload.settings.watchRules || []).filter((rule) => rule.path !== relPath);
+    selected.payload = { ...selected.payload, settings: { ...selected.payload.settings, watchRules: nextRules } };
+    state.globalProjectSettings.set(selected.key, selected.payload);
+    setStatus("folder watch rule removed · save to apply");
+    return;
+  }
   setStatus("removing folder watch rule...");
   const result = await api("/api/watch-rule", {
     method: "DELETE",
@@ -14720,28 +21292,69 @@ async function removeWatchRuleFromSettings(relPath) {
   await refreshAfterWatchMutation(result.settings, "folder watch rule removed");
 }
 
+async function saveGlobalContextRoomSettings({ projectSettings, reviewGate, appearance, shortcuts, sounds, explorer }) {
+  const selected = selectedGlobalProjectSettingsContext();
+  const requests = [api("/api/context-hub/preferences", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ settings: { appearance, shortcuts, sounds, explorer } }),
+  })];
+  if (selected.payload?.settings && selected.worktree?.id) {
+    requests.push(api("/api/context-hub/project-settings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId: selected.worktree.id, expectedRevision: selected.payload.revision, settings: projectSettings, reviewGate }),
+    }));
+  }
+  const [preferencesResult, projectResult = null] = await Promise.all(requests);
+  const previousComputerRoot = state.settings?.explorer?.computerRoot || "";
+  state.settings = { ...state.settings, ...(preferencesResult.preferences || {}) };
+  if (projectResult && selected.key) {
+    state.globalProjectSettings.set(selected.key, projectResult);
+    state.globalProjectSettingsValidated.add(selected.key);
+    state.globalProjectSettingsErrors.delete(selected.key);
+    if (selected.project) clearGlobalProjectExplorerCache(selected.project);
+  }
+  if (previousComputerRoot !== state.settings?.explorer?.computerRoot) {
+    state.computerExplorer = null;
+    state.computerExplorerFolders.clear();
+    state.computerExplorerExpandedFolders.clear();
+    state.computerExplorerLoadingFolders.clear();
+    state.computerExplorerErrors.clear();
+  }
+  applyFileTheme();
+  renderSettingsPanel();
+  const hookWarning = projectResult?.hooks?.conflicts?.length
+    ? " · custom hooks need manual wiring: " + projectResult.hooks.conflicts.join(", ")
+    : projectResult?.hooks?.unavailable ? " · " + projectResult.hooks.unavailable : "";
+  setStatus((projectResult ? "project settings saved" : "global preferences saved") + hookWarning);
+  workspaceUpdate("settings-saved");
+  flashSavedButton(el("saveSettings"), "Saved");
+  scheduleSessionStatePush();
+}
+
 async function saveSettings() {
+  const activeSettings = activeSettingsForPanel();
   const watchAllow = linesFromTextarea("watchAllow");
-  const reviewPaths = linesFromTextarea("reviewPaths");
   const reviewGate = {
     operations: [...document.querySelectorAll("[data-review-gate-operation]:checked")].map((input) => input.value),
   };
   const startupContext = {
     enabled: Boolean(el("startupContextEnabled")?.checked),
-    ...(Object.prototype.hasOwnProperty.call(state.settings?.startupContext || {}, "projectOnly") ? { projectOnly: Boolean(state.settings.startupContext.projectOnly) } : {}),
+    ...(Object.prototype.hasOwnProperty.call(activeSettings?.startupContext || {}, "projectOnly") ? { projectOnly: Boolean(activeSettings.startupContext.projectOnly) } : {}),
     fileNames: linesFromTextarea("startupContextFileNames"),
     globalPaths: linesFromTextarea("startupContextGlobalPaths"),
   };
   const startupSkills = {
     enabled: Boolean(el("startupSkillsEnabled")?.checked),
-    ...(Object.prototype.hasOwnProperty.call(state.settings?.startupSkills || {}, "projectOnly") ? { projectOnly: Boolean(state.settings.startupSkills.projectOnly) } : {}),
+    ...(Object.prototype.hasOwnProperty.call(activeSettings?.startupSkills || {}, "projectOnly") ? { projectOnly: Boolean(activeSettings.startupSkills.projectOnly) } : {}),
     folderNames: linesFromTextarea("startupSkillFolderNames"),
   };
   const agentHookSources = agentHookSourcesFromTextarea("startupAgentHookSources");
   const agentHookPaths = agentHookSources.flatMap((source) => source.paths || []);
   const startupHooks = {
     enabled: Boolean(el("startupHooksEnabled")?.checked),
-    ...(Object.prototype.hasOwnProperty.call(state.settings?.startupHooks || {}, "projectOnly") ? { projectOnly: Boolean(state.settings.startupHooks.projectOnly) } : {}),
+    ...(Object.prototype.hasOwnProperty.call(activeSettings?.startupHooks || {}, "projectOnly") ? { projectOnly: Boolean(activeSettings.startupHooks.projectOnly) } : {}),
     editable: Boolean(el("startupHooksEditable")?.checked),
     agentHooks: Boolean(el("startupAgentHooks")?.checked),
     codexHooks: Boolean(el("startupAgentHooks")?.checked),
@@ -14755,11 +21368,19 @@ async function saveSettings() {
   };
   const appearance = {
     fileTheme: el("fileTheme")?.value || DEFAULT_FILE_THEME,
+    colorMode: el("colorMode")?.value || DEFAULT_APPEARANCE.colorMode,
     autoOpenGitDiff: el("autoOpenGitDiff")?.checked !== false,
     showHiddenFiles: el("showHiddenFiles")?.checked !== false,
   };
   const shortcuts = {
     codexReference: el("codexReferenceShortcut")?.dataset.shortcut ?? currentCodexReferenceShortcut(),
+  };
+  const sounds = {
+    enabled: el("interfaceSoundsEnabled")?.checked !== false,
+    volume: Math.min(1, Math.max(0, Number(el("interfaceSoundsVolume")?.value || 0) / 100)),
+  };
+  const explorer = {
+    computerRoot: el("computerExplorerRoot")?.value.trim() || state.settings?.explorer?.computerRoot || "",
   };
   const markdownTemplates = collectMarkdownTemplateEditors();
   const hubSections = collectHubSectionEditors();
@@ -14769,11 +21390,22 @@ async function saveSettings() {
   markButtonSaving(saveButton);
   setStatus("saving settings...");
   try {
+    if (IS_GLOBAL_CONTEXT_ROOM) {
+      await saveGlobalContextRoomSettings({
+        projectSettings: { watchAllow, watchRules: activeSettings.watchRules || [], startupContext, startupSkills, startupHooks, markdownTemplates, hubCards, hubSections },
+        reviewGate,
+        appearance,
+        shortcuts,
+        sounds,
+        explorer,
+      });
+      return;
+    }
     const [result, reviewGateResult] = await Promise.all([
       api("/api/settings", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ settings: { watchAllow, watchRules: state.settings.watchRules || [], reviewPaths, startupContext, startupSkills, startupHooks, appearance, shortcuts, markdownTemplates, hubCards, hubSections } }),
+        body: JSON.stringify({ settings: { watchAllow, watchRules: state.settings.watchRules || [], startupContext, startupSkills, startupHooks, appearance, shortcuts, sounds, explorer, markdownTemplates, hubCards, hubSections } }),
       }),
       api("/api/review-gate", {
         method: "POST",
@@ -14781,7 +21413,17 @@ async function saveSettings() {
         body: JSON.stringify({ reviewGate }),
       }),
     ]);
+    const previousComputerRoot = state.settings?.explorer?.computerRoot || "";
     state.settings = { ...result.settings, reviewGate: reviewGateResult.reviewGate };
+    state.singleStartupEffectiveContext = null;
+    state.singleStartupEffectiveError = "";
+    if (previousComputerRoot !== state.settings?.explorer?.computerRoot) {
+      state.computerExplorer = null;
+      state.computerExplorerFolders.clear();
+      state.computerExplorerExpandedFolders.clear();
+      state.computerExplorerLoadingFolders.clear();
+      state.computerExplorerErrors.clear();
+    }
     applyFileTheme();
     state.availableHubCards = result.availableHubCards || state.availableHubCards;
     state.hubFolders = result.hubCards || [];
@@ -14806,10 +21448,14 @@ async function saveSettings() {
     state.selectedReview = state.docqa.queue[0]?.path || null;
     if (state.page === "settings") renderSettingsPanel();
     else renderDocQaDashboard();
+    if (state.hubDisclosuresOpen.has("startup-environment")) {
+      loadSingleProjectStartupEnvironment().catch((error) => setStatus(error.message));
+    }
     const hookWarning = reviewGateResult.hooks?.conflicts?.length
       ? " · custom hooks need manual wiring: " + reviewGateResult.hooks.conflicts.join(", ")
       : reviewGateResult.hooks?.unavailable ? " · " + reviewGateResult.hooks.unavailable : "";
     setStatus("settings saved" + hookWarning);
+    workspaceUpdate("settings-saved");
     flashSavedButton(el("saveSettings"), "Saved");
     scheduleSessionStatePush();
   } catch (error) {
@@ -15062,6 +21708,332 @@ function normalizeUiPath(value) {
   return String(value || "").replaceAll("\\", "/").replace(/^\.\//, "").trim();
 }
 
+function sharedSkillsProjectSelection() {
+  if (!IS_GLOBAL_CONTEXT_ROOM) return { projectId: "", key: "__current__", root: state.root || "" };
+  const project = (state.contextHub?.projects || []).find((item) => item.projectKey === state.globalExplorerProjectKey);
+  const worktree = project ? globalProjectSelectedWorktree(project) : null;
+  return { projectId: worktree?.id || "", key: worktree?.id || "", root: worktree?.root || "" };
+}
+
+async function loadSharedSkillLocations({ refresh = false, projectId = "" } = {}) {
+  const selected = sharedSkillsProjectSelection();
+  const targetProjectId = projectId || selected.projectId;
+  const key = targetProjectId || "__current__";
+  if (IS_GLOBAL_CONTEXT_ROOM && !targetProjectId) {
+    const status = { connected: false, selectionRequired: true, collections: [], destinations: [], conflicts: [] };
+    state.sharedSkillLocations.set(key, status);
+    state.sharedInstructionLocations.set(key, { connected: false, selectionRequired: true, collections: [], assignments: [], links: [], conflicts: [] });
+    refreshSharedSkillLocationsSettingsPanel();
+    return status;
+  }
+  const suffix = "?refresh=" + (refresh ? "1" : "0") + (targetProjectId ? "&projectId=" + encodeURIComponent(targetProjectId) : "");
+  const status = await api("/api/shared-skills/locations" + suffix, { signal: state.sharedSkillLocationsController?.signal });
+  state.sharedSkillLocations.set(key, status);
+  try {
+    const instructionStatus = await api("/api/shared-instructions/locations" + suffix, { signal: state.sharedSkillLocationsController?.signal });
+    state.sharedInstructionLocations.set(key, instructionStatus);
+  } catch (error) {
+    if (error?.name !== "AbortError") state.sharedInstructionLocations.set(key, { connected: false, error: error.message, collections: [], assignments: [], links: [], conflicts: [] });
+  }
+  if ((sharedSkillsProjectSelection().key || "__current__") === key) refreshSharedSkillLocationsSettingsPanel();
+  return status;
+}
+
+function sharedSkillLocationsForSettings() {
+  const selected = sharedSkillsProjectSelection();
+  return state.sharedSkillLocations.get(selected.key || "__current__") || null;
+}
+
+function sharedInstructionLocationsForSettings() {
+  const selected = sharedSkillsProjectSelection();
+  return state.sharedInstructionLocations.get(selected.key || "__current__") || null;
+}
+
+function refreshSharedSkillLocationsSettingsPanel() {
+  if (state.page !== "settings") return;
+  const panel = document.querySelector('[data-settings-section-panel="shared-skills"]');
+  const body = panel?.querySelector(".settings-section-body");
+  if (!panel || !body) {
+    renderSettingsPanel();
+    return;
+  }
+  const status = sharedSkillLocationsForSettings();
+  const instructionStatus = sharedInstructionLocationsForSettings();
+  body.innerHTML = renderSharedSkillLocationsSettings(status) + renderSharedInstructionLocationsSettings(instructionStatus);
+  const actions = panel.querySelector(".settings-section-actions");
+  if (actions) {
+    actions.innerHTML = '<span class="settings-pill">Shared</span>' + (status?.connected
+      ? '<span class="settings-pill">' + (status.collections || []).length + ' skill collections</span><span class="settings-pill">' + (instructionStatus?.collections || []).length + ' instruction collections</span><span class="settings-pill">' + ((status.conflicts || []).length + (instructionStatus?.conflicts || []).length) + ' conflicts</span>'
+      : '');
+  }
+  wireSettingsDisclosures(panel);
+  wireSharedSkillLocationsSettingsActions(panel);
+  wireSharedInstructionLocationsSettingsActions(panel);
+}
+
+function renderSharedInstructionLocationsSettings(status) {
+  const concept = '<div class="settings-concept shared-instructions-concept"><strong>Share the instruction files that define how agents behave in your projects.</strong><p>Collections may contain any reviewed Markdown instruction files you choose, including AGENTS.md, AGENTS.override.md, CLAUDE.md, or another provider-specific filename. Context Room links only the accepted main revision and never replaces an unmanaged local file.</p></div>';
+  if (!status) return concept + '<div class="settings-empty-state">Loading shared instruction collections…</div>';
+  if (!status.connected) {
+    const message = status.selectionRequired ? 'Select a project in the Explorer.' : 'This project is not connected to a shared context.';
+    return concept + '<div class="settings-empty-state"><strong>' + escapeHtml(message) + '</strong><span class="settings-empty-state-detail">Choose a connected project before importing or assigning shared instructions.</span></div>';
+  }
+  const collections = status.collections || [];
+  const rows = collections.map((collection) => {
+    const assignments = (status.assignments || []).filter((item) => item.collectionId === collection.id);
+    const links = (status.links || []).filter((item) => item.collectionId === collection.id);
+    return '<div class="shared-skills-location-row' + (links.some((item) => ["conflict", "error", "source-missing", "provider-unavailable"].includes(item.status)) ? ' conflict' : '') + '">'
+      + '<div class="shared-skills-location-head"><strong>' + escapeHtml(collection.title) + '</strong><span class="shared-skills-location-meta">' + collection.fileCount + ' files</span></div>'
+      + '<code>' + escapeHtml(collection.path) + '</code>'
+      + (assignments.length ? assignments.map((assignment) => '<div class="shared-skills-assignment-row"><span class="shared-skills-location-meta">' + escapeHtml(assignment.scope + ' · ' + assignment.files.length + ' mappings') + '</span><span><button class="secondary" type="button" data-shared-instructions-unassign="' + escapeHtml(assignment.id) + '">Remove assignment…</button></span></div>').join('') : '<span class="shared-skills-location-meta">Not assigned yet</span>')
+      + (links.length ? links.map((link) => '<div class="shared-skills-location-meta"><strong>' + escapeHtml(link.provider + ' · ' + link.status) + '</strong><span>' + escapeHtml((link.relativeTarget || link.source) + (link.destination ? ' → ' + link.destination : '')) + '</span>' + ((link.conflicts || []).length ? '<span>' + (link.conflicts || []).map((conflict) => escapeHtml(conflict.reason || conflict.path || 'Conflict')).join('<br />') + '</span>' : '') + '</div>').join('') : '')
+      + '</div>';
+  }).join('');
+  const providerOptions = (status.providers || []).map((provider) => '<option value="' + escapeHtml(provider.id) + '">' + escapeHtml(provider.label) + '</option>').join('');
+  return '<div class="settings-shared-resource-divider" aria-hidden="true"></div>' + concept
+    + '<div class="settings-disclosure-list">'
+    + renderSettingsDisclosure({ id: "shared-instructions-how", title: "How shared instructions work", copy: "Choose files, provider targets, and scope; accepted main remains the only effective version.", status: "Proposal-owned", scope: "Shared", body: '<dl class="settings-glossary"><div><dt>Collection</dt><dd>A reviewed folder of Markdown instruction files stored in the shared context.</dd></div><div><dt>Mapping</dt><dd>A source file, its exact target path, and the providers expected to read it.</dd></div><div><dt>Assignment</dt><dd>The accepted project, shared, or device scope. Changing it creates an instructions proposal.</dd></div><div><dt>Managed link</dt><dd>A link to the immutable accepted snapshot. Unmanaged files always win and become visible conflicts.</dd></div></dl>' })
+    + renderSettingsDisclosure({ id: "shared-instructions-collections", title: "Instruction collections and assignments", copy: "Inspect accepted collections, exact target files, provider mappings, and collisions.", status: collections.length + " collections · " + (status.conflicts || []).length + " conflicts", scope: "Shared + Device", body: '<div class="settings-body-toolbar"><span>Only accepted main is active in projects.</span><button class="secondary" type="button" data-shared-instructions-reconcile>Reconcile managed links</button></div><div class="shared-skills-status-list">' + (rows || '<div class="settings-empty-state">No shared instruction collection exists yet.</div>') + '</div>' })
+    + renderSettingsDisclosure({ id: "shared-instructions-import", title: "Import or update instruction files", copy: "Create one atomic proposal from local Markdown files and their exact project/provider targets.", status: "Creates a proposal", scope: "Shared", body: '<div class="shared-skills-form"><label>Collection ID<input id="sharedInstructionsCollectionId" placeholder="team-instructions" /></label><label>Collection title<input id="sharedInstructionsCollectionTitle" placeholder="Team instructions" /></label><label>Scope<select id="sharedInstructionsScope"><option value="project">Selected project</option><option value="shared">Every registered project in this shared</option><option value="device">This device</option></select></label><label>Default provider<select id="sharedInstructionsProvider">' + providerOptions + '</select></label><label class="wide">Shared collection folder<input id="sharedInstructionsCollectionPath" placeholder="instructions/team" /></label><label class="wide">Files and destinations<textarea id="sharedInstructionsFiles" rows="5" placeholder="/absolute/path/AGENTS.md | AGENTS.md | AGENTS.md | codex,opencode&#10;/absolute/path/CLAUDE.md | CLAUDE.md | apps/calls/CLAUDE.md | claude-code"></textarea><span class="settings-field-note">One mapping per line: local file | shared source | project or provider target | providers. Providers are optional and use the default above.</span></label><div class="settings-action-row wide"><span class="shared-skills-location-meta">Local files stay untouched. The accepted proposal installs managed links later.</span><button class="primary" type="button" data-shared-instructions-import>Create instructions proposal</button></div></div>' })
+    + '</div>';
+}
+
+function sharedInstructionImportFiles() {
+  const fallbackProvider = el("sharedInstructionsProvider")?.value || "codex";
+  return String(el("sharedInstructionsFiles")?.value || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+    const [localPath, source, target, providers] = line.split("|").map((value) => value.trim());
+    return { localPath, source: source || localPath.split(/[\\/]/).pop(), target: target || source || localPath.split(/[\\/]/).pop(), providers: providers ? providers.split(",").map((value) => value.trim()).filter(Boolean) : [fallbackProvider] };
+  });
+}
+
+function wireSharedInstructionLocationsSettingsActions(root) {
+  root.querySelector('[data-shared-instructions-import]')?.addEventListener('click', async () => {
+    try {
+      const selection = sharedSkillsProjectSelection();
+      const body = {
+        projectId: selection.projectId,
+        collectionId: el("sharedInstructionsCollectionId")?.value || "",
+        collectionTitle: el("sharedInstructionsCollectionTitle")?.value || "",
+        collectionPath: el("sharedInstructionsCollectionPath")?.value || "",
+        scope: el("sharedInstructionsScope")?.value || "project",
+        projectIds: selection.projectId ? [selection.projectId] : [],
+        files: sharedInstructionImportFiles(),
+      };
+      const preview = await api('/api/shared-instructions/import/preview', { method: 'POST', body: JSON.stringify(body) });
+      if (!window.confirm('Create a shared instructions proposal with ' + preview.files.length + ' file mapping' + (preview.files.length === 1 ? '' : 's') + '?')) return;
+      await api('/api/shared-instructions/import', { method: 'POST', body: JSON.stringify(body) });
+      setStatus('shared instructions proposal created');
+      await loadSharedSkillLocations({ refresh: true, projectId: selection.projectId });
+    } catch (error) { setStatus(error.message); }
+  });
+  root.querySelectorAll('[data-shared-instructions-unassign]').forEach((button) => button.addEventListener('click', async () => {
+    try {
+      const selection = sharedSkillsProjectSelection();
+      const assignmentId = button.dataset.sharedInstructionsUnassign;
+      const preview = await api('/api/shared-instructions/assignments/unassign/preview', { method: 'POST', body: JSON.stringify({ projectId: selection.projectId, assignmentId }) });
+      if (!window.confirm('Remove this ' + preview.assignment.scope + ' instruction assignment through a proposal?')) return;
+      await api('/api/shared-instructions/assignments', { method: 'DELETE', body: JSON.stringify({ projectId: selection.projectId, assignmentId }) });
+      setStatus('shared instructions unassignment proposal created');
+      await loadSharedSkillLocations({ refresh: true, projectId: selection.projectId });
+    } catch (error) { setStatus(error.message); }
+  }));
+  root.querySelector('[data-shared-instructions-reconcile]')?.addEventListener('click', async () => {
+    try {
+      const selection = sharedSkillsProjectSelection();
+      await api('/api/shared-instructions/reconcile', { method: 'POST', body: JSON.stringify({ projectId: selection.projectId }) });
+      setStatus('shared instruction links reconciled');
+      await loadSharedSkillLocations({ refresh: false, projectId: selection.projectId });
+    } catch (error) { setStatus(error.message); }
+  });
+}
+
+function renderSharedSkillLocationsSettings(status) {
+  const concept = '<div class="settings-concept"><strong>Keep one reviewed version of a skill, then use it wherever an agent needs it.</strong><p>Accepted skills stay canonical in the shared context. Context Room exposes them to Codex, Claude Code, OpenCode, or a custom folder through managed links instead of copies.</p></div>';
+  if (!status) return concept + '<div class="settings-empty-state">Loading shared skill collections…</div>';
+  if (!status.connected) {
+    const title = status.selectionRequired ? "Select a project in the Explorer." : "This project is not connected to a shared context.";
+    const detail = status.selectionRequired
+      ? "Choose a project connected to a shared context, then return here to manage its collections, providers, and local destinations."
+      : "Connect this project to a shared context before managing shared skill collections, providers, and local destinations.";
+    return concept + '<div class="settings-empty-state"><strong>' + title + '</strong><span class="settings-empty-state-detail">' + detail + '</span></div>';
+  }
+  const providerControls = (status.providers || []).map((provider) => {
+    const globalState = status.providerPreferences?.providers?.[provider.id] || "enabled";
+    const projectState = status.projectProviderOverrides?.[provider.id] || "inherit";
+    const effectiveState = projectState === "inherit" ? globalState : projectState;
+    return '<div class="shared-skills-provider-row"><div class="shared-skills-provider-identity"><strong>' + escapeHtml(provider.label) + '</strong><span>Managed skill links</span></div><label><span class="shared-skills-provider-field-label">Device default</span><select aria-label="' + escapeHtml(provider.label) + ' device default" data-shared-provider-global="' + escapeHtml(provider.id) + '"><option value="enabled"' + (globalState === 'enabled' ? ' selected' : '') + '>Enabled</option><option value="disabled"' + (globalState === 'disabled' ? ' selected' : '') + '>Disabled</option></select></label><label><span class="shared-skills-provider-field-label">Project override</span><select aria-label="' + escapeHtml(provider.label) + ' project override" data-shared-provider-project="' + escapeHtml(provider.id) + '"><option value="inherit"' + (projectState === 'inherit' ? ' selected' : '') + '>Use device default</option><option value="enabled"' + (projectState === 'enabled' ? ' selected' : '') + '>Enabled</option><option value="disabled"' + (projectState === 'disabled' ? ' selected' : '') + '>Disabled</option></select></label><span class="shared-skills-provider-effective" data-state="' + escapeHtml(effectiveState) + '">' + (effectiveState === 'disabled' ? 'Disabled here' : 'Enabled here') + '</span></div>';
+  }).join('');
+  const collections = status.collections || [];
+  const assignmentRows = collections.map((collection) => {
+    const destinations = (status.destinations || []).filter((item) => item.collectionId === collection.id);
+    const assignments = (status.assignments || []).filter((item) => item.collectionId === collection.id);
+    return '<div class="shared-skills-location-row' + (destinations.some((item) => ["conflict", "broken", "error", "worktree-error", "provider-unavailable", "provider-disabled"].includes(item.status)) ? ' conflict' : '') + '">'
+      + '<div class="shared-skills-location-head"><strong>' + escapeHtml(collection.title) + '</strong><span class="shared-skills-location-meta">' + collection.skillCount + ' skills</span></div>'
+      + '<code>' + escapeHtml(collection.path) + '</code>'
+      + (assignments.length ? assignments.map((item) => {
+        const localOverride = destinations.find((destination) => destination.assignmentId === item.id)?.localOverride || { disabled: false, exclude: [] };
+        return '<div class="shared-skills-assignment-row"><span class="shared-skills-location-meta">Used in ' + escapeHtml(item.scope + ' scope through ' + (item.providers || []).join(', ')) + (localOverride.disabled ? ' · disabled locally' : '') + ((localOverride.exclude || []).length ? ' · ' + localOverride.exclude.length + ' local exclusions' : '') + '</span><span><button class="secondary" type="button" data-shared-skills-edit="' + escapeHtml(item.id) + '" data-shared-skills-collection="' + escapeHtml(collection.id) + '">Edit assignment…</button><button class="secondary" type="button" data-shared-skills-local-link="' + escapeHtml(item.id) + '" data-shared-skills-collection="' + escapeHtml(collection.id) + '">Set local destination…</button><button class="secondary" type="button" data-shared-skills-local-toggle="' + escapeHtml(item.id) + '" data-disabled="' + String(localOverride.disabled) + '">' + (localOverride.disabled ? 'Enable locally' : 'Disable locally') + '</button><button class="secondary" type="button" data-shared-skills-local-exclude="' + escapeHtml(item.id) + '">Local exclusions…</button><button class="secondary" type="button" data-shared-skills-unassign="' + escapeHtml(item.id) + '">Remove assignment…</button></span></div>';
+      }).join('') : '<span class="shared-skills-location-meta">Not assigned yet</span>')
+      + '<div class="settings-action-row"><span class="shared-skills-location-meta">Revision ' + escapeHtml(String(status.revision || '').slice(0, 12)) + (status.legacy ? ' · legacy defaults' : '') + '</span><button class="secondary" type="button" data-shared-skills-use="' + escapeHtml(collection.id) + '">Use these skills in…</button></div>'
+      + '</div>';
+  }).join('');
+  const destinationRows = collections.map((collection) => {
+    const destinations = (status.destinations || []).filter((item) => item.collectionId === collection.id);
+    return '<div class="shared-skills-location-row' + (destinations.some((item) => ["conflict", "broken", "error", "worktree-error", "provider-unavailable", "provider-disabled"].includes(item.status)) ? ' conflict' : '') + '"><div class="shared-skills-location-head"><strong>' + escapeHtml(collection.title) + '</strong><span class="shared-skills-location-meta">' + destinations.length + ' destinations</span></div>'
+      + (destinations.length ? destinations.map((item) => '<div class="shared-skills-location-meta"><strong>' + escapeHtml(item.provider + ' · ' + item.status) + '</strong><span>' + escapeHtml(item.origin + ' · ' + item.scope) + (item.destination ? ' — ' + escapeHtml(item.destination) : '') + '</span>' + ((item.conflicts || []).length ? '<span>' + (item.conflicts || []).map((conflict) => escapeHtml((conflict.skill || 'Conflict') + ': ' + (conflict.reason || conflict.path || 'blocked'))).join('<br />') + '</span>' : '') + (item.origin === 'local-destination' ? '<button class="secondary" type="button" data-shared-skills-unlink="' + escapeHtml(item.id) + '">Unlink destination</button>' : '') + '</div>').join('') : '<span class="shared-skills-location-meta">No local destination is installed on this device.</span>')
+      + '</div>';
+  }).join('');
+  return concept
+    + '<div class="settings-body-toolbar"><span>Shared intent changes through a proposal. Provider activation and physical paths stay local to this device.</span><button class="secondary" type="button" data-shared-skills-import>Import local skills…</button></div>'
+    + '<div class="settings-disclosure-list">'
+    + renderSettingsDisclosure({ id: "shared-how", title: "How shared skills work", copy: "Understand the shared source of truth and the local links that expose it to agents.", status: "Read-only until proposed", scope: "Shared", body: '<dl class="settings-glossary"><div><dt>Collection</dt><dd>A reviewed folder of skills stored in the shared context.</dd></div><div><dt>Assignment</dt><dd>Accepted intent describing which projects, providers, and scope should use a collection. Changing it creates a skills proposal.</dd></div><div><dt>Local destination</dt><dd>The physical provider folder on this device. Linking it does not edit the shared manifest.</dd></div><div><dt>Managed link</dt><dd>A link to the immutable accepted snapshot. Context Room never replaces an unmanaged file or folder.</dd></div></dl>' })
+    + renderSettingsDisclosure({ id: "shared-providers", title: "Provider availability", copy: "Set the device default once, then override it only for this project when needed.", status: (status.providers || []).length + " providers", scope: "Device + Project", body: '<div class="shared-skills-provider-settings"><div class="shared-skills-provider-head"><div class="shared-skills-provider-title"><strong>Provider availability</strong><span>Disabling a provider removes only links that Context Room manages.</span></div><button class="secondary" type="button" data-shared-provider-apply>Apply provider changes</button></div><div class="shared-skills-provider-columns" aria-hidden="true"><span>Provider</span><span>Device default</span><span>Project override</span><span>Effective</span></div>' + providerControls + '</div>' })
+    + renderSettingsDisclosure({ id: "shared-collections", title: "Collections and assignments", copy: "Choose which accepted collections should be available to projects and providers.", status: collections.length + " collections", scope: "Shared", body: '<div class="shared-skills-status-list">' + (assignmentRows || '<div class="settings-empty-state">No collections are declared in this shared context.</div>') + '</div>' })
+    + renderSettingsDisclosure({ id: "shared-destinations", title: "Local destinations and conflicts", copy: "Inspect physical provider folders, managed links, disabled providers, and blocked collisions.", status: (status.destinations || []).length + " destinations · " + (status.conflicts || []).length + " conflicts", scope: "Device", body: '<div class="shared-skills-status-list">' + (destinationRows || '<div class="settings-empty-state">No local destinations are installed for these collections.</div>') + '</div>' })
+    + '</div>';
+}
+
+async function openSharedSkillsWizard({ mode = "assign", assignmentId = "", collectionId = "", sourceDirectory = "", projectId = "" } = {}) {
+  const selected = sharedSkillsProjectSelection();
+  const targetProjectId = projectId || selected.projectId;
+  let status = state.sharedSkillLocations.get(targetProjectId || "__current__");
+  if (!status) status = await loadSharedSkillLocations({ projectId: targetProjectId });
+  if (!status?.connected) throw new Error("Choose a project connected to a shared context first");
+  const existingAssignment = assignmentId ? status.assignments?.find((item) => item.id === assignmentId) : null;
+  state.sharedSkillsWizard = { mode, step: 1, projectId: targetProjectId, status, assignmentId, collectionId: collectionId || existingAssignment?.collectionId || status.collections?.[0]?.id || "", sourceDirectory, collectionTitle: "", collectionPath: "skills/shared", providers: existingAssignment?.providers || ["codex"], provider: existingAssignment?.providers?.[0] || "custom", projectIds: existingAssignment?.projectIds?.length ? existingAssignment.projectIds : [status.projectId], scope: existingAssignment?.scope || "project", include: existingAssignment?.include || ["*"], exclude: existingAssignment?.exclude || [], selectedSkills: [], destination: mode === "import" ? sourceDirectory : "", preview: null, busy: false };
+  el("sharedSkillsWizard").hidden = false;
+  renderSharedSkillsWizard();
+}
+
+function closeSharedSkillsWizard() {
+  el("sharedSkillsWizard").hidden = true;
+  state.sharedSkillsWizard = null;
+}
+
+function readSharedSkillsWizardFields() {
+  const wizard = state.sharedSkillsWizard;
+  if (!wizard) return;
+  for (const id of ["collectionId", "sourceDirectory", "collectionTitle", "collectionPath", "provider", "scope", "destination"]) {
+    const input = el("sharedSkillsWizard" + id[0].toUpperCase() + id.slice(1));
+    if (input) wizard[id] = input.value;
+  }
+  const providerInputs = [...document.querySelectorAll('[data-shared-skills-provider]')];
+  if (providerInputs.length) wizard.providers = providerInputs.filter((input) => input.checked).map((input) => input.value);
+  const projectInputs = [...document.querySelectorAll('[data-shared-skills-project]')];
+  if (projectInputs.length) wizard.projectIds = projectInputs.filter((input) => input.checked).map((input) => input.value);
+  const includeInput = el("sharedSkillsWizardInclude");
+  const excludeInput = el("sharedSkillsWizardExclude");
+  if (includeInput) wizard.include = [...new Set(includeInput.value.split(/[\\n,]/).map((item) => item.trim()).filter(Boolean))];
+  if (excludeInput) wizard.exclude = [...new Set(excludeInput.value.split(/[\\n,]/).map((item) => item.trim()).filter(Boolean))];
+  const skillInputs = [...document.querySelectorAll('[data-shared-skills-import-skill]')];
+  if (skillInputs.length) wizard.selectedSkills = skillInputs.filter((input) => input.checked).map((input) => input.value);
+}
+
+function renderSharedSkillsWizard() {
+  const wizard = state.sharedSkillsWizard;
+  const body = el("sharedSkillsWizardBody");
+  if (!wizard || !body) return;
+  const collections = wizard.status.collections || [];
+  const providers = wizard.status.providers || [];
+  const step = wizard.step;
+  const steps = [{ title: 'Collection', copy: 'Source of truth' }, { title: 'Reach', copy: 'Provider and scope' }, { title: 'Review', copy: 'Exact changes' }];
+  const stepCopy = step === 1
+    ? { title: wizard.mode === 'import' ? 'Choose what becomes shared' : 'Choose the accepted collection', copy: wizard.mode === 'import' ? 'Select the local skill folder and the collection that will own its reviewed content.' : 'Start from a collection already accepted in this shared context.' }
+    : step === 2
+      ? { title: wizard.mode === 'link' ? 'Install an accepted assignment on this device' : 'Choose where these skills should be available', copy: wizard.mode === 'link' ? 'This action changes only a physical local destination. It does not edit shared intent.' : 'Provider, scope, and project changes are shared intent and will be proposed for human review.' }
+      : { title: 'Review the exact effect before continuing', copy: wizard.mode === 'link' ? 'Confirm the local path and any collisions. The shared context remains unchanged.' : 'Confirm the shared proposal, affected projects, providers, and conflicts. This device stays unchanged until acceptance.' };
+  let form = '';
+  if (step === 1) {
+    form = '<div class="shared-skills-form">'
+      + (wizard.mode === 'import' ? '<label class="wide">Local skills folder<input id="sharedSkillsWizardSourceDirectory" value="' + escapeHtml(wizard.sourceDirectory) + '" placeholder="/absolute/path/to/skills" /></label>' : '')
+      + '<label>Collection<select id="sharedSkillsWizardCollectionId">' + collections.map((item) => '<option value="' + escapeHtml(item.id) + '"' + (item.id === wizard.collectionId ? ' selected' : '') + '>' + escapeHtml(item.title + ' · ' + item.skillCount + ' skills') + '</option>').join('') + (wizard.mode === 'import' ? '<option value="new"' + (wizard.collectionId === 'new' ? ' selected' : '') + '>New collection…</option>' : '') + '</select></label>'
+      + (wizard.mode === 'import' ? '<label>New collection title<input id="sharedSkillsWizardCollectionTitle" value="' + escapeHtml(wizard.collectionTitle) + '" placeholder="Team skills" /></label><label class="wide">Shared folder<input id="sharedSkillsWizardCollectionPath" value="' + escapeHtml(wizard.collectionPath) + '" placeholder="skills/team" /></label>' : '')
+      + '</div>';
+  } else if (step === 2) {
+    if (wizard.mode === 'link') {
+      form = '<div class="shared-skills-form"><label>Provider<select id="sharedSkillsWizardProvider"><option value="custom"' + (wizard.provider === 'custom' ? ' selected' : '') + '>Custom folder</option>' + providers.map((item) => '<option value="' + escapeHtml(item.id) + '"' + (item.id === wizard.provider ? ' selected' : '') + '>' + escapeHtml(item.label) + '</option>').join('') + '</select></label><label class="wide">Physical destination<input id="sharedSkillsWizardDestination" value="' + escapeHtml(wizard.destination) + '" placeholder="/absolute/path/to/skills" required /></label><p class="settings-help wide">This changes only the local destination for the accepted assignment. It never edits the shared manifest.</p></div>';
+    } else {
+      const providerChoices = providers.map((item) => '<label class="shared-skills-choice"><input type="checkbox" data-shared-skills-provider value="' + escapeHtml(item.id) + '"' + (wizard.providers.includes(item.id) ? ' checked' : '') + ' /><span><strong>' + escapeHtml(item.label) + '</strong><em>' + escapeHtml((wizard.status.providerPreferences?.providers?.[item.id] || 'enabled') + ' on this device · ' + (wizard.status.projectProviderOverrides?.[item.id] || 'inherit') + ' for this project') + '</em></span></label>').join('');
+      const projectChoices = (wizard.status.projects || []).map((item) => '<label class="shared-skills-choice" data-shared-project-choice data-search="' + escapeHtml((item.title + ' ' + item.id).toLowerCase()) + '"><input type="checkbox" data-shared-skills-project value="' + escapeHtml(item.id) + '"' + (wizard.projectIds.includes(item.id) ? ' checked' : '') + ' /><span><strong>' + escapeHtml(item.title) + '</strong><em>' + escapeHtml(item.id) + '</em></span></label>').join('');
+      form = '<div class="shared-skills-form"><label>Scope<select id="sharedSkillsWizardScope"><option value="project"' + (wizard.scope === 'project' ? ' selected' : '') + '>Selected projects</option><option value="shared"' + (wizard.scope === 'shared' ? ' selected' : '') + '>Every registered project in this shared</option><option value="device"' + (wizard.scope === 'device' ? ' selected' : '') + '>This device</option></select></label><div class="wide shared-skills-choice-group"><strong>Providers</strong>' + providerChoices + '</div><label class="wide">Include skills<input id="sharedSkillsWizardInclude" value="' + escapeHtml((wizard.include || ['*']).join(', ')) + '" placeholder="* or skill-name, another-skill" /></label><label class="wide">Exclude skills<input id="sharedSkillsWizardExclude" value="' + escapeHtml((wizard.exclude || []).join(', ')) + '" placeholder="optional skill names" /></label><div class="wide shared-skills-project-picker"' + (wizard.scope === 'project' ? '' : ' hidden') + '><label>Find projects<input id="sharedSkillsWizardProjectSearch" type="search" placeholder="Search projects…" /></label><div class="shared-skills-choice-list">' + projectChoices + '</div></div></div>';
+    }
+  } else {
+    const preview = wizard.preview;
+    const conflicts = preview?.conflicts || [];
+    const skills = preview?.selected || preview?.skills || [];
+    form = '<div class="shared-skills-preview">'
+      + '<div class="shared-skills-preview-impact"><div><strong>Shared context</strong><span>' + (wizard.mode === 'link' ? 'No change. The accepted assignment remains canonical.' : 'A skills proposal records this collection or assignment change for human review.') + '</span></div><div><strong>This device</strong><span>' + (wizard.mode === 'link' ? 'Context Room installs managed links only after this confirmation.' : wizard.mode === 'import' ? 'Local originals remain untouched until the proposal is accepted.' : 'No physical destination changes until the shared proposal is accepted and reconciled.') + '</span></div></div>'
+      + '<div class="shared-skills-preview-row' + (conflicts.length ? ' conflict' : '') + '"><strong>' + (wizard.mode === 'link' ? 'Local destination preview' : 'Skills proposal preview') + '</strong><span>' + (preview?.assignment ? escapeHtml(preview.action + ' · ' + preview.assignment.scope + ' · ' + preview.assignment.providers.join(', ')) : skills.length + ' skills') + ' · ' + conflicts.length + ' conflicts</span>' + (preview?.destination ? '<code>' + escapeHtml(preview.destination) + '</code>' : '') + '</div>'
+      + (preview?.assignment?.scope === 'project' ? '<div class="shared-skills-preview-row"><strong>Projects</strong><span>' + escapeHtml(preview.assignment.projectIds.join(', ')) + '</span></div>' : '')
+      + (preview?.affectedLocations?.length ? '<div class="shared-skills-preview-row"><strong>Registered locations</strong><span>' + escapeHtml(preview.affectedLocations.length + ' location' + (preview.affectedLocations.length === 1 ? '' : 's')) + '</span></div>' : '')
+      + skills.map((name) => wizard.mode === 'import'
+        ? '<label class="shared-skills-choice"><input type="checkbox" data-shared-skills-import-skill value="' + escapeHtml(name) + '"' + (!wizard.selectedSkills.length || wizard.selectedSkills.includes(name) ? ' checked' : '') + ' /><span><strong>' + escapeHtml(name) + '</strong><em>Import this skill into the reviewed collection</em></span></label>'
+        : '<div class="shared-skills-preview-row"><strong>' + escapeHtml(name) + '</strong></div>').join('')
+      + conflicts.map((item) => '<div class="shared-skills-preview-row conflict"><strong>' + escapeHtml(item.skill || 'Conflict') + '</strong><code>' + escapeHtml(item.path || item.reason || '') + '</code></div>').join('')
+      + (wizard.mode === 'import' ? '<p class="settings-help">Nothing local changes now. Context Room creates a skills proposal; originals are archived and replaced only after human acceptance.</p>' : '')
+      + '</div>';
+  }
+  body.innerHTML = '<div class="shared-skills-steps">' + steps.map((item, index) => '<div class="shared-skills-step' + (index + 1 === step ? ' active' : '') + '"><strong>' + (index + 1) + '. ' + item.title + '</strong><span>' + item.copy + '</span></div>').join('') + '</div><div class="shared-skills-step-copy"><strong>' + stepCopy.title + '</strong><p>' + stepCopy.copy + '</p></div>' + form;
+  el("sharedSkillsWizardBack").disabled = step === 1 || wizard.busy;
+  el("sharedSkillsWizardNext").disabled = wizard.busy;
+  el("sharedSkillsWizardNext").textContent = step === 3 ? (wizard.mode === 'link' ? 'Link destination' : 'Create proposal') : 'Continue';
+  el("sharedSkillsWizardScope")?.addEventListener("change", (event) => {
+    wizard.scope = event.target.value;
+    readSharedSkillsWizardFields();
+    renderSharedSkillsWizard();
+  });
+  el("sharedSkillsWizardProjectSearch")?.addEventListener("input", (event) => {
+    const query = event.target.value.trim().toLowerCase();
+    document.querySelectorAll('[data-shared-project-choice]').forEach((row) => { row.hidden = Boolean(query) && !row.dataset.search.includes(query); });
+  });
+}
+
+async function advanceSharedSkillsWizard(direction = 1) {
+  const wizard = state.sharedSkillsWizard;
+  if (!wizard || wizard.busy) return;
+  readSharedSkillsWizardFields();
+  if (direction < 0) { wizard.step = Math.max(1, wizard.step - 1); renderSharedSkillsWizard(); return; }
+  if (wizard.step === 1) { wizard.step = 2; renderSharedSkillsWizard(); return; }
+  const collectionId = wizard.collectionId === 'new' ? (slugifyUiId(wizard.collectionTitle) || 'shared-skills') : wizard.collectionId;
+  if (wizard.step === 2) {
+    wizard.busy = true; renderSharedSkillsWizard();
+    try {
+      if (wizard.mode !== 'link' && !wizard.providers.length) throw new Error('Choose at least one provider');
+      if (wizard.mode !== 'link' && wizard.scope === 'project' && !wizard.projectIds.length) throw new Error('Choose at least one project');
+      const payload = wizard.mode === 'import'
+        ? { projectId: wizard.projectId, sourceDirectory: wizard.sourceDirectory, collectionId, collectionPath: wizard.collectionPath, providers: wizard.providers, scope: wizard.scope, projectIds: wizard.projectIds, include: wizard.include, exclude: wizard.exclude }
+        : wizard.mode === 'assign'
+          ? { projectId: wizard.projectId, assignmentId: wizard.assignmentId, collectionId, providers: wizard.providers, scope: wizard.scope, projectIds: wizard.projectIds, include: wizard.include, exclude: wizard.exclude }
+          : { projectId: wizard.projectId, assignmentId: wizard.assignmentId, collectionId, provider: wizard.provider, scope: wizard.scope, destination: wizard.destination };
+      const previewPath = wizard.mode === 'import' ? '/api/shared-skills/import/preview' : wizard.mode === 'assign' ? '/api/shared-skills/assignments/preview' : '/api/shared-skills/locations/preview';
+      wizard.preview = await api(previewPath, { method: 'POST', body: JSON.stringify(payload) });
+      if (wizard.mode === 'import') {
+        wizard.preview.action = 'import';
+        wizard.preview.assignment = { scope: wizard.scope, providers: [...wizard.providers], projectIds: wizard.scope === 'project' ? [...wizard.projectIds] : [] };
+        wizard.selectedSkills = [...(wizard.preview.selected || wizard.preview.skills || [])];
+      }
+      wizard.collectionId = collectionId;
+      wizard.step = 3;
+    } finally { wizard.busy = false; renderSharedSkillsWizard(); }
+    return;
+  }
+  wizard.busy = true; renderSharedSkillsWizard();
+  try {
+    const payload = wizard.mode === 'import'
+      ? { projectId: wizard.projectId, sourceDirectory: wizard.sourceDirectory, collectionId: wizard.collectionId, collectionTitle: wizard.collectionTitle, collectionPath: wizard.collectionPath, providers: wizard.providers, scope: wizard.scope, projectIds: wizard.projectIds, include: wizard.include, exclude: wizard.exclude, skills: wizard.selectedSkills, destination: wizard.destination }
+      : wizard.mode === 'assign'
+        ? { projectId: wizard.projectId, assignmentId: wizard.assignmentId, collectionId: wizard.collectionId, providers: wizard.providers, scope: wizard.scope, projectIds: wizard.projectIds, include: wizard.include, exclude: wizard.exclude }
+        : { projectId: wizard.projectId, assignmentId: wizard.assignmentId, collectionId: wizard.collectionId, provider: wizard.provider, scope: wizard.scope, destination: wizard.destination };
+    const actionPath = wizard.mode === 'import' ? '/api/shared-skills/import' : wizard.mode === 'assign' ? '/api/shared-skills/assignments' : '/api/shared-skills/locations/link';
+    const result = await api(actionPath, { method: 'POST', body: JSON.stringify(payload) });
+    closeSharedSkillsWizard();
+    await loadSharedSkillLocations({ refresh: true, projectId: wizard.projectId });
+    if (IS_GLOBAL_CONTEXT_ROOM) await refreshContextHub();
+    setStatus(wizard.mode === 'link' ? 'local destination linked' : 'skills proposal created');
+    return result;
+  } finally { if (state.sharedSkillsWizard) { state.sharedSkillsWizard.busy = false; renderSharedSkillsWizard(); } }
+}
+
 function showSettingsPage() {
   if (state.dirty && !confirm("You have unsaved changes. Open settings?")) return;
   state.page = "settings";
@@ -15077,10 +22049,11 @@ function showSettingsPage() {
   state.savedHash = null;
   state.dirty = false;
   el("title").textContent = "Settings";
-  el("path").textContent = "review · startup · appearance · templates · hub";
+  el("path").textContent = "review · startup · shared skills · appearance · templates · hub · Codex prompts";
   el("impact").textContent = "Choose one category, make the change, then save once.";
   el("meta").textContent = "settings open";
   el("home").hidden = true;
+  el("proposalReviewPage").hidden = true;
   el("settingsPage").hidden = false;
   el("newDocPage").hidden = true;
   el("viewer").hidden = true;
@@ -15088,6 +22061,12 @@ function showSettingsPage() {
   el("save").disabled = true;
   document.querySelector(".editor-shell").classList.remove("planet-file-open", "file-open");
   renderSettingsPanel();
+  const selectedProject = selectedGlobalSettingsProject();
+  if (selectedProject) void loadGlobalProjectSettings(selectedProject).catch((error) => setStatus(error.message));
+  if (state.settingsSection === "shared-skills" && !sharedSkillLocationsForSettings()) loadSharedSkillLocations().catch((error) => {
+    state.sharedSkillLocations.set(sharedSkillsProjectSelection().key || "__current__", { connected: false, error: error.message });
+    refreshSharedSkillLocationsSettingsPanel();
+  });
   updateCodexReferenceAction();
   updateHistoryButtons();
   updateActionBanner();
@@ -15095,34 +22074,49 @@ function showSettingsPage() {
   scheduleSessionStatePush();
 }
 
-async function handleHubAction() {
-  if (state.page === "hub") showSettingsPage();
-  else {
+async function handleBrandHomeAction() {
+  const returnUrl = contextRoomReturnUrl();
+  if (returnUrl) {
     await waitForReviewFinalizationBeforeNavigation();
-    goHub();
+    if (state.dirty && !confirm("You have unsaved changes. Return to the main Context Room?")) return;
+    window.location.assign(returnUrl);
+    return;
   }
+  if (state.page === "hub") return;
+  await waitForReviewFinalizationBeforeNavigation();
+  goHub();
 }
 
 function updateActionBanner() {
   const onFile = state.page === "file" && Boolean(state.selected);
+  const onProposal = state.page === "proposal";
+  const hasHomeHistory = state.page === "hub" && state.historyIndex >= 0;
   const workspaceDock = document.querySelector(".workspace-dock");
   const fileOpening = onFile && Boolean(state.openingFilePath);
   workspaceDock?.setAttribute("aria-busy", fileOpening ? "true" : "false");
+  const brandHome = el("brandHome");
+  const returnUrl = contextRoomReturnUrl();
+  if (brandHome) {
+    brandHome.title = returnUrl ? "Back to main Context Room" : "Home";
+    brandHome.setAttribute("aria-label", brandHome.title);
+  }
   const hasGitDiff = onFile && !state.selectedStartupContext && state.selectedDiff?.available !== false && Boolean(state.selectedDiff?.changed);
-  el("hub").textContent = state.page === "hub" ? "Settings" : "Hub";
-  el("hub").title = state.page === "hub" ? "Open settings" : "Back to hub";
+  el("settingsButton").hidden = state.page !== "hub";
   const workspaceTitle = el("workspaceTitle");
   if (workspaceTitle) {
+    const proposal = state.sharedContext?.mode === "review"
+      ? state.sharedContext.review || {}
+      : state.contextRoomPreparingProposal || {};
     workspaceTitle.textContent = onFile
       ? state.selected
-      : state.page === "settings"
-        ? "Settings"
-        : state.page === "new-doc"
+      : onProposal
+        ? proposal.title || proposal.proposal || proposal.branch || "Proposal review"
+      : state.page === "new-doc"
           ? "New document"
-          : "Context Room";
+          : "";
     workspaceTitle.title = workspaceTitle.textContent;
   }
-  ["back", "forward"].forEach((id) => { el(id).hidden = !onFile; });
+  ["back", "forward"].forEach((id) => { el(id).hidden = !(onFile || hasHomeHistory); });
   const gitDiffButton = el("gitDiffToggle");
   if (gitDiffButton) {
     gitDiffButton.hidden = !hasGitDiff;
@@ -15131,20 +22125,35 @@ function updateActionBanner() {
     gitDiffButton.classList.toggle("active", hasGitDiff && !state.diffCollapsed);
   }
   ["reload", "verifyCurrent", "deleteCurrent", "save"].forEach((id) => { el(id).hidden = true; });
+  renderProposalDockControls();
 }
 
 function renderHubFolders() {
   const holder = el("hubFolders");
   if (!holder) return;
-  const sections = state.rootHubSections?.length ? state.rootHubSections : state.hubSections?.length ? state.hubSections : [{ id: "main", title: "Main", cards: state.hubFolders || [] }];
-  const activeIds = activeHubCardIds(sections);
-  holder.innerHTML = sections.map((section) => '<section class="hub-section"><div class="hub-section-title">' + escapeHtml(section.title || "Section") + '</div><div class="hub-section-grid">' + (section.cards || []).map((card) => renderHubFolderCard(card, activeIds)).join("") + '</div></section>').join("") + renderStartupContextPanel() + renderStartupSkillsPanel() + renderStartupHooksPanel();
+  const sections = Array.isArray(state.rootHubSections) ? state.rootHubSections : Array.isArray(state.hubSections) ? state.hubSections : [];
+  const visibleSections = sections.filter((section) => section && Array.isArray(section.cards));
+  const activeIds = activeHubCardIds(visibleSections);
+  const startupPanels = IS_GLOBAL_CONTEXT_ROOM
+    ? ""
+    : renderSingleProjectStartupEnvironmentPanel();
+  holder.innerHTML = visibleSections.map((section) => '<section class="hub-section" data-empty="' + (section.cards.length ? 'false' : 'true') + '">' + renderHubSectionHeading(section) + '<div class="hub-section-grid">' + section.cards.map((card) => renderHubFolderCard(card, activeIds)).join("") + '</div></section>').join("") + startupPanels;
+  holder.hidden = !holder.innerHTML;
   document.querySelectorAll("[data-hub-disclosure]").forEach((details) => details.addEventListener("toggle", () => {
     const id = details.dataset.hubDisclosure;
     if (!id) return;
     if (details.open) state.hubDisclosuresOpen.add(id);
     else state.hubDisclosuresOpen.delete(id);
+    if (id === "startup-environment" && details.open && !state.singleStartupEffectiveContext && !state.singleStartupEffectiveLoading) {
+      loadSingleProjectStartupEnvironment().catch((error) => setStatus(error.message));
+    }
   }));
+  document.querySelector("[data-single-startup-provider]")?.addEventListener("change", (event) => {
+    state.singleStartupProvider = event.currentTarget.value;
+    state.singleStartupEffectiveContext = null;
+    state.singleStartupEffectiveError = "";
+    loadSingleProjectStartupEnvironment().catch((error) => setStatus(error.message));
+  });
   document.querySelectorAll("[data-hub-file]").forEach((button) => button.addEventListener("click", () => selectFile(button.dataset.hubFile).catch((error) => setStatus(error.message))));
   document.querySelectorAll("[data-hub-folders]").forEach((button) => button.addEventListener("click", () => filterFolders(button.dataset.hubFolders.split('|'))));
   document.querySelectorAll("[data-hub-card-children]").forEach((button) => button.addEventListener("click", () => openHubChildren(button.dataset.hubCardChildren)));
@@ -15177,6 +22186,20 @@ function renderHubFolders() {
   });
   document.querySelectorAll("[data-startup-hook-filter]").forEach((button) => button.addEventListener("click", () => setStartupHookFilter(button.dataset.startupHookFilter)));
   document.querySelectorAll("[data-startup-hook-order]").forEach((button) => button.addEventListener("click", () => selectStartupHookFile(button.dataset.startupHookOrder).catch((error) => setStatus(error.message))));
+}
+
+function renderHubSectionHeading(section) {
+  const title = escapeHtml(section?.title || "Section");
+  if (!IS_GLOBAL_CONTEXT_ROOM) return '<div class="hub-section-title">' + title + '</div>';
+  const project = workspaceSelectedProject();
+  if (!project) return '<div class="hub-section-heading"><div class="hub-section-title">' + title + '</div><div class="hub-section-origin"><span class="hub-section-origin-label">Select a project to identify this section</span></div></div>';
+  const worktree = globalProjectSelectedWorktree(project);
+  const location = worktree?.branch || (project.mode === "shared" ? "Shared documentation" : "");
+  const locationMarkup = location
+    ? '<span aria-hidden="true">·</span><code title="' + escapeHtml(worktree?.root || location) + '">' + escapeHtml(location) + '</code>'
+    : '';
+  const accessibleOrigin = "Project " + (project.title || project.id) + (location ? ", worktree " + location : "");
+  return '<div class="hub-section-heading"><div class="hub-section-title">' + title + '</div><div class="hub-section-origin" aria-label="' + escapeHtml(accessibleOrigin) + '"><span class="hub-section-origin-label">Project</span><strong>' + escapeHtml(project.title || project.id) + '</strong>' + locationMarkup + '</div></div>';
 }
 
 function renderHubBreadcrumb() {
@@ -15225,6 +22248,56 @@ function renderHubFolderChildren(folder, activeIds) {
   '</div>';
 }
 
+function singleProjectStartupCount(effective) {
+  if (!effective) return "Not loaded";
+  const active = ["instructions", "skills", "hooks", "providerConfigs", "documents"]
+    .reduce((sum, key) => sum + Number(effective[key]?.length || 0), 0);
+  return active + " effective · " + Number(effective.inactive?.length || 0) + " inactive";
+}
+
+function renderSingleProjectStartupEnvironmentPanel() {
+  const provider = state.singleStartupProvider || "codex";
+  const controls = '<label class="context-engine-provider"><span>Provider</span><select data-single-startup-provider aria-label="Startup environment provider">'
+    + '<option value="codex"' + (provider === "codex" ? " selected" : "") + '>Codex</option>'
+    + '<option value="claude-code"' + (provider === "claude-code" ? " selected" : "") + '>Claude Code</option>'
+    + '<option value="opencode"' + (provider === "opencode" ? " selected" : "") + '>OpenCode</option>'
+    + '</select></label>';
+  let body = '<div class="global-project-inspection-empty">Open this section to resolve the accepted context for this project.</div>';
+  if (state.singleStartupEffectiveLoading) body = '<div class="global-project-inspection-loading" role="status">Resolving the accepted startup environment…</div>';
+  else if (state.singleStartupEffectiveError) body = '<div class="global-project-inspection-error">' + escapeHtml(state.singleStartupEffectiveError) + '</div>';
+  else if (state.singleStartupEffectiveContext) body = renderEffectiveContextBody(state.singleStartupEffectiveContext, { embedded: true });
+  return renderHubDisclosure({
+    id: "startup-environment",
+    title: "Startup environment",
+    count: singleProjectStartupCount(state.singleStartupEffectiveContext),
+    copy: "The exact accepted instructions, skills, hooks, provider configuration, and documents that apply to this project.",
+    body: controls + body,
+  });
+}
+
+async function loadSingleProjectStartupEnvironment() {
+  if (IS_GLOBAL_CONTEXT_ROOM) return;
+  const request = ++state.singleStartupEffectiveRequest;
+  state.singleStartupEffectiveLoading = true;
+  state.singleStartupEffectiveError = "";
+  renderHubFolders();
+  try {
+    const query = new URLSearchParams({ folder: ".", provider: state.singleStartupProvider || "codex", allowStale: "1" });
+    const effective = await api("/api/context/effective?" + query);
+    if (request !== state.singleStartupEffectiveRequest) return;
+    state.singleStartupEffectiveContext = effective;
+  } catch (error) {
+    if (request !== state.singleStartupEffectiveRequest) return;
+    state.singleStartupEffectiveContext = null;
+    state.singleStartupEffectiveError = error.message || "Could not resolve the startup environment.";
+  } finally {
+    if (request === state.singleStartupEffectiveRequest) {
+      state.singleStartupEffectiveLoading = false;
+      renderHubFolders();
+    }
+  }
+}
+
 function renderStartupContextPanel() {
   if (!state.settings?.startupContext?.enabled) return "";
   const files = (state.startupContextFiles || []).sort((a, b) => (a.startupContext.order || 0) - (b.startupContext.order || 0));
@@ -15244,8 +22317,9 @@ function renderStartupContextPanel() {
 function renderStartupSkillsPanel() {
   if (state.settings?.startupSkills?.enabled === false) return "";
   const folders = (state.startupSkillFolders || []).sort((a, b) => (a.order || 0) - (b.order || 0));
-  if (!folders.length) return "";
-  const body = '<div class="startup-context-list">' + folders.map((folder) => {
+  const sharedStatus = state.sharedSkillLocations.get("__current__");
+  const sharedDestinations = sharedStatus?.connected ? (sharedStatus.destinations || []) : [];
+  const body = folders.length ? '<div class="startup-context-list">' + folders.map((folder) => {
     const names = (folder.skills || []).slice(0, 60);
     const isCreating = String(state.startupSkillCreateFolder || "") === String(folder.order || "");
     const canManage = !folder.readOnly;
@@ -15267,8 +22341,8 @@ function renderStartupSkillsPanel() {
       '<strong>' + escapeHtml((folder.order || "?") + ". " + (folder.skillCount || 0) + " skills") + '</strong>' +
       '<div class="startup-skill-names"><code>' + escapeHtml(folder.displayPath || folder.folderName || "skills") + '</code>' + buttons + '</div>' +
     '</div>';
-  }).join("") + '</div>';
-  const skillCount = folders.reduce((sum, folder) => sum + Number(folder.skillCount || 0), 0);
+  }).join("") + sharedDestinations.map((destination) => '<div class="startup-context-item startup-skill-folder readonly"><strong>' + escapeHtml((destination.skills?.length || 0) + ' managed skills · ' + destination.collectionId) + '</strong><div class="startup-skill-names"><code>' + escapeHtml(destination.destination) + '</code><em>' + escapeHtml([sharedStatus.repositoryName, destination.provider, destination.scope, destination.origin, String(sharedStatus.revision || '').slice(0, 12), destination.status].filter(Boolean).join(' · ')) + '</em><div class="startup-skill-buttons">' + (destination.skills || []).map((name) => '<span class="startup-skill-pill"><span class="startup-skill-button">' + escapeHtml(name) + '</span></span>').join('') + '</div></div></div>').join('') + '</div>' : (sharedDestinations.length ? '<div class="startup-context-list">' + sharedDestinations.map((destination) => '<div class="startup-context-item startup-skill-folder readonly"><strong>' + escapeHtml((destination.skills?.length || 0) + ' managed skills · ' + destination.collectionId) + '</strong><div class="startup-skill-names"><code>' + escapeHtml(destination.destination) + '</code><em>' + escapeHtml([sharedStatus.repositoryName, destination.provider, destination.scope, destination.origin, String(sharedStatus.revision || '').slice(0, 12), destination.status].filter(Boolean).join(' · ')) + '</em></div></div>').join('') + '</div>' : '<div class="issue">No startup skill folders were found for this project.</div>');
+  const skillCount = folders.reduce((sum, folder) => sum + Number(folder.skillCount || 0), 0) + sharedDestinations.reduce((sum, destination) => sum + Number(destination.skills?.length || 0), 0);
   return renderHubDisclosure({
     id: "startup-skills",
     title: "Startup skills",
@@ -15281,7 +22355,6 @@ function renderStartupSkillsPanel() {
 function renderStartupHooksPanel() {
   if (state.settings?.startupHooks?.enabled === false) return "";
   const files = (state.startupHookFiles || []).sort((a, b) => (a.startupContext.order || 0) - (b.startupContext.order || 0));
-  if (!files.length) return "";
   const counts = startupHookFilterCounts(files);
   const activeFilter = startupHookFilterId(state.startupHookFilter);
   const visibleFiles = activeFilter === "all"
@@ -15491,13 +22564,45 @@ async function applyReviewDecision(path, status, options = {}) {
       ? "verification removed from Context Room review queue"
       : "needs changes from Context Room review queue";
   setStatus(normalizedStatus === "verified" ? "validating..." : normalizedStatus === "unverified" ? "marking unverified..." : "marking...");
-  await api("/api/docqa/review", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ path, status: normalizedStatus, note }),
-  });
+  const reviewItem = reviewQueueItemForPath(path);
+  const expectedContentHash = state.selected === path && state.savedHash ? state.savedHash : reviewItem?.currentHash;
+  if (!expectedContentHash) throw new Error("Refresh this review before deciding it.");
+  let decisionResult;
+  try {
+    decisionResult = await api("/api/docqa/review", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        path,
+        status: normalizedStatus,
+        note,
+        expectedContentHash,
+        expectedResourceState: reviewItem?.resourceState || null,
+        expectedResourceVersion: reviewItem?.resourceVersion || null,
+      }),
+    });
+  } catch (error) {
+    if (error.code !== "review_revision_conflict") throw error;
+    state.docqa = await api("/api/docqa");
+    renderHome();
+    setStatus("Review blocked · a newer version is waiting");
+    return;
+  }
   const docqa = await api("/api/docqa");
+  const nextQueue = docqa.queue || [];
+  const reviewCompleted = normalizedStatus === "verified"
+    && previousQueue.some((item) => item?.path === path)
+    && !nextQueue.some((item) => item?.path === path);
+  const reviewQueueCleared = reviewCompleted && previousQueue.length > 0 && nextQueue.length === 0;
   state.docqa = docqa;
+  workspaceUpdate("review-decided", { path });
+  const finalizationBlocked = decisionResult?.proposalFinalization?.blocked ? decisionResult.proposalFinalization.error : "";
+  if (decisionResult?.proposalFinalization) {
+    if (decisionResult.proposalFinalization.accepted) {
+      state.sharedContext = { ...state.sharedContext, accepted: decisionResult.proposalFinalization };
+      playContextRoomSound("proposal-accepted");
+    }
+  }
   if (state.reviewModePath === path) state.reviewModeStatus = normalizedStatus === "verified" ? "verified" : null;
   state.selectedReview = docqa.queue.find((item) => item.path === path)?.path || nextReviewItemAfter(previousQueue, path, docqa.queue || [])?.path || docqa.queue[0]?.path || null;
   if (state.selected === path) {
@@ -15513,12 +22618,15 @@ async function applyReviewDecision(path, status, options = {}) {
     renderDocQaDashboard();
     setStatus(normalizedStatus === "verified" ? "verified" : normalizedStatus === "unverified" ? "unverified" : "needs changes");
   }
+  if (reviewCompleted) playContextRoomSound(reviewQueueCleared ? "all-clear" : "review-complete");
+  if (finalizationBlocked) setStatus("proposal finalization blocked · " + finalizationBlocked);
 }
 
 async function advanceAfterInlineReviewRemoval(path, previousQueue, statusWhenDone) {
   const nextItem = nextReviewItemAfter(previousQueue, path, state.docqa?.queue || []);
   state.selectedReview = nextItem?.path || state.docqa?.queue?.[0]?.path || null;
-  goHub();
+  if (state.sharedContext?.mode === "review") showProposalReview();
+  else goHub();
   setStatus(nextItem ? "review applied · next review available" : statusWhenDone);
 }
 
@@ -15681,14 +22789,13 @@ async function selectPlanetFile(path) {
 }
 
 function focusExplorer() {
-  document.querySelector(".app").classList.remove("sidebar-collapsed");
+  if (isExplorerCollapsed()) return;
   const aside = document.querySelector("aside");
   const target = el("files");
   if (aside && target) aside.scrollTop += target.getBoundingClientRect().top - aside.getBoundingClientRect().top - 18;
 }
 
 function homeAction(action) {
-  document.querySelector(".app").classList.remove("sidebar-collapsed");
   state.pathFilters = [];
   if (action === "hermes") el("search").value = "~/.hermes/";
   else if (action === "lifeos") el("search").value = "";
@@ -15706,12 +22813,15 @@ function pushHistory(path) {
 }
 
 function updateHistoryButtons() {
-  el("back").disabled = state.historyIndex <= 0;
+  const onHome = state.page === "hub";
+  el("back").disabled = onHome ? state.historyIndex < 0 : state.historyIndex <= 0;
   el("forward").disabled = state.historyIndex < 0 || state.historyIndex >= state.history.length - 1;
+  el("back").title = onHome ? "Return to last file" : "Previous file";
+  el("back").setAttribute("aria-label", el("back").title);
 }
 
 async function goHistory(delta) {
-  const nextIndex = state.historyIndex + delta;
+  const nextIndex = state.page === "hub" && delta < 0 ? state.historyIndex : state.historyIndex + delta;
   if (nextIndex < 0 || nextIndex >= state.history.length) return;
   await waitForReviewFinalizationBeforeNavigation();
   state.historyIndex = nextIndex;
@@ -15720,7 +22830,16 @@ async function goHistory(delta) {
 
 function goHub() {
   if (state.dirty && !confirm("You have unsaved changes. Return to hub?")) return;
-  collapseSidebarOnNarrow();
+  if (state.sharedContext?.mode !== "review" && state.contextRoomPreparingProposal) {
+    state.contextRoomProposalRequest += 1;
+    state.contextRoomOpeningProposalId = "";
+    state.contextRoomPreparingProposal = null;
+    state.contextRoomPreparedReview = null;
+    state.contextRoomQueuedProposalFile = "";
+    state.sharedContextBusy = false;
+  }
+  state.contextHubView = "home";
+  setSharedProposalWorkspaceOpen(false);
   state.selected = null;
   state.selectedReadOnly = false;
   state.openingFilePath = null;
@@ -15891,21 +23010,24 @@ function renderViewer() {
     ? { label: state.selectedStartupContext.fileName, path: state.selectedStartupContext.displayPath }
     : state.files.find((item) => item.path === state.selected) || { label: state.selected, path: state.selected };
   const isHtmlDocument = !isStartupFile && isHtmlDocumentPath(file.path);
+  const isImageDocument = !isStartupFile && isImageDocumentPath(file.path);
   const hasDiff = !isStartupFile && diff.available !== false && diff.changed;
   const diffMarkup = hasDiff ? renderDiffPanel(diff) : "";
-  const templateState = !isStartupFile && !isHtmlDocument && !openingFile && !loadError && !conflict && !externalChange ? templateStateForContent(text) : null;
+  const templateState = !isStartupFile && !isHtmlDocument && !isImageDocument && !openingFile && !loadError && !conflict && !externalChange ? templateStateForContent(text) : null;
   const actionsMarkup = loadError
     ? '<div class="file-actions"><button class="file-action primary" type="button" data-file-retry>Retry</button></div>'
     : openingFile
       ? renderFileActionsLoading()
       : externalChange && !conflict
       ? renderExternalReviewActions(externalChange, { fileActionOptions: externalReviewFileActionOptions() })
-      : renderFileActionButtons({ reviewAction: reviewActionForSelectedFile(), secondaryReviewAction: secondaryReviewActionForSelectedFile(), nextReviewAction: nextReviewActionForSelectedFile(), dirty: state.dirty, templateState, blockedByConflict: Boolean(conflict || externalChange), readOnly: Boolean(state.selectedStartupContext?.readOnly || state.selectedReadOnly), deletable: !isStartupFile && !state.selectedReadOnly, savable: !isHtmlDocument });
+      : renderFileActionButtons({ reviewAction: reviewActionForSelectedFile(), secondaryReviewAction: secondaryReviewActionForSelectedFile(), nextReviewAction: nextReviewActionForSelectedFile(), dirty: state.dirty, templateState, blockedByConflict: Boolean(conflict || externalChange), readOnly: Boolean(state.selectedStartupContext?.readOnly || state.selectedReadOnly), deletable: !isStartupFile && !state.selectedReadOnly, savable: !isHtmlDocument && !isImageDocument });
   const conflictMarkup = conflict ? renderConflictPanel(conflict, text) : "";
   const editorMarkup = loadError
     ? renderFileLoadError(loadError)
     : loadingFile
       ? renderFileLoadingState(file)
+      : isImageDocument
+        ? renderImageDocumentPreview(state.selectedVisualAsset, file.path)
       : !conflict && externalChange
         ? isHtmlDocument
           ? renderHtmlDocumentPreview(externalChange.diskContent || "", file.path)
@@ -15915,7 +23037,7 @@ function renderViewer() {
         : state.mode === "edit"
           ? renderDocumentEditor(text, file.path)
           : renderDocumentView(text, file.path);
-  const annotationMarkup = !isStartupFile && !conflict ? renderAgentAnnotations(state.selected) : "";
+  const annotationMarkup = !isStartupFile && !isImageDocument && !conflict ? renderAgentAnnotations(state.selected) : "";
   const initialReviewNotice = initialReviewNoticeForSelectedFile();
   el("viewer").innerHTML = '<div class="review-workspace ' + (!hasDiff || state.diffCollapsed ? 'no-diff' : '') + '">' +
     (state.diffCollapsed ? "" : diffMarkup) +
@@ -15933,6 +23055,7 @@ function renderViewer() {
   wireExternalReviewAllButtons();
   wireExternalReviewJumpButtons();
   wireAgentAnnotationButtons();
+  wireImageDocumentPreview();
   wireMarkdownDocLinks();
   document.querySelector("[data-conflict-compare]")?.addEventListener("click", () => toggleConflictCompare());
   document.querySelector("[data-conflict-reload]")?.addEventListener("click", () => promptReloadConflictFromDisk());
@@ -16372,6 +23495,41 @@ function usePlainTextSurface(filePath, text) {
 
 function isHtmlDocumentPath(filePath) {
   return /\.html?$/i.test(String(filePath || ""));
+}
+
+function isImageDocumentPath(filePath) {
+  return /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(String(filePath || ""));
+}
+
+function renderImageDocumentPreview(asset, filePath = state.selected) {
+  if (!asset?.dataUrl) return '<div class="file-load-state error"><div class="file-load-state-inner"><strong>Image preview unavailable</strong><span>The visual asset could not be decoded safely.</span></div></div>';
+  const actualSize = state.imagePreviewActualSize;
+  const format = String(asset.mimeType || "image").replace("image/", "").toUpperCase().replace("JPEG", "JPG").replace("SVG+XML", "SVG");
+  return '<div class="image-preview-shell" data-image-preview>'
+    + '<div class="image-preview-toolbar"><span>' + escapeHtml(format + " · " + formatExplorerBytes(asset.bytes || 0)) + ' · <span data-image-dimensions>measuring…</span></span>'
+    + '<button type="button" data-image-size-toggle>' + (actualSize ? "Fit to window" : "Actual size") + '</button></div>'
+    + '<div class="image-preview-stage' + (actualSize ? " actual-size" : "") + '" data-image-stage>'
+      + '<img src="' + escapeHtml(asset.dataUrl) + '" alt="Preview of ' + escapeHtml(filePath || "image") + '" draggable="false" referrerpolicy="no-referrer" />'
+    + '</div></div>';
+}
+
+function wireImageDocumentPreview() {
+  const preview = document.querySelector("[data-image-preview]");
+  if (!preview) return;
+  const image = preview.querySelector("img");
+  const dimensions = preview.querySelector("[data-image-dimensions]");
+  const updateDimensions = () => {
+    if (!dimensions || !image?.naturalWidth || !image?.naturalHeight) return;
+    dimensions.textContent = image.naturalWidth + " × " + image.naturalHeight;
+  };
+  if (image?.complete) updateDimensions();
+  else image?.addEventListener("load", updateDimensions, { once: true });
+  preview.querySelector("[data-image-size-toggle]")?.addEventListener("click", () => {
+    state.imagePreviewActualSize = !state.imagePreviewActualSize;
+    const viewState = captureEditorViewState();
+    renderViewer();
+    restoreEditorViewState(viewState);
+  });
 }
 
 function contextRoomVisualPatternStyles() {
@@ -18624,7 +25782,7 @@ function applyChangedFileInlineReview(path, diff, review, requestId = state.sele
     state.diffCollapsed = true;
     if (ignoredMetadataOnly && state.selectedDiff) state.selectedDiff = { ...state.selectedDiff, changed: false, additions: 0, deletions: 0, patch: "" };
     el("editor").value = state.saved;
-    setStatus(ignoredMetadataOnly ? "last_verified synced · ready for verification" : "changes already reviewed · mark verified when ready");
+    setStatus(ignoredMetadataOnly ? "last_verified synced · ready for verification" : "no unresolved diff blocks · mark the file verified when ready");
     return false;
   }
   const previousSession = state.reviewSessions?.[path] || null;
@@ -18658,33 +25816,35 @@ async function startChangedFileInlineReview(path, diff, requestId = state.select
   return applyChangedFileInlineReview(path, diff, review, requestId);
 }
 
-async function writeSelectedDiskFile(content, path = state.selected) {
+async function writeSelectedDiskFile(content, path = state.selected, options = {}) {
+  const expectedContentHash = options.expectedContentHash || activeFileConflict()?.diskHash || activeExternalChange()?.diskHash || state.savedHash;
+  if (!expectedContentHash) throw new Error("Refresh this file before saving it.");
   const startup = startupSelectionRequest();
   if (startup?.type === "startup-context") {
     return api("/api/startup-context/file", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ order: startup.order, content }),
+      body: JSON.stringify({ order: startup.order, content, expectedContentHash }),
     });
   }
   if (startup?.type === "startup-skill") {
     return api("/api/startup-skills/file", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ folder: startup.folder, skill: startup.skill, content }),
+      body: JSON.stringify({ folder: startup.folder, skill: startup.skill, content, expectedContentHash }),
     });
   }
   if (startup?.type === "startup-hook") {
     return api("/api/startup-hooks/file", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ order: startup.order, content }),
+      body: JSON.stringify({ order: startup.order, content, expectedContentHash }),
     });
   }
   return api("/api/file", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ path, content }),
+    body: JSON.stringify({ path, content, expectedContentHash }),
   });
 }
 
@@ -18806,6 +25966,7 @@ async function checkSelectedFileConflict() {
   state.conflictMergeKey = "";
   state.conflictMergeMode = "auto";
   state.selectedDiff = diff;
+  playContextRoomSound("attention");
   renderViewer();
   updateHeader();
   updatePreview();
@@ -18958,6 +26119,7 @@ async function saveCurrent(options = {}) {
     const result = await writeSelectedDiskFile(content);
     state.saved = content;
     state.savedHash = result.contentHash;
+    workspaceUpdate("file-saved", { path: state.selected });
     if (result.startupContext) state.selectedStartupContext = result.startupContext;
     syncEditorDirtyState();
     resetConflictState();
@@ -18970,6 +26132,11 @@ async function saveCurrent(options = {}) {
     flashSavedButton(document.querySelector("[data-file-save]"), "Saved");
   } catch (error) {
     restoreButtonLabel(saveButton);
+    if (error.code === "file_revision_conflict") {
+      await checkSelectedFileConflict().catch(() => {});
+      setStatus("Save blocked · updated in another workspace");
+      return;
+    }
     throw error;
   }
 }
@@ -19320,58 +26487,12 @@ function escapeHtml(value) { return String(value).replace(/[&<>"]/g, (ch) => ({"
 function escapeRegExp(value) { return String(value).replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&"); }
 function cssEscape(value) { return window.CSS && CSS.escape ? CSS.escape(value) : String(value).replace(/(["\\])/g, "\\$1"); }
 
-const SPOTLIGHT_CARD_SELECTOR = ".launch-card, .review-item, .hub-folder-card, .startup-context-item:not(.startup-skill-folder), .settings-toggle, .settings-theme-preview, .template-editor, .hub-section-editor, .hub-card-editor, .path-picker, .card, .conflict-card";
-let spotlightCard = null;
-let spotlightPointer = null;
-let spotlightFrame = 0;
 let interfaceScrollEndTimer = 0;
-function clearCardSpotlight() {
-  if (spotlightCard) spotlightCard.classList.remove("spotlight-active");
-  spotlightCard = null;
-}
-function setCardSpotlight(card, x, y) {
-  if (spotlightCard && spotlightCard !== card) spotlightCard.classList.remove("spotlight-active");
-  spotlightCard = card;
-  if (!card) return;
-  const rect = card.getBoundingClientRect();
-  card.classList.add("spotlight-active");
-  card.style.setProperty("--spotlight-x", Math.round(x - rect.left) + "px");
-  card.style.setProperty("--spotlight-y", Math.round(y - rect.top) + "px");
-}
-function updateCardSpotlightAt(x, y) {
-  if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) {
-    clearCardSpotlight();
-    return;
-  }
-  const element = document.elementFromPoint(x, y);
-  const card = element instanceof Element ? element.closest(SPOTLIGHT_CARD_SELECTOR) : null;
-  setCardSpotlight(card, x, y);
-}
-function scheduleCardSpotlightUpdate() {
-  if (!spotlightPointer || spotlightFrame || document.documentElement.classList.contains("ui-scrolling")) return;
-  const pointer = spotlightPointer;
-  spotlightFrame = window.requestAnimationFrame(() => {
-    spotlightFrame = 0;
-    if (spotlightPointer !== pointer) return;
-    updateCardSpotlightAt(pointer.x, pointer.y);
-  });
-}
-function updateCardSpotlight(event) {
-  spotlightPointer = { x: event.clientX, y: event.clientY };
-  scheduleCardSpotlightUpdate();
-}
-function refreshCardSpotlightAfterScroll() {
-  markInterfaceScrolling();
-  scheduleCardSpotlightUpdate();
-}
-
 function markInterfaceScrolling() {
   document.documentElement.classList.add("ui-scrolling");
-  clearCardSpotlight();
   window.clearTimeout(interfaceScrollEndTimer);
   interfaceScrollEndTimer = window.setTimeout(() => {
     document.documentElement.classList.remove("ui-scrolling");
-    scheduleCardSpotlightUpdate();
   }, 140);
 }
 
@@ -19409,24 +26530,12 @@ document.addEventListener("click", (event) => {
   hideExplorerContextMenu();
 });
 document.addEventListener("pointermove", (event) => {
-  updateCardSpotlight(event);
   setDocLinkModifierActive(isDocLinkModifierEventActive(event));
 }, { passive: true });
-document.addEventListener("pointerleave", () => {
-  spotlightPointer = null;
-  clearCardSpotlight();
-}, { passive: true });
-document.addEventListener("pointercancel", () => {
-  spotlightPointer = null;
-  clearCardSpotlight();
-}, { passive: true });
-document.addEventListener("scroll", refreshCardSpotlightAfterScroll, { capture: true, passive: true });
 document.addEventListener("scroll", scheduleCodexReferenceActionUpdate, { capture: true, passive: true });
-window.addEventListener("resize", refreshCardSpotlightAfterScroll, { passive: true });
 window.addEventListener("resize", scheduleCodexReferenceActionUpdate, { passive: true });
+window.addEventListener("resize", syncContextRoomProposalDescriptionToggles, { passive: true });
 window.addEventListener("blur", () => {
-  spotlightPointer = null;
-  clearCardSpotlight();
   setDocLinkModifierActive(false);
 });
 document.addEventListener("keydown", (event) => {
@@ -19437,9 +26546,10 @@ document.addEventListener("keydown", (event) => {
   if (handleSaveShortcut(event)) return;
   if (event.key === "Escape") {
     if (state.sharedProposalWorkspaceOpen) {
-      setSharedProposalWorkspaceOpen(false);
+      closeContextRoomSecondaryView();
       return;
     }
+    hideContextRoomReviewContextMenu();
     hideExplorerContextMenu();
   }
 });
@@ -19461,43 +26571,485 @@ document.addEventListener("visibilitychange", () => {
   scheduleBackgroundRefresh();
 });
 el("sidebarToggle").addEventListener("click", () => {
-  state.mobileSidebarTouched = true;
-  const app = document.querySelector(".app");
-  app.classList.toggle("sidebar-collapsed");
-  if (window.matchMedia("(max-width: 640px)").matches && !app.classList.contains("sidebar-collapsed")) app.classList.add("explorer-expanded");
-  else app.classList.remove("explorer-expanded");
-  syncSidebarToggleIcon();
+  setExplorerCollapsedFromUser(!isExplorerCollapsed());
 });
 el("explorerOpen")?.addEventListener("click", () => {
-  state.mobileSidebarTouched = true;
-  const app = document.querySelector(".app");
-  app.classList.remove("sidebar-collapsed");
-  if (window.matchMedia("(max-width: 640px)").matches) app.classList.add("explorer-expanded");
-  syncSidebarToggleIcon();
+  setExplorerCollapsedFromUser(false);
+});
+el("explorerEdgeTrigger")?.addEventListener("pointerenter", () => setExplorerEdgePeek(true));
+document.addEventListener("pointermove", revealExplorerFromLeftEdge, { passive: true });
+document.querySelector(".app > aside")?.addEventListener("pointerenter", () => {
+  if (document.querySelector(".app")?.classList.contains("explorer-edge-peek")) setExplorerEdgePeek(true);
+});
+document.querySelector(".app > aside")?.addEventListener("pointerleave", () => {
+  if (document.querySelector(".app")?.classList.contains("explorer-edge-peek")) scheduleExplorerEdgePeekClose();
+});
+window.addEventListener("blur", () => setExplorerEdgePeek(false));
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && document.querySelector(".app")?.classList.contains("explorer-edge-peek")) setExplorerEdgePeek(false);
+});
+el("singleProjectWorktreeSwitch")?.addEventListener("change", (event) => {
+  const select = event.target.closest("[data-single-project-worktree]");
+  if (!select || !select.value || select.value === state.projectId) return;
+  openContextHubProject(select.value).catch((error) => setStatus(error.message));
+});
+el("globalProjectSearch")?.addEventListener("input", (event) => {
+  state.globalProjectSearch = event.target.value;
+  renderGlobalProjectExplorer();
+  if (state.globalExplorerMode !== "project") return;
+  clearTimeout(state.globalProjectSearchTimer);
+  state.globalProjectSearchTimer = setTimeout(() => {
+    const project = (state.contextHub?.projects || []).find((item) => item.projectKey === state.globalExplorerProjectKey);
+    if (project) loadGlobalProjectExplorerPage(project, { query: state.globalProjectSearch }).catch((error) => setStatus(error.message));
+  }, 100);
+});
+el("clearGlobalProjectSearch")?.addEventListener("click", () => {
+  state.globalProjectSearch = "";
+  renderGlobalProjectExplorer();
+  el("globalProjectSearch")?.focus();
+});
+document.querySelectorAll("[data-global-explorer-mode]").forEach((button) => button.addEventListener("click", () => {
+  const mode = button.dataset.globalExplorerMode;
+  state.globalProjectSearch = "";
+  if (mode === "computer") {
+    state.globalExplorerMode = "computer";
+    renderGlobalProjectExplorer();
+    renderContextHealth();
+    refreshGlobalSettingsScopeFromExplorer();
+    if (!state.computerExplorer) loadComputerExplorer().catch((error) => setStatus(error.message));
+    return;
+  }
+  state.globalExplorerMode = "projects";
+  state.globalExplorerProjectKey = "";
+  renderGlobalProjectExplorer();
+  renderContextHealth();
+  refreshGlobalSettingsScopeFromExplorer();
+}));
+el("globalExplorerScope")?.addEventListener("click", (event) => {
+  if (event.target.closest("[data-global-explorer-back]")) {
+    state.globalExplorerMode = "projects";
+    state.globalExplorerProjectKey = "";
+    state.globalProjectSearch = "";
+    renderGlobalProjectExplorer();
+    renderContextHealth();
+    refreshGlobalSettingsScopeFromExplorer();
+    return;
+  }
+});
+el("globalExplorerScope")?.addEventListener("change", (event) => {
+  const select = event.target.closest("[data-global-project-worktree]");
+  if (!select) return;
+  const project = (state.contextHub?.projects || []).find((item) => item.projectKey === select.dataset.globalProjectWorktree);
+  if (!project) return;
+  if (state.page === "settings" && state.settingsDirtyGroups.size) {
+    select.value = state.globalProjectWorktreeIds.get(project.projectKey) || globalProjectSelectedWorktree(project)?.id || "";
+    setStatus("save or revert the current worktree settings before selecting another worktree");
+    return;
+  }
+  state.globalProjectWorktreeIds.set(project.projectKey, select.value);
+  state.globalProjectSearch = "";
+  openGlobalProjectExplorer(project).catch((error) => setStatus(error.message));
+});
+el("globalProjectList")?.addEventListener("click", (event) => {
+  const nativeWorkspaceLink = event.target.closest("a[href]");
+  if (nativeWorkspaceLink && (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)) return;
+  if (nativeWorkspaceLink) event.preventDefault();
+  const moreButton = event.target.closest("[data-global-project-more]");
+  if (moreButton) {
+    const project = (state.contextHub?.projects || []).find((item) => item.projectKey === moreButton.dataset.globalProjectKey);
+    if (project) void loadGlobalProjectExplorerPage(project, {
+      directory: moreButton.dataset.globalProjectPath || "",
+      query: moreButton.dataset.globalProjectQuery || "",
+      cursor: moreButton.dataset.globalProjectMore || "",
+      force: true,
+    }).catch((error) => setStatus(error.message));
+    return;
+  }
+  const computerFolder = event.target.closest("[data-computer-explorer-folder]");
+  if (computerFolder) {
+    const folderPath = computerFolder.dataset.computerExplorerFolder;
+    if (state.computerExplorerExpandedFolders.has(folderPath)) {
+      state.computerExplorerExpandedFolders.delete(folderPath);
+      renderGlobalProjectExplorer();
+    } else if (state.computerExplorerFolders.has(folderPath)) {
+      state.computerExplorerExpandedFolders.add(folderPath);
+      renderGlobalProjectExplorer();
+    } else {
+      loadComputerExplorer(folderPath, { expand: true }).catch((error) => setStatus(error.message));
+    }
+    return;
+  }
+  const folderButton = event.target.closest("[data-global-project-folder]");
+  if (folderButton) {
+    const folderId = folderButton.dataset.globalProjectKey + "::" + folderButton.dataset.globalProjectFolder;
+    if (state.globalProjectExpandedFolders.has(folderId)) state.globalProjectExpandedFolders.delete(folderId);
+    else {
+      state.globalProjectExpandedFolders.add(folderId);
+      const project = (state.contextHub?.projects || []).find((item) => item.projectKey === folderButton.dataset.globalProjectKey);
+      if (project) void loadGlobalProjectExplorerPage(project, { directory: folderButton.dataset.globalProjectFolder }).catch((error) => setStatus(error.message));
+    }
+    renderGlobalProjectExplorer();
+    return;
+  }
+  const fileButton = event.target.closest("[data-global-project-file]");
+  if (fileButton) {
+    const project = (state.contextHub?.projects || []).find((item) => item.projectKey === fileButton.dataset.globalProjectKey);
+    if (!project) return;
+    const worktree = globalProjectSelectedWorktree(project);
+    openContextHubProject(worktree?.id || project.id, { filePath: fileButton.dataset.globalProjectFile }).catch((error) => setStatus(error.message));
+    return;
+  }
+  const watchFilter = event.target.closest("[data-global-project-watch-filter]");
+  if (watchFilter) {
+    state.globalProjectWatchFilters.set(watchFilter.dataset.globalProjectKey, watchFilter.dataset.globalProjectWatchFilter);
+    renderGlobalProjectExplorer();
+    return;
+  }
+  const sharedButton = event.target.closest("[data-global-project-shared]");
+  if (sharedButton) {
+    state.sharedProposalProject = sharedButton.dataset.globalProjectShared;
+    state.contextHubSource = "shared";
+    state.sharedProposalSearch = "";
+    state.contextHubSelection = "";
+    renderContextRoomGlobalReviewQueue();
+    document.querySelector(".context-hub-review-card")?.scrollIntoView({ block: "start", behavior: "smooth" });
+    return;
+  }
+  const button = event.target.closest("[data-global-project-key]");
+  if (!button) return;
+  const project = (state.contextHub?.projects || []).find((item) => item.projectKey === button.dataset.globalProjectKey);
+  if (!project) return;
+  const worktree = globalProjectSelectedWorktree(project);
+  window.history.pushState({}, "", workspaceProjectHref(worktree?.id || project.id));
+  openGlobalProjectExplorer(project).catch((error) => setStatus(error.message));
+});
+el("globalProjectList")?.addEventListener("contextmenu", (event) => {
+  const computerFolder = event.target.closest("[data-computer-explorer-folder]");
+  if (computerFolder) {
+    openGlobalExplorerContextMenu(event, { scope: "computer", kind: "folder", path: computerFolder.dataset.computerExplorerFolder });
+    return;
+  }
+  const computerFile = event.target.closest("[data-computer-explorer-file]");
+  if (computerFile) {
+    openGlobalExplorerContextMenu(event, { scope: "computer", kind: "file", path: computerFile.dataset.computerExplorerFile });
+    return;
+  }
+  const projectFolder = event.target.closest("[data-global-project-folder]");
+  if (projectFolder) {
+    openGlobalExplorerContextMenu(event, { scope: "project", kind: "folder", path: projectFolder.dataset.globalProjectFolder, projectKey: projectFolder.dataset.globalProjectKey });
+    return;
+  }
+  const projectFile = event.target.closest("[data-global-project-file]");
+  if (projectFile) {
+    openGlobalExplorerContextMenu(event, { scope: "project", kind: "file", path: projectFile.dataset.globalProjectFile, projectKey: projectFile.dataset.globalProjectKey });
+    return;
+  }
+  const projectRow = event.target.closest("[data-global-project-key]");
+  if (projectRow) openGlobalExplorerContextMenu(event, { scope: "project", kind: "project", path: "", projectKey: projectRow.dataset.globalProjectKey });
+});
+el("globalProjectList")?.addEventListener("pointerover", (event) => {
+  const row = event.target.closest("[data-global-project-key]");
+  if (!row || state.globalExplorerMode !== "projects") return;
+  clearTimeout(state.globalProjectSettingsPrefetchTimer);
+  state.globalProjectSettingsPrefetchTimer = setTimeout(() => {
+    const project = (state.contextHub?.projects || []).find((item) => item.projectKey === row.dataset.globalProjectKey);
+    void prefetchGlobalProjectSettings(project);
+  }, 120);
+});
+el("globalProjectList")?.addEventListener("pointerout", (event) => {
+  if (event.target.closest("[data-global-project-key]") === event.relatedTarget?.closest?.("[data-global-project-key]")) return;
+  clearTimeout(state.globalProjectSettingsPrefetchTimer);
 });
 el("refreshDocQa")?.addEventListener("click", () => loadFiles({ waitForBackground: true }).catch((error) => setStatus(error.message)));
 el("refreshContextHealth")?.addEventListener("click", () => refreshContextHealthAnalysis().catch((error) => setStatus(error.message)));
 el("sendContextHealthToCodex")?.addEventListener("click", () => sendContextHealthIssuesToCodex().catch((error) => setStatus(error.message)));
 el("sharedContextRefresh")?.addEventListener("click", () => refreshSharedContextUi().catch((error) => setStatus(error.message)));
-el("contextHubOpen")?.addEventListener("click", () => setSharedProposalWorkspaceOpen(true));
-el("sharedProposalBrowser")?.addEventListener("click", () => setSharedProposalWorkspaceOpen(true));
 el("sharedProposalReview")?.addEventListener("click", () => openSelectedSharedProposal().catch((error) => setStatus(error.message)));
-el("sharedProposalAccept")?.addEventListener("click", () => acceptCurrentSharedProposal().catch((error) => setStatus(error.message)));
+el("proposalDockBack")?.addEventListener("click", () => showProposalReview());
 el("sharedProposalSelect")?.addEventListener("change", renderSharedContextControls);
-el("sharedProposalWorkspaceClose")?.addEventListener("click", () => setSharedProposalWorkspaceOpen(false));
 el("sharedProposalWorkspaceRefresh")?.addEventListener("click", () => refreshContextHubUi().catch((error) => setStatus(error.message)));
-document.querySelectorAll("[data-context-hub-view]").forEach((button) => button.addEventListener("click", () => {
-  state.contextHubView = button.dataset.contextHubView;
-  state.contextHubSelection = "";
-  renderSharedProposalWorkspace();
-  if (state.contextHubView === "codex-prompts") {
-    loadCodexPromptCenter().catch((error) => {
-      state.codexPromptsError = error.message;
-      state.codexPromptsErrorScope = "catalog";
-      renderCodexPromptWorkspace();
-    });
+el("sharedProposalWorkspaceClose")?.addEventListener("click", closeContextRoomSecondaryView);
+document.addEventListener("click", (event) => {
+  const trigger = event.target.closest("[data-context-hub-project-picker-trigger]");
+  if (!trigger) return;
+  openContextHubProjectPicker(trigger);
+});
+el("contextHubProjectPicker")?.addEventListener("click", (event) => {
+  const closeButton = event.target.closest("[data-context-hub-project-picker-close]");
+  if (closeButton) {
+    closeContextHubProjectPicker();
+    return;
   }
-}));
+  const choice = event.target.closest("[data-context-hub-project-picker-choice]");
+  if (!choice) return;
+  selectContextHubProjectPickerChoice(choice.dataset.contextHubProjectPickerChoice || "");
+});
+el("contextHubManageProjects")?.addEventListener("click", () => {
+  closeContextHubProjectPicker({ restoreFocus: false });
+  state.sharedProposalProject = "";
+  state.contextHubSource = "all";
+  state.sharedProposalSearch = "";
+  openContextRoomView("project-manager", { returnTo: "home" });
+});
+el("contextHubProjectPickerSearch")?.addEventListener("input", (event) => {
+  state.contextHubProjectPickerQuery = event.target.value;
+  state.contextHubProjectPickerIndex = 0;
+  renderContextHubProjectPicker();
+});
+el("contextHubProjectPickerSearch")?.addEventListener("keydown", (event) => {
+  const { choices } = contextHubProjectPickerChoices();
+  if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+    event.preventDefault();
+    if (!choices.length) return;
+    if (event.key === "Home") state.contextHubProjectPickerIndex = 0;
+    else if (event.key === "End") state.contextHubProjectPickerIndex = choices.length - 1;
+    else {
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      state.contextHubProjectPickerIndex = (state.contextHubProjectPickerIndex + direction + choices.length) % choices.length;
+    }
+    renderContextHubProjectPicker();
+    return;
+  }
+  if (event.key === "Enter" && choices.length) {
+    event.preventDefault();
+    const project = choices[state.contextHubProjectPickerIndex] || null;
+    selectContextHubProjectPickerChoice(project?.projectKey || "");
+  }
+});
+el("contextHubProjectPicker")?.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    closeContextHubProjectPicker();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const modal = event.currentTarget;
+  const focusable = [...modal.querySelectorAll('input:not([disabled]), button:not([disabled]):not([tabindex="-1"])')]
+    .filter((item) => !item.hidden && item.offsetParent !== null);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+});
+el("sharedSkillsWizard")?.addEventListener("click", (event) => {
+  if (event.target.closest("[data-shared-skills-close]")) closeSharedSkillsWizard();
+});
+el("sharedSkillsWizard")?.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") { event.preventDefault(); closeSharedSkillsWizard(); }
+});
+el("sharedSkillsWizardBack")?.addEventListener("click", () => advanceSharedSkillsWizard(-1).catch((error) => setStatus(error.message)));
+el("sharedSkillsWizardNext")?.addEventListener("click", () => advanceSharedSkillsWizard(1).catch((error) => setStatus(error.message)));
+el("contextEngineClose")?.addEventListener("click", () => {
+  state.contextEngineInspection = null;
+  state.contextEngineResult = null;
+  state.contextEngineDetail = null;
+  state.contextEngineError = "";
+  renderContextEngineInspection();
+});
+el("contextEngineProvider")?.addEventListener("change", (event) => {
+  if (!state.contextEngineInspection) return;
+  state.contextEngineInspection.provider = event.target.value;
+  loadContextEngineInspection().catch((error) => setStatus(error.message));
+});
+el("contextRoomReviewSearch")?.addEventListener("input", (event) => {
+  state.sharedProposalSearch = event.target.value;
+  state.contextHubSelection = "";
+  renderContextRoomGlobalReviewQueue();
+});
+el("contextRoomReviewSourceFilter")?.addEventListener("change", (event) => {
+  state.contextHubSource = event.target.value;
+  state.contextHubSelection = "";
+  renderContextRoomGlobalReviewQueue();
+});
+el("contextRoomReviewSelection")?.addEventListener("click", (event) => {
+  const visibleAction = event.target.closest("[data-context-room-select-visible]");
+  if (visibleAction) {
+    const visible = contextHubHomeReviewItems(state.sharedProposalSearch.trim().toLowerCase())
+      .slice(0, CONTEXT_HUB_HOME_REVIEW_LIMIT);
+    if (visibleAction.dataset.contextRoomSelectVisible === "clear") {
+      for (const item of visible) state.contextRoomSelectedReviews.delete(item.id);
+    } else {
+      for (const item of visible) state.contextRoomSelectedReviews.add(item.id);
+    }
+    renderContextRoomGlobalReviewQueue();
+    return;
+  }
+  if (event.target.closest("[data-context-room-clear-selection]")) {
+    state.contextRoomSelectedReviews.clear();
+    renderContextRoomGlobalReviewQueue();
+    return;
+  }
+  if (event.target.closest("[data-context-room-reject-selected]")) {
+    requestContextRoomReviewRejection(state.contextRoomSelectedReviews);
+    return;
+  }
+  const snooze = event.target.closest("[data-context-room-snooze-selected]");
+  if (snooze) {
+    event.stopPropagation();
+    openContextRoomSnoozeChooser(contextRoomSelectedReviewItems(), { anchor: snooze });
+  }
+});
+el("reviewQueue")?.addEventListener("contextmenu", (event) => {
+  const entry = event.target.closest("[data-context-room-review-entry]");
+  if (!entry) return;
+  const item = contextHubReviewItems().find((candidate) => candidate.id === entry.dataset.contextRoomReviewEntry);
+  if (item) openContextRoomReviewContextMenu(event, item);
+});
+el("contextRoomReviewContextMenu")?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  const openSnooze = event.target.closest("[data-context-room-snooze-open]");
+  if (openSnooze) {
+    const item = contextHubReviewItems().find((candidate) => candidate.id === openSnooze.dataset.contextRoomSnoozeOpen);
+    const menu = el("contextRoomReviewContextMenu");
+    const rect = menu?.getBoundingClientRect();
+    if (item) openContextRoomSnoozeChooser([item], { x: rect?.left, y: rect?.top });
+    return;
+  }
+  const preset = event.target.closest("[data-context-room-snooze-preset]");
+  if (preset) {
+    const targets = contextRoomSnoozeTargetItems();
+    const until = contextRoomSnoozeDeadline(preset.dataset.contextRoomSnoozePreset);
+    hideContextRoomReviewContextMenu();
+    snoozeContextRoomReviews(targets, until).catch((error) => setStatus(error.message));
+    return;
+  }
+  if (event.target.closest("[data-context-room-snooze-duration]")) {
+    const targets = contextRoomSnoozeTargetItems();
+    const until = contextRoomCustomSnoozeDeadline(el("contextRoomSnoozeAmount")?.value, el("contextRoomSnoozeUnit")?.value);
+    if (!until) {
+      setStatus("choose a valid snooze duration");
+      return;
+    }
+    hideContextRoomReviewContextMenu();
+    snoozeContextRoomReviews(targets, until).catch((error) => setStatus(error.message));
+    return;
+  }
+  if (event.target.closest("[data-context-room-snooze-time]")) {
+    const targets = contextRoomSnoozeTargetItems();
+    const deadline = new Date(el("contextRoomSnoozeUntil")?.value || "");
+    if (!Number.isFinite(deadline.getTime()) || deadline.getTime() <= Date.now()) {
+      setStatus("choose a future return time");
+      return;
+    }
+    const until = deadline.toISOString();
+    hideContextRoomReviewContextMenu();
+    snoozeContextRoomReviews(targets, until).catch((error) => setStatus(error.message));
+    return;
+  }
+  if (event.target.closest("[data-context-room-snooze-cancel]")) {
+    hideContextRoomReviewContextMenu();
+    return;
+  }
+  const unsnooze = event.target.closest("[data-context-room-unsnooze]");
+  if (unsnooze) {
+    const item = contextHubReviewItems().find((candidate) => candidate.id === unsnooze.dataset.contextRoomUnsnooze);
+    hideContextRoomReviewContextMenu();
+    if (item) unsnoozeContextRoomReviews([item]).catch((error) => setStatus(error.message));
+    return;
+  }
+  const toggle = event.target.closest("[data-context-room-selection-toggle]");
+  if (toggle) {
+    const id = toggle.dataset.contextRoomSelectionToggle;
+    const item = contextHubReviewItems().find((candidate) => candidate.id === id);
+    hideContextRoomReviewContextMenu();
+    toggleContextRoomReviewSelection(item);
+    return;
+  }
+  const visibleAction = event.target.closest("[data-context-room-selection-visible]");
+  if (visibleAction) {
+    const visible = contextRoomVisibleSelectableReviews();
+    if (visibleAction.dataset.contextRoomSelectionVisible === "clear") {
+      for (const item of visible) state.contextRoomSelectedReviews.delete(item.id);
+    } else {
+      for (const item of visible) state.contextRoomSelectedReviews.add(item.id);
+    }
+    hideContextRoomReviewContextMenu();
+    renderContextRoomGlobalReviewQueue();
+    return;
+  }
+  if (event.target.closest("[data-context-room-selection-clear]")) {
+    state.contextRoomSelectedReviews.clear();
+    hideContextRoomReviewContextMenu();
+    renderContextRoomGlobalReviewQueue();
+  }
+});
+document.addEventListener("click", (event) => {
+  const menu = el("contextRoomReviewContextMenu");
+  if (!menu || menu.hidden || menu.contains(event.target)) return;
+  hideContextRoomReviewContextMenu();
+});
+document.addEventListener("scroll", hideContextRoomReviewContextMenu, { capture: true, passive: true });
+window.addEventListener("blur", hideContextRoomReviewContextMenu);
+el("reviewQueue")?.addEventListener("click", (event) => {
+  const descriptionToggle = event.target.closest("[data-context-room-proposal-description-toggle]");
+  if (descriptionToggle) {
+    const proposalId = descriptionToggle.dataset.contextRoomProposalDescriptionToggle;
+    if (state.contextHubExpandedProposalDescriptions.has(proposalId)) state.contextHubExpandedProposalDescriptions.delete(proposalId);
+    else state.contextHubExpandedProposalDescriptions.add(proposalId);
+    renderContextRoomGlobalReviewQueue();
+    window.requestAnimationFrame(() => document.querySelector('[data-context-room-proposal-description-toggle="' + CSS.escape(proposalId) + '"]')?.focus({ preventScroll: true }));
+    return;
+  }
+  const selectionEntry = event.target.closest("[data-context-room-review-entry]");
+  if (state.contextRoomSelectedReviews.size > 0 && selectionEntry) {
+    const item = contextHubReviewItems().find((candidate) => candidate.id === selectionEntry.dataset.contextRoomReviewEntry);
+    if (toggleContextRoomReviewSelection(item)) {
+      event.preventDefault();
+      event.stopPropagation();
+      hideContextRoomReviewContextMenu();
+      window.requestAnimationFrame(() => {
+        document.querySelector('[data-context-room-review-entry="' + CSS.escape(item.id) + '"] button')?.focus({ preventScroll: true });
+      });
+      return;
+    }
+  }
+  const modePrompt = event.target.closest("[data-context-room-mode-prompt]");
+  if (modePrompt) {
+    sendContextRoomModePrompt(modePrompt.dataset.contextRoomModePrompt).catch((error) => setStatus(error.message));
+    return;
+  }
+  const button = event.target.closest("[data-context-room-review]");
+  if (!button) return;
+  const item = contextHubReviewItems().find((candidate) => candidate.id === button.dataset.contextRoomReview);
+  if (!item) return;
+  state.contextHubSelection = item.id;
+  renderContextRoomGlobalReviewQueue();
+  if (item.type === "shared") {
+    openSharedProposal(item.branch, item.repository).catch((error) => setStatus(error.message));
+    return;
+  }
+  openContextHubProject(item.projectId, {
+    reviewTarget: item.localReview || (item.localFile ? { path: item.localFile } : null),
+  }).catch((error) => setStatus(error.message));
+});
+el("proposalReviewFiles")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-proposal-review-path]");
+  if (!button || button.disabled) return;
+  const filePath = button.dataset.proposalReviewPath;
+  if (state.contextRoomPreparingProposal) {
+    const prepared = state.contextRoomPreparedReview;
+    if (prepared?.url) {
+      window.location.assign(contextRoomProposalFileUrl(prepared.url, filePath));
+      return;
+    }
+    state.contextRoomQueuedProposalFile = filePath;
+    renderProposalReviewPage();
+    setStatus("opening this file as soon as the exact review is ready...");
+    return;
+  }
+  const reviewItem = state.docqa?.queue?.find((item) => item.path === filePath);
+  const open = reviewItem
+    ? openReviewQueueItem(reviewItem)
+    : selectFile(filePath, { reviewMode: true });
+  open.catch((error) => setStatus(error.message));
+});
 el("sharedProposalSearch")?.addEventListener("input", (event) => {
       if (state.contextHubView === "codex-prompts") {
         state.codexPromptSearch = event.target.value;
@@ -19516,10 +27068,6 @@ el("sharedProposalSearch")?.addEventListener("input", (event) => {
       renderCodexPromptWorkspace();
     });
   }
-});
-el("sharedProposalProjectFilter")?.addEventListener("change", (event) => {
-  state.sharedProposalProject = event.target.value;
-  renderSharedProposalWorkspace();
 });
 el("contextHubSourceFilter")?.addEventListener("change", (event) => {
   state.contextHubSource = event.target.value;
@@ -19562,15 +27110,18 @@ el("sharedProposalOpenReview")?.addEventListener("click", (event) => {
   if (button.dataset.contextHubAction === "proposal") {
     openSharedProposal(button.dataset.sharedProposal, button.dataset.sharedRepository).catch((error) => setStatus(error.message));
   } else if (button.dataset.contextHubAction === "project") {
-    openContextHubProject(button.dataset.contextHubProject).catch((error) => setStatus(error.message));
+    const item = contextHubReviewItems().find((candidate) => candidate.id === button.dataset.contextHubReview);
+    openContextHubProject(button.dataset.contextHubProject, {
+      reviewTarget: item?.localReview || (button.dataset.contextHubFile ? { path: button.dataset.contextHubFile } : null),
+    }).catch((error) => setStatus(error.message));
   } else if (button.dataset.contextHubAction === "filter-project") {
     const project = (state.contextHub?.projects || []).find((item) => item.id === button.dataset.contextHubProject);
     if (project) {
-      state.contextHubView = "inbox";
       state.contextHubSource = "shared";
       state.sharedProposalProject = project.projectKey;
       state.contextHubSelection = "";
-      renderSharedProposalWorkspace();
+      closeContextRoomSecondaryView();
+      renderContextRoomGlobalReviewQueue();
     }
   }
 });
@@ -19578,7 +27129,7 @@ document.addEventListener("keydown", (event) => {
   if (!state.sharedProposalWorkspaceOpen) return;
   if (event.key === "Escape") {
     event.preventDefault();
-    setSharedProposalWorkspaceOpen(false);
+    closeContextRoomSecondaryView();
     return;
   }
   if (event.key === "/" && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) {
@@ -19606,7 +27157,8 @@ document.querySelectorAll("[data-home-action]").forEach((button) => button.addEv
 document.querySelectorAll("[data-home-file]").forEach((button) => button.addEventListener("click", () => selectFile(button.dataset.homeFile).catch((error) => setStatus(error.message))));
 el("back").addEventListener("click", () => goHistory(-1).catch((error) => setStatus(error.message)));
 el("forward").addEventListener("click", () => goHistory(1).catch((error) => setStatus(error.message)));
-el("hub").addEventListener("click", () => handleHubAction().catch((error) => setStatus(error.message)));
+el("settingsButton").addEventListener("click", showSettingsPage);
+el("brandHome").addEventListener("click", () => handleBrandHomeAction().catch((error) => setStatus(error.message)));
 el("gitDiffToggle").addEventListener("click", () => {
   if (!state.selectedDiff?.changed) return;
   setDiffCollapsed(!state.diffCollapsed);
@@ -19625,25 +27177,51 @@ el("reload").addEventListener("click", () => {
 });
 window.addEventListener("beforeunload", (event) => {
   persistNavigationState();
+  stopWorkspaceRuntime();
+  if (state.workspaceId) fetch("/api/workspaces/register", {
+    method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ workspaceId: state.workspaceId }),
+    keepalive: true,
+  }).catch(() => {});
   if (!state.dirty) return;
   event.preventDefault();
   event.returnValue = "";
 });
+document.addEventListener("visibilitychange", () => publishSessionState().catch(() => {}));
+window.addEventListener("focus", () => publishSessionState().catch(() => {}));
+window.addEventListener("popstate", () => {
+  if (!state.workspaceIdentityReady) return;
+  if (state.workspaceSyncedUrl && window.location.href === state.workspaceSyncedUrl) return;
+  void applyWorkspaceUrlState({ reason: "history" });
+});
+document.addEventListener("pointerdown", unlockContextRoomAudio, { capture: true, once: true, passive: true });
+document.addEventListener("keydown", unlockContextRoomAudio, { capture: true, once: true });
+document.addEventListener("click", playContextRoomButtonBeat);
 document.addEventListener("pointerdown", markUserActive, { passive: true });
 document.addEventListener("wheel", markUserScrollIntent, { capture: true, passive: true });
 document.addEventListener("touchmove", markUserScrollIntent, { capture: true, passive: true });
 document.addEventListener("pointerover", (event) => schedulePrefetchPathFromTarget(event.target), { passive: true });
 document.addEventListener("focusin", (event) => prefetchPathFromTarget(event.target));
 document.addEventListener("scroll", scheduleSessionStatePush, { capture: true, passive: true });
-syncResponsiveSidebar({ force: true });
+el("sidebarResizer")?.addEventListener("pointerdown", beginSidebarResize);
+el("sidebarResizer")?.addEventListener("keydown", resizeSidebarFromKeyboard);
+window.matchMedia("(prefers-color-scheme: light)").addEventListener?.("change", () => {
+  if (currentColorModePreference() === "system" && currentFileThemeId() === "context-room") applyFileTheme();
+});
+syncResponsiveSidebar();
 window.addEventListener("resize", () => syncResponsiveSidebar());
 setMode("view");
-startAgentCommandPolling();
-loadFiles({ initial: true })
-  .catch((error) => setStatus(error.message))
-  .finally(() => window.requestAnimationFrame(finishInitialBoot));
-window.setInterval(() => refreshFromDisk(), 2200);
-window.setInterval(() => scheduleBackgroundRefresh(), 5_000);
+initializeWorkspaceDiagnostics();
+finishInitialBoot();
+establishWorkspaceIdentity().then(() => {
+  startAgentCommandPolling();
+  startWorkspaceHeartbeat();
+  return loadFiles({ initial: true });
+}).catch((error) => setStatus(error.message))
+  .finally(finishInitialBoot);
+state.diskRefreshTimer = window.setInterval(() => refreshFromDisk(), 2200);
+state.backgroundRefreshInterval = window.setInterval(() => scheduleBackgroundRefresh(), 5_000);
 </script>
 </body>
 </html>`;
@@ -19654,10 +27232,15 @@ if (process.argv[1] === __filename) {
   const preferredPort = portArgIndex >= 0 ? Number(process.argv[portArgIndex + 1]) : DEFAULT_PORT;
   const port = await selectAvailableContextRoomPort(preferredPort, { allowFallback: portArgIndex < 0 });
   const rootArgIndex = process.argv.indexOf("--root");
-  const root = rootArgIndex >= 0 ? path.resolve(process.argv[rootArgIndex + 1]) : process.cwd();
-  const { server } = createMemoryServer({ root, port, registerInHub: true });
+  const requestedRoot = rootArgIndex >= 0 ? path.resolve(process.argv[rootArgIndex + 1]) : process.cwd();
+  initializeContextRoomProject(requestedRoot);
+  const registered = registerContextHubProject(requestedRoot);
+  const root = contextHubHostRoot();
+  initializeContextRoomProject(root, { title: "Context Room", allowedPaths: [], watchAllow: [] });
+  const { server } = createMemoryServer({ root, port, registerInHub: false });
   server.listen(port, "127.0.0.1", () => {
-    console.log(`Context Room: http://127.0.0.1:${port}`);
-    console.log(`Root: ${root}`);
+    const url = `http://127.0.0.1:${port}`;
+    writeContextHubRuntime({ port, root, url });
+    console.log(`Context Room: ${url}/?hub=1&project=${encodeURIComponent(registered.id)}`);
   });
 }

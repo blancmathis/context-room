@@ -4,13 +4,19 @@ import path from "node:path";
 import { isUtf8 } from "node:buffer";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { appendContextRoomEvent } from "./event_journal.mjs";
 
 export const SHARED_REPOSITORY_CONFIG = ".context-room/shared-repository.json";
 export const SHARED_REVIEW_CONFIG = ".context-room/shared-review.json";
 export const SHARED_REPOSITORY_SCHEMA_VERSION = 1;
+export const SHARED_SKILL_LOCATIONS_SCHEMA_VERSION = 1;
+export const SHARED_SKILL_LOCAL_STATE_VERSION = 2;
+export const SHARED_INSTRUCTION_LOCATIONS_SCHEMA_VERSION = 1;
 const MAX_SHARED_TEXT_BYTES = 750_000;
 const SHARED_REPOSITORY_SCHEMA_URL = "https://unpkg.com/context-room@latest/schemas/shared-repository.schema.json";
 const SHARED_PROJECTS_SCHEMA_URL = "https://unpkg.com/context-room@latest/schemas/shared-projects.schema.json";
+const SHARED_SKILL_LOCATIONS_SCHEMA_URL = "https://unpkg.com/context-room@latest/schemas/shared-skill-locations.schema.json";
+const SHARED_INSTRUCTION_LOCATIONS_SCHEMA_URL = "https://unpkg.com/context-room@latest/schemas/shared-instruction-locations.schema.json";
 const SHARED_REVIEW_TEXT_EXTENSIONS = new Set([
   ".md", ".mdx", ".csv", ".tsv", ".txt", ".json", ".jsonc", ".jsonl", ".yaml", ".yml", ".toml", ".ini",
   ".mjs", ".cjs", ".js", ".jsx", ".ts", ".tsx", ".py", ".sh", ".bash", ".zsh", ".css", ".scss", ".sass",
@@ -29,7 +35,10 @@ const DEFAULT_REPOSITORY_CONFIG = {
   defaultBranch: "main",
   proposalPrefix: "proposal/",
   acceptancePrefix: "accepted/",
+  rejectionPrefix: "rejected/",
   globalSkillsPath: "skills/global",
+  skillLocationsFile: "skill-locations.json",
+  instructionLocationsFile: "instruction-locations.json",
   projectsPath: "projects",
   projectsFile: "projects.json",
 };
@@ -51,6 +60,15 @@ function readJson(filePath, fallback = null) {
 function writeJson(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2) + "\n", "utf8");
+  return value;
+}
+
+function writePrivateJson(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  fs.renameSync(temporary, filePath);
+  fs.chmodSync(filePath, 0o600);
   return value;
 }
 
@@ -243,23 +261,37 @@ function normalizedRepositoryConfig(raw = {}) {
   const acceptancePrefix = String(raw.acceptancePrefix || "accepted/").trim();
   if (!acceptancePrefix.endsWith("/")) throw new Error("Acceptance prefix must end with /");
   safeBranchName(acceptancePrefix + "example", "acceptance prefix");
-  if (proposalPrefix === acceptancePrefix) throw new Error("proposalPrefix and acceptancePrefix must be different");
+  const rejectionPrefix = String(raw.rejectionPrefix || "rejected/").trim();
+  if (!rejectionPrefix.endsWith("/")) throw new Error("Rejection prefix must end with /");
+  safeBranchName(rejectionPrefix + "example", "rejection prefix");
+  if (new Set([proposalPrefix, acceptancePrefix, rejectionPrefix]).size !== 3) {
+    throw new Error("proposalPrefix, acceptancePrefix, and rejectionPrefix must be different");
+  }
   const config = {
     version,
     name: String(raw.name || "Shared Context").trim() || "Shared Context",
     defaultBranch,
     proposalPrefix,
     acceptancePrefix,
+    rejectionPrefix,
     globalSkillsPath: safeRelativePath(raw.globalSkillsPath || "skills/global", "globalSkillsPath"),
+    skillLocationsFile: safeRelativePath(raw.skillLocationsFile || "skill-locations.json", "skillLocationsFile"),
+    instructionLocationsFile: safeRelativePath(raw.instructionLocationsFile || "instruction-locations.json", "instructionLocationsFile"),
     projectsPath: safeRelativePath(raw.projectsPath || "projects", "projectsPath"),
     projectsFile: safeRelativePath(raw.projectsFile || "projects.json", "projectsFile"),
   };
   if (pathsOverlap(config.globalSkillsPath, config.projectsPath)) throw new Error("globalSkillsPath and projectsPath must not overlap");
-  if ([config.globalSkillsPath, config.projectsPath, config.projectsFile].some((value) => value === ".context-room" || value.startsWith(".context-room/"))) {
+  if ([config.globalSkillsPath, config.skillLocationsFile, config.instructionLocationsFile, config.projectsPath, config.projectsFile].some((value) => value === ".context-room" || value.startsWith(".context-room/"))) {
     throw new Error("Shared content paths must stay outside .context-room runtime state");
   }
   if (pathsOverlap(config.projectsFile, config.globalSkillsPath) || pathsOverlap(config.projectsFile, config.projectsPath)) {
     throw new Error("projectsFile must stay outside the shared content roots");
+  }
+  if ([config.globalSkillsPath, config.projectsPath, config.projectsFile].some((value) => pathsOverlap(config.skillLocationsFile, value))) {
+    throw new Error("skillLocationsFile must stay outside shared content roots and projectsFile");
+  }
+  if ([config.globalSkillsPath, config.projectsPath, config.projectsFile, config.skillLocationsFile].some((value) => pathsOverlap(config.instructionLocationsFile, value))) {
+    throw new Error("instructionLocationsFile must stay outside shared content roots, projectsFile, and skillLocationsFile");
   }
   return config;
 }
@@ -308,6 +340,216 @@ function normalizedProjectsCatalog(raw = {}) {
   return { version: 1, projects };
 }
 
+const SHARED_SKILL_PROVIDER_PROFILES = Object.freeze({
+  codex: Object.freeze({ id: "codex", label: "Codex", globalPath: "~/.codex/skills", projectPath: ".codex/skills" }),
+  "claude-code": Object.freeze({ id: "claude-code", label: "Claude Code", globalPath: "~/.claude/skills", projectPath: ".claude/skills" }),
+  opencode: Object.freeze({ id: "opencode", label: "OpenCode", globalPath: "~/.config/opencode/skills", projectPath: ".opencode/skills" }),
+});
+
+function safeSkillName(value, label = "skill name") {
+  const name = String(value || "").trim();
+  if (name === "*") return name;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(name)) throw new Error(`Invalid ${label}: ${name || "(empty)"}`);
+  return name;
+}
+
+function normalizedSkillSelection(values, fallback = []) {
+  const source = Array.isArray(values) ? values : fallback;
+  return [...new Set(source.map((value) => safeSkillName(value)).filter(Boolean))];
+}
+
+function normalizedSharedSkillLocations(raw = {}, { repositoryConfig, catalog } = {}) {
+  const version = Number(raw.version || SHARED_SKILL_LOCATIONS_SCHEMA_VERSION);
+  if (version !== SHARED_SKILL_LOCATIONS_SCHEMA_VERSION) throw new Error(`Unsupported shared skill locations version: ${version}`);
+  if (!Array.isArray(raw.collections) || !Array.isArray(raw.assignments)) {
+    throw new Error("Shared skill locations must contain collections and assignments arrays");
+  }
+  const collectionIds = new Set();
+  const collectionPaths = [];
+  const collections = raw.collections.map((item) => {
+    const id = safeId(item?.id, "skill collection id");
+    if (collectionIds.has(id)) throw new Error(`Duplicate shared skill collection id: ${id}`);
+    collectionIds.add(id);
+    const collectionPath = safeRelativePath(item?.path, `skill collection ${id} path`);
+    if (repositoryConfig && collectionPath === repositoryConfig.skillLocationsFile) {
+      throw new Error(`Skill collection ${id} cannot use skillLocationsFile`);
+    }
+    if (collectionPaths.some((existing) => pathsOverlap(existing, collectionPath))) {
+      throw new Error(`Shared skill collections must not overlap: ${collectionPath}`);
+    }
+    collectionPaths.push(collectionPath);
+    return { id, title: String(item?.title || id).trim() || id, path: collectionPath };
+  });
+  const projectIds = new Set((catalog?.projects || []).map((project) => project.id));
+  const assignmentIds = new Set();
+  const assignments = raw.assignments.map((item) => {
+    const id = safeId(item?.id, "skill assignment id");
+    if (assignmentIds.has(id)) throw new Error(`Duplicate shared skill assignment id: ${id}`);
+    assignmentIds.add(id);
+    const collectionId = safeId(item?.collectionId, `skill assignment ${id} collectionId`);
+    if (!collectionIds.has(collectionId)) throw new Error(`Skill assignment ${id} references unknown collection: ${collectionId}`);
+    const scope = String(item?.scope || "").trim();
+    if (!new Set(["project", "shared", "device"]).has(scope)) throw new Error(`Invalid skill assignment scope: ${scope || "(empty)"}`);
+    const providers = [...new Set((item?.providers || []).map((provider) => safeId(provider, `skill assignment ${id} provider`)))];
+    if (!providers.length) throw new Error(`Skill assignment ${id} must declare at least one provider`);
+    const unknownProvider = providers.find((provider) => !SHARED_SKILL_PROVIDER_PROFILES[provider]);
+    if (unknownProvider) throw new Error(`Skill assignment ${id} references unsupported provider: ${unknownProvider}`);
+    const projectIdsForAssignment = [...new Set((item?.projectIds || []).map((projectId) => safeId(projectId, `skill assignment ${id} projectId`)))];
+    if (scope === "project" && !projectIdsForAssignment.length) throw new Error(`Project skill assignment ${id} must declare projectIds`);
+    if (scope !== "project" && projectIdsForAssignment.length) throw new Error(`Skill assignment ${id} may use projectIds only with project scope`);
+    const unknownProject = projectIdsForAssignment.find((projectId) => catalog && !projectIds.has(projectId));
+    if (unknownProject) throw new Error(`Skill assignment ${id} references unknown project: ${unknownProject}`);
+    const include = normalizedSkillSelection(item?.include, ["*"]);
+    const exclude = normalizedSkillSelection(item?.exclude, []);
+    if (include.includes("*") && include.length > 1) throw new Error(`Skill assignment ${id} cannot combine * with named includes`);
+    if (exclude.includes("*")) throw new Error(`Skill assignment ${id} cannot exclude *`);
+    return { id, collectionId, scope, projectIds: projectIdsForAssignment, providers, include, exclude };
+  });
+  return { version, collections, assignments, legacy: false };
+}
+
+function legacySharedSkillLocations(repositoryConfig, catalog) {
+  const collections = [{ id: "global", title: "Global skills", path: repositoryConfig.globalSkillsPath }];
+  const assignments = [{ id: "global-codex", collectionId: "global", scope: "device", projectIds: [], providers: ["codex"], include: ["*"], exclude: [] }];
+  for (const project of catalog.projects || []) {
+    const collectionId = `project-${project.id}`;
+    collections.push({ id: collectionId, title: `${project.title} skills`, path: `${repositoryConfig.projectsPath}/${project.id}/skills` });
+    assignments.push({ id: `${collectionId}-codex`, collectionId, scope: "project", projectIds: [project.id], providers: ["codex"], include: ["*"], exclude: [] });
+  }
+  return { version: SHARED_SKILL_LOCATIONS_SCHEMA_VERSION, collections, assignments, legacy: true };
+}
+
+function readSharedSkillLocationsFromRoot(root, repositoryConfig, catalog, { allowLegacy = true } = {}) {
+  const filePath = path.join(root, repositoryConfig.skillLocationsFile);
+  if (!fs.existsSync(filePath)) {
+    if (!allowLegacy) throw new Error(`Missing ${repositoryConfig.skillLocationsFile}`);
+    return legacySharedSkillLocations(repositoryConfig, catalog);
+  }
+  return normalizedSharedSkillLocations(readJson(filePath), { repositoryConfig, catalog });
+}
+
+function readSharedSkillLocationsFromRevision(checkout, revision, repositoryConfig, catalog, { allowLegacy = true } = {}) {
+  if (!gitObjectExists(checkout, `${revision}:${repositoryConfig.skillLocationsFile}`)) {
+    if (!allowLegacy) throw new Error(`Missing ${repositoryConfig.skillLocationsFile}`);
+    return legacySharedSkillLocations(repositoryConfig, catalog);
+  }
+  const raw = JSON.parse(String(runGit(checkout, ["show", `${revision}:${repositoryConfig.skillLocationsFile}`])));
+  return normalizedSharedSkillLocations(raw, { repositoryConfig, catalog });
+}
+
+function sharedSkillLocationsDocument(locations) {
+  return {
+    $schema: SHARED_SKILL_LOCATIONS_SCHEMA_URL,
+    version: SHARED_SKILL_LOCATIONS_SCHEMA_VERSION,
+    collections: locations.collections.map(({ id, title, path: collectionPath }) => ({ id, title, path: collectionPath })),
+    assignments: locations.assignments.map(({ id, collectionId, scope, projectIds, providers, include, exclude }) => ({
+      id,
+      collectionId,
+      scope,
+      ...(scope === "project" ? { projectIds } : {}),
+      providers,
+      include,
+      exclude,
+    })),
+  };
+}
+
+const SHARED_INSTRUCTION_PROVIDER_PROFILES = Object.freeze({
+  codex: Object.freeze({ id: "codex", label: "Codex", deviceRoot: "~/.codex" }),
+  "claude-code": Object.freeze({ id: "claude-code", label: "Claude Code", deviceRoot: "~/.claude" }),
+  opencode: Object.freeze({ id: "opencode", label: "OpenCode", deviceRoot: "~/.config/opencode" }),
+});
+
+function safeInstructionPath(value, label = "instruction path") {
+  const result = safeRelativePath(value, label);
+  if (result === ".context-room" || result.startsWith(".context-room/")) throw new Error(`${label} must stay outside .context-room runtime state`);
+  if (!/\.mdx?$/i.test(result)) throw new Error(`${label} must point to a Markdown instruction file`);
+  return result;
+}
+
+function normalizedSharedInstructionLocations(raw = {}, { repositoryConfig, catalog } = {}) {
+  const version = Number(raw.version || SHARED_INSTRUCTION_LOCATIONS_SCHEMA_VERSION);
+  if (version !== SHARED_INSTRUCTION_LOCATIONS_SCHEMA_VERSION) throw new Error(`Unsupported shared instruction locations version: ${version}`);
+  if (!Array.isArray(raw.collections) || !Array.isArray(raw.assignments)) {
+    throw new Error("Shared instruction locations must contain collections and assignments arrays");
+  }
+  const collectionIds = new Set();
+  const collectionPaths = [];
+  const collections = raw.collections.map((item) => {
+    const id = safeId(item?.id, "instruction collection id");
+    if (collectionIds.has(id)) throw new Error(`Duplicate shared instruction collection id: ${id}`);
+    collectionIds.add(id);
+    const collectionPath = safeRelativePath(item?.path, `instruction collection ${id} path`);
+    if (collectionPath === ".context-room" || collectionPath.startsWith(".context-room/")) throw new Error(`Instruction collection ${id} must stay outside .context-room runtime state`);
+    if (repositoryConfig && [repositoryConfig.instructionLocationsFile, repositoryConfig.skillLocationsFile, repositoryConfig.projectsFile].some((reserved) => pathsOverlap(collectionPath, reserved))) {
+      throw new Error(`Instruction collection ${id} overlaps a reserved shared manifest`);
+    }
+    if (collectionPaths.some((existing) => pathsOverlap(existing, collectionPath))) {
+      throw new Error(`Shared instruction collections must not overlap: ${collectionPath}`);
+    }
+    collectionPaths.push(collectionPath);
+    return { id, title: String(item?.title || id).trim() || id, path: collectionPath };
+  });
+  const knownProjects = new Set((catalog?.projects || []).map((project) => project.id));
+  const assignmentIds = new Set();
+  const assignments = raw.assignments.map((item) => {
+    const id = safeId(item?.id, "instruction assignment id");
+    if (assignmentIds.has(id)) throw new Error(`Duplicate shared instruction assignment id: ${id}`);
+    assignmentIds.add(id);
+    const collectionId = safeId(item?.collectionId, `instruction assignment ${id} collectionId`);
+    if (!collectionIds.has(collectionId)) throw new Error(`Instruction assignment ${id} references unknown collection: ${collectionId}`);
+    const scope = String(item?.scope || "").trim();
+    if (!new Set(["project", "shared", "device"]).has(scope)) throw new Error(`Invalid instruction assignment scope: ${scope || "(empty)"}`);
+    const projectIds = [...new Set((item?.projectIds || []).map((projectId) => safeId(projectId, `instruction assignment ${id} projectId`)))];
+    if (scope === "project" && !projectIds.length) throw new Error(`Project instruction assignment ${id} must declare projectIds`);
+    if (scope !== "project" && projectIds.length) throw new Error(`Instruction assignment ${id} may use projectIds only with project scope`);
+    const unknownProject = projectIds.find((projectId) => catalog && !knownProjects.has(projectId));
+    if (unknownProject) throw new Error(`Instruction assignment ${id} references unknown project: ${unknownProject}`);
+    if (!Array.isArray(item?.files) || !item.files.length) throw new Error(`Instruction assignment ${id} must declare files`);
+    const seenFiles = new Set();
+    const files = item.files.map((file) => {
+      const source = safeInstructionPath(file?.source, `instruction assignment ${id} source`);
+      const target = safeInstructionPath(file?.target, `instruction assignment ${id} target`);
+      const providers = [...new Set((file?.providers || []).map((provider) => safeId(provider, `instruction assignment ${id} provider`)))];
+      if (!providers.length) throw new Error(`Instruction assignment ${id} file ${source} must declare providers`);
+      const unknownProvider = providers.find((provider) => !SHARED_INSTRUCTION_PROVIDER_PROFILES[provider]);
+      if (unknownProvider) throw new Error(`Instruction assignment ${id} references unsupported provider: ${unknownProvider}`);
+      const identity = `${source}\0${target}\0${providers.join(",")}`;
+      if (seenFiles.has(identity)) throw new Error(`Instruction assignment ${id} contains a duplicate file mapping: ${source}`);
+      seenFiles.add(identity);
+      return { source, target, providers };
+    });
+    return { id, collectionId, scope, projectIds, files };
+  });
+  return { version, collections, assignments };
+}
+
+function emptySharedInstructionLocations() {
+  return { version: SHARED_INSTRUCTION_LOCATIONS_SCHEMA_VERSION, collections: [], assignments: [] };
+}
+
+function readSharedInstructionLocationsFromRoot(root, repositoryConfig, catalog) {
+  const filePath = path.join(root, repositoryConfig.instructionLocationsFile);
+  return fs.existsSync(filePath)
+    ? normalizedSharedInstructionLocations(readJson(filePath), { repositoryConfig, catalog })
+    : emptySharedInstructionLocations();
+}
+
+function sharedInstructionLocationsDocument(locations) {
+  return {
+    $schema: SHARED_INSTRUCTION_LOCATIONS_SCHEMA_URL,
+    version: SHARED_INSTRUCTION_LOCATIONS_SCHEMA_VERSION,
+    collections: locations.collections.map(({ id, title, path: collectionPath }) => ({ id, title, path: collectionPath })),
+    assignments: locations.assignments.map(({ id, collectionId, scope, projectIds, files }) => ({
+      id,
+      collectionId,
+      scope,
+      ...(scope === "project" ? { projectIds } : {}),
+      files: files.map(({ source, target, providers }) => ({ source, target, providers })),
+    })),
+  };
+}
+
 function registryPath() {
   return path.join(sharedHome(), "registry.json");
 }
@@ -349,15 +591,24 @@ function bindingMatchesSource(binding, source) {
 function registerSourceBinding(root, connection) {
   const source = sourceIdentity(root);
   const registry = readJson(registryPath(), { version: 1, bindings: [] });
+  const registeredRoot = stableRoot(root);
+  const previous = (registry.bindings || []).find((item) => (
+    source
+      ? String(item.sourceSubpath || ".") === source.sourceSubpath
+        && [...new Set([...(item.sourceRemotes || []), item.sourceRemote].filter(Boolean).map(normalizeRemote))].some((remote) => source.remotes.includes(remote))
+      : item.sourceRoot && stableRoot(item.sourceRoot) === registeredRoot
+  ));
   const binding = source ? {
     repository: connection.repository,
     projectId: connection.projectId,
     sourceRemotes: source.remotes,
     sourceSubpath: source.sourceSubpath,
+    projectRoots: [...new Set([...(previous?.projectRoots || []), registeredRoot])],
   } : {
     repository: connection.repository,
     projectId: connection.projectId,
-    sourceRoot: stableRoot(root),
+    sourceRoot: registeredRoot,
+    projectRoots: [...new Set([...(previous?.projectRoots || []), registeredRoot])],
   };
   registry.bindings = [...(registry.bindings || []).filter((item) => !(
     source
@@ -399,6 +650,27 @@ function resolveRegisteredConnection(root) {
     projectId: safeId(binding.projectId, "projectId"),
     projectRoot: stableRoot(projectRoot),
   };
+}
+
+function registeredProjectRoots(connection) {
+  const repository = safeRepository(connection.repository);
+  const projectId = safeId(connection.projectId, "projectId");
+  const registry = readJson(registryPath(), { bindings: [] });
+  return [...new Set((registry.bindings || [])
+    .filter((binding) => safeRepository(binding.repository) === repository && String(binding.projectId || "") === projectId)
+    .flatMap((binding) => binding.projectRoots || (binding.sourceRoot ? [binding.sourceRoot] : []))
+    .map(stableRoot)
+    .filter((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()))];
+}
+
+function registeredRepositoryProjectLocations(repository) {
+  const safeRemote = safeRepository(repository);
+  const registry = readJson(registryPath(), { bindings: [] });
+  const locations = (registry.bindings || []).filter((binding) => safeRepository(binding.repository) === safeRemote)
+    .flatMap((binding) => (binding.projectRoots || (binding.sourceRoot ? [binding.sourceRoot] : [])).map((root) => ({ projectId: safeId(binding.projectId, "projectId"), root: stableRoot(root) })))
+    .filter((item) => fs.existsSync(item.root) && fs.statSync(item.root).isDirectory());
+  return [...new Map(locations.map((item) => [`${item.projectId}:${item.root}`, item])).values()]
+    .sort((left, right) => `${left.projectId}:${left.root}`.localeCompare(`${right.projectId}:${right.root}`, "en"));
 }
 
 function repositoryCacheRoot(repository) {
@@ -466,6 +738,35 @@ function syncSharedRepositoryState(repository, { allowOffline = true } = {}) {
   };
 }
 
+function cachedSharedRepositoryState(repository, { projectId = "global", projectRoot = "" } = {}) {
+  const safeRemote = safeRepository(repository);
+  const state = readJson(sharedStatePath(safeRemote), {});
+  if (!state.revision || !state.repositoryConfig || !state.catalog) {
+    return syncSharedRepositoryState(safeRemote, { allowOffline: true });
+  }
+  const revision = safeRevision(state.revision, "cached shared revision");
+  const repositoryConfig = normalizedRepositoryConfig(state.repositoryConfig);
+  const catalog = normalizedProjectsCatalog(state.catalog);
+  const checkout = ensureRepositoryClone(safeRemote);
+  if (!gitObjectExists(checkout, `${revision}^{commit}`)) {
+    return syncSharedRepositoryState(safeRemote, { allowOffline: true });
+  }
+  const cacheRoot = repositoryCacheRoot(safeRemote);
+  const snapshot = path.join(cacheRoot, "snapshots", revision);
+  fs.mkdirSync(path.dirname(snapshot), { recursive: true });
+  materializeSnapshot(checkout, revision, snapshot);
+  return {
+    connection: { repository: safeRemote, projectId, projectRoot },
+    repositoryConfig,
+    catalog,
+    revision,
+    online: state.online !== false,
+    fetchError: String(state.fetchError || ""),
+    cacheRoot,
+    snapshot,
+  };
+}
+
 function ensureRepositoryClone(repository) {
   const checkout = repositoryCheckout(repository);
   if (fs.existsSync(path.join(checkout, ".git"))) {
@@ -504,6 +805,342 @@ function readRemoteSharedDescriptor(checkout, fallbackBranch = "") {
   }
   const catalog = normalizedProjectsCatalog(JSON.parse(runGit(checkout, ["show", `${revision}:${config.projectsFile}`])));
   return { revision, config, catalog };
+}
+
+function sharedContextError(code, message, details = {}) {
+  const error = new Error(message);
+  error.code = code;
+  error.details = details;
+  return error;
+}
+
+function commitTrailerMap(checkout, revision) {
+  const body = String(runGit(checkout, ["show", "-s", "--format=%B", safeRevision(revision)]));
+  const trailers = {};
+  for (const line of body.split(/\r?\n/)) {
+    const match = line.match(/^([A-Za-z0-9-]+):\s*(.*)$/);
+    if (match && match[1].startsWith("Context-Room-")) trailers[match[1]] = match[2].trim();
+  }
+  return trailers;
+}
+
+function sharedMainCommit(checkout, revision, previousRevision = "") {
+  const commit = safeRevision(revision, "shared main commit");
+  const metadata = String(runGit(checkout, ["show", "-s", "--format=%cI%x00%an%x00%ae%x00%s", commit]))
+    .split("\0");
+  const parent = previousRevision || tryGit(checkout, ["rev-parse", `${commit}^1`]);
+  const files = parent
+    ? gitChangedPaths(checkout, `${safeRevision(parent, "shared main parent")}..${commit}`)
+    : splitNull(runGit(checkout, ["ls-tree", "-r", "--name-only", "-z", commit], { encoding: null }));
+  const trailers = commitTrailerMap(checkout, commit);
+  let acceptance = null;
+  let acceptanceError = "";
+  if (trailers["Context-Room-Proposal"] || trailers["Context-Room-Proposal-Head"]) {
+    try {
+      if (!trailers["Context-Room-Proposal"] || !trailers["Context-Room-Proposal-Head"]) throw new Error("Acceptance trailers are incomplete");
+      acceptance = {
+        proposal: safeBranchName(trailers["Context-Room-Proposal"], "proposal branch"),
+        proposalHead: safeRevision(trailers["Context-Room-Proposal-Head"], "proposal head"),
+        projectId: trailers["Context-Room-Project"] ? safeId(trailers["Context-Room-Project"], "projectId") : "",
+        sessionId: trailers["Context-Room-Session"] ? safeSessionId(trailers["Context-Room-Session"]) : "",
+      };
+    } catch (error) {
+      acceptanceError = error.message;
+    }
+  }
+  return {
+    revision: commit,
+    previousRevision: parent ? safeRevision(parent, "shared main parent") : "",
+    committedAt: metadata[0] || "",
+    author: { name: metadata[1] || "", email: metadata[2] || "" },
+    subject: metadata[3] || "",
+    files,
+    trailers,
+    acceptance,
+    acceptanceError,
+  };
+}
+
+function resolveSharedMainRevision(repository, { refresh = true } = {}) {
+  const safeRemote = safeRepository(repository);
+  const checkout = ensureRepositoryClone(safeRemote);
+  if (refresh) {
+    try {
+      runGit(checkout, ["fetch", "--prune", "origin"], { stdio: ["ignore", "ignore", "pipe"] });
+    } catch (error) {
+      throw sharedContextError("shared-freshness-unverified", `Unable to verify the accepted shared revision: ${String(error.stderr || error.message || error).trim()}`, { repository: safeRemote });
+    }
+  }
+  let descriptor;
+  try {
+    descriptor = readRemoteSharedDescriptor(checkout, readJson(sharedStatePath(safeRemote), {}).defaultBranch || "");
+  } catch (error) {
+    throw sharedContextError("shared-main-unavailable", error.message, { repository: safeRemote });
+  }
+  const remoteRef = `refs/remotes/origin/${descriptor.config.defaultBranch}`;
+  if (!gitIsAncestor(checkout, descriptor.revision, remoteRef)) {
+    throw sharedContextError("shared-main-unreachable", "The selected shared revision is not reachable from the configured remote branch", {
+      repository: safeRemote,
+      defaultBranch: descriptor.config.defaultBranch,
+      revision: descriptor.revision,
+    });
+  }
+  return {
+    repository: safeRemote,
+    checkout,
+    defaultBranch: descriptor.config.defaultBranch,
+    revision: descriptor.revision,
+    repositoryConfig: descriptor.config,
+    catalog: descriptor.catalog,
+    online: refresh,
+    commit: sharedMainCommit(checkout, descriptor.revision),
+  };
+}
+
+export function readSharedMainRevision(repository, options = {}) {
+  const { checkout: _checkout, ...main } = resolveSharedMainRevision(repository, options);
+  return main;
+}
+
+export function diffSharedMainRevisions(repository, { fromRevision, toRevision = "", projectId = "", refresh = false } = {}) {
+  const main = resolveSharedMainRevision(repository, { refresh });
+  const checkout = main.checkout;
+  const from = safeRevision(fromRevision, "fromRevision");
+  const to = toRevision ? safeRevision(toRevision, "toRevision") : main.revision;
+  for (const revision of [from, to]) {
+    if (!gitObjectExists(checkout, `${revision}^{commit}`)) {
+      throw sharedContextError("shared-revision-not-accepted", "A compared revision is not reachable from the configured shared main branch", {
+        repository: main.repository,
+        defaultBranch: main.defaultBranch,
+        revision,
+        acceptedRevision: main.revision,
+      });
+    }
+    if (!gitIsAncestor(checkout, revision, main.revision)) {
+      if (revision === from) {
+        throw sharedContextError("shared-history-diverged", "The previously accepted shared revision is no longer reachable from the configured main branch", {
+          fromRevision: from,
+          acceptedRevision: main.revision,
+        });
+      }
+      throw sharedContextError("shared-revision-not-accepted", "The target revision is not reachable from the configured shared main branch", {
+        repository: main.repository,
+        defaultBranch: main.defaultBranch,
+        revision,
+        acceptedRevision: main.revision,
+      });
+    }
+  }
+  if (!gitIsAncestor(checkout, from, to)) {
+    throw sharedContextError("shared-history-diverged", "The shared main history diverged; no accepted transition can be inferred", { fromRevision: from, toRevision: to });
+  }
+  const revisions = tryGit(checkout, ["rev-list", "--first-parent", "--reverse", `${from}..${to}`])
+    .split("\n")
+    .filter(Boolean)
+    .map((revision) => safeRevision(revision, "shared main transition"));
+  let previous = from;
+  const transitions = revisions.map((revision) => {
+    const item = sharedMainCommit(checkout, revision, previous);
+    previous = revision;
+    return item;
+  });
+  const normalizedProjectId = projectId ? safeId(projectId, "projectId") : "";
+  const applicablePrefixes = normalizedProjectId ? [
+    `${main.repositoryConfig.projectsPath}/${normalizedProjectId}`,
+    main.repositoryConfig.globalSkillsPath,
+  ] : [];
+  const applicableExact = normalizedProjectId ? new Set([
+    SHARED_REPOSITORY_CONFIG,
+    main.repositoryConfig.projectsFile,
+    main.repositoryConfig.skillLocationsFile,
+  ]) : new Set();
+  const isApplicable = (filePath) => !normalizedProjectId
+    || applicableExact.has(filePath)
+    || applicablePrefixes.some((prefix) => filePath === prefix || filePath.startsWith(prefix + "/"));
+  return {
+    repository: main.repository,
+    defaultBranch: main.defaultBranch,
+    acceptedRevision: main.revision,
+    fromRevision: from,
+    toRevision: to,
+    projectId: normalizedProjectId,
+    commitCount: transitions.length,
+    transitions: transitions.map((transition) => ({ ...transition, applicableFiles: transition.files.filter(isApplicable) })),
+    changedPaths: [...new Set(transitions.flatMap((transition) => transition.files))],
+    applicablePaths: [...new Set(transitions.flatMap((transition) => transition.files.filter(isApplicable)))],
+  };
+}
+
+function gitNameStatusChanges(checkout, fromRevision, toRevision) {
+  const records = splitNull(runGit(checkout, ["diff", "--name-status", "-z", "-M", `${fromRevision}..${toRevision}`, "--"], { encoding: null }));
+  const changes = [];
+  for (let index = 0; index < records.length;) {
+    const rawStatus = records[index++];
+    const status = rawStatus[0];
+    if (["R", "C"].includes(status)) {
+      const fromPath = records[index++];
+      const filePath = records[index++];
+      if (!fromPath || !filePath) throw new Error("Unable to parse renamed shared proposal path");
+      changes.push({ status, score: Number(rawStatus.slice(1)) || null, fromPath, path: filePath });
+    } else {
+      const filePath = records[index++];
+      if (!filePath) throw new Error("Unable to parse shared proposal path");
+      changes.push({ status, path: filePath });
+    }
+  }
+  return changes;
+}
+
+function remoteProposalBranchesAtRevision(checkout, repositoryConfig, revision) {
+  const proposalRefPrefix = `refs/remotes/origin/${repositoryConfig.proposalPrefix}`;
+  return tryGit(checkout, ["for-each-ref", "--points-at", revision, "--format=%(refname:strip=3)", proposalRefPrefix])
+    .split("\n")
+    .filter(Boolean)
+    .map((branch) => safeBranchName(branch, "proposal branch"));
+}
+
+export function diffSharedProposalRevisions(repository, { fromRevision, toRevision, refresh = true } = {}) {
+  const main = resolveSharedMainRevision(repository, { refresh });
+  const checkout = main.checkout;
+  const from = safeRevision(fromRevision, "proposal base revision");
+  const to = safeRevision(toRevision, "proposal head revision");
+  if (!gitObjectExists(checkout, `${from}^{commit}`) || !gitIsAncestor(checkout, from, main.revision)) {
+    throw sharedContextError("shared-history-diverged", "The proposal base is not reachable from the configured shared main branch", {
+      fromRevision: from,
+      acceptedRevision: main.revision,
+    });
+  }
+  if (!gitObjectExists(checkout, `${to}^{commit}`)) {
+    throw sharedContextError("shared-proposal-revision-unavailable", "The exact proposal revision is not available after refreshing the shared repository", { toRevision: to });
+  }
+  const proposalRefs = remoteProposalBranchesAtRevision(checkout, main.repositoryConfig, to);
+  if (!proposalRefs.length) {
+    throw sharedContextError("shared-proposal-revision-unavailable", "The exact revision is not the published head of an active proposal branch", { toRevision: to });
+  }
+  const mergeBase = safeRevision(tryGit(checkout, ["merge-base", from, to]), "proposal merge base");
+  const changes = gitNameStatusChanges(checkout, from, to);
+  return {
+    repository: main.repository,
+    defaultBranch: main.defaultBranch,
+    acceptedRevision: main.revision,
+    fromRevision: from,
+    toRevision: to,
+    proposalBranches: proposalRefs,
+    truthState: "proposal",
+    accepted: false,
+    mergeBase,
+    rebaseRequired: mergeBase !== main.revision || from !== main.revision,
+    hasConflict: proposalHasConflict(checkout, main.revision, to),
+    changes,
+    files: changes.map((change) => change.path),
+  };
+}
+
+function sharedSkillLocationsAtRevision(checkout, revision) {
+  const repositoryConfig = normalizedRepositoryConfig(JSON.parse(String(runGit(checkout, ["show", `${revision}:${SHARED_REPOSITORY_CONFIG}`]))));
+  const catalog = normalizedProjectsCatalog(JSON.parse(String(runGit(checkout, ["show", `${revision}:${repositoryConfig.projectsFile}`]))));
+  const locations = readSharedSkillLocationsFromRevision(checkout, revision, repositoryConfig, catalog);
+  const collections = locations.collections.map((collection) => {
+    const prefix = collection.path + "/";
+    const skills = [...new Set(gitTreeEntries(checkout, revision, [collection.path]).flatMap((entry) => {
+      if (!entry.path.startsWith(prefix) || !entry.path.endsWith("/SKILL.md")) return [];
+      const relative = entry.path.slice(prefix.length);
+      const segments = relative.split("/");
+      return segments.length === 2 && segments[1] === "SKILL.md" ? [segments[0]] : [];
+    }))].sort((left, right) => left.localeCompare(right, "en"));
+    const skillVersions = skills.map((name) => ({
+      name,
+      version: safeRevision(tryGit(checkout, ["rev-parse", `${revision}:${collection.path}/${name}`]), `shared skill ${name} tree`),
+    }));
+    return { ...collection, skills, skillVersions };
+  });
+  return { repositoryConfig, catalog, locations: { ...locations, collections } };
+}
+
+function logicalSkillDestinations(assignment) {
+  return assignment.providers.map((provider) => ({
+    assignmentId: assignment.id,
+    collectionId: assignment.collectionId,
+    provider,
+    scope: assignment.scope,
+    projectIds: assignment.scope === "project" ? assignment.projectIds : [],
+    destination: assignment.scope === "device" ? "provider-global" : "project-provider",
+  }));
+}
+
+function diffLogicalRecords(beforeRecords, afterRecords) {
+  const before = new Map(beforeRecords.map((item) => [item.id, item]));
+  const after = new Map(afterRecords.map((item) => [item.id, item]));
+  const ids = [...new Set([...before.keys(), ...after.keys()])].sort((left, right) => left.localeCompare(right, "en"));
+  return ids.flatMap((id) => {
+    const previous = before.get(id) || null;
+    const next = after.get(id) || null;
+    if (!previous) return [{ id, change: "added", before: null, after: next }];
+    if (!next) return [{ id, change: "removed", before: previous, after: null }];
+    if (JSON.stringify(previous) !== JSON.stringify(next)) return [{ id, change: "modified", before: previous, after: next }];
+    return [];
+  });
+}
+
+export function diffSharedSkillLocationsRevisions(repository, { fromRevision, toRevision, refresh = true } = {}) {
+  const main = resolveSharedMainRevision(repository, { refresh });
+  const checkout = main.checkout;
+  const from = safeRevision(fromRevision, "shared skill base revision");
+  const to = safeRevision(toRevision, "shared skill target revision");
+  if (!gitObjectExists(checkout, `${from}^{commit}`) || !gitIsAncestor(checkout, from, main.revision)) {
+    throw sharedContextError("shared-history-diverged", "The Shared Skills base is not reachable from the configured shared main branch", { fromRevision: from, acceptedRevision: main.revision });
+  }
+  if (!gitObjectExists(checkout, `${to}^{commit}`)) {
+    throw sharedContextError("shared-skill-revision-unavailable", "The exact Shared Skills target revision is unavailable", { toRevision: to });
+  }
+  const toAccepted = gitIsAncestor(checkout, to, main.revision);
+  const proposalBranches = toAccepted ? [] : remoteProposalBranchesAtRevision(checkout, main.repositoryConfig, to);
+  if (!toAccepted && !proposalBranches.length) {
+    throw sharedContextError("shared-skill-revision-unavailable", "The Shared Skills target is neither accepted main history nor an exact published proposal head", { toRevision: to });
+  }
+  const before = sharedSkillLocationsAtRevision(checkout, from);
+  const after = sharedSkillLocationsAtRevision(checkout, to);
+  const collectionChanges = diffLogicalRecords(before.locations.collections, after.locations.collections);
+  const assignmentChanges = diffLogicalRecords(before.locations.assignments, after.locations.assignments);
+  const affectedCollectionIds = new Set(collectionChanges.map((change) => change.id));
+  const affectedAssignmentIds = new Set(assignmentChanges.map((change) => change.id));
+  for (const assignment of [...before.locations.assignments, ...after.locations.assignments]) {
+    if (affectedCollectionIds.has(assignment.collectionId)) affectedAssignmentIds.add(assignment.id);
+  }
+  const affectedAssignments = [...before.locations.assignments, ...after.locations.assignments]
+    .filter((assignment) => affectedAssignmentIds.has(assignment.id));
+  const logicalDestinations = [...new Map(affectedAssignments.flatMap(logicalSkillDestinations).map((destination) => [
+    JSON.stringify(destination),
+    destination,
+  ])).values()].sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right), "en"));
+  const changes = gitNameStatusChanges(checkout, from, to);
+  const collectionPaths = new Set([...before.locations.collections, ...after.locations.collections]
+    .filter((collection) => affectedCollectionIds.has(collection.id))
+    .map((collection) => collection.path));
+  return {
+    repository: main.repository,
+    defaultBranch: main.defaultBranch,
+    acceptedRevision: main.revision,
+    fromRevision: from,
+    fromTruthState: "accepted",
+    toRevision: to,
+    toTruthState: toAccepted ? "accepted" : "proposal",
+    proposalBranches,
+    manifestPaths: [...new Set([before.repositoryConfig.skillLocationsFile, after.repositoryConfig.skillLocationsFile])],
+    collectionChanges,
+    assignmentChanges,
+    providersAffected: [...new Set(affectedAssignments.flatMap((assignment) => assignment.providers))].sort((left, right) => left.localeCompare(right, "en")),
+    logicalDestinations,
+    repositoryChanges: changes.filter((change) => {
+      const paths = [change.path, change.fromPath].filter(Boolean);
+      return paths.some((filePath) => collectionPaths.has(filePath)
+        || [...collectionPaths].some((collectionPath) => filePath.startsWith(collectionPath + "/"))
+        || filePath === before.repositoryConfig.skillLocationsFile
+        || filePath === after.repositoryConfig.skillLocationsFile);
+    }),
+    changed: collectionChanges.length > 0 || assignmentChanges.length > 0,
+    materializedLocalState: false,
+  };
 }
 
 export function detectSharedProject(root, { repository, projectId = "" } = {}) {
@@ -637,7 +1274,542 @@ function skillLinkRegistryPath(repository, projectRoot) {
   return path.join(repositoryCacheRoot(repository), "skill-links", `${hashKey(stableRoot(projectRoot))}.json`);
 }
 
-function configureProjectRoom(root, connection, repositoryConfig, currentRoot) {
+function skillLocationPreferencesPath(repository) {
+  return path.join(repositoryCacheRoot(repository), "skill-locations-local.json");
+}
+
+function skillProviderPreferencesPath() {
+  return path.join(sharedHome(), "skill-provider-preferences.json");
+}
+
+function normalizeProviderPreference(value, fallback = "enabled") {
+  const state = String(value || fallback).trim();
+  if (!["inherit", "enabled", "disabled"].includes(state)) throw new Error(`Invalid skill provider preference: ${state}`);
+  return state;
+}
+
+export function sharedSkillProviderPreferences() {
+  const raw = readJson(skillProviderPreferencesPath(), { version: 1, providers: {} });
+  return {
+    version: 1,
+    providers: Object.fromEntries(Object.keys(SHARED_SKILL_PROVIDER_PROFILES).map((provider) => [provider, normalizeProviderPreference(raw.providers?.[provider], "enabled")])),
+  };
+}
+
+export function writeSharedSkillProviderPreferences({ providers = {} } = {}) {
+  const current = sharedSkillProviderPreferences();
+  const next = {
+    version: 1,
+    providers: Object.fromEntries(Object.keys(SHARED_SKILL_PROVIDER_PROFILES).map((provider) => [provider, normalizeProviderPreference(providers[provider], current.providers[provider])])),
+  };
+  writePrivateJson(skillProviderPreferencesPath(), next);
+  return next;
+}
+
+export function setSharedSkillProviderPreferences(root, input = {}) {
+  const preferences = writeSharedSkillProviderPreferences(input);
+  const registry = readJson(registryPath(), { bindings: [] });
+  const rootsByRepository = new Map();
+  for (const binding of registry.bindings || []) {
+    const candidate = (binding.projectRoots || (binding.sourceRoot ? [binding.sourceRoot] : [])).find((item) => fs.existsSync(item));
+    if (candidate && !rootsByRepository.has(binding.repository)) rootsByRepository.set(binding.repository, candidate);
+  }
+  const reconciled = [];
+  const errors = [];
+  for (const [repository, candidate] of rootsByRepository) {
+    try {
+      syncSharedContext(candidate, { allowOffline: true, forceReconcile: true });
+      reconciled.push(repository);
+    } catch (error) {
+      errors.push({ repository, message: error.message });
+    }
+  }
+  return { preferences, reconciled, errors, status: root && readSharedProjectConnection(root) ? sharedSkillLocationsStatus(root, { refresh: false }) : null };
+}
+
+function privateFileSnapshot(filePath) {
+  try {
+    const stats = fs.statSync(filePath);
+    return { exists: true, content: fs.readFileSync(filePath), mode: stats.mode & 0o777 };
+  } catch (error) {
+    if (error.code === "ENOENT") return { exists: false, content: null, mode: 0o600 };
+    throw error;
+  }
+}
+
+function restorePrivateFile(filePath, snapshot) {
+  if (!snapshot.exists) {
+    try { fs.unlinkSync(filePath); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    return;
+  }
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(filePath, snapshot.content, { mode: snapshot.mode });
+  fs.chmodSync(filePath, snapshot.mode);
+}
+
+function normalizedProviderSettingsInput(connection, { providers = {}, projectOverrides = {} } = {}) {
+  if (!providers || typeof providers !== "object" || Array.isArray(providers)) throw new Error("providers must be an object keyed by provider id");
+  const unknownGlobal = Object.keys(providers).find((provider) => !SHARED_SKILL_PROVIDER_PROFILES[provider]);
+  if (unknownGlobal) throw new Error(`Unknown shared skill provider: ${unknownGlobal}`);
+  const currentProviders = sharedSkillProviderPreferences().providers;
+  const nextProviders = Object.fromEntries(Object.keys(SHARED_SKILL_PROVIDER_PROFILES).map((provider) => [
+    provider,
+    normalizeProviderPreference(providers[provider], currentProviders[provider]),
+  ]));
+  const entries = [];
+  if (Array.isArray(projectOverrides)) {
+    for (const item of projectOverrides) entries.push(item);
+  } else {
+    if (!projectOverrides || typeof projectOverrides !== "object") throw new Error("projectOverrides must be an object or array");
+    const directProviderKeys = Object.keys(projectOverrides).filter((key) => SHARED_SKILL_PROVIDER_PROFILES[key]);
+    const unknownDirectKeys = Object.keys(projectOverrides).filter((key) => !SHARED_SKILL_PROVIDER_PROFILES[key]);
+    if (directProviderKeys.length) {
+      if (unknownDirectKeys.length) throw new Error(`Unknown shared skill provider: ${unknownDirectKeys[0]}`);
+      for (const provider of directProviderKeys) entries.push({ projectId: connection.projectId, provider, state: projectOverrides[provider] });
+    } else {
+      for (const [projectId, values] of Object.entries(projectOverrides)) {
+        if (!values || typeof values !== "object" || Array.isArray(values)) throw new Error(`Project provider overrides for ${projectId} must be an object`);
+        const unknownProvider = Object.keys(values).find((provider) => !SHARED_SKILL_PROVIDER_PROFILES[provider]);
+        if (unknownProvider) throw new Error(`Unknown shared skill provider: ${unknownProvider}`);
+        for (const [provider, state] of Object.entries(values)) entries.push({ projectId, provider, state });
+      }
+    }
+  }
+  const normalizedOverrides = entries.map((item) => {
+    const projectId = safeId(item?.projectId || connection.projectId, "skill provider override projectId");
+    const provider = safeId(item?.provider, "skill provider override provider");
+    if (!SHARED_SKILL_PROVIDER_PROFILES[provider]) throw new Error(`Unknown shared skill provider: ${provider}`);
+    return { projectId, provider, state: normalizeProviderPreference(item?.state, "inherit") };
+  });
+  const duplicate = normalizedOverrides.find((item, index) => normalizedOverrides.findIndex((candidate) => candidate.projectId === item.projectId && candidate.provider === item.provider) !== index);
+  if (duplicate) throw new Error(`Duplicate provider override for ${duplicate.projectId}:${duplicate.provider}`);
+  return { nextProviders, normalizedOverrides };
+}
+
+export function setSharedSkillProviderSettings(root, input = {}) {
+  const connection = readSharedProjectConnection(root);
+  if (!connection) throw new Error("This project has no approved shared-context binding");
+  const { nextProviders, normalizedOverrides } = normalizedProviderSettingsInput(connection, input);
+  const preferences = readSkillLocationPreferences(connection.repository);
+  const registeredProjects = new Set(registeredRepositoryProjectLocations(connection.repository).map((location) => location.projectId));
+  const unknownProject = normalizedOverrides.find((item) => !registeredProjects.has(item.projectId));
+  if (unknownProject) throw new Error(`Provider override targets an unregistered shared project: ${unknownProject.projectId}`);
+  const changedGlobalProviders = Object.keys(nextProviders).filter((provider) => sharedSkillProviderPreferences().providers[provider] !== nextProviders[provider]);
+  const nextOverrides = [...preferences.providerOverrides];
+  for (const override of normalizedOverrides) {
+    const index = nextOverrides.findIndex((item) => item.projectId === override.projectId && item.provider === override.provider);
+    if (index >= 0) nextOverrides.splice(index, 1);
+    if (override.state !== "inherit") nextOverrides.push(override);
+  }
+  const changedProjectProviders = normalizedOverrides.filter((override) => {
+    const previous = preferences.providerOverrides.find((item) => item.projectId === override.projectId && item.provider === override.provider)?.state || "inherit";
+    return previous !== override.state;
+  }).map((override) => override.provider);
+  const affectedProviders = [...new Set([...changedGlobalProviders, ...changedProjectProviders])];
+  const globalPath = skillProviderPreferencesPath();
+  const localPath = skillLocationPreferencesPath(connection.repository);
+  const beforeGlobal = privateFileSnapshot(globalPath);
+  const beforeLocal = privateFileSnapshot(localPath);
+  const nextLocal = { ...preferences, providerOverrides: nextOverrides };
+  const repositoryRoots = new Map();
+  if (changedGlobalProviders.length) {
+    const registry = readJson(registryPath(), { bindings: [] });
+    for (const binding of registry.bindings || []) {
+      const candidate = (binding.projectRoots || (binding.sourceRoot ? [binding.sourceRoot] : [])).find((item) => fs.existsSync(item));
+      if (candidate && !repositoryRoots.has(binding.repository)) repositoryRoots.set(binding.repository, candidate);
+    }
+  } else {
+    repositoryRoots.set(connection.repository, connection.projectRoot || path.resolve(root));
+  }
+  if (!affectedProviders.length) {
+    return { changed: false, providers: { version: 1, providers: nextProviders }, projectOverrides: nextOverrides, reconciled: [], status: sharedSkillLocationsStatus(root, { refresh: false }) };
+  }
+  try {
+    writePrivateJson(globalPath, { version: 1, providers: nextProviders });
+    writeSkillLocationPreferences(connection.repository, nextLocal);
+    const reconciled = [];
+    for (const [repository, candidate] of repositoryRoots) {
+      const synced = syncSharedContext(candidate, { allowOffline: true, forceReconcile: true, providers: affectedProviders });
+      const failures = (synced.skillDestinations || []).filter((destination) => ["error", "worktree-error"].includes(destination.status));
+      if (failures.length) throw new Error(`Unable to reconcile shared skill provider settings: ${failures[0].message || failures[0].status}`);
+      reconciled.push(repository);
+    }
+    return {
+      changed: true,
+      providers: { version: 1, providers: nextProviders },
+      projectOverrides: nextOverrides,
+      affectedProviders,
+      reconciled,
+      status: sharedSkillLocationsStatus(root, { refresh: false }),
+    };
+  } catch (error) {
+    restorePrivateFile(globalPath, beforeGlobal);
+    restorePrivateFile(localPath, beforeLocal);
+    for (const candidate of repositoryRoots.values()) {
+      try { syncSharedContext(candidate, { allowOffline: true, forceReconcile: true, providers: affectedProviders }); } catch {}
+    }
+    throw error;
+  }
+}
+
+function readSkillLocationPreferences(repository) {
+  const raw = readJson(skillLocationPreferencesPath(repository), { version: SHARED_SKILL_LOCAL_STATE_VERSION, mounts: [], overrides: [], providerOverrides: [], pendingImports: [] });
+  const version = Number(raw?.version || 1);
+  if (![1, SHARED_SKILL_LOCAL_STATE_VERSION].includes(version)) throw new Error(`Unsupported shared skill local state version: ${version}`);
+  const mounts = Array.isArray(raw.mounts) ? raw.mounts.flatMap((item) => {
+    try {
+      const id = safeId(item?.id, "local skill mount id");
+      const collectionId = safeId(item?.collectionId, `local skill mount ${id} collectionId`);
+      const rawDestination = String(item?.destination || "").trim();
+      if (!rawDestination) throw new Error("destination is required");
+      const destination = path.resolve(rawDestination);
+      if (!destination || destination === path.parse(destination).root) throw new Error("destination is unsafe");
+      return [{ id, assignmentId: item?.assignmentId ? safeId(item.assignmentId, `local skill mount ${id} assignmentId`) : "", collectionId, destination, provider: item?.provider ? safeId(item.provider, `local skill mount ${id} provider`) : "custom", scope: ["project", "shared", "device"].includes(item?.scope) ? item.scope : "project", projectId: item?.projectId ? safeId(item.projectId, `local skill mount ${id} projectId`) : "", include: normalizedSkillSelection(item?.include, ["*"]), exclude: normalizedSkillSelection(item?.exclude, []), enabled: item?.enabled !== false }];
+    } catch { return []; }
+  }) : [];
+  const overrides = Array.isArray(raw.overrides) ? raw.overrides.flatMap((item) => {
+    try {
+      return [{ assignmentId: safeId(item?.assignmentId, "skill assignment override id"), projectId: item?.projectId ? safeId(item.projectId, "skill assignment override projectId") : "", disabled: Boolean(item?.disabled), exclude: normalizedSkillSelection(item?.exclude, []) }];
+    } catch { return []; }
+  }) : [];
+  const providerOverrides = Array.isArray(raw.providerOverrides) ? raw.providerOverrides.flatMap((item) => {
+    try {
+      return [{ projectId: safeId(item?.projectId, "skill provider override projectId"), provider: safeId(item?.provider, "skill provider override provider"), state: normalizeProviderPreference(item?.state, "inherit") }];
+    } catch { return []; }
+  }) : [];
+  const pendingImports = Array.isArray(raw.pendingImports) ? raw.pendingImports.flatMap((item) => {
+    try {
+      const sourceDirectory = String(item?.sourceDirectory || "").trim();
+      const destination = String(item?.destination || "").trim();
+      if (!sourceDirectory || !destination) throw new Error("pending import paths are required");
+      return [{ id: safeId(item?.id, "pending skill import id"), proposal: safeBranchName(item?.proposal, "pending skill import proposal"), proposalHead: item?.proposalHead ? safeRevision(item.proposalHead, "pending skill import proposal head") : "", collectionId: safeId(item?.collectionId, "pending skill import collectionId"), sourceDirectory: path.resolve(sourceDirectory), destination: path.resolve(destination), skills: normalizedSkillSelection(item?.skills, []), createdAt: String(item?.createdAt || "") }];
+    } catch { return []; }
+  }) : [];
+  return { version: SHARED_SKILL_LOCAL_STATE_VERSION, mounts, overrides, providerOverrides, pendingImports, updatedAt: String(raw.updatedAt || "") };
+}
+
+function writeSkillLocationPreferences(repository, preferences) {
+  writePrivateJson(skillLocationPreferencesPath(repository), {
+    $schema: "https://unpkg.com/context-room@latest/schemas/shared-skill-local-state.schema.json",
+    version: SHARED_SKILL_LOCAL_STATE_VERSION,
+    updatedAt: new Date().toISOString(),
+    mounts: preferences.mounts || [],
+    overrides: preferences.overrides || [],
+    providerOverrides: preferences.providerOverrides || [],
+    pendingImports: preferences.pendingImports || [],
+  });
+}
+
+export function readSharedSkillLocalState(root) {
+  const connection = readSharedProjectConnection(root);
+  if (!connection) return { connected: false, version: SHARED_SKILL_LOCAL_STATE_VERSION, mounts: [], overrides: [], providerOverrides: [], pendingImports: [] };
+  return { connected: true, repository: connection.repository, projectId: connection.projectId, ...readSkillLocationPreferences(connection.repository) };
+}
+
+function expandUserPath(value) {
+  const raw = String(value || "").trim();
+  if (raw === "~") return path.resolve(process.env.HOME || os.homedir());
+  if (raw.startsWith("~/")) return path.join(process.env.HOME || os.homedir(), raw.slice(2));
+  return path.resolve(raw);
+}
+
+function providerSkillDestination(providerId, scope, projectRoot) {
+  const profile = SHARED_SKILL_PROVIDER_PROFILES[providerId];
+  if (!profile) return null;
+  return scope === "device" ? expandUserPath(profile.globalPath) : path.resolve(projectRoot, profile.projectPath);
+}
+
+function instructionLinkRegistryPath(repository, projectRoot, scope = "project") {
+  const identity = scope === "device" ? "device" : hashKey(stableRoot(projectRoot));
+  return path.join(repositoryCacheRoot(repository), "instruction-links", `${identity}.json`);
+}
+
+function providerInstructionRoot(providerId, scope, projectRoot) {
+  const profile = SHARED_INSTRUCTION_PROVIDER_PROFILES[providerId];
+  if (!profile) return null;
+  return scope === "device" ? expandUserPath(profile.deviceRoot) : path.resolve(projectRoot);
+}
+
+function instructionAssignmentApplies(assignment, projectId) {
+  return assignment.scope === "device" || assignment.scope === "shared" || (assignment.scope === "project" && assignment.projectIds.includes(projectId));
+}
+
+function resolvedInstructionLinkPlan(root, connection, repositoryConfig, catalog, currentRoot, { includeDevice = true } = {}) {
+  const locations = readSharedInstructionLocationsFromRoot(currentRoot, repositoryConfig, catalog);
+  const collections = locations.collections.map((collection) => ({ ...collection, source: path.join(currentRoot, collection.path) }));
+  const collectionById = new Map(collections.map((collection) => [collection.id, collection]));
+  const links = [];
+  for (const assignment of locations.assignments) {
+    if (!instructionAssignmentApplies(assignment, connection.projectId)) continue;
+    if (assignment.scope === "device" && !includeDevice) continue;
+    const collection = collectionById.get(assignment.collectionId);
+    if (!collection) continue;
+    for (const file of assignment.files) {
+      const source = path.resolve(collection.source, ...file.source.split("/"));
+      if (source !== collection.source && !source.startsWith(collection.source + path.sep)) throw new Error(`Instruction source escapes collection ${collection.id}`);
+      for (const provider of file.providers) {
+        const destinationRoot = providerInstructionRoot(provider, assignment.scope, root);
+        links.push({
+          id: `${assignment.id}:${provider}:${hashKey(file.target, 10)}`,
+          assignmentId: assignment.id,
+          collectionId: collection.id,
+          scope: assignment.scope,
+          projectId: assignment.scope === "device" ? "" : connection.projectId,
+          provider,
+          source: file.source,
+          target: source,
+          destination: destinationRoot ? path.resolve(destinationRoot, ...file.target.split("/")) : "",
+          relativeTarget: file.target,
+          status: destinationRoot ? "pending" : "provider-unavailable",
+          message: destinationRoot ? "" : `No instruction destination is configured for ${provider}`,
+        });
+      }
+    }
+  }
+  return { locations, collections, links, currentRoot };
+}
+
+function reconcileInstructionLinks(root, connection, repositoryConfig, currentRoot, catalog, { includeDevice = true } = {}) {
+  const plan = resolvedInstructionLinkPlan(root, connection, repositoryConfig, catalog, currentRoot, { includeDevice });
+  const managedRoot = repositoryCacheRoot(connection.repository);
+  const grouped = new Map();
+  grouped.set(instructionLinkRegistryPath(connection.repository, root, "project"), []);
+  if (includeDevice) grouped.set(instructionLinkRegistryPath(connection.repository, root, "device"), []);
+  for (const item of plan.links) {
+    const registryScope = item.scope === "device" ? "device" : "project";
+    const registryFile = instructionLinkRegistryPath(connection.repository, root, registryScope);
+    grouped.set(registryFile, [...(grouped.get(registryFile) || []), item]);
+  }
+  const results = [];
+  for (const [registryFile, desiredItems] of grouped) {
+    const previous = readJson(registryFile, { version: 1, links: [] });
+    const byDestination = new Map();
+    for (const item of desiredItems) byDestination.set(path.resolve(item.destination || "/"), [...(byDestination.get(path.resolve(item.destination || "/")) || []), item]);
+    const conflicts = [];
+    for (const items of byDestination.values()) {
+      const targets = [...new Set(items.map((item) => path.resolve(item.target)))];
+      if (items[0].destination && targets.length > 1) {
+        conflicts.push({ path: items[0].destination, reason: `Several shared instructions target the same file (${items.map((item) => item.assignmentId).join(", ")})` });
+      }
+    }
+    const conflictPaths = new Set(conflicts.map((item) => path.resolve(item.path)));
+    const next = [];
+    for (const item of desiredItems) {
+      if (!item.destination) {
+        next.push(item);
+        continue;
+      }
+      if (!fs.existsSync(item.target) || !fs.statSync(item.target).isFile()) {
+        next.push({ ...item, status: "source-missing", message: `Shared instruction is missing: ${item.source}` });
+        continue;
+      }
+      if (conflictPaths.has(path.resolve(item.destination))) {
+        next.push({ ...item, status: "conflict", conflicts: conflicts.filter((conflict) => path.resolve(conflict.path) === path.resolve(item.destination)), message: "Several assignments target this instruction file" });
+        continue;
+      }
+      const state = managedSymlinkTarget(item.destination, managedRoot);
+      if (state.exists && (!state.symbolic || !state.managed)) {
+        next.push({ ...item, status: "conflict", conflicts: [{ path: item.destination, reason: "Destination already contains an unmanaged instruction file" }], message: "Unmanaged instruction file preserved" });
+        continue;
+      }
+      try {
+        replaceSymlink(item.destination, item.target, { managedRoot });
+        next.push({ ...item, status: "ready", conflicts: [] });
+      } catch (error) {
+        next.push({ ...item, status: "error", message: error.message, conflicts: [] });
+      }
+    }
+    const desiredPaths = new Set(desiredItems.filter((item) => item.destination).map((item) => path.resolve(item.destination)));
+    for (const stale of previous.links || []) {
+      if (!stale.destination || desiredPaths.has(path.resolve(stale.destination))) continue;
+      const state = managedSymlinkTarget(stale.destination, managedRoot);
+      if (state.symbolic && state.managed) {
+        try { fs.unlinkSync(stale.destination); } catch {}
+      }
+    }
+    writePrivateJson(registryFile, { version: 1, repository: connection.repository, projectRoot: root, revision: path.basename(currentRoot), links: next });
+    results.push(...next);
+  }
+  return { ...plan, links: results };
+}
+
+export function sharedInstructionLocationsStatus(root, { refresh = true } = {}) {
+  const connection = readSharedProjectConnection(root);
+  if (!connection) return { connected: false, collections: [], assignments: [], links: [], conflicts: [], providers: Object.values(SHARED_INSTRUCTION_PROVIDER_PROFILES) };
+  const synced = refresh ? syncSharedContext(root, { allowOffline: true }) : cachedSharedRepositoryState(connection.repository, { projectId: connection.projectId, projectRoot: connection.projectRoot || path.resolve(root) });
+  const snapshot = synced.snapshot || path.join(synced.cacheRoot, "snapshots", synced.revision);
+  const locations = readSharedInstructionLocationsFromRoot(snapshot, synced.repositoryConfig, synced.catalog);
+  const projectRegistry = readJson(instructionLinkRegistryPath(connection.repository, connection.projectRoot || path.resolve(root)), { links: [] });
+  const deviceRegistry = readJson(instructionLinkRegistryPath(connection.repository, connection.projectRoot || path.resolve(root), "device"), { links: [] });
+  const links = [...(projectRegistry.links || []), ...(deviceRegistry.links || [])];
+  return {
+    connected: true,
+    repository: connection.repository,
+    projectId: connection.projectId,
+    projects: synced.catalog.projects,
+    revision: synced.revision,
+    manifestPath: synced.repositoryConfig.instructionLocationsFile,
+    collections: locations.collections.map((collection) => ({ ...collection, fileCount: (() => {
+      const source = path.join(snapshot, collection.path);
+      if (!fs.existsSync(source)) return 0;
+      let count = 0;
+      const walk = (directory) => { for (const entry of fs.readdirSync(directory, { withFileTypes: true })) { const child = path.join(directory, entry.name); if (entry.isDirectory()) walk(child); else if (entry.isFile() && /\.mdx?$/i.test(entry.name)) count += 1; } };
+      walk(source);
+      return count;
+    })() })),
+    assignments: locations.assignments,
+    links,
+    conflicts: links.flatMap((item) => item.conflicts || []),
+    providers: Object.values(SHARED_INSTRUCTION_PROVIDER_PROFILES),
+  };
+}
+
+function assignmentAppliesToProject(assignment, projectId) {
+  return assignment.scope === "device" || assignment.scope === "shared" || (assignment.scope === "project" && assignment.projectIds.includes(projectId));
+}
+
+function selectedSkillsForLocation(skillNames, include, exclude) {
+  const selected = include.includes("*") ? skillNames : skillNames.filter((name) => include.includes(name));
+  return selected.filter((name) => !exclude.includes(name));
+}
+
+function localOverrideForAssignment(preferences, assignmentId, projectId) {
+  return preferences.overrides.find((item) => item.assignmentId === assignmentId && (!item.projectId || item.projectId === projectId)) || null;
+}
+
+function effectiveSkillProviderState(preferences, provider, projectId, scope = "project") {
+  if (!SHARED_SKILL_PROVIDER_PROFILES[provider]) return { state: "unavailable", source: "provider" };
+  const override = scope === "device" ? null : preferences.providerOverrides.find((item) => item.provider === provider && item.projectId === projectId);
+  const globalState = sharedSkillProviderPreferences().providers[provider] || "enabled";
+  const state = override && override.state !== "inherit" ? override.state : globalState;
+  return { state, source: override && override.state !== "inherit" ? "project-override" : "device" };
+}
+
+function resolvedSkillLinkPlan(root, connection, repositoryConfig, catalog, currentRoot) {
+  const locations = readSharedSkillLocationsFromRoot(currentRoot, repositoryConfig, catalog);
+  const preferences = readSkillLocationPreferences(connection.repository);
+  const collections = locations.collections.map((collection) => {
+    const source = path.join(currentRoot, collection.path);
+    return { ...collection, source, skills: skillDirectories(source) };
+  });
+  const collectionById = new Map(collections.map((collection) => [collection.id, collection]));
+  const assignmentById = new Map(locations.assignments.map((assignment) => [assignment.id, assignment]));
+  const destinations = [];
+  for (const assignment of locations.assignments) {
+    if (!assignmentAppliesToProject(assignment, connection.projectId)) continue;
+    const collection = collectionById.get(assignment.collectionId);
+    if (!collection) continue;
+    const override = localOverrideForAssignment(preferences, assignment.id, connection.projectId);
+    for (const provider of assignment.providers) {
+      const providerPreference = effectiveSkillProviderState(preferences, provider, connection.projectId, assignment.scope);
+      const destination = providerSkillDestination(provider, assignment.scope, root);
+      if (!destination) {
+        destinations.push({ id: `${assignment.id}:${provider}`, assignmentId: assignment.id, collectionId: collection.id, provider, scope: assignment.scope, destination: "", skills: [], status: "provider-unavailable", providerPreference, origin: "shared-assignment", message: `No skill destination is configured for ${provider}` });
+        continue;
+      }
+      const excluded = [...new Set([...assignment.exclude, ...(override?.exclude || [])])];
+      const disabled = providerPreference.state === "disabled";
+      destinations.push({ id: `${assignment.id}:${provider}`, assignmentId: assignment.id, collectionId: collection.id, provider, scope: assignment.scope, destination, skills: disabled || override?.disabled ? [] : selectedSkillsForLocation(collection.skills, assignment.include, excluded), status: disabled ? "provider-disabled" : override?.disabled ? "local-override" : "pending", providerPreference, origin: "shared-assignment", message: disabled ? `Provider ${provider} is disabled for this project` : override?.disabled ? "Disabled by a local override" : "" });
+    }
+  }
+  for (const mount of preferences.mounts) {
+    if (!mount.enabled || (mount.scope === "project" && mount.projectId && mount.projectId !== connection.projectId)) continue;
+    const assignment = mount.assignmentId ? assignmentById.get(mount.assignmentId) : null;
+    const collection = collectionById.get(assignment?.collectionId || mount.collectionId);
+    if (!collection) {
+      destinations.push({ ...mount, skills: [], status: "collection-missing", message: `Collection ${mount.collectionId} no longer exists` });
+      continue;
+    }
+    const providerPreference = mount.provider === "custom" ? { state: "enabled", source: "custom" } : effectiveSkillProviderState(preferences, mount.provider, connection.projectId, mount.scope);
+    const disabled = providerPreference.state === "disabled";
+    destinations.push({ ...mount, collectionId: collection.id, assignmentId: mount.assignmentId || "", skills: disabled ? [] : selectedSkillsForLocation(collection.skills, mount.include, mount.exclude), status: disabled ? "provider-disabled" : "pending", providerPreference, origin: "local-destination", message: disabled ? `Provider ${mount.provider} is disabled for this project` : "" });
+  }
+  return { locations, preferences, collections, destinations, currentRoot };
+}
+
+function reconcileSkillDestination(destinationPlan, collection, managedRoot, previousLinks, desiredOverride = null) {
+  if (!destinationPlan.destination) return { ...destinationPlan, links: [], status: destinationPlan.status || "provider-unavailable" };
+  const destination = path.resolve(destinationPlan.destination);
+  const desired = desiredOverride || destinationPlan.skills.map((name) => ({ scope: destinationPlan.scope, provider: destinationPlan.provider, assignmentId: destinationPlan.assignmentId || "", mountId: destinationPlan.assignmentId ? "" : destinationPlan.id, collectionId: collection.id, name, link: path.join(destination, name), target: path.join(collection.source, name), destination }));
+  const previous = previousLinks.filter((item) => path.resolve(item.destination || path.dirname(item.link)) === destination);
+  const desiredPaths = new Set(desired.map((item) => path.resolve(item.link)));
+  const stale = previous.filter((item) => !desiredPaths.has(path.resolve(item.link)));
+  const before = new Map();
+  const conflicts = [];
+  for (const item of [...desired, ...stale]) {
+    const link = path.resolve(item.link);
+    if (path.dirname(link) !== destination) throw new Error(`Unsafe managed skill link path: ${link}`);
+    const state = managedSymlinkTarget(link, managedRoot);
+    before.set(link, state);
+    if (desired.includes(item) && state.exists && (!state.symbolic || !state.managed)) conflicts.push({ skill: item.name, path: link, reason: "Destination already contains an unmanaged skill" });
+  }
+  if (conflicts.length) return { ...destinationPlan, links: previous, status: "conflict", conflicts, message: `${conflicts.length} unmanaged destination conflict${conflicts.length === 1 ? "" : "s"}` };
+  try {
+    fs.mkdirSync(destination, { recursive: true });
+    for (const item of desired) replaceSymlink(item.link, item.target, { managedRoot });
+    for (const item of stale) {
+      const state = managedSymlinkTarget(item.link, managedRoot);
+      if (state.symbolic && state.managed) fs.unlinkSync(item.link);
+    }
+  } catch (error) {
+    for (const [link, state] of [...before.entries()].reverse()) {
+      try {
+        const current = managedSymlinkTarget(link, managedRoot);
+        if (!state.exists && current.symbolic && current.managed) fs.unlinkSync(link);
+        else if (state.symbolic && state.managed) replaceSymlink(link, state.target, { managedRoot });
+      } catch {}
+    }
+    return { ...destinationPlan, links: previous, status: "error", message: error.message };
+  }
+  return { ...destinationPlan, links: desired, status: ["local-override", "provider-disabled"].includes(destinationPlan.status) ? destinationPlan.status : "ready", conflicts: [] };
+}
+
+function archiveAcceptedSkillImports(plan, connection) {
+  if (!plan.preferences.pendingImports.length) return [];
+  const collectionById = new Map(plan.collections.map((collection) => [collection.id, collection]));
+  const completed = [];
+  const remaining = [];
+  const checkout = repositoryCheckout(connection.repository);
+  const acceptedRevision = path.basename(plan.currentRoot || "");
+  for (const pending of plan.preferences.pendingImports) {
+    const accepted = pending.proposalHead && Boolean(tryGit(checkout, ["log", "-n", "1", "--format=%H", "--fixed-strings", `--grep=Context-Room-Proposal-Head: ${pending.proposalHead}`, acceptedRevision || "origin/main"]));
+    if (!accepted) {
+      if (!remoteBranchRevision(checkout, pending.proposal)) continue;
+      remaining.push(pending);
+      continue;
+    }
+    const collection = collectionById.get(pending.collectionId);
+    if (!collection || !pending.skills.every((name) => collection.skills.includes(name))) {
+      remaining.push(pending);
+      continue;
+    }
+    const backupRoot = path.join(repositoryCacheRoot(connection.repository), "skill-import-backups", `${Date.now()}-${pending.id}`);
+    const moved = [];
+    try {
+      for (const name of pending.skills) {
+        const source = path.join(pending.sourceDirectory, name);
+        let stats;
+        try { stats = fs.lstatSync(source); } catch { continue; }
+        if (stats.isSymbolicLink()) continue;
+        fs.mkdirSync(backupRoot, { recursive: true });
+        const backup = path.join(backupRoot, name);
+        fs.renameSync(source, backup);
+        moved.push({ source, backup });
+      }
+      completed.push({ ...pending, backupRoot, archived: moved.map((item) => item.backup) });
+    } catch (error) {
+      for (const item of moved.reverse()) {
+        try { fs.renameSync(item.backup, item.source); } catch {}
+      }
+      remaining.push({ ...pending, error: `Unable to archive imported skills: ${error.message}` });
+    }
+  }
+  plan.preferences.pendingImports = remaining;
+  writeSkillLocationPreferences(connection.repository, plan.preferences);
+  return completed;
+}
+
+function configureProjectRoom(root, connection, repositoryConfig, currentRoot, skillLocations = null, instructionLocations = null) {
   const configPath = path.join(root, ".context-room", "config.json");
   if (!fs.existsSync(configPath)) return { updated: false, reason: "Context Room is not initialized yet" };
   const config = readJson(configPath, {});
@@ -654,8 +1826,10 @@ function configureProjectRoom(root, connection, repositoryConfig, currentRoot) {
   const docs = homeVirtualPath(path.join(projectRoot, "docs"), true);
   const projectSkills = homeVirtualPath(path.join(projectRoot, "skills"), true);
   const globalSkills = homeVirtualPath(path.join(currentRoot, repositoryConfig.globalSkillsPath), true);
-  config.allowedPaths = appendUnique(config.allowedPaths, [docs, projectSkills, globalSkills]);
-  config.readOnlyPaths = appendUnique(config.readOnlyPaths, [docs, projectSkills, globalSkills]);
+  const collectionPaths = (skillLocations?.collections || []).map((collection) => homeVirtualPath(path.join(currentRoot, collection.path), true));
+  const instructionCollectionPaths = (instructionLocations?.collections || []).map((collection) => homeVirtualPath(path.join(currentRoot, collection.path), true));
+  config.allowedPaths = appendUnique(config.allowedPaths, [docs, projectSkills, globalSkills, ...collectionPaths, ...instructionCollectionPaths]);
+  config.readOnlyPaths = appendUnique(config.readOnlyPaths, [docs, projectSkills, globalSkills, ...collectionPaths, ...instructionCollectionPaths]);
   const section = {
     id: "shared-context",
     title: "Shared context",
@@ -664,6 +1838,8 @@ function configureProjectRoom(root, connection, repositoryConfig, currentRoot) {
       { id: "shared-docs", title: "Shared project docs", path: docs, description: `Accepted documentation for ${connection.projectId}.` },
       { id: "shared-project-skills", title: "Shared project skills", path: projectSkills, description: `Accepted skills for ${connection.projectId}.` },
       { id: "shared-global-skills", title: "Shared global skills", path: globalSkills, description: "Accepted skills shared across projects." },
+      ...(skillLocations && !skillLocations.legacy ? skillLocations.collections.map((collection) => ({ id: `shared-skill-collection-${collection.id}`, title: collection.title, path: homeVirtualPath(path.join(currentRoot, collection.path), true), description: `Accepted shared skill collection · ${collection.id}.` })) : []),
+      ...(instructionLocations ? instructionLocations.collections.map((collection) => ({ id: `shared-instruction-collection-${collection.id}`, title: collection.title, path: homeVirtualPath(path.join(currentRoot, collection.path), true), description: `Accepted shared instruction collection · ${collection.id}.` })) : []),
     ],
   };
   config.hubSections = [...(config.hubSections || []).filter((item) => item?.id !== section.id), section];
@@ -672,61 +1848,65 @@ function configureProjectRoom(root, connection, repositoryConfig, currentRoot) {
   return { updated: true, configPath, paths: { docs, projectSkills, globalSkills } };
 }
 
-function syncSkillLinks(root, connection, repositoryConfig, currentRoot) {
-  const projectSkillSource = path.join(currentRoot, repositoryConfig.projectsPath, connection.projectId, "skills");
-  const globalSkillSource = path.join(currentRoot, repositoryConfig.globalSkillsPath);
-  const projectSkills = skillDirectories(projectSkillSource);
-  const globalSkills = skillDirectories(globalSkillSource);
-  const collisions = projectSkills.filter((name) => globalSkills.includes(name));
-  if (collisions.length) throw new Error(`Project skills must not shadow global skills: ${collisions.join(", ")}`);
-  const links = [];
-  const globalDestination = path.join(process.env.HOME || os.homedir(), ".codex", "skills");
-  const projectDestination = path.join(root, ".codex", "skills");
-  for (const name of globalSkills) {
-    const link = path.join(globalDestination, name);
-    links.push({ scope: "global", name, link, target: path.join(globalSkillSource, name) });
-  }
-  for (const name of projectSkills) {
-    const link = path.join(projectDestination, name);
-    links.push({ scope: "project", name, link, target: path.join(projectSkillSource, name) });
-  }
+function syncSkillLinks(root, connection, repositoryConfig, currentRoot, catalog, { providers = null } = {}) {
+  const plan = resolvedSkillLinkPlan(root, connection, repositoryConfig, catalog, currentRoot);
+  const completedImports = archiveAcceptedSkillImports(plan, connection);
   const managedRoot = repositoryCacheRoot(connection.repository);
   const registryFile = skillLinkRegistryPath(connection.repository, root);
-  const previous = readJson(registryFile, { version: 1, links: [] });
-  const desiredPaths = new Set(links.map((item) => path.resolve(item.link)));
-  const safeDestinations = new Set([path.resolve(globalDestination), path.resolve(projectDestination)]);
-  const stale = (previous.links || []).filter((item) => {
-    const link = path.resolve(String(item.link || ""));
-    return safeDestinations.has(path.dirname(link)) && !desiredPaths.has(link);
-  });
-  const before = new Map();
-  for (const item of [...links, ...stale]) {
-    const link = path.resolve(item.link);
-    if (!safeDestinations.has(path.dirname(link))) throw new Error(`Unsafe managed skill link path: ${link}`);
-    const state = managedSymlinkTarget(link, managedRoot);
-    before.set(link, state);
-    if (links.includes(item) && state.exists && (!state.symbolic || !state.managed)) {
-      throw new Error(`Refusing to replace unmanaged skill path: ${link}`);
+  const previous = readJson(registryFile, { version: 2, links: [], destinations: [] });
+  const collectionById = new Map(plan.collections.map((collection) => [collection.id, collection]));
+  const providerSet = providers?.length ? new Set(providers.map((provider) => safeId(provider, "provider"))) : null;
+  const selectedPhysicalDestinations = new Set(plan.destinations
+    .filter((destination) => providerSet?.has(destination.provider) && destination.destination)
+    .map((destination) => path.resolve(destination.destination)));
+  const selectedDestinations = providerSet
+    ? plan.destinations.filter((destination) => providerSet.has(destination.provider) || (destination.destination && selectedPhysicalDestinations.has(path.resolve(destination.destination))))
+    : plan.destinations;
+  const untouchedDestinations = providerSet
+    ? (previous.destinations || []).filter((destination) => !providerSet.has(destination.provider) && (!destination.destination || !selectedPhysicalDestinations.has(path.resolve(destination.destination))))
+    : [];
+  const noDestination = selectedDestinations.filter((destination) => !destination.destination)
+    .map((destination) => reconcileSkillDestination(destination, collectionById.get(destination.collectionId) || { id: destination.collectionId, source: "" }, managedRoot, previous.links || []));
+  const destinationGroups = new Map();
+  for (const destination of selectedDestinations.filter((item) => item.destination)) {
+    const key = path.resolve(destination.destination);
+    destinationGroups.set(key, [...(destinationGroups.get(key) || []), destination]);
+  }
+  const destinations = [...untouchedDestinations, ...noDestination];
+  for (const [physicalDestination, group] of destinationGroups) {
+    const desired = group.flatMap((destination) => {
+      const collection = collectionById.get(destination.collectionId) || { id: destination.collectionId, source: "" };
+      return destination.skills.map((name) => ({ scope: destination.scope, provider: destination.provider, assignmentId: destination.assignmentId || "", mountId: destination.assignmentId ? "" : destination.id, collectionId: collection.id, name, link: path.join(physicalDestination, name), target: path.join(collection.source, name), destination: physicalDestination }));
+    });
+    const byName = new Map();
+    for (const item of desired) byName.set(item.name, [...(byName.get(item.name) || []), item]);
+    const explicitConflicts = [...byName.entries()].flatMap(([name, items]) => {
+      const targets = [...new Set(items.map((item) => path.resolve(item.target)))];
+      return targets.length > 1 ? [{ skill: name, path: path.join(physicalDestination, name), reason: `Several shared collections target the same destination (${items.map((item) => item.collectionId).join(", ")})` }] : [];
+    });
+    if (explicitConflicts.length) {
+      const retained = (previous.links || []).filter((item) => path.resolve(item.destination || path.dirname(item.link)) === physicalDestination);
+      for (const destination of group) destinations.push({ ...destination, links: retained.filter((item) => item.assignmentId === (destination.assignmentId || "") && item.mountId === (destination.assignmentId ? "" : destination.id)), status: "conflict", conflicts: explicitConflicts, message: `${explicitConflicts.length} explicit shared skill collision${explicitConflicts.length === 1 ? "" : "s"}` });
+      continue;
+    }
+    const uniqueDesired = [...new Map(desired.map((item) => [path.resolve(item.link), item])).values()];
+    const combined = reconcileSkillDestination({ ...group[0], id: `destination:${hashKey(physicalDestination).slice(0, 12)}`, skills: [] }, { id: "combined", source: "" }, managedRoot, previous.links || [], uniqueDesired);
+    for (const destination of group) {
+      const ownLinks = (combined.links || []).filter((item) => item.assignmentId === (destination.assignmentId || "") && item.mountId === (destination.assignmentId ? "" : destination.id));
+      destinations.push({ ...destination, links: ownLinks, status: ["local-override", "provider-disabled"].includes(destination.status) ? destination.status : combined.status, conflicts: combined.conflicts || [], message: combined.message || destination.message || "" });
     }
   }
-  try {
-    for (const item of links) replaceSymlink(item.link, item.target, { managedRoot });
-    for (const item of stale) {
-      const state = managedSymlinkTarget(item.link, managedRoot);
-      if (state.symbolic && state.managed) fs.unlinkSync(item.link);
+  const plannedDestinationPaths = new Set(selectedDestinations.filter((item) => item.destination).map((item) => path.resolve(item.destination)));
+  const orphaned = (previous.links || []).filter((item) => (!providerSet || providerSet.has(item.provider)) && !plannedDestinationPaths.has(path.resolve(item.destination || path.dirname(item.link))));
+  for (const item of orphaned) {
+    const state = managedSymlinkTarget(item.link, managedRoot);
+    if (state.symbolic && state.managed) {
+      try { fs.unlinkSync(item.link); } catch {}
     }
-    writeJson(registryFile, { version: 1, repository: connection.repository, projectRoot: stableRoot(root), links });
-  } catch (error) {
-    for (const [link, state] of [...before.entries()].reverse()) {
-      try {
-        const current = managedSymlinkTarget(link, managedRoot);
-        if (!state.exists && current.symbolic && current.managed) fs.unlinkSync(link);
-        else if (state.symbolic && state.managed) replaceSymlink(link, state.target, { managedRoot });
-      } catch {}
-    }
-    throw error;
   }
-  return links;
+  const links = destinations.flatMap((destination) => destination.links || []);
+  writeJson(registryFile, { version: 2, repository: connection.repository, projectRoot: stableRoot(root), revision: path.basename(currentRoot), links, destinations });
+  return { ...plan, links, destinations, completedImports };
 }
 
 function detachInstalledSkillLinks(root, installed) {
@@ -734,15 +1914,14 @@ function detachInstalledSkillLinks(root, installed) {
   const repository = safeRepository(installed.repository);
   const managedRoot = repositoryCacheRoot(repository);
   const registry = readJson(skillLinkRegistryPath(repository, root), { links: [] });
-  const safeDestinations = new Set([
-    path.resolve(process.env.HOME || os.homedir(), ".codex", "skills"),
-    path.resolve(root, ".codex", "skills"),
-  ]);
+  const keepDeviceLinks = installed.projectId && registeredProjectRoots({ repository, projectId: installed.projectId }).some((candidate) => stableRoot(candidate) !== stableRoot(root));
   const removed = [];
   try {
     for (const item of registry.links || []) {
+      if (item.scope === "device" && keepDeviceLinks) continue;
       const link = path.resolve(String(item.link || ""));
-      if (!safeDestinations.has(path.dirname(link))) continue;
+      const destination = path.resolve(String(item.destination || path.dirname(link)));
+      if (path.dirname(link) !== destination) continue;
       const state = managedSymlinkTarget(link, managedRoot);
       if (!state.symbolic || !state.managed) continue;
       fs.unlinkSync(link);
@@ -807,11 +1986,12 @@ export function connectSharedContext(root, { repository, projectId, sync = true 
   }
 }
 
-export function syncSharedContext(root, { allowOffline = true } = {}) {
+export function syncSharedContext(root, { allowOffline = true, forceReconcile = false, providers = null } = {}) {
   const resolvedRoot = path.resolve(root);
   const connection = readSharedProjectConnection(resolvedRoot);
   if (!connection) throw new Error("This project has no approved shared-context binding; run context-room shared setup first");
   const localProjectRoot = connection.projectRoot || resolvedRoot;
+  registerSourceBinding(localProjectRoot, { ...connection, projectRoot: localProjectRoot });
   const checkout = ensureRepositoryClone(connection.repository);
   let fetchError = "";
   try {
@@ -821,6 +2001,7 @@ export function syncSharedContext(root, { allowOffline = true } = {}) {
     if (!allowOffline) throw new Error(`Unable to refresh shared context: ${fetchError}`);
   }
   const state = readJson(sharedStatePath(connection.repository), {});
+  const previousRevision = state.revision ? safeRevision(state.revision, "previous shared revision") : "";
   let repositoryConfig;
   let revision;
   let catalog;
@@ -865,12 +2046,37 @@ export function syncSharedContext(root, { allowOffline = true } = {}) {
   );
   let detachedSkillLinks = [];
   let links;
+  let instructionLinks;
   let room;
+  const revisionChanged = previousRevision !== revision;
+  const reconcileLocation = (locationRoot, locationConnection, skillLocations) => {
+    const registryFile = skillLinkRegistryPath(connection.repository, locationRoot);
+    const existing = readJson(registryFile, null);
+    if (!forceReconcile && !revisionChanged && existing?.revision === revision) {
+      const plan = resolvedSkillLinkPlan(locationRoot, locationConnection, repositoryConfig, catalog, snapshot);
+      return { ...plan, links: existing.links || [], destinations: existing.destinations || [], completedImports: [], skipped: true };
+    }
+    return syncSkillLinks(locationRoot, locationConnection, repositoryConfig, snapshot, catalog, { providers });
+  };
   try {
     if (switchingSharedContext) detachedSkillLinks = detachInstalledSkillLinks(localProjectRoot, installedSharedContext);
     replaceSymlink(current, snapshot, { managedRoot: cacheRoot });
-    room = configureProjectRoom(localProjectRoot, connection, repositoryConfig, current);
-    links = syncSkillLinks(localProjectRoot, connection, repositoryConfig, snapshot);
+    const skillLocations = readSharedSkillLocationsFromRoot(snapshot, repositoryConfig, catalog);
+    const instructionLocations = readSharedInstructionLocationsFromRoot(snapshot, repositoryConfig, catalog);
+    room = configureProjectRoom(localProjectRoot, connection, repositoryConfig, current, skillLocations, instructionLocations);
+    links = reconcileLocation(localProjectRoot, connection, skillLocations);
+    instructionLinks = reconcileInstructionLinks(localProjectRoot, connection, repositoryConfig, snapshot, catalog, { includeDevice: true });
+    for (const location of registeredRepositoryProjectLocations(connection.repository)) {
+      if (location.projectId === connection.projectId && stableRoot(location.root) === stableRoot(localProjectRoot)) continue;
+      try {
+        configureProjectRoom(location.root, { ...connection, projectId: location.projectId, projectRoot: location.root }, repositoryConfig, current, skillLocations, instructionLocations);
+        reconcileLocation(location.root, { ...connection, projectId: location.projectId, projectRoot: location.root }, skillLocations);
+        const reconciledInstructions = reconcileInstructionLinks(location.root, { ...connection, projectId: location.projectId, projectRoot: location.root }, repositoryConfig, snapshot, catalog, { includeDevice: false });
+        instructionLinks.links.push(...reconciledInstructions.links);
+      } catch (error) {
+        links.destinations.push({ id: `worktree:${hashKey(location.root).slice(0, 12)}`, assignmentId: "", collectionId: "", provider: "", scope: "project", destination: location.root, skills: [], links: [], status: "worktree-error", message: `Unable to reconcile registered worktree: ${error.message}`, conflicts: [] });
+      }
+    }
   } catch (error) {
     restoreDetachedSkillLinks(detachedSkillLinks);
     if (previousCurrent) {
@@ -898,7 +2104,39 @@ export function syncSharedContext(root, { allowOffline = true } = {}) {
     catalog,
   };
   writeJson(sharedStatePath(connection.repository), nextState);
-  return { connection: { ...connection, projectRoot: localProjectRoot }, repositoryConfig, catalog, revision, online: !fetchError, fetchError, cacheRoot, current, links, room };
+  let commitCount = 0;
+  if (revisionChanged) {
+    if (previousRevision && gitObjectExists(checkout, `${previousRevision}^{commit}`) && gitIsAncestor(checkout, previousRevision, revision)) {
+      commitCount = Number(tryGit(checkout, ["rev-list", "--first-parent", "--count", `${previousRevision}..${revision}`])) || 0;
+    } else if (!previousRevision) {
+      commitCount = 1;
+    }
+    appendContextRoomEvent("shared.synced", {
+      projectId: connection.projectId,
+      sharedRepository: connection.repository,
+      resource: { revision },
+      data: { previousRevision, revision, commitCount, online: !fetchError, fetchError: fetchError || "" },
+    });
+  }
+  return { connection: { ...connection, projectRoot: localProjectRoot }, repositoryConfig, catalog, previousRevision, revision, revisionChanged, commitCount, online: !fetchError, fetchError, cacheRoot, current, skillLocations: links.locations, skillCollections: links.collections, skillDestinations: links.destinations, links: links.links, instructionLocations: instructionLinks.locations, instructionCollections: instructionLinks.collections, instructionLinks: instructionLinks.links, room };
+}
+
+export function reconcileSharedSkillLocations(root, { provider = "all", allowOffline = true } = {}) {
+  const providerId = String(provider || "all").trim();
+  if (providerId !== "all" && !SHARED_SKILL_PROVIDER_PROFILES[providerId]) throw new Error(`Unknown shared skill provider: ${providerId}`);
+  const synced = syncSharedContext(root, {
+    allowOffline,
+    forceReconcile: true,
+    providers: providerId === "all" ? null : [providerId],
+  });
+  return {
+    repository: synced.connection.repository,
+    projectId: synced.connection.projectId,
+    revision: synced.revision,
+    provider: providerId,
+    destinations: synced.skillDestinations.filter((destination) => providerId === "all" || destination.provider === providerId),
+    conflicts: synced.skillDestinations.flatMap((destination) => destination.conflicts || []),
+  };
 }
 
 export function sharedContextStatus(root) {
@@ -914,12 +2152,547 @@ export function sharedContextStatus(root) {
     permissionBoundary: {
       verified: Boolean(security?.verified),
       checkedAt: security?.checkedAt || null,
-      enforcement: "GitHub ruleset requires a pull request and Context Room never pushes accepted changes to main",
+      enforcement: "Agents publish proposal branches; the reviewed result reaches main only through the in-app human acceptance action, using a normal fast-forward push",
       note: security?.verified
-        ? `Last remote check passed for ${security.repository}:${security.defaultBranch}. Run shared security-check to verify again.`
-        : "Run context-room shared secure-github once, then shared security-check to verify the remote rule.",
+        ? `Legacy pull-request protection is active for ${security.repository}:${security.defaultBranch} and will block direct in-app acceptance until removed or changed.`
+        : "The shared remote must allow Context Room to fast-forward the default branch when the human accepts a completed proposal.",
     },
   };
+}
+
+export function sharedSkillProviderProfiles() {
+  return Object.values(SHARED_SKILL_PROVIDER_PROFILES).map((profile) => ({ ...profile }));
+}
+
+export function sharedSkillLocationsStatus(root, { refresh = true } = {}) {
+  const connection = readSharedProjectConnection(root);
+  if (!connection) return { connected: false, providers: sharedSkillProviderProfiles(), providerPreferences: sharedSkillProviderPreferences(), collections: [], destinations: [], conflicts: [] };
+  const synced = refresh ? syncSharedContext(root, { allowOffline: true }) : cachedSharedRepositoryState(connection.repository, { projectId: connection.projectId, projectRoot: connection.projectRoot || path.resolve(root) });
+  let collections = synced.skillCollections;
+  let destinations = synced.skillDestinations;
+  let locations = synced.skillLocations;
+  if (!collections || !destinations || !locations) {
+    const snapshot = synced.current || synced.snapshot || path.join(synced.cacheRoot, "snapshots", synced.revision);
+    const plan = resolvedSkillLinkPlan(connection.projectRoot || path.resolve(root), { ...connection, projectId: connection.projectId }, synced.repositoryConfig, synced.catalog, snapshot);
+    locations = plan.locations;
+    collections = plan.collections;
+    const registry = readJson(skillLinkRegistryPath(connection.repository, connection.projectRoot || path.resolve(root)), { destinations: [] });
+    destinations = registry.destinations?.length ? registry.destinations : plan.destinations;
+  }
+  const publicCollections = collections.map((collection) => ({ id: collection.id, title: collection.title, path: collection.path, skills: collection.skills, skillCount: collection.skills.length }));
+  const preferences = readSkillLocationPreferences(connection.repository);
+  const registeredLocations = registeredRepositoryProjectLocations(connection.repository);
+  const assignmentById = new Map(locations.assignments.map((assignment) => [assignment.id, assignment]));
+  const publicDestinations = destinations.map((destination) => {
+    const assignment = assignmentById.get(destination.assignmentId || "") || null;
+    const localOverride = assignment ? localOverrideForAssignment(preferences, assignment.id, connection.projectId) : null;
+    const consumers = assignment?.scope === "device"
+      ? [{ scope: "device", projectId: "", projectRoot: "" }]
+      : registeredLocations
+        .filter((location) => assignment?.scope === "shared" || assignment?.projectIds.includes(location.projectId))
+        .map((location) => ({ scope: assignment?.scope || destination.scope, projectId: location.projectId, projectRoot: location.root }));
+    return {
+      id: destination.id,
+      assignmentId: destination.assignmentId || "",
+      collectionId: destination.collectionId,
+      provider: destination.provider,
+      scope: destination.scope,
+      origin: destination.origin || (destination.assignmentId ? "shared-assignment" : "local-destination"),
+      revision: synced.revision,
+      destination: destination.destination,
+      target: (destination.links || []).map((link) => ({ skill: link.name, link: link.link, target: link.target })),
+      skills: destination.skills || [],
+      filters: assignment ? { include: assignment.include, exclude: assignment.exclude, localExclude: localOverride?.exclude || [] } : { include: destination.include || ["*"], exclude: destination.exclude || [], localExclude: [] },
+      localOverride: localOverride ? { disabled: localOverride.disabled, exclude: localOverride.exclude } : null,
+      consumers,
+      status: destination.status,
+      reason: destination.message || (destination.status === "ready" ? "Accepted shared assignment is materialized at this managed destination" : ""),
+      providerPreference: destination.providerPreference || effectiveSkillProviderState(preferences, destination.provider, connection.projectId, destination.scope),
+      message: destination.message || "",
+      conflicts: destination.conflicts || [],
+      unmanagedContentPreserved: (destination.conflicts || []).some((conflict) => conflict.reason?.includes("unmanaged")),
+    };
+  });
+  return {
+    connected: true,
+    repository: connection.repository,
+    repositoryName: synced.repositoryConfig.name,
+    projectId: connection.projectId,
+    projects: synced.catalog.projects.map((project) => ({ id: project.id, title: project.title })),
+    revision: synced.revision,
+    online: synced.online,
+    legacy: Boolean(locations.legacy),
+    manifestPath: synced.repositoryConfig.skillLocationsFile,
+    providers: sharedSkillProviderProfiles(),
+    providerPreferences: sharedSkillProviderPreferences(),
+    localStateVersion: preferences.version,
+    projectProviderOverrides: Object.fromEntries(Object.keys(SHARED_SKILL_PROVIDER_PROFILES).map((provider) => [provider, preferences.providerOverrides.find((item) => item.projectId === connection.projectId && item.provider === provider)?.state || "inherit"])),
+    scopeDescriptions: {
+      project: "Declared projectIds and all of their registered locations",
+      shared: "Every registered project location for this shared repository",
+      device: "One global provider destination on this device",
+    },
+    collections: publicCollections,
+    assignments: locations.assignments,
+    destinations: publicDestinations,
+    conflicts: publicDestinations.flatMap((destination) => destination.conflicts.map((conflict) => ({ ...conflict, destinationId: destination.id, collectionId: destination.collectionId }))),
+  };
+}
+
+export function sharedSkillEffectiveProjection(root, { refresh = false, provider = "all" } = {}) {
+  const status = sharedSkillLocationsStatus(root, { refresh });
+  if (!status.connected) return status;
+  const providerId = String(provider || "all").trim();
+  if (providerId !== "all" && !SHARED_SKILL_PROVIDER_PROFILES[providerId]) throw new Error(`Unknown shared skill provider: ${providerId}`);
+  const destinations = status.destinations.filter((destination) => providerId === "all" || destination.provider === providerId);
+  return {
+    ...status,
+    provider: providerId,
+    destinations,
+    conflicts: destinations.flatMap((destination) => destination.conflicts.map((conflict) => ({ ...conflict, destinationId: destination.id, collectionId: destination.collectionId }))),
+  };
+}
+
+export function previewSharedSkillLocation(root, { assignmentId = "", collectionId, destination = "", provider = "custom", scope = "project", include = ["*"], exclude = [] } = {}) {
+  const status = sharedSkillLocationsStatus(root, { refresh: false });
+  if (!status.connected) throw new Error("This project has no approved shared-context binding");
+  const normalizedAssignmentId = String(assignmentId || "").trim();
+  const assignment = normalizedAssignmentId
+    ? status.assignments.find((item) => item.id === safeId(normalizedAssignmentId, "assignmentId"))
+    : status.assignments.find((item) => item.collectionId === safeId(collectionId, "collectionId") && (provider === "custom" || item.providers.includes(provider)) && item.scope === scope && assignmentAppliesToProject(item, status.projectId));
+  if (!assignment) throw new Error("A local destination can link only an accepted shared skill assignment");
+  if (provider !== "custom" && !assignment.providers.includes(provider)) throw new Error(`Provider ${provider} is not part of accepted assignment ${assignment.id}`);
+  const collection = status.collections.find((item) => item.id === assignment.collectionId);
+  if (!collection) throw new Error(`Unknown shared skill collection: ${assignment.collectionId}`);
+  const resolvedDestination = destination
+    ? expandUserPath(destination)
+    : providerSkillDestination(safeId(provider, "provider"), assignment.scope === "device" ? "device" : "project", path.resolve(root));
+  if (!resolvedDestination) throw new Error(`No destination is configured for provider ${provider}`);
+  const skills = selectedSkillsForLocation(collection.skills, normalizedSkillSelection(include, ["*"]), normalizedSkillSelection(exclude, []));
+  const managedRoot = repositoryCacheRoot(status.repository);
+  const conflicts = skills.flatMap((name) => {
+    const link = path.join(resolvedDestination, name);
+    const state = managedSymlinkTarget(link, managedRoot);
+    return state.exists && (!state.symbolic || !state.managed) ? [{ skill: name, path: link, reason: "Destination already contains an unmanaged skill" }] : [];
+  });
+  return { assignment, collection, provider, scope: assignment.scope, destination: resolvedDestination, skills, conflicts, ready: conflicts.length === 0 };
+}
+
+export function linkSharedSkillLocation(root, options = {}) {
+  const connection = readSharedProjectConnection(root);
+  if (!connection) throw new Error("This project has no approved shared-context binding");
+  const preview = previewSharedSkillLocation(root, options);
+  if (preview.conflicts.length) throw new Error(`Skill destination has unmanaged conflicts: ${preview.conflicts.map((item) => item.skill).join(", ")}`);
+  const preferences = readSkillLocationPreferences(connection.repository);
+  const id = options.id ? safeId(options.id, "mount id") : `mount-${hashKey(`${preview.assignment.id}:${preview.destination}`).slice(0, 12)}`;
+  const mount = {
+    id,
+    assignmentId: preview.assignment.id,
+    collectionId: preview.assignment.collectionId,
+    destination: preview.destination,
+    provider: options.provider ? safeId(options.provider, "provider") : "custom",
+    scope: preview.assignment.scope,
+    projectId: preview.assignment.scope === "device" ? "" : connection.projectId,
+    include: normalizedSkillSelection(options.include, ["*"]),
+    exclude: normalizedSkillSelection(options.exclude, []),
+    enabled: true,
+  };
+  preferences.mounts = [...preferences.mounts.filter((item) => item.id !== id), mount];
+  writeSkillLocationPreferences(connection.repository, preferences);
+  const synced = syncSharedContext(root, { allowOffline: true, forceReconcile: true });
+  return { mount, status: sharedSkillLocationsStatus(root, { refresh: false }), online: synced.online };
+}
+
+export function unlinkSharedSkillLocation(root, { id } = {}) {
+  const connection = readSharedProjectConnection(root);
+  if (!connection) throw new Error("This project has no approved shared-context binding");
+  const mountId = safeId(id, "mount id");
+  const preferences = readSkillLocationPreferences(connection.repository);
+  const existing = preferences.mounts.find((item) => item.id === mountId);
+  if (!existing) throw new Error(`Unknown local skill mount: ${mountId}`);
+  preferences.mounts = preferences.mounts.filter((item) => item.id !== mountId);
+  writeSkillLocationPreferences(connection.repository, preferences);
+  syncSharedContext(root, { allowOffline: true, forceReconcile: true });
+  return { unlinked: true, mount: existing, status: sharedSkillLocationsStatus(root, { refresh: false }) };
+}
+
+export function setSharedSkillLocationOverride(root, { assignmentId, disabled = false, exclude = [] } = {}) {
+  const connection = readSharedProjectConnection(root);
+  if (!connection) throw new Error("This project has no approved shared-context binding");
+  const id = safeId(assignmentId, "assignmentId");
+  const status = sharedSkillLocationsStatus(root, { refresh: false });
+  if (!status.assignments.some((assignment) => assignment.id === id)) throw new Error(`Unknown shared skill assignment: ${id}`);
+  const preferences = readSkillLocationPreferences(connection.repository);
+  const normalizedExclude = normalizedSkillSelection(exclude, []);
+  const override = Boolean(disabled) || normalizedExclude.length
+    ? { assignmentId: id, projectId: connection.projectId, disabled: Boolean(disabled), exclude: normalizedExclude }
+    : null;
+  preferences.overrides = [
+    ...preferences.overrides.filter((item) => !(item.assignmentId === id && item.projectId === connection.projectId)),
+    ...(override ? [override] : []),
+  ];
+  writeSkillLocationPreferences(connection.repository, preferences);
+  syncSharedContext(root, { allowOffline: true, forceReconcile: true });
+  return { override, status: sharedSkillLocationsStatus(root, { refresh: false }) };
+}
+
+export function setSharedSkillProviderOverride(root, { provider, state = "inherit" } = {}) {
+  const connection = readSharedProjectConnection(root);
+  if (!connection) throw new Error("This project has no approved shared-context binding");
+  const providerId = safeId(provider, "provider");
+  if (!SHARED_SKILL_PROVIDER_PROFILES[providerId]) throw new Error(`Unknown shared skill provider: ${providerId}`);
+  const normalizedState = normalizeProviderPreference(state, "inherit");
+  const preferences = readSkillLocationPreferences(connection.repository);
+  preferences.providerOverrides = [
+    ...preferences.providerOverrides.filter((item) => !(item.projectId === connection.projectId && item.provider === providerId)),
+    ...(normalizedState === "inherit" ? [] : [{ projectId: connection.projectId, provider: providerId, state: normalizedState }]),
+  ];
+  writeSkillLocationPreferences(connection.repository, preferences);
+  syncSharedContext(root, { allowOffline: true, forceReconcile: true });
+  return { provider: providerId, state: normalizedState, status: sharedSkillLocationsStatus(root, { refresh: false }) };
+}
+
+function skillDirectoryDigest(root) {
+  const hash = createHash("sha256");
+  const visit = (directory, prefix = "") => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name, "en"))) {
+      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const absolute = path.join(directory, entry.name);
+      const stats = fs.lstatSync(absolute);
+      if (stats.isSymbolicLink() || (!stats.isDirectory() && !stats.isFile())) throw new Error(`Shared skill import rejects links and special files: ${relative}`);
+      hash.update(`${relative}\0${stats.mode & 0o777}\0`);
+      if (stats.isDirectory()) visit(absolute, relative);
+      else {
+        if (stats.size > MAX_SHARED_TEXT_BYTES) throw new Error(`Shared skill import file is too large: ${relative}`);
+        const content = fs.readFileSync(absolute);
+        if (!isUtf8(content)) throw new Error(`Shared skill import requires UTF-8 text files: ${relative}`);
+        hash.update(content);
+      }
+    }
+  };
+  visit(root);
+  return hash.digest("hex");
+}
+
+function copySharedSkillDirectory(source, destination) {
+  skillDirectoryDigest(source);
+  if (fs.existsSync(destination)) {
+    if (skillDirectoryDigest(destination) === skillDirectoryDigest(source)) return { copied: false, identical: true };
+    throw new Error(`Shared collection already contains a different skill: ${path.basename(destination)}`);
+  }
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.cpSync(source, destination, { recursive: true, errorOnExist: true, force: false, preserveTimestamps: true });
+  return { copied: true, identical: false };
+}
+
+export function previewSharedSkillImport(root, { sourceDirectory, collectionId = "", collectionPath = "", skills = [] } = {}) {
+  const status = sharedSkillLocationsStatus(root, { refresh: true });
+  if (!status.connected) throw new Error("This project has no approved shared-context binding");
+  const source = path.resolve(String(sourceDirectory || ""));
+  if (!fs.existsSync(source) || !fs.statSync(source).isDirectory()) throw new Error(`Skill source folder does not exist: ${source}`);
+  const available = skillDirectories(source);
+  const selected = skills.length ? normalizedSkillSelection(skills).filter((name) => available.includes(name)) : available;
+  if (!selected.length) throw new Error("The selected folder contains no importable skill directories with SKILL.md");
+  for (const name of selected) skillDirectoryDigest(path.join(source, name));
+  const existingCollection = collectionId ? status.collections.find((collection) => collection.id === safeId(collectionId, "collectionId")) : null;
+  const targetPath = existingCollection?.path || safeRelativePath(collectionPath, "collectionPath");
+  return { sourceDirectory: source, available, selected, collection: existingCollection || { id: safeId(collectionId, "collectionId"), title: collectionId, path: targetPath }, targetPath, manifestLegacy: status.legacy };
+}
+
+function sharedSkillAssignmentInput(status, { assignmentId = "", collectionId, scope = "project", projectIds = [], providers = ["codex"], include = ["*"], exclude = [] } = {}) {
+  const collection = status.collections.find((item) => item.id === safeId(collectionId, "collectionId"));
+  if (!collection) throw new Error(`Unknown shared skill collection: ${collectionId}`);
+  const normalizedScope = String(scope || "project").trim();
+  if (!new Set(["project", "shared", "device"]).has(normalizedScope)) throw new Error(`Invalid skill assignment scope: ${normalizedScope}`);
+  const normalizedProjects = normalizedScope === "project"
+    ? [...new Set((projectIds.length ? projectIds : [status.projectId]).map((projectId) => safeId(projectId, "projectId")))]
+    : [];
+  if (normalizedScope === "project" && !normalizedProjects.length) throw new Error("Project assignments require at least one projectId");
+  const knownProjects = new Set((status.projects || []).map((project) => project.id));
+  const unknownProject = normalizedProjects.find((projectId) => !knownProjects.has(projectId));
+  if (unknownProject) throw new Error(`Unknown shared project: ${unknownProject}`);
+  const providerIds = [...new Set(providers.map((provider) => safeId(provider, "provider")))];
+  if (!providerIds.length) throw new Error("Skill assignments require at least one provider");
+  const unknownProvider = providerIds.find((provider) => !SHARED_SKILL_PROVIDER_PROFILES[provider]);
+  if (unknownProvider) throw new Error(`Unknown shared skill provider: ${unknownProvider}`);
+  const base = `${collection.id}-${normalizedScope}`;
+  const id = assignmentId
+    ? safeId(assignmentId, "assignmentId")
+    : safeId(base.length <= 63 ? base : `${collection.id.slice(0, 42)}-${hashKey(base).slice(0, 12)}`, "assignmentId");
+  return { id, collectionId: collection.id, scope: normalizedScope, projectIds: normalizedProjects, providers: providerIds, include: normalizedSkillSelection(include, ["*"]), exclude: normalizedSkillSelection(exclude, []) };
+}
+
+export function previewSharedSkillAssignment(root, options = {}) {
+  const status = sharedSkillLocationsStatus(root, { refresh: true });
+  if (!status.connected) throw new Error("This project has no approved shared-context binding");
+  const assignment = sharedSkillAssignmentInput(status, options);
+  const existing = status.assignments.find((item) => item.id === assignment.id) || null;
+  const registered = registeredRepositoryProjectLocations(status.repository)
+    .filter((location) => assignment.scope === "shared" || assignment.scope === "device" || assignment.projectIds.includes(location.projectId));
+  const affectedLocations = [...new Set((assignment.scope === "device"
+    ? assignment.providers.map((provider) => providerSkillDestination(provider, "device", path.resolve(root))).filter(Boolean)
+    : registered.map((location) => location.root)))]
+    .sort((left, right) => left.localeCompare(right, "en"));
+  const collection = status.collections.find((item) => item.id === assignment.collectionId);
+  const selectedSkills = selectedSkillsForLocation(collection?.skills || [], assignment.include, assignment.exclude);
+  const destinations = assignment.scope === "device"
+    ? assignment.providers.map((provider) => ({ provider, projectId: "", projectRoot: "", destination: providerSkillDestination(provider, "device", path.resolve(root)) }))
+    : registered.flatMap((location) => assignment.providers.map((provider) => ({ provider, projectId: location.projectId, projectRoot: location.root, destination: providerSkillDestination(provider, "project", location.root) })));
+  const managedRoot = repositoryCacheRoot(status.repository);
+  const preferences = readSkillLocationPreferences(status.repository);
+  const destinationPreview = destinations.map((destination) => {
+    const providerPreference = effectiveSkillProviderState(preferences, destination.provider, destination.projectId || status.projectId, assignment.scope);
+    const localOverride = localOverrideForAssignment(preferences, assignment.id, destination.projectId || status.projectId);
+    const effectiveSkills = providerPreference.state === "disabled" || localOverride?.disabled
+      ? []
+      : selectedSkills.filter((skill) => !(localOverride?.exclude || []).includes(skill));
+    const conflicts = effectiveSkills.flatMap((skill) => {
+      const link = path.join(destination.destination, skill);
+      const state = managedSymlinkTarget(link, managedRoot);
+      return state.exists && (!state.symbolic || !state.managed) ? [{ skill, path: link, reason: "Destination already contains an unmanaged skill" }] : [];
+    });
+    return { ...destination, providerPreference, localOverride, skills: effectiveSkills, conflicts };
+  });
+  return {
+    assignment,
+    existing,
+    collection: collection ? { id: collection.id, title: collection.title, path: collection.path, skills: selectedSkills } : null,
+    providers: assignment.providers.map((provider) => ({ provider, preference: effectiveSkillProviderState(preferences, provider, status.projectId, assignment.scope) })),
+    destinations: destinationPreview,
+    conflicts: destinationPreview.flatMap((destination) => destination.conflicts.map((conflict) => ({ ...conflict, provider: destination.provider, destination: destination.destination }))),
+    affectedLocations,
+    action: existing ? "reassign" : "assign",
+    proposalRequired: true,
+    sharedChanges: { manifestPath: status.manifestPath, assignment },
+    localChanges: [],
+  };
+}
+
+export function proposeSharedSkillAssignment(root, { title = "Assign shared skills", description = "Update the shared skill assignment and provider scope.", sessionId = process.env.CODEX_THREAD_ID || "", ...options } = {}) {
+  const preview = previewSharedSkillAssignment(root, options);
+  const proposal = ensureSharedProposal(root, { title, description, scope: "skills", sessionId });
+  const repositoryConfig = readSharedRepositoryConfig(proposal.root);
+  const catalog = normalizedProjectsCatalog(readJson(path.join(proposal.root, repositoryConfig.projectsFile)));
+  const current = readSharedSkillLocationsFromRoot(proposal.root, repositoryConfig, catalog);
+  const next = { ...current, collections: current.collections.map((item) => ({ ...item })), assignments: [...current.assignments.filter((item) => item.id !== preview.assignment.id), preview.assignment] };
+  const normalized = normalizedSharedSkillLocations(next, { repositoryConfig, catalog });
+  writeJson(path.join(proposal.root, repositoryConfig.skillLocationsFile), sharedSkillLocationsDocument(normalized));
+  const published = publishSharedProposal(root, { proposal: proposal.branch, title, description, message: title });
+  return { proposal: published, assignment: preview.assignment, action: preview.action, affectedLocations: preview.affectedLocations, localFilesChanged: false };
+}
+
+export function previewSharedSkillUnassignment(root, { assignmentId } = {}) {
+  const status = sharedSkillLocationsStatus(root, { refresh: true });
+  if (!status.connected) throw new Error("This project has no approved shared-context binding");
+  const id = safeId(assignmentId, "assignmentId");
+  const assignment = status.assignments.find((item) => item.id === id);
+  if (!assignment) throw new Error(`Unknown shared skill assignment: ${id}`);
+  return { assignment, action: "unassign", proposalRequired: true };
+}
+
+export function proposeSharedSkillUnassignment(root, { assignmentId, title = "Unassign shared skills", description = "Remove the shared skill assignment without deleting local unmanaged content.", sessionId = process.env.CODEX_THREAD_ID || "" } = {}) {
+  const preview = previewSharedSkillUnassignment(root, { assignmentId });
+  const proposal = ensureSharedProposal(root, { title, description, scope: "skills", sessionId });
+  const repositoryConfig = readSharedRepositoryConfig(proposal.root);
+  const catalog = normalizedProjectsCatalog(readJson(path.join(proposal.root, repositoryConfig.projectsFile)));
+  const current = readSharedSkillLocationsFromRoot(proposal.root, repositoryConfig, catalog);
+  const normalized = normalizedSharedSkillLocations({ ...current, collections: current.collections.map((item) => ({ ...item })), assignments: current.assignments.filter((item) => item.id !== preview.assignment.id) }, { repositoryConfig, catalog });
+  writeJson(path.join(proposal.root, repositoryConfig.skillLocationsFile), sharedSkillLocationsDocument(normalized));
+  const published = publishSharedProposal(root, { proposal: proposal.branch, title, description, message: title });
+  return { proposal: published, assignment: preview.assignment, action: "unassign", localFilesChanged: false };
+}
+
+export function importSharedSkills(root, {
+  sourceDirectory,
+  collectionId,
+  collectionTitle = "",
+  collectionPath = "",
+  skills = [],
+  scope = "project",
+  projectIds = [],
+  providers = ["codex"],
+  destination = "",
+  title = "Import shared skills",
+  description = "Import selected skills into the shared canonical library and link their accepted snapshot.",
+  sessionId = process.env.CODEX_THREAD_ID || "",
+} = {}) {
+  const preview = previewSharedSkillImport(root, { sourceDirectory, collectionId, collectionPath, skills });
+  const connection = readSharedProjectConnection(root);
+  const proposal = ensureSharedProposal(root, { title, description, scope: "skills", sessionId });
+  const repositoryConfig = readSharedRepositoryConfig(proposal.root);
+  const catalog = normalizedProjectsCatalog(readJson(path.join(proposal.root, repositoryConfig.projectsFile)));
+  const existingLocations = readSharedSkillLocationsFromRoot(proposal.root, repositoryConfig, catalog);
+  const next = { ...existingLocations, collections: existingLocations.collections.map((item) => ({ ...item })), assignments: existingLocations.assignments.map((item) => ({ ...item, projectIds: [...item.projectIds], providers: [...item.providers], include: [...item.include], exclude: [...item.exclude] })) };
+  let collection = next.collections.find((item) => item.id === preview.collection.id);
+  if (!collection) {
+    collection = { id: preview.collection.id, title: String(collectionTitle || preview.collection.id).trim() || preview.collection.id, path: preview.targetPath };
+    next.collections.push(collection);
+  }
+  const providerIds = [...new Set(providers.map((provider) => safeId(provider, "provider")))];
+  const assignmentBase = `${collection.id}-${scope}`;
+  const assignmentId = safeId(assignmentBase.length <= 63 ? assignmentBase : `${collection.id.slice(0, 42)}-${hashKey(assignmentBase).slice(0, 12)}`, "assignment id");
+  const normalizedScope = new Set(["project", "shared", "device"]).has(scope) ? scope : "project";
+  const assignment = { id: assignmentId, collectionId: collection.id, scope: normalizedScope, projectIds: normalizedScope === "project" ? [...new Set((projectIds.length ? projectIds : [connection.projectId]).map((projectId) => safeId(projectId, "projectId")))] : [], providers: providerIds, include: ["*"], exclude: [] };
+  next.assignments = [...next.assignments.filter((item) => item.id !== assignmentId), assignment];
+  const normalized = normalizedSharedSkillLocations(next, { repositoryConfig, catalog });
+  writeJson(path.join(proposal.root, repositoryConfig.skillLocationsFile), sharedSkillLocationsDocument(normalized));
+  const copied = preview.selected.map((name) => ({ name, ...copySharedSkillDirectory(path.join(preview.sourceDirectory, name), path.join(proposal.root, collection.path, name)) }));
+  const published = publishSharedProposal(root, { proposal: proposal.branch, title, description, message: title });
+  const preferences = readSkillLocationPreferences(connection.repository);
+  const resolvedDestination = destination
+    ? expandUserPath(destination)
+    : providerIds.length === 1 ? providerSkillDestination(providerIds[0], scope === "device" ? "device" : "project", connection.projectRoot || path.resolve(root)) : preview.sourceDirectory;
+  if (resolvedDestination && !preferences.mounts.some((mount) => mount.collectionId === collection.id && mount.destination === resolvedDestination)) {
+    const defaultProviderDestination = providerIds.length === 1 ? providerSkillDestination(providerIds[0], scope === "device" ? "device" : "project", connection.projectRoot || path.resolve(root)) : "";
+    if (destination || !defaultProviderDestination || path.resolve(defaultProviderDestination) !== path.resolve(resolvedDestination)) {
+      preferences.mounts.push({ id: `mount-${hashKey(`${collection.id}:${resolvedDestination}`).slice(0, 12)}`, collectionId: collection.id, destination: resolvedDestination, provider: providerIds.length === 1 ? providerIds[0] : "custom", scope: scope === "device" ? "device" : "project", projectId: scope === "device" ? "" : connection.projectId, include: ["*"], exclude: [], enabled: true });
+    }
+  }
+  const pendingId = `import-${hashKey(`${published.branch}:${preview.sourceDirectory}`).slice(0, 12)}`;
+  preferences.pendingImports = [...preferences.pendingImports.filter((item) => item.id !== pendingId), { id: pendingId, proposal: published.branch, proposalHead: published.head, collectionId: collection.id, sourceDirectory: preview.sourceDirectory, destination: resolvedDestination || preview.sourceDirectory, skills: preview.selected, createdAt: new Date().toISOString() }];
+  writeSkillLocationPreferences(connection.repository, preferences);
+  return { proposal: published, collection, assignment, copied, pendingImport: preferences.pendingImports.find((item) => item.id === pendingId), localFilesChanged: false };
+}
+
+function normalizedInstructionFiles(files, assignmentId = "preview") {
+  return normalizedSharedInstructionLocations({
+    version: 1,
+    collections: [{ id: "collection", title: "Collection", path: "instructions/collection" }],
+    assignments: [{ id: safeId(assignmentId, "instruction assignment id"), collectionId: "collection", scope: "device", files }],
+  }).assignments[0].files;
+}
+
+function affectedInstructionLocations(repository, assignment) {
+  if (assignment.scope === "device") return [{ projectId: "", root: "", scope: "device" }];
+  return registeredRepositoryProjectLocations(repository)
+    .filter((location) => assignment.scope === "shared" || assignment.projectIds.includes(location.projectId))
+    .map((location) => ({ ...location, scope: assignment.scope }));
+}
+
+export function previewSharedInstructionAssignment(root, { assignmentId = "", collectionId, scope = "project", projectIds = [], files = [] } = {}) {
+  const status = sharedInstructionLocationsStatus(root, { refresh: true });
+  if (!status.connected) throw new Error("This project has no approved shared-context binding");
+  const collection = status.collections.find((item) => item.id === safeId(collectionId, "collectionId"));
+  if (!collection) throw new Error(`Unknown shared instruction collection: ${collectionId}`);
+  const normalizedScope = String(scope || "project");
+  const id = assignmentId ? safeId(assignmentId, "assignmentId") : safeId(`${collection.id}-${normalizedScope}`.slice(0, 63), "assignmentId");
+  const assignment = normalizedSharedInstructionLocations({
+    version: 1,
+    collections: status.collections,
+    assignments: [{ id, collectionId: collection.id, scope: normalizedScope, ...(normalizedScope === "project" ? { projectIds: projectIds.length ? projectIds : [status.projectId] } : {}), files }],
+  }, { catalog: { projects: status.projects || [] } }).assignments[0];
+  return {
+    action: status.assignments.some((item) => item.id === assignment.id) ? "reassign" : "assign",
+    proposalRequired: true,
+    assignment,
+    collection,
+    affectedLocations: affectedInstructionLocations(status.repository, assignment),
+    sharedChanges: { manifestPath: status.manifestPath, assignment },
+    localChanges: [],
+  };
+}
+
+export function proposeSharedInstructionAssignment(root, { title = "Assign shared instructions", description = "Update the shared instruction assignment and its project/provider targets.", sessionId = process.env.CODEX_THREAD_ID || "", ...options } = {}) {
+  const preview = previewSharedInstructionAssignment(root, options);
+  const proposal = ensureSharedProposal(root, { title, description, scope: "instructions", sessionId });
+  const repositoryConfig = readSharedRepositoryConfig(proposal.root);
+  const catalog = normalizedProjectsCatalog(readJson(path.join(proposal.root, repositoryConfig.projectsFile)));
+  const current = readSharedInstructionLocationsFromRoot(proposal.root, repositoryConfig, catalog);
+  const next = normalizedSharedInstructionLocations({ ...current, assignments: [...current.assignments.filter((item) => item.id !== preview.assignment.id), preview.assignment] }, { repositoryConfig, catalog });
+  writeJson(path.join(proposal.root, repositoryConfig.instructionLocationsFile), sharedInstructionLocationsDocument(next));
+  const published = publishSharedProposal(root, { proposal: proposal.branch, title, description, message: title });
+  return { proposal: published, assignment: preview.assignment, action: preview.action, affectedLocations: preview.affectedLocations, localFilesChanged: false };
+}
+
+export function previewSharedInstructionUnassignment(root, { assignmentId } = {}) {
+  const status = sharedInstructionLocationsStatus(root, { refresh: true });
+  const id = safeId(assignmentId, "assignmentId");
+  const assignment = status.assignments.find((item) => item.id === id);
+  if (!assignment) throw new Error(`Unknown shared instruction assignment: ${id}`);
+  return { action: "unassign", proposalRequired: true, assignment, affectedLocations: affectedInstructionLocations(status.repository, assignment) };
+}
+
+export function proposeSharedInstructionUnassignment(root, { assignmentId, title = "Unassign shared instructions", description = "Remove the shared instruction assignment without deleting unmanaged local files.", sessionId = process.env.CODEX_THREAD_ID || "" } = {}) {
+  const preview = previewSharedInstructionUnassignment(root, { assignmentId });
+  const proposal = ensureSharedProposal(root, { title, description, scope: "instructions", sessionId });
+  const repositoryConfig = readSharedRepositoryConfig(proposal.root);
+  const catalog = normalizedProjectsCatalog(readJson(path.join(proposal.root, repositoryConfig.projectsFile)));
+  const current = readSharedInstructionLocationsFromRoot(proposal.root, repositoryConfig, catalog);
+  const next = normalizedSharedInstructionLocations({ ...current, assignments: current.assignments.filter((item) => item.id !== preview.assignment.id) }, { repositoryConfig, catalog });
+  writeJson(path.join(proposal.root, repositoryConfig.instructionLocationsFile), sharedInstructionLocationsDocument(next));
+  const published = publishSharedProposal(root, { proposal: proposal.branch, title, description, message: title });
+  return { proposal: published, assignment: preview.assignment, action: "unassign", localFilesChanged: false };
+}
+
+export function previewSharedInstructionImport(root, { collectionId = "", collectionTitle = "", collectionPath = "", files = [] } = {}) {
+  const status = sharedInstructionLocationsStatus(root, { refresh: true });
+  const id = safeId(collectionId || collectionTitle, "collectionId");
+  const existing = status.collections.find((item) => item.id === id);
+  const targetPath = existing?.path || safeRelativePath(collectionPath || `instructions/${id}`, "instruction collection path");
+  if (!Array.isArray(files) || !files.length) throw new Error("Select at least one local instruction file");
+  const selected = files.map((item) => {
+    const localPath = path.resolve(String(item?.localPath || ""));
+    if (!fs.existsSync(localPath) || !fs.statSync(localPath).isFile()) throw new Error(`Instruction file does not exist: ${localPath}`);
+    if (!/\.mdx?$/i.test(localPath)) throw new Error(`Instruction imports support Markdown files only: ${localPath}`);
+    const source = safeInstructionPath(item?.source || path.basename(localPath), "shared instruction source");
+    const target = safeInstructionPath(item?.target || path.basename(localPath), "instruction target");
+    const providers = normalizedInstructionFiles([{ source, target, providers: item?.providers || ["codex"] }])[0].providers;
+    return { localPath, source, target, providers };
+  });
+  return { collection: { id, title: String(collectionTitle || existing?.title || id).trim() || id, path: targetPath }, existing: Boolean(existing), files: selected, proposalRequired: true, localFilesChanged: false };
+}
+
+export function importSharedInstructions(root, {
+  collectionId,
+  collectionTitle = "",
+  collectionPath = "",
+  files = [],
+  scope = "project",
+  projectIds = [],
+  title = "Import shared instructions",
+  description = "Import selected instruction files into the shared canonical library and assign their accepted snapshot.",
+  sessionId = process.env.CODEX_THREAD_ID || "",
+} = {}) {
+  const preview = previewSharedInstructionImport(root, { collectionId, collectionTitle, collectionPath, files });
+  const connection = readSharedProjectConnection(root);
+  const proposal = ensureSharedProposal(root, { title, description, scope: "instructions", sessionId });
+  const repositoryConfig = readSharedRepositoryConfig(proposal.root);
+  const catalog = normalizedProjectsCatalog(readJson(path.join(proposal.root, repositoryConfig.projectsFile)));
+  const current = readSharedInstructionLocationsFromRoot(proposal.root, repositoryConfig, catalog);
+  const collection = preview.collection;
+  const normalizedScope = new Set(["project", "shared", "device"]).has(scope) ? scope : "project";
+  const assignmentId = safeId(`${collection.id}-${normalizedScope}`.slice(0, 63), "assignmentId");
+  const previousAssignment = current.assignments.find((item) => item.id === assignmentId);
+  const importedFiles = preview.files.map(({ source, target, providers }) => ({ source, target, providers }));
+  const importedDestinations = new Set(importedFiles.flatMap((item) => item.providers.map((provider) => `${provider}:${item.target}`)));
+  const preservedFiles = (previousAssignment?.files || []).filter((item) => (
+    !item.providers.some((provider) => importedDestinations.has(`${provider}:${item.target}`))
+  ));
+  const assignment = {
+    id: assignmentId,
+    collectionId: collection.id,
+    scope: normalizedScope,
+    projectIds: normalizedScope === "project" ? [...new Set((projectIds.length ? projectIds : [connection.projectId]).map((id) => safeId(id, "projectId")))] : [],
+    files: [...preservedFiles, ...importedFiles],
+  };
+  const next = normalizedSharedInstructionLocations({
+    version: 1,
+    collections: [...current.collections.filter((item) => item.id !== collection.id), collection],
+    assignments: [...current.assignments.filter((item) => item.id !== assignment.id), assignment],
+  }, { repositoryConfig, catalog });
+  for (const item of preview.files) {
+    const destination = path.join(proposal.root, collection.path, ...item.source.split("/"));
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.copyFileSync(item.localPath, destination);
+  }
+  writeJson(path.join(proposal.root, repositoryConfig.instructionLocationsFile), sharedInstructionLocationsDocument(next));
+  const published = publishSharedProposal(root, { proposal: proposal.branch, title, description, message: title });
+  return { proposal: published, collection, assignment, imported: preview.files.map((item) => ({ source: item.localPath, sharedPath: `${collection.path}/${item.source}` })), localFilesChanged: false };
+}
+
+export function reconcileSharedInstructionLocations(root, { allowOffline = true } = {}) {
+  const synced = syncSharedContext(root, { allowOffline, forceReconcile: true });
+  return { connected: true, repository: synced.connection.repository, projectId: synced.connection.projectId, revision: synced.revision, links: synced.instructionLinks || [], status: sharedInstructionLocationsStatus(root, { refresh: false }) };
 }
 
 function sharedSecurityTarget(root) {
@@ -1152,36 +2925,61 @@ export function secureSharedGitHubRepository(root) {
   return { ...result, rulesetCreated: !existing, rulesetUpdated: Boolean(existing), deployKeyId: deployKey.id || result.deployKeyId };
 }
 
-function proposalScopePrefixes(config, projectId, scope) {
+function proposalScopePrefixes(config, projectId, scope, options = {}) {
   if (scope === "global") return [config.globalSkillsPath.replace(/\/$/, "") + "/"];
-  if (scope !== "project") throw new Error("Proposal scope must be project or global");
+  if (scope === "skills") {
+    let locations = options.locations || null;
+    if (!locations && options.root) {
+      const catalog = options.catalog || normalizedProjectsCatalog(readJson(path.join(options.root, config.projectsFile)));
+      locations = readSharedSkillLocationsFromRoot(options.root, config, catalog);
+    }
+    if (!locations && options.checkout && options.revision) {
+      const catalog = options.catalog || normalizedProjectsCatalog(JSON.parse(String(runGit(options.checkout, ["show", `${options.revision}:${config.projectsFile}`]))));
+      locations = readSharedSkillLocationsFromRevision(options.checkout, options.revision, config, catalog);
+    }
+    return (locations?.collections || []).map((collection) => collection.path.replace(/\/$/, "") + "/");
+  }
+  if (scope === "instructions") {
+    let locations = options.instructionLocations || null;
+    if (!locations && options.root) {
+      const catalog = options.catalog || normalizedProjectsCatalog(readJson(path.join(options.root, config.projectsFile)));
+      locations = readSharedInstructionLocationsFromRoot(options.root, config, catalog);
+    }
+    return (locations?.collections || []).map((collection) => collection.path.replace(/\/$/, "") + "/");
+  }
+  if (scope !== "project") throw new Error("Proposal scope must be project, global, skills, or instructions");
   const projectRoot = `${config.projectsPath.replace(/\/$/, "")}/${safeId(projectId, "projectId")}`;
   return [`${projectRoot}/docs/`, `${projectRoot}/skills/`];
 }
 
-function proposalIdentity(config, branch) {
+function proposalIdentity(config, branch, options = {}) {
   const safeBranch = safeBranchName(branch, "proposal branch");
   if (!safeBranch.startsWith(config.proposalPrefix)) throw new Error(`Proposal branch must start with ${config.proposalPrefix}`);
   const suffix = safeBranch.slice(config.proposalPrefix.length);
   const segments = suffix.split("/");
   if (segments.length < 2 || !segments.slice(1).join("/")) throw new Error("Proposal branch must include a scope and proposal name");
   const scopeId = safeId(segments[0], "proposal scope");
+  const scope = scopeId === "global" ? "global" : scopeId === "skills" ? "skills" : scopeId === "instructions" ? "instructions" : "project";
   return {
     branch: safeBranch,
     projectId: scopeId,
-    scope: scopeId === "global" ? "global" : "project",
-    allowedPrefixes: proposalScopePrefixes(config, scopeId, scopeId === "global" ? "global" : "project"),
+    scope,
+    allowedExact: scope === "skills" ? [config.skillLocationsFile] : scope === "instructions" ? [config.instructionLocationsFile] : [],
+    allowedPrefixes: proposalScopePrefixes(config, scopeId, scope, options),
   };
 }
 
 function assertPathsInProposalScope(files, policy) {
-  const outside = files.filter((file) => !policy.allowedPrefixes.some((prefix) => file.startsWith(prefix)));
-  if (outside.length) throw new Error(`Proposal changes files outside ${policy.allowedPrefixes.join(" or ")}: ${outside.join(", ")}`);
+  const outside = files.filter((file) => !(policy.allowedExact || []).includes(file) && !policy.allowedPrefixes.some((prefix) => file.startsWith(prefix)));
+  if (!outside.length) return;
+  if (policy.scope === "project") throw new Error(`Proposal changes files outside ${policy.allowedPrefixes.join(" or ")}: ${outside.join(", ")}`);
+  if (policy.scope === "global") throw new Error(`Proposal changes files outside ${policy.allowedPrefixes.join(" or ")}: ${outside.join(", ")}`);
+  throw new Error(`Proposal changes files outside its allowed shared manifest or collections: ${outside.join(", ")}`);
 }
 
 function proposalBranch(config, projectId, title, scope, explicit = "") {
-  const scopeId = scope === "global" ? "global" : safeId(projectId, "projectId");
-  if (!['project', 'global'].includes(scope)) throw new Error("Proposal scope must be project or global");
+  const scopeId = scope === "global" || scope === "skills" || scope === "instructions" ? scope : safeId(projectId, "projectId");
+  if (!['project', 'global', 'skills', 'instructions'].includes(scope)) throw new Error("Proposal scope must be project, global, skills, or instructions");
   if (explicit) {
     const identity = proposalIdentity(config, explicit);
     if (identity.projectId !== scopeId) throw new Error(`Proposal branch scope must be ${config.proposalPrefix}${scopeId}/`);
@@ -1230,8 +3028,8 @@ export function createSharedProposal(root, { title, description = "", scope = "p
 }
 
 function proposalScopeId(connection, scope) {
-  if (scope === "global") return "global";
-  if (scope !== "project") throw new Error("Proposal scope must be project or global");
+  if (scope === "global" || scope === "skills" || scope === "instructions") return scope;
+  if (scope !== "project") throw new Error("Proposal scope must be project, global, skills, or instructions");
   return safeId(connection.projectId, "projectId");
 }
 
@@ -1239,7 +3037,7 @@ function proposalSessionMatches(entry, connection, scope, sessionId) {
   return entry
     && safeSessionId(entry.sessionId) === sessionId
     && String(entry.scope || "project") === scope
-    && String(entry.scope === "global" ? "global" : entry.projectId) === proposalScopeId(connection, scope);
+    && String(["global", "skills", "instructions"].includes(entry.scope) ? entry.scope : entry.projectId) === proposalScopeId(connection, scope);
 }
 
 function remoteBranchRevision(checkout, branch) {
@@ -1333,12 +3131,13 @@ function proposalCommitMessage(entry, message) {
   const trailers = [
     `Context-Room-Title: ${proposalTitle(entry.title)}`,
     entry.description ? `Context-Room-Description-Base64: ${encodeProposalDescription(entry.description)}` : "",
-    `Context-Room-Project: ${entry.scope === "global" ? "global" : entry.projectId}`,
+    `Context-Room-Project: ${["global", "skills", "instructions"].includes(entry.scope) ? entry.scope : entry.projectId}`,
     `Context-Room-Base: ${entry.baseRevision}`,
     entry.sourceRemote ? `Context-Room-Source-Remote: ${entry.sourceRemote}` : "",
     entry.sourceBranch ? `Context-Room-Source-Branch: ${entry.sourceBranch}` : "",
     entry.sourceCommit ? `Context-Room-Source-Commit: ${entry.sourceCommit}` : "",
     entry.sessionId ? `Context-Room-Session: ${entry.sessionId}` : "",
+    entry.semanticReviewRequired ? "Context-Room-Semantic-Review: required" : "",
   ].filter(Boolean);
   return `${String(message || entry.title || "Propose shared context changes").trim()}\n\n${trailers.join("\n")}`;
 }
@@ -1352,6 +3151,26 @@ function proposalEntry(root, branch) {
   return { connection, entry, registry };
 }
 
+export function listSharedProposalWorkspaces(root, { sessionId = "", scope = "" } = {}) {
+  const connection = readSharedProjectConnection(root);
+  if (!connection) return [];
+  const registry = readJson(proposalRegistryPath(connection.repository), { version: 1, proposals: {} });
+  const normalizedSession = safeSessionId(sessionId);
+  return Object.values(registry.proposals || {}).flatMap((entry) => {
+    if (!entry?.branch || !entry?.root || !fs.existsSync(entry.root)) return [];
+    if (normalizedSession && safeSessionId(entry.sessionId) !== normalizedSession) return [];
+    if (scope && String(entry.scope || "project") !== scope) return [];
+    const status = tryGit(entry.root, ["status", "--porcelain=v1"]);
+    const head = tryGit(entry.root, ["rev-parse", "HEAD"]);
+    return [{
+      ...entry,
+      head,
+      dirty: Boolean(status),
+      conflict: Boolean(tryGit(entry.root, ["diff", "--name-only", "--diff-filter=U"])),
+    }];
+  }).sort((left, right) => String(right.updatedAt || right.createdAt || "").localeCompare(String(left.updatedAt || left.createdAt || "")));
+}
+
 function changedFiles(cwd, base) {
   const committed = gitChangedPaths(cwd, `${base}...HEAD`);
   const working = splitNull(runGit(cwd, ["diff", "--name-only", "-z", "HEAD", "--"], { encoding: null }));
@@ -1360,10 +3179,11 @@ function changedFiles(cwd, base) {
 }
 
 export function publishSharedProposal(root, { proposal, message = "", title, description } = {}) {
+  const synced = syncSharedContext(root, { allowOffline: false });
   const { connection, entry, registry } = proposalEntry(root, proposal);
   const config = readSharedRepositoryConfig(entry.root);
-  const identity = proposalIdentity(config, entry.branch);
-  const expectedScopeId = entry.scope === "global" ? "global" : entry.projectId;
+  const identity = proposalIdentity(config, entry.branch, { root: entry.root });
+  const expectedScopeId = ["global", "skills", "instructions"].includes(entry.scope) ? entry.scope : entry.projectId;
   if (identity.projectId !== expectedScopeId) throw new Error(`Proposal branch scope must be ${config.proposalPrefix}${expectedScopeId}/`);
   const previousRemoteHead = tryGit(entry.root, ["rev-parse", "--verify", `refs/remotes/origin/${entry.branch}`]);
   if (previousRemoteHead && description === undefined) {
@@ -1390,19 +3210,63 @@ export function publishSharedProposal(root, { proposal, message = "", title, des
     commitArgs.push("-m", proposalCommitMessage(entry, message));
     runGit(entry.root, commitArgs, { stdio: ["ignore", "ignore", "pipe"] });
   }
+  const unmerged = tryGit(entry.root, ["diff", "--name-only", "--diff-filter=U"]);
+  if (unmerged) {
+    entry.conflict = { status: "conflict", mainRevision: synced.revision, files: unmerged.split("\n").filter(Boolean), updatedAt: new Date().toISOString() };
+    writeJson(proposalRegistryPath(connection.repository), registry);
+    throw new Error(`Proposal rebase conflict remains unresolved: ${entry.conflict.files.join(", ")}`);
+  }
+  const previousBaseRevision = entry.baseRevision;
+  const rebased = synced.revision !== previousBaseRevision;
+  if (rebased) {
+    try {
+      runGit(entry.root, ["rebase", "--onto", synced.revision, previousBaseRevision, entry.branch], { stdio: ["ignore", "ignore", "pipe"] });
+    } catch (error) {
+      const files = tryGit(entry.root, ["diff", "--name-only", "--diff-filter=U"]).split("\n").filter(Boolean);
+      entry.conflict = { status: "conflict", mainRevision: synced.revision, files, updatedAt: new Date().toISOString() };
+      writeJson(proposalRegistryPath(connection.repository), registry);
+      appendContextRoomEvent("proposal.conflict", {
+        projectId: connection.projectId,
+        sharedRepository: connection.repository,
+        resource: { proposal: entry.branch, files },
+        data: { mainRevision: synced.revision },
+      });
+      throw new Error(`Proposal rebase conflict: ${files.join(", ") || String(error.stderr || error.message || error).trim()}`);
+    }
+    entry.baseRevision = synced.revision;
+    entry.semanticReviewRequired = true;
+    delete entry.conflict;
+    runGit(entry.root, ["commit", "--allow-empty", "-m", proposalCommitMessage(entry, "Rebase proposal onto current shared main")], { stdio: ["ignore", "ignore", "pipe"] });
+  }
   const head = safeRevision(tryGit(entry.root, ["rev-parse", "HEAD"]), "proposal head");
   const files = gitChangedPaths(entry.root, `${entry.baseRevision}...${head}`);
   assertPathsInProposalScope(files, identity);
   assertReviewableChangedPaths(entry.root, entry.baseRevision, head, files);
-  runGit(entry.root, ["push", "--set-upstream", "origin", `${entry.branch}:${entry.branch}`], { stdio: ["ignore", "ignore", "pipe"] });
+  const pushArgs = ["push", "--set-upstream"];
+  if (previousRemoteHead && rebased) pushArgs.push(`--force-with-lease=refs/heads/${entry.branch}:${previousRemoteHead}`);
+  pushArgs.push("origin", `${entry.branch}:${entry.branch}`);
+  runGit(entry.root, pushArgs, { stdio: ["ignore", "ignore", "pipe"] });
   entry.updatedAt = new Date().toISOString();
   entry.lastPublishedHead = head;
   writeJson(proposalRegistryPath(connection.repository), registry);
-  return { ...entry, head, files };
+  appendContextRoomEvent("proposal.published", {
+    projectId: connection.projectId,
+    sharedRepository: connection.repository,
+    resource: { proposal: entry.branch, files },
+    data: { head, baseRevision: entry.baseRevision, semanticReviewRequired: Boolean(entry.semanticReviewRequired) },
+  });
+  return { ...entry, head, files, rebased };
 }
 
-export function listSharedProposals(root, { allProjects = true } = {}) {
-  const synced = syncSharedContext(root, { allowOffline: true });
+export function listSharedProposals(root, { allProjects = true, refresh = true } = {}) {
+  const connection = readSharedProjectConnection(root);
+  if (!connection) throw new Error("This project has no approved shared-context binding; run context-room shared setup first");
+  const synced = refresh
+    ? syncSharedContext(root, { allowOffline: true })
+    : cachedSharedRepositoryState(connection.repository, {
+        projectId: connection.projectId,
+        projectRoot: connection.projectRoot || path.resolve(root),
+      });
   return listRemoteSharedProposals(synced, { allProjects });
 }
 
@@ -1411,7 +3275,7 @@ function sharedSessionProposalOverlay(synced, projectId, sessionId) {
   const normalizedProject = safeId(projectId, "projectId");
   const proposals = normalizedSession ? listRemoteSharedProposals(synced).filter((proposal) => (
     proposal.sessionId === normalizedSession
-    && (proposal.scope === "global" || (normalizedProject !== "global" && proposal.projectId === normalizedProject))
+    && (["global", "skills", "instructions"].includes(proposal.scope) || (normalizedProject !== "global" && proposal.projectId === normalizedProject))
     && proposal.reviewStatus !== "merged"
   )).map((proposal) => ({
     branch: proposal.branch,
@@ -1497,6 +3361,10 @@ export function resolveSharedDocumentationTarget(repository, {
     addRoot(`${synced.repositoryConfig.projectsPath}/${normalizedProject}/skills`);
   }
   addRoot(synced.repositoryConfig.globalSkillsPath);
+  const skillLocations = readSharedSkillLocationsFromRoot(synced.snapshot, synced.repositoryConfig, synced.catalog);
+  for (const collection of skillLocations.collections) addRoot(collection.path);
+  const instructionLocations = readSharedInstructionLocationsFromRoot(synced.snapshot, synced.repositoryConfig, synced.catalog);
+  for (const collection of instructionLocations.collections) addRoot(collection.path);
   return {
     mode: "shared-only",
     repository: synced.connection.repository,
@@ -1526,13 +3394,14 @@ export function readSharedDocumentationProposalDocuments(target = {}, overlay = 
   }
   const checkout = repositoryCheckout(repository);
   const config = readSharedRepositoryConfig(path.join(repositoryCacheRoot(repository), "snapshots", acceptedRevision));
+  const catalog = normalizedProjectsCatalog(JSON.parse(String(runGit(checkout, ["show", `${acceptedRevision}:${config.projectsFile}`]))));
   const documents = [];
   for (const rawProposal of overlay.proposals) {
-    const identity = proposalIdentity(config, rawProposal.branch);
-    if (identity.scope !== "global" && (projectId === "global" || identity.projectId !== projectId)) {
+    const head = safeRevision(rawProposal.head, "session proposal head");
+    const identity = proposalIdentity(config, rawProposal.branch, { checkout, revision: head, catalog });
+    if (!new Set(["global", "skills", "instructions"]).has(identity.scope) && (projectId === "global" || identity.projectId !== projectId)) {
       throw new Error(`Session proposal is outside this project: ${rawProposal.branch}`);
     }
-    const head = safeRevision(rawProposal.head, "session proposal head");
     const baseRevision = safeRevision(rawProposal.baseRevision, "session proposal base");
     if (!gitObjectExists(checkout, `${head}^{commit}`)) throw new Error(`Session proposal commit is unavailable locally: ${head}`);
     const files = Array.isArray(rawProposal.files) && rawProposal.files.length
@@ -1586,8 +3455,10 @@ export function listRegisteredSharedRepositories() {
   }))];
 }
 
-export function listSharedRepositoryProposals(repository, { allowOffline = true } = {}) {
-  const synced = syncSharedRepositoryState(repository, { allowOffline });
+export function listSharedRepositoryProposals(repository, { allowOffline = true, refresh = true } = {}) {
+  const synced = refresh
+    ? syncSharedRepositoryState(repository, { allowOffline })
+    : cachedSharedRepositoryState(repository);
   return {
     repository: synced.connection.repository,
     repositoryName: synced.repositoryConfig.name,
@@ -1601,6 +3472,77 @@ export function listSharedRepositoryProposals(repository, { allowOffline = true 
     projects: synced.catalog.projects,
     proposals: listRemoteSharedProposals(synced),
   };
+}
+
+export function rejectSharedRepositoryProposal(repository, { proposal, expectedHead } = {}) {
+  const synced = syncSharedRepositoryState(repository, { allowOffline: false });
+  const identity = proposalIdentity(synced.repositoryConfig, proposal);
+  const reviewedHead = safeRevision(expectedHead, "expected proposal head");
+  const current = listRemoteSharedProposals(synced).find((item) => item.branch === identity.branch);
+  if (!current) throw new Error(`Remote proposal not found: ${identity.branch}`);
+  if (current.head !== reviewedHead) {
+    throw new Error("Proposal changed before rejection; refresh and review the current exact revision");
+  }
+  if (["accepted", "merged"].includes(current.reviewStatus)) {
+    throw new Error("An accepted proposal cannot be rejected from the active review queue");
+  }
+
+  const checkout = repositoryCheckout(synced.connection.repository);
+  const registryFile = proposalRegistryPath(synced.connection.repository);
+  const registry = readJson(registryFile, { version: 1, proposals: {} });
+  const localEntry = registry.proposals?.[identity.branch];
+  if (localEntry?.root && fs.existsSync(localEntry.root)) {
+    const pending = tryGit(localEntry.root, ["status", "--porcelain=v1", "--untracked-files=all"]);
+    if (pending) {
+      throw new Error("Proposal has unpublished local changes; publish or resolve them before rejecting it");
+    }
+  }
+
+  const proposalSuffix = identity.branch.slice(synced.repositoryConfig.proposalPrefix.length);
+  const rejectionBranch = safeBranchName(
+    `${synced.repositoryConfig.rejectionPrefix}${proposalSuffix}-${reviewedHead.slice(0, 12)}`,
+    "rejection branch",
+  );
+  if (remoteBranchRevision(checkout, rejectionBranch)) {
+    throw new Error(`Rejected proposal archive already exists: ${rejectionBranch}`);
+  }
+
+  runGit(checkout, [
+    "push",
+    "--atomic",
+    "origin",
+    `${reviewedHead}:refs/heads/${rejectionBranch}`,
+    `:refs/heads/${identity.branch}`,
+  ], { stdio: ["ignore", "ignore", "pipe"] });
+
+  if (localEntry?.root && fs.existsSync(localEntry.root)) {
+    try {
+      runGit(checkout, ["worktree", "remove", "--force", localEntry.root], { stdio: ["ignore", "ignore", "ignore"] });
+    } catch {}
+  }
+  if (tryGit(checkout, ["rev-parse", "--verify", `refs/heads/${identity.branch}`])) {
+    try {
+      runGit(checkout, ["branch", "-D", identity.branch], { stdio: ["ignore", "ignore", "ignore"] });
+    } catch {}
+  }
+  if (registry.proposals?.[identity.branch]) {
+    delete registry.proposals[identity.branch];
+    writeJson(registryFile, registry);
+  }
+  runGit(checkout, ["fetch", "--prune", "origin"], { stdio: ["ignore", "ignore", "pipe"] });
+  const result = {
+    rejected: true,
+    repository: synced.connection.repository,
+    proposal: identity.branch,
+    proposalHead: reviewedHead,
+    rejectionBranch,
+  };
+  appendContextRoomEvent("proposal.rejected", {
+    projectId: identity.projectId,
+    sharedRepository: synced.connection.repository,
+    resource: { proposal: identity.branch, proposalHead: reviewedHead, rejectionBranch },
+  });
+  return result;
 }
 
 function gitIsAncestor(cwd, ancestor, descendant) {
@@ -1630,13 +3572,19 @@ function sharedReviewActivityIndex(repository, checkout, mainRevision) {
       if (!review || safeRepository(review.repository) !== repository) continue;
       const proposal = safeBranchName(review.proposal, "proposal branch");
       const proposalHead = safeRevision(review.proposalHead, "reviewed proposal head");
-      const accepted = review.accepted?.accepted ? {
+      const acceptedCommit = review.accepted?.accepted
+        ? safeRevision(review.accepted.commit, "accepted commit")
+        : "";
+      const accepted = acceptedCommit ? {
         accepted: true,
         acceptedAt: review.acceptedAt || null,
-        commit: safeRevision(review.accepted.commit, "accepted commit"),
-        acceptanceBranch: safeBranchName(review.accepted.acceptanceBranch, "acceptance branch"),
+        commit: acceptedCommit,
+        delivery: review.accepted.delivery === "main" ? "main" : "pull-request",
+        acceptanceBranch: review.accepted.acceptanceBranch
+          ? safeBranchName(review.accepted.acceptanceBranch, "acceptance branch")
+          : "",
         pullRequestUrl: String(review.accepted.pullRequestUrl || ""),
-        merged: gitIsAncestor(checkout, review.accepted.commit, mainRevision),
+        merged: review.accepted.delivery === "main" || gitIsAncestor(checkout, acceptedCommit, mainRevision),
       } : null;
       const activity = {
         proposalHead,
@@ -1687,17 +3635,51 @@ function sharedRemoteAcceptanceIndex(synced, checkout) {
   return index;
 }
 
+function sharedMainAcceptanceIndex(synced, checkout) {
+  const index = new Map();
+  const commits = tryGit(checkout, ["rev-list", "--first-parent", synced.revision]).split("\n").filter(Boolean);
+  for (const revision of commits) {
+    try {
+      const item = sharedMainCommit(checkout, revision);
+      if (!item.acceptance) continue;
+      const accepted = {
+        accepted: true,
+        acceptedAt: item.committedAt,
+        commit: item.revision,
+        acceptanceBranch: "",
+        pullRequestUrl: "",
+        merged: true,
+        proposalHead: item.acceptance.proposalHead,
+        sessionId: item.acceptance.sessionId,
+      };
+      if (!index.has(item.acceptance.proposal)) index.set(item.acceptance.proposal, accepted);
+    } catch {}
+  }
+  return index;
+}
+
+export function listSharedMainAcceptances(repository, { refresh = true } = {}) {
+  const main = resolveSharedMainRevision(repository, { refresh });
+  const synced = {
+    connection: { repository: main.repository },
+    repositoryConfig: main.repositoryConfig,
+    revision: main.revision,
+  };
+  return [...sharedMainAcceptanceIndex(synced, main.checkout).entries()].map(([proposal, accepted]) => ({ proposal, ...accepted }));
+}
+
 function listRemoteSharedProposals(synced, { allProjects = true } = {}) {
   const checkout = repositoryCheckout(synced.connection.repository);
   const reviewActivity = sharedReviewActivityIndex(synced.connection.repository, checkout, synced.revision);
   const remoteAcceptance = sharedRemoteAcceptanceIndex(synced, checkout);
+  const mainAcceptance = sharedMainAcceptanceIndex(synced, checkout);
   const prefix = `refs/remotes/origin/${synced.repositoryConfig.proposalPrefix}`;
   const output = tryGit(checkout, ["for-each-ref", "--format=%(refname:strip=3)%09%(objectname)%09%(committerdate:iso8601)%09%(authorname)%09%(authoremail)%09%(subject)", prefix]);
   return output.split("\n").filter(Boolean).flatMap((line) => {
     const [branch, head, updatedAt, authorName, authorEmail, subject] = line.split("\t");
     try {
-      const identity = proposalIdentity(synced.repositoryConfig, branch);
       const proposalHead = safeRevision(head, "proposal head");
+      const identity = proposalIdentity(synced.repositoryConfig, branch, { checkout, revision: proposalHead, catalog: synced.catalog });
       let sessionId = "";
       let title = subject;
       let description = "";
@@ -1705,11 +3687,12 @@ function listRemoteSharedProposals(synced, { allProjects = true } = {}) {
       let sourceRemote = "";
       let sourceBranch = "";
       let sourceCommit = "";
+      let semanticReviewRequired = false;
       try {
         const metadata = String(runGit(checkout, [
           "log",
           "-1",
-          "--format=%(trailers:key=Context-Room-Title,valueonly)%x00%(trailers:key=Context-Room-Description-Base64,valueonly)%x00%(trailers:key=Context-Room-Session,valueonly)%x00%(trailers:key=Context-Room-Base,valueonly)%x00%(trailers:key=Context-Room-Source-Remote,valueonly)%x00%(trailers:key=Context-Room-Source-Branch,valueonly)%x00%(trailers:key=Context-Room-Source-Commit,valueonly)",
+          "--format=%(trailers:key=Context-Room-Title,valueonly)%x00%(trailers:key=Context-Room-Description-Base64,valueonly)%x00%(trailers:key=Context-Room-Session,valueonly)%x00%(trailers:key=Context-Room-Base,valueonly)%x00%(trailers:key=Context-Room-Source-Remote,valueonly)%x00%(trailers:key=Context-Room-Source-Branch,valueonly)%x00%(trailers:key=Context-Room-Source-Commit,valueonly)%x00%(trailers:key=Context-Room-Semantic-Review,valueonly)",
           proposalHead,
         ])).split("\0").map((value) => value.trim());
         title = proposalTitle(metadata[0] || subject);
@@ -1719,12 +3702,13 @@ function listRemoteSharedProposals(synced, { allProjects = true } = {}) {
         sourceRemote = String(metadata[4] || "");
         sourceBranch = String(metadata[5] || "");
         sourceCommit = metadata[6] ? safeRevision(metadata[6], "source commit") : "";
+        semanticReviewRequired = metadata[7] === "required";
       } catch {}
       const files = gitChangedPaths(checkout, `${synced.revision}...${proposalHead}`);
       const activities = reviewActivity.get(branch) || [];
       const currentActivity = activities.find((activity) => activity.proposalHead === proposalHead) || null;
       const latestActivity = activities[0] || null;
-      const durableAccepted = remoteAcceptance.get(branch);
+      const durableAccepted = mainAcceptance.get(branch) || remoteAcceptance.get(branch);
       const accepted = currentActivity?.accepted || (durableAccepted?.proposalHead === proposalHead ? durableAccepted : null);
       const reviewStatus = accepted?.merged
         ? "merged"
@@ -1743,7 +3727,7 @@ function listRemoteSharedProposals(synced, { allProjects = true } = {}) {
         ...identity,
         repository: synced.connection.repository,
         repositoryName: synced.repositoryConfig.name,
-        projectTitle: synced.catalog.projects.find((project) => project.id === identity.projectId)?.title || (identity.projectId === "global" ? "Global skills" : identity.projectId),
+        projectTitle: synced.catalog.projects.find((project) => project.id === identity.projectId)?.title || (identity.projectId === "global" ? "Global skills" : identity.projectId === "skills" ? "Shared skill locations" : identity.projectId),
         head: proposalHead,
         baseRevision,
         updatedAt,
@@ -1754,6 +3738,7 @@ function listRemoteSharedProposals(synced, { allProjects = true } = {}) {
         sourceRemote,
         sourceBranch,
         sourceCommit,
+        semanticReviewRequired,
         files,
         fileCount: files.length,
         reviewStatus,
@@ -1766,29 +3751,67 @@ function listRemoteSharedProposals(synced, { allProjects = true } = {}) {
       return [];
     }
   })
-    .filter((item) => allProjects || item.projectId === synced.connection.projectId || item.projectId === "global")
+    .filter((item) => allProjects || item.projectId === synced.connection.projectId || item.projectId === "global" || item.projectId === "skills")
     .sort((left, right) => String(right.updatedAt || "").localeCompare(String(left.updatedAt || "")));
 }
 
-export function materializeSharedReview(root, { proposal } = {}) {
+export function materializeSharedReview(root, { proposal, expectedHead = "" } = {}) {
   const synced = syncSharedContext(root, { allowOffline: false });
-  return materializeSharedReviewFromState(synced, { proposal });
+  return materializeSharedReviewFromState(synced, { proposal, expectedHead });
 }
 
-export function materializeSharedRepositoryReview(repository, { proposal } = {}) {
+export function materializeSharedRepositoryReview(repository, { proposal, expectedHead = "" } = {}) {
   const synced = syncSharedRepositoryState(repository, { allowOffline: false });
-  return materializeSharedReviewFromState(synced, { proposal });
+  return materializeSharedReviewFromState(synced, { proposal, expectedHead });
 }
 
-function materializeSharedReviewFromState(synced, { proposal } = {}) {
+function reusableSharedReview(synced, match) {
+  const authorityRoot = path.join(sharedHome(), "review-authority");
+  if (!fs.existsSync(authorityRoot)) return null;
+  const candidates = fs.readdirSync(authorityRoot)
+    .filter((name) => /^[a-f0-9-]{36}\.json$/i.test(name))
+    .map((name) => {
+      try { return readJson(path.join(authorityRoot, name)); } catch { return null; }
+    })
+    .filter((review) => (
+      review
+      && !review.accepted
+      && review.repository === synced.connection.repository
+      && review.proposal === match.branch
+      && review.proposalHead === match.head
+      && review.baseRevision === synced.revision
+    ))
+    .sort((left, right) => String(right.createdAt || "").localeCompare(String(left.createdAt || "")));
+  for (const candidate of candidates) {
+    try {
+      const reviewRoot = path.resolve(candidate.reviewRoot);
+      if (!fs.existsSync(reviewRoot)) continue;
+      const review = readSharedReview(reviewRoot);
+      if (tryGit(reviewRoot, ["rev-parse", "HEAD"]) !== review.baseRevision) continue;
+      const workspace = reviewWorkspaceChanges(reviewRoot, review.baseRevision);
+      assertPathsInProposalScope(workspace.files, match);
+      assertReviewWorkspaceFiles(reviewRoot, workspace.files);
+      return { reviewRoot, metadata: review, repositoryConfig: synced.repositoryConfig, reused: true };
+    } catch {}
+  }
+  return null;
+}
+
+function materializeSharedReviewFromState(synced, { proposal, expectedHead = "" } = {}) {
   const match = listRemoteSharedProposals(synced).find((item) => item.branch === proposal);
   if (!match) throw new Error(`Remote proposal not found: ${proposal}`);
+  if (expectedHead && match.head !== safeRevision(expectedHead, "expected proposal head")) {
+    throw new Error("Proposal changed before review; refresh and open its current exact revision");
+  }
+  const reusable = reusableSharedReview(synced, match);
+  if (reusable) return reusable;
   const checkout = repositoryCheckout(synced.connection.repository);
   const changedFiles = gitChangedPaths(checkout, `${synced.revision}...${match.head}`);
   if (!changedFiles.length) throw new Error("Proposal has no changes relative to shared main");
   assertPathsInProposalScope(changedFiles, match);
-  assertSafeTreeEntries(checkout, synced.revision, match.allowedPrefixes);
-  assertSafeTreeEntries(checkout, match.head, match.allowedPrefixes);
+  const scopePaths = [...(match.allowedExact || []), ...match.allowedPrefixes];
+  assertSafeTreeEntries(checkout, synced.revision, scopePaths);
+  assertSafeTreeEntries(checkout, match.head, scopePaths);
   assertReviewableChangedPaths(checkout, synced.revision, match.head, changedFiles);
   const reviewRoot = path.join(repositoryCacheRoot(synced.connection.repository), "reviews", `${hashKey(proposal)}-${Date.now()}`);
   let worktreeCreated = false;
@@ -1806,10 +3829,14 @@ function materializeSharedReviewFromState(synced, { proposal } = {}) {
       repository: synced.connection.repository,
       projectId: match.projectId,
       scope: match.scope,
+      allowedExact: match.allowedExact || [],
       allowedPrefixes: match.allowedPrefixes,
       proposalFiles: changedFiles,
       proposal: match.branch,
       proposalHead: match.head,
+      title: match.title,
+      description: match.description,
+      semanticReviewRequired: Boolean(match.semanticReviewRequired),
       sessionId: match.sessionId,
       baseRevision: synced.revision,
       defaultBranch: synced.repositoryConfig.defaultBranch,
@@ -1905,7 +3932,8 @@ export function acceptSharedReview(reviewRoot, { message = "Accept shared contex
   if (reviewHead !== review.baseRevision) throw new Error("Review worktree history changed; materialize the proposal again");
   const configText = runGit(checkout, ["show", `${review.baseRevision}:${SHARED_REPOSITORY_CONFIG}`]);
   const repositoryConfig = normalizedRepositoryConfig(JSON.parse(configText));
-  const policy = proposalIdentity(repositoryConfig, review.proposal);
+  const catalog = normalizedProjectsCatalog(JSON.parse(String(runGit(checkout, ["show", `${review.baseRevision}:${repositoryConfig.projectsFile}`]))));
+  const policy = proposalIdentity(repositoryConfig, review.proposal, { checkout, revision: review.proposalHead, catalog });
   if (policy.projectId !== review.projectId || policy.scope !== review.scope) throw new Error("Shared review scope metadata is invalid");
   const currentProposalHead = remoteRevision(checkout, review.proposal);
   if (currentProposalHead !== review.proposalHead) throw new Error("Proposal changed after review; materialize and review the new exact commit");
@@ -1917,7 +3945,8 @@ export function acceptSharedReview(reviewRoot, { message = "Accept shared contex
   assertPathsInProposalScope(workspace.files, policy);
   assertReviewWorkspaceFiles(resolvedReviewRoot, workspace.files);
   addIntentToAdd(resolvedReviewRoot, workspace.untracked);
-  const acceptedPatch = runGit(resolvedReviewRoot, ["diff", "--binary", "--full-index", review.baseRevision, "--", ...policy.allowedPrefixes], { encoding: null });
+  const policyPaths = [...(policy.allowedExact || []), ...policy.allowedPrefixes];
+  const acceptedPatch = runGit(resolvedReviewRoot, ["diff", "--binary", "--full-index", review.baseRevision, "--", ...policyPaths], { encoding: null });
   if (!acceptedPatch.length) return { accepted: false, reason: "No accepted changes remain", proposal: review.proposal };
   const acceptanceRoot = path.join(repositoryCacheRoot(review.repository), "accept", `${hashKey(review.proposal)}-${Date.now()}`);
   runGit(checkout, ["worktree", "add", "--detach", acceptanceRoot, currentMain], { stdio: ["ignore", "ignore", "pipe"] });
@@ -1926,7 +3955,7 @@ export function acceptSharedReview(reviewRoot, { message = "Accept shared contex
     if (applied.status !== 0 || tryGit(acceptanceRoot, ["diff", "--name-only", "--diff-filter=U"])) {
       throw new Error("Accepted result conflicts with the current main branch; review the resolved result again");
     }
-    runGit(acceptanceRoot, ["add", "-A", "--", ...policy.allowedPrefixes]);
+    runGit(acceptanceRoot, ["add", "-A", "--", ...policyPaths]);
     try {
       runGit(acceptanceRoot, ["diff", "--cached", "--quiet"]);
       return { accepted: false, reason: "Accepted result is already present on main", proposal: review.proposal };
@@ -1935,24 +3964,23 @@ export function acceptSharedReview(reviewRoot, { message = "Accept shared contex
     const acceptedCommit = safeRevision(tryGit(acceptanceRoot, ["rev-parse", "HEAD"]), "accepted commit");
     assertSafeTreeEntries(acceptanceRoot, acceptedCommit, policy.allowedPrefixes);
     assertReviewableChangedPaths(acceptanceRoot, currentMain, acceptedCommit, workspace.files);
-    const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
-    const acceptanceBranch = safeBranchName(
-      `${repositoryConfig.acceptancePrefix}${policy.projectId}/${stamp}-${acceptedCommit.slice(0, 12)}`,
-      "acceptance branch",
-    );
-    if (acceptanceBranch === review.defaultBranch) throw new Error("Acceptance branch must not be the default branch");
-    runGit(acceptanceRoot, ["push", "origin", `HEAD:refs/heads/${acceptanceBranch}`], { stdio: ["ignore", "ignore", "pipe"] });
+    runGit(acceptanceRoot, ["push", "origin", `HEAD:refs/heads/${review.defaultBranch}`], { stdio: ["ignore", "ignore", "pipe"] });
     const result = {
       accepted: true,
-      delivery: "pull-request",
+      delivery: "main",
       proposal: review.proposal,
       proposalHead: review.proposalHead,
       previousMain: currentMain,
       commit: acceptedCommit,
-      acceptanceBranch,
-      pullRequestUrl: githubPullRequestUrl(review.repository, review.defaultBranch, acceptanceBranch),
+      defaultBranch: review.defaultBranch,
     };
     writeJson(path.join(sharedHome(), "review-authority", `${review.authorityId}.json`), { ...review, accepted: result, acceptedAt: new Date().toISOString() });
+    appendContextRoomEvent("proposal.completed", {
+      projectId: review.projectId,
+      sharedRepository: review.repository,
+      resource: { proposal: review.proposal, proposalHead: review.proposalHead },
+      data: { commit: acceptedCommit, previousMain: currentMain, defaultBranch: review.defaultBranch },
+    });
     return result;
   } finally {
     try { runGit(checkout, ["worktree", "remove", "--force", acceptanceRoot], { stdio: ["ignore", "ignore", "ignore"] }); } catch {}

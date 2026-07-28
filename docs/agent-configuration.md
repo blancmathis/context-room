@@ -4,8 +4,8 @@ context_room:
   scope: context-room
   status: current
   canonical_for: agent configuration
-  last_verified: 2026-07-23
-  sources: [bin/context-room.mjs, src/context_room.mjs, src/codex_prompt_center.mjs, src/shared_context.mjs, schemas/config.schema.json, schemas/codex-prompt-catalog-v1.schema.json, schemas/codex-prompt-overrides-v1.schema.json, schemas/codex-prompt-publication-state-v2.schema.json, schemas/codex-prompt-runtime-receipt-v2.schema.json]
+  last_verified: 2026-07-28
+  sources: [bin/context-room.mjs, src/context_room.mjs, src/context_settings.mjs, src/codex_prompt_center.mjs, src/shared_context.mjs, schemas/config.schema.json, schemas/shared-repository.schema.json, schemas/shared-skill-locations.schema.json, schemas/shared-skill-local-state.schema.json, schemas/shared-instruction-locations.schema.json, schemas/codex-prompt-catalog-v1.schema.json, schemas/codex-prompt-overrides-v1.schema.json, schemas/codex-prompt-publication-state-v2.schema.json, schemas/codex-prompt-runtime-receipt-v2.schema.json]
 ---
 
 # Agent configuration guide
@@ -18,13 +18,13 @@ Project behavior is configured with one JSON file:
 
 That file is the contract between the project owner, the UI, and AI agents. Fresh setup derives it from the documentation that actually exists in the project. If an agent later needs to curate a card or safe editable surface, it should edit this JSON file and then run `context-room doctor`. For folder watch rules, prefer `context-room agent watch` and `context-room agent unwatch` so snapshots are captured consistently.
 
-Appearance preferences are shared across every Context Room on the computer and stored separately:
+Interface preferences are shared across every Context Room on the computer and stored separately:
 
 ```text
 ~/.context-room/preferences.json
 ```
 
-Use the Settings screen to change the app theme, hidden-file visibility, or `Auto-open Git diff`. Project paths, review rules, scanners, templates, and hub cards remain local to `.context-room/config.json`.
+Use the Settings screen to change the app theme, hidden-file visibility, `Auto-open Git diff`, interface sounds, their volume, or keyboard shortcuts. Project paths, review rules, scanners, templates, and hub cards remain local to `.context-room/config.json`.
 
 Codex prompt overrides are also computer-wide, but they are not preferences and never belong in project configuration:
 
@@ -32,7 +32,7 @@ Codex prompt overrides are also computer-wide, but they are not preferences and 
 $CODEX_HOME/prompt-overrides/
 ```
 
-Use **Context Hub → Codex prompts** to inspect the runtime-published catalog and edit only targets marked `securityClass: local_user_editable`. Context Room writes the strict private `overrides.json` contract; a compatible Codex runtime regenerates the catalog and per-process runtime receipts. After a change, quit Codex completely (`⌘Q` on macOS), reopen it, then create a new task. See [Codex Prompt Center](features/codex-prompt-center.md).
+Use **Settings → Codex prompts → Open prompt editor** to inspect the runtime-published catalog and edit only targets marked `securityClass: local_user_editable`. Context Room writes the strict private `overrides.json` contract; a compatible Codex runtime regenerates the catalog and per-process runtime receipts. After a change, quit Codex completely (`⌘Q` on macOS), reopen it, then create a new task. See [Codex Prompt Center](features/codex-prompt-center.md).
 
 The human-owned review gate is also stored separately:
 
@@ -44,7 +44,8 @@ Use the Review tab in Settings to choose any combination of `commit`, `push`, `p
 
 ## Fresh project setup
 
-Use one command to initialize the project-aware configuration and start an isolated room:
+Use one command to initialize the project-aware configuration, register the
+project, and start or reuse the global Context Room:
 
 ```bash
 context-room setup --root . --title "My Project"
@@ -83,7 +84,7 @@ Check intent:
 - Top-level `projectOnly` controls physical containment for ordinary project paths. Fresh setup writes `true`. Setting it to `false`, or omitting it in a legacy config, can make configured symlink targets outside the project readable and editable; retain that compatibility only for trusted, established hubs.
 - `watchAllow` contains simple file watches and legacy/default recursive live folder watches.
 - `watchRules` contains folder watches that need an explicit recursive/direct and live/current-files mode.
-- `reviewPaths` is used only for files that must be reviewed even without a Git diff.
+- Every document covered by `watchAllow` or `watchRules` requires human verification for its current content hash. Git only provides a diff when one exists.
 - `hubSections` separates current truth, target truth, and records when the project makes those distinctions.
 - Fresh `startupContext`, `startupSkills`, and `startupHooks` settings expose project-local surfaces only unless the owner opts into broader scanning.
 - Hook editing stays off unless the project owner explicitly wants Context Room to edit executable files.
@@ -92,9 +93,15 @@ If those boundaries are right, the exact JSON shape is a mechanical concern.
 
 ## Configuration fields
 
-### Global appearance preferences
+### Global interface preferences
 
-`fileTheme`, `showHiddenFiles`, and `autoOpenGitDiff` apply to every Context Room on the computer. The Settings screen writes them to `~/.context-room/preferences.json`; they do not belong in project configuration.
+`fileTheme`, `colorMode`, `showHiddenFiles`, `autoOpenGitDiff`, `shortcuts`, and
+`sounds` apply to every Context Room on the computer. The Settings screen writes
+them to `~/.context-room/preferences.json`; they do not belong in project
+configuration. `colorMode` accepts `system`, `light`, or `dark` and affects the
+adaptive Context Room theme. Explicit editor themes retain their own palette.
+
+`sounds` contains the computer-wide `enabled` switch and a normalized `volume` from `0` to `1`. Sounds are enabled by default at `0.35`. Enabled buttons use a short, dry, warm low-mid interaction click that remains audible on laptop speakers at restrained volume. Longer low-register cues identify completed review milestones, accepted shared proposals, and newly detected file conflicts. Typing, field focus, sliders, disabled buttons, and background refreshes stay silent. All five previews in Settings remain available while interface sounds are muted.
 
 ### `allowedPaths`
 
@@ -122,6 +129,16 @@ Every entry uses the same project-relative or explicit `~/...` path syntax as `a
 
 Shared-context sync adds the accepted project docs, project skills, and global skills to both arrays. Those entries point through `~/.context-room/shared/` to an accepted immutable Git snapshot. Change them through the shared proposal workflow, not by removing their read-only protection.
 
+Generic shared skill collections and assignments use `skill-locations.json` in the shared repository, not fields in `.context-room/config.json`. Logical assignment changes require a `skills` proposal. Device provider preferences, project provider overrides, physical destinations, custom mounts, local exclusions, pending imports, archives, and the managed-link registry use the version 2 local-state contract under `~/.context-room/shared/`. See [Shared Context](features/shared-context.md#shared-skill-locations).
+
+Shared instruction collections use `instruction-locations.json`, also outside
+project configuration. Each assignment declares exact Markdown source and
+target paths, providers, and a `project`, `shared`, or `device` scope. Logical
+changes require an `instructions` proposal. Accepted-main files are exposed
+through managed links; an unmanaged file at the destination is preserved and
+reported as a conflict. Shared hooks are not supported. See
+[Shared Context](features/shared-context.md#shared-instruction-locations).
+
 ```json
 {
   "allowedPaths": ["docs/", "imported-reference/"],
@@ -133,7 +150,9 @@ Shared-context sync adds the accepted project docs, project skills, and global s
 
 Review boundary.
 
-Files here enter the review queue when they change. Folder entries use `recursive-live`: current and future eligible files at any depth enter the queue. Project files use Git status; files under an explicit `~/...` `allowedPaths` boundary use Context Room's local review baseline. This remains the compatible simple format for existing configurations.
+Files here require human verification for every current content version. A verified content hash leaves the queue; any meaningful content change creates a new hash and reopens review, including after that change has already been committed. Folder entries use `recursive-live`: current and future eligible files at any depth use the same rule.
+
+For project files, Git supplies an inline diff when one exists. A Git-clean file with an unverified current hash still appears and can be verified as a whole. Files under an explicit `~/...` `allowedPaths` boundary use Context Room's local review baseline because project Git does not own them.
 
 Good examples:
 
@@ -180,19 +199,13 @@ The Explorer and agent CLI require an existing folder covered by `allowedPaths`;
 
 External watched files are not assigned invented Git history. Their first appearance is a new-file first review. Accepting it records a local baseline; later edits and deletions are reviewed against that baseline. A live external rule also admits later eligible files according to its recursive or direct-child scope. The shared ledger still keys trust by canonical absolute path, so another room watching the same external file can reuse a matching verified content hash.
 
-### `reviewPaths`
+### Deprecated `reviewPaths` and `reviewAgentInstructions`
 
-Required verification boundary.
+Context Room still reads these legacy fields for compatibility but no longer generates or exposes them. Allowed `reviewPaths` are merged into the unified watched-document scope in memory. Their former array order has no effect; the queue uses its normal risk, authority, and path ordering.
 
-Files and folders here appear in the review queue until the current content is marked verified, even when there is no Git diff. Their array order defines the human verification path; critical safety issues still appear first. Use this for onboarding a documentation set or requiring explicit review of agent-critical files. Only unchanged entries from `reviewPaths` show `Mark verified`; Git changes are reviewed through their inline diff.
+On the next human Settings save, Context Room records the unified `watchAllow` and `watchRules` scope and removes both deprecated fields. It never widens `allowedPaths`: an inaccessible legacy path remains unconfigured and appears in Context Health with a migration action.
 
-Context Room automatically adds every project `AGENTS.md` to the editable and watched boundaries. By default they are also required-review paths. Set `"reviewAgentInstructions": false` only when a room deliberately reserves human review for a narrower set such as one documentation area; explicit `reviewPaths` still apply.
-
-Good examples:
-
-```json
-"reviewPaths": ["AGENTS.md", "docs/INDEX.md", "skills/docs-architect/SKILL.md"]
-```
+Every project `AGENTS.md` is implicitly editable and watched. It follows exactly the same content-hash review rule as every other watched document; `reviewAgentInstructions: false` no longer exempts it.
 
 ### Shared review ledger
 
@@ -202,7 +215,7 @@ Verified content is recorded in the local Context Room state and in a shared rep
 .context-room/review-ledger.json
 ```
 
-The shared key is the canonical absolute file path. Trust stores the exact content hash, a review hash that ignores only `context_room.last_verified`, whether the resource was present or absent when reviewed, and the last Git change for an absent path. When Context Room observes a restored path, it clears that deletion trust so a later deletion at the same path requires review again. A date-only edit is omitted from review queues and inline diffs. If two Context Rooms watch the same present file, one verification is enough until meaningful content changes.
+The shared key is the canonical absolute file path. Trust is decided by the exact content hash, whether the resource was present or absent when reviewed, and the last Git change for an absent path. A secondary review hash may simplify diffs by ignoring only `context_room.last_verified`, but it never grants trust. When Context Room observes a restored path, it clears that deletion trust so a later deletion at the same path requires review again. If two Context Rooms watch the same present file, one verification is enough until any content changes.
 
 When two or more watched files are deleted without being recognized as renames, the webapp groups them into an expandable deletion set. The path list is loaded only when opened, up to 5,000 pending paths at a time. Routine paths start selected; protected or uncertain-history paths start unselected and require an extra acknowledgement when included. A human can narrow the selection and confirm the removals once; the server rejects a stale batch key and revalidates every path before recording its absent state. This action acknowledges files that are already missing and never deletes them.
 
@@ -221,7 +234,13 @@ Use hub sections for the paths that should be opened first. A card can point to 
 }
 ```
 
-Fresh setup builds sections from discovered documentation rather than retaining generic cards for paths that do not exist. Explicit `_target`, `target`, `plans`, `proposals`, and `roadmap` paths go under Target documentation; a generic `draft` status alone does not prove target ownership and remains under Documentation to classify. Decisions, research, history, and incidents get their own records section. Entry points and indexes go under Start here unless their path makes them target or record material. Documentation explicitly marked `current` goes under Current documentation. Missing or invalid status metadata remains under Documentation to classify unless an explicit target or record path supplies its truth state; it is never presented as current truth. Project instructions plus safe skill documentation appear under Agent guidance. Empty sections are omitted.
+Fresh setup builds sections from discovered documentation rather than retaining generic cards for paths that do not exist.
+
+Explicit `_target`, `target`, `plans`, `proposals`, and `roadmap` paths go under Target documentation. A generic `draft` status alone does not prove target ownership and remains under Documentation to classify. Decisions, research, history, and incidents get their own records section.
+
+Entry points and indexes go under Start here unless their path makes them target or record material. Documentation explicitly marked `current` goes under Current documentation. Missing or invalid status metadata remains under Documentation to classify unless an explicit target or record path supplies its truth state; it is never presented as current truth. Project instructions plus safe skill documentation appear under Agent guidance.
+
+Every configured section remains visible even when it has no cards, so it may serve as a deliberate separator. Remove the section in **Settings → Hub → Sections and cards** when it should disappear entirely; `Main` has no special protection.
 
 ### `startupContext`
 
@@ -245,7 +264,7 @@ The explorer shows safe hidden files, including this generated folder, by defaul
 
 Startup skill scanner.
 
-When enabled, Context Room lists configured skill folders such as `.codex/skills` or `skills`. Fresh setup enables it only when one of those folders exists locally and writes `projectOnly: true`, preventing discovery in ancestor folders. Existing configs without `projectOnly` keep ancestor discovery for compatibility.
+Context Room enables startup skill discovery by default and lists configured skill folders such as `.codex/skills` or `skills` whenever they exist. Fresh setup writes `projectOnly: true`, preventing discovery in ancestor folders. Keeping the scanner active means a skill folder added after setup is discovered automatically. Existing configs without `projectOnly` keep ancestor discovery for compatibility.
 
 Startup skills can be opened in the explorer without making the whole project editable.
 
@@ -280,6 +299,14 @@ Generated connection summary.
 ```
 
 See [Shared context](features/shared-context.md) for repository setup, refresh, proposals, exact-hash review, partial acceptance, skills, and the required Git-host permission boundary.
+
+`sharedContext` does not select a proposal as effective context. The configured
+shared default branch remains canonical. `context-room context effective`
+verifies that accepted shared revision before reporting current effective
+context; `--allow-stale` is reserved for an explicitly stale read-only
+diagnostic. Proposal
+metadata can remain visible, but proposal content does not enter effective
+documents, instructions, or skills before integration.
 
 ## Documentation metadata
 
@@ -329,6 +356,21 @@ Keep metadata small. The goal is not bureaucracy; it lets Context Room find stal
 context-room doctor
 ```
 
+Use the typed context Settings CLI when an agent needs to inspect or change a
+supported context setting. It validates values, previews the exact revision,
+and refuses stale apply operations:
+
+```bash
+context-room settings explain startupContext.projectOnly --format json
+context-room settings plan --set 'startupContext.projectOnly=true' --format json
+context-room settings apply <plan-id> --format json
+```
+
+This surface intentionally excludes appearance, owner-controlled Git gates,
+review decisions, document or hook content, and shared collection or assignment
+intent. `context-room capabilities` lists the full installed machine contract
+without interpreting the agent's objective or choosing a command.
+
 9. For stronger validation, run:
 
 ```bash
@@ -338,10 +380,10 @@ context-room guard --profile strict
 
 Use strict mode only when the project is ready to enforce metadata and graph health.
 
-10. To generate a local no-LLM context brief for a task, run:
+10. For deterministic structured task context, run:
 
 ```bash
-context-room brief --task "change billing onboarding"
+context-room agent prepare --task "change billing onboarding"
 ```
 
 11. If available, start the UI and smoke-test the hub and review queue:
@@ -358,7 +400,7 @@ Without `--port`, Context Room selects a free port and prints the URL. Do not st
 context-room install-hooks
 ```
 
-`install-hook` remains as a compatibility alias. Context Room manages `pre-commit`, `pre-push`, and `pre-merge-commit` only when their matching operation is selected and refuses to overwrite a custom hook. A managed dispatcher can remain installed after an operation is deselected; it reads the active worktree's owner policy and exits silently. Git hooks are local and are not committed to the repository.
+`install-hooks` is the only installation command. Context Room manages `pre-commit`, `pre-push`, and `pre-merge-commit` only when their matching operation is selected and refuses to overwrite a custom hook. A managed dispatcher can remain installed after an operation is deselected; it reads the active worktree's owner policy and exits silently. Git hooks are local and are not committed to the repository.
 
 There is no local Git hook for creating a pull request, and a merge performed by GitHub, GitLab, or another host does not run the clone's hooks. For those selections, connect the corresponding command to a hosted check and make that check required:
 

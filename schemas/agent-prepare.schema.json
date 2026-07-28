@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://context-room.local/schemas/agent-prepare.schema.json",
+  "title": "Context Room agent prepare data",
+  "type": "object",
+  "required": ["task", "sessionId", "environment", "documentation", "review", "proposals", "health"],
+  "properties": {
+    "task": { "type": "string" },
+    "sessionId": { "type": "string" },
+    "environment": {
+      "type": "object",
+      "required": ["localEnvironment", "instructions", "skills", "hooks", "summary"]
+    },
+    "documentation": {
+      "type": "object",
+      "required": ["query", "accepted", "pendingSession"],
+      "properties": {
+        "query": { "type": "string" },
+        "revision": {},
+        "accepted": { "type": "array" },
+        "pendingSession": { "type": "array" }
+      }
+    },
+    "review": {
+      "type": "object",
+      "required": ["summary", "items", "humanOwned"]
+    },
+    "proposals": { "type": "array" },
+    "health": {
+      "type": "object",
+      "required": ["issues", "critical", "high", "items"]
+    }
+  },
+  "additionalProperties": false
+}

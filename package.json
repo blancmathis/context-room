@@ -18,6 +18,8 @@
     "examples/",
     "schemas/",
     "README.md",
+    "PRODUCT.md",
+    "DESIGN.md",
     "LICENSE"
   ],
   "scripts": {

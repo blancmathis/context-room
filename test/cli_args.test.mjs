@@ -58,6 +58,169 @@ test("CLI --version exits without initializing a project", (t) => {
   assert.equal(fs.existsSync(missingRoot), false);
 });
 
+test("agent help explains capabilities, commands, and the human-owned review decision without writing project state", (t) => {
+  const root = makeRoot(t);
+  const result = spawnSync(process.execPath, [cli, "agent", "help", `--root=${root}`], { encoding: "utf8" });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Context Room Agent CLI/);
+  assert.match(result.stdout, /Give this to your agent/);
+  assert.match(result.stdout, /context-room capabilities/);
+  assert.doesNotMatch(result.stdout, /capabilities --intent/);
+  assert.match(result.stdout, /context-room review list --root \./);
+  assert.match(result.stdout, /context-room agent watch --root \./);
+  assert.match(result.stdout, /context-room context ask/);
+  assert.doesNotMatch(result.stdout, /context-room brief --root \./);
+  assert.doesNotMatch(result.stdout, /context-room agent queue --root \./);
+  assert.match(result.stdout, /context-room doctor --root \./);
+  assert.match(result.stdout, /More CLI capabilities/);
+  assert.match(result.stdout, /shared skills status\|effective\|explain\|reconcile\|assign\|unassign\|link\|unlink\|import/);
+  assert.match(result.stdout, /Only a human can accept or reject each file awaiting review/);
+  assert.match(result.stdout, /does not require a separate human decision/);
+  assert.doesNotMatch(result.stdout, /owner-controlled review gate/);
+  assert.equal(fs.existsSync(path.join(root, ".context-room")), false);
+});
+
+test("redundant discovery and compatibility commands are not executable", () => {
+  for (const argv of [
+    ["resolve", "--intent=test"],
+    ["capabilities", "--intent=test"],
+    ["docs", "capabilities"],
+    ["events"],
+    ["review", "follow"],
+    ["agent", "environment"],
+    ["agent", "explain", "AGENTS.md"],
+    ["agent", "queue"],
+    ["agent", "review-queue"],
+    ["brief"],
+    ["hub", "start"],
+    ["hub", "status"],
+    ["agent", "navigate"],
+    ["shared", "connect"],
+    ["shared", "list"],
+    ["shared", "proposal-create"],
+    ["shared", "proposal-push"],
+    ["install-hook"],
+  ]) {
+    const result = spawnSync(process.execPath, [cli, ...argv, "--format=json"], { encoding: "utf8" });
+    assert.notEqual(result.status, 0, argv.join(" "));
+  }
+});
+
+test("agent-first CLI emits versioned envelopes, caches prepare, and previews mutations without applying them", (t) => {
+  const root = makeRoot(t);
+  const hubHome = path.join(path.dirname(root), "hub-home");
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\n");
+  let result = spawnSync(process.execPath, [cli, "init", `--root=${root}`, "--watch=docs/"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  const env = { ...process.env, CONTEXT_ROOM_HUB_HOME: hubHome };
+
+  result = spawnSync(process.execPath, [cli, "capabilities", "--format=json"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  const capabilities = JSON.parse(result.stdout);
+  assert.equal(capabilities.schemaVersion, "context-room.cli/1");
+  assert.equal(capabilities.data.contractAudience, "ai-agent");
+  assert.equal(capabilities.data.commands.some((item) => /accept|reject|verify/.test(item.path)), false);
+  assert.equal(capabilities.data.commands.some((item) => item.path === "agent environment"), false);
+
+  const registrationPlanResult = spawnSync(process.execPath, [cli, "project", "register", `--root=${root}`, "--format=json"], { encoding: "utf8", env });
+  assert.equal(registrationPlanResult.status, 0, registrationPlanResult.stderr);
+  const registrationPlan = JSON.parse(registrationPlanResult.stdout).data.planId;
+  result = spawnSync(process.execPath, [cli, "project", "register", `--root=${root}`, `--apply=${registrationPlan}`, "--format=json"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  const before = fs.readFileSync(path.join(root, CONFIG_FILE), "utf8");
+  result = spawnSync(process.execPath, [cli, "agent", "watch", `--root=${root}`, "--path=other/", "--plan", "--format=json"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(JSON.parse(result.stdout).data.planId, /^plan-/);
+  assert.equal(fs.readFileSync(path.join(root, CONFIG_FILE), "utf8"), before);
+
+  const prepareArgs = [cli, "agent", "prepare", `--root=${root}`, "--task=Read guide", "--format=json"];
+  const cold = spawnSync(process.execPath, prepareArgs, { encoding: "utf8", env });
+  const warm = spawnSync(process.execPath, prepareArgs, { encoding: "utf8", env });
+  assert.equal(cold.status, 0, cold.stderr);
+  assert.equal(warm.status, 0, warm.stderr);
+  assert.equal(JSON.parse(cold.stdout).freshness.cache, "cold");
+  assert.equal(JSON.parse(warm.stdout).freshness.cache, "warm");
+
+  result = spawnSync(process.execPath, [cli, "agent", "prepare", "--project=missing-project", "--task=Read guide", "--non-interactive", "--format=json"], { encoding: "utf8", env });
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout, "");
+  const failure = JSON.parse(result.stderr);
+  assert.equal(failure.ok, false);
+  assert.equal(failure.error.code, "unknown-project");
+  assert.doesNotMatch(result.stderr, /choose interactively|\?\s*$/i);
+
+  result = spawnSync(process.execPath, [cli, "completion", "zsh"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /#compdef context-room/);
+});
+
+test("Context Engine CLI resolves, snapshots, diffs, and paginates one accepted local context", (t) => {
+  const root = makeRoot(t, "Context Engine");
+  const hubHome = path.join(path.dirname(root), "hub-context-engine");
+  fs.mkdirSync(path.join(root, "docs", "nested"), { recursive: true });
+  fs.writeFileSync(path.join(root, "AGENTS.md"), "# Project instructions\n");
+  fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\n");
+  const env = { ...process.env, CONTEXT_ROOM_HUB_HOME: hubHome, CONTEXT_ROOM_SNAPSHOT_HOME: path.join(path.dirname(root), "snapshots") };
+  let result = spawnSync(process.execPath, [cli, "init", `--root=${root}`, "--allow=AGENTS.md,docs/", "--watch=AGENTS.md,docs/"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+
+  result = spawnSync(process.execPath, [cli, "context", "effective", `--root=${root}`, "--provider=codex", "--format=json"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  const effective = JSON.parse(result.stdout);
+  assert.equal(effective.ok, true);
+  assert.equal(effective.data.schemaVersion, "context-room.context-effective/1");
+  assert.equal(effective.data.proposals instanceof Array, true);
+
+  result = spawnSync(process.execPath, [cli, "context", "graph", `--root=${root}`, "--provider=codex", "--limit=1", "--format=json"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  const graph = JSON.parse(result.stdout).data;
+  assert.equal(graph.resources.length, 1);
+  assert.equal(graph.pagination.limit, 1);
+
+  result = spawnSync(process.execPath, [cli, "context", "impact", `--root=${root}`, "--provider=codex", "--limit=1", "--format=json"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).data.impacts.length, 1);
+
+  result = spawnSync(process.execPath, [cli, "context", "snapshot", `--root=${root}`, "--provider=codex", "--format=json"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  const snapshotId = JSON.parse(result.stdout).data.manifest.snapshotId;
+  assert.match(snapshotId, /^[a-f0-9]{64}$/);
+
+  result = spawnSync(process.execPath, [cli, "context", "diff", `--root=${root}`, "--provider=codex", `--from=${snapshotId}`, "--format=json"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).data.resources.modified, []);
+});
+
+test("Settings CLI applies only an exact typed plan and emits the changed state", (t) => {
+  const root = makeRoot(t, "Settings CLI");
+  const hubHome = path.join(path.dirname(root), "hub-settings-cli");
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\n");
+  const env = { ...process.env, CONTEXT_ROOM_HUB_HOME: hubHome };
+  let result = spawnSync(process.execPath, [cli, "init", `--root=${root}`, "--allow=docs/", "--watch=docs/"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+
+  result = spawnSync(process.execPath, [cli, "settings", "plan", `--root=${root}`, "--set=startupSkills.enabled=false", "--format=json"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  const plan = JSON.parse(result.stdout).data;
+  assert.match(plan.planId, /^plan-/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, CONFIG_FILE), "utf8")).startupSkills.enabled, true);
+
+  result = spawnSync(process.execPath, [cli, "settings", "apply", plan.planId, `--root=${root}`, "--format=json"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).data.settingsChangedEvent, "settings.changed");
+
+  result = spawnSync(process.execPath, [cli, "settings", "get", "startupSkills.enabled", `--root=${root}`, "--format=json"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).data.value, false);
+
+  result = spawnSync(process.execPath, [cli, "settings", "plan", `--root=${root}`, "--set=appearance.theme=dark", "--format=json"], { encoding: "utf8", env });
+  assert.notEqual(result.status, 0);
+  assert.equal(JSON.parse(result.stderr).error.code, "setting-not-manageable");
+});
+
 test("CLI treats an equals-style occupied port as explicit and leaves its listener running", async (t) => {
   const root = makeRoot(t);
   const occupied = net.createServer();
@@ -310,7 +473,7 @@ test("malformed config errors stay concise and preserve the file", (t) => {
       timeout: 10_000,
     });
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /Context Room (?:initialization|setup) failed: Invalid Context Room config JSON/);
+    assert.match(result.stderr, /Context Room (?:initialization|setup|Hub) failed: Invalid Context Room config JSON/);
     assert.doesNotMatch(result.stderr, /\n\s+at /);
     assert.equal(fs.readFileSync(configPath, "utf8"), "{ malformed\n");
   }

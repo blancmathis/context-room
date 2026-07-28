@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://context-room.local/schemas/cli-event.schema.json",
+  "title": "Context Room CLI event",
+  "type": "object",
+  "required": ["schemaVersion", "cursor", "type", "occurredAt", "projectId", "locationId", "sharedRepository", "resource", "data"],
+  "properties": {
+    "schemaVersion": { "const": "context-room.event/1" },
+    "cursor": { "type": "string", "minLength": 1 },
+    "type": { "type": "string", "minLength": 1 },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "projectId": { "type": "string" },
+    "locationId": { "type": "string" },
+    "sharedRepository": { "type": "string" },
+    "resource": {},
+    "data": {}
+  },
+  "additionalProperties": false
+}

@@ -35,7 +35,7 @@
     },
     "watchAllow": {
       "type": "array",
-      "description": "Simple files or folders to monitor for the review queue. Folder entries use recursive-live behavior: current and future files at any depth can appear for verification.",
+      "description": "Files or folders whose current content versions require human verification. A verified content hash leaves the queue; any content change creates a new review. Folder entries use recursive-live behavior: current and future files at any depth can appear for verification.",
       "items": { "$ref": "#/$defs/allowedPath" },
       "uniqueItems": true,
       "default": []
@@ -48,15 +48,15 @@
     },
     "reviewPaths": {
       "type": "array",
-      "description": "Ordered important files or folders that stay in the review queue until a human verifies the current content, even when there is no Git diff. Critical safety issues still appear first.",
+      "description": "Deprecated compatibility field. Context Room reads these paths into the unified watched-document scope when allowedPaths covers them, then removes the field on the next human Settings save.",
+      "deprecated": true,
       "items": { "$ref": "#/$defs/projectPath" },
-      "uniqueItems": true,
-      "default": []
+      "uniqueItems": true
     },
     "reviewAgentInstructions": {
       "type": "boolean",
-      "description": "Whether project AGENTS.md files are implicit required-review paths. Disable this only for a room whose human review scope is intentionally narrower.",
-      "default": true
+      "description": "Deprecated compatibility field. Project AGENTS.md files now follow the same implicit watched-document review rule as every other watched document.",
+      "deprecated": true
     },
     "sharedContext": {
       "type": ["object", "null"],

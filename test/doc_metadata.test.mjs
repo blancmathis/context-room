@@ -19,3 +19,18 @@ Bare code identifiers: \`factory.py\`, \`pipeline.json\`.
     "src/app.ts",
   ]);
 });
+
+test("inline path references ignore fenced configuration examples", () => {
+  const refs = collectInlinePathReferences(`
+\`docs/PRODUCT.md\` is a real repository reference.
+
+\`\`\`json
+{
+  "source": "CLAUDE.md",
+  "target": "apps/calls/AGENTS.md"
+}
+\`\`\`
+`);
+
+  assert.deepEqual(refs, ["docs/PRODUCT.md"]);
+});

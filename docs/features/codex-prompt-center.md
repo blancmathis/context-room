@@ -12,9 +12,9 @@ context_room:
 
 ## Purpose
 
-Codex Prompt Center is the global Context Hub editor for prompt targets published by a compatible local Codex runtime. It does not guess which modes or model prompts exist. The installed runtime owns the catalog; Context Room renders every group and target it receives.
+Codex Prompt Center is the Context Room editor for prompt targets published by a compatible local Codex runtime. It does not guess which modes or model prompts exist. The installed runtime owns the catalog; Context Room renders every group and target it receives.
 
-Open Context Hub and select **Codex prompts**. The catalog is loaded only when this tab opens, so prompt discovery does not slow normal project startup.
+Open **Settings → Codex prompts**, then select **Open prompt editor**. The catalog is loaded only when this dedicated editor opens, so prompt discovery does not slow normal project startup or compete with the review queue.
 
 ## Compatibility Prerequisite
 
@@ -113,7 +113,12 @@ An override whose target disappeared, changed strategy, or became read-only is s
 
 After the atomic manifest rename succeeds, a later receipt-refresh failure cannot turn that commit into a false save failure. The API returns the committed target with `commitWarning`; the UI reports that the override was saved while its runtime-loaded status remains temporarily unavailable.
 
-Because several isolated Context Room servers can expose the same global Prompt Center, a private lock directory serializes the final revalidation and atomic manifest replacement across processes. Its `owner.json` binds the lock to a PID, that process instance's start time when available, and a random generation token. A verified live owner is never evicted because of age and produces `409`.
+Because the global Context Room and temporary exact-proposal review services can
+expose the same global Prompt Center, a private lock directory serializes the
+final revalidation and atomic manifest replacement across processes. Its
+`owner.json` binds the lock to a PID, that process instance's start time when
+available, and a random generation token. A verified live owner is never
+evicted because of age and produces `409`.
 
 Every owner or reclaimer whose recorded start time is `null` first receives a 30-second incomplete-record grace period. After that grace, Context Room compares the current process start with the owner record timestamp: a process that predates the record remains a live owner, while a valid later start proves a reused PID. If that start remains unavailable, malformed, or throws while the PID is alive, Context Room fails safe and keeps the lock blocking.
 
@@ -171,15 +176,29 @@ Context Room rebuilds the runtime's typed canonical JSON in fixed field order an
 
 Each verified Codex app-server process writes a schema-v2 hash-only receipt and references one immutable catalog snapshot. The receipt includes a positive JavaScript-safe `publicationGeneration` and the exact macOS process-generation identity `processStartIdentity: darwin-proc-bsdinfo-v1:<boot-session-uuid>:<tvsec>:<tvusec>`. The boot-session UUID is lowercase `kern.bootsessionuuid`; `tvsec` is positive and `tvusec` comes from `proc_pidinfo(PROC_PIDTBSDINFO)`, zero-padded to six digits. `catalogFile` is a strict basename bound to the receipt PID and the snapshot's raw SHA-256. The snapshot must be a regular non-symlink file with mode `0600`; its raw hash, logical `catalogRevision`, and runtime version must match the receipt. Dead or non-Codex PIDs are ignored before their receipt is parsed.
 
-Receipt freshness is also bound to the current process instance. Context Room invokes only Apple's absolute `/usr/bin/python3` path with a minimal environment, never a `python3` resolved from `PATH`. Its `ctypes` helper validates the exact `proc_pidinfo` result size, PID, positive start second, and bounded microseconds; it also bounds the `kern.bootsessionuuid` buffer to 128 bytes before allocation and requires an ASCII canonical UUID before lowercasing it. The reader compares this identity with the receipt before opening the snapshot, then obtains it again after snapshot validation and requires the tuple to remain unchanged. If `/usr/bin/python3` is absent or not executable, or if exact identity is unavailable or changes, runtime-loaded state fails closed as unverified. Context Room also strictly requires the receipt load timestamp plus the receipt and snapshot modification times to be no older than the process start. There is no grace window: even a receipt from one second before the verified process start is rejected.
+Receipt freshness is also bound to the current process instance. Context Room invokes only Apple's absolute `/usr/bin/python3` path with a minimal environment, never a `python3` resolved from `PATH`.
+
+Its `ctypes` helper validates the exact `proc_pidinfo` result size, PID, positive start second, and bounded microseconds. It also bounds the `kern.bootsessionuuid` buffer to 128 bytes before allocation and requires an ASCII canonical UUID before lowercasing it.
+
+The reader compares this identity with the receipt before opening the snapshot, then obtains it again after snapshot validation and requires the tuple to remain unchanged. If `/usr/bin/python3` is absent or not executable, or if exact identity is unavailable or changes, runtime-loaded state fails closed as unverified.
+
+Context Room also strictly requires the receipt load timestamp plus the receipt and snapshot modification times to be no older than the process start. There is no grace window: even a receipt from one second before the verified process start is rejected.
 
 Every snapshot read is bracketed by two reads each of the receipt and **.publication-state.json**. The verification order is process identity A, receipt R1, publication state S1, snapshot, receipt R2, publication state S2, then process identity B. R1 and R2 must be byte-identical. Both states must be strictly valid, and the owner generation for that receipt's PID must stay unchanged; unrelated `nextGeneration`, `globalOwnerGeneration`, registry-generation, or other PID owner changes do not invalidate the proof. Each relevant owner must equal the receipt's exact `publicationGeneration`.
 
 Publication state v2 separates instance registry age from receipt publication age. `runtimeRegistryGenerations[pid]` is the generation reserved when the current configuration instance takes ownership of that PID; `runtimeOwnerGenerations[pid]` changes for every receipt publication or tombstone. The two maps must contain exactly the same canonical decimal non-zero `u32` PID keys. All runtime generations are positive JavaScript-safe integers below `nextGeneration`, and each registry generation must be less than or equal to its owner generation. `globalOwnerGeneration` may be zero and must remain below `nextGeneration`. Context Room validates registry generations structurally, but only `runtimeOwnerGenerations[pid]` proves receipt freshness. A legacy v1 file remains unverified here until the compatible runtime atomically migrates it while reserving its next publication generation; Context Room never guesses the missing registry map.
 
-Before returning an aggregate, Context Room also validates one coherent batch for the exact PIDs whose receipts it will trust. It captures their initial receipt bytes, owner-generation vector, represented live-process set, and exact process identities; validates every snapshot; reads a strict final publication state; rereads every proved receipt; then reads the publication state and represented process set again. Each receipt's bytes and generation must still match its proof, the relevant owner vector must match the initial vector across both final state reads, and both the PID set and every process-start identity must remain unchanged. Churn in fields and owners outside the relevant owner vector is deliberately ignored. A batch race retries the entire batch once; a second race fails every otherwise verified member closed as unverified, so aggregation never combines stale runtime A with current runtime B.
+Before returning an aggregate, Context Room validates one coherent batch for the exact PIDs whose receipts it will trust. It captures their initial receipt bytes, owner-generation vector, represented live-process set, and exact process identities. It then validates every snapshot, reads a strict final publication state, rereads every proved receipt, and reads the publication state and represented process set again.
 
-The publication protocol requires receipt bytes to be immutable for one `publicationGeneration`. Under the runtime's artifact lock, only the current or a newer registry generation may publish. It reserves the next unique owner generation, advances `nextGeneration`, and writes publication state with that owner before writing the content-addressed snapshot and then the receipt. A failure before receipt replacement therefore leaves the new owner as a tombstone; a failure after replacement may leave the fully written receipt verifiable. The runtime revalidates owner generation after publication, and an older registry generation cannot republish. Any later receipt publication, replacement, or tombstone must allocate a fresh owner generation for that PID. Context Room rereads receipt bytes and catches violations that overlap its verification window, but no sequence of filesystem reads can create a coherent batch against a writer that silently rewrites an already-read receipt without advancing its generation.
+Each receipt's bytes and generation must still match its proof. The relevant owner vector must match the initial vector across both final state reads, and both the PID set and every process-start identity must remain unchanged. Churn in fields and owners outside the relevant owner vector is deliberately ignored.
+
+A batch race retries the entire batch once. A second race fails every otherwise verified member closed as unverified, so aggregation never combines stale runtime A with current runtime B.
+
+The publication protocol requires receipt bytes to be immutable for one `publicationGeneration`. Under the runtime's artifact lock, only the current or a newer registry generation may publish. It reserves the next unique owner generation, advances `nextGeneration`, and writes publication state with that owner before writing the content-addressed snapshot and then the receipt.
+
+A failure before receipt replacement therefore leaves the new owner as a tombstone; a failure after replacement may leave the fully written receipt verifiable. The runtime revalidates owner generation after publication, and an older registry generation cannot republish. Any later receipt publication, replacement, or tombstone must allocate a fresh owner generation for that PID.
+
+Context Room rereads receipt bytes and catches violations that overlap its verification window. However, no sequence of filesystem reads can create a coherent batch against a writer that silently rewrites an already-read receipt without advancing its generation.
 
 If the runtime atomically publishes a newer relevant receipt or owner generation, changes process identity, or changes the represented process set during the first attempt, the reader retries once from the latest batch. A second relevant change within the bounded retry fails closed as unverified. Missing, unreadable, insecure, malformed, ownerless, or generation-mismatched publication state also fails closed as unverified. A runtime tombstone updates the owner generation before removing a receipt, so an in-flight old receipt cannot remain verified even if its immutable snapshot still exists.
 
@@ -221,7 +240,7 @@ DELETE /api/codex-prompts/override
 POST   /api/codex-prompts/refresh
 ```
 
-The server requires a loopback peer and the active loopback `Host`. It rejects an `Origin` or `Referer` that names another origin and rejects requests explicitly marked cross-site; headerless local clients remain supported. Every mutation must still send both the random `x-context-room-prompt-nonce` and the active `x-context-room-project` identity, which prevents a stale project tab or local client from mutating through a different Context Room process. Every Context Room page also sends a `frame-ancestors` policy limited to itself and the exact loopback ports of its known parent rooms, so Context Hub nesting works without allowing wildcard or external framing.
+The server requires a loopback peer and the active loopback `Host`. It rejects an `Origin` or `Referer` that names another origin and rejects requests explicitly marked cross-site; headerless local clients remain supported. Every mutation must still send both the random `x-context-room-prompt-nonce` and the active `x-context-room-project` identity, which prevents a stale project tab or local client from mutating through a different Context Room process. Every Context Room page also sends a `frame-ancestors` policy limited to itself and the exact loopback ports of its known parent rooms, so isolated project and proposal reviews can open inside the secondary review area without allowing wildcard or external framing.
 
 ## Durable Contracts
 
@@ -237,8 +256,8 @@ All four schemas reject unknown top-level fields. The compatible Codex runtime v
 ## Source Map
 
 - `src/codex_prompt_center.mjs`: catalog normalization, exact overlays, optimistic concurrency, private storage, receipts, and provider.
-- `src/context_room.mjs`: injectable API routes and lazy Context Hub interface.
+- `src/context_room.mjs`: injectable API routes and lazy Context Room interface.
 - `schemas/codex-prompt-*.schema.json`: strict persisted catalog, manifest, publication-state, snapshot, and receipt contracts.
 - `test/codex_prompt_center.test.mjs`: synthetic catalog, overlay, storage, receipt, API, and privacy tests.
-- [Context Hub](context-hub.md): global navigation and project isolation.
+- [Global Context Room](context-hub.md): global navigation and project isolation.
 - [Settings](settings.md): project and preference configuration that remains separate from prompt state.

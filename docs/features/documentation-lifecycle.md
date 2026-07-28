@@ -22,7 +22,7 @@ Context Room separates three responsibilities so documentation can stay complete
 
 ## 1. Create Or Update
 
-The maintenance skill first finds the canonical owner with `docs capabilities`, `search`, and `trace`. It applies the normal documentation quality rules, then routes each change independently:
+The maintenance skill first finds the canonical owner with `docs search` and `docs trace`. It applies the normal documentation quality rules, then routes each change independently:
 
 - local canonical owner: edit the local file and leave it in the normal Context Room review queue;
 - shared project docs or skill: create or reuse a project proposal;
@@ -32,6 +32,8 @@ The maintenance skill first finds the canonical owner with `docs capabilities`, 
 If a durable fact is unresolved, the agent asks the user focused questions instead of writing an assumption. After the answer, it resumes the same workflow.
 
 For shared content, `shared propose` uses `CODEX_THREAD_ID` or `--session`. The identity is the shared repository, project or global scope, and task ID. A later message in the same task therefore returns the same open proposal worktree. A terminal accepted or merged proposal is not reopened; the next update creates a new one.
+
+The default agent-facing route is `context ask` for accepted documentation. Shared documentation changes use proposal worktrees; the CLI never accepts, rejects, or verifies a file review.
 
 Every publish replaces the proposal description with a complete current **agent recap**. The recap is temporary review context: it explains the latest cumulative intent before the owner reads the diffs, but it never becomes accepted project truth by itself.
 
@@ -61,10 +63,11 @@ If the packet exposes a blocking unknown, the working agent asks the user. A dur
 
 - Local review remains human-owned.
 - Shared `main` and accepted snapshots remain read-only to agents.
-- Agents may push only proposal branches; reviewed partial results go to `accepted/*` for a human pull-request merge.
+- Agents may push only proposal branches; only the human proposal action can
+  publish the reviewed result to the configured shared default branch.
 - A proposal recap helps review but does not replace the diff.
 - A scheduled audit may propose a correction but cannot accept or merge it.
-- Only merged shared content and reviewed local content become normal accepted research input.
+- Only accepted shared content on `main` and reviewed local content become normal accepted research input.
 
 ## Skills
 

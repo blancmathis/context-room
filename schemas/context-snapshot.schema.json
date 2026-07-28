@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://context-room.local/schemas/context-snapshot.schema.json",
+  "title": "Context Room context snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "snapshotId",
+    "schemaVersion",
+    "resolverVersion",
+    "providerProfileVersion",
+    "coordinate",
+    "resources",
+    "applications",
+    "watermarks",
+    "sharedRevisions"
+  ],
+  "properties": {
+    "snapshotId": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "schemaVersion": { "const": "context-room.context-snapshot/1" },
+    "resolverVersion": { "type": "string", "minLength": 1 },
+    "providerProfileVersion": { "type": "string", "minLength": 1 },
+    "coordinate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projectId", "locationId", "folder", "provider"],
+      "properties": {
+        "projectId": { "type": "string" },
+        "locationId": { "type": "string" },
+        "folder": { "type": "string" },
+        "provider": { "type": "string" }
+      }
+    },
+    "resources": { "type": "array", "items": { "$ref": "#/$defs/resource" } },
+    "applications": { "type": "array", "items": { "$ref": "#/$defs/application" } },
+    "watermarks": { "type": "object" },
+    "sharedRevisions": { "type": "array", "items": { "$ref": "#/$defs/sharedRevision" } }
+  },
+  "$defs": {
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "source", "locator", "providers", "version", "truthState", "review"],
+      "properties": {
+        "id": { "type": "string" },
+        "kind": { "type": "string" },
+        "source": {},
+        "locator": {},
+        "providers": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "version": {},
+        "truthState": { "type": "string" },
+        "review": {}
+      }
+    },
+    "application": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resourceId", "coordinate", "status", "scope", "order", "reason", "destination", "provider"],
+      "properties": {
+        "resourceId": { "type": "string" },
+        "coordinate": { "$ref": "#/properties/coordinate" },
+        "status": { "type": "string" },
+        "scope": {},
+        "order": { "type": ["number", "null"] },
+        "reason": {},
+        "destination": {},
+        "provider": { "type": "string" }
+      }
+    },
+    "sharedRevision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "repository", "defaultBranch", "projectId", "revision"],
+      "properties": {
+        "id": { "type": "string" },
+        "repository": { "type": "string" },
+        "defaultBranch": { "type": "string" },
+        "projectId": { "type": "string" },
+        "revision": { "type": "string" }
+      }
+    }
+  }
+}

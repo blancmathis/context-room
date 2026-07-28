@@ -36,7 +36,7 @@ Context Room injects the active app theme into every HTML preview. Changing the 
 - Use native controls, CSS view selectors, and `<details>` when interaction makes exploration easier. Keep the main conclusion visible without interaction.
 - Open HTML reviews as rendered previews. Accept or reject the proposed document as a whole.
 - Limit desktop rows to four steps, three cards, or two comparison options when possible. Built-in layouts collapse on mobile.
-- Put the file in `watchAllow` or `reviewPaths` when changes require approval.
+- Put the file in `watchAllow` when every current content version requires human verification.
 
 ## Choose A Pattern
 

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://context-room.local/schemas/cli-envelope.schema.json",
+  "title": "Context Room CLI envelope",
+  "type": "object",
+  "required": ["schemaVersion", "command", "requestId", "ok", "warnings", "nextActions"],
+  "properties": {
+    "schemaVersion": { "const": "context-room.cli/1" },
+    "command": { "type": "string", "minLength": 1 },
+    "requestId": { "type": "string", "minLength": 1 },
+    "ok": { "type": "boolean" },
+    "target": { "type": ["object", "null"] },
+    "freshness": { "type": ["object", "null"] },
+    "data": {},
+    "error": {
+      "type": "object",
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 },
+        "retryable": { "type": "boolean" },
+        "details": {}
+      },
+      "additionalProperties": false
+    },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "nextActions": { "type": "array", "items": { "type": "object" } }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "ok": { "const": true } }, "required": ["ok"] },
+      "then": { "required": ["data"], "not": { "required": ["error"] } },
+      "else": { "required": ["error"], "not": { "required": ["data"] } }
+    }
+  ],
+  "additionalProperties": false
+}

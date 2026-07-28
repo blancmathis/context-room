@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://unpkg.com/context-room@latest/schemas/shared-instruction-locations.schema.json",
+  "title": "Context Room shared instruction locations",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "collections", "assignments"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "const": 1 },
+    "collections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title", "path"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "title": { "type": "string", "minLength": 1 },
+          "path": { "$ref": "#/$defs/relativePath" }
+        }
+      }
+    },
+    "assignments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "collectionId", "scope", "files"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "collectionId": { "$ref": "#/$defs/id" },
+          "scope": { "enum": ["project", "shared", "device"] },
+          "projectIds": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+          "files": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["source", "target", "providers"],
+              "properties": {
+                "source": { "$ref": "#/$defs/instructionPath" },
+                "target": { "$ref": "#/$defs/instructionPath" },
+                "providers": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": { "enum": ["codex", "claude-code", "opencode"] }
+                }
+              }
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "scope": { "const": "project" } } },
+            "then": { "required": ["projectIds"], "properties": { "projectIds": { "minItems": 1 } } },
+            "else": { "not": { "required": ["projectIds"] } }
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$" },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "not": { "pattern": "(^/|(^|/)\\.\\.?(/|$)|(^|/)\\.git(/|$)|^\\.context-room(/|$)|\\u0000)" }
+    },
+    "instructionPath": {
+      "allOf": [
+        { "$ref": "#/$defs/relativePath" },
+        { "pattern": "\\.(?:md|mdx)$" }
+      ]
+    }
+  }
+}

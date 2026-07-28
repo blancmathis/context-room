@@ -131,7 +131,7 @@ export function renderDocMetadataTemplateValues({ title, normalized, metadata })
 
 export function collectInlinePathReferences(content = "") {
   const refs = new Set();
-  const text = String(content || "");
+  const text = String(content || "").replace(/```[\s\S]*?```/g, "");
   for (const match of text.matchAll(/\[[^\]]+\]\(([^)\s]+)\)/g)) {
     const value = match[1].trim();
     if (isPlausibleInlinePathReference(value, { fromMarkdownLink: true })) refs.add(value);

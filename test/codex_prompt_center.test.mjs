@@ -4921,7 +4921,7 @@ test("Prompt Center mutations do not repaint after the user leaves the prompt vi
   const saveMutation = nextMutation();
   const saving = harness.saveCodexPromptOverride();
   assert.equal(await saveMutation.startedPromise, "POST");
-  state.contextHubView = "inbox";
+  state.contextHubView = "home";
   saveMutation.resolve({
     ...state.codexPromptDetails.get("synthetic/target"),
     overrideHash: "override-1",
@@ -4942,7 +4942,7 @@ test("Prompt Center mutations do not repaint after the user leaves the prompt vi
   const restoreMutation = nextMutation();
   const restoring = harness.restoreOfficialCodexPrompt();
   assert.equal(await restoreMutation.startedPromise, "DELETE");
-  state.contextHubView = "projects";
+  state.contextHubView = "project-manager";
   restoreMutation.reject(new Error("Synthetic restore failure"));
   await restoring;
   assert.equal(workspaceRenders, 0);
@@ -5185,7 +5185,7 @@ test("Prompt Center target requests do not repaint after leaving the view", asyn
   const loading = selectCodexPromptTarget("synthetic/a");
   await Promise.resolve();
   const rendersBeforeLeaving = renders;
-  state.contextHubView = "inbox";
+  state.contextHubView = "home";
   resolveDetail({ id: "synthetic/a", effective: "loaded after leaving" });
   await loading;
   assert.equal(renders, rendersBeforeLeaving);
@@ -5197,7 +5197,7 @@ test("Prompt Center search preserves catalog errors and clears only target error
   const script = inlineAppScript();
   const source = script.slice(
     script.indexOf('el("sharedProposalSearch")?.addEventListener'),
-    script.indexOf('el("sharedProposalProjectFilter")?.addEventListener'),
+    script.indexOf('el("contextHubSourceFilter")?.addEventListener'),
   );
   let handler = null;
   const state = {
@@ -5364,7 +5364,8 @@ test("Prompt Center API exposes six generic routes through an injectable provide
   const origin = `http://127.0.0.1:${room.server.address().port}`;
 
   const html = await (await fetch(origin + "/")).text();
-  assert.match(html, />Codex prompts<\/button>/);
+  assert.match(html, /\{ id: "codex-prompts", label: "Codex prompts", scope: "Global" \}/);
+  assert.match(html, /id="openCodexPromptCenter"/);
   assert.match(html, /Official · read-only/);
   assert.match(html, /id="codexPromptEffectiveLabel">Effective after restart</);
   assert.match(html, /Runtime loaded · read-only/);

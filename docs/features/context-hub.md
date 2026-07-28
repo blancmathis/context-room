@@ -3,36 +3,48 @@ context_room:
   kind: canonical
   scope: context-room
   status: current
-  canonical_for: global Context Hub
-  last_verified: 2026-07-23
-  sources: [src/context_hub.mjs, src/context_room.mjs, src/codex_prompt_center.mjs, src/shared_context.mjs, bin/context-room.mjs, docs/features/shared-context.md, docs/features/codex-prompt-center.md]
+  canonical_for: global Context Room registry and views
+  last_verified: 2026-07-27
+  sources: [src/context_hub.mjs, src/context_room.mjs, src/context_engine.mjs, src/context_inventory.mjs, src/codex_prompt_center.mjs, src/shared_context.mjs, bin/context-room.mjs, docs/features/shared-context.md, docs/features/codex-prompt-center.md]
 ---
 
-# Context Hub
+# Global Context Room
 
 ## Purpose
 
-Context Hub is one local cockpit for every registered Context Room project and shared-context repository. It keeps local files and shared proposals together without pretending they use the same trust workflow.
+Context Room has one review-first Home and one global runtime. It aggregates every registered local project and shared-context repository while keeping the selected project's navigation, Context Health, startup context, skills, and hooks directly below the queue.
+
+Each browser tab or window is an independent **Workspace** within that global
+runtime. A Workspace is only a view: it owns its selected project, worktree,
+folder, file, proposal, history, filters, Explorer state, and open panels. It
+is not a project, a documentation source, or another Context Room server.
+
+`Local` and `Shared` describe documentation sources only. Local documents live
+with a project and enter its file review queue. Shared documents live in a Git
+repository and change through proposals. Neither source creates a separate
+room mode.
+
+`context-room hub` is the launcher and `src/context_hub.mjs` owns the computer-local registry, but the UI does not expose a second product surface named Context Hub or a primary tab bar. Context Room itself is Home. Project management and Codex prompt editing use explicit secondary entry points.
 
 | Source | Trusted content | Owner workflow |
 | --- | --- | --- |
-| Local project | Files inside that project's allowed paths | Open the project room, edit normally, then complete its local review queue |
-| Shared repository | The accepted default-branch snapshot | Open an exact proposal commit, accept all or part, then prepare and merge its pull request |
+| Local project | Files inside that project's allowed paths | Select the project in Explorer, edit in the global room, then complete its local review queue |
+| Shared repository | The accepted configured default-branch snapshot | Open an exact proposal commit and accept or reject its file reviews; completing those decisions finalizes the reviewed result into the default branch |
 
 A project may be local-only, shared-only, or local and connected to shared docs and skills. The UI labels every item by source and explains which review path it uses.
 
-## Start Or Reuse The Hub
+## Start Or Reuse The Global Room
 
 ```bash
 context-room hub --root .
 ```
 
-The command initializes and registers the current local project, then starts one global Hub service. If that service is already healthy, another invocation reuses it and prints a URL focused on the current project instead of starting another Hub.
+The command initializes and registers the current local project, then starts one global Context Room service. If that service is already healthy, another invocation reuses it and prints a URL focused on the current project instead of starting another service.
 
-Use a shared-only launch when the current directory should not become a local project:
+Start the global room without registering the current directory:
 
 ```bash
-context-room hub --no-local
+context-room hub
 ```
 
 Inspect the user-local catalog or add a shared repository without connecting a local project:
@@ -44,43 +56,137 @@ context-room hub proposals --session <task-id>
 context-room hub open --session <task-id>
 ```
 
-Normal `init`, `setup`, and `start` flows register their initialized project automatically. Shared setup records the repository and links the local project to its shared project ID.
+`setup` and `start` register their initialized project and focus it inside the
+global room. `init` remains write-only. Shared setup records the repository and
+links the local project to its shared project ID. The legacy `--no-local` flag
+is still accepted by `hub` for compatibility but is no longer needed.
 
-`hub proposals` exposes the aggregated proposal index to agents and can filter by project or Codex task ID. `hub open` prints a deep link into the running Hub with the same focus.
+Every registered Git worktree keeps its own root, branch, configuration, and
+local review state. Context Room groups those locations under one logical
+project and targets one worktree at a time inside the global room. The stable
+group identity uses Git's common directory plus the Context Room root relative
+to the Git top level. Non-Git projects keep their path identity. Context Room
+never scans the disk for worktrees: only explicitly registered locations
+appear.
 
-## Inbox, Projects, And Codex Prompts
+`hub proposals` exposes the aggregated proposal index to agents and can filter by project or Codex task ID. `hub open` prints a deep link into the running Context Room with the same focus.
 
-**Inbox** combines work that may need attention:
+Use `context-room workspace open --project <id>` to create a deep link for a
+new Workspace, or add `--file <path>` to focus a document. A normal project
+click reuses the current Workspace. Modified clicks, middle-click, and **Open
+in new workspace** preserve independent browser-tab behavior.
 
-- published shared proposals, including their current title, latest cumulative agent recap, author, session, files, branch, and exact hash;
-- local projects whose normal review queue contains files;
-- proposal states such as ready, updated after review, in review, accepted branch ready, and merged.
+Workspace navigation is stored per tab in `sessionStorage`. Theme, sounds, and
+other device-wide preferences remain shared. Duplicate tabs keep their view
+but receive a new Workspace identity. The server stores only ephemeral
+navigation metadata; it never stores editor drafts or document content there.
 
-**Projects** shows every registered project, including clean local projects and shared projects with no local folder. Filters can narrow by project or by local versus shared source. Search covers project names, proposal metadata, paths, sessions, hashes, roots, and repositories. The selected-proposal overview labels the recap explicitly before the owner opens the diff.
+## Primary Room And Secondary Tools
+
+**Home** is the default computer-wide cockpit. Its order is deliberate:
+
+1. one compact, scrollable review queue containing every local file waiting for review and every actionable shared proposal;
+2. the current local project's Context Health;
+3. the selected project's `hubSections`, startup context, skills, and hooks.
+
+Each local file waiting for review gets its own compact row and opens directly in that project's normal review queue. Local changes are never grouped as a proposal. Each shared proposal gets one visually distinct row because the proposal branch is its review unit. Its current description, exact revision, and up to four changed paths stay visible on Home.
+
+Clicking anywhere on the row shows that proposal's file-review summary immediately while Context Room materializes the exact commit in the background. Every changed path is listed with its change type and review state, and no file is chosen for the owner. Selecting a file opens it in the exact proposal room once ready, with that room's Explorer, file-history arrows, diff control, path, and normal document review UI.
+
+Proposal navigation is integrated into the single workspace bar: a file shows **← Proposal**, and the grouped summary shows progress without a separate proposal decision. Context Room finalizes the reviewed result automatically after the last human file decision. The Context Room logo returns to the global Home. When the description exceeds its two-line preview, a compact **+** appears beside it and expands or collapses only the description without opening the proposal.
+
+Rows stay visually clean until the owner starts a selection. Right-clicking an actionable local file or shared proposal opens a compact menu for selecting that item, selecting every visible item, or clearing the current selection. Once one item is selected, left-clicking another row adds or removes it instead of opening it; the proposal description control remains usable.
+
+The selection bar can select or unselect every currently visible item, clear the selection, or reject the selected set after one human confirmation. Selection may span projects and sources while filters change. Shared proposals leave the active queue while their exact revisions remain archived on `rejected/...` branches.
+
+Local files are not deleted: their reviews are marked **Needs changes** and remain visible until the underlying work is corrected and reviewed again. Accepted proposals and local reviews already marked **Needs changes** cannot be selected for the same rejection action.
+
+The mixed queue interleaves local files and shared proposals without flattening them into the same object. Separate counters report files and proposals. Its search, review-type selector, and project button filter the active queue immediately. Selecting a project resets the review-type selector so a local-only project naturally shows files and a shared-only project naturally shows proposals. Selecting a local review targets its exact registered worktree and opens the file in the same global room. Selecting a shared review opens its exact proposal workspace.
+
+The owner can give logical projects an exact device-wide priority order in
+**Settings → Hub → Project priority** or through a project's Explorer context
+menu. Every registered worktree shares its logical project's rank. The same
+order drives Explorer, project pickers, and review ordering; blocking conflicts
+still surface first. Projects without an explicit rank retain the normal
+current-project, attention, recent-use, and title fallback. Priority is private
+local preference: it never changes project config, shared Git history, Home
+sections, or review decisions.
+
+Right-clicking one review, selecting several, or right-clicking an Explorer
+folder containing active reviews opens the same snooze chooser. It offers quick
+durations, a custom number of minutes, hours, days, or weeks, and an exact
+return time. Snooze hides only the displayed version from Home; it remains
+pending and continues to block any enabled review gate. **Settings → Review →
+Snoozed reviews** lists every hidden item and can return it immediately. The
+item also returns when its deadline passes. A local content-hash change or
+shared proposal-head change returns immediately, so a newer version can never
+stay hidden behind an older snooze.
+
+The project button opens one reusable picker popup. The popup shows the complete prioritized project registry in a scrollable list, separates each title from its local path or shared identity, exposes Local and Shared badges, and filters the visible list immediately while the user types. Arrow keys move through the live results, Enter selects one, Escape closes the popup, and **All projects** clears the queue filter. **Manage projects…** at the bottom opens the complete registry without keeping Projects as permanent navigation.
+
+A logical project appears once in Home, the project picker, and the global Explorer even when dozens of its worktrees are registered. Its badge reports the worktree count. Shared proposals remain project-level and therefore appear once. Local reviews remain attached to the concrete worktree that produced them and show its branch label when the group contains several worktrees.
+
+Home stays bounded when the registry contains many projects. It renders at most 80 matching review rows at once, while the searchable popup and **Manage projects…** retain the complete registry.
+
+When at least one file has been opened, the file-history arrows remain visible on Home. **Back** returns to the exact last file without adding Home to the file stack; **Forward** remains available whenever that stack already contains a later file.
+
+The aggregate queue, Context Health, project sections, folder Explorer, and startup panels share one normal Context Room document flow. Global Home always includes a project-inspection panel after the review queue. Until a local project or one of its files is selected in Explorer, it asks the owner to make that selection rather than presenting the global host's diagnostics as project data.
+
+Once selected, **View Context health** and **View startup environment** become two inline disclosure rows for that exact worktree. Opening one reveals its diagnostics in place; selecting it again closes it, and opening the other switches the expanded view. The URL, global Explorer, Review Queue, panel heading, and surrounding Home remain in place. Shared-only projects remain visible in the project registry and shared proposal flows but expose no local inspection until a local folder is connected.
+
+The Explorer folder menu also exposes **Inspect agent environment**. It keeps
+the current page and folder selection, asks for Codex, Claude Code, or OpenCode,
+then resolves that exact project, worktree, and folder through the shared
+[Context Engine](context-engine.md). The inspector separates active, inactive,
+disabled, shadowed, uncertain, blocked, and unverified resources. A resource
+can be opened without widening `allowedPaths`; **Trace** explains its ordered
+application chain and **Show impact** lists only registered consumers.
+
+Opening a grouped project keeps a worktree selector in Explorer and loads the
+selected worktree's real file tree. Changing the selection retargets the same
+global room. Startup context, skills, hooks, files, and Context Health always
+come from that exact worktree rather than being merged across branches.
+
+Every review item has exactly one source: **Local** for a file or **Shared** for a proposal. A project may be available through both independent sources, in which case the project catalog shows two separate badges rather than inventing a combined source. When the owner selects such a mixed project, Home keeps both review types visible but warns that two documentation review flows are active. **Keep Shared** and **Keep Local** prepare a source-grounded migration prompt in the active Codex composer; they never send the prompt or mutate the project directly.
+
+**Manage projects…** shows every registered project, including clean local projects and shared projects with no local folder. Filters can narrow by project or by local versus shared source. Search covers project names, proposal metadata, paths, sessions, hashes, roots, and repositories.
 
 Repository-wide proposal scopes appear as a dedicated **Global skills** project. They stay searchable and filterable without being duplicated under every project that consumes them.
 
-**Codex prompts** loads a compatible installed Codex runtime's global prompt catalog on demand. It groups every runtime-published target without hardcoding mode or model names, compares official, effective-after-restart, and runtime-loaded versions, and saves exact private overlays. Runtime receipts prove local resolution by target, not mode selection or task delivery. Prompt state is not project configuration and never enters the local or shared review workflow. See [Codex Prompt Center](codex-prompt-center.md).
+**Settings → Codex prompts** opens a compatible installed Codex runtime's global prompt catalog on demand. It groups every runtime-published target without hardcoding mode or model names, compares official, effective-after-restart, and runtime-loaded versions, and saves exact private overlays. Runtime receipts prove local resolution by target, not mode selection or task delivery. Prompt state is not project configuration and never enters the local or shared review workflow. See [Codex Prompt Center](codex-prompt-center.md).
 
-Keyboard shortcuts inside the Hub:
+Keyboard shortcuts inside the secondary views:
 
 - `/`: focus search;
-- `j` and `k`: move through visible items;
+- `j` and `k`: move through visible project-management, review, or prompt items;
 - `Escape`: return to the current Context Room.
 
 ## Freshness And Isolation
 
-Opening a connected local project refreshes its accepted shared snapshot before its room starts. If the remote is unavailable, the normal shared-context offline rules apply.
+Opening a connected local project refreshes its accepted shared snapshot before
+the global room uses it. If the remote is unavailable, the normal
+shared-context offline rules apply.
 
-Each local project still runs in an isolated Context Room server with its own project identity. The Hub embeds that room instead of giving one server arbitrary path access. Shared proposal reviews use the same isolation: each exact commit receives its own review worktree and room.
+The global server keeps a fixed host identity and requires every project-scoped
+file request to carry the exact registered location ID. It resolves that ID
+against the local registry before reading or mutating anything, so changing
+projects does not widen access or merge worktree state. Shared proposal reviews
+still use a temporary exact-commit review worktree because they are immutable
+review artifacts, not project-scoped rooms. Home never nests another Home.
 
-The global registry lives at `$HOME/.context-room/hub/registry.json`. The running Hub record lives beside it in `runtime.json`. Both are computer-local state, not project truth and not files to commit.
+The global registry lives at `$HOME/.context-room/hub/registry.json`. The running global-room record lives beside it in `runtime.json`. Device-wide project priority and exact-version review snoozes live in the private, atomic `$HOME/.context-room/hub/attention.json` file. These files are computer-local state, not project truth and not files to commit.
+
+Context Room writes a versioned catalog snapshot to `$HOME/.context-room/hub/snapshot.json` with private `0600` permissions. It contains project identities, registered worktrees, review counters, proposal summaries, Home sections, and freshness metadata, but no document content. The first paint reads that snapshot or the minimal registry without running Git on the critical path. A missing, corrupt, or older snapshot is safe to display only as **Refreshing**; it can never label a project **Up to date** until a background refresh confirms the current state.
+
+The browser requests the project catalog, the paginated review queue, and Home sections separately. Review rows default to 80 per page. The aggregate `/api/context-hub` route remains available for existing consumers. Refresh work is coalesced, runs outside the HTTP critical path, and indexes only registered projects and worktrees. The explicit **Refresh** action rebuilds the snapshot from current local and shared state. Opening a proposal still performs one required remote synchronization before binding the review to its exact head; reopening the same exact head reuses its existing review room without another materialization.
 
 ## Source Map
 
-- `src/context_hub.mjs`: global project, shared-repository, and runtime registry.
-- `src/context_room.mjs`: aggregate Hub state, inbox UI, prompt-center UI, project-room isolation, and exact review embedding.
+- `src/context_hub.mjs`: global project, shared-repository, runtime registry, private startup snapshot, and device-local attention preferences.
+- `src/context_room.mjs`: aggregate state, unified review-first Home, project management, Settings entry to the prompt-center UI, project-room isolation, and full-room proposal navigation.
 - `src/codex_prompt_center.mjs`: runtime-published prompt catalog, private overlays, and load receipts.
 - `src/shared_context.mjs`: shared-only repository listing, proposal lifecycle signals, and exact review materialization.
 - `bin/context-room.mjs`: `context-room hub` commands and automatic registration.
+- `src/context_engine.mjs` and `src/context_inventory.mjs`: provider-specific folder inspection shared by the UI and CLI.
+- [Context Engine](context-engine.md): accepted context, graph, trace, impact, snapshots, and proposal impact.
 - [Shared context](shared-context.md): proposal, acceptance, skills, freshness, and permission contracts.

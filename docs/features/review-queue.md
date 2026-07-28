@@ -4,7 +4,7 @@ context_room:
   scope: context-room
   status: current
   canonical_for: review queue
-  last_verified: 2026-07-20
+  last_verified: 2026-07-26
   sources: [src/context_room.mjs, bin/context-room.mjs, docs/agent-configuration.md]
 ---
 
@@ -16,31 +16,36 @@ The review queue shows watched documentation that needs verification before it b
 
 ## Example Flow
 
-1. Configure `watchAllow`, optional folder `watchRules`, and optional `reviewPaths`.
+1. Configure `watchAllow` and optional folder `watchRules`.
 2. Open a queued file.
 3. For a Git change, accept or reject each visible change, or use `Accept all` or `Reject all` even when only one change remains; the completed diff records the review.
 4. When several files were removed together, expand the deletion set, inspect or narrow the selected paths, then confirm their removal once.
-5. For an unchanged `reviewPaths` file, read the current content and use `Mark verified`.
+5. When Git has no diff, review the current document and use `Mark verified`.
 6. Review newly discovered startup instructions and skills once; they return only when their content changes.
 
 ## Rules
 
 - Review owns the final trust decision.
 - Agents may surface the queue, but should never mark files verified for the user.
+- Snooze is a visibility preference, never a review decision. It hides only the exact displayed local content hash or shared proposal head from Home until its return time. The item remains pending and is listed under **Settings → Review → Snoozed reviews**.
+- Snoozed reviews continue to block configured review gates and prevent a false all-clear state. A changed file hash or proposal head returns immediately; expiry or **Return now** also restores the item without changing its review state.
+- Home selection can combine local file reviews with shared proposals. Its rejection action marks local files **Needs changes** without deleting them; shared proposal rejection follows the separate Git archive contract in [Global Context Room](context-hub.md).
 - The owner can select one or several blocking checkpoints: commit, push, pull request, or merge. Commit, push, and local merge use managed Git hooks; hosted checks require provider wiring.
-- `watchAllow` follows changed tracked files and new untracked files in the project; an explicitly allowed `~/...` path follows the same scope using a Context Room review baseline because project Git does not own it. A folder entry keeps the compatible recursive live behavior.
+- `watchAllow` defines documents that require human verification for every current content hash. Git status supplies a diff when available, but never decides whether a document is trusted.
+- A watched Git-clean document with no verified current hash stays in the queue. After verification it leaves immediately; any meaningful content change creates a new review even if the change has already been committed.
+- An explicitly allowed `~/...` path follows the same scope using a Context Room review baseline because project Git does not own it. A folder entry keeps the compatible recursive live behavior.
 - `watchRules` can narrow a folder to current-file snapshots, direct children, or both. Only live modes admit later files; only recursive modes admit subfolder files. See [Agent configuration](../agent-configuration.md#watchrules) for the canonical mode contract.
 - The queue reviews files, not empty directories. A retained live folder rule makes eligible future files enter as new-file reviews.
 - The first eligible file discovered under an external watch is labeled new and reviewed as a whole. Verification records its local baseline; later external modifications and reviewed-file deletions receive inline baseline diffs with synthetic `M` and `D` states.
-- `reviewPaths` keeps important docs in the queue until the current content is verified.
-- Every project `AGENTS.md` is an implicit required-review path by default, even when nested outside configured documentation folders. A deliberately narrow room can set `reviewAgentInstructions` to `false`; explicit `reviewPaths` still apply.
+- Legacy `reviewPaths` are merged into the watched scope when `allowedPaths` covers them. The next human Settings save removes the deprecated fields without widening the allowed boundary.
+- Every project `AGENTS.md` is implicitly watched, even when nested outside configured documentation folders, and follows the same hash-based review rule.
 - Every entrypoint exposed by Startup skills requires an initial review and hash-based re-review after changes.
 - Context Room captures an untrusted observation baseline when an external startup resource is first discovered. An unchanged initial review uses whole-document acceptance or a non-destructive request-changes decision; an edit made before that decision already receives the normal inline diff.
 - Changes that predate the first Context Room observation need an existing Git version, backup, or recovered snapshot; Context Room does not invent missing history.
 - A startup resource already represented by a normal Git queue item is shown only once.
-- The `reviewPaths` array order defines the intended verification path. Critical safety issues remain first; unlisted changed files retain the default risk and documentation order.
-- Reader-facing headings such as `Question: ...` are normal prose. Only explicit TODO markers, including `[QUESTION]` or `<!-- QUESTION -->`, create an unresolved-question issue.
-- `Mark verified` appears only for unchanged `reviewPaths` files. Git changes must be completed through their inline diff.
+- The queue uses its normal risk, authority, and path order. Legacy `reviewPaths` array order has no effect.
+- Reader-facing headings such as `Question: ...` are normal prose. Only explicit unresolved-task markers, including `[QUESTION]` or `<!-- QUESTION -->`, create an unresolved-question issue.
+- `Mark verified` appears for any queued document with no meaningful Git diff. Git changes are completed through their inline diff.
 - Mixed paragraph edits stay inline when changed words are at most 25% of the combined before and after text. Larger rewrites use separate paragraphs; simple additions or removals stay inline.
 - Verified content is also recorded in the shared review ledger by canonical absolute path and content hash, so another Context Room watching the same file does not require a duplicate review.
 - Updating only `context_room.last_verified` is not a review change: it stays out of the queue and inline diff, and syncs silently when the file is open.

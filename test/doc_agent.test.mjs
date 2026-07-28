@@ -166,7 +166,8 @@ test("documentation agent prompt limits research to docs and forbids self-improv
   assert.match(prompt, /Never open or search source code, tests, runtime configuration/i);
   assert.match(prompt, /Do not modify files, create proposals, suggest CLI improvements/i);
   assert.match(prompt, /src\/auth\/session\.ts/);
-  assert.match(prompt, /capabilities/);
+  assert.match(prompt, /Start with a focused search/);
+  assert.doesNotMatch(prompt, /docs .* capabilities/);
   assert.match(prompt, /approximately 900 tokens/);
   assert.match(prompt, /One evidence item must cite exactly one section/);
   assert.match(prompt, /Use targetDifferences only for differences explicitly supported by target documentation/);

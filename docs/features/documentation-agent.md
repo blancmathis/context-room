@@ -57,7 +57,6 @@ This reads only the selected project's accepted docs and project skills plus acc
 The spawned researcher receives the exact installed CLI path and uses only these commands:
 
 ```bash
-context-room docs capabilities --root .
 context-room docs search "session expiration" --status current --limit 8 --budget 1200
 context-room docs search "session expiration" --status proposal --session "$CODEX_THREAD_ID"
 context-room docs read docs/authentication.md#expiration --budget 1600
@@ -65,7 +64,6 @@ context-room docs related docs/authentication.md
 context-room docs trace docs/authentication.md#expiration
 ```
 
-- `capabilities` describes the current project's corpus, canonical subjects, truth states, sources, revisions, and available operations.
 - `search` ranks exact documentation sections with deterministic lexical matching and returns compact snippets. A search without `--status proposal` excludes pending proposal material.
 - `read` returns one document or section with its truth state, source, revision, line range, and hash.
 - `related` follows declared sources, Markdown or HTML links, and incoming documentation references.

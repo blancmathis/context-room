@@ -4,8 +4,8 @@ context_room:
   scope: context-room
   status: current
   canonical_for: features
-  last_verified: 2026-07-23
-  sources: [README.md, docs/product-overview.md, bin/context-room.mjs, src/context_room.mjs, src/context_hub.mjs, src/codex_prompt_center.mjs, src/doc_agent.mjs, src/shared_context.mjs, schemas/config.schema.json]
+  last_verified: 2026-07-27
+  sources: [README.md, docs/product-overview.md, bin/context-room.mjs, src/context_room.mjs, src/context_engine.mjs, src/context_hub.mjs, src/codex_prompt_center.mjs, src/doc_agent.mjs, src/shared_context.mjs, schemas/config.schema.json]
 ---
 
 # Features
@@ -15,7 +15,7 @@ This folder explains Context Room by user-facing feature. Read this when changin
 ## Start Here
 
 - [Hub and navigation](hub-and-navigation.md)
-- [Context Hub](context-hub.md)
+- [Global Context Room](context-hub.md)
 - [Codex Prompt Center](codex-prompt-center.md)
 - [File explorer and editor](file-explorer-and-editor.md)
 - [HTML visual documents](html-visual-documents.md)
@@ -28,7 +28,12 @@ This folder explains Context Room by user-facing feature. Read this when changin
 - [Documentation research agent](documentation-agent.md)
 - [Documentation lifecycle](documentation-lifecycle.md)
 - [Agent CLI](agent-cli.md)
+- [Context Engine](context-engine.md)
 - [Shared context](shared-context.md)
+
+## Target Design
+
+- [Context Hub and agent environment target](context-hub_target.md)
 
 ## Boundaries
 

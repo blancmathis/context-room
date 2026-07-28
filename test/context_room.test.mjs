@@ -9,6 +9,13 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
+  connectSharedContext,
+  initializeSharedRepository,
+} from "../src/shared_context.mjs";
+import { registerContextHubProject } from "../src/context_hub.mjs";
+import { readContextRoomEvents } from "../src/event_journal.mjs";
+
+import {
   AGENT_CONTEXT_DIR,
   AGENT_CONTEXT_FILE,
   CONFIG_DIR,
@@ -40,6 +47,7 @@ import {
   createMemoryServer,
   createDefaultProjectConfig,
   computeDocIssues,
+  contextRoomProjectResponseAction,
   deleteStartupContextFile,
   deleteMemoryPaths,
   deleteStartupSkill,
@@ -57,6 +65,7 @@ import {
   listStartupHookFiles,
   listStartupSkillFolders,
   normalizeKeyboardShortcut,
+  parseWorkspaceNavigationUrl,
   parseDocMetadata,
   readAgentAnnotations,
   readAgentCommand,
@@ -79,6 +88,7 @@ import {
   renderTemplateOptionsMarkup,
   removeFolderWatchRule,
   selectAvailableContextRoomPort,
+  shouldReplaceDuplicatedWorkspaceIdentity,
   syncContextRoomAgentContext,
   syncContextRoomGitHooks,
   revertMemoryFile,
@@ -86,6 +96,7 @@ import {
   writeDeletedReviewBatchDecision,
   writeStartupContextFile,
   writeStartupHookFile,
+  workspaceReloadCircuitDecision,
   writeStartupSkillFile,
   writeAgentCommand,
   writeCollaborationSessionState,
@@ -155,18 +166,111 @@ test("app presents a compact review-first workspace", () => {
   const asideEnd = html.indexOf("</aside>");
   const mainStart = html.indexOf("<main>", asideEnd);
   const dockStart = html.indexOf('class="workspace-dock"', mainStart);
+  const brandStart = html.indexOf('id="brandHome" class="context-room-brand"', dockStart);
+  const workspaceSwitchStart = html.indexOf('id="settingsButton" class="dock-button workspace-switch"', dockStart);
+  const backStart = html.indexOf('id="back" class="dock-button"', dockStart);
 
   assert.ok(asideEnd >= 0 && mainStart > asideEnd && dockStart > mainStart);
+  assert.ok(brandStart > dockStart && workspaceSwitchStart > brandStart && backStart > workspaceSwitchStart);
+  assert.match(html, /id="brandHome" class="context-room-brand" type="button" title="Home" aria-label="Home"/);
+  assert.match(html, /\.context-room-brand \{[\s\S]*background: transparent;[\s\S]*cursor: pointer;/);
+  assert.match(html, /\.context-room-brand:focus-visible \{[\s\S]*outline:/);
   assert.match(html, /id="workspaceTitle" class="workspace-title">Context Room<\/div>/);
+  assert.match(html, /id="settingsButton" class="dock-button workspace-switch"[^>]*>Settings<\/button>/);
+  assert.match(html, /\.workspace-switch \{[\s\S]*min-width: 76px;[\s\S]*border-left: 1px solid var\(--line\);[\s\S]*background: transparent;/);
+  assert.match(html, /\.workspace-switch:hover \{[\s\S]*color: var\(--label-strong\);/);
+  assert.match(html, /el\("settingsButton"\)\.hidden = state\.page !== "hub"/);
+  assert.doesNotMatch(html, /id="hub" class="dock-button workspace-switch"/);
+  assert.doesNotMatch(html, /Back to Home/);
+  assert.doesNotMatch(html, /state\.page === "hub" \? "Settings" : "Home"/);
+  assert.match(html, /async function handleBrandHomeAction\(\) \{[\s\S]*if \(state\.page === "hub"\) return;[\s\S]*await waitForReviewFinalizationBeforeNavigation\(\);[\s\S]*goHub\(\);/);
+  assert.match(html, /el\("brandHome"\)\.addEventListener\("click", \(\) => handleBrandHomeAction\(\)\.catch/);
+  assert.match(html, /el\("settingsButton"\)\.addEventListener\("click", showSettingsPage\)/);
   assert.match(html, /<h2 id="reviewQueueHeading" tabindex="-1">Review queue<\/h2>/);
   assert.match(html, /hubDisclosuresOpen:\s*new Set\(\)/);
   assert.match(html, /data-hub-disclosure=/);
-  assert.match(html, /@keyframes workbenchGridDrift/);
+  assert.doesNotMatch(html, /@keyframes workbenchGridDrift/);
+  assert.match(html, /QUIET NATIVE WORKBENCH/);
+  assert.match(html, /--explorer-width:\s*272px/);
+  assert.match(html, /\.context-room-proposal-description-toggle \{[^}]*width: 16px;[^}]*height: 16px;[^}]*border: 0;[^}]*background: transparent;[^}]*font: 650 10px\/1/);
+  assert.match(html, /\.context-room-proposal-description-toggle:hover \{[^}]*background: var\(--native-hover\);[^}]*opacity: 1;/);
   assert.equal(
     renderReviewSummary({ changedDocs: 9, needsReview: 2 }),
     '<div class="review-summary-item"><strong>2</strong><span>to review</span></div>' +
       '<div class="review-summary-item"><strong>9</strong><span>changed</span></div>',
   );
+});
+
+test("project links keep the Explorer hierarchy quiet instead of looking like web links", () => {
+  const html = renderAppHtml();
+
+  assert.match(html, /\.global-project-row \{[^}]*text-decoration: none;/);
+  assert.match(html, /\.global-project-tree-entry \{[^}]*text-decoration: none;/);
+});
+
+test("the global Context Room keeps project targeting inside one workspace", () => {
+  const html = renderAppHtml();
+  const script = extractInlineAppScript(html);
+
+  assert.match(html, /body\.global-context-room #singleProjectExplorer,[\s\S]*body\.focused-review-context-room #globalProjectExplorer \{ display: none !important; \}/);
+  assert.doesNotMatch(html, /body\.global-context-room #contextHealthPanel \{ display: none !important; \}/);
+  assert.match(html, /id="singleProjectExplorer"[\s\S]*id="globalProjectExplorer" class="global-project-explorer" hidden/);
+  assert.match(html, /id="globalProjectSearch"[\s\S]*id="globalProjectList"/);
+  assert.match(html, /\.shared-proposal-workspace \{ position: fixed; inset: 0 0 0 320px;/);
+  assert.match(html, /\.app\.sidebar-collapsed ~ \.shared-proposal-workspace \{ left: 56px; \}/);
+  assert.doesNotMatch(html, /id="sharedProposalBrowser"/);
+  assert.match(html, /body\.focused-review-context-room \.context-room-review-toolbar \{ grid-template-columns:/);
+  assert.match(html, /\.context-hub-review-filter\[hidden\] \{ display: none !important; \}/);
+  assert.match(script, /state\.activeProjectLocationId = IS_GLOBAL_CONTEXT_ROOM \? String\(CONTEXT_ROOM_QUERY\.get\("project"\) \|\| ""\) : "";/);
+  assert.match(script, /headers\.set\("x-context-room-target-project", state\.activeProjectLocationId\)/);
+  assert.match(script, /async function openContextHubProject\([\s\S]*target\.searchParams\.set\("hub", "1"\)[\s\S]*window\.location\.assign\(target\.toString\(\)\)/);
+  assert.match(script, /function currentContextRoomProject\(\)[\s\S]*project\.current[\s\S]*hub\.currentProjectId/);
+  assert.match(script, /function contextHubHomeReviewItems\(needle = "", visibility = "active"\)[\s\S]*IS_GLOBAL_CONTEXT_ROOM[\s\S]*!state\.sharedProposalProject \|\| item\.projectKey === state\.sharedProposalProject[\s\S]*currentProject && item\.projectKey === currentProject\.projectKey/);
+  assert.match(script, /function renderGlobalProjectExplorer\(\)[\s\S]*contextHubPrioritizedProjects[\s\S]*data-global-project-key/);
+  assert.match(script, /async function openGlobalProjectExplorer\(project\)[\s\S]*state\.globalExplorerMode = "project"[\s\S]*loadGlobalProjectExplorerPage\(project\)/);
+  assert.match(script, /async function loadGlobalProjectExplorerPage\([\s\S]*\/api\/context-hub\/project-explorer\?/);
+  assert.match(script, /async function loadComputerExplorer\(targetPath = "", \{ expand = false \} = \{\}\)[\s\S]*\/api\/context-hub\/computer-explorer/);
+  assert.match(script, /function renderComputerExplorerNode\(snapshot, depth = 0, needle = ""\)[\s\S]*data-computer-explorer-folder/);
+  assert.match(script, /data-computer-explorer-file/);
+  assert.match(script, /computerExplorerExpandedFolders\.has\(folderPath\)[\s\S]*computerExplorerExpandedFolders\.delete\(folderPath\)/);
+  assert.match(html, /data-global-explorer-mode="projects"[\s\S]*data-global-explorer-mode="computer"/);
+  assert.match(html, /id="globalExplorerListLabel">Projects<\/strong>/);
+  assert.match(script, /data-global-explorer-back[\s\S]*state\.globalExplorerMode = "projects"/);
+  assert.match(html, /id="computerExplorerRoot" type="text"/);
+  assert.match(script, /globalProjectList[\s\S]*data-global-project-file[\s\S]*globalProjectSelectedWorktree\(project\)[\s\S]*openContextHubProject\(worktree\?\.id \|\| project\.id, \{ filePath:/);
+  assert.match(script, /globalProjectList[\s\S]*addEventListener\("contextmenu"[\s\S]*openGlobalExplorerContextMenu/);
+  assert.match(script, /function renderGlobalExplorerContextMenu\(x, y\)[\s\S]*Watch this folder…[\s\S]*View Context health[\s\S]*View startup environment[\s\S]*New file[\s\S]*New folder[\s\S]*Copy path/);
+  assert.match(script, /data-global-context-inspect[\s\S]*Inspect agent environment/);
+  assert.match(script, /data-context-inspect-environment[\s\S]*openContextEngineInspection/);
+  assert.match(script, /data-global-context-health[\s\S]*openGlobalProjectInspection\("health", project\)/);
+  assert.match(script, /data-global-context-startup[\s\S]*openGlobalProjectInspection\("startup", project\)/);
+  assert.doesNotMatch(script, /searchParams\.set\("(?:startupEnvironment|contextHealth)", "1"\)/);
+  assert.doesNotMatch(script, /function contextHubProjectDirectUrl/);
+  assert.doesNotMatch(script, /function revealRequested(?:StartupEnvironment|ContextHealth)/);
+  assert.match(script, /\/api\/context-hub\/project-explorer\/action/);
+  assert.match(script, /\/api\/context-hub\/project-inspection\?projectId=/);
+  assert.match(script, /data-global-project-shared[\s\S]*state\.sharedProposalProject = sharedButton\.dataset\.globalProjectShared/);
+  assert.match(script, /function renderContextHealth\(\)[\s\S]*if \(IS_GLOBAL_CONTEXT_ROOM\) \{[\s\S]*renderGlobalProjectInspection\(panel, holder\);[\s\S]*return;/);
+  assert.doesNotMatch(html, /id="toggleContextHealthPanel"/);
+  assert.match(script, /function renderGlobalInspectionDisclosure\([\s\S]*<details class="global-project-inspection-disclosure"[\s\S]*<summary>/);
+  assert.match(script, /data-global-inspection-disclosure[\s\S]*state\.globalInspectionView === view[\s\S]*state\.globalInspectionView = ""/);
+  assert.match(html, /\.global-project-inspection-disclosure\[open\] \.global-project-inspection-disclosure-chevron/);
+  assert.match(script, /function renderGlobalProjectInspection\([\s\S]*Select a project or file in Explorer[\s\S]*View Context health[\s\S]*View startup environment/);
+  assert.match(script, /function renderGlobalInspectionHealth\([\s\S]*Context health filters[\s\S]*context-health-issue-list/);
+  assert.match(script, /function renderGlobalInspectionStartup\([\s\S]*Startup context[\s\S]*Startup skills[\s\S]*Startup hooks/);
+  assert.match(script, /function renderGlobalInspectionStartup\([\s\S]*data\.effectiveContext[\s\S]*renderEffectiveContextBody/);
+  assert.match(html, /id="contextEnginePanel" class="docqa-panel context-engine-panel" hidden/);
+  assert.match(html, /id="contextEngineProvider"[\s\S]*Codex[\s\S]*Claude Code[\s\S]*OpenCode/);
+  assert.match(script, /async function loadContextEngineInspection\([\s\S]*\/api\/context\/effective/);
+  assert.match(script, /data-context-resource-trace[\s\S]*\/api\/context\/" \+ kind/);
+  assert.match(script, /Open resource[\s\S]*contextEngineEntryCanOpen/);
+  assert.match(script, /function renderGlobalInspectionRow\([\s\S]*global-project-inspection-row-head[\s\S]*global-project-inspection-kind/);
+  assert.match(script, /kind: "Context file"[\s\S]*kind: "Skill folder"[\s\S]*kind: "Hook"/);
+  assert.match(script, /global-project-inspection-row disabled[\s\S]*Enable it in this project’s settings to inspect its active files/);
+  assert.match(html, /\.global-project-inspection-list \{[^}]*gap: 6px/);
+  assert.match(html, /\.global-project-inspection-row \{[^}]*border: 1px solid[^}]*border-radius: 9px/);
+  assert.match(script, /function renderHubFolders\(\)[\s\S]*visibleSections = sections\.filter\(\(section\) => section && Array\.isArray\(section\.cards\)\)/);
+  assert.match(script, /function renderHubFolders\(\)[\s\S]*data-empty=[\s\S]*holder\.hidden = !holder\.innerHTML/);
 });
 
 test("app reveals one complete initial frame and keeps recurring refreshes in the background", () => {
@@ -175,24 +279,229 @@ test("app reveals one complete initial frame and keeps recurring refreshes in th
   const loadFilesSource = script.slice(script.indexOf("async function loadFiles"), script.indexOf("function reconcileMissingSelectedFile"));
   const diskRefreshSource = script.slice(script.indexOf("async function refreshFromDisk"), script.indexOf("function scheduleBackgroundRefresh"));
 
-  assert.match(loadFilesSource, /const reportsRequest = options\.initial \? api\("\/api\/reports"\) : null;/);
+  assert.match(loadFilesSource, /const reportsRequest = options\.initial && !IS_GLOBAL_CONTEXT_ROOM \? api\("\/api\/reports"\) : null;/);
+  assert.match(loadFilesSource, /const sharedRequest = options\.initial && !IS_GLOBAL_CONTEXT_ROOM \? api\("\/api\/shared-context"\) : null;/);
   assert.match(loadFilesSource, /Promise\.all\(\[api\(filesApiPath\(\)\), api\("\/api\/settings"\)\]\)/);
-  assert.match(loadFilesSource, /const restoreRequest = restoreNavigationAfterInitialLoad\(\);\s*const restored = await restoreRequest;/);
+  assert.match(loadFilesSource, /const restoreRequest = hasRequestedContextHubTarget \? Promise\.resolve\(false\) : restoreNavigationAfterInitialLoad\(\);\s*const restored = await restoreRequest;/);
   assert.match(loadFilesSource, /const restored = await restoreRequest;/);
   assert.doesNotMatch(loadFilesSource, /await reportsRequest/);
   assert.match(loadFilesSource, /else if \(reportsRequest\) applyInitialReportsWhenReady\(reportsRequest\);/);
+  assert.match(loadFilesSource, /applyInitialContextHubWhenReady\(loadInitialContextHubData\(\)\)/);
   assert.match(script, /function applyInitialReportsWhenReady\(reportsRequest\) \{[\s\S]*reportsRequest\.then\(\(reports\) => \{[\s\S]*requestAnimationFrame\(\(\) => window\.requestAnimationFrame\(\(\) => \{[\s\S]*applyBackgroundReportPayload\(reports\);[\s\S]*renderAfterBackgroundReportPayload\(\);/);
   assert.match(script, /function renderAfterBackgroundReportPayload\(\) \{[\s\S]*if \(state\.page === "file" && state\.selected && !state\.openingFilePath\) \{[\s\S]*renderViewer\(\);[\s\S]*restoreEditorViewState\(viewState\);/);
   assert.match(script, /function restoreNavigationAfterInitialLoad\(\)[\s\S]*void openRequest\.then\(\(\) => setStatus\("restored"\)\)/);
   assert.doesNotMatch(script, /await selectFile\(persisted\.selectedPath, options\)/);
   assert.match(html, /<body class="app-booting">/);
-  assert.match(script, /loadFiles\(\{ initial: true \}\)[\s\S]*requestAnimationFrame\(finishInitialBoot\)/);
+  assert.match(script, /setMode\("view"\);\s*initializeWorkspaceDiagnostics\(\);\s*finishInitialBoot\(\);\s*establishWorkspaceIdentity\(\)\.then\(\(\) => \{/);
+  assert.match(script, /return loadFiles\(\{ initial: true \}\);\s*\}\)\.catch\([\s\S]*\.finally\(finishInitialBoot\);/);
   assert.match(html, /body\.app-booting \.app \{ visibility: hidden; opacity: 0; pointer-events: none; \}/);
   assert.match(script, /const reportsPath = "\/api\/reports"/);
   assert.match(script, /readFileForOpen\(path, \{ force: options\.forceReload \}\)/);
   assert.match(diskRefreshSource, /const data = await readSelectedDiskFile\(previousSelected\)/);
   assert.doesNotMatch(diskRefreshSource, /Promise\.all\(\[[\s\S]*readSelectedDiff/);
-  assert.match(script, /window\.setInterval\(\(\) => scheduleBackgroundRefresh\(\), 5_000\)/);
+  assert.match(script, /state\.backgroundRefreshInterval = window\.setInterval\(\(\) => scheduleBackgroundRefresh\(\), 5_000\)/);
+});
+
+test("Context Engine UI uses read-only API adapters and keeps proposal semantics explicit", () => {
+  const source = fs.readFileSync(new URL("../src/context_room.mjs", import.meta.url), "utf8");
+  const html = renderAppHtml();
+  const script = extractInlineAppScript(html);
+
+  assert.match(source, /import\("\.\/context_inventory\.mjs"\)/);
+  assert.match(source, /import\("\.\/context_engine\.mjs"\)/);
+  assert.match(source, /url\.pathname === "\/api\/context\/effective"/);
+  assert.match(source, /url\.pathname === "\/api\/context\/graph"/);
+  assert.match(source, /url\.pathname === "\/api\/context\/trace"/);
+  assert.match(source, /url\.pathname === "\/api\/context\/impact"/);
+  assert.match(source, /url\.pathname === "\/api\/proposal\/context-impact"/);
+  assert.match(source, /import\("\.\/agent_cli\.mjs"\)/);
+  assert.match(source, /proposalContextImpact\(\{ selector, repository \}\)/);
+  assert.doesNotMatch(source, /selectedProposal\?\.files \|\| \[\]\)\.map/);
+  assert.doesNotMatch(source, /listExactReviewInvalidations:[\s\S]{0,200}changedFiles\.map/);
+  assert.match(script, /Shared Skills delta/);
+  assert.match(script, /Existing reviews invalidated/);
+  assert.match(source, /semantic conflicts are not evaluated/i);
+  assert.match(script, /Semantic conflicts are not evaluated\. Review invalidation is exact-revision only\./);
+  assert.match(script, /function contextEngineEntryCanOpen\([\s\S]*metadata\?\.relativePath[\s\S]*!relPath\.startsWith\("~"\)/);
+  assert.doesNotMatch(script, /allowedPaths.*contextEngine|contextEngine.*allowedPaths/);
+});
+
+test("single-project Startup environment resolves through the same Context Core surface", () => {
+  const source = fs.readFileSync(new URL("../src/context_room.mjs", import.meta.url), "utf8");
+  const html = renderAppHtml();
+  const script = extractInlineAppScript(html);
+
+  assert.match(source, /const startupPanels = IS_GLOBAL_CONTEXT_ROOM\s*\? ""\s*: renderSingleProjectStartupEnvironmentPanel\(\);/);
+  assert.match(script, /function renderSingleProjectStartupEnvironmentPanel\(\)[\s\S]*data-single-startup-provider/);
+  assert.match(script, /async function loadSingleProjectStartupEnvironment\(\)[\s\S]*\/api\/context\/effective\?/);
+  assert.match(script, /renderEffectiveContextBody\(state\.singleStartupEffectiveContext, \{ embedded: true \}\)/);
+  assert.doesNotMatch(source, /const startupPanels = IS_GLOBAL_CONTEXT_ROOM \? "" : renderStartupContextPanel\(\) \+ renderStartupSkillsPanel\(\) \+ renderStartupHooksPanel\(\);/);
+});
+
+test("Shared Skills empty states distinguish project selection from an unconnected project", () => {
+  const script = extractInlineAppScript(renderAppHtml());
+  assert.match(script, /status\.selectionRequired \? "Select a project in the Explorer\." : "This project is not connected to a shared context\."/);
+  assert.match(script, /Choose a project connected to a shared context/);
+  assert.match(script, /Connect this project to a shared context before managing shared skill collections/);
+});
+
+test("review decisions emitted by the UI API use registered Hub identities", async (t) => {
+  const root = makeRoot();
+  const hubHome = makeRoot();
+  const previousHubHome = process.env.CONTEXT_ROOM_HUB_HOME;
+  process.env.CONTEXT_ROOM_HUB_HOME = hubHome;
+  t.after(() => {
+    if (previousHubHome === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
+    else process.env.CONTEXT_ROOM_HUB_HOME = previousHubHome;
+  });
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\n");
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: ["docs/guide.md"] });
+  const registered = registerContextHubProject(root, {
+    title: "Event identity",
+    shared: { repository: "https://example.test/shared.git", projectId: "shared-demo" },
+  });
+  const { server } = createMemoryServer({ root });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/docqa/review`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path: "docs/guide.md", status: "verified", expectedContentHash: createHash("sha256").update("# Guide\n").digest("hex") }),
+  });
+  assert.equal(response.status, 200);
+
+  const [event] = readContextRoomEvents({ types: ["review.decision"] }).events;
+  assert.ok(event);
+  assert.equal(event.projectId, registered.logicalProjectId);
+  assert.equal(event.locationId, registered.id);
+  assert.equal(event.sharedProjectId, "shared-demo");
+  assert.equal(event.sharedRepository, "https://example.test/shared.git");
+  assert.notEqual(event.locationId, path.resolve(root));
+});
+
+test("Context Engine read-only APIs resolve through the web server without an import cycle", async (t) => {
+  const root = makeRoot();
+  fs.writeFileSync(path.join(root, "AGENTS.md"), "# Project instructions\n");
+  const { server } = createMemoryServer({ root });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const base = `http://127.0.0.1:${server.address().port}`;
+
+  const response = await fetch(base + "/api/context/effective?folder=.&provider=codex&allowStale=1");
+  const result = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(result.schemaVersion, "context-room.context-effective/1");
+  assert.equal(result.coordinate.folder, ".");
+  assert.equal(result.coordinate.provider, "codex");
+  assert.ok(Array.isArray(result.instructions));
+  assert.ok(Array.isArray(result.inactive));
+
+  const graphResponse = await fetch(base + "/api/context/graph?folder=.&provider=codex&allowStale=1");
+  const graph = await graphResponse.json();
+  assert.equal(graphResponse.status, 200);
+  assert.equal(graph.schemaVersion, "context-room.context-graph/1");
+  const instruction = graph.resources.find((item) => item.kind === "instruction" && item.metadata?.relativePath === "AGENTS.md");
+  assert.ok(instruction);
+
+  const target = new URLSearchParams({ folder: ".", provider: "codex", allowStale: "1", selector: instruction.id });
+  const [traceResponse, impactResponse] = await Promise.all([
+    fetch(base + "/api/context/trace?" + target),
+    fetch(base + "/api/context/impact?" + target),
+  ]);
+  const [trace, impact] = await Promise.all([traceResponse.json(), impactResponse.json()]);
+  assert.equal(traceResponse.status, 200);
+  assert.equal(trace.status, "ok");
+  assert.equal(trace.selected.id, instruction.id);
+  assert.equal(impactResponse.status, 200);
+  assert.equal(impact.status, "ok");
+  assert.equal(impact.resource.id, instruction.id);
+
+  const proposalResponse = await fetch(base + "/api/proposal/context-impact?selector=proposal/example");
+  const proposalError = await proposalResponse.json();
+  assert.equal(proposalResponse.status, 400);
+  assert.match(proposalError.error, /repository is required/i);
+});
+
+test("Shared Skills settings expose local controls and selective imports without replacing unmanaged files", () => {
+  const source = fs.readFileSync(new URL("../src/context_room.mjs", import.meta.url), "utf8");
+  const script = extractInlineAppScript(renderAppHtml());
+
+  assert.match(script, /data-shared-skills-local-toggle/);
+  assert.match(script, /data-shared-skills-local-exclude/);
+  assert.match(script, /data-shared-skills-unlink/);
+  assert.match(script, /data-shared-skills-import-skill/);
+  assert.match(script, /sharedSkillsWizardInclude/);
+  assert.match(script, /sharedSkillsWizardExclude/);
+  assert.match(script, /Unmanaged files remain untouched/);
+  assert.match(script, /technical collisions/);
+  const applyProviderSource = script.slice(script.indexOf("async function applySharedSkillProviderSettings"), script.indexOf("async function unassignSharedSkillsFromSettings"));
+  assert.match(applyProviderSource, /JSON\.stringify\(\{ projectId: selection\.projectId, providers: globalProviders, projectOverrides \}\)/);
+  assert.equal((applyProviderSource.match(/\/api\/shared-skills\/providers/g) || []).length, 1);
+  assert.match(source, /setSharedSkillProviderSettings\(projectRoot/);
+  assert.doesNotMatch(source, /setSharedSkillProvider(?:Override|Preferences)\(projectRoot/);
+});
+
+test("Shared Skills provider API applies device defaults and project overrides atomically", async (t) => {
+  const base = makeRoot();
+  const remote = path.join(base, "remote.git");
+  const seed = path.join(base, "seed");
+  const project = path.join(base, "project");
+  const previousHome = process.env.HOME;
+  const previousSharedHome = process.env.CONTEXT_ROOM_SHARED_HOME;
+  process.env.HOME = path.join(base, "home");
+  process.env.CONTEXT_ROOM_SHARED_HOME = path.join(process.env.HOME, ".context-room", "shared");
+  fs.mkdirSync(process.env.HOME, { recursive: true });
+  fs.mkdirSync(project, { recursive: true });
+  t.after(() => {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousSharedHome === undefined) delete process.env.CONTEXT_ROOM_SHARED_HOME;
+    else process.env.CONTEXT_ROOM_SHARED_HOME = previousSharedHome;
+  });
+
+  execFileSync("git", ["init", "--bare", "--initial-branch=main", remote], { cwd: base, stdio: "ignore" });
+  execFileSync("git", ["clone", remote, seed], { cwd: base, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "context-room@example.test"], { cwd: seed, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Context Room Test"], { cwd: seed, stdio: "ignore" });
+  initializeSharedRepository(seed, { name: "Provider API shared" });
+  fs.writeFileSync(path.join(seed, "projects.json"), JSON.stringify({ version: 1, projects: [{ id: "demo", title: "Demo" }] }, null, 2) + "\n");
+  fs.mkdirSync(path.join(seed, "projects", "demo", "docs"), { recursive: true });
+  fs.writeFileSync(path.join(seed, "projects", "demo", "docs", "README.md"), "# Demo\n");
+  execFileSync("git", ["add", "."], { cwd: seed, stdio: "ignore" });
+  execFileSync("git", ["commit", "-m", "Initialize shared"], { cwd: seed, stdio: "ignore" });
+  execFileSync("git", ["push", "origin", "main"], { cwd: seed, stdio: "ignore" });
+  initializeContextRoomProject(project, { title: "Demo", allowedPaths: [], watchAllow: [] });
+  connectSharedContext(project, { repository: remote, projectId: "demo" });
+
+  const { server } = createMemoryServer({ root: project });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const endpoint = `http://127.0.0.1:${server.address().port}/api/shared-skills/providers`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      providers: { codex: "disabled", "claude-code": "enabled", opencode: "enabled" },
+      projectOverrides: [{ projectId: "demo", provider: "claude-code", state: "disabled" }],
+    }),
+  });
+  const result = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(result.providers.providers.codex, "disabled");
+  assert.deepEqual(result.projectOverrides.find((item) => item.projectId === "demo" && item.provider === "claude-code"), {
+    projectId: "demo",
+    provider: "claude-code",
+    state: "disabled",
+  });
+
+  const legacyResponse = await fetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ scope: "project", provider: "claude-code", state: "inherit" }),
+  });
+  assert.equal(legacyResponse.status, 200);
 });
 
 test("background report and diff endpoints preserve complete results", async (t) => {
@@ -246,7 +555,7 @@ test("background report and diff endpoints preserve complete results", async (t)
   const writeResponse = await fetch(baseUrl + "/api/file", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ path: "docs/guide.md", content: "# Guide\n\nUpdated through the API.\n" }),
+    body: JSON.stringify({ path: "docs/guide.md", content: "# Guide\n\nUpdated through the API.\n", expectedContentHash: createHash("sha256").update("# Guide\n\nUpdated.\n").digest("hex") }),
   });
   assert.equal(writeResponse.status, 200);
   const refreshedReports = await (await fetch(baseUrl + "/api/reports")).json();
@@ -254,6 +563,56 @@ test("background report and diff endpoints preserve complete results", async (t)
   assert.equal(refreshedReports.docqa.queue[0].path, "docs/guide.md");
   const refreshedDiff = await (await fetch(baseUrl + "/api/file/diff?path=" + encodeURIComponent("docs/guide.md"))).json();
   assert.match(refreshedDiff.patch, /Updated through the API\./);
+});
+
+test("workspace registry keeps independent metadata and routes commands to an exact workspace", async (t) => {
+  const root = makeRoot();
+  initializeContextRoomProject(root, { allowedPaths: [], watchAllow: [] });
+  const { server } = createMemoryServer({ root });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  for (const workspace of [
+    { workspaceId: "workspace-one", clientInstanceId: "client-one", projectId: "alpha", locationId: "location-a", view: "file", file: "docs/a.md", visible: true },
+    { workspaceId: "workspace-two", clientInstanceId: "client-two", projectId: "beta", locationId: "location-b", view: "settings", visible: false },
+  ]) {
+    const response = await fetch(baseUrl + "/api/workspaces/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(workspace) });
+    assert.equal(response.status, 200);
+  }
+  const listed = await (await fetch(baseUrl + "/api/workspaces")).json();
+  assert.deepEqual(new Set(listed.workspaces.map((item) => item.workspaceId)), new Set(["workspace-one", "workspace-two"]));
+  const commandResponse = await fetch(baseUrl + "/api/workspaces/workspace-one/command", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "navigate", view: "file", path: "docs/a.md", target: { heading: "Purpose" } }),
+  });
+  assert.equal(commandResponse.status, 200);
+  const one = await (await fetch(baseUrl + "/api/workspaces/workspace-one/command")).json();
+  const two = await (await fetch(baseUrl + "/api/workspaces/workspace-two/command")).json();
+  assert.equal(one.command.path, "docs/a.md");
+  assert.deepEqual(one.command.target, { type: "heading", value: "Purpose" });
+  assert.equal(two.command, null);
+});
+
+test("optimistic file writes and review decisions reject unseen revisions", async (t) => {
+  const root = makeRoot();
+  fs.mkdirSync(path.join(root, "docs"));
+  fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Original\n");
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: ["docs/guide.md"] });
+  const { server } = createMemoryServer({ root });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const originalHash = createHash("sha256").update("# Original\n").digest("hex");
+  const first = await fetch(baseUrl + "/api/file", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: "docs/guide.md", content: "# First workspace\n", expectedContentHash: originalHash }) });
+  assert.equal(first.status, 200);
+  const staleSave = await fetch(baseUrl + "/api/file", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: "docs/guide.md", content: "# Stale workspace\n", expectedContentHash: originalHash }) });
+  assert.equal(staleSave.status, 409);
+  assert.equal((await staleSave.json()).code, "file_revision_conflict");
+  const staleReview = await fetch(baseUrl + "/api/docqa/review", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: "docs/guide.md", status: "verified", expectedContentHash: originalHash }) });
+  assert.equal(staleReview.status, 409);
+  assert.equal((await staleReview.json()).code, "review_revision_conflict");
+  assert.equal(fs.readFileSync(path.join(root, "docs", "guide.md"), "utf8"), "# First workspace\n");
 });
 
 test("default config is project-agnostic and supports cards, nested cards, allowed paths, and watched paths", () => {
@@ -264,7 +623,8 @@ test("default config is project-agnostic and supports cards, nested cards, allow
   assert.equal(config.title, "Demo Project");
   assert.match(config.$schema, /schemas\/config\.schema\.json$/);
   assert.deepEqual(config.watchAllow, []);
-  assert.deepEqual(config.reviewPaths, []);
+  assert.equal("reviewPaths" in config, false);
+  assert.equal("reviewAgentInstructions" in config, false);
   assert.equal("appearance" in config, false);
   assert.deepEqual(config.startupSkills.folderNames, [".codex/skills", "skills"]);
   assert.equal(config.startupHooks.enabled, true);
@@ -415,7 +775,8 @@ test("repeated init preserves intentionally empty owner settings, custom hub sec
   fs.mkdirSync(path.join(root, "docs"), { recursive: true });
   fs.writeFileSync(path.join(root, "docs", "index.md"), "# Docs\n");
   fs.writeFileSync(path.join(root, "AGENTS.md"), agentsBytes);
-  initializeContextRoomProject(root, { title: "First setup" });
+  const firstSetup = initializeContextRoomProject(root, { title: "First setup" });
+  assert.equal(firstSetup.config.startupSkills.enabled, true);
 
   const configPath = path.join(root, CONFIG_FILE);
   const ownerConfig = JSON.parse(fs.readFileSync(configPath, "utf8"));
@@ -454,6 +815,23 @@ test("repeated init preserves intentionally empty owner settings, custom hub sec
   assert.deepEqual(amended.extensionData, { setup: "preserve-me" });
   assert.equal(amended.startupContext.extensionMode, "owner-defined");
   assert.deepEqual(amended.hubSections[0].extensionData, { owner: "project" });
+});
+
+test("empty hub sections remain configured and every section can be removed", () => {
+  const root = makeRoot();
+  initializeContextRoomProject(root, { allowedPaths: [], watchAllow: [] });
+  const settings = readMemoryWebappSettings(root);
+
+  settings.hubSections = [{ id: "separator", title: "Separator", cards: [] }];
+  writeMemoryWebappSettings(root, settings);
+  assert.deepEqual(hubSectionsForRoot(root, readMemoryWebappSettings(root)), [
+    { id: "separator", title: "Separator", cards: [] },
+  ]);
+
+  settings.hubSections = [];
+  writeMemoryWebappSettings(root, settings);
+  assert.deepEqual(readMemoryWebappSettings(root).hubSections, []);
+  assert.deepEqual(hubSectionsForRoot(root, readMemoryWebappSettings(root)), []);
 });
 
 test("init refuses malformed project config without overwriting it", () => {
@@ -1309,7 +1687,7 @@ test("allowed paths are driven by project config", () => {
   assert.equal(isAllowedMemoryPath("../secret.md", settings), false);
 });
 
-test("appearance and shortcut preferences are shared across Context Rooms and stay out of project config", async (t) => {
+test("appearance, sound, and shortcut preferences are shared across Context Rooms and stay out of project config", async (t) => {
   const firstRoot = makeRoot();
   const secondRoot = makeRoot();
   const preferencesPath = path.join(makeRoot(), "preferences.json");
@@ -1317,16 +1695,23 @@ test("appearance and shortcut preferences are shared across Context Rooms and st
   initializeContextRoomProject(secondRoot, { allowedPaths: ["docs/"] });
 
   assert.equal(GLOBAL_PREFERENCES_FILE, "~/.context-room/preferences.json");
+  assert.equal(readGlobalContextRoomPreferences(preferencesPath).appearance.colorMode, "system");
   assert.equal(readGlobalContextRoomPreferences(preferencesPath).appearance.autoOpenGitDiff, true);
   assert.equal(readGlobalContextRoomPreferences(preferencesPath).appearance.showHiddenFiles, true);
   assert.equal(readGlobalContextRoomPreferences(preferencesPath).shortcuts.codexReference, DEFAULT_CODEX_REFERENCE_SHORTCUT);
+  assert.deepEqual(readGlobalContextRoomPreferences(preferencesPath).sounds, { enabled: true, volume: 0.35 });
+  assert.equal(readGlobalContextRoomPreferences(preferencesPath).explorer.computerRoot, os.homedir());
   writeGlobalContextRoomPreferences({
-    appearance: { fileTheme: "dracula", autoOpenGitDiff: false, showHiddenFiles: false },
+    appearance: { fileTheme: "dracula", colorMode: "dark", autoOpenGitDiff: false, showHiddenFiles: false },
     shortcuts: { codexReference: "Mod+Alt+K" },
+    sounds: { enabled: false, volume: 0.6 },
+    explorer: { computerRoot: firstRoot },
   }, preferencesPath);
-  assert.deepEqual(readResolvedContextRoomSettings(firstRoot, { preferencesPath }).appearance, { fileTheme: "dracula", autoOpenGitDiff: false, showHiddenFiles: false });
-  assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).appearance, { fileTheme: "dracula", autoOpenGitDiff: false, showHiddenFiles: false });
+  assert.deepEqual(readResolvedContextRoomSettings(firstRoot, { preferencesPath }).appearance, { fileTheme: "dracula", colorMode: "dark", autoOpenGitDiff: false, showHiddenFiles: false });
+  assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).appearance, { fileTheme: "dracula", colorMode: "dark", autoOpenGitDiff: false, showHiddenFiles: false });
   assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).shortcuts, { codexReference: "Mod+Alt+K" });
+  assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).sounds, { enabled: false, volume: 0.6 });
+  assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).explorer, { computerRoot: firstRoot });
 
   const { server } = createMemoryServer({ root: firstRoot, globalPreferencesPath: preferencesPath });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -1334,21 +1719,71 @@ test("appearance and shortcut preferences are shared across Context Rooms and st
   const response = await fetch(`http://127.0.0.1:${server.address().port}/api/settings`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ settings: { ...readMemoryWebappSettings(firstRoot), appearance: { fileTheme: "github-dark", autoOpenGitDiff: false, showHiddenFiles: true }, shortcuts: { codexReference: "Mod+Shift+R" } } }),
+    body: JSON.stringify({ settings: { ...readMemoryWebappSettings(firstRoot), appearance: { fileTheme: "github-dark", colorMode: "light", autoOpenGitDiff: false, showHiddenFiles: true }, shortcuts: { codexReference: "Mod+Shift+R" }, sounds: { enabled: true, volume: 0.2 }, explorer: { computerRoot: secondRoot } } }),
   });
   const payload = await response.json();
   const savedProject = JSON.parse(fs.readFileSync(path.join(firstRoot, CONFIG_FILE), "utf8"));
 
   assert.equal(response.status, 200);
-  assert.deepEqual(payload.settings.appearance, { fileTheme: "github-dark", autoOpenGitDiff: false, showHiddenFiles: true });
+  assert.deepEqual(payload.settings.appearance, { fileTheme: "github-dark", colorMode: "light", autoOpenGitDiff: false, showHiddenFiles: true });
   assert.deepEqual(payload.settings.shortcuts, { codexReference: "Mod+Shift+R" });
-  assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).appearance, { fileTheme: "github-dark", autoOpenGitDiff: false, showHiddenFiles: true });
+  assert.deepEqual(payload.settings.sounds, { enabled: true, volume: 0.2 });
+  assert.deepEqual(payload.settings.explorer, { computerRoot: secondRoot });
+  assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).appearance, { fileTheme: "github-dark", colorMode: "light", autoOpenGitDiff: false, showHiddenFiles: true });
   assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).shortcuts, { codexReference: "Mod+Shift+R" });
+  assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).sounds, { enabled: true, volume: 0.2 });
+  assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).explorer, { computerRoot: secondRoot });
   assert.equal("appearance" in savedProject, false);
   assert.equal("shortcuts" in savedProject, false);
+  assert.equal("sounds" in savedProject, false);
+  assert.equal("explorer" in savedProject, false);
   assert.equal(normalizeKeyboardShortcut("Command + shift + l"), "Mod+Shift+L");
   assert.equal(normalizeKeyboardShortcut(""), "");
   assert.equal(normalizeKeyboardShortcut("L"), DEFAULT_CODEX_REFERENCE_SHORTCUT);
+});
+
+test("sound preferences migrate legacy files and clamp volume safely", () => {
+  const preferencesPath = path.join(makeRoot(), "preferences.json");
+  fs.writeFileSync(preferencesPath, JSON.stringify({
+    appearance: { fileTheme: "context-room" },
+    shortcuts: { codexReference: "Mod+Shift+L" },
+  }));
+  assert.deepEqual(readGlobalContextRoomPreferences(preferencesPath).sounds, { enabled: true, volume: 0.35 });
+  assert.deepEqual(writeGlobalContextRoomPreferences({ sounds: { enabled: false, volume: 4 } }, preferencesPath).sounds, { enabled: false, volume: 1 });
+  assert.deepEqual(writeGlobalContextRoomPreferences({ sounds: { volume: -2 } }, preferencesPath).sounds, { enabled: false, volume: 0 });
+  assert.deepEqual(writeGlobalContextRoomPreferences({ sounds: { volume: "not-a-number" } }, preferencesPath).sounds, { enabled: false, volume: 0.35 });
+});
+
+test("Computer Explorer browses one configured root lazily and cannot escape it", async (t) => {
+  const root = makeRoot();
+  const computerRoot = makeRoot();
+  const preferencesPath = path.join(makeRoot(), "preferences.json");
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"] });
+  fs.mkdirSync(path.join(computerRoot, "Project A"));
+  fs.writeFileSync(path.join(computerRoot, "notes.txt"), "hello\n");
+  fs.writeFileSync(path.join(computerRoot, ".hidden.txt"), "hidden\n");
+  writeGlobalContextRoomPreferences({
+    appearance: { showHiddenFiles: false },
+    explorer: { computerRoot },
+  }, preferencesPath);
+  const { server } = createMemoryServer({ root, globalPreferencesPath: preferencesPath });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const base = `http://127.0.0.1:${server.address().port}`;
+
+  const response = await fetch(`${base}/api/context-hub/computer-explorer`);
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(payload.root, computerRoot);
+  assert.deepEqual(payload.entries.map((entry) => [entry.name, entry.kind]), [["Project A", "directory"], ["notes.txt", "file"]]);
+
+  const childResponse = await fetch(`${base}/api/context-hub/computer-explorer?path=${encodeURIComponent(path.join(computerRoot, "Project A"))}`);
+  const childPayload = await childResponse.json();
+  assert.equal(childResponse.status, 200);
+  assert.equal(childPayload.parent, computerRoot);
+
+  const outsideResponse = await fetch(`${base}/api/context-hub/computer-explorer?path=${encodeURIComponent(path.dirname(computerRoot))}`);
+  assert.equal(outsideResponse.status, 403);
 });
 
 test("review gates are owner-local, sanitized, and separate from project config", () => {
@@ -1420,6 +1855,41 @@ test("HTML documents are listed as visual documents", () => {
 
   assert.equal(file?.kind, "html");
   assert.equal(file?.exists, true);
+});
+
+test("Explorer lists image assets and diagram sources without treating binary files as editable text", () => {
+  const root = makeRoot();
+  fs.mkdirSync(path.join(root, "docs"));
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+X8Y6WQAAAABJRU5ErkJggg==", "base64");
+  fs.writeFileSync(path.join(root, "docs", "process.png"), png);
+  fs.writeFileSync(path.join(root, "docs", "architecture.svg"), '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 0h10v10H0z"/></svg>');
+  fs.writeFileSync(path.join(root, "docs", "flow.mmd"), "flowchart LR\n  A --> B\n");
+  fs.writeFileSync(path.join(root, "docs", "system.drawio"), "<mxfile><diagram>project</diagram></mxfile>\n");
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+
+  const allowed = listMemoryFiles(root);
+  const explorer = listExplorerFiles(root);
+  const pngEntry = explorer.find((file) => file.path === "docs/process.png");
+  const svgEntry = explorer.find((file) => file.path === "docs/architecture.svg");
+  const mermaidEntry = explorer.find((file) => file.path === "docs/flow.mmd");
+  const drawioEntry = explorer.find((file) => file.path === "docs/system.drawio");
+  const openedPng = readMemoryFile(root, "docs/process.png");
+  const openedSvg = readMemoryFile(root, "docs/architecture.svg");
+
+  assert.equal(allowed.some((file) => file.path === "docs/process.png"), false);
+  assert.equal(allowed.some((file) => file.path === "docs/architecture.svg"), false);
+  assert.equal(pngEntry?.kind, "image");
+  assert.equal(svgEntry?.kind, "diagram");
+  assert.equal(pngEntry?.readOnly, true);
+  assert.equal(svgEntry?.readOnly, true);
+  assert.equal(mermaidEntry?.kind, "diagram-source");
+  assert.equal(drawioEntry?.kind, "diagram-source");
+  assert.equal(openedPng.mimeType, "image/png");
+  assert.equal(openedPng.dataUrl, "data:image/png;base64," + png.toString("base64"));
+  assert.equal(openedPng.readOnly, true);
+  assert.equal(openedSvg.mimeType, "image/svg+xml");
+  assert.match(openedSvg.dataUrl, /^data:image\/svg\+xml;base64,/);
+  assert.match(readMemoryFile(root, "docs/flow.mmd").content, /flowchart LR/);
 });
 
 test("explorer listing can show project files outside watched docs as read-only", () => {
@@ -2296,7 +2766,7 @@ test("CLI guard is non-blocking unless strict mode is explicit", () => {
   );
 
   writeReviewGateSettings(root, { operations: ["commit"] });
-  execFileSync(process.execPath, [cli, "install-hook"], { cwd: root, encoding: "utf8" });
+  execFileSync(process.execPath, [cli, "install-hooks"], { cwd: root, encoding: "utf8" });
   const hook = fs.readFileSync(path.join(root, ".git", "hooks", "pre-commit"), "utf8");
   assert.match(hook, /Managed by Context Room review gate/);
   assert.match(hook, /--operation 'commit'/);
@@ -2427,7 +2897,7 @@ test("watched HTML changes enter the review queue", () => {
   assert.equal(item.reviewRequired, false);
 });
 
-test("last_verified-only edits preserve local and global review trust", () => {
+test("last_verified-only edits invalidate both local and global exact-hash trust", () => {
   const root = makeRoot();
   execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
   execFileSync("git", ["config", "user.email", "context-room@example.test"], { cwd: root, stdio: "ignore" });
@@ -2450,21 +2920,20 @@ test("last_verified-only edits preserve local and global review trust", () => {
   fs.writeFileSync(ledgerPath, JSON.stringify(legacyLedger, null, 2) + "\n");
 
   fs.writeFileSync(path.join(root, "README.md"), contentFor("2026-07-09"));
+  assert.equal(buildDocQaReport(root).queue.some((item) => item.path === "README.md"), true);
+
+  writeDocReviewDecision(root, "README.md", { status: "verified" });
   assert.equal(buildDocQaReport(root).queue.some((item) => item.path === "README.md"), false);
-  const migratedState = JSON.parse(fs.readFileSync(reviewStatePath, "utf8"));
-  const migratedLedger = JSON.parse(fs.readFileSync(ledgerPath, "utf8"));
-  assert.match(migratedState.reviews["README.md"].reviewHash, /^[a-f0-9]{64}$/);
-  assert.ok(Object.values(migratedLedger.reviews).every((review) => /^[a-f0-9]{64}$/.test(review.reviewHash)));
 
   fs.unlinkSync(reviewStatePath);
   fs.writeFileSync(path.join(root, "README.md"), contentFor("2026-07-10"));
-  assert.equal(buildDocQaReport(root).queue.some((item) => item.path === "README.md"), false);
+  assert.equal(buildDocQaReport(root).queue.some((item) => item.path === "README.md"), true);
 
   fs.writeFileSync(path.join(root, "README.md"), contentFor("2026-07-10", "Changed truth."));
   assert.equal(buildDocQaReport(root).queue.some((item) => item.path === "README.md"), true);
 });
 
-test("last_verified-only Git edits do not require review without prior trust", () => {
+test("last_verified-only Git edits require review until the current hash is trusted", () => {
   const root = makeRoot();
   execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
   execFileSync("git", ["config", "user.email", "context-room@example.test"], { cwd: root, stdio: "ignore" });
@@ -2476,7 +2945,9 @@ test("last_verified-only Git edits do not require review without prior trust", (
   execFileSync("git", ["commit", "-m", "initial"], { cwd: root, stdio: "ignore" });
 
   fs.writeFileSync(path.join(root, "README.md"), contentFor("2026-07-09"));
-  assert.deepEqual(buildDocQaReport(root).queue, []);
+  const initialReview = buildDocQaReport(root);
+  assert.equal(initialReview.queue.length, 1);
+  assert.equal(initialReview.queue[0].reviewReason, "unverified-current");
 
   const configPath = path.join(root, CONFIG_FILE);
   const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
@@ -2491,6 +2962,70 @@ test("last_verified-only Git edits do not require review without prior trust", (
 
   fs.writeFileSync(path.join(root, "README.md"), contentFor("2026-07-09", "Changed truth."));
   assert.notEqual(buildDocQaReport(root).queue[0].gitStatus.trim(), "");
+});
+
+test("a watched document stays reviewed only for its exact current content hash", () => {
+  const root = makeRoot();
+  execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "context-room@example.test"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Context Room Test"], { cwd: root, stdio: "ignore" });
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\n\nVersion one.\n");
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: ["docs/guide.md"] });
+  execFileSync("git", ["add", "."], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["commit", "-m", "initial"], { cwd: root, stdio: "ignore" });
+
+  const initial = buildDocQaReport(root);
+  assert.equal(initial.queue[0].reviewReason, "unverified-current");
+  writeDocReviewDecision(root, "docs/guide.md", { status: "verified", note: "reviewed" });
+  assert.deepEqual(buildDocQaReport(root).queue, []);
+
+  fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\n\nVersion two.\n");
+  execFileSync("git", ["add", "docs/guide.md"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["commit", "-m", "update guide"], { cwd: root, stdio: "ignore" });
+  const committedChange = buildDocQaReport(root);
+  assert.equal(committedChange.queue.length, 1);
+  assert.equal(committedChange.queue[0].path, "docs/guide.md");
+  assert.equal(committedChange.queue[0].gitStatus, "");
+  assert.equal(committedChange.queue[0].reviewReason, "unverified-current");
+});
+
+test("human Settings save migrates allowed legacy reviewPaths without widening allowedPaths", async (t) => {
+  const root = makeRoot();
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\n");
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: [] });
+  const configPath = path.join(root, CONFIG_FILE);
+  const legacy = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  legacy.watchAllow = [];
+  legacy.watchRules = [{ path: "docs/", mode: "direct-current", files: [] }];
+  legacy.reviewPaths = ["docs/guide.md", "outside.md"];
+  legacy.reviewAgentInstructions = false;
+  fs.writeFileSync(configPath, JSON.stringify(legacy, null, 2) + "\n");
+
+  const server = createMemoryServer({ root }).server;
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const current = await (await fetch(baseUrl + "/api/settings")).json();
+  assert.ok(current.settings.watchAllow.includes("docs/guide.md"));
+  assert.deepEqual(current.settings.watchRules, legacy.watchRules);
+  assert.equal("reviewPaths" in current.settings, false);
+
+  const response = await fetch(baseUrl + "/api/settings", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ settings: current.settings }),
+  });
+  assert.equal(response.status, 200);
+  const saved = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  assert.deepEqual(saved.allowedPaths, ["docs/"]);
+  assert.ok(saved.watchAllow.includes("docs/guide.md"));
+  assert.deepEqual(saved.watchRules, legacy.watchRules);
+  assert.equal(saved.watchAllow.includes("outside.md"), false);
+  assert.equal("reviewPaths" in saved, false);
+  assert.equal("reviewAgentInstructions" in saved, false);
+  assert.ok(buildContextRoomDoctorReport(root, { settings: legacy }).issues.some((issue) => issue.type === "legacy_review_path_not_allowed" && issue.path === "outside.md"));
 });
 
 test("collaboration state, commands, annotations, and queue are agent-safe", () => {
@@ -2541,28 +3076,24 @@ test("collaboration state, commands, annotations, and queue are agent-safe", () 
   assert.ok(Array.isArray(queue.queue));
 });
 
-test("CLI agent commands expose state, navigation, annotations, and queue without verify", () => {
+test("CLI agent commands expose workspace targeting and annotations while reviews use the canonical review family", () => {
   const root = makeRoot();
   fs.mkdirSync(path.join(root, "docs"));
   fs.writeFileSync(path.join(root, "docs/guide.md"), "# Guide\n");
   initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: ["docs/"] });
   const cli = path.resolve("bin/context-room.mjs");
 
-  const open = JSON.parse(execFileSync(process.execPath, [cli, "agent", "open", "--root", root, "--path", "docs/guide.md", "--heading", "Guide"], { encoding: "utf8" }));
-  assert.equal(open.command.path, "docs/guide.md");
-  assert.equal(open.command.target.type, "heading");
-
-  const stateOutput = JSON.parse(execFileSync(process.execPath, [cli, "agent", "state", "--root", root], { encoding: "utf8" }));
-  assert.equal(stateOutput.status, "No active webapp session state has been published yet.");
-
   const annotation = JSON.parse(execFileSync(process.execPath, [cli, "agent", "annotate", "--root", root, "--path", "docs/guide.md", "--note", "Review this with the user."], { encoding: "utf8" }));
   assert.equal(annotation.annotation.path, "docs/guide.md");
 
-  const queue = JSON.parse(execFileSync(process.execPath, [cli, "agent", "queue", "--root", root], { encoding: "utf8" }));
-  assert.match(queue.note, /Human verification/);
+  const reviews = JSON.parse(execFileSync(process.execPath, [cli, "review", "list", "--root", root, "--format=json"], { encoding: "utf8" }));
+  assert.equal(reviews.command, "review.list");
+  assert.ok(Array.isArray(reviews.data.queue));
 
   const help = execFileSync(process.execPath, [cli, "--help"], { encoding: "utf8" });
   assert.match(help, /context-room agent state/);
+  assert.match(help, /context-room workspace list/);
+  assert.match(help, /\[--workspace\]/);
   assert.doesNotMatch(help, /agent verify/);
 });
 
@@ -2595,6 +3126,7 @@ test("folder watch modes enforce recursive, direct, current, and future queue bo
     {
       mode: "recursive-live",
       expected: [
+        "docs/delete.md",
         "docs/direct.md",
         "docs/later-direct.md",
         "docs/later-folder/deeper/later-deep.md",
@@ -2604,17 +3136,17 @@ test("folder watch modes enforce recursive, direct, current, and future queue bo
     },
     {
       mode: "recursive-current",
-      expected: ["docs/direct.md", "docs/nested/existing.md"],
+      expected: ["docs/delete.md", "docs/direct.md", "docs/nested/existing.md"],
       snapshot: ["docs/delete.md", "docs/direct.md", "docs/nested/existing.md"],
     },
     {
       mode: "direct-current",
-      expected: ["docs/direct.md"],
+      expected: ["docs/delete.md", "docs/direct.md"],
       snapshot: ["docs/delete.md", "docs/direct.md"],
     },
     {
       mode: "direct-live",
-      expected: ["docs/direct.md", "docs/later-direct.md"],
+      expected: ["docs/delete.md", "docs/direct.md", "docs/later-direct.md"],
       snapshot: null,
     },
   ];
@@ -3281,8 +3813,8 @@ test("batch deletion review records absent resources and revalidates every selec
   config.reviewPaths = ["docs/alpha.md"];
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
   const reclassifiedBatch = buildDeletedReviewBatch(root);
-  assert.notEqual(reclassifiedBatch.key, batch.key, "changing protected status must invalidate an already loaded batch");
-  assert.equal(reclassifiedBatch.protectedCount, 2);
+  assert.equal(reclassifiedBatch.key, batch.key, "legacy reviewPaths no longer changes deletion classification or ordering");
+  assert.equal(reclassifiedBatch.protectedCount, 1);
   config.reviewPaths = [];
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
 
@@ -3335,6 +3867,7 @@ test("deleted review batch exposes the full set beyond the eighty-item queue cap
 
   assert.equal(report.summary.deletedDocs, 85);
   assert.equal(report.queue.length, 80);
+  assert.equal(report.pendingPaths.length, 85);
   assert.equal(batch.count, 85);
   assert.equal(batch.items.length, 85);
 });
@@ -3434,10 +3967,12 @@ test("deleted review batch API lists and confirms the current server-validated s
   const listed = await (await fetch(baseUrl + "/api/docqa/review-deletions")).json();
   assert.equal(listed.count, 2);
 
-  const configPath = path.join(root, CONFIG_FILE);
-  const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-  config.reviewPaths = ["docs/one.md"];
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+  const firstConfirmation = await fetch(baseUrl + "/api/docqa/review-deletions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ paths: ["docs/two.md"], key: listed.key }),
+  });
+  assert.equal(firstConfirmation.status, 200);
   const staleResponse = await fetch(baseUrl + "/api/docqa/review-deletions", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -3448,14 +3983,7 @@ test("deleted review batch API lists and confirms the current server-validated s
 
   const relisted = await (await fetch(baseUrl + "/api/docqa/review-deletions")).json();
   assert.notEqual(relisted.key, listed.key);
-  assert.equal(relisted.protectedCount, 1);
-  const unacknowledgedResponse = await fetch(baseUrl + "/api/docqa/review-deletions", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ paths: ["docs/one.md"], key: relisted.key }),
-  });
-  assert.equal(unacknowledgedResponse.status, 400);
-  assert.match((await unacknowledgedResponse.json()).error, /explicit acknowledgement/);
+  assert.equal(relisted.count, 1);
 
   const confirmed = await (await fetch(baseUrl + "/api/docqa/review-deletions", {
     method: "POST",
@@ -3464,10 +3992,10 @@ test("deleted review batch API lists and confirms the current server-validated s
   })).json();
   assert.deepEqual(confirmed.confirmed, ["docs/one.md"]);
   assert.deepEqual(confirmed.skipped, [{ path: "docs/missing.md", reason: "not_pending_deletion" }]);
-  assert.equal(confirmed.docqa.summary.deletedDocs, 1);
+  assert.equal(confirmed.docqa.summary.deletedDocs, 0);
 
   const remaining = await (await fetch(baseUrl + "/api/docqa/review-deletions")).json();
-  assert.deepEqual(remaining.items.map((item) => item.path), ["docs/two.md"]);
+  assert.deepEqual(remaining.items, []);
 });
 
 test("doc QA review queue follows a human docs verification order", () => {
@@ -3514,7 +4042,7 @@ context_room:
   assert.deepEqual(report.queue.map((item) => item.path), files.map(([relPath]) => relPath));
 });
 
-test("reviewPaths order defines the human verification path", () => {
+test("legacy reviewPaths join the watched scope without defining queue order", () => {
   const root = makeRoot();
   const files = ["AGENTS.md", "docs/PRODUCT.md", "website/docs/PRODUCT.md"];
   for (const relPath of files) {
@@ -3532,10 +4060,11 @@ test("reviewPaths order defines the human verification path", () => {
 
   const report = buildDocQaReport(root);
 
-  assert.deepEqual(report.queue.map((item) => item.path), reviewPaths);
+  assert.deepEqual(report.queue.map((item) => item.path), ["AGENTS.md", "docs/PRODUCT.md", "website/docs/PRODUCT.md"]);
+  assert.ok(report.queue.every((item) => item.reviewReason === "unverified-current"));
 });
 
-test("reviewAgentInstructions can limit required reviews to explicit reviewPaths", () => {
+test("legacy reviewAgentInstructions cannot exempt implicit AGENTS.md review", () => {
   const root = makeRoot();
   fs.mkdirSync(path.join(root, "docs", "verification"), { recursive: true });
   fs.writeFileSync(path.join(root, "AGENTS.md"), "# Agent instructions\n");
@@ -3549,7 +4078,7 @@ test("reviewAgentInstructions can limit required reviews to explicit reviewPaths
 
   const report = buildDocQaReport(root);
 
-  assert.deepEqual(report.queue.map((item) => item.path), ["docs/verification/README.md"]);
+  assert.deepEqual(report.queue.map((item) => item.path), ["AGENTS.md", "docs/verification/README.md"]);
 });
 
 test("reader questions do not become unresolved TODO markers", () => {
@@ -4240,7 +4769,7 @@ context_room:
   assert.match(brief, /Startup Context/);
   assert.match(brief, /AGENTS\.md/);
   assert.match(brief, /docs\/billing\.md/);
-  assert.match(brief, /No watched documentation changes are pending review/);
+  assert.match(brief, /1 watched changed file\(s\) still need review/);
 });
 
 test("doctor report keeps acknowledged health issues visible but marked", () => {
@@ -4341,7 +4870,7 @@ test("explorer folder watch menu renders all four modes with recursive live as t
     directory: "docs",
   });
 
-  assert.match(menu, /data-context-watch>Watch options…<\/button>/);
+  assert.match(menu, /data-context-watch>Watch this folder…<\/button>/);
   assert.match(menu, /data-context-watch-mode-form hidden/);
   assert.match(menu, /role="radiogroup" aria-label="Folder watch mode"/);
   assert.deepEqual(WATCH_RULE_MODE_OPTIONS.map((option) => option.id), WATCH_RULE_MODES);
@@ -4493,7 +5022,7 @@ test("explorer new file creates markdown directly before opening it", () => {
   const html = renderAppHtml();
   const createMarkdownFn = html.match(/async function createMarkdownFromContextMenu\(\) \{[\s\S]*?\n\}/)?.[0] || "";
 
-  assert.match(html, /id="newDocPage" class="settings-page" hidden/);
+  assert.match(html, /id="newDocPage" class="settings-page workspace-page" hidden/);
   assert.match(html, /function showNewDocPage\(/);
   assert.match(html, /function renderNewDocPanel\(/);
   assert.match(html, /placeholder="File name"/);
@@ -4558,43 +5087,33 @@ test("app CSS keeps hub sections stacked and cards responsive", () => {
   assert.doesNotMatch(hubFoldersRule, /grid-template-columns/);
   assert.doesNotMatch(html, /@media \(max-width: 1200px\)\s*\{[^}]*\.hub-folders[^}]*grid-template-columns:\s*1fr 1fr/);
   assert.match(html, /\.hub-section-grid\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fit, minmax\(min\(100%, 260px\), 1fr\)\)/);
+  assert.match(html, /\.hub-section\[data-empty="true"\] \.hub-section-grid\s*\{\s*min-height:\s*1px/);
   assert.match(html, /\.hub-folder-card\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*hidden/);
   assert.match(html, /\.hub-folder-card-main\s*\{[^}]*min-height:\s*132px;[^}]*padding:\s*var\(--space-5\)/);
   assert.match(html, /\.hub-folder-card strong\s*\{[^}]*letter-spacing:\s*0;[^}]*overflow-wrap:\s*anywhere/);
   assert.match(html, /\.hub-folder-meta code\s*\{\s*flex:\s*1 1 auto;\s*\}/);
+  assert.match(html, /function renderHubSectionHeading\(section\)/);
+  assert.match(html, /class="hub-section-origin-label">Project</);
+  assert.match(html, /const accessibleOrigin = "Project " \+ \(project\.title \|\| project\.id\) \+ \(location \? ", worktree " \+ location : ""\)/);
+  assert.match(html, /\.hub-section-heading\s*\{[^}]*justify-content:\s*space-between/);
+  assert.match(html, /@media \(max-width: 639px\)[\s\S]*\.hub-section-heading\s*\{[^}]*flex-direction:\s*column/);
 });
 
-test("card hover spotlight follows the pointer without intercepting clicks", () => {
+test("quiet native workbench removes decorative card spotlights", () => {
   const html = renderAppHtml();
 
-  assert.match(html, /--spotlight-x:\s*50%;\s*--spotlight-y:\s*50%/);
-  assert.match(html, /radial-gradient\(360px circle at var\(--spotlight-x\) var\(--spotlight-y\)/);
-  assert.match(html, /pointer-events:\s*none/);
-  assert.match(html, /\.hub-folder-card\.spotlight-active::before/);
-  assert.match(html, /\.hub-card-editor\.spotlight-active::before/);
-  assert.match(html, /\.startup-skill-folder::before\s*\{\s*display:\s*none/);
-  assert.match(html, /const SPOTLIGHT_CARD_SELECTOR = ".*\.hub-folder-card.*\.startup-context-item:not\(\.startup-skill-folder\).*\.settings-toggle.*\.hub-card-editor/);
-  assert.doesNotMatch(html, /SPOTLIGHT_CARD_SELECTOR = "[^"]*\.settings-section/);
-  assert.match(html, /function updateCardSpotlightAt\(x, y\)/);
-  assert.match(html, /function scheduleCardSpotlightUpdate\(\)/);
-  assert.match(html, /const pointer = spotlightPointer;/);
-  assert.match(html, /if \(spotlightPointer !== pointer\) return;/);
-  assert.match(html, /spotlightFrame = window\.requestAnimationFrame/);
-  assert.match(html, /document\.elementFromPoint\(x, y\)/);
-  assert.match(html, /function updateCardSpotlight\(event\)/);
-  assert.match(html, /scheduleCardSpotlightUpdate\(\);/);
-  assert.match(html, /function refreshCardSpotlightAfterScroll\(\)/);
-  assert.match(html, /document\.addEventListener\("pointermove", \(event\) => \{[\s\S]*updateCardSpotlight\(event\);[\s\S]*setDocLinkModifierActive\(isDocLinkModifierEventActive\(event\)\);[\s\S]*\}, \{ passive: true \}\)/);
-  assert.match(html, /document\.addEventListener\("scroll", refreshCardSpotlightAfterScroll, \{ capture: true, passive: true \}\)/);
-  assert.match(html, /html\.ui-scrolling body::before\s*\{\s*animation-play-state:\s*paused/);
-  assert.match(html, /function markInterfaceScrolling\(\)\s*\{[\s\S]*classList\.add\("ui-scrolling"\)[\s\S]*clearCardSpotlight\(\)[\s\S]*classList\.remove\("ui-scrolling"\)/);
-  assert.match(html, /classList\.contains\("ui-scrolling"\)/);
+  assert.doesNotMatch(html, /--spotlight-x:\s*50%/);
+  assert.doesNotMatch(html, /SPOTLIGHT_CARD_SELECTOR/);
+  assert.doesNotMatch(html, /function updateCardSpotlight/);
+  assert.doesNotMatch(html, /refreshCardSpotlightAfterScroll/);
+  assert.match(html, /\.launch-card::before,[\s\S]*\.conflict-card::before \{ display: none !important; \}/);
   assert.doesNotMatch(html, /will-change:\s*transform/);
   assert.doesNotMatch(html, /backface-visibility:\s*hidden/);
 });
 
 test("rendered app supports selectable file themes and colored markdown reading", () => {
   const html = renderAppHtml();
+  const source = fs.readFileSync(new URL("../src/context_room.mjs", import.meta.url), "utf8");
 
   assert.match(html, /data-file-theme="context-room"/);
   assert.match(html, /const FILE_THEMES = \[/);
@@ -4610,31 +5129,75 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /<strong>Auto-open Git diff<\/strong>/);
   assert.match(html, /id="showHiddenFiles"/);
   assert.match(html, /<strong>Show hidden files<\/strong>/);
-  assert.match(html, /Display safe dotfiles and \.context-room in every explorer\./);
+  assert.match(html, /Display safe dotfiles and \.context-room in every Explorer\./);
   assert.match(html, /class="settings-shell"/);
   assert.match(html, /function renderSettingsTabs\(items = \[\]\)/);
   assert.match(html, /role="tablist" aria-label="Settings categories"/);
   assert.match(html, /data-settings-section-target="' \+ escapeHtml\(item\.id\)/);
   assert.match(html, /function renderSettingsSection\(\{ id, kicker, title, copy, scope/);
   assert.match(html, /'<section id="settings-section-' \+ sectionId/);
-  assert.match(html, /id:\s*"review"[\s\S]*kicker:\s*"Review"[\s\S]*title:\s*"Watched docs"/);
+  assert.match(html, /id:\s*"review"[\s\S]*kicker:\s*"Review"[\s\S]*title:\s*showGlobalProjectPicker \? "Global review overview" : "Review rules"/);
+  assert.match(html, /title:\s*"Documents to review"/);
+  assert.doesNotMatch(html, /title:\s*"Always require review"/);
+  assert.match(html, /title:\s*"Agent CLI guide"/);
+  assert.match(html, /Give this to your agent/);
+  assert.match(html, /context-room context ask/);
+  assert.match(html, /data-copy-agent-cli-prompt/);
+  assert.match(html, /What remains human-owned/);
+  assert.match(html, /Commands and advanced capabilities/);
+  assert.match(html, /Projects, reviews, shared contexts, skills, setup, and maintenance/);
+  assert.match(html, /Ask one focused question and receive accepted project documentation with provenance/i);
+  assert.doesNotMatch(html, /events --follow --since/);
+  assert.match(html, /Find and read the documentation relevant to its task, with provenance/);
+  assert.match(html, /link accepted skills to Codex, Claude Code, OpenCode, or a custom folder/);
+  assert.match(html, /Accepting or rejecting each file awaiting review/);
+  assert.match(html, /there is no separate proposal decision/);
+  assert.doesNotMatch(html, /Changing the owner-controlled Git review gate\./);
+  assert.match(html, /globalReviewBody = '[^']*context ask[^']*static command inventory/);
+  assert.doesNotMatch(html, /capabilities --intent/);
+  assert.match(html, /Your agent can manage these rules itself through the Context Room CLI/);
+  assert.match(html, /context-room agent watch/);
+  assert.match(html, /context-room agent unwatch/);
+  assert.match(html, /Human verification remains yours/);
+  assert.match(html, /title:\s*"Protect Git actions"/);
+  assert.match(html, /title: showGlobalProjectPicker \? "Global review overview" : "Review rules"/);
+  assert.match(html, /status: globalReviewCounts\.local \+ " local files", scope: "All projects", body: renderGlobalProjectSettingsGate\("Watched documents and folder modes"\)/);
+  assert.match(html, /Select a local project in the Explorer\./);
+  assert.doesNotMatch(html, /data-open-selected-project-settings/);
+  assert.match(html, /function activeSettingsForPanel\(\)/);
+  assert.match(html, /loadGlobalProjectSettings\(project/);
+  assert.match(html, /api\("\/api\/context-hub\/project-settings\?projectId="/);
+  assert.match(html, /api\("\/api\/context-hub\/preferences"/);
+  assert.match(source, /url\.pathname === "\/api\/context-hub\/project-settings"/);
+  assert.match(source, /writeMemoryWebappSettings\(project\.root, projectInput, \{ migrateLegacyReview: true \}\)/);
+  assert.match(html, /state\.contextHub = contextHub;[\s\S]*if \(state\.page === "settings"\) renderSettingsPanel\(\);/);
   assert.match(html, /Block Git operations while review is pending/);
   assert.match(html, /data-review-gate-operation value="commit"/);
   assert.match(html, /data-review-gate-operation value="push"/);
   assert.match(html, /data-review-gate-operation value="pull-request"/);
   assert.match(html, /data-review-gate-operation value="merge"/);
   assert.match(html, /Owner control/);
-  assert.match(html, /not writable through the agent CLI/);
+  assert.match(html, /cannot be changed through the agent CLI/);
   assert.match(html, /Git has no local hook for creating a pull request/);
   assert.match(html, /api\("\/api\/review-gate"/);
   assert.match(html, /document\.querySelectorAll\("\[data-review-gate-operation\]:checked"\)/);
   assert.match(html, /\.review-gate-options\s*\{[^}]*grid-template-columns:\s*repeat\(4/);
-  assert.match(html, /id:\s*"startup"[\s\S]*kicker:\s*"Startup"[\s\S]*title:\s*"Injected context scanners"/);
-  assert.match(html, /id:\s*"appearance"[\s\S]*kicker:\s*"Appearance"[\s\S]*title:\s*"Theme, files, and shortcuts"/);
-  assert.match(html, /copy:\s*"Shared by every Context Room on this computer\."/);
+  assert.match(html, /id:\s*"startup"[\s\S]*kicker:\s*"Startup"[\s\S]*title:\s*"Agent startup environment"/);
+  assert.match(html, /title:\s*"Agent instructions"/);
+  assert.match(html, /title:\s*"Local skill discovery"/);
+  assert.match(html, /Shared skills are different: they keep reviewed canonical skills/);
+  assert.match(html, /id:\s*"appearance"[\s\S]*kicker:\s*"Appearance"[\s\S]*title:\s*"Interface preferences"/);
+  assert.match(html, /copy:\s*"Personal preferences shared by every Context Room on this computer\."/);
   assert.match(html, /scope:\s*"All rooms"/);
-  assert.match(html, /id:\s*"templates"[\s\S]*kicker:\s*"Templates"[\s\S]*title:\s*"Markdown document templates"/);
-  assert.match(html, /id:\s*"hub"[\s\S]*kicker:\s*"Hub"[\s\S]*title:\s*"Sections and cards"/);
+  assert.match(html, /id:\s*"templates"[\s\S]*kicker:\s*"Templates"[\s\S]*title:\s*showGlobalProjectPicker \? "Project document templates" : "Markdown document templates"/);
+  assert.match(html, /id:\s*"hub"[\s\S]*kicker:\s*"Hub"[\s\S]*title:\s*"Hub organization"[\s\S]*Priority is device-wide; sections remain project-owned/);
+  assert.match(html, /No Home sections yet\. Add one to create a labeled separator or a group of project links\./);
+  assert.match(html, /data-remove-section title="Remove this section">Delete section</);
+  assert.match(html, /\.hub-section-editor-summary"\)\.forEach\(\(summary\) => summary\.addEventListener\("contextmenu"/);
+  assert.match(html, /function openHubSectionSettingsContextMenu\(event, section\)[\s\S]*data-settings-delete-section>Delete section/);
+  assert.match(html, /id:\s*"codex-prompts"[\s\S]*kicker:\s*"Codex prompts"[\s\S]*title:\s*"Codex Prompt Center"/);
+  assert.match(html, /id="openCodexPromptCenter"/);
+  assert.match(html, /openContextRoomView\("codex-prompts", \{ returnTo: "settings" \}\)/);
   assert.match(html, /\.settings-section-head\s*\{[^}]*display:\s*flex/);
   assert.match(html, /\.settings-tabs\s*\{[^}]*position:\s*sticky/);
   assert.match(html, /\.settings-tab\[aria-selected="true"\]/);
@@ -4645,14 +5208,42 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /\.hub-card-editor:not\(\[open\]\) > :not\(summary\)\s*\{\s*display:\s*none;\s*\}/);
   assert.match(html, /function activateSettingsSection\(sectionId, options = \{\}\)/);
   assert.match(html, /function wireSettingsTabs\(root\)/);
+  assert.match(html, /id="settingsSearch"[^>]*role="combobox"/);
+  assert.match(html, /id="settingsSearchResults"[^>]*role="listbox"/);
+  assert.match(html, /const SETTINGS_SEARCH_ITEMS = \[/);
+  assert.match(html, /function matchingSettingsSearchItems\(query\)/);
+  assert.match(html, /function openSettingsSearchItem\(itemId\)/);
+  assert.match(html, /No settings found\. Try a familiar word/);
+  assert.match(html, /event\.key === "ArrowDown" \|\| event\.key === "ArrowUp"/);
+  assert.match(html, /function renderSettingsDisclosure/);
+  assert.match(html, /data-settings-disclosure=/);
+  assert.match(html, /settingsDisclosureState/);
+  assert.match(html, /version: 4/);
+  assert.match(html, /\[1, 2, 3, 4\]\.includes\(raw\.version\)/);
+  assert.match(html, /paneLayout:/);
+  assert.match(html, /id="sidebarResizer" class="sidebar-resizer"/);
+  assert.match(html, /Unsaved changes/);
+  assert.match(html, /setting group/);
+  assert.match(html, /function refreshSharedSkillLocationsSettingsPanel\(\)/);
+  assert.match(html, /wireSharedSkillLocationsSettingsActions\(panel\)/);
   assert.match(html, /\["ArrowRight", "ArrowDown"\]/);
   assert.match(html, /settingsSection: normalizeSettingsSectionId\(state\.settingsSection\)/);
   assert.match(html, /state\.settingsSection = persisted\.settingsSection/);
   assert.match(html, /activateSettingsSection\(state\.settingsSection, \{ resetScroll: false \}\)/);
   assert.match(html, /Reference in Codex shortcut/);
   assert.match(html, /id="codexReferenceShortcut"/);
+  assert.match(html, /id="interfaceSoundsEnabled"/);
+  assert.match(html, /id="interfaceSoundsVolume" type="range"/);
+  assert.match(html, /data-sound-preview="interaction"/);
+  assert.match(html, /A soft, compact click responds to buttons/);
+  assert.match(html, />Button click</);
+  assert.match(html, /data-sound-preview="review-complete"/);
+  assert.match(html, /data-sound-preview="all-clear"/);
+  assert.match(html, /data-sound-preview="proposal-accepted"/);
+  assert.match(html, /data-sound-preview="attention"/);
+  assert.match(html, /Previews work even while interface sounds are muted\./);
   assert.match(html, /function wireShortcutRecorder\(\)/);
-  assert.match(html, /Project setup stays in this room\. Appearance and shortcuts apply to all rooms\./);
+  assert.match(html, /Choose one category, make the change, then save once\./);
   assert.match(html, /\.settings-toggle\s*\{[^}]*grid-template-columns:\s*auto minmax\(0, 1fr\)/);
   assert.match(html, /\.settings-footer\s*\{[^}]*position:\s*sticky/);
   assert.match(html, /button\.save-pending, \.file-action\.save-pending/);
@@ -4663,10 +5254,13 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /id="settingsThemePreviewName"/);
   assert.match(html, /SETTINGS_THEME_PREVIEW_DOC/);
   assert.match(html, /function normalizeFileThemeId\(wanted\)/);
-  assert.match(html, /function applyFileTheme\(themeId = currentFileThemeId\(\)\)/);
+  assert.match(html, /function applyFileTheme\(themeId = currentFileThemeId\(\), colorMode = currentColorModePreference\(\)\)/);
   assert.match(html, /document\.documentElement\.dataset\.appTheme = clean;/);
+  assert.match(html, /document\.documentElement\.dataset\.colorMode = mode;/);
   assert.match(html, /function previewSelectedFileTheme\(\)/);
   assert.match(html, /el\("fileTheme"\)\?\.addEventListener\("change", previewSelectedFileTheme\)/);
+  assert.match(html, /id="colorMode"/);
+  assert.match(html, /el\("colorMode"\)\?\.addEventListener\("change", previewSelectedFileTheme\)/);
   assert.match(html, /function markButtonSaving\(button, label = "Saving\.\.\."\)/);
   assert.match(html, /function restoreButtonLabel\(button\)/);
   assert.match(html, /function flashSavedButton\(button, label = "Saved"\)/);
@@ -4678,15 +5272,20 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /function collapsedByGitDiffPreference\(diff\)/);
   assert.match(html, /autoOpenGitDiff:\s*el\("autoOpenGitDiff"\)\?\.checked !== false/);
   assert.match(html, /showHiddenFiles:\s*el\("showHiddenFiles"\)\?\.checked !== false/);
+  assert.match(html, /const sounds = \{[\s\S]*enabled:\s*el\("interfaceSoundsEnabled"\)\?\.checked !== false/);
   assert.match(html, /state\.files = filesData\.files \|\| state\.files;[\s\S]*renderFiles\(\);/);
   assert.doesNotMatch(html, /autoAdvanceReview/);
   assert.doesNotMatch(html, /Auto-open next review/);
   assert.match(html, /renderFileThemeOptions\(appearance\.fileTheme\)/);
   assert.match(html, /:root\[data-file-theme="dracula"\]\s*\{[\s\S]*--bg:\s*#282a36;[\s\S]*--panel:/);
   assert.match(html, /:root\[data-file-theme="light-plus"\]\s*\{[\s\S]*color-scheme:\s*light;[\s\S]*--bg:\s*#f6f8fa;[\s\S]*--on-accent:\s*#ffffff/);
-  assert.match(html, /body\s*\{[\s\S]*radial-gradient\(circle at top left, var\(--body-glow-1\)/);
+  assert.doesNotMatch(html, /@keyframes starDrift|@keyframes nebulaPulse|@keyframes workbenchGridDrift/);
+  assert.match(html, /QUIET NATIVE WORKBENCH/);
+  assert.match(html, /--native-titlebar-height:\s*46px/);
+  assert.match(html, /grid-template-columns:\s*var\(--explorer-width\) minmax\(0, 1fr\)/);
+  assert.match(html, /font-family:\s*-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif/);
   assert.match(html, /aside\s*\{[^}]*background:\s*var\(--surface-sidebar\)/);
-  assert.match(html, /\.docqa-home\s*\{[^}]*background:\s*radial-gradient\(circle at 18% 0%, var\(--body-glow-3\)/);
+  assert.doesNotMatch(html, /const SPOTLIGHT_CARD_SELECTOR/);
   assert.match(html, /--space-1:\s*4px;[\s\S]*--space-6:\s*24px;[\s\S]*--page-padding:\s*var\(--space-6\)/);
   assert.match(html, /\.workspace-dock\s*\{[^}]*display:\s*inline-flex;[^}]*padding:\s*var\(--space-1\);[^}]*background:\s*var\(--surface-floating-soft\)/);
   assert.match(html, /\.dock-button\s*\{[^}]*min-width:\s*var\(--control-height\);[^}]*min-height:\s*var\(--control-height\);[^}]*padding:\s*0 var\(--space-3\)/);
@@ -4824,6 +5423,24 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /function visibleMarkdownReader\(\)/);
   assert.match(html, /const reader = el\("docReader"\) \|\| el\("docHighlighter"\);/);
   assert.match(html, /visibleMarkdownReader\(\) \|\| activeEditor\(\) \|\| el\("viewer"\)/);
+});
+
+test("Settings search matches aliases, technical names, scopes, and advanced groups", () => {
+  const script = extractInlineAppScript(renderAppHtml());
+  const source = script.slice(
+    script.indexOf("const SETTINGS_SEARCH_ITEMS ="),
+    script.indexOf("function renderSettingsSearchResults"),
+  );
+  const { matchingSettingsSearchItems } = Function(
+    source + "; return { matchingSettingsSearchItems };",
+  )();
+
+  assert.equal(matchingSettingsSearchItems("watch folders")[0].group, "review-documents");
+  assert.equal(matchingSettingsSearchItems("AGENTS.md")[0].group, "startup-context");
+  assert.equal(matchingSettingsSearchItems("provider conflicts")[0].section, "shared-skills");
+  assert.equal(matchingSettingsSearchItems("device prompt restart")[0].group, "codex-prompts-editor");
+  assert.equal(matchingSettingsSearchItems("definitely absent").length, 0);
+  assert.ok(matchingSettingsSearchItems("git gate").some((item) => item.group === "review-protection"));
 });
 
 test("normal and startup files open directly editable while review mode owns verification", () => {
@@ -4979,12 +5596,23 @@ test("Codex composer API inserts only validated text through the injected local 
 test("browser refresh restores the last Context Room page", () => {
   const html = renderAppHtml();
 
-  assert.match(html, /NAVIGATION_STATE_STORAGE_PREFIX = "context-room:navigation:"/);
+  assert.match(html, /WORKSPACE_NAVIGATION_STATE_STORAGE_PREFIX = "context-room:workspace-navigation:"/);
   assert.match(html, /function navigationStorageKey\(root = state\.root\)/);
-  assert.match(html, /window\.localStorage\?\.setItem\(key, JSON\.stringify/);
+  assert.match(html, /window\.sessionStorage\?\.setItem\(key, JSON\.stringify/);
+  assert.match(html, /function establishWorkspaceIdentity\(\)/);
+  assert.match(html, /workspace-conflict/);
+  assert.match(html, /function establishWorkspaceIdentity\(\)[\s\S]*replaceDuplicatedWorkspaceIdentity[\s\S]*state\.workspaceIdentityReady = true;[\s\S]*syncWorkspaceUrl\(\);/);
+  assert.doesNotMatch(html, /await new Promise\(\(resolve\) => window\.setTimeout\(resolve, 90\)\)/);
+  assert.match(html, /function syncWorkspaceUrl\(\)[\s\S]*if \(url\.href === window\.location\.href\) \{[\s\S]*state\.workspaceSyncedUrl = url\.href;[\s\S]*return;[\s\S]*window\.history\.replaceState/);
+  assert.match(html, /state\.workspaceSyncedUrl = url\.href;[\s\S]*window\.history\.replaceState/);
+  assert.match(html, /window\.addEventListener\("popstate", \(\) => \{[\s\S]*if \(!state\.workspaceIdentityReady\) return;[\s\S]*window\.location\.href === state\.workspaceSyncedUrl\) return;[\s\S]*applyWorkspaceUrlState\(\{ reason: "history" \}\)/);
+  assert.doesNotMatch(html, /window\.addEventListener\("popstate",[\s\S]{0,300}window\.location\.reload\(\)/);
+  assert.match(html, /window\.addEventListener\("beforeunload", \(event\) => \{[\s\S]*stopWorkspaceRuntime\(\);/);
   assert.match(html, /if \(state\.projectId\) headers\.set\("x-context-room-project", state\.projectId\);/);
-  assert.match(html, /if \(!state\.projectId && responseProjectId\) state\.projectId = responseProjectId;/);
-  assert.match(html, /function handleContextRoomProjectChange\(\)[\s\S]*state\.projectReloading = true;[\s\S]*window\.location\.reload\(\);/);
+  assert.match(html, /if \(responseAction === "initialize"\) state\.projectId = responseProjectId;/);
+  assert.match(html, /function handleContextRoomProjectChange\([\s\S]*if \(IS_GLOBAL_CONTEXT_ROOM\)[\s\S]*loadFiles\(\{ identityRefresh: true \}\)/);
+  assert.match(html, /function requestExceptionalWorkspaceReload\([\s\S]*workspaceReloadCircuitDecision/);
+  assert.match(html, /function showWorkspaceRecovery\([\s\S]*Retry once/);
   assert.match(html, /searchText: el\("search"\)\?\.value \|\| ""/);
   assert.match(html, /root: state\.root,\s*projectId: state\.projectId,/);
   assert.match(html, /if \(!raw\.root \|\| !raw\.projectId\) return null;/);
@@ -4992,9 +5620,10 @@ test("browser refresh restores the last Context Room page", () => {
   assert.match(html, /if \(!state\.projectId \|\| raw\.projectId !== state\.projectId\) return null;/);
   assert.match(html, /const pathFilters = rawPathFilters\.filter\(\(filter\) => state\.files\.some\(\(file\) => pathMatchesFilter\(file\.path, filter\)\)\);/);
   assert.match(html, /el\("search"\)\.value = persisted\.searchText \|\| folderFilterSearchQuery\(state\.pathFilters\);/);
-  assert.match(html, /function acceptContextRoomRoot\(nextRoot\)[\s\S]*if \(!state\.root\) \{[\s\S]*state\.root = nextRoot;[\s\S]*if \(state\.root === nextRoot\) return;[\s\S]*handleContextRoomProjectChange\(\);/);
+  assert.match(html, /function acceptContextRoomRoot\(nextRoot\)[\s\S]*if \(!state\.root\) \{[\s\S]*state\.root = nextRoot;[\s\S]*if \(state\.root === nextRoot\) return;[\s\S]*if \(IS_GLOBAL_CONTEXT_ROOM\) \{[\s\S]*state\.root = nextRoot;[\s\S]*handleContextRoomProjectChange\(\{ reason: "server-root-changed" \}\);/);
   assert.match(html, /acceptContextRoomRoot\(data\.root\);/);
-  assert.match(html, /const restoreRequest = restoreNavigationAfterInitialLoad\(\);/);
+  assert.match(html, /const hasRequestedContextHubTarget = Boolean\(requestedReviewFile \|\| requestedHubCard \|\| requestedStartupOrder \|\| state\.sharedContext\?\.mode === "review"\);/);
+  assert.match(html, /const restoreRequest = hasRequestedContextHubTarget \? Promise\.resolve\(false\) : restoreNavigationAfterInitialLoad\(\);/);
   assert.match(html, /const restored = await restoreRequest;/);
   assert.match(html, /if \(restored\) \{[\s\S]*scheduleSessionStatePush\(\);[\s\S]*return;/);
   assert.match(html, /openRequest = selectFile\(persisted\.selectedPath, options\);/);
@@ -5005,6 +5634,57 @@ test("browser refresh restores the last Context Room page", () => {
   assert.match(html, /if \(typeof options\.diffCollapsed === "boolean"\) state\.diffCollapsed = options\.diffCollapsed;/);
   assert.match(html, /window\.addEventListener\("beforeunload", \(event\) => \{[\s\S]*persistNavigationState\(\);/);
   assert.match(html, /window\.addEventListener\("beforeunload", \(event\) => \{[\s\S]*if \(!state\.dirty\) return;[\s\S]*event\.preventDefault\(\);/);
+});
+
+test("workspace URL restoration parses every supported destination without browser state", () => {
+  const target = parseWorkspaceNavigationUrl("http://127.0.0.1:4319/?hub=1&workspace=workspace_123&project=hicharlie-wt&view=settings&settings=shared-skills&folder=apps%2Fcalls&file=apps%2Fcalls%2FAGENTS.md&proposal=proposal_123");
+  assert.deepEqual(target, {
+    workspaceId: "workspace_123",
+    projectId: "hicharlie-wt",
+    view: "settings",
+    folder: "apps/calls",
+    file: "apps/calls/AGENTS.md",
+    proposal: "proposal_123",
+    settingsSection: "shared-skills",
+  });
+  assert.equal(parseWorkspaceNavigationUrl("/?view=unknown").view, "hub");
+  assert.equal(parseWorkspaceNavigationUrl("/?view=hub").view, "hub");
+  assert.equal(parseWorkspaceNavigationUrl("/?view=file&file=README.md").view, "file");
+  assert.equal(parseWorkspaceNavigationUrl("/?view=proposal&proposal=p1").view, "proposal");
+});
+
+test("workspace reload circuit permits one exceptional retry and blocks the second", () => {
+  const first = workspaceReloadCircuitDecision("", 10_000, 5_000);
+  const second = workspaceReloadCircuitDecision(first.value, 10_400, 5_000);
+  const expired = workspaceReloadCircuitDecision(first.value, 16_000, 5_000);
+  assert.equal(first.allowed, true);
+  assert.equal(second.allowed, false);
+  assert.equal(expired.allowed, true);
+});
+
+test("duplicated workspace identity is replaced exactly once", () => {
+  const message = { type: "workspace-conflict", workspaceId: "workspace_123", requester: "client_123" };
+  assert.equal(shouldReplaceDuplicatedWorkspaceIdentity({ message, requestedWorkspaceId: "workspace_123", clientInstanceId: "client_123" }), true);
+  assert.equal(shouldReplaceDuplicatedWorkspaceIdentity({ message, requestedWorkspaceId: "workspace_123", clientInstanceId: "client_123", alreadyResolved: true }), false);
+  assert.equal(shouldReplaceDuplicatedWorkspaceIdentity({ message: { ...message, requester: "other" }, requestedWorkspaceId: "workspace_123", clientInstanceId: "client_123" }), false);
+});
+
+test("stale project responses refresh global workspaces without accepting old data", () => {
+  assert.equal(contextRoomProjectResponseAction({ expectedProjectId: "old", responseProjectId: "old", globalRoom: true }), "accept");
+  assert.equal(contextRoomProjectResponseAction({ expectedProjectId: "", responseProjectId: "host", globalRoom: true }), "initialize");
+  assert.equal(contextRoomProjectResponseAction({ expectedProjectId: "old", responseProjectId: "new", globalRoom: true }), "refresh-in-place");
+  assert.equal(contextRoomProjectResponseAction({ expectedProjectId: "old", responseProjectId: "new", globalRoom: false }), "exceptional-reload");
+});
+
+test("every top-level workspace page owns reliable bounded scrolling", () => {
+  const html = renderAppHtml();
+
+  assert.match(html, /\.editor-shell \{[^}]*width: 100%;[^}]*height: 100%;[^}]*min-height: 0;[^}]*overflow: hidden;/);
+  assert.match(html, /\.workspace-page \{[^}]*height: 100%;[^}]*min-height: 0;[^}]*overflow-x: hidden;[^}]*overflow-y: auto;[^}]*overscroll-behavior: contain;[^}]*scrollbar-gutter: stable;/);
+  assert.match(html, /id="home" class="docqa-home workspace-page"/);
+  assert.match(html, /id="proposalReviewPage" class="proposal-review-page workspace-page"/);
+  assert.match(html, /id="settingsPage" class="settings-page workspace-page"/);
+  assert.match(html, /id="newDocPage" class="settings-page workspace-page"/);
 });
 
 test("file opening renders loading and retry states instead of a blank document", () => {
@@ -5043,6 +5723,126 @@ test("file opening renders loading and retry states instead of a blank document"
   assert.doesNotMatch(html, /renderFiles\(\);\s*if \(options\.revealInExplorer\)/);
 });
 
+test("interface sound engine synthesizes every cue and honors mute, preview, and volume", () => {
+  const script = extractInlineAppScript(renderAppHtml());
+  const source = script.slice(
+    script.indexOf("function currentContextRoomSoundSettings"),
+    script.indexOf("const PLANET_GROUPS"),
+  );
+  const calls = { oscillators: 0, oscillatorFrequencies: [], linearAttacks: 0, noiseSources: 0, convolvers: 0 };
+  const audioParam = () => ({
+    setValueAtTime() {},
+    linearRampToValueAtTime() {},
+    exponentialRampToValueAtTime() {},
+  });
+  class MockAudioContext {
+    constructor() {
+      this.currentTime = 1;
+      this.sampleRate = 1000;
+      this.state = "running";
+      this.destination = {};
+    }
+    createOscillator() {
+      calls.oscillators += 1;
+      const frequency = audioParam();
+      frequency.setValueAtTime = (value) => calls.oscillatorFrequencies.push(value);
+      return { connect() {}, start() {}, stop() {}, frequency, type: "sine" };
+    }
+    createGain() {
+      const gain = audioParam();
+      gain.linearRampToValueAtTime = () => { calls.linearAttacks += 1; };
+      return { connect() {}, gain };
+    }
+    createBiquadFilter() {
+      return { connect() {}, frequency: audioParam(), Q: audioParam(), type: "lowpass" };
+    }
+    createBuffer(channels, length) {
+      const data = Array.from({ length: channels }, () => new Float32Array(length));
+      return { getChannelData(channel) { return data[channel]; } };
+    }
+    createBufferSource() {
+      calls.noiseSources += 1;
+      return { buffer: null, connect() {}, start() {}, stop() {} };
+    }
+    createConvolver() {
+      calls.convolvers += 1;
+      return { buffer: null, connect() {} };
+    }
+    resume() {
+      this.state = "running";
+      return Promise.resolve();
+    }
+  }
+  const state = { settings: { sounds: { enabled: true, volume: 0.35 } } };
+  const volumeInput = { value: "50" };
+  const volumeOutput = { value: "" };
+  const el = (id) => id === "interfaceSoundsVolume" ? volumeInput : id === "interfaceSoundsVolumeValue" ? volumeOutput : null;
+  const harness = Function(
+    "state",
+    "window",
+    "el",
+    "calls",
+    `let contextRoomAudioContext = null;
+     let contextRoomAudioUnlocked = false;
+     let contextRoomReverbImpulse = null;
+     let contextRoomInteractionVariant = 0;
+     ${source}
+     return { playContextRoomSound, unlockContextRoomAudio, updateSoundVolumePreview };`,
+  )(state, { AudioContext: MockAudioContext }, el, calls);
+
+  assert.equal(harness.playContextRoomSound("review-complete"), false);
+  harness.unlockContextRoomAudio();
+  for (const cue of ["interaction", "review-complete", "all-clear", "proposal-accepted", "attention"]) {
+    assert.equal(harness.playContextRoomSound(cue), true);
+  }
+  assert.equal(calls.oscillators, 14);
+  assert.ok(calls.oscillatorFrequencies[0] >= 485 && calls.oscillatorFrequencies[0] <= 505);
+  assert.ok(calls.oscillatorFrequencies[1] >= 240 && calls.oscillatorFrequencies[1] <= 255);
+  assert.equal(calls.linearAttacks, 2);
+  assert.equal(calls.noiseSources, 1);
+  assert.equal(calls.convolvers, 4);
+
+  state.settings.sounds.enabled = false;
+  assert.equal(harness.playContextRoomSound("review-complete"), false);
+  assert.equal(calls.oscillators, 14);
+  assert.equal(harness.playContextRoomSound("review-complete", { preview: true }), true);
+  assert.equal(calls.oscillators, 17);
+
+  state.settings.sounds.enabled = true;
+  state.settings.sounds.volume = 0;
+  volumeInput.value = "0";
+  assert.equal(harness.playContextRoomSound("attention"), false);
+  assert.equal(harness.playContextRoomSound("all-clear", { preview: true }), false);
+  volumeInput.value = "65";
+  harness.updateSoundVolumePreview();
+  assert.equal(volumeOutput.value, "65%");
+});
+
+test("interface sounds add restrained button feedback and richer cues only for meaningful outcomes", () => {
+  const script = extractInlineAppScript(renderAppHtml());
+  const interactionSource = script.slice(script.indexOf("function playContextRoomButtonBeat"), script.indexOf("function updateSoundVolumePreview"));
+  const reviewSource = script.slice(script.indexOf("async function applyReviewDecision"), script.indexOf("async function advanceAfterInlineReviewRemoval"));
+  const conflictSource = script.slice(script.indexOf("async function checkSelectedFileConflict"), script.indexOf("async function applyExternalChange"));
+  const saveSource = script.slice(script.indexOf("async function saveCurrent"), script.indexOf("async function refreshFromDisk"));
+
+  assert.match(interactionSource, /target\?\.closest\?\.\("button"\)/);
+  assert.match(interactionSource, /button\.disabled/);
+  assert.match(interactionSource, /button\.closest\("\[data-sound-preview\]"\)/);
+  assert.match(interactionSource, /contextRoomLastInteractionSoundAt < 35/);
+  assert.match(interactionSource, /playContextRoomSound\("interaction"\)/);
+  assert.match(script, /frequency: 493\.88 \* pitch/);
+  assert.match(script, /frequency: 246\.94 \* pitch/);
+  assert.match(script, /new AudioContextCtor\(\{ latencyHint: "interactive" \}\)/);
+  assert.match(script, /cue === "interaction" \? 1600 : 2600/);
+  assert.match(script, /cue === "interaction" \? Math\.min\(1, sounds\.volume \* 1\.35\) : sounds\.volume/);
+  assert.match(script, /document\.addEventListener\("click", playContextRoomButtonBeat\)/);
+  assert.match(reviewSource, /const reviewCompleted = normalizedStatus === "verified"/);
+  assert.match(reviewSource, /playContextRoomSound\(reviewQueueCleared \? "all-clear" : "review-complete"\)/);
+  assert.match(reviewSource, /decisionResult\.proposalFinalization\.accepted[\s\S]*playContextRoomSound\("proposal-accepted"\)/);
+  assert.match(conflictSource, /const existingConflict = activeFileConflict\(\);[\s\S]*if \(existingConflict && existingConflict\.diskHash === data\.contentHash[\s\S]*return true;[\s\S]*playContextRoomSound\("attention"\)/);
+  assert.doesNotMatch(saveSource, /playContextRoomSound/);
+});
+
 test("HTML files open as sandboxed visual previews without source editing", () => {
   const html = renderAppHtml();
 
@@ -5062,7 +5862,7 @@ test("HTML files open as sandboxed visual previews without source editing", () =
   assert.match(html, /\.cr-callout/);
   assert.match(html, /theme\.setAttribute\("data-context-room-visual-system", currentFileThemeId\(\)\)/);
   assert.match(html, /doc\.documentElement\.dataset\.contextRoomTheme = currentFileThemeId\(\)/);
-  assert.match(html, /function applyFileTheme\(themeId = currentFileThemeId\(\)\)[\s\S]*document\.querySelector\("iframe\.html-preview-frame"\)[\s\S]*renderViewer\(\);/);
+  assert.match(html, /function applyFileTheme\(themeId = currentFileThemeId\(\), colorMode = currentColorModePreference\(\)\)[\s\S]*document\.querySelector\("iframe\.html-preview-frame"\)[\s\S]*renderViewer\(\);/);
   assert.match(html, /function renderHtmlDocumentPreview\(text, filePath = state\.selected\)/);
   assert.match(html, /class="html-preview-frame" sandbox="" referrerpolicy="no-referrer"/);
   assert.match(html, /isHtmlDocument\s*\? renderHtmlDocumentPreview\(text, file\.path\)/);
@@ -5074,19 +5874,32 @@ test("HTML files open as sandboxed visual previews without source editing", () =
   assert.match(html, /savable \? '<button class="file-action primary"/);
 });
 
+test("image and exported diagram files open in a fitted read-only visual preview", () => {
+  const html = renderAppHtml();
+
+  assert.match(html, /function isImageDocumentPath\(filePath\)/);
+  assert.match(html, /function renderImageDocumentPreview\(asset, filePath = state\.selected\)/);
+  assert.match(html, /class="image-preview-stage/);
+  assert.match(html, /data-image-size-toggle/);
+  assert.match(html, /image\.naturalWidth \+ " × " \+ image\.naturalHeight/);
+  assert.match(html, /isImageDocument\s*\? renderImageDocumentPreview\(state\.selectedVisualAsset, file\.path\)/);
+  assert.match(html, /savable: !isHtmlDocument && !isImageDocument/);
+  assert.match(html, /isImageDocumentPath\(path\) \? Promise\.resolve\(null\)/);
+});
+
 test("recurring theme refresh keeps an unchanged HTML preview iframe alive", () => {
   const script = extractInlineAppScript(renderAppHtml());
   const themeSource = script.slice(script.indexOf("function currentFileThemeId"), script.indexOf("function previewSelectedFileTheme"));
   const settingsSource = script.slice(script.indexOf("function applySettingsPayload"), script.indexOf("function backgroundReportRenderKey"));
   const document = {
-    documentElement: { dataset: { fileTheme: "context-room", appTheme: "context-room" } },
+    documentElement: { dataset: { fileTheme: "context-room", appTheme: "context-room", colorMode: "dark", colorPreference: "system" } },
     frame: { id: "interactive-preview" },
     querySelector(selector) {
       return selector === "iframe.html-preview-frame" ? this.frame : null;
     },
   };
   const state = {
-    settings: { appearance: { fileTheme: "context-room" } },
+    settings: { appearance: { fileTheme: "context-room", colorMode: "system" } },
     availableHubCards: [],
     hubFolders: [],
     rootHubSections: [],
@@ -5210,7 +6023,8 @@ test("file opening shows content before secondary dependencies and keeps actions
   assert.match(html, /function applyChangedFileInlineReview\(path, diff, review, requestId = state\.selectionRequest\)/);
   assert.match(html, /return applyChangedFileInlineReview\(path, diff, review, requestId\);/);
   assert.match(html, /\[data-file-path\], \[data-review-path\], \[data-hub-file\]/);
-  assert.match(html, /const diffPromise = api\("\/api\/file\/diff\?path=" \+ encodeURIComponent\(path\)\);/);
+  assert.match(html, /const diffPromise = isImageDocumentPath\(path\) \? Promise\.resolve\(null\) : api\("\/api\/file\/diff\?path=" \+ encodeURIComponent\(path\)\);/);
+  assert.match(html, /if \(isImageDocumentPath\(path\)\) return Promise\.resolve\(null\);/);
   assert.match(html, /document\.addEventListener\("pointerover", \(event\) => schedulePrefetchPathFromTarget\(event\.target\)/);
   assert.match(html, /workspaceDock\?\.setAttribute\("aria-busy", fileOpening \? "true" : "false"\);/);
   assert.doesNotMatch(html, /\.workspace-dock\.file-opening\s*\{[^}]*visibility:\s*hidden/);
@@ -5255,7 +6069,7 @@ test("verification actions are limited to files opened from the review queue", (
   assert.match(html, /function nextReviewItemForManualAdvance\(\) \{[\s\S]*return nextReviewItemAfter\(queue, state\.reviewModePath \|\| state\.selected \|\| state\.selectedReview, queue\);/);
   assert.match(html, /async function waitForReviewFinalizationBeforeNavigation\(\)/);
   assert.match(html, /async function openNextReviewManually\(\) \{\s*await waitForReviewFinalizationBeforeNavigation\(\);/);
-  assert.match(html, /async function handleHubAction\(\)[\s\S]*await waitForReviewFinalizationBeforeNavigation\(\);\s*goHub\(\);/);
+  assert.match(html, /async function handleBrandHomeAction\(\)[\s\S]*await waitForReviewFinalizationBeforeNavigation\(\);\s*goHub\(\);/);
   assert.match(html, /async function selectFile\(path, options = \{\}\) \{[\s\S]*await waitForReviewFinalizationBeforeNavigation\(\);/);
   assert.match(html, /async function advanceAfterInlineReviewRemoval\(path, previousQueue, statusWhenDone\)/);
   assert.doesNotMatch(html, /file verified · next doc open/);
@@ -5308,12 +6122,37 @@ test("review queue groups removed files into a selectable human-confirmed batch"
   assert.match(html, /\.review-deletion-batch \{[^}]*border-left: 3px solid var\(--danger\)/);
 });
 
-test("opening a file never reopens a collapsed explorer", () => {
+test("the explorer persists its state and only its own controls can change it", () => {
   const html = renderAppHtml();
+  const script = extractInlineAppScript(html);
+  const responsiveSource = script.slice(
+    script.indexOf("function syncResponsiveSidebar"),
+    script.indexOf("function syncSidebarToggleIcon"),
+  );
+  const focusSource = script.slice(
+    script.indexOf("function focusExplorer"),
+    script.indexOf("function homeAction"),
+  );
 
-  assert.match(html, /const explorerWasCollapsed = document\.querySelector\("\.app"\)\?\.classList\.contains\("sidebar-collapsed"\);/);
-  assert.doesNotMatch(html, /if \(options\.revealInExplorer\) \{[\s\S]{0,180}classList\.remove\("sidebar-collapsed"\)/);
-  assert.match(html, /if \(options\.revealInExplorer && !explorerWasCollapsed\) scrollExplorerToPath\(path\);/);
+  assert.match(html, /explorerCollapsed: typeof raw\.explorerCollapsed === "boolean" \? raw\.explorerCollapsed : null/);
+  assert.match(html, /explorerCollapsed: state\.explorerNavigationOverride === null[\s\S]*isExplorerCollapsed\(\)[\s\S]*Boolean\(state\.explorerStoredCollapsed\)/);
+  assert.match(html, /if \(options\.initial\) restoreExplorerStateAfterInitialLoad\(\);/);
+  assert.match(html, /function restoreExplorerStateAfterInitialLoad\(\)[\s\S]*navigationMode === "collapsed"[\s\S]*navigationMode === "expanded"[\s\S]*applyExplorerCollapsed\(state\.explorerNavigationOverride \?\? storedCollapsed\);/);
+  assert.match(html, /el\("sidebarToggle"\)\.addEventListener\("click", \(\) => \{\s*setExplorerCollapsedFromUser\(!isExplorerCollapsed\(\)\);/);
+  assert.match(html, /el\("explorerOpen"\)\?\.addEventListener\("click", \(\) => \{\s*setExplorerCollapsedFromUser\(false\);/);
+  assert.match(html, /function contextRoomProposalReviewUrl\([\s\S]*searchParams\.set\("explorer", isExplorerCollapsed\(\) \? "collapsed" : "expanded"\)/);
+  assert.match(html, /id="explorerEdgeTrigger" class="explorer-edge-trigger"/);
+  assert.match(html, /\.app\.sidebar-collapsed:not\(\.explorer-edge-peek\) \.explorer-edge-trigger/);
+  assert.match(html, /\.app\.sidebar-collapsed\.explorer-edge-peek > main \{ grid-column: 2; \}/);
+  assert.match(html, /function setExplorerEdgePeek\(open\)[\s\S]*classList\.toggle\("explorer-edge-peek"/);
+  assert.match(html, /explorerEdgeTrigger"\)\?\.addEventListener\("pointerenter", \(\) => setExplorerEdgePeek\(true\)\)/);
+  assert.match(html, /document\.addEventListener\("pointermove", revealExplorerFromLeftEdge, \{ passive: true \}\)/);
+  assert.match(html, /pointerleave", \(\) => \{[\s\S]*scheduleExplorerEdgePeekClose\(\)/);
+  assert.match(html, /function setExplorerCollapsedFromUser\(collapsed\)[\s\S]*state\.explorerNavigationOverride = null;[\s\S]*state\.explorerStoredCollapsed = Boolean\(collapsed\);/);
+  assert.doesNotMatch(responsiveSource, /sidebar-collapsed/);
+  assert.doesNotMatch(focusSource, /classList\.(?:add|remove|toggle)\("sidebar-collapsed"/);
+  assert.doesNotMatch(html, /openSidebarIfCollapsed|collapseSidebarOnNarrow|mobileSidebarTouched/);
+  assert.match(html, /if \(options\.revealInExplorer && !isExplorerCollapsed\(\)\) scrollExplorerToPath\(path\);/);
 });
 
 test("context health supports full refresh, acknowledged results, and simple filters", () => {
@@ -5411,7 +6250,7 @@ test("review queue opens changed files with the inline segment review engine", (
   assert.match(html, /const ignoredMetadataOnly = onlyIgnoredReviewMetadataChanged\(baseContent, diskContent\);/);
   assert.match(html, /if \(baseContent === diskContent \|\| ignoredMetadataOnly\) \{/);
   assert.match(html, /last_verified synced · ready for verification/);
-  assert.match(html, /changes already reviewed · mark verified when ready/);
+  assert.match(html, /no unresolved diff blocks · mark the file verified when ready/);
   assert.match(html, /review\.changeKind === "renamed" \? "renamed file waiting for review"/);
   assert.match(html, /if \(activeExternalChange\(\)\?\.source === "review"\) \{[\s\S]*state\.selectedDiff = await readSelectedDiff\(previousSelected\);[\s\S]*return;[\s\S]*\}/);
   assert.doesNotMatch(html, /function activeBlockingExternalChange\(\)/);
@@ -5521,12 +6360,12 @@ test("rendered app exposes agent collaboration hooks without human review bypass
   assert.match(html, /id="agentToast"/);
   assert.match(html, /function buildSessionStatePayload\(\)/);
   assert.match(html, /function activeEditorCaretLineIndex\(editor\)/);
-  assert.match(html, /api\("\/api\/session-state"/);
+  assert.match(html, /api\("\/api\/workspaces\/register"/);
   assert.match(html, /AGENT_COMMAND_ACK_STORAGE_PREFIX = "context-room:last-agent-command-id:"/);
-  assert.match(html, /function agentCommandAckStorageKey\(\)[\s\S]*AGENT_COMMAND_ACK_STORAGE_PREFIX \+ state\.root/);
+  assert.match(html, /function agentCommandAckStorageKey\(\)[\s\S]*AGENT_COMMAND_ACK_STORAGE_PREFIX \+ state\.workspaceId/);
   assert.match(html, /AGENT_COMMAND_MAX_AGE_MS = 60_000/);
   assert.match(html, /function startAgentCommandPolling\(\)/);
-  assert.match(html, /api\("\/api\/agent\/command"\)/);
+  assert.match(html, /api\("\/api\/workspaces\/" \+ encodeURIComponent\(state\.workspaceId\) \+ "\/command"\)/);
   assert.match(html, /state\.lastAgentCommandId = readLastAgentCommandId\(\);/);
   assert.match(html, /if \(isStaleAgentCommand\(command\)\) \{[\s\S]*rememberAgentCommandId\(command\.id\);[\s\S]*return;[\s\S]*\}/);
   assert.match(html, /function rememberAgentCommandId\(id\)/);
@@ -5724,6 +6563,9 @@ test("disk changes stay pending for review instead of silently reloading the ope
   assert.match(html, /file changed on disk · review before applying/);
   assert.doesNotMatch(html, /blockPendingExternalChange/);
   assert.match(html, /async function goHistory\(delta\) \{[\s\S]*await waitForReviewFinalizationBeforeNavigation\(\);[\s\S]*await selectFile/);
+  assert.match(html, /const hasHomeHistory = state\.page === "hub" && state\.historyIndex >= 0;/);
+  assert.match(html, /const nextIndex = state\.page === "hub" && delta < 0 \? state\.historyIndex : state\.historyIndex \+ delta;/);
+  assert.match(html, /el\("back"\)\.disabled = onHome \? state\.historyIndex < 0 : state\.historyIndex <= 0;/);
   assert.match(html, /function goHub\(\) \{[\s\S]*resetExternalChangeState\(\);[\s\S]*showHome\(\);/);
   assert.match(html, /function firstExternalReviewChangeBlockId\(\)/);
   assert.match(html, /return externalReviewChangeElements\(\)\[0\]\?\.dataset\.externalReviewBlock \|\| "";/);
@@ -5803,6 +6645,7 @@ test("saved startup skill with stale dirty state treats a later disk edit as ext
     "restoreEditorViewState",
     "updateHeader",
     "updatePreview",
+    "playContextRoomSound",
     "setStatus",
     selectionSource + conflictSource + refreshSource + "; return { refreshFromDisk };",
   )(
@@ -5835,6 +6678,7 @@ test("saved startup skill with stale dirty state treats a later disk edit as ext
     () => {},
     () => {},
     () => {},
+    () => false,
     (status) => statuses.push(status),
   );
 
@@ -6003,7 +6847,7 @@ test("hub child cards expand inline without replacing root sections", () => {
 
   assert.match(html, /\.hub-folder-card\.expanded\s*\{[^}]*grid-column:\s*1 \/ -1/);
   assert.match(html, /function renderHubFolderChildren\(folder, activeIds\)/);
-  assert.match(html, /const sections = state\.rootHubSections\?\.length \? state\.rootHubSections/);
+  assert.match(html, /const sections = Array\.isArray\(state\.rootHubSections\) \? state\.rootHubSections/);
   assert.doesNotMatch(html, /holder\.innerHTML = renderHubBreadcrumb\(\) \+ sections/);
   assert.doesNotMatch(html, /const nextSections = hubSectionViewForCard/);
 });
@@ -6048,6 +6892,10 @@ test("hub cards open direct file paths without filtering folders", () => {
   assert.match(html, /selectFile\(button\.dataset\.hubFile\)/);
   assert.match(html, /data-hub-file="[^"]*directFilePath/);
   assert.match(html, /data-hub-folders="[^"]*paths\.join/);
+  assert.match(html, /async function activateContextHubCard/);
+  assert.match(html, /if \(directFilePath\) \{[\s\S]*await selectFile\(directFilePath\)/);
+  assert.match(html, /if \(children\.length\) \{[\s\S]*openHubPath\(card\.id\)/);
+  assert.match(html, /if \(paths\.length\) \{[\s\S]*filterFolders\(paths\)/);
 });
 
 test("stale project identities cannot write session state after a port is reused", async (t) => {

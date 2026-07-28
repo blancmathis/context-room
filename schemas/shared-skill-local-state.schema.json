@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://unpkg.com/context-room@latest/schemas/shared-skill-local-state.schema.json",
+  "title": "Context Room local shared skill state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "mounts", "overrides", "providerOverrides", "pendingImports"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "const": 2 },
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "mounts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "collectionId", "destination", "provider", "scope", "include", "exclude", "enabled"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "assignmentId": { "$ref": "#/$defs/optionalId" },
+          "collectionId": { "$ref": "#/$defs/id" },
+          "destination": { "type": "string", "minLength": 1 },
+          "provider": { "enum": ["codex", "claude-code", "opencode", "custom"] },
+          "scope": { "enum": ["project", "shared", "device"] },
+          "projectId": { "$ref": "#/$defs/optionalId" },
+          "include": { "$ref": "#/$defs/skillNames" },
+          "exclude": { "$ref": "#/$defs/skillNames" },
+          "enabled": { "type": "boolean" }
+        }
+      }
+    },
+    "overrides": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["assignmentId", "projectId", "disabled", "exclude"],
+        "properties": {
+          "assignmentId": { "$ref": "#/$defs/id" },
+          "projectId": { "$ref": "#/$defs/optionalId" },
+          "disabled": { "type": "boolean" },
+          "exclude": { "$ref": "#/$defs/skillNames" }
+        }
+      }
+    },
+    "providerOverrides": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["projectId", "provider", "state"],
+        "properties": {
+          "projectId": { "$ref": "#/$defs/id" },
+          "provider": { "enum": ["codex", "claude-code", "opencode"] },
+          "state": { "enum": ["enabled", "disabled"] }
+        }
+      }
+    },
+    "pendingImports": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "proposal", "proposalHead", "collectionId", "sourceDirectory", "destination", "skills", "createdAt"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "proposal": { "type": "string", "minLength": 1 },
+          "proposalHead": { "type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$" },
+          "collectionId": { "$ref": "#/$defs/id" },
+          "sourceDirectory": { "type": "string", "minLength": 1 },
+          "destination": { "type": "string", "minLength": 1 },
+          "skills": { "$ref": "#/$defs/skillNames" },
+          "createdAt": { "type": "string" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$" },
+    "optionalId": { "type": "string", "pattern": "^(?:|[a-z0-9][a-z0-9-]{0,62})$" },
+    "skillNames": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^(?:\\*|[A-Za-z0-9][A-Za-z0-9._-]{0,127})$" }
+    }
+  }
+}
