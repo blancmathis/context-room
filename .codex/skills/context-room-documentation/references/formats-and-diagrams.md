@@ -57,7 +57,7 @@ Mermaid is the default diagram format because it remains text, diffable, searcha
 
 Embed Mermaid in a normal Markdown file when it explains only one local section.
 
-```markdown
+````markdown
 ## Proposal lifecycle
 
 ```mermaid
@@ -66,7 +66,7 @@ stateDiagram-v2
   Published --> Accepted
   Published --> Rejected
 ```
-```
+````
 
 The containing document owns the diagram's metadata and meaning.
 
