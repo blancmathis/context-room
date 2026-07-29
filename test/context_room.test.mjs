@@ -440,6 +440,11 @@ test("the global Context Room keeps project targeting inside one workspace", () 
   const computerModeHandler = script.match(/if \(mode === "computer"\) \{([\s\S]*?)\n\s*return;\n\s*\}/)?.[1] || "";
   assert.match(computerModeHandler, /state\.globalExplorerMode = "computer"/);
   assert.doesNotMatch(computerModeHandler, /globalExplorerProjectKey\s*=|activeProjectLocationId\s*=|refreshGlobalSettingsScopeFromExplorer/);
+  const projectsModeHandler = script.match(/const activeProject = workspaceSelectedProject\(\);([\s\S]*?)\n\s*\}\)\);/)?.[1] || "";
+  assert.match(projectsModeHandler, /state\.globalExplorerMode = activeProject \? "project" : "projects"/);
+  assert.match(projectsModeHandler, /state\.globalExplorerProjectKey = activeProject\?\.projectKey \|\| ""/);
+  assert.match(projectsModeHandler, /loadGlobalProjectExplorerPage\(activeProject\)/);
+  assert.doesNotMatch(projectsModeHandler, /activeProjectLocationId\s*=|refreshGlobalSettingsScopeFromExplorer/);
   assert.match(script, /async function loadGlobalProjectExplorerPage\([\s\S]*\/api\/context-hub\/project-explorer\?/);
   assert.match(script, /async function loadComputerExplorer\(targetPath = "", \{ expand = false \} = \{\}\)[\s\S]*\/api\/context-hub\/computer-explorer/);
   assert.match(script, /function renderComputerExplorerNode\(snapshot, depth = 0, needle = ""\)[\s\S]*data-computer-explorer-folder/);

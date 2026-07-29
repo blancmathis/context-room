@@ -28795,11 +28795,14 @@ document.querySelectorAll("[data-global-explorer-mode]").forEach((button) => but
     if (!state.computerExplorer) loadComputerExplorer().catch((error) => setStatus(error.message));
     return;
   }
-  state.globalExplorerMode = "projects";
-  state.globalExplorerProjectKey = "";
+  const activeProject = workspaceSelectedProject();
+  state.globalExplorerMode = activeProject ? "project" : "projects";
+  state.globalExplorerProjectKey = activeProject?.projectKey || "";
   renderGlobalProjectExplorer();
   renderContextHealth();
-  refreshGlobalSettingsScopeFromExplorer();
+  if (activeProject && activeProject.mode !== "shared") {
+    loadGlobalProjectExplorerPage(activeProject).catch((error) => setStatus(error.message));
+  }
 }));
 el("globalExplorerScope")?.addEventListener("click", (event) => {
   if (event.target.closest("[data-global-explorer-back]")) {
