@@ -39,6 +39,8 @@ Home starts with a unified review queue. Local files and shared proposals stay v
 
 The Explorer stays available across Home, Settings, files, and proposals. It supports project and Computer views, registered worktrees, watched states, search, file operations, and project-aware context menus.
 
+Graph turns explicit documentation links into a progressive visual map: start with all registered projects, open one project's managed documents, then focus on the proven neighbors of a single file. Accepted context is shown by default; unverified, target, unresolved, and proposal layers remain optional and visibly separate.
+
 ### Read, edit, compare, and review
 
 ![A watched AGENTS.md file open beside its Git diff in Context Room](https://raw.githubusercontent.com/Swarek/context-room/main/docs/assets/readme/document-review.png)
@@ -79,11 +81,12 @@ Context Room never replaces an unmanaged local file or link. Executable hooks re
 | --- | --- |
 | Reviews | A unified queue, exact-hash verification, project priority, snooze, annotations, and owner-controlled Git gates. |
 | Documents | Markdown, visual HTML, images, diagrams, diffs, editing, read-only paths, and explicit edit boundaries. |
+| Document Graph | Global, project, and local maps of explicit references, applicable instructions and skills, shared origins, backlinks, and cited sources. |
 | Projects | Local projects, multiple shared contexts, registered worktrees, project search, and independent browser Workspaces. |
 | Agent startup | `AGENTS.md`, `CLAUDE.md`, provider-specific instructions, local skills, and local executable hooks. |
 | Shared resources | Reviewed skill and instruction collections, scoped assignments, provider destinations, exclusions, overrides, and collision safety. |
 | Context Engine | Effective context, application trace, resource impact, accepted snapshots, snapshot diffs, and proposal impact. |
-| Research | A documentation-only Research Agent through `context ask`, grounded in accepted sources and clearly separated proposal metadata. |
+| Research | A documentation-only Research Agent through `context ask`, technically restricted to accepted local documents and accepted shared main. |
 | Personalization | Searchable Settings, six themes, system light/dark mode, interface sounds, keyboard shortcuts, Hub sections, and Codex Prompt Center. |
 | Diagnostics | Doctor, Context Health, configuration checks, shared freshness, managed-link checks, and Git review gates. |
 
@@ -133,6 +136,7 @@ The complete machine contract, output formats, targeting rules, and safety bound
 - [Agent configuration](docs/agent-configuration.md) — project settings, paths, review scope, and startup discovery.
 - [Shared context](docs/features/shared-context.md) — repositories, proposals, reviews, Shared Skills, and Shared Instructions.
 - [Context Engine](docs/features/context-engine.md) — effective context, graph, trace, impact, snapshots, and diffs.
+- [Document Graph](docs/features/document-graph.md) — human navigation across proven document relations.
 - [Agent CLI](docs/features/agent-cli.md) — the complete agent-facing machine contract.
 
 ## Development

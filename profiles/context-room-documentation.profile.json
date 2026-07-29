@@ -1,0 +1,30 @@
+{
+  "schemaVersion": "context-room.metadata-profile/1",
+  "id": "context-room-documentation",
+  "version": "1.0.0",
+  "match": ["**/*.md", "**/*.mdx", "**/*.html", "**/*.htm"],
+  "identity": {
+    "path": "context_room.id"
+  },
+  "relations": [
+    {
+      "path": "context_room.depends_on",
+      "type": "depends-on",
+      "label": "Depends on",
+      "reverseLabel": "Depended on by",
+      "strength": "declared"
+    },
+    {
+      "path": "context_room.sources",
+      "type": "declares-source",
+      "label": "Sources",
+      "reverseLabel": "Used as a source by",
+      "strength": "declared"
+    }
+  ],
+  "display": {
+    "badges": ["status", "context_room.kind", "context_room.scope"],
+    "dates": ["context_room.last_verified"],
+    "fields": ["title", "context_room.canonical_for"]
+  }
+}

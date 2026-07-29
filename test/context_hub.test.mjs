@@ -337,6 +337,11 @@ test("Context Room Home combines global review queues without nesting another Ho
   assert.ok(reviewPage.nextCursor);
   const sectionsPage = await (await fetch(origin + "/api/context-hub/sections")).json();
   assert.equal(sectionsPage.projects.some((project) => project.projectKey === secondProject.projectKey && project.hubSections.length > 0), true);
+  const attentionResponse = await fetch(origin + `/api/context-hub/attention?projectId=${encodeURIComponent(secondEntry.id)}`);
+  assert.equal(attentionResponse.status, 200);
+  const attentionPayload = await attentionResponse.json();
+  assert.equal(attentionPayload.items.filter((item) => item.kind === "review").length, 2);
+  assert.ok(attentionPayload.items.every((item) => item.schemaVersion === "context-room.attention-item/1"));
 
   fs.writeFileSync(path.join(second, "docs", "THIRD.md"), "# Third file\n", "utf8");
   const cachedHub = await (await fetch(origin + "/api/context-hub")).json();

@@ -14,7 +14,7 @@ context_room:
 
 Codex Prompt Center is the Context Room editor for prompt targets published by a compatible local Codex runtime. It does not guess which modes or model prompts exist. The installed runtime owns the catalog; Context Room renders every group and target it receives.
 
-Open **Settings → Codex prompts**, then select **Open prompt editor**. The catalog is loaded only when this dedicated editor opens, so prompt discovery does not slow normal project startup or compete with the review queue.
+Open **Settings → Advanced extensions → Codex prompts**, then select **Open prompt editor**. The catalog is loaded only when this dedicated editor opens, so prompt discovery does not slow normal project startup or compete with the review queue.
 
 ## Compatibility Prerequisite
 

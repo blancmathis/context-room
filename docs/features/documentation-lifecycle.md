@@ -24,6 +24,8 @@ Context Room separates three responsibilities so documentation can stay complete
 
 The maintenance skill first finds the canonical owner with `docs search` and `docs trace`. It applies the normal documentation quality rules, then routes each change independently:
 
+The official documentation skill creates ordinary documents with the minimal `id` and optional `depends_on` convention described in [Document Metadata](document-metadata.md). Context Room itself accepts other metadata contracts through profiles. A newly accepted dependency version creates a freshness task for direct dependents without revoking their accepted content; confirming unchanged freshness does not propagate another invalidation.
+
 - local canonical owner: edit the local file and leave it in the normal Context Room review queue;
 - shared project docs or skill: create or reuse a project proposal;
 - shared global skill: create or reuse a global proposal;
@@ -55,7 +57,7 @@ A clean audit creates nothing. The Codex desktop scheduler runs this loop for se
 
 The working agent calls `context-room context ask` with its task and desired outcome. It may use the detected local project or explicitly target shared-only context with `--repository <git-url> --project <project-id>`. A new read-only Codex process uses only the deterministic documentation CLI, returns a schema-constrained packet, then exits.
 
-Accepted local and shared docs supply current facts. Shared-only research includes accepted project docs plus accepted project and global skills, without creating a local Context Room project. Same-session shared proposals may also be relevant after the task has updated documentation, but they stay in `pendingSessionChanges`, visibly marked **not merged**. Other sessions are excluded. The accepted shared revision and exact proposal heads are frozen for the full call.
+Accepted local and shared docs supply the complete research corpus. Shared-only research includes accepted project docs plus accepted project and global skills, without creating a local Context Room project. Proposal branches are not mounted, summarized, or exposed to the researcher. The accepted shared main revision is frozen for the full call.
 
 If the packet exposes a blocking unknown, the working agent asks the user. A durable answer then returns to loop 1. The documentation researcher itself never edits docs or improves the CLI.
 

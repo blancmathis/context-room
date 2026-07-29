@@ -124,6 +124,11 @@ test("Proposal context impact compares exact accepted and proposal revisions wit
       ? [{ key: "old", type: "stale-link", resourceId: "skill:a" }]
       : [{ key: "new", type: "collision", resourceId: "skill:b" }],
     listExactReviewInvalidations: async () => [{ reviewId: "review-1", fromRevision: "accepted-main", toRevision: "proposal-head" }],
+    analyzeDependencyInvalidations: async () => ({
+      changedDependencies: [{ documentId: "strategy.trust", beforeVersion: "a", afterVersion: "b" }],
+      dependentReviews: [{ documentId: "product.review", path: "projects/hicharlie/docs/review.md", dependencies: ["strategy.trust"], reviewRequired: true }],
+      diagnostics: [],
+    }),
     applyProposal: async () => { mutated = true; },
     reconcileSkills: async () => { mutated = true; },
   };
@@ -134,7 +139,12 @@ test("Proposal context impact compares exact accepted and proposal revisions wit
   assert.equal(result.defaultBranch, "trunk");
   assert.equal(result.needsRebase, true);
   assert.equal(result.semanticConflicts, "not-evaluated");
+  assert.equal(result.contextCoverage.schemaVersion, "context-room.proposal-context-coverage/1");
+  assert.ok(result.contextCoverage.evaluatedPaths.includes("projects/hicharlie/docs/runtime.md"));
+  assert.ok(result.contextCoverage.requiredReviewPaths.includes("projects/hicharlie/docs/review.md"));
   assert.equal(result.reviewInvalidation.mode, "exact-revision");
+  assert.equal(result.dependencyInvalidations.schemaVersion, "context-room.proposal-dependency-invalidations/1");
+  assert.equal(result.dependencyInvalidations.dependentReviews[0].documentId, "product.review");
   assert.equal(result.affected.consumers.length, 2);
   assert.deepEqual(result.affected.sharedSkills.collections, ["calls"]);
   assert.equal(result.healthDelta.resolved[0].key, "old");

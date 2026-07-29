@@ -329,7 +329,7 @@ never replaces unmanaged content.
 
 The HTTP surface mirrors those boundaries: `/api/shared-skills/assignments/*` previews or publishes assignment proposals; `/api/shared-skills/locations/*` previews or changes local destinations; `/api/shared-skills/providers` changes device or project-local activation; and `/api/shared-skills/import/*` previews or publishes imports.
 
-**Settings → Shared skills** first explains the unfamiliar model, then separates **Provider availability**, **Collections and assignments**, and **Local destinations and conflicts**. A collection is reviewed skill content stored in the shared context. An assignment is accepted shared intent. A local destination is the physical provider folder on this device, populated with managed links rather than copies.
+**Settings → Agent environment → Shared resources** first explains the unfamiliar model, then separates **Provider availability**, **Collections and assignments**, and **Local destinations and conflicts**. A collection is reviewed skill content stored in the shared context. An assignment is accepted shared intent. A local destination is the physical provider folder on this device, populated with managed links rather than copies.
 
 **Use these skills in…** creates or updates shared intent through a proposal. **Set local destination…** maps an accepted assignment without editing the manifest. The Explorer action **Link this skill location to shared…** imports local skills through the same three-step review flow. In a global room, Settings requires a project or worktree selection in Explorer before showing that shared context's collections.
 

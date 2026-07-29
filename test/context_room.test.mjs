@@ -14,6 +14,12 @@ import {
 } from "../src/shared_context.mjs";
 import { registerContextHubProject } from "../src/context_hub.mjs";
 import { readContextRoomEvents } from "../src/event_journal.mjs";
+import { collectInlinePathReferences } from "../src/doc_metadata.mjs";
+import {
+  buildGlobalDocumentRelationsGraph,
+  buildProjectDocumentRelationsGraph,
+  layoutDocumentRelationsGraph,
+} from "../src/document_graph.mjs";
 
 import {
   AGENT_CONTEXT_DIR,
@@ -86,6 +92,8 @@ import {
   renderExplorerContextMenuMarkup,
   renderReviewSummary,
   renderTemplateOptionsMarkup,
+  resolveDocumentReference,
+  resolveDocumentReferenceInDocuments,
   removeFolderWatchRule,
   selectAvailableContextRoomPort,
   shouldReplaceDuplicatedWorkspaceIdentity,
@@ -161,6 +169,160 @@ test("rendered app inline script parses before the browser boots it", () => {
   assert.match(script, /function onlyIgnoredReviewMetadataChanged\(leftContent, rightContent\)/);
 });
 
+test("document relations recognize explicit Markdown, HTML, inline-code, and wikilink paths", () => {
+  const references = collectInlinePathReferences([
+    "[Runbook](guides/runbook.md#deploy)",
+    "<a href=\"../architecture/system.html\">Architecture</a>",
+    "<img src=\"images/flow.svg\" alt=\"Flow\">",
+    "`src/runtime.mjs`",
+    "[[notes/operations|Operations]]",
+    "[[notes/decisions#accepted]]",
+  ].join("\n"));
+  assert.deepEqual(references, [
+    "guides/runbook.md#deploy",
+    "src/runtime.mjs",
+    "notes/operations",
+    "notes/decisions#accepted",
+    "../architecture/system.html",
+    "images/flow.svg",
+  ]);
+});
+
+test("document relations keep accepted, target, pending, proposal, and local-depth layers separate", async () => {
+  const root = makeRoot();
+  fs.mkdirSync(path.join(root, "docs", "images"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs", "images", "flow.svg"), "<svg/>");
+  const documentationGraph = {
+    generatedAt: "2026-07-28T00:00:00.000Z",
+    nodes: [
+      { path: "docs/index.md", label: "Index", metadata: { kind: "index", scope: "atlas", status: "current", canonical_for: "Atlas documentation", sources: ["guide.md"] } },
+      { path: "docs/guide.md", label: "Guide", source: "shared-main", metadata: { status: "current", canonical_for: "Atlas guide" } },
+      { path: "docs/future_target.md", label: "Future", metadata: { status: "target" } },
+    ],
+    edges: [
+      { from: "doc:docs/index.md", to: "reference:guide.md", type: "references", source: "guide.md" },
+      { from: "doc:docs/guide.md", to: "reference:images/flow.svg", type: "declares-source", source: "images/flow.svg" },
+    ],
+  };
+  const contextGraph = {
+    freshness: { state: "fresh" },
+    resources: [{ id: "instruction:root", kind: "instruction", locator: "AGENTS.md", truthState: "accepted", metadata: { relativePath: "AGENTS.md" } }],
+    applications: [{ resourceId: "instruction:root", scope: "project", status: "active", coordinate: { provider: "codex", folder: "." } }],
+    relations: [],
+  };
+  const accepted = buildProjectDocumentRelationsGraph({ root, projectId: "atlas", locationId: "atlas-main", title: "Atlas", documentationGraph, contextGraph });
+  assert.ok(accepted.nodes.some((node) => node.path === "docs/index.md"));
+  assert.ok(accepted.nodes.some((node) => node.path === "docs/images/flow.svg" && node.kind === "diagram"));
+  assert.ok(accepted.nodes.some((node) => node.path === "AGENTS.md" && node.kind === "instruction"));
+  assert.equal(accepted.nodes.find((node) => node.path === "docs/guide.md")?.source, "shared-main");
+  assert.deepEqual(accepted.nodes.find((node) => node.path === "docs/index.md")?.metadata, {
+    contract: "legacy",
+    id: "",
+    idValid: false,
+    dependsOn: [],
+    diagramLinks: [],
+    truthState: "",
+    kind: "index",
+    scope: "atlas",
+    status: "current",
+    canonicalFor: "Atlas documentation",
+    sources: ["guide.md"],
+  });
+  assert.equal(accepted.edges.some((edge) => edge.source === "Atlas documentation"), false);
+  assert.ok(!accepted.nodes.some((node) => node.path === "docs/future_target.md"));
+
+  const layered = buildProjectDocumentRelationsGraph({
+    root,
+    projectId: "atlas",
+    locationId: "atlas-main",
+    title: "Atlas",
+    documentationGraph,
+    contextGraph,
+    pendingPaths: ["docs/guide.md"],
+    layers: ["accepted", "unverified", "target", "proposal"],
+    proposals: [{ id: "proposal-1", branch: "proposal/docs", title: "Docs update", files: ["docs/index.md"] }],
+  });
+  assert.equal(layered.nodes.find((node) => node.path === "docs/guide.md")?.truthState, "unverified");
+  assert.ok(layered.nodes.some((node) => node.path === "docs/future_target.md" && node.truthState === "target"));
+  assert.ok(layered.nodes.some((node) => node.kind === "proposal" && node.truthState === "proposal"));
+  assert.equal(layered.edges.find((edge) => edge.from.endsWith(":docs/guide.md"))?.evidence.truthState, "unverified");
+
+  const local = buildProjectDocumentRelationsGraph({ root, projectId: "atlas", locationId: "atlas-main", scope: "local", centerPath: "docs/index.md", depth: 1, documentationGraph, contextGraph });
+  assert.deepEqual(new Set(local.nodes.map((node) => node.path)), new Set(["docs/index.md", "docs/guide.md"]));
+
+  const laidOutA = await layoutDocumentRelationsGraph(accepted);
+  const laidOutB = await layoutDocumentRelationsGraph(accepted);
+  assert.deepEqual(laidOutA.nodes.map((node) => node.position), laidOutB.nodes.map((node) => node.position));
+});
+
+test("document relations resolve stable IDs, dependencies, inverse direction, and Mermaid appearances", () => {
+  const graph = buildProjectDocumentRelationsGraph({
+    root: makeRoot(),
+    projectId: "atlas",
+    locationId: "atlas-main",
+    layers: ["accepted"],
+    includeUnresolved: true,
+    documentationGraph: {
+      nodes: [
+        { path: "docs/product/policy.md", metadata: { contract: "minimal", id: "product.review.policy", idValid: true, dependsOn: [], truthState: "current" } },
+        { path: "docs/system/queue.md", metadata: { contract: "minimal", id: "system.review.queue", idValid: true, dependsOn: ["product.review.policy"], truthState: "current" } },
+        { path: "docs/system/map.md", metadata: { contract: "minimal", id: "system.review.map", idValid: true, dependsOn: [], truthState: "current", diagramLinks: [{ nodeId: "policy", id: "product.review.policy", anchor: "approval", uri: "cr://product.review.policy#approval" }] } },
+      ],
+      edges: [{ from: "doc:docs/system/queue.md", to: "reference:cr://product.review.policy#approval", type: "references", source: "cr://product.review.policy#approval" }],
+    },
+  });
+  const policy = graph.nodes.find((node) => node.documentId === "product.review.policy");
+  const queue = graph.nodes.find((node) => node.documentId === "system.review.queue");
+  const map = graph.nodes.find((node) => node.documentId === "system.review.map");
+  assert.ok(graph.edges.some((edge) => edge.from === queue.id && edge.to === policy.id && edge.type === "depends-on"));
+  assert.ok(graph.edges.some((edge) => edge.from === queue.id && edge.to === policy.id && edge.type === "references" && edge.evidence.anchor === "approval"));
+  assert.ok(graph.edges.some((edge) => edge.from === map.id && edge.to === policy.id && edge.type === "appears-in-diagram"));
+  assert.match(policy.id, /^document:atlas:atlas-main:product\.review\.policy$/);
+});
+
+test("proposal document resolution prefers the exact pending revision and preserves its truth layer", () => {
+  const resolved = resolveDocumentReferenceInDocuments([
+    {
+      path: "projects/atlas/docs/review.md",
+      version: "pending-blob",
+      content: "---\ncontext_room:\n  id: product.review.policy\n---\n\n# Pending policy\n",
+    },
+  ], "cr://product.review.policy#approval", {
+    proposal: { id: "proposal-1", head: "pending-head" },
+  });
+
+  assert.equal(resolved.path, "projects/atlas/docs/review.md");
+  assert.equal(resolved.anchor, "approval");
+  assert.equal(resolved.truthState, "proposal");
+  assert.equal(resolved.version, "pending-blob");
+  assert.equal(resolved.proposal.head, "pending-head");
+});
+
+test("document resolution accepts provider-native files outside the documentation graph", () => {
+  const root = makeRoot();
+  fs.writeFileSync(path.join(root, "AGENTS.md"), "# Project instructions\n", "utf8");
+
+  const resolved = resolveDocumentReference(root, "AGENTS.md");
+
+  assert.equal(resolved.path, "AGENTS.md");
+  assert.equal(resolved.contract, "provider-native");
+  assert.equal(resolved.documentId, "");
+});
+
+test("global document relations group registered worktrees and only connect explicit shared origins", () => {
+  const graph = buildGlobalDocumentRelationsGraph({
+    projects: [
+      { id: "atlas", projectKey: "atlas", title: "Atlas", shared: { repository: "shared://team" }, worktrees: [{ id: "atlas-main", root: "/tmp/atlas" }, { id: "atlas-feature", root: "/tmp/atlas-feature" }] },
+      { id: "beacon", projectKey: "beacon", title: "Beacon", shared: { repository: "shared://team" }, worktrees: [{ id: "beacon-main", root: "/tmp/beacon" }] },
+      { id: "local", projectKey: "local", title: "Local", worktrees: [{ id: "local-main", root: "/tmp/local" }] },
+    ],
+    projectOrder: ["atlas", "beacon", "local"],
+  });
+  assert.equal(graph.nodes.length, 3);
+  assert.equal(graph.nodes.find((node) => node.projectKey === "atlas")?.worktrees.length, 2);
+  assert.deepEqual(graph.edges.map((edge) => edge.type), ["shared-origin"]);
+});
+
 test("app presents a compact review-first workspace", () => {
   const html = renderAppHtml();
   const asideEnd = html.indexOf("</aside>");
@@ -201,6 +363,51 @@ test("app presents a compact review-first workspace", () => {
   );
 });
 
+test("app exposes progressive Document Graph navigation, filters, and accessible list mode", () => {
+  const html = renderAppHtml();
+  const script = extractInlineAppScript(html);
+  assert.match(html, /\.workspace-page\[hidden\] \{ display: none !important; \}/);
+  assert.match(html, /id="graphOpen"[^>]*aria-label="Open document graph"/);
+  assert.match(html, /id="graphPage" class="graph-page workspace-page" hidden/);
+  assert.match(html, /id="graphScope"/);
+  assert.match(html, /id="graphDepth"/);
+  assert.match(html, /id="graphTypeFilter"/);
+  assert.match(html, /id="graphRelationFilter"/);
+  assert.match(html, /id="graphProposalSelect"/);
+  assert.match(html, /id="graphAccessibleList"/);
+  assert.match(script, /Open project graph/);
+  assert.match(script, /Open local graph/);
+  assert.match(script, /\/api\/context-hub\/document-graph/);
+  assert.match(script, /graphManualPositions/);
+  assert.match(script, /el\("graphAccessibleList"\)\.hidden = !state\.graphListMode/);
+  assert.match(script, /state\.page === "graph"/);
+});
+
+test("Explorer projects an opened document into explicit Location and Related views", () => {
+  const html = renderAppHtml();
+  const script = extractInlineAppScript(html);
+
+  assert.match(script, /\['location', 'related'\]/);
+  assert.match(script, /Depends on/);
+  assert.match(script, /Depended on by/);
+  assert.match(script, /References/);
+  assert.match(script, /Referenced by/);
+  assert.match(script, /Appears in diagrams/);
+  assert.match(script, /Unresolved/);
+  assert.match(script, /relatedProjection\.dependsOn\.length[\s\S]*relatedProjection\.appearsInDiagrams\.length/);
+  assert.match(script, /data-explorer-reveal-location/);
+  assert.match(script, /data-explorer-open-local-graph/);
+  assert.match(script, /scope: "local"/);
+  assert.match(script, /depth: "1"/);
+  assert.match(script, /layout: "0"/);
+  assert.match(script, /if \(!IS_GLOBAL_CONTEXT_ROOM \|\| state\.explorerDocumentView !== "related"/);
+  assert.match(script, /explorerDocumentView:\s*state\.explorerDocumentView/);
+  assert.match(script, /if \(state\.explorerDocumentView === "related"\) target\.searchParams\.set\("explorerView", "related"\)/);
+  assert.match(script, /state\.explorerDocumentView = initialNavigation\.explorerDocumentView/);
+  assert.match(script, /\["ArrowLeft", "ArrowRight", "Home", "End"\]/);
+  assert.match(html, /\.explorer-related-row \{[^}]*min-height: 40px/);
+});
+
 test("project links keep the Explorer hierarchy quiet instead of looking like web links", () => {
   const html = renderAppHtml();
 
@@ -228,6 +435,11 @@ test("the global Context Room keeps project targeting inside one workspace", () 
   assert.match(script, /function contextHubHomeReviewItems\(needle = "", visibility = "active"\)[\s\S]*IS_GLOBAL_CONTEXT_ROOM[\s\S]*!state\.sharedProposalProject \|\| item\.projectKey === state\.sharedProposalProject[\s\S]*currentProject && item\.projectKey === currentProject\.projectKey/);
   assert.match(script, /function renderGlobalProjectExplorer\(\)[\s\S]*contextHubPrioritizedProjects[\s\S]*data-global-project-key/);
   assert.match(script, /async function openGlobalProjectExplorer\(project\)[\s\S]*state\.globalExplorerMode = "project"[\s\S]*loadGlobalProjectExplorerPage\(project\)/);
+  assert.match(script, /function renderGlobalProjectInspection\([\s\S]*const project = workspaceSelectedProject\(\)/);
+  assert.match(script, /function selectedGlobalSettingsProject\(\)[\s\S]*return workspaceSelectedProject\(\)/);
+  const computerModeHandler = script.match(/if \(mode === "computer"\) \{([\s\S]*?)\n\s*return;\n\s*\}/)?.[1] || "";
+  assert.match(computerModeHandler, /state\.globalExplorerMode = "computer"/);
+  assert.doesNotMatch(computerModeHandler, /globalExplorerProjectKey\s*=|activeProjectLocationId\s*=|refreshGlobalSettingsScopeFromExplorer/);
   assert.match(script, /async function loadGlobalProjectExplorerPage\([\s\S]*\/api\/context-hub\/project-explorer\?/);
   assert.match(script, /async function loadComputerExplorer\(targetPath = "", \{ expand = false \} = \{\}\)[\s\S]*\/api\/context-hub\/computer-explorer/);
   assert.match(script, /function renderComputerExplorerNode\(snapshot, depth = 0, needle = ""\)[\s\S]*data-computer-explorer-folder/);
@@ -255,7 +467,12 @@ test("the global Context Room keeps project targeting inside one workspace", () 
   assert.match(script, /function renderGlobalInspectionDisclosure\([\s\S]*<details class="global-project-inspection-disclosure"[\s\S]*<summary>/);
   assert.match(script, /data-global-inspection-disclosure[\s\S]*state\.globalInspectionView === view[\s\S]*state\.globalInspectionView = ""/);
   assert.match(html, /\.global-project-inspection-disclosure\[open\] \.global-project-inspection-disclosure-chevron/);
-  assert.match(script, /function renderGlobalProjectInspection\([\s\S]*Select a project or file in Explorer[\s\S]*View Context health[\s\S]*View startup environment/);
+  assert.match(script, /function renderGlobalProjectInspection\([\s\S]*Select a project in Explorer[\s\S]*Context health[\s\S]*Agent environment/);
+  assert.match(script, /heading\.textContent = "Project inspection"/);
+  assert.match(script, /Context health and the agent environment for its selected worktree will appear here\./);
+  assert.doesNotMatch(script, /function renderProjectOverviewBody/);
+  assert.doesNotMatch(script, /\/api\/context-hub\/project-overview/);
+  assert.doesNotMatch(html, /id="visualDocumentsButton"/);
   assert.match(script, /function renderGlobalInspectionHealth\([\s\S]*Context health filters[\s\S]*context-health-issue-list/);
   assert.match(script, /function renderGlobalInspectionStartup\([\s\S]*Startup context[\s\S]*Startup skills[\s\S]*Startup hooks/);
   assert.match(script, /function renderGlobalInspectionStartup\([\s\S]*data\.effectiveContext[\s\S]*renderEffectiveContextBody/);
@@ -293,7 +510,7 @@ test("app reveals one complete initial frame and keeps recurring refreshes in th
   assert.doesNotMatch(script, /await selectFile\(persisted\.selectedPath, options\)/);
   assert.match(html, /<body class="app-booting">/);
   assert.match(script, /setMode\("view"\);\s*initializeWorkspaceDiagnostics\(\);\s*finishInitialBoot\(\);\s*establishWorkspaceIdentity\(\)\.then\(\(\) => \{/);
-  assert.match(script, /return loadFiles\(\{ initial: true \}\);\s*\}\)\.catch\([\s\S]*\.finally\(finishInitialBoot\);/);
+  assert.match(script, /return Promise\.all\(\[loadFiles\(\{ initial: true \}\), graphRequest\]\);\s*\}\)\.catch\([\s\S]*\.finally\(finishInitialBoot\);/);
   assert.match(html, /body\.app-booting \.app \{ visibility: hidden; opacity: 0; pointer-events: none; \}/);
   assert.match(script, /const reportsPath = "\/api\/reports"/);
   assert.match(script, /readFileForOpen\(path, \{ force: options\.forceReload \}\)/);
@@ -321,7 +538,8 @@ test("Context Engine UI uses read-only API adapters and keeps proposal semantics
   assert.match(script, /Shared Skills delta/);
   assert.match(script, /Existing reviews invalidated/);
   assert.match(source, /semantic conflicts are not evaluated/i);
-  assert.match(script, /Semantic conflicts are not evaluated\. Review invalidation is exact-revision only\./);
+  assert.match(script, /Semantic conflicts are not evaluated\./);
+  assert.match(script, /Review invalidation is exact-revision only\./);
   assert.match(script, /function contextEngineEntryCanOpen\([\s\S]*metadata\?\.relativePath[\s\S]*!relPath\.startsWith\("~"\)/);
   assert.doesNotMatch(script, /allowedPaths.*contextEngine|contextEngine.*allowedPaths/);
 });
@@ -422,6 +640,75 @@ test("Context Engine read-only APIs resolve through the web server without an im
   const proposalError = await proposalResponse.json();
   assert.equal(proposalResponse.status, 400);
   assert.match(proposalError.error, /repository is required/i);
+});
+
+test("Document Graph API returns a versioned accepted project graph and a bounded local graph", async (t) => {
+  const root = makeRoot();
+  const indexContent = "---\ncontext_room:\n  id: docs.index\n---\n\n# Index\n\n[Guide](guide.md)\n";
+  const guideContent = "---\ncontext_room:\n  id: docs.guide\n---\n\n# Guide\n";
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(root, "AGENTS.md"), "# Project instructions\n");
+  fs.writeFileSync(path.join(root, "docs", "index.md"), indexContent);
+  fs.writeFileSync(path.join(root, "docs", "guide.md"), guideContent);
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+  writeDocReviewDecision(root, "docs/index.md", { status: "verified", expectedContentHash: createHash("sha256").update(indexContent).digest("hex") });
+  writeDocReviewDecision(root, "docs/guide.md", { status: "verified", expectedContentHash: createHash("sha256").update(guideContent).digest("hex") });
+  writeDocReviewDecision(root, "AGENTS.md", { status: "verified", expectedContentHash: createHash("sha256").update("# Project instructions\n").digest("hex") });
+  const { server } = createMemoryServer({ root });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const base = `http://127.0.0.1:${server.address().port}`;
+
+  const projectResponse = await fetch(base + "/api/context-hub/document-graph?scope=project&layout=0&allowStale=1");
+  const projectGraph = await projectResponse.json();
+  assert.equal(projectResponse.status, 200);
+  assert.equal(projectGraph.schemaVersion, "context-room.document-relations-graph/2");
+  assert.deepEqual(projectGraph.layers, ["accepted"]);
+  assert.ok(projectGraph.nodes.some((node) => node.path === "AGENTS.md"));
+  assert.ok(projectGraph.nodes.some((node) => node.path === "docs/index.md"));
+  assert.ok(projectGraph.edges.some((edge) => edge.type === "references"));
+
+  const localResponse = await fetch(base + "/api/context-hub/document-graph?scope=local&path=docs/index.md&depth=1&layout=0&allowStale=1");
+  const localGraph = await localResponse.json();
+  assert.equal(localResponse.status, 200);
+  assert.equal(localGraph.target.scope, "local");
+  assert.equal(localGraph.target.depth, 1);
+  assert.deepEqual(new Set(localGraph.nodes.map((node) => node.path)), new Set(["docs/index.md", "docs/guide.md"]));
+
+  const inspectionResponse = await fetch(base + "/api/context-hub/document-inspect?path=AGENTS.md");
+  const inspection = await inspectionResponse.json();
+  assert.equal(inspectionResponse.status, 200);
+  assert.equal(inspection.document.contract, "provider-native");
+  assert.equal(inspection.trust.contentVerification, "accepted");
+
+  const searchResponse = await fetch(base + "/api/context-hub/document-search?query=Index&limit=1");
+  const search = await searchResponse.json();
+  assert.equal(searchResponse.status, 200);
+  assert.equal(search.schemaVersion, "context-room.document-search/1");
+  assert.equal(search.pagination.limit, 1);
+  assert.ok(search.items.some((item) => item.path === "docs/index.md"));
+
+  const validationResponse = await fetch(base + "/api/context-hub/document-validate?path=docs/guide.md");
+  const validation = await validationResponse.json();
+  assert.equal(validationResponse.status, 200);
+  assert.equal(validation.schemaVersion, "context-room.document-validation/1");
+  assert.equal(validation.valid, true);
+
+  const changedContent = indexContent + "\nUpdated.\n";
+  const saveResponse = await fetch(base + "/api/file", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      path: "docs/index.md",
+      content: changedContent,
+      expectedContentHash: createHash("sha256").update(indexContent).digest("hex"),
+    }),
+  });
+  assert.equal(saveResponse.status, 200);
+  const refreshedResponse = await fetch(base + "/api/context-hub/document-graph?scope=project&layout=0&allowStale=1");
+  const refreshedGraph = await refreshedResponse.json();
+  assert.equal(refreshedResponse.status, 200);
+  assert.equal(refreshedGraph.nodes.some((node) => node.path === "docs/index.md"), false);
 });
 
 test("Shared Skills settings expose local controls and selective imports without replacing unmanaged files", () => {
@@ -2877,6 +3164,48 @@ test("shared review ledger verifies the same absolute path and content across ro
   assert.equal(buildDocQaReport(root).queue.some((item) => item.path === "README.md"), true);
 });
 
+test("accepted dependency changes require targeted human revalidation", () => {
+  const root = makeRoot();
+  fs.mkdirSync(path.join(root, "docs"));
+  const dependencyPath = path.join(root, "docs", "trust.md");
+  const dependentPath = path.join(root, "docs", "review.md");
+  const dependencyV1 = "---\ncontext_room:\n  id: strategy.trust\n---\n\n# Trust\n\nHuman approval.\n";
+  const dependencyV2 = "---\ncontext_room:\n  id: strategy.trust\n---\n\n# Trust\n\nExact human approval.\n";
+  const dependent = "---\ncontext_room:\n  id: product.review\n  depends_on:\n    - strategy.trust\n---\n\n# Review\n\nReview the current version.\n";
+  fs.writeFileSync(dependencyPath, dependencyV1);
+  fs.writeFileSync(dependentPath, dependent);
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+
+  writeDocReviewDecision(root, "docs/trust.md", { status: "verified" });
+  const firstDependentReview = writeDocReviewDecision(root, "docs/review.md", { status: "verified" });
+  assert.equal(firstDependentReview.dependencyVersions["strategy.trust"], createHash("sha256").update(dependencyV1).digest("hex"));
+  assert.equal(buildDocQaReport(root).queue.some((item) => item.path === "docs/review.md"), false);
+
+  fs.writeFileSync(dependencyPath, dependencyV2);
+  assert.equal(buildDocQaReport(root).queue.some((item) => item.path === "docs/review.md"), false);
+  writeDocReviewDecision(root, "docs/trust.md", { status: "verified" });
+
+  const invalidated = buildDocQaReport(root).queue.find((item) => item.path === "docs/review.md");
+  assert.ok(invalidated);
+  assert.equal(invalidated.reviewReason, "dependency-changed");
+  assert.equal(invalidated.dependencyChanges.length, 1);
+  assert.equal(invalidated.dependencyChanges[0].documentId, "strategy.trust");
+  assert.ok(buildContextRoomDoctorReport(root).issues.some((issue) => issue.type === "dependency_review_required" && issue.path === "docs/review.md"));
+  assert.throws(
+    () => writeDocReviewDecision(root, "docs/review.md", {
+      status: "verified",
+      expectedDependencyVersions: firstDependentReview.dependencyVersions,
+    }),
+    (error) => error?.statusCode === 409 && error?.code === "review_revision_conflict",
+  );
+
+  writeDocReviewDecision(root, "docs/review.md", {
+    status: "verified",
+    expectedDependencyVersions: invalidated.dependencyVersions,
+  });
+  assert.equal(buildDocQaReport(root).queue.some((item) => item.path === "docs/review.md"), false);
+});
+
 test("watched HTML changes enter the review queue", () => {
   const root = makeRoot();
   fs.mkdirSync(path.join(root, "docs"));
@@ -4313,9 +4642,12 @@ test("default config exposes scoped context and simple markdown templates withou
   const golden = DEFAULT_MARKDOWN_TEMPLATES.find((template) => template.id === "context-golden");
   assert.ok(golden);
   assert.match(golden.content, /context_room:/);
-  assert.match(golden.content, /kind: canonical/);
+  assert.match(golden.content, /id: \{\{id_yaml\}\}/);
+  assert.match(golden.content, /\{\{depends_on_block\}\}/);
   assert.match(golden.content, /# \{\{title\}\}/);
-  assert.match(golden.content, /## Purpose/);
+  assert.match(golden.content, /## Summary/);
+  assert.match(golden.content, /## Defines/);
+  assert.match(golden.content, /## Does not define/);
   assert.match(golden.content, /## Key facts/);
   assert.match(golden.content, /## References/);
   assert.ok(golden.content.length < 1100, "golden template should stay simple enough to read quickly");
@@ -4370,12 +4702,8 @@ test("createMarkdownFile can write a structured doc from metadata-aware template
     templateId: "context-golden",
     applyTemplate: true,
     metadata: {
-      kind: "canonical",
-      scope: "website",
-      status: "current",
-      canonical_for: "billing",
-      last_verified: "2026-06-26",
-      sources: ["src/billing.ts", "docs/pricing.md"],
+      id: "product.billing",
+      depends_on: ["strategy.pricing"],
     },
   });
 
@@ -4384,10 +4712,9 @@ test("createMarkdownFile can write a structured doc from metadata-aware template
 
   assert.equal(result.path, "docs/billing.md");
   assert.equal(metadata.present, true);
-  assert.equal(metadata.kind, "canonical");
-  assert.equal(metadata.scope, "website");
-  assert.equal(metadata.canonical_for, "billing");
-  assert.deepEqual(metadata.sources, ["src/billing.ts", "docs/pricing.md"]);
+  assert.equal(metadata.contract, "minimal");
+  assert.equal(metadata.id, "product.billing");
+  assert.deepEqual(metadata.dependsOn, ["strategy.pricing"]);
   assert.match(content, /# Billing/);
 });
 
@@ -4461,8 +4788,9 @@ test("applyMarkdownTemplateToFile fills an existing empty markdown file only", (
   assert.equal(result.existed, true);
   assert.match(content, /^---/);
   assert.match(content, /context_room:/);
+  assert.match(content, /id: context\.empty/);
   assert.match(content, /# Empty/);
-  assert.match(content, /## Purpose/);
+  assert.match(content, /## Key facts/);
 
   assert.throws(
     () => applyMarkdownTemplateToFile(root, { path: "context/current.md", title: "Current", templateId: "context-golden" }),
@@ -4726,6 +5054,23 @@ description: >
   assert.equal(parseDocMetadata("# Agent instructions\n", "AGENTS.md").kind, "agents");
   assert.equal(graph.healthIssues.some((issue) => issue.type === "metadata_parse_error"), false);
   assert.equal(graph.healthIssues.some((issue) => issue.type === "duplicate_canonical"), false);
+});
+
+test("documentation graph treats sidecars as metadata and reports unavailable visual renderers", () => {
+  const root = makeRoot();
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs", "architecture.png"), "image");
+  fs.writeFileSync(path.join(root, "docs", "architecture.png.meta.yaml"), "title: Architecture\n");
+  fs.writeFileSync(path.join(root, "docs", "missing.png.meta.json"), JSON.stringify({ title: "Missing" }));
+  fs.writeFileSync(path.join(root, "docs", "system.puml"), "@startuml\nAlice -> Bob\n@enduml\n");
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+
+  const graph = buildDocumentationGraph(root);
+
+  assert.equal(graph.nodes.some((node) => node.path === "docs/architecture.png.meta.yaml"), false);
+  assert.equal(graph.nodes.find((node) => node.path === "docs/architecture.png")?.metadata.generic.raw.title, "Architecture");
+  assert.ok(graph.healthIssues.some((issue) => issue.type === "orphan_metadata_sidecar" && issue.path === "docs/missing.png.meta.json"));
+  assert.ok(graph.healthIssues.some((issue) => issue.type === "document_renderer_unavailable" && issue.path === "docs/system.puml"));
 });
 
 test("doctor report and deterministic brief summarize the context graph", () => {
@@ -5037,7 +5382,9 @@ test("explorer new file creates markdown directly before opening it", () => {
   assert.match(html, /function updateStructuredMarkdownPath\(/);
   assert.match(createMarkdownFn, /api\("\/api\/markdown\/create"/);
   assert.match(createMarkdownFn, /const directory = markdownCreateDirectoryForTarget\(\);/);
-  assert.match(createMarkdownFn, /body:\s*JSON\.stringify\(\{ path: relPath, title, applyTemplate: false \}\)/);
+  assert.match(createMarkdownFn, /applyTemplate: true/);
+  assert.match(createMarkdownFn, /templateId: "context-golden"/);
+  assert.match(createMarkdownFn, /metadata: \{ id: documentIdForUiPath\(relPath\), depends_on: \[\] \}/);
   assert.match(createMarkdownFn, /await loadFiles\(\);[\s\S]*await selectFile\(result\.path, \{ revealInExplorer: true \}\)/);
   assert.doesNotMatch(createMarkdownFn, /showNewDocPage/);
   assert.match(html, /function submitMarkdownFromContextMenu\(\)/);
@@ -5077,6 +5424,9 @@ test("app CSS keeps hidden context menu forms hidden despite form display rules"
   assert.match(html, /\.app\.sidebar-collapsed \.sidebar-copy,[^}]*\.app\.sidebar-collapsed \.watch-filter-row,[^}]*\.app\.sidebar-collapsed \.selection-bar,[^}]*opacity:\s*0/);
   assert.doesNotMatch(html, /\.app\.sidebar-collapsed \.sidebar-copy,\s*\.app\.sidebar-collapsed \.workspace-dock/);
   assert.match(html, /@media \(min-width: 981px\) \{[\s\S]*\.app\.sidebar-collapsed \.sidebar-head\s*\{[^}]*justify-content:\s*center[^}]*\}[\s\S]*\.app\.sidebar-collapsed \.sidebar-copy\s*\{\s*display:\s*none;\s*\}[\s\S]*\.app\.sidebar-collapsed \.sidebar-toggle\s*\{[^}]*position:\s*static[^}]*margin:\s*0 auto/);
+  assert.match(html, /\.app\.sidebar-collapsed \.graph-open\s*\{\s*display:\s*none;\s*\}/);
+  assert.match(html, /\.sidebar-actions\s*\{[^}]*display:\s*flex;[^}]*gap:\s*2px/);
+  assert.match(html, /<div class="sidebar-actions">\s*<button id="graphOpen"[\s\S]*?<button id="sidebarToggle"/);
   assert.match(html, /@media \(max-width: 980px\) \{[\s\S]*\.app\.sidebar-collapsed \.sidebar-copy,[^}]*\.app\.sidebar-collapsed \.watch-filter-row,[^}]*\.app\.sidebar-collapsed \.selection-bar,[^}]*opacity:\s*0/);
 });
 
@@ -5196,6 +5546,11 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /\.hub-section-editor-summary"\)\.forEach\(\(summary\) => summary\.addEventListener\("contextmenu"/);
   assert.match(html, /function openHubSectionSettingsContextMenu\(event, section\)[\s\S]*data-settings-delete-section>Delete section/);
   assert.match(html, /id:\s*"codex-prompts"[\s\S]*kicker:\s*"Codex prompts"[\s\S]*title:\s*"Codex Prompt Center"/);
+  assert.match(html, /\{ id: "project", label: "Project", scope: "Project \+ Device" \}/);
+  assert.match(html, /\{ id: "review-trust", label: "Review and trust", scope: "Human" \}/);
+  assert.match(html, /\{ id: "agent-environment", label: "Agent environment", scope: "Project \+ Shared" \}/);
+  assert.match(html, /\{ id: "preferences", label: "Preferences", scope: "Device" \}/);
+  assert.match(html, /\{ id: "advanced-extensions", label: "Advanced extensions", scope: "Device" \}/);
   assert.match(html, /id="openCodexPromptCenter"/);
   assert.match(html, /openContextRoomView\("codex-prompts", \{ returnTo: "settings" \}\)/);
   assert.match(html, /\.settings-section-head\s*\{[^}]*display:\s*flex/);
@@ -5218,8 +5573,8 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /function renderSettingsDisclosure/);
   assert.match(html, /data-settings-disclosure=/);
   assert.match(html, /settingsDisclosureState/);
-  assert.match(html, /version: 4/);
-  assert.match(html, /\[1, 2, 3, 4\]\.includes\(raw\.version\)/);
+  assert.match(html, /version: 6/);
+  assert.match(html, /\[1, 2, 3, 4, 5, 6\]\.includes\(raw\.version\)/);
   assert.match(html, /paneLayout:/);
   assert.match(html, /id="sidebarResizer" class="sidebar-resizer"/);
   assert.match(html, /Unsaved changes/);
@@ -5243,7 +5598,7 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /data-sound-preview="attention"/);
   assert.match(html, /Previews work even while interface sounds are muted\./);
   assert.match(html, /function wireShortcutRecorder\(\)/);
-  assert.match(html, /Choose one category, make the change, then save once\./);
+  assert.match(html, /Choose one clear scope, make the change, then save once\./);
   assert.match(html, /\.settings-toggle\s*\{[^}]*grid-template-columns:\s*auto minmax\(0, 1fr\)/);
   assert.match(html, /\.settings-footer\s*\{[^}]*position:\s*sticky/);
   assert.match(html, /button\.save-pending, \.file-action\.save-pending/);
@@ -5603,8 +5958,8 @@ test("browser refresh restores the last Context Room page", () => {
   assert.match(html, /workspace-conflict/);
   assert.match(html, /function establishWorkspaceIdentity\(\)[\s\S]*replaceDuplicatedWorkspaceIdentity[\s\S]*state\.workspaceIdentityReady = true;[\s\S]*syncWorkspaceUrl\(\);/);
   assert.doesNotMatch(html, /await new Promise\(\(resolve\) => window\.setTimeout\(resolve, 90\)\)/);
-  assert.match(html, /function syncWorkspaceUrl\(\)[\s\S]*if \(url\.href === window\.location\.href\) \{[\s\S]*state\.workspaceSyncedUrl = url\.href;[\s\S]*return;[\s\S]*window\.history\.replaceState/);
-  assert.match(html, /state\.workspaceSyncedUrl = url\.href;[\s\S]*window\.history\.replaceState/);
+  assert.match(html, /function syncWorkspaceUrl\(\{ push = false \} = \{\}\)[\s\S]*if \(url\.href === window\.location\.href\) \{[\s\S]*state\.workspaceSyncedUrl = url\.href;[\s\S]*return;[\s\S]*window\.history\[push \? "pushState" : "replaceState"\]/);
+  assert.match(html, /state\.workspaceSyncedUrl = url\.href;[\s\S]*window\.history\[push \? "pushState" : "replaceState"\]/);
   assert.match(html, /window\.addEventListener\("popstate", \(\) => \{[\s\S]*if \(!state\.workspaceIdentityReady\) return;[\s\S]*window\.location\.href === state\.workspaceSyncedUrl\) return;[\s\S]*applyWorkspaceUrlState\(\{ reason: "history" \}\)/);
   assert.doesNotMatch(html, /window\.addEventListener\("popstate",[\s\S]{0,300}window\.location\.reload\(\)/);
   assert.match(html, /window\.addEventListener\("beforeunload", \(event\) => \{[\s\S]*stopWorkspaceRuntime\(\);/);
@@ -5646,11 +6001,43 @@ test("workspace URL restoration parses every supported destination without brows
     file: "apps/calls/AGENTS.md",
     proposal: "proposal_123",
     settingsSection: "shared-skills",
+    explorerDocumentView: "location",
+    graphScope: "global",
+    graphDepth: 1,
+    graphLayers: [],
+    graphTypes: [],
+    graphRelations: [],
+    graphNode: "",
+    graphIncludeUnresolved: false,
+    graphShowOrphans: true,
+    graphShowArrows: false,
+    graphCamera: { x: 0, y: 0, scale: 1 },
   });
   assert.equal(parseWorkspaceNavigationUrl("/?view=unknown").view, "hub");
   assert.equal(parseWorkspaceNavigationUrl("/?view=hub").view, "hub");
   assert.equal(parseWorkspaceNavigationUrl("/?view=file&file=README.md").view, "file");
   assert.equal(parseWorkspaceNavigationUrl("/?view=proposal&proposal=p1").view, "proposal");
+  assert.deepEqual(parseWorkspaceNavigationUrl("/?view=graph&graphScope=local&graphDepth=3&graphLayers=accepted,target&graphTypes=instruction&graphRelations=applies-to&graphNode=file%3AAGENTS.md&graphUnresolved=1&graphOrphans=0&graphArrows=1&graphCamera=12.5,-4,1.75"), {
+    workspaceId: "",
+    projectId: "",
+    view: "graph",
+    folder: "",
+    file: "",
+    proposal: "",
+    settingsSection: "",
+    explorerDocumentView: "location",
+    graphScope: "local",
+    graphDepth: 3,
+    graphLayers: ["accepted", "target"],
+    graphTypes: ["instruction"],
+    graphRelations: ["applies-to"],
+    graphNode: "file:AGENTS.md",
+    graphIncludeUnresolved: true,
+    graphShowOrphans: false,
+    graphShowArrows: true,
+    graphCamera: { x: 12.5, y: -4, scale: 1.75 },
+  });
+  assert.equal(parseWorkspaceNavigationUrl("/?view=file&file=README.md&explorerView=related").explorerDocumentView, "related");
 });
 
 test("workspace reload circuit permits one exceptional retry and blocks the second", () => {
@@ -5864,7 +6251,7 @@ test("HTML files open as sandboxed visual previews without source editing", () =
   assert.match(html, /doc\.documentElement\.dataset\.contextRoomTheme = currentFileThemeId\(\)/);
   assert.match(html, /function applyFileTheme\(themeId = currentFileThemeId\(\), colorMode = currentColorModePreference\(\)\)[\s\S]*document\.querySelector\("iframe\.html-preview-frame"\)[\s\S]*renderViewer\(\);/);
   assert.match(html, /function renderHtmlDocumentPreview\(text, filePath = state\.selected\)/);
-  assert.match(html, /class="html-preview-frame" sandbox="" referrerpolicy="no-referrer"/);
+  assert.match(html, /class="html-preview-frame" sandbox="allow-same-origin" referrerpolicy="no-referrer"/);
   assert.match(html, /isHtmlDocument\s*\? renderHtmlDocumentPreview\(text, file\.path\)/);
   assert.match(html, /externalChange[\s\S]*isHtmlDocument[\s\S]*renderHtmlDocumentPreview\(externalChange\.diskContent \|\| "", file\.path\)/);
   assert.match(html, /const visualHtmlReview = isHtmlDocumentPath\(change\.path\);/);
@@ -6147,12 +6534,46 @@ test("the explorer persists its state and only its own controls can change it", 
   assert.match(html, /function setExplorerEdgePeek\(open\)[\s\S]*classList\.toggle\("explorer-edge-peek"/);
   assert.match(html, /explorerEdgeTrigger"\)\?\.addEventListener\("pointerenter", \(\) => setExplorerEdgePeek\(true\)\)/);
   assert.match(html, /document\.addEventListener\("pointermove", revealExplorerFromLeftEdge, \{ passive: true \}\)/);
-  assert.match(html, /pointerleave", \(\) => \{[\s\S]*scheduleExplorerEdgePeekClose\(\)/);
+  assert.match(html, /pointerleave", \(\) => \{[\s\S]*setExplorerEdgePeek\(false\)/);
+  assert.match(html, /event\.clientX > state\.explorerWidth \+ 12\) setExplorerEdgePeek\(false\)/);
+  assert.doesNotMatch(html, /explorerEdgePeekCloseTimer|scheduleExplorerEdgePeekClose/);
   assert.match(html, /function setExplorerCollapsedFromUser\(collapsed\)[\s\S]*state\.explorerNavigationOverride = null;[\s\S]*state\.explorerStoredCollapsed = Boolean\(collapsed\);/);
   assert.doesNotMatch(responsiveSource, /sidebar-collapsed/);
   assert.doesNotMatch(focusSource, /classList\.(?:add|remove|toggle)\("sidebar-collapsed"/);
   assert.doesNotMatch(html, /openSidebarIfCollapsed|collapseSidebarOnNarrow|mobileSidebarTouched/);
   assert.match(html, /if \(options\.revealInExplorer && !isExplorerCollapsed\(\)\) scrollExplorerToPath\(path\);/);
+});
+
+test("responsive Explorer uses one shared mobile, drawer, and desktop contract", () => {
+  const html = renderAppHtml();
+  const script = extractInlineAppScript(html);
+  const viewportSource = script.slice(
+    script.indexOf("const EXPLORER_MOBILE_MAX_WIDTH"),
+    script.indexOf("function restoreExplorerStateAfterInitialLoad"),
+  );
+  const explorerViewportMode = Function(viewportSource + "\nreturn explorerViewportMode;")();
+  const drawerCssStart = html.lastIndexOf("@media (max-width: 980px)");
+  const mobileCssStart = html.lastIndexOf("@media (max-width: 639px)");
+  const drawerCss = html.slice(drawerCssStart, mobileCssStart);
+
+  assert.deepEqual(
+    [390, 639, 640, 899, 900, 920, 980, 981, 1024, 1440].map((width) => explorerViewportMode(width)),
+    ["mobile", "mobile", "drawer", "drawer", "drawer", "drawer", "drawer", "desktop", "desktop", "desktop"],
+  );
+  assert.match(html, /@media \(min-width: 981px\) and \(hover: hover\) and \(pointer: fine\)/);
+  assert.doesNotMatch(html, /height:\s*min\(62dvh, 560px\)/);
+  assert.doesNotMatch(html, /height:\s*min\(66dvh, 560px\)/);
+  assert.doesNotMatch(script, /max-width:\s*899px|min-width:\s*900px/);
+
+  assert.match(
+    drawerCss,
+    /@media \(max-width: 980px\) \{[\s\S]*?\.app, \.app\.sidebar-collapsed \{[^}]*height:\s*100dvh;[^}]*padding-top:\s*0;[^}]*overflow:\s*hidden;[^}]*\}[\s\S]*?main \{[^}]*height:\s*100dvh;[^}]*padding:\s*0;[^}]*\}[\s\S]*?aside \{[^}]*height:\s*calc\(100dvh - var\(--native-titlebar-height\)\);[^}]*max-height:\s*none;[^}]*border-bottom:\s*0;[\s\S]*?\.app\.sidebar-collapsed \.workspace-dock \{\s*padding-left:\s*48px;\s*\}/,
+  );
+  assert.match(
+    html,
+    /@media \(max-width: 639px\) \{[\s\S]*?\.app\.explorer-expanded aside \{[^}]*height:\s*100dvh;[^}]*max-height:\s*none;[^}]*border-radius:\s*0;[^}]*transform:\s*translateX\(0\);[^}]*pointer-events:\s*auto;/,
+  );
+  assert.doesNotMatch(drawerCss, /\.context-room-brand strong[^}]*display:\s*none/);
 });
 
 test("context health supports full refresh, acknowledged results, and simple filters", () => {

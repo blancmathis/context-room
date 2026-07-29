@@ -20,9 +20,19 @@ export function yamlScalar(value) {
 export function parseSimpleYaml(source) {
   const root = {};
   const stack = [{ indent: -1, value: root }];
-  for (const raw of String(source || "").split(/\r?\n/)) {
+  const lines = String(source || "").split(/\r?\n/);
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const raw = lines[lineIndex];
     if (!raw.trim() || raw.trim().startsWith("#")) continue;
     const indent = raw.match(/^ */)[0].length;
+    const listMatch = raw.trim().match(/^-\s+(.+)$/);
+    if (listMatch) {
+      while (stack.length > 1 && indent <= stack.at(-1).indent) stack.pop();
+      const parent = stack.at(-1).value;
+      if (!Array.isArray(parent)) throw new Error(`Unsupported YAML list: ${raw}`);
+      parent.push(parseYamlScalar(listMatch[1]));
+      continue;
+    }
     const match = raw.trim().match(/^([A-Za-z0-9_-]+):(?:\s*(.*))?$/);
     if (!match) throw new Error(`Unsupported YAML: ${raw}`);
     while (stack.length > 1 && indent <= stack.at(-1).indent) stack.pop();
@@ -30,7 +40,9 @@ export function parseSimpleYaml(source) {
     const key = match[1];
     const rest = match[2] ?? "";
     if (rest === "") {
-      parent[key] = {};
+      const nextLine = lines.slice(lineIndex + 1).find((line) => line.trim() && !line.trim().startsWith("#"));
+      const nextIndent = nextLine ? nextLine.match(/^ */)[0].length : -1;
+      parent[key] = nextLine && nextIndent > indent && /^\s*-\s+/.test(nextLine) ? [] : {};
       stack.push({ indent, value: parent[key] });
     } else {
       parent[key] = parseYamlScalar(rest);

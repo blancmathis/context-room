@@ -9,8 +9,17 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import { appendContextRoomEvent } from "./event_journal.mjs";
-import { collectInlinePathReferences, parseDocMetadata, renderDocMetadataTemplateValues } from "./doc_metadata.mjs";
+import { collectContextRoomLinks, collectInlinePathReferences, collectMermaidDocumentLinks, documentIdForPath, isNativeProviderDocumentPath, isValidDocumentId, parseContextRoomUri, parseDocMetadata, renderDocMetadataTemplateValues } from "./doc_metadata.mjs";
+import { inspectDocumentMetadata, loadMetadataProfiles } from "./document_metadata_engine.mjs";
+import {
+  buildGlobalDocumentRelationsGraph,
+  buildProjectDocumentRelationsGraph,
+  layoutDocumentRelationsGraph,
+  releaseDocumentRelationsGraphLayout,
+  warmDocumentRelationsGraphLayout,
+} from "./document_graph.mjs";
 import { parseSimpleYaml, stringifyYaml } from "./yaml_utils.mjs";
+import { buildAttentionItems } from "./product_compression.mjs";
 import {
   MAX_CODEX_COMPOSER_TEXT_BYTES,
   insertFileReferenceIntoActiveCodexComposer,
@@ -39,6 +48,8 @@ import {
   proposeSharedSkillAssignment,
   proposeSharedSkillUnassignment,
   readSharedProjectConnection,
+  readAcceptedSharedMetadataProfiles,
+  readSharedRevisionDocuments,
   readSharedReview,
   rejectSharedRepositoryProposal,
   setSharedSkillLocationOverride,
@@ -49,6 +60,7 @@ import {
   syncSharedContext,
   unlinkSharedSkillLocation,
   reconcileSharedInstructionLocations,
+  resolveSharedDocumentationTarget,
 } from "./shared_context.mjs";
 import {
   contextHubHostRoot,
@@ -78,14 +90,28 @@ export function parseWorkspaceNavigationUrl(input, base = "http://127.0.0.1/") {
   const url = new URL(String(input || ""), base);
   const clean = (key, limit = 4_000) => String(url.searchParams.get(key) || "").trim().slice(0, limit);
   const requestedView = clean("view", 80);
+  const graphCamera = clean("graphCamera", 120).split(",").map(Number);
   return {
     workspaceId: /^[A-Za-z0-9_-]{8,120}$/.test(clean("workspace", 120)) ? clean("workspace", 120) : "",
     projectId: clean("project", 240),
-    view: ["hub", "file", "settings", "proposal", "new-doc", "project-manager", "codex-prompts"].includes(requestedView) ? requestedView : "hub",
+    view: ["hub", "file", "settings", "proposal", "new-doc", "project-manager", "codex-prompts", "graph"].includes(requestedView) ? requestedView : "hub",
     folder: clean("folder"),
     file: clean("file"),
     proposal: clean("proposal"),
     settingsSection: clean("settings", 120),
+    explorerDocumentView: clean("explorerView", 20) === "related" ? "related" : "location",
+    graphScope: ["global", "project", "local"].includes(clean("graphScope", 40)) ? clean("graphScope", 40) : "global",
+    graphDepth: Math.min(3, Math.max(1, Number(clean("graphDepth", 4)) || 1)),
+    graphLayers: clean("graphLayers", 240).split(",").filter(Boolean),
+    graphTypes: clean("graphTypes", 240).split(",").filter(Boolean),
+    graphRelations: clean("graphRelations", 240).split(",").filter(Boolean),
+    graphNode: clean("graphNode", 1_000),
+    graphIncludeUnresolved: clean("graphUnresolved", 2) === "1",
+    graphShowOrphans: clean("graphOrphans", 2) !== "0",
+    graphShowArrows: clean("graphArrows", 2) === "1",
+    graphCamera: graphCamera.length === 3 && graphCamera.every(Number.isFinite)
+      ? { x: graphCamera[0], y: graphCamera[1], scale: Math.min(3.5, Math.max(0.45, graphCamera[2])) }
+      : { x: 0, y: 0, scale: 1 },
   };
 }
 
@@ -326,6 +352,7 @@ const BACKGROUND_WATCH_IGNORED_PATHS = new Set([
 ]);
 const gitTopLevelCache = new Map();
 const backgroundReportCache = new Map();
+const documentGraphCache = new Map();
 const backgroundReportGenerations = new Map();
 const backgroundFileTaskCache = new Map();
 const backgroundFileTaskGenerations = new Map();
@@ -348,15 +375,19 @@ export const DEFAULT_MARKDOWN_TEMPLATES = [
     description: "Root or scoped instructions that are injected into AI coding agents.",
     content: `---
 context_room:
-  kind: agents
-  scope: {{scope_yaml}}
-  status: {{status_yaml}}
-  canonical_for: {{canonical_for_yaml}}
-  last_verified: {{last_verified_yaml}}
-  sources: {{sources_inline}}
----
+  id: {{id_yaml}}
+{{depends_on_block}}---
 
 # {{title}}
+
+## Summary
+State the durable instruction this file establishes.
+
+## Defines
+The agent behavior controlled by this file.
+
+## Does not define
+Product behavior or documentation owned elsewhere.
 
 ## Purpose
 What this instruction file controls, which agents read it, and what it must keep stable.
@@ -382,15 +413,19 @@ What this instruction file controls, which agents read it, and what it must keep
     description: "Short map of a documentation folder: what is canonical and where to go next.",
     content: `---
 context_room:
-  kind: index
-  scope: {{scope_yaml}}
-  status: {{status_yaml}}
-  canonical_for: {{canonical_for_yaml}}
-  last_verified: {{last_verified_yaml}}
-  sources: {{sources_inline}}
----
+  id: {{id_yaml}}
+{{depends_on_block}}---
 
 # {{title}}
+
+## Summary
+Map the accepted documentation in this area.
+
+## Defines
+The navigation route into this documentation scope.
+
+## Does not define
+The detailed truth owned by linked documents.
 
 ## Purpose
 What this documentation area covers.
@@ -414,18 +449,19 @@ What this documentation area covers.
     description: "Default source-of-truth document for a product, system, feature, or workflow.",
     content: `---
 context_room:
-  kind: canonical
-  scope: {{scope_yaml}}
-  status: {{status_yaml}}
-  canonical_for: {{canonical_for_yaml}}
-  last_verified: {{last_verified_yaml}}
-  sources: {{sources_inline}}
----
+  id: {{id_yaml}}
+{{depends_on_block}}---
 
 # {{title}}
 
-## Purpose
-Why this file exists, who uses it, and what decision or action it should support.
+## Summary
+State the main durable truth in one sentence.
+
+## Defines
+The subject for which this document is the canonical owner.
+
+## Does not define
+Nearby subjects owned by other documents.
 
 ## Key facts
 The 5 to 10 most important durable facts. Short, concrete, current.
@@ -446,15 +482,19 @@ Sources of truth, related files, commands, or useful links. Do not copy what can
     description: "A short repeatable workflow, runbook, checklist, or operational procedure.",
     content: `---
 context_room:
-  kind: procedure
-  scope: {{scope_yaml}}
-  status: {{status_yaml}}
-  canonical_for: {{canonical_for_yaml}}
-  last_verified: {{last_verified_yaml}}
-  sources: {{sources_inline}}
----
+  id: {{id_yaml}}
+{{depends_on_block}}---
 
 # {{title}}
+
+## Summary
+State what this procedure reliably accomplishes.
+
+## Defines
+The repeatable workflow and its completion evidence.
+
+## Does not define
+Product policy or implementation details owned elsewhere.
 
 ## When To Use
 The exact situation where this procedure applies.
@@ -480,15 +520,19 @@ The exact situation where this procedure applies.
     description: "Small ADR-style note for decisions that should be easy to revisit.",
     content: `---
 context_room:
-  kind: decision
-  scope: {{scope_yaml}}
-  status: {{status_yaml}}
-  canonical_for: {{canonical_for_yaml}}
-  last_verified: {{last_verified_yaml}}
-  sources: {{sources_inline}}
----
+  id: {{id_yaml}}
+{{depends_on_block}}---
 
 # {{title}}
+
+## Summary
+State the durable decision in one sentence.
+
+## Defines
+The decision, its rationale, and its consequences.
+
+## Does not define
+Current product truth maintained by canonical documents.
 
 ## Decision
 The decision made, in one or two sentences.
@@ -2712,12 +2756,12 @@ export function revertMemoryFile(root, relPath) {
 export function readDocReviewState(root = process.cwd()) {
   const statePath = path.join(root, DOCQA_REVIEW_STATE);
   assertManagedProjectPath(root, statePath, DOCQA_REVIEW_STATE);
-  if (!fs.existsSync(statePath)) return { version: 1, reviews: {} };
+  if (!fs.existsSync(statePath)) return { version: 2, reviews: {} };
   try {
     const parsed = JSON.parse(fs.readFileSync(statePath, "utf8"));
-    return { version: 1, reviews: parsed.reviews && typeof parsed.reviews === "object" ? parsed.reviews : {} };
+    return { version: 2, reviews: parsed.reviews && typeof parsed.reviews === "object" ? parsed.reviews : {} };
   } catch {
-    return { version: 1, reviews: {} };
+    return { version: 2, reviews: {} };
   }
 }
 
@@ -2733,12 +2777,12 @@ export function readGlobalReviewLedger(root = process.cwd()) {
   const ledgerRoot = globalReviewLedgerRoot(root);
   const ledgerPath = globalReviewLedgerPath(root);
   assertManagedProjectPath(ledgerRoot, ledgerPath, DOCQA_GLOBAL_REVIEW_LEDGER);
-  if (!fs.existsSync(ledgerPath)) return { version: 1, reviews: {} };
+  if (!fs.existsSync(ledgerPath)) return { version: 2, reviews: {} };
   try {
     const parsed = JSON.parse(fs.readFileSync(ledgerPath, "utf8"));
-    return { version: 1, reviews: parsed.reviews && typeof parsed.reviews === "object" ? parsed.reviews : {} };
+    return { version: 2, reviews: parsed.reviews && typeof parsed.reviews === "object" ? parsed.reviews : {} };
   } catch {
-    return { version: 1, reviews: {} };
+    return { version: 2, reviews: {} };
   }
 }
 
@@ -2822,8 +2866,8 @@ function applyGlobalReviewDecision(ledger, root, relPath, file, decision) {
     return { entry: null, changed: false };
   }
   if (existing?.status === "verified" && reviewResourceIdentityMatches(existing, resourceState, resourceVersion) && (existing.contentHash === contentHash || existing.reviewHash === reviewHash)) {
-    const current = { ...existing, contentHash, reviewHash, resourceState, resourceVersion };
-    if (existing.contentHash !== contentHash || existing.reviewHash !== reviewHash || existing.resourceState !== resourceState || existing.resourceVersion !== resourceVersion) {
+    const current = { ...existing, contentHash, reviewHash, resourceState, resourceVersion, dependencyVersions: decision.dependencyVersions || existing.dependencyVersions || {} };
+    if (existing.contentHash !== contentHash || existing.reviewHash !== reviewHash || existing.resourceState !== resourceState || existing.resourceVersion !== resourceVersion || JSON.stringify(existing.dependencyVersions || {}) !== JSON.stringify(current.dependencyVersions)) {
       ledger.reviews[key] = current;
       return { entry: current, changed: true };
     }
@@ -2841,6 +2885,7 @@ function applyGlobalReviewDecision(ledger, root, relPath, file, decision) {
     relPath: normalizeRelPath(relPath),
     root: path.resolve(root),
     note: String(decision.note || "").slice(0, 500),
+    dependencyVersions: decision.dependencyVersions || {},
   };
   ledger.reviews[key] = entry;
   return { entry, changed: true };
@@ -2851,6 +2896,54 @@ function writeGlobalReviewDecision(root, relPath, file, decision) {
   const result = applyGlobalReviewDecision(ledger, root, relPath, file, decision);
   if (result.changed) writeGlobalReviewLedger(root, ledger);
   return result.entry;
+}
+
+function buildAcceptedDependencyState(root, files = listMemoryFiles(root), reviewState = readDocReviewState(root)) {
+  const byId = new Map();
+  const globalLedger = readGlobalReviewLedger(root);
+  for (const file of files) {
+    if (!file?.exists || !/\.(?:md|mdx|html?)$/i.test(file.path)) continue;
+    const abs = resolveExternalPath(file.path) || path.join(root, file.path);
+    let currentContent = "";
+    try {
+      if (!fs.statSync(abs).isFile() || fs.statSync(abs).size > MAX_FILE_BYTES) continue;
+      currentContent = fs.readFileSync(abs, "utf8");
+    } catch { continue; }
+    const localReview = reviewState.reviews?.[file.path];
+    const globalReview = globalLedger.reviews?.[globalReviewKeyFor(root, file.path)];
+    const review = localReview?.status === "verified" ? localReview : globalReview?.status === "verified" ? globalReview : null;
+    if (!review) continue;
+    let acceptedContent = currentContent;
+    if (review.contentHash !== hashContent(currentContent)) {
+      const baseline = localReview ? readDocReviewBaseline(root, file.path, localReview) : null;
+      if (!baseline?.content || baseline.contentHash !== review.contentHash) continue;
+      acceptedContent = baseline.content;
+    }
+    const metadata = parseDocMetadata(acceptedContent, file.path);
+    if (!metadata.id || !metadata.idValid || metadata.truthState !== "current") continue;
+    if (!byId.has(metadata.id)) byId.set(metadata.id, []);
+    byId.get(metadata.id).push({ path: file.path, version: review.contentHash, metadata });
+  }
+  return { byId };
+}
+
+function directDependencyVersions(metadata = {}, byId = new Map()) {
+  const result = {};
+  for (const dependencyId of metadata.dependsOn || []) {
+    const candidates = byId.get(dependencyId) || [];
+    if (candidates.length === 1) result[dependencyId] = candidates[0].version;
+  }
+  return result;
+}
+
+function dependencyChangesForReview(review, dependencyVersions = {}) {
+  if (!review || review.status !== "verified" || !review.dependencyVersions || typeof review.dependencyVersions !== "object") return [];
+  const changes = [];
+  for (const [documentId, previousVersion] of Object.entries(review.dependencyVersions)) {
+    const currentVersion = dependencyVersions[documentId];
+    if (currentVersion && currentVersion !== previousVersion) changes.push({ documentId, previousVersion, currentVersion });
+  }
+  return changes;
 }
 
 function currentGlobalReviewFor(root, relPath, content, resourceState = "present", resourceVersion = null, providedLedger = null) {
@@ -2959,7 +3052,7 @@ export function writeDocReviewBaselineContent(root, relPath, content, { note = "
   return { path: normalized, ...next };
 }
 
-export function writeDocReviewDecision(root, relPath, { status, note = "", expectedResourceState = null, expectedResourceVersion = null, expectedContentHash = null } = {}) {
+export function writeDocReviewDecision(root, relPath, { status, note = "", expectedResourceState = null, expectedResourceVersion = null, expectedContentHash = null, expectedDependencyVersions = null } = {}) {
   const file = readReviewTrackedFile(root, relPath);
   const normalized = file.path;
   const allowedStatuses = new Set(["verified", "needs_changes", "snoozed"]);
@@ -2977,6 +3070,16 @@ export function writeDocReviewDecision(root, relPath, { status, note = "", expec
     error.statusCode = 409;
     error.code = "review_revision_conflict";
     error.details = { path: normalized, expectedContentHash: String(expectedContentHash), currentContentHash, resourceState, resourceVersion };
+    throw error;
+  }
+  const dependencyState = buildAcceptedDependencyState(root, listMemoryFiles(root), state);
+  const metadata = parseDocMetadata(file.content || "", normalized);
+  const dependencyVersions = directDependencyVersions(metadata, dependencyState.byId);
+  if (expectedDependencyVersions && JSON.stringify(expectedDependencyVersions) !== JSON.stringify(dependencyVersions)) {
+    const error = new Error(`Document dependencies changed before the decision was saved: ${normalized}`);
+    error.statusCode = 409;
+    error.code = "review_revision_conflict";
+    error.details = { path: normalized, expectedDependencyVersions, currentDependencyVersions: dependencyVersions };
     throw error;
   }
   if (status === "unverified") {
@@ -3000,6 +3103,7 @@ export function writeDocReviewDecision(root, relPath, { status, note = "", expec
     baselineHash: baseline.baselineHash,
     baselineReviewHash: baseline.baselineReviewHash,
     baselineAt: baseline.baselineAt,
+    dependencyVersions,
   };
   state.reviews[normalized] = decision;
   writeDocReviewState(root, state);
@@ -3236,6 +3340,8 @@ export function buildAgentReviewQueue(root = process.cwd()) {
       resourceState: item.resourceState || "",
       resourceVersion: item.resourceVersion || "",
       currentHash: item.currentHash || "",
+      dependencyVersions: item.dependencyVersions || {},
+      dependencyChanges: item.dependencyChanges || [],
     })),
     note: "Read-only queue. Human verification must happen in the Context Room webapp.",
   };
@@ -3386,7 +3492,7 @@ function currentReviewFor(root, reviews, relPath, content, resourceState = "pres
         try {
           preflightDocReviewMutationPaths(root, relPath, { globalLedger: true });
           reviews[relPath] = { ...review, contentHash, reviewHash, baselineReviewHash, resourceState, resourceVersion };
-          writeDocReviewState(root, { version: 1, reviews });
+          writeDocReviewState(root, { version: 2, reviews });
           writeGlobalReviewDecision(root, relPath, { content, exists: resourceState === "present" }, local);
         } catch {}
         return local;
@@ -3944,18 +4050,69 @@ export function buildDocumentationGraph(root = process.cwd(), options = {}) {
   const edges = [];
   const healthIssues = [];
   const canonicalGroups = new Map();
-
+  const documentIdGroups = new Map();
+  const profileSet = options.profileSet || loadMetadataProfiles({
+    root,
+    sharedProfiles: options.sharedProfiles || readAcceptedSharedMetadataProfiles(root),
+    pluginProfiles: options.pluginProfiles || [],
+  });
+  const sidecarPattern = /\.meta\.(?:ya?ml|json)$/i;
+  const unavailableRendererPattern = /\.(?:puml|plantuml|dot|gv|drawio)$/i;
+  const graphFiles = [...files];
+  const configuredPaths = new Set(graphFiles.map((file) => normalizeRelPath(file.path)));
   for (const file of files) {
-    if (!file.exists || file.kind !== "markdown") continue;
+    if (!file.exists || !sidecarPattern.test(file.path)) continue;
+    const targetPath = normalizeRelPath(file.path.replace(sidecarPattern, ""));
+    const targetAbs = path.resolve(root, targetPath);
+    if (!configuredPaths.has(targetPath) && fs.existsSync(targetAbs) && fs.statSync(targetAbs).isFile()) {
+      const stats = fs.statSync(targetAbs);
+      graphFiles.push({ path: targetPath, label: path.basename(targetPath), exists: true, bytes: stats.size, updatedAt: stats.mtime.toISOString(), kind: PROJECT_VISUAL_ASSET_TYPES.has(path.extname(targetPath).toLowerCase()) ? "image" : "structured" });
+      configuredPaths.add(targetPath);
+    }
+  }
+  const presentPaths = new Set(graphFiles.filter((file) => file.exists).map((file) => normalizeRelPath(file.path)));
+
+  for (const file of graphFiles) {
+    if (!file.exists || !sidecarPattern.test(file.path)) continue;
+    const targetPath = normalizeRelPath(file.path.replace(sidecarPattern, ""));
+    if (!presentPaths.has(targetPath)) healthIssues.push({
+      path: file.path,
+      type: "orphan_metadata_sidecar",
+      severity: "medium",
+      resourceId: file.path,
+      message: `Metadata sidecar has no matching document: ${targetPath}.`,
+    });
+  }
+
+  for (const file of graphFiles) {
+    if (!file.exists || sidecarPattern.test(file.path) || !["markdown", "html", "json", "yaml", "diagram-source", "image"].includes(file.kind) && !/\.(?:md|mdx|html?|jsonc?|ya?ml|mmd|mermaid|puml|plantuml|dot|gv|drawio|png|jpe?g|gif|webp|avif|svg)$/i.test(file.path)) continue;
     const abs = resolveExternalPath(file.path) || path.join(root, file.path);
-    const content = fs.existsSync(abs) && fs.statSync(abs).isFile() && fs.statSync(abs).size <= MAX_FILE_BYTES ? fs.readFileSync(abs, "utf8") : "";
+    const textual = !/\.(?:png|jpe?g|gif|webp|avif|svg)$/i.test(file.path);
+    const content = textual && fs.existsSync(abs) && fs.statSync(abs).isFile() && fs.statSync(abs).size <= MAX_FILE_BYTES ? fs.readFileSync(abs, "utf8") : "";
+    const inspection = inspectDocumentMetadata({ content, relPath: file.path, root, absolutePath: abs }, { profileSet });
     const metadata = effectiveDocumentationMetadataForPath(parseDocMetadata(content, file.path), file.path);
+    metadata.generic = inspection.metadata;
+    metadata.interpretations = inspection.profiles;
+    metadata.identities = inspection.identities;
+    metadata.relations = inspection.relations;
     const watched = isWatchedPath(file.path, settings);
     const inHub = pathIsInHub(file.path, hubInfo.paths);
     const startup = startupRelPaths.has(file.path);
     const references = collectInlinePathReferences(content);
+    const contextLinks = collectContextRoomLinks(content);
+    const diagramLinks = collectMermaidDocumentLinks(content);
+    metadata.diagramLinks = diagramLinks;
     const issues = graphIssuesForDocument({ root, file, content, metadata, watched, inHub, startup, references });
     healthIssues.push(...issues.map((issue) => ({ ...issue, path: file.path })));
+    healthIssues.push(...inspection.health.map((issue) => ({ ...issue, path: file.path, resourceId: issue.profileId || file.path })));
+    if (unavailableRendererPattern.test(file.path)) healthIssues.push({
+      path: file.path,
+      type: "document_renderer_unavailable",
+      severity: "low",
+      resourceId: file.path,
+      renderer: path.extname(file.path).slice(1).toLowerCase(),
+      message: "No enabled local renderer can preview this diagram format. The source remains available.",
+    });
     const node = {
       id: `doc:${file.path}`,
       type: "doc",
@@ -3969,14 +4126,36 @@ export function buildDocumentationGraph(root = process.cwd(), options = {}) {
       startup,
       metadata,
       references,
+      contextLinks,
+      diagramLinks,
       health: issues,
     };
     nodes.push(node);
+    const nodeIdentities = inspection.identities.length ? inspection.identities : metadata.id ? [{ value: metadata.id, profileId: "context-room-documentation" }] : [];
+    for (const identity of nodeIdentities) {
+      const identityKey = `${identity.profileId}:${identity.value}`;
+      if (!documentIdGroups.has(identityKey)) documentIdGroups.set(identityKey, []);
+      documentIdGroups.get(identityKey).push(node);
+    }
     for (const source of metadata.sources) {
       edges.push({ from: node.id, to: `source:${source}`, type: "declares-source", source });
     }
     for (const reference of references) {
       edges.push({ from: node.id, to: `reference:${reference}`, type: "references", source: reference });
+    }
+    for (const relation of inspection.relations) {
+      edges.push({
+        from: node.id,
+        to: `identity:${relation.profileId}:${relation.target}`,
+        type: relation.type,
+        label: relation.label,
+        reverseLabel: relation.reverseLabel,
+        strength: relation.strength,
+        source: relation.target,
+        targetIdentity: relation.target,
+        profileId: relation.profileId,
+        sourceRange: relation.sourceRange,
+      });
     }
     if (metadata.present && metadata.statusValid && metadata.kind === "canonical" && metadata.status === "current" && metadata.canonical_for) {
       const key = `${metadata.scope}:${metadata.canonical_for}`;
@@ -3984,6 +4163,53 @@ export function buildDocumentationGraph(root = process.cwd(), options = {}) {
       canonicalGroups.get(key).push(file.path);
     }
   }
+
+  for (const [identityKey, matchingNodes] of documentIdGroups) {
+    if (matchingNodes.length > 1) {
+      for (const node of matchingNodes) healthIssues.push({
+        path: node.path,
+        type: "duplicate_document_id",
+        severity: "high",
+        resourceId: identityKey,
+        message: `Document identity is ambiguous in this project: ${identityKey} (${matchingNodes.map((item) => item.path).join(", ")}).`,
+      });
+    }
+  }
+  for (const node of nodes) {
+    for (const dependencyId of node.metadata.dependsOn || []) {
+      if (dependencyId === node.metadata.id) {
+        healthIssues.push({ path: node.path, type: "self_dependency", severity: "high", resourceId: dependencyId, message: `Document depends on itself: ${dependencyId}.` });
+        continue;
+      }
+      const matches = documentIdGroups.get(`context-room-documentation:${dependencyId}`) || [];
+      if (matches.length === 0) healthIssues.push({ path: node.path, type: "missing_dependency", severity: "high", resourceId: dependencyId, message: `Dependency does not resolve: ${dependencyId}.` });
+      if (matches.length > 1) healthIssues.push({ path: node.path, type: "ambiguous_dependency", severity: "high", resourceId: dependencyId, message: `Dependency resolves to multiple documents: ${dependencyId}.` });
+    }
+    for (const link of [...(node.contextLinks || []), ...(node.diagramLinks || [])]) {
+      const matches = documentIdGroups.get(`context-room-documentation:${link.id}`) || [];
+      if (matches.length === 0) healthIssues.push({ path: node.path, type: "unresolved_document_link", severity: "medium", resourceId: link.id, message: `Context Room link does not resolve: cr://${link.id}.` });
+      if (matches.length > 1) healthIssues.push({ path: node.path, type: "ambiguous_document_link", severity: "high", resourceId: link.id, message: `Context Room link is ambiguous: cr://${link.id}.` });
+    }
+  }
+  const dependencyAdjacency = new Map(nodes.filter((node) => node.metadata.id).map((node) => [node.metadata.id, node.metadata.dependsOn || []]));
+  const visiting = new Set();
+  const visited = new Set();
+  const cycleIds = new Set();
+  const visitDependency = (documentId, stack = []) => {
+    if (visiting.has(documentId)) {
+      const start = stack.indexOf(documentId);
+      for (const id of stack.slice(Math.max(0, start))) cycleIds.add(id);
+      cycleIds.add(documentId);
+      return;
+    }
+    if (visited.has(documentId)) return;
+    visiting.add(documentId);
+    for (const dependencyId of dependencyAdjacency.get(documentId) || []) if (dependencyAdjacency.has(dependencyId)) visitDependency(dependencyId, [...stack, documentId]);
+    visiting.delete(documentId);
+    visited.add(documentId);
+  };
+  for (const documentId of dependencyAdjacency.keys()) visitDependency(documentId);
+  for (const documentId of cycleIds) for (const node of documentIdGroups.get(documentId) || []) healthIssues.push({ path: node.path, type: "dependency_cycle", severity: "high", resourceId: documentId, message: `Document dependency is part of a cycle: ${documentId}.` });
 
   for (const [key, paths] of canonicalGroups.entries()) {
     if (paths.length <= 1) continue;
@@ -4025,23 +4251,25 @@ function graphIssuesForDocument({ root, file, content, metadata, watched, inHub,
   if (metadata.parseError) issues.push({ type: "metadata_parse_error", severity: "high", message: `Cannot parse context_room metadata: ${metadata.parseError}.` });
   if (metadata.statusConflict === "target_path_current") issues.push({ type: "target_status_conflict", severity: "high", message: "Target-path documentation cannot declare current implemented truth." });
   if (metadata.statusConflict === "record_path_current") issues.push({ type: "record_status_conflict", severity: "high", message: "Record documentation cannot declare current canonical truth." });
-  if (metadata.present && !metadata.statusValid) issues.push({ type: "invalid_metadata_status", severity: "high", message: "context_room.status must be current, draft, historical, or superseded." });
-  if (metadata.present && metadata.statusValid && ["canonical", "procedure", "agents"].includes(metadata.kind) && metadata.status === "current" && !metadata.last_verified) {
+  if (metadata.present && metadata.contract === "minimal" && !metadata.idValid && !isNativeProviderDocumentPath(file.path)) issues.push({ type: "invalid_document_id", severity: "high", message: "context_room.id must use lowercase dot-separated segments with optional internal hyphens." });
+  if (metadata.present && metadata.contract === "legacy" && !metadata.statusValid) issues.push({ type: "invalid_metadata_status", severity: "high", message: "Legacy context_room.status must be current, draft, historical, or superseded." });
+  if (metadata.present && metadata.contract === "legacy" && metadata.statusValid && ["canonical", "procedure", "agents"].includes(metadata.kind) && metadata.status === "current" && !metadata.last_verified) {
     issues.push({ type: "missing_last_verified", severity: watched ? "medium" : "low", message: "Current high-impact doc has no last_verified date." });
   }
-  if (metadata.present && metadata.last_verified && Date.parse(metadata.last_verified) < Date.now() - 1000 * 60 * 60 * 24 * 120) {
+  if (metadata.contract === "legacy" && metadata.present && metadata.last_verified && Date.parse(metadata.last_verified) < Date.now() - 1000 * 60 * 60 * 24 * 120) {
     issues.push({ type: "stale_last_verified", severity: watched ? "medium" : "low", message: `last_verified is older than 120 days: ${metadata.last_verified}.` });
   }
-  if (metadata.present && metadata.statusValid && metadata.kind === "canonical" && metadata.status === "current" && !metadata.canonical_for) {
+  if (metadata.contract === "legacy" && metadata.present && metadata.statusValid && metadata.kind === "canonical" && metadata.status === "current" && !metadata.canonical_for) {
     issues.push({ type: "missing_canonical_for", severity: "medium", message: "Current canonical doc should declare canonical_for." });
   }
-  if (metadata.present && metadata.statusValid && ["canonical", "procedure"].includes(metadata.kind) && metadata.status === "current" && metadata.sources.length === 0) {
+  if (metadata.contract === "legacy" && metadata.present && metadata.statusValid && ["canonical", "procedure"].includes(metadata.kind) && metadata.status === "current" && metadata.sources.length === 0) {
     issues.push({ type: "missing_sources", severity: "low", message: "Current doc has no source files or links." });
   }
   for (const source of metadata.sources) {
     if (!sourceReferenceExists(root, file.path, source)) issues.push({ type: "broken_source", severity: "high", message: `Declared source does not exist: ${source}.` });
   }
   if (metadata.present) for (const reference of references) {
+    if (parseContextRoomUri(reference)) continue;
     if (!sourceReferenceExists(root, file.path, reference)) issues.push({ type: "broken_reference", severity: "medium", message: `Referenced file does not exist: ${reference}.` });
   }
   if (metadata.present && !content.trim()) issues.push({ type: "empty_doc", severity: watched ? "medium" : "low", message: "Document is empty." });
@@ -4166,7 +4394,17 @@ export function buildContextRoomDoctorReport(root = process.cwd(), options = {})
   try {
     acknowledgements = readContextHealthAcknowledgements(root);
   } catch {}
-  const issues = [...configurationIssues, ...graph.healthIssues].map((issue) => publicHealthIssue(issue, acknowledgements));
+  const dependencyReviewIssues = (docqa.queue || [])
+    .filter((item) => item.reviewReason === "dependency-changed")
+    .map((item) => ({
+      type: "dependency_review_required",
+      severity: "high",
+      path: item.path,
+      resourceId: item.metadata?.id || "",
+      message: `Accepted dependencies changed after this document was verified: ${(item.dependencyChanges || []).map((change) => change.documentId).join(", ")}.`,
+      dependencyChanges: item.dependencyChanges || [],
+    }));
+  const issues = [...configurationIssues, ...graph.healthIssues, ...dependencyReviewIssues].map((issue) => publicHealthIssue(issue, acknowledgements));
   return {
     generatedAt: new Date().toISOString(),
     root: path.resolve(root),
@@ -4374,11 +4612,12 @@ export function computeDocIssues({ path: relPath, content = "", gitStatus = "", 
   const todoCount = (text.match(/\b(TODO|FIXME|HACK|à clarifier|a verifier|à vérifier)\b|\[QUESTION\]|<!--\s*QUESTION\b/gi) || []).length;
   if (todoCount) issues.push({ type: "todo", severity: docMetadata.kind === "canonical" ? "high" : "medium", message: `${todoCount} TODO/question to consolidate.` });
   if (path.extname(normalizeRelPath(relPath)) === ".md" && gitStatus.trim() && !docMetadata.present) issues.push({ type: "missing_metadata", severity: "medium", message: "Missing context_room metadata." });
-  if (docMetadata.present && !docMetadata.statusValid) issues.push({ type: "invalid_metadata_status", severity: "high", message: "context_room.status must be current, draft, historical, or superseded." });
+  if (docMetadata.present && docMetadata.contract === "minimal" && !docMetadata.idValid && !isNativeProviderDocumentPath(relPath)) issues.push({ type: "invalid_document_id", severity: "high", message: "context_room.id must use lowercase dot-separated segments with optional internal hyphens." });
+  if (docMetadata.present && docMetadata.contract === "legacy" && !docMetadata.statusValid) issues.push({ type: "invalid_metadata_status", severity: "high", message: "Legacy context_room.status must be current, draft, historical, or superseded." });
   if (effectiveMetadata.statusConflict === "target_path_current") issues.push({ type: "target_status_conflict", severity: "high", message: "Target-path documentation cannot declare current implemented truth." });
   if (effectiveMetadata.statusConflict === "record_path_current") issues.push({ type: "record_status_conflict", severity: "high", message: "Record documentation cannot declare current canonical truth." });
-  if (!["target", "record"].includes(effectiveMetadata.truthState) && docMetadata.present && docMetadata.statusValid && ["agents", "canonical", "procedure"].includes(docMetadata.kind) && docMetadata.status === "current" && !docMetadata.last_verified && gitStatus.trim()) issues.push({ type: "missing_last_verified", severity: "medium", message: "Missing last_verified while the file is modified." });
-  if (docMetadata.last_verified && Date.parse(docMetadata.last_verified) < Date.now() - 1000 * 60 * 60 * 24 * 120) issues.push({ type: "stale_verified", severity: "medium", message: `Old last_verified: ${docMetadata.last_verified}.` });
+  if (docMetadata.contract === "legacy" && !["target", "record"].includes(effectiveMetadata.truthState) && docMetadata.present && docMetadata.statusValid && ["agents", "canonical", "procedure"].includes(docMetadata.kind) && docMetadata.status === "current" && !docMetadata.last_verified && gitStatus.trim()) issues.push({ type: "missing_last_verified", severity: "medium", message: "Missing last_verified while the file is modified." });
+  if (docMetadata.contract === "legacy" && docMetadata.last_verified && Date.parse(docMetadata.last_verified) < Date.now() - 1000 * 60 * 60 * 24 * 120) issues.push({ type: "stale_verified", severity: "medium", message: `Old last_verified: ${docMetadata.last_verified}.` });
   if (classification.type === "daily" && /source of truth|canonique|vérité|source de vérité/i.test(text)) issues.push({ type: "temporary_truth_claim", severity: "high", message: "Temporary log presents itself as source of truth." });
   if (gitStatus.trim()) {
     for (const match of text.matchAll(/`([^`]+\.(?:md|mjs|js|py|json|yaml|yml|csv))`/g)) {
@@ -4427,6 +4666,7 @@ export function buildDocQaReport(root = process.cwd(), options = {}) {
     : effectiveMemoryWebappSettings(root);
   const files = options.files || listMemoryFiles(root);
   invalidateAbsentReviewsForPresentFiles(root, reviewState, files);
+  const acceptedDependencyState = buildAcceptedDependencyState(root, files, reviewState);
   const startupFiles = options.startupFiles || listStartupContextFiles(root, settings);
   const { inferredRenames, renamedDeletedPaths } = inferGitRenames(root, gitStatuses, files, settings, gitHeadContents);
   const { inferredRenames: inferredBaselineRenames, renamedDeletedPaths: baselineRenamedDeletedPaths } = inferReviewBaselineRenames(root, reviewState, gitStatuses, files, settings);
@@ -4442,15 +4682,17 @@ export function buildDocQaReport(root = process.cwd(), options = {}) {
     const resourceState = file.exists === false ? "absent" : "present";
     const resourceVersion = resourceVersionForReviewFile(root, file.path, file, reviewState.reviews[file.path] || null);
     const review = currentReviewFor(root, reviewState.reviews, file.path, content, resourceState, resourceVersion);
-    if (review?.status === "verified" && review.current) return null;
     const metadata = parseDocMetadata(content, file.path);
+    const dependencyVersions = directDependencyVersions(metadata, acceptedDependencyState.byId);
+    const dependencyChanges = dependencyChangesForReview(review, dependencyVersions);
+    if (review?.status === "verified" && review.current && dependencyChanges.length === 0) return null;
     const issues = computeDocIssues({ path: file.path, content, gitStatus, metadata });
     const riskScore = riskScoreFor({ classification, issues, gitStatus });
-    const reviewReason = reviewReasonFor({ gitStatus, resourceState });
+    const reviewReason = dependencyChanges.length ? "dependency-changed" : reviewReasonFor({ gitStatus, resourceState });
     const reviewRequired = reviewReason === "unverified-current";
-    return { path: file.path, oldPath: gitEntry?.oldPath || null, inferredRename: Boolean(gitEntry?.inferredRename), label: file.label, summary: file.summary, updatedAt: file.updatedAt, classification, metadata, gitStatus, reviewReason, reviewRequired, issues, riskScore, review, resourceState, resourceVersion, currentHash: hashContent(content) };
+    return { path: file.path, oldPath: gitEntry?.oldPath || null, inferredRename: Boolean(gitEntry?.inferredRename), label: file.label, summary: file.summary, updatedAt: file.updatedAt, classification, metadata, gitStatus, reviewReason, reviewRequired, issues, riskScore, review, resourceState, resourceVersion, currentHash: hashContent(content), dependencyVersions, dependencyChanges };
   }).filter(Boolean
-  ).filter((item) => !(item.review?.status === "verified" && item.review.current));
+  ).filter((item) => !(item.review?.status === "verified" && item.review.current && !(item.dependencyChanges || []).length));
   const deletedPage = buildDeletedReviewPage(root, {
     gitStatuses,
     gitHeadContents,
@@ -7298,6 +7540,13 @@ function invalidateBackgroundReports(root) {
   backgroundReportCache.delete(key);
 }
 
+function invalidateDocumentGraphCache(root) {
+  const prefix = `${path.resolve(root)}\0`;
+  for (const key of documentGraphCache.keys()) {
+    if (key.startsWith(prefix)) documentGraphCache.delete(key);
+  }
+}
+
 function invalidateBackgroundCaches(root, { explicit = false } = {}) {
   const key = path.resolve(root);
   if (explicit) backgroundExplicitInvalidations.set(key, Date.now());
@@ -7305,6 +7554,7 @@ function invalidateBackgroundCaches(root, { explicit = false } = {}) {
   invalidateBackgroundFileTasks(key);
   contextHubProjectSummaryCache.delete(key);
   contextHubStateCache.delete(key);
+  invalidateDocumentGraphCache(key);
 }
 
 function clearBackgroundCacheState(root) {
@@ -7316,6 +7566,7 @@ function clearBackgroundCacheState(root) {
   backgroundExplicitInvalidations.delete(key);
   contextHubProjectSummaryCache.delete(key);
   contextHubStateCache.delete(key);
+  invalidateDocumentGraphCache(key);
   for (const taskKey of backgroundFileTaskCache.keys()) {
     if (taskKey.startsWith(prefix)) backgroundFileTaskCache.delete(taskKey);
   }
@@ -7632,6 +7883,8 @@ function contextHubLocalProjectSummary(project, currentRoot) {
       resourceState: item.resourceState || "",
       resourceVersion: item.resourceVersion || "",
       currentHash: item.currentHash || "",
+      dependencyVersions: item.dependencyVersions || {},
+      dependencyChanges: item.dependencyChanges || [],
       reviewStatus: item.review?.current ? (item.review.status || "") : "",
       startupContext: item.startupContext ? {
         kind: item.startupContext.kind || "",
@@ -7947,6 +8200,46 @@ function contextHubStateWithFreshness(state, { generatedAt = "", refreshing = fa
   };
 }
 
+function contextHubProjectSelection(state, requestedId = "") {
+  const cleanId = String(requestedId || "").trim();
+  const project = (state.projects || []).find((candidate) => (
+    candidate.projectKey === cleanId
+    || candidate.id === cleanId
+    || (candidate.worktrees || []).some((worktree) => worktree.id === cleanId)
+  ));
+  if (!project) return { project: null, worktree: null };
+  const worktree = (project.worktrees || []).find((candidate) => candidate.id === cleanId)
+    || (project.worktrees || []).find((candidate) => candidate.current)
+    || (project.worktrees || []).find((candidate) => candidate.available)
+    || (project.root ? { id: project.id, root: project.root, branch: project.worktree?.branch || "", head: project.worktree?.head || "" } : null);
+  return { project, worktree };
+}
+
+function contextHubAttentionItems(root, requestedId = "") {
+  const state = readFastContextHubState(root);
+  const selection = requestedId ? contextHubProjectSelection(state, requestedId) : { project: null, worktree: null };
+  if (requestedId && !selection.project) throw sharedRequestError(`Unknown project: ${requestedId}`, 404, "context_hub_project_not_found");
+  const reviews = contextHubAtomicReviewItems(state).filter((item) => !selection.project || item.projectKey === selection.project.projectKey);
+  let healthIssues = [];
+  let freshness = [];
+  if (selection.worktree?.root && selection.worktree.available !== false) {
+    const report = buildContextRoomDoctorReport(selection.worktree.root);
+    healthIssues = report.issues || [];
+    freshness = (buildAgentReviewQueue(selection.worktree.root).queue || []).filter((item) => item.reviewReason === "dependency-changed");
+  }
+  const decisions = (state.proposals || []).filter((proposal) => (
+    (!selection.project || proposal.projectKey === selection.project.projectKey)
+    && (proposal.hasConflict || proposal.reviewStatus === "conflict")
+  )).map((proposal) => ({
+    id: `proposal-decision:${proposal.id}`,
+    title: proposal.title || proposal.branch,
+    description: "Resolve the proposal conflict before file review can continue.",
+    resourceId: proposal.id,
+    severity: "high",
+  }));
+  return buildAttentionItems({ reviews, freshness, decisions, healthIssues, project: selection.project });
+}
+
 function minimalContextHubState(root) {
   const currentRoot = path.resolve(root);
   const worktrees = listContextHubProjects().map((project) => ({
@@ -8137,6 +8430,7 @@ export function createMemoryServer({
   codexPromptCenter = createCodexPromptCenterProvider(),
   registerInHub = false,
   frameAncestorPorts = [],
+  persistentDocumentGraphLayout = false,
 } = {}) {
   const projectId = contextRoomProjectId(root);
   const promptMutationNonce = randomBytes(32).toString("base64url");
@@ -8150,6 +8444,7 @@ export function createMemoryServer({
   const sharedReviewServers = new Set();
   const sharedReviewRooms = new Map();
   const workspaceRegistry = createWorkspaceRegistry();
+  if (persistentDocumentGraphLayout) warmDocumentRelationsGraphLayout();
   ensureBackgroundWorker(root, "files");
   void readBackgroundReports(root).catch(() => {});
   const lastSelectedPath = normalizeRelPath(readCollaborationSessionState(root).selectedPath || "");
@@ -8274,6 +8569,7 @@ export function createMemoryServer({
             port: reviewPort,
             globalPreferencesPath,
             registerInHub: false,
+            persistentDocumentGraphLayout,
             frameAncestorPorts: [
               ...trustedFrameAncestorPorts,
               contextRoomServerPort(server, port),
@@ -8313,7 +8609,7 @@ export function createMemoryServer({
         ...(error.details !== undefined ? { details: error.details } : {}),
       });
     } finally {
-      if (requestInvalidatesBackgroundCaches(req)) invalidateBackgroundCaches(root, { explicit: true });
+      if (requestInvalidatesBackgroundCaches(req)) invalidateBackgroundCaches(requestRoot, { explicit: true });
     }
   });
   server.once("close", () => {
@@ -8323,6 +8619,7 @@ export function createMemoryServer({
     workspaceRegistry.clear();
     stopBackgroundWatch();
     closeBackgroundWorkers(root);
+    if (persistentDocumentGraphLayout) releaseDocumentRelationsGraphLayout();
     clearBackgroundCacheState(root);
   });
   return { server, root, port, projectId, promptMutationNonce };
@@ -8354,7 +8651,7 @@ function contextApiTarget(root, url) {
   };
 }
 
-async function contextApiGraph(root, url) {
+async function contextApiGraph(root, url, { readers = null } = {}) {
   const target = contextApiTarget(root, url);
   const [{ buildContextInventory }, { buildContextGraph }] = await Promise.all([
     import("./context_inventory.mjs"),
@@ -8371,6 +8668,7 @@ async function contextApiGraph(root, url) {
     folder: target.folder,
     refreshShared: url.searchParams.get("refresh") !== "0",
     allowStale: url.searchParams.get("allowStale") === "1",
+    ...(readers ? { readers } : {}),
   });
   return buildContextGraph({ coordinate: inventory.coordinate, ...inventory });
 }
@@ -8387,6 +8685,467 @@ async function contextApiResult(root, url, operation) {
     return engine.impactContext(graph, selector, { provider: String(url.searchParams.get("provider") || "") });
   }
   throw sharedRequestError(`Unknown context operation: ${operation}`, 400, "context_operation_invalid");
+}
+
+function documentGraphListParam(url, key, fallback = []) {
+  const values = url.searchParams.getAll(key).flatMap((value) => String(value || "").split(","));
+  const normalized = [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+  return normalized.length ? normalized : fallback;
+}
+
+function documentationGraphForRelations(root) {
+  const graph = buildDocumentationGraph(root);
+  const existing = new Set(graph.nodes.map((node) => node.path));
+  const nodes = [...graph.nodes];
+  const edges = [...graph.edges];
+  for (const file of listMemoryFiles(root)) {
+    if (!file.exists || file.kind !== "html" || existing.has(file.path)) continue;
+    const abs = resolveExternalPath(file.path) || path.join(root, file.path);
+    const content = fs.existsSync(abs) && fs.statSync(abs).size <= MAX_FILE_BYTES ? fs.readFileSync(abs, "utf8") : "";
+    const references = collectInlinePathReferences(content);
+    nodes.push({
+      id: `doc:${file.path}`,
+      type: "doc",
+      path: file.path,
+      label: file.label || path.basename(file.path),
+      summary: file.summary || summarizeContent(content),
+      updatedAt: file.updatedAt,
+      gitStatus: "",
+      watched: isWatchedPath(file.path, readMemoryWebappSettings(root)),
+      inHub: false,
+      startup: false,
+      metadata: effectiveDocumentationMetadataForPath(parseDocMetadata(content, file.path), file.path),
+      references,
+      health: [],
+    });
+    for (const reference of references) edges.push({ from: `doc:${file.path}`, to: `reference:${reference}`, type: "references", source: reference });
+  }
+  return { ...graph, nodes, edges, summary: { ...graph.summary, docs: nodes.length } };
+}
+
+function sharedDocumentationGraphForRelations(target) {
+  const nodes = [];
+  const edges = [];
+  const seen = new Set();
+  for (const sourceRoot of target.roots || []) {
+    const pending = [sourceRoot.absolutePath];
+    while (pending.length && nodes.length < 5000) {
+      const current = pending.shift();
+      let entries = [];
+      try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { continue; }
+      for (const entry of entries) {
+        const absolutePath = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          if (!entry.name.startsWith(".")) pending.push(absolutePath);
+          continue;
+        }
+        if (!entry.isFile() || !PROJECT_DOCUMENTATION_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue;
+        const repositoryPath = normalizeRelPath(path.relative(target.root, absolutePath));
+        if (!repositoryPath || seen.has(repositoryPath)) continue;
+        seen.add(repositoryPath);
+        let content = "";
+        try {
+          if (fs.statSync(absolutePath).size <= MAX_FILE_BYTES) content = fs.readFileSync(absolutePath, "utf8");
+        } catch {}
+        const metadata = effectiveDocumentationMetadataForPath(parseDocMetadata(content, repositoryPath), repositoryPath);
+        metadata.diagramLinks = collectMermaidDocumentLinks(content);
+        const references = collectInlinePathReferences(content);
+        const node = {
+          id: `doc:${repositoryPath}`,
+          type: "doc",
+          path: repositoryPath,
+          label: path.basename(repositoryPath),
+          summary: summarizeContent(content),
+          updatedAt: "",
+          gitStatus: "",
+          watched: false,
+          inHub: false,
+          startup: /(?:^|\/)(?:AGENTS|CLAUDE)\.md$/i.test(repositoryPath) || /(?:^|\/)SKILL\.md$/i.test(repositoryPath),
+          metadata,
+          references,
+          contextLinks: collectContextRoomLinks(content),
+          diagramLinks: metadata.diagramLinks,
+          health: [],
+          source: "shared-main",
+        };
+        nodes.push(node);
+        for (const source of metadata.sources || []) edges.push({ from: node.id, to: `source:${source}`, type: "declares-source", source });
+        for (const reference of references) edges.push({ from: node.id, to: `reference:${reference}`, type: "references", source: reference });
+      }
+    }
+  }
+  return {
+    generatedAt: new Date().toISOString(),
+    nodes,
+    edges,
+    health: [],
+    summary: { docs: nodes.length, edges: edges.length },
+  };
+}
+
+function documentGraphQueryKey(url) {
+  return [...url.searchParams.entries()]
+    .filter(([key]) => key !== "refresh" && key !== "allowStale")
+    .sort(([leftKey, leftValue], [rightKey, rightValue]) => (
+      leftKey.localeCompare(rightKey) || leftValue.localeCompare(rightValue)
+    ))
+    .map(([key, value]) => `${key}=${value}`)
+    .join("&");
+}
+
+async function readCachedDocumentGraph(cacheKey, build, { refresh = false } = {}) {
+  if (refresh) documentGraphCache.delete(cacheKey);
+  const cached = documentGraphCache.get(cacheKey);
+  if (cached?.value) return cached.value;
+  if (cached?.promise) return cached.promise;
+  const promise = Promise.resolve().then(build);
+  documentGraphCache.set(cacheKey, { promise, value: null });
+  try {
+    const value = await promise;
+    if (documentGraphCache.get(cacheKey)?.promise === promise) {
+      documentGraphCache.set(cacheKey, { promise: null, value });
+    }
+    return value;
+  } catch (error) {
+    if (documentGraphCache.get(cacheKey)?.promise === promise) documentGraphCache.delete(cacheKey);
+    throw error;
+  }
+}
+
+async function documentGraphApiResult(root, url) {
+  const scope = ["global", "project", "local"].includes(url.searchParams.get("scope")) ? url.searchParams.get("scope") : "global";
+  const layers = documentGraphListParam(url, "layer", ["accepted"]);
+  const types = documentGraphListParam(url, "type");
+  const relations = documentGraphListParam(url, "relation");
+  const includeUnresolved = url.searchParams.get("unresolved") === "1";
+  const layout = url.searchParams.get("layout") !== "0";
+  const refresh = url.searchParams.get("refresh") === "1";
+  const queryKey = documentGraphQueryKey(url);
+  if (scope === "global") {
+    const hub = readFastContextHubState(root);
+    const projectSignature = (hub.projects || []).map((project) => [
+      project.id,
+      project.projectKey,
+      project.mode,
+      project.localReviewCount,
+      project.sharedProposalCount,
+      project.shared?.repository,
+      (project.worktrees || []).map((worktree) => [worktree.id, worktree.branch, worktree.available]),
+    ]);
+    const cacheKey = `${path.resolve(root)}\0global\0${hashContent(JSON.stringify(projectSignature))}\0${queryKey}`;
+    return readCachedDocumentGraph(cacheKey, async () => {
+      let graph = buildGlobalDocumentRelationsGraph({
+        projects: hub.projects || [],
+        projectOrder: hub.attention?.projectOrder || readContextHubAttention().projectOrder || [],
+      });
+      if (types.length) {
+        const nodes = graph.nodes.filter((node) => types.includes(node.kind));
+        const ids = new Set(nodes.map((node) => node.id));
+        graph = { ...graph, nodes, edges: graph.edges.filter((edge) => ids.has(edge.from) && ids.has(edge.to)) };
+      }
+      if (relations.length) graph = { ...graph, edges: graph.edges.filter((edge) => relations.includes(edge.type)) };
+      graph.stats = { ...graph.stats, nodes: graph.nodes.length, edges: graph.edges.length };
+      graph.freshness = hub.freshness || graph.freshness;
+      return layout ? layoutDocumentRelationsGraph(graph) : graph;
+    }, { refresh });
+  }
+  const requestedLocationId = String(url.searchParams.get("locationId") || url.searchParams.get("projectId") || "").trim();
+  const selectionHub = readFastContextHubState(root);
+  const selectedHubProject = requestedLocationId
+    ? (selectionHub.projects || []).find((project) => (
+        project.id === requestedLocationId
+        || project.projectKey === requestedLocationId
+        || (project.worktrees || []).some((worktree) => worktree.id === requestedLocationId)
+      )) || registeredContextHubWorktree(requestedLocationId)
+    : null;
+  if (selectedHubProject?.mode === "shared") {
+    const sharedTarget = resolveSharedDocumentationTarget(selectedHubProject.shared.repository, {
+      projectId: selectedHubProject.shared.projectId,
+      allowOffline: true,
+    });
+    const provider = String(url.searchParams.get("provider") || "codex").trim().toLowerCase();
+    const folder = normalizeRelPath(String(url.searchParams.get("folder") || ".").trim() || ".");
+    const requestedProposal = String(url.searchParams.get("proposal") || "").trim();
+    const hub = readFastContextHubState(root);
+    const proposals = layers.includes("proposal")
+      ? (hub.proposals || []).filter((proposal) => (
+          (!requestedProposal || proposal.id === requestedProposal || proposal.branch === requestedProposal)
+          && proposal.projectKey === selectedHubProject.projectKey
+        )).slice(0, 1)
+      : [];
+    const proposalSignature = proposals.map((proposal) => [proposal.id, proposal.head, proposal.status]);
+    const cacheKey = `${path.resolve(sharedTarget.root)}\0${sharedTarget.revision || "offline"}\0${hashContent(JSON.stringify(proposalSignature))}\0${queryKey}`;
+    return readCachedDocumentGraph(cacheKey, async () => {
+      const [{ buildContextInventory }, { buildContextGraph }] = await Promise.all([
+        import("./context_inventory.mjs"),
+        import("./context_engine.mjs"),
+      ]);
+      const inventory = buildContextInventory({
+        projectId: selectedHubProject.shared.projectId,
+        locationId: "",
+        folder,
+        provider,
+        registered: true,
+        shared: selectedHubProject.shared,
+      }, {
+        provider,
+        folder,
+        refreshShared: true,
+      });
+      const contextGraph = buildContextGraph({ coordinate: inventory.coordinate, ...inventory });
+      const graph = buildProjectDocumentRelationsGraph({
+        root: sharedTarget.root,
+        projectId: selectedHubProject.shared.projectId,
+        locationId: "",
+        title: selectedHubProject.title,
+        scope,
+        centerPath: String(url.searchParams.get("path") || folder || "").trim(),
+        depth: Number(url.searchParams.get("depth") || 1),
+        layers,
+        types,
+        relations,
+        includeUnresolved,
+        documentationGraph: sharedDocumentationGraphForRelations(sharedTarget),
+        contextGraph,
+        pendingPaths: [],
+        proposals,
+      });
+      graph.freshness = {
+        state: sharedTarget.online ? "fresh" : "offline",
+        verified: true,
+        source: "shared-main",
+        revision: sharedTarget.revision,
+        defaultBranch: sharedTarget.defaultBranch,
+      };
+      return layout ? layoutDocumentRelationsGraph(graph) : graph;
+    }, { refresh });
+  }
+  const target = contextApiTarget(root, url);
+  const cacheKey = `${path.resolve(target.root)}\0${queryKey}`;
+  return readCachedDocumentGraph(cacheKey, async () => {
+    const contextUrl = new URL(url);
+    if (!refresh) contextUrl.searchParams.set("refresh", "0");
+    contextUrl.searchParams.set("allowStale", "1");
+    const reviewReport = buildDocQaReport(target.root);
+    const contextGraph = await contextApiGraph(root, contextUrl, {
+      readers: {
+        readDoctor: () => ({ issues: [] }),
+        listDocuments: () => [],
+        readSharedDocuments: () => [],
+        listProposals: () => [],
+        readReviewQueue: () => ({ queue: reviewReport.queue || [] }),
+      },
+    });
+    const hub = readFastContextHubState(root);
+    const project = (hub.projects || []).find((item) => item.id === target.locationId || item.id === target.projectId || (item.worktrees || []).some((worktree) => worktree.id === target.locationId));
+    const requestedProposal = String(url.searchParams.get("proposal") || "").trim();
+    const proposals = layers.includes("proposal")
+      ? (hub.proposals || []).filter((proposal) => (
+          (!requestedProposal || proposal.id === requestedProposal || proposal.branch === requestedProposal)
+          && (!project || proposal.projectKey === project.projectKey)
+        )).slice(0, 1)
+      : [];
+    const graph = buildProjectDocumentRelationsGraph({
+      root: target.root,
+      projectId: target.projectId,
+      locationId: target.locationId,
+      title: project?.title || path.basename(target.root),
+      scope,
+      centerPath: String(url.searchParams.get("path") || target.folder || "").trim(),
+      depth: Number(url.searchParams.get("depth") || 1),
+      layers,
+      types,
+      relations,
+      includeUnresolved,
+      documentationGraph: documentationGraphForRelations(target.root),
+      contextGraph,
+      pendingPaths: reviewReport.pendingPaths || reviewReport.queue.map((item) => item.path),
+      proposals,
+    });
+    return layout ? layoutDocumentRelationsGraph(graph) : graph;
+  }, { refresh });
+}
+
+export function resolveDocumentReference(root = process.cwd(), selector = "", { anchor = "" } = {}) {
+  const requested = String(selector || "").trim();
+  const parsed = parseContextRoomUri(requested);
+  const documentId = parsed?.id || (/^[a-z0-9]+(?:-[a-z0-9]+)*(?:\.[a-z0-9]+(?:-[a-z0-9]+)*)+$/.test(requested) ? requested : "");
+  const requestedAnchor = parsed?.anchor || String(anchor || "").trim();
+  const graph = documentationGraphForRelations(root);
+  const candidates = documentId
+    ? graph.nodes.filter((node) => node.metadata?.id === documentId || (node.metadata?.identities || []).some((identity) => identity.value === documentId))
+    : graph.nodes.filter((node) => normalizeRelPath(node.path) === normalizeRelPath(requested));
+  if (!candidates.length && !documentId) {
+    const normalizedPath = normalizeRelPath(requested);
+    const projectRoot = path.resolve(root);
+    const absolutePath = path.resolve(projectRoot, normalizedPath);
+    const relative = path.relative(projectRoot, absolutePath);
+    if (!relative.startsWith("..") && !path.isAbsolute(relative) && fs.existsSync(absolutePath) && fs.statSync(absolutePath).isFile()) {
+      return {
+        schemaVersion: "context-room.document-resolution/1",
+        selector: requested,
+        documentId: "",
+        path: normalizedPath,
+        anchor: requestedAnchor,
+        truthState: parseDocMetadata("", normalizedPath).truthState,
+        contract: /(?:^|\/)(?:AGENTS|CLAUDE)\.md$/i.test(normalizedPath) || /(?:^|\/)SKILL\.md$/i.test(normalizedPath) ? "provider-native" : "unprofiled",
+      };
+    }
+  }
+  if (!candidates.length) throw sharedRequestError(`Document does not resolve: ${requested}`, 404, "not-found", { selector: requested, documentId, anchor: requestedAnchor });
+  if (candidates.length > 1) throw sharedRequestError(`Document reference is ambiguous: ${requested}`, 409, "ambiguous", {
+    selector: requested,
+    documentId,
+    candidates: candidates.map((node) => ({ path: node.path, truthState: node.metadata?.truthState || "unclassified" })),
+  });
+  const node = candidates[0];
+  const providerNative = /(?:^|\/)(?:AGENTS|CLAUDE)\.md$/i.test(node.path) || /(?:^|\/)SKILL\.md$/i.test(node.path);
+  return {
+    schemaVersion: "context-room.document-resolution/1",
+    selector: requested,
+    documentId: node.metadata?.id || "",
+    path: node.path,
+    anchor: requestedAnchor,
+    truthState: node.metadata?.truthState || "unclassified",
+    contract: providerNative ? "provider-native" : (node.metadata?.contract || "legacy"),
+  };
+}
+
+async function documentInspectionApiResult(root, url) {
+  const target = contextApiTarget(root, url);
+  const selector = String(url.searchParams.get("selector") || url.searchParams.get("path") || "").trim();
+  if (!selector) throw sharedRequestError("selector is required", 400, "document_selector_required");
+  const resolved = resolveDocumentReference(target.root, selector);
+  const absolutePath = resolveExternalPath(resolved.path) || path.resolve(target.root, resolved.path);
+  const relative = path.relative(path.resolve(target.root), absolutePath);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) throw sharedRequestError("Document is outside the selected project", 403, "document_outside_project");
+  if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) throw sharedRequestError("Document is unavailable", 404, "document_not_found");
+  const stats = fs.statSync(absolutePath);
+  const textual = !/\.(?:png|jpe?g|gif|webp|avif|svg)$/i.test(absolutePath);
+  const content = textual && stats.size <= MAX_FILE_BYTES ? fs.readFileSync(absolutePath, "utf8") : "";
+  const inspection = inspectDocumentMetadata({ content, relPath: resolved.path, root: target.root, absolutePath });
+  const graphUrl = new URL(url);
+  graphUrl.searchParams.set("scope", "local");
+  graphUrl.searchParams.set("path", resolved.path);
+  graphUrl.searchParams.set("depth", "1");
+  graphUrl.searchParams.set("layout", "0");
+  graphUrl.searchParams.set("layers", "accepted,unverified,target");
+  const graph = await documentGraphApiResult(root, graphUrl);
+  const center = graph.nodes.find((node) => node.path === normalizeRelPath(resolved.path)) || null;
+  const connected = center ? graph.edges.filter((edge) => edge.from === center.id || edge.to === center.id) : [];
+  const review = (buildDocQaReport(target.root).queue || []).find((item) => normalizeRelPath(item.path) === normalizeRelPath(resolved.path)) || null;
+  return {
+    schemaVersion: "context-room.document-inspection/1",
+    target: { projectId: target.projectId, locationId: target.locationId, path: resolved.path },
+    document: { ...resolved, size: stats.size, updatedAt: stats.mtime.toISOString() },
+    metadata: inspection.metadata,
+    profiles: inspection.profiles,
+    identities: inspection.identities,
+    relations: inspection.relations,
+    connections: { nodes: graph.nodes, edges: connected },
+    health: inspection.health,
+    trust: {
+      contentVerification: review && review.reviewReason !== "dependency-changed" ? "needs-review" : "accepted",
+      dependencyFreshness: review?.reviewReason === "dependency-changed" ? "needs-review" : "current",
+      review,
+    },
+  };
+}
+
+async function documentSearchApiResult(root, url) {
+  const target = contextApiTarget(root, url);
+  const query = String(url.searchParams.get("query") || url.searchParams.get("q") || "").trim();
+  if (!query) throw sharedRequestError("query is required", 400, "document_search_query_required");
+  const cursor = Math.max(0, Number.parseInt(url.searchParams.get("cursor") || "0", 10) || 0);
+  const limit = Math.min(100, Math.max(1, Number.parseInt(url.searchParams.get("limit") || "25", 10) || 25));
+  const { searchDocumentation } = await import("./doc_agent.mjs");
+  const result = searchDocumentation(target.root, query, {
+    limit: Math.min(500, cursor + limit + 1),
+    status: String(url.searchParams.get("truth") || url.searchParams.get("status") || "").trim(),
+    kind: String(url.searchParams.get("kind") || "").trim(),
+  });
+  const page = result.results.slice(cursor, cursor + limit);
+  const nextCursor = cursor + page.length < result.results.length ? String(cursor + page.length) : null;
+  return {
+    schemaVersion: "context-room.document-search/1",
+    target: { projectId: target.projectId, locationId: target.locationId },
+    query: result.query,
+    filters: result.filters,
+    revision: result.revision,
+    items: page,
+    pagination: { cursor: String(cursor), limit, nextCursor },
+  };
+}
+
+async function documentValidationApiResult(root, url) {
+  const inspection = await documentInspectionApiResult(root, url);
+  return {
+    schemaVersion: "context-room.document-validation/1",
+    target: inspection.target,
+    document: inspection.document,
+    valid: inspection.health.length === 0,
+    issues: inspection.health,
+    profiles: inspection.profiles.map((item) => ({ id: item.profile?.id || "", version: item.profile?.version || "", origin: item.profile?.origin || "" })),
+    trust: inspection.trust,
+  };
+}
+
+export function resolveDocumentReferenceInDocuments(documents = [], selector = "", { anchor = "", truthState = "proposal", proposal = null } = {}) {
+  const requested = String(selector || "").trim();
+  const parsed = parseContextRoomUri(requested);
+  const documentId = parsed?.id || (isValidDocumentId(requested) ? requested : "");
+  const requestedAnchor = parsed?.anchor || String(anchor || "").trim();
+  const candidates = documents.flatMap((document) => {
+    const metadata = parseDocMetadata(document.content || "", document.path || "");
+    const matches = documentId
+      ? metadata.id === documentId
+      : normalizeRelPath(document.path) === normalizeRelPath(requested);
+    return matches ? [{ document, metadata }] : [];
+  });
+  if (!candidates.length) return null;
+  if (candidates.length > 1) throw sharedRequestError(`Document reference is ambiguous: ${requested}`, 409, "ambiguous", {
+    selector: requested,
+    documentId,
+    candidates: candidates.map(({ document }) => ({ path: document.path, truthState })),
+  });
+  const { document, metadata } = candidates[0];
+  return {
+    schemaVersion: "context-room.document-resolution/1",
+    selector: requested,
+    documentId: metadata.id || "",
+    path: document.path,
+    anchor: requestedAnchor,
+    truthState,
+    contract: metadata.contract || "legacy",
+    version: document.version || "",
+    ...(proposal ? { proposal } : {}),
+  };
+}
+
+async function resolveDocumentReferenceForApi(root, target, selector, { anchor = "", proposal = "" } = {}) {
+  const proposalSelector = String(proposal || "").trim();
+  if (proposalSelector) {
+    const hub = readFastContextHubState(root);
+    const candidates = (hub.proposals || []).filter((item) => (
+      (item.id === proposalSelector || item.branch === proposalSelector)
+      && (!target.projectId || item.projectId === target.projectId || item.projectKey === target.projectId)
+    ));
+    if (candidates.length > 1) throw sharedRequestError(`Proposal is ambiguous: ${proposalSelector}`, 409, "ambiguous", {
+      selector: proposalSelector,
+      candidates: candidates.map((item) => ({ id: item.id, branch: item.branch, repository: item.repository })),
+    });
+    if (candidates.length === 1) {
+      const match = candidates[0];
+      const documents = readSharedRevisionDocuments(match.repository, match.head, { refresh: false });
+      const pending = resolveDocumentReferenceInDocuments(documents, selector, {
+        anchor,
+        truthState: "proposal",
+        proposal: { id: match.id, branch: match.branch, head: match.head, repository: match.repository },
+      });
+      if (pending) return pending;
+    }
+  }
+  return resolveDocumentReference(target.root, selector, { anchor });
 }
 
 async function proposalContextImpactForApi({ selector, repository }) {
@@ -8434,6 +9193,16 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       renderAppHtml({ codexPromptMutationNonce: promptMutationNonce }),
       { frameAncestorPorts },
     );
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/vendor/mermaid.min.js") {
+    const vendorPath = fileURLToPath(new URL("../node_modules/mermaid/dist/mermaid.min.js", import.meta.url));
+    res.writeHead(200, {
+      "content-type": "text/javascript; charset=utf-8",
+      "cache-control": "public, max-age=31536000, immutable",
+      "x-content-type-options": "nosniff",
+    });
+    fs.createReadStream(vendorPath).pipe(res);
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/workspaces") {
@@ -8608,6 +9377,32 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     sendJson(res, 200, await contextApiResult(root, url, "impact"));
     return;
   }
+  if (req.method === "GET" && url.pathname === "/api/context-hub/document-graph") {
+    sendJson(res, 200, await documentGraphApiResult(root, url));
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/context-hub/document-inspect") {
+    sendJson(res, 200, await documentInspectionApiResult(root, url));
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/context-hub/document-search") {
+    sendJson(res, 200, await documentSearchApiResult(root, url));
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/context-hub/document-validate") {
+    sendJson(res, 200, await documentValidationApiResult(root, url));
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/context-hub/document-resolve") {
+    const target = contextApiTarget(root, url);
+    const selector = String(url.searchParams.get("selector") || url.searchParams.get("id") || "").trim();
+    if (!selector) throw sharedRequestError("selector is required", 400, "document_selector_required");
+    sendJson(res, 200, await resolveDocumentReferenceForApi(root, target, selector, {
+      anchor: url.searchParams.get("anchor") || "",
+      proposal: url.searchParams.get("proposal") || "",
+    }));
+    return;
+  }
   if (req.method === "GET" && url.pathname === "/api/proposal/context-impact") {
     const selector = String(url.searchParams.get("selector") || "").trim();
     const repository = String(url.searchParams.get("repository") || "").trim();
@@ -8617,7 +9412,11 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/context-hub/attention") {
-    sendJson(res, 200, readContextHubAttention());
+    const settings = readContextHubAttention();
+    sendJson(res, 200, {
+      ...settings,
+      items: contextHubAttentionItems(root, url.searchParams.get("projectId") || ""),
+    });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/context-hub/project-order") {
@@ -8912,7 +9711,13 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     } else if (action === "watch-folder") {
       result = writeFolderWatchRule(project.root, { path: body.path, mode: body.mode });
     } else if (action === "create-markdown") {
-      result = createMarkdownFile(project.root, { path: body.path, title: body.title, applyTemplate: false });
+      result = createMarkdownFile(project.root, {
+        path: body.path,
+        title: body.title,
+        applyTemplate: true,
+        templateId: "context-golden",
+        metadata: { id: documentIdForPath(body.path), depends_on: [] },
+      });
     } else if (action === "create-folder") {
       result = createFolder(project.root, { path: body.path });
     } else if (action === "delete") {
@@ -9381,6 +10186,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       expectedResourceState: body.expectedResourceState,
       expectedResourceVersion: body.expectedResourceVersion,
       expectedContentHash: body.expectedContentHash,
+      expectedDependencyVersions: body.expectedDependencyVersions || null,
     });
     let proposalFinalization = null;
     if (body.status === "verified" && fs.existsSync(path.join(path.resolve(root), SHARED_REVIEW_CONFIG))) {
@@ -10356,6 +11162,11 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .global-project-row-side { display: grid; justify-items: end; gap: 3px; color: var(--muted); font-size: 9px; white-space: nowrap; }
     .global-project-row-action { color: var(--accent); font-weight: 780; }
     .global-project-folder-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .explorer-document-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; margin: 0 0 8px; padding: 2px; border-radius: 7px; background: var(--surface-card); }
+    .explorer-document-tab { min-height: 28px; padding: 4px 8px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; font-size: 10px; font-weight: 650; }
+    .explorer-document-tab:hover { color: var(--text); background: var(--surface-card-hover); }
+    .explorer-document-tab.active { background: color-mix(in srgb, var(--accent) 11%, var(--surface-card-hover)); color: var(--text); }
+    .explorer-document-tab:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 1px; }
     .global-project-watch-filters { display: flex; flex-wrap: wrap; gap: 4px; }
     .global-project-watch-filter { min-height: 25px; padding: 3px 7px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; font-size: 9px; }
     .global-project-watch-filter:hover { background: var(--surface-card-hover); color: var(--text); }
@@ -10370,6 +11181,32 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .global-project-tree-name { min-width: 0; overflow: hidden; font-size: 10px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
     .global-project-tree-meta { color: var(--muted); font-size: 9px; }
     .global-project-folder-state { padding: 20px 8px; color: var(--muted); font-size: 10px; line-height: 1.45; text-align: center; }
+    .explorer-related-current { display: grid; gap: 4px; padding: 8px 7px 10px; border-bottom: 1px solid var(--line); }
+    .explorer-related-current > strong { min-width: 0; overflow: hidden; color: var(--text); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .explorer-related-current > div { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--muted); font-size: 9px; }
+    .explorer-related-current > div strong { color: var(--text-soft); font-weight: 650; }
+    .explorer-related-state { padding: 2px 5px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 11%, transparent); color: var(--accent); font-weight: 700; }
+    .explorer-related-section { display: grid; gap: 2px; padding: 10px 0 4px; border-bottom: 1px solid var(--line); }
+    .explorer-related-section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 7px 4px; }
+    .explorer-related-section-head h3 { margin: 0; color: var(--text-soft); font-size: 10px; font-weight: 700; letter-spacing: 0; }
+    .explorer-related-section-head span { color: var(--muted); font-size: 9px; font-variant-numeric: tabular-nums; }
+    .explorer-related-list { display: grid; gap: 1px; }
+    .explorer-related-row { min-width: 0; min-height: 40px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 7px; padding: 5px 7px; border-radius: 6px; color: var(--text-soft); text-decoration: none; }
+    .explorer-related-row:hover { background: var(--surface-card-hover); color: var(--text); }
+    .explorer-related-row:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent); outline-offset: -1px; }
+    .explorer-related-row.missing { color: var(--muted); cursor: default; }
+    .explorer-related-icon { width: 16px; color: var(--accent); font-size: 11px; text-align: center; }
+    .explorer-related-row.missing .explorer-related-icon { color: var(--warning); font-weight: 800; }
+    .explorer-related-copy { min-width: 0; display: grid; gap: 2px; }
+    .explorer-related-copy strong, .explorer-related-copy code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .explorer-related-copy strong { font-size: 10px; font-weight: 650; }
+    .explorer-related-copy code { color: var(--muted); font-size: 8px; }
+    .explorer-related-meta { display: grid; justify-items: end; gap: 2px; color: var(--muted); font-size: 8px; white-space: nowrap; }
+    .explorer-related-meta small { font-size: inherit; }
+    .explorer-related-meta span { color: var(--text-soft); }
+    .explorer-related-empty { margin: 0; padding: 5px 7px 9px; color: var(--muted); font-size: 9px; line-height: 1.4; }
+    .explorer-related-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 10px 0 18px; }
+    .explorer-related-actions button { min-width: 0; min-height: 30px; padding-inline: 7px; font-size: 9px; }
     .global-project-shared-action { min-height: 30px; margin-top: 7px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-card); color: var(--accent); cursor: pointer; font-size: 10px; font-weight: 760; }
     .computer-explorer-tree { min-width: 0; display: grid; gap: 1px; padding-bottom: 18px; }
     .computer-explorer-loading { padding: 7px 8px 7px 28px; color: var(--muted); font-size: 9px; }
@@ -10470,6 +11307,38 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     @keyframes saveConfirmShine { to { transform: translateX(125%); } }
     .status { color: var(--muted); font-size: 13px; min-width: 150px; text-align: right; }
     .editor-shell { width: 100%; height: 100%; min-height: 0; overflow: hidden; position: relative; }
+    .document-context-panel { position: absolute; z-index: 18; top: 0; right: 0; bottom: 0; width: var(--inspector-width, 320px); overflow: auto; border-left: 1px solid var(--line); background: var(--panel); color: var(--text); }
+    .document-context-panel[hidden] { display: none !important; }
+    .editor-shell.context-panel-open > .viewer { margin-right: var(--inspector-width, 320px); }
+    .document-context-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--line); background: var(--panel); }
+    .document-context-head h2 { margin: 0; font-size: 15px; }
+    .document-context-body { padding: 8px 14px 28px; }
+    .document-context-group { border-bottom: 1px solid var(--line); padding: 10px 0; }
+    .document-context-group > summary { cursor: pointer; font-weight: 650; list-style: none; }
+    .document-context-group > summary::-webkit-details-marker { display: none; }
+    .document-context-list { display: grid; gap: 6px; margin: 10px 0 0; padding: 0; list-style: none; }
+    .document-context-row { min-width: 0; padding: 7px 8px; border-radius: 7px; background: color-mix(in srgb, var(--panel-strong) 65%, transparent); }
+    .document-context-row code, .metadata-tree code { overflow-wrap: anywhere; font-size: 11px; }
+    .metadata-tree { display: grid; gap: 3px; margin-top: 8px; font-size: 12px; }
+    .metadata-tree details { margin-left: 8px; }
+    .metadata-tree summary { cursor: pointer; color: var(--muted); }
+    .metadata-tree-value { display: grid; grid-template-columns: minmax(70px, auto) 1fr; gap: 8px; padding: 3px 0; }
+    .metadata-tree-key { color: var(--muted); }
+    .metadata-view-switcher { display: flex; gap: 4px; margin-top: 10px; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-card); }
+    .metadata-view-switcher button { flex: 1; min-width: 0; border: 0; border-radius: 6px; padding: 6px 7px; background: transparent; color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; }
+    .metadata-view-switcher button.active { background: var(--panel-strong); color: var(--text); }
+    .metadata-view[hidden] { display: none; }
+    .metadata-search { width: 100%; margin: 8px 0; }
+    .metadata-tree-value { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 6px; }
+    .metadata-tree-value[data-filtered="true"] { display: none; }
+    .metadata-copy-path { border: 0; background: transparent; color: var(--muted); padding: 2px 4px; font: inherit; font-size: 10px; cursor: pointer; }
+    .metadata-copy-path:hover, .metadata-copy-path:focus-visible { color: var(--accent); }
+    .metadata-raw-source { margin: 8px 0 0; padding: 9px; overflow: auto; border: 1px solid var(--line); border-radius: 7px; background: var(--file-bg); color: var(--text); font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+    .trust-state[data-state="needs-review"] { color: var(--warning); }
+    @media (max-width: 1279px) {
+      .editor-shell.context-panel-open > .viewer { margin-right: 0; }
+      .document-context-panel { width: min(380px, 92vw); box-shadow: -16px 0 42px rgba(0,0,0,.24); }
+    }
     .workspace-page { width: 100%; height: 100%; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
     .workspace-dock { display: inline-flex; max-width: 100%; gap: var(--space-1); align-items: center; flex-wrap: wrap; margin: 0 0 var(--space-3); padding: var(--space-1); border: 1px solid var(--line); border-radius: 16px; background: var(--surface-floating-soft); backdrop-filter: blur(18px); box-shadow: 0 16px 48px rgba(0,0,0,0.22); }
     .dock-button { display: inline-flex; align-items: center; justify-content: center; min-width: var(--control-height); min-height: var(--control-height); border: 1px solid rgba(148,163,184,0.22); border-radius: 12px; background: rgba(255,255,255,0.06); color: var(--text); padding: 0 var(--space-3); font-weight: 850; line-height: 1; white-space: nowrap; cursor: pointer; }
@@ -11011,6 +11880,22 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .markdown-line.quote { color: var(--file-quote); border-left: 2px solid var(--file-quote); padding-left: 0.8em; opacity: 0.9; }
     .markdown-line.code, .markdown-line.fence { color: var(--file-code); background: color-mix(in srgb, var(--file-code) 10%, transparent); }
     .markdown-line.frontmatter, .markdown-line.hr { color: var(--file-marker); }
+    .mermaid-document { margin: var(--space-5) 0; border: 1px solid var(--file-line); border-radius: 10px; overflow: hidden; background: var(--file-panel-bg); }
+    .mermaid-render { min-height: 120px; padding: var(--space-5); overflow: auto; color: var(--file-fg); text-align: center; }
+    .mermaid-render svg { display: block; max-width: 100%; height: auto; margin: auto; }
+    .mermaid-document figcaption { display: flex; justify-content: space-between; align-items: center; gap: 12px; border-top: 1px solid var(--file-line); padding: 8px 12px; color: var(--muted); font-size: 12px; }
+    .mermaid-source { margin: 0; border-top: 1px solid var(--file-line); padding: 12px; overflow: auto; color: var(--file-code); background: color-mix(in srgb, var(--file-code) 7%, transparent); }
+    .mermaid-view-modes { display: inline-flex; gap: 4px; }
+    .mermaid-view-modes button.active { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+    .mermaid-document[data-view-mode="source"] .mermaid-render { display: none; }
+    .mermaid-document[data-view-mode="rendered"] .mermaid-source { display: none; }
+    .mermaid-document[data-view-mode="split"] { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, .65fr); }
+    .mermaid-document[data-view-mode="split"] figcaption, .mermaid-document[data-view-mode="split"] .diagram-links { grid-column: 1 / -1; }
+    @media (max-width: 980px) { .mermaid-document[data-view-mode="split"] { grid-template-columns: 1fr; } .mermaid-document[data-view-mode="split"] figcaption, .mermaid-document[data-view-mode="split"] .diagram-links { grid-column: auto; } }
+    .diagram-links { border-top: 1px solid var(--file-line); padding: 10px 12px; text-align: left; }
+    .diagram-links:empty { display: none; }
+    .diagram-links ul { display: grid; gap: 4px; margin: 6px 0 0; padding: 0; list-style: none; }
+    .diagram-links button { height: auto; padding: 4px 0; border: 0; background: transparent; color: var(--accent); text-align: left; }
     .markdown-inline-code { color: var(--file-code); background: color-mix(in srgb, var(--file-code) 12%, transparent); border-radius: 4px; padding: 0 3px; }
     .markdown-path { color: var(--file-list); border-bottom: 1px solid color-mix(in srgb, var(--file-list) 36%, transparent); }
     .markdown-path[data-doc-link-path] { cursor: inherit; text-decoration: none; background-image: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 72%, transparent), transparent); background-repeat: no-repeat; background-size: 0 2px; background-position: 0 100%; transition: color 140ms ease, border-color 140ms ease, background-color 140ms ease, box-shadow 140ms ease; }
@@ -11200,24 +12085,9 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     @media (max-width: 980px) {
       body { overflow: hidden; }
 	  .context-health-controls { grid-template-columns: 1fr; }
-      .app, .app.sidebar-collapsed { grid-template-columns: 1fr; height: 100dvh; overflow: hidden; padding-top: 56px; }
-      aside { position: fixed; z-index: 30; top: 0; left: 0; right: 0; height: min(62dvh, 560px); max-height: min(62dvh, 560px); border-right: 0; border-bottom: 1px solid var(--line); padding: var(--space-3); overflow: auto; box-shadow: 0 18px 60px rgba(0,0,0,0.42); }
-      .app.sidebar-collapsed aside { height: 56px; max-height: 56px; padding: var(--space-2) var(--space-3); overflow: hidden; }
-      .app.sidebar-collapsed .sidebar-toggle { position: absolute; left: auto; right: 10px; top: 8px; z-index: 31; width: 40px; height: 40px; }
-      .app.sidebar-collapsed .sidebar-copy, .app.sidebar-collapsed .search-row, .app.sidebar-collapsed .watch-filter-row, .app.sidebar-collapsed .selection-bar, .app.sidebar-collapsed .explorer-title, .app.sidebar-collapsed .tree, .app.sidebar-collapsed .hint { opacity: 0; pointer-events: none; transform: translateY(-8px); }
-      .app.sidebar-collapsed .workspace-dock { opacity: 1; pointer-events: auto; transform: none; width: calc(100% - 50px); margin: 0; padding: 4px; overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
-      .app.sidebar-collapsed .workspace-dock::-webkit-scrollbar { display: none; }
-      .workspace-dock { margin-right: 50px; }
-      .app:not(.sidebar-collapsed) .workspace-dock { margin-right: 0; }
       .dock-button { min-height: 36px; min-width: 36px; padding: 0 10px; white-space: nowrap; }
       #back.dock-button, #forward.dock-button { padding: 0; }
       .dock-button.diff-dock-button { padding: 0 11px; }
-      .sidebar-head { position: absolute; right: 10px; top: 8px; display: block; }
-      .app:not(.sidebar-collapsed) .sidebar-head { position: static; display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-1) var(--space-1) var(--space-2); }
-      .sidebar-copy { padding-right: 52px; }
-      .app:not(.sidebar-collapsed) .sidebar-copy { padding-right: 0; flex: 1 1 auto; min-width: 0; }
-      .sidebar-toggle { width: 40px; height: 40px; }
-      main { height: calc(100dvh - 56px); padding: var(--space-3); overflow: hidden; }
       .editor-shell { height: 100%; min-height: 0; border-radius: 18px; }
       .docqa-home, .settings-page { padding: 12px; }
       .docqa-panel { border-radius: 18px; }
@@ -11261,27 +12131,8 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     }
     @media (max-width: 640px) {
       body { overflow: hidden; }
-      .app, .app.sidebar-collapsed { grid-template-columns: 1fr; grid-template-rows: 1fr; height: 100dvh; padding: 52px 0 0; overflow: hidden; }
-      .explorer-open { display: inline-flex; position: fixed; top: 8px; right: 8px; z-index: 35; width: 38px; height: 38px; border-radius: 12px; }
-      .app.explorer-expanded .explorer-open { display: none; }
-      .workspace-dock, .app.sidebar-collapsed .workspace-dock { position: fixed; top: 0; left: 0; right: 0; z-index: 33; width: 100%; height: 52px; margin: 0; padding: var(--space-2) 52px var(--space-2) var(--space-2); gap: var(--space-1); border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: var(--surface-floating); backdrop-filter: blur(18px); box-shadow: 0 8px 24px rgba(0,0,0,0.32); flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; opacity: 1; pointer-events: auto; transform: none; }
-      .app.sidebar-collapsed .workspace-dock { width: 100%; padding: var(--space-2) 52px var(--space-2) var(--space-2); margin: 0; opacity: 1; }
-      .app.explorer-expanded .workspace-dock { display: none; }
-      .workspace-dock::-webkit-scrollbar { display: none; }
-      .workspace-dock .dock-button { min-height: 36px; min-width: 36px; padding: 0 10px; white-space: nowrap; flex: 0 0 auto; }
-      .workspace-dock #back.dock-button, .workspace-dock #forward.dock-button { padding: 0; }
-      .workspace-dock .dock-button.diff-dock-button { padding: 0 11px; }
-      .workspace-dock .dock-status { display: none; }
       .shared-context-label, .workspace-title { display: none; }
       .shared-context-select { width: 220px; }
-      aside { position: fixed; left: 0; right: 0; bottom: 0; top: auto; width: 100%; height: auto; max-height: 0; min-height: 0; margin: 0; padding: 0; border: 0; border-radius: 22px 22px 0 0; background: rgba(6,10,22,0.985); backdrop-filter: none; box-shadow: 0 -20px 70px rgba(0,0,0,0.55); overflow: auto; overscroll-behavior: contain; transition: transform 280ms cubic-bezier(.2,.9,.2,1), max-height 280ms ease, padding 280ms ease; transform: translateY(100%); pointer-events: none; }
-      .app.explorer-expanded aside { height: min(66dvh, 560px) !important; max-height: min(66dvh, 560px) !important; padding: 0 var(--space-3) var(--space-4) !important; border-top: 1px solid var(--line) !important; transform: translateY(0) !important; pointer-events: auto !important; }
-      .app.sidebar-collapsed aside { height: auto; max-height: 0; padding: 0; border: 0; transform: translateY(100%); pointer-events: none; }
-      .sidebar-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-3) var(--space-1); background: rgba(6,10,22,0.98); border-bottom: 1px solid rgba(148,163,184,0.16); }
-      .sidebar-copy { padding-right: 0; flex: 1 1 auto; min-width: 0; }
-      .sidebar-copy h1 { font-size: 15px; margin: 0; }
-      .sidebar-copy .subtitle { font-size: 11px; }
-      .sidebar-toggle { position: static; width: 38px; height: 38px; flex: 0 0 auto; }
       .search-row { margin: 10px 0 8px; }
       .search { margin: 0; padding: 11px 12px; font-size: 15px; }
       .clear-search { padding: 11px 12px; }
@@ -11980,11 +12831,8 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       .external-change-stats { margin-right: auto; }
     }
     @media (max-width: 980px) {
-      .app, .app.sidebar-collapsed { grid-template-columns: 1fr; }
       .shared-proposal-workspace,
       .app.sidebar-collapsed ~ .shared-proposal-workspace { left: 0; }
-      .app.sidebar-collapsed .workspace-dock { width: 100%; margin: 0; opacity: 1; pointer-events: auto; transform: none; }
-      .workspace-dock { margin: 0; }
       main { grid-template-rows: auto minmax(0, 1fr); }
       .docqa-panel header { flex-direction: row; }
       .hub-section-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); }
@@ -12165,6 +13013,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     }
     .app.sidebar-collapsed aside { padding: 7px 5px; overflow: hidden; }
     .app.sidebar-collapsed .sidebar-head { display: flex; justify-content: center; }
+    .app.sidebar-collapsed .graph-open { display: none; }
     .app.sidebar-collapsed .sidebar-toggle { position: static; margin: 0; }
     .app.sidebar-collapsed .sidebar-copy,
     .app.sidebar-collapsed .search-row,
@@ -12184,6 +13033,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       gap: 8px;
       padding: 0 2px 8px 8px;
     }
+    .sidebar-actions { display: flex; align-items: center; gap: 2px; }
     .sidebar-copy h1 { margin: 0; font-size: 12px; font-weight: 650; letter-spacing: 0; }
     .sidebar-toggle, .selection-action, .global-explorer-back {
       width: 30px;
@@ -12216,7 +13066,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .sidebar-resizer:hover::after, .sidebar-resizer:focus-visible::after, body.workbench-resizing .sidebar-resizer::after { background: var(--accent); }
     .app.sidebar-collapsed .sidebar-resizer { display: none; }
     .explorer-edge-trigger { display: none; }
-    @media (min-width: 900px) and (hover: hover) and (pointer: fine) {
+    @media (min-width: 981px) and (hover: hover) and (pointer: fine) {
       .app.sidebar-collapsed:not(.explorer-edge-peek) .explorer-edge-trigger {
         position: fixed;
         z-index: 59;
@@ -12454,6 +13304,18 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       background: var(--native-selection);
       box-shadow: none;
     }
+    .context-room-other-attention { border-top: 1px solid var(--line); }
+    .context-attention-head { min-height: 40px; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 10px 16px; background: var(--panel-strong); }
+    .context-attention-head strong { font-size: 12px; }
+    .context-attention-head span { color: var(--muted); font-size: 10px; }
+    .context-attention-list { display: grid; }
+    .context-attention-row { min-width: 0; display: grid; grid-template-columns: 58px minmax(0,1fr) auto; gap: 10px; align-items: center; padding: 9px 16px; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+    .context-attention-row:hover { background: var(--native-hover); }
+    .context-attention-row > span:nth-child(2) { min-width: 0; display: grid; gap: 2px; }
+    .context-attention-row strong, .context-attention-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .context-attention-row strong { font-size: 12px; font-weight: 600; }
+    .context-attention-row small { color: var(--muted); font-size: 10px; }
+    .context-attention-kind { color: var(--accent); font-size: 9px; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; }
     .review-title { font-size: 13px; font-weight: 600; }
     .review-path { margin-top: 2px; color: var(--muted); font-size: 10px; }
     .chip, .review-item .chip, .context-room-source-badge, .settings-scope, .settings-pill {
@@ -12500,6 +13362,14 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     }
     .hub-disclosure summary:hover, .docqa-disclosure summary:hover, .global-project-inspection-disclosure > summary:hover { background: var(--native-hover); }
     .hub-disclosure-body, .global-project-inspection-disclosure-body { padding: 12px 16px 16px; border-top: 1px solid var(--line); }
+    .global-project-inspection-empty { display: grid; gap: 4px; }
+    .global-project-inspection-empty strong { color: var(--text); }
+    @media (min-width: 1280px) {
+      .global-context-room .docqa-grid { grid-template-columns: minmax(0,1fr) 340px; align-items: start; }
+      .global-context-room #reviewQueuePanel { grid-column: 1; min-width: 0; }
+      .global-context-room #contextHealthPanel { grid-column: 2; position: sticky; top: 0; max-height: calc(100vh - 48px); overflow: auto; border-left: 1px solid var(--line); border-top: 0; }
+      .global-context-room #contextEnginePanel { grid-column: 1 / -1; }
+    }
     .startup-context-item { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; }
     .settings-page .settings-card { max-width: none; }
     .settings-page-header { display: flex; align-items: center; gap: 20px; }
@@ -12534,6 +13404,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .settings-tab strong { font-size: 12px; font-weight: 600; }
     .settings-tab small { padding: 2px 4px; border: 0; border-radius: 4px; background: color-mix(in srgb, var(--text) 5%, transparent); font-size: 8px; }
     .settings-content { max-width: 1180px; margin: 0 auto; }
+    .settings-content > .settings-section:not([hidden]) + .settings-section:not([hidden]) { border-top: 1px solid var(--line); }
     .settings-section-head { padding: 18px 20px 14px; border-bottom: 1px solid var(--line); }
     .settings-section-head h3 { font-size: 18px; font-weight: 650; letter-spacing: -.015em; }
     .settings-section-body { padding: 0 20px 24px; }
@@ -12626,19 +13497,82 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .launch-card::before, .review-item::before, .hub-folder-card::before, .startup-context-item::before,
     .settings-toggle::before, .settings-theme-preview::before, .template-editor::before,
     .hub-section-editor::before, .hub-card-editor::before, .path-picker::before, .card::before, .conflict-card::before { display: none !important; }
+    .graph-open { color: var(--muted); }
+    .graph-open:hover, .graph-open:focus-visible { color: var(--text); background: var(--surface-hover); }
+    .workspace-page[hidden] { display: none !important; }
+    .graph-page { min-height: 0; height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr); overflow: hidden; background: var(--bg); }
+    .graph-toolbar { min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+    .graph-heading { min-width: 180px; }
+    .graph-heading h2, .graph-heading p { margin: 0; }
+    .graph-heading h2 { font-size: 15px; line-height: 1.25; }
+    .graph-heading p { margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 1.35; }
+    .graph-toolbar-controls { min-width: 0; display: flex; align-items: end; justify-content: flex-end; gap: 8px; }
+    .graph-toolbar-controls label { display: grid; gap: 3px; color: var(--muted); font-size: 10px; }
+    .graph-toolbar-controls input, .graph-toolbar-controls select { height: 32px; min-width: 104px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); }
+    .graph-toolbar-controls input { width: min(28vw, 280px); padding: 0 10px; }
+    .graph-filterbar { min-height: 38px; display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 6px 16px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+    .graph-filterbar label { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+    .graph-filterbar input { accent-color: var(--accent); }
+    .graph-compact-filter select { height: 28px; max-width: 140px; padding: 0 24px 0 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); font-size: 11px; }
+    .graph-filter-separator { width: 1px; height: 18px; background: var(--line); }
+    .graph-workbench { position: relative; min-height: 0; height: auto; display: grid; grid-template-columns: minmax(0, 1fr) 320px; }
+    .graph-canvas-wrap { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: color-mix(in srgb, var(--bg) 96%, var(--surface)); }
+    .graph-canvas-wrap::before { content: ""; position: absolute; inset: 0; pointer-events: none; background-image: radial-gradient(circle, color-mix(in srgb, var(--text) 9%, transparent) .6px, transparent .8px); background-size: 24px 24px; opacity: .22; }
+    #graphCanvas { position: relative; display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+    #graphCanvas:active { cursor: grabbing; }
+    #graphCanvas:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+    .graph-inspector { position: static; width: auto; height: auto; padding: 0; border-left: 1px solid var(--line); background: var(--surface); box-shadow: none; transform: none; overflow: auto; }
+    .graph-inspector-body { padding: 16px; }
+    .graph-inspector h3, .graph-inspector p { margin: 0; }
+    .graph-inspector h3 { font-size: 14px; }
+    .graph-inspector p { margin-top: 7px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .graph-inspector code { display: block; margin-top: 10px; color: var(--text-soft); white-space: normal; overflow-wrap: anywhere; }
+    .graph-inspector-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 14px; }
+    .graph-stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; margin-top: 14px; background: var(--line); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+    .graph-stat { padding: 10px; background: var(--surface); }
+    .graph-stat strong, .graph-stat span { display: block; }
+    .graph-stat strong { font-size: 15px; }
+    .graph-stat span { margin-top: 2px; color: var(--muted); font-size: 10px; }
+    .graph-loading, .graph-empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; color: var(--muted); font-size: 12px; text-align: center; pointer-events: none; }
+    .graph-loading[hidden], .graph-empty[hidden] { display: none; }
+    .graph-accessible-list { min-height: 0; overflow: auto; grid-column: 1 / -1; background: var(--bg); }
+    .graph-list-row { width: 100%; min-height: 44px; display: grid; grid-template-columns: minmax(180px, 1fr) minmax(120px, .6fr) auto; align-items: center; gap: 14px; padding: 8px 16px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+    .graph-list-row:hover, .graph-list-row:focus-visible { background: var(--surface-hover); }
+    .graph-list-row small { color: var(--muted); }
+    .graph-node-state { color: var(--muted); font-size: 10px; text-transform: capitalize; }
+    .graph-workbench.list-mode { display: block; overflow: auto; }
+    .graph-workbench.list-mode .graph-canvas-wrap, .graph-workbench.list-mode .graph-inspector { display: none; }
+    .graph-workbench.list-mode .graph-accessible-list { display: block !important; }
     @media (max-width: 1279px) {
       .review-workspace { grid-template-columns: 1fr; }
       .diff-panel { border-right: 0; border-bottom: 1px solid var(--file-line); }
       .shared-proposal-workspace-body { grid-template-columns: minmax(280px, 330px) minmax(0, 1fr); }
+      .graph-workbench { grid-template-columns: 1fr; }
+      .graph-inspector { position: absolute; z-index: 12; top: 0; right: 0; bottom: 0; width: min(360px, 88vw); border-top: 1px solid var(--line); box-shadow: -16px 0 32px rgba(0,0,0,.2); }
+      .graph-inspector[data-empty="true"] { display: none; }
+      .graph-toolbar { align-items: stretch; flex-direction: column; }
+      .graph-toolbar-controls { justify-content: flex-start; flex-wrap: wrap; }
+      .graph-toolbar-controls .graph-search { flex: 1 1 100%; }
+      .graph-toolbar-controls input { width: 100%; }
     }
-    @media (max-width: 899px) {
-      .app, .app.sidebar-collapsed { grid-template-columns: 1fr; }
+    @media (max-width: 980px) {
+      .app, .app.sidebar-collapsed {
+        grid-template-columns: 1fr;
+        grid-template-rows: minmax(0, 1fr);
+        height: 100dvh;
+        padding-top: 0;
+        overflow: hidden;
+      }
+      main { height: 100dvh; min-height: 0; padding: 0; overflow: hidden; }
       aside {
         position: fixed;
         z-index: 60;
         inset: var(--native-titlebar-height) auto 0 0;
         width: min(88vw, var(--explorer-width));
-        height: auto;
+        height: calc(100dvh - var(--native-titlebar-height));
+        max-height: none;
+        min-height: 0;
+        border-bottom: 0;
         transform: translateX(0);
         box-shadow: 18px 0 45px rgba(0,0,0,.22);
       }
@@ -12646,7 +13580,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       .sidebar-resizer { display: none; }
       .explorer-open { display: inline-flex !important; position: fixed; z-index: 70; top: 7px; left: 8px; width: 32px; height: 32px; align-items: center; justify-content: center; border: 0; border-radius: var(--native-radius-control); background: transparent; color: var(--text); }
       .app:not(.sidebar-collapsed) .explorer-open { display: none !important; }
-      .workspace-dock { padding-left: 48px; }
+      .app.sidebar-collapsed .workspace-dock { padding-left: 48px; }
       .shared-proposal-workspace, .app.sidebar-collapsed ~ .shared-proposal-workspace { left: 0; }
       .shared-proposal-workspace-body { grid-template-columns: 1fr; grid-template-rows: minmax(220px, 38vh) minmax(0, 1fr); }
       .context-hub-review-toolbar, .context-room-review-toolbar { grid-template-columns: 1fr 1fr; }
@@ -12654,6 +13588,10 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     }
     @media (max-width: 639px) {
       :root { --native-titlebar-height: 48px; }
+      .explorer-document-tab { min-height: 40px; font-size: 12px; }
+      .explorer-related-row { min-height: 44px; padding-block: 7px; }
+      .explorer-related-actions { grid-template-columns: 1fr; }
+      .explorer-related-actions button { min-height: 40px; font-size: 11px; }
       aside {
         inset: 0;
         width: 100vw;
@@ -12663,8 +13601,17 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
         border-right: 0;
         box-shadow: none;
       }
+      .app.explorer-expanded aside {
+        height: 100dvh;
+        max-height: none;
+        padding: 10px 8px 12px;
+        border: 0;
+        border-radius: 0;
+        transform: translateX(0);
+        pointer-events: auto;
+      }
       .workspace-dock { height: var(--native-titlebar-height); padding-right: 6px; }
-      .context-room-brand strong, .workspace-title, .dock-status { display: none; }
+      .workspace-title, .dock-status { display: none; }
       .settings-page-header { align-items: stretch; flex-direction: column; gap: 10px; }
       .settings-search { width: 100%; margin-left: 0; }
       .settings-tabs { padding: 0 6px; }
@@ -12683,6 +13630,11 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       .diff-code, .doc-content, .doc-editor { padding: 18px 16px; }
       .doc-content { font-size: 15px; }
       .shared-proposal-workspace-head { grid-template-columns: minmax(0,1fr) auto; }
+      .graph-toolbar { padding: 10px; }
+      .graph-filterbar { gap: 8px; padding-inline: 10px; overflow-x: auto; flex-wrap: nowrap; }
+      .graph-toolbar-controls label:not(.graph-search) { flex: 1 1 100px; }
+      .graph-toolbar-controls select { width: 100%; }
+      .graph-inspector { width: 100vw; }
     }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
@@ -12710,6 +13662,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     <symbol id="cr-icon-eye-plus" viewBox="0 0 20 20"><path d="M2.5 10s2.6-4 7.5-4 7.5 4 7.5 4-2.6 4-7.5 4-7.5-4-7.5-4Z"></path><circle cx="10" cy="10" r="1.8"></circle><path d="M15.5 3v4M13.5 5h4"></path></symbol>
     <symbol id="cr-icon-eye-minus" viewBox="0 0 20 20"><path d="M2.5 10s2.6-4 7.5-4 7.5 4 7.5 4-2.6 4-7.5 4-7.5-4-7.5-4Z"></path><circle cx="10" cy="10" r="1.8"></circle><path d="M13.5 5h4"></path></symbol>
     <symbol id="cr-icon-trash" viewBox="0 0 20 20"><path d="M4.5 6h11M8 3.5h4M6 6l.7 10h6.6L14 6"></path></symbol>
+    <symbol id="cr-icon-graph" viewBox="0 0 20 20"><circle cx="4" cy="10" r="2"></circle><circle cx="10" cy="4" r="2"></circle><circle cx="16" cy="11" r="2"></circle><circle cx="10" cy="16" r="2"></circle><path d="M5.5 8.5L8.5 5.5M11.7 5.1l2.6 4.5M14.2 12.3l-2.7 2.5M8.4 14.8l-3-3.2"></path></symbol>
   </svg>
   <div id="bootScreen" class="boot-screen" role="status"><div id="bootScreenContent" class="boot-screen-inner"><span class="boot-indicator" aria-hidden="true"></span><span>Opening Context Room</span></div></div>
   <div class="app">
@@ -12720,7 +13673,10 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
         <div class="sidebar-copy">
           <h1>Explorer</h1>
         </div>
-        <button id="sidebarToggle" class="sidebar-toggle" type="button" title="Collapse explorer" aria-label="Collapse explorer"><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-sidebar"></use></svg></button>
+        <div class="sidebar-actions">
+          <button id="graphOpen" class="sidebar-toggle graph-open" type="button" title="Open document graph" aria-label="Open document graph"><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-graph"></use></svg></button>
+          <button id="sidebarToggle" class="sidebar-toggle" type="button" title="Collapse explorer" aria-label="Collapse explorer"><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-sidebar"></use></svg></button>
+        </div>
       </div>
       <div id="singleProjectExplorer">
         <div id="singleProjectWorktreeSwitch" class="single-project-worktree-switch" hidden></div>
@@ -12757,6 +13713,8 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
           <button id="back" class="dock-button" type="button" title="Previous file" aria-label="Previous file"><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-left"></use></svg></button>
           <button id="forward" class="dock-button" type="button" title="Next file" aria-label="Next file"><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-right"></use></svg></button>
           <button id="gitDiffToggle" class="dock-button diff-dock-button" type="button" title="Show Git diff" hidden>Show Git diff</button>
+          <button id="graphLocal" class="dock-button" type="button" title="Open local document graph" hidden><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-graph"></use></svg><span>Local graph</span></button>
+          <button id="contextPanelToggle" class="dock-button" type="button" title="Inspect document context" hidden>Context</button>
           <button id="reload" class="dock-button" type="button" hidden>Reload</button>
           <button id="verifyCurrent" class="dock-button" type="button" hidden>Verified</button>
           <button id="deleteCurrent" class="dock-button danger-action" type="button" hidden>Delete</button>
@@ -12822,6 +13780,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
               <div id="reviewQueue" class="review-list"></div>
               <div id="contextRoomReviewContextMenu" class="explorer-context-menu context-room-review-context-menu" role="menu" hidden></div>
               <div id="contextRoomReviewLimit" class="context-hub-list-limit" role="status" hidden></div>
+              <div id="contextRoomOtherAttention" class="context-room-other-attention" hidden></div>
             </section>
             <section id="contextEnginePanel" class="docqa-panel context-engine-panel" hidden>
               <header>
@@ -12870,6 +13829,47 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
             <div id="proposalReviewFiles" class="proposal-review-files"></div>
           </section>
         </div>
+        <div id="graphPage" class="graph-page workspace-page" hidden>
+          <header class="graph-toolbar">
+            <div class="graph-heading">
+              <h2 id="graphTitle">Document graph</h2>
+              <p id="graphSubtitle">Accepted document relations across registered projects.</p>
+            </div>
+            <div class="graph-toolbar-controls">
+              <label class="graph-search"><span class="sr-only">Search graph</span><input id="graphSearch" type="search" placeholder="Search documents…" autocomplete="off" /></label>
+              <label>Scope<select id="graphScope"><option value="global">All projects</option><option value="project">Project</option><option value="local">Local</option></select></label>
+              <label id="graphDepthField" hidden>Depth<select id="graphDepth"><option value="1">1</option><option value="2">2</option><option value="3">3</option></select></label>
+              <label id="graphProposalField" hidden>Proposal<select id="graphProposalSelect"></select></label>
+              <button id="graphFit" class="file-action" type="button">Fit</button>
+              <button id="graphListToggle" class="file-action" type="button" aria-pressed="false">List</button>
+            </div>
+          </header>
+          <div class="graph-filterbar" aria-label="Graph filters">
+            <label><input id="graphLayerAccepted" type="checkbox" checked /> Accepted</label>
+            <label><input id="graphLayerUnverified" type="checkbox" /> Unverified</label>
+            <label><input id="graphLayerTarget" type="checkbox" /> Targets</label>
+            <label><input id="graphLayerHistorical" type="checkbox" /> Historical</label>
+            <label><input id="graphLayerProposal" type="checkbox" /> Proposal</label>
+            <span class="graph-filter-separator" aria-hidden="true"></span>
+            <label class="graph-compact-filter">Type<select id="graphTypeFilter"><option value="">All types</option><option value="document">Documents</option><option value="html">HTML</option><option value="instruction">Instructions</option><option value="skill">Skills</option><option value="source">Sources</option><option value="image">Images</option><option value="diagram">Diagrams</option><option value="project">Projects</option></select></label>
+            <label class="graph-compact-filter">Relation<select id="graphRelationFilter"><option value="">All relations</option><option value="depends-on">Dependencies</option><option value="references">References</option><option value="appears-in-diagram">Diagram appearances</option><option value="declares-source">Legacy declared sources</option><option value="applies-to">Applies to</option><option value="shared-origin">Shared origin</option><option value="managed-link">Managed links</option></select></label>
+            <label><input id="graphShowUnresolved" type="checkbox" /> Unresolved</label>
+            <label><input id="graphShowOrphans" type="checkbox" checked /> Orphans</label>
+            <label><input id="graphShowArrows" type="checkbox" /> Direction arrows</label>
+            <button id="graphRefresh" class="quiet-button" type="button">Refresh</button>
+          </div>
+          <div class="graph-workbench">
+            <div class="graph-canvas-wrap">
+              <canvas id="graphCanvas" tabindex="0" aria-label="Interactive document relations graph"></canvas>
+              <div id="graphEmpty" class="graph-empty" hidden></div>
+              <div id="graphLoading" class="graph-loading" hidden>Building document graph…</div>
+            </div>
+            <aside id="graphInspector" class="graph-inspector" aria-label="Graph selection details">
+              <div id="graphInspectorBody" class="graph-inspector-body"><h3>Explore relations</h3><p>Hover a node to isolate its neighbors. Select one to inspect its context.</p></div>
+            </aside>
+            <div id="graphAccessibleList" class="graph-accessible-list" hidden aria-live="polite"></div>
+          </div>
+        </div>
         <div id="settingsPage" class="settings-page workspace-page" hidden>
           <section id="settingsCard" class="docqa-panel settings-card">
             <header class="settings-page-header">
@@ -12899,6 +13899,10 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
           </section>
         </div>
         <div id="viewer" class="viewer"></div>
+        <aside id="documentContextPanel" class="document-context-panel" aria-label="Document context" hidden>
+          <header class="document-context-head"><h2>Context</h2><button id="documentContextClose" class="quiet-button" type="button">Close</button></header>
+          <div id="documentContextBody" class="document-context-body"></div>
+        </aside>
         <textarea id="editor" spellcheck="false"></textarea>
       </section>
     </main>
@@ -13033,7 +14037,30 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
 		${workspaceReloadCircuitDecision.toString()}
 		${shouldReplaceDuplicatedWorkspaceIdentity.toString()}
 		${contextRoomProjectResponseAction.toString()}
-		const state = { root: null, projectId: null, projectReloading: false, files: [], directories: [], startupContextFiles: [], startupSkillFolders: [], startupHookFiles: [], startupHooksHelpOpen: false, startupHookFilter: "all", hubDisclosuresOpen: new Set(), activeStartupSkillExplorer: null, activeStartupContextExplorer: null, startupSkillCreateFolder: null, startupContextContextTarget: null, selectedStartupContext: null, docqa: null, doctor: null, backgroundReportRenderKey: "", contextHealthStatusFilter: "open", contextHealthSeverityFilter: "triggered", contextHealthCategoryFilter: "all", contextHealthRefreshing: false, contextHealthCodexSending: false, settings: null, settingsOpen: false, settingsSection: "review", settingsDisclosureState: {}, settingsBaselineByGroup: new Map(), settingsDirtyGroups: new Set(), settingsSearchQuery: "", settingsSearchIndex: -1, page: "hub", pendingMarkdown: null, availableHubCards: [], hubFolders: [], hubSections: [], rootHubSections: [], activeHubCardId: null, selectedReview: null, deletionBatchExpanded: false, deletionBatchLoading: false, deletionBatchItems: [], deletionBatchKey: "", deletionBatchReportedCount: 0, deletionBatchError: "", selectedDeletionReviews: new Set(), reviewModePath: null, reviewModeStatus: null, reviewSessions: {}, reviewFinalizationPromise: null, selected: null, selectedReadOnly: false, selectedDiff: null, fileLoadError: null, fileConflict: null, externalChange: null, conflictCompare: false, conflictMergeText: null, conflictMergeKey: "", conflictMergeMode: "auto", diffCollapsed: false, saved: "", savedHash: null, dirty: false, mode: "view", homeView: "root", planetStack: ["root"], filePanel: false, history: [], historyIndex: -1, pathFilters: [], explorerWatchFilter: "all", explorerRenderKey: "", explorerSearchFrame: 0, explorerWidth: 272, explorerStoredCollapsed: null, explorerNavigationOverride: null, explorerEdgePeekCloseTimer: null, inspectorWidth: 320, inspectorOpen: false, focusMode: false, selectedForDelete: new Set(), selectionRequest: 0, openingFilePath: null, fileContentReadyPath: null, sessionStateTimer: null, agentCommandTimer: null, lastAgentCommandId: "", pendingAgentCommand: null, agentAnnotations: {}, userActiveAt: 0, userScrollIntentAt: 0, refreshInFlight: false, reportsRefreshInFlight: false, backgroundRefreshTimer: null, filePrefetches: new Map(), prefetchTimer: null, prefetchPath: "", lastDiffRefreshAt: 0, lastReportRefreshAt: 0, lastFullRefreshAt: 0, navigationRestoreAttempted: false, bootStartedAt: Date.now(), bootMilestones: {}, markdownHighlightFrame: 0, markdownHighlightText: "", markdownHighlightLastText: "", docLinkModifierActive: false, workspaceId: "", workspaceClientInstanceId: "", workspaceChannel: null, workspaceHeartbeatTimer: null, workspaceIdentityReady: false, workspaceSyncedUrl: "", expanded: new Set(["data", "automations", "integrations", "skills", "tools", "~", "~/.hermes", "~/.hermes/memories", "~/.hermes/skills"]) };
+		const state = { root: null, projectId: null, projectReloading: false, files: [], directories: [], startupContextFiles: [], startupSkillFolders: [], startupHookFiles: [], startupHooksHelpOpen: false, startupHookFilter: "all", hubDisclosuresOpen: new Set(), activeStartupSkillExplorer: null, activeStartupContextExplorer: null, startupSkillCreateFolder: null, startupContextContextTarget: null, selectedStartupContext: null, docqa: null, doctor: null, backgroundReportRenderKey: "", contextHealthStatusFilter: "open", contextHealthSeverityFilter: "triggered", contextHealthCategoryFilter: "all", contextHealthRefreshing: false, contextHealthCodexSending: false, settings: null, settingsOpen: false, settingsSection: "review-trust", settingsDisclosureState: {}, settingsBaselineByGroup: new Map(), settingsDirtyGroups: new Set(), settingsSearchQuery: "", settingsSearchIndex: -1, page: "hub", pendingMarkdown: null, availableHubCards: [], hubFolders: [], hubSections: [], rootHubSections: [], activeHubCardId: null, selectedReview: null, deletionBatchExpanded: false, deletionBatchLoading: false, deletionBatchItems: [], deletionBatchKey: "", deletionBatchReportedCount: 0, deletionBatchError: "", selectedDeletionReviews: new Set(), reviewModePath: null, reviewModeStatus: null, reviewSessions: {}, reviewFinalizationPromise: null, selected: null, selectedReadOnly: false, selectedDiff: null, fileLoadError: null, fileConflict: null, externalChange: null, conflictCompare: false, conflictMergeText: null, conflictMergeKey: "", conflictMergeMode: "auto", diffCollapsed: false, saved: "", savedHash: null, dirty: false, mode: "view", homeView: "root", planetStack: ["root"], filePanel: false, history: [], historyIndex: -1, pathFilters: [], explorerWatchFilter: "all", explorerRenderKey: "", explorerSearchFrame: 0, explorerWidth: 272, explorerStoredCollapsed: null, explorerNavigationOverride: null, inspectorWidth: 320, inspectorOpen: false, documentInspection: null, documentInspectionPath: "", documentInspectionLoading: false, focusMode: false, selectedForDelete: new Set(), selectionRequest: 0, openingFilePath: null, fileContentReadyPath: null, sessionStateTimer: null, agentCommandTimer: null, lastAgentCommandId: "", pendingAgentCommand: null, agentAnnotations: {}, userActiveAt: 0, userScrollIntentAt: 0, refreshInFlight: false, reportsRefreshInFlight: false, backgroundRefreshTimer: null, filePrefetches: new Map(), prefetchTimer: null, prefetchPath: "", lastDiffRefreshAt: 0, lastReportRefreshAt: 0, lastFullRefreshAt: 0, navigationRestoreAttempted: false, bootStartedAt: Date.now(), bootMilestones: {}, markdownHighlightFrame: 0, markdownHighlightText: "", markdownHighlightLastText: "", docLinkModifierActive: false, workspaceId: "", workspaceClientInstanceId: "", workspaceChannel: null, workspaceHeartbeatTimer: null, workspaceIdentityReady: false, workspaceSyncedUrl: "", expanded: new Set(["data", "automations", "integrations", "skills", "tools", "~", "~/.hermes", "~/.hermes/memories", "~/.hermes/skills"]) };
+		Object.assign(state, {
+		  graph: null,
+		  graphLoading: false,
+		  graphError: "",
+		  graphScope: "global",
+		  graphDepth: 1,
+		  graphLayers: ["accepted"],
+		  graphTypes: [],
+		  graphRelations: [],
+		  graphProposal: "",
+		  graphIncludeUnresolved: false,
+		  graphShowOrphans: true,
+		  graphShowArrows: false,
+		  graphSelectedNode: "",
+		  graphSearch: "",
+		  graphCamera: { x: 0, y: 0, scale: 1 },
+		  graphListMode: false,
+		  graphRequest: 0,
+		  graphPointer: null,
+		  graphDraggedNode: "",
+		  graphHoverNode: "",
+		  graphManualPositions: {},
+		});
 		state.selectedVisualAsset = null;
 		state.imagePreviewActualSize = false;
 		state.sharedContext = null;
@@ -13078,6 +14105,12 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
 		state.globalProjectSettingsPrefetching = new Set();
 		state.globalProjectExpandedFolders = new Set();
 		state.globalProjectWatchFilters = new Map();
+		state.explorerDocumentView = "location";
+		state.explorerRelatedGraphs = new Map();
+		state.explorerRelatedLoading = new Set();
+		state.explorerRelatedErrors = new Map();
+		state.explorerRelatedRequest = 0;
+		state.explorerRelatedController = null;
 		state.computerExplorer = null;
 		state.computerExplorerFolders = new Map();
 		state.computerExplorerExpandedFolders = new Set();
@@ -13089,6 +14122,10 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
 		state.globalInspectionLoading = new Set();
 		state.globalInspectionErrors = new Map();
 		state.globalInspectionController = null;
+		state.contextAttentionItems = [];
+		state.contextAttentionProjectKey = "";
+		state.contextAttentionLoading = false;
+		state.contextAttentionError = "";
 		state.globalInspectionHealthStatus = "open";
 		state.globalInspectionHealthSeverity = "all";
 		state.globalInspectionHealthCategory = "all";
@@ -13173,7 +14210,23 @@ const WATCH_RULE_MODE_OPTIONS = ${JSON.stringify(WATCH_RULE_MODE_OPTIONS)};
 const CONTEXT_HEALTH_STATUS_OPTIONS = [{ id: "open", label: "Open" }, { id: "all", label: "Open + OK" }, { id: "acknowledged", label: "OK only" }];
 const CONTEXT_HEALTH_SEVERITY_OPTIONS = [{ id: "triggered", label: "Triggered" }, { id: "all", label: "All severities" }, { id: "critical", label: "Critical" }, { id: "high", label: "High" }, { id: "medium", label: "Medium" }, { id: "low", label: "Low" }];
 const CONTEXT_HEALTH_CATEGORY_OPTIONS = [{ id: "all", label: "All areas" }, { id: "configuration", label: "Configuration" }, { id: "documentation", label: "Documentation" }, { id: "references", label: "References" }, { id: "review", label: "Review safety" }, { id: "startup", label: "Startup context" }, { id: "hooks", label: "Hooks" }];
-const SETTINGS_SECTION_IDS = ["review", "startup", "shared-skills", "appearance", "templates", "hub", "codex-prompts"];
+const SETTINGS_SECTION_IDS = ["project", "review-trust", "agent-environment", "preferences", "advanced-extensions"];
+const SETTINGS_SECTION_GROUPS = {
+  project: ["templates", "hub"],
+  "review-trust": ["review"],
+  "agent-environment": ["startup", "shared-skills"],
+  preferences: ["appearance"],
+  "advanced-extensions": ["codex-prompts"],
+};
+const SETTINGS_SECTION_ALIASES = {
+  review: "review-trust",
+  startup: "agent-environment",
+  "shared-skills": "agent-environment",
+  appearance: "preferences",
+  templates: "project",
+  hub: "project",
+  "codex-prompts": "advanced-extensions",
+};
 const AGENT_CLI_HANDOFF_PROMPT = "Use context-room context ask \"<question>\" for accepted project documentation. context-room capabilities only lists the static installed contract; it never interprets an objective or chooses a command. Never discover unregistered worktrees or write directly to shared main. Only the human can accept or reject files awaiting review.";
 const SETTINGS_DISCLOSURE_IDS = ["review-agent-cli", "review-documents", "review-protection", "startup-context", "startup-skills", "startup-hooks", "shared-how", "shared-providers", "shared-collections", "shared-destinations", "shared-instructions-how", "shared-instructions-collections", "shared-instructions-import", "appearance-theme", "appearance-explorer", "appearance-sounds", "appearance-shortcuts", "templates-list", "hub-project-priority", "hub-sections", "codex-prompts-editor"];
 const SETTINGS_DISCLOSURE_DEFAULTS = {
@@ -14380,6 +15433,189 @@ function globalProjectSelectedWorktree(project) {
   return contextHubPreferredWorktree(project, state.globalProjectWorktreeIds.get(project?.projectKey) || "");
 }
 
+function explorerDocumentPathForProject(project) {
+  const worktree = globalProjectSelectedWorktree(project);
+  if (state.page !== "file" || !state.selected || state.selectedStartupContext) return "";
+  if (state.activeProjectLocationId && worktree?.id && state.activeProjectLocationId !== worktree.id) return "";
+  return normalizeUiPath(state.selected);
+}
+
+function explorerRelatedGraphKey(project, filePath = explorerDocumentPathForProject(project)) {
+  const worktree = globalProjectSelectedWorktree(project);
+  return worktree?.id && filePath ? worktree.id + "::" + normalizeUiPath(filePath) : "";
+}
+
+function invalidateExplorerRelatedGraphs() {
+  state.explorerRelatedRequest += 1;
+  state.explorerRelatedController?.abort();
+  state.explorerRelatedController = null;
+  state.explorerRelatedGraphs.clear();
+  state.explorerRelatedLoading.clear();
+  state.explorerRelatedErrors.clear();
+}
+
+async function loadExplorerRelatedGraph(project, { force = false } = {}) {
+  const filePath = explorerDocumentPathForProject(project);
+  const worktree = globalProjectSelectedWorktree(project);
+  const key = explorerRelatedGraphKey(project, filePath);
+  if (!key || !worktree?.id) return null;
+  if (!force && state.explorerRelatedGraphs.has(key)) return state.explorerRelatedGraphs.get(key);
+  if (state.explorerRelatedLoading.has(key)) return null;
+  const request = ++state.explorerRelatedRequest;
+  state.explorerRelatedController?.abort();
+  state.explorerRelatedController = new AbortController();
+  state.explorerRelatedLoading.add(key);
+  state.explorerRelatedErrors.delete(key);
+  renderGlobalProjectExplorer();
+  try {
+    const params = new URLSearchParams({
+      scope: "local",
+      projectId: worktree.id,
+      locationId: worktree.id,
+      path: filePath,
+      depth: "1",
+      layout: "0",
+      unresolved: "1",
+    });
+    for (const layer of ["accepted", "unverified", "target"]) params.append("layer", layer);
+    for (const relation of ["depends-on", "references", "appears-in-diagram", "declares-source"]) params.append("relation", relation);
+    if (force) params.set("refresh", "1");
+    const graph = await api("/api/context-hub/document-graph?" + params, { signal: state.explorerRelatedController.signal });
+    if (request !== state.explorerRelatedRequest || key !== explorerRelatedGraphKey(project)) return null;
+    state.explorerRelatedGraphs.set(key, graph);
+    return graph;
+  } catch (error) {
+    if (error.name !== "AbortError") state.explorerRelatedErrors.set(key, error.message || "Could not load related files.");
+    return null;
+  } finally {
+    state.explorerRelatedLoading.delete(key);
+    if (request === state.explorerRelatedRequest) renderGlobalProjectExplorer();
+  }
+}
+
+function explorerRelatedProjection(graph, filePath) {
+  const nodes = graph?.nodes || [];
+  const center = nodes.find((node) => node.id === graph?.centerId) || nodes.find((node) => normalizeUiPath(node.path) === normalizeUiPath(filePath));
+  if (!center) return { center: null, dependsOn: [], dependedOnBy: [], references: [], referencedBy: [], appearsInDiagrams: [], unresolved: [] };
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const usableNeighbor = (node) => node && (node.truthState === "accepted" || node.missing);
+  const dependsOn = [];
+  const dependedOnBy = [];
+  const references = [];
+  const referencedBy = [];
+  const appearsInDiagrams = [];
+  const unresolved = [];
+  for (const edge of graph.edges || []) {
+    if (edge.from === center.id) {
+      const node = byId.get(edge.to);
+      if (!usableNeighbor(node)) continue;
+      const item = { edge, node };
+      if (node.missing) unresolved.push(item);
+      else if (edge.type === "depends-on") dependsOn.push(item);
+      else references.push(item);
+    } else if (edge.to === center.id) {
+      const node = byId.get(edge.from);
+      if (!usableNeighbor(node) || node.missing) continue;
+      const item = { edge, node };
+      if (edge.type === "depends-on") dependedOnBy.push(item);
+      else if (edge.type === "appears-in-diagram") appearsInDiagrams.push(item);
+      else referencedBy.push(item);
+    }
+  }
+  const unique = (items) => [...new Map(items.map((item) => [item.edge.type + "::" + item.node.id, item])).values()];
+  return { center, dependsOn: unique(dependsOn), dependedOnBy: unique(dependedOnBy), references: unique(references), referencedBy: unique(referencedBy), appearsInDiagrams: unique(appearsInDiagrams), unresolved: unique(unresolved) };
+}
+
+function explorerRelationLabel(edge) {
+  const label = edge.type === "declares-source" ? "Legacy source" : edge.type === "depends-on" ? "Dependency" : edge.type === "appears-in-diagram" ? "Diagram link" : "Reference";
+  if (edge.evidence?.truthState === "unverified") return "Pending " + label.toLowerCase();
+  if (edge.evidence?.truthState === "target") return "Target " + label.toLowerCase();
+  if (edge.evidence?.truthState === "proposal") return "Proposal " + label.toLowerCase();
+  return label;
+}
+
+function renderExplorerRelatedRow(item, project, { missing = false } = {}) {
+  const node = item.node;
+  const worktree = globalProjectSelectedWorktree(project);
+  const stateLabel = missing ? "Missing" : node.truthState === "accepted" ? "Accepted" : node.truthState;
+  const content = '<span class="explorer-related-icon" aria-hidden="true">' + (missing ? "!" : "◇") + '</span>'
+    + '<span class="explorer-related-copy"><strong>' + escapeHtml(node.label || node.path) + '</strong><code title="' + escapeHtml(node.path || "") + '">' + escapeHtml(node.path || "") + '</code></span>'
+    + '<span class="explorer-related-meta"><small>' + escapeHtml(explorerRelationLabel(item.edge)) + '</small><span>' + escapeHtml(stateLabel) + '</span></span>';
+  if (missing || !node.path) return '<div class="explorer-related-row missing" role="listitem">' + content + '</div>';
+  return '<a class="explorer-related-row" href="' + escapeHtml(workspaceProjectHref(worktree?.id || project.id, node.path)) + '" data-global-project-file="' + escapeHtml(node.path) + '" data-global-project-key="' + escapeHtml(project.projectKey) + '" data-global-related-file="' + escapeHtml(node.path) + '">' + content + '</a>';
+}
+
+function renderExplorerRelatedSection(title, items, project, emptyCopy, options = {}) {
+  return '<section class="explorer-related-section"><div class="explorer-related-section-head"><h3>' + escapeHtml(title) + '</h3><span>' + items.length + '</span></div>'
+    + (items.length ? '<div class="explorer-related-list" role="list">' + items.map((item) => renderExplorerRelatedRow(item, project, options)).join("") + '</div>' : '<p class="explorer-related-empty">' + escapeHtml(emptyCopy) + '</p>')
+    + '</section>';
+}
+
+function renderExplorerRelated(project, filePath) {
+  const key = explorerRelatedGraphKey(project, filePath);
+  if (!key) return '<div class="global-project-folder-state">Open a document to inspect its relations.</div>';
+  if (state.explorerRelatedLoading.has(key)) return '<div class="global-project-folder-state">Loading related files…</div>';
+  const error = state.explorerRelatedErrors.get(key);
+  if (error) return '<div class="global-project-folder-state"><strong>Related files unavailable</strong><br>' + escapeHtml(error) + '</div>';
+  const graph = state.explorerRelatedGraphs.get(key);
+  if (!graph) return '<div class="global-project-folder-state">Loading related files…</div>';
+  const projection = explorerRelatedProjection(graph, filePath);
+  if (!projection.center) return '<div class="global-project-folder-state">This document has no graph entry in the selected truth layers.</div>';
+  const needle = state.globalProjectSearch.trim().toLowerCase();
+  const matches = (item) => !needle || [item.node.label, item.node.path, item.edge.type].filter(Boolean).join(" ").toLowerCase().includes(needle);
+  const dependsOn = projection.dependsOn.filter(matches);
+  const dependedOnBy = projection.dependedOnBy.filter(matches);
+  const references = projection.references.filter(matches);
+  const referencedBy = projection.referencedBy.filter(matches);
+  const appearsInDiagrams = projection.appearsInDiagrams.filter(matches);
+  const unresolved = projection.unresolved.filter(matches);
+  const metadata = projection.center.metadata || {};
+  const canonical = projection.center.documentId ? '<span>ID <strong>' + escapeHtml(projection.center.documentId) + '</strong></span>' : metadata.canonicalFor ? '<span>Canonical for <strong>' + escapeHtml(metadata.canonicalFor) + '</strong></span>' : '<span>' + escapeHtml(metadata.kind || projection.center.kind || "Document") + '</span>';
+  const truth = projection.center.truthState === "accepted" ? "Accepted" : projection.center.truthState === "unverified" ? "Review" : "Target";
+  return '<div class="explorer-related-current"><strong title="' + escapeHtml(filePath) + '">' + escapeHtml(projection.center.label || filePath) + '</strong><div>' + canonical + '<span class="explorer-related-state">' + escapeHtml(truth) + '</span></div></div>'
+    + renderExplorerRelatedSection("Depends on", dependsOn, project, "No direct maintenance dependencies.")
+    + renderExplorerRelatedSection("Depended on by", dependedOnBy, project, "No documents depend on this version.")
+    + renderExplorerRelatedSection("References", references, project, "No accepted outgoing references.")
+    + renderExplorerRelatedSection("Referenced by", referencedBy, project, "No accepted backlinks.")
+    + renderExplorerRelatedSection("Appears in diagrams", appearsInDiagrams, project, "No accepted diagram links.")
+    + renderExplorerRelatedSection("Unresolved", unresolved, project, "No unresolved dependencies or references.", { missing: true })
+    + '<div class="explorer-related-actions"><button class="secondary" type="button" data-explorer-reveal-location>Reveal in Location</button><button class="secondary" type="button" data-explorer-open-local-graph>Open local graph</button></div>';
+}
+
+function renderExplorerDocumentViewTabs(filePath) {
+  if (!filePath) return "";
+  return '<div class="explorer-document-tabs" role="tablist" aria-label="Document explorer view">'
+    + ['location', 'related'].map((view) => '<button type="button" role="tab" aria-selected="' + String(state.explorerDocumentView === view) + '" class="explorer-document-tab' + (state.explorerDocumentView === view ? ' active' : '') + '" data-explorer-document-view="' + view + '">' + (view === 'location' ? 'Location' : 'Related') + '</button>').join('')
+    + '</div>';
+}
+
+async function revealSelectedDocumentLocation(project) {
+  const filePath = explorerDocumentPathForProject(project);
+  if (!filePath) return;
+  state.explorerDocumentView = "location";
+  state.globalProjectSearch = "";
+  const parts = filePath.split("/").filter(Boolean);
+  parts.pop();
+  let directory = "";
+  await loadGlobalProjectExplorerPage(project);
+  for (const part of parts) {
+    directory = directory ? directory + "/" + part : part;
+    state.globalProjectExpandedFolders.add(project.projectKey + "::" + directory);
+    await loadGlobalProjectExplorerPage(project, { directory });
+  }
+  renderGlobalProjectExplorer();
+  syncWorkspaceUrl();
+  persistNavigationState();
+  requestAnimationFrame(() => document.querySelector('[data-global-project-file="' + cssEscape(filePath) + '"]')?.scrollIntoView({ block: "center" }));
+}
+
+function refreshExplorerRelatedForCurrentFile({ force = false } = {}) {
+  if (!IS_GLOBAL_CONTEXT_ROOM || state.explorerDocumentView !== "related" || state.page !== "file" || !state.selected) return Promise.resolve(null);
+  const project = workspaceSelectedProject();
+  if (!project) return Promise.resolve(null);
+  return loadExplorerRelatedGraph(project, { force });
+}
+
 function globalProjectExplorerCacheKey(project) {
   const worktree = globalProjectSelectedWorktree(project);
   return project.projectKey + "::" + (worktree?.id || project.id);
@@ -14400,6 +15636,11 @@ function renderGlobalProjectFolder(project) {
     return '<div class="global-project-folder-state">This project is shared-only. Browse its files inside a proposal.</div>'
       + '<button class="global-project-shared-action" type="button" data-global-project-shared="' + escapeHtml(project.projectKey) + '">Show proposals</button>';
   }
+  const documentPath = explorerDocumentPathForProject(project);
+  const tabs = renderExplorerDocumentViewTabs(documentPath);
+  if (documentPath && state.explorerDocumentView === "related") {
+    return tabs + renderExplorerRelated(project, documentPath);
+  }
   const needle = state.globalProjectSearch.trim().toLowerCase();
   const cacheKey = globalProjectExplorerPageKey(project, { query: needle });
   if (state.globalProjectExplorerLoading.has(cacheKey)) {
@@ -14412,7 +15653,7 @@ function renderGlobalProjectFolder(project) {
   const filter = state.globalProjectWatchFilters.get(project.projectKey) || "all";
   const markup = renderGlobalProjectExplorerPage(project, details, 0, filter);
   const visibleCount = (details.entries || []).filter((entry) => globalProjectExplorerEntryMatchesFilter(entry, filter)).length;
-  return '<div class="global-project-folder-head"><div class="global-project-watch-filters" aria-label="Project watch filter">'
+  return tabs + '<div class="global-project-folder-head"><div class="global-project-watch-filters" aria-label="Project watch filter">'
     + [
       ["all", "All"],
       ["watched", "Watched"],
@@ -14434,6 +15675,9 @@ async function openGlobalProjectExplorer(project) {
   state.globalProjectSearch = "";
   state.globalInspectionView = "";
   state.globalProjectSelectionGeneration += 1;
+  state.explorerRelatedRequest += 1;
+  state.explorerRelatedController?.abort();
+  state.explorerRelatedController = null;
   state.globalProjectSettingsController?.abort();
   state.globalProjectExplorerController?.abort();
   state.sharedSkillLocationsController?.abort();
@@ -14446,7 +15690,7 @@ async function openGlobalProjectExplorer(project) {
   refreshGlobalSettingsScopeFromExplorer();
   if (state.page === "settings") {
     void loadGlobalProjectSettings(project).catch((error) => setStatus(error.message));
-    if (state.settingsSection === "shared-skills") {
+    if (normalizeSettingsSectionId(state.settingsSection) === "agent-environment") {
       void loadSharedSkillLocations({ projectId: globalProjectSelectedWorktree(project)?.id || "" }).catch((error) => setStatus(error.message));
     }
   }
@@ -14454,6 +15698,13 @@ async function openGlobalProjectExplorer(project) {
   state.projectSwitchMetrics.selectionVisibleMs = performance.now() - state.projectSwitchMetrics.startedAt;
   document.body.dataset.projectSwitchMetrics = JSON.stringify(state.projectSwitchMetrics);
   renderContextHealth();
+  const attentionGeneration = state.globalProjectSelectionGeneration;
+  const loadAttentionWhenIdle = () => {
+    if (attentionGeneration !== state.globalProjectSelectionGeneration || state.globalExplorerProjectKey !== project.projectKey) return;
+    void loadContextAttention(project).catch((error) => setStatus(error.message));
+  };
+  if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(loadAttentionWhenIdle, { timeout: 800 });
+  else window.setTimeout(loadAttentionWhenIdle, 150);
   scheduleSessionStatePush();
   if (project.mode === "shared" || !globalProjectSelectedWorktree(project)?.root) return;
   await loadGlobalProjectExplorerPage(project);
@@ -14619,6 +15870,8 @@ function renderGlobalExplorerContextMenu(x, y) {
           + '<button class="secondary" type="button" data-global-context-priority="up">Move project up</button>'
           + '<button class="secondary" type="button" data-global-context-manage-priority>Manage project priority…</button>'
         : "")
+      + (target.kind === "project" ? '<button class="secondary" type="button" data-global-context-project-graph>Open project graph</button>' : '')
+      + (target.kind === "file" ? '<button class="secondary" type="button" data-global-context-local-graph>Open local graph</button>' : '')
       + '<button class="secondary" type="button" data-global-context-health title="Review configuration, documentation, hook, and review-safety issues for this project">View Context health</button>'
       + '<button class="secondary" type="button" data-global-context-startup title="Show the agent instructions, skills, and hooks active for this project">View startup environment</button>'
       + (target.kind === "folder" ? '<button class="secondary" type="button" data-global-context-inspect title="Resolve the exact instructions, skills, hooks, provider settings, and accepted documents for this folder">Inspect agent environment</button>' : '')
@@ -14684,10 +15937,27 @@ function renderGlobalExplorerContextMenu(x, y) {
   }));
   menu.querySelector("[data-global-context-manage-priority]")?.addEventListener("click", () => {
     hideExplorerContextMenu();
-    state.settingsSection = "hub";
+    state.settingsSection = "project";
     setSettingsDisclosureOpen("hub-project-priority", true);
     showSettingsPage();
     window.requestAnimationFrame(() => document.querySelector('[data-settings-disclosure="hub-project-priority"]')?.scrollIntoView({ block: "start" }));
+  });
+  menu.querySelector("[data-global-context-project-graph]")?.addEventListener("click", async () => {
+    try {
+      hideExplorerContextMenu();
+      const selectedWorktree = globalProjectSelectedWorktree(project);
+      state.activeProjectLocationId = selectedWorktree?.id || project.id;
+      await showGraphPage({ scope: "project" });
+    } catch (error) { setStatus(error.message); }
+  });
+  menu.querySelector("[data-global-context-local-graph]")?.addEventListener("click", async () => {
+    try {
+      hideExplorerContextMenu();
+      const selectedWorktree = globalProjectSelectedWorktree(project);
+      const locationId = selectedWorktree?.id || project.id;
+      if (locationId) state.activeProjectLocationId = locationId;
+      await showGraphPage({ scope: "local", path: target.path });
+    } catch (error) { setStatus(error.message); }
   });
   menu.querySelector("[data-global-context-health]")?.addEventListener("click", () => {
     hideExplorerContextMenu();
@@ -14834,6 +16104,7 @@ function renderGlobalProjectExplorer() {
   const scope = el("globalExplorerScope");
   const listLabel = el("globalExplorerListLabel");
   const search = el("globalProjectSearch");
+  const clearSearch = el("clearGlobalProjectSearch");
   const count = el("globalProjectCount");
   const list = el("globalProjectList");
   if (!explorer || !scope || !listLabel || !search || !count || !list) return;
@@ -14844,6 +16115,7 @@ function renderGlobalProjectExplorer() {
   if (state.globalExplorerMode === "computer") {
     search.placeholder = "Search explorer...";
     search.setAttribute("aria-label", "Search computer explorer");
+    if (clearSearch) clearSearch.title = "Clear Explorer search";
     const snapshot = state.computerExplorer;
     scope.hidden = false;
     scope.innerHTML = '<span class="global-explorer-scope-copy"><strong>Computer</strong><code title="' + escapeHtml(snapshot?.root || state.settings?.explorer?.computerRoot || "") + '">' + escapeHtml(snapshot?.root || state.settings?.explorer?.computerRoot || "") + '</code></span>';
@@ -14855,13 +16127,25 @@ function renderGlobalProjectExplorer() {
   const selectedProject = (state.contextHub?.projects || []).find((project) => project.projectKey === state.globalExplorerProjectKey);
   if (state.globalExplorerMode === "project" && selectedProject) {
     const selectedWorktree = globalProjectSelectedWorktree(selectedProject);
-    search.placeholder = "Search files...";
-    search.setAttribute("aria-label", "Search project files");
+    const related = Boolean(explorerDocumentPathForProject(selectedProject) && state.explorerDocumentView === "related");
+    search.placeholder = related ? "Search related files..." : "Search files...";
+    search.setAttribute("aria-label", related ? "Search related files" : "Search project files");
+    if (clearSearch) clearSearch.title = related ? "Clear related-file search" : "Show all project files";
     scope.hidden = false;
     scope.innerHTML = '<button class="global-explorer-back" type="button" data-global-explorer-back aria-label="Back to projects">←</button><span class="global-explorer-scope-copy"><strong>' + escapeHtml(selectedProject.title || selectedProject.id) + '</strong><code title="' + escapeHtml(selectedWorktree?.root || contextHubProjectPickerLocation(selectedProject)) + '">' + escapeHtml(selectedWorktree?.root || contextHubProjectPickerLocation(selectedProject)) + '</code></span>'
       + contextHubWorktreeSelectorMarkup(selectedProject, selectedWorktree?.id || "", 'data-global-project-worktree="' + escapeHtml(selectedProject.projectKey) + '"');
-    listLabel.textContent = selectedProject.mode === "shared" ? "Shared files" : "Files";
-    count.textContent = selectedProject.mode === "shared" ? "Proposals only" : "Project files";
+    listLabel.textContent = related ? "Related" : selectedProject.mode === "shared" ? "Shared files" : "Files";
+    const relatedGraph = state.explorerRelatedGraphs.get(explorerRelatedGraphKey(selectedProject));
+    const relatedProjection = relatedGraph ? explorerRelatedProjection(relatedGraph, explorerDocumentPathForProject(selectedProject)) : null;
+    const directRelationCount = relatedProjection
+      ? relatedProjection.dependsOn.length
+        + relatedProjection.dependedOnBy.length
+        + relatedProjection.references.length
+        + relatedProjection.referencedBy.length
+        + relatedProjection.appearsInDiagrams.length
+        + relatedProjection.unresolved.length
+      : 0;
+    count.textContent = related ? (relatedGraph ? directRelationCount + " relations" : "Loading…") : selectedProject.mode === "shared" ? "Proposals only" : "Project files";
     list.innerHTML = renderGlobalProjectFolder(selectedProject);
     return;
   }
@@ -14869,6 +16153,7 @@ function renderGlobalProjectExplorer() {
   state.globalExplorerProjectKey = "";
   search.placeholder = "Search projects...";
   search.setAttribute("aria-label", "Search projects");
+  if (clearSearch) clearSearch.title = "Show all projects";
   scope.hidden = true;
   scope.innerHTML = "";
   listLabel.textContent = "Projects";
@@ -15500,6 +16785,7 @@ function renderContextRoomGlobalReviewQueue() {
   limit.textContent = hiddenReviewCount
     ? "Showing the first " + visibleReviews.length + " of " + renderedReviews.length + " items. Choose a project or refine the search to narrow the queue."
     : "";
+  renderContextRoomOtherAttention();
   scheduleContextRoomSnoozeExpiry();
 }
 
@@ -15848,9 +17134,14 @@ async function openContextHubProject(projectId, options = {}) {
   }
   const target = new URL(window.location.origin + "/");
   target.searchParams.set("hub", "1");
+  if (state.workspaceId) target.searchParams.set("workspace", state.workspaceId);
   target.searchParams.set("project", targetProjectId);
   const review = options.reviewTarget || (options.filePath ? { path: options.filePath } : null);
-  if (review?.path) target.searchParams.set("file", review.path);
+  if (review?.path) {
+    target.searchParams.set("view", "file");
+    target.searchParams.set("file", review.path);
+    if (state.explorerDocumentView === "related") target.searchParams.set("explorerView", "related");
+  }
   if (review?.startupContext?.kind) target.searchParams.set("startupKind", review.startupContext.kind);
   if (review?.startupContext?.order) target.searchParams.set("startupOrder", review.startupContext.order);
   if (review?.startupContext?.skillName) target.searchParams.set("startupSkill", review.startupContext.skillName);
@@ -16013,11 +17304,13 @@ function abortObsoleteWorkspaceRequests() {
   state.contextEngineRequest += 1;
   state.singleStartupEffectiveRequest += 1;
   state.globalProjectSelectionGeneration += 1;
+  state.explorerRelatedRequest += 1;
   for (const key of [
     "globalProjectSettingsController",
     "globalProjectExplorerController",
     "sharedSkillLocationsController",
     "globalInspectionController",
+    "explorerRelatedController",
   ]) {
     state[key]?.abort?.();
     state[key] = null;
@@ -16208,7 +17501,7 @@ function createWorkspaceId() {
   return (globalThis.crypto?.randomUUID?.() || (Date.now().toString(36) + "-" + Math.random().toString(36).slice(2))).replace(/[^A-Za-z0-9_-]/g, "-");
 }
 
-function syncWorkspaceUrl() {
+function syncWorkspaceUrl({ push = false } = {}) {
   if (!state.workspaceId || state.workspaceApplyingHistory) return;
   const url = new URL(window.location.href);
   url.searchParams.set("hub", "1");
@@ -16223,15 +17516,38 @@ function syncWorkspaceUrl() {
   if (state.pathFilters?.[0]) url.searchParams.set("folder", state.pathFilters[0]);
   else url.searchParams.delete("folder");
   if (state.page === "proposal" && state.contextHubSelection) url.searchParams.set("proposal", state.contextHubSelection);
+  else if (state.page === "graph" && state.graphProposal) url.searchParams.set("proposal", state.graphProposal);
   else url.searchParams.delete("proposal");
   if (state.page === "settings") url.searchParams.set("settings", normalizeSettingsSectionId(state.settingsSection));
   else url.searchParams.delete("settings");
+  if (state.page === "file" && state.selected && state.explorerDocumentView === "related") url.searchParams.set("explorerView", "related");
+  else url.searchParams.delete("explorerView");
+  if (state.page === "graph") {
+    url.searchParams.set("graphScope", state.graphScope);
+    url.searchParams.set("graphDepth", String(state.graphDepth));
+    url.searchParams.set("graphLayers", state.graphLayers.join(","));
+    if (state.graphTypes.length) url.searchParams.set("graphTypes", state.graphTypes.join(","));
+    else url.searchParams.delete("graphTypes");
+    if (state.graphRelations.length) url.searchParams.set("graphRelations", state.graphRelations.join(","));
+    else url.searchParams.delete("graphRelations");
+    if (state.graphSelectedNode) url.searchParams.set("graphNode", state.graphSelectedNode);
+    else url.searchParams.delete("graphNode");
+    if (state.graphIncludeUnresolved) url.searchParams.set("graphUnresolved", "1");
+    else url.searchParams.delete("graphUnresolved");
+    if (!state.graphShowOrphans) url.searchParams.set("graphOrphans", "0");
+    else url.searchParams.delete("graphOrphans");
+    if (state.graphShowArrows) url.searchParams.set("graphArrows", "1");
+    else url.searchParams.delete("graphArrows");
+    url.searchParams.set("graphCamera", [state.graphCamera.x, state.graphCamera.y, state.graphCamera.scale].map((value) => Number(value).toFixed(3)).join(","));
+  } else {
+    ["graphScope", "graphDepth", "graphLayers", "graphTypes", "graphRelations", "graphNode", "graphUnresolved", "graphOrphans", "graphArrows", "graphCamera"].forEach((key) => url.searchParams.delete(key));
+  }
   if (url.href === window.location.href) {
     state.workspaceSyncedUrl = url.href;
     return;
   }
   state.workspaceSyncedUrl = url.href;
-  window.history.replaceState(window.history.state, "", url);
+  window.history[push ? "pushState" : "replaceState"](window.history.state, "", url);
 }
 
 async function applyWorkspaceUrlState({ reason = "history", force = false } = {}) {
@@ -16253,6 +17569,7 @@ async function applyWorkspaceUrlState({ reason = "history", force = false } = {}
   recordWorkspaceDiagnostic("restoring-navigation", reason);
   try {
     const projectChanged = IS_GLOBAL_CONTEXT_ROOM && target.projectId !== state.activeProjectLocationId;
+    state.explorerDocumentView = target.explorerDocumentView;
     if (projectChanged) {
       state.activeProjectLocationId = target.projectId;
       state.root = null;
@@ -16264,13 +17581,13 @@ async function applyWorkspaceUrlState({ reason = "history", force = false } = {}
         state.globalExplorerMode = "project";
         state.globalProjectWorktreeIds.set(project.projectKey, target.projectId);
       }
-      await loadFiles({ navigation: true });
+      if (target.view !== "graph") await loadFiles({ navigation: true });
       if (generation !== state.workspaceNavigationGeneration) return false;
     }
     state.pathFilters = target.folder ? [normalizeUiPath(target.folder)] : [];
     if (el("search")) el("search").value = folderFilterSearchQuery(state.pathFilters);
     if (target.view === "settings") {
-      if (SETTINGS_SECTION_IDS.includes(target.settingsSection)) state.settingsSection = target.settingsSection;
+      if (target.settingsSection) state.settingsSection = normalizeSettingsSectionId(target.settingsSection);
       showSettingsPage();
     } else if (target.view === "proposal" && target.proposal) {
       const proposal = (state.contextHub?.proposals || []).find((item) => item.id === target.proposal || item.branch === target.proposal);
@@ -16279,6 +17596,19 @@ async function applyWorkspaceUrlState({ reason = "history", force = false } = {}
     } else if (target.view === "file" && target.file) {
       if (!state.files.some((file) => file.path === target.file)) throw new Error("This file is no longer available in the selected project.");
       await selectFile(target.file, { pushHistory: false, revealInExplorer: false, forceReload: projectChanged });
+    } else if (target.view === "graph") {
+      state.graphScope = target.graphScope;
+      state.graphDepth = target.graphDepth;
+      state.graphLayers = target.graphLayers.length ? target.graphLayers : ["accepted"];
+      state.graphTypes = target.graphTypes;
+      state.graphRelations = target.graphRelations;
+      state.graphProposal = target.proposal;
+      state.graphSelectedNode = target.graphNode;
+      state.graphIncludeUnresolved = target.graphIncludeUnresolved;
+      state.graphShowOrphans = target.graphShowOrphans;
+      state.graphShowArrows = target.graphShowArrows;
+      state.graphCamera = target.graphCamera;
+      await showGraphPage({ scope: target.graphScope, path: target.file || target.folder, depth: target.graphDepth, pushHistory: false });
     } else if (["project-manager", "codex-prompts"].includes(target.view)) {
       openContextRoomView(target.view);
     } else {
@@ -16318,6 +17648,10 @@ function updateWorkspaceDocumentTitle() {
 }
 
 function workspaceUpdate(event, detail = {}) {
+  if (["file-saved", "review-decided", "settings-saved", "shared-synced", "catalog-refreshed"].includes(event)) {
+    invalidateExplorerRelatedGraphs();
+    queueMicrotask(() => void refreshExplorerRelatedForCurrentFile({ force: true }).catch((error) => setStatus(error.message)));
+  }
   state.workspaceChannel?.postMessage({ type: "workspace-update", event, workspaceId: state.workspaceId, locationId: state.activeProjectLocationId || "", path: detail.path || "", at: Date.now() });
 }
 
@@ -16329,12 +17663,21 @@ async function handleWorkspaceMessage(message = {}) {
   }
   if (message.type !== "workspace-update" || message.workspaceId === state.workspaceId) return;
   if (message.locationId && state.activeProjectLocationId && message.locationId !== state.activeProjectLocationId) return;
+  const invalidatesDocumentRelations = ["file-saved", "review-decided", "settings-saved", "shared-synced", "catalog-refreshed"].includes(message.event);
+  if (invalidatesDocumentRelations) {
+    invalidateExplorerRelatedGraphs();
+    await refreshExplorerRelatedForCurrentFile({ force: true });
+  }
   if (message.event === "file-saved" && message.path === state.selected) {
     await refreshFromDisk();
     setStatus(state.dirty ? "Conflict · updated in another workspace" : "Updated in another workspace");
     return;
   }
+  if (state.page === "graph" && ["file-saved", "review-decided", "settings-saved", "shared-synced", "catalog-refreshed"].includes(message.event)) {
+    await loadDocumentGraph({ force: true });
+  }
   if (["review-decided", "settings-saved", "shared-synced", "catalog-refreshed"].includes(message.event)) scheduleBackgroundRefresh();
+  if (!invalidatesDocumentRelations) await refreshExplorerRelatedForCurrentFile({ force: true });
 }
 
 async function establishWorkspaceIdentity() {
@@ -16358,7 +17701,12 @@ async function establishWorkspaceIdentity() {
     window.sessionStorage?.setItem(WORKSPACE_ID_SESSION_KEY, replacement);
     recordWorkspaceDiagnostic("identity-ready", "duplicated-tab");
     if (state.workspaceIdentityReady) {
-      syncWorkspaceUrl();
+      const currentUrl = new URL(window.location.href);
+      if (currentUrl.searchParams.has("view")) {
+        currentUrl.searchParams.set("hub", "1");
+        currentUrl.searchParams.set("workspace", replacement);
+        window.history.replaceState(window.history.state, "", currentUrl);
+      } else syncWorkspaceUrl();
       publishSessionState().catch(() => {});
     }
   };
@@ -16376,7 +17724,12 @@ async function establishWorkspaceIdentity() {
   }
   window.sessionStorage?.setItem(WORKSPACE_ID_SESSION_KEY, state.workspaceId);
   state.workspaceIdentityReady = true;
-  syncWorkspaceUrl();
+  if (new URL(window.location.href).searchParams.has("view")) {
+    const requestedUrl = new URL(window.location.href);
+    requestedUrl.searchParams.set("hub", "1");
+    requestedUrl.searchParams.set("workspace", state.workspaceId);
+    window.history.replaceState(window.history.state, "", requestedUrl);
+  } else syncWorkspaceUrl();
   recordWorkspaceDiagnostic("identity-ready", "workspace-established");
 }
 
@@ -16433,11 +17786,11 @@ function readPersistedNavigationState(root = state.root) {
     const workspaceRaw = window.sessionStorage?.getItem(key) || "";
     const legacyRaw = !workspaceRaw ? window.localStorage?.getItem(LEGACY_NAVIGATION_STATE_STORAGE_PREFIX + root) || "" : "";
     const raw = JSON.parse(workspaceRaw || legacyRaw || "null");
-    if (!raw || ![1, 2, 3, 4].includes(raw.version)) return null;
+    if (!raw || ![1, 2, 3, 4, 5, 6].includes(raw.version)) return null;
     if (!raw.root || !raw.projectId) return null;
     if (raw.root !== root) return null;
     if (!state.projectId || raw.projectId !== state.projectId) return null;
-    const page = ["hub", "file", "settings", "new-doc"].includes(raw.page) ? raw.page : "hub";
+    const page = ["hub", "file", "settings", "new-doc", "graph"].includes(raw.page) ? raw.page : "hub";
     const rawPathFilters = Array.isArray(raw.pathFilters) ? raw.pathFilters.map(normalizeUiPath).filter(Boolean).slice(0, 20) : [];
     const pathFilters = rawPathFilters.filter((filter) => state.files.some((file) => pathMatchesFilter(file.path, filter)));
     const rawSearchText = typeof raw.searchText === "string" ? raw.searchText.slice(0, 300) : "";
@@ -16455,7 +17808,7 @@ function readPersistedNavigationState(root = state.root) {
       searchText,
       pathFilters,
       activeHubCardId: typeof raw.activeHubCardId === "string" ? raw.activeHubCardId : null,
-      settingsSection: SETTINGS_SECTION_IDS.includes(raw.settingsSection) ? raw.settingsSection : "review",
+      settingsSection: normalizeSettingsSectionId(raw.settingsSection),
       settingsDisclosureState: raw.version >= 2 && raw.settingsDisclosureState && typeof raw.settingsDisclosureState === "object"
         ? Object.fromEntries(Object.entries(raw.settingsDisclosureState).filter(([id, open]) => SETTINGS_DISCLOSURE_IDS.includes(id) && typeof open === "boolean"))
         : {},
@@ -16472,6 +17825,8 @@ function readPersistedNavigationState(root = state.root) {
       activeProjectLocationId: raw.version >= 4 && typeof raw.activeProjectLocationId === "string" ? raw.activeProjectLocationId : "",
       globalExplorerProjectKey: raw.version >= 4 && typeof raw.globalExplorerProjectKey === "string" ? raw.globalExplorerProjectKey : "",
       globalExplorerMode: raw.version >= 4 && typeof raw.globalExplorerMode === "string" ? raw.globalExplorerMode : "projects",
+      explorerDocumentView: raw.version >= 6 && raw.explorerDocumentView === "related" ? "related" : "location",
+      graphState: raw.version >= 5 && raw.graphState && typeof raw.graphState === "object" ? raw.graphState : null,
     };
   } catch {
     return null;
@@ -16483,7 +17838,7 @@ function persistNavigationState() {
   if (!key) return;
   try {
     window.sessionStorage?.setItem(key, JSON.stringify({
-      version: 4,
+      version: 6,
       workspaceId: state.workspaceId,
       root: state.root,
       projectId: state.projectId,
@@ -16515,11 +17870,50 @@ function persistNavigationState() {
       activeProjectLocationId: state.activeProjectLocationId || "",
       globalExplorerProjectKey: state.globalExplorerProjectKey || "",
       globalExplorerMode: state.globalExplorerMode || "projects",
+      explorerDocumentView: state.explorerDocumentView,
+      graphState: {
+        scope: state.graphScope,
+        depth: state.graphDepth,
+        layers: [...state.graphLayers],
+        types: [...state.graphTypes],
+        relations: [...state.graphRelations],
+        proposal: state.graphProposal,
+        includeUnresolved: state.graphIncludeUnresolved,
+        showOrphans: state.graphShowOrphans,
+        showArrows: state.graphShowArrows,
+        selectedNode: state.graphSelectedNode,
+        search: state.graphSearch,
+        camera: { ...state.graphCamera },
+        manualPositions: { ...state.graphManualPositions },
+        listMode: state.graphListMode,
+      },
       updatedAt: new Date().toISOString(),
     }));
     syncWorkspaceUrl();
     updateWorkspaceDocumentTitle();
   } catch {}
+}
+
+const EXPLORER_MOBILE_MAX_WIDTH = 639;
+const EXPLORER_DRAWER_MAX_WIDTH = 980;
+
+function explorerViewportMode(width = window.innerWidth) {
+  const viewportWidth = Number(width);
+  if (viewportWidth <= EXPLORER_MOBILE_MAX_WIDTH) return "mobile";
+  if (viewportWidth <= EXPLORER_DRAWER_MAX_WIDTH) return "drawer";
+  return "desktop";
+}
+
+function isExplorerMobileViewport() {
+  return explorerViewportMode() === "mobile";
+}
+
+function isExplorerDrawerViewport() {
+  return explorerViewportMode() !== "desktop";
+}
+
+function isExplorerDesktopViewport() {
+  return explorerViewportMode() === "desktop";
 }
 
 function restoreExplorerStateAfterInitialLoad() {
@@ -16534,7 +17928,7 @@ function restoreExplorerStateAfterInitialLoad() {
   document.body.classList.toggle("workbench-focus-mode", state.focusMode);
   const storedCollapsed = typeof persisted?.explorerCollapsed === "boolean"
     ? persisted.explorerCollapsed
-    : window.matchMedia("(max-width: 980px)").matches;
+    : isExplorerDrawerViewport();
   const navigationMode = new URLSearchParams(window.location.search).get("explorer");
   state.explorerStoredCollapsed = storedCollapsed;
   state.explorerNavigationOverride = navigationMode === "collapsed"
@@ -16548,6 +17942,10 @@ function restoreExplorerStateAfterInitialLoad() {
 async function restoreNavigationAfterInitialLoad() {
   if (state.navigationRestoreAttempted || state.selected || state.openingFilePath) return false;
   state.navigationRestoreAttempted = true;
+  if (new URL(window.location.href).searchParams.has("view")) {
+    state.workspaceSyncedUrl = "";
+    return applyWorkspaceUrlState({ reason: "initial-url", force: true });
+  }
   const persisted = readPersistedNavigationState();
   if (!persisted) return false;
   state.selectedReview = persisted.selectedReview || state.selectedReview;
@@ -16562,6 +17960,24 @@ async function restoreNavigationAfterInitialLoad() {
     state.activeProjectLocationId = persisted.activeProjectLocationId || state.activeProjectLocationId;
     state.globalExplorerProjectKey = persisted.globalExplorerProjectKey || state.globalExplorerProjectKey;
     state.globalExplorerMode = persisted.globalExplorerMode || state.globalExplorerMode;
+    state.explorerDocumentView = persisted.explorerDocumentView || "location";
+  }
+  if (persisted.graphState) {
+    const graphState = persisted.graphState;
+    state.graphScope = ["global", "project", "local"].includes(graphState.scope) ? graphState.scope : "global";
+    state.graphDepth = Math.min(3, Math.max(1, Number(graphState.depth) || 1));
+    state.graphLayers = Array.isArray(graphState.layers) && graphState.layers.length ? graphState.layers : ["accepted"];
+    state.graphTypes = Array.isArray(graphState.types) ? graphState.types : [];
+    state.graphRelations = Array.isArray(graphState.relations) ? graphState.relations : [];
+    state.graphProposal = String(graphState.proposal || "");
+    state.graphIncludeUnresolved = Boolean(graphState.includeUnresolved);
+    state.graphShowOrphans = graphState.showOrphans !== false;
+    state.graphShowArrows = Boolean(graphState.showArrows);
+    state.graphSelectedNode = String(graphState.selectedNode || "");
+    state.graphSearch = String(graphState.search || "");
+    state.graphCamera = graphState.camera && typeof graphState.camera === "object" ? graphState.camera : { x: 0, y: 0, scale: 1 };
+    state.graphManualPositions = graphState.manualPositions && typeof graphState.manualPositions === "object" ? graphState.manualPositions : {};
+    state.graphListMode = Boolean(graphState.listMode);
   }
   el("search").value = persisted.searchText || folderFilterSearchQuery(state.pathFilters);
   if (el("search").value.trim()) expandSearchMatches();
@@ -16577,6 +17993,10 @@ async function restoreNavigationAfterInitialLoad() {
   }
   if (persisted.page === "hub") {
     showHome();
+    return true;
+  }
+  if (persisted.page === "graph") {
+    await showGraphPage({ scope: state.graphScope, path: persisted.selectedPath, depth: state.graphDepth, pushHistory: false });
     return true;
   }
   if (persisted.page !== "file" || !persisted.selectedPath) return false;
@@ -17488,7 +18908,13 @@ async function createMarkdownFromContextMenu() {
   const result = await api("/api/markdown/create", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ path: relPath, title, applyTemplate: false }),
+    body: JSON.stringify({
+      path: relPath,
+      title,
+      applyTemplate: true,
+      templateId: "context-golden",
+      metadata: { id: documentIdForUiPath(relPath), depends_on: [] },
+    }),
   });
   hideExplorerContextMenu();
   const parent = parentDirectoryFromUiPath(result.path);
@@ -17563,7 +18989,7 @@ function applyExplorerCollapsed(collapsed) {
   app.classList.toggle("sidebar-collapsed", Boolean(collapsed));
   app.classList.toggle(
     "explorer-expanded",
-    !collapsed && window.matchMedia("(max-width: 640px)").matches,
+    !collapsed && isExplorerMobileViewport(),
   );
   syncSidebarToggleIcon();
 }
@@ -17578,26 +19004,15 @@ function setExplorerCollapsedFromUser(collapsed) {
 function setExplorerEdgePeek(open) {
   const app = document.querySelector(".app");
   if (!app) return;
-  clearTimeout(state.explorerEdgePeekCloseTimer);
-  state.explorerEdgePeekCloseTimer = null;
   app.classList.toggle("explorer-edge-peek", Boolean(open) && isExplorerCollapsed());
   syncSidebarToggleIcon();
 }
 
-function scheduleExplorerEdgePeekClose() {
-  clearTimeout(state.explorerEdgePeekCloseTimer);
-  state.explorerEdgePeekCloseTimer = window.setTimeout(() => setExplorerEdgePeek(false), 150);
-}
-
 function revealExplorerFromLeftEdge(event) {
-  if (!window.matchMedia("(min-width: 900px) and (hover: hover) and (pointer: fine)").matches) return;
+  if (!isExplorerDesktopViewport() || !window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
   const app = document.querySelector(".app");
   if (app?.classList.contains("explorer-edge-peek")) {
-    if (event.clientX > state.explorerWidth + 12) scheduleExplorerEdgePeekClose();
-    else {
-      clearTimeout(state.explorerEdgePeekCloseTimer);
-      state.explorerEdgePeekCloseTimer = null;
-    }
+    if (event.clientX > state.explorerWidth + 12) setExplorerEdgePeek(false);
     return;
   }
   if (event.clientX > 8 || !isExplorerCollapsed()) return;
@@ -17609,7 +19024,7 @@ function syncResponsiveSidebar() {
   if (!app) return;
   app.classList.toggle(
     "explorer-expanded",
-    !isExplorerCollapsed() && window.matchMedia("(max-width: 640px)").matches,
+    !isExplorerCollapsed() && isExplorerMobileViewport(),
   );
   syncSidebarToggleIcon();
 }
@@ -17617,7 +19032,7 @@ function syncResponsiveSidebar() {
 function syncSidebarToggleIcon() {
   const toggle = el("sidebarToggle");
   if (!toggle) return;
-  const mobile = window.matchMedia("(max-width: 640px)").matches;
+  const mobile = isExplorerMobileViewport();
   const edgePeek = Boolean(document.querySelector(".app")?.classList.contains("explorer-edge-peek"));
   const use = toggle.querySelector("use");
   if (use) use.setAttribute("href", mobile ? "#cr-icon-close" : "#cr-icon-sidebar");
@@ -17635,7 +19050,7 @@ function setWorkbenchExplorerWidth(value, { persist = false } = {}) {
 }
 
 function beginSidebarResize(event) {
-  if (isExplorerCollapsed() || window.matchMedia("(max-width: 899px)").matches) return;
+  if (isExplorerCollapsed() || isExplorerDrawerViewport()) return;
   event.preventDefault();
   const startX = event.clientX;
   const startWidth = state.explorerWidth;
@@ -17987,12 +19402,14 @@ function applyInitialContextHubWhenReady(contextHubRequest) {
         state.globalExplorerMode = "project";
         state.globalProjectWorktreeIds.set(requestedProject.projectKey, roomQuery.get("project"));
         void loadGlobalProjectExplorerPage(requestedProject).catch((error) => setStatus(error.message));
+        void refreshExplorerRelatedForCurrentFile().catch((error) => setStatus(error.message));
       }
       renderSharedContextControls();
       if (state.page === "settings") renderSettingsPanel();
       renderContextRoomGlobalReviewQueue();
       renderSharedProposalWorkspace();
       renderContextHealth();
+      if (state.page === "graph") renderGraphPage();
       state.bootMilestones.contextHubReady = Date.now() - state.bootStartedAt;
       if (contextHub.freshness?.refreshing) pollFreshContextHubSnapshot();
     });
@@ -18007,6 +19424,7 @@ async function loadInitialContextHubData() {
   window.requestAnimationFrame(() => {
     renderGlobalProjectExplorer();
     renderContextRoomGlobalReviewQueue();
+    if (state.page === "graph") renderGraphPage();
   });
   const [reviews, sections] = await Promise.all([
     api("/api/context-hub/review-queue?limit=80"),
@@ -18030,6 +19448,7 @@ function pollFreshContextHubSnapshot(attempt = 0) {
     api("/api/context-hub").then((contextHub) => {
       state.contextHub = contextHub;
       renderGlobalProjectExplorer();
+      void refreshExplorerRelatedForCurrentFile().catch(() => {});
       renderContextRoomGlobalReviewQueue();
       renderSharedProposalWorkspace();
       renderContextHealth();
@@ -18086,6 +19505,7 @@ async function loadFiles(options = {}) {
 
   // File restoration and review reports use separate workers, so keep them concurrent.
   const initialQuery = options.initial ? new URLSearchParams(window.location.search) : null;
+  const requestedWorkspaceView = initialQuery?.get("view") || "";
   const requestedHubCard = initialQuery?.get("hubCard") || "";
   const requestedReviewFile = initialQuery?.get("file") || "";
   const requestedStartupKind = initialQuery?.get("startupKind") || "";
@@ -18126,6 +19546,9 @@ async function loadFiles(options = {}) {
   if (options.initial && state.sharedContext?.mode !== "review") {
     window.setTimeout(() => applyInitialContextHubWhenReady(loadInitialContextHubData()), 0);
   }
+  if (options.initial && requestedWorkspaceView === "graph" && state.page !== "graph") {
+    await applyWorkspaceUrlState({ reason: "initial-graph", force: true });
+  }
   if (restoredContextHubTarget) {
     scheduleSessionStatePush();
     return;
@@ -18134,7 +19557,7 @@ async function loadFiles(options = {}) {
     scheduleSessionStatePush();
     return;
   }
-  if (clearedMissingSelection || !state.selected) showHome();
+  if (!options.navigation && state.page === "hub" && (clearedMissingSelection || !state.selected)) showHome();
   setStatus("ready");
   scheduleSessionStatePush();
 }
@@ -18264,6 +19687,10 @@ async function selectFile(path, options = {}) {
   updateHistoryButtons();
   updateActionBanner();
   updatePreview();
+  if (IS_GLOBAL_CONTEXT_ROOM) {
+    renderGlobalProjectExplorer();
+    void refreshExplorerRelatedForCurrentFile().catch((error) => setStatus(error.message));
+  }
   if (options.revealInExplorer || !document.querySelector('[data-file-path="' + cssEscape(path) + '"]')) renderFiles();
   else updateExplorerSelectedFile(previousSelected, path);
   if (options.revealInExplorer && !isExplorerCollapsed()) scrollExplorerToPath(path);
@@ -18782,6 +20209,7 @@ function showHome() {
   el("meta").textContent = state.docqa ? "audit generated " + new Date(state.docqa.generatedAt).toLocaleTimeString("en-US") : "";
   el("home").hidden = false;
   el("proposalReviewPage").hidden = true;
+  el("graphPage").hidden = true;
   el("settingsPage").hidden = true;
   el("newDocPage").hidden = true;
   el("viewer").hidden = true;
@@ -18898,6 +20326,8 @@ function renderProposalContextImpactDisclosure({ key, repository, selector }) {
     const providers = skills.providers || [];
     const destinations = skills.destinations || [];
     const invalidatedReviews = impact.reviewInvalidation?.reviews || [];
+    const dependencyReviews = impact.dependencyInvalidations?.dependentReviews || [];
+    const coverage = impact.contextCoverage || {};
     const renderChangeList = (items, empty, label) => items.length
       ? '<ul class="proposal-context-impact-list">' + items.map((item) => '<li><code>' + escapeHtml(item.id || item.path || String(item)) + '</code><span>' + escapeHtml(item.change || label || '') + '</span></li>').join('') + '</ul>'
       : '<div class="proposal-context-impact-note">' + escapeHtml(empty) + '</div>';
@@ -18914,14 +20344,20 @@ function renderProposalContextImpactDisclosure({ key, repository, selector }) {
         + renderChangeList(invalidatedReviews, 'No existing reviews are invalidated.', 'exact revision changed')
         + '</details>'
       : '';
+    const dependencyDetails = dependencyReviews.length
+      ? '<details open><summary>Dependency reviews required · ' + dependencyReviews.length + '</summary>'
+        + '<ul class="proposal-context-impact-list">' + dependencyReviews.map((item) => '<li><code>' + escapeHtml(item.documentId || item.path || 'document') + '</code><span>' + escapeHtml((item.dependencies || []).join(', ')) + '</span></li>').join('') + '</ul>'
+        + '</details>'
+      : '';
     body = '<div class="proposal-context-impact-summary">'
       + '<div><strong>' + Number(impact.changedFiles?.length || 0) + ' changed files</strong><span>' + Number(impact.affected?.documents?.length || 0) + ' documents · ' + Number(impact.affected?.instructions?.length || 0) + ' instructions</span></div>'
       + '<div><strong>' + consumers.length + ' registered consumers</strong><span>' + [...new Set(consumers.map((item) => item.projectId).filter(Boolean))].length + ' projects or worktrees affected</span></div>'
       + '<div><strong>' + (collectionChanges.length + assignmentChanges.length) + ' Shared Skills changes</strong><span>' + Number(impact.technicalCollisions?.length || 0) + ' technical collisions</span></div>'
-      + '<div><strong>' + invalidatedReviews.length + ' existing reviews affected</strong><span>' + (impact.needsRebase ? 'Rebase required before review' : 'Based on the accepted revision') + '</span></div>'
+      + '<div><strong>' + (invalidatedReviews.length + dependencyReviews.length) + ' reviews affected</strong><span>' + (dependencyReviews.length ? dependencyReviews.length + ' dependency reviews required' : impact.needsRebase ? 'Rebase required before review' : 'Based on the accepted revision') + '</span></div>'
       + '</div>'
-      + '<div class="proposal-context-impact-details">' + skillDetails + reviewDetails + '</div>'
-      + '<div class="proposal-context-impact-note">Semantic conflicts are not evaluated. Review invalidation is exact-revision only.</div>';
+      + '<div class="proposal-context-impact-details">' + dependencyDetails + skillDetails + reviewDetails + '</div>'
+      + '<details class="proposal-context-impact-coverage"><summary>Coverage and limitations</summary><div class="proposal-context-impact-note">Evaluated ' + Number(coverage.evaluatedPaths?.length || impact.changedFiles?.length || 0) + ' changed paths across ' + Number(coverage.affectedConsumers?.length || consumers.length) + ' registered consumers. ' + escapeHtml((coverage.limitations || ["Semantic conflicts are not evaluated."]).join(" ")) + '</div></details>'
+      + '<div class="proposal-context-impact-note">Review invalidation is exact-revision only.</div>';
   }
   return '<details class="proposal-context-impact" data-proposal-context-impact="' + escapeHtml(key) + '" data-proposal-repository="' + escapeHtml(repository) + '" data-proposal-selector="' + escapeHtml(selector) + '"' + (active ? ' open' : '') + '>'
     + '<summary><strong>Context impact</strong><span>Accepted main → exact proposal head</span></summary>'
@@ -18972,6 +20408,7 @@ function showProposalReview({ preparingItem = null } = {}) {
   state.dirty = false;
   el("home").hidden = true;
   el("proposalReviewPage").hidden = false;
+  el("graphPage").hidden = true;
   el("settingsPage").hidden = true;
   el("newDocPage").hidden = true;
   el("viewer").hidden = true;
@@ -19042,15 +20479,13 @@ function renderGlobalProjectInspection(panel = el("contextHealthPanel"), holder 
   const headerActions = panel.querySelector(".context-health-header-actions");
   if (headerActions) headerActions.hidden = true;
   holder.classList.add("global-project-inspection");
-  const project = state.globalExplorerMode === "project"
-    ? (state.contextHub?.projects || []).find((item) => item.projectKey === state.globalExplorerProjectKey)
-    : null;
+  const project = workspaceSelectedProject();
   const worktree = project ? globalProjectSelectedWorktree(project) : null;
   const heading = panel.querySelector("h2");
   if (heading) heading.textContent = "Project inspection";
   if (!project || !worktree?.root || project.mode === "shared") {
     state.globalInspectionView = "";
-    holder.innerHTML = '<div class="global-project-inspection-empty">Select a project or file in Explorer to view its Context health and startup environment.</div>';
+    holder.innerHTML = '<div class="global-project-inspection-empty"><strong>Select a project in Explorer.</strong><span>Context health and the agent environment for its selected worktree will appear here.</span></div>';
     return;
   }
   const location = worktree.branch || worktree.root;
@@ -19060,8 +20495,8 @@ function renderGlobalProjectInspection(panel = el("contextHealthPanel"), holder 
   const error = state.globalInspectionErrors.get(cacheKey) || "";
   holder.innerHTML = '<div class="global-project-inspection-summary"><strong>' + escapeHtml(project.title || project.id) + '</strong><code title="' + escapeHtml(worktree.root) + '">' + escapeHtml(location) + '</code></div>'
     + '<div class="global-project-inspection-actions">'
-      + renderGlobalInspectionDisclosure("health", "View Context health", "Review configuration, documentation, hooks, and review-safety issues.", project, data, loading, error)
-      + renderGlobalInspectionDisclosure("startup", "View startup environment", "Inspect active agent instructions, skills, and hooks.", project, data, loading, error)
+      + renderGlobalInspectionDisclosure("health", "Context health", "Problems that can weaken or confuse trusted context.", project, data, loading, error)
+      + renderGlobalInspectionDisclosure("startup", "Agent environment", "Accepted instructions, skills, hooks, and provider configuration.", project, data, loading, error)
     + '</div>';
   wireGlobalProjectInspection(project);
 }
@@ -19398,6 +20833,55 @@ function wireGlobalProjectInspection(project) {
   }));
 }
 
+async function loadContextAttention(project) {
+  const worktree = globalProjectSelectedWorktree(project);
+  if (!worktree?.id) return null;
+  state.contextAttentionLoading = true;
+  state.contextAttentionError = "";
+  state.contextAttentionProjectKey = project.projectKey;
+  renderContextRoomOtherAttention();
+  try {
+    const payload = await api("/api/context-hub/attention?projectId=" + encodeURIComponent(worktree.id));
+    if (state.globalExplorerProjectKey !== project.projectKey) return null;
+    state.contextAttentionItems = (payload.items || []).filter((item) => item.kind !== "review");
+    return payload;
+  } catch (error) {
+    state.contextAttentionError = error.message || "Could not load project attention.";
+    throw error;
+  } finally {
+    state.contextAttentionLoading = false;
+    renderContextRoomOtherAttention();
+  }
+}
+
+function renderContextRoomOtherAttention() {
+  const holder = el("contextRoomOtherAttention");
+  if (!holder) return;
+  const selected = (state.contextHub?.projects || []).find((project) => project.projectKey === state.globalExplorerProjectKey);
+  if (!selected || state.contextAttentionProjectKey !== selected.projectKey) {
+    holder.hidden = true;
+    holder.innerHTML = "";
+    return;
+  }
+  if (state.contextAttentionLoading && !state.contextAttentionItems.length) {
+    holder.hidden = false;
+    holder.innerHTML = '<div class="context-attention-head"><strong>Other attention</strong><span>Checking…</span></div>';
+    return;
+  }
+  if (state.contextAttentionError) {
+    holder.hidden = false;
+    holder.innerHTML = '<div class="context-attention-head"><strong>Other attention</strong><span>' + escapeHtml(state.contextAttentionError) + '</span></div>';
+    return;
+  }
+  const items = state.contextAttentionItems || [];
+  holder.hidden = !items.length;
+  holder.innerHTML = items.length ? '<div class="context-attention-head"><strong>Other attention</strong><span>Recheck, decide, then fix</span></div><div class="context-attention-list">' + items.map((item) => '<button class="context-attention-row" type="button" data-context-attention-kind="' + escapeHtml(item.kind) + '"><span class="context-attention-kind">' + escapeHtml(item.action || item.kind) + '</span><span><strong>' + escapeHtml(item.title) + '</strong><small>' + escapeHtml(item.description || "") + '</small></span><span aria-hidden="true">→</span></button>').join("") + '</div>' : "";
+  holder.querySelectorAll("[data-context-attention-kind]").forEach((button) => button.addEventListener("click", () => {
+    const project = (state.contextHub?.projects || []).find((candidate) => candidate.projectKey === state.globalExplorerProjectKey);
+    if (project) openGlobalProjectInspection("health", project);
+  }));
+}
+
 function openGlobalProjectInspection(view, project) {
   if (!project || !["health", "startup"].includes(view)) return;
   state.globalInspectionView = view;
@@ -19549,6 +21033,7 @@ function showNewDocPage({ title = "New document", path = "docs/new-document.md",
   el("meta").textContent = directory ? "folder: " + directory : "project root";
   el("home").hidden = true;
   el("proposalReviewPage").hidden = true;
+  el("graphPage").hidden = true;
   el("settingsPage").hidden = true;
   el("newDocPage").hidden = false;
   el("viewer").hidden = true;
@@ -19565,11 +21050,11 @@ function renderNewDocPanel() {
   const holder = el("newDocPanel");
   if (!holder || !state.pendingMarkdown) return;
   const pending = state.pendingMarkdown;
-  const canonical = slugifyUiId(pending.title).replaceAll("-", "_");
   const initialPath = splitMarkdownPath(pending.path);
   const initialFolder = initialPath.folder || pending.directory || "";
   const initialFileName = initialPath.fileName || markdownFileNameFromName(pending.title);
   const initialPreview = markdownPathFromParts(initialFolder, initialFileName);
+  const initialId = documentIdForUiPath(initialPreview);
   holder.innerHTML = '<div class="markdown-create" data-structured-doc-form>' +
     '<div class="settings-field new-doc-title-field"><label for="markdownCreateTitle">Title</label><input id="markdownCreateTitle" value="' + escapeHtml(pending.title) + '" /></div>' +
     '<div class="settings-field path-picker-field"><label>Path</label><div class="path-picker" data-path-picker>' +
@@ -19582,11 +21067,8 @@ function renderNewDocPanel() {
       '<div class="path-picker-preview"><span>final path</span><code id="markdownCreatePathPreview">' + escapeHtml(initialPreview) + '</code></div>' +
     '</div></div>' +
     '<div class="settings-field new-doc-compact-field"><label for="markdownCreateTemplate">Template</label><select id="markdownCreateTemplate">' + renderTemplateOptions("context-golden") + '</select></div>' +
-    '<div class="settings-field new-doc-compact-field"><label for="markdownCreateKind">Kind</label><select id="markdownCreateKind"><option value="canonical">canonical</option><option value="index">index</option><option value="agents">agents</option><option value="procedure">procedure</option><option value="decision">decision</option></select></div>' +
-    '<div class="settings-field new-doc-compact-field"><label for="markdownCreateScope">Scope</label><input id="markdownCreateScope" value="project" /></div>' +
-    '<div class="settings-field new-doc-compact-field"><label for="markdownCreateStatus">Status</label><select id="markdownCreateStatus"><option value="current">current</option><option value="draft">draft</option><option value="historical">historical</option><option value="superseded">superseded</option></select></div>' +
-    '<div class="settings-field new-doc-compact-field"><label for="markdownCreateCanonical">Canonical for</label><input id="markdownCreateCanonical" value="' + escapeHtml(canonical) + '" placeholder="feature or system name" /></div>' +
-    '<div class="settings-field paths"><label for="markdownCreateSources">Sources</label><textarea id="markdownCreateSources" placeholder="one source path or URL per line"></textarea></div>' +
+    '<div class="settings-field"><label for="markdownCreateId">Document ID</label><input id="markdownCreateId" data-auto-id="true" value="' + escapeHtml(initialId) + '" pattern="[a-z0-9]+(?:-[a-z0-9]+)*(?:\\.[a-z0-9]+(?:-[a-z0-9]+)*)+" /><small>Stable lowercase identity. It stays the same when the file moves.</small></div>' +
+    '<div class="settings-field paths"><label for="markdownCreateDependencies">Depends on</label><textarea id="markdownCreateDependencies" placeholder="one document ID per line"></textarea><small>Only direct dependencies that should trigger re-review when they change.</small></div>' +
     '<div class="new-doc-actions"><button id="cancelStructuredMarkdown" class="secondary" type="button">Cancel</button><button id="createStructuredMarkdown" class="primary" type="button">Create file</button></div>' +
   '</div>';
   el("markdownCreateTitle")?.addEventListener("input", suggestStructuredMarkdownPath);
@@ -19594,6 +21076,7 @@ function renderNewDocPanel() {
     el("markdownCreateFileName").dataset.autoName = "false";
     updateStructuredMarkdownPath();
   });
+  el("markdownCreateId")?.addEventListener("input", () => { el("markdownCreateId").dataset.autoId = "false"; });
   el("markdownCreateFileName")?.addEventListener("blur", normalizeStructuredFileName);
   el("markdownCreateTemplate")?.addEventListener("change", syncStructuredTemplateKind);
   el("cancelStructuredMarkdown")?.addEventListener("click", () => goHub());
@@ -19606,8 +21089,14 @@ function suggestStructuredMarkdownPath() {
   const fileName = el("markdownCreateFileName");
   if (fileName && fileName.dataset.autoName !== "false") fileName.value = markdownFileNameFromName(title);
   updateStructuredMarkdownPath();
-  const canonical = el("markdownCreateCanonical");
-  if (canonical && !canonical.value.trim()) canonical.value = slugifyUiId(title).replaceAll("-", "_");
+}
+
+function documentIdForUiPath(relPath = "") {
+  const segments = normalizeUiPath(relPath).replace(/\.(?:md|mdx|html?)$/i, "").replace(/(?:^|\/)index$/i, "").replace(/_target$/i, "").toLowerCase().split("/")
+    .map((segment) => segment.replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "")).filter(Boolean);
+  if (segments[0] === "docs") segments.shift();
+  if (segments.length < 2) segments.unshift("document");
+  return segments.join(".") || "document.untitled";
 }
 
 function pathFolderLabel(folder = "") {
@@ -19645,6 +21134,8 @@ function updateStructuredMarkdownPath() {
   if (folderInput) folderInput.value = folder;
   if (folderDisplay) folderDisplay.textContent = pathFolderLabel(folder);
   if (preview) preview.textContent = relPath;
+  const idInput = el("markdownCreateId");
+  if (idInput && idInput.dataset.autoId !== "false") idInput.value = documentIdForUiPath(relPath);
   if (state.pendingMarkdown) {
     state.pendingMarkdown.path = relPath;
     state.pendingMarkdown.directory = folder;
@@ -19663,25 +21154,17 @@ function normalizeStructuredFileName() {
   updateStructuredMarkdownPath();
 }
 
-function syncStructuredTemplateKind() {
-  const templateId = el("markdownCreateTemplate")?.value || "context-golden";
-  const kindByTemplate = { agents: "agents", "docs-index": "index", "context-golden": "canonical", procedure: "procedure", "decision-record": "decision" };
-  const kind = kindByTemplate[templateId];
-  if (kind && el("markdownCreateKind")) el("markdownCreateKind").value = kind;
-}
+function syncStructuredTemplateKind() {}
 
 async function createStructuredMarkdownFromWizard() {
   const title = el("markdownCreateTitle")?.value.trim() || "New document";
   const relPath = normalizeUiPath(updateStructuredMarkdownPath() || el("markdownCreatePath")?.value || "");
   if (!relPath) throw new Error("New markdown path is required");
   const metadata = {
-    kind: el("markdownCreateKind")?.value || "canonical",
-    scope: el("markdownCreateScope")?.value.trim() || "project",
-    status: el("markdownCreateStatus")?.value || "current",
-    canonical_for: el("markdownCreateCanonical")?.value.trim() || "",
-    last_verified: new Date().toISOString().slice(0, 10),
-    sources: linesFromTextarea("markdownCreateSources"),
+    id: el("markdownCreateId")?.value.trim() || documentIdForUiPath(relPath),
+    depends_on: linesFromTextarea("markdownCreateDependencies"),
   };
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*(?:\.[a-z0-9]+(?:-[a-z0-9]+)*)+$/.test(metadata.id)) throw new Error("Document ID must use lowercase dot-separated segments with optional internal hyphens.");
   setStatus("creating structured doc...");
   const result = await api("/api/markdown/create", {
     method: "POST",
@@ -19956,6 +21439,7 @@ function reviewActionForSelectedFile() {
   if (!state.selected || state.reviewModePath !== state.selected) return null;
   if (state.reviewModeStatus === "verified") return null;
   const reviewItem = state.docqa?.queue?.find((item) => item.path === state.selected);
+  if (reviewItem?.reviewReason === "dependency-changed") return { status: "verified", label: "Confirm still current" };
   if (!reviewItem?.reviewRequired || String(reviewItem.gitStatus || "").trim()) return null;
   if (reviewItem.initialReview) return { status: "verified", label: "Accept document" };
   return { status: "verified", label: "Mark verified" };
@@ -19972,6 +21456,10 @@ function secondaryReviewActionForSelectedFile() {
 function initialReviewNoticeForSelectedFile() {
   if (!state.selected || state.reviewModePath !== state.selected) return "";
   const reviewItem = state.docqa?.queue?.find((item) => item.path === state.selected);
+  if (reviewItem?.reviewReason === "dependency-changed") {
+    const changes = (reviewItem.dependencyChanges || []).map((change) => escapeHtml(change.documentId || "dependency")).join(", ");
+    return '<div class="issue initial-review-notice"><strong>Freshness review</strong> <span>The content hash is still accepted. Review the updated dependencies' + (changes ? ': ' + changes : '') + ', then confirm whether this document remains current.</span></div>';
+  }
   if (!reviewItem?.initialReview) return "";
   return '<div class="issue initial-review-notice"><strong>First review</strong> <span>No previous baseline exists for this first review. Review the current document as a whole; requesting changes will not modify the file.</span></div>';
 }
@@ -20039,20 +21527,21 @@ async function openReviewQueueItem(item) {
 const SETTINGS_THEME_PREVIEW_DOC = "# Preview document\n\n> Scope: docs/\n\n## Read first\n\n- Start in docs/INDEX.md.\n- Keep website/docs/ current.\n\n### Paths\n\nUse AGENTS.md, website/docs/, and our_agentic_system/docs/.";
 
 function normalizeSettingsSectionId(value) {
-  return SETTINGS_SECTION_IDS.includes(value) ? value : "review";
+  const normalized = SETTINGS_SECTION_ALIASES[value] || value;
+  return SETTINGS_SECTION_IDS.includes(normalized) ? normalized : "review-trust";
 }
 
 function renderSettingsTabs(items = []) {
   return '<nav class="settings-tabs" role="tablist" aria-label="Settings categories">' + items.map((item) =>
-    '<button id="settings-tab-' + escapeHtml(item.id) + '" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-section-' + escapeHtml(item.id) + '" tabindex="-1" data-settings-section-target="' + escapeHtml(item.id) + '">' +
+    '<button id="settings-tab-' + escapeHtml(item.id) + '" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-content" tabindex="-1" data-settings-section-target="' + escapeHtml(item.id) + '">' +
       '<strong>' + escapeHtml(item.label) + '</strong><small>' + escapeHtml(item.scope) + '</small>' +
     '</button>'
   ).join("") + '</nav>';
 }
 
 function renderSettingsSection({ id, kicker, title, copy, scope = "Project", pills = [], body = "" } = {}) {
-  const sectionId = normalizeSettingsSectionId(id);
-  return '<section id="settings-section-' + sectionId + '" class="settings-section" role="tabpanel" aria-labelledby="settings-tab-' + sectionId + '" data-settings-section-panel="' + sectionId + '" hidden>' +
+  const sectionId = String(id || "review");
+  return '<section id="settings-section-' + sectionId + '" class="settings-section" role="region" aria-label="' + escapeHtml(title || "Settings") + '" data-settings-section-panel="' + sectionId + '" hidden>' +
     '<div class="settings-section-head">' +
       '<div class="settings-section-title"><span class="settings-kicker">Settings / ' + escapeHtml(kicker || "") + '</span><h3>' + escapeHtml(title || "") + '</h3>' + (copy ? '<p class="settings-section-copy">' + escapeHtml(copy) + '</p>' : '') + '</div>' +
       '<div class="settings-section-actions"><span class="settings-pill">' + escapeHtml(scope) + '</span>' + pills.map((pill) => '<span class="settings-pill">' + escapeHtml(pill) + '</span>').join("") + '</div>' +
@@ -20062,8 +21551,8 @@ function renderSettingsSection({ id, kicker, title, copy, scope = "Project", pil
 }
 
 function selectedGlobalSettingsProject() {
-  if (!IS_GLOBAL_CONTEXT_ROOM || state.globalExplorerMode !== "project") return null;
-  return (state.contextHub?.projects || []).find((project) => project.projectKey === state.globalExplorerProjectKey) || null;
+  if (!IS_GLOBAL_CONTEXT_ROOM) return null;
+  return workspaceSelectedProject();
 }
 
 function selectedGlobalProjectSettingsContext() {
@@ -20180,7 +21669,7 @@ function renderAgentCliGuide() {
         + '<li>Ask one focused question and receive accepted project documentation with provenance.</li>'
         + '<li>Inspect and explain effective instructions, skills, hooks, paths, reviews, and proposals.</li>'
         + '<li>Find and read the documentation relevant to its task, with provenance.</li>'
-        + '<li>Keep accepted documentation separate from same-session pending proposals.</li>'
+        + '<li>Use only human-accepted documentation; proposal content is never exposed to the researcher.</li>'
         + '<li>Classify changes, preview a deterministic handoff, then publish local reviews and shared proposals safely.</li>'
         + '<li>Navigate to the exact project, file, heading, text, or diff.</li>'
         + '<li>Leave human-facing annotations and manage explicit folder watch rules.</li>'
@@ -20283,6 +21772,17 @@ function normalizedSettingsSearch(value) {
   return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
+function settingsSectionLabel(sectionId) {
+  const labels = {
+    project: "Project",
+    "review-trust": "Review and trust",
+    "agent-environment": "Agent environment",
+    preferences: "Preferences",
+    "advanced-extensions": "Advanced extensions",
+  };
+  return labels[normalizeSettingsSectionId(sectionId)] || "Settings";
+}
+
 function matchingSettingsSearchItems(query) {
   const terms = normalizedSettingsSearch(query).split(" ").filter(Boolean);
   if (!terms.length) return [];
@@ -20311,7 +21811,7 @@ function renderSettingsSearchResults() {
     return;
   }
   results.innerHTML = items.length
-    ? items.map((item, index) => '<button id="settings-search-result-' + escapeHtml(item.id) + '" class="settings-search-result" type="button" role="option" aria-selected="' + String(index === state.settingsSearchIndex) + '" data-settings-search-result="' + escapeHtml(item.id) + '"><strong>' + escapeHtml(item.label) + '</strong><span class="settings-search-result-meta">' + escapeHtml(item.section.replaceAll("-", " ") + ' · ' + item.scope) + '</span><p>' + escapeHtml(item.description) + '</p></button>').join("")
+    ? items.map((item, index) => '<button id="settings-search-result-' + escapeHtml(item.id) + '" class="settings-search-result" type="button" role="option" aria-selected="' + String(index === state.settingsSearchIndex) + '" data-settings-search-result="' + escapeHtml(item.id) + '"><strong>' + escapeHtml(item.label) + '</strong><span class="settings-search-result-meta">' + escapeHtml(settingsSectionLabel(item.section) + ' · ' + item.scope) + '</span><p>' + escapeHtml(item.description) + '</p></button>').join("")
     : '<div class="settings-search-empty">No settings found. Try a familiar word such as “skills”, “review”, or “sound”.</div>';
   if (items.length) input.setAttribute("aria-activedescendant", "settings-search-result-" + items[state.settingsSearchIndex].id);
   else input.removeAttribute("aria-activedescendant");
@@ -20391,6 +21891,7 @@ function wireSettingsSearch() {
 
 function activateSettingsSection(sectionId, options = {}) {
   const next = normalizeSettingsSectionId(sectionId);
+  const visiblePanels = new Set(SETTINGS_SECTION_GROUPS[next] || []);
   state.settingsSection = next;
   document.querySelectorAll("[data-settings-section-target]").forEach((tab) => {
     const active = tab.dataset.settingsSectionTarget === next;
@@ -20398,9 +21899,9 @@ function activateSettingsSection(sectionId, options = {}) {
     tab.tabIndex = active ? 0 : -1;
   });
   document.querySelectorAll("[data-settings-section-panel]").forEach((panel) => {
-    panel.hidden = panel.dataset.settingsSectionPanel !== next;
+    panel.hidden = !visiblePanels.has(panel.dataset.settingsSectionPanel);
   });
-  if (next === "shared-skills") {
+  if (next === "agent-environment") {
     const selected = selectedGlobalProjectSettingsContext();
     const projectId = selected.worktree?.id || "";
     const cacheKey = projectId || "__current__";
@@ -20901,14 +22402,12 @@ function renderSettingsPanel() {
   });
   holder.innerHTML = '<div class="settings-shell">' +
   renderSettingsTabs([
-    { id: "review", label: "Review", scope: "Project" },
-    { id: "startup", label: "Startup", scope: "Project" },
-    { id: "shared-skills", label: "Shared resources", scope: "Shared" },
-    { id: "appearance", label: "Appearance", scope: "Global" },
-    { id: "templates", label: "Templates", scope: "Project" },
-    { id: "hub", label: "Hub", scope: "Device + Project" },
-    { id: "codex-prompts", label: "Codex prompts", scope: "Global" },
-  ]) + '<div class="settings-content">' +
+    { id: "project", label: "Project", scope: "Project + Device" },
+    { id: "review-trust", label: "Review and trust", scope: "Human" },
+    { id: "agent-environment", label: "Agent environment", scope: "Project + Shared" },
+    { id: "preferences", label: "Preferences", scope: "Device" },
+    { id: "advanced-extensions", label: "Advanced extensions", scope: "Device" },
+  ]) + '<div id="settings-content" class="settings-content">' +
   renderSettingsSection({
     id: "review",
     kicker: "Review",
@@ -20948,7 +22447,7 @@ function renderSettingsPanel() {
       '<div class="settings-field"><label class="settings-toggle" for="startupContextEnabled"><input id="startupContextEnabled" type="checkbox" ' + (startupContext.enabled ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Discover startup instructions</strong><em>Include configured ancestor filenames and global instruction paths.</em></span></label><span class="settings-input-label">Ancestor filenames</span><textarea id="startupContextFileNames" placeholder="one ancestor filename per line">' + escapeHtml(startupFileNames) + '</textarea><span class="settings-input-label">Global instruction paths</span><textarea id="startupContextGlobalPaths" placeholder="one global path per line">' + escapeHtml(startupGlobalPaths) + '</textarea></div>'
     }) +
     renderSettingsDisclosure({ id: "startup-skills", title: "Local skill discovery", copy: "Find skill folders that already exist around this project.", status: startupSkills.enabled !== false ? startupSkillFolderCount + " folders" : "Disabled", scope: "Project", trackDirty: true, body:
-      '<div class="settings-field"><label class="settings-toggle" for="startupSkillsEnabled"><input id="startupSkillsEnabled" type="checkbox" ' + (startupSkills.enabled !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Discover local skills</strong><em>List skill folders visible to agents without managing or copying them.</em></span></label><span class="settings-input-label">Skill folder names</span><textarea id="startupSkillFolderNames" placeholder="one folder path per line">' + escapeHtml(startupSkillFolderNames) + '</textarea><p class="settings-help">Need one reviewed version shared across a team or multiple projects? Use the Shared resources tab instead.</p></div>'
+      '<div class="settings-field"><label class="settings-toggle" for="startupSkillsEnabled"><input id="startupSkillsEnabled" type="checkbox" ' + (startupSkills.enabled !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Discover local skills</strong><em>List skill folders visible to agents without managing or copying them.</em></span></label><span class="settings-input-label">Skill folder names</span><textarea id="startupSkillFolderNames" placeholder="one folder path per line">' + escapeHtml(startupSkillFolderNames) + '</textarea><p class="settings-help">Need one reviewed version shared across a team or multiple projects? Shared resources are in this Agent environment category.</p></div>'
     }) +
     renderSettingsDisclosure({ id: "startup-hooks", title: "Hooks and automation", copy: "Inspect executable sources that can affect agents, commits, and validation.", status: startupHooks.enabled !== false ? startupHookNameCount + startupAgentHookCount + startupHookManagerCount + " sources" : "Disabled", scope: "Project", trackDirty: true, body:
     '<div class="settings-grid">' +
@@ -22049,11 +23548,12 @@ function showSettingsPage() {
   state.savedHash = null;
   state.dirty = false;
   el("title").textContent = "Settings";
-  el("path").textContent = "review · startup · shared skills · appearance · templates · hub · Codex prompts";
-  el("impact").textContent = "Choose one category, make the change, then save once.";
+  el("path").textContent = "project · review and trust · agent environment · preferences · advanced extensions";
+  el("impact").textContent = "Choose one clear scope, make the change, then save once.";
   el("meta").textContent = "settings open";
   el("home").hidden = true;
   el("proposalReviewPage").hidden = true;
+  el("graphPage").hidden = true;
   el("settingsPage").hidden = false;
   el("newDocPage").hidden = true;
   el("viewer").hidden = true;
@@ -22063,7 +23563,7 @@ function showSettingsPage() {
   renderSettingsPanel();
   const selectedProject = selectedGlobalSettingsProject();
   if (selectedProject) void loadGlobalProjectSettings(selectedProject).catch((error) => setStatus(error.message));
-  if (state.settingsSection === "shared-skills" && !sharedSkillLocationsForSettings()) loadSharedSkillLocations().catch((error) => {
+  if (normalizeSettingsSectionId(state.settingsSection) === "agent-environment" && !sharedSkillLocationsForSettings()) loadSharedSkillLocations().catch((error) => {
     state.sharedSkillLocations.set(sharedSkillsProjectSelection().key || "__current__", { connected: false, error: error.message });
     refreshSharedSkillLocationsSettingsPanel();
   });
@@ -22087,9 +23587,348 @@ async function handleBrandHomeAction() {
   goHub();
 }
 
+function graphCurrentCenterPath() {
+  if (state.graphScope !== "local") return "";
+  return normalizeUiPath(state.selected || state.pathFilters?.[0] || "");
+}
+
+function graphLayerValues() {
+  const layers = [];
+  if (el("graphLayerAccepted")?.checked !== false) layers.push("accepted");
+  if (el("graphLayerUnverified")?.checked) layers.push("unverified");
+  if (el("graphLayerTarget")?.checked) layers.push("target");
+  if (el("graphLayerHistorical")?.checked) layers.push("historical");
+  if (el("graphLayerProposal")?.checked) layers.push("proposal");
+  return layers.length ? layers : ["accepted"];
+}
+
+function graphRequestPath() {
+  const params = new URLSearchParams({ scope: state.graphScope, depth: String(state.graphDepth) });
+  if (state.graphScope !== "global" && state.activeProjectLocationId) {
+    params.set("projectId", state.activeProjectLocationId);
+    params.set("locationId", state.activeProjectLocationId);
+  }
+  const centerPath = graphCurrentCenterPath();
+  if (centerPath) params.set("path", centerPath);
+  for (const layer of state.graphLayers) params.append("layer", layer);
+  for (const type of state.graphTypes) params.append("type", type);
+  for (const relation of state.graphRelations) params.append("relation", relation);
+  if (state.graphIncludeUnresolved) params.set("unresolved", "1");
+  const selectedProposal = (state.contextHub?.proposals || []).find((proposal) => proposal.id === state.graphProposal || proposal.branch === state.graphProposal);
+  if (state.graphLayers.includes("proposal") && selectedProposal) params.set("proposal", selectedProposal.id || selectedProposal.branch);
+  return "/api/context-hub/document-graph?" + params;
+}
+
+function graphNodeColor(node) {
+  const styles = getComputedStyle(document.documentElement);
+  if (node.truthState === "unverified") return styles.getPropertyValue("--warning").trim() || "#d7a84b";
+  if (node.truthState === "target") return styles.getPropertyValue("--muted").trim() || "#8d9596";
+  if (node.truthState === "proposal") return styles.getPropertyValue("--review").trim() || "#b68cff";
+  if (node.kind === "project") return styles.getPropertyValue("--accent").trim() || "#65c7d7";
+  if (node.kind === "instruction") return styles.getPropertyValue("--warning").trim() || "#d7a84b";
+  if (node.kind === "skill") return styles.getPropertyValue("--success").trim() || "#62b98a";
+  if (node.kind === "unresolved") return styles.getPropertyValue("--danger").trim() || "#db6b75";
+  return styles.getPropertyValue("--text-soft").trim() || "#c7cdcf";
+}
+
+function graphCanvasMetrics() {
+  const canvas = el("graphCanvas");
+  const rect = canvas?.getBoundingClientRect() || { width: 1, height: 1, left: 0, top: 0 };
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  if (canvas && (canvas.width !== Math.round(rect.width * dpr) || canvas.height !== Math.round(rect.height * dpr))) {
+    canvas.width = Math.max(1, Math.round(rect.width * dpr));
+    canvas.height = Math.max(1, Math.round(rect.height * dpr));
+  }
+  return { canvas, rect, dpr, width: rect.width, height: rect.height };
+}
+
+function graphScreenPoint(node, metrics = graphCanvasMetrics()) {
+  const padding = 42;
+  const position = state.graphManualPositions[node.id] || node.position || { x: 0.5, y: 0.5 };
+  const baseX = padding + Number(position.x ?? 0.5) * Math.max(1, metrics.width - padding * 2);
+  const baseY = padding + Number(position.y ?? 0.5) * Math.max(1, metrics.height - padding * 2);
+  return {
+    x: (baseX + state.graphCamera.x) * state.graphCamera.scale,
+    y: (baseY + state.graphCamera.y) * state.graphCamera.scale,
+  };
+}
+
+function graphVisibleNodes() {
+  const graph = state.graph || { nodes: [] };
+  const connectedIds = state.graphShowOrphans ? null : new Set((graph.edges || []).flatMap((edge) => [edge.from, edge.to]));
+  const needle = state.graphSearch.trim().toLowerCase();
+  return (graph.nodes || []).filter((node) => (
+    (!connectedIds || connectedIds.has(node.id))
+    && (!needle || [node.label, node.path, node.kind, node.summary].filter(Boolean).join(" ").toLowerCase().includes(needle))
+  ));
+}
+
+function graphNeighbors(nodeId) {
+  const neighbors = new Set([nodeId]);
+  for (const edge of state.graph?.edges || []) {
+    if (edge.from === nodeId) neighbors.add(edge.to);
+    if (edge.to === nodeId) neighbors.add(edge.from);
+  }
+  return neighbors;
+}
+
+function graphHitNode(clientX, clientY) {
+  const metrics = graphCanvasMetrics();
+  const x = clientX - metrics.rect.left;
+  const y = clientY - metrics.rect.top;
+  let best = null;
+  let distance = Infinity;
+  for (const node of graphVisibleNodes()) {
+    const point = graphScreenPoint(node, metrics);
+    const delta = Math.hypot(point.x - x, point.y - y);
+    const radius = Math.max(7, Number(node.radius || 7) * state.graphCamera.scale);
+    if (delta <= radius + 7 && delta < distance) { best = node; distance = delta; }
+  }
+  return best;
+}
+
+function drawGraphArrow(ctx, from, to, color) {
+  const angle = Math.atan2(to.y - from.y, to.x - from.x);
+  const size = 5;
+  ctx.beginPath();
+  ctx.moveTo(to.x, to.y);
+  ctx.lineTo(to.x - Math.cos(angle - Math.PI / 6) * size, to.y - Math.sin(angle - Math.PI / 6) * size);
+  ctx.lineTo(to.x - Math.cos(angle + Math.PI / 6) * size, to.y - Math.sin(angle + Math.PI / 6) * size);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+}
+
+function renderGraphCanvas() {
+  const metrics = graphCanvasMetrics();
+  if (!metrics.canvas) return;
+  const ctx = metrics.canvas.getContext("2d");
+  ctx.setTransform(metrics.dpr, 0, 0, metrics.dpr, 0, 0);
+  ctx.clearRect(0, 0, metrics.width, metrics.height);
+  const visibleNodes = graphVisibleNodes();
+  const visibleIds = new Set(visibleNodes.map((node) => node.id));
+  const nodesById = new Map((state.graph?.nodes || []).map((node) => [node.id, node]));
+  const highlighted = state.graphHoverNode ? graphNeighbors(state.graphHoverNode) : null;
+  const styles = getComputedStyle(document.documentElement);
+  const line = styles.getPropertyValue("--line").trim() || "#3b4143";
+  const muted = styles.getPropertyValue("--muted").trim() || "#8d9596";
+  for (const edge of state.graph?.edges || []) {
+    if (!visibleIds.has(edge.from) || !visibleIds.has(edge.to)) continue;
+    const from = graphScreenPoint(nodesById.get(edge.from), metrics);
+    const to = graphScreenPoint(nodesById.get(edge.to), metrics);
+    const emphasized = !highlighted || (highlighted.has(edge.from) && highlighted.has(edge.to));
+    ctx.globalAlpha = emphasized ? 0.62 : 0.08;
+    ctx.strokeStyle = edge.type === "shared-origin" ? graphNodeColor({ kind: "project" }) : line;
+    ctx.lineWidth = edge.type === "declares-source" ? 1.4 : 1;
+    if (["declares-source", "managed-link"].includes(edge.type)) ctx.setLineDash([4, 4]);
+    else ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(from.x, from.y);
+    ctx.lineTo(to.x, to.y);
+    ctx.stroke();
+    if (state.graphShowArrows) drawGraphArrow(ctx, from, to, ctx.strokeStyle);
+  }
+  ctx.setLineDash([]);
+  for (const node of visibleNodes) {
+    const point = graphScreenPoint(node, metrics);
+    const selected = state.graphSelectedNode === node.id;
+    const dimmed = highlighted && !highlighted.has(node.id);
+    const radius = Math.max(5, Number(node.radius || 7) * state.graphCamera.scale);
+    ctx.globalAlpha = dimmed ? 0.18 : 1;
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+    ctx.fillStyle = ["unverified", "target"].includes(node.truthState) ? styles.getPropertyValue("--bg").trim() || "#111" : graphNodeColor(node);
+    ctx.fill();
+    ctx.strokeStyle = graphNodeColor(node);
+    ctx.lineWidth = selected ? 3 : 1.5;
+    if (["unverified", "target"].includes(node.truthState)) ctx.setLineDash([3, 3]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (selected || state.graphHoverNode === node.id || node.kind === "project") {
+      ctx.globalAlpha = dimmed ? 0.18 : 0.92;
+      ctx.font = "600 11px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+      ctx.fillStyle = styles.getPropertyValue("--text").trim() || "#fff";
+      ctx.textAlign = "center";
+      ctx.fillText(String(node.label || "").slice(0, 36), point.x, point.y + radius + 16);
+    }
+  }
+  ctx.globalAlpha = 1;
+  el("graphEmpty").hidden = Boolean(visibleNodes.length) || state.graphLoading;
+}
+
+function renderGraphAccessibleList() {
+  const list = el("graphAccessibleList");
+  if (!list) return;
+  const nodes = graphVisibleNodes();
+  list.innerHTML = nodes.length ? nodes.map((node) => '<button class="graph-list-row" type="button" data-graph-list-node="' + escapeHtml(node.id) + '"><span><strong>' + escapeHtml(node.label) + '</strong><small>' + escapeHtml(node.path || node.summary || node.kind) + '</small></span><small>' + escapeHtml(node.kind) + '</small><span class="graph-node-state">' + escapeHtml(node.truthState) + '</span></button>').join("") : '<div class="graph-empty-static">No graph nodes match this search.</div>';
+  list.querySelectorAll("[data-graph-list-node]").forEach((button) => button.addEventListener("click", () => selectGraphNode(button.dataset.graphListNode)));
+}
+
+function renderGraphInspector() {
+  const body = el("graphInspectorBody");
+  const inspector = el("graphInspector");
+  if (!body || !inspector) return;
+  const node = (state.graph?.nodes || []).find((item) => item.id === state.graphSelectedNode);
+  inspector.dataset.empty = String(!node);
+  if (!node) {
+    const stats = state.graph?.stats || {};
+    body.innerHTML = '<h3>Document relations</h3><p>Select a node to inspect why it exists and what it connects to.</p><div class="graph-stat-grid"><div class="graph-stat"><strong>' + Number(stats.nodes || 0) + '</strong><span>nodes</span></div><div class="graph-stat"><strong>' + Number(stats.edges || 0) + '</strong><span>relations</span></div></div>';
+    return;
+  }
+  const incoming = (state.graph.edges || []).filter((edge) => edge.to === node.id);
+  const outgoing = (state.graph.edges || []).filter((edge) => edge.from === node.id);
+  const canOpenNode = node.kind === "project" || (node.path && node.source !== "shared-main");
+  body.innerHTML = '<h3>' + escapeHtml(node.label) + '</h3><p>' + escapeHtml(node.summary || node.kind) + '</p><code>' + escapeHtml(node.path || node.projectKey || node.id) + '</code><div class="graph-stat-grid"><div class="graph-stat"><strong>' + incoming.length + '</strong><span>backlinks</span></div><div class="graph-stat"><strong>' + outgoing.length + '</strong><span>outgoing</span></div></div><div class="graph-inspector-actions">' + (canOpenNode ? '<button class="primary" type="button" data-graph-open-node>Open</button>' : '') + (node.path ? '<button class="secondary" type="button" data-graph-local-node>Local graph</button>' : '') + '</div>';
+  body.querySelector("[data-graph-open-node]")?.addEventListener("click", () => openGraphNode(node));
+  body.querySelector("[data-graph-local-node]")?.addEventListener("click", () => showGraphPage({ scope: "local", path: node.path }));
+}
+
+function renderGraphPage() {
+  const graph = state.graph;
+  el("graphLoading").hidden = !state.graphLoading;
+  el("graphEmpty").textContent = state.graphError || "No proven relations match these filters.";
+  el("graphSearch").value = state.graphSearch;
+  el("graphScope").value = state.graphScope;
+  el("graphDepth").value = String(state.graphDepth);
+  el("graphDepthField").hidden = state.graphScope !== "local";
+  const graphProject = workspaceSelectedProject() || currentContextRoomProject();
+  const graphProposals = (state.contextHub?.proposals || []).filter((proposal) => !graphProject || proposal.projectKey === graphProject.projectKey);
+  if (state.graphLayers.includes("proposal") && graphProposals.length && !graphProposals.some((proposal) => proposal.id === state.graphProposal || proposal.branch === state.graphProposal)) {
+    state.graphProposal = graphProposals[0].id || graphProposals[0].branch;
+  }
+  const proposalField = el("graphProposalField");
+  proposalField.hidden = state.graphScope === "global" || !state.graphLayers.includes("proposal") || !graphProposals.length;
+  el("graphProposalSelect").innerHTML = graphProposals.map((proposal) => '<option value="' + escapeHtml(proposal.id || proposal.branch) + '">' + escapeHtml(proposal.title || proposal.branch || "Proposal") + '</option>').join("");
+  el("graphProposalSelect").value = state.graphProposal;
+  el("graphLayerAccepted").checked = state.graphLayers.includes("accepted");
+  el("graphLayerUnverified").checked = state.graphLayers.includes("unverified");
+  el("graphLayerTarget").checked = state.graphLayers.includes("target");
+  el("graphLayerHistorical").checked = state.graphLayers.includes("historical");
+  el("graphLayerProposal").checked = state.graphLayers.includes("proposal");
+  el("graphTypeFilter").value = state.graphTypes[0] || "";
+  el("graphRelationFilter").value = state.graphRelations[0] || "";
+  el("graphShowUnresolved").checked = state.graphIncludeUnresolved;
+  el("graphShowOrphans").checked = state.graphShowOrphans;
+  el("graphShowArrows").checked = state.graphShowArrows;
+  el("graphListToggle").setAttribute("aria-pressed", String(state.graphListMode));
+  document.querySelector(".graph-workbench")?.classList.toggle("list-mode", state.graphListMode);
+  el("graphAccessibleList").hidden = !state.graphListMode;
+  const project = graphProject;
+  el("graphTitle").textContent = state.graphVisualMode ? "Visual documents" : state.graphScope === "global" ? "All project relations" : state.graphScope === "local" ? "Local graph" : (project?.title || "Project") + " graph";
+  el("graphSubtitle").textContent = state.graphVisualMode ? "Mermaid, HTML, documented images and installed visual renderers in accepted context." : state.graphScope === "global" ? "One node per registered project. Shared or explicit relations connect projects." : state.graphScope === "local" ? "Accepted context around " + (graphCurrentCenterPath() || "the selected file") + "." : "Managed documents, instructions, skills and cited sources.";
+  if (graph) {
+    el("graphEmpty").textContent = graph.truncation?.truncated
+      ? "This graph reached its safe display limit. Narrow the scope or filters to inspect every relation."
+      : (state.graphError || "No proven relations match these filters.");
+    renderGraphCanvas();
+    renderGraphAccessibleList();
+    renderGraphInspector();
+  }
+}
+
+async function loadDocumentGraph({ force = false } = {}) {
+  const request = ++state.graphRequest;
+  state.graphLoading = true;
+  state.graphError = "";
+  renderGraphPage();
+  try {
+    const requestPath = graphRequestPath() + (force ? "&refresh=1" : "");
+    const graph = await api(requestPath);
+    if (request !== state.graphRequest || state.page !== "graph") return;
+    state.graph = graph;
+    const visibleIds = new Set(graph.nodes.map((node) => node.id));
+    state.graphManualPositions = Object.fromEntries(Object.entries(state.graphManualPositions).filter(([id]) => visibleIds.has(id)));
+    if (state.graphSelectedNode && !graph.nodes.some((node) => node.id === state.graphSelectedNode)) state.graphSelectedNode = "";
+  } catch (error) {
+    if (request !== state.graphRequest) return;
+    state.graph = null;
+    state.graphError = error.message;
+  } finally {
+    if (request === state.graphRequest) {
+      state.graphLoading = false;
+      renderGraphPage();
+      scheduleSessionStatePush();
+    }
+  }
+}
+
+async function showGraphPage(options = {}) {
+  if (state.dirty && !confirm("You have unsaved changes. Open Graph?")) return;
+  const requestedScope = ["global", "project", "local"].includes(options.scope) ? options.scope : state.graphScope;
+  state.graphVisualMode = Boolean(options.visual);
+  state.graphScope = requestedScope === "project" && !state.activeProjectLocationId ? "global" : requestedScope;
+  if (options.path) {
+    state.selected = normalizeUiPath(options.path);
+    state.pathFilters = [normalizeUiPath(options.path)];
+  }
+  if (options.depth) state.graphDepth = Math.min(3, Math.max(1, Number(options.depth) || 1));
+  state.page = "graph";
+  state.settingsOpen = false;
+  state.pendingMarkdown = null;
+  el("home").hidden = true;
+  el("proposalReviewPage").hidden = true;
+  el("settingsPage").hidden = true;
+  el("newDocPage").hidden = true;
+  el("viewer").hidden = true;
+  el("editor").hidden = true;
+  el("graphPage").hidden = false;
+  setDocumentContextOpen(false, { persist: false });
+  document.querySelector(".editor-shell")?.classList.remove("planet-file-open", "file-open");
+  updateHeader();
+  updateHistoryButtons();
+  setStatus("graph");
+  syncWorkspaceUrl({ push: options.pushHistory !== false });
+  persistNavigationState();
+  await loadDocumentGraph({ force: options.force });
+}
+
+async function showVisualDocuments() {
+  state.graphVisualMode = true;
+  state.graphTypes = ["html", "image", "diagram"];
+  state.graphListMode = true;
+  await showGraphPage({ scope: state.activeProjectLocationId ? "project" : "global", visual: true });
+}
+
+function selectGraphNode(nodeId) {
+  state.graphSelectedNode = nodeId || "";
+  renderGraphCanvas();
+  renderGraphInspector();
+  persistNavigationState();
+}
+
+async function openGraphNode(node) {
+  if (!node) return;
+  if (node.kind === "project") {
+    state.activeProjectLocationId = node.locationId || node.projectId || "";
+    state.graphScope = "project";
+    state.graphSelectedNode = "";
+    const project = (state.contextHub?.projects || []).find((item) => item.projectKey === node.projectKey || item.id === node.projectId);
+    if (project) {
+      state.globalExplorerProjectKey = project.projectKey;
+      state.globalExplorerMode = "project";
+      state.globalProjectWorktreeIds.set(project.projectKey, state.activeProjectLocationId);
+    }
+    await loadDocumentGraph();
+    syncWorkspaceUrl({ push: true });
+    persistNavigationState();
+    return;
+  }
+  if (node.path && node.source !== "shared-main" && !node.missing && !["destination"].includes(node.kind)) {
+    await loadFiles({ navigation: true });
+    await selectFile(node.path);
+  }
+}
+
+function resetGraphCamera() {
+  state.graphCamera = { x: 0, y: 0, scale: 1 };
+  renderGraphCanvas();
+  persistNavigationState();
+}
+
 function updateActionBanner() {
   const onFile = state.page === "file" && Boolean(state.selected);
   const onProposal = state.page === "proposal";
+  const onGraph = state.page === "graph";
   const hasHomeHistory = state.page === "hub" && state.historyIndex >= 0;
   const workspaceDock = document.querySelector(".workspace-dock");
   const fileOpening = onFile && Boolean(state.openingFilePath);
@@ -22111,11 +23950,22 @@ function updateActionBanner() {
       ? state.selected
       : onProposal
         ? proposal.title || proposal.proposal || proposal.branch || "Proposal review"
+      : onGraph
+        ? state.graphVisualMode ? "Visual documents" : state.graphScope === "global" ? "All project relations" : state.graphScope === "local" ? "Local graph" : "Project graph"
       : state.page === "new-doc"
           ? "New document"
           : "";
     workspaceTitle.title = workspaceTitle.textContent;
   }
+  const graphLocal = el("graphLocal");
+  if (graphLocal) graphLocal.hidden = !onFile;
+  const contextPanelToggle = el("contextPanelToggle");
+  if (contextPanelToggle) {
+    contextPanelToggle.hidden = !onFile;
+    contextPanelToggle.classList.toggle("active", onFile && state.inspectorOpen);
+    contextPanelToggle.setAttribute("aria-expanded", onFile && state.inspectorOpen ? "true" : "false");
+  }
+  if (!onFile) setDocumentContextOpen(false, { persist: false });
   ["back", "forward"].forEach((id) => { el(id).hidden = !(onFile || hasHomeHistory); });
   const gitDiffButton = el("gitDiffToggle");
   if (gitDiffButton) {
@@ -22126,6 +23976,146 @@ function updateActionBanner() {
   }
   ["reload", "verifyCurrent", "deleteCurrent", "save"].forEach((id) => { el(id).hidden = true; });
   renderProposalDockControls();
+}
+
+function renderMetadataTreeValue(value, key = "metadata", depth = 0, parentPath = "") {
+  const safeKey = escapeHtml(key);
+  const valuePath = parentPath ? parentPath + "." + key : key;
+  if (value && typeof value === "object") {
+    const entries = Array.isArray(value) ? value.map((item, index) => [String(index), item]) : Object.entries(value);
+    if (!entries.length) return '<div class="metadata-tree-value"><span class="metadata-tree-key">' + safeKey + '</span><code>' + (Array.isArray(value) ? '[]' : '{}') + '</code></div>';
+    return '<details ' + (depth < 1 ? 'open' : '') + ' data-metadata-branch="' + escapeHtml(valuePath) + '"><summary>' + safeKey + ' <span class="muted">' + entries.length + '</span></summary>' + entries.map(([childKey, childValue]) => renderMetadataTreeValue(childValue, childKey, depth + 1, valuePath)).join("") + '</details>';
+  }
+  const display = value == null ? "null" : typeof value === "string" ? value : JSON.stringify(value);
+  return '<div class="metadata-tree-value" data-metadata-search-text="' + escapeHtml((valuePath + " " + display).toLowerCase()) + '"><span><span class="metadata-tree-key">' + safeKey + '</span><code>' + escapeHtml(display) + '</code></span><button class="metadata-copy-path" type="button" data-metadata-copy-path="' + escapeHtml(valuePath) + '" title="Copy metadata path">Copy path</button></div>';
+}
+
+function renderDocumentContextPanel() {
+  const holder = el("documentContextBody");
+  if (!holder) return;
+  if (state.documentInspectionLoading) {
+    holder.innerHTML = '<div class="document-context-row">Loading document context…</div>';
+    return;
+  }
+  const inspection = state.documentInspectionPath === state.selected ? state.documentInspection : null;
+  if (!inspection) {
+    holder.innerHTML = '<div class="document-context-row">Document context is unavailable.</div>';
+    return;
+  }
+  const profiles = inspection.profiles || [];
+  const identities = inspection.identities || [];
+  const relations = inspection.relations || [];
+  const center = inspection.connections?.nodes?.find((node) => node.path === inspection.document?.path);
+  const connected = inspection.connections?.edges || [];
+  const nodes = new Map((inspection.connections?.nodes || []).map((node) => [node.id, node]));
+  const connectionRows = connected.map((edge) => {
+    const outgoing = edge.from === center?.id;
+    const neighbor = nodes.get(outgoing ? edge.to : edge.from) || {};
+    const label = outgoing ? (edge.label || edge.type || "References") : (edge.reverseLabel || edge.type || "Referenced by");
+    return '<li class="document-context-row"><strong>' + escapeHtml(label) + '</strong><br><button class="quiet-button" type="button" data-context-open-path="' + escapeHtml(neighbor.path || "") + '">' + escapeHtml(neighbor.label || neighbor.path || "Unresolved") + '</button>' + (neighbor.path ? '<br><code>' + escapeHtml(neighbor.path) + '</code>' : '') + '</li>';
+  }).join("");
+  const profileRows = profiles.map((profile) => '<li class="document-context-row"><strong>' + escapeHtml(profile.profile?.id || "Profile") + '</strong><br><span class="muted">' + escapeHtml([profile.profile?.origin, profile.profile?.version].filter(Boolean).join(" · ")) + '</span></li>').join("");
+  const identityRows = identities.map((identity) => '<li class="document-context-row"><strong>' + escapeHtml(identity.profileId || "Identity") + '</strong><br><code>' + escapeHtml(identity.value) + '</code></li>').join("");
+  const relationRows = relations.map((relation) => '<li class="document-context-row"><strong>' + escapeHtml(relation.label || relation.type) + '</strong><br><code>' + escapeHtml(relation.target) + '</code><br><span class="muted">' + escapeHtml([relation.strength, relation.profileId].filter(Boolean).join(" · ")) + '</span></li>').join("");
+  const healthRows = (inspection.health || []).map((issue) => '<li class="document-context-row"><strong>' + escapeHtml(issue.type || "Issue") + '</strong><br><span class="muted">' + escapeHtml(issue.message || issue.source || issue.profileId || "Review this document metadata.") + '</span></li>').join("");
+  const interpretedMetadata = Object.fromEntries(profiles.map((profile) => [profile.profile?.id || "profile", {
+    identity: profile.identity?.value || null,
+    relations: profile.relations || [],
+    display: profile.display || {},
+  }]));
+  const rawMetadataSources = (inspection.metadata?.sources || []).map((source) => '# ' + source.source + '\n' + (source.raw || '')).join('\n\n');
+  const visualRows = connected.map((edge) => {
+    const outgoing = edge.from === center?.id;
+    const neighbor = nodes.get(outgoing ? edge.to : edge.from) || {};
+    return /^(?:image|diagram|html|visual)/.test(String(neighbor.kind || neighbor.type || ""))
+      ? '<li class="document-context-row"><button class="quiet-button" type="button" data-context-open-path="' + escapeHtml(neighbor.path || "") + '">' + escapeHtml(neighbor.label || neighbor.path || "Visual") + '</button></li>'
+      : '';
+  }).filter(Boolean).join("");
+  holder.innerHTML =
+    '<details class="document-context-group" open><summary>Metadata</summary>' +
+      '<div class="metadata-view-switcher" role="tablist" aria-label="Metadata view"><button class="active" type="button" data-metadata-view="interpreted">Interpreted</button><button type="button" data-metadata-view="all">All metadata</button><button type="button" data-metadata-view="raw">Raw source</button></div>' +
+      '<input class="metadata-search" type="search" data-metadata-search placeholder="Search metadata keys or values…" aria-label="Search metadata keys or values" />' +
+      '<div class="metadata-view metadata-tree" data-metadata-panel="interpreted">' + renderMetadataTreeValue(interpretedMetadata, "Profiles") + '</div>' +
+      '<div class="metadata-view metadata-tree" data-metadata-panel="all" hidden>' + renderMetadataTreeValue(inspection.metadata?.raw || {}, "All metadata") + '</div>' +
+      '<div class="metadata-view" data-metadata-panel="raw" hidden><pre class="metadata-raw-source">' + escapeHtml(rawMetadataSources || "No metadata source") + '</pre></div>' +
+    '</details>' +
+    '<details class="document-context-group" open><summary>Profiles <span class="muted">' + profiles.length + '</span></summary><ul class="document-context-list">' + (profileRows || '<li class="document-context-row muted">No matching profile</li>') + '</ul></details>' +
+    '<details class="document-context-group" open><summary>Identities <span class="muted">' + identities.length + '</span></summary><ul class="document-context-list">' + (identityRows || '<li class="document-context-row muted">No interpreted identity</li>') + '</ul></details>' +
+    '<details class="document-context-group" open><summary>Connections <span class="muted">' + connected.length + '</span></summary><ul class="document-context-list">' + (connectionRows || relationRows || '<li class="document-context-row muted">No proven connection</li>') + '</ul></details>' +
+    '<details class="document-context-group"><summary>Visuals</summary><ul class="document-context-list">' + (visualRows || '<li class="document-context-row muted">No connected visual document</li>') + '</ul></details>' +
+    '<details class="document-context-group"><summary>Project files</summary><ul class="document-context-list"><li class="document-context-row"><button class="quiet-button" type="button" data-context-reveal-location>Reveal in Explorer</button><br><code>' + escapeHtml(inspection.document?.path || "") + '</code></li></ul></details>' +
+    '<details class="document-context-group"><summary>Trust</summary><ul class="document-context-list"><li class="document-context-row">Content verification: <strong class="trust-state" data-state="' + escapeHtml(inspection.trust?.contentVerification || "unknown") + '">' + escapeHtml(inspection.trust?.contentVerification || "unknown") + '</strong></li><li class="document-context-row">Dependency freshness: <strong class="trust-state" data-state="' + escapeHtml(inspection.trust?.dependencyFreshness || "unknown") + '">' + escapeHtml(inspection.trust?.dependencyFreshness || "unknown") + '</strong></li></ul></details>' +
+    '<details class="document-context-group"><summary>Health <span class="muted">' + (inspection.health || []).length + '</span></summary><ul class="document-context-list">' + (healthRows || '<li class="document-context-row muted">No metadata issue</li>') + '</ul></details>';
+  holder.querySelectorAll("[data-context-open-path]").forEach((button) => button.addEventListener("click", () => {
+    const nextPath = button.dataset.contextOpenPath;
+    if (nextPath) selectFile(nextPath, { revealInExplorer: false }).catch((error) => setStatus(error.message));
+  }));
+  holder.querySelectorAll("[data-metadata-view]").forEach((button) => button.addEventListener("click", () => {
+    const view = button.dataset.metadataView;
+    holder.querySelectorAll("[data-metadata-view]").forEach((item) => item.classList.toggle("active", item === button));
+    holder.querySelectorAll("[data-metadata-panel]").forEach((panel) => { panel.hidden = panel.dataset.metadataPanel !== view; });
+  }));
+  holder.querySelector("[data-metadata-search]")?.addEventListener("input", (event) => {
+    const query = String(event.currentTarget.value || "").trim().toLowerCase();
+    holder.querySelectorAll("[data-metadata-search-text]").forEach((row) => {
+      row.dataset.filtered = query && !row.dataset.metadataSearchText.includes(query) ? "true" : "false";
+    });
+  });
+  holder.querySelectorAll("[data-metadata-copy-path]").forEach((button) => button.addEventListener("click", async () => {
+    const metadataPath = button.dataset.metadataCopyPath || "";
+    if (!metadataPath) return;
+    await navigator.clipboard.writeText(metadataPath);
+    setStatus("Copied metadata path: " + metadataPath);
+  }));
+  holder.querySelector("[data-context-reveal-location]")?.addEventListener("click", () => {
+    const project = workspaceSelectedProject();
+    if (project) revealSelectedDocumentLocation(project).catch((error) => setStatus(error.message));
+  });
+}
+
+async function loadDocumentContextPanel({ force = false } = {}) {
+  if (!state.selected || state.page !== "file") return;
+  if (!force && state.documentInspectionPath === state.selected && state.documentInspection) {
+    renderDocumentContextPanel();
+    return;
+  }
+  const requestedPath = state.selected;
+  const project = workspaceSelectedProject();
+  const worktree = globalProjectSelectedWorktree(project);
+  const locationId = state.activeProjectLocationId || worktree?.id || "";
+  state.documentInspectionLoading = true;
+  renderDocumentContextPanel();
+  try {
+    const params = new URLSearchParams({ path: requestedPath });
+    if (locationId) {
+      params.set("projectId", locationId);
+      params.set("locationId", locationId);
+    }
+    const data = await api("/api/context-hub/document-inspect?" + params);
+    if (requestedPath !== state.selected) return;
+    state.documentInspection = data;
+    state.documentInspectionPath = requestedPath;
+  } catch (error) {
+    if (requestedPath !== state.selected) return;
+    state.documentInspection = { health: [{ type: "inspection_unavailable", message: error.message }] };
+    state.documentInspectionPath = requestedPath;
+  } finally {
+    if (requestedPath === state.selected) {
+      state.documentInspectionLoading = false;
+      renderDocumentContextPanel();
+    }
+  }
+}
+
+function setDocumentContextOpen(open, options = {}) {
+  state.inspectorOpen = Boolean(open);
+  const panel = el("documentContextPanel");
+  const shell = document.querySelector(".editor-shell");
+  if (panel) panel.hidden = !state.inspectorOpen;
+  shell?.classList.toggle("context-panel-open", state.inspectorOpen);
+  el("contextPanelToggle")?.classList.toggle("active", state.inspectorOpen);
+  if (state.inspectorOpen) loadDocumentContextPanel().catch((error) => setStatus(error.message));
+  if (options.persist !== false) persistNavigationState();
 }
 
 function renderHubFolders() {
@@ -22579,6 +24569,7 @@ async function applyReviewDecision(path, status, options = {}) {
         expectedContentHash,
         expectedResourceState: reviewItem?.resourceState || null,
         expectedResourceVersion: reviewItem?.resourceVersion || null,
+        expectedDependencyVersions: reviewItem?.dependencyVersions || {},
       }),
     });
   } catch (error) {
@@ -22664,11 +24655,15 @@ async function requestReviewDecision(path, status) {
     await applyReviewDecision(path, "verified");
     return;
   }
-  const initialReview = Boolean(state.docqa?.queue?.find((item) => item.path === path)?.initialReview);
+  const reviewItem = state.docqa?.queue?.find((item) => item.path === path);
+  const initialReview = Boolean(reviewItem?.initialReview);
+  const freshnessReview = reviewItem?.reviewReason === "dependency-changed";
   showConfirmDialog({
-    title: initialReview ? "Accept document?" : "Mark verified?",
-    body: initialReview ? "This accepts the current document as the first trusted baseline. Use Next review when ready." : "This marks the current content as trusted. Use Next review when ready.",
-    confirmLabel: initialReview ? "Accept document" : "Mark verified",
+    title: freshnessReview ? "Confirm still current?" : initialReview ? "Accept document?" : "Mark verified?",
+    body: freshnessReview
+      ? "The accepted content stays trusted. This only records that you reviewed the changed dependencies and the document is still current."
+      : initialReview ? "This accepts the current document as the first trusted baseline. Use Next review when ready." : "This marks the current content as trusted. Use Next review when ready.",
+    confirmLabel: freshnessReview ? "Confirm still current" : initialReview ? "Accept document" : "Mark verified",
     confirmVariant: "primary",
     checkboxLabel: "Do not ask again",
     onConfirm: ({ checked } = {}) => {
@@ -22935,6 +24930,9 @@ function templateValuesForPath(title, normalized) {
   return {
     title,
     path: normalized,
+    id: documentIdForUiPath(normalized),
+    id_yaml: yamlScalarUi(documentIdForUiPath(normalized)),
+    depends_on_block: "",
     kind: metadata.kind,
     status: metadata.status,
     scope: metadata.scope,
@@ -23056,6 +25054,8 @@ function renderViewer() {
   wireExternalReviewJumpButtons();
   wireAgentAnnotationButtons();
   wireImageDocumentPreview();
+  wireMermaidDocuments();
+  wireHtmlPreviewNavigation();
   wireMarkdownDocLinks();
   document.querySelector("[data-conflict-compare]")?.addEventListener("click", () => toggleConflictCompare());
   document.querySelector("[data-conflict-reload]")?.addEventListener("click", () => promptReloadConflictFromDisk());
@@ -23068,6 +25068,7 @@ function renderViewer() {
   wireFileActionButtons();
   wireRenderedMarkdownEditor();
   updateCodexReferenceAction();
+  if (state.inspectorOpen) loadDocumentContextPanel().catch((error) => setStatus(error.message));
   syncWorkspaceScroll();
   scheduleSessionStatePush();
 }
@@ -23484,7 +25485,7 @@ function updateMarkdownEditorVisualSelection() {
 
 function renderMarkdownLineView(text, options = {}) {
   return '<div id="docReader" class="doc-editor markdown-view" role="document" tabindex="0" aria-label="' + (options.readOnly ? "Read-only document" : "Document preview") + '">' +
-    renderMarkdownLines(text) +
+    renderMarkdownLines(text, { renderMermaid: true }) +
   '</div>';
 }
 
@@ -23530,6 +25531,93 @@ function wireImageDocumentPreview() {
     renderViewer();
     restoreEditorViewState(viewState);
   });
+}
+
+let mermaidLoaderPromise = null;
+
+function loadMermaidRenderer() {
+  if (window.mermaid) return Promise.resolve(window.mermaid);
+  if (mermaidLoaderPromise) return mermaidLoaderPromise;
+  mermaidLoaderPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "/vendor/mermaid.min.js";
+    script.async = true;
+    script.onload = () => resolve(window.mermaid);
+    script.onerror = () => reject(new Error("Mermaid renderer could not be loaded."));
+    document.head.append(script);
+  });
+  return mermaidLoaderPromise;
+}
+
+function safeMermaidSource(source) {
+  const rejected = [];
+  const kept = [];
+  for (const line of String(source || "").split("\n")) {
+    if (/^\s*%%\{/.test(line) || /\b(?:callback|javascript:|https?:\/\/|file:\/\/)/i.test(line) || /<\/?[A-Za-z][^>]*>/.test(line)) rejected.push(line);
+    else if (!/^\s*click\s+/i.test(line)) kept.push(line);
+  }
+  return { source: kept.join("\n"), rejected };
+}
+
+function mermaidCrLinks(source) {
+  const links = [];
+  for (const line of String(source || "").split("\n")) {
+    const match = line.match(/^\s*click\s+([A-Za-z0-9_.:-]+)\s+["'](cr:\/\/[^"']+)["']/i);
+    if (match) links.push({ nodeId: match[1], target: match[2] });
+  }
+  return links;
+}
+
+async function openContextRoomDocumentUri(target) {
+  const response = await api("/api/context-hub/document-resolve?" + new URLSearchParams({ selector: target }));
+  if (!response?.path) throw new Error("Document ID could not be resolved.");
+  await selectFile(response.path, { revealInExplorer: false });
+}
+
+async function wireMermaidDocuments() {
+  const figures = [...document.querySelectorAll("[data-mermaid-document]")];
+  if (!figures.length) return;
+  let renderer;
+  try {
+    renderer = await loadMermaidRenderer();
+    renderer.initialize({ startOnLoad: false, securityLevel: "strict", htmlLabels: false, suppressErrorRendering: true });
+  } catch (error) {
+    for (const figure of figures) figure.querySelector("[data-mermaid-source]").textContent = error.message;
+    return;
+  }
+  for (const [index, figure] of figures.entries()) {
+    const holder = figure.querySelector("[data-mermaid-source]");
+    const rawSource = holder?.textContent || "";
+    const safe = safeMermaidSource(rawSource);
+    const links = mermaidCrLinks(rawSource);
+    figure.querySelectorAll("[data-mermaid-view]").forEach((button) => button.addEventListener("click", () => {
+      figure.dataset.viewMode = button.dataset.mermaidView;
+      figure.querySelectorAll("[data-mermaid-view]").forEach((item) => item.classList.toggle("active", item === button));
+    }));
+    const linkList = figure.querySelector("[data-diagram-links]");
+    if (linkList && links.length) {
+      linkList.innerHTML = '<strong>Diagram links</strong><ul>' + links.map((link) => '<li><button type="button" data-cr-target="' + escapeHtml(link.target) + '">' + escapeHtml(link.nodeId + " → " + link.target) + '</button></li>').join("") + '</ul>';
+      linkList.querySelectorAll("[data-cr-target]").forEach((button) => button.addEventListener("click", () => openContextRoomDocumentUri(button.dataset.crTarget).catch((error) => setStatus(error.message))));
+    }
+    try {
+      const rendered = await renderer.render("context-room-mermaid-" + index + "-" + Date.now(), safe.source);
+      holder.innerHTML = rendered.svg;
+      for (const link of links) {
+        const candidates = [...holder.querySelectorAll("[id]")].filter((element) => element.id === link.nodeId || element.id.includes("-" + link.nodeId + "-") || element.id.endsWith("-" + link.nodeId));
+        for (const element of candidates) {
+          element.setAttribute("role", "link");
+          element.setAttribute("tabindex", "0");
+          element.addEventListener("click", () => openContextRoomDocumentUri(link.target).catch((error) => setStatus(error.message)));
+          element.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" || event.key === " ") openContextRoomDocumentUri(link.target).catch((error) => setStatus(error.message));
+          });
+        }
+      }
+      if (safe.rejected.length) figure.dataset.mermaidSanitized = "true";
+    } catch (error) {
+      holder.textContent = "Diagram could not be rendered safely: " + (error?.message || "invalid source");
+    }
+  }
 }
 
 function contextRoomVisualPatternStyles() {
@@ -23968,7 +26056,11 @@ function sanitizedHtmlPreviewDocument(source) {
     for (const attribute of [...element.attributes]) {
       const name = attribute.name.toLowerCase();
       const value = attribute.value.trim();
-      if (name.startsWith("on") || name === "href" || name === "xlink:href" || name === "action" || name === "formaction") {
+      if (name.startsWith("on") || name === "xlink:href" || name === "action" || name === "formaction") {
+        element.removeAttribute(attribute.name);
+      } else if (name === "href" && !/^(?:#|cr:\/\/|\.{0,2}\/|[A-Za-z0-9_.-]+\/)[A-Za-z0-9_./@#~-]*$/i.test(value)) {
+        element.removeAttribute(attribute.name);
+      } else if (name === "data-cr-document" && !/^[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?)+$/i.test(value)) {
         element.removeAttribute(attribute.name);
       } else if (["src", "srcset", "poster"].includes(name) && !/^data:(?:image|font|audio|video)\//i.test(value)) {
         element.removeAttribute(attribute.name);
@@ -23991,12 +26083,62 @@ function sanitizedHtmlPreviewDocument(source) {
 }
 
 function renderHtmlDocumentPreview(text, filePath = state.selected) {
-  return '<div class="html-preview-shell"><iframe class="html-preview-frame" sandbox="" referrerpolicy="no-referrer" title="HTML preview: ' + escapeHtml(filePath || "document") + '" srcdoc="' + escapeHtml(sanitizedHtmlPreviewDocument(text)) + '"></iframe></div>';
+  return '<div class="html-preview-shell"><iframe class="html-preview-frame" sandbox="allow-same-origin" referrerpolicy="no-referrer" title="HTML preview: ' + escapeHtml(filePath || "document") + '" srcdoc="' + escapeHtml(sanitizedHtmlPreviewDocument(text)) + '"></iframe></div>';
+}
+
+function normalizedDocumentLinkPath(currentPath, href) {
+  const cleanHref = String(href || "").split("#")[0];
+  if (!cleanHref) return "";
+  const base = String(currentPath || "").split("/").slice(0, -1);
+  const parts = cleanHref.startsWith("/") ? [] : base;
+  for (const segment of cleanHref.replace(/^\.\//, "").split("/")) {
+    if (!segment || segment === ".") continue;
+    if (segment === "..") parts.pop();
+    else parts.push(segment);
+  }
+  return parts.join("/");
+}
+
+function wireHtmlPreviewNavigation() {
+  const frame = document.querySelector("iframe.html-preview-frame");
+  if (!frame) return;
+  frame.addEventListener("load", () => {
+    const frameDocument = frame.contentDocument;
+    if (!frameDocument) return;
+    frameDocument.addEventListener("click", (event) => {
+      const anchor = event.target?.closest?.("a[href], [data-cr-document]");
+      if (!anchor) return;
+      event.preventDefault();
+      const explicitId = anchor.getAttribute("data-cr-document");
+      const href = anchor.getAttribute("href") || "";
+      const target = explicitId ? "cr://" + explicitId : href;
+      const open = async () => {
+        if (/^cr:\/\//i.test(target)) return openContextRoomDocumentUri(target);
+        const nextPath = normalizedDocumentLinkPath(state.selected, target);
+        if (!nextPath) return;
+        if (event.metaKey || event.ctrlKey) {
+          window.open(workspaceProjectHref(state.projectId, nextPath, { fresh: true }), "_blank", "noopener");
+          return;
+        }
+        await selectFile(nextPath, { revealInExplorer: false });
+      };
+      open().catch((error) => setStatus(error.message));
+    });
+  });
 }
 
 function renderDocumentView(text, filePath = state.selected) {
+  if (/\.(?:mmd|mermaid)$/i.test(String(filePath || ""))) return renderStandaloneMermaidDocument(text);
   if (!usePlainTextSurface(filePath, text)) return renderMarkdownLineView(text);
   return '<pre id="docReader" class="doc-editor plain-text-view" role="document" tabindex="0" aria-label="Text file">' + escapeHtml(text) + '</pre>';
+}
+
+function mermaidViewModeButtons(active = "rendered") {
+  return '<span class="mermaid-view-modes" role="group" aria-label="Diagram view"><button type="button" data-mermaid-view="rendered" class="' + (active === "rendered" ? 'active' : '') + '">Rendered</button><button type="button" data-mermaid-view="source" class="' + (active === "source" ? 'active' : '') + '">Source</button><button type="button" data-mermaid-view="split" class="' + (active === "split" ? 'active' : '') + '">Split</button></span>';
+}
+
+function renderStandaloneMermaidDocument(source) {
+  return '<figure class="mermaid-document standalone" data-mermaid-document data-view-mode="rendered"><div class="mermaid-render" data-mermaid-source>' + escapeHtml(source) + '</div><pre class="mermaid-source">' + escapeHtml(source) + '</pre><figcaption><span>Mermaid document</span>' + mermaidViewModeButtons("rendered") + '</figcaption><div class="diagram-links" data-diagram-links aria-label="Diagram links"></div></figure>';
 }
 
 function renderDocumentEditor(text, filePath = state.selected) {
@@ -24013,6 +26155,7 @@ function renderMarkdownEditor(text) {
 }
 
 function renderMarkdownLines(text, options = {}) {
+  if (options.renderMermaid) return renderMarkdownBlocks(text, options);
   let inFence = false;
   const lines = String(text || "").split("\n");
   const decorations = Array.isArray(options.lineDecorations) ? options.lineDecorations : [];
@@ -24022,6 +26165,30 @@ function renderMarkdownLines(text, options = {}) {
       if (startsFence) inFence = !inFence;
       return decorateMarkdownLine(rendered, decorations[index]);
     }).join("");
+}
+
+function renderMarkdownBlocks(text, options = {}) {
+  const lines = String(text || "").split("\n");
+  const output = [];
+  for (let index = 0; index < lines.length;) {
+    const start = lines[index].match(/^\s*(\x60{3}|~~~)\s*mermaid\s*$/i);
+    if (!start) {
+      output.push(renderMarkdownLine(lines[index], index, options));
+      index += 1;
+      continue;
+    }
+    const fence = start[1];
+    const sourceLines = [];
+    let end = index + 1;
+    while (end < lines.length && !new RegExp("^\\s*" + fence.replace(/[\x60~]/g, "\\$&") + "\\s*$").test(lines[end])) {
+      sourceLines.push(lines[end]);
+      end += 1;
+    }
+    const source = sourceLines.join("\n");
+    output.push('<figure class="mermaid-document" data-mermaid-document data-view-mode="rendered"><div class="mermaid-render" data-mermaid-source>' + escapeHtml(source) + '</div><pre class="mermaid-source">' + escapeHtml(source) + '</pre><figcaption><span>Mermaid diagram</span>' + mermaidViewModeButtons("rendered") + '</figcaption><div class="diagram-links" data-diagram-links aria-label="Diagram links"></div></figure>');
+    index = end < lines.length ? end + 1 : end;
+  }
+  return output.join("");
 }
 
 function decorateMarkdownLine(rendered, decoration) {
@@ -24138,6 +26305,9 @@ function renderMarkdownPlainInline(value, options = {}) {
 }
 
 function markdownDocLinkAttributes(rawTarget) {
+  if (/^cr:\/\/[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?)+(?:#[A-Za-z0-9_.-]+)?$/i.test(String(rawTarget || "").trim())) {
+    return ' data-doc-link-path="' + escapeHtml(rawTarget) + '" data-doc-link-cr="' + escapeHtml(rawTarget) + '" title="Ctrl/Cmd-click to resolve ' + escapeHtml(rawTarget) + '"';
+  }
   const resolved = resolveDocLinkPath(rawTarget);
   if (!resolved) return "";
   return ' data-doc-link-path="' + escapeHtml(rawTarget) + '" data-doc-link-resolved="' + escapeHtml(resolved) + '" title="Ctrl/Cmd-click to open ' + escapeHtml(resolved) + '"';
@@ -24145,6 +26315,7 @@ function markdownDocLinkAttributes(rawTarget) {
 
 function isMarkdownDocLinkTarget(value) {
   const target = cleanMarkdownDocLinkTarget(value);
+  if (!target && /^cr:\/\//i.test(String(value || "").trim())) return /^cr:\/\/[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?)+(?:#[A-Za-z0-9_.-]+)?$/i.test(String(value || "").trim());
   if (!target) return false;
   if (/^(?:[a-z][a-z0-9+.-]*:|#)/i.test(target)) return false;
   return /^(?:~\/|\.{1,2}\/|\.?[A-Za-z0-9_-]+\/)?[A-Za-z0-9_./@~-]*[A-Za-z0-9_@~-]+\.[A-Za-z0-9_-]+(?:#[A-Za-z0-9_.-]+)?$/.test(target) ||
@@ -24271,6 +26442,10 @@ function clearMarkdownEditorDocLinkHover(editor = el("docEditor")) {
 }
 
 async function openMarkdownDocLink(rawTarget) {
+  if (/^cr:\/\//i.test(String(rawTarget || "").trim())) {
+    await openContextRoomDocumentUri(String(rawTarget).trim());
+    return;
+  }
   const resolved = resolveDocLinkPath(rawTarget) || normalizeDocPath(cleanMarkdownDocLinkTarget(rawTarget));
   if (!resolved || !isKnownContextRoomFile(resolved)) {
     setStatus("file not available in Context Room: " + cleanMarkdownDocLinkTarget(rawTarget));
@@ -26582,7 +28757,7 @@ document.querySelector(".app > aside")?.addEventListener("pointerenter", () => {
   if (document.querySelector(".app")?.classList.contains("explorer-edge-peek")) setExplorerEdgePeek(true);
 });
 document.querySelector(".app > aside")?.addEventListener("pointerleave", () => {
-  if (document.querySelector(".app")?.classList.contains("explorer-edge-peek")) scheduleExplorerEdgePeekClose();
+  if (document.querySelector(".app")?.classList.contains("explorer-edge-peek")) setExplorerEdgePeek(false);
 });
 window.addEventListener("blur", () => setExplorerEdgePeek(false));
 document.addEventListener("keydown", (event) => {
@@ -26597,6 +28772,8 @@ el("globalProjectSearch")?.addEventListener("input", (event) => {
   state.globalProjectSearch = event.target.value;
   renderGlobalProjectExplorer();
   if (state.globalExplorerMode !== "project") return;
+  const selectedProject = (state.contextHub?.projects || []).find((item) => item.projectKey === state.globalExplorerProjectKey);
+  if (selectedProject && explorerDocumentPathForProject(selectedProject) && state.explorerDocumentView === "related") return;
   clearTimeout(state.globalProjectSearchTimer);
   state.globalProjectSearchTimer = setTimeout(() => {
     const project = (state.contextHub?.projects || []).find((item) => item.projectKey === state.globalExplorerProjectKey);
@@ -26615,7 +28792,6 @@ document.querySelectorAll("[data-global-explorer-mode]").forEach((button) => but
     state.globalExplorerMode = "computer";
     renderGlobalProjectExplorer();
     renderContextHealth();
-    refreshGlobalSettingsScopeFromExplorer();
     if (!state.computerExplorer) loadComputerExplorer().catch((error) => setStatus(error.message));
     return;
   }
@@ -26654,6 +28830,31 @@ el("globalProjectList")?.addEventListener("click", (event) => {
   const nativeWorkspaceLink = event.target.closest("a[href]");
   if (nativeWorkspaceLink && (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)) return;
   if (nativeWorkspaceLink) event.preventDefault();
+  const documentView = event.target.closest("[data-explorer-document-view]");
+  if (documentView) {
+    const project = (state.contextHub?.projects || []).find((item) => item.projectKey === state.globalExplorerProjectKey);
+    if (!project) return;
+    if (documentView.dataset.explorerDocumentView === "location") {
+      void revealSelectedDocumentLocation(project).catch((error) => setStatus(error.message));
+    } else {
+      state.explorerDocumentView = "related";
+      state.globalProjectSearch = "";
+      renderGlobalProjectExplorer();
+      syncWorkspaceUrl();
+      persistNavigationState();
+      void loadExplorerRelatedGraph(project).catch((error) => setStatus(error.message));
+    }
+    return;
+  }
+  if (event.target.closest("[data-explorer-reveal-location]")) {
+    const project = (state.contextHub?.projects || []).find((item) => item.projectKey === state.globalExplorerProjectKey);
+    if (project) void revealSelectedDocumentLocation(project).catch((error) => setStatus(error.message));
+    return;
+  }
+  if (event.target.closest("[data-explorer-open-local-graph]")) {
+    void showGraphPage({ scope: "local", path: state.selected }).catch((error) => setStatus(error.message));
+    return;
+  }
   const moreButton = event.target.closest("[data-global-project-more]");
   if (moreButton) {
     const project = (state.contextHub?.projects || []).find((item) => item.projectKey === moreButton.dataset.globalProjectKey);
@@ -26746,6 +28947,20 @@ el("globalProjectList")?.addEventListener("contextmenu", (event) => {
   }
   const projectRow = event.target.closest("[data-global-project-key]");
   if (projectRow) openGlobalExplorerContextMenu(event, { scope: "project", kind: "project", path: "", projectKey: projectRow.dataset.globalProjectKey });
+});
+el("globalProjectList")?.addEventListener("keydown", (event) => {
+  const tab = event.target.closest("[data-explorer-document-view]");
+  if (!tab || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const tabs = [...el("globalProjectList").querySelectorAll("[data-explorer-document-view]")];
+  const index = tabs.indexOf(tab);
+  const next = event.key === "Home"
+    ? tabs[0]
+    : event.key === "End"
+      ? tabs.at(-1)
+      : tabs[(index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length];
+  next?.focus();
+  next?.click();
 });
 el("globalProjectList")?.addEventListener("pointerover", (event) => {
   const row = event.target.closest("[data-global-project-key]");
@@ -27158,11 +29373,164 @@ document.querySelectorAll("[data-home-file]").forEach((button) => button.addEven
 el("back").addEventListener("click", () => goHistory(-1).catch((error) => setStatus(error.message)));
 el("forward").addEventListener("click", () => goHistory(1).catch((error) => setStatus(error.message)));
 el("settingsButton").addEventListener("click", showSettingsPage);
+el("graphOpen")?.addEventListener("click", () => showGraphPage({ scope: "global" }).catch((error) => setStatus(error.message)));
+el("graphLocal")?.addEventListener("click", () => showGraphPage({ scope: "local", path: state.selected }).catch((error) => setStatus(error.message)));
 el("brandHome").addEventListener("click", () => handleBrandHomeAction().catch((error) => setStatus(error.message)));
+el("graphSearch")?.addEventListener("input", (event) => {
+  state.graphSearch = event.currentTarget.value;
+  renderGraphCanvas();
+  renderGraphAccessibleList();
+  scheduleSessionStatePush();
+});
+el("graphScope")?.addEventListener("change", (event) => {
+  state.graphScope = event.currentTarget.value;
+  if (state.graphScope === "local" && !graphCurrentCenterPath()) state.graphScope = state.activeProjectLocationId ? "project" : "global";
+  state.graphSelectedNode = "";
+  resetGraphCamera();
+  loadDocumentGraph().catch((error) => setStatus(error.message));
+});
+el("graphDepth")?.addEventListener("change", (event) => {
+  state.graphDepth = Math.min(3, Math.max(1, Number(event.currentTarget.value) || 1));
+  loadDocumentGraph().catch((error) => setStatus(error.message));
+});
+el("graphProposalSelect")?.addEventListener("change", (event) => {
+  state.graphProposal = event.currentTarget.value;
+  state.graphSelectedNode = "";
+  loadDocumentGraph().catch((error) => setStatus(error.message));
+});
+["graphLayerAccepted", "graphLayerUnverified", "graphLayerTarget", "graphLayerHistorical", "graphLayerProposal"].forEach((id) => el(id)?.addEventListener("change", () => {
+  state.graphLayers = graphLayerValues();
+  loadDocumentGraph().catch((error) => setStatus(error.message));
+}));
+el("graphShowUnresolved")?.addEventListener("change", (event) => {
+  state.graphIncludeUnresolved = event.currentTarget.checked;
+  loadDocumentGraph().catch((error) => setStatus(error.message));
+});
+el("graphShowOrphans")?.addEventListener("change", (event) => {
+  state.graphShowOrphans = event.currentTarget.checked;
+  renderGraphCanvas();
+  renderGraphAccessibleList();
+  scheduleSessionStatePush();
+});
+el("graphTypeFilter")?.addEventListener("change", (event) => {
+  state.graphTypes = event.currentTarget.value ? [event.currentTarget.value] : [];
+  state.graphSelectedNode = "";
+  loadDocumentGraph().catch((error) => setStatus(error.message));
+});
+el("graphRelationFilter")?.addEventListener("change", (event) => {
+  state.graphRelations = event.currentTarget.value ? [event.currentTarget.value] : [];
+  state.graphSelectedNode = "";
+  loadDocumentGraph().catch((error) => setStatus(error.message));
+});
+el("graphShowArrows")?.addEventListener("change", (event) => {
+  state.graphShowArrows = event.currentTarget.checked;
+  renderGraphCanvas();
+  scheduleSessionStatePush();
+});
+el("graphRefresh")?.addEventListener("click", () => loadDocumentGraph({ force: true }).catch((error) => setStatus(error.message)));
+el("graphFit")?.addEventListener("click", resetGraphCamera);
+el("graphListToggle")?.addEventListener("click", () => {
+  state.graphListMode = !state.graphListMode;
+  renderGraphPage();
+  persistNavigationState();
+});
+el("graphCanvas")?.addEventListener("pointermove", (event) => {
+  const canvas = event.currentTarget;
+  if (state.graphPointer?.pointerId === event.pointerId) {
+    if (state.graphDraggedNode) {
+      const metrics = graphCanvasMetrics();
+      const padding = 42;
+      const localX = event.clientX - metrics.rect.left;
+      const localY = event.clientY - metrics.rect.top;
+      state.graphManualPositions[state.graphDraggedNode] = {
+        x: Math.min(1, Math.max(0, ((localX / state.graphCamera.scale) - state.graphCamera.x - padding) / Math.max(1, metrics.width - padding * 2))),
+        y: Math.min(1, Math.max(0, ((localY / state.graphCamera.scale) - state.graphCamera.y - padding) / Math.max(1, metrics.height - padding * 2))),
+      };
+      state.graphPointer = { ...state.graphPointer, x: event.clientX, y: event.clientY };
+      renderGraphCanvas();
+      return;
+    }
+    const dx = event.clientX - state.graphPointer.x;
+    const dy = event.clientY - state.graphPointer.y;
+    state.graphCamera.x += dx / state.graphCamera.scale;
+    state.graphCamera.y += dy / state.graphCamera.scale;
+    state.graphPointer = { ...state.graphPointer, pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+    renderGraphCanvas();
+    return;
+  }
+  const hovered = graphHitNode(event.clientX, event.clientY);
+  const nextId = hovered?.id || "";
+  if (nextId !== state.graphHoverNode) {
+    state.graphHoverNode = nextId;
+    canvas.title = hovered ? hovered.label + (hovered.path ? " · " + hovered.path : "") : "";
+    renderGraphCanvas();
+  }
+});
+el("graphCanvas")?.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0) return;
+  state.graphDraggedNode = graphHitNode(event.clientX, event.clientY)?.id || "";
+  state.graphPointer = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY };
+  event.currentTarget.setPointerCapture?.(event.pointerId);
+});
+el("graphCanvas")?.addEventListener("pointerup", (event) => {
+  const moved = state.graphPointer && Math.hypot(event.clientX - state.graphPointer.startX, event.clientY - state.graphPointer.startY) > 3;
+  state.graphPointer = null;
+  state.graphDraggedNode = "";
+  event.currentTarget.releasePointerCapture?.(event.pointerId);
+  if (!moved) {
+    const node = graphHitNode(event.clientX, event.clientY);
+    if (node) selectGraphNode(node.id);
+  }
+  persistNavigationState();
+});
+el("graphCanvas")?.addEventListener("pointercancel", () => { state.graphPointer = null; state.graphDraggedNode = ""; });
+el("graphCanvas")?.addEventListener("pointerleave", () => {
+  if (state.graphPointer) return;
+  state.graphHoverNode = "";
+  renderGraphCanvas();
+});
+el("graphCanvas")?.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  const factor = event.deltaY > 0 ? 0.9 : 1.1;
+  state.graphCamera.scale = Math.min(3.5, Math.max(0.45, state.graphCamera.scale * factor));
+  renderGraphCanvas();
+  scheduleSessionStatePush();
+}, { passive: false });
+el("graphCanvas")?.addEventListener("dblclick", (event) => {
+  const node = graphHitNode(event.clientX, event.clientY);
+  if (node) openGraphNode(node).catch((error) => setStatus(error.message));
+});
+el("graphCanvas")?.addEventListener("contextmenu", (event) => {
+  const node = graphHitNode(event.clientX, event.clientY);
+  if (!node) return;
+  event.preventDefault();
+  if (node.kind === "project") {
+    const project = (state.contextHub?.projects || []).find((item) => item.projectKey === node.projectKey || item.id === node.projectId);
+    if (project) openGlobalExplorerContextMenu(event, { scope: "project", kind: "project", projectKey: project.projectKey, path: "" });
+    return;
+  }
+  const project = currentContextRoomProject();
+  if (node.path && project) openGlobalExplorerContextMenu(event, { scope: "project", kind: node.kind === "document" || node.kind === "html" || node.kind === "instruction" || node.kind === "skill" ? "file" : "folder", projectKey: project.projectKey, path: node.path });
+});
+el("graphCanvas")?.addEventListener("keydown", (event) => {
+  const nodes = graphVisibleNodes();
+  if (!nodes.length) return;
+  const index = Math.max(0, nodes.findIndex((node) => node.id === state.graphSelectedNode));
+  if (["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp"].includes(event.key)) {
+    event.preventDefault();
+    const offset = ["ArrowRight", "ArrowDown"].includes(event.key) ? 1 : -1;
+    selectGraphNode(nodes[(index + offset + nodes.length) % nodes.length].id);
+  } else if (event.key === "Enter") {
+    const node = nodes.find((item) => item.id === state.graphSelectedNode);
+    if (node) openGraphNode(node).catch((error) => setStatus(error.message));
+  }
+});
 el("gitDiffToggle").addEventListener("click", () => {
   if (!state.selectedDiff?.changed) return;
   setDiffCollapsed(!state.diffCollapsed);
 });
+el("contextPanelToggle")?.addEventListener("click", () => setDocumentContextOpen(!state.inspectorOpen));
+el("documentContextClose")?.addEventListener("click", () => setDocumentContextOpen(false));
 el("verifyCurrent").addEventListener("click", () => verifyCurrentFile().catch((error) => setStatus(error.message)));
 el("deleteCurrent").addEventListener("click", () => deletePaths([state.selected]).catch((error) => setStatus(error.message)));
 el("watchSelected").addEventListener("click", () => addSelectedToWatch().catch((error) => setStatus(error.message)));
@@ -27210,14 +29578,24 @@ window.matchMedia("(prefers-color-scheme: light)").addEventListener?.("change", 
   if (currentColorModePreference() === "system" && currentFileThemeId() === "context-room") applyFileTheme();
 });
 syncResponsiveSidebar();
-window.addEventListener("resize", () => syncResponsiveSidebar());
+window.addEventListener("resize", () => {
+  syncResponsiveSidebar();
+  if (state.page === "graph") renderGraphCanvas();
+});
 setMode("view");
 initializeWorkspaceDiagnostics();
 finishInitialBoot();
 establishWorkspaceIdentity().then(() => {
   startAgentCommandPolling();
   startWorkspaceHeartbeat();
-  return loadFiles({ initial: true });
+  const initialNavigation = parseWorkspaceNavigationUrl(window.location.href);
+  state.explorerDocumentView = initialNavigation.explorerDocumentView;
+  let graphRequest = Promise.resolve(false);
+  if (initialNavigation.view === "graph") {
+    state.navigationRestoreAttempted = true;
+    graphRequest = applyWorkspaceUrlState({ reason: "initial-graph-shell", force: true });
+  }
+  return Promise.all([loadFiles({ initial: true }), graphRequest]);
 }).catch((error) => setStatus(error.message))
   .finally(finishInitialBoot);
 state.diskRefreshTimer = window.setInterval(() => refreshFromDisk(), 2200);
@@ -27237,7 +29615,7 @@ if (process.argv[1] === __filename) {
   const registered = registerContextHubProject(requestedRoot);
   const root = contextHubHostRoot();
   initializeContextRoomProject(root, { title: "Context Room", allowedPaths: [], watchAllow: [] });
-  const { server } = createMemoryServer({ root, port, registerInHub: false });
+  const { server } = createMemoryServer({ root, port, registerInHub: false, persistentDocumentGraphLayout: true });
   server.listen(port, "127.0.0.1", () => {
     const url = `http://127.0.0.1:${port}`;
     writeContextHubRuntime({ port, root, url });

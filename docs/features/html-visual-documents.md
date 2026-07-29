@@ -33,6 +33,7 @@ Context Room injects the active app theme into every HTML preview. Changing the 
 - Use one clear composition. Avoid decorative dashboards, nested cards, and grids that do not improve comparison.
 - Use headings in order, short paragraphs, lists, `article`, `section`, and `table` only when the content fits them.
 - Keep the document readable without JavaScript. Scripts and external resources do not run in previews.
+- Put the minimal Context Room metadata comment immediately after the doctype when the HTML file is a managed document. Safe `data-cr-document` IDs take precedence over relative `href` fallbacks.
 - Use native controls, CSS view selectors, and `<details>` when interaction makes exploration easier. Keep the main conclusion visible without interaction.
 - Open HTML reviews as rendered previews. Accept or reject the proposed document as a whole.
 - Limit desktop rows to four steps, three cards, or two comparison options when possible. Built-in layouts collapse on mobile.

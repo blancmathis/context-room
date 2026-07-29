@@ -620,7 +620,7 @@ function addProviderConfigs(inventory, target, coordinate) {
   }
 }
 
-function addAcceptedLocalDocuments(inventory, target, coordinate, readers) {
+function addAcceptedLocalDocuments(inventory, target, coordinate, readers, queue = new Map()) {
   const reviewState = readers.readReviewState(target.root) || { reviews: {} };
   const globalLedger = readers.readGlobalReviewLedger(target.root) || { reviews: {} };
   const managedPaths = new Set((readers.listDocuments(target.root) || []).filter((item) => item.exists !== false).map((item) => unixPath(item.path)));
@@ -638,7 +638,10 @@ function addAcceptedLocalDocuments(inventory, target, coordinate, readers) {
     const absolutePath = path.isAbsolute(relPath) ? relPath : path.join(target.root, relPath);
     const metadata = parseDocMetadata(file.content || "", relPath);
     if (!metadata.present || metadata.status !== "current") continue;
-    const verified = currentVerifiedReview({ root: target.root, relPath, absolutePath, contentHash: file.contentHash || sha256(file.content || ""), reviewState, globalLedger });
+    const exactReview = currentVerifiedReview({ root: target.root, relPath, absolutePath, contentHash: file.contentHash || sha256(file.content || ""), reviewState, globalLedger });
+    const queuedReview = queue.get(relPath) || queue.get(absolutePath) || null;
+    const dependencyReviewRequired = queuedReview?.reviewReason === "dependency-changed";
+    const verified = exactReview;
     const resource = {
       id: resourceIdForFile(absolutePath),
       kind: "document",
@@ -647,15 +650,33 @@ function addAcceptedLocalDocuments(inventory, target, coordinate, readers) {
       providers: ["all"],
       version: file.contentHash || sha256(file.content || ""),
       truthState: verified ? "accepted" : "unverified",
-      review: verified ? { status: "verified", reviewedAt: verified.reviewedAt || null, current: true } : { status: "unverified", current: true },
-      metadata: { ...metadata, documentStatus: metadata.status, managed: true, absolutePath: stablePath(absolutePath), relativePath: relPath },
+      review: verified ? {
+        status: "verified",
+        reviewedAt: verified.reviewedAt || null,
+        current: true,
+        dependencyFreshness: dependencyReviewRequired ? "needs-review" : "current",
+      } : { status: "unverified", current: true, dependencyFreshness: dependencyReviewRequired ? "needs-review" : "unknown" },
+      metadata: {
+        ...metadata,
+        documentStatus: metadata.status,
+        managed: true,
+        absolutePath: stablePath(absolutePath),
+        relativePath: relPath,
+        dependencyReviewRequired,
+        dependencyFreshness: dependencyReviewRequired ? "needs-review" : verified ? "current" : "unknown",
+        ...(queuedReview?.dependencyChanges?.length ? { dependencyChanges: queuedReview.dependencyChanges } : {}),
+      },
     };
     addResource(inventory, resource, {
       coordinate,
       status: verified ? "active" : "unverified",
       scope: metadata.scope || "project",
       order: order++,
-      reason: verified ? "Current managed document hash was explicitly verified by a human." : "Current managed document hash has not been verified by a human.",
+      reason: verified
+        ? dependencyReviewRequired
+          ? "The current content hash remains human-verified; a declared dependency changed and its freshness needs review."
+          : "Current managed document hash and its direct dependency versions were explicitly verified by a human."
+        : "Current managed document hash has not been verified by a human.",
       evidence: verified ? { reviewSource: verified.source, contentHash: resource.version } : null,
     });
   }
@@ -841,6 +862,19 @@ export function buildContextInventory(targetInput, options = {}) {
       if (refreshShared) {
         sharedMain = readers.verifySharedMain(sharedConnection.repository, { refresh: true });
         inventory.freshness = { state: "fresh", verified: true, source: "shared-main", repository: sharedMain.repository, revision: sharedMain.revision, defaultBranch: sharedMain.defaultBranch };
+        for (const review of sharedMain.commit?.dependencyReviewRequired || []) {
+          inventory.healthIssues.push({
+            type: "dependency_review_required",
+            severity: "medium",
+            path: review.path,
+            resourceId: review.documentId ? `shared-document:${review.documentId}` : "",
+            scope: "shared",
+            provider: "all",
+            message: `${review.path} depends on accepted shared documents that changed without dependency-review proof.`,
+            dependencies: review.dependencies || [],
+            revision: sharedMain.revision,
+          });
+        }
       } else {
         const status = target.root ? readers.readSharedStatus(target.root) : null;
         if (status?.revision) {
@@ -873,7 +907,7 @@ export function buildContextInventory(targetInput, options = {}) {
     addLocalSkills(inventory, target, coordinate, settings, queue, readers);
     addHooks(inventory, target, coordinate, settings, readers);
     addProviderConfigs(inventory, target, coordinate);
-    addAcceptedLocalDocuments(inventory, target, coordinate, readers);
+    addAcceptedLocalDocuments(inventory, target, coordinate, readers, queue);
     const doctor = readers.readDoctor(target.root) || { issues: [] };
     inventory.healthIssues.push(...(doctor.issues || []));
   }

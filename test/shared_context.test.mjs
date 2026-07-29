@@ -403,6 +403,28 @@ test("shared main trailers expose cross-device proposal completion without local
   assert.equal(accepted.some((item) => item.proposal === "proposal/demo/elsewhere" && item.proposalHead === proposalHead && item.merged), true);
 });
 
+test("direct shared main commits expose dependent reviews when no dependency proof exists", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  writeFile(fixture.seed, "projects/demo/docs/trust.md", "---\ncontext_room:\n  id: strategy.trust\n---\n\n# Trust\n");
+  writeFile(fixture.seed, "projects/demo/docs/review.md", "---\ncontext_room:\n  id: product.review\n  depends_on:\n    - strategy.trust\n---\n\n# Review\n");
+  git(fixture.seed, ["add", "."]);
+  git(fixture.seed, ["commit", "-m", "Add dependent documentation"]);
+  git(fixture.seed, ["push", "origin", "main"]);
+  writeFile(fixture.seed, "projects/demo/docs/trust.md", "---\ncontext_room:\n  id: strategy.trust\n---\n\n# Trust\n\nUpdated.\n");
+  git(fixture.seed, ["add", "."]);
+  git(fixture.seed, ["commit", "-m", "Direct human trust update"]);
+  git(fixture.seed, ["push", "origin", "main"]);
+
+  const main = readSharedMainRevision(fixture.remote, { refresh: true });
+  assert.equal(main.commit.dependencyProof, null);
+  assert.deepEqual(main.commit.dependencyReviewRequired, [{
+    path: "projects/demo/docs/review.md",
+    documentId: "product.review",
+    dependencies: ["strategy.trust"],
+  }]);
+});
+
 test("proposal revision diff reports exact published A M D R changes without treating them as accepted", (t) => {
   const fixture = makeFixture();
   withSharedHome(t, fixture);
@@ -1092,6 +1114,45 @@ test("proposal branches stay scoped and partial acceptance reaches newer non-con
   assert.throws(() => acceptSharedReview(review.reviewRoot), /already accepted/);
 });
 
+test("shared proposal reviews include unchanged direct dependents", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  writeFile(fixture.seed, "projects/demo/docs/TRUST.md", "---\ncontext_room:\n  id: strategy.trust\n---\n\n# Trust\n\nHuman approval.\n");
+  writeFile(fixture.seed, "projects/demo/docs/REVIEW.md", "---\ncontext_room:\n  id: product.review\n  depends_on:\n    - strategy.trust\n---\n\n# Review\n\nApply trust policy.\n");
+  git(fixture.seed, ["add", "."]);
+  git(fixture.seed, ["commit", "-m", "Add dependent docs"]);
+  git(fixture.seed, ["push", "origin", "main"]);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Tighten trust",
+    description: "Change the accepted trust rule and require dependent review.",
+    branch: "proposal/demo/tighten-trust",
+  });
+  configureGit(proposal.root);
+  writeFile(proposal.root, "projects/demo/docs/TRUST.md", "---\ncontext_room:\n  id: strategy.trust\n---\n\n# Trust\n\nExact human approval.\n");
+  publishSharedProposal(fixture.project, { proposal: proposal.branch, message: "Tighten trust" });
+
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  assert.deepEqual(review.metadata.dependencyReviews, [{
+    path: "projects/demo/docs/REVIEW.md",
+    documentId: "product.review",
+    dependencies: ["strategy.trust"],
+  }]);
+  assert.deepEqual(review.metadata.proposalFiles.sort(), [
+    "projects/demo/docs/REVIEW.md",
+    "projects/demo/docs/TRUST.md",
+  ]);
+  for (const filePath of review.metadata.proposalFiles) {
+    writeDocReviewDecision(review.reviewRoot, filePath, { status: "verified", note: "Reviewed exact dependency state" });
+  }
+  configureGit(review.reviewRoot);
+  acceptSharedReview(review.reviewRoot, { message: "Accept reviewed dependency update" });
+  const main = readSharedMainRevision(fixture.remote, { refresh: true });
+  assert.equal(main.commit.dependencyReviewRequired.length, 0);
+  assert.equal(main.commit.dependencyProof.documents.some((item) => item.path === "projects/demo/docs/REVIEW.md" && /^[a-f0-9]{40}$/.test(item.blob)), true);
+});
+
 test("proposal updates require and expose fresh descriptive metadata, and expire an earlier review", (t) => {
   const fixture = makeFixture();
   withSharedHome(t, fixture);
@@ -1198,7 +1259,7 @@ test("a published session proposal can be rehydrated after its local workspace i
   assert.equal(fs.readFileSync(path.join(resumed.root, "projects/demo/docs/README.md"), "utf8"), "# Demo\n\nPublished session proposal.\n");
 });
 
-test("documentation research keeps accepted truth separate from the current session proposal overlay", (t) => {
+test("documentation tools keep proposal inspection explicit while context ask remains accepted-only", (t) => {
   const fixture = makeFixture();
   withSharedHome(t, fixture);
   connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
@@ -1249,49 +1310,53 @@ test("documentation research keeps accepted truth separate from the current sess
   assert.equal(deletion.results[0].deleted, true);
 
   const frozen = resolveSharedSessionProposals(fixture.project, { sessionId: "session-overlay-a" });
-  const packet = {
-    summary: "The current session proposes one pending project-document change.",
-    currentFacts: [],
+  const acceptedOnlyCorpus = buildDocumentationCorpus(fixture.project, {
+    acceptedOnly: true,
+    sessionId: "session-overlay-a",
+    proposalOverlay: frozen,
+  });
+  assert.equal(acceptedOnlyCorpus.access.acceptedOnly, true);
+  assert.equal(acceptedOnlyCorpus.session, null);
+  assert.equal(acceptedOnlyCorpus.documents.some((document) => document.truthState === "proposal" || document.source === "session-proposal"), false);
+  const connectedAcceptedDocument = acceptedOnlyCorpus.documents.find((document) => document.source === "shared-accepted" && /Initial\./.test(document.rawContent || ""));
+  assert.ok(connectedAcceptedDocument);
+  const acceptedRead = readDocumentation(fixture.project, `${connectedAcceptedDocument.path}#demo`, { corpus: acceptedOnlyCorpus });
+  const acceptedPacket = {
+    summary: "The accepted shared documentation still contains the initial guidance.",
+    currentFacts: [{
+      claim: "The accepted guidance remains initial.",
+      excerpt: "Initial.",
+      path: acceptedRead.path,
+      section: acceptedRead.section,
+      truthState: acceptedRead.truthState,
+      revision: acceptedRead.revision,
+      contentHash: acceptedRead.contentHash,
+    }],
     constraints: [],
     decisions: [],
     targetDifferences: [],
-    pendingSessionChanges: [{
-      claim: "The proposal adds pending session alpha.",
-      path: pendingSearch.results[0].path,
-      repositoryPath: pendingSearch.results[0].repositoryPath,
-      section: pendingSearch.results[0].section,
-      truthState: "proposal",
-      revision: pendingSearch.results[0].revision,
-      contentHash: pendingSearch.results[0].contentHash,
-      deleted: false,
-      proposal: pendingSearch.results[0].proposal,
-    }],
     unknowns: [],
     conflicts: [],
     optionalReads: [],
-    coverage: { project: "demo", docsRevision: "replaced", scope: "standard", sourcesExamined: 1, pathsExamined: [pendingSearch.results[0].path] },
+    coverage: { project: "demo", docsRevision: "replaced", scope: "standard", sourcesExamined: 1, pathsExamined: [acceptedRead.path] },
   };
+  let researchInvocation = null;
   const researched = runDocumentationAgent({
     root: fixture.project,
     cliPath: cli,
-    task: "Use the pending session documentation",
+    task: "Read only accepted documentation",
     sessionId: "session-overlay-a",
     proposalOverlay: frozen,
     codexBin: "/test/codex",
-    spawnSyncImpl() { return { status: 0, signal: null, stdout: JSON.stringify(packet), stderr: "" }; },
+    spawnSyncImpl(command, args, options) {
+      researchInvocation = { command, args, options };
+      return { status: 0, signal: null, stdout: JSON.stringify(acceptedPacket), stderr: "" };
+    },
   });
-  assert.equal(researched.packet.pendingSessionChanges[0].proposal.head, pendingSearch.results[0].proposal.head);
-  const wrongHead = structuredClone(packet);
-  wrongHead.pendingSessionChanges[0].proposal.head = "f".repeat(40);
-  assert.throws(() => runDocumentationAgent({
-    root: fixture.project,
-    cliPath: cli,
-    task: "Reject stale pending evidence",
-    sessionId: "session-overlay-a",
-    proposalOverlay: frozen,
-    codexBin: "/test/codex",
-    spawnSyncImpl() { return { status: 0, signal: null, stdout: JSON.stringify(wrongHead), stderr: "" }; },
-  }), /exact proposal head/);
+  assert.equal(researched.packet.currentFacts[0].excerpt, "Initial.");
+  assert.equal(researchInvocation.options.env.CONTEXT_ROOM_DOC_ACCEPTED_ONLY, "1");
+  assert.equal(researchInvocation.options.env.CONTEXT_ROOM_DOC_SESSION, "");
+  assert.equal(researchInvocation.options.env.CONTEXT_ROOM_DOC_PROPOSALS, "");
 
   writeFile(projectProposal.root, "projects/demo/docs/PENDING.md", "# Pending session\n\nPending session alpha, second head.\n");
   publishSharedProposal(fixture.project, {
@@ -1326,19 +1391,25 @@ test("documentation research keeps accepted truth separate from the current sess
   assert.equal(sharedOnlyDefault.results.some((result) => result.truthState === "proposal"), false);
   const sharedOnlyPending = searchDocumentation(sharedOnlyRoot, "second head", { ...sharedOnlyOptions, status: "proposal" });
   assert.equal(sharedOnlyPending.results[0].repositoryPath, "projects/demo/docs/PENDING.md");
-  const sharedOnlyPacket = structuredClone(packet);
-  sharedOnlyPacket.pendingSessionChanges = [{
-    claim: "The latest proposal updates the pending session guidance.",
-    path: sharedOnlyPending.results[0].path,
-    repositoryPath: sharedOnlyPending.results[0].repositoryPath,
-    section: sharedOnlyPending.results[0].section,
-    truthState: "proposal",
-    revision: sharedOnlyPending.results[0].revision,
-    contentHash: sharedOnlyPending.results[0].contentHash,
-    deleted: false,
-    proposal: sharedOnlyPending.results[0].proposal,
-  }];
-  sharedOnlyPacket.coverage.pathsExamined = [sharedOnlyPending.results[0].path];
+  const sharedOnlyAcceptedCorpus = buildDocumentationCorpus(sharedOnlyRoot, {
+    repository: fixture.remote,
+    projectId: "demo",
+    acceptedOnly: true,
+  });
+  const sharedOnlyAcceptedRead = readDocumentation(sharedOnlyRoot, "projects/demo/docs/README.md#demo", { corpus: sharedOnlyAcceptedCorpus });
+  const sharedOnlyPacket = {
+    ...structuredClone(acceptedPacket),
+    currentFacts: [{
+      claim: "The accepted guidance remains initial.",
+      excerpt: "Initial.",
+      path: sharedOnlyAcceptedRead.path,
+      section: sharedOnlyAcceptedRead.section,
+      truthState: sharedOnlyAcceptedRead.truthState,
+      revision: sharedOnlyAcceptedRead.revision,
+      contentHash: sharedOnlyAcceptedRead.contentHash,
+    }],
+    coverage: { project: "demo", docsRevision: "replaced", scope: "standard", sourcesExamined: 1, pathsExamined: [sharedOnlyAcceptedRead.path] },
+  };
 
   const fakeCodex = path.join(fixture.base, "shared-only-codex.mjs");
   fs.writeFileSync(fakeCodex, `#!/usr/bin/env node
@@ -1346,17 +1417,16 @@ let prompt = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => { prompt += chunk; });
 process.stdin.on("end", () => {
-  if (!prompt.includes("--repository") || !prompt.includes("--project") || !process.env.CONTEXT_ROOM_DOC_ACCEPTED_REVISION) process.exit(9);
+  if (!prompt.includes("--repository") || !prompt.includes("--project") || !process.env.CONTEXT_ROOM_DOC_ACCEPTED_REVISION || process.env.CONTEXT_ROOM_DOC_ACCEPTED_ONLY !== "1" || process.env.CONTEXT_ROOM_DOC_PROPOSALS) process.exit(9);
   process.stdout.write(${JSON.stringify(JSON.stringify(sharedOnlyPacket))});
 });
 `, "utf8");
   fs.chmodSync(fakeCodex, 0o755);
   const sharedOnlyCli = spawnSync(process.execPath, [
     cli,
-    "context", "ask", "Use the pending session documentation",
+    "context", "ask", "Read the accepted shared documentation",
     `--repository=${fixture.remote}`,
     "--project=demo",
-    "--session=session-overlay-a",
     "--json",
   ], {
     cwd: sharedOnlyRoot,
@@ -1364,8 +1434,18 @@ process.stdin.on("end", () => {
     env: { ...process.env, CONTEXT_ROOM_CODEX_BIN: fakeCodex, NODE_TEST_CONTEXT: "1" },
   });
   assert.equal(sharedOnlyCli.status, 0, sharedOnlyCli.stderr);
-  assert.equal(JSON.parse(sharedOnlyCli.stdout).pendingSessionChanges[0].proposal.sessionId, "session-overlay-a");
+  assert.equal(JSON.parse(sharedOnlyCli.stdout).currentFacts[0].excerpt, "Initial.");
   assert.equal(fs.existsSync(path.join(sharedOnlyRoot, ".context-room")), false);
+
+  const rejectedSessionFlag = spawnSync(process.execPath, [
+    cli,
+    "context", "ask", "Do not expose proposals",
+    `--repository=${fixture.remote}`,
+    "--project=demo",
+    "--session=session-overlay-a",
+  ], { cwd: sharedOnlyRoot, encoding: "utf8" });
+  assert.equal(rejectedSessionFlag.status, 2);
+  assert.match(rejectedSessionFlag.stderr, /accepted-only/);
 });
 
 test("a registered shared repository can be browsed and reviewed without a local project connection", (t) => {

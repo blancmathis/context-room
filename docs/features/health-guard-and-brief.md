@@ -23,6 +23,7 @@ These surfaces turn project docs into local proof: health issues, review signals
 ## Rules
 
 - `doctor` reports health; strict mode fails on high-impact issues.
+- Document Health reports malformed YAML or JSON, invalid or conflicting profiles, schema failures, sidecar conflicts, invalid or duplicate identities, unresolved and ambiguous links, missing declared dependencies, cycles, unavailable renderers, and stale dependency observations.
 - Doctor accepts structured project, location, folder, provider, shared,
   severity, query, cursor, and limit filters. `--all-projects` inspects only
   explicitly registered locations and filters before expensive diagnostics.
@@ -41,7 +42,7 @@ These surfaces turn project docs into local proof: health issues, review signals
 - Context Room manages local hooks for commit, push, and local merge commits without overwriting custom hooks. Pull requests and hosted merges require a provider check and repository rule.
 - Review-gate operation policy is local owner state, separate from project config and unavailable to the agent CLI.
 - `context ask` is the compact agent entry point for task-specific documentation research.
-- Metadata improves ranking and health checks, but existing Markdown still works.
+- Generic interpreted metadata, declared and reference-strength relations, Mermaid node text, ambiguities, and dependency freshness improve research ranking and evidence. Existing Markdown still works and no profile becomes universally mandatory.
 - The web UI refreshes shared reports in the background and reuses one project scan.
 
 ## Source Map
@@ -56,4 +57,4 @@ These surfaces turn project docs into local proof: health issues, review signals
 - The local health acknowledgements runtime file stores `OK` decisions.
 - `buildDocQaReport` powers review state and guard decisions.
 - `buildAgentBrief` ranks read-first docs.
-- `parseDocMetadata` reads Markdown frontmatter.
+- `src/document_metadata_engine.mjs` preserves and interprets Markdown, MDX, HTML, sidecar, YAML, and JSON metadata. `parseDocMetadata` remains the compatibility projection for the official profile.

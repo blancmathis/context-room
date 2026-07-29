@@ -32,7 +32,7 @@ Codex prompt overrides are also computer-wide, but they are not preferences and 
 $CODEX_HOME/prompt-overrides/
 ```
 
-Use **Settings → Codex prompts → Open prompt editor** to inspect the runtime-published catalog and edit only targets marked `securityClass: local_user_editable`. Context Room writes the strict private `overrides.json` contract; a compatible Codex runtime regenerates the catalog and per-process runtime receipts. After a change, quit Codex completely (`⌘Q` on macOS), reopen it, then create a new task. See [Codex Prompt Center](features/codex-prompt-center.md).
+Use **Settings → Advanced extensions → Codex prompts → Open prompt editor** to inspect the runtime-published catalog and edit only targets marked `securityClass: local_user_editable`. Context Room writes the strict private `overrides.json` contract; a compatible Codex runtime regenerates the catalog and per-process runtime receipts. After a change, quit Codex completely (`⌘Q` on macOS), reopen it, then create a new task. See [Codex Prompt Center](features/codex-prompt-center.md).
 
 The human-owned review gate is also stored separately:
 
@@ -240,7 +240,7 @@ Explicit `_target`, `target`, `plans`, `proposals`, and `roadmap` paths go under
 
 Entry points and indexes go under Start here unless their path makes them target or record material. Documentation explicitly marked `current` goes under Current documentation. Missing or invalid status metadata remains under Documentation to classify unless an explicit target or record path supplies its truth state; it is never presented as current truth. Project instructions plus safe skill documentation appear under Agent guidance.
 
-Every configured section remains visible even when it has no cards, so it may serve as a deliberate separator. Remove the section in **Settings → Hub → Sections and cards** when it should disappear entirely; `Main` has no special protection.
+Every configured section remains visible even when it has no cards, so it may serve as a deliberate separator. Remove the section in **Settings → Project → Home sections and cards** when it should disappear entirely; `Main` has no special protection.
 
 ### `startupContext`
 

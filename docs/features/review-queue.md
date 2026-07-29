@@ -27,7 +27,7 @@ The review queue shows watched documentation that needs verification before it b
 
 - Review owns the final trust decision.
 - Agents may surface the queue, but should never mark files verified for the user.
-- Snooze is a visibility preference, never a review decision. It hides only the exact displayed local content hash or shared proposal head from Home until its return time. The item remains pending and is listed under **Settings → Review → Snoozed reviews**.
+- Snooze is a visibility preference, never a review decision. It hides only the exact displayed local content hash or shared proposal head from Home until its return time. The item remains pending and is listed under **Settings → Review and trust → Snoozed reviews**.
 - Snoozed reviews continue to block configured review gates and prevent a false all-clear state. A changed file hash or proposal head returns immediately; expiry or **Return now** also restores the item without changing its review state.
 - Home selection can combine local file reviews with shared proposals. Its rejection action marks local files **Needs changes** without deleting them; shared proposal rejection follows the separate Git archive contract in [Global Context Room](context-hub.md).
 - The owner can select one or several blocking checkpoints: commit, push, pull request, or merge. Commit, push, and local merge use managed Git hooks; hosted checks require provider wiring.

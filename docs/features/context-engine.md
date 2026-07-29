@@ -33,6 +33,7 @@ the computer for worktrees.
 Resource identity is evidence-based:
 
 - a local or device file uses its canonical physical path and content hash;
+- an ordinary managed document additionally exposes its stable document ID, direct dependencies, and dependency-review state;
 - a shared resource uses its normalized repository, Git path, accepted commit,
   and blob or tree identity;
 - a Shared Skill is one canonical resource with one or more local applications

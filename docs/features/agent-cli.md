@@ -39,7 +39,7 @@ document content or drafts.
 The default agent entry point is:
 
 ```text
-context ask -> inspect cited evidence -> work
+context ask -> use exact accepted excerpts -> work
 ```
 
 Only a human accepts or rejects each file awaiting review. A shared proposal is

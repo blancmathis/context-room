@@ -119,11 +119,12 @@ function effectiveStatus(resource, application) {
 }
 
 function selectorCandidates(resources, selector, kind = "") {
-  const needle = String(selector || "").trim();
+  const rawNeedle = String(selector || "").trim();
+  const needle = rawNeedle.replace(/^cr:\/\//i, "").split("#", 1)[0];
   if (!needle) return [];
   return resources.filter((resource) => {
     if (kind && resource.kind !== kind) return false;
-    return resource.id === needle || resource.locator === needle || path.posix.basename(resource.locator) === needle || resource.metadata?.name === needle;
+    return resource.id === needle || resource.locator === rawNeedle || resource.locator === needle || path.posix.basename(resource.locator) === needle || resource.metadata?.name === needle || resource.metadata?.id === needle;
   });
 }
 

@@ -4,7 +4,9 @@ import path from "node:path";
 import { isUtf8 } from "node:buffer";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { parseDocument } from "yaml";
 import { appendContextRoomEvent } from "./event_journal.mjs";
+import { parseDocMetadata } from "./doc_metadata.mjs";
 
 export const SHARED_REPOSITORY_CONFIG = ".context-room/shared-repository.json";
 export const SHARED_REVIEW_CONFIG = ".context-room/shared-review.json";
@@ -115,6 +117,35 @@ function gitTreeEntries(cwd, revision, prefixes = []) {
     const [mode, type, object] = record.slice(0, separator).split(" ");
     return { mode, type, object, path: record.slice(separator + 1) };
   });
+}
+
+function sharedDocumentDependencyReviewPaths(cwd, baseRevision, headRevision, changedFiles = [], prefixes = []) {
+  const indexAt = (revision) => {
+    const byId = new Map();
+    for (const entry of gitTreeEntries(cwd, revision, prefixes).filter((item) => /\.(?:md|mdx|html?)$/i.test(item.path))) {
+      const metadata = parseDocMetadata(String(runGit(cwd, ["show", `${revision}:${entry.path}`])), entry.path);
+      if (!metadata.id || !metadata.idValid) continue;
+      if (!byId.has(metadata.id)) byId.set(metadata.id, []);
+      byId.get(metadata.id).push({ path: entry.path, version: entry.object, metadata });
+    }
+    return byId;
+  };
+  const base = indexAt(baseRevision);
+  const head = indexAt(headRevision);
+  const changedIds = new Set();
+  for (const id of new Set([...base.keys(), ...head.keys()])) {
+    const before = base.get(id) || [];
+    const after = head.get(id) || [];
+    if (before.length !== 1 || after.length !== 1 || before[0].version !== after[0].version) changedIds.add(id);
+  }
+  const changed = new Set(changedFiles);
+  const reviews = [];
+  for (const [id, candidates] of head) {
+    if (candidates.length !== 1 || changed.has(candidates[0].path)) continue;
+    const dependencies = (candidates[0].metadata.dependsOn || []).filter((dependencyId) => changedIds.has(dependencyId));
+    if (dependencies.length) reviews.push({ path: candidates[0].path, documentId: id, dependencies });
+  }
+  return reviews.sort((left, right) => left.path.localeCompare(right.path, "en"));
 }
 
 function assertSafeTreeEntries(cwd, revision, prefixes) {
@@ -824,6 +855,28 @@ function commitTrailerMap(checkout, revision) {
   return trailers;
 }
 
+function parseDependencyProof(value = "") {
+  if (!value) return { proof: null, error: "" };
+  try {
+    const parsed = JSON.parse(Buffer.from(String(value), "base64url").toString("utf8"));
+    if (parsed?.version !== 1 || !Array.isArray(parsed.documents)) throw new Error("Dependency proof has an unsupported shape");
+    return {
+      proof: {
+        version: 1,
+        documents: parsed.documents.map((item) => ({
+          path: String(item?.path || "").replaceAll("\\", "/").replace(/^\.\//, ""),
+          blob: String(item?.blob || ""),
+          contentHash: String(item?.contentHash || ""),
+          dependencies: item?.dependencies && typeof item.dependencies === "object" ? { ...item.dependencies } : {},
+        })).filter((item) => item.path),
+      },
+      error: "",
+    };
+  } catch (error) {
+    return { proof: null, error: error.message };
+  }
+}
+
 function sharedMainCommit(checkout, revision, previousRevision = "") {
   const commit = safeRevision(revision, "shared main commit");
   const metadata = String(runGit(checkout, ["show", "-s", "--format=%cI%x00%an%x00%ae%x00%s", commit]))
@@ -833,6 +886,12 @@ function sharedMainCommit(checkout, revision, previousRevision = "") {
     ? gitChangedPaths(checkout, `${safeRevision(parent, "shared main parent")}..${commit}`)
     : splitNull(runGit(checkout, ["ls-tree", "-r", "--name-only", "-z", commit], { encoding: null }));
   const trailers = commitTrailerMap(checkout, commit);
+  const dependencyProofResult = parseDependencyProof(trailers["Context-Room-Dependency-Proof"] || "");
+  const reviewedDependencyPaths = new Set(dependencyProofResult.proof?.documents.map((item) => item.path) || []);
+  const dependencyReviewRequired = parent && files.some((filePath) => /\.(?:md|mdx|html?)$/i.test(filePath))
+    ? sharedDocumentDependencyReviewPaths(checkout, parent, commit, files)
+      .filter((item) => !reviewedDependencyPaths.has(item.path))
+    : [];
   let acceptance = null;
   let acceptanceError = "";
   if (trailers["Context-Room-Proposal"] || trailers["Context-Room-Proposal-Head"]) {
@@ -856,6 +915,9 @@ function sharedMainCommit(checkout, revision, previousRevision = "") {
     subject: metadata[3] || "",
     files,
     trailers,
+    dependencyProof: dependencyProofResult.proof,
+    dependencyProofError: dependencyProofResult.error,
+    dependencyReviewRequired,
     acceptance,
     acceptanceError,
   };
@@ -1034,6 +1096,21 @@ export function diffSharedProposalRevisions(repository, { fromRevision, toRevisi
     changes,
     files: changes.map((change) => change.path),
   };
+}
+
+export function readSharedRevisionDocuments(repository, revision, { refresh = true } = {}) {
+  const main = resolveSharedMainRevision(repository, { refresh });
+  const wanted = safeRevision(revision, "shared document revision");
+  if (!gitObjectExists(main.checkout, `${wanted}^{commit}`)) {
+    throw sharedContextError("shared-revision-unavailable", "The requested shared document revision is unavailable", { revision: wanted });
+  }
+  return gitTreeEntries(main.checkout, wanted)
+    .filter((entry) => /\.(?:md|mdx|html?)$/i.test(entry.path))
+    .map((entry) => ({
+      path: entry.path,
+      content: String(runGit(main.checkout, ["show", `${wanted}:${entry.path}`])),
+      version: safeRevision(tryGit(main.checkout, ["rev-parse", `${wanted}:${entry.path}`]), `shared document ${entry.path}`),
+    }));
 }
 
 function sharedSkillLocationsAtRevision(checkout, revision) {
@@ -2158,6 +2235,35 @@ export function sharedContextStatus(root) {
         : "The shared remote must allow Context Room to fast-forward the default branch when the human accepts a completed proposal.",
     },
   };
+}
+
+export function readAcceptedSharedMetadataProfiles(root) {
+  const status = sharedContextStatus(root);
+  if (!status.connected || !status.cacheRoot || !status.revision) return [];
+  const snapshot = path.join(status.cacheRoot, "snapshots", status.revision);
+  const directory = path.join(snapshot, ".context-room", "profiles");
+  if (!fs.existsSync(directory) || !fs.statSync(directory).isDirectory()) return [];
+  return fs.readdirSync(directory, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && /\.(?:json|ya?ml)$/i.test(entry.name))
+    .slice(0, 100)
+    .flatMap((entry) => {
+      const filePath = path.join(directory, entry.name);
+      const raw = fs.readFileSync(filePath, "utf8");
+      try {
+        let definition;
+        if (/\.json$/i.test(entry.name)) definition = JSON.parse(raw);
+        else {
+          const document = parseDocument(raw, { strict: true, uniqueKeys: true, merge: false, schema: "core" });
+          if (document.errors.length) throw new Error(document.errors.map((error) => error.message).join("; "));
+          definition = document.toJS({ maxAliasCount: 50 });
+        }
+        return definition && typeof definition === "object" && !Array.isArray(definition)
+          ? [{ ...definition, origin: "shared", filePath: `.context-room/profiles/${entry.name}`, sharedRevision: status.revision }]
+          : [];
+      } catch {
+        return [{ id: `invalid-shared-profile-${entry.name}`, schemaVersion: "context-room.metadata-profile/1", version: "invalid", match: ["**/*"], origin: "shared", filePath: `.context-room/profiles/${entry.name}`, sharedRevision: status.revision, invalidSource: true }];
+      }
+    });
 }
 
 export function sharedSkillProviderProfiles() {
@@ -3813,6 +3919,11 @@ function materializeSharedReviewFromState(synced, { proposal, expectedHead = "" 
   assertSafeTreeEntries(checkout, synced.revision, scopePaths);
   assertSafeTreeEntries(checkout, match.head, scopePaths);
   assertReviewableChangedPaths(checkout, synced.revision, match.head, changedFiles);
+  const dependencyReviewPrefixes = match.scope === "project"
+    ? [`${synced.repositoryConfig.projectsPath}/${match.projectId}`]
+    : [...(match.allowedPrefixes || [])];
+  const dependencyReviews = sharedDocumentDependencyReviewPaths(checkout, synced.revision, match.head, changedFiles, dependencyReviewPrefixes);
+  const proposalReviewFiles = [...new Set([...changedFiles, ...dependencyReviews.map((item) => item.path)])];
   const reviewRoot = path.join(repositoryCacheRoot(synced.connection.repository), "reviews", `${hashKey(proposal)}-${Date.now()}`);
   let worktreeCreated = false;
   try {
@@ -3831,7 +3942,8 @@ function materializeSharedReviewFromState(synced, { proposal, expectedHead = "" 
       scope: match.scope,
       allowedExact: match.allowedExact || [],
       allowedPrefixes: match.allowedPrefixes,
-      proposalFiles: changedFiles,
+      proposalFiles: proposalReviewFiles,
+      dependencyReviews,
       proposal: match.branch,
       proposalHead: match.head,
       title: match.title,
@@ -3913,11 +4025,23 @@ function addIntentToAdd(root, files) {
 }
 
 function acceptedProposalCommitMessage(review, message) {
+  let dependencyProof = "";
+  try {
+    const reviewState = readJson(path.join(review.reviewRoot, ".context-room", "review-state.json"));
+    const documents = (review.proposalFiles || []).flatMap((filePath) => {
+      const item = reviewState?.reviews?.[filePath];
+      if (item?.status !== "verified" || !item.contentHash) return [];
+      const blob = tryGit(review.reviewRoot, ["hash-object", "--", filePath]);
+      return [{ path: filePath, blob, contentHash: item.contentHash, dependencies: item.dependencyVersions || {} }];
+    });
+    if (documents.length) dependencyProof = Buffer.from(JSON.stringify({ version: 1, documents }), "utf8").toString("base64url");
+  } catch {}
   const trailers = [
     `Context-Room-Proposal: ${safeBranchName(review.proposal, "proposal branch")}`,
     `Context-Room-Proposal-Head: ${safeRevision(review.proposalHead, "proposal head")}`,
     review.sessionId ? `Context-Room-Session: ${safeSessionId(review.sessionId)}` : "",
     `Context-Room-Project: ${safeId(review.projectId, "projectId")}`,
+    dependencyProof ? `Context-Room-Dependency-Proof: ${dependencyProof}` : "",
   ].filter(Boolean);
   return `${String(message || "Accept shared context proposal").trim()}\n\n${trailers.join("\n")}`;
 }

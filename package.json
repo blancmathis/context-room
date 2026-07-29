@@ -8,14 +8,18 @@
     "context-room": "bin/context-room.mjs"
   },
   "exports": {
-    ".": "./src/context_room.mjs"
+    ".": "./src/context_room.mjs",
+    "./document-extensions": "./src/document_extensions.mjs",
+    "./metadata": "./src/document_metadata_engine.mjs"
   },
   "files": [
+    ".codex/skills/context-room-documentation/",
     "bin/",
     "scripts/",
     "src/",
     "docs/",
     "examples/",
+    "profiles/",
     "schemas/",
     "README.md",
     "PRODUCT.md",
@@ -45,7 +49,12 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "ws": "^8.21.1"
+    "ajv": "^8.20.0",
+    "d3-force": "^3.0.0",
+    "jsonc-parser": "^3.3.1",
+    "mermaid": "^11.16.0",
+    "ws": "^8.21.1",
+    "yaml": "^2.9.0"
   },
   "engines": {
     "node": ">=20"

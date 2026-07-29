@@ -83,6 +83,20 @@ navigation metadata; it never stores editor drafts or document content there.
 
 ## Primary Room And Secondary Tools
 
+Home is deliberately review-first. The unified Review Queue remains the first
+surface and keeps local files atomic while shared changes remain grouped by
+proposal. The project-owned Hub sections directly below the queue are the
+primary project navigation. They preserve the names, cards, nesting, and empty
+separators configured by the owner instead of inferring a second set of entry
+points or domains from filenames. When a project is selected, the compact
+Project inspection surface shows only its exact worktree identity, Context
+Health, and Agent environment.
+
+Attention uses one compact grammar. Reviews stay first because only a human can
+decide them. Other actionable items are ordered as Recheck, Decide, then Fix.
+Informational diagnostics stay in Context Health instead of competing with the
+Review Queue.
+
 **Home** is the default computer-wide cockpit. Its order is deliberate:
 
 1. one compact, scrollable review queue containing every local file waiting for review and every actionable shared proposal;
@@ -104,7 +118,7 @@ Local files are not deleted: their reviews are marked **Needs changes** and rema
 The mixed queue interleaves local files and shared proposals without flattening them into the same object. Separate counters report files and proposals. Its search, review-type selector, and project button filter the active queue immediately. Selecting a project resets the review-type selector so a local-only project naturally shows files and a shared-only project naturally shows proposals. Selecting a local review targets its exact registered worktree and opens the file in the same global room. Selecting a shared review opens its exact proposal workspace.
 
 The owner can give logical projects an exact device-wide priority order in
-**Settings → Hub → Project priority** or through a project's Explorer context
+**Settings → Project → Project priority** or through a project's Explorer context
 menu. Every registered worktree shares its logical project's rank. The same
 order drives Explorer, project pickers, and review ordering; blocking conflicts
 still surface first. Projects without an explicit rank retain the normal
@@ -116,7 +130,7 @@ Right-clicking one review, selecting several, or right-clicking an Explorer
 folder containing active reviews opens the same snooze chooser. It offers quick
 durations, a custom number of minutes, hours, days, or weeks, and an exact
 return time. Snooze hides only the displayed version from Home; it remains
-pending and continues to block any enabled review gate. **Settings → Review →
+pending and continues to block any enabled review gate. **Settings → Review and trust →
 Snoozed reviews** lists every hidden item and can return it immediately. The
 item also returns when its deadline passes. A local content-hash change or
 shared proposal-head change returns immediately, so a newer version can never
@@ -147,13 +161,22 @@ selected worktree's real file tree. Changing the selection retargets the same
 global room. Startup context, skills, hooks, files, and Context Health always
 come from that exact worktree rather than being merged across branches.
 
+When a document is open, the project Explorer offers two views. **Location**
+shows the existing tree centered on the document and retains the watched
+filters. **Related** shows the document's direct accepted sources, references,
+and backlinks from the same deterministic [Document Graph](document-graph.md),
+plus unresolved explicit references. The selected view is Workspace-local.
+Opening another document updates both views but does not switch the view or
+open a closed Explorer. **Reveal in Location** expands the current document's
+parents and returns to the tree.
+
 Every review item has exactly one source: **Local** for a file or **Shared** for a proposal. A project may be available through both independent sources, in which case the project catalog shows two separate badges rather than inventing a combined source. When the owner selects such a mixed project, Home keeps both review types visible but warns that two documentation review flows are active. **Keep Shared** and **Keep Local** prepare a source-grounded migration prompt in the active Codex composer; they never send the prompt or mutate the project directly.
 
 **Manage projects…** shows every registered project, including clean local projects and shared projects with no local folder. Filters can narrow by project or by local versus shared source. Search covers project names, proposal metadata, paths, sessions, hashes, roots, and repositories.
 
 Repository-wide proposal scopes appear as a dedicated **Global skills** project. They stay searchable and filterable without being duplicated under every project that consumes them.
 
-**Settings → Codex prompts** opens a compatible installed Codex runtime's global prompt catalog on demand. It groups every runtime-published target without hardcoding mode or model names, compares official, effective-after-restart, and runtime-loaded versions, and saves exact private overlays. Runtime receipts prove local resolution by target, not mode selection or task delivery. Prompt state is not project configuration and never enters the local or shared review workflow. See [Codex Prompt Center](codex-prompt-center.md).
+**Settings → Advanced extensions → Codex prompts** opens a compatible installed Codex runtime's global prompt catalog on demand. It groups every runtime-published target without hardcoding mode or model names, compares official, effective-after-restart, and runtime-loaded versions, and saves exact private overlays. Runtime receipts prove local resolution by target, not mode selection or task delivery. Prompt state is not project configuration and never enters the local or shared review workflow. See [Codex Prompt Center](codex-prompt-center.md).
 
 Keyboard shortcuts inside the secondary views:
 

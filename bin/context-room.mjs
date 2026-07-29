@@ -83,6 +83,12 @@ import {
   writeContextHubRuntime,
 } from "../src/context_hub.mjs";
 import {
+  backlinksDocumentation,
+  dependenciesDocumentation,
+  diagramsDocumentation,
+  inspectDocumentation,
+  linksDocumentation,
+  metadataDocumentation,
   readDocumentation,
   relatedDocumentation,
   renderDocumentationPacket,
@@ -90,6 +96,7 @@ import {
   runDocumentationAgent,
   searchDocumentation,
   traceDocumentation,
+  validateDocumentation,
 } from "../src/doc_agent.mjs";
 import {
   appendAgentAnnotation,
@@ -227,11 +234,13 @@ Usage:
   context-room hub add-shared --repository <git-url>
   context-room doctor [--root .] [--strict]
   context-room guard [--root .] [--profile advisory|review-only|strict] [--operation commit|push|pull-request|merge]
-  context-room context ask "what the agent needs to do" [--root . | --repository <git-url> --project <project-id>] [--goal "desired outcome"] [--files path,...] [--depth quick|standard|exhaustive] [--budget 1200] [--session <task-id>] [--json]
+  context-room context ask "what the agent needs to do" [--root . | --repository <git-url> --project <project-id>] [--goal "desired outcome"] [--files path,...] [--depth quick|standard|exhaustive] [--budget 1200] [--json]
   context-room docs search "query" [--root . | --repository <git-url> --project <project-id>] [--status current|proposal] [--kind canonical] [--limit 8] [--budget 1200] [--session <task-id>]
   context-room docs read path[#section] [--root . | --repository <git-url> --project <project-id>] [--budget 1600] [--session <task-id>]
   context-room docs related path [--root . | --repository <git-url> --project <project-id>] [--session <task-id>]
   context-room docs trace path[#section] [--root . | --repository <git-url> --project <project-id>] [--session <task-id>]
+  context-room docs inspect path-or-id [--root . | --repository <git-url> --project <project-id>]
+  context-room docs metadata|links|backlinks|dependencies|diagrams|validate path-or-id [--root .]
   context-room capabilities [--format human|json]
   context-room completion zsh|bash|fish
   context-room project current|list|search|register|open|recent [--project <id|title>] [--location <id|path>]
@@ -767,7 +776,7 @@ if (command === "hub") {
       watchAllow: [],
     });
     const port = selectedPort;
-    const { server } = createMemoryServer({ root: hostRoot, port, registerInHub: false });
+    const { server } = createMemoryServer({ root: hostRoot, port, registerInHub: false, persistentDocumentGraphLayout: true });
     await new Promise((resolve, reject) => {
       const onError = (error) => reject(error);
       server.once("error", onError);
@@ -1016,7 +1025,7 @@ if (command === "shared") {
       });
       const preferredPort = args.port === undefined ? 4317 : Number(args.port);
       const port = await selectAvailableContextRoomPort(preferredPort, { allowFallback: args.port === undefined });
-      const { server } = createMemoryServer({ root: result.reviewRoot, port });
+      const { server } = createMemoryServer({ root: result.reviewRoot, port, persistentDocumentGraphLayout: true });
       await new Promise((resolve, reject) => {
         const onError = (error) => reject(error);
         server.once("error", onError);
@@ -1081,9 +1090,13 @@ if (command === "context") {
   if (action !== "ask") {
     failAgentFirstCommand(`context.${action}`, new ContextRoomCliError("unknown-command", `Unknown context command: ${action}`, { exitCode: 2 }), { format: agentFirstFormat, target: agentFirstTarget });
   }
+  if (args.session !== undefined) {
+    console.error("context ask is accepted-only and does not accept --session or proposal overlays.");
+    process.exit(2);
+  }
   const task = args.task && args.task !== true ? String(args.task) : args._.slice(2).join(" ").trim();
   if (!task) {
-    console.error("Usage: context-room context ask \"what the agent needs to do\" [--root . | --repository <git-url> --project <project-id>] [--goal \"desired outcome\"] [--files path,...] [--depth quick|standard|exhaustive] [--budget 1200] [--session <task-id>] [--json]");
+    console.error("Usage: context-room context ask \"what the agent needs to do\" [--root . | --repository <git-url> --project <project-id>] [--goal \"desired outcome\"] [--files path,...] [--depth quick|standard|exhaustive] [--budget 1200] [--json]");
     process.exit(2);
   }
   try {
@@ -1096,7 +1109,6 @@ if (command === "context") {
       files: splitList(args.files),
       depth: args.depth && args.depth !== true ? String(args.depth) : "standard",
       budget: args.budget === undefined ? undefined : args.budget,
-      sessionId: args.session && args.session !== true ? String(args.session) : undefined,
     });
     if (args.json) console.log(JSON.stringify(result.packet, null, 2));
     else process.stdout.write(renderDocumentationPacket(result.packet));
@@ -1136,7 +1148,16 @@ if (command === "docs") {
       console.log(JSON.stringify(traceDocumentation(root, selector, { ...documentationTargetOptions, section: args.section, sessionId }), null, 2));
       process.exit(0);
     }
-    throw new Error(`Unknown docs command: ${action}`);
+    const inspectOptions = { ...documentationTargetOptions, sessionId };
+    if (action === "inspect") console.log(JSON.stringify(inspectDocumentation(root, selector, inspectOptions), null, 2));
+    else if (action === "metadata") console.log(JSON.stringify(metadataDocumentation(root, selector, inspectOptions), null, 2));
+    else if (action === "links") console.log(JSON.stringify(linksDocumentation(root, selector, inspectOptions), null, 2));
+    else if (action === "backlinks") console.log(JSON.stringify(backlinksDocumentation(root, selector, inspectOptions), null, 2));
+    else if (action === "dependencies") console.log(JSON.stringify(dependenciesDocumentation(root, selector, inspectOptions), null, 2));
+    else if (action === "diagrams") console.log(JSON.stringify(diagramsDocumentation(root, selector, inspectOptions), null, 2));
+    else if (action === "validate") console.log(JSON.stringify(validateDocumentation(root, selector, inspectOptions), null, 2));
+    else throw new Error(`Unknown docs command: ${action}`);
+    process.exit(0);
   } catch (error) {
     console.error(`Context Room docs failed: ${error.message}`);
     process.exit(1);

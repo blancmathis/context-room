@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { parseDocMetadata } from "./doc_metadata.mjs";
+import { inspectDocumentMetadata } from "./document_metadata_engine.mjs";
 
 import {
   appendAgentAnnotation,
@@ -40,6 +42,7 @@ import {
   proposeSharedInstructionAssignment,
   proposeSharedInstructionUnassignment,
   readSharedMainRevision,
+  readSharedRevisionDocuments,
   readSharedProjectConnection,
   readSharedSkillLocalState,
   reconcileSharedSkillLocations,
@@ -884,6 +887,73 @@ export async function proposalContextImpact({ selector, repository = "", target 
         proposal: selectedProposal,
         headRevision,
       }),
+      analyzeDependencyInvalidations: async ({ baseRevision, headRevision, changedFiles }) => {
+        const buildIndex = (documents) => {
+          const byId = new Map();
+          for (const document of documents) {
+            const metadata = parseDocMetadata(document.content || "", document.path);
+            if (!metadata.id || !metadata.idValid) continue;
+            if (!byId.has(metadata.id)) byId.set(metadata.id, []);
+            byId.get(metadata.id).push({ ...document, metadata });
+          }
+          return byId;
+        };
+        const baseDocuments = readSharedRevisionDocuments(repositoryId, baseRevision, { refresh: false });
+        const headDocuments = readSharedRevisionDocuments(repositoryId, headRevision, { refresh: false });
+        const genericState = (documents) => new Map(documents.map((document) => {
+          const inspection = inspectDocumentMetadata({ content: document.content || "", relPath: document.path || "" });
+          return [document.path, {
+            profiles: inspection.profiles.map((item) => item.profile),
+            identities: inspection.identities,
+            relations: inspection.relations,
+            health: inspection.health,
+          }];
+        }));
+        const baseGeneric = genericState(baseDocuments);
+        const headGeneric = genericState(headDocuments);
+        const baseIndex = buildIndex(baseDocuments);
+        const headIndex = buildIndex(headDocuments);
+        const changedDependencies = [];
+        for (const documentId of new Set([...baseIndex.keys(), ...headIndex.keys()])) {
+          const before = baseIndex.get(documentId) || [];
+          const after = headIndex.get(documentId) || [];
+          const beforeVersion = before.length === 1 ? before[0].version : "";
+          const afterVersion = after.length === 1 ? after[0].version : "";
+          if (beforeVersion !== afterVersion) changedDependencies.push({
+            documentId,
+            beforeVersion: beforeVersion || null,
+            afterVersion: afterVersion || null,
+            beforePath: before.length === 1 ? before[0].path : null,
+            afterPath: after.length === 1 ? after[0].path : null,
+          });
+        }
+        const changedIds = new Set(changedDependencies.map((item) => item.documentId));
+        const changedPaths = new Set((changedFiles || []).map((item) => String(item.path || item)));
+        const dependentReviews = [];
+        const diagnostics = [];
+        for (const [documentId, candidates] of headIndex) {
+          if (candidates.length !== 1) {
+            diagnostics.push({ type: "duplicate-document-id", documentId, paths: candidates.map((item) => item.path) });
+            continue;
+          }
+          const document = candidates[0];
+          const dependencies = (document.metadata.dependsOn || []).filter((dependencyId) => changedIds.has(dependencyId));
+          if (!dependencies.length) continue;
+          dependentReviews.push({
+            documentId,
+            path: document.path,
+            dependencies,
+            contentChangedInProposal: changedPaths.has(document.path),
+            reviewRequired: true,
+          });
+        }
+        const metadataInterpretationChanges = [...new Set([...baseGeneric.keys(), ...headGeneric.keys()])].flatMap((filePath) => {
+          const before = baseGeneric.get(filePath) || null;
+          const after = headGeneric.get(filePath) || null;
+          return JSON.stringify(before) === JSON.stringify(after) ? [] : [{ path: filePath, before, after }];
+        });
+        return { changedDependencies, dependentReviews, diagnostics, metadataInterpretationChanges };
+      },
       ...adapters,
     };
     return await buildProposalContextImpact({ selector, repository: repositoryId, adapters: realAdapters });
@@ -908,6 +978,8 @@ function publicReviewReport(report) {
       review: item.review || null,
       resourceState: item.resourceState || "present",
       startupContext: item.startupContext || null,
+      dependencyVersions: item.dependencyVersions || {},
+      dependencyChanges: item.dependencyChanges || [],
     })),
     humanOwned: true,
   };

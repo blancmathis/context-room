@@ -1,8 +1,10 @@
 import path from "node:path";
 import { parseSimpleYaml, yamlScalar } from "./yaml_utils.mjs";
+import { builtinMetadataProfiles, extractDocumentMetadata, interpretDocumentMetadata } from "./document_metadata_engine.mjs";
 
 export const DOC_METADATA_KINDS = ["agents", "index", "canonical", "procedure", "decision"];
 export const DOC_METADATA_STATUSES = ["current", "draft", "historical", "superseded"];
+export const DOC_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*(?:\.[a-z0-9]+(?:-[a-z0-9]+)*)+$/;
 
 const DEFAULT_DOC_METADATA = {
   kind: "canonical",
@@ -26,6 +28,41 @@ export function metadataDefaultsForPath(relPath) {
     canonical_for: inferredKind === "canonical" ? path.basename(normalizeRelPath(relPath), ".md") : "",
     last_verified: todayIsoDate(),
   };
+}
+
+export function documentIdForPath(relPath = "") {
+  const normalized = normalizeRelPath(relPath)
+    .replace(/\.(?:md|mdx|html?)$/i, "")
+    .replace(/(?:^|\/)index$/i, "")
+    .replace(/_target$/i, "")
+    .toLowerCase();
+  const segments = normalized.split("/")
+    .map((segment) => segment.replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, ""))
+    .filter(Boolean);
+  if (segments[0] === "docs") segments.shift();
+  if (segments.length < 2) segments.unshift("document");
+  return segments.join(".") || "document.untitled";
+}
+
+export function isValidDocumentId(value = "") {
+  return DOC_ID_PATTERN.test(String(value || "").trim());
+}
+
+export function isNativeProviderDocumentPath(relPath = "") {
+  const base = path.basename(normalizeRelPath(relPath));
+  return /^(?:AGENTS|CLAUDE)\.md$/i.test(base) || /^SKILL\.md$/i.test(base);
+}
+
+export function documentTruthStateForPath(relPath = "") {
+  const normalized = normalizeRelPath(relPath).toLowerCase();
+  if (/(?:^|\/)docs\/evolution\/changes\/archive(?:\/|$)/.test(normalized)
+    || /(?:^|\/)evolution\/changes\/archive(?:\/|$)/.test(normalized)
+    || /(?:^|\/)(?:decisions|records)(?:\/|$)/.test(normalized)) return "historical";
+  if (/(?:^|\/)docs\/evolution\/changes\/active(?:\/|$)/.test(normalized)
+    || /(?:^|\/)evolution\/changes\/active(?:\/|$)/.test(normalized)
+    || /(?:^|\/)target(?:\/|$)/.test(normalized)
+    || /_target\.(?:md|mdx|html?)$/i.test(normalized)) return "target";
+  return "current";
 }
 
 function inferDocKindFromPath(relPath) {
@@ -72,34 +109,79 @@ function extractMarkdownFrontmatter(content = "") {
   return { data: match[1], body: String(content || "").slice(match[0].length), raw: match[0] };
 }
 
+function extractHtmlMetadataComment(content = "") {
+  const text = String(content || "");
+  const match = text.match(/^\s*<!doctype\s+html\s*>\s*<!--([\s\S]*?)-->/i);
+  if (!match) return { data: null, body: text, raw: "" };
+  return { data: match[1].trim(), body: text.slice(match[0].length), raw: match[0] };
+}
+
+function extractDocumentMetadataBlock(content = "", relPath = "") {
+  return /\.html?$/i.test(normalizeRelPath(relPath))
+    ? extractHtmlMetadataComment(content)
+    : extractMarkdownFrontmatter(content);
+}
+
 export function parseDocMetadata(content = "", relPath = "") {
-  const frontmatter = extractMarkdownFrontmatter(content);
-  if (!frontmatter.data || !/^\s*(context[_-]?room|contextRoom)\s*:/im.test(frontmatter.data)) {
+  const envelope = extractDocumentMetadata({ content, relPath });
+  const generic = interpretDocumentMetadata(envelope, builtinMetadataProfiles());
+  const parsed = envelope.raw || {};
+  const raw = parsed.context_room || parsed.contextRoom || {};
+  if (!raw || typeof raw !== "object" || !Object.keys(raw).length) {
     return {
       present: false,
       parseError: "",
       statusValid: false,
+      contract: "legacy",
+      id: "",
+      idValid: false,
+      dependsOn: [],
+      truthState: documentTruthStateForPath(relPath),
+      rawMetadata: envelope.raw,
+      metadataEnvelope: envelope,
+      interpretations: generic.interpretations,
       ...normalizeDocMetadata({}, relPath),
       status: "",
     };
   }
   try {
-    const parsed = parseSimpleYaml(frontmatter.data);
-    const raw = parsed.context_room || parsed.contextRoom || {};
+    const hasMinimalContract = Object.hasOwn(raw, "id") || Object.hasOwn(raw, "depends_on") || Object.hasOwn(raw, "dependsOn");
+    const hasLegacyContract = ["kind", "scope", "status", "canonical_for", "canonicalFor", "last_verified", "lastVerified", "sources", "source"].some((key) => Object.hasOwn(raw, key));
+    const contract = hasMinimalContract && !hasLegacyContract ? "minimal" : "legacy";
+    const id = String(raw.id || "").trim();
+    const dependsOn = sanitizeReferenceList(raw.depends_on || raw.dependsOn || []);
+    const truthState = documentTruthStateForPath(relPath);
     const declaredStatus = String(raw.status || "").trim();
-    const statusValid = DOC_METADATA_STATUSES.includes(declaredStatus);
+    const statusValid = contract === "minimal" ? true : DOC_METADATA_STATUSES.includes(declaredStatus);
+    const inferredStatus = truthState === "current" ? "current" : truthState === "historical" ? "historical" : "draft";
     return {
       present: Boolean(parsed.context_room || parsed.contextRoom),
       parseError: "",
       statusValid,
+      contract,
+      id,
+      idValid: isValidDocumentId(id),
+      dependsOn,
+      truthState,
+      rawMetadata: envelope.raw,
+      metadataEnvelope: envelope,
+      interpretations: generic.interpretations,
       ...normalizeDocMetadata(raw, relPath),
-      status: statusValid ? declaredStatus : "",
+      status: statusValid ? (contract === "minimal" ? inferredStatus : declaredStatus) : "",
     };
   } catch (error) {
     return {
       present: false,
       parseError: error.message,
       statusValid: false,
+      contract: "legacy",
+      id: "",
+      idValid: false,
+      dependsOn: [],
+      truthState: documentTruthStateForPath(relPath),
+      rawMetadata: envelope.raw,
+      metadataEnvelope: envelope,
+      interpretations: generic.interpretations,
       ...normalizeDocMetadata({}, relPath),
       status: "",
     };
@@ -114,6 +196,12 @@ export function renderDocMetadataTemplateValues({ title, normalized, metadata })
   return {
     title,
     path: normalized,
+    id: String(metadata?.id || documentIdForPath(normalized)).trim(),
+    id_yaml: yamlScalar(String(metadata?.id || documentIdForPath(normalized)).trim()),
+    depends_on_block: (() => {
+      const dependencies = sanitizeReferenceList(metadata?.depends_on || metadata?.dependsOn || []);
+      return dependencies.length ? `  depends_on:\n${dependencies.map((dependency) => `    - ${yamlScalar(dependency)}`).join("\n")}\n` : "";
+    })(),
     kind: docMetadata.kind,
     status: docMetadata.status,
     scope: docMetadata.scope,
@@ -140,7 +228,58 @@ export function collectInlinePathReferences(content = "") {
     const value = match[1].trim();
     if (isPlausibleInlinePathReference(value, { fromMarkdownLink: false })) refs.add(value);
   }
+  for (const match of text.matchAll(/\[\[([^\]]+)\]\]/g)) {
+    const value = match[1].split("|", 1)[0].trim();
+    if (value && !/[<>{}\[\]*;&|`$]/.test(value) && !value.includes("...") && !/^\s*#/.test(value)) refs.add(value);
+  }
+  for (const match of text.matchAll(/\b(?:href|src)\s*=\s*["']([^"']+)["']/gi)) {
+    const value = match[1].trim();
+    if (isPlausibleInlinePathReference(value, { fromMarkdownLink: true })) refs.add(value);
+  }
   return [...refs].slice(0, 80);
+}
+
+export function parseContextRoomUri(value = "") {
+  const match = String(value || "").trim().match(/^cr:\/\/([^#?]+?)(?:#([^\s]+))?$/i);
+  if (!match) return null;
+  const segments = match[1].split("/").filter(Boolean);
+  if (!segments.length || segments.length > 2) return null;
+  let projectId = "";
+  let id = "";
+  try {
+    if (segments.length === 2) projectId = decodeURIComponent(segments[0]);
+    id = decodeURIComponent(segments.at(-1));
+  } catch {
+    return null;
+  }
+  let anchor = "";
+  try { anchor = decodeURIComponent(match[2] || ""); } catch { anchor = match[2] || ""; }
+  return projectId ? { id, projectId, anchor } : { id, anchor };
+}
+
+export function collectContextRoomLinks(content = "") {
+  const links = [];
+  const seen = new Set();
+  for (const match of String(content || "").matchAll(/cr:\/\/[^\s"'<>`\])}]+/gi)) {
+    const parsed = parseContextRoomUri(match[0]);
+    if (!parsed) continue;
+    const key = `${parsed.id}#${parsed.anchor}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    links.push(parsed);
+  }
+  return links;
+}
+
+export function collectMermaidDocumentLinks(content = "") {
+  const links = [];
+  for (const block of String(content || "").matchAll(/```mermaid\s*\n([\s\S]*?)```/gi)) {
+    for (const match of block[1].matchAll(/^\s*click\s+([A-Za-z0-9_-]+)\s+["'](cr:\/\/[^"']+)["']/gim)) {
+      const target = parseContextRoomUri(match[2]);
+      if (target) links.push({ nodeId: match[1], ...target, uri: match[2] });
+    }
+  }
+  return links;
 }
 
 function isPlausibleInlinePathReference(value, { fromMarkdownLink = false } = {}) {

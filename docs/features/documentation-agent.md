@@ -4,7 +4,7 @@ context_room:
   scope: context-room
   status: current
   canonical_for: documentation research agent
-  last_verified: 2026-07-23
+  last_verified: 2026-07-29
   sources: [bin/context-room.mjs, src/doc_agent.mjs, schemas/doc-context.schema.json, src/context_room.mjs, src/shared_context.mjs]
 ---
 
@@ -32,13 +32,12 @@ context-room context ask \
   --files src/auth/session.ts \
   --depth standard \
   --budget 1200 \
-  --session "$CODEX_THREAD_ID" \
   --json
 ```
 
 `--files` supplies vocabulary and task context only. The documentation researcher must not open those files.
 
-From a nested directory, the command walks upward to the nearest initialized Context Room project. If that project has approved shared context, Context Room refreshes the accepted shared snapshot before starting the researcher and uses the verified offline snapshot when refresh is unavailable. `--session` selects pending shared proposals from one Codex task; `CODEX_THREAD_ID` is the fallback.
+From a nested directory, the command walks upward to the nearest initialized Context Room project. If that project has approved shared context, Context Room refreshes the accepted shared snapshot before starting the researcher and uses the verified offline snapshot when refresh is unavailable. The researcher is always locked to an accepted-only corpus. It cannot receive a task proposal overlay.
 
 No local project is required for a shared-only query:
 
@@ -46,11 +45,10 @@ No local project is required for a shared-only query:
 context-room context ask \
   --repository git@github.com:example/company-shared-context.git \
   --project payments \
-  --task "Change session expiration" \
-  --session "$CODEX_THREAD_ID"
+  --task "Change session expiration"
 ```
 
-This reads only the selected project's accepted docs and project skills plus accepted global skills. It does not create `.context-room` state or bind the current directory. The accepted Git revision is frozen before the child starts, just like the proposal heads.
+This reads only the selected project's accepted docs and project skills plus accepted global skills. It does not create `.context-room` state or bind the current directory. The accepted main revision is frozen before the child starts.
 
 ## Documentation-Agent CLI
 
@@ -58,26 +56,32 @@ The spawned researcher receives the exact installed CLI path and uses only these
 
 ```bash
 context-room docs search "session expiration" --status current --limit 8 --budget 1200
-context-room docs search "session expiration" --status proposal --session "$CODEX_THREAD_ID"
 context-room docs read docs/authentication.md#expiration --budget 1600
 context-room docs related docs/authentication.md
 context-room docs trace docs/authentication.md#expiration
+context-room docs inspect product.authentication
+context-room docs metadata product.authentication
+context-room docs links product.authentication
+context-room docs backlinks product.authentication
+context-room docs dependencies product.authentication
+context-room docs diagrams docs/process.mmd
+context-room docs validate product.authentication
 ```
 
-- `search` ranks exact documentation sections with deterministic lexical matching and returns compact snippets. A search without `--status proposal` excludes pending proposal material.
+- `search` ranks exact accepted documentation sections with deterministic lexical matching and returns compact snippets. Proposal material is absent from the researcher's corpus.
 - `read` returns one document or section with its truth state, source, revision, line range, and hash.
 - `related` follows declared sources, Markdown or HTML links, and incoming documentation references.
 - `trace` exposes canonical ownership, verification date, references, health issues, revision, and content hash.
+- `inspect` is the compact agent-first aggregate: exact truth and revision, raw and interpreted metadata, profiles, identities, declared relations, references, backlinks, diagrams, Health, content verification, and dependency freshness.
+- `metadata`, `links`, `backlinks`, `dependencies`, `diagrams`, and `validate` expose smaller specialized JSON payloads when an agent does not need the full inspection.
+
+Structured search supports `id:`, `meta.<path>:`, `profile:`, `depends-on:`, `referenced-by:`, `diagram:`, and `truth:` filters. These filters use the same accepted corpus and metadata profiles as inspection.
 
 The CLI indexes Markdown, MDX, text documentation, and semantic HTML exposed through the project's Context Room `allowedPaths`. Shared accepted documentation already mounted read-only by Context Room participates in the same corpus and keeps its accepted Git revision.
 
-When a task already owns shared proposals, Context Room adds their exact commits as a separate session overlay. Project and global proposals may coexist. Every pending document carries its repository path, proposal branch, head, base revision, task ID, title, latest agent recap, review state, conflict signal, and deletion state. Proposals from other sessions remain invisible.
-
 ## Research Lifecycle
 
-Every `context ask` call starts a new non-interactive Codex process. Context Room does not resume an earlier research process. The task ID is used only to select the task's pending proposals.
-
-Before launch, the parent process resolves those proposals once and freezes their exact heads. The child receives that frozen manifest through its environment, so later `docs` commands cannot silently move to a newer proposal commit during the same answer.
+Every `context ask` call starts a new non-interactive Codex process. Context Room does not resume an earlier research process. Before launch, the parent freezes the accepted local and shared documentation revision. The child receives an enforced `accepted-only` mode, so its later `docs` commands cannot access proposal content through arguments, task environment, or inherited task identity.
 
 The invocation is equivalent to:
 
@@ -97,6 +101,15 @@ The child process reuses the local Codex authentication but does not persist its
 
 ## Context Packet
 
+The packet includes a deterministic coverage report. It names the accepted
+documents available to the researcher, the documents included in the answer, explicit
+exclusions, unresolved obligations, the applied depth and budget, and known
+limitations. Search results are grouped as canonical current definition, other
+current context, accepted targets, history and records, and linked project
+files. Ranking reasons remain visible so an agent can distinguish exact current
+truth from supporting or non-current material without loading the complete
+corpus.
+
 `schemas/doc-context.schema.json` requires one stable result with:
 
 - summary;
@@ -104,14 +117,11 @@ The child process reuses the local Codex authentication but does not persist its
 - constraints;
 - accepted decisions;
 - target differences;
-- pending changes from this session, kept explicitly non-canonical;
 - unknowns and conflicts;
 - optional deeper reads;
 - examined paths and documentation revision.
 
-Every evidence item carries one exact path, section, truth state, revision, and 64-character content hash. Claims supported by several sections stay separate instead of joining their hashes. `targetDifferences` contains only differences supported by target documentation. Target, draft, historical, superseded, or proposal material must never be presented as current behavior.
-
-`pendingSessionChanges` is the only field allowed to cite a session proposal. Context Room validates each item against the frozen corpus and exact proposal head. Proposal paths, hashes, or truth states are rejected from `currentFacts`, `constraints`, `decisions`, and `targetDifferences`. Missing facts remain explicit unknowns, while `coverage.docsRevision` records the accepted local-plus-shared corpus; pending heads remain attached to their own evidence.
+Every evidence item carries a short exact excerpt copied from one section, plus its path, truth state, revision, and 64-character content hash for machine validation. The normal Markdown response shows the useful claim and excerpt without printing source filenames. `--json` retains the provenance so another agent can audit it. Claims supported by several sections stay separate instead of joining their hashes. `targetDifferences` contains only differences supported by accepted target documentation. Draft, historical, superseded, or proposal material must never be presented as current behavior.
 
 The default output is compact Markdown for the working agent. `--json` exposes the schema-conformant packet directly.
 
@@ -127,12 +137,12 @@ The default output is compact Markdown for the working agent. `--json` exposes t
 
 ## Local, Shared, And Mixed Projects
 
-| Project mode | Accepted research corpus | Pending session overlay |
-| --- | --- | --- |
-| Local only | Local Context Room documentation | None |
-| Shared only | Selected project's accepted docs and project skills plus accepted global skills | Same-session project and global proposals |
-| Shared through a connected project identity | Accepted shared project docs and accepted global/project skills | Same-session project and global proposals |
-| Local plus shared | Local docs plus accepted shared snapshot | Same-session project and global proposals |
+| Project mode | Research corpus |
+| --- | --- |
+| Local only | Exact-hash accepted local Context Room documentation |
+| Shared only | Selected project's accepted main docs and project skills plus accepted global skills |
+| Shared through a connected project identity | Accepted shared main project docs and accepted global/project skills |
+| Local plus shared | Accepted local docs plus the accepted shared main snapshot |
 
 Local edits continue through the normal review queue. Context Room does not invent local proposal branches. The complete creation, audit, and consumption loop lives in [Documentation lifecycle](documentation-lifecycle.md).
 
@@ -142,5 +152,5 @@ Local edits continue through the normal review queue. Context Room does not inve
 - `schemas/doc-context.schema.json`: final Codex response contract.
 - `bin/context-room.mjs`: public `context ask` and internal `docs` command routing.
 - `src/context_room.mjs`: allowed documentation files and graph metadata.
-- `src/shared_context.mjs`: accepted shared snapshot freshness, task proposal resolution, and exact-head overlay documents.
-- `test/doc_agent.test.mjs` and `test/shared_context.test.mjs`: corpus, retrieval, proposal isolation, frozen provenance, prompt boundary, ephemeral invocation, validation, and rendering coverage.
+- `src/shared_context.mjs`: accepted shared main snapshot freshness and shared-only resolution.
+- `test/doc_agent.test.mjs` and `test/shared_context.test.mjs`: corpus, retrieval, accepted-only isolation, frozen provenance, prompt boundary, ephemeral invocation, validation, and rendering coverage.

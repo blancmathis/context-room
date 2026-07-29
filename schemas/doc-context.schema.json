@@ -32,12 +32,6 @@
         "$ref": "#/$defs/evidence"
       }
     },
-    "pendingSessionChanges": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/pendingEvidence"
-      }
-    },
     "unknowns": {
       "type": "array",
       "items": {
@@ -78,6 +72,31 @@
           "items": {
             "type": "string"
           }
+        },
+        "schemaVersion": {
+          "const": "context-room.context-coverage/2"
+        },
+        "candidateUniverse": {
+          "type": "object"
+        },
+        "included": {
+          "type": "object"
+        },
+        "excluded": {
+          "type": "object"
+        },
+        "obligations": {
+          "type": "array"
+        },
+        "budget": {
+          "type": "object"
+        },
+        "redundancy": {
+          "type": "array"
+        },
+        "limitations": {
+          "type": "array",
+          "items": { "type": "string" }
         }
       },
       "required": ["project", "docsRevision", "scope", "sourcesExamined", "pathsExamined"]
@@ -89,7 +108,6 @@
     "constraints",
     "decisions",
     "targetDifferences",
-    "pendingSessionChanges",
     "unknowns",
     "conflicts",
     "optionalReads",
@@ -102,6 +120,10 @@
       "properties": {
         "claim": {
           "type": "string"
+        },
+        "excerpt": {
+          "type": "string",
+          "minLength": 1
         },
         "path": {
           "type": "string"
@@ -120,7 +142,7 @@
           "pattern": "^[a-f0-9]{64}$"
         }
       },
-      "required": ["claim", "path", "section", "truthState", "revision", "contentHash"]
+      "required": ["claim", "excerpt", "path", "section", "truthState", "revision", "contentHash"]
     },
     "read": {
       "type": "object",
@@ -137,38 +159,6 @@
         }
       },
       "required": ["path", "section", "reason"]
-    },
-    "pendingEvidence": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "claim": { "type": "string" },
-        "path": { "type": "string", "pattern": "^_session-proposals/" },
-        "repositoryPath": { "type": "string", "minLength": 1 },
-        "section": { "type": "string" },
-        "truthState": { "const": "proposal" },
-        "revision": { "type": "string", "pattern": "^[a-f0-9]{40,64}$" },
-        "contentHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-        "deleted": { "type": "boolean" },
-        "proposal": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "branch": { "type": "string" },
-            "head": { "type": "string", "pattern": "^[a-f0-9]{40,64}$" },
-            "baseRevision": { "type": "string", "pattern": "^[a-f0-9]{40,64}$" },
-            "sessionId": { "type": "string" },
-            "projectId": { "type": "string" },
-            "scope": { "enum": ["project", "global"] },
-            "title": { "type": "string" },
-            "description": { "type": "string" },
-            "reviewStatus": { "type": "string" },
-            "hasConflict": { "type": "boolean" }
-          },
-          "required": ["branch", "head", "baseRevision", "sessionId", "projectId", "scope", "title", "description", "reviewStatus", "hasConflict"]
-        }
-      },
-      "required": ["claim", "path", "repositoryPath", "section", "truthState", "revision", "contentHash", "deleted", "proposal"]
     }
   }
 }

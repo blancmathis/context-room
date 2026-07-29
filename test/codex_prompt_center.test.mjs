@@ -5364,7 +5364,7 @@ test("Prompt Center API exposes six generic routes through an injectable provide
   const origin = `http://127.0.0.1:${room.server.address().port}`;
 
   const html = await (await fetch(origin + "/")).text();
-  assert.match(html, /\{ id: "codex-prompts", label: "Codex prompts", scope: "Global" \}/);
+  assert.match(html, /\{ id: "advanced-extensions", label: "Advanced extensions", scope: "Device" \}/);
   assert.match(html, /id="openCodexPromptCenter"/);
   assert.match(html, /Official · read-only/);
   assert.match(html, /id="codexPromptEffectiveLabel">Effective after restart</);

@@ -37,11 +37,13 @@ agent-facing proposal decision.
 - History and project management: secondary routes from the queue and project picker; every selected project and worktree keeps its own identity while remaining inside the single global room.
 - Codex Prompt Center: an advanced global tool opened from Settings, with runtime-published official, effective-after-restart, and runtime-loaded views; exact overrides remain private to `$CODEX_HOME`, while protected and server-owned targets stay visible and read-only.
 - Explorer and editor: safe project text, with progressive folder loading in the global room, editing limited by `allowedPaths`, and four explicit folder watch modes.
+- Document Graph: progressive global, project, and local Canvas views of explicit document references and applicable context, with accepted truth visible by default and pending layers opt-in.
 - Documents to review: hash-backed human verification for watched documents, Git diffs when available, implicit project `AGENTS.md` files, and every skill exposed by Startup skills.
 - Startup context: project instruction files by default, with ancestor and global discovery available by opt-in.
 - Startup skills: project skill folders by default, with ancestor discovery available for existing or explicitly broadened configs.
 - Startup hooks: project AI-agent and hook-manager files plus current-repository Git hooks by default.
-- Settings: seven-category editor with compact revision-safe project loading, live search, explicit scopes, progressive disclosure, one manual Save bar, computer-wide appearance and shortcuts, Shared Skills and Shared Instructions management, and the entry to Codex Prompt Center.
+- Settings: five-category editor—Project, Review and trust, Agent environment, Preferences, and Advanced extensions—with compact revision-safe project loading, live search, explicit scopes, progressive disclosure, one manual Save bar, Shared Skills and Shared Instructions management, and the entry to Codex Prompt Center.
+- Project inspection: a compact companion to the Review Queue that keeps the selected worktree identity visible and exposes Context Health and Agent environment; configured Home sections remain the primary project navigation.
 - Agent CLI: queue inspection, navigation, annotations, and explicit folder watch configuration for coding agents.
 - Context Engine: exact provider-specific context for one registered project,
   worktree, and folder, with graph, trace, impact, metadata-only snapshots,
@@ -105,6 +107,7 @@ Feature-level docs live in [Features](features/index.md).
 - `src/shared_context.mjs`: shared repository sync, snapshots, managed skill and instruction links, proposals, review materialization, and acceptance.
 - `src/agent_cli.mjs`: target resolution, exact-folder environment, task preparation, change routing, handoff, reviews, project commands, and shared resource inspection.
 - `src/context_engine.mjs`, `src/context_inventory.mjs`, and `src/provider_profiles.mjs`: effective context, graph, trace, impact, accepted-document filtering, and provider evidence.
+- `src/document_graph.mjs` and `src/document_graph_layout_worker.mjs`: the human-facing Document Graph, proven reference model, bounded deterministic layout, and progressive graph scopes.
 - `src/context_snapshots.mjs`: private metadata-only context snapshots and diffs.
 - `src/context_settings.mjs` and `src/context_diagnostics.mjs`: typed context Settings and structured Doctor or proposal-impact analysis.
 - `src/cli_registry.mjs`, `src/cli_contract.mjs`, and `src/event_journal.mjs`: command parity, versioned machine output, completions, and resumable local events.

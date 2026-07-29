@@ -307,6 +307,9 @@ export async function buildProposalContextImpact({ selector, repository = "", ad
   const invalidatedReviews = typeof adapters.listExactReviewInvalidations === "function"
     ? await adapters.listExactReviewInvalidations({ repository: resolvedRepository, baseRevision: accepted.revision, headRevision: proposal.head, changedFiles: classified.changedFiles })
     : [];
+  const dependencyInvalidations = typeof adapters.analyzeDependencyInvalidations === "function"
+    ? await adapters.analyzeDependencyInvalidations({ repository: resolvedRepository, baseRevision: accepted.revision, headRevision: proposal.head, changedFiles: classified.changedFiles, proposal })
+    : { changedDependencies: [], dependentReviews: [], diagnostics: [] };
 
   return {
     repository: resolvedRepository,
@@ -336,6 +339,26 @@ export async function buildProposalContextImpact({ selector, repository = "", ad
     reviewInvalidation: {
       mode: "exact-revision",
       reviews: Array.isArray(invalidatedReviews) ? invalidatedReviews : [],
+    },
+    dependencyInvalidations: {
+      schemaVersion: "context-room.proposal-dependency-invalidations/1",
+      changedDependencies: dependencyInvalidations.changedDependencies || [],
+      dependentReviews: dependencyInvalidations.dependentReviews || [],
+      diagnostics: dependencyInvalidations.diagnostics || [],
+      metadataInterpretationChanges: dependencyInvalidations.metadataInterpretationChanges || [],
+    },
+    contextCoverage: {
+      schemaVersion: "context-room.proposal-context-coverage/1",
+      evaluatedPaths: classified.changedFiles.map((item) => item.path),
+      affectedConsumers: normalizeConsumers(consumers),
+      requiredReviewPaths: [
+        ...(Array.isArray(invalidatedReviews) ? invalidatedReviews : []).map((item) => item.path),
+        ...(dependencyInvalidations.dependentReviews || []).map((item) => item.path),
+      ].filter((value, index, values) => value && values.indexOf(value) === index),
+      limitations: [
+        "Only exact Git, metadata, dependency, provider, and registered-consumer relations were evaluated.",
+        "Semantic contradictions were not evaluated.",
+      ],
     },
     semanticConflicts: "not-evaluated",
     readOnly: true,

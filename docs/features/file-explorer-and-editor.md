@@ -24,14 +24,17 @@ The explorer and editor expose safe project documents and visual assets in one c
 ## Common Actions
 
 - Browse, search, expand folders, or filter by all, watched, and not watched files.
+- While a document is open, switch between **Location** and **Related**. Related uses the same deterministic graph to separate dependencies, dependents, references, backlinks, diagram appearances, and unresolved targets.
 - Browse safe hidden files and `.context-room` by default; use the global Appearance setting to hide dotfiles and dotfolders.
 - Use the workspace toolbar to return to the hub, navigate history, and act on the current file.
 - Resize the desktop Explorer between 220 and 360 pixels by dragging its
   separator or using Arrow keys while the separator is focused. Context Room
   remembers the explicit width locally.
 - Collapsing the Explorer expands the document without hiding the workspace
-  toolbar. Wide layouts retain a compact 48-pixel rail; narrow layouts use a
-  temporary drawer.
+ toolbar. Wide layouts retain a compact 48-pixel rail; narrow layouts use a
+ temporary drawer.
+- Read embedded Mermaid diagrams without loading Mermaid on documents that do not contain one. Standalone `.mmd` and `.mermaid` files use the same adapter with Rendered, Source, and Split modes. Rendering uses strict security, removes interactive directives, and reconnects only recognized `cr://` document links.
+- Open the document **Context** panel for complete metadata, every matching profile, identities, labeled connections, trust state, and structured Health issues. Unknown metadata remains visible in its original tree instead of being discarded.
 - Opening a file, including one in another registered project or proposal
   room, never reopens a collapsed Explorer. Context Room still expands the
   file's ancestors and selects its location behind the closed rail.
@@ -72,11 +75,11 @@ The explorer and editor expose safe project documents and visual assets in one c
   calm continuous canvas. Themes change palette without changing controls,
   spacing, or navigation geometry.
 - The Markdown overlay is visual only. The real text field owns pointer selection, clipboard commands, keyboard editing, undo history, and scrolling; the overlay mirrors its caret, selection, and viewport.
-- HTML opens as a sandboxed visual preview. Scripts, navigation, forms, and external resources cannot run from the preview.
+- HTML opens as a sandboxed visual preview. Scripts, forms, and external resources cannot run. Safe relative or `cr://` navigation is intercepted by the shell and resolved through Context Room instead of allowing the iframe to navigate itself.
 - HTML previews inherit the active Context Room theme and its built-in visual components.
 - Watched HTML changes use the same review queue and source diff as other watched files.
 - Supported image files open in a fitted visual preview and can temporarily switch to their actual pixel size. SVG is treated as an image preview, not executable HTML.
-- Diagram source formats use the normal text reader and editor. Context Room does not claim a rendered preview when their external renderer is unavailable.
+- Mermaid source formats render locally. PlantUML, Graphviz, draw.io, and future formats use the versioned renderer registry; when an explicitly enabled local renderer is unavailable, Context Room always falls back to exact source and reports the missing renderer.
 - Search rendering is frame-scheduled so typing stays responsive in large explorers.
 - In a global room, selecting a project loads only its direct root children. A folder loads when it is expanded, pages are limited to 250 entries with folders first, and cached pages are isolated by project, worktree, and path. Each response carries a revision for freshness checks.
 - Global project search uses paths and lightweight file metadata only. It does not read document bodies or summaries. Search waits 100 ms after typing and an obsolete request cannot replace the currently selected project.
