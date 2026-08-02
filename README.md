@@ -25,6 +25,16 @@ Setup maps the current project, registers it in the global Context Room, and ope
 
 There is only one Context Room application. **Local** and **Shared** describe where documentation is stored and how it is reviewed; they are not separate app modes.
 
+### Optional remote mode for QM
+
+Version 0.4.0 adds an opt-in multi-user server entrypoint without changing the local default:
+
+```bash
+context-room-remote
+```
+
+The entrypoint refuses to start unless `CONTEXT_ROOM_REMOTE=1` and all signed-identity, shared-repository, project, and persistent-data settings are present. Browser requests require a short-lived signed QM administrator identity. Agent requests require a separate project-scoped token and expose only accepted `main` plus proposal creation, editing, and publishing; agents cannot review, reject, or accept. The service is intended to stay on a private Docker network behind the QM Portal, with `/data` on a persistent encrypted volume. See [Remote QM deployment](docs/remote-qm.md).
+
 ## How it works
 
 1. **Register the places that matter.** Add projects, explicit worktrees, and any shared documentation repositories you use.

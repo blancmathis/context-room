@@ -563,7 +563,7 @@ test("app reveals one complete initial frame and keeps recurring refreshes in th
   assert.match(script, /readFileForOpen\(path, \{ force: options\.forceReload \}\)/);
   assert.match(diskRefreshSource, /const data = await readSelectedDiskFile\(previousSelected\)/);
   assert.doesNotMatch(diskRefreshSource, /Promise\.all\(\[[\s\S]*readSelectedDiff/);
-  assert.match(script, /function startRuntimeEvents\(\)[\s\S]*new EventSource\("\/api\/runtime-events\?"/);
+  assert.match(script, /function startRuntimeEvents\(\)[\s\S]*new EventSource\(contextRoomScopedRequestPath\("\/api\/runtime-events\?"/);
   assert.match(script, /function ensureRuntimeFallback\(\)[\s\S]*60_000/);
   assert.doesNotMatch(script, /setInterval\(\(\) => refreshFromDisk\(\), 2200\)/);
   assert.doesNotMatch(script, /setInterval\(\(\) => scheduleBackgroundRefresh\(\), 5_000\)/);

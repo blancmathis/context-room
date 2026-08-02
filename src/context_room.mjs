@@ -35,6 +35,7 @@ import {
   listRegisteredSharedBindings,
   listRegisteredSharedRepositories,
   listSharedRepositoryProposals,
+  listSharedProposalWorkspaces,
   listSharedProposals,
   importSharedSkills,
   importSharedInstructions,
@@ -52,6 +53,10 @@ import {
   proposeSharedInstructionUnassignment,
   proposeSharedSkillAssignment,
   proposeSharedSkillUnassignment,
+  ensureSharedProposal,
+  openSharedProposalWorkspace,
+  publishSharedProposal,
+  readSharedMainRevision,
   readSharedProjectConnection,
   readAcceptedSharedMetadataProfiles,
   readSharedRevisionDocuments,
@@ -67,6 +72,16 @@ import {
   reconcileSharedInstructionLocations,
   resolveSharedDocumentationTarget,
 } from "./shared_context.mjs";
+import { bearerToken, createReplayStore, verifyRemoteIdentity } from "./remote_identity.mjs";
+import { createGitHubInstallationToken } from "./github_app_token.mjs";
+import {
+  AGENT_CONTEXT_OPERATIONS,
+  MAX_CONTEXT_TEXT_BYTES,
+  applyTextPatch,
+  assertAgentOperation,
+  assertContextProjectPath,
+  projectDocuments,
+} from "./qm_gateway.mjs";
 import {
   contextHubHostRoot,
   disconnectContextHubProjectShared,
@@ -8584,6 +8599,45 @@ function isGlobalProjectScopedRequestPath(pathname = "") {
     && pathname !== "/api/health";
 }
 
+function remoteAgentOperation(pathname, method) {
+  const key = `${String(method || "GET").toUpperCase()} ${pathname}`;
+  return new Map([
+    ["GET /api/agent/capabilities", "capabilities:read"],
+    ["GET /api/agent/accepted", "accepted:read"],
+    ["GET /api/agent/proposals", "proposal:list"],
+    ["POST /api/agent/proposals/ensure", "proposal:write"],
+    ["GET /api/agent/proposals/checkout", "proposal:checkout"],
+    ["POST /api/agent/proposals/patch", "proposal:write"],
+    ["POST /api/agent/proposals/publish", "proposal:publish"],
+  ]).get(key) || "";
+}
+
+function remoteHumanOperation(pathname, method) {
+  if (["GET", "HEAD", "OPTIONS"].includes(String(method || "GET").toUpperCase())) return "view";
+  if (pathname.endsWith("/accept")) return "accept";
+  if (pathname.includes("/reject")) return "reject";
+  return "review";
+}
+
+function requestHeader(req, name) {
+  const value = req.headers[String(name).toLowerCase()];
+  return Array.isArray(value) ? value[0] || "" : String(value || "");
+}
+
+function assertRemoteHost(req, expectedHost) {
+  if (!expectedHost) return;
+  const forwarded = requestHeader(req, "x-forwarded-host").split(",")[0].trim().toLowerCase();
+  if (forwarded !== String(expectedHost).trim().toLowerCase()) {
+    throw Object.assign(new Error("Context Room received an unexpected public host."), { statusCode: 403, code: "remote_host_denied" });
+  }
+}
+
+function githubHttpsRemote(repository) {
+  const match = /github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?$/.exec(String(repository || "").trim());
+  if (!match) throw Object.assign(new Error("Remote acceptance supports the configured GitHub shared repository only."), { statusCode: 500, code: "github_app_repository_invalid" });
+  return { owner: match[1], repository: match[2], url: `https://github.com/${match[1]}/${match[2]}.git` };
+}
+
 export function createMemoryServer({
   root = process.cwd(),
   port = DEFAULT_PORT,
@@ -8594,6 +8648,7 @@ export function createMemoryServer({
   registerInHub = false,
   frameAncestorPorts = [],
   persistentDocumentGraphLayout = false,
+  remoteAccess = null,
 } = {}) {
   const projectId = contextRoomProjectId(root);
   const promptMutationNonce = randomBytes(32).toString("base64url");
@@ -8607,6 +8662,8 @@ export function createMemoryServer({
   }
   const sharedReviewServers = new Set();
   const sharedReviewRooms = new Map();
+  const remoteReviewRoutes = new Map();
+  const remoteReplayStore = remoteAccess?.replayStore || (remoteAccess ? createReplayStore() : null);
   const runtimeEvents = createRuntimeEventBus();
   const contextHubRefreshNotifications = new Map();
   const scheduleContextHubSnapshotRefresh = (targetRoot, options = {}) => {
@@ -8649,18 +8706,77 @@ export function createMemoryServer({
   if (lastSelectedPath) void readBackgroundFileTask("file-diff", root, { path: lastSelectedPath }).catch(() => {});
   watchRuntimeRoot(root);
   const server = http.createServer(async (req, res) => {
-    const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+    let requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+    let remoteReview = null;
+    if (remoteAccess) {
+      const match = /^\/reviews\/([^/]+)(\/.*)?$/.exec(requestUrl.pathname);
+      if (match) {
+        remoteReview = remoteReviewRoutes.get(decodeURIComponent(match[1])) || null;
+        if (!remoteReview) {
+          sendJson(res, 404, { error: "This exact proposal review is no longer available.", code: "remote_review_not_found" });
+          return;
+        }
+        req.url = `${match[2] || "/"}${requestUrl.search}`;
+        requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+      }
+    }
     const promptRequest = isCodexPromptRequest(req);
     const requestMutation = !["GET", "HEAD", "OPTIONS"].includes(req.method || "GET");
     const projectIdentityMutation = requestMutation && !requestUrl.pathname.startsWith("/api/workspaces");
-    const trustedHost = isLoopbackPromptAuthority(req.headers.host, server, port);
-    const trustedPeer = isLoopbackRemoteAddress(req.socket.remoteAddress);
+    const trustedHost = remoteAccess || isLoopbackPromptAuthority(req.headers.host, server, port);
+    const trustedPeer = remoteAccess || isLoopbackRemoteAddress(req.socket.remoteAddress);
     if (!trustedHost || !trustedPeer) {
       sendJson(res, 403, {
         error: "Context Room accepts requests only through its local loopback address.",
         code: promptRequest ? "codex_prompt_untrusted_origin" : "context_room_untrusted_host",
       });
       return;
+    }
+    let requestIdentity = null;
+    if (remoteAccess) {
+      try {
+        assertRemoteHost(req, remoteAccess.expectedHost);
+        const healthAuthorized = requestUrl.pathname === "/api/health"
+          && remoteAccess.healthSecret
+          && secretHeaderMatches(remoteAccess.healthSecret, requestHeader(req, "x-peerlab-context-health"));
+        if (healthAuthorized) {
+          requestIdentity = { kind: "service", sub: "healthcheck", operations: ["view"] };
+        } else if (requestUrl.pathname.startsWith("/api/agent/")) {
+          const operation = remoteAgentOperation(requestUrl.pathname, req.method);
+          if (!operation) throw Object.assign(new Error("Unknown Context Room agent operation."), { statusCode: 404, code: "agent_operation_unknown" });
+          requestIdentity = verifyRemoteIdentity(bearerToken(req.headers), remoteAccess.agentSecret, {
+            kind: "agent",
+            operation,
+            replayStore: remoteReplayStore,
+          });
+        } else {
+          const operation = remoteHumanOperation(requestUrl.pathname, req.method);
+          requestIdentity = verifyRemoteIdentity(requestHeader(req, "x-peerlab-context-identity"), remoteAccess.humanSecret, {
+            kind: "human",
+            operation,
+            replayStore: remoteReplayStore,
+          });
+          const allowedAdmins = new Set((remoteAccess.adminSubjects || []).map((value) => String(value).toLowerCase()));
+          if (requestIdentity.role !== "admin" || (allowedAdmins.size && !allowedAdmins.has(String(requestIdentity.sub).toLowerCase()))) {
+            throw Object.assign(new Error("Context Room is reserved for Peerlab administrators."), { statusCode: 403, code: "remote_admin_required" });
+          }
+        }
+      } catch (error) {
+        sendJson(res, Number(error.statusCode) || 403, { error: error.message, code: error.code || "remote_identity_invalid" });
+        return;
+      }
+    }
+    if (remoteAccess && requestMutation && requestIdentity) {
+      const auditPath = requestUrl.pathname;
+      const auditMethod = String(req.method || "POST").toUpperCase();
+      res.once("finish", () => {
+        appendContextRoomEvent(requestIdentity.kind === "agent" ? "remote.agent.mutation" : "remote.human.mutation", {
+          projectId: requestIdentity.projectId || contextRoomProjectId(remoteReview?.reviewRoot || root),
+          actor: { sub: requestIdentity.sub, email: requestIdentity.email || "", kind: requestIdentity.kind },
+          resource: { path: auditPath },
+          data: { method: auditMethod, statusCode: res.statusCode, sessionId: requestIdentity.sessionId || "", jti: requestIdentity.jti || "" },
+        });
+      });
     }
     if (promptRequest) {
       const crossSite = String(req.headers["sec-fetch-site"] || "").toLowerCase() === "cross-site";
@@ -8681,7 +8797,17 @@ export function createMemoryServer({
         return;
       }
     }
-    res.setHeader("x-context-room-project", projectId);
+    let requestRoot = remoteReview?.reviewRoot || root;
+    if (requestIdentity?.kind === "agent") {
+      const scopedRoot = remoteAccess?.projectRoots?.[requestIdentity.projectId];
+      if (!scopedRoot) {
+        sendJson(res, 403, { error: "The agent project is not configured on this Context Room gateway.", code: "agent_project_scope_denied" });
+        return;
+      }
+      requestRoot = path.resolve(scopedRoot);
+    }
+    const requestProjectId = contextRoomProjectId(requestRoot);
+    res.setHeader("x-context-room-project", requestProjectId);
     const expectedProjectId = String(req.headers["x-context-room-project"] || "").trim();
     const browserMutation = requestMutation
       && Boolean(req.headers["sec-fetch-site"] || req.headers.origin || req.headers.referer);
@@ -8689,23 +8815,22 @@ export function createMemoryServer({
       sendJson(res, 409, {
         error: "Reload this Context Room tab before changing project state.",
         code: "context_room_project_identity_required",
-        projectId,
-        root: path.resolve(root),
+        projectId: requestProjectId,
+        root: path.resolve(requestRoot),
       });
       return;
     }
-    if (expectedProjectId && expectedProjectId !== projectId) {
+    if (expectedProjectId && expectedProjectId !== requestProjectId) {
       sendJson(res, 409, {
         error: "This browser tab belongs to a different Context Room project. Reload before continuing.",
         code: "context_room_project_changed",
-        projectId,
-        root: path.resolve(root),
+        projectId: requestProjectId,
+        root: path.resolve(requestRoot),
       });
       return;
     }
-    let requestRoot = root;
     const requestedTargetProjectId = String(req.headers["x-context-room-target-project"] || "").trim();
-    if (requestedTargetProjectId && isGlobalProjectScopedRequestPath(requestUrl.pathname)) {
+    if (!remoteReview && requestIdentity?.kind !== "agent" && requestedTargetProjectId && isGlobalProjectScopedRequestPath(requestUrl.pathname)) {
       const targetProject = registeredContextHubWorktree(requestedTargetProjectId);
       if (!targetProject || targetProject.mode === "shared") {
         sendJson(res, 404, {
@@ -8734,6 +8859,16 @@ export function createMemoryServer({
         codexPromptCenter,
         promptMutationNonce,
         frameAncestorPorts: trustedFrameAncestorPorts,
+        requestIdentity,
+        remoteReviewBase: remoteReview ? `/reviews/${encodeURIComponent(remoteReview.metadata.authorityId)}` : "",
+        acceptancePush: remoteAccess?.githubApp ? async (review) => {
+          const target = githubHttpsRemote(review.repository);
+          const installation = await createGitHubInstallationToken({
+            ...remoteAccess.githubApp,
+            repository: target.repository,
+          });
+          return { url: target.url, token: installation.token, expiresAt: installation.expiresAt };
+        } : null,
         startSharedReview: async ({ proposal, repository = "", expectedHead = "", projectRoot = requestRoot }) => {
           const sourceRoot = path.resolve(projectRoot || requestRoot);
           if (fs.existsSync(path.join(sourceRoot, SHARED_REVIEW_CONFIG))) {
@@ -8764,6 +8899,17 @@ export function createMemoryServer({
             allowedPaths,
             watchAllow: allowedPaths,
           });
+          if (remoteAccess) {
+            const routeId = String(result.metadata.authorityId || hashContent(`${result.metadata.repository}\0${result.metadata.proposal}\0${result.metadata.proposalHead}`)).slice(0, 120);
+            const opened = {
+              ...result,
+              routeId,
+              url: `/reviews/${encodeURIComponent(routeId)}/`,
+            };
+            remoteReviewRoutes.set(routeId, opened);
+            sharedReviewRooms.set(reviewKey, opened);
+            return opened;
+          }
           const reviewPort = await selectAvailableContextRoomPort(DEFAULT_PORT, { allowFallback: true });
           const reviewRoom = createMemoryServer({
             root: result.reviewRoot,
@@ -8827,6 +8973,7 @@ export function createMemoryServer({
     for (const reviewServer of sharedReviewServers) reviewServer.close();
     sharedReviewServers.clear();
     sharedReviewRooms.clear();
+    remoteReviewRoutes.clear();
     workspaceRegistry.clear();
     runtimeEvents.clear();
     contextHubRefreshNotifications.clear();
@@ -9369,6 +9516,25 @@ async function proposalContextImpactForApi({ selector, repository }) {
   return proposalContextImpact({ selector, repository });
 }
 
+function agentProposalFiles(proposal, projectId) {
+  const output = execFileSync("git", ["ls-files", "-co", "--exclude-standard", "-z", "--", `projects/${projectId}/docs`, `projects/${projectId}/skills`], {
+    cwd: proposal.root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  return [...new Set(output.split("\0").filter(Boolean))].sort().map((filePath) => {
+    const normalized = assertContextProjectPath(projectId, filePath);
+    const absolute = path.join(proposal.root, ...normalized.split("/"));
+    const stats = fs.lstatSync(absolute);
+    if (!stats.isFile() || stats.isSymbolicLink()) throw sharedRequestError(`Unsafe proposal entry: ${normalized}`, 400, "agent_entry_type_denied");
+    if (stats.size > MAX_CONTEXT_TEXT_BYTES) throw sharedRequestError(`Proposal file exceeds 750 KB: ${normalized}`, 413, "agent_file_too_large");
+    const content = fs.readFileSync(absolute, "utf8");
+    if (content.includes("\0")) throw sharedRequestError(`Binary proposal file is not allowed: ${normalized}`, 400, "agent_binary_denied");
+    return { path: normalized, content, contentHash: hashContent(content), bytes: stats.size };
+  });
+}
+
 function assertExpectedContentHash(current, expectedContentHash, displayPath = current?.path || "file") {
   if (typeof expectedContentHash !== "string") {
     throw sharedRequestError("expectedContentHash is required", 400, "file_revision_required");
@@ -9394,6 +9560,9 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   workspaceRegistry = null,
   runtimeEvents = null,
   scheduleContextHubSnapshotRefresh = null,
+  requestIdentity = null,
+  remoteReviewBase = "",
+  acceptancePush = null,
 } = {}) {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   const sharedSkillsProjectRoot = (requestedProjectId = "") => {
@@ -9404,6 +9573,64 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     if (!project.available) throw sharedRequestError(`Local project is unavailable: ${project.root}`, 409, "context_hub_project_unavailable");
     return path.resolve(project.root);
   };
+
+  const agentGatewayOperation = remoteAgentOperation(url.pathname, req.method);
+  if (agentGatewayOperation) {
+    const operation = agentGatewayOperation;
+    const projectId = String(url.searchParams.get("projectId") || requestIdentity?.projectId || "").trim();
+    const agent = assertAgentOperation(requestIdentity, operation, projectId);
+    const connection = readSharedProjectConnection(root);
+    if (!connection || connection.projectId !== agent.projectId) throw sharedRequestError("This gateway root is not connected to the scoped shared project", 403, "agent_project_scope_denied");
+    if (req.method === "GET" && url.pathname === "/api/agent/capabilities") {
+      const main = readSharedMainRevision(connection.repository, { refresh: false });
+      sendJson(res, 200, { projectId: agent.projectId, operations: AGENT_CONTEXT_OPERATIONS.filter((item) => agent.operations.includes(item)), acceptedRevision: main.revision, fresh: main.online !== false });
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/api/agent/accepted") {
+      const main = readSharedMainRevision(connection.repository, { refresh: url.searchParams.get("refresh") !== "0" });
+      let documents = projectDocuments(readSharedRevisionDocuments(connection.repository, main.revision, { refresh: false }), agent.projectId);
+      const selectedPath = String(url.searchParams.get("path") || "").trim();
+      if (selectedPath) documents = documents.filter((item) => item.path === assertContextProjectPath(agent.projectId, selectedPath));
+      const query = String(url.searchParams.get("q") || "").trim().toLowerCase();
+      if (query) documents = documents.filter((item) => item.path.toLowerCase().includes(query) || item.content.toLowerCase().includes(query));
+      sendJson(res, 200, { projectId: agent.projectId, revision: main.revision, truthState: "accepted", documents });
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/api/agent/proposals") {
+      const proposals = listSharedRepositoryProposals(connection.repository, { refresh: url.searchParams.get("refresh") !== "0" }).proposals.filter((item) => item.projectId === agent.projectId);
+      sendJson(res, 200, { projectId: agent.projectId, proposals });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/agent/proposals/ensure") {
+      const body = await readJsonBody(req);
+      const proposal = ensureSharedProposal(root, { title: body.title, description: body.description || "", scope: "project", sessionId: agent.sessionId || agent.jti });
+      sendJson(res, proposal.reused ? 200 : 201, { projectId: agent.projectId, proposal });
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/api/agent/proposals/checkout") {
+      const proposal = openSharedProposalWorkspace(root, { proposal: url.searchParams.get("proposal") || "" });
+      if (proposal.projectId !== agent.projectId) throw sharedRequestError("The proposal belongs to another project", 403, "agent_project_scope_denied");
+      sendJson(res, 200, { projectId: agent.projectId, proposal: { ...proposal, root: undefined }, files: agentProposalFiles(proposal, agent.projectId) });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/agent/proposals/patch") {
+      const body = await readJsonBody(req);
+      const proposal = openSharedProposalWorkspace(root, { proposal: body.proposal || "" });
+      if (proposal.projectId !== agent.projectId) throw sharedRequestError("The proposal belongs to another project", 403, "agent_project_scope_denied");
+      const changed = applyTextPatch(proposal, body, { projectId: agent.projectId });
+      sendJson(res, 200, { projectId: agent.projectId, proposal: proposal.branch, changed });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/agent/proposals/publish") {
+      const body = await readJsonBody(req);
+      const proposal = openSharedProposalWorkspace(root, { proposal: body.proposal || "" });
+      if (proposal.projectId !== agent.projectId) throw sharedRequestError("The proposal belongs to another project", 403, "agent_project_scope_denied");
+      const published = publishSharedProposal(root, { proposal: proposal.branch, title: body.title, description: body.description, message: body.message || body.title });
+      sendJson(res, 200, { projectId: agent.projectId, proposal: published });
+      return;
+    }
+    throw sharedRequestError("Unknown Context Room agent operation", 404, "agent_operation_unknown");
+  }
 
   if (req.method === "GET" && url.pathname === "/api/runtime-events") {
     if (!runtimeEvents) throw sharedRequestError("Runtime events are unavailable", 503, "runtime_events_unavailable");
@@ -10221,7 +10448,8 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     }
     let result;
     try {
-      result = acceptSharedReview(root, { message: body.message });
+      const push = acceptancePush ? await acceptancePush(review) : null;
+      result = acceptSharedReview(root, { message: body.message, actor: requestIdentity?.kind === "human" ? requestIdentity : null, push });
     } catch (error) {
       throw sharedRequestError(error.message, 409, "shared_context_acceptance_stale");
     }
@@ -10508,7 +10736,10 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
         const report = buildDocQaReport(root);
         const reviewedPaths = new Set(report.reviewedPaths || []);
         const remaining = (review.proposalFiles || []).filter((filePath) => !reviewedPaths.has(filePath));
-        if (!remaining.length) proposalFinalization = acceptSharedReview(root, { message: "Complete reviewed shared proposal" });
+        if (!remaining.length) {
+          const push = acceptancePush ? await acceptancePush(readSharedReview(root)) : null;
+          proposalFinalization = acceptSharedReview(root, { message: "Complete reviewed shared proposal", actor: requestIdentity?.kind === "human" ? requestIdentity : null, push });
+        }
       } catch (error) {
         proposalFinalization = { accepted: false, blocked: true, error: error.message };
         appendContextRoomEvent("proposal.finalization-blocked", {
@@ -15060,6 +15291,12 @@ const SATELLITE_POSITIONS = [
 ];
 const el = (id) => document.getElementById(id);
 
+function contextRoomScopedRequestPath(requestPath) {
+  const value = String(requestPath || "");
+  const reviewBase = /^\/reviews\/[^/]+/.exec(window.location.pathname)?.[0] || "";
+  return reviewBase && value.startsWith("/api/") ? reviewBase + value : value;
+}
+
 async function api(path, options) {
   state.apiTrace.push({ path: String(path).split("?")[0], at: Date.now() });
   if (state.apiTrace.length > 40) state.apiTrace.splice(0, state.apiTrace.length - 40);
@@ -15089,7 +15326,7 @@ async function api(path, options) {
   let lastError = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      const res = await fetch(path, requestOptions);
+      const res = await fetch(contextRoomScopedRequestPath(path), requestOptions);
       const responseProjectId = res.headers.get("x-context-room-project") || "";
       const responseAction = contextRoomProjectResponseAction({ expectedProjectId: state.projectId || "", responseProjectId, globalRoom: IS_GLOBAL_CONTEXT_ROOM });
       if (["refresh-in-place", "exceptional-reload"].includes(responseAction)) {
@@ -18765,7 +19002,7 @@ function startRuntimeEvents() {
   const key = runtimeEventCursorStorageKey();
   try { state.runtimeEventCursor = Number(window.sessionStorage?.getItem(key) || 0) || 0; } catch {}
   const query = new URLSearchParams({ workspace: state.workspaceId, since: String(state.runtimeEventCursor || 0) });
-  const source = new EventSource("/api/runtime-events?" + query.toString());
+  const source = new EventSource(contextRoomScopedRequestPath("/api/runtime-events?" + query.toString()));
   state.runtimeEventSource = source;
   source.addEventListener("ready", () => {
     state.runtimeEventsConnected = true;
@@ -30646,7 +30883,7 @@ el("reload").addEventListener("click", () => {
 window.addEventListener("beforeunload", (event) => {
   persistNavigationState();
   stopWorkspaceRuntime();
-  if (state.workspaceId) fetch("/api/workspaces/register", {
+  if (state.workspaceId) fetch(contextRoomScopedRequestPath("/api/workspaces/register"), {
     method: "DELETE",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ workspaceId: state.workspaceId }),
