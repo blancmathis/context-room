@@ -10,6 +10,7 @@ const TEST_DIRECTORY = path.join(ROOT, "test");
 const SHARED_CONTEXT_TEST = "test/shared_context.test.mjs";
 const JOB_TIMEOUT_MS = 170_000;
 const MAX_CONCURRENCY = Math.min(6, Math.max(2, availableParallelism()));
+const TEST_GIT_EMAIL = ["context-room", "example.test"].join("@");
 
 function testFiles() {
   return fs.readdirSync(TEST_DIRECTORY)
@@ -56,7 +57,14 @@ function runJob(job) {
     const hubHome = fs.mkdtempSync(path.join(tmpdir(), "context-room-test-hub-"));
     const child = spawn(process.execPath, job.args, {
       cwd: ROOT,
-      env: { ...process.env, CONTEXT_ROOM_HUB_HOME: hubHome },
+      env: {
+        ...process.env,
+        CONTEXT_ROOM_HUB_HOME: hubHome,
+        GIT_AUTHOR_NAME: "Context Room Test",
+        GIT_AUTHOR_EMAIL: TEST_GIT_EMAIL,
+        GIT_COMMITTER_NAME: "Context Room Test",
+        GIT_COMMITTER_EMAIL: TEST_GIT_EMAIL,
+      },
       stdio: ["ignore", "pipe", "pipe"],
     });
     const output = [];
