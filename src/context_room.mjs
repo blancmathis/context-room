@@ -13433,7 +13433,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       scrollbar-gutter: stable;
       transition: background 160ms ease;
     }
-    .app.sidebar-collapsed > aside { padding: 7px 5px; overflow: hidden; }
+    .app.sidebar-collapsed > aside { padding: 7px 5px; overflow: hidden; scrollbar-gutter: auto; }
     .app.sidebar-collapsed .sidebar-head { display: flex; justify-content: center; padding: 0 0 8px; }
     .app.sidebar-collapsed .graph-open { display: none; }
     .app.sidebar-collapsed .sidebar-toggle { position: static; margin: 0; }
