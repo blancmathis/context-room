@@ -115,7 +115,7 @@
           "type": "array",
           "items": { "type": "string", "minLength": 1 },
           "uniqueItems": true,
-          "default": [".codex/skills", "skills"]
+          "default": [".agents/skills", "skills"]
         }
       }
     },

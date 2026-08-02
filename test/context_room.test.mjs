@@ -89,6 +89,7 @@ import {
   readStartupHookFile,
   readStartupSkillFile,
   renderAppHtml,
+  contextRoomWebAssetBundle,
   renderExplorerContextMenuMarkup,
   renderReviewSummary,
   renderTemplateOptionsMarkup,
@@ -116,6 +117,15 @@ import {
   writeReviewGateSettings,
   watchStateForPath,
 } from "../src/context_room.mjs";
+
+const previousSuiteHubHome = process.env.CONTEXT_ROOM_HUB_HOME;
+const contextRoomTestHubHome = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-suite-hub-"));
+process.env.CONTEXT_ROOM_HUB_HOME = contextRoomTestHubHome;
+test.after(() => {
+  if (previousSuiteHubHome === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
+  else process.env.CONTEXT_ROOM_HUB_HOME = previousSuiteHubHome;
+  fs.rmSync(contextRoomTestHubHome, { recursive: true, force: true });
+});
 
 function makeRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "context-room-"));
@@ -167,6 +177,31 @@ test("rendered app inline script parses before the browser boots it", () => {
   assert.match(script, /diffLinesEqual\(left\[i\], right\[j\]\)/);
   assert.match(script, /function reviewIdentityContentForUi\(content\)/);
   assert.match(script, /function onlyIgnoredReviewMetadataChanged\(leftContent, rightContent\)/);
+});
+
+test("served web shell keeps CSS and JavaScript in versioned cacheable assets", () => {
+  const bundle = contextRoomWebAssetBundle("test-prompt-nonce");
+  const secondBundle = contextRoomWebAssetBundle("second-prompt-nonce");
+  assert.ok(Buffer.byteLength(bundle.html) < 100_000);
+  assert.ok(Buffer.byteLength(bundle.css) > 100_000);
+  assert.ok(Buffer.byteLength(bundle.js) > 100_000);
+  assert.match(bundle.html, new RegExp(`href="${bundle.cssPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
+  assert.match(bundle.html, new RegExp(`src="${bundle.jsPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
+  assert.doesNotMatch(bundle.html, /<style>/);
+  assert.doesNotMatch(bundle.html, /<script>/);
+  assert.match(bundle.cssEtag, /^"[a-f0-9]{16}"$/);
+  assert.match(bundle.jsEtag, /^"[a-f0-9]{16}"$/);
+  assert.equal(secondBundle.cssPath, bundle.cssPath);
+  assert.equal(secondBundle.jsPath, bundle.jsPath);
+  assert.equal(secondBundle.css, bundle.css);
+  assert.equal(secondBundle.js, bundle.js);
+  assert.match(bundle.html, /name="context-room-prompt-nonce" content="test-prompt-nonce"/);
+  assert.match(secondBundle.html, /name="context-room-prompt-nonce" content="second-prompt-nonce"/);
+  assert.doesNotMatch(bundle.js, /test-prompt-nonce|second-prompt-nonce/);
+  assert.ok(bundle.cssVariants.gzip.length < bundle.cssVariants.raw.length);
+  assert.ok(bundle.cssVariants.brotli.length < bundle.cssVariants.gzip.length);
+  assert.ok(bundle.jsVariants.gzip.length < bundle.jsVariants.raw.length);
+  assert.ok(bundle.jsVariants.brotli.length < bundle.jsVariants.gzip.length);
 });
 
 test("document relations recognize explicit Markdown, HTML, inline-code, and wikilink paths", () => {
@@ -354,8 +389,10 @@ test("app presents a compact review-first workspace", () => {
   assert.doesNotMatch(html, /@keyframes workbenchGridDrift/);
   assert.match(html, /QUIET NATIVE WORKBENCH/);
   assert.match(html, /--explorer-width:\s*272px/);
-  assert.match(html, /\.context-room-proposal-description-toggle \{[^}]*width: 16px;[^}]*height: 16px;[^}]*border: 0;[^}]*background: transparent;[^}]*font: 650 10px\/1/);
+  assert.match(html, /\.context-room-proposal-description-toggle \{[^}]*width: 28px;[^}]*min-width: 28px;[^}]*height: 28px;[^}]*border: 0;[^}]*background: transparent;[^}]*font: 650 11px\/1/);
+  assert.match(html, /@media \(max-width: 639px\) \{[\s\S]*\.context-room-proposal-description-toggle \{ width: 40px; min-width: 40px; height: 40px;/);
   assert.match(html, /\.context-room-proposal-description-toggle:hover \{[^}]*background: var\(--native-hover\);[^}]*opacity: 1;/);
+  assert.match(html, /\.settings-snoozed-search \{[^}]*display: grid;[^}]*gap: 6px;/);
   assert.equal(
     renderReviewSummary({ changedDocs: 9, needsReview: 2 }),
     '<div class="review-summary-item"><strong>2</strong><span>to review</span></div>' +
@@ -405,6 +442,7 @@ test("Explorer projects an opened document into explicit Location and Related vi
   assert.match(script, /if \(state\.explorerDocumentView === "related"\) target\.searchParams\.set\("explorerView", "related"\)/);
   assert.match(script, /state\.explorerDocumentView = initialNavigation\.explorerDocumentView/);
   assert.match(script, /\["ArrowLeft", "ArrowRight", "Home", "End"\]/);
+  assert.match(script, /data-kind="folder" aria-expanded="' \+ \(expanded \? "true" : "false"\)/);
   assert.match(html, /\.explorer-related-row \{[^}]*min-height: 40px/);
 });
 
@@ -503,7 +541,9 @@ test("app reveals one complete initial frame and keeps recurring refreshes in th
 
   assert.match(loadFilesSource, /const reportsRequest = options\.initial && !IS_GLOBAL_CONTEXT_ROOM \? api\("\/api\/reports"\) : null;/);
   assert.match(loadFilesSource, /const sharedRequest = options\.initial && !IS_GLOBAL_CONTEXT_ROOM \? api\("\/api\/shared-context"\) : null;/);
-  assert.match(loadFilesSource, /Promise\.all\(\[api\(filesApiPath\(\)\), api\("\/api\/settings"\)\]\)/);
+  assert.match(loadFilesSource, /IS_GLOBAL_CONTEXT_ROOM[\s\S]*api\("\/api\/health"\)[\s\S]*api\(filesApiPath\(\)\)/);
+  assert.match(loadFilesSource, /Promise\.all\(\[filesRequest, api\("\/api\/settings"\)\]\)/);
+  assert.doesNotMatch(loadFilesSource, /Promise\.all\(\[api\(filesApiPath\(\)\), api\("\/api\/settings"\)\]\)/);
   assert.match(loadFilesSource, /const restoreRequest = hasRequestedContextHubTarget \? Promise\.resolve\(false\) : restoreNavigationAfterInitialLoad\(\);\s*const restored = await restoreRequest;/);
   assert.match(loadFilesSource, /const restored = await restoreRequest;/);
   assert.doesNotMatch(loadFilesSource, /await reportsRequest/);
@@ -516,12 +556,19 @@ test("app reveals one complete initial frame and keeps recurring refreshes in th
   assert.match(html, /<body class="app-booting">/);
   assert.match(script, /setMode\("view"\);\s*initializeWorkspaceDiagnostics\(\);\s*finishInitialBoot\(\);\s*establishWorkspaceIdentity\(\)\.then\(\(\) => \{/);
   assert.match(script, /return Promise\.all\(\[loadFiles\(\{ initial: true \}\), graphRequest\]\);\s*\}\)\.catch\([\s\S]*\.finally\(finishInitialBoot\);/);
+  const globalQueueSource = script.slice(script.indexOf("function renderContextRoomGlobalReviewQueue"), script.indexOf("function renderSingleProjectWorktreeSwitch"));
+  assert.doesNotMatch(globalQueueSource, /renderGlobalProjectExplorer\(\)/);
   assert.match(html, /body\.app-booting \.app \{ visibility: hidden; opacity: 0; pointer-events: none; \}/);
   assert.match(script, /const reportsPath = "\/api\/reports"/);
   assert.match(script, /readFileForOpen\(path, \{ force: options\.forceReload \}\)/);
   assert.match(diskRefreshSource, /const data = await readSelectedDiskFile\(previousSelected\)/);
   assert.doesNotMatch(diskRefreshSource, /Promise\.all\(\[[\s\S]*readSelectedDiff/);
-  assert.match(script, /state\.backgroundRefreshInterval = window\.setInterval\(\(\) => scheduleBackgroundRefresh\(\), 5_000\)/);
+  assert.match(script, /function startRuntimeEvents\(\)[\s\S]*new EventSource\("\/api\/runtime-events\?"/);
+  assert.match(script, /function ensureRuntimeFallback\(\)[\s\S]*60_000/);
+  assert.doesNotMatch(script, /setInterval\(\(\) => refreshFromDisk\(\), 2200\)/);
+  assert.doesNotMatch(script, /setInterval\(\(\) => scheduleBackgroundRefresh\(\), 5_000\)/);
+  assert.doesNotMatch(script, /setInterval\(\(\) => pollAgentCommand\(\)\.catch\(\(\) => \{\}\), 1500\)/);
+  assert.doesNotMatch(script, /setInterval\(\(\) => publishSessionState\(\)\.catch\(\(\) => \{\}\), 5_000\)/);
 });
 
 test("Context Engine UI uses read-only API adapters and keeps proposal semantics explicit", () => {
@@ -868,7 +915,11 @@ test("workspace registry keeps independent metadata and routes commands to an ex
     { workspaceId: "workspace-one", clientInstanceId: "client-one", projectId: "alpha", locationId: "location-a", view: "file", file: "docs/a.md", visible: true },
     { workspaceId: "workspace-two", clientInstanceId: "client-two", projectId: "beta", locationId: "location-b", view: "settings", visible: false },
   ]) {
-    const response = await fetch(baseUrl + "/api/workspaces/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(workspace) });
+    const response = await fetch(baseUrl + "/api/workspaces/register", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: baseUrl },
+      body: JSON.stringify(workspace),
+    });
     assert.equal(response.status, 200);
   }
   const listed = await (await fetch(baseUrl + "/api/workspaces")).json();
@@ -884,6 +935,46 @@ test("workspace registry keeps independent metadata and routes commands to an ex
   assert.equal(one.command.path, "docs/a.md");
   assert.deepEqual(one.command.target, { type: "heading", value: "Purpose" });
   assert.equal(two.command, null);
+});
+
+test("workspace runtime events deliver commands without periodic polling", async (t) => {
+  const root = makeRoot();
+  initializeContextRoomProject(root, { allowedPaths: [], watchAllow: [] });
+  const { server } = createMemoryServer({ root });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const controller = new AbortController();
+  t.after(async () => {
+    controller.abort();
+    if (server.listening) await new Promise((resolve) => server.close(() => resolve()));
+  });
+  await fetch(baseUrl + "/api/workspaces/register", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ workspaceId: "workspace-stream", clientInstanceId: "client-stream", view: "hub" }),
+  });
+  const streamResponse = await fetch(baseUrl + "/api/runtime-events?workspace=workspace-stream", { signal: controller.signal });
+  assert.equal(streamResponse.status, 200);
+  assert.match(streamResponse.headers.get("content-type") || "", /text\/event-stream/);
+  const reader = streamResponse.body.getReader();
+  await reader.read();
+  const commandResponse = await fetch(baseUrl + "/api/workspaces/workspace-stream/command", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "navigate", view: "file", path: "docs/a.md" }),
+  });
+  assert.equal(commandResponse.status, 200);
+  const decoder = new TextDecoder();
+  let received = "";
+  for (let attempt = 0; attempt < 5 && !received.includes("workspace-command"); attempt += 1) {
+    const next = await reader.read();
+    if (next.done) break;
+    received += decoder.decode(next.value, { stream: true });
+  }
+  assert.match(received, /event: runtime/);
+  assert.match(received, /"type":"workspace-command"/);
+  assert.match(received, /"workspaceId":"workspace-stream"/);
+  await reader.cancel();
 });
 
 test("optimistic file writes and review decisions reject unseen revisions", async (t) => {
@@ -918,7 +1009,7 @@ test("default config is project-agnostic and supports cards, nested cards, allow
   assert.equal("reviewPaths" in config, false);
   assert.equal("reviewAgentInstructions" in config, false);
   assert.equal("appearance" in config, false);
-  assert.deepEqual(config.startupSkills.folderNames, [".codex/skills", "skills"]);
+  assert.deepEqual(config.startupSkills.folderNames, [".agents/skills", "skills"]);
   assert.equal(config.startupHooks.enabled, true);
   assert.equal(config.startupHooks.editable, false);
   assert.equal(config.startupHooks.agentHooks, true);
@@ -2135,6 +2226,19 @@ test("file listing follows project config and does not inject Hermes/LifeOS file
   assert.deepEqual(paths, ["docs/guide.md"]);
   assert.equal(paths.some((item) => item.includes("~/.hermes")), false);
   assert.equal(paths.some((item) => item.includes(".lifeos")), false);
+});
+
+test("document snapshots can reuse file content without adding it to normal listing payloads", () => {
+  const root = makeRoot();
+  fs.mkdirSync(path.join(root, "docs"));
+  fs.writeFileSync(path.join(root, "docs/guide.md"), "# Guide\n\nAccepted context.\n");
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"] });
+
+  const regular = listMemoryFiles(root).find((file) => file.path === "docs/guide.md");
+  const snapshot = listMemoryFiles(root, { includeContent: true }).find((file) => file.path === "docs/guide.md");
+
+  assert.equal(Object.hasOwn(regular, "content"), false);
+  assert.equal(snapshot.content, "# Guide\n\nAccepted context.\n");
 });
 
 test("HTML documents are listed as visual documents", () => {
@@ -3424,11 +3528,13 @@ test("CLI agent commands expose workspace targeting and annotations while review
   assert.equal(reviews.command, "review.list");
   assert.ok(Array.isArray(reviews.data.queue));
 
-  const help = execFileSync(process.execPath, [cli, "--help"], { encoding: "utf8" });
-  assert.match(help, /context-room agent state/);
-  assert.match(help, /context-room workspace list/);
-  assert.match(help, /\[--workspace\]/);
-  assert.doesNotMatch(help, /agent verify/);
+  const rootHelp = execFileSync(process.execPath, [cli, "--help"], { encoding: "utf8" });
+  assert.doesNotMatch(rootHelp, /context-room agent state/);
+  assert.doesNotMatch(rootHelp, /context-room workspace list/);
+  const allHelp = execFileSync(process.execPath, [cli, "--help", "--all"], { encoding: "utf8" });
+  assert.doesNotMatch(allHelp, /context-room workspace list/);
+  assert.match(allHelp, /context-room ui list/);
+  assert.doesNotMatch(allHelp, /context-room agent state/);
 });
 
 test("folder watch defaults and legacy watchAllow folders both stay recursive and live", () => {
@@ -3830,6 +3936,45 @@ test("external watched file changes invalidate cached reports", async () => {
     assert.notEqual(refreshed.generatedAt, initial.generatedAt);
     assert.equal(refreshed.docqa.queue.find((item) => item.path === "~/shared/guide.md")?.gitStatus, "M");
   } finally {
+    if (server) await new Promise((resolve) => server.close(resolve));
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+  }
+});
+
+test("short-lived watched files cannot crash background invalidation", async () => {
+  const originalHome = process.env.HOME;
+  const home = makeRoot();
+  process.env.HOME = home;
+  let server = null;
+  const originalStatSync = fs.statSync;
+  try {
+    const root = path.join(home, "project");
+    const gitRoot = path.join(root, ".git");
+    const lockPath = path.join(gitRoot, "index.lock");
+    fs.mkdirSync(gitRoot, { recursive: true });
+    initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: [] });
+
+    ({ server } = createMemoryServer({ root }));
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    let transientStatObserved = false;
+    fs.statSync = (...args) => {
+      if (path.resolve(String(args[0])) === lockPath) {
+        transientStatObserved = true;
+        const error = new Error(`ENOENT: no such file or directory, stat '${lockPath}'`);
+        error.code = "ENOENT";
+        throw error;
+      }
+      return originalStatSync(...args);
+    };
+
+    fs.writeFileSync(lockPath, "");
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.equal(transientStatObserved, true);
+  } finally {
+    fs.statSync = originalStatSync;
     if (server) await new Promise((resolve) => server.close(resolve));
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;
@@ -4942,6 +5087,30 @@ ${statusLine}
   assert.doesNotMatch(allTopicBrief, /topic-(?:invalid|missing)\.md \(canonical, current,/);
 });
 
+test("legacy target status is accepted without high-severity metadata diagnostics", () => {
+  const root = makeRoot();
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs", "future.md"), `---
+context_room:
+  kind: canonical
+  scope: project
+  status: target
+  canonical_for: future
+  sources: []
+---
+
+# Future
+`);
+  initializeContextRoomProject(root);
+
+  const graph = buildDocumentationGraph(root);
+  const node = graph.nodes.find((item) => item.path === "docs/future.md");
+  assert.equal(node.metadata.statusValid, true);
+  assert.equal(node.metadata.status, "target");
+  assert.equal(node.metadata.truthState, "target");
+  assert.equal(graph.healthIssues.some((issue) => issue.path === node.path && ["invalid_metadata_status", "target_status_conflict"].includes(issue.type)), false);
+});
+
 test("path truth classifies invalid target and record docs while current routing indexes stay current", () => {
   const root = makeRoot();
   for (const relPath of ["docs/target", "docs/decisions", "docs/research", "docs/incidents"]) {
@@ -5466,6 +5635,17 @@ test("quiet native workbench removes decorative card spotlights", () => {
   assert.doesNotMatch(html, /backface-visibility:\s*hidden/);
 });
 
+test("quiet native workbench keeps one gutter authority across empty, inspector, and dialog surfaces", () => {
+  const html = renderAppHtml();
+
+  assert.match(html, /\.hub-folders:empty\s*\{\s*display:\s*none/);
+  assert.match(html, /\.global-project-inspection\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);[^}]*padding:\s*12px var\(--inspector-gutter\)/);
+  assert.match(html, /\.global-project-inspection-summary,[\s\S]*?\.global-project-inspection-disclosure\s*\{[^}]*min-width:\s*0;[^}]*width:\s*100%/);
+  assert.match(html, /\.global-project-inspection-disclosure > summary,[\s\S]*?\.global-project-inspection-disclosure-body\s*\{\s*padding-inline:\s*0/);
+  assert.match(html, /\.confirm-backdrop(?:,\s*\.shared-context-help-backdrop)?\s*\{\s*padding:\s*var\(--dialog-gutter\)/);
+  assert.match(html, /\.confirm-dialog\s*\{\s*padding:\s*var\(--dialog-gutter\)/);
+});
+
 test("rendered app supports selectable file themes and colored markdown reading", () => {
   const html = renderAppHtml();
   const source = fs.readFileSync(new URL("../src/context_room.mjs", import.meta.url), "utf8");
@@ -5496,23 +5676,24 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.doesNotMatch(html, /title:\s*"Always require review"/);
   assert.match(html, /title:\s*"Agent CLI guide"/);
   assert.match(html, /Give this to your agent/);
-  assert.match(html, /context-room context ask/);
+  assert.match(html, /context-room ask/);
   assert.match(html, /data-copy-agent-cli-prompt/);
   assert.match(html, /What remains human-owned/);
-  assert.match(html, /Commands and advanced capabilities/);
-  assert.match(html, /Projects, reviews, shared contexts, skills, setup, and maintenance/);
-  assert.match(html, /Ask one focused question and receive accepted project documentation with provenance/i);
+  assert.match(html, /Advanced capabilities/);
+  assert.match(html, /Keep the root workflow small/);
+  assert.match(html, /Send a complete research brief and receive an implementation-ready answer from accepted project documentation/i);
   assert.doesNotMatch(html, /events --follow --since/);
-  assert.match(html, /Find and read the documentation relevant to its task, with provenance/);
-  assert.match(html, /link accepted skills to Codex, Claude Code, OpenCode, or a custom folder/);
+  assert.match(html, /Create a clearly described shared proposal, list open proposals, or restore an exact proposal worktree/);
+  assert.match(html, /Ask:<\/strong> research accepted project documentation from a complete task-specific brief, not keywords/);
+  assert.match(html, /Edit:<\/strong> create, list, or open shared proposal worktrees without making review decisions/);
   assert.match(html, /Accepting or rejecting each file awaiting review/);
   assert.match(html, /there is no separate proposal decision/);
   assert.doesNotMatch(html, /Changing the owner-controlled Git review gate\./);
-  assert.match(html, /globalReviewBody = '[^']*context ask[^']*static command inventory/);
+  assert.match(html, /globalReviewBody = '[^']*<code>ask<\/code>[^']*static command inventory/);
   assert.doesNotMatch(html, /capabilities --intent/);
-  assert.match(html, /Your agent can manage these rules itself through the Context Room CLI/);
-  assert.match(html, /context-room agent watch/);
-  assert.match(html, /context-room agent unwatch/);
+  assert.match(html, /Your agent can manage one explicit rule with/);
+  assert.match(html, /context-room watch set/);
+  assert.match(html, /Removing a rule uses/);
   assert.match(html, /Human verification remains yours/);
   assert.match(html, /title:\s*"Protect Git actions"/);
   assert.match(html, /title: showGlobalProjectPicker \? "Global review overview" : "Review rules"/);
@@ -5573,10 +5754,16 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /const SETTINGS_SEARCH_ITEMS = \[/);
   assert.match(html, /function matchingSettingsSearchItems\(query\)/);
   assert.match(html, /function openSettingsSearchItem\(itemId\)/);
+  assert.match(html, /const target = \(item\.target \? el\(item\.target\) : null\) \|\| disclosure\?\.querySelector\("summary"\);/);
+  assert.match(html, /target\?\.focus\(\{ preventScroll: true \}\);[\s\S]*status\.textContent = "Opened " \+ item\.label;/);
   assert.match(html, /No settings found\. Try a familiar word/);
   assert.match(html, /event\.key === "ArrowDown" \|\| event\.key === "ArrowUp"/);
   assert.match(html, /function renderSettingsDisclosure/);
   assert.match(html, /data-settings-disclosure=/);
+  assert.match(html, /<summary><span class="settings-disclosure-chevron" aria-hidden="true"><span>›<\/span><\/span>'\s*\+\s*'<span class="settings-disclosure-summary">/);
+  assert.match(html, /\.settings-disclosure > summary\s*\{[^}]*grid-template-columns:\s*16px minmax\(0, 1fr\)[^}]*align-items:\s*start/);
+  assert.match(html, /\.settings-disclosure-chevron\s*\{[^}]*width:\s*16px;[^}]*height:\s*16px;[^}]*align-self:\s*start;[^}]*margin-top:\s*1px/);
+  assert.match(html, /\.settings-disclosure-body\s*\{[^}]*padding:\s*var\(--space-2\) 0 var\(--space-5\) calc\(var\(--space-4\) \+ var\(--space-2\)\)/);
   assert.match(html, /settingsDisclosureState/);
   assert.match(html, /version: 6/);
   assert.match(html, /\[1, 2, 3, 4, 5, 6\]\.includes\(raw\.version\)/);
@@ -5605,7 +5792,8 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /function wireShortcutRecorder\(\)/);
   assert.match(html, /Choose one clear scope, make the change, then save once\./);
   assert.match(html, /\.settings-toggle\s*\{[^}]*grid-template-columns:\s*auto minmax\(0, 1fr\)/);
-  assert.match(html, /\.settings-footer\s*\{[^}]*position:\s*sticky/);
+  assert.match(html, /\.settings-shell \{[^}]*grid-template-rows:\s*auto minmax\(0, 1fr\) auto/);
+  assert.match(html, /\.settings-footer\s*\{[^}]*position:\s*static/);
   assert.match(html, /button\.save-pending, \.file-action\.save-pending/);
   assert.match(html, /button\.save-confirmed, \.file-action\.save-confirmed/);
   assert.match(html, /@keyframes savePendingSweep/);
@@ -5647,7 +5835,7 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /aside\s*\{[^}]*background:\s*var\(--surface-sidebar\)/);
   assert.doesNotMatch(html, /const SPOTLIGHT_CARD_SELECTOR/);
   assert.match(html, /--space-1:\s*4px;[\s\S]*--space-6:\s*24px;[\s\S]*--page-padding:\s*var\(--space-6\)/);
-  assert.match(html, /\.workspace-dock\s*\{[^}]*display:\s*inline-flex;[^}]*padding:\s*var\(--space-1\);[^}]*background:\s*var\(--surface-floating-soft\)/);
+  assert.match(html, /\.workspace-dock\s*\{[^}]*display:\s*flex;[^}]*padding:\s*5px var\(--workbench-gutter-compact\);[^}]*background:\s*transparent/);
   assert.match(html, /\.dock-button\s*\{[^}]*min-width:\s*var\(--control-height\);[^}]*min-height:\s*var\(--control-height\);[^}]*padding:\s*0 var\(--space-3\)/);
   assert.match(html, /\.workspace-dock \.dock-button\[hidden\]\s*\{\s*display:\s*none !important;\s*\}/);
   assert.match(html, /id="gitDiffToggle" class="dock-button diff-dock-button" type="button" title="Show Git diff" hidden>Show Git diff<\/button>/);
@@ -5658,13 +5846,15 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.doesNotMatch(html, /class="diff-toggle" type="button" data-show-diff/);
   assert.match(html, /function renderMarkdownLineView\(text, options = \{\}\)/);
   assert.match(html, /id="docReader" class="doc-editor markdown-view"/);
-  assert.match(html, /function renderMarkdownEditor\(text\)/);
+  assert.match(html, /function renderMarkdownEditor\(text, filePath = state\.selected\)/);
   assert.match(html, /id="docHighlighter" class="doc-editor markdown-view markdown-editor-highlight"/);
   assert.match(html, /function usePlainTextSurface\(filePath, text\)/);
   assert.match(html, /!String\(filePath \|\| ""\)\.toLowerCase\(\)\.endsWith\("\.md"\)/);
   assert.match(html, /value\.length > 120_000/);
   assert.match(html, /function renderDocumentEditor\(text, filePath = state\.selected\)/);
-  assert.match(html, /id="docEditor" class="doc-editor plain-text-editor"/);
+  assert.match(html, /id="docEditor" class="doc-editor plain-text-editor" aria-label="' \+ escapeHtml\(documentEditorAccessibleName\(filePath\)\) \+ '"/);
+  assert.match(html, /id="docEditor" class="doc-editor markdown-editor-input" aria-label="' \+ escapeHtml\(documentEditorAccessibleName\(filePath\)\) \+ '"/);
+  assert.match(html, /<h1 class="file-title">' \+ escapeHtml\(file\.label \|\| "Document"\) \+ '<\/h1>/);
   assert.match(html, /\.plain-text-editor\s*\{[^}]*display:\s*block/);
   assert.match(html, /data-heading-text/);
   assert.match(html, /\.markdown-line\.h1\s*\{[^}]*color:\s*var\(--file-h1\)/);
@@ -6401,7 +6591,8 @@ test("file opening shows content before secondary dependencies and keeps actions
   assert.match(selectFileFn, /const annotationsRequest = settleUiRequest\(loadAnnotationsForPath\(path\)\);/);
   assert.match(selectFileFn, /const diffRequest = settleUiRequest\(readDiffForOpen\(path, \{ force: options\.forceReload \}\)\);/);
   assert.match(selectFileFn, /const reviewBaseRequest = options\.reviewMode[\s\S]*settleUiRequest\(readSelectedReviewBase\(path\)\)/);
-  assert.match(selectFileFn, /const data = await fileRequest;[\s\S]*await annotationsRequest;/);
+  assert.match(selectFileFn, /const data = await fileRequest;[\s\S]*state\.fileContentReadyPath = path;\s*renderViewer\(\);[\s\S]*void annotationsRequest\.then/);
+  assert.doesNotMatch(selectFileFn, /await annotationsRequest/);
   assert.match(selectFileFn, /state\.fileContentReadyPath = path;\s*renderViewer\(\);\s*restorePersistedViewState\(options\.restoreViewState\);/);
   assert.match(selectFileFn, /setStatus\("open · loading Git diff\.\.\."\);/);
   assert.match(selectFileFn, /const \[diffResult, reviewBaseResult\] = await Promise\.all\(\[diffRequest, reviewBaseRequest\]\);/);
@@ -6521,6 +6712,10 @@ test("the explorer persists its state and only its own controls can change it", 
     script.indexOf("function syncResponsiveSidebar"),
     script.indexOf("function syncSidebarToggleIcon"),
   );
+  const collapseSource = script.slice(
+    script.indexOf("function applyExplorerCollapsed"),
+    script.indexOf("function setExplorerCollapsedFromUser"),
+  );
   const focusSource = script.slice(
     script.indexOf("function focusExplorer"),
     script.indexOf("function homeAction"),
@@ -6530,9 +6725,11 @@ test("the explorer persists its state and only its own controls can change it", 
   assert.match(html, /explorerCollapsed: state\.explorerNavigationOverride === null[\s\S]*isExplorerCollapsed\(\)[\s\S]*Boolean\(state\.explorerStoredCollapsed\)/);
   assert.match(html, /if \(options\.initial\) restoreExplorerStateAfterInitialLoad\(\);/);
   assert.match(html, /function restoreExplorerStateAfterInitialLoad\(\)[\s\S]*navigationMode === "collapsed"[\s\S]*navigationMode === "expanded"[\s\S]*applyExplorerCollapsed\(state\.explorerNavigationOverride \?\? storedCollapsed\);/);
-  assert.match(html, /el\("sidebarToggle"\)\.addEventListener\("click", \(\) => \{\s*setExplorerCollapsedFromUser\(!isExplorerCollapsed\(\)\);/);
-  assert.match(html, /el\("explorerOpen"\)\?\.addEventListener\("click", \(\) => \{\s*setExplorerCollapsedFromUser\(false\);/);
-  assert.match(html, /function contextRoomProposalReviewUrl\([\s\S]*searchParams\.set\("explorer", isExplorerCollapsed\(\) \? "collapsed" : "expanded"\)/);
+  assert.match(collapseSource, /syncResponsiveSidebar\(\);/);
+  assert.match(html, /el\("sidebarToggle"\)\.addEventListener\("click", \(\) => \{[\s\S]*setExplorerCollapsedFromUser\(!isExplorerCollapsed\(\)\);[\s\S]*restoreFocusAfterExplorerClose\(\)/);
+  assert.match(html, /el\("explorerOpen"\)\?\.addEventListener\("click", \(\) => \{[\s\S]*state\.explorerReturnFocus = document\.activeElement;[\s\S]*setExplorerCollapsedFromUser\(false\);[\s\S]*focusExplorerAfterOpen\(\)/);
+  assert.match(html, /function contextRoomProposalReviewUrl\([\s\S]*searchParams\.set\("explorer", \(isExplorerDrawerViewport\(\) \|\| isExplorerCollapsed\(\)\) \? "collapsed" : "expanded"\)/);
+  assert.match(html, /function openContextHubProject\([\s\S]*searchParams\.set\("explorer", \(isExplorerDrawerViewport\(\) \|\| isExplorerCollapsed\(\)\) \? "collapsed" : "expanded"\)/);
   assert.match(html, /id="explorerEdgeTrigger" class="explorer-edge-trigger"/);
   assert.match(html, /\.app\.sidebar-collapsed:not\(\.explorer-edge-peek\) \.explorer-edge-trigger/);
   assert.match(html, /\.app\.sidebar-collapsed\.explorer-edge-peek > main \{ grid-column: 2; \}/);
@@ -6547,6 +6744,10 @@ test("the explorer persists its state and only its own controls can change it", 
   assert.doesNotMatch(focusSource, /classList\.(?:add|remove|toggle)\("sidebar-collapsed"/);
   assert.doesNotMatch(html, /openSidebarIfCollapsed|collapseSidebarOnNarrow|mobileSidebarTouched/);
   assert.match(html, /if \(options\.revealInExplorer && !isExplorerCollapsed\(\)\) scrollExplorerToPath\(path\);/);
+  assert.match(html, /const overlayOpen = !desktop && !collapsed;[\s\S]*main\.inert = overlayOpen;[\s\S]*main\.setAttribute\("aria-hidden", "true"\)/);
+  assert.match(html, /event\.key === "Escape"[\s\S]*setExplorerCollapsedFromUser\(true\);[\s\S]*restoreFocusAfterExplorerClose\(\)/);
+  assert.match(html, /event\.key === "Tab"[\s\S]*explorerFocusableElements\(\)/);
+  assert.match(html, /aria-pressed="' \+ String\(filter === value\) \+ '" data-global-project-watch-filter/);
 });
 
 test("responsive Explorer uses one shared mobile, drawer, and desktop contract", () => {
@@ -6572,13 +6773,54 @@ test("responsive Explorer uses one shared mobile, drawer, and desktop contract",
 
   assert.match(
     drawerCss,
-    /@media \(max-width: 980px\) \{[\s\S]*?\.app, \.app\.sidebar-collapsed \{[^}]*height:\s*100dvh;[^}]*padding-top:\s*0;[^}]*overflow:\s*hidden;[^}]*\}[\s\S]*?main \{[^}]*height:\s*100dvh;[^}]*padding:\s*0;[^}]*\}[\s\S]*?aside \{[^}]*height:\s*calc\(100dvh - var\(--native-titlebar-height\)\);[^}]*max-height:\s*none;[^}]*border-bottom:\s*0;[\s\S]*?\.app\.sidebar-collapsed \.workspace-dock \{\s*padding-left:\s*48px;\s*\}/,
+    /@media \(max-width: 980px\) \{[\s\S]*?\.app, \.app\.sidebar-collapsed \{[^}]*height:\s*100dvh;[^}]*padding-top:\s*0;[^}]*overflow:\s*hidden;[^}]*\}[\s\S]*?main \{[^}]*height:\s*100dvh;[^}]*padding:\s*0;[^}]*\}[\s\S]*?\.app > aside \{[^}]*height:\s*calc\(100dvh - var\(--native-titlebar-height\)\);[^}]*max-height:\s*none;[^}]*border-bottom:\s*0;[\s\S]*?\.app\.sidebar-collapsed \.workspace-dock \{\s*padding-left:\s*48px;\s*\}/,
   );
   assert.match(
     html,
-    /@media \(max-width: 639px\) \{[\s\S]*?\.app\.explorer-expanded aside \{[^}]*height:\s*100dvh;[^}]*max-height:\s*none;[^}]*border-radius:\s*0;[^}]*transform:\s*translateX\(0\);[^}]*pointer-events:\s*auto;/,
+    /@media \(max-width: 639px\) \{[\s\S]*?\.app\.explorer-expanded > aside \{[^}]*height:\s*100dvh;[^}]*max-height:\s*none;[^}]*border-radius:\s*0;[^}]*transform:\s*translateX\(0\);[^}]*pointer-events:\s*auto;/,
   );
   assert.doesNotMatch(drawerCss, /\.context-room-brand strong[^}]*display:\s*none/);
+  assert.match(html, /\.context-room-brand \{[^}]*flex:\s*0 0 auto/);
+  assert.match(html, /\.diff-panel > \.diff-header, \.file-panel > header \{ flex:\s*0 0 auto; \}/);
+  assert.match(html, /\.dock-status \{ position:\s*absolute; width:\s*1px; height:\s*1px;/);
+  assert.match(html, /--workbench-gutter:\s*var\(--space-5\)/);
+  assert.match(html, /--workbench-gutter-compact:\s*var\(--space-3\)/);
+  assert.match(html, /\.settings-page \.settings-card > \.settings-page-header \{[^}]*padding:\s*16px var\(--workbench-gutter\)/);
+});
+
+test("quiet workbench spacing uses semantic gutters instead of competing surface values", () => {
+  const html = renderAppHtml();
+
+  assert.match(html, /--workbench-gutter:\s*var\(--space-5\)/);
+  assert.match(html, /--workbench-gutter-compact:\s*var\(--space-3\)/);
+  assert.match(html, /--explorer-gutter:\s*var\(--space-2\)/);
+  assert.match(html, /--inspector-gutter:\s*var\(--space-4\)/);
+  assert.match(html, /--dialog-gutter:\s*var\(--space-5\)/);
+  assert.match(html, /\.workspace-dock \{[^}]*padding:\s*5px var\(--workbench-gutter-compact\)/);
+  assert.match(html, /@media \(max-width: 639px\) \{[\s\S]*?\.workspace-dock \{[^}]*padding-right:\s*var\(--workbench-gutter-compact\)/);
+  assert.match(html, /\.context-hub-review-toolbar, \.context-room-review-toolbar \{[^}]*padding:\s*7px var\(--workbench-gutter\)/);
+  assert.match(html, /\.review-item, \.context-room-proposal-row, \.context-hub-review-item \{[^}]*padding:\s*10px var\(--workbench-gutter\)/);
+  assert.match(html, /\.settings-search input \{[^}]*padding:\s*8px 40px 8px var\(--workbench-gutter-compact\)/);
+  assert.match(html, /\.settings-search-control \{ position:\s*relative; \}/);
+  assert.match(html, /\.settings-search-icon \{[^}]*right:\s*var\(--workbench-gutter-compact\)/);
+  assert.match(html, /<svg class="ui-icon settings-search-icon" aria-hidden="true"><use href="#cr-icon-search"><\/use><\/svg>/);
+  assert.match(html, /\.sr-only \{[^}]*position:\s*absolute !important;[^}]*width:\s*1px !important;/);
+  assert.match(html, /\.diff-header, \.file-panel header \{[^}]*padding:\s*8px var\(--workbench-gutter\)/);
+  assert.match(html, /\.proposal-review-empty \{[^}]*padding-inline:\s*var\(--workbench-gutter\)/);
+  assert.match(html, /\.document-context-head \{[^}]*padding:\s*12px var\(--inspector-gutter\)/);
+  assert.match(html, /\.document-context-body \{[^}]*padding:\s*8px var\(--inspector-gutter\) 24px/);
+  assert.match(html, /#contextHealthPanel > header \{[^}]*padding-inline:\s*var\(--inspector-gutter\)/);
+  assert.match(html, /\.global-project-inspection \{[^}]*padding:\s*12px var\(--inspector-gutter\)/);
+  assert.match(html, /\.graph-filterbar \{[^}]*flex-wrap:\s*nowrap;[^}]*padding:\s*6px var\(--workbench-gutter\);[^}]*overflow-x:\s*auto/);
+  assert.match(html, /\.sidebar-head \{[^}]*padding:\s*0 0 8px/);
+  assert.match(html, /\.app\.sidebar-collapsed \.sidebar-head \{[^}]*padding:\s*0 0 8px/);
+  assert.doesNotMatch(html, /(?:^|\n)\s*aside \{/);
+  assert.doesNotMatch(html, /\.app\.sidebar-collapsed aside/);
+  assert.match(html, /\.app\.sidebar-collapsed > aside \{[^}]*transform:\s*translateX\(-105%\)/);
+  assert.match(html, /@media \(max-width: 639px\) \{[\s\S]*?--dialog-gutter:\s*var\(--space-3\)/);
+  assert.match(html, /@media \(max-width: 639px\) \{[\s\S]*?--inspector-gutter:\s*var\(--space-3\)/);
+  assert.match(html, /@media \(max-width: 639px\) \{[\s\S]*?\.hub-disclosure summary, \.docqa-disclosure summary,[\s\S]*?\.hub-disclosure-body \{ padding-inline:\s*var\(--workbench-gutter-compact\)/);
+  assert.match(html, /@media \(max-width: 639px\) \{[\s\S]*?\.graph-list-row \{ padding-inline:\s*var\(--workbench-gutter-compact\)/);
 });
 
 test("context health supports full refresh, acknowledged results, and simple filters", () => {

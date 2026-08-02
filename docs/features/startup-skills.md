@@ -4,7 +4,7 @@ context_room:
   scope: context-room
   status: current
   canonical_for: startup skills
-  last_verified: 2026-07-26
+  last_verified: 2026-07-29
   sources: [src/context_room.mjs, src/context_inventory.mjs, src/provider_profiles.mjs, src/context_engine.mjs, src/shared_context.mjs, docs/agent-configuration.md, docs/features/shared-context.md]
 ---
 
@@ -15,6 +15,14 @@ context_room:
 Startup skills show every skill folder that may affect future agent behavior, including managed collections projected from an accepted shared-context snapshot.
 
 Startup skills and Shared skills answer different questions. Startup skills discover what is locally available around the selected project or folder. Shared skills manage reviewed canonical skill content, accepted assignments, and the managed links that expose that content to providers.
+
+Shared instructions use the same provider preference but report two separate
+facts. **Installed** means Context Room created the managed link. **Active**
+means the selected provider is proven to discover its destination. An
+arbitrary shared filename can therefore be installed while remaining inactive
+until it targets a native provider filename or local provider configuration
+explicitly names it. Startup environment lists effective instructions first
+and keeps installed-but-undiscovered resources separate.
 
 ## Example Flow
 
@@ -29,6 +37,10 @@ Startup skills and Shared skills answer different questions. Startup skills disc
 - System skill folders are read-only.
 - Accepting the current content of a changed system skill records the review without rewriting the file. A reject or mixed decision that would change the file is blocked and returns the review to an actionable state.
 - Fresh configs keep startup skill discovery enabled and discover project skill roots only. A configured skill root added later appears automatically. Existing configs without `projectOnly` retain ancestor discovery for compatibility.
+- Codex discovery and managed Shared Skills use the same provider profile:
+  `.agents/skills` for a project and `~/.agents/skills` for the device. Existing
+  `.codex/skills` content may still be shown as legacy, but Context Room never
+  rewrites or removes an unmanaged legacy location.
 - Writable skill folders can create a new skill from the panel.
 - Startup skills can be opened in the explorer without broadening the whole project allowlist.
 - Every discovered skill entrypoint enters review once, then re-enters only after its meaningful content changes.

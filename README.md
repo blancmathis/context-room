@@ -71,7 +71,7 @@ Startup environment separates every discovered instruction, skill, and hook, wit
 
 *Shared resources keep accepted skills and instruction files canonical while exposing them through explicit, managed destinations.*
 
-Shared Skills can target Codex, Claude Code, OpenCode, or a custom folder. Shared Instructions can contain reviewed `AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`, or another chosen Markdown instruction file. Logical assignments live in the shared repository; provider activation, physical destinations, and local overrides remain device configuration.
+Shared Skills can target Codex, Claude Code, OpenCode, or a custom folder. Codex uses its official `~/.agents/skills` device destination and `.agents/skills` project destination. Shared Instructions can contain reviewed `AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`, or another chosen Markdown instruction file. Logical assignments live in the shared repository; provider activation, physical destinations, and local overrides remain device configuration.
 
 Context Room never replaces an unmanaged local file or link. Executable hooks remain local and are not presented as shareable resources.
 
@@ -86,7 +86,7 @@ Context Room never replaces an unmanaged local file or link. Executable hooks re
 | Agent startup | `AGENTS.md`, `CLAUDE.md`, provider-specific instructions, local skills, and local executable hooks. |
 | Shared resources | Reviewed skill and instruction collections, scoped assignments, provider destinations, exclusions, overrides, and collision safety. |
 | Context Engine | Effective context, application trace, resource impact, accepted snapshots, snapshot diffs, and proposal impact. |
-| Research | A documentation-only Research Agent through `context ask`, technically restricted to accepted local documents and accepted shared main. |
+| Research | A documentation-only Research Agent through `ask`, technically restricted to accepted local documents and accepted shared main. |
 | Personalization | Searchable Settings, six themes, system light/dark mode, interface sounds, keyboard shortcuts, Hub sections, and Codex Prompt Center. |
 | Diagnostics | Doctor, Context Health, configuration checks, shared freshness, managed-link checks, and Git review gates. |
 
@@ -103,19 +103,27 @@ This separation lets teams share one reviewed body of knowledge without giving a
 
 ## Agent-first CLI
 
-The webapp is the human interface. The CLI is the machine interface for coding agents and voice agents. Most agents only need to search accepted documentation or prepare and publish a shared proposal.
+The webapp is the human interface. The CLI is the machine interface for coding agents and voice agents. Its root surface has only three commands.
 
 ```bash
-context-room context ask "Explain the deployment process"
-context-room shared propose --root . --description "Update deployment documentation"
-context-room shared publish --root . --proposal proposal/...
+context-room ask "We are changing production rollback for the Atlas deployment service. Find the accepted documents that define the current workflow and ownership, explain the exact sequence and constraints the implementation must preserve, identify contradictions or missing decisions, and return the useful passages in the answer."
+context-room edit create "Update the accepted deployment documentation to explain the production rollback sequence, ownership boundaries, failure handling, and verification steps." --project atlas
 context-room capabilities
 ```
 
-- `context ask` starts a read-only documentation researcher for one question.
-- `shared propose` creates the proposal branch and isolated worktree an agent can edit.
-- `shared publish` updates the proposal branch and makes its exact revision available for human review.
-- `capabilities` returns the installed machine contract when an agent needs a less common primitive.
+- `ask` sends a complete task-specific research brief to a read-only documentation researcher. Include the work context, what must be learned or verified, constraints, and the expected answer; it is not a keyword search.
+- `edit create` creates a proposal from a complete human-readable description. `edit list` uses the project containing the current directory, and `edit open <exact-branch>` finds and restores the proposal without another project selector. None of them accepts documentation.
+- `capabilities` returns six compact sections. An agent opens only the relevant section, then asks for one exact command contract if needed.
+
+```bash
+context-room capabilities
+context-room capabilities --include shared
+context-room capabilities "shared skills assign"
+```
+
+The exhaustive inventory remains available through `capabilities --expand`, but is never loaded by default.
+
+Advanced and compatibility commands stay out of root help. There is no agent-facing `publish` step and no CLI command that accepts or rejects a file review.
 
 The complete machine contract, output formats, targeting rules, and safety boundaries live in the [Agent CLI guide](docs/features/agent-cli.md).
 
@@ -143,9 +151,13 @@ The complete machine contract, output formats, targeting rules, and safety bound
 
 ```bash
 npm test
+npm run test:ux-smoke
+npm run test:perf
 node bin/context-room.mjs doctor --root .
 npm run package:privacy
 npm pack --dry-run
 ```
+
+`npm run test:ux-smoke` runs the permanent desktop and mobile browser regression suite in an isolated Context Room. `npm run test:perf` measures hot boot, first paint, long tasks, transfer sizes, and idle network activity after two warmups. Before a release or after a substantial shell change, run `npm run test:ux-soak`; it runs for 15 minutes by default and repeats the same workflows across accelerated days while checking browser memory, DOM growth, requests, Workspace cleanup, and navigation persistence. For a bounded local diagnosis, set `CONTEXT_ROOM_UX_SOAK_CYCLES=4`.
 
 `package:privacy` inspects the exact npm file list and rejects absolute user-home paths or email addresses before publication.

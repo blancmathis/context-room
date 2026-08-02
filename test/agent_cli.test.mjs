@@ -121,7 +121,8 @@ test("agent-first target, environment, review, handoff, and event contracts stay
 
 test("machine envelopes and capabilities expose no agent review decision command", () => {
   const capabilities = cliCapabilities({ version: "test" });
-  assert.equal(capabilities.commands.some((item) => /(?:accept|reject|verify)/.test(item.path)), false);
+  const expanded = cliCapabilities({ version: "test", expand: true });
+  assert.equal(expanded.commands.some((item) => /(?:accept|reject|verify)/.test(item.path)), false);
   assert.deepEqual(capabilities.humanOwned, ["accept-file-review", "reject-file-review"]);
   const success = cliEnvelope("agent.prepare", { data: { ok: true } });
   assert.equal(success.schemaVersion, "context-room.cli/1");

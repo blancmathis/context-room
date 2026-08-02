@@ -1,4 +1,4 @@
-const PROFILE_VERSION = "2026-07-27";
+const PROFILE_VERSION = "2026-07-30";
 
 const PROFILES = Object.freeze({
   codex: Object.freeze({
@@ -8,6 +8,9 @@ const PROFILES = Object.freeze({
     instructions: Object.freeze({
       globalFiles: Object.freeze(["AGENTS.override.md", "AGENTS.md"]),
       projectFiles: Object.freeze(["AGENTS.override.md", "AGENTS.md"]),
+      deviceRoot: "~/.codex",
+      nativeTargets: Object.freeze(["AGENTS.override.md", "AGENTS.md"]),
+      configuredTargets: "codex-project-doc-fallback-filenames",
       order: "global-then-root-to-folder",
       onePerDirectory: true,
       overrideFile: "AGENTS.override.md",
@@ -39,6 +42,9 @@ const PROFILES = Object.freeze({
     instructions: Object.freeze({
       globalFiles: Object.freeze(["CLAUDE.md"]),
       projectFiles: Object.freeze(["CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"]),
+      deviceRoot: "~/.claude",
+      nativeTargets: Object.freeze(["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md", ".claude/rules/**/*.md"]),
+      configuredTargets: "claude-memory-imports-and-rules",
       order: "managed-then-user-then-project-ancestors-with-nested-lazy-loading",
       onePerDirectory: false,
       overrideFile: "",
@@ -62,6 +68,9 @@ const PROFILES = Object.freeze({
     instructions: Object.freeze({
       globalFiles: Object.freeze(["AGENTS.md"]),
       projectFiles: Object.freeze(["AGENTS.md", "CLAUDE.md"]),
+      deviceRoot: "~/.config/opencode",
+      nativeTargets: Object.freeze(["AGENTS.md", "CLAUDE.md"]),
+      configuredTargets: "opencode-instructions",
       order: "global-then-project-ancestors-first-matching-rule-file",
       onePerDirectory: true,
       overrideFile: "",

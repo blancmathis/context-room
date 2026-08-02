@@ -18,16 +18,24 @@ This is not vector search and does not use embeddings. Markdown links, Context R
 
 ## Working-Agent Command
 
+`ask` receives a complete research brief. It is not a three-word query or a
+keyword search. A useful brief gives the researcher:
+
+- the work the calling agent is about to perform;
+- the decisions, rules, or unknowns it must resolve;
+- the constraints and edge cases it must check;
+- the form of the result needed by the calling agent.
+
 ```bash
-context-room context ask \
-  "Change session expiration without signing out existing mobile users"
+context-room ask \
+  "We are changing session expiration for mobile users. Find the accepted documents that define current session lifetime, refresh behavior, sign-out rules, and ownership. Explain the exact invariants the implementation must preserve, identify contradictions or missing decisions, and return the useful passages needed to implement and test the change without signing out existing users."
 ```
 
 Optional task context controls the research depth and returned context budget:
 
 ```bash
-context-room context ask \
-  --task "Change session expiration" \
+context-room ask \
+  --task "We are changing session expiration. Research the accepted authentication rules, compare web and mobile behavior, identify constraints and unresolved decisions, and return an implementation-ready synthesis with useful passages." \
   --goal "Keep existing mobile users signed in" \
   --files src/auth/session.ts \
   --depth standard \
@@ -42,7 +50,7 @@ From a nested directory, the command walks upward to the nearest initialized Con
 No local project is required for a shared-only query:
 
 ```bash
-context-room context ask \
+context-room ask \
   --repository git@github.com:example/company-shared-context.git \
   --project payments \
   --task "Change session expiration"
@@ -81,7 +89,7 @@ The CLI indexes Markdown, MDX, text documentation, and semantic HTML exposed thr
 
 ## Research Lifecycle
 
-Every `context ask` call starts a new non-interactive Codex process. Context Room does not resume an earlier research process. Before launch, the parent freezes the accepted local and shared documentation revision. The child receives an enforced `accepted-only` mode, so its later `docs` commands cannot access proposal content through arguments, task environment, or inherited task identity.
+Every `ask` call starts a new non-interactive Codex process. Context Room does not resume an earlier research process. Before launch, the parent freezes the accepted local and shared documentation revision. The child receives an enforced `accepted-only` mode, so its later `docs` commands cannot access proposal content through arguments, task environment, or inherited task identity.
 
 The invocation is equivalent to:
 
@@ -128,7 +136,7 @@ The default output is compact Markdown for the working agent. `--json` exposes t
 ## Boundaries
 
 - `context-room docs` is deterministic and never calls a model.
-- `context-room context ask` is the only surface in this feature that launches Codex.
+- `context-room ask` is the only surface in this feature that launches Codex.
 - The researcher reads documentation only. A separate future role may research code.
 - Research never edits documentation, creates proposals, or suggests changes to the documentation CLI.
 - Documentation or CLI improvements happen during a separate documentation-update task and follow the normal local review or shared proposal workflow.
@@ -150,7 +158,7 @@ Local edits continue through the normal review queue. Context Room does not inve
 
 - `src/doc_agent.mjs`: project resolution, documentation corpus, section retrieval, Codex prompt, invocation, validation, and packet rendering.
 - `schemas/doc-context.schema.json`: final Codex response contract.
-- `bin/context-room.mjs`: public `context ask` and internal `docs` command routing.
+- `bin/context-room.mjs`: public `ask` and internal `docs` command routing.
 - `src/context_room.mjs`: allowed documentation files and graph metadata.
 - `src/shared_context.mjs`: accepted shared main snapshot freshness and shared-only resolution.
 - `test/doc_agent.test.mjs` and `test/shared_context.test.mjs`: corpus, retrieval, accepted-only isolation, frozen provenance, prompt boundary, ephemeral invocation, validation, and rendering coverage.

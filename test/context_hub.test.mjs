@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   clearContextHubRuntime,
+  disconnectContextHubProjectShared,
   listContextHubProjects,
   readContextHubRegistry,
   readContextHubAttention,
@@ -17,10 +18,12 @@ import {
   removeContextHubReviewSnoozes,
   setContextHubProjectOrder,
   setContextHubReviewSnoozes,
+  unregisterContextHubSharedRepository,
   writeContextHubSnapshot,
   writeContextHubRuntime,
 } from "../src/context_hub.mjs";
 import {
+  contextRoomWebAssetBundle,
   createMemoryServer,
   initializeContextRoomProject,
   listProjectExplorerPage,
@@ -69,6 +72,21 @@ test("Context Hub registry keeps local projects and shared repositories independ
   assert.equal(readContextHubRuntime().url, "http://127.0.0.1:4319");
   assert.equal(clearContextHubRuntime(43210), true);
   assert.equal(readContextHubRuntime(), null);
+});
+
+test("Context Hub removes a shared repository only after its local projects disconnect", (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-shared-management-"));
+  withHubHome(t, path.join(base, "hub"));
+  const root = makeProject(base, "Connected project");
+  const repository = "git@github.com:example/team-context.git";
+  registerContextHubProject(root, { shared: { repository, projectId: "connected" } });
+
+  assert.throws(() => unregisterContextHubSharedRepository(repository), (error) => error?.code === "shared_repository_in_use");
+  const disconnected = disconnectContextHubProjectShared(root);
+  assert.equal(disconnected.disconnectedLocations, 1);
+  assert.equal(readContextHubRegistry().projects[0].shared, null);
+  assert.deepEqual(unregisterContextHubSharedRepository(repository), { repository, removed: true });
+  assert.equal(readContextHubRegistry().sharedRepositories.length, 0);
 });
 
 test("Context Hub snapshot is private, atomic, versioned, and fails closed when corrupted", (t) => {
@@ -167,11 +185,12 @@ test("registered Git worktrees stay distinct locally but appear as one logical p
   assert.equal(project.localReviews.some((review) => review.worktreeId === agent.id && review.worktreeLabel === "agent/grouped-project"), true);
 
   const html = await (await fetch(origin + "/")).text();
-  assert.match(html, /id="singleProjectWorktreeSwitch"/);
-  assert.match(html, /function contextHubWorktreeSelectorMarkup\(/);
-  assert.match(html, /data-global-project-worktree/);
-  assert.match(html, /data-single-project-worktree/);
-  assert.match(html, /context-hub-worktree-count/);
+  const source = `${html}\n${contextRoomWebAssetBundle().js}`;
+  assert.match(source, /id="singleProjectWorktreeSwitch"/);
+  assert.match(source, /function contextHubWorktreeSelectorMarkup\(/);
+  assert.match(source, /data-global-project-worktree/);
+  assert.match(source, /data-single-project-worktree/);
+  assert.match(source, /context-hub-worktree-count/);
 });
 
 test("Context Room Home combines global review queues without nesting another Home", async (t) => {
@@ -205,74 +224,75 @@ test("Context Room Home combines global review queues without nesting another Ho
   const rootPage = await fetch(origin + "/");
   assert.equal(rootPage.headers.get("content-security-policy"), "frame-ancestors 'self'");
   const rootHtml = await rootPage.text();
-  assert.match(rootHtml, /class="context-room-brand"/);
-  assert.doesNotMatch(rootHtml, /data-context-room-view=/);
-  assert.doesNotMatch(rootHtml, /contextRoomReviewHistory|Review history|contextHubHistoryItems|localReviewHistory/);
-  assert.match(rootHtml, /id="contextHubManageProjects"[^>]*>Manage projects…</);
-  assert.match(rootHtml, /id="openCodexPromptCenter"/);
-  assert.ok(rootHtml.indexOf("Review queue") < rootHtml.indexOf("<h2>Context health</h2>"));
-  assert.doesNotMatch(rootHtml, /Your sections/);
-  assert.doesNotMatch(rootHtml, /id="contextHubHome"/);
-  assert.doesNotMatch(rootHtml, /id="contextHubHomeProjectFrame"/);
-  assert.doesNotMatch(rootHtml, /context-room-project-home-height/);
-  assert.doesNotMatch(rootHtml, /body\.context-hub-project-embed/);
-  assert.match(rootHtml, /id="contextHubProjectPicker"/);
-  assert.match(rootHtml, /id="contextHubProjectPickerSearch"/);
-  assert.match(rootHtml, /data-context-hub-project-picker-trigger="room-home"/);
-  assert.match(rootHtml, /id="contextRoomReviewSourceFilter"/);
-  assert.match(rootHtml, /id="contextRoomReviewSearch"/);
-  assert.match(rootHtml, /data-context-room-review/);
-  assert.match(rootHtml, /class="context-room-review-proposal/);
-  assert.match(rootHtml, /class="context-room-proposal-hitbox"/);
-  assert.match(rootHtml, /context-room-proposal-hitbox[^\n]+data-context-room-review=/);
-  assert.match(rootHtml, /data-context-room-proposal-description=/);
-  assert.match(rootHtml, /data-context-room-proposal-description-toggle=/);
-  assert.match(rootHtml, /function syncContextRoomProposalDescriptionToggles\(\)/);
-  assert.ok(rootHtml.indexOf("const descriptionToggle = event.target.closest") < rootHtml.indexOf("const selectionEntry = event.target.closest"));
-  assert.doesNotMatch(rootHtml, /data-context-room-proposal-toggle/);
-  assert.match(rootHtml, /id="contextRoomReviewSelection"/);
-  assert.match(rootHtml, /id="contextRoomReviewContextMenu"/);
-  assert.match(rootHtml, /data-context-room-review-entry=/);
-  assert.match(rootHtml, /addEventListener\("contextmenu"/);
-  assert.match(rootHtml, /data-context-room-selection-toggle=/);
-  assert.match(rootHtml, /state\.contextRoomSelectedReviews\.size > 0 && selectionEntry/);
-  assert.match(rootHtml, /function toggleContextRoomReviewSelection\(item\)/);
-  assert.doesNotMatch(rootHtml, /data-context-room-select=/);
-  assert.match(rootHtml, /data-context-room-reject-selected/);
-  assert.doesNotMatch(rootHtml, /data-context-room-review-visibility="snoozed"/);
-  assert.match(rootHtml, /data-context-room-snooze-open=/);
-  assert.match(rootHtml, /data-context-room-snooze-selected/);
-  assert.match(rootHtml, /data-context-room-snooze-preset="1h"/);
-  assert.match(rootHtml, /data-context-room-snooze-duration/);
-  assert.match(rootHtml, /data-context-room-snooze-time/);
-  assert.match(rootHtml, /Only the versions currently shown are hidden/);
-  assert.match(rootHtml, /id: "review-snoozed"/);
-  assert.match(rootHtml, /id="settingsSnoozedReviewSearch"/);
-  assert.match(rootHtml, /data-settings-unsnooze-review=/);
-  assert.match(rootHtml, /data-global-context-snooze-reviews/);
-  assert.match(rootHtml, /data-context-snooze-reviews/);
-  assert.match(rootHtml, /function contextRoomReviewSnooze\(item\)/);
-  assert.match(rootHtml, /snooze\.revisionToken !== item\.revisionToken/);
-  assert.match(rootHtml, /data-global-context-priority="top"/);
-  assert.match(rootHtml, /title: "Project priority"/);
-  assert.doesNotMatch(rootHtml, /data-context-room-reject-proposal/);
-  assert.match(rootHtml, /\/api\/context-hub\/reject/);
-  assert.match(rootHtml, /exact Git revision stays archived on a rejected branch/);
-  assert.match(rootHtml, /Local files stay atomic\. Shared changes stay grouped by proposal\./);
-  assert.match(rootHtml, /function buildContextRoomModeCodexPrompt/);
-  assert.match(rootHtml, /data-context-room-mode-prompt="shared"/);
-  assert.match(rootHtml, /Two review flows are active for/);
-  assert.match(rootHtml, /state\.contextHubSource = "all"/);
-  assert.match(rootHtml, /function contextRoomReviewPriority/);
-  assert.match(rootHtml, /function renderContextRoomGlobalReviewQueue/);
-  assert.match(rootHtml, /CONTEXT_HUB_HOME_REVIEW_LIMIT = 80/);
-  assert.match(rootHtml, /id="sharedProposalProjectFilter"[^>]+aria-haspopup="dialog"/);
-  assert.match(rootHtml, /function renderContextHubProjectPicker/);
-  assert.match(rootHtml, /contextHubProjectPickerQuery = event\.target\.value/);
-  assert.match(rootHtml, /state\.activeProjectLocationId = IS_GLOBAL_CONTEXT_ROOM/);
-  assert.match(rootHtml, /x-context-room-target-project/);
-  assert.match(rootHtml, /target\.searchParams\.set\("hub", "1"\)/);
-  assert.doesNotMatch(rootHtml, /state\.contextHubView = "review"/);
+  const rootSource = `${rootHtml}\n${contextRoomWebAssetBundle().js}`;
+  assert.match(rootSource, /class="context-room-brand"/);
+  assert.doesNotMatch(rootSource, /data-context-room-view=/);
+  assert.doesNotMatch(rootSource, /contextRoomReviewHistory|Review history|contextHubHistoryItems|localReviewHistory/);
+  assert.match(rootSource, /id="contextHubManageProjects"[^>]*>Manage projects…</);
+  assert.match(rootSource, /id="openCodexPromptCenter"/);
+  assert.ok(rootSource.indexOf("Review queue") < rootSource.indexOf("<h2>Context health</h2>"));
+  assert.doesNotMatch(rootSource, /Your sections/);
+  assert.doesNotMatch(rootSource, /id="contextHubHome"/);
+  assert.doesNotMatch(rootSource, /id="contextHubHomeProjectFrame"/);
+  assert.doesNotMatch(rootSource, /context-room-project-home-height/);
+  assert.doesNotMatch(rootSource, /body\.context-hub-project-embed/);
+  assert.match(rootSource, /id="contextHubProjectPicker"/);
+  assert.match(rootSource, /id="contextHubProjectPickerSearch"/);
+  assert.match(rootSource, /data-context-hub-project-picker-trigger="room-home"/);
+  assert.match(rootSource, /id="contextRoomReviewSourceFilter"/);
+  assert.match(rootSource, /id="contextRoomReviewSearch"/);
+  assert.match(rootSource, /data-context-room-review/);
+  assert.match(rootSource, /class="context-room-review-proposal/);
+  assert.match(rootSource, /class="context-room-proposal-hitbox"/);
+  assert.match(rootSource, /context-room-proposal-hitbox[^\n]+data-context-room-review=/);
+  assert.match(rootSource, /data-context-room-proposal-description=/);
+  assert.match(rootSource, /data-context-room-proposal-description-toggle=/);
+  assert.match(rootSource, /function syncContextRoomProposalDescriptionToggles\(\)/);
+  assert.ok(rootSource.indexOf("const descriptionToggle = event.target.closest") < rootSource.indexOf("const selectionEntry = event.target.closest"));
+  assert.doesNotMatch(rootSource, /data-context-room-proposal-toggle/);
+  assert.match(rootSource, /id="contextRoomReviewSelection"/);
+  assert.match(rootSource, /id="contextRoomReviewContextMenu"/);
+  assert.match(rootSource, /data-context-room-review-entry=/);
+  assert.match(rootSource, /addEventListener\("contextmenu"/);
+  assert.match(rootSource, /data-context-room-selection-toggle=/);
+  assert.match(rootSource, /state\.contextRoomSelectedReviews\.size > 0 && selectionEntry/);
+  assert.match(rootSource, /function toggleContextRoomReviewSelection\(item\)/);
+  assert.doesNotMatch(rootSource, /data-context-room-select=/);
+  assert.match(rootSource, /data-context-room-reject-selected/);
+  assert.doesNotMatch(rootSource, /data-context-room-review-visibility="snoozed"/);
+  assert.match(rootSource, /data-context-room-snooze-open=/);
+  assert.match(rootSource, /data-context-room-snooze-selected/);
+  assert.match(rootSource, /data-context-room-snooze-preset="1h"/);
+  assert.match(rootSource, /data-context-room-snooze-duration/);
+  assert.match(rootSource, /data-context-room-snooze-time/);
+  assert.match(rootSource, /Only the versions currently shown are hidden/);
+  assert.match(rootSource, /id: "review-snoozed"/);
+  assert.match(rootSource, /id="settingsSnoozedReviewSearch"/);
+  assert.match(rootSource, /data-settings-unsnooze-review=/);
+  assert.match(rootSource, /data-global-context-snooze-reviews/);
+  assert.match(rootSource, /data-context-snooze-reviews/);
+  assert.match(rootSource, /function contextRoomReviewSnooze\(item\)/);
+  assert.match(rootSource, /snooze\.revisionToken !== item\.revisionToken/);
+  assert.match(rootSource, /data-global-context-priority="top"/);
+  assert.match(rootSource, /title: "Project priority"/);
+  assert.doesNotMatch(rootSource, /data-context-room-reject-proposal/);
+  assert.match(rootSource, /\/api\/context-hub\/reject/);
+  assert.match(rootSource, /exact Git revision stays archived on a rejected branch/);
+  assert.match(rootSource, /Local files stay atomic\. Shared changes stay grouped by proposal\./);
+  assert.match(rootSource, /function buildContextRoomModeCodexPrompt/);
+  assert.match(rootSource, /data-context-room-mode-prompt="shared"/);
+  assert.match(rootSource, /Two review flows are active for/);
+  assert.match(rootSource, /state\.contextHubSource = "all"/);
+  assert.match(rootSource, /function contextRoomReviewPriority/);
+  assert.match(rootSource, /function renderContextRoomGlobalReviewQueue/);
+  assert.match(rootSource, /CONTEXT_HUB_HOME_REVIEW_LIMIT = 80/);
+  assert.match(rootSource, /id="sharedProposalProjectFilter"[^>]+aria-haspopup="dialog"/);
+  assert.match(rootSource, /function renderContextHubProjectPicker/);
+  assert.match(rootSource, /contextHubProjectPickerQuery = event\.target\.value/);
+  assert.match(rootSource, /state\.activeProjectLocationId = IS_GLOBAL_CONTEXT_ROOM/);
+  assert.match(rootSource, /x-context-room-target-project/);
+  assert.match(rootSource, /target\.searchParams\.set\("hub", "1"\)/);
+  assert.doesNotMatch(rootSource, /state\.contextHubView = "review"/);
   const hubResponse = await fetch(origin + "/api/context-hub/refresh", {
     method: "POST",
     headers: { "content-type": "application/json", "x-context-room-project": room.projectId },
@@ -335,6 +355,11 @@ test("Context Room Home combines global review queues without nesting another Ho
   const reviewPage = await (await fetch(origin + "/api/context-hub/review-queue?limit=1")).json();
   assert.equal(reviewPage.items.length, 1);
   assert.ok(reviewPage.nextCursor);
+  const compactLocalItem = reviewPage.items.find((item) => item.type === "local");
+  if (compactLocalItem?.reviews?.length) {
+    assert.deepEqual(compactLocalItem.files, []);
+    assert.equal("dependencyVersions" in compactLocalItem.reviews[0], false);
+  }
   const sectionsPage = await (await fetch(origin + "/api/context-hub/sections")).json();
   assert.equal(sectionsPage.projects.some((project) => project.projectKey === secondProject.projectKey && project.hubSections.length > 0), true);
   const attentionResponse = await fetch(origin + `/api/context-hub/attention?projectId=${encodeURIComponent(secondEntry.id)}`);
@@ -507,7 +532,9 @@ test("Context Room keeps a 150-project registry complete in the live picker whil
   assert.ok(hub.projects.length >= 150);
 
   const html = await (await fetch(origin + "/")).text();
-  assert.match(html, /visibleReviews = renderedReviews\.slice\(0, CONTEXT_HUB_HOME_REVIEW_LIMIT\)/);
-  assert.match(html, /choices: needle \? projects : \[null, \.\.\.projects\]/);
-  assert.match(html, /contextHubProjectPickerQuery = event\.target\.value/);
+  const bundle = contextRoomWebAssetBundle();
+  assert.ok(Buffer.byteLength(html) < 100_000);
+  assert.match(bundle.js, /visibleReviews = renderedReviews\.slice\(0, CONTEXT_HUB_HOME_REVIEW_LIMIT\)/);
+  assert.match(bundle.js, /choices: needle \? projects : \[null, \.\.\.projects\]/);
+  assert.match(bundle.js, /contextHubProjectPickerQuery = event\.target\.value/);
 });

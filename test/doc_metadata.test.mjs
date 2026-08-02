@@ -30,8 +30,15 @@ test("minimal Markdown metadata derives truth from the path", () => {
   assert.deepEqual(metadata.dependsOn, ["product.review.policy"]);
   assert.equal(metadata.truthState, "current");
   assert.equal(metadata.status, "current");
+  assert.equal(documentTruthStateForPath("docs/product/capabilities/review.md"), "current");
+  assert.equal(documentTruthStateForPath("docs/lifecycle/changes/active/review.md"), "target");
+  assert.equal(documentTruthStateForPath("docs/lifecycle/changes/archive/review.md"), "historical");
+  assert.equal(documentTruthStateForPath("docs/lifecycle/decisions/review-policy.md"), "historical");
+  assert.equal(documentTruthStateForPath("docs/lifecycle/records/incidents/review.md"), "historical");
   assert.equal(documentTruthStateForPath("docs/evolution/changes/active/review.md"), "target");
   assert.equal(documentTruthStateForPath("docs/evolution/changes/archive/review.md"), "historical");
+  assert.equal(documentTruthStateForPath("docs/target/review.md"), "target");
+  assert.equal(documentTruthStateForPath("docs/review_target.md"), "target");
 });
 
 test("legacy and mixed metadata remain readable", () => {
@@ -41,6 +48,14 @@ test("legacy and mixed metadata remain readable", () => {
   const mixed = parseDocMetadata("---\ncontext_room:\n  id: product.review.queue\n  kind: canonical\n  status: current\n---\n", "docs/review.md");
   assert.equal(mixed.contract, "legacy");
   assert.equal(mixed.id, "product.review.queue");
+});
+
+test("legacy target status remains a supported target-truth alias", () => {
+  const metadata = parseDocMetadata("---\ncontext_room:\n  kind: canonical\n  status: target\n  canonical_for: review-next\n---\n", "docs/review-next.md");
+  assert.equal(metadata.contract, "legacy");
+  assert.equal(metadata.statusValid, true);
+  assert.equal(metadata.status, "target");
+  assert.equal(metadata.truthState, "target");
 });
 
 test("HTML metadata is read only from the comment immediately after doctype", () => {

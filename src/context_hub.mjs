@@ -278,6 +278,22 @@ export function registerContextHubSharedRepository(repository) {
   return registry.sharedRepositories.at(-1);
 }
 
+export function unregisterContextHubSharedRepository(repository) {
+  const safeRepository = cleanRepository(repository);
+  const registry = readContextHubRegistry();
+  const connectedProjects = registry.projects.filter((entry) => entry.shared?.repository === safeRepository);
+  if (connectedProjects.length) {
+    const error = new Error("Disconnect every local project before removing this shared repository from Context Room");
+    error.code = "shared_repository_in_use";
+    error.details = { projectIds: connectedProjects.map((entry) => entry.id) };
+    throw error;
+  }
+  const existed = registry.sharedRepositories.some((entry) => entry.repository === safeRepository);
+  registry.sharedRepositories = registry.sharedRepositories.filter((entry) => entry.repository !== safeRepository);
+  writeJson(registryPath(), registry);
+  return { repository: safeRepository, removed: existed };
+}
+
 export function registerContextHubProject(root, { title = "", shared = null } = {}) {
   const projectRoot = stableRoot(root);
   const configPath = path.join(projectRoot, ".context-room", "config.json");
@@ -300,7 +316,12 @@ export function registerContextHubProject(root, { title = "", shared = null } = 
       projectId: String(shared.projectId).trim(),
     } : existing?.shared || null,
   };
-  registry.projects = [...registry.projects.filter((project) => project.id !== id), entry];
+  const logicalProjectId = entry.logicalProjectId || entry.id;
+  registry.projects = [...registry.projects.filter((project) => project.id !== id), entry].map((project) => (
+    entry.shared && (project.logicalProjectId || project.id) === logicalProjectId
+      ? { ...project, shared: entry.shared }
+      : project
+  ));
   if (entry.shared) {
     const existingRepository = registry.sharedRepositories.find((item) => item.repository === entry.shared.repository);
     registry.sharedRepositories = [
@@ -310,6 +331,22 @@ export function registerContextHubProject(root, { title = "", shared = null } = 
   }
   writeJson(registryPath(), registry);
   return entry;
+}
+
+export function disconnectContextHubProjectShared(root) {
+  const projectRoot = stableRoot(root);
+  const registry = readContextHubRegistry();
+  const selected = registry.projects.find((entry) => entry.id === stableProjectId(projectRoot));
+  if (!selected) throw new Error(`Context Hub project is not registered: ${projectRoot}`);
+  const logicalProjectId = selected.logicalProjectId || selected.id;
+  let changed = 0;
+  registry.projects = registry.projects.map((entry) => {
+    if ((entry.logicalProjectId || entry.id) !== logicalProjectId || !entry.shared) return entry;
+    changed += 1;
+    return { ...entry, shared: null };
+  });
+  writeJson(registryPath(), registry);
+  return { projectId: selected.id, logicalProjectId, disconnectedLocations: changed };
 }
 
 export function listContextHubProjects({ refreshGit = false } = {}) {

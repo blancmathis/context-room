@@ -47,14 +47,18 @@ Start the global room without registering the current directory:
 context-room hub
 ```
 
-Inspect the user-local catalog or add a shared repository without connecting a local project:
+Inspect the user-local catalog, connect a selected project to a shared
+repository, list proposals, or open the project in a Workspace:
 
 ```bash
-context-room hub list
-context-room hub add-shared --repository git@github.com:example/company-shared-context.git
-context-room hub proposals --session <task-id>
-context-room hub open --session <task-id>
+context-room hub status
+context-room shared connect --project <project-id> --repository git@github.com:example/company-shared-context.git
+context-room proposal list --project <project-id> --session <task-id>
+context-room ui open --project <project-id>
 ```
+
+If the repository contains several possible shared project IDs and Context
+Room cannot infer the match, add `--shared-project <shared-project-id>`.
 
 `setup` and `start` register their initialized project and focus it inside the
 global room. `init` remains write-only. Shared setup records the repository and
@@ -71,8 +75,8 @@ appear.
 
 `hub proposals` exposes the aggregated proposal index to agents and can filter by project or Codex task ID. `hub open` prints a deep link into the running Context Room with the same focus.
 
-Use `context-room workspace open --project <id>` to create a deep link for a
-new Workspace, or add `--file <path>` to focus a document. A normal project
+Use `context-room ui open --project <id>` to create a deep link for a new
+Workspace, or add `--file <path>` to focus a document. A normal project
 click reuses the current Workspace. Modified clicks, middle-click, and **Open
 in new workspace** preserve independent browser-tab behavior.
 

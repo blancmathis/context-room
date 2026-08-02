@@ -1,6 +1,6 @@
 {
   "name": "context-room",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Local-first documentation control room for AI-assisted projects.",
   "type": "module",
   "homepage": "https://www.npmjs.com/package/context-room",
@@ -30,7 +30,12 @@
     "start": "node bin/context-room.mjs start",
     "init": "node bin/context-room.mjs init",
     "doctor": "node bin/context-room.mjs doctor",
-    "test": "node --check src/context_room.mjs && node --check bin/context-room.mjs && node --check scripts/update-context-rooms.mjs && node --test test/*.test.mjs",
+    "test": "node --check src/context_room.mjs && node --check bin/context-room.mjs && node --check scripts/update-context-rooms.mjs && node --check scripts/run-tests.mjs && node --check scripts/audit-layout-css.mjs && node scripts/audit-layout-css.mjs && node scripts/run-tests.mjs",
+    "test:ux-smoke": "playwright test --grep @smoke",
+    "test:ux-soak": "playwright test --project=chromium-desktop --grep @soak",
+    "test:perf": "playwright test --project=chromium-desktop --grep @perf",
+    "test:layout": "node scripts/audit-layout-css.mjs && playwright test --grep @layout",
+    "audit:layout": "node scripts/audit-layout-css.mjs --json && CONTEXT_ROOM_LAYOUT_REPORT=1 playwright test --grep @layout",
     "package:privacy": "node scripts/check-package-privacy.mjs",
     "prepack": "npm run package:privacy",
     "update:rooms": "node scripts/update-context-rooms.mjs",
@@ -58,5 +63,8 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1"
   }
 }

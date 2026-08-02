@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import Ajv2020 from "ajv/dist/2020.js";
 
 import {
   acceptSharedReview,
@@ -13,12 +14,14 @@ import {
   connectSharedContext,
   createSharedProposal,
   detectSharedProject,
+  disconnectSharedContext,
   ensureSharedProposal,
   initializeSharedRepository,
   importSharedInstructions,
   importSharedSkills,
   linkSharedSkillLocation,
   listSharedProposalWorkspaces,
+  listRegisteredSharedBindings,
   listSharedRepositoryProposals,
   listSharedProposals,
   materializeSharedRepositoryReview,
@@ -103,14 +106,43 @@ test("shared proposal review keeps navigation and automatic completion in the pr
   assert.match(html, /Every registered project in this shared/);
   assert.match(html, /data-shared-provider-global/);
   assert.match(html, /data-shared-provider-project/);
+  assert.match(html, /Control both Shared Skills and Shared Instructions/);
   assert.match(html, /Select a project in the Explorer/);
   assert.match(html, /How shared skills work/);
   assert.match(html, /Collections and assignments/);
   assert.match(html, /Local destinations and conflicts/);
   assert.match(html, /Shared resources/);
+  assert.match(html, /Projects and shared contexts/);
+  assert.match(html, /What is a Shared Context\?/);
+  assert.match(html, /data-settings-help-trigger/);
+  assert.match(html, /aria-haspopup="dialog"/);
+  assert.match(html, /role="dialog" aria-modal="true"/);
+  assert.match(html, /One canonical source/);
+  assert.match(html, /Shared Skills/);
+  assert.match(html, /Shared Instructions/);
+  assert.match(html, /Hooks stay local/);
+  assert.match(html, /human accepts or rejects its files/);
+  assert.match(html, /\.context-room\/shared-repository\.json/);
+  assert.match(html, /skill-locations\.json/);
+  assert.match(html, /instruction-locations\.json/);
+  assert.match(html, /never replaces unmanaged files or links/);
+  assert.match(html, /showSharedContextHelpDialog/);
+  assert.match(html, /data-shared-context-help-close/);
+  assert.doesNotMatch(html, /data-settings-disclosure="project-shared-explainer"/);
+  assert.match(html, /Shared repositories/);
+  assert.match(html, /Selected project connection/);
+  assert.match(html, /data-add-shared-repository/);
+  assert.match(html, /data-connect-shared-context/);
+  assert.match(html, /\/api\/context-hub\/shared-repositories/);
+  assert.match(html, /\/api\/context-hub\/project-shared-context/);
   assert.match(html, /How shared instructions work/);
   assert.match(html, /Import or update instruction files/);
+  assert.match(html, /Use these instructions in/);
   assert.match(html, /AGENTS\.md, AGENTS\.override\.md, CLAUDE\.md/);
+  assert.match(html, /Active in provider/);
+  assert.match(html, /Installed but not discovered/);
+  assert.match(html, /Requires provider configuration/);
+  assert.match(html, /Unmanaged conflict/);
   assert.match(html, /\/api\/shared-instructions\/locations/);
   assert.match(html, /\/api\/shared-instructions\/import\/preview/);
   assert.match(html, /data-shared-instructions-reconcile/);
@@ -127,6 +159,9 @@ test("shared proposal review keeps navigation and automatic completion in the pr
   assert.match(html, /id="contextRoomReviewSearch"/);
   assert.match(html, /data-context-room-review/);
   assert.match(html, /visibleReviews = renderedReviews\.slice\(0, CONTEXT_HUB_HOME_REVIEW_LIMIT\)/);
+  assert.match(html, /const visibleEntries = entries\.slice\(0, Math\.max\(40, Number\(state\.proposalReviewVisibleCount \|\| 40\)\)\)/);
+  assert.match(html, /data-proposal-review-more/);
+  assert.match(html, /const overviewFiles = files\.slice\(0, 12\)/);
   assert.match(html, /workspaceHead\.dataset\.view = state\.contextHubView/);
   assert.match(html, /x-context-room-target-project/);
   assert.match(html, /target\.searchParams\.set\("hub", "1"\)/);
@@ -349,6 +384,56 @@ function withSharedHome(t, fixture) {
   });
 }
 
+test("disconnecting a shared context clears only the local binding and project configuration", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  assert.equal(listRegisteredSharedBindings(fixture.remote).length, 1);
+  assert.equal(readSharedProjectConnection(fixture.project).projectId, "demo");
+
+  const result = disconnectSharedContext(fixture.project);
+  assert.equal(result.disconnected, true);
+  assert.equal(listRegisteredSharedBindings(fixture.remote).length, 0);
+  assert.equal(readSharedProjectConnection(fixture.project), null);
+  assert.equal(fs.existsSync(fixture.remote), true);
+});
+
+test("primary edit creates, lists, and reopens an exact shared proposal worktree", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const env = { ...process.env };
+  const description = "Clarify the complete onboarding sequence, ownership boundaries, failure handling, and verification steps in the accepted documentation.";
+
+  let result = spawnSync(process.execPath, [cli, "edit", "create", description, `--root=${fixture.project}`, "--session=editing-session", "--contract=v2", "--format=json"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  const created = JSON.parse(result.stdout).data;
+  assert.equal(created.description, description);
+  assert.match(created.proposal.branch, /^proposal\/demo\//);
+  assert.equal(fs.existsSync(created.editRoot), true);
+
+  const nestedProjectFolder = path.join(fixture.project, "docs", "work");
+  fs.mkdirSync(nestedProjectFolder, { recursive: true });
+  result = spawnSync(process.execPath, [cli, "edit", "list", "--contract=v2", "--format=json"], { cwd: nestedProjectFolder, encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  const listed = JSON.parse(result.stdout).data;
+  assert.equal(listed.proposals.length, 1);
+  assert.equal(listed.proposals[0].branch, created.proposal.branch);
+  assert.equal(listed.proposals[0].description, description);
+
+  result = spawnSync(process.execPath, [cli, "edit", "open", created.proposal.branch, "--contract=v2", "--format=json"], { cwd: fixture.base, encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  const reopened = JSON.parse(result.stdout).data;
+  assert.equal(reopened.proposal.branch, created.proposal.branch);
+  assert.equal(reopened.editRoot, created.editRoot);
+  assert.equal(reopened.proposal.reused, true);
+
+  result = spawnSync(process.execPath, [cli, "edit", "create", "Document a separate onboarding change with its own complete scope and verification steps.", `--root=${fixture.project}`, "--session=editing-session", "--contract=v2", "--format=json"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  const second = JSON.parse(result.stdout).data;
+  assert.notEqual(second.proposal.branch, created.proposal.branch);
+});
+
 test("shared main primitives follow the configured remote branch and ignore proposal-only commits", (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-shared-trunk-"));
   const remote = path.join(base, "remote.git");
@@ -536,6 +621,226 @@ test("accepted Shared Instructions project arbitrary Markdown instruction files 
   assert.equal(fs.readFileSync(path.join(fixture.project, "AGENTS.md"), "utf8"), "# Local owner file\n");
 });
 
+test("Shared Instructions distinguish installed links from provider activation and obey local provider preferences", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  writeFile(fixture.seed, "instructions/team/CALL.md", "# Call instructions\n");
+  writeFile(fixture.seed, "instruction-locations.json", JSON.stringify({
+    version: 1,
+    collections: [{ id: "team", title: "Team", path: "instructions/team" }],
+    assignments: [{ id: "team-project", collectionId: "team", scope: "project", projectIds: ["demo"], files: [{ source: "CALL.md", target: "CALL.md", providers: ["codex"] }] }],
+  }, null, 2) + "\n");
+  git(fixture.seed, ["add", "."]);
+  git(fixture.seed, ["commit", "-m", "Add arbitrary instruction target"]);
+  git(fixture.seed, ["push", "origin", "main"]);
+
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  let link = sharedInstructionLocationsStatus(fixture.project, { refresh: false }).links.find((item) => item.relativeTarget === "CALL.md");
+  assert.equal(link.materializationStatus, "installed");
+  assert.equal(link.activationStatus, "inactive");
+  assert.equal(fs.lstatSync(path.join(fixture.project, "CALL.md")).isSymbolicLink(), true);
+
+  writeFile(fixture.project, ".codex/config.toml", 'project_doc_fallback_filenames = ["CALL.md"]\n');
+  reconcileSharedInstructionLocations(fixture.project, { provider: "codex" });
+  link = sharedInstructionLocationsStatus(fixture.project, { refresh: false }).links.find((item) => item.relativeTarget === "CALL.md");
+  assert.equal(link.activationStatus, "configured");
+
+  fs.writeFileSync(path.join(fixture.project, "AGENTS.md"), "# Native instructions take precedence\n", "utf8");
+  reconcileSharedInstructionLocations(fixture.project, { provider: "codex" });
+  link = sharedInstructionLocationsStatus(fixture.project, { refresh: false }).links.find((item) => item.relativeTarget === "CALL.md");
+  assert.equal(link.activationStatus, "shadowed");
+  assert.match(link.activationReason, /AGENTS\.md before configured fallback/);
+
+  setSharedSkillProviderSettings(fixture.project, { projectOverrides: { codex: "disabled" } });
+  link = sharedInstructionLocationsStatus(fixture.project, { refresh: false }).links.find((item) => item.relativeTarget === "CALL.md");
+  assert.equal(link.status, "provider-disabled");
+  assert.equal(fs.existsSync(path.join(fixture.project, "CALL.md")), false);
+});
+
+test("provider-targeted Shared Instructions reconcile leaves other provider links on their previous snapshot", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  writeFile(fixture.seed, "instructions/team/AGENTS.md", "# Codex v1\n");
+  writeFile(fixture.seed, "instructions/team/CLAUDE.md", "# Claude v1\n");
+  writeFile(fixture.seed, "instruction-locations.json", JSON.stringify({
+    version: 1,
+    collections: [{ id: "team", title: "Team", path: "instructions/team" }],
+    assignments: [{
+      id: "team-project",
+      collectionId: "team",
+      scope: "project",
+      projectIds: ["demo"],
+      files: [
+        { source: "AGENTS.md", target: "AGENTS.md", providers: ["codex"] },
+        { source: "CLAUDE.md", target: "CLAUDE.md", providers: ["claude-code"] },
+      ],
+    }],
+  }, null, 2) + "\n");
+  git(fixture.seed, ["add", "."]);
+  git(fixture.seed, ["commit", "-m", "Add provider instructions"]);
+  git(fixture.seed, ["push", "origin", "main"]);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const codexDestination = path.join(fixture.project, "AGENTS.md");
+  const claudeDestination = path.join(fixture.project, "CLAUDE.md");
+  const oldCodexTarget = fs.realpathSync(codexDestination);
+  const oldClaudeTarget = fs.realpathSync(claudeDestination);
+
+  writeFile(fixture.seed, "instructions/team/AGENTS.md", "# Codex v2\n");
+  writeFile(fixture.seed, "instructions/team/CLAUDE.md", "# Claude v2\n");
+  git(fixture.seed, ["add", "."]);
+  git(fixture.seed, ["commit", "-m", "Update provider instructions"]);
+  git(fixture.seed, ["push", "origin", "main"]);
+
+  reconcileSharedInstructionLocations(fixture.project, { allowOffline: false, provider: "codex" });
+  assert.notEqual(fs.realpathSync(codexDestination), oldCodexTarget);
+  assert.equal(fs.realpathSync(claudeDestination), oldClaudeTarget);
+  reconcileSharedInstructionLocations(fixture.project, { allowOffline: false, provider: "claude-code" });
+  assert.notEqual(fs.realpathSync(claudeDestination), oldClaudeTarget);
+});
+
+test("Shared Instructions reconciliations serialize and recover an abandoned destination lock", async (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  writeFile(fixture.seed, "instructions/team/AGENTS.md", "# Shared instructions\n");
+  writeFile(fixture.seed, "instruction-locations.json", JSON.stringify({
+    version: 1,
+    collections: [{ id: "team", title: "Team", path: "instructions/team" }],
+    assignments: [{ id: "team-project", collectionId: "team", scope: "project", projectIds: ["demo"], files: [{ source: "AGENTS.md", target: "AGENTS.md", providers: ["codex"] }] }],
+  }, null, 2) + "\n");
+  git(fixture.seed, ["add", "."]);
+  git(fixture.seed, ["commit", "-m", "Add shared instructions"]);
+  git(fixture.seed, ["push", "origin", "main"]);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+
+  const destination = path.resolve(fixture.project, "AGENTS.md");
+  const registryPath = path.join(process.env.CONTEXT_ROOM_SHARED_HOME, "managed-destinations.json");
+  const lockKey = createHash("sha256").update(registryPath).digest("hex").slice(0, 24);
+  const lock = path.join(process.env.CONTEXT_ROOM_SHARED_HOME, "locks", `${lockKey}.lock`);
+  fs.mkdirSync(lock, { recursive: true });
+  fs.writeFileSync(path.join(lock, "owner.json"), JSON.stringify({ pid: 2_147_483_647, createdAt: new Date(Date.now() - 60_000).toISOString(), destination: registryPath }));
+  writeFile(fixture.seed, "instructions/team/AGENTS.md", "# Updated shared instructions\n");
+  git(fixture.seed, ["add", "."]);
+  git(fixture.seed, ["commit", "-m", "Update shared instructions"]);
+  git(fixture.seed, ["push", "origin", "main"]);
+  fs.unlinkSync(destination);
+  reconcileSharedInstructionLocations(fixture.project, { allowOffline: false, provider: "codex" });
+  assert.equal(fs.existsSync(lock), false);
+
+  const moduleUrl = new URL("../src/shared_context.mjs", import.meta.url).href;
+  const source = `import { reconcileSharedInstructionLocations } from ${JSON.stringify(moduleUrl)}; reconcileSharedInstructionLocations(process.argv[1], { provider: "codex" });`;
+  const run = () => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", source, fixture.project], {
+      env: { ...process.env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("exit", (code) => code === 0 ? resolve() : reject(new Error(stderr || `reconcile exited ${code}`)));
+  });
+  await Promise.all([run(), run()]);
+  assert.equal(fs.lstatSync(destination).isSymbolicLink(), true);
+  assert.match(fs.realpathSync(destination), /snapshots\/.*\/instructions\/team\/AGENTS\.md$/);
+});
+
+test("accepted instruction imports archive an unchanged source that is also the provider destination", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const localInstruction = path.join(fixture.project, "AGENTS.md");
+  fs.writeFileSync(localInstruction, "# Imported agent instructions\n", "utf8");
+  const imported = importSharedInstructions(fixture.project, {
+    collectionId: "agents",
+    collectionTitle: "Agent instructions",
+    collectionPath: "instructions/agents",
+    files: [{ localPath: localInstruction, source: "AGENTS.md", target: "AGENTS.md", providers: ["codex"] }],
+    sessionId: "instruction-import-test",
+  });
+  assert.equal(fs.lstatSync(localInstruction).isFile(), true);
+  const review = materializeSharedReview(fixture.project, { proposal: imported.proposal.branch });
+  for (const file of imported.proposal.files) writeDocReviewDecision(review.reviewRoot, file, { status: "verified", note: "Reviewed exact instruction import" });
+  configureGit(review.reviewRoot);
+  assert.equal(acceptSharedReview(review.reviewRoot, { message: "Accept shared instructions" }).accepted, true);
+  syncSharedContext(fixture.project, { allowOffline: false });
+
+  assert.equal(fs.lstatSync(localInstruction).isSymbolicLink(), true);
+  assert.match(fs.realpathSync(localInstruction), /snapshots\/.*\/instructions\/agents\/AGENTS\.md$/);
+  const localState = readSharedSkillLocalState(fixture.project);
+  assert.equal(localState.pendingInstructionImports.length, 0);
+  const backupRoot = path.join(sharedContextStatus(fixture.project).cacheRoot, "instruction-import-backups");
+  assert.equal(fs.readdirSync(backupRoot).length, 1);
+});
+
+test("partial instruction acceptance cannot merge a manifest that references a rejected source", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const localInstruction = path.join(fixture.base, "AGENTS.md");
+  fs.writeFileSync(localInstruction, "# Imported instructions\n", "utf8");
+  const imported = importSharedInstructions(fixture.project, {
+    collectionId: "agents",
+    collectionPath: "instructions/agents",
+    files: [{ localPath: localInstruction, source: "AGENTS.md", target: "AGENTS.md", providers: ["codex"] }],
+  });
+  const review = materializeSharedReview(fixture.project, { proposal: imported.proposal.branch });
+  fs.rmSync(path.join(review.reviewRoot, "instructions/agents/AGENTS.md"));
+  writeDocReviewDecision(review.reviewRoot, "instruction-locations.json", { status: "verified", note: "Manifest selected without its source" });
+  configureGit(review.reviewRoot);
+  assert.throws(() => acceptSharedReview(review.reviewRoot), /references a missing accepted file/);
+  assert.throws(() => git(fixture.seed, ["show", "origin/main:instruction-locations.json"]));
+});
+
+test("an instruction import source changed after preview is never archived or replaced", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const localInstruction = path.join(fixture.project, "AGENTS.md");
+  fs.writeFileSync(localInstruction, "# Previewed instructions\n", "utf8");
+  const imported = importSharedInstructions(fixture.project, {
+    collectionId: "agents",
+    collectionPath: "instructions/agents",
+    files: [{ localPath: localInstruction, source: "AGENTS.md", target: "AGENTS.md", providers: ["codex"] }],
+  });
+  fs.writeFileSync(localInstruction, "# Newer local instructions\n", "utf8");
+  const review = materializeSharedReview(fixture.project, { proposal: imported.proposal.branch });
+  for (const file of imported.proposal.files) writeDocReviewDecision(review.reviewRoot, file, { status: "verified", note: "Reviewed import" });
+  configureGit(review.reviewRoot);
+  assert.equal(acceptSharedReview(review.reviewRoot).accepted, true);
+  syncSharedContext(fixture.project, { allowOffline: false });
+
+  assert.equal(fs.lstatSync(localInstruction).isFile(), true);
+  assert.equal(fs.readFileSync(localInstruction, "utf8"), "# Newer local instructions\n");
+  const localState = readSharedSkillLocalState(fixture.project);
+  assert.equal(localState.pendingInstructionImports[0].error, "import-source-changed");
+  assert.equal(sharedInstructionLocationsStatus(fixture.project, { refresh: false }).links.some((item) => item.materializationStatus === "unmanaged-conflict"), true);
+});
+
+test("an accepted instruction import waits for its provider before replacing the local destination", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  setSharedSkillProviderSettings(fixture.project, { projectOverrides: { codex: "disabled" } });
+  const localInstruction = path.join(fixture.project, "AGENTS.md");
+  fs.writeFileSync(localInstruction, "# Deferred agent instructions\n", "utf8");
+  const imported = importSharedInstructions(fixture.project, {
+    collectionId: "agents",
+    collectionPath: "instructions/agents",
+    files: [{ localPath: localInstruction, source: "AGENTS.md", target: "AGENTS.md", providers: ["codex"] }],
+  });
+  const review = materializeSharedReview(fixture.project, { proposal: imported.proposal.branch });
+  for (const file of imported.proposal.files) writeDocReviewDecision(review.reviewRoot, file, { status: "verified", note: "Reviewed deferred import" });
+  configureGit(review.reviewRoot);
+  assert.equal(acceptSharedReview(review.reviewRoot).accepted, true);
+  syncSharedContext(fixture.project, { allowOffline: false });
+
+  assert.equal(fs.lstatSync(localInstruction).isFile(), true);
+  assert.equal(readSharedSkillLocalState(fixture.project).pendingInstructionImports[0].error, "provider-disabled");
+
+  setSharedSkillProviderSettings(fixture.project, { projectOverrides: { codex: "enabled" } });
+  assert.equal(fs.lstatSync(localInstruction).isSymbolicLink(), true);
+  assert.equal(readSharedSkillLocalState(fixture.project).pendingInstructionImports.length, 0);
+});
+
 test("Shared Instructions assignment and import changes stay proposal-only until human acceptance", (t) => {
   const fixture = makeFixture();
   withSharedHome(t, fixture);
@@ -553,6 +858,9 @@ test("Shared Instructions assignment and import changes stay proposal-only until
     files: [{ source: "AGENTS.md", target: "apps/calls/AGENTS.md", providers: ["codex"] }],
   });
   assert.equal(preview.proposalRequired, true);
+  assert.equal(preview.mappings[0].activationStatus, "active");
+  assert.equal(preview.mappings[0].materializationStatus, "pending");
+  assert.equal(preview.mappings[0].localBehavior.includes("managed link"), true);
   const proposed = proposeSharedInstructionAssignment(fixture.project, {
     collectionId: "team",
     scope: "project",
@@ -587,6 +895,11 @@ test("shared instructions CLI uses machine-readable preview and exact apply", (t
   const runInstructions = (args) => JSON.parse(execFileSync(process.execPath, [cli, "shared", "instructions", ...args, "--root", fixture.project, "--format", "json"], { encoding: "utf8", env: { ...process.env, NODE_TEST_CONTEXT: "1" } })).data;
   const status = runInstructions(["status"]);
   assert.equal(status.collections[0].id, "team");
+  const reconcilePlan = runInstructions(["reconcile", "--provider", "codex"]);
+  assert.equal(reconcilePlan.input.provider, "codex");
+  assert.equal(reconcilePlan.preview.provider, "codex");
+  const reconciled = runInstructions(["reconcile", "--apply", reconcilePlan.planId, "--provider", "codex"]);
+  assert.equal(reconciled.result.provider, "codex");
   const plan = runInstructions(["assign", "--collection", "team", "--files", mappings, "--scope", "project", "--projects", "demo"]);
   assert.equal(plan.proposalRequired, true);
   assert.equal(plan.preview.assignment.files[0].target, "AGENTS.md");
@@ -606,8 +919,8 @@ test("shared setup publishes an exact main snapshot and safe global/project skil
   assert.equal(fs.readFileSync(path.join(synced.current, "projects/demo/docs/README.md"), "utf8"), "# Demo\n\nInitial.\n");
   assert.equal(fs.statSync(path.join(synced.current, "projects/demo/docs/README.md")).mode & 0o222, 0);
 
-  const globalLink = path.join(process.env.HOME, ".codex/skills/global-workflow");
-  const projectLink = path.join(fixture.project, ".codex/skills/demo-workflow");
+  const globalLink = path.join(process.env.HOME, ".agents/skills/global-workflow");
+  const projectLink = path.join(fixture.project, ".agents/skills/demo-workflow");
   assert.equal(fs.lstatSync(globalLink).isSymbolicLink(), true);
   assert.equal(fs.lstatSync(projectLink).isSymbolicLink(), true);
   assert.match(fs.realpathSync(globalLink), /snapshots\/[a-f0-9]{40}\/skills\/global\/global-workflow$/);
@@ -625,8 +938,10 @@ test("shared setup publishes an exact main snapshot and safe global/project skil
 test("legacy shared skills are synthesized and unmanaged collisions remain untouched", (t) => {
   const fixture = makeFixture();
   withSharedHome(t, fixture);
-  const unmanaged = path.join(fixture.project, ".codex/skills/demo-workflow");
-  writeFile(fixture.project, ".codex/skills/demo-workflow/SKILL.md", "# Local owner copy\n");
+  const unmanaged = path.join(fixture.project, ".agents/skills/demo-workflow");
+  const legacyUnmanaged = path.join(fixture.project, ".codex/skills/legacy-owner/SKILL.md");
+  writeFile(fixture.project, ".agents/skills/demo-workflow/SKILL.md", "# Local owner copy\n");
+  writeFile(fixture.project, ".codex/skills/legacy-owner/SKILL.md", "# Legacy local owner\n");
 
   const synced = connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
   const status = sharedSkillLocationsStatus(fixture.project, { refresh: false });
@@ -636,7 +951,50 @@ test("legacy shared skills are synthesized and unmanaged collisions remain untou
   assert.equal(status.destinations.some((destination) => destination.status === "conflict"), true);
   assert.equal(fs.lstatSync(unmanaged).isDirectory(), true);
   assert.equal(fs.readFileSync(path.join(unmanaged, "SKILL.md"), "utf8"), "# Local owner copy\n");
+  assert.equal(fs.readFileSync(legacyUnmanaged, "utf8"), "# Legacy local owner\n");
   assert.equal(fs.existsSync(path.join(synced.current, "projects/demo/docs/README.md")), true);
+});
+
+test("managed Codex links migrate atomically and remain installed when the official destination is blocked", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+
+  const officialLink = path.join(fixture.project, ".agents/skills/demo-workflow");
+  const legacyLink = path.join(fixture.project, ".codex/skills/demo-workflow");
+  const target = fs.realpathSync(officialLink);
+  fs.rmSync(officialLink);
+  fs.mkdirSync(path.dirname(legacyLink), { recursive: true });
+  fs.symlinkSync(target, legacyLink);
+
+  const projectKey = createHash("sha256").update(fs.realpathSync(fixture.project)).digest("hex").slice(0, 16);
+  const repositoryCache = fs.readdirSync(process.env.CONTEXT_ROOM_SHARED_HOME, { withFileTypes: true })
+    .find((entry) => entry.isDirectory() && fs.existsSync(path.join(process.env.CONTEXT_ROOM_SHARED_HOME, entry.name, "skill-links")))?.name;
+  assert.ok(repositoryCache);
+  const registryPath = path.join(process.env.CONTEXT_ROOM_SHARED_HOME, repositoryCache, "skill-links", `${projectKey}.json`);
+  const registry = JSON.parse(fs.readFileSync(registryPath, "utf8"));
+  for (const link of registry.links) {
+    if (link.provider !== "codex" || link.name !== "demo-workflow") continue;
+    link.link = legacyLink;
+    link.destination = path.dirname(legacyLink);
+  }
+  for (const destination of registry.destinations) {
+    if (destination.provider !== "codex" || destination.scope !== "project") continue;
+    destination.destination = path.dirname(legacyLink);
+    for (const link of destination.links || []) {
+      if (link.name !== "demo-workflow") continue;
+      link.link = legacyLink;
+      link.destination = path.dirname(legacyLink);
+    }
+  }
+  fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2) + "\n");
+
+  writeFile(fixture.project, ".agents/skills/demo-workflow/SKILL.md", "# Unmanaged official destination\n");
+  const synced = syncSharedContext(fixture.project, { allowOffline: false, forceReconcile: true });
+
+  assert.equal(fs.lstatSync(legacyLink).isSymbolicLink(), true);
+  assert.equal(fs.readFileSync(path.join(officialLink, "SKILL.md"), "utf8"), "# Unmanaged official destination\n");
+  assert.ok(synced.skillMigrations.some((migration) => migration.provider === "codex" && migration.status === "blocked" && migration.previousDestination === path.dirname(legacyLink)));
 });
 
 test("two shared contexts never resolve a same-name device skill by implicit priority", (t) => {
@@ -644,16 +1002,110 @@ test("two shared contexts never resolve a same-name device skill by implicit pri
   const second = makeFixture();
   withSharedHome(t, first);
   const firstSync = connectSharedContext(first.project, { repository: first.remote, projectId: "demo" });
-  const deviceLink = path.join(process.env.HOME, ".codex/skills/global-workflow");
+  const deviceLink = path.join(process.env.HOME, ".agents/skills/global-workflow");
   const firstTarget = fs.realpathSync(deviceLink);
 
   const secondSync = connectSharedContext(second.project, { repository: second.remote, projectId: "demo" });
   const secondStatus = sharedSkillLocationsStatus(second.project, { refresh: false });
 
   assert.equal(secondStatus.destinations.some((destination) => destination.scope === "device" && destination.status === "conflict"), true);
+  assert.equal(secondStatus.conflicts.some((conflict) => conflict.owner?.repository === first.remote || String(conflict.reason || "").includes(first.remote)), true);
   assert.equal(fs.realpathSync(deviceLink), firstTarget);
   assert.equal(fs.existsSync(path.join(firstSync.current, "projects/demo/docs/README.md")), true);
   assert.equal(fs.existsSync(path.join(secondSync.current, "projects/demo/docs/README.md")), true);
+});
+
+test("two shared contexts expose both owners for one device instruction destination", (t) => {
+  const first = makeFixture();
+  const second = makeFixture();
+  withSharedHome(t, first);
+  for (const fixture of [first, second]) {
+    writeFile(fixture.seed, "instructions/team/AGENTS.md", `# ${path.basename(fixture.base)} instructions\n`);
+    writeFile(fixture.seed, "instruction-locations.json", JSON.stringify({
+      version: 1,
+      collections: [{ id: "team", title: "Team", path: "instructions/team" }],
+      assignments: [{ id: "team-device", collectionId: "team", scope: "device", projectIds: [], files: [{ source: "AGENTS.md", target: "AGENTS.md", providers: ["codex"] }] }],
+    }, null, 2) + "\n");
+    git(fixture.seed, ["add", "."]);
+    git(fixture.seed, ["commit", "-m", "Add device instructions"]);
+    git(fixture.seed, ["push", "origin", "main"]);
+  }
+
+  connectSharedContext(first.project, { repository: first.remote, projectId: "demo" });
+  const destination = path.join(process.env.HOME, ".codex", "AGENTS.md");
+  const firstTarget = fs.realpathSync(destination);
+  connectSharedContext(second.project, { repository: second.remote, projectId: "demo" });
+  const conflicted = sharedInstructionLocationsStatus(second.project, { refresh: false }).links.find((item) => item.destination === destination);
+
+  assert.equal(conflicted.materializationStatus, "shared-owner-conflict");
+  assert.equal(conflicted.owner.repository, first.remote);
+  assert.equal(fs.realpathSync(destination), firstTarget);
+});
+
+test("two isolated machines keep provider preferences local and receive instructions only after accepted main advances", (t) => {
+  const fixture = makeFixture();
+  const projectB = path.join(fixture.base, "project-b");
+  fs.mkdirSync(projectB, { recursive: true });
+  initializeContextRoomProject(projectB, { title: "Demo B", allowedPaths: ["README.md"], watchAllow: [] });
+  writeFile(fixture.seed, "instructions/team/AGENTS.md", "# Shared agents\n");
+  writeFile(fixture.seed, "instruction-locations.json", JSON.stringify({ version: 1, collections: [{ id: "team", title: "Team", path: "instructions/team" }], assignments: [] }, null, 2) + "\n");
+  git(fixture.seed, ["add", "."]);
+  git(fixture.seed, ["commit", "-m", "Add instruction collection"]);
+  git(fixture.seed, ["push", "origin", "main"]);
+
+  const originalHome = process.env.HOME;
+  const originalSharedHome = process.env.CONTEXT_ROOM_SHARED_HOME;
+  const homeA = path.join(fixture.base, "machine-a");
+  const homeB = path.join(fixture.base, "machine-b");
+  const useMachine = (home) => {
+    fs.mkdirSync(home, { recursive: true });
+    process.env.HOME = home;
+    process.env.CONTEXT_ROOM_SHARED_HOME = path.join(home, ".context-room", "shared");
+  };
+  t.after(() => {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalSharedHome === undefined) delete process.env.CONTEXT_ROOM_SHARED_HOME;
+    else process.env.CONTEXT_ROOM_SHARED_HOME = originalSharedHome;
+  });
+
+  useMachine(homeA);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  setSharedSkillProviderSettings(fixture.project, { projectOverrides: { codex: "disabled" } });
+  const proposed = proposeSharedInstructionAssignment(fixture.project, {
+    collectionId: "team",
+    scope: "project",
+    projectIds: ["demo"],
+    files: [{ source: "AGENTS.md", target: "AGENTS.md", providers: ["codex"] }],
+  });
+  assert.equal(sharedInstructionLocationsStatus(fixture.project, { refresh: false }).assignments.length, 0);
+
+  useMachine(homeB);
+  connectSharedContext(projectB, { repository: fixture.remote, projectId: "demo" });
+  assert.equal(sharedSkillProviderPreferences().providers.codex, "enabled");
+  assert.equal(sharedInstructionLocationsStatus(projectB, { refresh: false }).assignments.length, 0);
+
+  useMachine(homeA);
+  const review = materializeSharedReview(fixture.project, { proposal: proposed.proposal.branch });
+  for (const file of proposed.proposal.files) writeDocReviewDecision(review.reviewRoot, file, { status: "verified", note: "Reviewed on machine A" });
+  configureGit(review.reviewRoot);
+  assert.equal(acceptSharedReview(review.reviewRoot).accepted, true);
+  syncSharedContext(fixture.project, { allowOffline: false });
+  assert.equal(fs.existsSync(path.join(fixture.project, "AGENTS.md")), false);
+
+  useMachine(homeB);
+  syncSharedContext(projectB, { allowOffline: false });
+  assert.equal(fs.lstatSync(path.join(projectB, "AGENTS.md")).isSymbolicLink(), true);
+  const acceptedTarget = fs.realpathSync(path.join(projectB, "AGENTS.md"));
+  const offlineRemote = `${fixture.remote}.offline`;
+  fs.renameSync(fixture.remote, offlineRemote);
+  try {
+    const offline = syncSharedContext(projectB, { allowOffline: true });
+    assert.equal(offline.online, false);
+    assert.equal(fs.realpathSync(path.join(projectB, "AGENTS.md")), acceptedTarget);
+  } finally {
+    fs.renameSync(offlineRemote, fixture.remote);
+  }
 });
 
 test("custom shared skill locations link and unlink only managed symlinks", (t) => {
@@ -679,7 +1131,7 @@ test("custom shared skill locations link and unlink only managed symlinks", (t) 
   assert.equal(cliStatus.collections.some((collection) => collection.id === "project-demo"), true);
   const overridden = setSharedSkillLocationOverride(fixture.project, { assignmentId: "project-demo-all", disabled: true });
   assert.equal(overridden.status.destinations.some((item) => item.assignmentId === "project-demo-all" && item.status === "local-override"), true);
-  assert.equal(fs.existsSync(path.join(fixture.project, ".codex/skills/demo-workflow")), false);
+  assert.equal(fs.existsSync(path.join(fixture.project, ".agents/skills/demo-workflow")), false);
   setSharedSkillLocationOverride(fixture.project, { assignmentId: "project-demo-all", disabled: false });
 
   const mount = linked.mount;
@@ -706,7 +1158,7 @@ test("provider-targeted reconciliation leaves other provider destinations untouc
   git(fixture.seed, ["commit", "-m", "Declare two providers"]);
   git(fixture.seed, ["push", "origin", "main"]);
   connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
-  const codexLink = path.join(fixture.project, ".codex/skills/demo-workflow");
+  const codexLink = path.join(fixture.project, ".agents/skills/demo-workflow");
   const claudeLink = path.join(fixture.project, ".claude/skills/demo-workflow");
   fs.unlinkSync(codexLink);
   fs.unlinkSync(claudeLink);
@@ -719,10 +1171,10 @@ test("provider-targeted reconciliation leaves other provider destinations untouc
   setSharedSkillLocationOverride(fixture.project, { assignmentId: "project-demo-all", exclude: ["demo-workflow"] });
   const local = readSharedSkillLocalState(fixture.project);
   const projection = sharedSkillEffectiveProjection(fixture.project, { provider: "codex" });
-  assert.equal(local.version, 2);
+  assert.equal(local.version, 3);
   assert.deepEqual(local.overrides[0].exclude, ["demo-workflow"]);
   assert.equal(projection.destinations[0].filters.localExclude.includes("demo-workflow"), true);
-  const localStatePath = path.join(process.env.CONTEXT_ROOM_SHARED_HOME, fs.readdirSync(process.env.CONTEXT_ROOM_SHARED_HOME).find((name) => /^[a-f0-9]{16}$/.test(name)), "skill-locations-local.json");
+  const localStatePath = path.join(process.env.CONTEXT_ROOM_SHARED_HOME, fs.readdirSync(process.env.CONTEXT_ROOM_SHARED_HOME).find((name) => /^[a-f0-9]{16}$/.test(name)), "shared-resources-local.json");
   assert.equal(fs.statSync(localStatePath).mode & 0o077, 0);
 
   setSharedSkillLocationOverride(fixture.project, { assignmentId: "project-demo-all", disabled: false, exclude: [] });
@@ -749,7 +1201,7 @@ test("provider settings validate and apply device preferences with project overr
   assert.deepEqual(result.affectedProviders.sort(), ["claude-code", "codex"]);
   assert.equal(sharedSkillProviderPreferences().providers.codex, "disabled");
   assert.equal(readSharedSkillLocalState(fixture.project).providerOverrides.some((item) => item.projectId === "demo" && item.provider === "claude-code" && item.state === "disabled"), true);
-  assert.equal(fs.existsSync(path.join(fixture.project, ".codex/skills/demo-workflow")), false);
+  assert.equal(fs.existsSync(path.join(fixture.project, ".agents/skills/demo-workflow")), false);
   assert.equal(fs.existsSync(path.join(fixture.project, ".claude/skills/demo-workflow")), false);
 
   const beforeGlobal = sharedSkillProviderPreferences();
@@ -760,6 +1212,40 @@ test("provider settings validate and apply device preferences with project overr
   );
   assert.deepEqual(sharedSkillProviderPreferences(), beforeGlobal);
   assert.deepEqual(readSharedSkillLocalState(fixture.project), beforeLocal);
+});
+
+test("Shared Resources v3 reads Skills v2 and migrates it only on the first local mutation", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const repositoryDirectory = fs.readdirSync(process.env.CONTEXT_ROOM_SHARED_HOME, { withFileTypes: true })
+    .find((entry) => entry.isDirectory() && /^[a-f0-9]{16}$/.test(entry.name))?.name;
+  assert.ok(repositoryDirectory);
+  const cacheRoot = path.join(process.env.CONTEXT_ROOM_SHARED_HOME, repositoryDirectory);
+  const legacyPath = path.join(cacheRoot, "skill-locations-local.json");
+  const currentPath = path.join(cacheRoot, "shared-resources-local.json");
+  fs.rmSync(currentPath, { force: true });
+  fs.writeFileSync(legacyPath, JSON.stringify({
+    version: 2,
+    mounts: [],
+    overrides: [{ assignmentId: "project-demo-codex", projectId: "demo", disabled: false, exclude: ["demo-workflow"] }],
+    providerOverrides: [],
+    pendingImports: [],
+  }, null, 2) + "\n", { mode: 0o600 });
+
+  const compatible = readSharedSkillLocalState(fixture.project);
+  assert.equal(compatible.version, 3);
+  assert.deepEqual(compatible.overrides[0].exclude, ["demo-workflow"]);
+  assert.equal(fs.existsSync(currentPath), false);
+
+  setSharedSkillProviderOverride(fixture.project, { provider: "codex", state: "enabled" });
+  const migrated = JSON.parse(fs.readFileSync(currentPath, "utf8"));
+  assert.equal(migrated.version, 3);
+  assert.deepEqual(migrated.skillOverrides[0].exclude, ["demo-workflow"]);
+  assert.deepEqual(migrated.pendingInstructionImports, []);
+  const schema = JSON.parse(fs.readFileSync(new URL("../schemas/shared-resource-local-state.schema.json", import.meta.url), "utf8"));
+  const validate = new Ajv2020({ allErrors: true }).compile(schema);
+  assert.equal(validate(migrated), true, JSON.stringify(validate.errors));
 });
 
 test("provider settings roll back both local files when reconciliation fails", (t) => {
@@ -815,7 +1301,7 @@ test("shared skills CLI separates assignment proposals from local destination li
   const unassign = runSkills(["unassign", "--apply", unassignPlan.planId]);
   assert.equal(unassign.result.proposal.scope, "skills");
   assert.match(unassign.result.proposal.branch, /^proposal\//);
-  assert.equal(fs.lstatSync(path.join(fixture.project, ".codex/skills/demo-workflow")).isSymbolicLink(), true);
+  assert.equal(fs.lstatSync(path.join(fixture.project, ".agents/skills/demo-workflow")).isSymbolicLink(), true);
 });
 
 test("shared scope reaches every registered project location and never discovers an unregistered root", (t) => {
@@ -843,9 +1329,9 @@ test("shared scope reaches every registered project location and never discovers
   const preview = previewSharedSkillAssignment(fixture.project, { collectionId: "team", scope: "shared", providers: ["codex"] });
   assert.deepEqual(preview.affectedLocations.sort(), [fs.realpathSync(fixture.project), fs.realpathSync(otherRoot)].sort());
 
-  assert.equal(fs.lstatSync(path.join(fixture.project, ".codex/skills/global-workflow")).isSymbolicLink(), true);
-  assert.equal(fs.lstatSync(path.join(otherRoot, ".codex/skills/global-workflow")).isSymbolicLink(), true);
-  assert.equal(fs.existsSync(path.join(unregisteredRoot, ".codex/skills/global-workflow")), false);
+  assert.equal(fs.lstatSync(path.join(fixture.project, ".agents/skills/global-workflow")).isSymbolicLink(), true);
+  assert.equal(fs.lstatSync(path.join(otherRoot, ".agents/skills/global-workflow")).isSymbolicLink(), true);
+  assert.equal(fs.existsSync(path.join(unregisteredRoot, ".agents/skills/global-workflow")), false);
 });
 
 test("device assignments materialize one physical provider link across registered worktrees", (t) => {
@@ -858,7 +1344,7 @@ test("device assignments materialize one physical provider link across registere
   connectSharedContext(secondRoot, { repository: fixture.remote, projectId: "demo" });
   syncSharedContext(fixture.project, { allowOffline: false });
 
-  const deviceDirectory = path.join(process.env.HOME, ".codex/skills");
+  const deviceDirectory = path.join(process.env.HOME, ".agents/skills");
   assert.equal(fs.readdirSync(deviceDirectory).filter((name) => name === "global-workflow").length, 1);
   assert.equal(sharedSkillLocationsStatus(fixture.project, { refresh: false }).destinations.filter((item) => item.scope === "device" && item.provider === "codex").length, 1);
 });
@@ -867,7 +1353,7 @@ test("provider preferences remove only managed links and project overrides take 
   const fixture = makeFixture();
   withSharedHome(t, fixture);
   connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
-  const managed = path.join(fixture.project, ".codex/skills/demo-workflow");
+  const managed = path.join(fixture.project, ".agents/skills/demo-workflow");
   const unmanaged = path.join(fixture.project, ".claude/skills/local-owner/SKILL.md");
   writeFile(fixture.project, ".claude/skills/local-owner/SKILL.md", "# Local owner\n");
 
@@ -998,8 +1484,8 @@ test("a failed first sync rolls back the approved binding, current snapshot, and
     /JSON/,
   );
   assert.equal(readSharedProjectConnection(fixture.project), null);
-  assert.equal(fs.existsSync(path.join(process.env.HOME, ".codex/skills/global-workflow")), false);
-  assert.equal(fs.existsSync(path.join(fixture.project, ".codex/skills/demo-workflow")), false);
+  assert.equal(fs.existsSync(path.join(process.env.HOME, ".agents/skills/global-workflow")), false);
+  assert.equal(fs.existsSync(path.join(fixture.project, ".agents/skills/demo-workflow")), false);
   const cacheDirectory = fs.readdirSync(process.env.CONTEXT_ROOM_SHARED_HOME)
     .find((entry) => /^[a-f0-9]{16}$/.test(entry));
   assert.ok(cacheDirectory);
@@ -1010,7 +1496,7 @@ test("rebinding replaces only the previously managed paths and skill links", (t)
   const fixture = makeFixture();
   withSharedHome(t, fixture);
   const first = connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
-  const projectLink = path.join(fixture.project, ".codex/skills/demo-workflow");
+  const projectLink = path.join(fixture.project, ".agents/skills/demo-workflow");
   const firstTarget = fs.realpathSync(projectLink);
   const secondRemote = path.join(fixture.base, "second-remote.git");
   git(fixture.base, ["clone", "--bare", fixture.seed, secondRemote], { stdio: "ignore" });
@@ -1650,7 +2136,7 @@ test("sync removes only obsolete managed skill links", (t) => {
   const fixture = makeFixture();
   withSharedHome(t, fixture);
   connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
-  const managedLink = path.join(fixture.project, ".codex/skills/demo-workflow");
+  const managedLink = path.join(fixture.project, ".agents/skills/demo-workflow");
   assert.equal(fs.lstatSync(managedLink).isSymbolicLink(), true);
   fs.rmSync(path.join(fixture.seed, "projects/demo/skills/demo-workflow"), { recursive: true });
   git(fixture.seed, ["add", "-A"]);
@@ -1704,8 +2190,8 @@ test("project catalog resolves nested cwd and the same binding in another worktr
   assert.equal(explicit.projectRoot, fs.realpathSync(firstProject));
   connectSharedContext(nested, { repository: fixture.remote, projectId: "demo" });
   assert.equal(readSharedProjectConnection(nested).projectRoot, fs.realpathSync(firstProject));
-  assert.equal(fs.lstatSync(path.join(firstProject, ".codex/skills/demo-workflow")).isSymbolicLink(), true);
-  assert.equal(fs.existsSync(path.join(nested, ".codex/skills/demo-workflow")), false);
+  assert.equal(fs.lstatSync(path.join(firstProject, ".agents/skills/demo-workflow")).isSymbolicLink(), true);
+  assert.equal(fs.existsSync(path.join(nested, ".agents/skills/demo-workflow")), false);
 
   const secondNested = path.join(secondClone, "products/demo/website");
   const secondConnection = readSharedProjectConnection(secondNested);
@@ -1714,15 +2200,15 @@ test("project catalog resolves nested cwd and the same binding in another worktr
   const secondProject = path.join(secondClone, "products/demo");
   initializeContextRoomProject(secondProject, { title: "Demo second worktree" });
   connectSharedContext(secondNested, { repository: fixture.remote, projectId: "demo" });
-  assert.equal(fs.lstatSync(path.join(secondProject, ".codex/skills/demo-workflow")).isSymbolicLink(), true);
+  assert.equal(fs.lstatSync(path.join(secondProject, ".agents/skills/demo-workflow")).isSymbolicLink(), true);
 
   fs.rmSync(path.join(fixture.seed, "projects/demo/skills/demo-workflow"), { recursive: true });
   git(fixture.seed, ["add", "-A"]);
   git(fixture.seed, ["commit", "-m", "Remove registered worktree skill"]);
   git(fixture.seed, ["push", "origin", "main"]);
   syncSharedContext(firstProject, { allowOffline: false });
-  assert.equal(fs.existsSync(path.join(firstProject, ".codex/skills/demo-workflow")), false);
-  assert.equal(fs.existsSync(path.join(secondProject, ".codex/skills/demo-workflow")), false);
+  assert.equal(fs.existsSync(path.join(firstProject, ".agents/skills/demo-workflow")), false);
+  assert.equal(fs.existsSync(path.join(secondProject, ".agents/skills/demo-workflow")), false);
 });
 
 test("shared Context Room API lists proposals and opens an exact review room", async (t) => {

@@ -43,7 +43,14 @@ HTML uses the same body in a comment immediately after `<!doctype html>`. IDs co
 
 Legacy metadata remains readable indefinitely. Context Room never rewrites frontmatter during an ordinary Save. Provider-native agent instruction and skill files do not require this ID.
 
-For the official compatibility profile, truth follows the managed path: ordinary paths are current, target paths remain target, and archive, decision, or record paths remain historical. Current local content enters effective context only after a human validates its exact hash. Shared content is accepted only from the configured main branch.
+For the official compatibility profile, truth follows the managed path. Ordinary
+paths are current. `docs/lifecycle/changes/active/`, `_target.*`, and `target/`
+are target layers. `docs/lifecycle/changes/archive/`, decisions, and records are
+historical. The former `docs/evolution/changes/...` paths remain compatibility
+aliases so an existing corpus is never reclassified merely because it has not
+been migrated. Current local content enters effective context only after a
+human validates its exact hash. Shared content is accepted only from the
+configured main branch.
 
 Content acceptance and dependency freshness are separate. A dependency change does not revoke an already accepted content hash or remove it from effective context. It creates a focused task showing the old and new dependency versions. **Confirm still current** updates only the versions observed during review and does not propagate another invalidation.
 

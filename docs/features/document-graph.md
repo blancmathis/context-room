@@ -14,7 +14,7 @@ context_room:
 
 Graph is a human navigation view for proven relationships between managed documentation resources. It helps a person move from the global project landscape to one project's documents, then to the immediate context around one file.
 
-Graph is different from the CLI's `context graph` command. The visual Document Graph describes references between documents and their explicitly applicable context. `context graph` is the machine-readable Context Engine model that explains which resources apply to an exact project, worktree, folder, and provider.
+Graph is different from the Context Engine's internal structural graph. The visual Document Graph describes references between documents and their explicitly applicable context. Agents normally use `context effective`, `context explain`, or `context impact`; an expert can include the structural graph explicitly with `context effective --include graph`.
 
 ## Views
 

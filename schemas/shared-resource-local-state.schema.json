@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://unpkg.com/context-room@latest/schemas/shared-resource-local-state.schema.json",
+  "title": "Context Room shared resources local state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "skillMounts", "skillOverrides", "providerOverrides", "pendingSkillImports", "pendingInstructionImports"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "const": 3 },
+    "updatedAt": { "type": "string" },
+    "skillMounts": { "type": "array", "items": { "$ref": "#/$defs/skillMount" } },
+    "skillOverrides": { "type": "array", "items": { "$ref": "#/$defs/skillOverride" } },
+    "providerOverrides": { "type": "array", "items": { "$ref": "#/$defs/providerOverride" } },
+    "pendingSkillImports": { "type": "array", "items": { "$ref": "#/$defs/pendingSkillImport" } },
+    "pendingInstructionImports": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "proposal", "proposalHead", "collectionId", "assignmentId", "scope", "projectId", "files", "createdAt"],
+        "properties": {
+          "id": { "type": "string" },
+          "proposal": { "type": "string" },
+          "proposalHead": { "type": "string" },
+          "collectionId": { "type": "string" },
+          "assignmentId": { "type": "string" },
+          "scope": { "enum": ["project", "shared", "device"] },
+          "projectId": { "type": "string" },
+          "createdAt": { "type": "string" },
+          "error": { "type": "string" },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["localPath", "contentHash", "source", "target", "providers", "destinations"],
+              "properties": {
+                "localPath": { "type": "string" },
+                "contentHash": { "type": "string" },
+                "source": { "type": "string" },
+                "target": { "type": "string" },
+                "providers": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+                "destinations": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "safeId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+    "provider": { "enum": ["codex", "claude-code", "opencode", "custom"] },
+    "scope": { "enum": ["project", "shared", "device"] },
+    "selection": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "skillMount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "assignmentId", "collectionId", "destination", "provider", "scope", "projectId", "include", "exclude", "enabled"],
+      "properties": {
+        "id": { "$ref": "#/$defs/safeId" },
+        "assignmentId": { "type": "string" },
+        "collectionId": { "$ref": "#/$defs/safeId" },
+        "destination": { "type": "string", "minLength": 1 },
+        "provider": { "$ref": "#/$defs/provider" },
+        "scope": { "$ref": "#/$defs/scope" },
+        "projectId": { "type": "string" },
+        "include": { "$ref": "#/$defs/selection" },
+        "exclude": { "$ref": "#/$defs/selection" },
+        "enabled": { "type": "boolean" }
+      }
+    },
+    "skillOverride": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assignmentId", "projectId", "disabled", "exclude"],
+      "properties": {
+        "assignmentId": { "$ref": "#/$defs/safeId" },
+        "projectId": { "type": "string" },
+        "disabled": { "type": "boolean" },
+        "exclude": { "$ref": "#/$defs/selection" }
+      }
+    },
+    "providerOverride": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projectId", "provider", "state"],
+      "properties": {
+        "projectId": { "$ref": "#/$defs/safeId" },
+        "provider": { "enum": ["codex", "claude-code", "opencode"] },
+        "state": { "enum": ["inherit", "enabled", "disabled"] }
+      }
+    },
+    "pendingSkillImport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "proposal", "proposalHead", "collectionId", "sourceDirectory", "destination", "skills", "createdAt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/safeId" },
+        "proposal": { "type": "string", "minLength": 1 },
+        "proposalHead": { "type": "string" },
+        "collectionId": { "$ref": "#/$defs/safeId" },
+        "sourceDirectory": { "type": "string", "minLength": 1 },
+        "destination": { "type": "string", "minLength": 1 },
+        "skills": { "$ref": "#/$defs/selection" },
+        "createdAt": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

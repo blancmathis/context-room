@@ -18,6 +18,7 @@ import {
   runDocumentationAgent,
   searchDocumentation,
   traceDocumentation,
+  validateCodexStructuredOutputSchema,
 } from "../src/doc_agent.mjs";
 
 const cli = fileURLToPath(new URL("../bin/context-room.mjs", import.meta.url));
@@ -93,7 +94,7 @@ const packet = {
   currentFacts: [{ claim: "Sessions expire after thirty days.", excerpt: "Sessions expire after thirty days of inactivity.", path: "docs/sessions.md", section: "Sessions > Expiration", truthState: "current", revision: "abc123", contentHash: "1111111111111111111111111111111111111111111111111111111111111111" }],
   constraints: [{ claim: "Existing mobile clients must stay signed in.", excerpt: "Existing mobile clients must stay signed in.", path: "docs/sessions.md", section: "Sessions > Mobile constraint", truthState: "current", revision: "abc123", contentHash: "2222222222222222222222222222222222222222222222222222222222222222" }],
   decisions: [],
-  targetDifferences: [{ claim: "Refresh-token rotation is target behavior.", excerpt: "Rotate refresh tokens after every use.", path: "docs/targets/sessions_target.md", section: "Session target > Rotation", truthState: "target", revision: "abc123", contentHash: "3333333333333333333333333333333333333333333333333333333333333333" }],
+  targetDifferences: [],
   unknowns: [],
   conflicts: [],
   optionalReads: [{ path: "docs/index.md", section: "Documentation", reason: "Project documentation route." }],
@@ -103,12 +104,11 @@ const packet = {
 function packetForRoot(root) {
   const expiration = readDocumentation(root, "docs/sessions.md#expiration", { budget: 300 });
   const mobile = readDocumentation(root, "docs/sessions.md#mobile-constraint", { budget: 300 });
-  const rotation = readDocumentation(root, "docs/targets/sessions_target.md#rotation", { budget: 300 });
   return {
     ...structuredClone(packet),
     currentFacts: [{ claim: "Sessions expire after thirty days.", excerpt: "Sessions expire after thirty days of inactivity.", path: expiration.path, section: expiration.section, truthState: expiration.truthState, revision: expiration.revision, contentHash: expiration.contentHash }],
     constraints: [{ claim: "Existing mobile clients must stay signed in.", excerpt: "Existing mobile clients must stay signed in.", path: mobile.path, section: mobile.section, truthState: mobile.truthState, revision: mobile.revision, contentHash: mobile.contentHash }],
-    targetDifferences: [{ claim: "Refresh-token rotation is target behavior.", excerpt: "Rotate refresh tokens after every use.", path: rotation.path, section: rotation.section, truthState: rotation.truthState, revision: rotation.revision, contentHash: rotation.contentHash }],
+    targetDifferences: [],
   };
 }
 
@@ -188,6 +188,7 @@ test("accepted-only corpus excludes unverified documents and ignores proposal ov
   assert.equal(corpus.access.acceptedOnly, true);
   assert.equal(corpus.session, null);
   assert.equal(corpus.documents.some((document) => document.path === "docs/unverified.md"), false);
+  assert.equal(corpus.documents.some((document) => document.truthState !== "current"), false);
   assert.equal(corpus.documents.some((document) => document.truthState === "proposal" || document.source === "session-proposal"), false);
 });
 
@@ -212,7 +213,7 @@ test("documentation agent prompt limits research to docs and forbids self-improv
   assert.doesNotMatch(prompt, /docs .* capabilities/);
   assert.match(prompt, /approximately 900 tokens/);
   assert.match(prompt, /One evidence item must cite exactly one section/);
-  assert.match(prompt, /Use targetDifferences only for differences explicitly supported by target documentation/);
+  assert.match(prompt, /Return an empty targetDifferences array/);
   assert.match(prompt, /short, exact, contiguous excerpt/);
   assert.match(prompt, /accepted-only corpus/);
   assert.doesNotMatch(prompt, /pendingSessionChanges/);
@@ -223,11 +224,12 @@ test("documentation agent launches a fresh read-only Codex exec for every call",
   const root = documentationRoot(t);
   const cliPath = path.join(root, "bin", "context-room.mjs");
   const currentPacket = packetForRoot(root);
+  const researchBrief = "We are changing session expiration for mobile users. Find the accepted rules, verify refresh and sign-out constraints, identify missing decisions, and return an implementation-ready synthesis.";
   let invocation = null;
   const result = runDocumentationAgent({
     root,
     cliPath,
-    task: "Explain session expiration",
+    task: researchBrief,
     codexBin: "/test/codex",
     spawnSyncImpl(command, args, options) {
       invocation = { command, args, options };
@@ -246,11 +248,12 @@ test("documentation agent launches a fresh read-only Codex exec for every call",
   assert.equal(invocation.options.env.CONTEXT_ROOM_DOC_ACCEPTED_ONLY, "1");
   assert.equal(invocation.options.env.CONTEXT_ROOM_DOC_SESSION, "");
   assert.equal(invocation.options.env.CONTEXT_ROOM_DOC_PROPOSALS, "");
-  assert.match(invocation.options.input, /Explain session expiration/);
+  assert.match(invocation.options.input, /We are changing session expiration for mobile users/);
+  assert.match(invocation.options.input, /identify missing decisions/);
   assert.doesNotMatch(invocation.options.input, /proposal head|pendingSessionChanges/);
 });
 
-test("cold agent packet exposes deterministic coverage without promoting target documentation", (t) => {
+test("cold agent packet exposes deterministic accepted-only coverage", (t) => {
   const root = documentationRoot(t);
   const currentPacket = packetForRoot(root);
   const result = runDocumentationAgent({
@@ -266,10 +269,9 @@ test("cold agent packet exposes deterministic coverage without promoting target 
 
   assert.equal(result.packet.coverage.schemaVersion, "context-room.context-coverage/2");
   assert.equal(result.packet.coverage.candidateUniverse.acceptedCurrent, 2);
-  assert.equal(result.packet.coverage.candidateUniverse.target, 1);
+  assert.equal(result.packet.coverage.candidateUniverse.target, 0);
   assert.ok(result.packet.coverage.included.paths.includes("docs/sessions.md"));
-  assert.equal(result.packet.coverage.included.paths.includes("docs/targets/sessions_target.md"), false);
-  assert.ok(result.packet.coverage.included.evidencePaths.includes("docs/targets/sessions_target.md"));
+  assert.equal(result.packet.coverage.included.evidencePaths.includes("docs/targets/sessions_target.md"), false);
   assert.ok(result.packet.coverage.obligations.some((item) => item.id === "working-file:src/auth/session.ts"));
   assert.ok(result.packet.coverage.limitations.some((item) => /proposal content is unavailable/i.test(item)));
   assert.equal("proposals" in result.packet.coverage.candidateUniverse, false);
@@ -322,7 +324,15 @@ test("documentation agent keeps proposal evidence out of accepted truth fields",
     spawnSyncImpl() {
       return { status: 0, signal: null, stdout: JSON.stringify(invalid), stderr: "" };
     },
-  }), /contains unmerged proposal evidence/);
+  }), /contains non-current evidence/);
+});
+
+test("Codex output schema is strict before invocation", () => {
+  const schema = JSON.parse(fs.readFileSync(path.resolve("schemas/doc-context.schema.json"), "utf8"));
+  assert.equal(validateCodexStructuredOutputSchema(schema), true);
+  const invalid = structuredClone(schema);
+  delete invalid.$defs.evidence.properties.claim.type;
+  assert.throws(() => validateCodexStructuredOutputSchema(invalid), /must declare an explicit type/);
 });
 
 test("documentation packet renderer keeps evidence and coverage compact", () => {
@@ -359,21 +369,22 @@ test("CLI exposes compact generic document inspection primitives", (t) => {
   }
 });
 
-test("CLI context ask delegates one structured request to Codex", (t) => {
+test("CLI ask delegates one structured request to Codex", (t) => {
   const root = documentationRoot(t);
   const currentPacket = packetForRoot(root);
+  const researchBrief = "We are changing session expiration for mobile users. Find the accepted rules, verify refresh and sign-out constraints, identify missing decisions, and return an implementation-ready synthesis.";
   const fakeCodex = path.join(root, "fake-codex.mjs");
   fs.writeFileSync(fakeCodex, `#!/usr/bin/env node
 let prompt = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => { prompt += chunk; });
 process.stdin.on("end", () => {
-  if (!prompt.includes("Explain session expiration") || !process.argv.includes("--ephemeral")) process.exit(9);
+  if (!prompt.includes("We are changing session expiration for mobile users") || !prompt.includes("identify missing decisions") || !process.argv.includes("--ephemeral")) process.exit(9);
   process.stdout.write(${JSON.stringify(JSON.stringify(currentPacket))});
 });
 `);
   fs.chmodSync(fakeCodex, 0o755);
-  const result = spawnSync(process.execPath, [cli, "context", "ask", "Explain session expiration", `--root=${root}`, "--json"], {
+  const result = spawnSync(process.execPath, [cli, "ask", researchBrief, `--root=${root}`, "--json"], {
     cwd: root,
     encoding: "utf8",
     env: { ...process.env, CONTEXT_ROOM_CODEX_BIN: fakeCodex, NODE_TEST_CONTEXT: "1" },
@@ -382,5 +393,25 @@ process.stdin.on("end", () => {
   assert.equal(result.status, 0, result.stderr);
   const output = JSON.parse(result.stdout);
   assert.equal(output.summary, currentPacket.summary);
+  assert.match(output.coverage.docsRevision, /^[a-f0-9]{64}$/);
+});
+
+test("CLI ask satisfies the real Codex structured-output contract", {
+  skip: process.env.CONTEXT_ROOM_REAL_CODEX_TEST !== "1",
+  timeout: 120_000,
+}, (t) => {
+  const root = documentationRoot(t);
+  const result = spawnSync(process.execPath, [cli, "ask", "When do sessions expire?", `--root=${root}`, "--json", "--depth=quick", "--budget=400"], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 110_000,
+    env: { ...process.env, NODE_TEST_CONTEXT: "1" },
+  });
+
+  assert.equal(result.error, undefined, result.error?.message);
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.match(output.summary, /session/i);
+  assert.ok([...output.currentFacts, ...output.constraints, ...output.decisions].length > 0);
   assert.match(output.coverage.docsRevision, /^[a-f0-9]{64}$/);
 });

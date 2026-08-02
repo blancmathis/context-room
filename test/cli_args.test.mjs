@@ -10,6 +10,14 @@ import { CONFIG_FILE, REVIEW_GATE_FILE } from "../src/context_room.mjs";
 
 const cli = path.resolve("bin/context-room.mjs");
 const packageVersion = JSON.parse(fs.readFileSync(path.resolve("package.json"), "utf8")).version;
+const previousHubHome = process.env.CONTEXT_ROOM_HUB_HOME;
+const cliTestHubHome = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-cli-test-hub-"));
+process.env.CONTEXT_ROOM_HUB_HOME = cliTestHubHome;
+test.after(() => {
+  if (previousHubHome === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
+  else process.env.CONTEXT_ROOM_HUB_HOME = previousHubHome;
+  fs.rmSync(cliTestHubHome, { recursive: true, force: true });
+});
 
 function makeRoot(t, name = "project") {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-cli-"));
@@ -58,27 +66,32 @@ test("CLI --version exits without initializing a project", (t) => {
   assert.equal(fs.existsSync(missingRoot), false);
 });
 
-test("agent help explains capabilities, commands, and the human-owned review decision without writing project state", (t) => {
+test("removed agent help is replaced by the compact static capabilities contract", (t) => {
   const root = makeRoot(t);
-  const result = spawnSync(process.execPath, [cli, "agent", "help", `--root=${root}`], { encoding: "utf8" });
+  const removed = spawnSync(process.execPath, [cli, "agent", "help", `--root=${root}`], { encoding: "utf8" });
+  assert.notEqual(removed.status, 0);
+  assert.match(removed.stderr, /Unknown agent command: help/);
 
+  const result = spawnSync(process.execPath, [cli, "capabilities", "--profile=worker", "--contract=v2", "--format=json"], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Context Room Agent CLI/);
-  assert.match(result.stdout, /Give this to your agent/);
-  assert.match(result.stdout, /context-room capabilities/);
-  assert.doesNotMatch(result.stdout, /capabilities --intent/);
-  assert.match(result.stdout, /context-room review list --root \./);
-  assert.match(result.stdout, /context-room agent watch --root \./);
-  assert.match(result.stdout, /context-room context ask/);
-  assert.doesNotMatch(result.stdout, /context-room brief --root \./);
-  assert.doesNotMatch(result.stdout, /context-room agent queue --root \./);
-  assert.match(result.stdout, /context-room doctor --root \./);
-  assert.match(result.stdout, /More CLI capabilities/);
-  assert.match(result.stdout, /shared skills status\|effective\|explain\|reconcile\|assign\|unassign\|link\|unlink\|import/);
-  assert.match(result.stdout, /Only a human can accept or reject each file awaiting review/);
-  assert.match(result.stdout, /does not require a separate human decision/);
-  assert.doesNotMatch(result.stdout, /owner-controlled review gate/);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.schema, "context-room.cli/2");
+  assert.deepEqual(payload.data.commands.map((entry) => entry.path), ["ask"]);
+  assert.deepEqual(payload.data.humanOwned, ["accept-file-review", "reject-file-review"]);
   assert.equal(fs.existsSync(path.join(root, ".context-room")), false);
+
+  const invalid = spawnSync(process.execPath, [cli, "capabilities", "--profile=unknown", "--contract=v2", "--format=json"], { encoding: "utf8" });
+  assert.notEqual(invalid.status, 0);
+  const failure = JSON.parse(invalid.stderr);
+  assert.equal(failure.schema, "context-room.cli/2");
+  assert.equal(failure.ok, false);
+  assert.equal(Object.hasOwn(failure, "requestId"), false);
+  assert.equal(Object.hasOwn(failure, "command"), false);
+  assert.equal(Object.hasOwn(failure, "warnings"), false);
+
+  const unsupportedStream = spawnSync(process.execPath, [cli, "capabilities", "--format=jsonl"], { encoding: "utf8" });
+  assert.notEqual(unsupportedStream.status, 0);
+  assert.match(unsupportedStream.stderr, /available only for doctor --all-projects/);
 });
 
 test("redundant discovery and compatibility commands are not executable", () => {
@@ -92,11 +105,11 @@ test("redundant discovery and compatibility commands are not executable", () => 
     ["agent", "explain", "AGENTS.md"],
     ["agent", "queue"],
     ["agent", "review-queue"],
+    ["agent", "help"],
+    ["agent", "instructions"],
     ["brief"],
     ["hub", "start"],
-    ["hub", "status"],
     ["agent", "navigate"],
-    ["shared", "connect"],
     ["shared", "list"],
     ["shared", "proposal-create"],
     ["shared", "proposal-push"],
@@ -121,14 +134,64 @@ test("agent-first CLI emits versioned envelopes, caches prepare, and previews mu
   const capabilities = JSON.parse(result.stdout);
   assert.equal(capabilities.schemaVersion, "context-room.cli/1");
   assert.equal(capabilities.data.contractAudience, "ai-agent");
-  assert.equal(capabilities.data.commands.some((item) => /accept|reject|verify/.test(item.path)), false);
-  assert.equal(capabilities.data.commands.some((item) => item.path === "agent environment"), false);
+  assert.equal(capabilities.data.view, "sections");
+  assert.deepEqual(capabilities.data.primaryCommands.map((item) => item.path), ["ask", "edit"]);
+  assert.deepEqual(capabilities.data.sections.map((item) => item.id), ["documentation", "context", "review", "shared", "workspace", "configuration"]);
+  assert.equal(Object.hasOwn(capabilities.data, "commands"), false);
+  assert.ok(Buffer.byteLength(result.stdout) < 2_000, `default capabilities used ${Buffer.byteLength(result.stdout)} bytes`);
+  assert.equal(result.stdout.trim().includes("\n"), false);
 
-  const registrationPlanResult = spawnSync(process.execPath, [cli, "project", "register", `--root=${root}`, "--format=json"], { encoding: "utf8", env });
-  assert.equal(registrationPlanResult.status, 0, registrationPlanResult.stderr);
-  const registrationPlan = JSON.parse(registrationPlanResult.stdout).data.planId;
-  result = spawnSync(process.execPath, [cli, "project", "register", `--root=${root}`, `--apply=${registrationPlan}`, "--format=json"], { encoding: "utf8", env });
+  result = spawnSync(process.execPath, [cli, "capabilities", "--include=docs", "--format=json"], { encoding: "utf8", env });
   assert.equal(result.status, 0, result.stderr);
+  const docsCapabilities = JSON.parse(result.stdout).data;
+  assert.equal(docsCapabilities.namespace, "docs");
+  assert.deepEqual(docsCapabilities.commands.map((item) => item.path), ["docs search", "docs inspect"]);
+  assert.ok(Buffer.byteLength(result.stdout) < 4_000);
+
+  result = spawnSync(process.execPath, [cli, "capabilities", "--include=review", "--format=json"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  const reviewCapabilities = JSON.parse(result.stdout).data;
+  assert.equal(reviewCapabilities.view, "section");
+  assert.equal(reviewCapabilities.section.id, "review");
+  assert.deepEqual(reviewCapabilities.commands.map((item) => item.path), ["watch set", "note add", "note list", "review list", "review show", "proposal list", "proposal impact"]);
+
+  result = spawnSync(process.execPath, [cli, "capabilities", "watch set", "--format=json"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  const exactCapability = JSON.parse(result.stdout).data;
+  assert.equal(exactCapability.view, "command");
+  assert.equal(exactCapability.detail, "standard");
+  assert.ok(exactCapability.commands[0].arguments.some((argument) => argument.name === "--apply"));
+  assert.ok(Buffer.byteLength(result.stdout) < 4_000);
+
+  result = spawnSync(process.execPath, [cli, "capabilities", "--profile=editing", "--contract=v2", "--detail=compact", "--format=json"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  const editingCapabilities = JSON.parse(result.stdout);
+  assert.equal(editingCapabilities.schema, "context-room.cli/2");
+  assert.deepEqual(editingCapabilities.data.commands.map((item) => item.path), ["ask", "edit"]);
+
+  result = spawnSync(process.execPath, [cli, "capabilities", "--expand", "--format=json"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).data.commands.some((item) => item.path === "context effective"), true);
+
+  result = spawnSync(process.execPath, [cli, "project", "register", `--root=${root}`, "--format=json"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  const registration = JSON.parse(result.stdout);
+  assert.equal(registration.data.effect, "reversible-local");
+  result = spawnSync(process.execPath, [cli, "context", "effective", `--project=${registration.data.registered.id}`, "--contract=v2", "--detail=standard", "--format=json"], { cwd: path.dirname(root), encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  const projectContext = JSON.parse(result.stdout);
+  assert.equal(fs.realpathSync(projectContext.target.root), fs.realpathSync(root));
+  result = spawnSync(process.execPath, [cli, "shared", "status", `--project=${registration.data.registered.id}`, "--format=json"], { cwd: path.dirname(root), encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  const sharedStatus = JSON.parse(result.stdout);
+  assert.equal(fs.realpathSync(sharedStatus.target.root), fs.realpathSync(root));
+  assert.equal(sharedStatus.data.connected, false);
+  result = spawnSync(process.execPath, [cli, "doctor", "--all-projects", "--limit=1", "--contract=v2", "--format=jsonl"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  const doctorStream = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(doctorStream.at(-1).schema, "context-room.cli/2");
+  assert.ok(doctorStream.at(-1).data.summary);
+  assert.ok(doctorStream.at(-1).data.pagination);
   const before = fs.readFileSync(path.join(root, CONFIG_FILE), "utf8");
   result = spawnSync(process.execPath, [cli, "agent", "watch", `--root=${root}`, "--path=other/", "--plan", "--format=json"], { encoding: "utf8", env });
   assert.equal(result.status, 0, result.stderr);
@@ -172,6 +235,19 @@ test("Context Engine CLI resolves, snapshots, diffs, and paginates one accepted 
   assert.equal(effective.ok, true);
   assert.equal(effective.data.schemaVersion, "context-room.context-effective/1");
   assert.equal(effective.data.proposals instanceof Array, true);
+  assert.equal(Object.hasOwn(effective.data, "graph"), false);
+
+  result = spawnSync(process.execPath, [cli, "context", "effective", `--root=${root}`, "--provider=codex", "--include=graph", "--contract=v2", "--format=json"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  const expandedEffective = JSON.parse(result.stdout);
+  assert.equal(expandedEffective.schema, "context-room.cli/2");
+  assert.equal(expandedEffective.data.graph.schemaVersion, "context-room.context-graph/1");
+
+  result = spawnSync(process.execPath, [cli, "context", "explain", fs.realpathSync(path.join(root, "AGENTS.md")), `--root=${root}`, "--provider=codex", "--contract=v2", "--format=json"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  const explanation = JSON.parse(result.stdout).data;
+  assert.equal(explanation.status, "ok");
+  assert.ok(explanation.chain.length >= 1);
 
   result = spawnSync(process.execPath, [cli, "context", "graph", `--root=${root}`, "--provider=codex", "--limit=1", "--format=json"], { encoding: "utf8", env });
   assert.equal(result.status, 0, result.stderr);
@@ -193,7 +269,61 @@ test("Context Engine CLI resolves, snapshots, diffs, and paginates one accepted 
   assert.deepEqual(JSON.parse(result.stdout).data.resources.modified, []);
 });
 
-test("Settings CLI applies only an exact typed plan and emits the changed state", (t) => {
+test("docs edit and docs publish expose one bounded local documentation change handle", (t) => {
+  const root = makeRoot(t, "Documentation change");
+  const hubHome = path.join(path.dirname(root), "hub-documentation-change");
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\n\nAccepted text.\n");
+  for (const gitArgs of [
+    ["init"],
+    ["config", "user.email", "context-room@example.invalid"],
+    ["config", "user.name", "Context Room Tests"],
+    ["add", "."],
+    ["commit", "-m", "Initial documentation"],
+  ]) {
+    const git = spawnSync("git", gitArgs, { cwd: root, encoding: "utf8" });
+    assert.equal(git.status, 0, git.stderr);
+  }
+  const env = { ...process.env, CONTEXT_ROOM_HUB_HOME: hubHome };
+  let result = spawnSync(process.execPath, [cli, "init", `--root=${root}`, "--allow=docs/", "--watch=docs/"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+
+  result = spawnSync(process.execPath, [cli, "docs", "edit", `--root=${root}`, "--task=Update the guide", "--scope=local", "--contract=v2", "--format=json"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  const edit = JSON.parse(result.stdout);
+  assert.equal(edit.schema, "context-room.cli/2");
+  assert.match(edit.data.changeId, /^change-/);
+  assert.equal(edit.data.scope, "local");
+  assert.deepEqual(edit.data.allowedPaths, ["docs/"]);
+
+  fs.appendFileSync(path.join(root, "docs", "guide.md"), "Updated by the agent.\n");
+  result = spawnSync(process.execPath, [cli, "docs", "publish", `--change=${edit.data.changeId}`, "--summary=Update the guide", "--contract=v2", "--format=json"], { encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  const published = JSON.parse(result.stdout);
+  assert.equal(published.data.status, "published");
+  assert.deepEqual(published.data.result.localReviews.map((item) => item.path), ["docs/guide.md"]);
+  assert.match(published.data.result.humanOwned, /human accepts or rejects/i);
+});
+
+test("primary edit routes directly to a shared proposal and never exposes publish", (t) => {
+  const root = makeRoot(t, "Primary edit");
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\n");
+  let result = spawnSync(process.execPath, [cli, "init", `--root=${root}`, "--allow=docs/", "--watch=docs/"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  result = spawnSync(process.execPath, [cli, "edit", "create", "Update the guide with the complete accepted workflow and verification constraints.", `--root=${root}`, "--contract=v2", "--format=json"], { encoding: "utf8" });
+  assert.notEqual(result.status, 0);
+  const failure = JSON.parse(result.stderr);
+  assert.equal(failure.error.code, "shared-context-required");
+
+  const help = spawnSync(process.execPath, [cli, "--help"], { encoding: "utf8" });
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /context-room edit <action> \[value\]/);
+  assert.doesNotMatch(help.stdout, /publish/);
+});
+
+test("Settings CLI uses the same command path for an exact typed plan and apply", (t) => {
   const root = makeRoot(t, "Settings CLI");
   const hubHome = path.join(path.dirname(root), "hub-settings-cli");
   fs.mkdirSync(path.join(root, "docs"), { recursive: true });
@@ -202,13 +332,15 @@ test("Settings CLI applies only an exact typed plan and emits the changed state"
   let result = spawnSync(process.execPath, [cli, "init", `--root=${root}`, "--allow=docs/", "--watch=docs/"], { encoding: "utf8", env });
   assert.equal(result.status, 0, result.stderr);
 
-  result = spawnSync(process.execPath, [cli, "settings", "plan", `--root=${root}`, "--set=startupSkills.enabled=false", "--format=json"], { encoding: "utf8", env });
+  result = spawnSync(process.execPath, [cli, "settings", "set", `--root=${root}`, "--set=startupSkills.enabled=false", "--contract=v2", "--format=json"], { encoding: "utf8", env });
   assert.equal(result.status, 0, result.stderr);
-  const plan = JSON.parse(result.stdout).data;
+  const planPayload = JSON.parse(result.stdout);
+  assert.equal(planPayload.schema, "context-room.cli/2");
+  const plan = planPayload.data;
   assert.match(plan.planId, /^plan-/);
   assert.equal(JSON.parse(fs.readFileSync(path.join(root, CONFIG_FILE), "utf8")).startupSkills.enabled, true);
 
-  result = spawnSync(process.execPath, [cli, "settings", "apply", plan.planId, `--root=${root}`, "--format=json"], { encoding: "utf8", env });
+  result = spawnSync(process.execPath, [cli, "settings", "set", `--root=${root}`, `--apply=${plan.planId}`, "--contract=v2", "--format=json"], { encoding: "utf8", env });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).data.settingsChangedEvent, "settings.changed");
 
@@ -216,7 +348,7 @@ test("Settings CLI applies only an exact typed plan and emits the changed state"
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).data.value, false);
 
-  result = spawnSync(process.execPath, [cli, "settings", "plan", `--root=${root}`, "--set=appearance.theme=dark", "--format=json"], { encoding: "utf8", env });
+  result = spawnSync(process.execPath, [cli, "settings", "set", `--root=${root}`, "--set=appearance.theme=dark", "--contract=v2", "--format=json"], { encoding: "utf8", env });
   assert.notEqual(result.status, 0);
   assert.equal(JSON.parse(result.stderr).error.code, "setting-not-manageable");
 });

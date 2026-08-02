@@ -772,10 +772,13 @@ function addSharedInstructions(inventory, projection, coordinate, acceptedRevisi
     const providers = [link.provider];
     const targetDirectory = link.scope === "device" ? "" : path.dirname(link.destination || "");
     const appliesToFolder = link.scope === "device" || (targetDirectory && isWithin(targetDirectory, target.folderAbsolute));
+    const materializationStatus = link.materializationStatus || (link.status === "ready" ? "installed" : link.status);
+    const activationStatus = link.activationStatus || "uncertain";
     const status = !providerApplies(providers, coordinate.provider) || !appliesToFolder ? "inactive"
-      : link.status === "ready" ? "active"
-        : link.status === "conflict" ? "shadowed"
-          : link.status === "provider-unavailable" ? "disabled" : "uncertain";
+      : link.status === "provider-disabled" || link.status === "provider-unavailable" ? "disabled"
+        : ["conflict", "collision", "unmanaged-conflict"].includes(materializationStatus) ? "shadowed"
+          : materializationStatus === "installed" && ["active", "configured"].includes(activationStatus) ? "active"
+            : materializationStatus === "installed" && activationStatus === "inactive" ? "inactive" : "uncertain";
     const gitPath = `${collection.path || link.collectionId}/${link.source}`;
     const resource = {
       id: resourceIdForShared(projection.repository, gitPath),
@@ -795,6 +798,9 @@ function addSharedInstructions(inventory, projection, coordinate, acceptedRevisi
         assignmentId: link.assignmentId,
         absolutePath: link.destination,
         relativePath: link.relativeTarget,
+        materializationStatus,
+        activationStatus,
+        activationReason: link.activationReason || "",
       },
     };
     addResource(inventory, resource, {
@@ -804,8 +810,8 @@ function addSharedInstructions(inventory, projection, coordinate, acceptedRevisi
       subtree: link.scope === "device" ? "." : (unixPath(path.relative(target.root, targetDirectory)) || "."),
       order: order++,
       destination: link.destination,
-      reason: link.message || "Accepted Shared Instructions assignment exposes this instruction through a managed link.",
-      evidence: { assignmentId: link.assignmentId, collectionId: link.collectionId, revision: acceptedRevision, managed: true },
+      reason: link.message || link.activationReason || "Accepted Shared Instructions assignment exposes this instruction through a managed link.",
+      evidence: { assignmentId: link.assignmentId, collectionId: link.collectionId, revision: acceptedRevision, managed: true, materializationStatus, activationStatus },
     });
     inventory.relations.push({ from: resource.id, to: `assignment:${link.assignmentId}`, type: "assigned-by", evidence: { revision: acceptedRevision } });
   }

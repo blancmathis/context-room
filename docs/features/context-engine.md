@@ -4,7 +4,7 @@ context_room:
   scope: context-room
   status: current
   canonical_for: effective context resolution, graph, trace, impact, snapshots, and diffs
-  last_verified: 2026-07-27
+  last_verified: 2026-07-29
   sources: [src/context_engine.mjs, src/context_inventory.mjs, src/provider_profiles.mjs, src/context_snapshots.mjs, src/context_diagnostics.mjs, src/shared_context.mjs, src/agent_cli.mjs, bin/context-room.mjs]
 ---
 
@@ -104,20 +104,35 @@ Discovery is not proof of activation. When the runtime contract or available
 local evidence cannot establish precedence or activation, Context Room reports
 the resource as `uncertain` rather than `active`.
 
-## Graph, Trace, And Impact
+Shared Skills, Shared Instructions, Startup environment, Settings, and Health
+all consume these same profiles. Shared Instructions expose both
+`materializationStatus` and `activationStatus`; only an installed instruction
+with proven native or configured activation enters effective context. An
+installed arbitrary filename remains visible for diagnosis without being
+given to the agent as effective instructions.
+
+The Codex profile uses the official skill destinations `~/.agents/skills` and
+`.agents/skills`. Startup discovery, Shared Skills projection, Settings,
+effective context, and Health all consume this same profile rather than
+maintaining separate destination tables.
+
+## Effective Context, Explain, And Impact
 
 ```bash
-context-room context graph --project hicharlie --folder apps/calls --provider codex --format json
-context-room context trace AGENTS.md --project hicharlie --folder apps/calls --provider codex --format json
+context-room context effective --project hicharlie --folder apps/calls --provider codex --format json
+context-room context explain AGENTS.md --project hicharlie --folder apps/calls --provider codex --format json
 context-room context impact ~/.codex/AGENTS.md --provider codex --format json
 ```
 
-`context graph` exposes the same resources, applications, and proven relations
-used by effective resolution. It is a machine-readable structure, not a
-semantic contradiction detector or a visual knowledge graph.
+`context effective` returns the accepted resources that apply to the exact
+coordinate. Its default response does not include the structural graph. An
+expert diagnostic can request it explicitly with `--include graph`; the raw
+`context graph` command remains an internal engine primitive.
 
-`context trace` selects one resource and returns the ordered application chain
-for its kind. An ambiguous selector returns candidates instead of guessing.
+`context explain` selects one resource and returns the ordered application
+chain for its kind. It falls back to a path, review, or proposal explanation
+when the selector is not an effective context resource. An ambiguous selector
+returns candidates instead of guessing.
 Instruction traces follow provider order; Shared Skill traces connect the
 collection, assignment, provider, override, destination, and managed link.
 Document traces retain accepted-state evidence.
@@ -156,7 +171,7 @@ explicitly unverified.
 ## Proposal Context Impact
 
 ```bash
-context-room proposal context-impact proposal/project/example \
+context-room proposal impact proposal/project/example \
   --repository <shared-id-or-url> \
   --format json
 ```

@@ -4,7 +4,7 @@ context_room:
   scope: context-room
   status: current
   canonical_for: health guard and brief
-  last_verified: 2026-07-27
+  last_verified: 2026-07-29
   sources: [src/context_room.mjs, src/context_diagnostics.mjs, src/agent_cli.mjs, bin/context-room.mjs, src/doc_metadata.mjs, docs/agent-configuration.md]
 ---
 
@@ -18,12 +18,15 @@ These surfaces turn project docs into local proof: health issues, review signals
 
 1. Run `context-room doctor` after config or doc architecture changes.
 2. Choose the owner review-gate operations in Settings, then install the matching local hooks.
-3. Run `context-room context ask "..."` when an agent needs accepted project documentation.
+3. Run `context-room ask "..."` with a complete research brief when an agent needs accepted project documentation; include the work context, questions, constraints, and expected output rather than keywords.
 
 ## Rules
 
 - `doctor` reports health; strict mode fails on high-impact issues.
 - Document Health reports malformed YAML or JSON, invalid or conflicting profiles, schema failures, sidecar conflicts, invalid or duplicate identities, unresolved and ambiguous links, missing declared dependencies, cycles, unavailable renderers, and stale dependency observations.
+- The official compatibility profile accepts legacy `status: target` as target
+  truth. A document following the supported target-path convention is not
+  promoted to a high-severity error merely because it uses that spelling.
 - Doctor accepts structured project, location, folder, provider, shared,
   severity, query, cursor, and limit filters. `--all-projects` inspects only
   explicitly registered locations and filters before expensive diagnostics.
@@ -41,9 +44,12 @@ These surfaces turn project docs into local proof: health issues, review signals
 - `guard --operation commit|push|pull-request|merge` follows the local owner policy. A selected operation fails when review is pending.
 - Context Room manages local hooks for commit, push, and local merge commits without overwriting custom hooks. Pull requests and hosted merges require a provider check and repository rule.
 - Review-gate operation policy is local owner state, separate from project config and unavailable to the agent CLI.
-- `context ask` is the compact agent entry point for task-specific documentation research.
+- `ask` is the compact agent entry point for task-specific documentation research.
 - Generic interpreted metadata, declared and reference-strength relations, Mermaid node text, ambiguities, and dependency freshness improve research ranking and evidence. Existing Markdown still works and no profile becomes universally mandatory.
 - The web UI refreshes shared reports in the background and reuses one project scan.
+- Startup environment leads with effective resources. Inactive, shadowed, and
+  uncertain resources are summarized by count and remain collapsed until the
+  user asks for diagnostic detail.
 
 ## Source Map
 

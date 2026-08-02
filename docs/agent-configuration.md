@@ -4,8 +4,8 @@ context_room:
   scope: context-room
   status: current
   canonical_for: agent configuration
-  last_verified: 2026-07-28
-  sources: [bin/context-room.mjs, src/context_room.mjs, src/context_settings.mjs, src/codex_prompt_center.mjs, src/shared_context.mjs, schemas/config.schema.json, schemas/shared-repository.schema.json, schemas/shared-skill-locations.schema.json, schemas/shared-skill-local-state.schema.json, schemas/shared-instruction-locations.schema.json, schemas/codex-prompt-catalog-v1.schema.json, schemas/codex-prompt-overrides-v1.schema.json, schemas/codex-prompt-publication-state-v2.schema.json, schemas/codex-prompt-runtime-receipt-v2.schema.json]
+  last_verified: 2026-07-30
+  sources: [bin/context-room.mjs, src/context_room.mjs, src/context_settings.mjs, src/codex_prompt_center.mjs, src/shared_context.mjs, src/provider_profiles.mjs, schemas/config.schema.json, schemas/shared-repository.schema.json, schemas/shared-skill-locations.schema.json, schemas/shared-skill-local-state.schema.json, schemas/shared-resource-local-state.schema.json, schemas/shared-instruction-locations.schema.json, schemas/codex-prompt-catalog-v1.schema.json, schemas/codex-prompt-overrides-v1.schema.json, schemas/codex-prompt-publication-state-v2.schema.json, schemas/codex-prompt-runtime-receipt-v2.schema.json]
 ---
 
 # Agent configuration guide
@@ -16,7 +16,7 @@ Project behavior is configured with one JSON file:
 .context-room/config.json
 ```
 
-That file is the contract between the project owner, the UI, and AI agents. Fresh setup derives it from the documentation that actually exists in the project. If an agent later needs to curate a card or safe editable surface, it should edit this JSON file and then run `context-room doctor`. For folder watch rules, prefer `context-room agent watch` and `context-room agent unwatch` so snapshots are captured consistently.
+That file is the contract between the project owner, the UI, and AI agents. Fresh setup derives it from the documentation that actually exists in the project. If an agent later needs to curate a card or safe editable surface, it should use the typed Settings CLI and then run `context-room doctor`. For folder watch rules, prefer `context-room watch set` so snapshots are captured consistently.
 
 Interface preferences are shared across every Context Room on the computer and stored separately:
 
@@ -129,14 +129,17 @@ Every entry uses the same project-relative or explicit `~/...` path syntax as `a
 
 Shared-context sync adds the accepted project docs, project skills, and global skills to both arrays. Those entries point through `~/.context-room/shared/` to an accepted immutable Git snapshot. Change them through the shared proposal workflow, not by removing their read-only protection.
 
-Generic shared skill collections and assignments use `skill-locations.json` in the shared repository, not fields in `.context-room/config.json`. Logical assignment changes require a `skills` proposal. Device provider preferences, project provider overrides, physical destinations, custom mounts, local exclusions, pending imports, archives, and the managed-link registry use the version 2 local-state contract under `~/.context-room/shared/`. See [Shared Context](features/shared-context.md#shared-skill-locations).
+Generic shared skill collections and assignments use `skill-locations.json` in the shared repository, not fields in `.context-room/config.json`. Logical assignment changes require a `skills` proposal. Device provider preferences, project provider overrides, physical destinations, custom mounts, local exclusions, Skills and Instructions pending imports, archives, and managed-link ownership use the version 3 Shared Resources local-state contract under `~/.context-room/shared/`. Version 2 Skills state remains readable and migrates locally on the first mutation. See [Shared Context](features/shared-context.md#shared-skill-locations).
 
 Shared instruction collections use `instruction-locations.json`, also outside
 project configuration. Each assignment declares exact Markdown source and
 target paths, providers, and a `project`, `shared`, or `device` scope. Logical
 changes require an `instructions` proposal. Accepted-main files are exposed
 through managed links; an unmanaged file at the destination is preserved and
-reported as a conflict. Shared hooks are not supported. See
+reported as a conflict. The common provider preference applies to Skills and
+Instructions. Installation and provider activation remain separate: an
+arbitrary target is not effective until the provider natively discovers it or
+its local configuration explicitly names it. Shared hooks are not supported. See
 [Shared Context](features/shared-context.md#shared-instruction-locations).
 
 ```json
@@ -264,7 +267,14 @@ The explorer shows safe hidden files, including this generated folder, by defaul
 
 Startup skill scanner.
 
-Context Room enables startup skill discovery by default and lists configured skill folders such as `.codex/skills` or `skills` whenever they exist. Fresh setup writes `projectOnly: true`, preventing discovery in ancestor folders. Keeping the scanner active means a skill folder added after setup is discovered automatically. Existing configs without `projectOnly` keep ancestor discovery for compatibility.
+Context Room enables startup skill discovery by default and lists configured
+skill folders such as `.agents/skills` or `skills` whenever they exist. Fresh
+setup writes `projectOnly: true`, preventing discovery in ancestor folders.
+Keeping the scanner active means a skill folder added after setup is discovered
+automatically. Existing configs without `projectOnly` keep ancestor discovery
+for compatibility. Legacy `.codex/skills` locations remain visible when they
+exist, but fresh Codex destinations follow the provider profile and use
+`.agents/skills`.
 
 Startup skills can be opened in the explorer without making the whole project editable.
 
@@ -347,7 +357,7 @@ Keep metadata small. The goal is not bureaucracy; it lets Context Room find stal
 2. Start with `context-room setup`; edit the JSON directly only when the inferred project map needs deliberate curation.
 3. Keep `allowedPaths` conservative: documentation, skills, runbooks, agent instructions, and safe text files.
 4. Treat `readOnlyPaths` as context, not an edit surface. For shared accepted paths, create a shared proposal instead of removing the boundary.
-5. Put the truly important docs in `watchAllow` or an explicit `watchRules` mode, not every file in the repo. Use `context-room agent watch` to create folder snapshots.
+5. Put the truly important docs in `watchAllow` or an explicit `watchRules` mode, not every file in the repo. Use `context-room watch set <path> --mode <mode>` to create folder snapshots.
 6. Use stable lowercase IDs with dashes, for example `agent-context`, `architecture`, `release-runbooks`.
 7. Preserve the `$schema` field so editors and agents can validate the file shape.
 8. After editing config, run:
@@ -361,30 +371,35 @@ supported context setting. It validates values, previews the exact revision,
 and refuses stale apply operations:
 
 ```bash
-context-room settings explain startupContext.projectOnly --format json
-context-room settings plan --set 'startupContext.projectOnly=true' --format json
-context-room settings apply <plan-id> --format json
+context-room settings get startupContext.projectOnly --detail standard --format json
+context-room settings set --set 'startupContext.projectOnly=true' --format json
+context-room settings set --set 'startupContext.projectOnly=true' --apply <plan-id> --format json
 ```
 
 This surface intentionally excludes appearance, owner-controlled Git gates,
 review decisions, document or hook content, and shared collection or assignment
-intent. `context-room capabilities` lists the full installed machine contract
-without interpreting the agent's objective or choosing a command.
+intent. Root help exposes only `ask`, `edit`, and `capabilities`.
+`context-room capabilities` returns a compact static index of the primary
+actions and capability sections. Exact command contracts are loaded only on
+request; the command does not interpret an objective or choose an operation.
 
 9. For stronger validation, run:
 
 ```bash
 context-room doctor --strict
-context-room guard --profile strict
 ```
 
 Use strict mode only when the project is ready to enforce metadata and graph health.
 
-10. For deterministic structured task context, run:
+10. For accepted documentation, use the worker entry point:
 
 ```bash
-context-room agent prepare --task "change billing onboarding"
+context-room ask "We are changing billing onboarding. Find the accepted documents that govern the current flow, ownership, validation rules, failure handling, and provider constraints. Identify contradictions or missing decisions and return the implementation rules and useful passages the working agent must preserve."
 ```
+
+An administrative or diagnostic agent can request the expert profile and use
+`context-room context bundle --task "change billing onboarding"` when it needs
+the complete deterministic environment rather than a documentation answer.
 
 11. If available, start the UI and smoke-test the hub and review queue:
 
@@ -397,10 +412,11 @@ Without `--port`, Context Room selects a free port and prints the URL. Do not st
 12. To install or refresh the local Git hooks selected by the owner review gate, run:
 
 ```bash
-context-room install-hooks
+context-room hooks sync --root .
+context-room hooks sync --root . --apply <plan-id>
 ```
 
-`install-hooks` is the only installation command. Context Room manages `pre-commit`, `pre-push`, and `pre-merge-commit` only when their matching operation is selected and refuses to overwrite a custom hook. A managed dispatcher can remain installed after an operation is deselected; it reads the active worktree's owner policy and exits silently. Git hooks are local and are not committed to the repository.
+`hooks sync` returns an exact protected plan before changing local hooks. Context Room manages `pre-commit`, `pre-push`, and `pre-merge-commit` only when their matching operation is selected and refuses to overwrite a custom hook. A managed dispatcher can remain installed after an operation is deselected; it reads the active worktree's owner policy and exits silently. Git hooks are local and are not committed to the repository. The legacy `install-hooks` command remains executable during migration but is not part of the canonical agent profile surface.
 
 There is no local Git hook for creating a pull request, and a merge performed by GitHub, GitLab, or another host does not run the clone's hooks. For those selections, connect the corresponding command to a hosted check and make that check required:
 
@@ -428,7 +444,7 @@ Goal: make the documentation and agent skills easy to navigate, maintain, and ve
 
 1. Read the root README, every applicable project `AGENTS.md` or CLAUDE.md, and existing documentation indexes. Do not create, replace, or append agent instructions merely to configure Context Room.
 2. Confirm that the discovered docs, skills, runbooks, decisions, and records are project-owned safe text surfaces.
-3. Check that important docs are in `watchAllow` or an appropriate `watchRules` mode, not only `allowedPaths`. Use `context-room agent watch` for explicit folder modes so current-file snapshots are captured consistently.
+3. Check that important docs are in `watchAllow` or an appropriate `watchRules` mode, not only `allowedPaths`. Use `context-room watch set` for explicit folder modes so current-file snapshots are captured consistently.
 4. Check that `hubSections` separates Start here, Current documentation, Target documentation, records, unclassified docs, and Agent guidance where those groups exist.
 5. Preserve existing config values and leave `.context-room/review-gate.json` to the project owner.
 6. Keep startup scanners project-only unless the owner explicitly requests ancestor or global context.

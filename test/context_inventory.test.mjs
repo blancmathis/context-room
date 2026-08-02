@@ -186,7 +186,7 @@ test("accepted Shared Instructions enter effective context with assignment prove
         projectId: "project-a",
         revision,
         collections: [{ id: "team", path: "instructions/team" }],
-        links: [{ assignmentId: "team-project", collectionId: "team", provider: "codex", scope: "project", source: "AGENTS.md", target: snapshotFile, destination, relativeTarget: "apps/calls/AGENTS.md", status: "ready" }],
+        links: [{ assignmentId: "team-project", collectionId: "team", provider: "codex", scope: "project", source: "AGENTS.md", target: snapshotFile, destination, relativeTarget: "apps/calls/AGENTS.md", status: "ready", materializationStatus: "installed", activationStatus: "active" }],
       },
       documents: [],
       documentContents: {},
@@ -196,6 +196,38 @@ test("accepted Shared Instructions enter effective context with assignment prove
     assert.equal(instruction.resource.truthState, "accepted");
     assert.equal(instruction.resource.metadata.assignmentId, "team-project");
     assert.equal(instruction.application.status, "active");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("installed Shared Instructions stay outside effective context when provider activation is not proven", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "context-inventory-"));
+  try {
+    const snapshotFile = path.join(root, "accepted", "CALL.md");
+    fs.mkdirSync(path.dirname(snapshotFile), { recursive: true });
+    fs.writeFileSync(snapshotFile, "accepted but undiscovered instructions");
+    const revision = "d".repeat(40);
+    const repository = "https://example.test/team/docs.git";
+    const readers = fixtureReaders(root, {
+      connection: { repository, projectId: "project-a" },
+      sharedMain: { repository, revision, defaultBranch: "main", repositoryConfig: { projectsPath: "projects" } },
+      sharedDocuments: [],
+      sharedSkills: { connected: true, repository, revision, collections: [], destinations: [] },
+      sharedInstructions: {
+        connected: true,
+        repository,
+        projectId: "project-a",
+        revision,
+        collections: [{ id: "team", path: "instructions/team" }],
+        links: [{ assignmentId: "team-project", collectionId: "team", provider: "codex", scope: "project", source: "CALL.md", target: snapshotFile, destination: path.join(root, "CALL.md"), relativeTarget: "CALL.md", status: "ready", materializationStatus: "installed", activationStatus: "inactive", activationReason: "Not discovered by Codex" }],
+      },
+      documents: [],
+      documentContents: {},
+    });
+    const effective = resolveEffectiveContext(buildContextGraph(buildContextInventory({ root, projectId: "project-a", locationId: "location-a", folder: "." }, { provider: "codex", readers, refreshShared: true })));
+    assert.equal(effective.instructions.some((entry) => entry.resource.metadata.assignmentId === "team-project"), false);
+    assert.equal(effective.inactive.some((entry) => entry.resource.metadata.assignmentId === "team-project" && entry.resource.metadata.materializationStatus === "installed"), true);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

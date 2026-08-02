@@ -4,7 +4,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { updateAllContextRooms } from "../scripts/update-context-rooms.mjs";
 import {
-  agentInstructions,
   applyCliReviewAnnotation,
   applyAgentHandoff,
   applyCliContextSettings,
@@ -16,6 +15,8 @@ import {
   buildAgentPrepareCached,
   buildSharedOnlyAgentPrepare,
   classifyAgentChanges,
+  createDocumentationChange,
+  createSharedDocumentationProposal,
   createCliContextSnapshot,
   diffCliReview,
   diffCliContextSnapshots,
@@ -23,20 +24,24 @@ import {
   doctorSafePlan,
   effectiveSharedSkills,
   explainCliContextSetting,
+  explainAgentSelector,
   explainCliDoctorIssue,
   explainSharedSkill,
   getCliContextSettings,
   impactCliContext,
   listCliProjects,
   listCliReviews,
+  listSharedDocumentationProposals,
   openCliProject,
   openCliReview,
+  openSharedDocumentationProposalByBranch,
   planCliReviewAnnotation,
   planCliContextSettings,
   planCliDoctorIssue,
   planAgentHandoff,
   planSharedSkillOperation,
   planSharedInstructionOperation,
+  publishDocumentationChange,
   registerCliProject,
   renderAgentCliHuman,
   resolveCliTarget,
@@ -48,7 +53,9 @@ import {
   ContextRoomCliError,
   cliCapabilities,
   cliEnvelope,
+  cliEnvelopeV2,
   cliErrorEnvelope,
+  cliErrorEnvelopeV2,
   cliRequestId,
   normalizeCliFormat,
   projectCliData,
@@ -151,6 +158,10 @@ function splitList(value) {
   return String(value).split(",").map((item) => item.trim()).filter(Boolean);
 }
 
+function csvOption(value, fallback = []) {
+  return value && value !== true ? String(value).split(",").map((item) => item.trim()).filter(Boolean) : fallback;
+}
+
 function parsePositiveLimit(value, fallback = 25, maximum = 100) {
   if (value === undefined) return fallback;
   const parsed = Number(value);
@@ -189,6 +200,17 @@ function readProjectsFile(filePath) {
   }
 }
 
+function readJsonArrayFile(filePath, optionName) {
+  if (!filePath || filePath === true) return [];
+  const absolutePath = path.resolve(String(filePath));
+  let parsed;
+  try { parsed = JSON.parse(fs.readFileSync(absolutePath, "utf8")); } catch (error) {
+    throw new ContextRoomCliError("invalid-json-file", `Unable to read ${optionName}: ${error.message}`, { exitCode: 2 });
+  }
+  if (!Array.isArray(parsed)) throw new ContextRoomCliError("invalid-json-file", `${optionName} must point to a JSON array.`, { exitCode: 2 });
+  return parsed;
+}
+
 function paginateContextGraph(graph, { cursor = "", limit = undefined, query = "" } = {}) {
   const pageSize = parsePositiveLimit(limit);
   const offset = cursor === "" || cursor === undefined ? 0 : Number(cursor);
@@ -221,178 +243,70 @@ function paginateList(items, { cursor = "", limit = undefined } = {}) {
 }
 
 function usage() {
-  return `Context Room
-
-Usage:
-  context-room setup [--root .] [--title "My Project"] [--allow docs/] [--watch docs/] [--port 4317]
-  context-room init [--root .] [--title "My Project"] [--allow docs/] [--watch docs/]
-  context-room start [--root .] [--port 4317]
-  context-room hub [--root .] [--port 4317]
-  context-room hub list
-  context-room hub proposals [--project <project-id>] [--session <task-id>]
-  context-room hub open [--project <project-id>] [--session <task-id>] [--proposal proposal/...]
-  context-room hub add-shared --repository <git-url>
-  context-room doctor [--root .] [--strict]
-  context-room guard [--root .] [--profile advisory|review-only|strict] [--operation commit|push|pull-request|merge]
-  context-room context ask "what the agent needs to do" [--root . | --repository <git-url> --project <project-id>] [--goal "desired outcome"] [--files path,...] [--depth quick|standard|exhaustive] [--budget 1200] [--json]
-  context-room docs search "query" [--root . | --repository <git-url> --project <project-id>] [--status current|proposal] [--kind canonical] [--limit 8] [--budget 1200] [--session <task-id>]
-  context-room docs read path[#section] [--root . | --repository <git-url> --project <project-id>] [--budget 1600] [--session <task-id>]
-  context-room docs related path [--root . | --repository <git-url> --project <project-id>] [--session <task-id>]
-  context-room docs trace path[#section] [--root . | --repository <git-url> --project <project-id>] [--session <task-id>]
-  context-room docs inspect path-or-id [--root . | --repository <git-url> --project <project-id>]
-  context-room docs metadata|links|backlinks|dependencies|diagrams|validate path-or-id [--root .]
-  context-room capabilities [--format human|json]
-  context-room completion zsh|bash|fish
-  context-room project current|list|search|register|open|recent [--project <id|title>] [--location <id|path>]
-  context-room workspace list [--project <id|title>] [--location <id|path>]
-  context-room workspace open --project <id|title> [--location <id|path>] [--file path]
-  context-room agent help [--root .]
-  context-room agent prepare --task "Work" [--project <id|title>] [--location <id|path>] [--folder <path>] [--fresh]
-  context-room agent instructions [--provider auto|codex|claude-code|opencode]
-  context-room agent changes [--session <task-id>]
-  context-room agent handoff --task "Work" [--session <task-id>] [--plan | --apply <plan-id>]
-  context-room agent state [--workspace <id> | --project <id>]
-  context-room agent open [--workspace <id> | --project <id>] [--path docs/INDEX.md] [--view hub|settings|file|diff] [--heading "Purpose"] [--text "needle"] [--percent 50]
-  context-room agent annotate --root . --path docs/INDEX.md --note "Human-facing note" [--target "text"]
-  context-room agent watch --root . --path docs/ [--mode recursive-live|recursive-current|direct-current|direct-live]
-  context-room agent unwatch --root . --path docs/
-  context-room review list|show|diff|open|annotate [path|review-id]
-  context-room shared init-repository --root . --name "My Shared Context"
-  context-room shared bind --root . --repository <git-url> [--project <projectId>]
-  context-room shared setup --root . --repository <git-url> [--project <projectId>]
-  context-room shared sync|status|proposals --root .
-  context-room shared secure-github|security-check --root .
-  context-room shared propose --root . --title "Change" --description "Current proposal summary" [--scope project|global|skills] [--session <task-id>]
-  context-room shared publish --root . --proposal proposal/... [--title "Updated name"] [--description "Required when updating"] [--message "..."]
-  context-room shared review --root . --proposal proposal/... [--port 4317]
-  context-room shared skills status --root .
-  context-room shared skills assign --root . --collection <id> [--assignment <id>] --providers codex,claude-code [--scope project|shared|device] [--projects one,two]
-  context-room shared skills unassign --root . --assignment <id>
-  context-room shared skills link --root . --assignment <id> [--provider custom] --destination /path
-  context-room shared skills unlink --root . --id <mount-id>
-  context-room shared skills import --root . --source /path --collection <id> --collection-path skills/team [--providers codex,claude-code]
-  context-room shared skills effective|explain|reconcile --root . [--provider codex|claude-code|opencode|all]
-  context-room shared instructions status|assign|unassign|import|reconcile --root .
-  context-room install-hooks [--root .]
-  context-room update-all [--dry-run] [--no-restart] [--exclude /path]
-  context-room --version
-
-Folder watch modes:
-  recursive-live     Current and future files at any depth (default)
-  recursive-current  Current files at any depth; future files are excluded
-  direct-current     Current direct child files; future files and subfolders are excluded
-  direct-live        Current and future direct child files; subfolder files are excluded
-
-Fresh setup discovers and watches project documentation, builds project-specific hub sections, and uses the first free port when --port is omitted.
-
-Config: ${CONFIG_FILE}
-`;
+  return renderCliHelp();
 }
 
-function agentHelp() {
-  return `Context Room Agent CLI
-
-Give this to your agent:
-
-Use Context Room as the local context API for the project you are working in. Use \`context-room context ask "<question>"\` when you need accepted project documentation. \`context-room capabilities\` only lists the static installed contract; it never interprets an objective or chooses a command. Only the human can accept or reject files awaiting review.
-
-What an agent can do:
-  context-room agent prepare --task "what the agent will do" --format json
-      Resolve the project, worktree, folder, startup environment, relevant accepted docs, reviews, proposals, freshness, and next actions.
-  context-room context effective --project <id> --folder <path> --provider codex --format json
-      Resolve accepted documents, instructions, skills, hooks, provider configuration, inactive resources, proposals metadata, and linked health issues from one engine.
-  context-room context trace <resource> --project <id> --folder <path> --provider codex
-      Show the complete ordered application chain for one resource type.
-  context-room context impact <resource> --provider codex
-      Show only registered projects, worktrees, folder scopes, providers, destinations, and reviews that the resource provably influences.
-  context-room context snapshot ...; context-room context diff --from <snapshot-id>
-      Record and compare metadata-only accepted context states without storing document content.
-  context-room agent changes --format json
-      Classify local reviews, shared proposal workspaces, unmanaged documents, and non-documentation changes.
-  context-room agent handoff --task "current work" --session <task-id> --format json
-      Preview a safe handoff. Apply it only with --apply <plan-id>; file decisions remain human-owned.
-  context-room context ask "what the agent needs to do" --root .
-      Retrieve task-specific documentation context with provenance.
-  context-room docs search|read|related|trace ...
-      Inspect the accepted documentation corpus deterministically.
-  context-room doctor --root .
-      Diagnose configuration, documentation, startup, and review health.
-  context-room doctor explain <issue-key>; context-room doctor plan <issue-key>
-      Explain a structured issue and preview a deterministic repair when one exists.
-  context-room workspace list; context-room agent state --workspace <id>
-      List active metadata-only browser Workspaces and inspect one exact target. Ambiguity is never resolved by recency.
-  context-room review list --root .
-      Read the review queue without changing review decisions.
-  context-room agent open --workspace <id> [--path docs/INDEX.md] [--view hub|settings|file|diff]
-      Navigate one exact running Workspace for the user.
-  context-room agent annotate --root . --path docs/INDEX.md --note "Human-facing note"
-      Attach an annotation that the human can resolve.
-  context-room agent watch --root . --path docs/ [--mode recursive-live|recursive-current|direct-current|direct-live]
-      Add or replace an explicit folder watch rule.
-  context-room agent unwatch --root . --path docs/
-      Remove the exact folder watch rule.
-
-More CLI capabilities:
-  context-room project current|list|search|register|open|recent ...
-      Resolve durable projects and explicitly registered worktree locations without scanning the computer.
-  context-room review list|show|diff|open|annotate ...
-      Inspect file reviews without accepting, rejecting, or verifying them.
-  context-room hub list|proposals|open ...
-      Navigate the computer-wide project and proposal catalog.
-  context-room shared sync|status|propose|publish ...
-      Synchronize shared contexts and prepare shared changes for file review.
-  context-room shared skills status|effective|explain|reconcile|assign|unassign|link|unlink|import ...
-      Manage shared skill intent and accepted local destinations.
-  context-room setup|guard|install-hooks|update-all ...
-      Configure, protect, maintain, or update Context Room when explicitly requested.
-
-Human-owned review decision:
-  - Only a human can accept or reject each file awaiting review. A shared proposal is complete once every file review is complete; it does not require a separate human decision.
-
-Related tools:
-  - Run \`context-room capabilities\` for the installed machine-readable contract.
-  - Run \`context-room --help\` for documentation research, shared proposals, shared skills, guard, doctor, and Hub commands.
-  - Read \`.context-room/README.md\` for the generated project-specific setup contract.
-`;
+function writeStdout(value, { newline = true } = {}) {
+  const output = String(value);
+  fs.writeSync(1, output + (newline && !output.endsWith("\n") ? "\n" : ""));
 }
 
 const KNOWN_OPTIONS = new Set([
-  "actionable", "advisory", "all-projects", "allow", "allow-stale", "apply", "branch", "budget", "cursor", "cwd", "depth", "description", "dry-run", "enabled", "exclude", "expand", "fields", "files", "folder", "follow", "format", "fresh", "from", "goal", "h", "heading", "help", "highlight", "hook", "include",
-  "assignment", "collection", "collection-path", "collection-title", "destination", "id", "include", "json", "kind", "limit", "message", "mode", "name", "no-restart", "note", "operation", "path", "percent", "port", "profile", "project", "projects", "provider", "providers", "query",
-  "expected-revision", "file", "idempotency-key", "location", "no-color", "no-local", "non-interactive", "only", "plan", "project", "projects-file", "proposal", "quiet", "reason", "repository", "root", "scope", "section", "selector", "session", "set", "severity", "shared", "shell", "since", "skills", "source", "status", "strict", "summary", "target", "task", "text", "title", "to", "types", "verbose", "version", "view", "watch", "workspace",
+  "action", "actionable", "advisory", "all", "all-projects", "allow", "allow-stale", "apply", "branch", "budget", "contract", "cursor", "cwd", "depth", "description", "detail", "document", "dry-run", "enabled", "exclude", "expand", "fields", "files", "folder", "follow", "format", "fresh", "from", "goal", "h", "heading", "help", "highlight", "hook", "include",
+  "assignment", "change", "collection", "collection-path", "collection-title", "destination", "id", "include", "json", "kind", "limit", "message", "mode", "name", "no-restart", "note", "operation", "path", "percent", "port", "profile", "project", "projects", "provider", "providers", "query",
+  "expected-revision", "file", "idempotency-key", "location", "no-color", "no-local", "non-interactive", "only", "plan", "profile", "project", "projects-file", "proposal", "quiet", "reason", "recent", "repository", "resource", "root", "scope", "section", "selector", "session", "set", "severity", "shared", "shared-project", "shell", "since", "skills", "source", "status", "strict", "summary", "target", "task", "text", "title", "to", "types", "verbose", "version", "view", "watch", "workspace",
 ]);
 
 function packageVersion() {
   return JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 }
 
-function emitAgentFirstResult(commandName, result, { format = "json" } = {}) {
+function emitAgentFirstResult(commandName, result, { format = "json", compactJson = false } = {}) {
   const normalized = normalizeCliFormat(format, "json");
+  const contract = args.contract && args.contract !== true ? String(args.contract).toLowerCase() : "v1";
+  if (!["v1", "v2", "context-room.cli/1", "context-room.cli/2"].includes(contract)) throw new ContextRoomCliError("invalid-contract", "--contract must be v1 or v2.", { exitCode: 2 });
+  const detail = args.detail && args.detail !== true ? String(args.detail).toLowerCase() : "compact";
+  if (!["compact", "standard", "full"].includes(detail)) throw new ContextRoomCliError("invalid-detail", "--detail must be compact, standard, or full.", { exitCode: 2 });
   const envelope = cliEnvelope(commandName, {
     target: result?.target || null,
     freshness: result?.freshness || null,
     data: projectCliData(result?.data === undefined ? result : result.data, {
       fields: args.fields && args.fields !== true ? splitList(args.fields) : [],
-      summary: Boolean(args.summary),
+      summary: args.summary === true,
       expand: args.expand && args.expand !== true ? splitList(args.expand) : [],
     }),
     warnings: result?.warnings || [],
     nextActions: result?.nextActions || [],
   });
+  const machinePayload = contract === "v2" || contract === "context-room.cli/2"
+    ? cliEnvelopeV2({ data: envelope.data, target: envelope.target, freshness: envelope.freshness, warnings: envelope.warnings, nextActions: envelope.nextActions, detail })
+    : envelope;
   const output = normalized === "human"
     ? renderAgentCliHuman(commandName, envelope)
-    : JSON.stringify(envelope, null, normalized === "json" ? 2 : 0) + "\n";
+    : JSON.stringify(machinePayload, null, normalized === "json" && !compactJson ? 2 : 0) + "\n";
   fs.writeSync(1, output);
-  return envelope;
+  return machinePayload;
+}
+
+function machineContractRequested() {
+  return Boolean(
+    (args.contract && args.contract !== true)
+    || (args.format && args.format !== true)
+    || args.detail
+    || args.fields
+    || args.summary,
+  );
 }
 
 function failAgentFirstCommand(commandName, error, { format = "json", target = null, requestId = cliRequestId() } = {}) {
   const normalized = (() => {
     try { return normalizeCliFormat(format, "json"); } catch { return "json"; }
   })();
+  const contract = args?.contract && args.contract !== true ? String(args.contract).toLowerCase() : "v1";
+  const detail = args?.detail && args.detail !== true ? String(args.detail).toLowerCase() : "compact";
   const output = normalized === "human"
     ? `${error.message || String(error)}\n`
-    : JSON.stringify(cliErrorEnvelope(commandName, error, { requestId, target }), null, normalized === "json" ? 2 : 0) + "\n";
+    : JSON.stringify(contract === "v2" || contract === "context-room.cli/2" ? cliErrorEnvelopeV2(error, { detail }) : cliErrorEnvelope(commandName, error, { requestId, target }), null, normalized === "json" ? 2 : 0) + "\n";
   fs.writeSync(2, output);
   process.exit(error instanceof ContextRoomCliError ? error.exitCode : 1);
 }
@@ -416,8 +330,7 @@ function quotedCliValue(value) {
 }
 
 const args = parseArgs(process.argv.slice(2));
-const requestedCommand = args._[0] || "start";
-const command = ["start", "setup"].includes(requestedCommand) ? "hub" : requestedCommand;
+const invokedCommand = args._[0] || "start";
 const agentFirstFormat = args.format && args.format !== true ? String(args.format) : "json";
 
 if (args.version !== undefined) {
@@ -426,9 +339,23 @@ if (args.version !== undefined) {
 }
 
 if (args.help || args.h) {
-  process.stdout.write(renderCliHelp());
+  const namespace = invokedCommand && !["start", "setup"].includes(invokedCommand) ? String(invokedCommand) : "";
+  try {
+    writeStdout(renderCliHelp({ namespace, all: Boolean(args.all) }), { newline: false });
+  } catch (error) {
+    console.error(error.message);
+    process.exit(2);
+  }
   process.exit(0);
 }
+
+const primaryAskCommand = invokedCommand === "ask";
+const primaryEditCommand = invokedCommand === "edit";
+if (primaryAskCommand) args._ = ["context", "ask", ...args._.slice(1)];
+if (primaryEditCommand) args._ = ["docs", "edit", ...args._.slice(1)];
+const primaryEditOpenByBranch = primaryEditCommand && String(args._[2] || "").trim().toLowerCase() === "open";
+const requestedCommand = args._[0] || "start";
+const command = ["start", "setup"].includes(requestedCommand) ? "hub" : requestedCommand;
 
 const unknownOption = Object.keys(args).find((key) => key !== "_" && !KNOWN_OPTIONS.has(key));
 if (unknownOption) {
@@ -437,6 +364,13 @@ if (unknownOption) {
     exitCode: 2,
     nextActions: [{ id: "inspect-capabilities", command: "context-room capabilities --format json", mutates: false, requiresHuman: false }],
   }), { format: agentFirstFormat });
+}
+
+if (agentFirstFormat.toLowerCase() === "jsonl" && !(command === "doctor" && args["all-projects"])) {
+  failAgentFirstCommand(command, new ContextRoomCliError("invalid-format", "--format jsonl is available only for doctor --all-projects.", {
+    details: { expected: ["human", "json"], stream: "context-room doctor --all-projects --format jsonl" },
+    exitCode: 2,
+  }), { format: "json" });
 }
 
 if (args.root === true || args.root === "") {
@@ -470,9 +404,18 @@ if (["hub", "setup", "start"].includes(requestedCommand) && (args.port === true 
 
 if (command === "capabilities") {
   try {
-    const include = args.include && args.include !== true ? String(args.include) : "canonical";
-    const data = cliCapabilities({ version: packageVersion(), include });
-    emitAgentFirstResult("capabilities", { data }, { format: agentFirstFormat });
+    if (args.include === true) throw new ContextRoomCliError("missing-option-value", "--include requires a namespace.", { exitCode: 2 });
+    const namespace = args.include ? String(args.include) : "";
+    const selectedCommand = args._.slice(1).join(" ").trim();
+    const data = cliCapabilities({
+      version: packageVersion(),
+      namespace,
+      command: selectedCommand,
+      profile: args.profile && args.profile !== true ? String(args.profile) : "",
+      detail: args.detail && args.detail !== true ? String(args.detail) : "compact",
+      expand: Boolean(args.expand),
+    });
+    emitAgentFirstResult("capabilities", { data }, { format: agentFirstFormat, compactJson: true });
     process.exit(0);
   } catch (error) {
     failAgentFirstCommand("capabilities", error, { format: agentFirstFormat });
@@ -481,7 +424,7 @@ if (command === "capabilities") {
 
 if (command === "completion") {
   try {
-    process.stdout.write(renderCliCompletion(args._[1] || args.shell || "zsh"));
+    writeStdout(renderCliCompletion(args._[1] || args.shell || "zsh"), { newline: false });
     process.exit(0);
   } catch (error) {
     failAgentFirstCommand("completion", error, { format: agentFirstFormat });
@@ -491,8 +434,8 @@ if (command === "completion") {
 if (command === "project" && ["list", "search", "recent"].includes(args._[1] || "list")) {
   const action = args._[1] || "list";
   try {
-    const query = action === "search" ? (args.query && args.query !== true ? String(args.query) : args._.slice(2).join(" ")) : "";
-    const result = listCliProjects({ query, recent: action === "recent" });
+    const query = args.query && args.query !== true ? String(args.query) : action === "search" ? args._.slice(2).join(" ") : "";
+    const result = listCliProjects({ query, recent: action === "recent" || Boolean(args.recent) });
     const page = paginateList(result.projects || [], { cursor: args.cursor && args.cursor !== true ? String(args.cursor) : "", limit: args.limit });
     emitAgentFirstResult(`project.${action}`, { data: { ...result, projects: page.items, pagination: page.pagination } }, { format: agentFirstFormat });
     process.exit(0);
@@ -560,24 +503,34 @@ if (command === "workspace") {
 const requestedRoot = path.resolve(args.root || process.cwd());
 const documentationCommand = command === "docs" || (command === "context" && (args._[1] || "ask") === "ask");
 const agentPrepareCommand = command === "agent" && args._[1] === "prepare";
-if (documentationCommand && (args.repository === true || args.project === true)) {
-  console.error("--repository and --project each require a value.");
+if (documentationCommand && (args.repository === true || args.project === true || args["shared-project"] === true)) {
+  console.error("--repository, --project, and --shared-project each require a value.");
   process.exit(2);
 }
+const legacySharedDocumentationTarget = documentationCommand
+  && args.repository && args.repository !== true
+  && args.project && args.project !== true
+  && !args["shared-project"];
+const sharedDocumentationProject = args["shared-project"] && args["shared-project"] !== true
+  ? String(args["shared-project"])
+  : legacySharedDocumentationTarget ? String(args.project) : "";
 const sharedDocumentationTarget = documentationCommand && args.repository && args.repository !== true;
-if (documentationCommand && (Boolean(args.repository && args.repository !== true) !== Boolean(args.project && args.project !== true))) {
-  console.error("Shared-only documentation requires both --repository <git-url> and --project <project-id>.");
+if (documentationCommand && (Boolean(args.repository && args.repository !== true) !== Boolean(sharedDocumentationProject))) {
+  console.error("Shared-only documentation requires both --repository <git-url> and --shared-project <shared-project-id>.");
   process.exit(2);
 }
 if (agentPrepareCommand && args.repository && (args.repository === true || !args.project || args.project === true)) {
   console.error("Shared-only agent prepare requires both --repository <git-url> and --project <project-id>.");
   process.exit(2);
 }
-let root = documentationCommand && !sharedDocumentationTarget ? resolveDocumentationProjectRoot(requestedRoot) : requestedRoot;
+const explicitLocalDocumentationTarget = documentationCommand && !sharedDocumentationTarget && Boolean(
+  (args.project && args.project !== true) || (args.location && args.location !== true),
+);
+let root = documentationCommand && !primaryEditOpenByBranch && !sharedDocumentationTarget && !explicitLocalDocumentationTarget ? resolveDocumentationProjectRoot(requestedRoot) : requestedRoot;
 const documentationTargetOptions = sharedDocumentationTarget
-  ? { repository: String(args.repository), projectId: String(args.project) }
+  ? { repository: String(args.repository), projectId: sharedDocumentationProject }
   : {};
-const agentFirstAgentActions = new Set(["prepare", "instructions", "changes", "handoff"]);
+const agentFirstAgentActions = new Set(["prepare", "changes", "handoff"]);
 const workspaceAgentActions = new Set(["state", "open", "navigate", "scroll", "highlight"]);
 const sharedOnlyAgentPrepare = command === "agent" && args._[1] === "prepare" && args.repository && args.repository !== true && args.project && args.project !== true;
 const agentFirstTargetCommand = (
@@ -587,10 +540,17 @@ const agentFirstTargetCommand = (
     && !(args.project && args.project !== true)
     && !(args.location && args.location !== true))
   || command === "review"
-  || (command === "project" && ["current", "register", "open"].includes(args._[1] || "current"))
+  || (command === "project" && ["current", "show", "register", "open"].includes(args._[1] || "current"))
+  || (command === "ui" && (args._[1] || "list") === "open")
+  || command === "watch"
+  || command === "note"
+  || command === "hooks"
+  || (documentationCommand && !sharedDocumentationTarget && !primaryEditOpenByBranch)
+  || (command === "proposal" && ["impact", "context-impact", "list"].includes(args._[1] || "list") && !(args.repository && args.repository !== true))
+  || (command === "shared" && ["connect", "status", "sync", "assign", "unassign", "local", "reconcile", "security"].includes(args._[1] || "status"))
   || (command === "shared" && args._[1] === "skills" && args._[2] !== "status")
   || (command === "shared" && args._[1] === "instructions" && args._[2] !== "status")
-  || (command === "context" && (["effective", "graph", "trace", "impact", "snapshot"].includes(args._[1] || "") || ((args._[1] || "") === "diff" && !args.to)))
+  || (command === "context" && (["bundle", "effective", "explain", "graph", "trace", "impact", "snapshot"].includes(args._[1] || "") || ((args._[1] || "") === "diff" && !args.to)))
   || command === "settings"
   || (command === "doctor" && !args["all-projects"] && (Boolean(args._[1]) || Boolean(args.format || args.project || args.location || args.folder || args.provider || args.cursor || args.limit)))
 );
@@ -624,18 +584,24 @@ const nativePlanCommand = (
   (command === "agent" && args._[1] === "handoff")
   || (command === "agent" && ["watch", "unwatch", "open", "navigate", "scroll", "highlight", "annotate"].includes(args._[1]))
   || (command === "review" && args._[1] === "annotate")
-  || (command === "project" && args._[1] === "register")
   || (command === "shared" && args._[1] === "skills")
   || (command === "shared" && args._[1] === "instructions")
   || (command === "settings" && args._[1] === "plan")
+  || (command === "settings" && args._[1] === "set")
+  || command === "watch"
+  || command === "hooks"
+  || (command === "shared" && ["local", "security"].includes(args._[1]))
 );
 const nativeApplyCommand = (
   (command === "agent" && args._[1] === "handoff")
   || (command === "review" && args._[1] === "annotate")
-  || (command === "project" && args._[1] === "register")
   || (command === "shared" && args._[1] === "skills")
   || (command === "shared" && args._[1] === "instructions")
   || (command === "settings" && args._[1] === "apply")
+  || (command === "settings" && args._[1] === "set")
+  || command === "watch"
+  || command === "hooks"
+  || (command === "shared" && ["local", "security"].includes(args._[1]))
 );
 if (args.plan && !nativePlanCommand) {
   emitAgentFirstResult(`${command}.${args._.slice(1).join(".") || "run"}`, {
@@ -659,21 +625,19 @@ if (args.apply && !nativeApplyCommand) {
 if (command === "project") {
   const action = args._[1] || "current";
   try {
-    if (action === "current") {
-      emitAgentFirstResult("project.current", { target: agentFirstTarget, data: agentFirstTarget }, { format: agentFirstFormat });
+    if (action === "current" || action === "show") {
+      emitAgentFirstResult(`project.${action}`, { target: agentFirstTarget, data: agentFirstTarget }, { format: agentFirstFormat });
       process.exit(0);
     }
     if (action === "register") {
       const title = args.title && args.title !== true ? String(args.title) : "";
-      const plan = previewLegacyMutation("project.register", { root, input: { root, title }, affected: ["Context Room local Hub registry"] });
-      if (args.apply === true) throw new ContextRoomCliError("missing-plan-id", "--apply requires the exact plan id returned by project register.", { exitCode: 2 });
-      if (!args.apply) {
-        emitAgentFirstResult("project.register", { target: agentFirstTarget, data: plan }, { format: agentFirstFormat });
+      if (args.apply) throw new ContextRoomCliError("deprecated-option", "project register is reversible and idempotent; use --dry-run for a preview or run it directly.", { exitCode: 2 });
+      if (args["dry-run"]) {
+        emitAgentFirstResult("project.register", { target: agentFirstTarget, data: { dryRun: true, effect: "reversible-local", root, title } }, { format: agentFirstFormat });
         process.exit(0);
       }
-      if (String(args.apply) !== plan.planId) throw new ContextRoomCliError("stale-plan", "The project configuration changed after this registration was planned.", { details: { expectedPlanId: plan.planId, suppliedPlanId: String(args.apply) }, retryable: true });
       const registered = registerCliProject({ root, title });
-      emitAgentFirstResult("project.register", { data: { planId: plan.planId, registered } }, { format: agentFirstFormat });
+      emitAgentFirstResult("project.register", { data: { effect: "reversible-local", registered } }, { format: agentFirstFormat });
       process.exit(0);
     }
     if (action === "open") {
@@ -686,11 +650,119 @@ if (command === "project") {
   }
 }
 
+if (command === "ui") {
+  const action = args._[1] || "list";
+  try {
+    if (action === "list") {
+      const query = new URLSearchParams();
+      if (args.project && args.project !== true) query.set("project", String(args.project));
+      if (args.location && args.location !== true) query.set("location", String(args.location));
+      if (args.query && args.query !== true) query.set("query", String(args.query));
+      const { data } = await requestWorkspaceApi("/api/workspaces?" + query.toString());
+      const page = paginateList(data.workspaces || [], { cursor: args.cursor && args.cursor !== true ? String(args.cursor) : "", limit: args.limit });
+      emitAgentFirstResult("ui.list", { data: { workspaces: page.items, pagination: page.pagination, generatedAt: data.generatedAt } }, { format: agentFirstFormat });
+      process.exit(0);
+    }
+    if (action === "open") {
+      const workspaceId = args.workspace && args.workspace !== true ? String(args.workspace) : "";
+      const file = args.file && args.file !== true ? String(args.file) : args.path && args.path !== true ? String(args.path) : "";
+      const view = args.view && args.view !== true ? String(args.view) : file ? "file" : "hub";
+      if (workspaceId) {
+        const workspace = await resolveActiveWorkspace(agentFirstTarget, workspaceId);
+        const browserCommand = await sendWorkspaceCommand(workspace.workspaceId, {
+          action: "navigate",
+          view,
+          path: file,
+          target: { heading: args.heading || null, text: args.text || null, percent: null },
+        });
+        emitAgentFirstResult("ui.open", { target: agentFirstTarget, data: { workspace, command: browserCommand } }, { format: agentFirstFormat });
+        process.exit(0);
+      }
+      const runtime = readContextHubRuntime();
+      if (!runtime?.url) throw new ContextRoomCliError("workspace-hub-unavailable", "The global Context Room Hub is not running.", { retryable: true, exitCode: 3 });
+      const nextWorkspaceId = "ws-" + Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+      const url = new URL(runtime.url + "/");
+      url.searchParams.set("hub", "1");
+      url.searchParams.set("workspace", nextWorkspaceId);
+      if (agentFirstTarget?.project?.id) url.searchParams.set("project", agentFirstTarget.project.id);
+      url.searchParams.set("view", view);
+      if (file) url.searchParams.set("file", file);
+      emitAgentFirstResult("ui.open", { target: agentFirstTarget, data: { workspaceId: nextWorkspaceId, url: url.toString() } }, { format: agentFirstFormat });
+      process.exit(0);
+    }
+    throw new ContextRoomCliError("unknown-command", `Unknown ui command: ${action}`, { exitCode: 2 });
+  } catch (error) {
+    failAgentFirstCommand(`ui.${action}`, error, { format: agentFirstFormat, target: agentFirstTarget });
+  }
+}
+
+if (command === "watch") {
+  const action = args._[1] || "set";
+  try {
+    if (action !== "set") throw new ContextRoomCliError("unknown-command", `Unknown watch command: ${action}`, { exitCode: 2 });
+    if (args.plan) throw new ContextRoomCliError("deprecated-option", "--plan is no longer used. Use --dry-run for an optional preview or --apply <plan-id> for a protected removal.", { exitCode: 2 });
+    const watchedPath = args._[2] || args.path || "";
+    if (!watchedPath || watchedPath === true) throw new ContextRoomCliError("missing-path", "watch set requires a folder path.", { exitCode: 2 });
+    const mode = args.mode && args.mode !== true ? String(args.mode).trim() : "recursive-live";
+    if (mode !== "off" && !WATCH_RULE_MODES.includes(mode)) throw new ContextRoomCliError("invalid-watch-mode", `Unknown folder watch mode: ${mode}.`, { details: { expected: [...WATCH_RULE_MODES, "off"] }, exitCode: 2 });
+    const plan = previewLegacyMutation("watch.set", { root, input: { path: String(watchedPath), mode }, affected: [CONFIG_FILE] });
+    if (mode === "off") {
+      if (args.apply === true) throw new ContextRoomCliError("missing-plan-id", "--apply requires the exact plan id returned by watch set.", { exitCode: 2 });
+      if (!args.apply) {
+        emitAgentFirstResult("watch.set", { target: agentFirstTarget, data: { ...plan, effect: "protected", action: "remove-watch-rule" } }, { format: agentFirstFormat });
+        process.exit(0);
+      }
+      if (String(args.apply) !== plan.planId) throw new ContextRoomCliError("stale-plan", "The project configuration changed after this watch removal was planned.", { retryable: true, details: { expectedPlanId: plan.planId, suppliedPlanId: String(args.apply) } });
+      emitAgentFirstResult("watch.set", { target: agentFirstTarget, data: { planId: plan.planId, result: removeFolderWatchRule(root, { path: String(watchedPath) }) } }, { format: agentFirstFormat });
+      process.exit(0);
+    }
+    if (args["dry-run"]) {
+      emitAgentFirstResult("watch.set", { target: agentFirstTarget, data: { ...plan, effect: "reversible-local", dryRun: true } }, { format: agentFirstFormat });
+      process.exit(0);
+    }
+    emitAgentFirstResult("watch.set", { target: agentFirstTarget, data: { result: writeFolderWatchRule(root, { path: String(watchedPath), mode }), effect: "reversible-local" } }, { format: agentFirstFormat });
+    process.exit(0);
+  } catch (error) {
+    failAgentFirstCommand(`watch.${action}`, error, { format: agentFirstFormat, target: agentFirstTarget });
+  }
+}
+
+if (command === "note") {
+  const action = args._[1] || "list";
+  try {
+    if (action === "list") {
+      const notes = readAgentAnnotations(root, args.path && args.path !== true ? String(args.path) : "");
+      const page = paginateList(Array.isArray(notes) ? notes : notes.annotations || [], { cursor: args.cursor && args.cursor !== true ? String(args.cursor) : "", limit: args.limit });
+      emitAgentFirstResult("note.list", { target: agentFirstTarget, data: { notes: page.items, pagination: page.pagination } }, { format: agentFirstFormat });
+      process.exit(0);
+    }
+    if (action === "add") {
+      if (!args.path || args.path === true || !args.note || args.note === true) throw new ContextRoomCliError("missing-note-input", "note add requires --path and --note.", { exitCode: 2 });
+      const input = { path: String(args.path), note: String(args.note), target: args.target && args.target !== true ? String(args.target) : "", targetType: args.target ? "text" : "file", source: "agent-cli" };
+      if (args["dry-run"]) {
+        emitAgentFirstResult("note.add", { target: agentFirstTarget, data: { dryRun: true, note: input, effect: "reversible-local" } }, { format: agentFirstFormat });
+        process.exit(0);
+      }
+      emitAgentFirstResult("note.add", { target: agentFirstTarget, data: { annotation: appendAgentAnnotation(root, input), effect: "reversible-local" } }, { format: agentFirstFormat });
+      process.exit(0);
+    }
+    throw new ContextRoomCliError("unknown-command", `Unknown note command: ${action}`, { exitCode: 2 });
+  } catch (error) {
+    failAgentFirstCommand(`note.${action}`, error, { format: agentFirstFormat, target: agentFirstTarget });
+  }
+}
+
 if (command === "hub") {
   const action = args._[1] || "";
   try {
+    if (action === "status") {
+      const projects = listContextHubProjects({ refreshGit: false });
+      const page = paginateList(projects, { cursor: args.cursor && args.cursor !== true ? String(args.cursor) : "", limit: args.limit });
+      emitAgentFirstResult("hub.status", { data: { runtime: readContextHubRuntime(), projects: page.items, pagination: page.pagination } }, { format: agentFirstFormat });
+      process.exit(0);
+    }
     if (action === "list") {
-      console.log(JSON.stringify({
+      writeStdout(JSON.stringify({
         runtime: readContextHubRuntime(),
         registry: readContextHubRegistry(),
         projects: listContextHubProjects(),
@@ -699,14 +771,14 @@ if (command === "hub") {
     }
     if (action === "add-shared") {
       if (!args.repository || args.repository === true) throw new Error("Usage: context-room hub add-shared --repository <git-url>");
-      console.log(JSON.stringify(registerContextHubSharedRepository(args.repository), null, 2));
+      writeStdout(JSON.stringify(registerContextHubSharedRepository(args.repository), null, 2));
       process.exit(0);
     }
     if (action === "proposals") {
       let proposals = contextHubUiState(root).proposals;
       if (args.project && args.project !== true) proposals = proposals.filter((proposal) => proposal.projectId === args.project || proposal.projectTitle === args.project);
       if (args.session && args.session !== true) proposals = proposals.filter((proposal) => proposal.sessionId === args.session);
-      console.log(JSON.stringify(proposals, null, 2));
+      writeStdout(JSON.stringify(proposals, null, 2));
       process.exit(0);
     }
     if (action === "open") {
@@ -811,28 +883,138 @@ if (command !== "shared" && !sharedDocumentationTarget && ["setup", "start", "gu
 }
 
 if (command === "proposal") {
-  const action = args._[1] || "";
-  if (action !== "context-impact") {
-    failAgentFirstCommand(`proposal.${action || "unknown"}`, new ContextRoomCliError("unknown-command", `Unknown proposal command: ${action || "(missing)"}`, { exitCode: 2 }), { format: agentFirstFormat });
-  }
+  const action = args._[1] || "list";
   try {
+    if (action === "list") {
+      let proposals = listSharedProposals(root, { allProjects: true, refresh: false });
+      if (args.session && args.session !== true) proposals = proposals.filter((proposal) => proposal.sessionId === String(args.session));
+      if (args.query && args.query !== true) {
+        const needle = String(args.query).toLowerCase();
+        proposals = proposals.filter((proposal) => [proposal.branch, proposal.title, proposal.description, proposal.projectId].some((value) => String(value || "").toLowerCase().includes(needle)));
+      }
+      const page = paginateList(proposals, { cursor: args.cursor && args.cursor !== true ? String(args.cursor) : "", limit: args.limit });
+      emitAgentFirstResult("proposal.list", { target: agentFirstTarget, data: { proposals: page.items, pagination: page.pagination } }, { format: agentFirstFormat });
+      process.exit(0);
+    }
+    if (!["impact", "context-impact"].includes(action)) throw new ContextRoomCliError("unknown-command", `Unknown proposal command: ${action}`, { exitCode: 2 });
     const selector = args._[2] || args.proposal || args.branch || "";
-    const repository = args.repository && args.repository !== true ? String(args.repository) : "";
-    if (!selector) throw new ContextRoomCliError("missing-selector", "proposal context-impact requires a proposal selector.", { exitCode: 2 });
-    if (!repository) throw new ContextRoomCliError("proposal-repository-required", "proposal context-impact requires --repository <shared-id-or-url>.", { exitCode: 2 });
+    const repository = args.repository && args.repository !== true ? String(args.repository) : agentFirstTarget?.shared?.repository || "";
+    if (!selector) throw new ContextRoomCliError("missing-selector", "proposal impact requires a proposal selector.", { exitCode: 2 });
+    if (!repository) throw new ContextRoomCliError("proposal-repository-required", "proposal impact requires --repository or a selected shared project.", { exitCode: 2 });
     const data = await proposalContextImpact({ selector: String(selector), repository, target: agentFirstTarget });
-    emitAgentFirstResult("proposal.context-impact", { target: agentFirstTarget, data }, { format: agentFirstFormat });
+    emitAgentFirstResult(action === "impact" ? "proposal.impact" : "proposal.context-impact", { target: agentFirstTarget, data }, { format: agentFirstFormat });
     process.exit(0);
   } catch (error) {
-    failAgentFirstCommand("proposal.context-impact", error, { format: agentFirstFormat, target: agentFirstTarget });
+    failAgentFirstCommand(`proposal.${action}`, error, { format: agentFirstFormat, target: agentFirstTarget });
   }
 }
 
 if (command === "shared") {
   const action = args._[1] || "status";
   try {
+    if (action === "connect") {
+      if (!args.repository || args.repository === true) throw new ContextRoomCliError("missing-repository", "shared connect requires --repository <git-url>.", { exitCode: 2 });
+      const detected = detectSharedProject(root, { repository: String(args.repository), projectId: args["shared-project"] && args["shared-project"] !== true ? String(args["shared-project"]) : "" });
+      if (args["dry-run"]) {
+        emitAgentFirstResult("shared.connect", { target: agentFirstTarget, data: { dryRun: true, projectRoot: detected.projectRoot, projectId: detected.projectId, repository: String(args.repository), effect: "reversible-local" } }, { format: agentFirstFormat });
+        process.exit(0);
+      }
+      initializeContextRoomProject(detected.projectRoot);
+      const connected = connectSharedContext(detected.projectRoot, { repository: String(args.repository), projectId: detected.projectId });
+      if (!process.env.NODE_TEST_CONTEXT) {
+        registerContextHubSharedRepository(String(args.repository));
+        registerContextHubProject(detected.projectRoot, { shared: { repository: String(args.repository), projectId: detected.projectId } });
+      }
+      emitAgentFirstResult("shared.connect", { data: connected }, { format: agentFirstFormat });
+      process.exit(0);
+    }
+    if (action === "assign" || action === "unassign") {
+      const resource = args.resource && args.resource !== true ? String(args.resource) : "";
+      if (!["skills", "instructions"].includes(resource)) throw new ContextRoomCliError("missing-resource", `shared ${action} requires --resource skills|instructions.`, { exitCode: 2 });
+      const projectIds = [...new Set([...csvOption(args.projects), ...readProjectsFile(args["projects-file"])])];
+      const common = {
+        assignmentId: args.assignment && args.assignment !== true ? String(args.assignment) : "",
+        collectionId: args.collection && args.collection !== true ? String(args.collection) : "",
+        scope: args.scope && args.scope !== true ? String(args.scope) : "project",
+        projectIds,
+        title: args.title && args.title !== true ? String(args.title) : "",
+        description: args.description && args.description !== true ? String(args.description) : `${action === "assign" ? "Assign" : "Unassign"} shared ${resource}`,
+        sessionId: args.session && args.session !== true ? String(args.session) : process.env.CODEX_THREAD_ID || "",
+        idempotencyKey: args["idempotency-key"] && args["idempotency-key"] !== true ? String(args["idempotency-key"]) : process.env.CODEX_THREAD_ID || "",
+      };
+      let result;
+      if (resource === "skills") {
+        const options = { ...common, providers: csvOption(args.providers, ["codex"]), include: csvOption(args.include, ["*"]), exclude: csvOption(args.exclude) };
+        const plan = planSharedSkillOperation(agentFirstTarget, { action, ...options });
+        result = applySharedSkillOperation(agentFirstTarget, { action, planId: plan.planId, ...options });
+      } else {
+        const options = { ...common, files: action === "assign" ? readJsonArrayFile(args.files, "--files") : [] };
+        if (action === "assign" && !options.files.length) throw new ContextRoomCliError("missing-instruction-files", "shared assign --resource instructions requires --files <json-array>.", { exitCode: 2 });
+        const plan = planSharedInstructionOperation(agentFirstTarget, { action, ...options });
+        result = applySharedInstructionOperation(agentFirstTarget, { action, planId: plan.planId, ...options });
+      }
+      emitAgentFirstResult(`shared.${action}`, { target: agentFirstTarget, data: { resource, effect: "proposal-only", result } }, { format: agentFirstFormat });
+      process.exit(0);
+    }
+    if (action === "local" && args._[2] === "skill") {
+      const localAction = args.action && args.action !== true ? String(args.action) : "";
+      if (!['link', 'unlink', 'override'].includes(localAction)) throw new ContextRoomCliError("invalid-local-skill-action", "shared local skill requires --action link|unlink|override.", { exitCode: 2 });
+      const options = {
+        assignmentId: args.assignment && args.assignment !== true ? String(args.assignment) : "",
+        id: args.id && args.id !== true ? String(args.id) : "",
+        provider: args.provider && args.provider !== true ? String(args.provider) : "codex",
+        destination: args.destination && args.destination !== true ? String(args.destination) : "",
+        include: csvOption(args.include, ["*"]),
+        exclude: csvOption(args.exclude),
+        disabled: args.enabled === undefined ? undefined : ["false", "0", "disabled"].includes(String(args.enabled).toLowerCase()),
+        idempotencyKey: args["idempotency-key"] && args["idempotency-key"] !== true ? String(args["idempotency-key"]) : "",
+      };
+      const plan = planSharedSkillOperation(agentFirstTarget, { action: localAction, ...options });
+      if (localAction === "unlink" && !args.apply) {
+        emitAgentFirstResult("shared.local.skill", { target: agentFirstTarget, data: { ...plan, effect: "protected" } }, { format: agentFirstFormat });
+        process.exit(0);
+      }
+      if (args.apply === true) throw new ContextRoomCliError("missing-plan-id", "--apply requires the exact plan id returned by shared local skill.", { exitCode: 2 });
+      if (args.apply && String(args.apply) !== plan.planId) throw new ContextRoomCliError("stale-plan", "The local Shared Skill state changed after this operation was planned.", { retryable: true, details: { expectedPlanId: plan.planId, suppliedPlanId: String(args.apply) } });
+      if (args["dry-run"]) {
+        emitAgentFirstResult("shared.local.skill", { target: agentFirstTarget, data: { ...plan, dryRun: true, effect: "reversible-local" } }, { format: agentFirstFormat });
+        process.exit(0);
+      }
+      const result = applySharedSkillOperation(agentFirstTarget, { action: localAction, planId: plan.planId, ...options });
+      emitAgentFirstResult("shared.local.skill", { target: agentFirstTarget, data: { effect: localAction === "unlink" ? "protected" : "reversible-local", result } }, { format: agentFirstFormat });
+      process.exit(0);
+    }
+    if (action === "reconcile") {
+      const resource = args.resource && args.resource !== true ? String(args.resource) : "all";
+      if (!["skills", "instructions", "all"].includes(resource)) throw new ContextRoomCliError("invalid-resource", "--resource must be skills, instructions, or all.", { exitCode: 2 });
+      const results = {};
+      if (["skills", "all"].includes(resource)) {
+        const options = { provider: args.provider && args.provider !== true ? String(args.provider) : "all", idempotencyKey: args["idempotency-key"] && args["idempotency-key"] !== true ? String(args["idempotency-key"]) : "" };
+        const plan = planSharedSkillOperation(agentFirstTarget, { action: "reconcile", ...options });
+        results.skills = args["dry-run"] ? plan : applySharedSkillOperation(agentFirstTarget, { action: "reconcile", planId: plan.planId, ...options });
+      }
+      if (["instructions", "all"].includes(resource)) {
+        const options = { provider: args.provider && args.provider !== true ? String(args.provider) : "all", idempotencyKey: args["idempotency-key"] && args["idempotency-key"] !== true ? String(args["idempotency-key"]) : "" };
+        const plan = planSharedInstructionOperation(agentFirstTarget, { action: "reconcile", ...options });
+        results.instructions = args["dry-run"] ? plan : applySharedInstructionOperation(agentFirstTarget, { action: "reconcile", planId: plan.planId, ...options });
+      }
+      emitAgentFirstResult("shared.reconcile", { target: agentFirstTarget, data: { resource, dryRun: Boolean(args["dry-run"]), effect: "reversible-local", results } }, { format: agentFirstFormat });
+      process.exit(0);
+    }
+    if (action === "security") {
+      const status = checkSharedGitHubSecurity(root);
+      const plan = previewLegacyMutation("shared.security", { root, input: { repository: status.repository || "" }, affected: ["GitHub branch protections for the configured shared repository"] });
+      if (!args.apply) {
+        emitAgentFirstResult("shared.security", { target: agentFirstTarget, data: { status, ...(status.verified ? {} : { planId: plan.planId }), effect: status.verified ? "none" : "protected" } }, { format: agentFirstFormat });
+        process.exit(0);
+      }
+      if (args.apply === true) throw new ContextRoomCliError("missing-plan-id", "--apply requires the exact plan id returned by shared security.", { exitCode: 2 });
+      if (String(args.apply) !== plan.planId) throw new ContextRoomCliError("stale-plan", "Shared repository security changed after this repair was planned.", { retryable: true });
+      emitAgentFirstResult("shared.security", { target: agentFirstTarget, data: { planId: plan.planId, result: secureSharedGitHubRepository(root), effect: "protected" } }, { format: agentFirstFormat });
+      process.exit(0);
+    }
     if (action === "init-repository") {
-      console.log(JSON.stringify(initializeSharedRepository(root, { name: args.name || args.title || path.basename(root) }), null, 2));
+      writeStdout(JSON.stringify(initializeSharedRepository(root, { name: args.name || args.title || path.basename(root) }), null, 2));
       process.exit(0);
     }
     if (action === "bind") {
@@ -850,7 +1032,7 @@ if (command === "shared") {
       if (!process.env.NODE_TEST_CONTEXT && fs.existsSync(path.join(bindingRoot, CONFIG_FILE))) {
         registerContextHubProject(bindingRoot, { shared: { repository: args.repository, projectId: detected.projectId } });
       }
-      console.log(JSON.stringify(result, null, 2));
+      writeStdout(JSON.stringify(result, null, 2));
       process.exit(0);
     }
     if (action === "setup") {
@@ -865,22 +1047,22 @@ if (command === "shared") {
         registerContextHubSharedRepository(args.repository);
         registerContextHubProject(setupRoot, { shared: { repository: args.repository, projectId: detected.projectId } });
       }
-      console.log(JSON.stringify(result, null, 2));
+      writeStdout(JSON.stringify(result, null, 2));
       process.exit(0);
     }
     if (action === "sync") {
-      console.log(JSON.stringify(syncSharedContext(root, { allowOffline: true }), null, 2));
+      emitAgentFirstResult("shared.sync", { target: agentFirstTarget, data: syncSharedContext(root, { allowOffline: true }) }, { format: agentFirstFormat });
       process.exit(0);
     }
     if (action === "status") {
-      console.log(JSON.stringify(sharedContextStatus(root), null, 2));
+      emitAgentFirstResult("shared.status", { target: agentFirstTarget, data: sharedContextStatus(root) }, { format: agentFirstFormat });
       process.exit(0);
     }
     if (action === "skills") {
       const skillAction = args._[2] || "status";
       const csv = (value, fallback = []) => value && value !== true ? String(value).split(",").map((item) => item.trim()).filter(Boolean) : fallback;
       if (skillAction === "status") {
-        console.log(JSON.stringify(sharedSkillLocationsStatus(root, { refresh: Boolean(args.fresh) }), null, 2));
+        writeStdout(JSON.stringify(sharedSkillLocationsStatus(root, { refresh: Boolean(args.fresh) }), null, 2));
         process.exit(0);
       }
       if (skillAction === "effective") {
@@ -920,8 +1102,10 @@ if (command === "shared") {
           disabled: args.enabled === undefined ? undefined : ["false", "0", "disabled"].includes(String(args.enabled).toLowerCase()),
           title: args.title && args.title !== true ? String(args.title) : "",
           description: args.description && args.description !== true ? String(args.description) : "",
+          provider: args.provider && args.provider !== true ? String(args.provider) : "all",
           sessionId: args.session && args.session !== true ? String(args.session) : process.env.CODEX_THREAD_ID || "",
           idempotencyKey: args["idempotency-key"] && args["idempotency-key"] !== true ? String(args["idempotency-key"]) : "",
+          provider: args.provider && args.provider !== true ? String(args.provider) : "all",
         };
         const result = args.apply
           ? applySharedSkillOperation(agentFirstTarget, { action: skillAction, planId: String(args.apply), ...options })
@@ -959,6 +1143,7 @@ if (command === "shared") {
           files,
           title: args.title && args.title !== true ? String(args.title) : "",
           description: args.description && args.description !== true ? String(args.description) : "",
+          provider: args.provider && args.provider !== true ? String(args.provider) : "all",
           sessionId: args.session && args.session !== true ? String(args.session) : process.env.CODEX_THREAD_ID || "",
           idempotencyKey: args["idempotency-key"] && args["idempotency-key"] !== true ? String(args["idempotency-key"]) : "",
         };
@@ -971,24 +1156,24 @@ if (command === "shared") {
       throw new Error(`Unknown shared instructions command: ${instructionAction}`);
     }
     if (action === "secure-github") {
-      console.log(JSON.stringify(secureSharedGitHubRepository(root), null, 2));
+      writeStdout(JSON.stringify(secureSharedGitHubRepository(root), null, 2));
       process.exit(0);
     }
     if (action === "security-check") {
       const result = checkSharedGitHubSecurity(root);
-      console.log(JSON.stringify(result, null, 2));
+      writeStdout(JSON.stringify(result, null, 2));
       process.exit(result.verified ? 0 : 1);
     }
     if (action === "proposals") {
       let proposals = listSharedProposals(root);
       if (args.project && args.project !== true) proposals = proposals.filter((proposal) => proposal.projectId === args.project);
       if (args.session && args.session !== true) proposals = proposals.filter((proposal) => proposal.sessionId === args.session);
-      console.log(JSON.stringify(proposals, null, 2));
+      writeStdout(JSON.stringify(proposals, null, 2));
       process.exit(0);
     }
     if (action === "propose") {
       if (!args.description) throw new Error("--description is required when creating a proposal");
-      console.log(JSON.stringify(ensureSharedProposal(root, {
+      writeStdout(JSON.stringify(ensureSharedProposal(root, {
         title: args.title || args.task || "Shared context change",
         description: args.description,
         scope: args.scope || "project",
@@ -999,7 +1184,7 @@ if (command === "shared") {
     }
     if (action === "publish") {
       if (!args.proposal || args.proposal === true) throw new Error("--proposal requires a proposal/* branch");
-      console.log(JSON.stringify(publishSharedProposal(root, {
+      writeStdout(JSON.stringify(publishSharedProposal(root, {
         proposal: args.proposal,
         message: args.message,
         title: args.title,
@@ -1051,7 +1236,7 @@ if (command === "shared") {
 
 if (command === "context") {
   const action = args._[1] || "ask";
-  if (["effective", "graph", "trace", "impact", "snapshot", "diff"].includes(action)) {
+  if (["bundle", "effective", "explain", "graph", "trace", "impact", "snapshot", "diff"].includes(action)) {
     try {
       const provider = args.provider && args.provider !== true ? String(args.provider) : "codex";
       const common = {
@@ -1062,9 +1247,26 @@ if (command === "context") {
         cursor: args.cursor && args.cursor !== true ? String(args.cursor) : "",
         limit: parsePositiveLimit(args.limit),
         query: args.query && args.query !== true ? String(args.query) : "",
+        includeGraph: splitList(args.include).includes("graph") || args.detail === "full",
       };
       let data;
-      if (action === "effective") data = buildCliContextEffective(agentFirstTarget, common);
+      if (action === "bundle") {
+        const task = args.task && args.task !== true ? String(args.task) : args._.slice(2).join(" ").trim() || "current task";
+        const result = buildAgentPrepareCached(agentFirstTarget, { task, provider, fresh: Boolean(args.fresh), budget: args.budget });
+        emitAgentFirstResult("context.bundle", result, { format: agentFirstFormat });
+        process.exit(0);
+      } else if (action === "effective") data = buildCliContextEffective(agentFirstTarget, common);
+      else if (action === "explain") {
+        const selector = args._[2] || args.path || args.id || "";
+        if (!selector) throw new ContextRoomCliError("missing-selector", "context explain requires a resource selector.", { exitCode: 2 });
+        const kind = args.kind && args.kind !== true ? String(args.kind) : "";
+        try {
+          data = traceCliContext(agentFirstTarget, String(selector), { ...common, kind });
+        } catch (error) {
+          if (error?.code !== "context-resource-not-found") throw error;
+          data = explainAgentSelector(agentFirstTarget, { selector: String(selector), kind, provider });
+        }
+      }
       else if (action === "graph") data = paginateContextGraph(buildCliContextGraph(agentFirstTarget, common), common);
       else if (action === "trace") {
         const selector = args._[2] || args.path || args.id || "";
@@ -1096,7 +1298,7 @@ if (command === "context") {
   }
   const task = args.task && args.task !== true ? String(args.task) : args._.slice(2).join(" ").trim();
   if (!task) {
-    console.error("Usage: context-room context ask \"what the agent needs to do\" [--root . | --repository <git-url> --project <project-id>] [--goal \"desired outcome\"] [--files path,...] [--depth quick|standard|exhaustive] [--budget 1200] [--json]");
+    console.error("Usage: context-room ask \"<complete research brief: task context, questions, constraints, and expected output>\" [--root . | --repository <git-url> --shared-project <project-id>] [--goal \"desired outcome\"] [--files path,...] [--depth quick|standard|exhaustive] [--budget 1200] [--json]");
     process.exit(2);
   }
   try {
@@ -1110,10 +1312,13 @@ if (command === "context") {
       depth: args.depth && args.depth !== true ? String(args.depth) : "standard",
       budget: args.budget === undefined ? undefined : args.budget,
     });
-    if (args.json) console.log(JSON.stringify(result.packet, null, 2));
-    else process.stdout.write(renderDocumentationPacket(result.packet));
+    if ((args.contract && args.contract !== true && ["v2", "context-room.cli/2"].includes(String(args.contract).toLowerCase())) || (args.format && args.format !== true)) {
+      emitAgentFirstResult(primaryAskCommand ? "ask" : "context.ask", { data: result.packet }, { format: agentFirstFormat });
+    } else if (args.json) writeStdout(JSON.stringify(result.packet, null, 2));
+    else writeStdout(renderDocumentationPacket(result.packet), { newline: false });
     process.exit(0);
   } catch (error) {
+    if (machineContractRequested()) failAgentFirstCommand(primaryAskCommand ? "ask" : "context.ask", error, { format: agentFirstFormat });
     console.error(`Context Room documentation agent failed: ${error.message}`);
     process.exit(1);
   }
@@ -1124,41 +1329,95 @@ if (command === "docs") {
   const selector = args._[2] || args.path || "";
   const sessionId = args.session && args.session !== true ? String(args.session) : "";
   try {
+    if (action === "edit") {
+      let data;
+      if (primaryEditCommand) {
+        const editAction = String(args._[2] || "").trim().toLowerCase();
+        if (editAction === "list") {
+          data = listSharedDocumentationProposals(agentFirstTarget);
+        } else if (editAction === "open") {
+          const proposal = args.proposal && args.proposal !== true ? String(args.proposal) : String(args._[3] || "");
+          if (!proposal) throw new ContextRoomCliError("missing-proposal", "edit open requires an exact proposal branch.", { exitCode: 2 });
+          data = openSharedDocumentationProposalByBranch({ proposal });
+        } else if (editAction === "create") {
+          const description = args.description && args.description !== true ? String(args.description) : args._.slice(3).join(" ").trim();
+          data = createSharedDocumentationProposal(agentFirstTarget, {
+            description,
+            title: args.title && args.title !== true ? String(args.title) : "",
+            sessionId,
+          });
+        } else {
+          throw new ContextRoomCliError("invalid-edit-action", "edit requires one action: create, open, or list.", { exitCode: 2 });
+        }
+      } else {
+        const task = args.task && args.task !== true ? String(args.task) : args._.slice(2).join(" ").trim();
+        data = createDocumentationChange(agentFirstTarget, {
+          task,
+          document: args.document && args.document !== true ? String(args.document) : "",
+          scope: args.scope && args.scope !== true ? String(args.scope) : "local",
+          description: args.description && args.description !== true ? String(args.description) : "",
+          sessionId,
+        });
+      }
+      emitAgentFirstResult(primaryEditCommand ? "edit" : "docs.edit", { target: agentFirstTarget, data }, { format: agentFirstFormat });
+      process.exit(0);
+    }
+    if (action === "publish") {
+      const changeId = args.change && args.change !== true ? String(args.change) : args._[2] || "";
+      const data = publishDocumentationChange(changeId, {
+        summary: args.summary && args.summary !== true ? String(args.summary) : "",
+        description: args.description && args.description !== true ? String(args.description) : "",
+      });
+      emitAgentFirstResult("docs.publish", { data }, { format: agentFirstFormat });
+      process.exit(0);
+    }
     if (action === "search") {
       const query = args.query && args.query !== true ? String(args.query) : args._.slice(2).join(" ").trim();
-      console.log(JSON.stringify(searchDocumentation(root, query, {
+      const data = searchDocumentation(root, query, {
         ...documentationTargetOptions,
         status: args.status && args.status !== true ? String(args.status) : "",
         kind: args.kind && args.kind !== true ? String(args.kind) : "",
         limit: args.limit,
         budget: args.budget,
         sessionId,
-      }), null, 2));
+      });
+      if (machineContractRequested()) emitAgentFirstResult("docs.search", { data }, { format: agentFirstFormat });
+      else writeStdout(JSON.stringify(data, null, 2));
       process.exit(0);
     }
     if (action === "read") {
-      console.log(JSON.stringify(readDocumentation(root, selector, { ...documentationTargetOptions, section: args.section, budget: args.budget, sessionId }), null, 2));
+      const data = readDocumentation(root, selector, { ...documentationTargetOptions, section: args.section, budget: args.budget, sessionId });
+      if (machineContractRequested()) emitAgentFirstResult("docs.read", { data }, { format: agentFirstFormat });
+      else writeStdout(JSON.stringify(data, null, 2));
       process.exit(0);
     }
     if (action === "related") {
-      console.log(JSON.stringify(relatedDocumentation(root, selector, { ...documentationTargetOptions, sessionId }), null, 2));
+      const data = relatedDocumentation(root, selector, { ...documentationTargetOptions, sessionId });
+      if (machineContractRequested()) emitAgentFirstResult("docs.related", { data }, { format: agentFirstFormat });
+      else writeStdout(JSON.stringify(data, null, 2));
       process.exit(0);
     }
     if (action === "trace") {
-      console.log(JSON.stringify(traceDocumentation(root, selector, { ...documentationTargetOptions, section: args.section, sessionId }), null, 2));
+      const data = traceDocumentation(root, selector, { ...documentationTargetOptions, section: args.section, sessionId });
+      if (machineContractRequested()) emitAgentFirstResult("docs.trace", { data }, { format: agentFirstFormat });
+      else writeStdout(JSON.stringify(data, null, 2));
       process.exit(0);
     }
     const inspectOptions = { ...documentationTargetOptions, sessionId };
-    if (action === "inspect") console.log(JSON.stringify(inspectDocumentation(root, selector, inspectOptions), null, 2));
-    else if (action === "metadata") console.log(JSON.stringify(metadataDocumentation(root, selector, inspectOptions), null, 2));
-    else if (action === "links") console.log(JSON.stringify(linksDocumentation(root, selector, inspectOptions), null, 2));
-    else if (action === "backlinks") console.log(JSON.stringify(backlinksDocumentation(root, selector, inspectOptions), null, 2));
-    else if (action === "dependencies") console.log(JSON.stringify(dependenciesDocumentation(root, selector, inspectOptions), null, 2));
-    else if (action === "diagrams") console.log(JSON.stringify(diagramsDocumentation(root, selector, inspectOptions), null, 2));
-    else if (action === "validate") console.log(JSON.stringify(validateDocumentation(root, selector, inspectOptions), null, 2));
+    let data;
+    if (action === "inspect") data = inspectDocumentation(root, selector, inspectOptions);
+    else if (action === "metadata") data = metadataDocumentation(root, selector, inspectOptions);
+    else if (action === "links") data = linksDocumentation(root, selector, inspectOptions);
+    else if (action === "backlinks") data = backlinksDocumentation(root, selector, inspectOptions);
+    else if (action === "dependencies") data = dependenciesDocumentation(root, selector, inspectOptions);
+    else if (action === "diagrams") data = diagramsDocumentation(root, selector, inspectOptions);
+    else if (action === "validate") data = validateDocumentation(root, selector, inspectOptions);
     else throw new Error(`Unknown docs command: ${action}`);
+    if (machineContractRequested()) emitAgentFirstResult(`docs.${action}`, { data }, { format: agentFirstFormat });
+    else writeStdout(JSON.stringify(data, null, 2));
     process.exit(0);
   } catch (error) {
+    if (machineContractRequested() || ["edit", "publish"].includes(action)) failAgentFirstCommand(`docs.${action}`, error, { format: agentFirstFormat, target: agentFirstTarget });
     console.error(`Context Room docs failed: ${error.message}`);
     process.exit(1);
   }
@@ -1199,6 +1458,22 @@ if (command === "settings") {
       const key = args._[2] || "";
       if (!key) throw new ContextRoomCliError("missing-setting", "settings explain requires a setting key.", { exitCode: 2 });
       data = explainCliContextSetting(String(key));
+    } else if (action === "set") {
+      if (args.plan) throw new ContextRoomCliError("deprecated-option", "--plan is no longer used. Run settings set to receive the exact plan, then repeat it with --apply <plan-id>.", { exitCode: 2 });
+      if (args.apply === true) throw new ContextRoomCliError("missing-plan", "settings set --apply requires a plan id.", { exitCode: 2 });
+      if (args.apply) {
+        data = applyCliContextSettings(agentFirstTarget, {
+          planId: String(args.apply),
+          idempotencyKey: args["idempotency-key"] && args["idempotency-key"] !== true ? String(args["idempotency-key"]) : "",
+        });
+      } else {
+        const set = parseSettingAssignments(args.set);
+        if (!set.length) throw new ContextRoomCliError("empty-settings-plan", "settings set requires at least one --set key=value.", { exitCode: 2 });
+        data = planCliContextSettings(agentFirstTarget, {
+          set,
+          expectedRevision: args["expected-revision"] && args["expected-revision"] !== true ? String(args["expected-revision"]) : "",
+        });
+      }
     } else if (action === "plan") {
       const set = parseSettingAssignments(args.set);
       if (!set.length) throw new ContextRoomCliError("empty-settings-plan", "settings plan requires at least one --set key=value.", { exitCode: 2 });
@@ -1224,7 +1499,7 @@ if (command === "settings") {
 if (command === "doctor") {
   if (args["all-projects"]) {
     try {
-      emitAgentFirstResult("doctor.all-projects", { data: doctorAllProjects({
+      const report = doctorAllProjects({
         onlyActionable: Boolean(args.actionable || args.only === "actionable"),
         cursor: args.cursor && args.cursor !== true ? String(args.cursor) : "",
         limit: parsePositiveLimit(args.limit),
@@ -1234,7 +1509,13 @@ if (command === "doctor") {
         shared: args.shared && args.shared !== true ? String(args.shared) : "",
         provider: args.provider && args.provider !== true ? String(args.provider) : "",
         folder: args.folder && args.folder !== true ? String(args.folder) : "",
-      }) }, { format: agentFirstFormat });
+      });
+      if (agentFirstFormat.toLowerCase() === "jsonl") {
+        for (const project of report.projects) emitAgentFirstResult("doctor.all-projects.item", { data: { project } }, { format: "jsonl" });
+        emitAgentFirstResult("doctor.all-projects.summary", { data: { summary: report.summary, pagination: report.pagination } }, { format: "jsonl" });
+      } else {
+        emitAgentFirstResult("doctor.all-projects", { data: report }, { format: agentFirstFormat });
+      }
       process.exit(0);
     } catch (error) {
       failAgentFirstCommand("doctor.all-projects", error, { format: agentFirstFormat });
@@ -1418,10 +1699,6 @@ if (command === "agent") {
         emitAgentFirstResult("agent.prepare", result, { format: agentFirstFormat });
         process.exit(0);
       }
-      if (action === "instructions") {
-        emitAgentFirstResult("agent.instructions", { target: agentFirstTarget, data: agentInstructions(agentFirstTarget, { provider }) }, { format: agentFirstFormat });
-        process.exit(0);
-      }
       if (action === "changes") {
         emitAgentFirstResult("agent.changes", { target: agentFirstTarget, data: classifyAgentChanges(agentFirstTarget, { sessionId }) }, { format: agentFirstFormat });
         process.exit(0);
@@ -1442,10 +1719,6 @@ if (command === "agent") {
     } catch (error) {
       failAgentFirstCommand(`agent.${action}`, error, { format: agentFirstFormat, target: agentFirstTarget });
     }
-  }
-  if (action === "help") {
-    console.log(agentHelp());
-    process.exit(0);
   }
   if (action === "state") {
     try {
@@ -1481,7 +1754,7 @@ if (command === "agent") {
       process.exit(0);
     }
     try {
-      console.log(JSON.stringify(writeFolderWatchRule(root, { path: args.path, mode }), null, 2));
+      writeStdout(JSON.stringify(writeFolderWatchRule(root, { path: args.path, mode }), null, 2));
     } catch (error) {
       console.error(`Unable to watch folder: ${error.message}`);
       process.exit(1);
@@ -1501,7 +1774,7 @@ if (command === "agent") {
       process.exit(0);
     }
     try {
-      console.log(JSON.stringify(removeFolderWatchRule(root, { path: args.path }), null, 2));
+      writeStdout(JSON.stringify(removeFolderWatchRule(root, { path: args.path }), null, 2));
     } catch (error) {
       console.error(`Unable to unwatch folder: ${error.message}`);
       process.exit(1);
@@ -1559,16 +1832,35 @@ if (command === "agent") {
       process.exit(0);
     }
     const annotation = appendAgentAnnotation(root, annotationInput);
-    console.log(JSON.stringify({ annotation }, null, 2));
+    writeStdout(JSON.stringify({ annotation }, null, 2));
     process.exit(0);
   }
   if (action === "annotations") {
-    console.log(JSON.stringify(readAgentAnnotations(root, args.path || ""), null, 2));
+    writeStdout(JSON.stringify(readAgentAnnotations(root, args.path || ""), null, 2));
     process.exit(0);
   }
   console.error(`Unknown agent command: ${action}\n`);
   console.error(usage());
   process.exit(1);
+}
+
+if (command === "hooks") {
+  const action = args._[1] || "sync";
+  try {
+    if (action !== "sync") throw new ContextRoomCliError("unknown-command", `Unknown hooks command: ${action}`, { exitCode: 2 });
+    if (args.plan) throw new ContextRoomCliError("deprecated-option", "--plan is no longer used. Run hooks sync to receive the exact plan.", { exitCode: 2 });
+    const plan = previewLegacyMutation("hooks.sync", { root, input: { root }, affected: ["managed Context Room Git hooks"] });
+    if (!args.apply) {
+      emitAgentFirstResult("hooks.sync", { target: agentFirstTarget, data: { ...plan, dryRun: Boolean(args["dry-run"]), effect: "protected" } }, { format: agentFirstFormat });
+      process.exit(0);
+    }
+    if (args.apply === true) throw new ContextRoomCliError("missing-plan-id", "--apply requires the exact plan id returned by hooks sync.", { exitCode: 2 });
+    if (String(args.apply) !== plan.planId) throw new ContextRoomCliError("stale-plan", "Hook configuration changed after this synchronization was planned.", { retryable: true });
+    emitAgentFirstResult("hooks.sync", { target: agentFirstTarget, data: { planId: plan.planId, result: syncContextRoomGitHooks(root, { cliPath: fileURLToPath(import.meta.url) }), effect: "protected" } }, { format: agentFirstFormat });
+    process.exit(0);
+  } catch (error) {
+    failAgentFirstCommand(`hooks.${action}`, error, { format: agentFirstFormat, target: agentFirstTarget });
+  }
 }
 
 if (command === "install-hooks") {

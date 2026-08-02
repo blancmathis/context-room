@@ -30,12 +30,17 @@ import {
   diffSharedMainRevisions,
   diffSharedProposalRevisions,
   diffSharedSkillLocationsRevisions,
+  createSharedProposal,
+  ensureSharedProposal,
   importSharedSkills,
   importSharedInstructions,
   linkSharedSkillLocation,
   listSharedProposalWorkspaces,
   listSharedProposals,
+  listRegisteredSharedProjectLocations,
+  listRegisteredSharedRepositories,
   listSharedRepositoryProposals,
+  openSharedProposalWorkspace,
   publishSharedProposal,
   proposeSharedSkillAssignment,
   proposeSharedSkillUnassignment,
@@ -288,7 +293,13 @@ export function resolveCliTarget({ cwd = process.cwd(), project = "", location =
   const connection = root ? readSharedProjectConnection(root) : null;
   const locationId = selected?.id || (root ? hashId("location", root) : "");
   const logicalProjectId = selected?.logicalProjectId || (root ? hashId("project", gitText(root, ["rev-parse", "--git-common-dir"]) || root) : String(project || ""));
-  const branch = selected?.worktree?.branch || (root ? gitText(root, ["branch", "--show-current"]) : "");
+  const liveBranch = root ? gitText(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]) : "";
+  const liveHead = root ? gitText(root, ["rev-parse", "--short=12", "HEAD"]) : "";
+  const branch = liveBranch || (liveHead ? `detached@${liveHead}` : "");
+  const gitRoot = root ? gitText(root, ["rev-parse", "--show-toplevel"]) : "";
+  const commonDir = root ? gitText(root, ["rev-parse", "--git-common-dir"]) : "";
+  const resolvedCommonDir = gitRoot && commonDir ? stablePath(path.resolve(gitRoot, commonDir)) : "";
+  const liveMain = Boolean(gitRoot && resolvedCommonDir && path.basename(resolvedCommonDir) === ".git" && stablePath(path.dirname(resolvedCommonDir)) === stablePath(gitRoot));
   return {
     root,
     folderAbsolute: selectedFolder,
@@ -301,8 +312,8 @@ export function resolveCliTarget({ cwd = process.cwd(), project = "", location =
       id: locationId,
       root,
       branch,
-      head: selected?.worktree?.head || gitText(root, ["rev-parse", "--short=12", "HEAD"]),
-      main: Boolean(selected?.worktree?.main),
+      head: liveHead,
+      main: liveMain,
     } : null,
     folder: root ? {
       absolutePath: selectedFolder,
@@ -311,6 +322,7 @@ export function resolveCliTarget({ cwd = process.cwd(), project = "", location =
     shared: connection ? { repository: connection.repository, projectId: connection.projectId } : selected?.shared || null,
     registered: Boolean(selected),
     localEnvironment: root ? "available" : "unavailable",
+    freshness: root ? { git: "fresh", observedAt: new Date().toISOString() } : { git: "unavailable", observedAt: new Date().toISOString() },
   };
 }
 
@@ -578,7 +590,10 @@ export function buildCliContextGraph(target, options = {}) {
 /** Resolve only context that is valid for the exact coordinate. */
 export function buildCliContextEffective(target, options = {}) {
   try {
-    return resolveEffectiveContext(buildCliContextGraph(target, options));
+    const effective = resolveEffectiveContext(buildCliContextGraph(target, options));
+    if (options.includeGraph) return effective;
+    const { graph: _graph, ...compact } = effective;
+    return compact;
   } catch (error) {
     throw cliErrorFrom(error, "context-effective-failed");
   }
@@ -732,7 +747,7 @@ function snapshotInput(effective, target) {
 
 export async function createCliContextSnapshot(target, options = {}) {
   try {
-    const effective = buildCliContextEffective(target, { ...options, allowStale: false, refreshShared: true });
+    const effective = buildCliContextEffective(target, { ...options, allowStale: false, refreshShared: true, includeGraph: true });
     const created = await createContextSnapshot(snapshotInput(effective, target), {
       storageRoot: options.storageRoot,
       verifySharedRevision(shared) {
@@ -1133,7 +1148,7 @@ export function agentInstructions(target, { provider = "auto" } = {}) {
   const selectedProvider = normalizedProvider(provider);
   return {
     provider: selectedProvider,
-    prompt: `Use context-room context ask "<question>" --root ${JSON.stringify(target.root)} for accepted project documentation. context-room capabilities only lists the static installed contract; it never interprets an objective or chooses a command. Only the human can accept or reject files awaiting review. Never write directly to shared main and never discover unregistered worktrees.`,
+    prompt: `Use context-room ask "<complete research brief>" --root ${JSON.stringify(target.root)} for accepted project documentation. The brief must state the work context, questions to resolve, constraints to check, and expected output; never reduce it to keywords. When shared documentation must change, use context-room edit list, context-room edit open <branch>, or context-room edit create "<complete proposal description>"; edit only the returned proposal worktree. context-room capabilities lists the static advanced contract and never chooses a command. Only the human can accept or reject files awaiting review. Never write directly to shared main and never discover unregistered worktrees.`,
   };
 }
 
@@ -1378,6 +1393,239 @@ function writePrivateState(filePath, value) {
 
 function readPrivateState(filePath) {
   try { return JSON.parse(fs.readFileSync(filePath, "utf8")); } catch { return null; }
+}
+
+function documentationChangeId({ target, task, scope, sessionId }) {
+  const stableSession = String(sessionId || "").trim();
+  const nonce = stableSession || `${Date.now()}-${process.pid}`;
+  return "change-" + createHash("sha256").update(JSON.stringify({
+    projectId: target.project?.id || "",
+    locationId: target.location?.id || "",
+    root: target.root || "",
+    task: String(task || ""),
+    scope,
+    sessionId: stableSession,
+    nonce,
+  })).digest("hex").slice(0, 24);
+}
+
+export function createDocumentationChange(target, { task = "", document = "", scope = "local", description = "", sessionId = "", reuseShared = true } = {}) {
+  const normalizedTask = String(task || "").trim();
+  const normalizedScope = String(scope || "local").trim().toLowerCase();
+  if (!normalizedTask) throw new ContextRoomCliError("missing-task", "edit requires a documentation task.", { exitCode: 2 });
+  if (!["local", "shared"].includes(normalizedScope)) throw new ContextRoomCliError("invalid-change-scope", "--scope must be local or shared.", { exitCode: 2 });
+  if (!target?.root) throw new ContextRoomCliError("local-environment-unavailable", "edit requires an explicitly registered project location.");
+  const settings = readMemoryWebappSettings(target.root);
+  let proposal = null;
+  let editRoot = target.root;
+  let acceptedRevision = gitText(target.root, ["rev-parse", "HEAD"]);
+  if (normalizedScope === "shared") {
+    if (!target.shared?.repository) throw new ContextRoomCliError("shared-context-required", "This project is not connected to a shared context; use --scope local or connect it first.", { exitCode: 2 });
+    const proposalOptions = {
+      title: normalizedTask,
+      description: String(description || normalizedTask),
+      scope: "project",
+      sessionId: String(sessionId || process.env.CODEX_THREAD_ID || ""),
+    };
+    proposal = reuseShared
+      ? ensureSharedProposal(target.root, proposalOptions)
+      : { ...createSharedProposal(target.root, proposalOptions), reused: false };
+    editRoot = proposal.root;
+    acceptedRevision = proposal.baseRevision;
+  }
+  const changeId = documentationChangeId({ target, task: normalizedTask, scope: normalizedScope, sessionId });
+  const handle = {
+    schemaVersion: "context-room.documentation-change/1",
+    changeId,
+    createdAt: new Date().toISOString(),
+    status: "editing",
+    task: normalizedTask,
+    description: String(description || normalizedTask),
+    document: String(document || ""),
+    scope: normalizedScope,
+    sessionId: String(sessionId || process.env.CODEX_THREAD_ID || ""),
+    target: publicTarget(target),
+    sourceRoot: target.root,
+    editRoot,
+    acceptedRevision,
+    allowedPaths: normalizedScope === "local" ? [...(settings.allowedPaths || [])] : [],
+    watchRules: normalizedScope === "local" ? [...(settings.watchRules || [])] : [],
+    ...(proposal ? { proposal: { branch: proposal.branch, root: proposal.root, baseRevision: proposal.baseRevision, projectId: proposal.projectId, reused: Boolean(proposal.reused) } } : {}),
+    workflow: proposal
+      ? {
+          state: "proposal-ready",
+          writableRoot: proposal.root,
+          instruction: "Edit the documentation in this worktree. Context Room keeps acceptance or rejection in the human review UI.",
+        }
+      : {
+          state: "local-review-ready",
+          writableRoot: target.root,
+          instruction: "Edit watched documentation in this project. Context Room will present each changed file for human review.",
+        },
+    humanOwned: "Only a human can accept or reject the resulting file reviews.",
+  };
+  writePrivateState(privateStatePath("documentation-changes", changeId), handle);
+  return handle;
+}
+
+function proposalTitleFromDescription(description = "") {
+  const normalized = String(description || "").replace(/\s+/g, " ").trim();
+  const firstSentence = normalized.match(/^(.+?[.!?])(?:\s|$)/)?.[1] || normalized;
+  return firstSentence.slice(0, 120).replace(/[.!?]+$/, "").trim() || "Documentation update";
+}
+
+export function createSharedDocumentationProposal(target, { description = "", title = "", sessionId = "" } = {}) {
+  const normalizedDescription = String(description || "").trim();
+  if (!normalizedDescription) {
+    throw new ContextRoomCliError("missing-description", "edit create requires a complete proposal description.", { exitCode: 2 });
+  }
+  return createDocumentationChange(target, {
+    task: String(title || "").trim() || proposalTitleFromDescription(normalizedDescription),
+    scope: "shared",
+    description: normalizedDescription,
+    sessionId,
+    reuseShared: false,
+  });
+}
+
+export function listSharedDocumentationProposals(target) {
+  if (!target?.root || !target.shared?.repository) {
+    throw new ContextRoomCliError("shared-context-required", "edit list requires a project connected to a shared context.", { exitCode: 2 });
+  }
+  const local = listSharedProposalWorkspaces(target.root);
+  const remote = listSharedProposals(target.root, { allProjects: false, refresh: true })
+    .filter((proposal) => !["accepted", "merged"].includes(proposal.reviewStatus));
+  const proposals = new Map(remote.map((proposal) => [proposal.branch, { ...proposal, localWorkspace: false }]));
+  for (const proposal of local) {
+    const existing = proposals.get(proposal.branch) || {};
+    proposals.set(proposal.branch, {
+      ...existing,
+      ...proposal,
+      reviewStatus: existing.reviewStatus || "editing",
+      localWorkspace: true,
+    });
+  }
+  return {
+    schemaVersion: "context-room.documentation-proposals/1",
+    projectId: target.shared.projectId || target.project?.id || "",
+    proposals: [...proposals.values()].sort((left, right) => String(right.updatedAt || right.createdAt || "").localeCompare(String(left.updatedAt || left.createdAt || ""))),
+  };
+}
+
+export function openSharedDocumentationProposal(target, { proposal = "" } = {}) {
+  if (!target?.root || !target.shared?.repository) {
+    throw new ContextRoomCliError("shared-context-required", "edit open requires a project connected to a shared context.", { exitCode: 2 });
+  }
+  const workspace = openSharedProposalWorkspace(target.root, { proposal });
+  return {
+    schemaVersion: "context-room.documentation-change/1",
+    status: "editing",
+    scope: "shared",
+    target: publicTarget(target),
+    sourceRoot: target.root,
+    editRoot: workspace.root,
+    acceptedRevision: workspace.baseRevision,
+    description: workspace.description,
+    proposal: {
+      branch: workspace.branch,
+      root: workspace.root,
+      baseRevision: workspace.baseRevision,
+      head: workspace.head,
+      projectId: workspace.projectId,
+      reviewStatus: workspace.reviewStatus,
+      dirty: workspace.dirty,
+      conflict: workspace.conflict,
+      reused: true,
+    },
+    workflow: {
+      state: "proposal-ready",
+      writableRoot: workspace.root,
+      instruction: "Edit the documentation in this worktree. Context Room keeps acceptance or rejection in the human review UI.",
+    },
+    humanOwned: "Only a human can accept or reject the resulting file reviews.",
+  };
+}
+
+export function openSharedDocumentationProposalByBranch({ proposal = "" } = {}) {
+  const branch = String(proposal || "").trim();
+  if (!branch) throw new ContextRoomCliError("missing-proposal", "edit open requires an exact proposal branch.", { exitCode: 2 });
+
+  const candidates = [];
+  const checkedRepositories = [];
+  for (const repository of listRegisteredSharedRepositories()) {
+    const locations = listRegisteredSharedProjectLocations(repository);
+    if (!locations.length) continue;
+    checkedRepositories.push(repository);
+
+    const local = listSharedProposalWorkspaces(locations[0].root).find((entry) => entry.branch === branch) || null;
+    let remote = null;
+    if (!local) {
+      try {
+        remote = listSharedRepositoryProposals(repository, { allowOffline: true, refresh: true })
+          .proposals.find((entry) => entry.branch === branch) || null;
+      } catch {}
+    }
+    const match = local || remote;
+    if (!match) continue;
+    const location = locations.find((entry) => entry.projectId === match.projectId) || locations[0];
+    candidates.push({ repository, projectId: match.projectId || location.projectId, root: location.root });
+  }
+
+  if (!candidates.length) {
+    throw new ContextRoomCliError("proposal-not-found", `No open shared documentation proposal uses the exact branch ${branch}.`, {
+      details: { proposal: branch, checkedRepositories },
+      retryable: true,
+      exitCode: 4,
+    });
+  }
+  if (candidates.length > 1) {
+    throw new ContextRoomCliError("proposal-ambiguous", `The exact branch ${branch} exists in more than one shared context.`, {
+      details: { proposal: branch, candidates },
+      retryable: true,
+      exitCode: 2,
+    });
+  }
+
+  const selected = candidates[0];
+  const target = resolveCliTarget({ cwd: selected.root, requireLocal: true });
+  return openSharedDocumentationProposal(target, { proposal: branch });
+}
+
+export function publishDocumentationChange(changeId, { summary = "", description = "" } = {}) {
+  const normalizedId = String(changeId || "").trim();
+  if (!normalizedId) throw new ContextRoomCliError("missing-change", "docs publish requires --change <change-id>.", { exitCode: 2 });
+  const statePath = privateStatePath("documentation-changes", normalizedId);
+  const handle = readPrivateState(statePath);
+  if (!handle || handle.schemaVersion !== "context-room.documentation-change/1") throw new ContextRoomCliError("change-not-found", `Unknown documentation change: ${normalizedId}`, { exitCode: 4 });
+  if (!handle.sourceRoot || !fs.existsSync(handle.sourceRoot)) throw new ContextRoomCliError("change-root-unavailable", "The registered project location for this change is unavailable.", { details: { sourceRoot: handle.sourceRoot }, retryable: true });
+  let result;
+  if (handle.scope === "shared") {
+    if (!handle.proposal?.branch || !handle.proposal?.root || !fs.existsSync(handle.proposal.root)) throw new ContextRoomCliError("proposal-worktree-unavailable", "The proposal worktree for this change is unavailable.", { retryable: true });
+    result = publishSharedProposal(handle.sourceRoot, {
+      proposal: handle.proposal.branch,
+      title: String(summary || handle.task),
+      description: String(description || handle.description || handle.task),
+      message: String(summary || handle.task || "Publish documentation change"),
+    });
+  } else {
+    const target = {
+      project: handle.target?.project || {},
+      location: handle.target?.location || {},
+      folder: handle.target?.folder || { path: ".", absolutePath: handle.sourceRoot },
+      root: handle.sourceRoot,
+      registered: true,
+      shared: handle.target?.shared || null,
+    };
+    const changes = classifyAgentChanges(target, { sessionId: handle.sessionId || "" });
+    result = {
+      localReviews: changes.local.filter((item) => item.category === "local-review").map((item) => ({ path: item.path, status: item.status })),
+      untouched: changes.local.filter((item) => item.category !== "local-review").map((item) => ({ path: item.path, reason: item.category })),
+      humanOwned: "Each resulting file review remains pending until a human accepts or rejects it.",
+    };
+  }
+  const published = { ...handle, status: "published", publishedAt: new Date().toISOString(), result };
+  writePrivateState(statePath, published);
+  return published;
 }
 
 function settingsRevision(value) {
@@ -1637,7 +1885,8 @@ function sharedInstructionOperationPreview(target, action, rawOptions = {}) {
   if (action === "import") return { options, preview: previewSharedInstructionImport(target.root, options) };
   if (action === "reconcile") {
     const status = sharedInstructionLocationsStatus(target.root, { refresh: false });
-    return { options, preview: { action: "reconcile", revision: status.revision, links: status.links || [], conflicts: status.conflicts || [], unmanagedContentPreserved: true } };
+    const provider = String(options.provider || "all");
+    return { options: { ...options, provider }, preview: { action: "reconcile", provider, revision: status.revision, links: (status.links || []).filter((link) => provider === "all" || link.provider === provider), conflicts: status.conflicts || [], unmanagedContentPreserved: true } };
   }
   throw new ContextRoomCliError("unknown-shared-instruction-operation", `Unknown Shared Instructions operation: ${action}`, { exitCode: 2 });
 }
@@ -1672,7 +1921,7 @@ export function applySharedInstructionOperation(target, { action = "", planId, i
     if (stored.action === "assign") result = proposeSharedInstructionAssignment(target.root, stored.input);
     else if (stored.action === "unassign") result = proposeSharedInstructionUnassignment(target.root, stored.input);
     else if (stored.action === "import") result = importSharedInstructions(target.root, stored.input);
-    else if (stored.action === "reconcile") result = reconcileSharedInstructionLocations(target.root, { allowOffline: false });
+    else if (stored.action === "reconcile") result = reconcileSharedInstructionLocations(target.root, { allowOffline: false, provider: stored.input.provider || "all" });
     const receipt = { operationId, planId, action: stored.action, appliedAt: new Date().toISOString(), result, untouchedUnmanaged: true };
     writePrivateState(receiptPath, receipt);
     return receipt;
@@ -1805,6 +2054,27 @@ export function doctorSafePlan(target) {
 
 export function renderAgentCliHuman(command, payload) {
   const data = payload?.data ?? payload;
+  if (command === "capabilities") {
+    if (data.view === "sections") {
+      return [
+        "Primary commands",
+        ...(data.primaryCommands || []).map((entry) => `  ${entry.path} — ${entry.summary}`),
+        "",
+        "Capability sections",
+        ...(data.sections || []).map((section) => `  ${section.id} — ${section.summary}\n    ${section.inspect}`),
+        "",
+        "Human only: accept or reject file reviews.",
+      ].join("\n") + "\n";
+    }
+    if (["section", "namespace", "profile"].includes(data.view)) {
+      const title = data.section?.id || data.namespace || data.profile || "Capabilities";
+      return `${title}\n` + (data.commands || []).map((entry) => `  ${entry.path} — ${entry.summary}`).join("\n") + "\n";
+    }
+    if (data.view === "command" && data.commands?.[0]) {
+      const entry = data.commands[0];
+      return `${entry.path}\n${entry.summary}\n\nUsage\n  ${entry.usage}\n`;
+    }
+  }
   if (command === "project.list" || command === "project.search" || command === "project.recent") {
     return (data.projects || []).map((project) => `${project.title} · ${project.locations.length} location${project.locations.length === 1 ? "" : "s"}\n${project.locations.map((item) => `  ${item.branch || "no branch"} · ${item.root}`).join("\n")}`).join("\n\n") + "\n";
   }

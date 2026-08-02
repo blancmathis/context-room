@@ -36,11 +36,49 @@ Desktop, with Linear density and Creed-style document review.
 ### Geometry
 
 - Title bar: 46 px.
+- Base spacing unit: 4 px. Use the shared 8, 12, 16, 20, and 24 px steps
+  instead of introducing one-off offsets.
+- Workbench surface gutter: 20 px on desktop and drawer layouts, 12 px at
+  639 px and below. Headers, toolbars, list rows, section bodies, and sticky
+  footers on the same surface share this horizontal edge.
+- Explorer gutter: 8 px. The open Explorer header and its controls align to
+  this edge; the collapsed 48 px rail centers its single control geometrically.
+- Inspector gutter: 16 px on wide layouts and 12 px on mobile.
+- Dialog gutter: 20 px on desktop and 12 px on mobile. Dialog headers, bodies,
+  and confirmation footers keep the same horizontal edge.
+- Component-internal spacing may use 8–16 px when it expresses grouping, but
+  it must not move a surface's primary content edge.
 - Compact, default, and prominent controls: 28, 32, and 36 px.
 - Interactive rows: 36–44 px.
 - Radii: 6 px for controls, 8 px for groups, 10 px for dialogs.
 - Use one 1 px separator or one subtle shadow, never both for routine surfaces.
 - Pills are reserved for statuses, filters, and compact segmented controls.
+
+#### Executable layout contract
+
+The canonical geometry is mirrored by `test/e2e/layout-contract.mjs` and
+enforced by `npm run test:layout`.
+
+| Surface | Desktop and drawer | Mobile (≤639 px) |
+|---|---:|---:|
+| Workbench | 20 px | 12 px |
+| Explorer | 8 px | 8 px |
+| Inspector | 16 px | 12 px |
+| Dialog | 20 px | 12 px |
+
+- Structural rhythm uses only 4, 8, 12, 16, 20, and 24 px.
+- A surface header, toolbar, rows, body, and footer share the same semantic
+  horizontal edge. Nested components may add internal spacing, but may not add
+  a second surface gutter.
+- Scroll containers reserve their sticky or fixed footer space. Intentional
+  horizontal scrollers must remain keyboard reachable and must expose their
+  complete first and last items.
+- Optical exceptions are limited to the search glyph, the two-pixel active tab
+  indicator, and the collapsed Explorer control. The executable manifest owns
+  the reason for each exception and tests its computed geometry.
+- Geometry is authored once inside the `LAYOUT CONTRACT` section of the product
+  stylesheet. Responsive changes use only 639/980/981/1280 boundaries; older
+  640, 680, and 900 px geometry tiers are rejected by the static audit.
 
 ### Spatial Model
 
@@ -48,8 +86,9 @@ Desktop, with Linear density and Creed-style document review.
 - Collapsed Explorer: 48 px rail on wide screens.
 - Main content: flexible and never wrapped in an outer floating card.
 - Optional inspector: 320 px initially, resizable from 300 to 380 px.
-- At 900–1279 px the inspector becomes a drawer. Below 900 px the Explorer is
-  an overlay. Below 640 px, show one primary surface at a time.
+- At 981–1279 px the inspector becomes a drawer. From 640–980 px the Explorer
+  is a side drawer. At 639 px and below it becomes a full-screen surface. These
+  same boundaries are used by CSS and browser state logic.
 
 ### Motion
 
@@ -80,7 +119,13 @@ not part of the product chrome.
 - **Buttons:** solid primary, quiet secondary, icon-only, and destructive.
 - **Fields:** 32–36 px, subtle surface, clear focus ring, no heavy inset shadow.
 - **Lists:** hairline-separated rows with one selected state and no hover motion.
-- **Disclosures:** summary row plus bordered body only while open.
+- **Disclosures:** a compact, unframed 16 px leading chevron aligns with the
+  summary title so the expandable behavior is visible without resembling a
+  separate button; the body is bordered only while open and follows the title's
+  leading edge rather than restarting beneath the chevron.
+- **Concept help:** uncommon product concepts use a compact labeled help button
+  that opens a focused accessible dialog; explanatory content does not occupy a
+  settings disclosure row or compete with editable controls.
 - **Dialogs and menus:** 10 px radius, compact searchable rows, footer only when
   confirmation is required.
 - **Settings:** flat horizontal tab strip, grouped rows, sticky integrated Save

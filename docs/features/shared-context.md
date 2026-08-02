@@ -4,8 +4,8 @@ context_room:
   scope: context-room
   status: current
   canonical_for: shared context repositories
-  last_verified: 2026-07-27
-  sources: [src/shared_context.mjs, src/context_engine.mjs, src/context_inventory.mjs, src/context_snapshots.mjs, src/context_diagnostics.mjs, src/context_hub.mjs, bin/context-room.mjs, src/context_room.mjs, schemas/shared-repository.schema.json, schemas/shared-projects.schema.json, schemas/shared-skill-locations.schema.json, schemas/shared-skill-local-state.schema.json, schemas/shared-instruction-locations.schema.json, schemas/config.schema.json]
+  last_verified: 2026-07-30
+  sources: [src/shared_context.mjs, src/provider_profiles.mjs, src/context_engine.mjs, src/context_inventory.mjs, src/context_snapshots.mjs, src/context_diagnostics.mjs, src/context_hub.mjs, bin/context-room.mjs, src/context_room.mjs, schemas/shared-repository.schema.json, schemas/shared-projects.schema.json, schemas/shared-skill-locations.schema.json, schemas/shared-skill-local-state.schema.json, schemas/shared-resource-local-state.schema.json, schemas/shared-instruction-locations.schema.json, schemas/config.schema.json]
 ---
 
 # Shared Context
@@ -86,6 +86,18 @@ Commit and push both schemas' data plus every registered `projects/<project-id>/
 
 ## Connect And Refresh A Project
 
+Humans can perform the same setup without the CLI from **Settings → Project**:
+
+1. Open **Shared repositories** and add each independent Git repository used by a team, client, or personal documentation space.
+2. Select a local project or worktree in Explorer.
+3. Open **Selected project connection**, choose the repository and shared project, then connect it.
+
+Context Room supports multiple registered shared repositories on one device. Each repository keeps its own accepted default branch and proposal history. One local logical project connects to one shared repository at a time, across its registered worktrees. Disconnect before switching. Removing a repository from Settings only removes its device registration and is blocked while a local project remains connected; it never deletes Git data.
+
+The compact **What is a Shared Context?** help button opens a dedicated dialog instead of adding another settings disclosure. It explains the product benefit—one canonical documentation source remains separate from code and consistent across collaborators, branches, and worktrees—and the full trust model. Accepted repositories can provide canonical documents, Shared Skills, and Shared Instructions, while executable hooks remain local.
+
+The dialog also explains proposal branches, human file review, multiple repositories, provider activation, local preferences, and preservation of unmanaged files. The repository manifest owns the accepted branch and paths. `projects.json` owns project mapping, `skill-locations.json` declares Shared Skill collections and assignments, and `instruction-locations.json` maps reviewed instruction sources to exact provider targets. Proposals stay outside effective context, while device preferences, destinations, overrides, and managed-link ownership stay local.
+
 From the project that consumes the shared context:
 
 ```bash
@@ -120,7 +132,7 @@ context-room shared status --root .
 context-room shared sync --root .
 ```
 
-Read commands use the last accepted local snapshot immediately and report whether it is fresh, stale, refreshing, or offline. `agent prepare --fresh`, proposal publication, rebase, review materialization, and finalization require an online refresh. Other reads do not block automatically on a shared fetch.
+Read commands use the last accepted local snapshot immediately and report whether it is fresh, stale, refreshing, or offline. `context bundle --fresh`, proposal publication, rebase, review materialization, and finalization require an online refresh. Other reads do not block automatically on a shared fetch.
 
 ### Accepted History And Revision Diffs
 
@@ -142,41 +154,38 @@ If an older revision is no longer an ancestor, Context Room reports
 
 ## Propose A Change
 
-Create a project-scoped proposal from the latest accepted remote commit:
+Open a bounded shared documentation change from the latest accepted remote
+commit:
 
 ```bash
-context-room shared propose \
+context-room edit create \
   --root . \
-  --title "Clarify onboarding" \
-  --description "Clarify the owner-visible onboarding steps and their prerequisites." \
+  --description "Clarify the complete owner-visible onboarding sequence, its prerequisites, failure handling, and the verification steps that must remain true." \
   --session "$CODEX_THREAD_ID"
 ```
 
-The description is the current **agent recap** shown before the diffs. Keep it cumulative and replace it whenever the proposal changes.
+The command returns a change handle and an isolated writable proposal worktree.
+The mandatory description is the current **agent recap** shown before the diffs.
+A concise title is derived from its first sentence unless `--title` is supplied.
 
-The command prints a proposal branch and a writable worktree path. With a task ID, it first looks for one open proposal with the same repository and project or global scope. It returns that worktree instead of creating a second proposal, including when the remote branch must be reattached on another local checkout. More than one matching open proposal is an explicit error. Accepted or merged proposals are terminal and are never reused.
-
-Make the documentation or skill changes inside the returned worktree, then publish the exact proposal:
-
-```bash
-context-room shared publish \
-  --root . \
-  --proposal proposal/my-project/20260721120000-clarify-onboarding \
-  --message "Clarify onboarding"
-```
-
-The proposal name and description are stored in the proposal commit, not only in local CLI state. When the agent changes an already published proposal, it must publish again with a current description:
+List or restore an existing proposal without inventing another description:
 
 ```bash
-context-room shared publish \
-  --root . \
-  --proposal proposal/my-project/20260721120000-clarify-onboarding \
-  --title "Clarify onboarding and prerequisites" \
-  --description "Adds the missing prerequisite and updates the two owner-facing onboarding pages." \
-  --message "Update onboarding proposal"
+context-room edit list
+context-room edit open proposal/demo/20260730-clarify-onboarding
 ```
 
-`--title` is optional during an update; `--description` is required. Context Room refuses an update without it, so the proposal queue never silently keeps an older agent recap after the branch changes.
+`edit list` uses the project containing the current directory when no selector
+is provided. Because `edit open` receives the exact proposal branch, it resolves
+the registered shared context itself and does not require a project selector.
+
+`open` restores an explicitly selected proposal, including when its remote
+branch must be reattached on another local checkout. Accepted or merged
+proposals are terminal and cannot be reopened for editing.
+
+Make the documentation or skill changes inside the returned worktree. There is
+no second agent-facing publish command and no CLI acceptance step. Context Room
+keeps the resulting file decisions in the human proposal review flow.
 
 Publication first refreshes the configured shared default branch, then rebases
 the proposal onto that accepted revision before pushing it. A clean Git rebase
@@ -188,11 +197,19 @@ semantic contradictions created by an otherwise clean rebase.
 
 Project proposals may change only `projects/<project-id>/docs/` and `projects/<project-id>/skills/`. A global proposal uses `--scope global`, receives a `proposal/global/...` branch by default, and may change only the configured global skills directory. The explicit branch scope must match the requested scope.
 
-Context Room repeats that validation after fetching the remote branch, so bypassing the local publish command does not widen the review. Proposal files must be reviewable UTF-8 text supported by Context Room and no larger than 750 KB. Symlinks, gitlinks, binaries, and special files are rejected.
+Context Room repeats that validation before a proposal can enter accepted main. Proposal files must be reviewable UTF-8 text supported by Context Room and no larger than 750 KB. Symlinks, gitlinks, binaries, and special files are rejected.
 
-The proposal commit records its current name and description, accepted-doc base, plus the source repository, branch, commit, and Codex task ID when those are available. `shared propose` reads `CODEX_THREAD_ID` automatically in Codex; `--session <task-id>` can attach an explicit identity in another agent runtime. This identity selects one open proposal per repository and project/global scope and lets the global Context Room find it. It is metadata, not an authorization token. One task may legitimately own a project proposal and a separate global proposal.
+The proposal commit records its current name and description, accepted-doc
+base, plus the source repository, branch, commit, and Codex task ID when those
+are available. `edit` reads `CODEX_THREAD_ID` automatically in Codex;
+`--session <task-id>` can attach an explicit identity in another agent runtime.
+This identity selects one open proposal per repository and project scope and
+lets the global Context Room find it. It is metadata, not an authorization
+token.
 
-`--branch proposal/...` can provide an explicit unique branch name. Otherwise Context Room derives one from the project or global scope, timestamp, and title.
+Legacy proposal transport remains internal during migration. New agents use
+only `edit`, so they do not orchestrate branch names, worktree paths, or a
+separate publication command.
 
 ## Review And Partial Acceptance
 
@@ -279,7 +296,17 @@ Context Room never scans the computer for new projects or worktrees.
 }
 ```
 
-The built-in destinations are `~/.codex/skills` and `.codex/skills`, `~/.claude/skills` and `.claude/skills`, plus `~/.config/opencode/skills` and `.opencode/skills`. Custom destinations are local mounts selected in the Explorer.
+The built-in destinations come from the same provider profiles used by Startup
+environment and the Context Engine. They are `~/.agents/skills` and
+`.agents/skills` for Codex, `~/.claude/skills` and `.claude/skills` for Claude
+Code, plus `~/.config/opencode/skills` and `.opencode/skills` for OpenCode.
+Custom destinations remain explicit local mounts selected in the Explorer.
+
+Context Room migrates only links it previously recorded as managed. It creates
+the new provider-profile destination atomically, verifies it, and removes the
+old managed link only after success. An unmanaged `.codex/skills` file,
+directory, or symlink is reported as a legacy location and is never removed or
+replaced.
 
 Collections, assignments, scopes, providers, and shared `include` or `exclude`
 filters are accepted intent from `skill-locations.json` on the canonical shared
@@ -287,14 +314,14 @@ revision. Creating, reassigning, or removing an assignment always publishes a
 `skills` proposal. A local `link` maps one accepted assignment to a physical
 destination; `unlink` removes only that managed mapping. Physical paths,
 provider activation, local exclusions, disabled assignments, pending imports,
-archives, and managed-link records use the version 2 local-state contract under
+archives, and managed-link ownership use the version 3 Shared Resources local-state contract under
 `~/.context-room/shared/`; they never enter Git.
 
-Codex, Claude Code, and OpenCode are enabled on the device by default. A project can inherit that state or override one provider to `enabled` or `disabled` for its `project` and `shared` destinations. A `device` assignment uses the device preference only, so several projects cannot race over one global link. A disabled provider reports `provider-disabled` and loses only links registered as managed.
+Codex, Claude Code, and OpenCode are enabled on the device by default. The same preference governs both Shared Skills and Shared Instructions. A project can inherit that state or override one provider to `enabled` or `disabled` for its `project` and `shared` destinations. A `device` assignment uses the device preference only, so several projects cannot race over one global link. A disabled provider reports `provider-disabled` and loses only links registered as managed.
 
 Every materialized skill is one managed symlink to the exact accepted immutable snapshot. Relative scripts and assets remain inside the skill directory, executable bits are preserved, and snapshot content is read-only.
 
-Reconciliation is atomic per destination. An ordinary directory, file, or unmanaged symlink is never replaced: that destination reports a collision while documentation and other destinations continue to refresh. Two shared contexts targeting the same skill name at the same destination likewise conflict explicitly; there is no implicit priority. Refresh removes only links recorded as managed.
+Reconciliation is atomic per destination and guarded by a recoverable local lock. A device-wide owner registry records the repository, assignment, provider, revision, and target behind every managed destination. An ordinary directory, file, unmanaged symlink, or link owned by another shared context is never replaced. Both owners are reported explicitly and there is no implicit priority. Refresh removes only links recorded as managed.
 
 Refresh compares `previousRevision` with the accepted `revision`. An unchanged
 revision does not reconcile already current destinations. When the accepted
@@ -377,12 +404,22 @@ explicit Markdown source files to exact target paths and providers:
 }
 ```
 
-Names are not hard-coded. A collection may use **AGENTS.md**,
-**AGENTS.override.md**, **CLAUDE.md**, or another reviewed `.md` or `.mdx` file.
-The target is explicit and may be nested, such as
+The shared source name is not hard-coded. A collection may contain **CALL.md**
+or any other reviewed `.md` or `.mdx` file. The target is explicit and must be
+recognized by the selected provider: for example **AGENTS.md** or
+**AGENTS.override.md** for Codex, **CLAUDE.md** or a Claude rules/import target,
+and **AGENTS.md**, its documented fallback, or an `instructions` entry for OpenCode. It may be nested, such as
 **apps/calls/AGENTS.md**. Project and shared scopes resolve targets from each
 registered project root. Device scope resolves them from the selected
 provider's global configuration root.
+
+Status keeps materialization and activation separate. A link can be installed
+while the provider still ignores its filename. Settings, Startup environment,
+Context Health, and `context effective` share this projection. Only instructions
+with proven native or configured activation enter effective context.
+Provider precedence is included: a configured Codex fallback such as
+**CALL.md** is reported as shadowed when **AGENTS.override.md** or **AGENTS.md**
+already wins in the same directory.
 
 The accepted commit on the configured default branch is the only effective
 version. Assignment, import, and removal changes use an `instructions`
@@ -397,18 +434,24 @@ context-room shared instructions status --root . --format json
 context-room shared instructions import --root . --collection team --collection-path instructions/team --files mappings.json --format json
 context-room shared instructions import --root . --collection team --collection-path instructions/team --files mappings.json --apply <plan-id> --format json
 context-room shared instructions assign --root . --collection team --files mappings.json --scope project --projects my-project --format json
-context-room shared instructions reconcile --root . --format json
-context-room shared instructions reconcile --root . --apply <plan-id> --format json
+context-room shared instructions reconcile --root . --provider codex --format json
+context-room shared instructions reconcile --root . --provider codex --apply <plan-id> --format json
 ```
 
 `--files` points to a JSON array. Import entries contain `localPath`, `source`,
 `target`, and `providers`; assignment entries contain `source`, `target`, and
 `providers`. Mutations preview first and apply only with the exact returned plan
-ID. Settings exposes the same collections, mappings, conflicts, import, removal,
-and reconciliation primitives under **Shared resources**.
+ID. Settings exposes the same collections, **Use these instructions in…** assignment,
+mappings, conflicts, import, removal, and reconciliation primitives under **Shared resources**.
+
+Instruction imports record the exact local hash. After exact acceptance, an
+unchanged source that is also its provider destination is archived locally
+before the managed link is installed. A source elsewhere is preserved. If the
+source changed after preview, Context Room reports `import-source-changed` and
+does not move or replace it. Refused imports leave every local file untouched.
 
 Startup environment and the Context Engine read these managed links as
-accepted `shared-main` instructions. `effective`, `trace`, and `impact` retain
+accepted `shared-main` instructions only when provider activation is proven. `effective`, `trace`, and `impact` retain
 their collection, assignment, provider, target, and accepted revision. Hooks
 remain local discovery sources and are not part of Shared Instructions.
 
@@ -438,7 +481,7 @@ The generated deploy key used by the legacy setup can push proposal branches but
 - `schemas/shared-repository.schema.json`: shared repository manifest contract.
 - `schemas/shared-projects.schema.json`: project catalog and cwd-resolution contract.
 - `schemas/shared-skill-locations.schema.json`: shared collections and logical assignment contract.
-- `schemas/shared-skill-local-state.schema.json`: version 2 private destinations, overrides, provider overrides, and pending imports.
+- `schemas/shared-resource-local-state.schema.json`: version 3 private Skills and Instructions destinations, provider overrides, pending imports, archives, and managed owners. Version 2 Skills state remains readable and migrates on the first local mutation.
 - `schemas/shared-instruction-locations.schema.json`: reviewed instruction collections, exact file mappings, providers, and scopes.
 - `readOnlyPaths` in `schemas/config.schema.json`: displayable paths that the Context Room server must not create, edit, or delete.
 - The Context Engine canonical feature page owns accepted shared resources in

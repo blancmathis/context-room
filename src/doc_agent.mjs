@@ -363,18 +363,20 @@ export function buildDocumentationCorpus(root = process.cwd(), options = {}) {
       if (!stats.isFile() || stats.size > MAX_DOC_BYTES) continue;
       const rawContent = fs.readFileSync(absolutePath, "utf8");
       const graphNode = graphByPath.get(file.path);
-      const metadata = graphNode?.metadata || parseDocMetadata(rawContent, file.path);
+      const parsedMetadata = parseDocMetadata(rawContent, file.path);
+      const metadata = graphNode?.metadata || parsedMetadata;
       const details = sourceDetails(projectRoot, absolutePath, shared, localRevision);
       const queuedReview = reviewByPath.get(normalizedPath(file.path));
       const dependencyFreshness = queuedReview?.reviewReason === "dependency-changed" ? "needs-review" : "current";
+      const acceptedSharedMain = details.source === "shared-accepted";
       const document = {
         path: file.path,
         absolutePath,
         label: file.label || path.basename(file.path),
         format: documentationFileKind(file.path) || file.kind,
         kind: inferredKind(file.path, metadata, file.kind),
-        truthState: graphNode?.metadata?.truthState || inferredTruthState(file.path, metadata),
-        reviewStatus: queuedReview && queuedReview.reviewReason !== "dependency-changed" ? "unverified" : "accepted",
+        truthState: acceptedSharedMain ? inferredTruthState(file.path, parsedMetadata) : graphNode?.metadata?.truthState || inferredTruthState(file.path, metadata),
+        reviewStatus: acceptedSharedMain || !queuedReview || queuedReview.reviewReason === "dependency-changed" ? "accepted" : "unverified",
         dependencyFreshness,
         metadata,
         references: graphNode?.references || documentReferences(rawContent, file.kind),
@@ -398,7 +400,7 @@ export function buildDocumentationCorpus(root = process.cwd(), options = {}) {
   if (acceptedOnly) {
     for (let index = documents.length - 1; index >= 0; index -= 1) {
       const document = documents[index];
-      if (document.reviewStatus !== "accepted" || document.source === "session-proposal" || document.truthState === "proposal") {
+      if (document.reviewStatus !== "accepted" || document.source === "session-proposal" || document.truthState !== "current") {
         documents.splice(index, 1);
       }
     }
@@ -988,8 +990,7 @@ Truth rules:
 - Every material claim must include a short, exact, contiguous excerpt copied from the cited section, plus its path, section, truth state, revision, and content hash for machine validation.
 - Put only useful document wording in excerpt. Do not paraphrase it, join separate passages, or include a filename as the excerpt.
 - One evidence item must cite exactly one section and one 64-character content hash. Never join sections, revisions, or hashes in one string; split the claims instead.
-- Use targetDifferences only for differences explicitly supported by target documentation. Return an empty array when no target documentation is relevant.
-- Set coverage.docsRevision to exactly ${docsRevision || "the corpus revision returned by search"}.
+- Return an empty targetDifferences array. Target, draft, historical, superseded, and proposal documents are not present in this accepted-only research corpus.
 - Keep the final response within approximately ${normalizedBudget} tokens while preserving task-critical completeness.
 
 Research depth: ${normalizedAgentDepth}
@@ -1023,9 +1024,31 @@ function packetEvidenceDocument(corpus, evidence, field) {
   return { document, section };
 }
 
+export function validateCodexStructuredOutputSchema(schema, { pathLabel = "$" } = {}) {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) throw new Error(`${pathLabel} must be a schema object`);
+  if (schema.$ref) return true;
+  if (!schema.type) throw new Error(`${pathLabel} must declare an explicit type`);
+  if (schema.type === "object") {
+    if (schema.additionalProperties !== false) throw new Error(`${pathLabel} must set additionalProperties to false`);
+    const properties = schema.properties && typeof schema.properties === "object" && !Array.isArray(schema.properties) ? schema.properties : {};
+    const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+    for (const key of Object.keys(properties)) {
+      if (!required.has(key)) throw new Error(`${pathLabel}.properties.${key} must be required`);
+      validateCodexStructuredOutputSchema(properties[key], { pathLabel: `${pathLabel}.properties.${key}` });
+    }
+  } else if (schema.type === "array") {
+    if (!schema.items) throw new Error(`${pathLabel} must declare array items`);
+    validateCodexStructuredOutputSchema(schema.items, { pathLabel: `${pathLabel}.items` });
+  }
+  for (const [key, definition] of Object.entries(schema.$defs || {})) {
+    validateCodexStructuredOutputSchema(definition, { pathLabel: `${pathLabel}.$defs.${key}` });
+  }
+  return true;
+}
+
 function validateContextPacket(packet, { docsRevision = "", corpus } = {}) {
   if (!packet || typeof packet !== "object" || Array.isArray(packet)) throw new Error("Codex returned a non-object documentation packet");
-  for (const key of ["summary", "currentFacts", "constraints", "decisions", "targetDifferences", "unknowns", "conflicts", "optionalReads", "coverage"]) {
+  for (const key of ["summary", "currentFacts", "constraints", "decisions", "targetDifferences", "unknowns", "conflicts", "optionalReads"]) {
     if (!(key in packet)) throw new Error(`Codex documentation packet is missing ${key}`);
   }
   for (const key of ["currentFacts", "constraints", "decisions", "targetDifferences", "unknowns", "conflicts", "optionalReads"]) {
@@ -1036,13 +1059,13 @@ function validateContextPacket(packet, { docsRevision = "", corpus } = {}) {
       if (!/^[a-f0-9]{64}$/.test(String(evidence?.contentHash || ""))) {
         throw new Error(`Codex documentation packet field ${key} contains an invalid content hash`);
       }
-      if (evidence?.truthState === "proposal" || String(evidence?.path || "").startsWith("_session-proposals/")) {
-        throw new Error(`Codex documentation packet field ${key} contains unmerged proposal evidence`);
+      if (evidence?.truthState !== "current" || String(evidence?.path || "").startsWith("_session-proposals/")) {
+        throw new Error(`Codex documentation packet field ${key} contains non-current evidence`);
       }
       if (corpus) {
         const { document, section } = packetEvidenceDocument(corpus, evidence, key);
-        if (document.source === "session-proposal" || document.truthState === "proposal") {
-          throw new Error(`Codex documentation packet field ${key} contains unmerged proposal evidence`);
+        if (document.source === "session-proposal" || document.truthState !== "current") {
+          throw new Error(`Codex documentation packet field ${key} contains non-current evidence`);
         }
         if (evidence.truthState !== document.truthState) {
           throw new Error(`Codex documentation packet field ${key} mislabels documentation truth state`);
@@ -1054,10 +1077,7 @@ function validateContextPacket(packet, { docsRevision = "", corpus } = {}) {
       }
     }
   }
-  if (!packet.coverage || typeof packet.coverage !== "object" || Array.isArray(packet.coverage)) {
-    throw new Error("Codex documentation packet field coverage must be an object");
-  }
-  if (docsRevision) packet.coverage.docsRevision = docsRevision;
+  if (packet.targetDifferences.length) throw new Error("Codex documentation packet targetDifferences must stay empty for accepted-only research");
   return packet;
 }
 
@@ -1089,6 +1109,8 @@ export function runDocumentationAgent({
     acceptedOnly: true,
   });
   const docsRevision = corpus.revision.acceptedCorpus;
+  const outputSchema = JSON.parse(fs.readFileSync(path.resolve(schemaPath), "utf8"));
+  validateCodexStructuredOutputSchema(outputSchema);
   const prompt = buildDocumentationAgentPrompt({
     root: projectRoot,
     cliPath,
@@ -1106,6 +1128,7 @@ export function runDocumentationAgent({
     "--sandbox", "read-only",
     "--ask-for-approval", "never",
     "exec",
+    "--skip-git-repo-check",
     "--ephemeral",
     "--ignore-user-config",
     "--output-schema", path.resolve(schemaPath),
@@ -1147,7 +1170,6 @@ export function runDocumentationAgent({
     ...validatedPacket.currentFacts,
     ...validatedPacket.constraints,
     ...validatedPacket.decisions,
-    ...validatedPacket.targetDifferences,
   ];
   const coverageDetails = buildContextCoverage({
     corpus,
@@ -1157,13 +1179,12 @@ export function runDocumentationAgent({
     obligations: ["current-facts", "constraints", "decisions", "truth-boundaries", ...(files || []).map((file) => `working-file:${normalizedPath(file)}`)],
   });
   validatedPacket.coverage = {
-    ...validatedPacket.coverage,
     ...coverageDetails,
-    project: validatedPacket.coverage.project || corpus.target?.projectTitle || corpus.target?.projectId || path.basename(projectRoot),
+    project: corpus.target?.projectTitle || corpus.target?.projectId || path.basename(projectRoot),
     docsRevision,
-    scope: validatedPacket.coverage.scope || normalizedDepth(depth),
-    sourcesExamined: Number(validatedPacket.coverage.sourcesExamined || uniqueStrings(evidence.map((item) => item.path)).length),
-    pathsExamined: uniqueStrings([...(validatedPacket.coverage.pathsExamined || []), ...evidence.map((item) => item.path)]),
+    scope: normalizedDepth(depth),
+    sourcesExamined: uniqueStrings(evidence.map((item) => item.path)).length,
+    pathsExamined: uniqueStrings(evidence.map((item) => item.path)),
   };
   return {
     packet: validatedPacket,

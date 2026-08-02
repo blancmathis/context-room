@@ -32,6 +32,8 @@ test("provider profiles describe Codex, Claude Code, and OpenCode with primary e
   const codex = contextProviderProfile("codex");
   assert.deepEqual(codex.instructions.projectFiles.slice(0, 2), ["AGENTS.override.md", "AGENTS.md"]);
   assert.equal(codex.instructions.order, "global-then-root-to-folder");
+  assert.equal(codex.instructions.deviceRoot, "~/.codex");
+  assert.deepEqual(codex.instructions.nativeTargets, ["AGENTS.override.md", "AGENTS.md"]);
   assert.deepEqual(codex.skills.project, [".agents/skills"]);
   assert.deepEqual(codex.skills.global, ["~/.agents/skills"]);
   assert.deepEqual(codex.skills.admin, ["/etc/codex/skills"]);
@@ -40,6 +42,8 @@ test("provider profiles describe Codex, Claude Code, and OpenCode with primary e
 
   const claude = contextProviderProfile("claude-code");
   assert.deepEqual(claude.skills.project, [".claude/skills"]);
+  assert.equal(claude.instructions.deviceRoot, "~/.claude");
+  assert.equal(claude.instructions.nativeTargets.includes(".claude/rules/**/*.md"), true);
   assert.deepEqual(claude.instructions.concatenates, ["CLAUDE.md", "CLAUDE.local.md"]);
   assert.match(claude.instructions.precedence, /uncertain/);
   assert.match(claude.evidence[0], /^https:\/\/docs\.anthropic\.com\//);
@@ -47,6 +51,8 @@ test("provider profiles describe Codex, Claude Code, and OpenCode with primary e
   const opencode = contextProviderProfile("opencode");
   assert.deepEqual(opencode.skills.global, ["~/.config/opencode/skills", "~/.claude/skills", "~/.agents/skills"]);
   assert.deepEqual(opencode.skills.project, [".opencode/skills", ".claude/skills", ".agents/skills"]);
+  assert.equal(opencode.instructions.deviceRoot, "~/.config/opencode");
+  assert.deepEqual(opencode.instructions.nativeTargets, ["AGENTS.md", "CLAUDE.md"]);
   assert.match(opencode.skills.precedence, /uncertain/);
   assert.match(opencode.evidence[0], /^https:\/\/opencode\.ai\//);
 });

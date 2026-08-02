@@ -8,6 +8,7 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
+import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:zlib";
 import { appendContextRoomEvent } from "./event_journal.mjs";
 import { collectContextRoomLinks, collectInlinePathReferences, collectMermaidDocumentLinks, documentIdForPath, isNativeProviderDocumentPath, isValidDocumentId, parseContextRoomUri, parseDocMetadata, renderDocMetadataTemplateValues } from "./doc_metadata.mjs";
 import { inspectDocumentMetadata, loadMetadataProfiles } from "./document_metadata_engine.mjs";
@@ -28,6 +29,10 @@ import {
 import {
   SHARED_REVIEW_CONFIG,
   acceptSharedReview,
+  connectSharedContext,
+  detectSharedProject,
+  disconnectSharedContext,
+  listRegisteredSharedBindings,
   listRegisteredSharedRepositories,
   listSharedRepositoryProposals,
   listSharedProposals,
@@ -64,6 +69,7 @@ import {
 } from "./shared_context.mjs";
 import {
   contextHubHostRoot,
+  disconnectContextHubProjectShared,
   listContextHubProjects,
   readContextHubAttention,
   readContextHubRegistry,
@@ -71,8 +77,10 @@ import {
   recordContextHubProjectOpened,
   removeContextHubReviewSnoozes,
   registerContextHubProject,
+  registerContextHubSharedRepository,
   setContextHubProjectOrder,
   setContextHubReviewSnoozes,
+  unregisterContextHubSharedRepository,
   writeContextHubRuntime,
   writeContextHubSnapshot,
 } from "./context_hub.mjs";
@@ -192,7 +200,7 @@ const HERMES_CRON_JOBS_FILE = "~/.hermes/cron/jobs.json";
 const HERMES_CRON_JOBS_FOLDER = "~/.hermes/cron/jobs/";
 const HERMES_CRON_MD_FOLDER = "~/.hermes/cron/jobs-md/";
 const DEFAULT_STARTUP_CONTEXT = { enabled: false, fileNames: ["AGENTS.md", "CLAUDE.md"], globalPaths: ["~/.codex/AGENTS.md"] };
-const DEFAULT_STARTUP_SKILLS = { enabled: true, folderNames: [".codex/skills", "skills"] };
+const DEFAULT_STARTUP_SKILLS = { enabled: true, folderNames: [".agents/skills", "skills"] };
 const PROJECT_DOCUMENTATION_DIR_NAMES = new Set([
   "docs",
   "doc",
@@ -785,7 +793,7 @@ export function resolveMemoryPath(root, relPath) {
   return resolvedPath;
 }
 
-export function listMemoryFiles(root = process.cwd(), { externalRoots = [] } = {}) {
+export function listMemoryFiles(root = process.cwd(), { externalRoots = [], includeContent = false } = {}) {
   const baseSettings = effectiveMemoryWebappSettings(root);
   const activeRepoRoots = sanitizePathList((externalRoots || []).filter((item) => !normalizeRelPath(String(item || "")).startsWith("~")))
     .map((item) => item.endsWith("/") ? item : item + "/");
@@ -891,6 +899,7 @@ export function listMemoryFiles(root = process.cwd(), { externalRoots = [] } = {
         exists,
         bytes: stats?.size ?? 0,
         chars: content.length,
+        ...(includeContent ? { content } : {}),
         updatedAt: stats ? stats.mtime.toISOString() : null,
         kind: fileKindForPath(file.path),
         summary: summarizeContent(content),
@@ -2904,11 +2913,13 @@ function buildAcceptedDependencyState(root, files = listMemoryFiles(root), revie
   for (const file of files) {
     if (!file?.exists || !/\.(?:md|mdx|html?)$/i.test(file.path)) continue;
     const abs = resolveExternalPath(file.path) || path.join(root, file.path);
-    let currentContent = "";
-    try {
-      if (!fs.statSync(abs).isFile() || fs.statSync(abs).size > MAX_FILE_BYTES) continue;
-      currentContent = fs.readFileSync(abs, "utf8");
-    } catch { continue; }
+    let currentContent = typeof file.content === "string" ? file.content : "";
+    if (typeof file.content !== "string") {
+      try {
+        if (!fs.statSync(abs).isFile() || fs.statSync(abs).size > MAX_FILE_BYTES) continue;
+        currentContent = fs.readFileSync(abs, "utf8");
+      } catch { continue; }
+    }
     const localReview = reviewState.reviews?.[file.path];
     const globalReview = globalLedger.reviews?.[globalReviewKeyFor(root, file.path)];
     const review = localReview?.status === "verified" ? localReview : globalReview?.status === "verified" ? globalReview : null;
@@ -3140,7 +3151,7 @@ function sanitizeWorkspacePresence(next = {}) {
   };
 }
 
-function createWorkspaceRegistry({ ttlMs = 20_000 } = {}) {
+function createWorkspaceRegistry({ ttlMs = 20_000, onCommand = null } = {}) {
   const workspaces = new Map();
   const commands = new Map();
   const prune = () => {
@@ -3167,6 +3178,14 @@ function createWorkspaceRegistry({ ttlMs = 20_000 } = {}) {
       workspaces.set(presence.workspaceId, presence);
       prune();
       return presence;
+    },
+    touch(workspaceId) {
+      const id = normalizeWorkspaceId(workspaceId);
+      const current = id ? workspaces.get(id) : null;
+      if (!current) return null;
+      const next = { ...current, updatedAt: new Date().toISOString() };
+      workspaces.set(id, next);
+      return next;
     },
     unregister(workspaceId) {
       const id = normalizeWorkspaceId(workspaceId);
@@ -3196,11 +3215,71 @@ function createWorkspaceRegistry({ ttlMs = 20_000 } = {}) {
         createdAt: next.createdAt || new Date().toISOString(),
       };
       commands.set(id, command);
+      onCommand?.(command);
       return command;
     },
     clear() {
       workspaces.clear();
       commands.clear();
+    },
+  };
+}
+
+function createRuntimeEventBus({ limit = 1_000 } = {}) {
+  let cursor = 0;
+  const events = [];
+  const clients = new Set();
+  const serialize = (event) => `id: ${event.cursor}\nevent: runtime\ndata: ${JSON.stringify(event)}\n\n`;
+  const publish = (type, data = {}) => {
+    const event = { cursor: ++cursor, type, data, createdAt: new Date().toISOString() };
+    events.push(event);
+    if (events.length > limit) events.splice(0, events.length - limit);
+    const payload = serialize(event);
+    for (const client of clients) {
+      try { client.res.write(payload); }
+      catch { client.close(); }
+    }
+    return event;
+  };
+  return {
+    publish,
+    subscribe(req, res, { since = 0, workspaceId = "", onHeartbeat = null } = {}) {
+      res.writeHead(200, {
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-store",
+        connection: "keep-alive",
+        "x-accel-buffering": "no",
+      });
+      res.write(`event: ready\ndata: ${JSON.stringify({ cursor, replayableFrom: events[0]?.cursor || cursor })}\n\n`);
+      const oldestCursor = events[0]?.cursor || cursor;
+      if (since && since < oldestCursor - 1) {
+        res.write(serialize({ cursor, type: "resync-required", data: {}, createdAt: new Date().toISOString() }));
+      } else {
+        for (const event of events) if (event.cursor > since) res.write(serialize(event));
+      }
+      let closed = false;
+      const client = {
+        res,
+        close() {
+          if (closed) return;
+          closed = true;
+          clients.delete(client);
+          clearInterval(heartbeat);
+        },
+      };
+      const heartbeat = setInterval(() => {
+        onHeartbeat?.(workspaceId);
+        try { res.write(": keepalive\n\n"); }
+        catch { client.close(); }
+      }, 10_000);
+      heartbeat.unref?.();
+      clients.add(client);
+      req.once("close", () => client.close());
+      return client.close;
+    },
+    clear() {
+      for (const client of [...clients]) client.close();
+      events.length = 0;
     },
   };
 }
@@ -4088,7 +4167,11 @@ export function buildDocumentationGraph(root = process.cwd(), options = {}) {
     if (!file.exists || sidecarPattern.test(file.path) || !["markdown", "html", "json", "yaml", "diagram-source", "image"].includes(file.kind) && !/\.(?:md|mdx|html?|jsonc?|ya?ml|mmd|mermaid|puml|plantuml|dot|gv|drawio|png|jpe?g|gif|webp|avif|svg)$/i.test(file.path)) continue;
     const abs = resolveExternalPath(file.path) || path.join(root, file.path);
     const textual = !/\.(?:png|jpe?g|gif|webp|avif|svg)$/i.test(file.path);
-    const content = textual && fs.existsSync(abs) && fs.statSync(abs).isFile() && fs.statSync(abs).size <= MAX_FILE_BYTES ? fs.readFileSync(abs, "utf8") : "";
+    const content = !textual
+      ? ""
+      : typeof file.content === "string"
+        ? file.content
+        : fs.existsSync(abs) && fs.statSync(abs).isFile() && fs.statSync(abs).size <= MAX_FILE_BYTES ? fs.readFileSync(abs, "utf8") : "";
     const inspection = inspectDocumentMetadata({ content, relPath: file.path, root, absolutePath: abs }, { profileSet });
     const metadata = effectiveDocumentationMetadataForPath(parseDocMetadata(content, file.path), file.path);
     metadata.generic = inspection.metadata;
@@ -4252,7 +4335,7 @@ function graphIssuesForDocument({ root, file, content, metadata, watched, inHub,
   if (metadata.statusConflict === "target_path_current") issues.push({ type: "target_status_conflict", severity: "high", message: "Target-path documentation cannot declare current implemented truth." });
   if (metadata.statusConflict === "record_path_current") issues.push({ type: "record_status_conflict", severity: "high", message: "Record documentation cannot declare current canonical truth." });
   if (metadata.present && metadata.contract === "minimal" && !metadata.idValid && !isNativeProviderDocumentPath(file.path)) issues.push({ type: "invalid_document_id", severity: "high", message: "context_room.id must use lowercase dot-separated segments with optional internal hyphens." });
-  if (metadata.present && metadata.contract === "legacy" && !metadata.statusValid) issues.push({ type: "invalid_metadata_status", severity: "high", message: "Legacy context_room.status must be current, draft, historical, or superseded." });
+  if (metadata.present && metadata.contract === "legacy" && !metadata.statusValid) issues.push({ type: "invalid_metadata_status", severity: "high", message: "Legacy context_room.status must be current, target, draft, historical, or superseded." });
   if (metadata.present && metadata.contract === "legacy" && metadata.statusValid && ["canonical", "procedure", "agents"].includes(metadata.kind) && metadata.status === "current" && !metadata.last_verified) {
     issues.push({ type: "missing_last_verified", severity: watched ? "medium" : "low", message: "Current high-impact doc has no last_verified date." });
   }
@@ -4474,7 +4557,7 @@ function emptyDocQaReport() {
 
 function readDocQaSnapshot(root) {
   const settings = readMemoryWebappSettings(root);
-  const files = listMemoryFiles(root);
+  const files = listMemoryFiles(root, { includeContent: true });
   const gitEntries = readGitStatusEntries(root);
   const gitHeadContents = readGitHeadFileContents(root, [...gitEntries.values()].flatMap((entry) => [entry.path, entry.oldPath]).filter(Boolean));
   const reviewState = readDocReviewState(root);
@@ -4495,6 +4578,7 @@ export function buildContextRoomReports(root = process.cwd()) {
     const doctor = buildContextRoomDoctorReport(root);
     return {
       generatedAt: new Date().toISOString(),
+      documentCount: 0,
       docqa: emptyDocQaReport(),
       doctor,
       startupContext: [],
@@ -4511,6 +4595,7 @@ export function buildContextRoomReports(root = process.cwd()) {
   const doctor = buildContextRoomDoctorReport(root, { settings, graph, docqa });
   return {
     generatedAt: new Date().toISOString(),
+    documentCount: files.length,
     docqa,
     doctor,
     startupContext: startupFiles.map(publicStartupContextFile),
@@ -4613,7 +4698,7 @@ export function computeDocIssues({ path: relPath, content = "", gitStatus = "", 
   if (todoCount) issues.push({ type: "todo", severity: docMetadata.kind === "canonical" ? "high" : "medium", message: `${todoCount} TODO/question to consolidate.` });
   if (path.extname(normalizeRelPath(relPath)) === ".md" && gitStatus.trim() && !docMetadata.present) issues.push({ type: "missing_metadata", severity: "medium", message: "Missing context_room metadata." });
   if (docMetadata.present && docMetadata.contract === "minimal" && !docMetadata.idValid && !isNativeProviderDocumentPath(relPath)) issues.push({ type: "invalid_document_id", severity: "high", message: "context_room.id must use lowercase dot-separated segments with optional internal hyphens." });
-  if (docMetadata.present && docMetadata.contract === "legacy" && !docMetadata.statusValid) issues.push({ type: "invalid_metadata_status", severity: "high", message: "Legacy context_room.status must be current, draft, historical, or superseded." });
+  if (docMetadata.present && docMetadata.contract === "legacy" && !docMetadata.statusValid) issues.push({ type: "invalid_metadata_status", severity: "high", message: "Legacy context_room.status must be current, target, draft, historical, or superseded." });
   if (effectiveMetadata.statusConflict === "target_path_current") issues.push({ type: "target_status_conflict", severity: "high", message: "Target-path documentation cannot declare current implemented truth." });
   if (effectiveMetadata.statusConflict === "record_path_current") issues.push({ type: "record_status_conflict", severity: "high", message: "Record documentation cannot declare current canonical truth." });
   if (docMetadata.contract === "legacy" && !["target", "record"].includes(effectiveMetadata.truthState) && docMetadata.present && docMetadata.statusValid && ["agents", "canonical", "procedure"].includes(docMetadata.kind) && docMetadata.status === "current" && !docMetadata.last_verified && gitStatus.trim()) issues.push({ type: "missing_last_verified", severity: "medium", message: "Missing last_verified while the file is modified." });
@@ -4677,7 +4762,9 @@ export function buildDocQaReport(root = process.cwd(), options = {}) {
     if (!isWatchedPath(file.path, settings)) return null;
     if (resolveExternalPath(file.path)) return null;
     const abs = resolveExternalPath(file.path) || path.join(root, file.path);
-    const content = file.exists && fs.existsSync(abs) && file.bytes <= MAX_FILE_BYTES ? fs.readFileSync(abs, "utf8") : "";
+    const content = typeof file.content === "string"
+      ? file.content
+      : file.exists && fs.existsSync(abs) && file.bytes <= MAX_FILE_BYTES ? fs.readFileSync(abs, "utf8") : "";
     const gitStatus = meaningfulGitStatusForReview(root, file.path, gitEntry, content, reviewState.reviews, gitHeadContents, file.exists === false ? "absent" : "present");
     const resourceState = file.exists === false ? "absent" : "present";
     const resourceVersion = resourceVersionForReviewFile(root, file.path, file, reviewState.reviews[file.path] || null);
@@ -6213,13 +6300,13 @@ export function syncContextRoomAgentContext(root = process.cwd()) {
 
 This file is generated by Context Room. Do not edit it; \`context-room setup\`, \`context-room init\`, and \`context-room start\` refresh it from the installed version.
 
-## Agent CLI Lifecycle
+## Agent CLI
 
-Start each task with \`context-room agent prepare --task "<task>" --format json\`. It resolves the exact registered project, worktree, and folder; shows effective instructions, skills, and hooks; separates accepted documents from same-session proposals; and reports reviews, conflicts, health, and freshness.
+Use \`context-room ask "<complete research brief>"\` when work needs accepted project documentation. State the work context, questions to resolve, constraints to check, and expected output; never reduce the request to keywords.
 
-Use \`context-room context ask "<question>"\` for accepted project documentation. \`context-room capabilities\` only lists the static installed contract; it never interprets an objective or chooses a command. Only the human can accept or reject files awaiting review.
+When shared documentation must change, use \`context-room edit list\` to inspect open proposals, \`context-room edit open <branch>\` to restore one, or \`context-room edit create "<complete proposal description>"\` to create one. Edit only the returned worktree. There is no agent-facing publish or acceptance step. \`context-room capabilities\` lists the complete static advanced contract; it never interprets an objective or chooses a command.
 
-Context Room never scans the computer for worktrees. Register a location explicitly with the plan-first \`context-room project register\` command or let its own handoff notify the Hub. Agents never accept, reject, or verify file reviews, and they never write directly to shared \`main\`.
+Context Room never scans the computer for worktrees. Register a location explicitly with \`context-room project register\` when requested. Agents never accept, reject, or verify file reviews, and they never write directly to shared \`main\`.
 
 ## Set Up This Repository
 
@@ -6229,7 +6316,7 @@ Before declaring setup complete:
 
 1. Read the root README, every applicable \`AGENTS.md\`, \`CLAUDE.md\`, or \`.hermes.md\`, and the existing documentation indexes.
 2. Inspect the project-owned documentation, runbooks, decisions, research, incident records, and local skills. Do not copy paths or state from another Context Room.
-3. Refine only \`.context-room/config.json\`: keep top-level \`projectOnly: true\` for physical project containment unless the owner explicitly requires a trusted, established symlink hub. False or omitted legacy mode can make configured external symlink targets readable and editable. Keep safe documentation in \`allowedPaths\`, then use \`context-room agent watch --root <project> --path <folder> --mode <mode>\` for explicit folder behavior. The default \`recursive-live\` mode reviews current and future files at any depth; choose a current-only or direct-only mode only when the project evidence requires that narrower scope. Keep exact files and legacy recursive-live folders in \`watchAllow\`, structured folder modes in \`watchRules\`, and organize \`hubSections\` around the project's real ownership and truth states.
+3. Refine only \`.context-room/config.json\`: keep top-level \`projectOnly: true\` for physical project containment unless the owner explicitly requires a trusted, established symlink hub. False or omitted legacy mode can make configured external symlink targets readable and editable. Keep safe documentation in \`allowedPaths\`, then use \`context-room watch set <folder> --mode <mode> --root <project>\` for explicit folder behavior. The default \`recursive-live\` mode reviews current and future files at any depth; choose a current-only or direct-only mode only when the project evidence requires that narrower scope. Keep exact files and legacy recursive-live folders in \`watchAllow\`, structured folder modes in \`watchRules\`, and organize \`hubSections\` around the project's real ownership and truth states.
 4. Preserve an existing configuration, including intentionally empty lists, and preserve the owner-controlled \`.context-room/review-gate.json\`.
 5. Keep current implementation truth separate from target plans and from research, history, decisions, and incidents. Never promote a target claim without implementation evidence.
 6. Run \`context-room doctor --root <project>\`, start without taking over another room, and verify \`/api/health\` reports the intended root.
@@ -7627,7 +7714,7 @@ function requestInvalidatesBackgroundCaches(req) {
   }
 }
 
-function watchBackgroundInputs(root) {
+function watchBackgroundInputs(root, { onInvalidate = null } = {}) {
   const resolvedRoot = path.resolve(root);
   const startedAt = Date.now();
   let timer = null;
@@ -7639,12 +7726,21 @@ function watchBackgroundInputs(root) {
     if (BACKGROUND_WATCH_IGNORED_PATHS.has(relPath)) return;
     if (relPath === path.basename(resolvedRoot)) return;
     const watchedPath = relPath ? path.resolve(watchRoot, relPath) : "";
-    if (watchedPath && fs.existsSync(watchedPath) && fs.statSync(watchedPath).isDirectory()) return;
+    if (watchedPath) {
+      try {
+        if (fs.statSync(watchedPath).isDirectory()) return;
+      } catch {
+        // Git and editors create short-lived files such as index.lock. Treat a
+        // path that vanished between the watch event and this check as a cache
+        // invalidation instead of letting the watcher crash the Hub.
+      }
+    }
     clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;
       if (Date.now() - (backgroundExplicitInvalidations.get(resolvedRoot) || 0) < 250) return;
       invalidateBackgroundCaches(resolvedRoot);
+      onInvalidate?.({ root: resolvedRoot, path: relPath });
     }, 80);
     timer.unref?.();
   };
@@ -7743,23 +7839,56 @@ function sharedContextUiState(root, { refreshShared = false } = {}) {
 
 function withSharedSkillDiagnostics(root, reports = {}, { refresh = false } = {}) {
   const sharedSkills = sharedSkillLocationsStatus(root, { refresh });
+  const sharedInstructions = sharedSkills.connected ? sharedInstructionLocationsStatus(root, { refresh: false }) : { connected: false, links: [] };
   const sharedSkillIssues = sharedSkills.connected ? (sharedSkills.destinations || []).flatMap((destination) => {
     if (destination.status === "ready") return [];
     const severity = destination.status === "conflict" || destination.status === "broken" ? "high" : "medium";
     const message = destination.message || `Shared skill destination is ${destination.status || "not ready"}`;
     return [{
       id: `shared-skills:${destination.id}`,
+      type: destination.status === "provider-disabled" ? "provider-disabled" : destination.status === "conflict" ? "shared-skill-collision" : "shared-skill-unavailable",
       severity,
       category: "startup",
+      resourceId: `shared-skill-destination:${destination.id}`,
+      scope: destination.scope || "project",
+      provider: destination.provider || "all",
       path: destination.destination,
+      absolutePath: destination.destination,
       message: `${message} (${destination.provider} · ${destination.scope})`,
+      evidence: destination.conflicts || [],
+      acknowledged: false,
+    }];
+  }) : [];
+  const sharedInstructionIssues = sharedInstructions.connected ? (sharedInstructions.links || []).flatMap((instruction) => {
+    const materialization = instruction.materializationStatus || instruction.status;
+    const activation = instruction.activationStatus || "uncertain";
+    if (materialization === "installed" && ["active", "configured"].includes(activation)) return [];
+    const type = materialization === "installed" ? "shared-instruction-not-discovered"
+      : materialization === "provider-disabled" ? "provider-disabled"
+        : materialization === "unmanaged-conflict" || materialization === "shared-owner-conflict" || materialization === "collision" ? "shared-instruction-collision"
+          : "shared-instruction-unavailable";
+    const severity = ["shared-instruction-collision", "shared-instruction-unavailable"].includes(type) ? "high" : "medium";
+    const message = instruction.message || instruction.activationReason || `Shared instruction is ${materialization || "not ready"}`;
+    return [{
+      id: `shared-instructions:${instruction.id}`,
+      type,
+      severity,
+      category: "startup",
+      resourceId: `shared-instruction:${instruction.assignmentId}:${instruction.provider}:${instruction.relativeTarget}`,
+      scope: instruction.scope || "project",
+      provider: instruction.provider,
+      path: instruction.destination,
+      absolutePath: instruction.destination,
+      message: `${message} (${instruction.provider} · ${instruction.scope})`,
+      evidence: [{ materializationStatus: materialization, activationStatus: activation, owner: instruction.owner || null }],
       acknowledged: false,
     }];
   }) : [];
   return {
     ...reports,
-    doctor: { ...(reports.doctor || {}), issues: [...(reports.doctor?.issues || []), ...sharedSkillIssues] },
+    doctor: { ...(reports.doctor || {}), issues: [...(reports.doctor?.issues || []), ...sharedSkillIssues, ...sharedInstructionIssues] },
     sharedSkills,
+    sharedInstructions,
   };
 }
 
@@ -8323,9 +8452,43 @@ function paginatedContextHubReviews(state, { cursor = 0, limit = 80 } = {}) {
     generatedAt: state.generatedAt,
     freshness: state.freshness,
     attention: state.attention,
-    items: items.slice(offset, offset + pageSize),
+    items: items.slice(offset, offset + pageSize).map(compactContextHubReviewQueueItem),
     total: items.length,
     nextCursor: offset + pageSize < items.length ? offset + pageSize : null,
+  };
+}
+
+function compactContextHubReviewQueueItem(item = {}) {
+  if (item.type !== "local") return item;
+  const reviews = (item.reviews || []).map((review) => {
+    const compact = {};
+    for (const key of [
+      "path",
+      "label",
+      "resourceState",
+      "batchDeletion",
+      "oldPath",
+      "reviewReason",
+      "resourceVersion",
+      "currentHash",
+      "reviewStatus",
+      "startupContext",
+      "worktreeId",
+      "worktreeLabel",
+      "worktreeCurrent",
+    ]) {
+      const value = review[key];
+      if (value === undefined || value === null || value === false || value === "") continue;
+      if (Array.isArray(value) && value.length === 0) continue;
+      if (typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0) continue;
+      compact[key] = value;
+    }
+    return compact;
+  });
+  return {
+    ...item,
+    files: reviews.length ? [] : item.files,
+    reviews,
   };
 }
 
@@ -8434,6 +8597,7 @@ export function createMemoryServer({
 } = {}) {
   const projectId = contextRoomProjectId(root);
   const promptMutationNonce = randomBytes(32).toString("base64url");
+  contextRoomWebAssetBundle(promptMutationNonce);
   const trustedFrameAncestorPorts = normalizeFrameAncestorPorts(frameAncestorPorts);
   if (registerInHub && !process.env.NODE_TEST_CONTEXT && !fs.existsSync(path.join(path.resolve(root), SHARED_REVIEW_CONFIG))) {
     try {
@@ -8443,17 +8607,52 @@ export function createMemoryServer({
   }
   const sharedReviewServers = new Set();
   const sharedReviewRooms = new Map();
-  const workspaceRegistry = createWorkspaceRegistry();
+  const runtimeEvents = createRuntimeEventBus();
+  const contextHubRefreshNotifications = new Map();
+  const scheduleContextHubSnapshotRefresh = (targetRoot, options = {}) => {
+    const resolvedRoot = path.resolve(targetRoot);
+    const shouldNotify = Boolean(options.force || readFastContextHubState(resolvedRoot).freshness?.refreshing);
+    const refresh = refreshContextHubSnapshot(resolvedRoot, options);
+    if (!shouldNotify || contextHubRefreshNotifications.has(resolvedRoot)) return refresh;
+    contextHubRefreshNotifications.set(resolvedRoot, refresh);
+    void refresh.then((snapshot) => runtimeEvents.publish("state-invalidated", {
+      root: resolvedRoot,
+      projectId: contextRoomProjectId(resolvedRoot),
+      source: "context-hub-refresh",
+      generatedAt: snapshot.freshness?.generatedAt || snapshot.generatedAt || "",
+    })).catch(() => {}).finally(() => {
+      if (contextHubRefreshNotifications.get(resolvedRoot) === refresh) contextHubRefreshNotifications.delete(resolvedRoot);
+    });
+    return refresh;
+  };
+  const workspaceRegistry = createWorkspaceRegistry({
+    onCommand: (command) => runtimeEvents.publish("workspace-command", { command }),
+  });
+  const serverBackgroundRoots = new Set([path.resolve(root)]);
+  const backgroundWatchStops = new Map();
+  const watchRuntimeRoot = (watchRoot) => {
+    const resolvedRoot = path.resolve(watchRoot);
+    if (backgroundWatchStops.has(resolvedRoot)) return;
+    backgroundWatchStops.set(resolvedRoot, watchBackgroundInputs(resolvedRoot, {
+      onInvalidate: ({ path: changedPath }) => runtimeEvents.publish("state-invalidated", {
+        root: resolvedRoot,
+        projectId: contextRoomProjectId(resolvedRoot),
+        path: changedPath,
+        source: "filesystem",
+      }),
+    }));
+  };
   if (persistentDocumentGraphLayout) warmDocumentRelationsGraphLayout();
   ensureBackgroundWorker(root, "files");
   void readBackgroundReports(root).catch(() => {});
   const lastSelectedPath = normalizeRelPath(readCollaborationSessionState(root).selectedPath || "");
   if (lastSelectedPath) void readBackgroundFileTask("file-diff", root, { path: lastSelectedPath }).catch(() => {});
-  const stopBackgroundWatch = watchBackgroundInputs(root);
+  watchRuntimeRoot(root);
   const server = http.createServer(async (req, res) => {
     const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
     const promptRequest = isCodexPromptRequest(req);
     const requestMutation = !["GET", "HEAD", "OPTIONS"].includes(req.method || "GET");
+    const projectIdentityMutation = requestMutation && !requestUrl.pathname.startsWith("/api/workspaces");
     const trustedHost = isLoopbackPromptAuthority(req.headers.host, server, port);
     const trustedPeer = isLoopbackRemoteAddress(req.socket.remoteAddress);
     if (!trustedHost || !trustedPeer) {
@@ -8486,7 +8685,7 @@ export function createMemoryServer({
     const expectedProjectId = String(req.headers["x-context-room-project"] || "").trim();
     const browserMutation = requestMutation
       && Boolean(req.headers["sec-fetch-site"] || req.headers.origin || req.headers.referer);
-    if (!expectedProjectId && (browserMutation || (promptRequest && requestMutation))) {
+    if (!expectedProjectId && ((browserMutation && projectIdentityMutation) || (promptRequest && requestMutation))) {
       sendJson(res, 409, {
         error: "Reload this Context Room tab before changing project state.",
         code: "context_room_project_identity_required",
@@ -8523,6 +8722,8 @@ export function createMemoryServer({
         return;
       }
       requestRoot = path.resolve(targetProject.root);
+      serverBackgroundRoots.add(requestRoot);
+      watchRuntimeRoot(requestRoot);
       res.setHeader("x-context-room-target-project", targetProject.id);
       ensureBackgroundWorker(requestRoot, "files");
     }
@@ -8601,6 +8802,8 @@ export function createMemoryServer({
           };
         },
         workspaceRegistry,
+        runtimeEvents,
+        scheduleContextHubSnapshotRefresh,
       });
     } catch (error) {
       sendJson(res, Number(error.statusCode) || 500, {
@@ -8609,7 +8812,15 @@ export function createMemoryServer({
         ...(error.details !== undefined ? { details: error.details } : {}),
       });
     } finally {
-      if (requestInvalidatesBackgroundCaches(req)) invalidateBackgroundCaches(requestRoot, { explicit: true });
+      if (requestInvalidatesBackgroundCaches(req)) {
+        invalidateBackgroundCaches(requestRoot, { explicit: true });
+        runtimeEvents.publish("state-invalidated", {
+          root: path.resolve(requestRoot),
+          projectId: contextRoomProjectId(requestRoot),
+          path: requestUrl.pathname,
+          source: "mutation",
+        });
+      }
     }
   });
   server.once("close", () => {
@@ -8617,10 +8828,15 @@ export function createMemoryServer({
     sharedReviewServers.clear();
     sharedReviewRooms.clear();
     workspaceRegistry.clear();
-    stopBackgroundWatch();
-    closeBackgroundWorkers(root);
+    runtimeEvents.clear();
+    contextHubRefreshNotifications.clear();
+    for (const stopWatch of backgroundWatchStops.values()) stopWatch();
+    backgroundWatchStops.clear();
+    for (const workerRoot of serverBackgroundRoots) {
+      closeBackgroundWorkers(workerRoot);
+      clearBackgroundCacheState(workerRoot);
+    }
     if (persistentDocumentGraphLayout) releaseDocumentRelationsGraphLayout();
-    clearBackgroundCacheState(root);
   });
   return { server, root, port, projectId, promptMutationNonce };
 }
@@ -9176,6 +9392,8 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   startSharedReview = null,
   startContextHubProject = null,
   workspaceRegistry = null,
+  runtimeEvents = null,
+  scheduleContextHubSnapshotRefresh = null,
 } = {}) {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   const sharedSkillsProjectRoot = (requestedProjectId = "") => {
@@ -9187,22 +9405,37 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     return path.resolve(project.root);
   };
 
+  if (req.method === "GET" && url.pathname === "/api/runtime-events") {
+    if (!runtimeEvents) throw sharedRequestError("Runtime events are unavailable", 503, "runtime_events_unavailable");
+    const workspaceId = normalizeWorkspaceId(url.searchParams.get("workspace") || "");
+    const since = Math.max(0, Number(url.searchParams.get("since") || req.headers["last-event-id"] || 0) || 0);
+    runtimeEvents.subscribe(req, res, {
+      since,
+      workspaceId,
+      onHeartbeat: (id) => workspaceRegistry?.touch(id),
+    });
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/") {
+    const bundle = contextRoomWebAssetBundle(promptMutationNonce);
     sendHtml(
       res,
-      renderAppHtml({ codexPromptMutationNonce: promptMutationNonce }),
+      bundle.html,
       { frameAncestorPorts },
     );
     return;
   }
+  if (req.method === "GET" && url.pathname.startsWith("/assets/context-room.")) {
+    const bundle = contextRoomWebAssetBundle(promptMutationNonce);
+    if (url.pathname === bundle.cssPath) sendVersionedAsset(req, res, bundle.cssVariants, "text/css; charset=utf-8", bundle.cssEtag);
+    else if (url.pathname === bundle.jsPath) sendVersionedAsset(req, res, bundle.jsVariants, "text/javascript; charset=utf-8", bundle.jsEtag);
+    else sendJson(res, 404, { error: "Asset not found" });
+    return;
+  }
   if (req.method === "GET" && url.pathname === "/vendor/mermaid.min.js") {
-    const vendorPath = fileURLToPath(new URL("../node_modules/mermaid/dist/mermaid.min.js", import.meta.url));
-    res.writeHead(200, {
-      "content-type": "text/javascript; charset=utf-8",
-      "cache-control": "public, max-age=31536000, immutable",
-      "x-content-type-options": "nosniff",
-    });
-    fs.createReadStream(vendorPath).pipe(res);
+    const asset = mermaidWebAssetBundle();
+    sendVersionedAsset(req, res, asset.variants, "text/javascript; charset=utf-8", asset.etag);
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/workspaces") {
@@ -9358,7 +9591,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
   if (req.method === "POST" && url.pathname === "/api/shared-instructions/reconcile") {
     const body = await readJsonBody(req);
-    sendJson(res, 200, reconcileSharedInstructionLocations(sharedSkillsProjectRoot(body.projectId), { allowOffline: true }));
+    sendJson(res, 200, reconcileSharedInstructionLocations(sharedSkillsProjectRoot(body.projectId), { allowOffline: true, provider: body.provider || "all" }));
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/context/effective") {
@@ -9431,6 +9664,86 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     sendJson(res, 200, attention);
     return;
   }
+  if (req.method === "POST" && url.pathname === "/api/context-hub/shared-repositories") {
+    const body = await readJsonBody(req);
+    const repository = String(body.repository || "").trim();
+    if (!repository) throw sharedRequestError("A shared Git repository is required", 400, "shared_repository_required");
+    let shared;
+    try {
+      shared = listSharedRepositoryProposals(repository, { allowOffline: false, refresh: true });
+    } catch (error) {
+      throw sharedRequestError(`Could not add this shared repository: ${error.message}`, 400, "shared_repository_unavailable");
+    }
+    registerContextHubSharedRepository(repository);
+    markContextHubSnapshotStale();
+    const catalog = await refreshContextHubSnapshot(root, { refreshShared: true, force: true });
+    appendContextRoomEvent("settings.changed", { resource: { scope: "device", key: "hub.sharedRepositories" }, data: { repository, action: "added" } });
+    sendJson(res, 201, {
+      repository: shared.repository,
+      name: shared.repositoryName,
+      projectCount: shared.projects.length,
+      revision: shared.status.revision,
+      catalog,
+    });
+    return;
+  }
+  if (req.method === "DELETE" && url.pathname === "/api/context-hub/shared-repositories") {
+    const body = await readJsonBody(req);
+    const repository = String(body.repository || "").trim();
+    if (!repository) throw sharedRequestError("A shared Git repository is required", 400, "shared_repository_required");
+    const bindings = listRegisteredSharedBindings(repository);
+    if (bindings.length) {
+      throw sharedRequestError("Disconnect every local project before removing this shared repository from Context Room", 409, "shared_repository_in_use", { bindings });
+    }
+    const result = unregisterContextHubSharedRepository(repository);
+    markContextHubSnapshotStale();
+    const catalog = await refreshContextHubSnapshot(root, { refreshShared: false, force: true });
+    appendContextRoomEvent("settings.changed", { resource: { scope: "device", key: "hub.sharedRepositories" }, data: { repository, action: "removed" } });
+    sendJson(res, 200, { ...result, catalog });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/context-hub/project-shared-context") {
+    const body = await readJsonBody(req);
+    const projectId = String(body.projectId || "").trim();
+    const repository = String(body.repository || "").trim();
+    const sharedProjectId = String(body.sharedProjectId || "").trim();
+    if (!projectId) throw sharedRequestError("Select a local project first", 400, "project_required");
+    if (!repository) throw sharedRequestError("Choose a shared repository", 400, "shared_repository_required");
+    const project = registeredContextHubWorktree(projectId);
+    if (!project?.available || !project.root) throw sharedRequestError("The selected local project is unavailable", 404, "project_unavailable");
+    const current = readSharedProjectConnection(project.root);
+    if (current && current.repository !== repository) {
+      throw sharedRequestError("Disconnect the current shared context before connecting another one", 409, "shared_context_already_connected", { current });
+    }
+    let detected;
+    try {
+      detected = detectSharedProject(project.root, { repository, projectId: sharedProjectId });
+    } catch (error) {
+      throw sharedRequestError(error.message, 400, "shared_project_not_resolved");
+    }
+    const connected = connectSharedContext(detected.projectRoot, { repository, projectId: detected.projectId });
+    registerContextHubSharedRepository(repository);
+    registerContextHubProject(detected.projectRoot, { shared: { repository, projectId: detected.projectId } });
+    markContextHubSnapshotStale();
+    const catalog = await refreshContextHubSnapshot(root, { refreshShared: true, force: true });
+    appendContextRoomEvent("settings.changed", { resource: { scope: "project", projectId, key: "sharedContext" }, data: { repository, sharedProjectId: detected.projectId, action: "connected" } });
+    sendJson(res, 200, { connected, catalog });
+    return;
+  }
+  if (req.method === "DELETE" && url.pathname === "/api/context-hub/project-shared-context") {
+    const body = await readJsonBody(req);
+    const projectId = String(body.projectId || "").trim();
+    if (!projectId) throw sharedRequestError("Select a local project first", 400, "project_required");
+    const project = registeredContextHubWorktree(projectId);
+    if (!project?.available || !project.root) throw sharedRequestError("The selected local project is unavailable", 404, "project_unavailable");
+    const result = disconnectSharedContext(project.root);
+    disconnectContextHubProjectShared(project.root);
+    markContextHubSnapshotStale();
+    const catalog = await refreshContextHubSnapshot(root, { refreshShared: false, force: true });
+    appendContextRoomEvent("settings.changed", { resource: { scope: "project", projectId, key: "sharedContext" }, data: { action: "disconnected" } });
+    sendJson(res, 200, { ...result, catalog });
+    return;
+  }
   if (req.method === "POST" && url.pathname === "/api/context-hub/reviews/snooze") {
     const body = await readJsonBody(req);
     const until = String(body.until || "");
@@ -9468,14 +9781,14 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   if (req.method === "GET" && url.pathname === "/api/context-hub") {
     const startedAt = performance.now();
     const state = readFastContextHubState(root);
-    void refreshContextHubSnapshot(root, { refreshShared: false }).catch(() => {});
+    void (scheduleContextHubSnapshotRefresh?.(root, { refreshShared: false }) || refreshContextHubSnapshot(root, { refreshShared: false })).catch(() => {});
     sendJson(res, 200, state, { headers: { "server-timing": `hub-snapshot;dur=${(performance.now() - startedAt).toFixed(1)}` } });
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/context-hub/catalog") {
     const startedAt = performance.now();
     const state = readFastContextHubState(root);
-    void refreshContextHubSnapshot(root, { refreshShared: false }).catch(() => {});
+    void (scheduleContextHubSnapshotRefresh?.(root, { refreshShared: false }) || refreshContextHubSnapshot(root, { refreshShared: false })).catch(() => {});
     sendJson(res, 200, {
       enabled: state.enabled,
       generatedAt: state.generatedAt,
@@ -9510,7 +9823,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
   if (req.method === "GET" && url.pathname === "/api/context-hub/review-queue") {
     const state = readFastContextHubState(root);
-    void refreshContextHubSnapshot(root, { refreshShared: false }).catch(() => {});
+    void (scheduleContextHubSnapshotRefresh?.(root, { refreshShared: false }) || refreshContextHubSnapshot(root, { refreshShared: false })).catch(() => {});
     sendJson(res, 200, paginatedContextHubReviews(state, {
       cursor: url.searchParams.get("cursor") || 0,
       limit: url.searchParams.get("limit") || 80,
@@ -9519,7 +9832,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
   if (req.method === "GET" && url.pathname === "/api/context-hub/sections") {
     const state = readFastContextHubState(root);
-    void refreshContextHubSnapshot(root, { refreshShared: false }).catch(() => {});
+    void (scheduleContextHubSnapshotRefresh?.(root, { refreshShared: false }) || refreshContextHubSnapshot(root, { refreshShared: false })).catch(() => {});
     sendJson(res, 200, {
       generatedAt: state.generatedAt,
       freshness: state.freshness,
@@ -10261,7 +10574,14 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/health") {
-    sendJson(res, 200, { ok: true, root, projectId: contextRoomProjectId(root), files: listMemoryFiles(root).length });
+    const cachedReports = backgroundReportCache.get(path.resolve(root))?.value || null;
+    sendJson(res, 200, {
+      ok: true,
+      root,
+      projectId: contextRoomProjectId(root),
+      files: Number.isFinite(cachedReports?.documentCount) ? cachedReports.documentCount : null,
+      filesCached: Number.isFinite(cachedReports?.documentCount),
+    });
     return;
   }
 
@@ -10792,7 +11112,7 @@ async function readJsonBody(req, { maxBytes = Number.POSITIVE_INFINITY } = {}) {
 }
 
 function sendJson(res, status, payload, { headers = {} } = {}) {
-  const body = JSON.stringify(payload, null, 2);
+  const body = JSON.stringify(payload);
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
@@ -10813,6 +11133,89 @@ function sendHtml(res, body, { frameAncestorPorts = [] } = {}) {
     "content-security-policy": frameAncestorsPolicy(frameAncestorPorts),
   });
   res.end(body);
+}
+
+function compressedAssetVariants(body) {
+  const raw = Buffer.isBuffer(body) ? body : Buffer.from(body);
+  return {
+    raw,
+    gzip: gzipSync(raw, { level: 9 }),
+    brotli: brotliCompressSync(raw, {
+      params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 6 },
+    }),
+  };
+}
+
+function sendVersionedAsset(req, res, variants, contentType, etag) {
+  if (req.headers["if-none-match"] === etag) {
+    res.writeHead(304, { etag, "cache-control": "public, max-age=31536000, immutable" });
+    res.end();
+    return;
+  }
+  const encodings = String(req.headers["accept-encoding"] || "");
+  const acceptsBrotli = /(?:^|,)\s*br(?:\s*[,;]|$)/i.test(encodings);
+  const acceptsGzip = /(?:^|,)\s*gzip(?:\s*[,;]|$)/i.test(encodings);
+  const encoding = acceptsBrotli ? "br" : acceptsGzip ? "gzip" : "";
+  const payload = encoding === "br" ? variants.brotli : encoding === "gzip" ? variants.gzip : variants.raw;
+  res.writeHead(200, {
+    "content-type": contentType,
+    "content-length": payload.length,
+    "cache-control": "public, max-age=31536000, immutable",
+    etag,
+    vary: "accept-encoding",
+    ...(encoding ? { "content-encoding": encoding } : {}),
+    "x-content-type-options": "nosniff",
+  });
+  res.end(req.method === "HEAD" ? undefined : payload);
+}
+
+const CONTEXT_ROOM_PROMPT_NONCE_PLACEHOLDER = "__CONTEXT_ROOM_PROMPT_NONCE__";
+let contextRoomWebAssetCache = null;
+let mermaidWebAssetCache = null;
+
+function mermaidWebAssetBundle() {
+  if (mermaidWebAssetCache) return mermaidWebAssetCache;
+  const vendorPath = fileURLToPath(new URL("../node_modules/mermaid/dist/mermaid.min.js", import.meta.url));
+  const source = fs.readFileSync(vendorPath);
+  const hash = createHash("sha256").update(source).digest("hex").slice(0, 16);
+  mermaidWebAssetCache = { variants: compressedAssetVariants(source), etag: `"${hash}"` };
+  return mermaidWebAssetCache;
+}
+
+export function contextRoomWebAssetBundle(codexPromptMutationNonce = "") {
+  if (!contextRoomWebAssetCache) {
+    const source = renderAppHtml({ codexPromptMutationNonce: CONTEXT_ROOM_PROMPT_NONCE_PLACEHOLDER });
+    const style = source.match(/<style>([\s\S]*?)<\/style>/);
+    const script = source.match(/<script>([\s\S]*?)<\/script>\s*<\/body>/);
+    if (!style || !script) throw new Error("Context Room web assets could not be extracted from the application shell");
+    const css = style[1];
+    const js = script[1];
+    const cssHash = createHash("sha256").update(css).digest("hex").slice(0, 16);
+    const jsHash = createHash("sha256").update(js).digest("hex").slice(0, 16);
+    const cssPath = `/assets/context-room.${cssHash}.css`;
+    const jsPath = `/assets/context-room.${jsHash}.js`;
+    const htmlTemplate = source
+      .replace(style[0], `<link rel="stylesheet" href="${cssPath}" />`)
+      .replace(script[0], `<script src="${jsPath}" defer></script>\n</body>`);
+    contextRoomWebAssetCache = {
+      htmlTemplate,
+      css,
+      js,
+      cssVariants: compressedAssetVariants(css),
+      jsVariants: compressedAssetVariants(js),
+      cssPath,
+      jsPath,
+      cssEtag: `"${cssHash}"`,
+      jsEtag: `"${jsHash}"`,
+    };
+  }
+  return {
+    ...contextRoomWebAssetCache,
+    html: contextRoomWebAssetCache.htmlTemplate.replace(
+      CONTEXT_ROOM_PROMPT_NONCE_PLACEHOLDER,
+      escapeHtmlServer(String(codexPromptMutationNonce || "")),
+    ),
+  };
 }
 
 export function renderFileActionButtons({ reviewAction = null, nextReviewAction = null, requestChangesAction = null, dirty = false, deletable = true, savable = true } = {}) {
@@ -10838,6 +11241,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="context-room-prompt-nonce" content="${escapeHtmlServer(codexPromptMutationNonce)}" />
   <title>Context Room</title>
   <style>
     :root {
@@ -11108,6 +11512,17 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       --file-hr: rgba(5,80,174,0.22);
     }
     *, *::before, *::after { box-sizing: border-box; }
+    .sr-only {
+      position: absolute !important;
+      width: 1px !important;
+      height: 1px !important;
+      padding: 0 !important;
+      margin: -1px !important;
+      overflow: hidden !important;
+      clip: rect(0, 0, 0, 0) !important;
+      white-space: nowrap !important;
+      border: 0 !important;
+    }
     body {
       margin: 0;
       min-height: 100vh;
@@ -11120,10 +11535,8 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .app.sidebar-collapsed { grid-template-columns: 76px 1fr; }
     body.global-context-room #singleProjectExplorer,
     body.focused-review-context-room #globalProjectExplorer { display: none !important; }
-    aside { border-right: 1px solid var(--line); padding: var(--space-4) var(--space-5); background: var(--surface-sidebar); backdrop-filter: blur(22px); height: 100vh; min-height: 0; overflow: auto; display: block; transition: padding 260ms ease, background 260ms ease; }
-    .app.sidebar-collapsed aside { padding: var(--space-4) var(--space-2); overflow: visible; }
+    .app > aside { border-right: 1px solid var(--line); background: var(--surface-sidebar); backdrop-filter: blur(22px); transition: background 260ms ease; }
     .app.sidebar-collapsed .sidebar-toggle { position: fixed; left: 16px; top: 16px; z-index: 20; background: var(--surface-floating); }
-    .sidebar-head { display: grid; grid-template-columns: 1fr auto; gap: var(--space-3); align-items: start; }
     .sidebar-toggle { border: 1px solid rgba(139,211,255,0.28); border-radius: 14px; background: rgba(255,255,255,0.06); color: var(--text); width: 42px; height: 42px; cursor: pointer; box-shadow: 0 0 28px rgba(139,211,255,0.12); transition: transform 160ms ease, background 160ms ease; }
     .sidebar-toggle:hover { transform: translateY(-1px); background: rgba(139,211,255,0.12); }
     .explorer-open { display: none; border: 1px solid rgba(139,211,255,0.28); border-radius: 14px; background: rgba(255,255,255,0.06); color: var(--text); width: 42px; height: 42px; cursor: pointer; align-items: center; justify-content: center; box-shadow: 0 0 28px rgba(139,211,255,0.12); transition: transform 160ms ease, background 160ms ease; }
@@ -11310,9 +11723,8 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .document-context-panel { position: absolute; z-index: 18; top: 0; right: 0; bottom: 0; width: var(--inspector-width, 320px); overflow: auto; border-left: 1px solid var(--line); background: var(--panel); color: var(--text); }
     .document-context-panel[hidden] { display: none !important; }
     .editor-shell.context-panel-open > .viewer { margin-right: var(--inspector-width, 320px); }
-    .document-context-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--line); background: var(--panel); }
+    .document-context-head { z-index: 2; border-bottom: 1px solid var(--line); background: var(--panel); }
     .document-context-head h2 { margin: 0; font-size: 15px; }
-    .document-context-body { padding: 8px 14px 28px; }
     .document-context-group { border-bottom: 1px solid var(--line); padding: 10px 0; }
     .document-context-group > summary { cursor: pointer; font-weight: 650; list-style: none; }
     .document-context-group > summary::-webkit-details-marker { display: none; }
@@ -11340,7 +11752,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       .document-context-panel { width: min(380px, 92vw); box-shadow: -16px 0 42px rgba(0,0,0,.24); }
     }
     .workspace-page { width: 100%; height: 100%; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
-    .workspace-dock { display: inline-flex; max-width: 100%; gap: var(--space-1); align-items: center; flex-wrap: wrap; margin: 0 0 var(--space-3); padding: var(--space-1); border: 1px solid var(--line); border-radius: 16px; background: var(--surface-floating-soft); backdrop-filter: blur(18px); box-shadow: 0 16px 48px rgba(0,0,0,0.22); }
+    .workspace-dock { border: 1px solid var(--line); background: var(--surface-floating-soft); backdrop-filter: blur(18px); box-shadow: 0 16px 48px rgba(0,0,0,0.22); }
     .dock-button { display: inline-flex; align-items: center; justify-content: center; min-width: var(--control-height); min-height: var(--control-height); border: 1px solid rgba(148,163,184,0.22); border-radius: 12px; background: rgba(255,255,255,0.06); color: var(--text); padding: 0 var(--space-3); font-weight: 850; line-height: 1; white-space: nowrap; cursor: pointer; }
     .workspace-dock .dock-button[hidden] { display: none !important; }
     #back.dock-button, #forward.dock-button { padding: 0; }
@@ -11363,7 +11775,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .review-summary-item span { display: block; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; margin-top: 6px; }
     .review-list { display: grid; gap: 8px; padding: 12px; max-height: clamp(220px, 34vh, 360px); overflow: auto; overscroll-behavior-y: auto; scrollbar-gutter: stable; }
     .review-list.batch-open { max-height: min(58vh, 560px); }
-    .review-item { border: 1px solid color-mix(in srgb, var(--line) 88%, transparent); border-radius: 16px; background: var(--surface-card); color: var(--text); text-align: left; padding: var(--space-4); cursor: pointer; display: grid; gap: var(--space-2); }
+    .review-item { border: 1px solid color-mix(in srgb, var(--line) 88%, transparent); border-radius: 16px; background: var(--surface-card); color: var(--text); text-align: left; cursor: pointer; }
     .review-item:hover, .review-item.active { border-color: color-mix(in srgb, var(--accent) 42%, transparent); background: var(--surface-card-hover); transform: translateX(2px); }
     .review-deletion-batch { border: 1px solid color-mix(in srgb, var(--danger) 28%, var(--line)); border-left: 3px solid var(--danger); border-radius: 14px; background: color-mix(in srgb, var(--surface-card) 92%, var(--danger) 8%); overflow: clip; }
     .review-deletion-batch > summary { list-style: none; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 14px; color: var(--text); cursor: pointer; }
@@ -11504,16 +11916,15 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .path-picker input[id="markdownCreateFileName"] { min-height: var(--control-height); }
     .path-picker-preview { display: flex; align-items: center; gap: 8px; min-width: 0; padding: var(--space-3); border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent); border-radius: 14px; background: rgba(139,211,255,0.06); color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
     .path-picker-preview code { min-width: 0; color: var(--accent); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; text-transform: none; letter-spacing: 0; overflow-wrap: anywhere; }
-    .settings-page { padding: var(--page-padding); background: var(--surface-wash); }
+    .settings-page { background: var(--surface-wash); }
     .settings-page .settings-card { max-width: 1240px; margin: 0 auto; }
     .settings-card { box-shadow: var(--shadow); background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(18px); }
     .settings-card header { padding: var(--panel-header-padding); border-bottom: 1px solid var(--line); align-items: center; gap: var(--space-3); }
     .settings-card h2 { font-size: 22px; letter-spacing: -0.04em; }
-    .settings-page-header { position: relative; display: flex; justify-content: space-between; }
-    .settings-search { position: relative; width: min(360px, 42vw); }
-    .settings-search input { width: 100%; min-height: 40px; padding: 9px 38px 9px 13px; border: 1px solid color-mix(in srgb, var(--line) 92%, transparent); border-radius: 8px; background: var(--surface-reader); color: var(--text); font: 13px/1.35 inherit; }
+    .settings-search-control { position: relative; }
+    .settings-search input { border: 1px solid color-mix(in srgb, var(--line) 92%, transparent); border-radius: 8px; background: var(--surface-reader); color: var(--text); font: 13px/1.35 inherit; }
     .settings-search input:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent); outline-offset: 2px; border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
-    .settings-search::after { content: "⌕"; position: absolute; top: 10px; right: 13px; color: var(--muted); font-size: 16px; pointer-events: none; }
+    .settings-search-icon { color: var(--muted); transform: translateY(-50%); pointer-events: none; }
     .settings-search-results { position: absolute; top: calc(100% + 8px); right: 0; z-index: 30; width: min(480px, calc(100vw - 32px)); max-height: min(62vh, 520px); overflow: auto; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-floating); box-shadow: 0 18px 48px rgba(0,0,0,0.34); }
     .settings-search-result { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; padding: 10px 11px; border: 0; border-radius: 7px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
     .settings-search-result:hover, .settings-search-result[aria-selected="true"] { background: color-mix(in srgb, var(--accent) 11%, transparent); }
@@ -11521,17 +11932,15 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .settings-search-result p { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
     .settings-search-result-meta { color: var(--accent); font-size: 9px; font-weight: 850; text-transform: uppercase; }
     .settings-search-empty { padding: 16px; color: var(--muted); font-size: 12px; text-align: center; }
-    .settings-panel { padding: 20px; display: grid; gap: 0; }
-    .settings-shell { min-width: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow: clip; }
-    .settings-tabs { position: sticky; top: 0; z-index: 10; display: flex; min-width: 0; overflow-x: auto; scrollbar-width: thin; border-bottom: 1px solid var(--line); background: var(--surface-floating); }
-    .settings-tab { flex: 1 0 128px; min-width: 0; min-height: 52px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 9px 12px; border: 0; border-right: 1px solid var(--line); border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted); text-align: left; cursor: pointer; }
+    .settings-shell { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+    .settings-tabs { z-index: 10; border-bottom: 1px solid var(--line); background: var(--surface-floating); }
+    .settings-tab { border: 0; border-right: 1px solid var(--line); border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted); text-align: left; cursor: pointer; }
     .settings-tab:last-child { border-right: 0; }
     .settings-tab:hover { color: var(--text); background: color-mix(in srgb, var(--accent) 7%, transparent); }
     .settings-tab[aria-selected="true"] { color: var(--label-strong); border-bottom-color: var(--accent); background: color-mix(in srgb, var(--accent) 11%, transparent); }
     .settings-tab strong { min-width: 0; font-size: 12px; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .settings-tab small { border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; color: var(--muted); font-size: 8px; font-weight: 800; line-height: 1; text-transform: uppercase; }
     .settings-tab[aria-selected="true"] small { border-color: color-mix(in srgb, var(--accent) 35%, transparent); color: var(--accent); }
-    .settings-content { min-width: 0; }
     .settings-action-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-5); padding: var(--space-2) 0; }
     .settings-action-copy { min-width: 0; display: grid; gap: var(--space-1); }
     .settings-action-copy strong { color: var(--label-strong); font-size: 13px; line-height: 1.3; }
@@ -11539,14 +11948,13 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .settings-action-row .primary { flex: 0 0 auto; }
     .settings-section { min-width: 0; background: transparent; animation: settingsPanelEnter 180ms ease both; }
     .settings-section[hidden] { display: none; }
-    .settings-section-head { display: flex; justify-content: space-between; gap: var(--space-4); align-items: flex-start; padding: var(--space-4) var(--space-5); border-bottom: 1px solid color-mix(in srgb, var(--line) 84%, transparent); background: color-mix(in srgb, var(--surface-floating-soft) 58%, transparent); }
+    .settings-section-head { border-bottom: 1px solid color-mix(in srgb, var(--line) 84%, transparent); background: color-mix(in srgb, var(--surface-floating-soft) 58%, transparent); }
     .settings-section-title { display: grid; gap: var(--space-2); min-width: 0; }
     .settings-section-title h3 { margin: 0; color: var(--label-strong); font-size: 16px; line-height: 1.2; letter-spacing: 0; }
     .settings-kicker, .settings-title { color: var(--accent); font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.12em; }
     .settings-section-copy { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.4; }
     .settings-section-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
     .settings-pill { border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent); border-radius: 999px; padding: var(--space-2) var(--space-3); color: var(--label-strong); background: color-mix(in srgb, var(--accent) 9%, transparent); font-size: 11px; font-weight: 850; line-height: 1; white-space: nowrap; }
-    .settings-section-body { padding: var(--space-5); display: grid; gap: var(--space-4); }
     .settings-group { display: grid; gap: var(--space-3); }
     .settings-group + .settings-group { padding-top: var(--space-4); border-top: 1px solid var(--line); }
     .settings-group-title { margin: 0; color: var(--label-strong); font-size: 13px; line-height: 1.2; }
@@ -11572,18 +11980,53 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .settings-concept { display: grid; gap: 7px; max-width: 76ch; padding: 2px 0 var(--space-2); }
     .settings-concept strong { color: var(--label-strong); font-size: 14px; line-height: 1.35; }
     .settings-concept p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
+    .settings-concept-help { min-width: 0; display: grid; justify-items: start; margin-top: 3px; }
+    .settings-concept-help-button { min-height: 28px; display: inline-flex; align-items: center; gap: 7px; padding: 4px 9px 4px 7px; border: 1px solid var(--line); border-radius: 7px; background: transparent; color: var(--label-strong); font-family: inherit; font-size: 12px; font-weight: 650; line-height: 1.2; cursor: pointer; }
+    .settings-concept-help-button:hover { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); background: color-mix(in srgb, var(--accent) 7%, transparent); }
+    .settings-concept-help-button:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent); outline-offset: 2px; }
+    .settings-concept-help-icon { width: 16px; height: 16px; display: inline-grid; place-items: center; border-radius: 50%; background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent); font-family: inherit; font-size: 11px; font-weight: 800; line-height: 1; }
+    .shared-context-help-dialog { width: min(760px, 100%); max-height: min(760px, calc(100dvh - (2 * var(--dialog-gutter)))); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; border: 1px solid var(--line); border-radius: var(--native-radius-dialog); background: var(--surface-floating); color: var(--text); box-shadow: 0 24px 80px rgba(0,0,0,.36); }
+    .shared-context-help-dialog-head { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 32px; align-items: start; gap: var(--space-4); padding: 18px var(--dialog-gutter) 15px; border-bottom: 1px solid var(--line); }
+    .shared-context-help-dialog-head-copy { min-width: 0; display: grid; gap: 5px; }
+    .shared-context-help-dialog-head h2 { margin: 0; color: var(--label-strong); font-size: 19px; line-height: 1.25; }
+    .shared-context-help-dialog-head p { max-width: 68ch; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .shared-context-help-dialog-close { width: 32px; min-height: 32px; display: inline-grid; place-items: center; padding: 0; border: 0; border-radius: var(--native-radius-control); background: transparent; color: var(--muted); font-size: 19px; line-height: 1; cursor: pointer; }
+    .shared-context-help-dialog-close:hover { background: var(--surface-hover); color: var(--label-strong); }
+    .shared-context-help-dialog-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .shared-context-help-dialog-body { min-width: 0; overflow: auto; padding: 18px var(--dialog-gutter) 22px; }
+    .shared-context-help-dialog-sections { display: grid; gap: var(--space-5); }
+    .shared-context-help-section { min-width: 0; display: grid; gap: 8px; }
+    .shared-context-help-section + .shared-context-help-section { padding-top: var(--space-4); border-top: 1px solid var(--line); }
+    .shared-context-help-section h3 { margin: 0; color: var(--label-strong); font-size: 13px; line-height: 1.3; }
+    .shared-context-help-section p { max-width: 72ch; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+    .shared-context-help-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .shared-context-help-item { min-width: 0; display: grid; align-content: start; gap: 4px; padding: 11px 12px; border: 1px solid var(--line); border-radius: var(--native-radius-control); background: color-mix(in srgb, var(--surface-reader) 52%, transparent); }
+    .shared-context-help-item strong { color: var(--label-strong); font-size: 12px; line-height: 1.35; }
+    .shared-context-help-item span { color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .shared-context-help-flow { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; counter-reset: shared-context-step; }
+    .shared-context-help-step { min-width: 0; position: relative; display: grid; gap: 4px; padding: 11px 12px 11px 34px; border-radius: var(--native-radius-control); background: color-mix(in srgb, var(--accent) 6%, var(--surface-reader)); }
+    .shared-context-help-step::before { counter-increment: shared-context-step; content: counter(shared-context-step); position: absolute; left: 11px; top: 11px; width: 16px; height: 16px; display: grid; place-items: center; border-radius: 50%; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); font-size: 9px; font-weight: 850; }
+    .shared-context-help-step strong { color: var(--label-strong); font-size: 11px; }
+    .shared-context-help-step span { color: var(--muted); font-size: 10px; line-height: 1.45; }
+    .shared-context-help-note { display: grid; gap: 4px; padding: 11px 12px; border-left: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+    .shared-context-help-note strong { color: var(--label-strong); font-size: 11px; }
+    .shared-context-help-note span { color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .shared-context-help-dialog-footer { display: flex; justify-content: flex-end; padding: 12px var(--dialog-gutter); border-top: 1px solid var(--line); background: color-mix(in srgb, var(--surface-floating-soft) 72%, transparent); }
     .settings-disclosure-list { display: grid; gap: 10px; }
     .settings-disclosure { min-width: 0; border: 1px solid color-mix(in srgb, var(--line) 90%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--surface-card) 90%, transparent); overflow: clip; }
-    .settings-disclosure > summary { list-style: none; min-height: 72px; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px 14px; align-items: center; padding: 14px 16px; cursor: pointer; }
+    .settings-disclosure > summary { list-style: none; min-height: 72px; display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 8px; align-items: start; padding: 14px 16px; cursor: pointer; }
     .settings-disclosure > summary::-webkit-details-marker { display: none; }
     .settings-disclosure > summary:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
     .settings-disclosure > summary:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent); outline-offset: -3px; }
     .settings-disclosure-summary { min-width: 0; display: grid; gap: 4px; }
     .settings-disclosure-summary strong { color: var(--label-strong); font-size: 14px; line-height: 1.3; }
     .settings-disclosure-summary span { max-width: 72ch; color: var(--muted); font-size: 12px; line-height: 1.45; }
-    .settings-disclosure-status { color: var(--label-strong); font-size: 11px; font-weight: 800; white-space: nowrap; }
-    .settings-disclosure-chevron { color: var(--muted); font-size: 15px; transition: transform 160ms ease; }
-    .settings-disclosure[open] .settings-disclosure-chevron { transform: rotate(90deg); }
+    .settings-disclosure-status { align-self: start; padding-top: 1px; color: var(--label-strong); font-size: 11px; font-weight: 800; white-space: nowrap; }
+    .settings-disclosure-chevron { width: 16px; height: 16px; display: inline-grid; place-items: center; align-self: start; margin-top: 1px; color: var(--muted); }
+    .settings-disclosure-chevron > span { display: block; font-size: 14px; line-height: 1; transition: transform 160ms ease; }
+    .settings-disclosure > summary:hover .settings-disclosure-chevron { color: var(--label-strong); }
+    .settings-disclosure[open] .settings-disclosure-chevron { color: var(--accent); }
+    .settings-disclosure[open] .settings-disclosure-chevron > span { transform: rotate(90deg); }
     .settings-disclosure-body { padding: 16px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--surface-reader) 48%, transparent); }
     .settings-disclosure.is-search-target { animation: settingsSearchTarget 1000ms ease both; }
     @keyframes settingsSearchTarget { 0%, 100% { border-color: var(--line); } 30% { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent); } }
@@ -11626,7 +12069,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .settings-field textarea { min-height: 118px; height: 118px; resize: vertical; }
     .settings-field.large textarea { min-height: 150px; height: 150px; }
     .settings-field-note, .settings-help { margin: -2px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
-    @media (max-width: 760px) { .agent-cli-capabilities { grid-template-columns: 1fr; gap: var(--space-4); } }
+    @media (max-width: 639px) { .agent-cli-capabilities { grid-template-columns: 1fr; gap: var(--space-4); } }
     .watch-rule-list { display: grid; gap: 7px; }
     .watch-rule-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: var(--surface-card); }
     .watch-rule-copy { display: grid; gap: 3px; min-width: 0; }
@@ -11712,7 +12155,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .template-editor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
     .template-editor .template-body { grid-column: 1 / -1; }
     .template-editor .template-body textarea { min-height: 220px; height: 220px; }
-    .settings-footer { position: sticky; bottom: 0; z-index: 12; display: flex; justify-content: space-between; gap: var(--space-3); align-items: center; margin: 0 calc(var(--space-5) * -1) calc(var(--space-5) * -1); padding: var(--space-4) var(--space-5); color: var(--muted); font-size: 12px; border-top: 1px solid color-mix(in srgb, var(--line) 88%, transparent); background: color-mix(in srgb, var(--surface-floating) 94%, transparent); backdrop-filter: blur(18px); }
+    .settings-footer { z-index: 12; color: var(--muted); font-size: 12px; border-top: 1px solid color-mix(in srgb, var(--line) 88%, transparent); background: color-mix(in srgb, var(--surface-floating) 94%, transparent); backdrop-filter: blur(18px); }
     .settings-save-state { display: grid; gap: 2px; }
     .settings-save-state strong { color: var(--label-strong); font-size: 12px; }
     .settings-save-state[data-dirty="true"] strong { color: var(--warning); }
@@ -11816,7 +12259,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .tree-entry.watched-inherited .tree-name { color: #bff5d0; }
 
     .danger-action { border-color: rgba(255,140,157,0.38) !important; color: #ffc0c8 !important; }
-    @media (max-width: 860px) { .settings-card { position: static; width: 100%; max-height: none; margin-bottom: 12px; } }
+    @media (max-width: 980px) { .settings-card { position: static; width: 100%; max-height: none; margin-bottom: 12px; } }
     .cosmos-home { height: 100%; min-height: calc(100vh - 168px); padding: 34px; overflow: hidden; background: radial-gradient(circle at 50% 38%, var(--body-glow-3), transparent 24rem), var(--surface-wash); transition: padding-right 320ms ease; }
     .editor-shell.planet-file-open .cosmos-home { padding-right: min(46vw, 660px); }
     .planet-stage { position: relative; height: 100%; min-height: calc(100vh - 236px); border-radius: 28px; overflow: hidden; display: grid; place-items: center; background: radial-gradient(circle at 50% 50%, var(--body-glow-4), transparent 22rem); }
@@ -11859,7 +12302,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .review-workspace.no-diff { grid-template-columns: 1fr; }
     .diff-panel, .file-panel { border: 1px solid var(--line); border-radius: 22px; background: var(--panel); overflow: hidden; min-width: 0; }
     .file-panel { border-color: var(--file-line); background: var(--file-panel-bg); }
-    .diff-header, .file-panel header { padding: var(--space-4) var(--space-5); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; gap: var(--space-3); align-items: center; color: var(--label-strong); font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    .diff-header, .file-panel header { border-bottom: 1px solid var(--line); color: var(--label-strong); font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
     .file-panel header { border-bottom-color: var(--file-line); background: var(--file-header-bg); color: var(--file-fg); }
     .diff-header strong, .file-panel strong { font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; }
     .diff-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
@@ -12039,8 +12482,9 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .conflict-merge { display: grid; gap: var(--space-3); padding: var(--space-3); }
     .conflict-merge textarea { display: block; width: 100%; min-height: min(42vh, 430px); resize: vertical; border: 1px solid rgba(148,163,184,0.18); border-radius: 12px; background: rgba(2,6,23,0.56); color: var(--text); outline: none; padding: 12px; font: 12px/1.48 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
     .conflict-merge-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-    @media (max-width: 760px) { .external-review-actions { flex-wrap: wrap; justify-content: flex-start; } .external-review-block-controls { position: static; width: fit-content; margin: 4px 0 2px 8px; opacity: 1; } .external-review-line::before { left: -1.05em; } }
+    @media (max-width: 639px) { .external-review-actions { flex-wrap: wrap; justify-content: flex-start; } .external-review-block-controls { position: static; width: fit-content; margin: 4px 0 2px 8px; opacity: 1; } .external-review-line::before { left: -1.05em; } }
     .file-header-copy { min-width: 0; display: grid; gap: var(--space-1); }
+    .file-header-copy .file-title { min-width: 0; margin: 0; overflow: hidden; color: inherit; font: inherit; text-overflow: ellipsis; white-space: nowrap; }
     .file-header-copy .diff-meta { white-space: normal; line-height: 1.35; }
     .file-actions { display: flex; gap: 8px; align-items: center; flex: 0 0 auto; }
     .file-actions-loading { min-width: min(340px, 44vw); min-height: 36px; justify-content: flex-end; pointer-events: none; }
@@ -12060,14 +12504,14 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .shortcut-recorder input { cursor: pointer; }
     .shortcut-recorder input.recording { border-color: color-mix(in srgb, var(--accent) 68%, transparent); color: var(--accent); }
     .file-action.primary { color: var(--on-accent); border: 0; background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
-    .confirm-backdrop { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; padding: var(--space-5); background: rgba(2,6,23,0.72); backdrop-filter: blur(14px); }
+    .confirm-backdrop, .shared-context-help-backdrop { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; padding: var(--space-5); background: rgba(2,6,23,0.72); backdrop-filter: blur(14px); }
     .confirm-dialog { width: min(420px, 100%); border: 1px solid var(--line); border-radius: 18px; background: var(--surface-floating); box-shadow: 0 22px 80px rgba(0,0,0,0.45); padding: var(--space-6); color: var(--text); }
     .confirm-dialog strong { display: block; font-size: 18px; line-height: 1.2; margin-bottom: 8px; }
 	    .confirm-dialog p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.45; overflow-wrap: anywhere; }
 	    .confirm-option { display: flex; align-items: flex-start; gap: 10px; margin-top: 16px; color: var(--text); font-size: 13px; line-height: 1.35; }
 	    .confirm-option input { margin-top: 2px; accent-color: var(--accent); }
 	    .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
-    @media (max-width: 1280px) { .review-workspace { grid-template-columns: 1fr; } .diff-code, .doc-content { max-height: none; } }
+    @media (max-width: 1279px) { .review-workspace { grid-template-columns: 1fr; } .diff-code, .doc-content { max-height: none; } }
     .viewer a.path-link { color: var(--file-list); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--file-list) 36%, transparent); cursor: inherit; }
     .doc-link-modifier-active .viewer a.path-link:hover { color: var(--accent); border-bottom-color: color-mix(in srgb, var(--accent) 72%, transparent); cursor: pointer; }
     .mode-toggle { display: flex; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
@@ -12089,19 +12533,16 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       #back.dock-button, #forward.dock-button { padding: 0; }
       .dock-button.diff-dock-button { padding: 0 11px; }
       .editor-shell { height: 100%; min-height: 0; border-radius: 18px; }
-      .docqa-home, .settings-page { padding: 12px; }
       .docqa-panel { border-radius: 18px; }
       .docqa-panel header { padding: var(--space-4); align-items: flex-start; flex-direction: column; }
       .review-summary { width: 100%; }
       .review-summary-item { flex: 1; min-width: 0; }
       .review-list { max-height: none; }
-      .review-item { padding: var(--space-3); }
       .review-top { align-items: flex-start; }
       .settings-grid, .hub-card-editor-grid, .template-editor-grid, .markdown-create { grid-template-columns: 1fr; }
       .settings-grid.compact { grid-template-columns: 1fr; }
       .settings-sound-panel { grid-template-columns: 1fr; }
       .review-gate-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .settings-section-head { flex-direction: column; }
       .settings-section-actions { justify-content: flex-start; width: 100%; }
       .hub-section-editor, .hub-card-editor { gap: var(--space-3); padding: var(--space-3); }
       .hub-card-children:not(:empty) { margin-left: var(--space-1); padding-left: var(--space-2); }
@@ -12116,7 +12557,6 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       textarea, .viewer { min-height: 100%; padding: 16px; font-size: 14px; line-height: 1.58; }
       .review-workspace { grid-template-columns: 1fr; gap: 12px; }
       .diff-code, .doc-content, .doc-editor { max-height: none; padding: 12px; font-size: 12px; }
-      .diff-header, .file-panel header { padding: var(--space-3); align-items: flex-start; }
       .file-actions { gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
       .conflict-compare { grid-template-columns: 1fr; }
       .file-action { padding: 8px 10px; }
@@ -12129,7 +12569,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       .editor-shell.planet-file-open .cosmos-home { padding-right: 16px; }
       .editor-shell.planet-file-open .viewer, .editor-shell.planet-file-open textarea { position: static; width: 100%; height: 100%; min-height: 100%; border-radius: 18px; box-shadow: none; }
     }
-    @media (max-width: 640px) {
+    @media (max-width: 639px) {
       body { overflow: hidden; }
       .shared-context-label, .workspace-title { display: none; }
       .shared-context-select { width: 220px; }
@@ -12140,13 +12580,11 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       .explorer-title { margin: 8px 0 4px; }
       .tree { font-size: 13px; padding-right: 2px; }
       .hint { font-size: 11px; line-height: 1.4; padding: 8px 0 2px; }
-      main { height: calc(100dvh - 52px); padding: var(--space-2); overflow: hidden; }
+      main { overflow: hidden; }
       .editor-shell { height: 100%; min-height: 0; border-radius: 16px; }
-      .docqa-home, .settings-page { padding: var(--space-2); }
       .docqa-panel { border-radius: 16px; }
       .docqa-panel header { padding: 12px; }
       .review-summary-item { min-width: 0; }
-      .review-item { padding: var(--space-3); }
       .hub-folders { gap: var(--space-4); margin-top: var(--space-3); }
       .hub-folder-card { min-height: 104px; border-radius: 16px; }
       .hub-folder-card-main { min-height: 104px; padding: var(--space-4); border-radius: 16px; }
@@ -12158,7 +12596,6 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       .hub-crumb { padding: 6px 9px; font-size: 11px; }
       textarea, .viewer { min-height: 100%; padding: var(--space-4); font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
       .diff-code, .doc-content, .doc-editor { padding: 10px; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
-      .diff-header, .file-panel header { padding: var(--space-3); }
       .file-actions { gap: 6px; }
       .file-action { padding: 8px 10px; font-size: 13px; }
       .selected-title { font-size: 18px; }
@@ -12169,8 +12606,6 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       .history-nav button { min-width: 38px; padding: 8px 10px; }
       .mode-toggle button { padding: 9px 11px; font-size: 13px; }
       .settings-field textarea, .settings-field input { font-size: 12px; }
-      .settings-footer { flex-direction: column; align-items: flex-start; gap: 8px; }
-      .settings-section-head, .settings-section-body { padding: var(--space-3); }
       .settings-toggle { min-height: 58px; padding: 10px; }
       .hub-section-editor-head { grid-template-columns: 1fr; align-items: stretch; }
       .hub-section-editor-head button { justify-self: start; }
@@ -12190,8 +12625,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     body::before, body::after { display: none; }
     .app { grid-template-columns: 320px minmax(0, 1fr); }
     .app.sidebar-collapsed { grid-template-columns: 56px minmax(0, 1fr); }
-    aside { padding: 12px; background: var(--surface-sidebar); backdrop-filter: none; }
-    .app.sidebar-collapsed aside { padding: 10px 7px; }
+    .app > aside { background: var(--surface-sidebar); backdrop-filter: none; }
     .app.sidebar-collapsed .sidebar-copy,
     .app.sidebar-collapsed .search-row,
     .app.sidebar-collapsed .watch-filter-row,
@@ -12199,7 +12633,6 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .app.sidebar-collapsed .explorer-title,
     .app.sidebar-collapsed .tree,
     .app.sidebar-collapsed .hint { opacity: 0; pointer-events: none; transform: translateX(-8px); }
-    .sidebar-head { align-items: center; }
     .sidebar-copy h1 { font-size: 18px; margin: 0; }
     .sidebar-toggle, .explorer-open { width: 36px; height: 36px; border-radius: 7px; box-shadow: none; }
     @media (min-width: 981px) {
@@ -12216,11 +12649,8 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .tree-row { min-height: 30px; border-radius: 5px; padding: 5px 7px; }
     .tree-row:hover { transform: none; background: color-mix(in srgb, var(--accent) 8%, transparent); }
     .tree-row.active { border-color: color-mix(in srgb, var(--accent) 36%, transparent); background: color-mix(in srgb, var(--accent) 13%, transparent); box-shadow: inset 2px 0 0 var(--accent); }
-    main { padding: 12px; grid-template-rows: auto minmax(0, 1fr); gap: 8px; }
-    .workspace-dock {
-      width: 100%; min-height: 44px; margin: 0; padding: 4px; gap: 4px; flex-wrap: nowrap;
-      border-radius: 8px; background: var(--surface-floating-soft); box-shadow: none;
-    }
+    main { grid-template-rows: auto minmax(0, 1fr); }
+    .workspace-dock { border-radius: 8px; background: var(--surface-floating-soft); box-shadow: none; }
     .dock-button { min-width: 34px; min-height: 34px; border-radius: 6px; padding: 0 10px; font-size: 12px; }
     .dock-button:hover { transform: none; background: color-mix(in srgb, var(--accent) 12%, transparent); }
     .dock-button.primary, button.primary, .file-action.primary {
@@ -12271,12 +12701,12 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     }
     .shared-context-actions .shared-context-refresh { width: 36px; min-width: 36px; padding: 0; font-size: 17px; }
     .shared-context-actions .dock-button:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent); outline-offset: 2px; }
-    @media (max-width: 760px) {
+    @media (max-width: 980px) {
       .shared-context-controls { grid-template-columns: minmax(0, 1fr) auto; align-items: center; padding: 7px; }
       .shared-context-picker { grid-column: 1 / -1; grid-row: 2; }
       .shared-context-actions { grid-column: 2; grid-row: 1; }
     }
-    @media (max-width: 500px) {
+    @media (max-width: 639px) {
       .shared-context-controls { grid-template-columns: 1fr; gap: 6px; padding: 7px; }
       .shared-context-heading, .shared-context-picker, .shared-context-actions { grid-column: 1; grid-row: auto; }
       .shared-context-actions { display: grid; grid-template-columns: minmax(0, 1fr) 36px minmax(0, 1fr); width: 100%; }
@@ -12334,7 +12764,6 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .context-hub-review-counts strong { margin-right: 4px; color: var(--accent); font-size: 18px; }
     .context-hub-review-counts span:first-child strong { color: var(--accent-2); }
     .context-hub-review-toolbar { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(140px, .45fr); gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--surface-card) 72%, transparent); }
-    .context-room-review-toolbar { grid-template-columns: minmax(190px, 1fr) minmax(140px, .45fr) minmax(210px, .7fr); }
     body.focused-review-context-room .context-room-review-toolbar { grid-template-columns: minmax(140px, .45fr) minmax(210px, 1fr); }
     .context-room-review-search { width: 100%; min-width: 0; min-height: 32px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-sidebar); color: var(--text); font-size: 11px; }
     .context-room-review-search::placeholder { color: var(--muted); }
@@ -12430,7 +12859,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .shared-skills-provider-effective::before { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 12%, transparent); content: ""; }
     .shared-skills-provider-effective[data-state="disabled"] { color: var(--muted); }
     .shared-skills-provider-effective[data-state="disabled"]::before { background: var(--muted); box-shadow: none; }
-    @media (max-width: 780px) {
+    @media (max-width: 980px) {
       .shared-skills-provider-columns { display: none; }
       .shared-skills-provider-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px 12px; padding-block: 12px; }
       .shared-skills-provider-identity { grid-column: 1 / -1; }
@@ -12484,7 +12913,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .context-room-snooze-exact summary { color: var(--muted); cursor: pointer; font-size: 10px; }
     .context-room-snooze-exact-fields { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; margin-top: 8px; }
     .settings-snoozed-tools { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-    .settings-snoozed-search { width: min(360px, 100%); }
+    .settings-snoozed-search { width: min(360px, 100%); display: grid; gap: 6px; }
     .settings-snoozed-list { display: grid; border-top: 1px solid var(--line); }
     .settings-snoozed-row { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); }
     .settings-snoozed-row[hidden] { display: none; }
@@ -12515,7 +12944,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .context-room-proposal-description-row { min-width: 0; max-width: 76ch; display: flex; align-items: flex-end; gap: 3px; margin-top: 1px; }
     .context-room-proposal-description { min-width: 0; display: -webkit-box; overflow: hidden; color: var(--text-soft); font-size: 11px; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
     .context-room-proposal-description[data-expanded="true"] { display: block; overflow: visible; -webkit-line-clamp: unset; }
-    .context-room-proposal-description-toggle { position: relative; z-index: 2; width: 16px; min-width: 16px; height: 16px; display: grid; place-items: center; margin: 0 0 1px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: color-mix(in srgb, var(--muted) 78%, transparent); cursor: pointer; font: 650 10px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; opacity: .8; pointer-events: auto; transition: background 120ms ease, color 120ms ease, opacity 120ms ease; }
+    .context-room-proposal-description-toggle { position: relative; z-index: 2; width: 28px; min-width: 28px; height: 28px; display: grid; place-items: center; margin: 0 0 -5px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: color-mix(in srgb, var(--muted) 78%, transparent); cursor: pointer; font: 650 11px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; opacity: .8; pointer-events: auto; transition: background 120ms ease, color 120ms ease, opacity 120ms ease; }
     .context-room-proposal-description-toggle[hidden] { display: none !important; }
     .context-room-proposal-description-toggle:hover { background: var(--native-hover); color: var(--text); opacity: 1; }
     .context-room-proposal-preview-files { min-width: 0; display: flex; flex-wrap: wrap; gap: 5px; margin-top: 2px; }
@@ -12529,13 +12958,13 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .proposal-review-page { padding: clamp(18px, 3vw, 38px); background: var(--bg); scroll-padding-block: 24px; }
     .proposal-review-page[hidden] { display: none !important; }
     .proposal-review-shell { width: min(980px, 100%); margin: 0 auto; }
-    .proposal-review-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding-bottom: 20px; border-bottom: 1px solid var(--line); }
+    .proposal-review-head { border-bottom: 1px solid var(--line); }
     .proposal-review-copy { min-width: 0; }
     .proposal-review-copy h2 { margin: 0; color: var(--text); font-size: clamp(24px, 3vw, 36px); line-height: 1.08; letter-spacing: -0.03em !important; }
     .proposal-review-copy p { max-width: 72ch; margin: 9px 0 0; color: var(--text-soft); font-size: 12px; line-height: 1.55; }
     .proposal-review-progress { flex: 0 0 auto; display: grid; justify-items: end; gap: 3px; padding-top: 3px; color: var(--muted); font-size: 10px; }
     .proposal-review-progress strong { color: var(--text); font-size: 22px; line-height: 1; letter-spacing: -0.025em; }
-    .proposal-review-meta { display: flex; flex-wrap: wrap; gap: 7px 16px; padding: 13px 0 18px; color: var(--muted); font-size: 10px; line-height: 1.35; }
+    .proposal-review-meta { color: var(--muted); font-size: 10px; line-height: 1.35; }
     .proposal-review-meta code { color: var(--text-soft); font-size: 9px; }
     .proposal-review-technical { flex-basis: 100%; }
     .proposal-review-technical summary { width: fit-content; color: var(--muted); cursor: pointer; font-size: 10px; }
@@ -12557,7 +12986,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .proposal-context-impact-list code { min-width: 0; overflow-wrap: anywhere; color: var(--text-soft); }
     .proposal-context-impact-note { color: var(--warning); font-size: 10px; line-height: 1.45; }
     .proposal-review-files { overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
-    .proposal-review-file { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 14px 16px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; text-align: left; }
+    .proposal-review-file { border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; text-align: left; }
     .proposal-review-file:last-child { border-bottom: 0; }
     .proposal-review-file:hover { background: var(--surface-card-hover); }
     .proposal-review-file:focus-visible { position: relative; z-index: 1; outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: -3px; }
@@ -12570,10 +12999,8 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .proposal-review-file-state { min-width: 72px; color: var(--accent-2); font-size: 10px; font-weight: 790; text-align: right; white-space: nowrap; }
     .proposal-review-file[data-reviewed="true"] .proposal-review-file-state { color: var(--good); }
     .proposal-review-empty { padding: 28px 18px; color: var(--muted); font-size: 12px; line-height: 1.5; text-align: center; }
-    @media (max-width: 620px) {
-      .proposal-review-head { flex-direction: column; gap: 14px; }
+    @media (max-width: 639px) {
       .proposal-review-progress { justify-items: start; }
-      .proposal-review-file { grid-template-columns: minmax(0, 1fr) auto; }
       .proposal-review-file-change { display: none; }
     }
     .context-room-mode-warning { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px 18px; padding: 11px 14px; border-bottom: 1px solid color-mix(in srgb, var(--accent-2) 28%, var(--line)); background: color-mix(in srgb, var(--accent-2) 7%, var(--panel)); }
@@ -12675,7 +13102,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .codex-prompt-card-status[data-status="loaded"], .codex-prompt-card-status[data-status="official_loaded"], .codex-prompt-card-status[data-status="effective_loaded"] { color: var(--good); }
     .codex-prompt-card-status[data-status="conflict"], .codex-prompt-card-status[data-status="mixed_versions"] { color: var(--danger); }
     .codex-prompt-card-status[data-status="restart_required"], .codex-prompt-card-status[data-status="pending_next_launch"], .codex-prompt-card-status[data-status="loaded_differs"] { color: var(--accent-2); }
-    @media (max-width: 900px) {
+    @media (max-width: 980px) {
       .shared-proposal-workspace-head { grid-template-columns: minmax(170px, .65fr) minmax(0, 1fr) minmax(130px, .45fr) minmax(150px, .55fr) auto auto; }
       .shared-proposal-workspace-body { grid-template-columns: minmax(280px, 340px) minmax(0, 1fr); }
       .shared-proposal-files { grid-template-columns: 1fr; }
@@ -12683,7 +13110,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       .codex-prompt-surface { grid-template-rows: auto minmax(220px, auto); }
       .codex-prompt-surface textarea { min-height: 220px; }
     }
-    @media (max-width: 680px) {
+    @media (max-width: 639px) {
       .shared-proposal-workspace-head { grid-template-columns: minmax(0, 1fr) auto; gap: 7px; padding: 8px; }
       .shared-proposal-workspace-close { grid-column: 2; grid-row: 1; }
       #sharedProposalWorkspaceRefresh { grid-column: 1; grid-row: 2; justify-self: start; }
@@ -12703,7 +13130,6 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       .context-hub-review-toolbar { grid-template-columns: 1fr; }
       .context-hub-review-filter { grid-template-columns: 52px minmax(0, 1fr); }
       .context-hub-review-list.review-list { max-height: min(40vh, 320px); }
-      .context-room-review-toolbar { grid-template-columns: 1fr; }
       .context-room-review-selection { align-items: flex-start; flex-direction: column; }
       .context-room-review-selection-actions { width: 100%; flex-wrap: wrap; }
       .context-room-snooze-custom, .context-room-snooze-exact-fields { grid-template-columns: 1fr; }
@@ -12738,10 +13164,10 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .workspace-switch:hover { border-left-color: var(--line); background: color-mix(in srgb, var(--accent) 7%, transparent); color: var(--label-strong); }
     .topbar { border-radius: 8px; box-shadow: none; backdrop-filter: none; }
     .editor-shell { border: 0; border-radius: 0; background: transparent; box-shadow: none; backdrop-filter: none; }
-    .docqa-home, .settings-page { padding: 14px; border: 0; background: transparent; box-shadow: none; }
+    .docqa-home, .settings-page { border: 0; background: transparent; box-shadow: none; }
     .docqa-grid { gap: 12px; }
     .docqa-panel { border-radius: 8px; background: var(--panel); box-shadow: none; }
-    .docqa-panel header { padding: 12px 14px; align-items: center; }
+    .docqa-panel header { align-items: center; }
     .docqa-panel h2 { font-size: 15px; }
     .review-summary { gap: 14px; flex-wrap: nowrap; }
     .review-summary-item { min-width: 0; border: 0; border-radius: 0; background: transparent; padding: 0; display: flex; align-items: baseline; gap: 5px; }
@@ -12749,7 +13175,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .review-summary-item:first-child strong { color: var(--accent-2); }
     .review-summary-item span { margin: 0; font-size: 11px; text-transform: none; color: var(--muted); }
     .review-list { gap: 0; padding: 0; max-height: min(34vh, 300px); }
-    .review-item { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; padding: 10px 14px; gap: 4px; }
+    .review-item { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; }
     .review-deletion-batch { border-top: 0; border-right: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: color-mix(in srgb, var(--danger) 4%, transparent); }
     .review-item:last-child { border-bottom: 0; }
     .review-item:hover, .review-item.active { transform: none; background: color-mix(in srgb, var(--accent) 7%, transparent); box-shadow: inset 2px 0 0 var(--accent); }
@@ -12795,20 +13221,16 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .settings-toggle::before, .settings-theme-preview::before, .template-editor::before,
     .hub-section-editor::before, .hub-card-editor::before, .path-picker::before, .card::before, .conflict-card::before { display: none; }
     .settings-page .settings-card { max-width: 1160px; border: 0; background: transparent; }
-    .settings-page .settings-card > header { padding: 4px 0 12px; border: 0; }
+    .settings-page .settings-card > header { border: 0; }
     .settings-card, .settings-toggle, .settings-theme-preview, .template-editor, .hub-section-editor, .hub-card-editor, .path-picker { border-radius: 8px; box-shadow: none; }
-    .settings-panel { padding: 0; gap: 0; }
     .settings-shell { border-bottom: 0; border-radius: 10px 10px 0 0; }
-    .settings-section-head { padding: 12px; }
-    .settings-section-body { padding: 12px 12px 20px; }
-    .settings-footer { margin: 0; padding: 14px 12px; border: 1px solid var(--line); border-top-color: color-mix(in srgb, var(--line) 88%, transparent); border-radius: 0 0 10px 10px; }
+    .settings-footer { border: 1px solid var(--line); border-top-color: color-mix(in srgb, var(--line) 88%, transparent); border-radius: 0 0 10px 10px; }
     .settings-toggle { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; }
     .settings-toggle:last-child { border-bottom: 0; }
     .settings-field textarea, .settings-field input, .settings-field select, .markdown-create .settings-field select { border-radius: 6px; }
     .viewer { padding: 0; min-height: 100%; background: transparent; }
     .review-workspace { height: 100%; min-height: 0; gap: 8px; }
     .diff-panel, .file-panel { border-radius: 8px; box-shadow: none; }
-    .diff-header, .file-panel header { padding: 10px 12px; gap: 10px; }
     .diff-header strong, .file-panel strong { font-size: 13px; text-transform: none; }
     .file-header-copy { flex: 1 1 auto; }
     .file-actions { min-width: 0; flex-wrap: wrap; justify-content: flex-end; }
@@ -12824,8 +13246,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .file-panel .doc-editor.markdown-view .markdown-line::before { content: attr(data-line-number); position: absolute; left: -30px; top: 0.18em; width: 22px; color: color-mix(in srgb, var(--file-muted) 42%, transparent); font: 500 9px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; text-align: right; user-select: none; pointer-events: none; }
     .confirm-dialog, .mode-toggle, .card, .conflict-card { border-radius: 8px; }
     button.primary, button.secondary { border-radius: 6px; }
-    @media (max-width: 1180px) {
-      .file-panel header { align-items: stretch; flex-direction: column; }
+    @media (max-width: 1279px) {
       .file-header-copy { flex: 0 0 auto; }
       .file-actions, .external-review-actions { justify-content: flex-start; width: 100%; }
       .external-change-stats { margin-right: auto; }
@@ -12837,22 +13258,17 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       .docqa-panel header { flex-direction: row; }
       .hub-section-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); }
     }
-    @media (max-width: 640px) {
+    @media (max-width: 639px) {
       main { grid-template-rows: auto minmax(0, 1fr); }
       .workspace-title { display: none; }
-      .docqa-home, .settings-page { padding: 8px; }
-      .settings-page-header { align-items: stretch; flex-direction: column; }
-      .settings-search { width: 100%; }
       .settings-search-results { left: 0; right: auto; width: 100%; }
-      .settings-shell { min-height: calc(100dvh - 126px); }
-      .settings-tab { flex-basis: 108px; min-height: 46px; padding: 8px 10px; }
       .settings-tab small { display: none; }
       .settings-action-row { align-items: flex-start; flex-direction: column; }
-      .settings-section-head { flex-direction: column; gap: 10px; }
       .settings-section-actions { justify-content: flex-start; }
-      .settings-disclosure > summary { grid-template-columns: minmax(0, 1fr) auto; }
-      .settings-disclosure-status { grid-column: 1; grid-row: 2; justify-self: start; }
-      .settings-disclosure-chevron { grid-column: 2; grid-row: 1 / span 2; }
+      .settings-disclosure > summary { grid-template-columns: 16px minmax(0, 1fr); }
+      .settings-disclosure-chevron { grid-column: 1; grid-row: 1 / span 2; }
+      .settings-disclosure-summary { grid-column: 2; grid-row: 1; }
+      .settings-disclosure-status { grid-column: 2; grid-row: 2; justify-self: start; }
       .settings-glossary div { grid-template-columns: 1fr; gap: 4px; }
       .shared-skills-steps, .shared-skills-preview-impact { grid-template-columns: 1fr; }
       .shared-skills-form { grid-template-columns: 1fr; }
@@ -12871,8 +13287,8 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       .diff-code, .doc-content, .doc-editor { padding: 12px; }
       .file-panel .doc-editor.markdown-view, .file-panel .markdown-editor-input { padding-left: 32px; }
       .file-panel .doc-editor.markdown-view .markdown-line::before { left: -27px; width: 20px; font-size: 8px; }
-      .file-panel header { padding: 8px; }
     }
+    /* LAYOUT CONTRACT: START */
     /*
       QUIET NATIVE WORKBENCH
       THESIS: one continuous review workbench, never a floating-card dashboard.
@@ -12889,6 +13305,11 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       --native-radius-dialog: 10px;
       --native-titlebar-height: 46px;
       --native-row-height: 40px;
+      --workbench-gutter: var(--space-5);
+      --workbench-gutter-compact: var(--space-3);
+      --explorer-gutter: var(--space-2);
+      --inspector-gutter: var(--space-4);
+      --dialog-gutter: var(--space-5);
       --native-ease: cubic-bezier(.2,.8,.2,1);
       --native-selection: color-mix(in srgb, var(--accent) 11%, var(--panel));
       --native-hover: color-mix(in srgb, var(--text) 5%, transparent);
@@ -12975,6 +13396,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       --file-hr: rgba(28,32,29,.13);
     }
     html, body { width: 100%; height: 100%; }
+    [hidden] { display: none !important; }
     body {
       background: var(--bg);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -13000,10 +13422,10 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       transition: grid-template-columns 160ms var(--native-ease), opacity 120ms ease;
     }
     .app.sidebar-collapsed { grid-template-columns: 48px minmax(0, 1fr); }
-    aside {
+    .app > aside {
       position: relative;
       height: 100dvh;
-      padding: 10px 8px 12px;
+      padding: 10px var(--explorer-gutter) 12px;
       border-right: 1px solid var(--line);
       background: var(--surface-sidebar);
       backdrop-filter: none;
@@ -13011,8 +13433,8 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       scrollbar-gutter: stable;
       transition: background 160ms ease;
     }
-    .app.sidebar-collapsed aside { padding: 7px 5px; overflow: hidden; }
-    .app.sidebar-collapsed .sidebar-head { display: flex; justify-content: center; }
+    .app.sidebar-collapsed > aside { padding: 7px 5px; overflow: hidden; }
+    .app.sidebar-collapsed .sidebar-head { display: flex; justify-content: center; padding: 0 0 8px; }
     .app.sidebar-collapsed .graph-open { display: none; }
     .app.sidebar-collapsed .sidebar-toggle { position: static; margin: 0; }
     .app.sidebar-collapsed .sidebar-copy,
@@ -13031,7 +13453,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       align-items: center;
       justify-content: space-between;
       gap: 8px;
-      padding: 0 2px 8px 8px;
+      padding: 0 0 8px;
     }
     .sidebar-actions { display: flex; align-items: center; gap: 2px; }
     .sidebar-copy h1 { margin: 0; font-size: 12px; font-weight: 650; letter-spacing: 0; }
@@ -13082,7 +13504,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
         inset: 0 auto 0 0;
         width: var(--explorer-width);
         height: 100dvh;
-        padding: 10px 8px 12px;
+        padding: 10px var(--explorer-gutter) 12px;
         overflow: auto;
         box-shadow: 18px 0 45px rgba(0,0,0,.22);
       }
@@ -13100,8 +13522,8 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     }
     body.workbench-resizing { cursor: col-resize; user-select: none; }
     .search-row { gap: 5px; margin: 4px 0 8px; }
-    .search, .context-room-review-search, .settings-search input, .shared-proposal-search,
-    input[type="text"], input[type="search"], select, textarea {
+    .search, .context-room-review-search, .shared-proposal-search,
+    input[type="text"]:not(#settingsSearch), input[type="search"]:not(#settingsSearch), select, textarea {
       min-height: 32px;
       border: 1px solid var(--line);
       border-radius: var(--native-radius-control);
@@ -13109,7 +13531,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       color: var(--text);
       box-shadow: none;
     }
-    .search, .context-room-review-search, .settings-search input, .shared-proposal-search { padding: 6px 9px; }
+    .search, .context-room-review-search, .shared-proposal-search { padding: 6px 9px; }
     input::placeholder, textarea::placeholder { color: color-mix(in srgb, var(--muted) 74%, transparent); }
     input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible, [tabindex]:focus-visible {
       outline: 2px solid var(--native-focus);
@@ -13168,7 +13590,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     }
     .global-project-row { padding: 7px 8px; }
     .global-project-row-title strong, .global-project-tree-name { font-size: 12px; font-weight: 550; }
-    .global-project-row-location, .global-project-row-side, .global-project-tree-meta { font-size: 9px; }
+    .global-project-row-location, .global-project-row-side, .global-project-tree-meta { font-size: 10px; }
     .global-project-explorer-empty { border: 0; background: color-mix(in srgb, var(--text) 3%, transparent); }
     main {
       padding: 0;
@@ -13186,7 +13608,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       flex-wrap: nowrap;
       gap: 2px;
       margin: 0;
-      padding: 5px 8px;
+      padding: 5px var(--workbench-gutter-compact);
       border: 0;
       border-radius: 0;
       background: transparent;
@@ -13197,8 +13619,9 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     }
     .workspace-dock::-webkit-scrollbar { display: none; }
     .context-room-brand {
+      flex: 0 0 auto;
       min-height: 32px;
-      padding: 0 9px 0 7px;
+      padding: 0 9px 0 8px;
       border-radius: var(--native-radius-control);
       font-weight: 650;
     }
@@ -13218,6 +13641,9 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       line-height: 1;
       transition: background 130ms ease, color 130ms ease, opacity 130ms ease;
     }
+    .workspace-dock > .dock-button { flex: 0 0 auto; }
+    .quiet-button { min-height: 32px; padding: 0 10px; border: 0; border-radius: var(--native-radius-control); background: transparent; color: var(--text-soft); font-size: 12px; font-weight: 600; }
+    .quiet-button:hover { background: var(--native-hover); color: var(--text); }
     .workspace-switch { min-width: auto; margin: 0 4px 0 0; border-left: 0; }
     .workspace-switch:hover, .dock-button:hover, .file-action:hover, button.secondary:hover { transform: none; filter: none; background: var(--native-hover); color: var(--text); }
     .dock-button.primary, .file-action.primary, button.primary {
@@ -13230,10 +13656,10 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .dock-button.diff-dock-button.active, .mode-toggle button.active { background: var(--native-selection); color: var(--text); }
     button:disabled, .dock-button:disabled, .file-action:disabled { opacity: .42; cursor: default; }
     .workspace-title { margin-left: auto; padding: 0 8px; color: var(--muted); font-size: 10px; text-align: right; }
-    .dock-status { color: var(--muted); font-size: 11px; }
+    .dock-status { display: block; position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; color: var(--muted); font-size: 11px; }
     .shared-context-controls {
       min-height: 44px;
-      padding: 6px 8px;
+      padding: 6px var(--workbench-gutter-compact);
       border-top: 1px solid var(--line);
       background: var(--panel);
       box-shadow: none;
@@ -13260,7 +13686,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .docqa-panel + .docqa-panel { border-top: 1px solid var(--line); }
     .docqa-panel > header, .proposal-review-head, .settings-page-header {
       min-height: 64px;
-      padding: 14px 20px;
+      padding: 14px var(--workbench-gutter);
       border-bottom: 1px solid var(--line);
       background: var(--panel-strong);
     }
@@ -13279,18 +13705,18 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       grid-template-columns: minmax(190px,.7fr) minmax(170px,.55fr) minmax(220px,1fr);
       align-items: center;
       gap: 8px;
-      padding: 7px 14px;
+      padding: 7px var(--workbench-gutter);
       border-bottom: 1px solid var(--line);
       background: color-mix(in srgb, var(--panel) 96%, transparent);
       backdrop-filter: none;
     }
     .context-hub-review-filter { gap: 7px; }
-    .context-hub-review-filter > span { color: var(--muted); font-size: 10px; font-weight: 600; }
+    .context-hub-review-filter > span { color: var(--muted); font-size: 11px; font-weight: 600; }
     .context-hub-project-trigger, .context-hub-review-filter select { min-height: 32px; border: 1px solid var(--line); border-radius: var(--native-radius-control); background: var(--panel); color: var(--text); }
     .review-list { max-height: min(52vh, 520px); padding: 0; gap: 0; overflow: auto; }
     .review-item, .context-room-proposal-row, .context-hub-review-item {
       min-height: var(--native-row-height);
-      padding: 10px 16px;
+      padding: 10px var(--workbench-gutter);
       border: 0;
       border-bottom: 1px solid var(--line);
       border-radius: 0;
@@ -13305,11 +13731,11 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       box-shadow: none;
     }
     .context-room-other-attention { border-top: 1px solid var(--line); }
-    .context-attention-head { min-height: 40px; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 10px 16px; background: var(--panel-strong); }
+    .context-attention-head { min-height: 40px; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 10px var(--workbench-gutter); background: var(--panel-strong); }
     .context-attention-head strong { font-size: 12px; }
     .context-attention-head span { color: var(--muted); font-size: 10px; }
     .context-attention-list { display: grid; }
-    .context-attention-row { min-width: 0; display: grid; grid-template-columns: 58px minmax(0,1fr) auto; gap: 10px; align-items: center; padding: 9px 16px; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+    .context-attention-row { min-width: 0; display: grid; grid-template-columns: 58px minmax(0,1fr) auto; gap: 10px; align-items: center; padding: 9px var(--workbench-gutter); border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
     .context-attention-row:hover { background: var(--native-hover); }
     .context-attention-row > span:nth-child(2) { min-width: 0; display: grid; gap: 2px; }
     .context-attention-row strong, .context-attention-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -13317,19 +13743,20 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .context-attention-row small { color: var(--muted); font-size: 10px; }
     .context-attention-kind { color: var(--accent); font-size: 9px; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; }
     .review-title { font-size: 13px; font-weight: 600; }
-    .review-path { margin-top: 2px; color: var(--muted); font-size: 10px; }
+    .review-path { margin-top: 2px; color: var(--muted); font-size: 11px; }
     .chip, .review-item .chip, .context-room-source-badge, .settings-scope, .settings-pill {
       border: 0;
       border-radius: 999px;
       padding: 2px 6px;
       background: color-mix(in srgb, var(--text) 6%, transparent);
       color: var(--muted);
-      font-size: 9px;
+      font-size: 10px;
       font-weight: 600;
       letter-spacing: 0;
       text-transform: none;
     }
-    .hub-folders { padding: 20px; }
+    .hub-folders { padding: var(--workbench-gutter); }
+    .hub-folders:empty { display: none; }
     .hub-section { gap: 8px; padding: 18px 0 0; border-top: 1px solid var(--line); }
     .hub-section-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; min-width: 0; }
     .hub-section-title { color: var(--muted); font-size: 11px; font-weight: 600; text-transform: none; letter-spacing: 0; }
@@ -13357,11 +13784,25 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     }
     .hub-disclosure summary, .docqa-disclosure summary, .global-project-inspection-disclosure > summary {
       min-height: 44px;
-      padding: 10px 16px;
+      padding: 10px var(--workbench-gutter);
       background: transparent;
     }
     .hub-disclosure summary:hover, .docqa-disclosure summary:hover, .global-project-inspection-disclosure > summary:hover { background: var(--native-hover); }
-    .hub-disclosure-body, .global-project-inspection-disclosure-body { padding: 12px 16px 16px; border-top: 1px solid var(--line); }
+    .hub-disclosure-body, .global-project-inspection-disclosure-body { padding: 12px var(--workbench-gutter) 16px; border-top: 1px solid var(--line); }
+    #contextHealthPanel > header { padding-inline: var(--inspector-gutter); }
+    .global-project-inspection {
+      grid-template-columns: minmax(0, 1fr);
+      padding: 12px var(--inspector-gutter);
+    }
+    .global-project-inspection-summary,
+    .global-project-inspection-actions,
+    .global-project-inspection-disclosure {
+      min-width: 0;
+      width: 100%;
+    }
+    .global-project-inspection-summary { padding-inline: 0; }
+    .global-project-inspection-disclosure > summary,
+    .global-project-inspection-disclosure-body { padding-inline: 0; }
     .global-project-inspection-empty { display: grid; gap: 4px; }
     .global-project-inspection-empty strong { color: var(--text); }
     @media (min-width: 1280px) {
@@ -13371,17 +13812,26 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       .global-context-room #contextEnginePanel { grid-column: 1 / -1; }
     }
     .startup-context-item { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; }
-    .settings-page .settings-card { max-width: none; }
-    .settings-page-header { display: flex; align-items: center; gap: 20px; }
-    .settings-search { width: min(420px, 42vw); margin-left: auto; }
-    .settings-panel { padding: 0; }
-    .settings-shell { min-width: 0; border: 0; border-radius: 0; background: transparent; overflow: visible; }
+    .settings-page { overflow: hidden; }
+    .settings-page .settings-card { max-width: none; height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); }
+    .settings-page .settings-card > .settings-page-header { display: flex; align-items: center; justify-content: space-between; gap: var(--workbench-gutter); padding: 16px var(--workbench-gutter); }
+    .settings-search { position: relative; width: min(420px, 42vw); margin-left: auto; }
+    .settings-search input { width: 100%; min-height: 40px; padding: 8px 40px 8px var(--workbench-gutter-compact); }
+    .settings-search-icon { position: absolute; top: 50%; right: var(--workbench-gutter-compact); width: 16px; height: 16px; }
+    .settings-panel { min-height: 0; display: grid; padding: 0; overflow: hidden; }
+    .settings-shell { min-width: 0; height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; border: 0; border-radius: 0; background: transparent; overflow: hidden; }
     .settings-tabs {
       position: sticky;
       top: 0;
       z-index: 12;
+      display: flex;
+      min-width: 0;
       min-height: 44px;
       padding: 0 12px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      scroll-padding-inline: 12px;
+      scrollbar-width: thin;
       border-bottom: 1px solid var(--line);
       background: var(--panel-strong);
     }
@@ -13390,6 +13840,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       min-width: 112px;
       min-height: 44px;
       display: flex;
+      align-items: center;
       justify-content: center;
       gap: 7px;
       padding: 0 12px;
@@ -13403,11 +13854,11 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .settings-tab[aria-selected="true"] { border-bottom-color: var(--accent); background: transparent; color: var(--text); }
     .settings-tab strong { font-size: 12px; font-weight: 600; }
     .settings-tab small { padding: 2px 4px; border: 0; border-radius: 4px; background: color-mix(in srgb, var(--text) 5%, transparent); font-size: 8px; }
-    .settings-content { max-width: 1180px; margin: 0 auto; }
+    .settings-content { width: 100%; max-width: 1180px; min-width: 0; min-height: 0; margin: 0 auto; overflow: auto; scrollbar-gutter: stable; }
     .settings-content > .settings-section:not([hidden]) + .settings-section:not([hidden]) { border-top: 1px solid var(--line); }
-    .settings-section-head { padding: 18px 20px 14px; border-bottom: 1px solid var(--line); }
+    .settings-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 16px var(--workbench-gutter) 12px; border-bottom: 1px solid var(--line); }
     .settings-section-head h3 { font-size: 18px; font-weight: 650; letter-spacing: -.015em; }
-    .settings-section-body { padding: 0 20px 24px; }
+    .settings-section-body { display: grid; gap: 16px; padding: 0 var(--workbench-gutter) 24px; }
     .settings-concept { padding: 18px 0; border-bottom: 1px solid var(--line); }
     .settings-concept strong { font-size: 14px; font-weight: 650; }
     .settings-concept p { max-width: 76ch; color: var(--muted); }
@@ -13421,9 +13872,14 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     }
     .settings-disclosure > summary { min-height: 58px; padding: 10px 0; }
     .settings-disclosure > summary:hover { background: transparent; }
-    .settings-disclosure-copy strong { font-size: 13px; font-weight: 600; }
-    .settings-disclosure-copy span { font-size: 11px; }
-    .settings-disclosure-body { padding: 4px 0 18px; border-top: 0; }
+    .settings-disclosure-summary, .settings-disclosure-status { min-width: 0; }
+    .settings-disclosure-summary strong { font-size: 13px; font-weight: 600; }
+    .settings-disclosure-summary span { font-size: 11px; }
+    .settings-disclosure-body {
+      min-width: 0;
+      padding: var(--space-2) 0 var(--space-5) calc(var(--space-4) + var(--space-2));
+      border-top: 0;
+    }
     .settings-toggle, .settings-theme-preview, .template-editor, .hub-section-editor, .hub-card-editor, .path-picker,
     .review-gate-panel, .settings-sound-panel {
       border-radius: var(--native-radius-group);
@@ -13432,12 +13888,15 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     }
     .settings-toggle { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; }
     .settings-footer {
-      position: sticky;
-      bottom: 0;
+      position: static;
       z-index: 15;
       min-height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
       margin: 0;
-      padding: 10px 20px;
+      padding: 12px var(--workbench-gutter);
       border: 0;
       border-top: 1px solid var(--line);
       border-radius: 0;
@@ -13447,13 +13906,41 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     }
     .settings-save-state strong { font-size: 12px; font-weight: 600; }
     .settings-save-state span { font-size: 10px; }
+    .shared-context-manager { display: grid; gap: 12px; }
+    .shared-context-detection-list { display: grid; margin: 0; border-top: 1px solid var(--line); }
+    .shared-context-detection-row { display: grid; grid-template-columns: minmax(140px, .32fr) minmax(0, 1fr); gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+    .shared-context-detection-row dt { color: var(--label-strong); font-size: 12px; font-weight: 600; }
+    .shared-context-detection-row dd { min-width: 0; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .shared-context-detection-row code { color: var(--label); }
+    .shared-context-repository-list { display: grid; border-top: 1px solid var(--line); }
+    .shared-context-repository-row { min-width: 0; min-height: 64px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+    .shared-context-repository-copy { min-width: 0; display: grid; gap: 4px; }
+    .shared-context-repository-copy strong { font-size: 13px; font-weight: 600; }
+    .shared-context-repository-copy code, .shared-context-connection code, .shared-context-connection-project code { min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .shared-context-repository-copy span { color: var(--muted); font-size: 11px; }
+    .shared-context-add-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; }
+    .shared-context-add-row .settings-field { min-width: 0; }
+    .shared-context-add-row button { min-height: 36px; }
+    .shared-context-connection, .shared-context-connection-form { display: grid; gap: 12px; }
+    .shared-context-connection-summary { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+    .shared-context-connection-summary > div { min-width: 0; display: grid; gap: 4px; }
+    .shared-context-connection-summary strong { font-size: 13px; font-weight: 600; }
+    .shared-context-connection-summary span:not(.context-hub-source) { color: var(--muted); font-size: 11px; }
+    .shared-context-connection-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .shared-context-connection-actions p { max-width: 72ch; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .shared-context-connection-project { min-width: 0; display: grid; gap: 4px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+    .shared-context-connection-project span { color: var(--muted); font-size: 10px; font-weight: 700; text-transform: uppercase; }
+    .shared-context-connection-project strong { font-size: 13px; font-weight: 600; }
+    .shared-context-connect-action { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+    .shared-context-connect-action span { color: var(--muted); font-size: 12px; }
     .proposal-review-page { padding: 0; }
     .proposal-review-shell { max-width: none; }
-    .proposal-review-head { position: sticky; top: 0; z-index: 9; }
+    .proposal-review-head { position: sticky; top: 0; z-index: 9; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
     .proposal-review-copy p { max-width: 72ch; color: var(--muted); }
-    .proposal-review-meta { padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+    .proposal-review-meta { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 12px var(--workbench-gutter); border-bottom: 1px solid var(--line); background: var(--panel); }
     .proposal-review-files { display: grid; gap: 0; padding: 0; }
-    .proposal-review-file { min-height: 42px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; box-shadow: none; }
+    .proposal-review-file { width: 100%; min-width: 0; min-height: 44px; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 12px var(--workbench-gutter); border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; box-shadow: none; }
+    .proposal-review-empty { padding-inline: var(--workbench-gutter); }
     .proposal-review-file:hover { transform: none; background: var(--native-hover); }
     .shared-proposal-workspace {
       left: var(--explorer-width);
@@ -13463,7 +13950,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .app.sidebar-collapsed ~ .shared-proposal-workspace { left: 48px; }
     .shared-proposal-workspace-head {
       min-height: var(--native-titlebar-height);
-      padding: 6px 8px;
+      padding: 6px var(--workbench-gutter);
       border-bottom: 1px solid var(--line);
       background: var(--panel-strong);
     }
@@ -13471,6 +13958,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .shared-proposal-list-panel { border-right: 1px solid var(--line); background: var(--surface-sidebar); }
     .shared-proposal-review-panel { background: var(--bg); }
     .shared-proposal-card, .shared-proposal-item { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; box-shadow: none; }
+    .shared-proposal-card { padding: 12px var(--workbench-gutter); }
     .diff-panel, .file-panel {
       border: 0;
       border-radius: 0;
@@ -13478,7 +13966,10 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       box-shadow: none;
     }
     .diff-panel { border-right: 1px solid var(--file-line); }
-    .diff-header, .file-panel header { min-height: 44px; padding: 6px 10px; border-bottom: 1px solid var(--file-line); background: var(--file-header-bg); }
+    .diff-header, .file-panel header { min-height: 44px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px var(--workbench-gutter); border-bottom: 1px solid var(--file-line); background: var(--file-header-bg); }
+    .document-context-head { position: sticky; top: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px var(--inspector-gutter); }
+    .document-context-body { min-width: 0; padding: 8px var(--inspector-gutter) 24px; }
+    .diff-panel > .diff-header, .file-panel > header { flex: 0 0 auto; }
     .diff-header strong, .file-panel strong { font-size: 12px; font-weight: 600; }
     .diff-code, .doc-content, .doc-editor { padding: 24px clamp(20px, 4vw, 64px); }
     .doc-content { max-width: 76ch; margin: 0 auto; font-size: 16px; line-height: 1.7; }
@@ -13486,12 +13977,24 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .doc-content h2 { margin-top: 1.7em; font-size: 22px; font-weight: 650; }
     .doc-content h3 { margin-top: 1.5em; font-size: 17px; font-weight: 650; }
     .markdown-editor-shell { background: var(--file-bg); }
-    .confirm-dialog, .context-hub-project-picker-dialog, .explorer-context-menu, .settings-search-results {
+    .confirm-dialog, .shared-context-help-dialog, .context-hub-project-picker-dialog, .explorer-context-menu, .settings-search-results {
       border: 1px solid var(--line);
       border-radius: var(--native-radius-dialog);
       background: var(--surface-floating);
       box-shadow: 0 14px 38px rgba(0,0,0,.20);
       backdrop-filter: none;
+    }
+    .confirm-backdrop, .shared-context-help-backdrop { padding: var(--dialog-gutter); }
+    .confirm-dialog { padding: var(--dialog-gutter); }
+    .context-hub-project-picker-head { padding: 18px var(--dialog-gutter) 13px; }
+    .context-hub-project-picker-search-wrap { padding: 0 var(--dialog-gutter) 13px; }
+    .context-hub-project-picker-footer { padding: 10px var(--dialog-gutter); }
+    .shared-skills-wizard-body { padding: 16px var(--dialog-gutter) 20px; }
+    .shared-skills-wizard-footer { padding: 12px var(--dialog-gutter); }
+    @media (max-width: 639px) {
+      .shared-context-help-dialog { max-height: calc(100dvh - (2 * var(--dialog-gutter))); }
+      .shared-context-help-dialog-head { grid-template-columns: minmax(0, 1fr) 32px; padding-top: 15px; }
+      .shared-context-help-grid, .shared-context-help-flow { grid-template-columns: 1fr; }
     }
     .explorer-context-menu button, .settings-search-result, .context-hub-project-picker-option { min-height: 38px; border-radius: var(--native-radius-control); }
     .launch-card::before, .review-item::before, .hub-folder-card::before, .startup-context-item::before,
@@ -13501,7 +14004,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .graph-open:hover, .graph-open:focus-visible { color: var(--text); background: var(--surface-hover); }
     .workspace-page[hidden] { display: none !important; }
     .graph-page { min-height: 0; height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr); overflow: hidden; background: var(--bg); }
-    .graph-toolbar { min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+    .graph-toolbar { min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px var(--workbench-gutter); border-bottom: 1px solid var(--line); }
     .graph-heading { min-width: 180px; }
     .graph-heading h2, .graph-heading p { margin: 0; }
     .graph-heading h2 { font-size: 15px; line-height: 1.25; }
@@ -13510,7 +14013,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .graph-toolbar-controls label { display: grid; gap: 3px; color: var(--muted); font-size: 10px; }
     .graph-toolbar-controls input, .graph-toolbar-controls select { height: 32px; min-width: 104px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); }
     .graph-toolbar-controls input { width: min(28vw, 280px); padding: 0 10px; }
-    .graph-filterbar { min-height: 38px; display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 6px 16px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+    .graph-filterbar { min-height: 38px; display: flex; align-items: center; flex-wrap: nowrap; gap: 12px; padding: 6px var(--workbench-gutter); overflow-x: auto; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; scrollbar-width: thin; }
     .graph-filterbar label { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
     .graph-filterbar input { accent-color: var(--accent); }
     .graph-compact-filter select { height: 28px; max-width: 140px; padding: 0 24px 0 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); font-size: 11px; }
@@ -13522,7 +14025,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     #graphCanvas:active { cursor: grabbing; }
     #graphCanvas:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
     .graph-inspector { position: static; width: auto; height: auto; padding: 0; border-left: 1px solid var(--line); background: var(--surface); box-shadow: none; transform: none; overflow: auto; }
-    .graph-inspector-body { padding: 16px; }
+    .graph-inspector-body { padding: var(--inspector-gutter); }
     .graph-inspector h3, .graph-inspector p { margin: 0; }
     .graph-inspector h3 { font-size: 14px; }
     .graph-inspector p { margin-top: 7px; color: var(--muted); font-size: 12px; line-height: 1.5; }
@@ -13536,7 +14039,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .graph-loading, .graph-empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; color: var(--muted); font-size: 12px; text-align: center; pointer-events: none; }
     .graph-loading[hidden], .graph-empty[hidden] { display: none; }
     .graph-accessible-list { min-height: 0; overflow: auto; grid-column: 1 / -1; background: var(--bg); }
-    .graph-list-row { width: 100%; min-height: 44px; display: grid; grid-template-columns: minmax(180px, 1fr) minmax(120px, .6fr) auto; align-items: center; gap: 14px; padding: 8px 16px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+    .graph-list-row { width: 100%; min-height: 44px; display: grid; grid-template-columns: minmax(180px, 1fr) minmax(120px, .6fr) auto; align-items: center; gap: 14px; padding: 8px var(--workbench-gutter); border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text); text-align: left; cursor: pointer; }
     .graph-list-row:hover, .graph-list-row:focus-visible { background: var(--surface-hover); }
     .graph-list-row small { color: var(--muted); }
     .graph-node-state { color: var(--muted); font-size: 10px; text-transform: capitalize; }
@@ -13546,6 +14049,9 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     @media (max-width: 1279px) {
       .review-workspace { grid-template-columns: 1fr; }
       .diff-panel { border-right: 0; border-bottom: 1px solid var(--file-line); }
+      .diff-header, .file-panel > header { flex-wrap: wrap; align-items: flex-start; }
+      .file-header-copy { flex: 1 1 240px; min-width: 0; }
+      .file-actions { width: auto; max-width: 100%; }
       .shared-proposal-workspace-body { grid-template-columns: minmax(280px, 330px) minmax(0, 1fr); }
       .graph-workbench { grid-template-columns: 1fr; }
       .graph-inspector { position: absolute; z-index: 12; top: 0; right: 0; bottom: 0; width: min(360px, 88vw); border-top: 1px solid var(--line); box-shadow: -16px 0 32px rgba(0,0,0,.2); }
@@ -13564,7 +14070,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
         overflow: hidden;
       }
       main { height: 100dvh; min-height: 0; padding: 0; overflow: hidden; }
-      aside {
+      .app > aside {
         position: fixed;
         z-index: 60;
         inset: var(--native-titlebar-height) auto 0 0;
@@ -13576,7 +14082,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
         transform: translateX(0);
         box-shadow: 18px 0 45px rgba(0,0,0,.22);
       }
-      .app.sidebar-collapsed aside { transform: translateX(-105%); pointer-events: none; }
+      .app.sidebar-collapsed > aside { transform: translateX(-105%); pointer-events: none; }
       .sidebar-resizer { display: none; }
       .explorer-open { display: inline-flex !important; position: fixed; z-index: 70; top: 7px; left: 8px; width: 32px; height: 32px; align-items: center; justify-content: center; border: 0; border-radius: var(--native-radius-control); background: transparent; color: var(--text); }
       .app:not(.sidebar-collapsed) .explorer-open { display: none !important; }
@@ -13585,14 +14091,17 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
       .shared-proposal-workspace-body { grid-template-columns: 1fr; grid-template-rows: minmax(220px, 38vh) minmax(0, 1fr); }
       .context-hub-review-toolbar, .context-room-review-toolbar { grid-template-columns: 1fr 1fr; }
       .context-room-review-search { grid-column: 1 / -1; }
+      .settings-section-head { flex-direction: column; }
+      .settings-section-actions { justify-content: flex-start; width: 100%; }
     }
     @media (max-width: 639px) {
-      :root { --native-titlebar-height: 48px; }
+      :root { --native-titlebar-height: 48px; --inspector-gutter: var(--space-3); --dialog-gutter: var(--space-3); }
+      .context-room-proposal-description-toggle { width: 40px; min-width: 40px; height: 40px; margin-bottom: -11px; }
       .explorer-document-tab { min-height: 40px; font-size: 12px; }
       .explorer-related-row { min-height: 44px; padding-block: 7px; }
       .explorer-related-actions { grid-template-columns: 1fr; }
       .explorer-related-actions button { min-height: 40px; font-size: 11px; }
-      aside {
+      .app > aside {
         inset: 0;
         width: 100vw;
         max-width: none;
@@ -13601,37 +14110,81 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
         border-right: 0;
         box-shadow: none;
       }
-      .app.explorer-expanded aside {
+      .app.explorer-expanded > aside {
         height: 100dvh;
         max-height: none;
-        padding: 10px 8px 12px;
+        padding: 10px var(--explorer-gutter) 12px;
         border: 0;
         border-radius: 0;
         transform: translateX(0);
         pointer-events: auto;
       }
-      .workspace-dock { height: var(--native-titlebar-height); padding-right: 6px; }
-      .workspace-title, .dock-status { display: none; }
-      .settings-page-header { align-items: stretch; flex-direction: column; gap: 10px; }
+      .workspace-dock { height: var(--native-titlebar-height); padding-right: var(--workbench-gutter-compact); }
+      .workspace-title { display: none; }
+      .dock-status { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+      .context-room-brand { min-width: max-content; min-height: 40px; padding-inline: 7px; }
+      .workspace-dock > .dock-button { min-height: 40px; }
+      #back.dock-button, #forward.dock-button, #graphLocal.dock-button { min-width: 40px; }
+      #gitDiffToggle { font-size: 0; }
+      #gitDiffToggle::after { content: "Diff"; font-size: 12px; }
+      #graphLocal span { display: none; }
+      .settings-page .settings-card > .settings-page-header { align-items: stretch; flex-direction: column; gap: 10px; padding: var(--workbench-gutter-compact); }
       .settings-search { width: 100%; margin-left: 0; }
       .settings-tabs { padding: 0 6px; }
       .settings-tab { min-width: 104px; padding: 0 9px; }
       .settings-tab small { display: none; }
-      .settings-section-head, .docqa-panel > header, .proposal-review-head { padding: 12px; }
-      .settings-section-body, .hub-folders { padding-inline: 12px; }
-      .settings-footer { padding: 8px 12px; }
-      .context-hub-review-toolbar, .context-room-review-toolbar { grid-template-columns: 1fr; padding: 8px; }
+      .settings-field > label:not(.settings-toggle),
+      .shared-skills-form > label,
+      .settings-input-label { display: grid; grid-template-columns: 1fr; gap: 6px; align-items: start; }
+      .settings-field input, .settings-field select, .settings-field textarea,
+      .shared-skills-form input, .shared-skills-form select, .shared-skills-form textarea { width: 100%; min-width: 0; }
+      .settings-section-head, .docqa-panel > header, .proposal-review-head { padding: var(--workbench-gutter-compact); }
+      .settings-section-body, .hub-folders { padding-inline: var(--workbench-gutter-compact); }
+      .hub-disclosure summary, .docqa-disclosure summary,
+      .hub-disclosure-body { padding-inline: var(--workbench-gutter-compact); }
+      .settings-footer {
+        flex-direction: column;
+        align-items: flex-start;
+        padding: 8px var(--workbench-gutter-compact) max(8px, env(safe-area-inset-bottom));
+      }
+      .shared-context-repository-row, .shared-context-add-row { grid-template-columns: 1fr; align-items: stretch; }
+      .shared-context-detection-row { grid-template-columns: 1fr; gap: 4px; }
+      .shared-context-repository-row button, .shared-context-add-row button { justify-self: start; min-height: 40px; }
+      .shared-context-connection-actions, .shared-context-connect-action { align-items: flex-start; flex-direction: column; }
+      .shared-context-connection-actions button, .shared-context-connect-action button { min-height: 40px; }
+      .settings-footer button, .quiet-button, .file-action,
+      .explorer-open, .sidebar-toggle, .graph-open, .selection-action, .global-explorer-back,
+      .global-explorer-mode, .watch-filter, .global-project-watch-filter,
+      .context-hub-project-trigger, .context-hub-review-filter select,
+      .context-room-review-search { min-height: 40px; }
+      .explorer-open, .sidebar-toggle, .graph-open, .selection-action, .global-explorer-back { width: 40px; min-width: 40px; height: 40px; }
+      .explorer-open { top: 4px; left: 4px; }
+      .file-panel > header { min-height: auto; }
+      .file-header-copy, .file-actions { flex-basis: 100%; width: 100%; }
+      .file-actions { justify-content: flex-start; }
+      .file-actions .file-action, .graph-toolbar .file-action { min-width: 40px; min-height: 40px; }
+      .external-review-block-controls .external-choice.icon { width: 40px; min-width: 40px; height: 40px; min-height: 40px; }
+      .context-hub-review-toolbar, .context-room-review-toolbar { grid-template-columns: 1fr; padding: 8px var(--workbench-gutter-compact); }
       .context-room-review-search { grid-column: auto; }
-      .review-item, .context-room-proposal-row { padding: 10px 12px; }
+      .review-item, .context-room-proposal-row, .context-hub-review-item,
+      .context-attention-head, .context-attention-row,
+      .proposal-review-meta, .proposal-review-file,
+      .shared-proposal-card { padding-inline: var(--workbench-gutter-compact); }
+      .proposal-review-head { flex-direction: column; }
+      .proposal-review-file { grid-template-columns: minmax(0, 1fr) auto; }
+      .proposal-review-file-change { display: none; }
+      .proposal-review-empty { padding-inline: var(--workbench-gutter-compact); }
+      .diff-header, .file-panel header { padding-inline: var(--workbench-gutter-compact); }
       .hub-section-heading { align-items: flex-start; flex-direction: column; gap: 3px; }
       .hub-section-origin { justify-content: flex-start; width: 100%; }
       .hub-section-origin code { max-width: min(52vw, 28ch); }
       .hub-section-grid { grid-template-columns: 1fr; }
       .diff-code, .doc-content, .doc-editor { padding: 18px 16px; }
       .doc-content { font-size: 15px; }
-      .shared-proposal-workspace-head { grid-template-columns: minmax(0,1fr) auto; }
-      .graph-toolbar { padding: 10px; }
-      .graph-filterbar { gap: 8px; padding-inline: 10px; overflow-x: auto; flex-wrap: nowrap; }
+      .shared-proposal-workspace-head { grid-template-columns: minmax(0,1fr) auto; padding-inline: var(--workbench-gutter-compact); }
+      .graph-toolbar { padding: 10px var(--workbench-gutter-compact); }
+      .graph-filterbar { gap: 8px; padding-inline: var(--workbench-gutter-compact); overflow-x: auto; flex-wrap: nowrap; }
+      .graph-list-row { padding-inline: var(--workbench-gutter-compact); }
       .graph-toolbar-controls label:not(.graph-search) { flex: 1 1 100px; }
       .graph-toolbar-controls select { width: 100%; }
       .graph-inspector { width: 100vw; }
@@ -13639,6 +14192,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
     }
+    .explorer-open[hidden], .graph-open[hidden] { display: none !important; }
     body.app-booting .app { visibility: hidden; opacity: 0; pointer-events: none; }
     .boot-screen { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; background: var(--bg); color: var(--muted); }
     .boot-screen-inner { display: flex; align-items: center; gap: 10px; font: 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -13650,6 +14204,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .boot-indicator { width: 16px; height: 16px; border: 2px solid color-mix(in srgb, var(--line) 82%, transparent); border-top-color: var(--accent); border-radius: 50%; animation: bootSpin 700ms linear infinite; }
     body:not(.app-booting):not(.app-recovery) .boot-screen { display: none; }
     @keyframes bootSpin { to { transform: rotate(360deg); } }
+    /* LAYOUT CONTRACT: END */
   </style>
 </head>
 <body class="app-booting">
@@ -13659,6 +14214,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     <symbol id="cr-icon-left" viewBox="0 0 20 20"><path d="M12.5 4.5L7 10l5.5 5.5"></path></symbol>
     <symbol id="cr-icon-right" viewBox="0 0 20 20"><path d="M7.5 4.5L13 10l-5.5 5.5"></path></symbol>
     <symbol id="cr-icon-refresh" viewBox="0 0 20 20"><path d="M15.5 7A6 6 0 1 0 16 12"></path><path d="M15.5 3.5V7H12"></path></symbol>
+    <symbol id="cr-icon-search" viewBox="0 0 20 20"><circle cx="8.75" cy="8.75" r="5.25"></circle><path d="m12.6 12.6 4.15 4.15"></path></symbol>
     <symbol id="cr-icon-eye-plus" viewBox="0 0 20 20"><path d="M2.5 10s2.6-4 7.5-4 7.5 4 7.5 4-2.6 4-7.5 4-7.5-4-7.5-4Z"></path><circle cx="10" cy="10" r="1.8"></circle><path d="M15.5 3v4M13.5 5h4"></path></symbol>
     <symbol id="cr-icon-eye-minus" viewBox="0 0 20 20"><path d="M2.5 10s2.6-4 7.5-4 7.5 4 7.5 4-2.6 4-7.5 4-7.5-4-7.5-4Z"></path><circle cx="10" cy="10" r="1.8"></circle><path d="M13.5 5h4"></path></symbol>
     <symbol id="cr-icon-trash" viewBox="0 0 20 20"><path d="M4.5 6h11M8 3.5h4M6 6l.7 10h6.6L14 6"></path></symbol>
@@ -13879,7 +14435,10 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
               </div>
               <div class="settings-search" data-settings-search>
                 <label class="sr-only" for="settingsSearch">Search settings</label>
-                <input id="settingsSearch" type="search" role="combobox" aria-autocomplete="list" autocomplete="off" placeholder="Search settings…" aria-controls="settingsSearchResults" aria-expanded="false" />
+                <div class="settings-search-control">
+                  <input id="settingsSearch" type="search" role="combobox" aria-autocomplete="list" autocomplete="off" placeholder="Search settings…" aria-controls="settingsSearchResults" aria-expanded="false" />
+                  <svg class="ui-icon settings-search-icon" aria-hidden="true"><use href="#cr-icon-search"></use></svg>
+                </div>
                 <div id="settingsSearchResults" class="settings-search-results" role="listbox" aria-label="Settings search results" hidden></div>
                 <div id="settingsSearchStatus" class="sr-only" aria-live="polite"></div>
               </div>
@@ -14037,7 +14596,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
 		${workspaceReloadCircuitDecision.toString()}
 		${shouldReplaceDuplicatedWorkspaceIdentity.toString()}
 		${contextRoomProjectResponseAction.toString()}
-		const state = { root: null, projectId: null, projectReloading: false, files: [], directories: [], startupContextFiles: [], startupSkillFolders: [], startupHookFiles: [], startupHooksHelpOpen: false, startupHookFilter: "all", hubDisclosuresOpen: new Set(), activeStartupSkillExplorer: null, activeStartupContextExplorer: null, startupSkillCreateFolder: null, startupContextContextTarget: null, selectedStartupContext: null, docqa: null, doctor: null, backgroundReportRenderKey: "", contextHealthStatusFilter: "open", contextHealthSeverityFilter: "triggered", contextHealthCategoryFilter: "all", contextHealthRefreshing: false, contextHealthCodexSending: false, settings: null, settingsOpen: false, settingsSection: "review-trust", settingsDisclosureState: {}, settingsBaselineByGroup: new Map(), settingsDirtyGroups: new Set(), settingsSearchQuery: "", settingsSearchIndex: -1, page: "hub", pendingMarkdown: null, availableHubCards: [], hubFolders: [], hubSections: [], rootHubSections: [], activeHubCardId: null, selectedReview: null, deletionBatchExpanded: false, deletionBatchLoading: false, deletionBatchItems: [], deletionBatchKey: "", deletionBatchReportedCount: 0, deletionBatchError: "", selectedDeletionReviews: new Set(), reviewModePath: null, reviewModeStatus: null, reviewSessions: {}, reviewFinalizationPromise: null, selected: null, selectedReadOnly: false, selectedDiff: null, fileLoadError: null, fileConflict: null, externalChange: null, conflictCompare: false, conflictMergeText: null, conflictMergeKey: "", conflictMergeMode: "auto", diffCollapsed: false, saved: "", savedHash: null, dirty: false, mode: "view", homeView: "root", planetStack: ["root"], filePanel: false, history: [], historyIndex: -1, pathFilters: [], explorerWatchFilter: "all", explorerRenderKey: "", explorerSearchFrame: 0, explorerWidth: 272, explorerStoredCollapsed: null, explorerNavigationOverride: null, inspectorWidth: 320, inspectorOpen: false, documentInspection: null, documentInspectionPath: "", documentInspectionLoading: false, focusMode: false, selectedForDelete: new Set(), selectionRequest: 0, openingFilePath: null, fileContentReadyPath: null, sessionStateTimer: null, agentCommandTimer: null, lastAgentCommandId: "", pendingAgentCommand: null, agentAnnotations: {}, userActiveAt: 0, userScrollIntentAt: 0, refreshInFlight: false, reportsRefreshInFlight: false, backgroundRefreshTimer: null, filePrefetches: new Map(), prefetchTimer: null, prefetchPath: "", lastDiffRefreshAt: 0, lastReportRefreshAt: 0, lastFullRefreshAt: 0, navigationRestoreAttempted: false, bootStartedAt: Date.now(), bootMilestones: {}, markdownHighlightFrame: 0, markdownHighlightText: "", markdownHighlightLastText: "", docLinkModifierActive: false, workspaceId: "", workspaceClientInstanceId: "", workspaceChannel: null, workspaceHeartbeatTimer: null, workspaceIdentityReady: false, workspaceSyncedUrl: "", expanded: new Set(["data", "automations", "integrations", "skills", "tools", "~", "~/.hermes", "~/.hermes/memories", "~/.hermes/skills"]) };
+		const state = { root: null, projectId: null, projectReloading: false, files: [], directories: [], startupContextFiles: [], startupSkillFolders: [], startupHookFiles: [], startupHooksHelpOpen: false, startupHookFilter: "all", hubDisclosuresOpen: new Set(), activeStartupSkillExplorer: null, activeStartupContextExplorer: null, startupSkillCreateFolder: null, startupContextContextTarget: null, selectedStartupContext: null, docqa: null, doctor: null, backgroundReportRenderKey: "", contextHealthStatusFilter: "open", contextHealthSeverityFilter: "triggered", contextHealthCategoryFilter: "all", contextHealthRefreshing: false, contextHealthCodexSending: false, settings: null, settingsOpen: false, settingsSection: "review-trust", settingsDisclosureState: {}, settingsBaselineByGroup: new Map(), settingsDirtyGroups: new Set(), settingsSearchQuery: "", settingsSearchIndex: -1, page: "hub", pendingMarkdown: null, availableHubCards: [], hubFolders: [], hubSections: [], rootHubSections: [], activeHubCardId: null, selectedReview: null, deletionBatchExpanded: false, deletionBatchLoading: false, deletionBatchItems: [], deletionBatchKey: "", deletionBatchReportedCount: 0, deletionBatchError: "", selectedDeletionReviews: new Set(), reviewModePath: null, reviewModeStatus: null, reviewSessions: {}, reviewFinalizationPromise: null, selected: null, selectedReadOnly: false, selectedDiff: null, fileLoadError: null, fileConflict: null, externalChange: null, conflictCompare: false, conflictMergeText: null, conflictMergeKey: "", conflictMergeMode: "auto", diffCollapsed: false, saved: "", savedHash: null, dirty: false, mode: "view", homeView: "root", planetStack: ["root"], filePanel: false, history: [], historyIndex: -1, pathFilters: [], explorerWatchFilter: "all", explorerRenderKey: "", explorerSearchFrame: 0, explorerWidth: 272, explorerStoredCollapsed: null, explorerNavigationOverride: null, inspectorWidth: 320, inspectorOpen: false, documentInspection: null, documentInspectionPath: "", documentInspectionLoading: false, focusMode: false, selectedForDelete: new Set(), selectionRequest: 0, openingFilePath: null, fileContentReadyPath: null, sessionStateTimer: null, agentCommandTimer: null, lastAgentCommandId: "", pendingAgentCommand: null, agentAnnotations: {}, userActiveAt: 0, userScrollIntentAt: 0, refreshInFlight: false, reportsRefreshInFlight: false, backgroundRefreshTimer: null, backgroundRefreshTimerKind: "", filePrefetches: new Map(), prefetchTimer: null, prefetchPath: "", lastDiffRefreshAt: 0, lastReportRefreshAt: 0, lastFullRefreshAt: 0, navigationRestoreAttempted: false, bootStartedAt: Date.now(), bootMilestones: {}, markdownHighlightFrame: 0, markdownHighlightText: "", markdownHighlightLastText: "", docLinkModifierActive: false, workspaceId: "", workspaceClientInstanceId: "", workspaceChannel: null, workspaceHeartbeatTimer: null, runtimeEventSource: null, runtimeEventCursor: 0, runtimeEventsConnected: false, runtimeFallbackTimer: null, workspaceIdentityReady: false, workspaceSyncedUrl: "", expanded: new Set(["data", "automations", "integrations", "skills", "tools", "~", "~/.hermes", "~/.hermes/memories", "~/.hermes/skills"]) };
 		Object.assign(state, {
 		  graph: null,
 		  graphLoading: false,
@@ -14063,6 +14622,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
 		});
 		state.selectedVisualAsset = null;
 		state.imagePreviewActualSize = false;
+		state.explorerReturnFocus = null;
 		state.sharedContext = null;
 		state.sharedContextBusy = false;
 		state.sharedSkillLocations = new Map();
@@ -14079,6 +14639,9 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
 		state.settingsSnoozedReviewQuery = "";
 		state.projectPrioritySearch = "";
 		state.projectPriorityBusy = false;
+		state.sharedContextManagerRepository = "";
+		state.sharedContextManagerProject = "";
+		state.sharedContextManagerBusy = false;
 		state.contextHubSelection = "";
 		state.contextHubProjectPickerOpen = false;
 		state.contextHubProjectPickerQuery = "";
@@ -14149,6 +14712,8 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
 		state.contextRoomPreparingProposal = null;
 		state.contextRoomPreparedReview = null;
 		state.contextRoomQueuedProposalFile = "";
+		state.proposalReviewKey = "";
+		state.proposalReviewVisibleCount = 40;
 		state.contextRoomProposalRequest = 0;
 		state.contextRoomSelectedReviews = new Set();
 		state.contextRoomBulkBusy = false;
@@ -14171,7 +14736,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
 				state.codexPromptActionStatus = "";
 				state.codexPromptActionTargetId = "";
 			state.codexPromptRequest = 0;
-			state.codexPromptMutationNonce = ${JSON.stringify(codexPromptMutationNonce)};
+			state.codexPromptMutationNonce = document.querySelector('meta[name="context-room-prompt-nonce"]')?.content || "";
 			const CODEX_PROMPT_MAX_BYTES = ${MAX_CODEX_PROMPT_BYTES};
 			const CODEX_PROMPT_MAX_ESTIMATED_TOKENS = ${MAX_CODEX_PROMPT_ESTIMATED_TOKENS};
 			const CODEX_PROMPT_HIGH_CONTEXT_TOKENS = ${CODEX_PROMPT_HIGH_CONTEXT_CONFIRM_TOKENS};
@@ -14212,7 +14777,7 @@ const CONTEXT_HEALTH_SEVERITY_OPTIONS = [{ id: "triggered", label: "Triggered" }
 const CONTEXT_HEALTH_CATEGORY_OPTIONS = [{ id: "all", label: "All areas" }, { id: "configuration", label: "Configuration" }, { id: "documentation", label: "Documentation" }, { id: "references", label: "References" }, { id: "review", label: "Review safety" }, { id: "startup", label: "Startup context" }, { id: "hooks", label: "Hooks" }];
 const SETTINGS_SECTION_IDS = ["project", "review-trust", "agent-environment", "preferences", "advanced-extensions"];
 const SETTINGS_SECTION_GROUPS = {
-  project: ["templates", "hub"],
+  project: ["shared-contexts", "templates", "hub"],
   "review-trust": ["review"],
   "agent-environment": ["startup", "shared-skills"],
   preferences: ["appearance"],
@@ -14227,9 +14792,12 @@ const SETTINGS_SECTION_ALIASES = {
   hub: "project",
   "codex-prompts": "advanced-extensions",
 };
-const AGENT_CLI_HANDOFF_PROMPT = "Use context-room context ask \"<question>\" for accepted project documentation. context-room capabilities only lists the static installed contract; it never interprets an objective or chooses a command. Never discover unregistered worktrees or write directly to shared main. Only the human can accept or reject files awaiting review.";
-const SETTINGS_DISCLOSURE_IDS = ["review-agent-cli", "review-documents", "review-protection", "startup-context", "startup-skills", "startup-hooks", "shared-how", "shared-providers", "shared-collections", "shared-destinations", "shared-instructions-how", "shared-instructions-collections", "shared-instructions-import", "appearance-theme", "appearance-explorer", "appearance-sounds", "appearance-shortcuts", "templates-list", "hub-project-priority", "hub-sections", "codex-prompts-editor"];
+const AGENT_CLI_HANDOFF_PROMPT = "Use context-room ask \"<complete research brief>\" for accepted project documentation. Include the work context, questions to resolve, constraints to check, and expected output; never reduce the request to keywords. When shared documentation must change, use context-room edit list, context-room edit open <branch>, or context-room edit create \"<complete proposal description>\"; edit only the returned proposal worktree. There is no agent-facing publish or acceptance step. Use context-room capabilities only when an advanced operation is genuinely required. Never discover unregistered worktrees, write directly to shared main, or accept or reject files awaiting review.";
+const SETTINGS_DISCLOSURE_IDS = ["project-shared-explainer", "project-shared-repositories", "project-shared-connection", "review-agent-cli", "review-documents", "review-protection", "startup-context", "startup-skills", "startup-hooks", "shared-how", "shared-providers", "shared-collections", "shared-destinations", "shared-instructions-how", "shared-instructions-collections", "shared-instructions-assign", "shared-instructions-import", "appearance-theme", "appearance-explorer", "appearance-sounds", "appearance-shortcuts", "templates-list", "hub-project-priority", "hub-sections", "codex-prompts-editor"];
 const SETTINGS_DISCLOSURE_DEFAULTS = {
+  "project-shared-explainer": false,
+  "project-shared-repositories": true,
+  "project-shared-connection": true,
   "review-agent-cli": false,
   "review-documents": true,
   "review-protection": false,
@@ -14241,6 +14809,7 @@ const SETTINGS_DISCLOSURE_DEFAULTS = {
   "shared-collections": true,
   "shared-instructions-how": false,
   "shared-instructions-collections": true,
+  "shared-instructions-assign": false,
   "shared-instructions-import": false,
   "shared-destinations": false,
   "appearance-theme": true,
@@ -14253,6 +14822,9 @@ const SETTINGS_DISCLOSURE_DEFAULTS = {
   "codex-prompts-editor": true,
 };
 const SETTINGS_SEARCH_ITEMS = [
+  { id: "shared-repository-explainer", label: "What a Shared Context is", description: "Understand why one canonical documentation source stays shared across collaborators, branches, and worktrees.", section: "project", group: "", scope: "Project + Shared", target: "sharedContextHelpButton", keywords: "shared context canonical documentation source of truth repository collaborators branches worktrees projects docs documents skills instructions accepted proposals" },
+  { id: "shared-repositories", label: "Shared repositories", description: "Add or remove the Shared Context Git repositories available on this device.", section: "project", group: "project-shared-repositories", scope: "Device", target: "sharedContextRepositoryInput", keywords: "shared context repository repositories github git add remove teams collaborators" },
+  { id: "shared-project-connection", label: "Project shared context", description: "Connect or disconnect the selected local project from an accepted Shared Context repository.", section: "project", group: "project-shared-connection", scope: "Project", keywords: "shared context connect disconnect project repository team" },
   { id: "agent-cli-guide", label: "Agent CLI guide", description: "Learn what agents can do and copy a ready-to-send instruction.", section: "review", group: "review-agent-cli", scope: "All rooms", target: "copyAgentCliInstructions", keywords: "agent cli commands help guide prompt copy capabilities boundaries terminal" },
   { id: "watched-paths", label: "Documents to review", description: "Choose which documents require human verification for every current content version.", section: "review", group: "review-documents", scope: "Project", target: "watchAllow", keywords: "watch watched docs folders files rules queue required verify verification hash" },
   { id: "snoozed-reviews", label: "Snoozed reviews", description: "Find pending reviews hidden from Home until their chosen return time.", section: "review", group: "review-snoozed", scope: "Device", keywords: "snooze snoozed hidden delayed later return queue pending pause postpone" },
@@ -15401,7 +15973,7 @@ function renderGlobalProjectExplorerPage(project, page, depth = 0, filter = "all
       const child = state.globalProjectExplorerDetails.get(childKey);
       const loading = state.globalProjectExplorerLoading.has(childKey);
       const error = state.globalProjectExplorerErrors.get(childKey);
-      return '<button class="global-project-tree-entry" type="button" data-kind="folder" data-global-project-folder="' + escapeHtml(entry.path) + '" data-global-project-key="' + escapeHtml(project.projectKey) + '" style="padding-left:' + (7 + depth * 12) + 'px">'
+      return '<button class="global-project-tree-entry" type="button" data-kind="folder" aria-expanded="' + (expanded ? "true" : "false") + '" data-global-project-folder="' + escapeHtml(entry.path) + '" data-global-project-key="' + escapeHtml(project.projectKey) + '" style="padding-left:' + (7 + depth * 12) + 'px">'
         + '<span aria-hidden="true">' + (expanded ? "⌄" : "›") + '</span><span class="global-project-tree-name">' + escapeHtml(entry.name) + '</span><span class="global-project-tree-meta">folder</span></button>'
         + (expanded && loading ? '<div class="computer-explorer-loading" style="padding-left:' + (28 + depth * 12) + 'px">Opening…</div>' : '')
         + (expanded && error ? '<div class="computer-explorer-loading" style="padding-left:' + (28 + depth * 12) + 'px">' + escapeHtml(error) + '</div>' : '')
@@ -15658,7 +16230,7 @@ function renderGlobalProjectFolder(project) {
       ["all", "All"],
       ["watched", "Watched"],
       ["unwatched", "Not watched"],
-    ].map(([value, label]) => '<button class="global-project-watch-filter' + (filter === value ? " active" : "") + '" type="button" data-global-project-watch-filter="' + value + '" data-global-project-key="' + escapeHtml(project.projectKey) + '">' + label + '</button>').join("")
+    ].map(([value, label]) => '<button class="global-project-watch-filter' + (filter === value ? " active" : "") + '" type="button" aria-pressed="' + String(filter === value) + '" data-global-project-watch-filter="' + value + '" data-global-project-key="' + escapeHtml(project.projectKey) + '">' + label + '</button>').join("")
     + '</div><span class="global-project-tree-meta">' + visibleCount + (needle ? " results" : " at root") + '</span></div>'
     + '<div class="global-project-folder-tree">' + (markup || '<div class="global-project-folder-state">No files match this view.</div>') + '</div>';
 }
@@ -16110,7 +16682,11 @@ function renderGlobalProjectExplorer() {
   if (!explorer || !scope || !listLabel || !search || !count || !list) return;
   explorer.hidden = !IS_GLOBAL_CONTEXT_ROOM;
   if (!IS_GLOBAL_CONTEXT_ROOM) return;
-  document.querySelectorAll("[data-global-explorer-mode]").forEach((button) => button.classList.toggle("active", button.dataset.globalExplorerMode === (state.globalExplorerMode === "computer" ? "computer" : "projects")));
+  document.querySelectorAll("[data-global-explorer-mode]").forEach((button) => {
+    const active = button.dataset.globalExplorerMode === (state.globalExplorerMode === "computer" ? "computer" : "projects");
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
   if (search.value !== state.globalProjectSearch) search.value = state.globalProjectSearch;
   if (state.globalExplorerMode === "computer") {
     search.placeholder = "Search explorer...";
@@ -16693,7 +17269,6 @@ function syncContextRoomProposalDescriptionToggles() {
 }
 
 function renderContextRoomGlobalReviewQueue() {
-  renderGlobalProjectExplorer();
   renderSingleProjectWorktreeSwitch();
   const queueElement = el("reviewQueue");
   const summary = el("reviewSummary");
@@ -16971,8 +17546,10 @@ function renderContextHubOverview(item) {
       + (item.mainAdvancedBy ? '<span>Main advanced by ' + Number(item.mainAdvancedBy) + ' commit' + (Number(item.mainAdvancedBy) === 1 ? '' : 's') + (item.hasConflict === true ? ' · conflict detected' : '') + '.</span>' : '')
     : '<span>Local files use the project review queue directly; no proposal branch is created.</span>'
       + (project?.mode === "hybrid" ? '<span>Shared changes for this project appear separately as proposals.</span>' : '');
+  const overviewFiles = files.slice(0, 12);
   el("sharedProposalFiles").innerHTML = files.length
-    ? files.map((file) => '<span class="shared-proposal-file" title="' + escapeHtml(file) + '">' + escapeHtml(file) + '</span>').join("")
+    ? overviewFiles.map((file) => '<span class="shared-proposal-file" title="' + escapeHtml(file) + '">' + escapeHtml(file) + '</span>').join("")
+      + (files.length > overviewFiles.length ? '<span class="shared-proposal-file">+' + (files.length - overviewFiles.length) + ' more files</span>' : '')
     : '<span class="shared-proposal-file">Changed-file details unavailable for this legacy proposal.</span>';
   const openButton = el("sharedProposalOpenReview");
   const proposalOpening = item.type === "shared" && state.contextRoomOpeningProposalId === item.id;
@@ -17013,7 +17590,7 @@ function selectContextHubItem(itemId) {
 function contextRoomProposalReviewUrl(url) {
   const target = new URL(url, window.location.href);
   target.searchParams.set("returnTo", window.location.href);
-  target.searchParams.set("explorer", isExplorerCollapsed() ? "collapsed" : "expanded");
+  target.searchParams.set("explorer", (isExplorerDrawerViewport() || isExplorerCollapsed()) ? "collapsed" : "expanded");
   return target.toString();
 }
 
@@ -17145,7 +17722,7 @@ async function openContextHubProject(projectId, options = {}) {
   if (review?.startupContext?.kind) target.searchParams.set("startupKind", review.startupContext.kind);
   if (review?.startupContext?.order) target.searchParams.set("startupOrder", review.startupContext.order);
   if (review?.startupContext?.skillName) target.searchParams.set("startupSkill", review.startupContext.skillName);
-  target.searchParams.set("explorer", isExplorerCollapsed() ? "collapsed" : "expanded");
+  target.searchParams.set("explorer", (isExplorerDrawerViewport() || isExplorerCollapsed()) ? "collapsed" : "expanded");
   window.location.assign(target.toString());
 }
 
@@ -17594,7 +18171,7 @@ async function applyWorkspaceUrlState({ reason = "history", force = false } = {}
       if (!proposal) throw new Error("This proposal is no longer available.");
       await openSharedProposal(proposal.branch, proposal.repository || "");
     } else if (target.view === "file" && target.file) {
-      if (!state.files.some((file) => file.path === target.file)) throw new Error("This file is no longer available in the selected project.");
+      if (!IS_GLOBAL_CONTEXT_ROOM && !state.files.some((file) => file.path === target.file)) throw new Error("This file is no longer available in the selected project.");
       await selectFile(target.file, { pushHistory: false, revealInExplorer: false, forceReload: projectChanged });
     } else if (target.view === "graph") {
       state.graphScope = target.graphScope;
@@ -17761,9 +18338,7 @@ function buildWorkspacePresencePayload() {
 }
 
 function startWorkspaceHeartbeat() {
-  if (state.workspaceHeartbeatTimer) window.clearInterval(state.workspaceHeartbeatTimer);
   publishSessionState().catch(() => {});
-  state.workspaceHeartbeatTimer = window.setInterval(() => publishSessionState().catch(() => {}), 5_000);
 }
 
 async function publishSessionState() {
@@ -18059,6 +18634,7 @@ function validSessionSelectedPath() {
 
 function selectedFileExists(path = state.selected) {
   if (!path || state.selectedStartupContext) return Boolean(path);
+  if (IS_GLOBAL_CONTEXT_ROOM && state.activeProjectLocationId) return true;
   return state.files.some((file) => file.path === path) || canReviewMissingFile(path);
 }
 
@@ -18139,10 +18715,71 @@ function approximateVisibleLineIndex() {
 }
 
 function startAgentCommandPolling() {
-  if (state.agentCommandTimer) window.clearInterval(state.agentCommandTimer);
   state.lastAgentCommandId = readLastAgentCommandId();
-  state.agentCommandTimer = window.setInterval(() => pollAgentCommand().catch(() => {}), 1500);
   pollAgentCommand().catch(() => {});
+}
+
+function runtimeEventCursorStorageKey() {
+  return state.workspaceId ? "context-room:runtime-event-cursor:" + state.workspaceId : "";
+}
+
+function rememberRuntimeEventCursor(cursor) {
+  const next = Math.max(state.runtimeEventCursor || 0, Number(cursor) || 0);
+  state.runtimeEventCursor = next;
+  const key = runtimeEventCursorStorageKey();
+  if (!key) return;
+  try { window.sessionStorage?.setItem(key, String(next)); } catch {}
+}
+
+function handleRuntimeEvent(event = {}) {
+  rememberRuntimeEventCursor(event.cursor);
+  if (event.type === "workspace-command") {
+    const command = event.data?.command;
+    if (!command || command.workspaceId !== state.workspaceId || !command.id || command.id === state.lastAgentCommandId) return;
+    if (isStaleAgentCommand(command)) {
+      rememberAgentCommandId(command.id);
+      return;
+    }
+    state.lastAgentCommandId = command.id;
+    handleAgentCommand(command).catch((error) => setStatus(error.message));
+    return;
+  }
+  if (!['state-invalidated', 'resync-required'].includes(event.type)) return;
+  if (state.selected) refreshFromDisk().catch(() => {});
+  if (IS_GLOBAL_CONTEXT_ROOM) applyInitialContextHubWhenReady(loadInitialContextHubData());
+  else scheduleBackgroundRefresh({ forceReports: true, forceFull: true });
+}
+
+function ensureRuntimeFallback() {
+  if (state.runtimeFallbackTimer) return;
+  state.runtimeFallbackTimer = window.setInterval(() => {
+    if (state.runtimeEventsConnected || document.hidden) return;
+    publishSessionState().catch(() => {});
+    pollAgentCommand().catch(() => {});
+    if (state.selected) refreshFromDisk().catch(() => {});
+  }, 60_000);
+}
+
+function startRuntimeEvents() {
+  state.runtimeEventSource?.close();
+  const key = runtimeEventCursorStorageKey();
+  try { state.runtimeEventCursor = Number(window.sessionStorage?.getItem(key) || 0) || 0; } catch {}
+  const query = new URLSearchParams({ workspace: state.workspaceId, since: String(state.runtimeEventCursor || 0) });
+  const source = new EventSource("/api/runtime-events?" + query.toString());
+  state.runtimeEventSource = source;
+  source.addEventListener("ready", () => {
+    state.runtimeEventsConnected = true;
+    window.clearInterval(state.runtimeFallbackTimer);
+    state.runtimeFallbackTimer = null;
+    publishSessionState().catch(() => {});
+  });
+  source.addEventListener("runtime", (message) => {
+    try { handleRuntimeEvent(JSON.parse(message.data || "{}")); } catch {}
+  });
+  source.onerror = () => {
+    state.runtimeEventsConnected = false;
+    ensureRuntimeFallback();
+  };
 }
 
 async function pollAgentCommand() {
@@ -18528,6 +19165,7 @@ function updateExplorerWatchFilterButtons() {
     const label = button.dataset.watchLabel || filter;
     button.textContent = label + " " + (counts[filter] ?? 0);
     button.classList.toggle("active", filter === state.explorerWatchFilter);
+    button.setAttribute("aria-pressed", String(filter === state.explorerWatchFilter));
     button.title = filter === "all"
       ? counts.all + " project files visible in the explorer"
       : (counts[filter] ?? 0) + " " + label + " project files visible in the explorer";
@@ -18991,7 +19629,7 @@ function applyExplorerCollapsed(collapsed) {
     "explorer-expanded",
     !collapsed && isExplorerMobileViewport(),
   );
-  syncSidebarToggleIcon();
+  syncResponsiveSidebar();
 }
 
 function setExplorerCollapsedFromUser(collapsed) {
@@ -19022,11 +19660,47 @@ function revealExplorerFromLeftEdge(event) {
 function syncResponsiveSidebar() {
   const app = document.querySelector(".app");
   if (!app) return;
+  const collapsed = isExplorerCollapsed();
+  const desktop = isExplorerDesktopViewport();
   app.classList.toggle(
     "explorer-expanded",
-    !isExplorerCollapsed() && isExplorerMobileViewport(),
+    !collapsed && isExplorerMobileViewport(),
   );
+  const explorerOpen = el("explorerOpen");
+  if (explorerOpen) explorerOpen.hidden = desktop || !collapsed;
+  const graphOpen = el("graphOpen");
+  if (graphOpen) graphOpen.hidden = collapsed;
+  const sidebar = document.querySelector(".app > aside");
+  if (sidebar) {
+    sidebar.inert = collapsed && !desktop;
+    sidebar.setAttribute("aria-hidden", String(collapsed && !desktop));
+  }
+  const main = document.querySelector(".app > main");
+  const overlayOpen = !desktop && !collapsed;
+  if (main) {
+    main.inert = overlayOpen;
+    if (overlayOpen) main.setAttribute("aria-hidden", "true");
+    else main.removeAttribute("aria-hidden");
+  }
   syncSidebarToggleIcon();
+}
+
+function explorerFocusableElements() {
+  const sidebar = document.querySelector(".app > aside");
+  if (!sidebar) return [];
+  return [...sidebar.querySelectorAll('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+    .filter((element) => !element.hidden && element.offsetParent !== null);
+}
+
+function focusExplorerAfterOpen() {
+  if (isExplorerDesktopViewport() || isExplorerCollapsed()) return;
+  window.requestAnimationFrame(() => el("sidebarToggle")?.focus());
+}
+
+function restoreFocusAfterExplorerClose() {
+  const target = state.explorerReturnFocus?.isConnected ? state.explorerReturnFocus : el("explorerOpen");
+  state.explorerReturnFocus = null;
+  window.requestAnimationFrame(() => target?.focus());
 }
 
 function syncSidebarToggleIcon() {
@@ -19397,12 +20071,18 @@ function applyInitialContextHubWhenReady(contextHubRequest) {
         || (project.worktrees || []).some((worktree) => worktree.id === roomQuery.get("project"))
       ));
       if (requestedProject) {
+        const requestedLocationId = roomQuery.get("project") || requestedProject.id;
+        state.activeProjectLocationId = requestedLocationId;
         state.sharedProposalProject = requestedProject.projectKey;
         state.globalExplorerProjectKey = requestedProject.projectKey;
         state.globalExplorerMode = "project";
-        state.globalProjectWorktreeIds.set(requestedProject.projectKey, roomQuery.get("project"));
+        state.globalProjectWorktreeIds.set(requestedProject.projectKey, requestedLocationId);
         void loadGlobalProjectExplorerPage(requestedProject).catch((error) => setStatus(error.message));
         void refreshExplorerRelatedForCurrentFile().catch((error) => setStatus(error.message));
+        if (state.page === "settings" && requestedProject.mode !== "shared") {
+          state.globalProjectSettingsController ||= new AbortController();
+          void loadGlobalProjectSettings(requestedProject).catch((error) => setStatus(error.message));
+        }
       }
       renderSharedContextControls();
       if (state.page === "settings") renderSettingsPanel();
@@ -19443,8 +20123,9 @@ async function loadInitialContextHubData() {
 }
 
 function pollFreshContextHubSnapshot(attempt = 0) {
-  if (attempt >= 12) return;
+  if (attempt >= 12 || state.runtimeEventsConnected) return;
   window.setTimeout(() => {
+    if (state.runtimeEventsConnected) return;
     api("/api/context-hub").then((contextHub) => {
       state.contextHub = contextHub;
       renderGlobalProjectExplorer();
@@ -19481,11 +20162,14 @@ async function loadFiles(options = {}) {
   if (options.initial) state.bootMilestones.requestsStarted = Date.now() - state.bootStartedAt;
   const reportsRequest = options.initial && !IS_GLOBAL_CONTEXT_ROOM ? api("/api/reports") : null;
   const sharedRequest = options.initial && !IS_GLOBAL_CONTEXT_ROOM ? api("/api/shared-context") : null;
-  const [data, settingsData] = await Promise.all([api(filesApiPath()), api("/api/settings")]);
+  const filesRequest = IS_GLOBAL_CONTEXT_ROOM
+    ? api("/api/health").then((health) => ({ root: health.root, files: [], directories: [] }))
+    : api(filesApiPath());
+  const [data, settingsData] = await Promise.all([filesRequest, api("/api/settings")]);
   const sharedData = await (sharedRequest || Promise.resolve(null));
   if (options.initial) state.bootMilestones.coreDataReady = Date.now() - state.bootStartedAt;
   acceptContextRoomRoot(data.root);
-  state.files = data.files;
+  state.files = data.files || [];
   state.directories = data.directories || [];
   if (sharedData) state.sharedContext = sharedData;
   applySettingsPayload(settingsData);
@@ -19526,7 +20210,7 @@ async function loadFiles(options = {}) {
   } else if (requestedStartupOrder) {
     await selectStartupContextFile(requestedStartupOrder, { reviewMode: true });
     restoredContextHubTarget = true;
-  } else if (requestedReviewFile && state.files.some((file) => file.path === requestedReviewFile)) {
+  } else if (requestedReviewFile && (IS_GLOBAL_CONTEXT_ROOM || state.files.some((file) => file.path === requestedReviewFile))) {
     await selectFile(requestedReviewFile, { pushHistory: false, reviewMode: true, forceReload: true });
     restoredContextHubTarget = true;
   } else if (options.initial && state.sharedContext?.mode === "review") {
@@ -19581,12 +20265,17 @@ function initializeWorkspaceDiagnostics() {
 function stopWorkspaceRuntime() {
   window.clearTimeout(state.sessionStateTimer);
   window.clearTimeout(state.prefetchTimer);
-  window.clearTimeout(state.backgroundRefreshTimer);
+  cancelBackgroundRefresh();
   window.clearTimeout(state.workspaceIdentityRefreshTimer);
   window.clearInterval(state.workspaceHeartbeatTimer);
   window.clearInterval(state.agentCommandTimer);
   window.clearInterval(state.diskRefreshTimer);
   window.clearInterval(state.backgroundRefreshInterval);
+  window.clearInterval(state.runtimeFallbackTimer);
+  state.runtimeEventSource?.close();
+  state.runtimeEventSource = null;
+  state.runtimeEventsConnected = false;
+  state.runtimeFallbackTimer = null;
   state.workspaceHeartbeatTimer = null;
   state.agentCommandTimer = null;
   state.workspaceChannel?.close();
@@ -19715,12 +20404,16 @@ async function selectFile(path, options = {}) {
     state.mode = data.binary ? "view" : state.mode;
     state.fileLoadError = null;
     el("editor").value = data.content || "";
-    await annotationsRequest;
-    if (!isCurrentSelection(requestId, path)) return;
     state.fileContentReadyPath = path;
     renderViewer();
     restorePersistedViewState(options.restoreViewState);
     setStatus("open · loading Git diff...");
+    void annotationsRequest.then((annotationsResult) => {
+      if (annotationsResult.error || !isCurrentSelection(requestId, path)) return;
+      const contentViewState = captureEditorViewState();
+      renderViewer();
+      restoreEditorViewState(contentViewState);
+    });
 
     const finishOpen = (diffResult, reviewBaseResult) => {
       if (!isCurrentSelection(requestId, path)) return;
@@ -20220,7 +20913,6 @@ function showHome() {
   updateCodexReferenceAction();
   updateHistoryButtons();
   updateActionBanner();
-  renderHubFolders();
   setStatus("ready");
   scheduleSessionStatePush();
 }
@@ -20268,6 +20960,7 @@ function renderProposalReviewPage() {
   const prepared = Boolean(preview && state.contextRoomPreparedReview);
   const review = state.sharedContext?.mode === "review" ? state.sharedContext?.review || {} : preview || {};
   const entries = proposalReviewFileEntries();
+  const visibleEntries = entries.slice(0, Math.max(40, Number(state.proposalReviewVisibleCount || 40)));
   const reviewReady = !preparing && Boolean(state.docqa);
   const pending = reviewReady ? entries.filter((entry) => !entry.reviewed).length : entries.length;
   const reviewed = Math.max(0, entries.length - pending);
@@ -20285,7 +20978,7 @@ function renderProposalReviewPage() {
     + '<span>' + entries.length + ' changed file' + (entries.length === 1 ? '' : 's') + '</span>'
     + '<details class="proposal-review-technical"><summary>Git revision details</summary><div><code title="' + escapeHtml(review.proposal || review.branch || "") + '">' + escapeHtml(review.proposal || review.branch || "Proposal") + '</code><code title="' + escapeHtml(review.proposalHead || review.head || "") + '">@' + escapeHtml(shortSharedHash(review.proposalHead || review.head)) + '</code></div></details>'
     + (impactKey ? renderProposalContextImpactDisclosure({ key: impactKey, repository: impactRepository, selector: impactSelector }) : '');
-  files.innerHTML = entries.length ? entries.map((entry) => {
+  files.innerHTML = entries.length ? visibleEntries.map((entry) => {
     const changeLabel = preview
       ? "changed"
       : entry.reviewed
@@ -20299,7 +20992,9 @@ function renderProposalReviewPage() {
       + '<span class="proposal-review-file-change">' + escapeHtml(changeLabel) + '</span>'
       + '<span class="proposal-review-file-state">' + escapeHtml(stateLabel) + '</span>'
       + '</button>';
-  }).join("") : '<div class="proposal-review-empty">No changed files are available in this exact proposal revision.</div>';
+  }).join("") + (entries.length > visibleEntries.length
+    ? '<button class="proposal-review-file" type="button" data-proposal-review-more><span class="proposal-review-file-copy"><strong>Load more files</strong><code>' + (entries.length - visibleEntries.length) + ' remaining</code></span><span class="proposal-review-file-state">Show 40 more</span></button>'
+    : '') : '<div class="proposal-review-empty">No changed files are available in this exact proposal revision.</div>';
   meta.querySelector("[data-proposal-context-impact]")?.addEventListener("toggle", (event) => {
     if (!event.currentTarget.open) return;
     loadProposalContextImpact({
@@ -20389,6 +21084,11 @@ function showProposalReview({ preparingItem = null } = {}) {
     return;
   }
   if (state.dirty && !confirm("You have unsaved changes. Return to the proposal files?")) return;
+  const nextReviewKey = preparingItem?.id || preparingItem?.proposal || state.sharedContext?.review?.proposal || state.sharedContext?.review?.branch || "proposal";
+  if (state.proposalReviewKey !== nextReviewKey) {
+    state.proposalReviewKey = nextReviewKey;
+    state.proposalReviewVisibleCount = 40;
+  }
   state.page = "proposal";
   state.contextRoomPreparingProposal = preparingItem;
   if (!preparingItem && state.sharedContext?.mode === "review") {
@@ -20647,7 +21347,7 @@ function contextEngineResourceRow(entry, { actions = true } = {}) {
 
 function renderEffectiveContextGroup(title, entries = [], emptyCopy = "", options = {}) {
   const rows = entries.map((entry) => contextEngineResourceRow(entry, options)).join("");
-  return '<details class="global-project-inspection-group" open><summary><strong>' + escapeHtml(title) + '</strong><span>' + entries.length + '</span></summary><div class="global-project-inspection-list">'
+  return '<details class="global-project-inspection-group"' + (options.open === false ? '' : ' open') + '><summary><strong>' + escapeHtml(title) + '</strong><span>' + entries.length + '</span></summary><div class="global-project-inspection-list">'
     + (rows || '<div class="global-project-inspection-row empty"><strong>Nothing effective</strong><span>' + escapeHtml(emptyCopy) + '</span></div>')
     + '</div></details>';
 }
@@ -20655,6 +21355,12 @@ function renderEffectiveContextGroup(title, entries = [], emptyCopy = "", option
 function renderEffectiveContextBody(effective, { embedded = false } = {}) {
   const activeCount = ["instructions", "skills", "hooks", "providerConfigs", "documents"].reduce((sum, key) => sum + Number(effective?.[key]?.length || 0), 0);
   const inactive = effective?.inactive || [];
+  const inactiveCounts = inactive.reduce((counts, entry) => {
+    const status = entry.application?.status || "inactive";
+    counts[status] = Number(counts[status] || 0) + 1;
+    return counts;
+  }, {});
+  const inactiveSummary = Object.entries(inactiveCounts).map(([status, count]) => count + " " + status).join(" · ");
   const summary = '<div class="context-engine-summary">'
     + '<span data-state="' + escapeHtml(effective?.freshness?.state || "unknown") + '">' + escapeHtml(effective?.freshness?.state || "unknown") + '</span>'
     + '<span>' + activeCount + ' effective</span>'
@@ -20668,7 +21374,7 @@ function renderEffectiveContextBody(effective, { embedded = false } = {}) {
     + renderEffectiveContextGroup("Hooks and automation", effective?.hooks || [], "No proven hook applies. Uncertain discoveries appear below.", { actions: !embedded })
     + renderEffectiveContextGroup("Provider configuration", effective?.providerConfigs || [], "No recognized provider configuration applies.", { actions: !embedded })
     + renderEffectiveContextGroup("Accepted documents", effective?.documents || [], "No accepted current document is linked to this coordinate.", { actions: !embedded })
-    + renderEffectiveContextGroup("Inactive, disabled, shadowed, uncertain, or unverified", inactive, "No inactive resources were discovered.", { actions: !embedded })
+    + renderEffectiveContextGroup(inactiveSummary ? "Inactive resources · " + inactiveSummary : "Inactive resources", inactive, "No inactive resources were discovered.", { actions: !embedded, open: false })
     + '</div>';
   return summary + groups + (embedded ? "" : '<div id="contextEngineDetail" class="context-engine-detail"></div>');
 }
@@ -21666,34 +22372,29 @@ function renderAgentCliGuide() {
   return '<div class="agent-cli-guide">'
     + '<div class="agent-cli-capabilities">'
       + '<section><h4>What your agent can do</h4><ul>'
-        + '<li>Ask one focused question and receive accepted project documentation with provenance.</li>'
-        + '<li>Inspect and explain effective instructions, skills, hooks, paths, reviews, and proposals.</li>'
-        + '<li>Find and read the documentation relevant to its task, with provenance.</li>'
-        + '<li>Use only human-accepted documentation; proposal content is never exposed to the researcher.</li>'
-        + '<li>Classify changes, preview a deterministic handoff, then publish local reviews and shared proposals safely.</li>'
-        + '<li>Navigate to the exact project, file, heading, text, or diff.</li>'
-        + '<li>Leave human-facing annotations and manage explicit folder watch rules.</li>'
+        + '<li>Send a complete research brief and receive an implementation-ready answer from accepted project documentation.</li>'
+        + '<li>Create a clearly described shared proposal, list open proposals, or restore an exact proposal worktree.</li>'
+        + '<li>Inspect the complete advanced command contract only when it is needed.</li>'
       + '</ul></section>'
       + '<section><h4>What remains human-owned</h4><ul>'
         + '<li>Accepting or rejecting each file awaiting review. A shared proposal is complete once every file review is complete; there is no separate proposal decision.</li>'
       + '</ul></section>'
     + '</div>'
     + '<details class="agent-cli-more">'
-      + '<summary><span class="agent-cli-more-summary"><strong>Commands and advanced capabilities</strong><span>Projects, reviews, shared contexts, skills, setup, and maintenance.</span></span><span class="agent-cli-more-chevron" aria-hidden="true">›</span></summary>'
+      + '<summary><span class="agent-cli-more-summary"><strong>Advanced capabilities</strong><span>Keep the root workflow small and inspect specialized operations only when needed.</span></span><span class="agent-cli-more-chevron" aria-hidden="true">›</span></summary>'
       + '<ul>'
-        + '<li><code>context ask</code> retrieves accepted project documentation with provenance.</li>'
-        + '<li><code>project current|list|search|register|open|recent</code> resolves explicit worktree locations without scanning the computer.</li>'
-        + '<li><code>review list|show|diff|open|annotate</code> exposes file reviews without decision commands.</li>'
-        + '<li>Open the global Hub, list registered projects and proposals, and focus the correct project or proposal.</li>'
-        + '<li>Sync a shared context and create, update, or publish documentation and skill proposals for file-by-file review.</li>'
-        + '<li>Inspect shared skill status, manage assignments, and link accepted skills to Codex, Claude Code, OpenCode, or a custom folder.</li>'
-        + '<li>Initialize or connect Context Room, diagnose it with <code>doctor</code>, run Git guards, install hooks, and update registered rooms when explicitly requested.</li>'
+        + '<li><strong>Ask:</strong> research accepted project documentation from a complete task-specific brief, not keywords.</li>'
+        + '<li><strong>Edit:</strong> create, list, or open shared proposal worktrees without making review decisions.</li>'
+        + '<li><strong>Capabilities:</strong> list every advanced command without choosing one automatically.</li>'
+        + '<li><strong>Admin · 21 commands:</strong> Explicit project, UI, watch, review, proposal, shared, settings, and doctor operations.</li>'
+        + '<li><strong>Expert · 12 commands:</strong> Context inspection, deterministic document inspection, shared security, hooks, and Hub diagnostics.</li>'
+        + '<li>Use <code>context-room capabilities</code> to inspect them. No command interprets an objective or chooses another command.</li>'
       + '</ul>'
     + '</details>'
     + '<div class="agent-cli-handoff">'
       + '<div class="agent-cli-handoff-head"><strong>Give this to your agent</strong><p>Paste these instructions into any coding agent. It can then inspect the installed CLI for the complete, current command set.</p></div>'
       + '<pre class="agent-cli-prompt" data-agent-cli-prompt>' + escapeHtml(AGENT_CLI_HANDOFF_PROMPT) + '</pre>'
-      + '<div class="settings-body-toolbar"><code class="agent-cli-command">context-room context ask "&lt;question&gt;" --root .</code><button id="copyAgentCliInstructions" class="secondary" type="button" data-copy-agent-cli-prompt>Copy instructions</button></div>'
+      + '<div class="settings-body-toolbar"><code class="agent-cli-command">context-room ask "&lt;complete research brief&gt;" --root .</code><button id="copyAgentCliInstructions" class="secondary" type="button" data-copy-agent-cli-prompt>Copy instructions</button></div>'
     + '</div>'
   + '</div>';
 }
@@ -21708,8 +22409,9 @@ function renderSettingsDisclosure({ id, title, copy, status = "", scope = "", bo
   const open = settingsDisclosureIsOpen(safeId) ? " open" : "";
   const dirtyGroup = trackDirty ? ' data-settings-dirty-group="' + escapeHtml(safeId) + '"' : "";
   return '<details id="settings-group-' + escapeHtml(safeId) + '" class="settings-disclosure" data-settings-disclosure="' + escapeHtml(safeId) + '"' + dirtyGroup + open + '>'
-    + '<summary><span class="settings-disclosure-summary"><strong>' + escapeHtml(title) + '</strong><span>' + escapeHtml(copy) + '</span></span>'
-    + '<span class="settings-disclosure-status">' + escapeHtml([status, scope].filter(Boolean).join(" · ")) + '</span><span class="settings-disclosure-chevron" aria-hidden="true">›</span></summary>'
+    + '<summary><span class="settings-disclosure-chevron" aria-hidden="true"><span>›</span></span>'
+    + '<span class="settings-disclosure-summary"><strong>' + escapeHtml(title) + '</strong><span>' + escapeHtml(copy) + '</span></span>'
+    + '<span class="settings-disclosure-status">' + escapeHtml([status, scope].filter(Boolean).join(" · ")) + '</span></summary>'
     + '<div class="settings-disclosure-body">' + body + '</div></details>';
 }
 
@@ -21829,10 +22531,16 @@ function openSettingsSearchItem(itemId) {
     disclosure.classList.remove("is-search-target");
     requestAnimationFrame(() => disclosure.classList.add("is-search-target"));
   }
-  const target = item.target ? el(item.target) : disclosure?.querySelector("summary");
+  const target = (item.target ? el(item.target) : null) || disclosure?.querySelector("summary");
+  const opensHelpDialog = Boolean(target?.matches("[data-settings-help-trigger]"));
+  if (opensHelpDialog) target.click();
   requestAnimationFrame(() => {
-    target?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
-    target?.focus({ preventScroll: true });
+    if (!opensHelpDialog) {
+      target?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
+      target?.focus({ preventScroll: true });
+    }
+    const status = el("settingsSearchStatus");
+    if (status) status.textContent = "Opened " + item.label;
   });
   el("settingsSearchResults").hidden = true;
   el("settingsSearch").setAttribute("aria-expanded", "false");
@@ -22297,6 +23005,234 @@ function wireProjectPrioritySettings(root) {
   });
 }
 
+function sharedContextManagerRepositories() {
+  return Array.isArray(state.contextHub?.sharedRepositories) ? state.contextHub.sharedRepositories : [];
+}
+
+function sharedContextRepositoryLabel(repository) {
+  if (repository?.name) return repository.name;
+  const parts = String(repository?.repository || "").replace(/\.git$/, "").split(/[/:]/).filter(Boolean);
+  return parts.slice(-2).join("/") || "Shared repository";
+}
+
+function sharedContextRepositoryConnections(repository) {
+  return (state.contextHub?.projects || []).filter((project) => project.mode !== "shared" && project.shared?.repository === repository);
+}
+
+function selectedProjectSharedContext() {
+  const selected = selectedGlobalProjectSettingsContext();
+  return {
+    ...selected,
+    connection: selected.project?.shared || selected.worktree?.shared || null,
+    local: Boolean(selected.project && selected.project.mode !== "shared" && selected.worktree?.root),
+  };
+}
+
+function renderSharedRepositoryManager() {
+  const repositories = sharedContextManagerRepositories();
+  const rows = repositories.map((repository) => {
+    const connections = sharedContextRepositoryConnections(repository.repository);
+    const connected = connections.length;
+    const projectCount = Array.isArray(repository.projects) ? repository.projects.length : 0;
+    const busy = state.sharedContextManagerBusy ? " disabled" : "";
+    const removeDisabled = connected ? " disabled" : busy;
+    const removeTitle = connected ? "Disconnect every local project before removing this repository" : "Remove this repository from this device";
+    return '<div class="shared-context-repository-row" data-shared-repository="' + escapeHtml(repository.repository) + '">'
+      + '<div class="shared-context-repository-copy"><strong>' + escapeHtml(sharedContextRepositoryLabel(repository)) + '</strong><code title="' + escapeHtml(repository.repository) + '">' + escapeHtml(repository.repository) + '</code><span>' + projectCount + ' shared project' + (projectCount === 1 ? '' : 's') + ' · ' + connected + ' local connection' + (connected === 1 ? '' : 's') + '</span></div>'
+      + '<button class="secondary" type="button" data-remove-shared-repository="' + escapeHtml(repository.repository) + '" title="' + escapeHtml(removeTitle) + '"' + removeDisabled + '>Remove</button>'
+      + '</div>';
+  }).join("");
+  return '<div class="shared-context-manager">'
+    + '<div class="shared-context-repository-list">' + (rows || '<div class="settings-empty-state"><strong>No shared repositories yet.</strong><span class="settings-empty-state-detail">Add the Git repository that contains accepted shared documentation and proposals.</span></div>') + '</div>'
+    + '<div class="shared-context-add-row"><label class="settings-field" for="sharedContextRepositoryInput"><span class="settings-field-title">Git repository</span><span class="settings-field-note">Use an SSH URL, HTTPS URL, or an absolute local Git path.</span><input id="sharedContextRepositoryInput" type="text" autocomplete="off" placeholder="git@github.com:team/context.git" /></label><button class="primary" type="button" data-add-shared-repository' + (state.sharedContextManagerBusy ? ' disabled' : '') + '>Add repository</button></div>'
+    + '<p class="settings-help">Removing a repository only forgets it on this device. Context Room never deletes the Git repository or its documentation.</p>'
+    + '</div>';
+}
+
+function renderSharedContextHelpDialog() {
+  return '<section class="shared-context-help-dialog" role="dialog" aria-modal="true" aria-labelledby="sharedContextHelpTitle" aria-describedby="sharedContextHelpDescription">'
+    + '<header class="shared-context-help-dialog-head"><div class="shared-context-help-dialog-head-copy"><h2 id="sharedContextHelpTitle">Shared Contexts</h2><p id="sharedContextHelpDescription">A Shared Context is a dedicated Git repository that keeps accepted documentation and reusable agent resources separate from the code repository.</p></div><button class="shared-context-help-dialog-close" type="button" data-shared-context-help-close aria-label="Close Shared Context explanation">×</button></header>'
+    + '<div class="shared-context-help-dialog-body"><div class="shared-context-help-dialog-sections">'
+    + '<section class="shared-context-help-section"><h3>Why it is useful</h3><div class="shared-context-help-grid">'
+    + '<div class="shared-context-help-item"><strong>One canonical source</strong><span>Everyone reads the same accepted documentation instead of keeping competing copies in code branches and worktrees.</span></div>'
+    + '<div class="shared-context-help-item"><strong>Independent from code</strong><span>Code worktrees can be created, merged, or removed without splitting or deleting the documentation history.</span></div>'
+    + '<div class="shared-context-help-item"><strong>Built for collaboration</strong><span>Several people and agents can propose improvements to the same documentation repository.</span></div>'
+    + '<div class="shared-context-help-item"><strong>Human-controlled truth</strong><span>Only file changes accepted by a human reach the repository\'s accepted default branch.</span></div>'
+    + '</div></section>'
+    + '<section class="shared-context-help-section"><h3>What the repository can share</h3><div class="shared-context-help-grid">'
+    + '<div class="shared-context-help-item"><strong>Canonical documentation</strong><span>Current project or global documents that agents and humans can use as accepted context.</span></div>'
+    + '<div class="shared-context-help-item"><strong>Shared Skills</strong><span>Reusable skill collections assigned to selected projects, worktrees, providers, or the device.</span></div>'
+    + '<div class="shared-context-help-item"><strong>Shared Instructions</strong><span>Reviewed instruction files projected to provider-recognized destinations such as AGENTS.md or CLAUDE.md.</span></div>'
+    + '<div class="shared-context-help-item"><strong>Several shared projects</strong><span>One repository can organize documentation for multiple logical projects while keeping a single accepted history.</span></div>'
+    + '</div><div class="shared-context-help-note"><strong>Hooks stay local</strong><span>Executable hooks are never distributed as shared resources. Context Room keeps them on the machine or inside the local project for safety.</span></div></section>'
+    + '<section class="shared-context-help-section"><h3>How changes become accepted</h3><div class="shared-context-help-flow">'
+    + '<div class="shared-context-help-step"><strong>Open an edit</strong><span>An agent or teammate works on a separate Git proposal branch and worktree.</span></div>'
+    + '<div class="shared-context-help-step"><strong>Review each file</strong><span>The proposal stays outside effective context while a human accepts or rejects its files.</span></div>'
+    + '<div class="shared-context-help-step"><strong>Update the default branch</strong><span>After all required decisions, the proposal is finalized and the accepted branch becomes the new truth.</span></div>'
+    + '</div></section>'
+    + '<section class="shared-context-help-section"><h3>How Context Room recognizes the shared components</h3><p>The accepted repository declares its own structure. Context Room reads its manifest and mappings instead of guessing from arbitrary folders.</p><div class="shared-context-help-grid">'
+    + '<div class="shared-context-help-item"><strong>Repository manifest</strong><span><code>.context-room/shared-repository.json</code> defines the accepted branch and canonical repository paths.</span></div>'
+    + '<div class="shared-context-help-item"><strong>Projects</strong><span><code>projects.json</code> maps shared projects to the local projects that consume them.</span></div>'
+    + '<div class="shared-context-help-item"><strong>Skills</strong><span><code>skill-locations.json</code> declares skill collections, assignments, providers, and scopes.</span></div>'
+    + '<div class="shared-context-help-item"><strong>Instructions</strong><span><code>instruction-locations.json</code> maps reviewed source files to exact provider destinations.</span></div>'
+    + '</div></section>'
+    + '<section class="shared-context-help-section"><h3>What remains local to each machine</h3><p>Provider availability, device destinations, project overrides, exclusions, caches, and managed-link ownership are local preferences. Context Room only materializes a Skill or Instruction when it can prove the selected provider will discover it, and it never replaces unmanaged files or links.</p></section>'
+    + '<section class="shared-context-help-section"><h3>Using several repositories</h3><p>You can register independent Shared Context repositories for different teams, clients, or personal documentation spaces. A local project connects to one shared repository at a time, while every registered repository keeps its own accepted branch, proposals, Shared Skills, and Shared Instructions.</p></section>'
+    + '</div></div>'
+    + '<footer class="shared-context-help-dialog-footer"><button class="file-action primary" type="button" data-shared-context-help-close>Done</button></footer>'
+    + '</section>';
+}
+
+function renderSelectedProjectSharedContextManager() {
+  const selected = selectedProjectSharedContext();
+  if (!selected.local) {
+    return '<div class="settings-empty-state"><strong>Select a local project in the Explorer.</strong><span class="settings-empty-state-detail">The selected project can then be connected to one of this device\'s Shared Context repositories.</span></div>';
+  }
+  const projectTitle = selected.project.title || selected.project.id;
+  if (selected.connection) {
+    const repository = sharedContextManagerRepositories().find((item) => item.repository === selected.connection.repository);
+    const sharedProject = repository?.projects?.find((item) => item.id === selected.connection.projectId);
+    return '<div class="shared-context-connection">'
+      + '<div class="shared-context-connection-summary"><span class="context-hub-source" data-source="shared">Connected</span><div><strong>' + escapeHtml(projectTitle) + '</strong><span>' + escapeHtml(sharedProject?.title || selected.connection.projectId) + '</span><code title="' + escapeHtml(selected.connection.repository) + '">' + escapeHtml(selected.connection.repository) + '</code></div></div>'
+      + '<div class="shared-context-connection-actions"><p>Accepted documentation comes from this repository\'s configured default branch, normally main. Proposals stay separate until humans finish their file reviews.</p><button class="secondary" type="button" data-disconnect-shared-context' + (state.sharedContextManagerBusy ? ' disabled' : '') + '>Disconnect</button></div>'
+      + '</div>';
+  }
+  const repositories = sharedContextManagerRepositories();
+  if (!repositories.length) {
+    return '<div class="settings-empty-state"><strong>Add a shared repository first.</strong><span class="settings-empty-state-detail">Then connect ' + escapeHtml(projectTitle) + ' to the matching shared project.</span></div>';
+  }
+  const requestedRepository = state.sharedContextManagerRepository;
+  const repository = repositories.find((item) => item.repository === requestedRepository) || repositories[0];
+  state.sharedContextManagerRepository = repository.repository;
+  const sharedProjects = Array.isArray(repository.projects) ? repository.projects : [];
+  if (state.sharedContextManagerProject && !sharedProjects.some((item) => item.id === state.sharedContextManagerProject)) state.sharedContextManagerProject = "";
+  const repositoryOptions = repositories.map((item) => '<option value="' + escapeHtml(item.repository) + '"' + (item.repository === repository.repository ? ' selected' : '') + '>' + escapeHtml(sharedContextRepositoryLabel(item)) + '</option>').join("");
+  const projectOptions = '<option value="">Auto-detect from this project</option>' + sharedProjects.map((item) => '<option value="' + escapeHtml(item.id) + '"' + (item.id === state.sharedContextManagerProject ? ' selected' : '') + '>' + escapeHtml(item.title || item.id) + '</option>').join("");
+  return '<div class="shared-context-connection-form">'
+    + '<div class="shared-context-connection-project"><span>Local project</span><strong>' + escapeHtml(projectTitle) + '</strong><code>' + escapeHtml(contextHubProjectPickerLocation(selected.project)) + '</code></div>'
+    + '<label class="settings-field" for="sharedContextRepositorySelect"><span class="settings-field-title">Shared repository</span><select id="sharedContextRepositorySelect">' + repositoryOptions + '</select></label>'
+    + '<label class="settings-field" for="sharedContextProjectSelect"><span class="settings-field-title">Shared project</span><select id="sharedContextProjectSelect">' + projectOptions + '</select><span class="settings-field-note">Auto-detect uses the project mapping already declared in the accepted shared repository.</span></label>'
+    + '<div class="shared-context-connect-action"><span>One local project connects to one Shared Context repository at a time.</span><button class="primary" type="button" data-connect-shared-context' + (state.sharedContextManagerBusy ? ' disabled' : '') + '>Connect project</button></div>'
+    + '</div>';
+}
+
+function renderSharedContextManagementSettings() {
+  const repositories = sharedContextManagerRepositories();
+  const connectionCount = repositories.reduce((total, repository) => total + sharedContextRepositoryConnections(repository.repository).length, 0);
+  return '<div class="settings-concept"><strong>Connect each project to one canonical documentation source.</strong><p>Register the Shared Context repositories available on this device, then connect each local project to the right shared project.</p><div class="settings-concept-help"><button id="sharedContextHelpButton" class="settings-concept-help-button" type="button" data-settings-help-trigger aria-haspopup="dialog"><span class="settings-concept-help-icon" aria-hidden="true">i</span>What is a Shared Context?</button></div></div><div class="settings-disclosure-list">'
+    + renderSettingsDisclosure({ id: "project-shared-repositories", title: "Shared repositories", copy: "Choose which Shared Context Git repositories this device can browse and manage.", status: repositories.length + " registered", scope: "Device", body: renderSharedRepositoryManager() })
+    + renderSettingsDisclosure({ id: "project-shared-connection", title: "Selected project connection", copy: "Connect the selected local project to its matching shared documentation project.", status: connectionCount + " connected", scope: "Project", body: renderSelectedProjectSharedContextManager() })
+    + '</div>';
+}
+
+function applySharedContextManagerCatalog(catalog, message) {
+  if (catalog) state.contextHub = catalog;
+  state.sharedSkillLocations.clear();
+  state.sharedInstructionLocations.clear();
+  renderGlobalProjectExplorer();
+  renderContextRoomGlobalReviewQueue();
+  renderSettingsPanel();
+  workspaceUpdate("shared-synced");
+  setStatus(message);
+}
+
+async function addSharedRepositoryFromSettings() {
+  if (state.sharedContextManagerBusy) return;
+  const repository = String(el("sharedContextRepositoryInput")?.value || "").trim();
+  if (!repository) throw new Error("Enter a Shared Context Git repository");
+  state.sharedContextManagerBusy = true;
+  renderSettingsPanel();
+  try {
+    const result = await api("/api/context-hub/shared-repositories", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ repository }) });
+    state.sharedContextManagerRepository = result.repository || repository;
+    applySharedContextManagerCatalog(result.catalog, "shared repository added");
+  } finally {
+    state.sharedContextManagerBusy = false;
+    renderSettingsPanel();
+  }
+}
+
+async function removeSharedRepositoryFromSettings(repository) {
+  if (state.sharedContextManagerBusy) return;
+  state.sharedContextManagerBusy = true;
+  renderSettingsPanel();
+  try {
+    const result = await api("/api/context-hub/shared-repositories", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ repository }) });
+    if (state.sharedContextManagerRepository === repository) state.sharedContextManagerRepository = "";
+    applySharedContextManagerCatalog(result.catalog, "shared repository removed from this device");
+  } finally {
+    state.sharedContextManagerBusy = false;
+    renderSettingsPanel();
+  }
+}
+
+async function connectSelectedProjectSharedContext() {
+  if (state.sharedContextManagerBusy) return;
+  const selected = selectedProjectSharedContext();
+  if (!selected.local || !selected.worktree?.id) throw new Error("Select a local project first");
+  const repository = String(el("sharedContextRepositorySelect")?.value || state.sharedContextManagerRepository || "");
+  const sharedProjectId = String(el("sharedContextProjectSelect")?.value || state.sharedContextManagerProject || "");
+  state.sharedContextManagerBusy = true;
+  renderSettingsPanel();
+  try {
+    const result = await api("/api/context-hub/project-shared-context", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ projectId: selected.worktree.id, repository, sharedProjectId }) });
+    applySharedContextManagerCatalog(result.catalog, "project connected to shared context");
+  } finally {
+    state.sharedContextManagerBusy = false;
+    renderSettingsPanel();
+  }
+}
+
+async function disconnectSelectedProjectSharedContext() {
+  if (state.sharedContextManagerBusy) return;
+  const selected = selectedProjectSharedContext();
+  if (!selected.local || !selected.worktree?.id) throw new Error("Select a local project first");
+  state.sharedContextManagerBusy = true;
+  renderSettingsPanel();
+  try {
+    const result = await api("/api/context-hub/project-shared-context", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ projectId: selected.worktree.id }) });
+    applySharedContextManagerCatalog(result.catalog, "project disconnected from shared context");
+  } finally {
+    state.sharedContextManagerBusy = false;
+    renderSettingsPanel();
+  }
+}
+
+function wireSharedContextManagementSettings(root) {
+  root.querySelector("[data-add-shared-repository]")?.addEventListener("click", () => addSharedRepositoryFromSettings().catch((error) => setStatus(error.message)));
+  root.querySelector("#sharedContextRepositoryInput")?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    addSharedRepositoryFromSettings().catch((error) => setStatus(error.message));
+  });
+  root.querySelectorAll("[data-remove-shared-repository]").forEach((button) => button.addEventListener("click", () => {
+    const repository = button.dataset.removeSharedRepository;
+    showConfirmDialog({
+      title: "Remove shared repository from this device?",
+      body: "Context Room will forget this repository locally. The Git repository and all documentation remain untouched.",
+      confirmLabel: "Remove repository",
+      onConfirm: () => removeSharedRepositoryFromSettings(repository).catch((error) => setStatus(error.message)),
+    });
+  }));
+  root.querySelector("#sharedContextRepositorySelect")?.addEventListener("change", (event) => {
+    state.sharedContextManagerRepository = event.currentTarget.value;
+    state.sharedContextManagerProject = "";
+    renderSettingsPanel();
+    window.requestAnimationFrame(() => el("sharedContextRepositorySelect")?.focus());
+  });
+  root.querySelector("#sharedContextProjectSelect")?.addEventListener("change", (event) => { state.sharedContextManagerProject = event.currentTarget.value; });
+  root.querySelector("[data-connect-shared-context]")?.addEventListener("click", () => connectSelectedProjectSharedContext().catch((error) => setStatus(error.message)));
+  root.querySelector("[data-disconnect-shared-context]")?.addEventListener("click", () => {
+    const selected = selectedProjectSharedContext();
+    showConfirmDialog({
+      title: "Disconnect " + (selected.project?.title || "this project") + "?",
+      body: "Context Room will remove only its managed links and local connection. The shared Git repository, accepted documentation, proposals, and unmanaged files remain untouched.",
+      confirmLabel: "Disconnect project",
+      onConfirm: () => disconnectSelectedProjectSharedContext().catch((error) => setStatus(error.message)),
+    });
+  });
+}
+
 function renderSnoozedReviewSettings() {
   const reviews = contextRoomSnoozedReviews();
   const rows = reviews.map((item) => {
@@ -22357,7 +23293,7 @@ function renderSettingsPanel() {
   const startupContext = settings.startupContext || { enabled: false, fileNames: ["AGENTS.md", "CLAUDE.md"], globalPaths: [] };
   const startupFileNames = (startupContext.fileNames || []).join("\n");
   const startupGlobalPaths = (startupContext.globalPaths || []).join("\n");
-  const startupSkills = settings.startupSkills || { enabled: true, folderNames: [".codex/skills", "skills"] };
+  const startupSkills = settings.startupSkills || { enabled: true, folderNames: [".agents/skills", "skills"] };
   const startupSkillFolderNames = (startupSkills.folderNames || []).join("\n");
   const startupHooks = settings.startupHooks || { enabled: true, editable: false, agentHooks: true, codexHooks: true, gitHooks: true, hookManagers: true, fileNames: ["pre-commit", "pre-push", "commit-msg", "prepare-commit-msg"], agentHookSources: [{ id: "codex", label: "Codex", paths: [".codex/hooks.json"] }], agentHookPaths: [".codex/hooks.json"], codexPaths: [".codex/hooks.json"], managerPaths: [".husky/", "lefthook.yml", ".pre-commit-config.yaml", "lint-staged.config.js", "package.json"] };
   const startupHookFileNames = (startupHooks.fileNames || []).join("\n");
@@ -22381,7 +23317,7 @@ function renderSettingsPanel() {
   const globalReviewCounts = globalSettingsReviewCounts();
   const agentCliGuideDisclosure = renderSettingsDisclosure({ id: "review-agent-cli", title: "Agent CLI guide", copy: "Learn what agents can do and copy a ready-to-send instruction.", status: "Ready to share", scope: "All rooms", body: renderAgentCliGuide() });
   const snoozedReviewDisclosure = renderSettingsDisclosure({ id: "review-snoozed", title: "Snoozed reviews", copy: "Find pending reviews hidden from Home until their chosen return time.", status: contextRoomSnoozedReviews().length + " snoozed", scope: "Device", body: renderSnoozedReviewSettings() });
-  const globalReviewBody = '<div class="settings-concept"><strong>Review stays human-owned.</strong><p>Your agent retrieves accepted documentation with <code>context ask</code>. <code>capabilities</code> is only a static command inventory and never chooses an operation. Human file decisions remain yours.</p><p>Home combines review work from every registered project. Each watched document stays in review until a person verifies its current content; proposals remain grouped shared reviews.</p></div><div class="settings-disclosure-list">'
+  const globalReviewBody = '<div class="settings-concept"><strong>Review stays human-owned.</strong><p>Your agent retrieves accepted documentation with <code>ask</code>. <code>edit</code> prepares a shared proposal worktree. <code>capabilities</code> is only a static command inventory and never chooses an operation. Human file decisions remain yours.</p><p>Home combines review work from every registered project. Each watched document stays in review until a person verifies its current content; proposals remain grouped shared reviews.</p></div><div class="settings-disclosure-list">'
     + agentCliGuideDisclosure
     + snoozedReviewDisclosure
     + renderSettingsDisclosure({ id: "review-documents", title: "Documents to review", copy: "See the aggregate queue, then select one project to choose its watched documents.", status: globalReviewCounts.local + " local files", scope: "All projects", body: renderGlobalProjectSettingsGate("Watched documents and folder modes") })
@@ -22409,6 +23345,15 @@ function renderSettingsPanel() {
     { id: "advanced-extensions", label: "Advanced extensions", scope: "Device" },
   ]) + '<div id="settings-content" class="settings-content">' +
   renderSettingsSection({
+    id: "shared-contexts",
+    kicker: "Projects",
+    title: "Projects and shared contexts",
+    copy: "Give each project one accepted documentation source that stays consistent across collaborators and worktrees.",
+    scope: "Project + Device",
+    pills: [sharedContextManagerRepositories().length + " repositories", (state.contextHub?.projects || []).filter((project) => project.mode !== "shared" && project.shared).length + " connected"],
+    body: renderSharedContextManagementSettings(),
+  }) +
+  renderSettingsSection({
     id: "review",
     kicker: "Review",
     title: showGlobalProjectPicker ? "Global review overview" : "Review rules",
@@ -22421,7 +23366,7 @@ function renderSettingsPanel() {
     renderSettingsDisclosure({ id: "review-documents", title: "Documents to review", copy: "Choose files and folders whose current versions require human verification.", status: watchCount + " watched", scope: "Project", trackDirty: true, body:
       '<div class="settings-grid">' +
         '<div class="settings-field large"><label for="watchAllow">Watched documents and folders</label><span class="settings-field-note">One path per line. Every current content version stays in review until a person verifies it. Folder entries use the recursive current-and-future default.</span><textarea id="watchAllow" placeholder="docs/&#10;website/docs/">' + escapeHtml(watchAllow) + '</textarea></div>' +
-        '<div class="settings-field large"><label>Folder watch modes</label><span class="settings-field-note">Your agent can manage these rules itself through the Context Room CLI with <code>context-room agent watch</code> and <code>context-room agent unwatch</code>. Human verification remains yours.</span>' + watchRulesMarkup + '</div>' +
+        '<div class="settings-field large"><label>Folder watch modes</label><span class="settings-field-note">Your agent can manage one explicit rule with <code>context-room watch set &lt;path&gt; --mode &lt;mode&gt;</code>. Removing a rule uses <code>--mode off</code> and requires the returned protected plan. Human verification remains yours.</span>' + watchRulesMarkup + '</div>' +
       '</div>'
     }) +
     renderSettingsDisclosure({ id: "review-protection", title: "Protect Git actions", copy: "Pause selected Git checkpoints while documentation review is pending.", status: reviewGateCount ? reviewGateCount + " active" : "Optional", scope: "Owner control", trackDirty: true, body:
@@ -22532,15 +23477,18 @@ function renderSettingsPanel() {
     scope: "All rooms",
     body: '<div class="settings-concept"><strong>Prompt overrides belong to Codex on this device, not to a Context Room project.</strong><p>The dedicated editor keeps official content, saved overrides, and the version currently loaded by running Codex processes separate.</p></div><div class="settings-disclosure-list">' + renderSettingsDisclosure({ id: "codex-prompts-editor", title: "Advanced prompt editor", copy: "Compare official, effective-after-restart, and currently loaded prompt content.", status: "Device-wide", scope: "All rooms", body: '<div class="settings-action-row"><div class="settings-action-copy"><strong>Open the dedicated editor</strong><p>Saved overrides become effective after a new Codex process starts. Existing processes continue using the prompt version they already loaded.</p></div><button id="openCodexPromptCenter" class="primary" type="button">Open Prompt Center</button></div>' }) + '</div>',
   }) +
-  '</div></div>' +
-  '<div class="settings-footer"><span id="settingsSaveState" class="settings-save-state" data-dirty="false"><strong>All changes saved</strong><span>Project settings and global preferences are up to date.</span></span><div class="docqa-actions"><button id="saveSettings" class="primary" type="button" disabled>Save settings</button></div></div>';
+  '</div>' +
+  '<div class="settings-footer"><span id="settingsSaveState" class="settings-save-state" data-dirty="false"><strong>All changes saved</strong><span>Project settings and global preferences are up to date.</span></span><div class="docqa-actions"><button id="saveSettings" class="primary" type="button" disabled>Save settings</button></div></div>' +
+  '</div>';
   wireSettingsTabs(holder);
   wireSettingsDisclosures(holder);
+  wireSettingsHelpPanels(holder);
   wireSnoozedReviewSettings(holder);
   wireSettingsSearch();
   activateSettingsSection(state.settingsSection, { resetScroll: false });
   wireHubSettingsButtons(holder);
   wireProjectPrioritySettings(holder);
+  wireSharedContextManagementSettings(holder);
   wireMarkdownTemplateButtons(holder);
   el("addMarkdownTemplate")?.addEventListener("click", addMarkdownTemplateEditor);
   el("addHubSection")?.addEventListener("click", addHubSectionEditor);
@@ -22579,6 +23527,54 @@ function wireSharedSkillLocationsSettingsActions(root) {
   root.querySelectorAll("[data-shared-skills-unlink]").forEach((button) => button.addEventListener("click", () => unlinkSharedSkillDestination(button.dataset.sharedSkillsUnlink).catch((error) => setStatus(error.message))));
   root.querySelector("[data-shared-skills-import]")?.addEventListener("click", () => openSharedSkillsWizard({ mode: "import" }).catch((error) => setStatus(error.message)));
   root.querySelector("[data-shared-provider-apply]")?.addEventListener("click", () => applySharedSkillProviderSettings().catch((error) => setStatus(error.message)));
+}
+
+function wireSettingsHelpPanels(root) {
+  root.querySelectorAll("[data-settings-help-trigger]").forEach((button) => button.addEventListener("click", () => showSharedContextHelpDialog(button)));
+}
+
+function showSharedContextHelpDialog(returnFocus = document.activeElement) {
+  document.querySelector(".shared-context-help-backdrop")?.remove();
+  const appShell = document.querySelector(".app");
+  const backdrop = document.createElement("div");
+  backdrop.className = "shared-context-help-backdrop";
+  backdrop.innerHTML = renderSharedContextHelpDialog();
+  const close = ({ restoreFocus = true } = {}) => {
+    backdrop.remove();
+    appShell?.removeAttribute("inert");
+    document.removeEventListener("keydown", onKeydown);
+    if (restoreFocus && returnFocus instanceof HTMLElement && returnFocus.isConnected) returnFocus.focus();
+  };
+  const onKeydown = (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      close();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = [...backdrop.querySelectorAll('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')];
+    if (!focusable.length) {
+      event.preventDefault();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+  backdrop.addEventListener("click", (event) => {
+    if (event.target === backdrop) close();
+  });
+  backdrop.querySelectorAll("[data-shared-context-help-close]").forEach((button) => button.addEventListener("click", () => close()));
+  document.addEventListener("keydown", onKeydown);
+  appShell?.setAttribute("inert", "");
+  document.body.appendChild(backdrop);
+  backdrop.querySelector("[data-shared-context-help-close]")?.focus();
 }
 
 async function updateSharedSkillLocalOverride(assignmentId, patch = {}) {
@@ -23271,7 +24267,7 @@ function refreshSharedSkillLocationsSettingsPanel() {
 }
 
 function renderSharedInstructionLocationsSettings(status) {
-  const concept = '<div class="settings-concept shared-instructions-concept"><strong>Share the instruction files that define how agents behave in your projects.</strong><p>Collections may contain any reviewed Markdown instruction files you choose, including AGENTS.md, AGENTS.override.md, CLAUDE.md, or another provider-specific filename. Context Room links only the accepted main revision and never replaces an unmanaged local file.</p></div>';
+  const concept = '<div class="settings-concept shared-instructions-concept"><strong>Share the instruction files that define how agents behave in your projects.</strong><p>The shared source may use any Markdown filename. Native destinations include AGENTS.md, AGENTS.override.md, CLAUDE.md; other targets require explicit provider configuration. Context Room links only accepted main and never replaces unmanaged content.</p></div>';
   if (!status) return concept + '<div class="settings-empty-state">Loading shared instruction collections…</div>';
   if (!status.connected) {
     const message = status.selectionRequired ? 'Select a project in the Explorer.' : 'This project is not connected to a shared context.';
@@ -23285,15 +24281,17 @@ function renderSharedInstructionLocationsSettings(status) {
       + '<div class="shared-skills-location-head"><strong>' + escapeHtml(collection.title) + '</strong><span class="shared-skills-location-meta">' + collection.fileCount + ' files</span></div>'
       + '<code>' + escapeHtml(collection.path) + '</code>'
       + (assignments.length ? assignments.map((assignment) => '<div class="shared-skills-assignment-row"><span class="shared-skills-location-meta">' + escapeHtml(assignment.scope + ' · ' + assignment.files.length + ' mappings') + '</span><span><button class="secondary" type="button" data-shared-instructions-unassign="' + escapeHtml(assignment.id) + '">Remove assignment…</button></span></div>').join('') : '<span class="shared-skills-location-meta">Not assigned yet</span>')
-      + (links.length ? links.map((link) => '<div class="shared-skills-location-meta"><strong>' + escapeHtml(link.provider + ' · ' + link.status) + '</strong><span>' + escapeHtml((link.relativeTarget || link.source) + (link.destination ? ' → ' + link.destination : '')) + '</span>' + ((link.conflicts || []).length ? '<span>' + (link.conflicts || []).map((conflict) => escapeHtml(conflict.reason || conflict.path || 'Conflict')).join('<br />') + '</span>' : '') + '</div>').join('') : '')
+      + (links.length ? links.map((link) => { const label = link.status === 'provider-disabled' ? 'Provider disabled' : link.materializationStatus === 'unmanaged-conflict' ? 'Unmanaged conflict' : link.materializationStatus === 'installed' && ['active', 'configured'].includes(link.activationStatus) ? 'Active in provider' : link.materializationStatus === 'installed' && link.activationStatus === 'shadowed' ? 'Installed but shadowed' : link.materializationStatus === 'installed' && link.activationStatus === 'inactive' ? 'Installed but not discovered' : link.materializationStatus === 'installed' ? 'Requires provider configuration' : link.status; return '<div class="shared-skills-location-meta"><strong>' + escapeHtml(link.provider + ' · ' + label) + '</strong><span>' + escapeHtml((link.relativeTarget || link.source) + (link.destination ? ' → ' + link.destination : '')) + '</span>' + (link.activationReason ? '<span>' + escapeHtml(link.activationReason) + '</span>' : '') + (link.owner?.repository ? '<span>Managed by ' + escapeHtml(link.owner.repository) + '</span>' : '') + ((link.conflicts || []).length ? '<span>' + (link.conflicts || []).map((conflict) => escapeHtml(conflict.reason || conflict.path || 'Conflict')).join('<br />') + '</span>' : '') + '</div>'; }).join('') : '')
       + '</div>';
   }).join('');
   const providerOptions = (status.providers || []).map((provider) => '<option value="' + escapeHtml(provider.id) + '">' + escapeHtml(provider.label) + '</option>').join('');
+  const collectionOptions = collections.map((collection) => '<option value="' + escapeHtml(collection.id) + '">' + escapeHtml(collection.title) + '</option>').join('');
   return '<div class="settings-shared-resource-divider" aria-hidden="true"></div>' + concept
     + '<div class="settings-disclosure-list">'
     + renderSettingsDisclosure({ id: "shared-instructions-how", title: "How shared instructions work", copy: "Choose files, provider targets, and scope; accepted main remains the only effective version.", status: "Proposal-owned", scope: "Shared", body: '<dl class="settings-glossary"><div><dt>Collection</dt><dd>A reviewed folder of Markdown instruction files stored in the shared context.</dd></div><div><dt>Mapping</dt><dd>A source file, its exact target path, and the providers expected to read it.</dd></div><div><dt>Assignment</dt><dd>The accepted project, shared, or device scope. Changing it creates an instructions proposal.</dd></div><div><dt>Managed link</dt><dd>A link to the immutable accepted snapshot. Unmanaged files always win and become visible conflicts.</dd></div></dl>' })
     + renderSettingsDisclosure({ id: "shared-instructions-collections", title: "Instruction collections and assignments", copy: "Inspect accepted collections, exact target files, provider mappings, and collisions.", status: collections.length + " collections · " + (status.conflicts || []).length + " conflicts", scope: "Shared + Device", body: '<div class="settings-body-toolbar"><span>Only accepted main is active in projects.</span><button class="secondary" type="button" data-shared-instructions-reconcile>Reconcile managed links</button></div><div class="shared-skills-status-list">' + (rows || '<div class="settings-empty-state">No shared instruction collection exists yet.</div>') + '</div>' })
-    + renderSettingsDisclosure({ id: "shared-instructions-import", title: "Import or update instruction files", copy: "Create one atomic proposal from local Markdown files and their exact project/provider targets.", status: "Creates a proposal", scope: "Shared", body: '<div class="shared-skills-form"><label>Collection ID<input id="sharedInstructionsCollectionId" placeholder="team-instructions" /></label><label>Collection title<input id="sharedInstructionsCollectionTitle" placeholder="Team instructions" /></label><label>Scope<select id="sharedInstructionsScope"><option value="project">Selected project</option><option value="shared">Every registered project in this shared</option><option value="device">This device</option></select></label><label>Default provider<select id="sharedInstructionsProvider">' + providerOptions + '</select></label><label class="wide">Shared collection folder<input id="sharedInstructionsCollectionPath" placeholder="instructions/team" /></label><label class="wide">Files and destinations<textarea id="sharedInstructionsFiles" rows="5" placeholder="/absolute/path/AGENTS.md | AGENTS.md | AGENTS.md | codex,opencode&#10;/absolute/path/CLAUDE.md | CLAUDE.md | apps/calls/CLAUDE.md | claude-code"></textarea><span class="settings-field-note">One mapping per line: local file | shared source | project or provider target | providers. Providers are optional and use the default above.</span></label><div class="settings-action-row wide"><span class="shared-skills-location-meta">Local files stay untouched. The accepted proposal installs managed links later.</span><button class="primary" type="button" data-shared-instructions-import>Create instructions proposal</button></div></div>' })
+    + renderSettingsDisclosure({ id: "shared-instructions-assign", title: "Use these instructions in…", copy: "Assign an existing accepted collection without importing it again.", status: "Creates a proposal", scope: "Shared", body: '<div class="shared-skills-form"><label>Collection<select id="sharedInstructionsAssignCollection">' + collectionOptions + '</select></label><label>Scope<select id="sharedInstructionsAssignScope"><option value="project">Selected project</option><option value="shared">Every registered project in this shared</option><option value="device">This device</option></select></label><label class="wide">Mappings<textarea id="sharedInstructionsAssignFiles" rows="4" placeholder="AGENTS.md | AGENTS.md | codex,opencode&#10;CLAUDE.md | CLAUDE.md | claude-code"></textarea><span class="settings-field-note">One accepted source | provider target | providers per line.</span></label><div class="settings-action-row wide"><span class="shared-skills-location-meta">This changes shared intent through a proposal.</span><button class="primary" type="button" data-shared-instructions-assign>Use these instructions…</button></div></div>' })
+    + renderSettingsDisclosure({ id: "shared-instructions-import", title: "Import or update instruction files", copy: "Create one atomic proposal from local Markdown files and their exact project/provider targets.", status: "Creates a proposal", scope: "Shared", body: '<div class="shared-skills-form"><label>Collection ID<input id="sharedInstructionsCollectionId" placeholder="team-instructions" /></label><label>Collection title<input id="sharedInstructionsCollectionTitle" placeholder="Team instructions" /></label><label>Scope<select id="sharedInstructionsScope"><option value="project">Selected project</option><option value="shared">Every registered project in this shared</option><option value="device">This device</option></select></label><label>Default provider<select id="sharedInstructionsProvider">' + providerOptions + '</select></label><label class="wide">Shared collection folder<input id="sharedInstructionsCollectionPath" placeholder="instructions/team" /></label><label class="wide">Files and destinations<textarea id="sharedInstructionsFiles" rows="5" placeholder="/absolute/path/AGENTS.md | AGENTS.md | AGENTS.md | codex,opencode&#10;/absolute/path/CLAUDE.md | CLAUDE.md | apps/calls/CLAUDE.md | claude-code"></textarea><span class="settings-field-note">One mapping per line: local file | shared source | project or provider target | providers. Providers are optional and use the default above.</span></label><div class="settings-action-row wide"><span class="shared-skills-location-meta">Local files stay untouched until exact acceptance. If a source is also its destination, Context Room archives the unchanged original before linking.</span><button class="primary" type="button" data-shared-instructions-import>Create instructions proposal</button></div></div>' })
     + '</div>';
 }
 
@@ -23305,7 +24303,41 @@ function sharedInstructionImportFiles() {
   });
 }
 
+function sharedInstructionPreviewMessage(title, preview) {
+  const mappings = preview.mappings || [];
+  const lines = mappings.slice(0, 12).map((mapping) => {
+    const activation = mapping.materializationStatus === 'provider-disabled' ? 'Provider disabled'
+      : mapping.materializationStatus === 'conflict' ? 'Conflict'
+        : mapping.activationStatus === 'active' ? 'Active in provider'
+          : mapping.activationStatus === 'configured' ? 'Configured in provider'
+            : mapping.activationStatus === 'shadowed' ? 'Shadowed by a native instruction file'
+            : 'Requires provider configuration';
+    return '• ' + mapping.provider + ' · ' + (mapping.target || mapping.source) + ' → ' + (mapping.destination || 'Unavailable') + ' · ' + activation;
+  });
+  if (mappings.length > lines.length) lines.push('• +' + (mappings.length - lines.length) + ' more mappings');
+  const conflicts = (preview.conflicts || []).length;
+  return title + '\n\n' + (lines.length ? lines.join('\n') : 'No local destination will be changed before acceptance.')
+    + '\n\nShared change: proposal required.'
+    + '\nLocal change after acceptance: managed links only; unmanaged content is preserved.'
+    + (conflicts ? '\nConflicts: ' + conflicts + ' destination' + (conflicts === 1 ? '' : 's') + ' will remain untouched.' : '');
+}
+
 function wireSharedInstructionLocationsSettingsActions(root) {
+  root.querySelector('[data-shared-instructions-assign]')?.addEventListener('click', async () => {
+    try {
+      const selection = sharedSkillsProjectSelection();
+      const files = String(el("sharedInstructionsAssignFiles")?.value || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+        const [source, target, providers] = line.split("|").map((value) => value.trim());
+        return { source, target: target || source, providers: String(providers || "codex").split(",").map((value) => value.trim()).filter(Boolean) };
+      });
+      const body = { projectId: selection.projectId, collectionId: el("sharedInstructionsAssignCollection")?.value || "", scope: el("sharedInstructionsAssignScope")?.value || "project", projectIds: selection.projectId ? [selection.projectId] : [], files };
+      const preview = await api('/api/shared-instructions/assignments/preview', { method: 'POST', body: JSON.stringify(body) });
+      if (!window.confirm(sharedInstructionPreviewMessage('Assign ' + preview.assignment.files.length + ' instruction mapping' + (preview.assignment.files.length === 1 ? '' : 's') + '?', preview))) return;
+      await api('/api/shared-instructions/assignments', { method: 'POST', body: JSON.stringify(body) });
+      setStatus('shared instructions assignment proposal created');
+      await loadSharedSkillLocations({ refresh: true, projectId: selection.projectId });
+    } catch (error) { setStatus(error.message); }
+  });
   root.querySelector('[data-shared-instructions-import]')?.addEventListener('click', async () => {
     try {
       const selection = sharedSkillsProjectSelection();
@@ -23319,7 +24351,7 @@ function wireSharedInstructionLocationsSettingsActions(root) {
         files: sharedInstructionImportFiles(),
       };
       const preview = await api('/api/shared-instructions/import/preview', { method: 'POST', body: JSON.stringify(body) });
-      if (!window.confirm('Create a shared instructions proposal with ' + preview.files.length + ' file mapping' + (preview.files.length === 1 ? '' : 's') + '?')) return;
+      if (!window.confirm(sharedInstructionPreviewMessage('Create a shared instructions proposal with ' + preview.files.length + ' file mapping' + (preview.files.length === 1 ? '' : 's') + '?', preview))) return;
       await api('/api/shared-instructions/import', { method: 'POST', body: JSON.stringify(body) });
       setStatus('shared instructions proposal created');
       await loadSharedSkillLocations({ refresh: true, projectId: selection.projectId });
@@ -23360,7 +24392,7 @@ function renderSharedSkillLocationsSettings(status) {
     const globalState = status.providerPreferences?.providers?.[provider.id] || "enabled";
     const projectState = status.projectProviderOverrides?.[provider.id] || "inherit";
     const effectiveState = projectState === "inherit" ? globalState : projectState;
-    return '<div class="shared-skills-provider-row"><div class="shared-skills-provider-identity"><strong>' + escapeHtml(provider.label) + '</strong><span>Managed skill links</span></div><label><span class="shared-skills-provider-field-label">Device default</span><select aria-label="' + escapeHtml(provider.label) + ' device default" data-shared-provider-global="' + escapeHtml(provider.id) + '"><option value="enabled"' + (globalState === 'enabled' ? ' selected' : '') + '>Enabled</option><option value="disabled"' + (globalState === 'disabled' ? ' selected' : '') + '>Disabled</option></select></label><label><span class="shared-skills-provider-field-label">Project override</span><select aria-label="' + escapeHtml(provider.label) + ' project override" data-shared-provider-project="' + escapeHtml(provider.id) + '"><option value="inherit"' + (projectState === 'inherit' ? ' selected' : '') + '>Use device default</option><option value="enabled"' + (projectState === 'enabled' ? ' selected' : '') + '>Enabled</option><option value="disabled"' + (projectState === 'disabled' ? ' selected' : '') + '>Disabled</option></select></label><span class="shared-skills-provider-effective" data-state="' + escapeHtml(effectiveState) + '">' + (effectiveState === 'disabled' ? 'Disabled here' : 'Enabled here') + '</span></div>';
+    return '<div class="shared-skills-provider-row"><div class="shared-skills-provider-identity"><strong>' + escapeHtml(provider.label) + '</strong><span>Managed skill and instruction links</span></div><label><span class="shared-skills-provider-field-label">Device default</span><select aria-label="' + escapeHtml(provider.label) + ' device default" data-shared-provider-global="' + escapeHtml(provider.id) + '"><option value="enabled"' + (globalState === 'enabled' ? ' selected' : '') + '>Enabled</option><option value="disabled"' + (globalState === 'disabled' ? ' selected' : '') + '>Disabled</option></select></label><label><span class="shared-skills-provider-field-label">Project override</span><select aria-label="' + escapeHtml(provider.label) + ' project override" data-shared-provider-project="' + escapeHtml(provider.id) + '"><option value="inherit"' + (projectState === 'inherit' ? ' selected' : '') + '>Use device default</option><option value="enabled"' + (projectState === 'enabled' ? ' selected' : '') + '>Enabled</option><option value="disabled"' + (projectState === 'disabled' ? ' selected' : '') + '>Disabled</option></select></label><span class="shared-skills-provider-effective" data-state="' + escapeHtml(effectiveState) + '">' + (effectiveState === 'disabled' ? 'Disabled here' : 'Enabled here') + '</span></div>';
   }).join('');
   const collections = status.collections || [];
   const assignmentRows = collections.map((collection) => {
@@ -23386,7 +24418,7 @@ function renderSharedSkillLocationsSettings(status) {
     + '<div class="settings-body-toolbar"><span>Shared intent changes through a proposal. Provider activation and physical paths stay local to this device.</span><button class="secondary" type="button" data-shared-skills-import>Import local skills…</button></div>'
     + '<div class="settings-disclosure-list">'
     + renderSettingsDisclosure({ id: "shared-how", title: "How shared skills work", copy: "Understand the shared source of truth and the local links that expose it to agents.", status: "Read-only until proposed", scope: "Shared", body: '<dl class="settings-glossary"><div><dt>Collection</dt><dd>A reviewed folder of skills stored in the shared context.</dd></div><div><dt>Assignment</dt><dd>Accepted intent describing which projects, providers, and scope should use a collection. Changing it creates a skills proposal.</dd></div><div><dt>Local destination</dt><dd>The physical provider folder on this device. Linking it does not edit the shared manifest.</dd></div><div><dt>Managed link</dt><dd>A link to the immutable accepted snapshot. Context Room never replaces an unmanaged file or folder.</dd></div></dl>' })
-    + renderSettingsDisclosure({ id: "shared-providers", title: "Provider availability", copy: "Set the device default once, then override it only for this project when needed.", status: (status.providers || []).length + " providers", scope: "Device + Project", body: '<div class="shared-skills-provider-settings"><div class="shared-skills-provider-head"><div class="shared-skills-provider-title"><strong>Provider availability</strong><span>Disabling a provider removes only links that Context Room manages.</span></div><button class="secondary" type="button" data-shared-provider-apply>Apply provider changes</button></div><div class="shared-skills-provider-columns" aria-hidden="true"><span>Provider</span><span>Device default</span><span>Project override</span><span>Effective</span></div>' + providerControls + '</div>' })
+    + renderSettingsDisclosure({ id: "shared-providers", title: "Provider availability", copy: "Control both Shared Skills and Shared Instructions for this device and project.", status: (status.providers || []).length + " providers", scope: "Device + Project", body: '<div class="shared-skills-provider-settings"><div class="shared-skills-provider-head"><div class="shared-skills-provider-title"><strong>Provider availability</strong><span>Disabling a provider removes only skill and instruction links that Context Room manages.</span></div><button class="secondary" type="button" data-shared-provider-apply>Apply provider changes</button></div><div class="shared-skills-provider-columns" aria-hidden="true"><span>Provider</span><span>Device default</span><span>Project override</span><span>Effective</span></div>' + providerControls + '</div>' })
     + renderSettingsDisclosure({ id: "shared-collections", title: "Collections and assignments", copy: "Choose which accepted collections should be available to projects and providers.", status: collections.length + " collections", scope: "Shared", body: '<div class="shared-skills-status-list">' + (assignmentRows || '<div class="settings-empty-state">No collections are declared in this shared context.</div>') + '</div>' })
     + renderSettingsDisclosure({ id: "shared-destinations", title: "Local destinations and conflicts", copy: "Inspect physical provider folders, managed links, disabled providers, and blocked collisions.", status: (status.destinations || []).length + " destinations · " + (status.conflicts || []).length + " conflicts", scope: "Device", body: '<div class="shared-skills-status-list">' + (destinationRows || '<div class="settings-empty-state">No local destinations are installed for these collections.</div>') + '</div>' })
     + '</div>';
@@ -23699,7 +24731,17 @@ function drawGraphArrow(ctx, from, to, color) {
   ctx.fill();
 }
 
+let graphRenderFrame = 0;
+
 function renderGraphCanvas() {
+  if (graphRenderFrame) return;
+  graphRenderFrame = window.requestAnimationFrame(() => {
+    graphRenderFrame = 0;
+    renderGraphCanvasNow();
+  });
+}
+
+function renderGraphCanvasNow() {
   const metrics = graphCanvasMetrics();
   if (!metrics.canvas) return;
   const ctx = metrics.canvas.getContext("2d");
@@ -24111,8 +25153,10 @@ function setDocumentContextOpen(open, options = {}) {
   state.inspectorOpen = Boolean(open);
   const panel = el("documentContextPanel");
   const shell = document.querySelector(".editor-shell");
+  const viewer = el("viewer");
   if (panel) panel.hidden = !state.inspectorOpen;
   shell?.classList.toggle("context-panel-open", state.inspectorOpen);
+  viewer?.toggleAttribute("inert", state.inspectorOpen && !window.matchMedia("(min-width: 1280px)").matches);
   el("contextPanelToggle")?.classList.toggle("active", state.inspectorOpen);
   if (state.inspectorOpen) loadDocumentContextPanel().catch((error) => setStatus(error.message));
   if (options.persist !== false) persistNavigationState();
@@ -25039,7 +26083,7 @@ function renderViewer() {
   const initialReviewNotice = initialReviewNoticeForSelectedFile();
   el("viewer").innerHTML = '<div class="review-workspace ' + (!hasDiff || state.diffCollapsed ? 'no-diff' : '') + '">' +
     (state.diffCollapsed ? "" : diffMarkup) +
-    '<section class="file-panel"><header><div class="file-header-copy"><strong>' + escapeHtml(file.label || "Document") + '</strong>' + (isStartupFile ? '<span class="muted">' + escapeHtml(file.path) + '</span>' : '') + '</div>' + actionsMarkup + '</header>' + conflictMarkup + initialReviewNotice + annotationMarkup + editorMarkup + '</section></div>';
+    '<section class="file-panel"><header><div class="file-header-copy"><h1 class="file-title">' + escapeHtml(file.label || "Document") + '</h1>' + (isStartupFile ? '<span class="muted">' + escapeHtml(file.path) + '</span>' : '') + '</div>' + actionsMarkup + '</header>' + conflictMarkup + initialReviewNotice + annotationMarkup + editorMarkup + '</section></div>';
   updateActionBanner();
   document.querySelector("[data-hide-diff]")?.addEventListener("click", (event) => {
     event.preventDefault();
@@ -26142,14 +27186,19 @@ function renderStandaloneMermaidDocument(source) {
 }
 
 function renderDocumentEditor(text, filePath = state.selected) {
-  if (!usePlainTextSurface(filePath, text)) return renderMarkdownEditor(text);
-  return '<textarea id="docEditor" class="doc-editor plain-text-editor" spellcheck="false">' + escapeHtml(text) + '</textarea>';
+  if (!usePlainTextSurface(filePath, text)) return renderMarkdownEditor(text, filePath);
+  return '<textarea id="docEditor" class="doc-editor plain-text-editor" aria-label="' + escapeHtml(documentEditorAccessibleName(filePath)) + '" spellcheck="false">' + escapeHtml(text) + '</textarea>';
 }
 
-function renderMarkdownEditor(text) {
+function documentEditorAccessibleName(filePath = state.selected) {
+  const label = String(filePath || "").split("/").filter(Boolean).pop() || "document";
+  return "Edit " + label;
+}
+
+function renderMarkdownEditor(text, filePath = state.selected) {
   return '<div class="markdown-editor-shell" data-source-mode="false">' +
     '<div id="docHighlighter" class="doc-editor markdown-view markdown-editor-highlight" aria-hidden="true" data-source-faithful="false">' + renderMarkdownLines(text) + '</div>' +
-    '<textarea id="docEditor" class="doc-editor markdown-editor-input" spellcheck="false">' + escapeHtml(text) + '</textarea>' +
+    '<textarea id="docEditor" class="doc-editor markdown-editor-input" aria-label="' + escapeHtml(documentEditorAccessibleName(filePath)) + '" spellcheck="false">' + escapeHtml(text) + '</textarea>' +
     '<span id="markdownEditorCaret" class="markdown-editor-caret" hidden></span>' +
   '</div>';
 }
@@ -28413,10 +29462,27 @@ function scheduleBackgroundRefresh(options = {}) {
   if (document.hidden || state.backgroundRefreshTimer) return;
   const run = () => {
     state.backgroundRefreshTimer = null;
+    state.backgroundRefreshTimerKind = "";
     refreshBackgroundReports(options).catch((error) => setStatus(error.message));
   };
-  if ("requestIdleCallback" in window) state.backgroundRefreshTimer = window.requestIdleCallback(run, { timeout: 800 });
-  else state.backgroundRefreshTimer = window.setTimeout(run, 120);
+  if ("requestIdleCallback" in window) {
+    state.backgroundRefreshTimerKind = "idle";
+    state.backgroundRefreshTimer = window.requestIdleCallback(run, { timeout: 800 });
+  } else {
+    state.backgroundRefreshTimerKind = "timeout";
+    state.backgroundRefreshTimer = window.setTimeout(run, 120);
+  }
+}
+
+function cancelBackgroundRefresh() {
+  if (!state.backgroundRefreshTimer) return;
+  if (state.backgroundRefreshTimerKind === "idle" && "cancelIdleCallback" in window) {
+    window.cancelIdleCallback(state.backgroundRefreshTimer);
+  } else {
+    window.clearTimeout(state.backgroundRefreshTimer);
+  }
+  state.backgroundRefreshTimer = null;
+  state.backgroundRefreshTimerKind = "";
 }
 
 async function refreshBackgroundReports(options = {}) {
@@ -28746,10 +29812,14 @@ document.addEventListener("visibilitychange", () => {
   scheduleBackgroundRefresh();
 });
 el("sidebarToggle").addEventListener("click", () => {
+  const closingOverlay = !isExplorerDesktopViewport() && !isExplorerCollapsed();
   setExplorerCollapsedFromUser(!isExplorerCollapsed());
+  if (closingOverlay) restoreFocusAfterExplorerClose();
 });
 el("explorerOpen")?.addEventListener("click", () => {
+  state.explorerReturnFocus = document.activeElement;
   setExplorerCollapsedFromUser(false);
+  focusExplorerAfterOpen();
 });
 el("explorerEdgeTrigger")?.addEventListener("pointerenter", () => setExplorerEdgePeek(true));
 document.addEventListener("pointermove", revealExplorerFromLeftEdge, { passive: true });
@@ -28761,7 +29831,29 @@ document.querySelector(".app > aside")?.addEventListener("pointerleave", () => {
 });
 window.addEventListener("blur", () => setExplorerEdgePeek(false));
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && document.querySelector(".app")?.classList.contains("explorer-edge-peek")) setExplorerEdgePeek(false);
+  if (event.key === "Escape" && document.querySelector(".app")?.classList.contains("explorer-edge-peek")) {
+    setExplorerEdgePeek(false);
+    return;
+  }
+  if (!isExplorerDesktopViewport() && !isExplorerCollapsed() && event.key === "Escape") {
+    event.preventDefault();
+    setExplorerCollapsedFromUser(true);
+    restoreFocusAfterExplorerClose();
+    return;
+  }
+  if (!isExplorerDesktopViewport() && !isExplorerCollapsed() && event.key === "Tab") {
+    const focusables = explorerFocusableElements();
+    if (!focusables.length) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
 });
 el("singleProjectWorktreeSwitch")?.addEventListener("change", (event) => {
   const select = event.target.closest("[data-single-project-worktree]");
@@ -29248,6 +30340,11 @@ el("reviewQueue")?.addEventListener("click", (event) => {
   }).catch((error) => setStatus(error.message));
 });
 el("proposalReviewFiles")?.addEventListener("click", (event) => {
+  if (event.target.closest("[data-proposal-review-more]")) {
+    state.proposalReviewVisibleCount = Math.max(40, Number(state.proposalReviewVisibleCount || 40)) + 40;
+    renderProposalReviewPage();
+    return;
+  }
   const button = event.target.closest("[data-proposal-review-path]");
   if (!button || button.disabled) return;
   const filePath = button.dataset.proposalReviewPath;
@@ -29559,8 +30656,17 @@ window.addEventListener("beforeunload", (event) => {
   event.preventDefault();
   event.returnValue = "";
 });
-document.addEventListener("visibilitychange", () => publishSessionState().catch(() => {}));
-window.addEventListener("focus", () => publishSessionState().catch(() => {}));
+document.addEventListener("visibilitychange", () => {
+  publishSessionState().catch(() => {});
+  if (document.visibilityState !== "visible") return;
+  if (state.selected) refreshFromDisk().catch(() => {});
+  if (!state.runtimeEventsConnected) scheduleBackgroundRefresh({ forceReports: true });
+});
+window.addEventListener("focus", () => {
+  publishSessionState().catch(() => {});
+  if (state.selected) refreshFromDisk().catch(() => {});
+  if (!state.runtimeEventsConnected) scheduleBackgroundRefresh({ forceReports: true });
+});
 window.addEventListener("popstate", () => {
   if (!state.workspaceIdentityReady) return;
   if (state.workspaceSyncedUrl && window.location.href === state.workspaceSyncedUrl) return;
@@ -29583,6 +30689,7 @@ window.matchMedia("(prefers-color-scheme: light)").addEventListener?.("change", 
 syncResponsiveSidebar();
 window.addEventListener("resize", () => {
   syncResponsiveSidebar();
+  el("viewer")?.toggleAttribute("inert", state.inspectorOpen && !window.matchMedia("(min-width: 1280px)").matches);
   if (state.page === "graph") renderGraphCanvas();
 });
 setMode("view");
@@ -29591,6 +30698,7 @@ finishInitialBoot();
 establishWorkspaceIdentity().then(() => {
   startAgentCommandPolling();
   startWorkspaceHeartbeat();
+  startRuntimeEvents();
   const initialNavigation = parseWorkspaceNavigationUrl(window.location.href);
   state.explorerDocumentView = initialNavigation.explorerDocumentView;
   let graphRequest = Promise.resolve(false);
@@ -29601,8 +30709,6 @@ establishWorkspaceIdentity().then(() => {
   return Promise.all([loadFiles({ initial: true }), graphRequest]);
 }).catch((error) => setStatus(error.message))
   .finally(finishInitialBoot);
-state.diskRefreshTimer = window.setInterval(() => refreshFromDisk(), 2200);
-state.backgroundRefreshInterval = window.setInterval(() => scheduleBackgroundRefresh(), 5_000);
 </script>
 </body>
 </html>`;

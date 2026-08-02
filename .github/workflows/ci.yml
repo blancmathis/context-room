@@ -23,5 +23,12 @@ jobs:
         run: npm ci
       - name: Test Context Room
         run: npm test
+      - name: Install Chromium for UX smoke test
+        run: npx playwright install --with-deps chromium
+      - name: Test executable layout contract
+        if: matrix.node-version == 22
+        run: npm run test:layout
+      - name: Test critical UX flows
+        run: npm run test:ux-smoke
       - name: Package dry run
         run: npm pack --dry-run

@@ -3,7 +3,7 @@ import { parseSimpleYaml, yamlScalar } from "./yaml_utils.mjs";
 import { builtinMetadataProfiles, extractDocumentMetadata, interpretDocumentMetadata } from "./document_metadata_engine.mjs";
 
 export const DOC_METADATA_KINDS = ["agents", "index", "canonical", "procedure", "decision"];
-export const DOC_METADATA_STATUSES = ["current", "draft", "historical", "superseded"];
+export const DOC_METADATA_STATUSES = ["current", "target", "draft", "historical", "superseded"];
 export const DOC_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*(?:\.[a-z0-9]+(?:-[a-z0-9]+)*)+$/;
 
 const DEFAULT_DOC_METADATA = {
@@ -55,10 +55,14 @@ export function isNativeProviderDocumentPath(relPath = "") {
 
 export function documentTruthStateForPath(relPath = "") {
   const normalized = normalizeRelPath(relPath).toLowerCase();
-  if (/(?:^|\/)docs\/evolution\/changes\/archive(?:\/|$)/.test(normalized)
+  if (/(?:^|\/)docs\/lifecycle\/changes\/archive(?:\/|$)/.test(normalized)
+    || /(?:^|\/)lifecycle\/changes\/archive(?:\/|$)/.test(normalized)
+    || /(?:^|\/)docs\/evolution\/changes\/archive(?:\/|$)/.test(normalized)
     || /(?:^|\/)evolution\/changes\/archive(?:\/|$)/.test(normalized)
     || /(?:^|\/)(?:decisions|records)(?:\/|$)/.test(normalized)) return "historical";
-  if (/(?:^|\/)docs\/evolution\/changes\/active(?:\/|$)/.test(normalized)
+  if (/(?:^|\/)docs\/lifecycle\/changes\/active(?:\/|$)/.test(normalized)
+    || /(?:^|\/)lifecycle\/changes\/active(?:\/|$)/.test(normalized)
+    || /(?:^|\/)docs\/evolution\/changes\/active(?:\/|$)/.test(normalized)
     || /(?:^|\/)evolution\/changes\/active(?:\/|$)/.test(normalized)
     || /(?:^|\/)target(?:\/|$)/.test(normalized)
     || /_target\.(?:md|mdx|html?)$/i.test(normalized)) return "target";
@@ -150,9 +154,10 @@ export function parseDocMetadata(content = "", relPath = "") {
     const contract = hasMinimalContract && !hasLegacyContract ? "minimal" : "legacy";
     const id = String(raw.id || "").trim();
     const dependsOn = sanitizeReferenceList(raw.depends_on || raw.dependsOn || []);
-    const truthState = documentTruthStateForPath(relPath);
+    const pathTruthState = documentTruthStateForPath(relPath);
     const declaredStatus = String(raw.status || "").trim();
     const statusValid = contract === "minimal" ? true : DOC_METADATA_STATUSES.includes(declaredStatus);
+    const truthState = contract === "legacy" && declaredStatus === "target" ? "target" : pathTruthState;
     const inferredStatus = truthState === "current" ? "current" : truthState === "historical" ? "historical" : "draft";
     return {
       present: Boolean(parsed.context_room || parsed.contextRoom),

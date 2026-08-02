@@ -4,7 +4,7 @@ context_room:
   scope: context-room
   status: current
   canonical_for: product overview
-  last_verified: 2026-07-28
+  last_verified: 2026-07-29
   sources: [README.md, bin/context-room.mjs, src/context_room.mjs, src/context_engine.mjs, src/context_inventory.mjs, src/context_snapshots.mjs, src/context_settings.mjs, src/context_diagnostics.mjs, src/provider_profiles.mjs, src/codex_prompt_center.mjs, src/context_hub.mjs, src/doc_agent.mjs, src/shared_context.mjs, schemas/config.schema.json, schemas/codex-prompt-catalog-v1.schema.json, schemas/codex-prompt-overrides-v1.schema.json, schemas/codex-prompt-publication-state-v2.schema.json, schemas/codex-prompt-runtime-receipt-v2.schema.json, schemas/doc-context.schema.json, schemas/shared-repository.schema.json, schemas/shared-skill-locations.schema.json, schemas/shared-instruction-locations.schema.json, docs/agent-configuration.md]
 ---
 
@@ -20,9 +20,9 @@ Context Room is a local browser UI for keeping project context visible, editable
 2. Use the truth-aware hub to find current docs, targets, records, and source areas that matter.
 3. Edit safe text files inside `allowedPaths`.
 4. Review the current content versions covered by `watchAllow` and folder `watchRules`.
-5. Run `doctor` or `guard` for deterministic proof, or `context ask` when a working agent needs a task-specific documentation packet from the detected project or an explicit shared-only project target.
+5. Run `doctor` or `guard` for deterministic proof, or `ask` when a working agent needs a task-specific documentation packet from the detected project or an explicit shared-only project target.
 6. Route durable documentation updates through the local review queue or a task-scoped shared proposal; selected large projects may run a scheduled read-only-first audit.
-7. Give coding agents a compact `context ask` entry point and reveal specialized capabilities only on demand, while keeping every file decision human-owned.
+7. Give coding agents the compact `ask`, `edit`, and `capabilities` root surface, while keeping every file decision human-owned.
 
 Projects that need cross-project documentation or skills can add the optional
 [Shared context](features/shared-context.md) loop. The accepted configured
@@ -44,7 +44,9 @@ agent-facing proposal decision.
 - Startup hooks: project AI-agent and hook-manager files plus current-repository Git hooks by default.
 - Settings: five-category editor—Project, Review and trust, Agent environment, Preferences, and Advanced extensions—with compact revision-safe project loading, live search, explicit scopes, progressive disclosure, one manual Save bar, Shared Skills and Shared Instructions management, and the entry to Codex Prompt Center.
 - Project inspection: a compact companion to the Review Queue that keeps the selected worktree identity visible and exposes Context Health and Agent environment; configured Home sections remain the primary project navigation.
-- Agent CLI: queue inspection, navigation, annotations, and explicit folder watch configuration for coding agents.
+- Agent CLI: three root commands—`ask` for accepted-document research, `edit`
+  for a ready shared proposal worktree, and `capabilities` for the complete
+  advanced contract. Human file decisions never enter the CLI.
 - Context Engine: exact provider-specific context for one registered project,
   worktree, and folder, with graph, trace, impact, metadata-only snapshots,
   diffs, and proposal impact shared by the CLI and UI.
@@ -66,14 +68,21 @@ Feature-level docs live in [Features](features/index.md).
 - Let owners rank logical projects device-wide and temporarily snooze an exact review version without changing its decision, trust, or gate status. New content returns immediately to the active queue.
 - Keep executable hooks read-only unless the project owner explicitly enables hook editing.
 - Keep deterministic context primitives available internally while exposing a compact documentation-research entry point to ordinary coding agents.
-- Keep documentation research isolated. `context-room context ask` may launch Codex, while every `context-room docs` command remains deterministic and read-only.
+- Keep documentation research isolated. `context-room ask` may launch Codex, while deterministic inspection commands remain read-only.
 - Keep accepted and pending evidence separate. Proposal metadata may stay
   visible, but proposal content never enters effective build context before
   human review and integration into the configured shared default branch.
 - Keep config changes source-grounded. Run `context-room doctor` after changing `.context-room/config.json`.
 - Keep accepted shared context read-only. Changes belong in a proposal worktree; only human file decisions can make its reviewed result eligible for automatic finalization into the shared default branch.
 - Resolve worktrees only from the current directory or explicit registration. Context Room does not scan the computer for new worktrees.
-- Keep CLI output machine-stable: versioned envelopes, plan/apply for new mutations, and structured ambiguity instead of guesses. The metadata-only event journal remains an internal UI synchronization mechanism rather than a public agent command.
+- Keep CLI output machine-stable: compact versioned envelopes, effect-aware
+  mutations, same-path apply for protected operations, and structured
+  ambiguity instead of guesses. The metadata-only event journal remains an
+  internal UI synchronization mechanism rather than a public agent command.
+- Keep provider truth unified. Codex skill discovery and managed links use
+  `.agents/skills` from the common provider profile; unmanaged legacy
+  `.codex/skills` content is diagnostic evidence, never migration input to
+  overwrite.
 - Keep rooms isolated. Automatic port selection must not stop another room, and a stale tab must not write state after its port begins serving another project root.
 
 ## Data Model

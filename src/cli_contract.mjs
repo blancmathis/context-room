@@ -7,6 +7,7 @@ import {
 } from "./cli_registry.mjs";
 
 export const CLI_SCHEMA_VERSION = "context-room.cli/1";
+export const CLI_SCHEMA_VERSION_V2 = "context-room.cli/2";
 export const CLI_EVENT_SCHEMA_VERSION = "context-room.event/1";
 
 export class ContextRoomCliError extends Error {
@@ -63,6 +64,47 @@ export function cliErrorEnvelope(command, error, { requestId = cliRequestId(), t
     warnings: [],
     nextActions: known ? error.nextActions : [],
   };
+}
+
+function withoutEmpty(value) {
+  if (Array.isArray(value)) return value.map(withoutEmpty).filter((item) => item !== undefined);
+  if (!value || typeof value !== "object") return value;
+  const entries = Object.entries(value).flatMap(([key, child]) => {
+    const normalized = withoutEmpty(child);
+    if (normalized === undefined || normalized === null || normalized === "") return [];
+    if (Array.isArray(normalized) && normalized.length === 0) return [];
+    if (normalized && typeof normalized === "object" && !Array.isArray(normalized) && Object.keys(normalized).length === 0) return [];
+    return [[key, normalized]];
+  });
+  return Object.fromEntries(entries);
+}
+
+export function cliEnvelopeV2({ data = null, target = null, freshness = null, warnings = [], nextActions = [], detail = "compact" } = {}) {
+  const normalizedDetail = String(detail || "compact");
+  return withoutEmpty({
+    schema: CLI_SCHEMA_VERSION_V2,
+    ok: true,
+    data,
+    ...(normalizedDetail === "compact" ? {} : { target, freshness, warnings, nextActions }),
+  });
+}
+
+export function cliErrorEnvelopeV2(error, { detail = "compact" } = {}) {
+  const known = error instanceof ContextRoomCliError;
+  const details = known && error.details && typeof error.details === "object" ? error.details : {};
+  const recovery = known && error.nextActions?.find((item) => item.command);
+  return withoutEmpty({
+    schema: CLI_SCHEMA_VERSION_V2,
+    ok: false,
+    error: {
+      code: known ? error.code : "operation-failed",
+      message: String(error?.message || error || "Context Room command failed"),
+      retryable: known ? error.retryable : false,
+      ...(Array.isArray(details.candidates) ? { candidates: details.candidates } : {}),
+      ...(recovery ? { recover: { command: recovery.command } } : {}),
+      ...(String(detail || "compact") === "full" ? { details } : {}),
+    },
+  });
 }
 
 export function stableCliPlanId({ command, target = null, input = null, revision = null } = {}) {
@@ -125,16 +167,18 @@ export function projectCliData(data, { fields = [], summary = false, expand = []
 
 export const CLI_COMMANDS = CLI_COMMAND_REGISTRY;
 
-export function cliCapabilities({ version = "", include = "canonical" } = {}) {
+export function cliCapabilities({ version = "", include = "canonical", namespace = "", command = "", profile = "", detail = "compact", expand = false } = {}) {
+  const capabilities = cliCapabilitiesFromRegistry({ version, include, namespace, command, profile, detail, expand });
+  if (detail === "compact") return capabilities;
   return {
-    ...cliCapabilitiesFromRegistry({ version, include }),
+    ...capabilities,
     invariants: [
       "No CLI command accepts, rejects, or verifies a file review.",
       "Shared main changes only after file-level human review completes.",
       "Worktrees are registered explicitly and are never discovered by scanning the computer.",
       "Unmanaged skill destinations are never replaced.",
     ],
-    mutationProtocol: { preview: "omit --apply or pass --plan", apply: "--apply <plan-id>", staleError: "stale-plan", idempotentReceipts: true },
+    mutationProtocol: { ...capabilities.mutationProtocol, idempotentReceipts: true },
     limits: { eventJournalEntries: 10_000, eventPayload: "metadata-only", implicitWorktreeDiscovery: false, humanReviewDecisionsInCli: false },
     aliases: { "--root": "location path" },
   };
@@ -151,6 +195,6 @@ export function renderCliCompletion(shell = "zsh") {
   }
 }
 
-export function renderCliHelp() {
-  return renderCliHelpFromRegistry();
+export function renderCliHelp(options = {}) {
+  return renderCliHelpFromRegistry(options);
 }

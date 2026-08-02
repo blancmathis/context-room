@@ -49,57 +49,6 @@
       "items": {
         "$ref": "#/$defs/read"
       }
-    },
-    "coverage": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "project": {
-          "type": "string"
-        },
-        "docsRevision": {
-          "type": "string"
-        },
-        "scope": {
-          "type": "string"
-        },
-        "sourcesExamined": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "pathsExamined": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "schemaVersion": {
-          "const": "context-room.context-coverage/2"
-        },
-        "candidateUniverse": {
-          "type": "object"
-        },
-        "included": {
-          "type": "object"
-        },
-        "excluded": {
-          "type": "object"
-        },
-        "obligations": {
-          "type": "array"
-        },
-        "budget": {
-          "type": "object"
-        },
-        "redundancy": {
-          "type": "array"
-        },
-        "limitations": {
-          "type": "array",
-          "items": { "type": "string" }
-        }
-      },
-      "required": ["project", "docsRevision", "scope", "sourcesExamined", "pathsExamined"]
     }
   },
   "required": [
@@ -110,8 +59,7 @@
     "targetDifferences",
     "unknowns",
     "conflicts",
-    "optionalReads",
-    "coverage"
+    "optionalReads"
   ],
   "$defs": {
     "evidence": {

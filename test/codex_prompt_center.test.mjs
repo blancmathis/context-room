@@ -27,6 +27,7 @@ import {
   secureAtomicWritePromptState,
 } from "../src/codex_prompt_center.mjs";
 import {
+  contextRoomWebAssetBundle,
   createMemoryServer,
   initializeContextRoomProject,
   renderAppHtml,
@@ -5364,30 +5365,31 @@ test("Prompt Center API exposes six generic routes through an injectable provide
   const origin = `http://127.0.0.1:${room.server.address().port}`;
 
   const html = await (await fetch(origin + "/")).text();
-  assert.match(html, /\{ id: "advanced-extensions", label: "Advanced extensions", scope: "Device" \}/);
-  assert.match(html, /id="openCodexPromptCenter"/);
-  assert.match(html, /Official · read-only/);
-  assert.match(html, /id="codexPromptEffectiveLabel">Effective after restart</);
-  assert.match(html, /Runtime loaded · read-only/);
-  assert.match(html, /id="codexPromptDraftMetrics"/);
-  assert.match(html, /const CODEX_PROMPT_MAX_BYTES = 28672;/);
-  assert.match(html, /const CODEX_PROMPT_MAX_ESTIMATED_TOKENS = 8192;/);
-  assert.match(html, /const CODEX_PROMPT_HIGH_CONTEXT_TOKENS = 1000;/);
-  assert.match(html, /It will consume substantial context whenever this prompt is used\. Save it\?/);
-  assert.match(html, /acknowledgeHighContext,/);
-  assert.match(html, /Conflict · editable/);
-  assert.match(html, /Different loaded prompt versions/);
-  assert.match(html, /const canEdit = detail\.editable && detail\.officialContentAvailable !== false;/);
-  assert.match(html, /draft === detail\.effective && !detail\.overrideInherited/);
-  assert.match(html, /state\.codexPromptActionTargetId === detail\.id/);
-  assert.match(html, /if \(!state\.codexPromptDrafts\.has\(targetId\)\)/);
-  assert.match(html, /function reconcileCodexPromptCaches/);
-  assert.match(html, /draft !== \(previousDetail\.effective \?\? ""\)/);
-  assert.match(html, /state\.codexPromptsErrorScope = "";/);
-  assert.match(html, /state\.codexPromptActionTargetId = "";/);
-  assert.match(html, /if \(!codexPromptTargets\(\)\.some\(\(target\) => target\.id === targetId\)\) return;/);
-  assert.match(html, /if \(state\.codexPromptsBusy\) return;/);
-  assert.match(html, /Restore the official prompt and discard your unsaved draft\?/);
+  const source = `${html}\n${contextRoomWebAssetBundle().js}`;
+  assert.match(source, /\{ id: "advanced-extensions", label: "Advanced extensions", scope: "Device" \}/);
+  assert.match(source, /id="openCodexPromptCenter"/);
+  assert.match(source, /Official · read-only/);
+  assert.match(source, /id="codexPromptEffectiveLabel">Effective after restart</);
+  assert.match(source, /Runtime loaded · read-only/);
+  assert.match(source, /id="codexPromptDraftMetrics"/);
+  assert.match(source, /const CODEX_PROMPT_MAX_BYTES = 28672;/);
+  assert.match(source, /const CODEX_PROMPT_MAX_ESTIMATED_TOKENS = 8192;/);
+  assert.match(source, /const CODEX_PROMPT_HIGH_CONTEXT_TOKENS = 1000;/);
+  assert.match(source, /It will consume substantial context whenever this prompt is used\. Save it\?/);
+  assert.match(source, /acknowledgeHighContext,/);
+  assert.match(source, /Conflict · editable/);
+  assert.match(source, /Different loaded prompt versions/);
+  assert.match(source, /const canEdit = detail\.editable && detail\.officialContentAvailable !== false;/);
+  assert.match(source, /draft === detail\.effective && !detail\.overrideInherited/);
+  assert.match(source, /state\.codexPromptActionTargetId === detail\.id/);
+  assert.match(source, /if \(!state\.codexPromptDrafts\.has\(targetId\)\)/);
+  assert.match(source, /function reconcileCodexPromptCaches/);
+  assert.match(source, /draft !== \(previousDetail\.effective \?\? ""\)/);
+  assert.match(source, /state\.codexPromptsErrorScope = "";/);
+  assert.match(source, /state\.codexPromptActionTargetId = "";/);
+  assert.match(source, /if \(!codexPromptTargets\(\)\.some\(\(target\) => target\.id === targetId\)\) return;/);
+  assert.match(source, /if \(state\.codexPromptsBusy\) return;/);
+  assert.match(source, /Restore the official prompt and discard your unsaved draft\?/);
   assert.deepEqual(calls, [], "rendering the app must not eagerly load prompts");
 
   assert.equal((await fetch(origin + "/api/codex-prompts")).status, 200);
