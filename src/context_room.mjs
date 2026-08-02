@@ -19001,7 +19001,10 @@ function startRuntimeEvents() {
   const key = runtimeEventCursorStorageKey();
   try { state.runtimeEventCursor = Number(window.sessionStorage?.getItem(key) || 0) || 0; } catch {}
   const query = new URLSearchParams({ workspace: state.workspaceId, since: String(state.runtimeEventCursor || 0) });
-  const source = new EventSource(contextRoomScopedRequestPath("/api/runtime-events?" + query.toString()));
+  const scopedRuntimeEvents = contextRoomScopedRequestPath("/api/runtime-events?" + query.toString());
+  const source = scopedRuntimeEvents.startsWith("/reviews/")
+    ? new EventSource(scopedRuntimeEvents)
+    : new EventSource("/api/runtime-events?" + query.toString());
   state.runtimeEventSource = source;
   source.addEventListener("ready", () => {
     state.runtimeEventsConnected = true;
