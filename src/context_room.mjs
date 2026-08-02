@@ -9574,8 +9574,9 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     return path.resolve(project.root);
   };
 
-  if (url.pathname.startsWith("/api/agent/")) {
-    const operation = remoteAgentOperation(url.pathname, req.method);
+  const agentGatewayOperation = remoteAgentOperation(url.pathname, req.method);
+  if (agentGatewayOperation) {
+    const operation = agentGatewayOperation;
     const projectId = String(url.searchParams.get("projectId") || requestIdentity?.projectId || "").trim();
     const agent = assertAgentOperation(requestIdentity, operation, projectId);
     const connection = readSharedProjectConnection(root);
@@ -19001,10 +19002,7 @@ function startRuntimeEvents() {
   const key = runtimeEventCursorStorageKey();
   try { state.runtimeEventCursor = Number(window.sessionStorage?.getItem(key) || 0) || 0; } catch {}
   const query = new URLSearchParams({ workspace: state.workspaceId, since: String(state.runtimeEventCursor || 0) });
-  const scopedRuntimeEvents = contextRoomScopedRequestPath("/api/runtime-events?" + query.toString());
-  const source = scopedRuntimeEvents.startsWith("/reviews/")
-    ? new EventSource(scopedRuntimeEvents)
-    : new EventSource("/api/runtime-events?" + query.toString());
+  const source = new EventSource(contextRoomScopedRequestPath("/api/runtime-events?" + query.toString()));
   state.runtimeEventSource = source;
   source.addEventListener("ready", () => {
     state.runtimeEventsConnected = true;
