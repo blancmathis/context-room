@@ -10,9 +10,11 @@ test("the remote image contains the built-in documentation profile required at b
   const dockerfile = fs.readFileSync(path.join(repositoryRoot, "Dockerfile.remote"), "utf8");
   const workflow = fs.readFileSync(path.join(repositoryRoot, ".github", "workflows", "remote-image.yml"), "utf8");
 
+  assert.match(dockerfile, /^COPY docs \.\/docs$/m);
   assert.match(dockerfile, /^COPY profiles \.\/profiles$/m);
+  assert.match(workflow, /^      - docs\/\*\*$/m);
   assert.match(workflow, /^      - profiles\/\*\*$/m);
-  assert.match(workflow, /await import\('\.\/src\/document_metadata_engine\.mjs'\)/);
+  assert.match(workflow, /initializeContextRoomProject/);
   assert.equal(
     fs.existsSync(path.join(repositoryRoot, "profiles", "context-room-documentation.profile.json")),
     true,
