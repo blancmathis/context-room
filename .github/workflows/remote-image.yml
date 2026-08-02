@@ -38,12 +38,12 @@ jobs:
           platforms: linux/amd64
           provenance: false
           push: true
-          tags: ghcr.io/swarek/context-room/remote:${{ github.sha }}
+          tags: ghcr.io/${{ github.repository_owner }}/context-room/remote:${{ github.sha }}
           cache-from: type=gha,scope=context-room-remote
           cache-to: type=gha,mode=max,scope=context-room-remote
       - name: Sign and record exact image
         run: |
-          image='ghcr.io/swarek/context-room/remote@${{ steps.build.outputs.digest }}'
+          image='ghcr.io/${{ github.repository_owner }}/context-room/remote@${{ steps.build.outputs.digest }}'
           cosign sign --yes "$image"
           cosign verify "$image" \
             --certificate-identity='https://github.com/${{ github.repository }}/.github/workflows/remote-image.yml@refs/heads/main' \
