@@ -1,11 +1,12 @@
 {
   "name": "context-room",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Local-first documentation control room for AI-assisted projects.",
   "type": "module",
   "homepage": "https://www.npmjs.com/package/context-room",
   "bin": {
-    "context-room": "bin/context-room.mjs"
+    "context-room": "bin/context-room.mjs",
+    "context-room-remote": "bin/context-room-remote.mjs"
   },
   "exports": {
     ".": "./src/context_room.mjs",

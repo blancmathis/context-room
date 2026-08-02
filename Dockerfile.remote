@@ -1,0 +1,26 @@
+FROM node:24-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends git openssh-client ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+COPY bin ./bin
+COPY schemas ./schemas
+COPY src ./src
+
+RUN useradd --create-home --uid 10001 context-room \
+  && mkdir -p /data \
+  && chown -R context-room:context-room /data /app
+
+ENV NODE_ENV=production
+ENV CONTEXT_ROOM_REMOTE=1
+ENV CONTEXT_ROOM_DATA_ROOT=/data
+ENV CONTEXT_ROOM_HOST=0.0.0.0
+ENV CONTEXT_ROOM_PORT=4317
+EXPOSE 4317
+VOLUME ["/data"]
+USER context-room
+CMD ["node", "bin/context-room-remote.mjs"]

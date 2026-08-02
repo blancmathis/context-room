@@ -4671,7 +4671,14 @@ function addIntentToAdd(root, files) {
   }
 }
 
-function acceptedProposalCommitMessage(review, message) {
+function auditTrailerValue(value, label) {
+  const normalized = String(value || "").trim().replace(/[\r\n\0]+/g, " ").slice(0, 240);
+  if (!normalized) return "";
+  if (!/^[\p{L}\p{N} ._@+:/-]+$/u.test(normalized)) throw new Error(`Invalid ${label}`);
+  return normalized;
+}
+
+export function acceptedProposalCommitMessage(review, message, actor = null) {
   let dependencyProof = "";
   try {
     const reviewState = readJson(path.join(review.reviewRoot, ".context-room", "review-state.json"));
@@ -4688,12 +4695,14 @@ function acceptedProposalCommitMessage(review, message) {
     `Context-Room-Proposal-Head: ${safeRevision(review.proposalHead, "proposal head")}`,
     review.sessionId ? `Context-Room-Session: ${safeSessionId(review.sessionId)}` : "",
     `Context-Room-Project: ${safeId(review.projectId, "projectId")}`,
+    actor?.sub ? `Context-Room-Reviewed-By: ${auditTrailerValue(actor.sub, "reviewer identity")}` : "",
+    actor?.email ? `Context-Room-Reviewer-Email: ${auditTrailerValue(actor.email, "reviewer email")}` : "",
     dependencyProof ? `Context-Room-Dependency-Proof: ${dependencyProof}` : "",
   ].filter(Boolean);
   return `${String(message || "Accept shared context proposal").trim()}\n\n${trailers.join("\n")}`;
 }
 
-export function acceptSharedReview(reviewRoot, { message = "Accept shared context proposal" } = {}) {
+export function acceptSharedReview(reviewRoot, { message = "Accept shared context proposal", actor = null, push = null } = {}) {
   const resolvedReviewRoot = path.resolve(reviewRoot);
   const review = readSharedReview(resolvedReviewRoot);
   if (review.accepted) throw new Error("This exact shared review was already accepted and cannot be reused");
@@ -4732,11 +4741,22 @@ export function acceptSharedReview(reviewRoot, { message = "Accept shared contex
       runGit(acceptanceRoot, ["diff", "--cached", "--quiet"]);
       return { accepted: false, reason: "Accepted result is already present on main", proposal: review.proposal };
     } catch {}
-    runGit(acceptanceRoot, ["commit", "-m", acceptedProposalCommitMessage(review, message)], { stdio: ["ignore", "ignore", "pipe"] });
+    runGit(acceptanceRoot, ["commit", "-m", acceptedProposalCommitMessage(review, message, actor)], { stdio: ["ignore", "ignore", "pipe"] });
     const acceptedCommit = safeRevision(tryGit(acceptanceRoot, ["rev-parse", "HEAD"]), "accepted commit");
     assertSafeTreeEntries(acceptanceRoot, acceptedCommit, policy.allowedPrefixes);
     assertReviewableChangedPaths(acceptanceRoot, currentMain, acceptedCommit, workspace.files);
-    runGit(acceptanceRoot, ["push", "origin", `HEAD:refs/heads/${review.defaultBranch}`], { stdio: ["ignore", "ignore", "pipe"] });
+    if (push?.token && push?.url) {
+      runGit(acceptanceRoot, ["push", String(push.url), `HEAD:refs/heads/${review.defaultBranch}`], {
+        stdio: ["ignore", "ignore", "pipe"],
+        env: {
+          GIT_CONFIG_COUNT: "1",
+          GIT_CONFIG_KEY_0: "http.extraHeader",
+          GIT_CONFIG_VALUE_0: `Authorization: Bearer ${String(push.token)}`,
+        },
+      });
+    } else {
+      runGit(acceptanceRoot, ["push", "origin", `HEAD:refs/heads/${review.defaultBranch}`], { stdio: ["ignore", "ignore", "pipe"] });
+    }
     const result = {
       accepted: true,
       delivery: "main",
@@ -4745,12 +4765,14 @@ export function acceptSharedReview(reviewRoot, { message = "Accept shared contex
       previousMain: currentMain,
       commit: acceptedCommit,
       defaultBranch: review.defaultBranch,
+      actor: actor ? { sub: auditTrailerValue(actor.sub, "reviewer identity"), email: auditTrailerValue(actor.email, "reviewer email") } : null,
     };
     writeJson(path.join(sharedHome(), "review-authority", `${review.authorityId}.json`), { ...review, accepted: result, acceptedAt: new Date().toISOString() });
     appendContextRoomEvent("proposal.completed", {
       projectId: review.projectId,
       sharedRepository: review.repository,
       resource: { proposal: review.proposal, proposalHead: review.proposalHead },
+      actor: actor ? { sub: auditTrailerValue(actor.sub, "reviewer identity"), email: auditTrailerValue(actor.email, "reviewer email") } : null,
       data: { commit: acceptedCommit, previousMain: currentMain, defaultBranch: review.defaultBranch },
     });
     return result;

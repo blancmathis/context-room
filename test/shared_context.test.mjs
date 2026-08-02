@@ -10,6 +10,7 @@ import Ajv2020 from "ajv/dist/2020.js";
 
 import {
   acceptSharedReview,
+  acceptedProposalCommitMessage,
   checkSharedGitHubSecurity,
   connectSharedContext,
   createSharedProposal,
@@ -223,6 +224,23 @@ test("shared proposal review keeps navigation and automatic completion in the pr
   assert.match(html, /acceptButton\.hidden = true/);
   assert.match(html, /finalizes the proposal automatically after the last file decision/);
   assert.match(html, /el\("proposalDockBack"\)\?\.addEventListener\("click", \(\) => showProposalReview\(\)\)/);
+});
+
+test("accepted proposal commit records the human reviewer identity", () => {
+  const review = {
+    proposal: "proposal/demo/example",
+    proposalHead: "a".repeat(40),
+    sessionId: "thread-123",
+    projectId: "demo",
+    proposalFiles: [],
+    reviewRoot: "/tmp/review",
+  };
+  const message = acceptedProposalCommitMessage(review, "Accept reviewed docs", {
+    sub: "mathis",
+    email: "mathis@example.test",
+  });
+  assert.match(message, /Context-Room-Reviewed-By: mathis/);
+  assert.match(message, /Context-Room-Reviewer-Email: mathis@example\.test/);
 });
 
 test("proposal publication rebases onto fresh main and persists rebase conflicts", (t) => {
