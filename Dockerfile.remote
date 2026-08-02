@@ -8,6 +8,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY bin ./bin
+COPY docs ./docs
 COPY profiles ./profiles
 COPY schemas ./schemas
 COPY src ./src
