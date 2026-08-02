@@ -92,7 +92,10 @@ export async function collectLayoutViolations(page, { label = "layout" } = {}) {
       }
     }
 
-    const collapsedRail = document.querySelector(".app.sidebar-collapsed > aside");
+    // Edge peek temporarily expands a collapsed Explorer into a full drawer. Its
+    // toggle follows the drawer header layout, so the compact-rail centering
+    // contract only applies while the rail itself is actually visible.
+    const collapsedRail = document.querySelector(".app.sidebar-collapsed:not(.explorer-edge-peek) > aside");
     const collapsedToggle = collapsedRail?.querySelector("#sidebarToggle");
     if (width >= contract.breakpoints.desktopMin && activeSurface(collapsedRail) && activeSurface(collapsedToggle)) {
       const rail = collapsedRail.getBoundingClientRect();
