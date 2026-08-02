@@ -42,6 +42,17 @@ function htmlEscape(value) {
 }
 
 export async function collectLayoutViolations(page, { label = "layout" } = {}) {
+  // Geometry is only meaningful once finite UI transitions have reached their
+  // final frame. Slower CI runners can otherwise sample the 160ms Explorer grid
+  // transition while local machines have already completed it.
+  await page.evaluate(async () => {
+    const finiteAnimations = document.getAnimations().filter((animation) => {
+      const endTime = Number(animation.effect?.getComputedTiming?.().endTime);
+      return animation.playState === "running" && Number.isFinite(endTime) && endTime <= 1_000;
+    });
+    await Promise.allSettled(finiteAnimations.map((animation) => animation.finished));
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
   return page.evaluate(({ contract, label: auditLabel }) => {
     const visible = (element) => Boolean(element && element.getClientRects().length && getComputedStyle(element).visibility !== "hidden");
     const activeSurface = (element) => visible(element) && !element.closest("[hidden], [aria-hidden='true'], [inert]");
