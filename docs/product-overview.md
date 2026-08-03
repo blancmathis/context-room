@@ -47,7 +47,9 @@ agent-facing proposal decision.
 - Project inspection: a compact companion to the Review Queue that keeps the selected worktree identity visible and exposes Context Health and Agent environment; configured Home sections remain the primary project navigation.
 - Agent CLI: three root commands—`ask` for accepted-document research, `edit`
   for a ready shared proposal worktree, and `capabilities` for the complete
-  advanced contract. Human file decisions never enter the CLI.
+  advanced contract, plus deterministic local or authenticated remote
+  Workspace navigation through `ui list` and `ui open`. Human file decisions
+  never enter the CLI.
 - Context Engine: exact provider-specific context for one registered project,
   worktree, and folder, with graph, trace, impact, metadata-only snapshots,
   diffs, and proposal impact shared by the CLI and UI.
@@ -64,6 +66,9 @@ Feature-level docs live in [Features](features/index.md).
 - Treat each browser tab or window as an independent Workspace within that
   global room. Workspace state is navigation metadata, not project truth or a
   documentation source.
+- Bind remote Workspaces to the authenticated user, scoped project, and
+  optional task session. Never guess between multiple compatible pages;
+  require an exact selector or explicit `--recent`.
 - Keep the edit surface narrow. Add paths only when Context Room should be allowed to read and write them.
 - Treat review as human-owned. Agents can surface the queue and widen review coverage, but they cannot accept, reject, verify, narrow, or remove the owner-authorized scope.
 - Fail closed on missing or inconsistent authority evidence. A direct config reduction keeps the prior owner scope effective; a missing shared proposal ref stays visible until its exact accepted or rejected evidence is restored.

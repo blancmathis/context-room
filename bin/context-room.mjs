@@ -312,7 +312,7 @@ function writeStdout(value, { newline = true } = {}) {
 const KNOWN_OPTIONS = new Set([
   "action", "actionable", "advisory", "all", "all-projects", "allow", "allow-stale", "apply", "branch", "budget", "contract", "cursor", "cwd", "depth", "description", "detail", "document", "dry-run", "enabled", "exclude", "expand", "fields", "files", "folder", "follow", "format", "fresh", "from", "goal", "h", "heading", "help", "highlight", "hook", "include",
   "assignment", "change", "collection", "collection-path", "collection-title", "destination", "id", "include", "json", "kind", "limit", "message", "mode", "name", "no-restart", "note", "operation", "path", "percent", "port", "profile", "project", "projects", "provider", "providers", "query",
-  "expected-revision", "file", "idempotency-key", "location", "no-color", "no-local", "non-interactive", "only", "plan", "profile", "project", "projects-file", "proposal", "quiet", "reason", "recent", "repository", "resource", "root", "scope", "section", "selector", "session", "set", "severity", "shared", "shared-project", "shell", "since", "skills", "source", "status", "strict", "summary", "target", "task", "text", "title", "to", "types", "verbose", "version", "view", "watch", "workspace",
+  "expected-revision", "file", "filter", "idempotency-key", "label", "location", "no-color", "no-local", "non-interactive", "only", "plan", "profile", "project", "projects-file", "proposal", "quiet", "reason", "recent", "repository", "resource", "root", "scope", "search", "section", "selector", "session", "set", "settings", "severity", "shared", "shared-project", "shell", "since", "skills", "source", "status", "strict", "summary", "target", "task", "text", "title", "to", "types", "verbose", "version", "view", "watch", "workspace",
 ]);
 
 function packageVersion() {
@@ -516,6 +516,40 @@ async function requestWorkspaceApi(pathname, options = {}) {
   return { runtime, data };
 }
 
+function remoteUiTransport() {
+  const url = String(process.env.CONTEXT_ROOM_REMOTE_URL || "").trim().replace(/\/$/, "");
+  const token = String(process.env.CONTEXT_ROOM_REMOTE_TOKEN || "").trim();
+  if (!url && !token) return null;
+  if (!url || !token) throw new ContextRoomCliError("remote-ui-config-invalid", "CONTEXT_ROOM_REMOTE_URL and CONTEXT_ROOM_REMOTE_TOKEN must be configured together.", { exitCode: 2 });
+  return { url, token };
+}
+
+async function requestRemoteUi(pathname, options = {}) {
+  const transport = remoteUiTransport();
+  if (!transport) return null;
+  let response;
+  try {
+    response = await fetch(transport.url + pathname, {
+      ...options,
+      headers: {
+        authorization: `Bearer ${transport.token}`,
+        "content-type": "application/json",
+        ...(options.headers || {}),
+      },
+      signal: AbortSignal.timeout(5_000),
+    });
+  } catch (error) {
+    throw new ContextRoomCliError("remote-ui-unavailable", "The remote Context Room gateway could not be reached.", { retryable: true, details: { message: error.message }, exitCode: 3 });
+  }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new ContextRoomCliError(data.code || "remote-ui-request-failed", data.error || "Remote Context Room request failed.", {
+    retryable: response.status >= 500,
+    details: data.details || (data.candidates ? { candidates: data.candidates } : null),
+    exitCode: response.status === 404 ? 4 : response.status === 409 ? 5 : 1,
+  });
+  return data;
+}
+
 if (command === "workspace") {
   const action = args._[1] || "list";
   try {
@@ -591,6 +625,10 @@ const documentationTargetOptions = sharedDocumentationTarget
 const agentFirstAgentActions = new Set(["prepare", "changes", "handoff"]);
 const workspaceAgentActions = new Set(["state", "open", "navigate", "scroll", "highlight"]);
 const sharedOnlyAgentPrepare = command === "agent" && args._[1] === "prepare" && args.repository && args.repository !== true && args.project && args.project !== true;
+const remoteUiConfigured = Boolean(
+  String(process.env.CONTEXT_ROOM_REMOTE_URL || "").trim()
+  || String(process.env.CONTEXT_ROOM_REMOTE_TOKEN || "").trim()
+);
 const agentFirstTargetCommand = (
   (command === "agent" && agentFirstAgentActions.has(args._[1] || "") && !sharedOnlyAgentPrepare)
   || (command === "agent" && workspaceAgentActions.has(args._[1] || "state")
@@ -599,7 +637,7 @@ const agentFirstTargetCommand = (
     && !(args.location && args.location !== true))
   || command === "review"
   || (command === "project" && ["current", "show", "register", "open"].includes(args._[1] || "current"))
-  || (command === "ui" && (args._[1] || "list") === "open")
+  || (command === "ui" && (args._[1] || "list") === "open" && !remoteUiConfigured)
   || command === "watch"
   || command === "note"
   || command === "hooks"
@@ -716,7 +754,12 @@ if (command === "ui") {
       if (args.project && args.project !== true) query.set("project", String(args.project));
       if (args.location && args.location !== true) query.set("location", String(args.location));
       if (args.query && args.query !== true) query.set("query", String(args.query));
-      const { data } = await requestWorkspaceApi("/api/workspaces?" + query.toString());
+      if (args.session && args.session !== true) query.set("session", String(args.session));
+      if (args.all) query.set("all", "1");
+      const remote = remoteUiTransport();
+      const data = remote
+        ? await requestRemoteUi("/api/agent/ui/workspaces?" + query.toString())
+        : (await requestWorkspaceApi("/api/workspaces?" + query.toString())).data;
       const page = paginateList(data.workspaces || [], { cursor: args.cursor && args.cursor !== true ? String(args.cursor) : "", limit: args.limit });
       emitAgentFirstResult("ui.list", { data: { workspaces: page.items, pagination: page.pagination, generatedAt: data.generatedAt } }, { format: agentFirstFormat });
       process.exit(0);
@@ -725,13 +768,71 @@ if (command === "ui") {
       const workspaceId = args.workspace && args.workspace !== true ? String(args.workspace) : "";
       const file = args.file && args.file !== true ? String(args.file) : args.path && args.path !== true ? String(args.path) : "";
       const view = args.view && args.view !== true ? String(args.view) : file ? "file" : "hub";
+      const explicitSessionId = args.session && args.session !== true ? String(args.session) : "";
+      const sessionId = explicitSessionId || process.env.CODEX_THREAD_ID || "";
+      const filters = args.filter && args.filter !== true ? String(args.filter).split(",").map((item) => item.trim()).filter(Boolean) : [];
+      const percent = args.percent === undefined || args.percent === true ? null : Number(args.percent);
+      if (percent !== null && (!Number.isFinite(percent) || percent < 0 || percent > 100)) {
+        throw new ContextRoomCliError("invalid-percent", "--percent must be a number from 0 to 100.", { exitCode: 2 });
+      }
+      const navigationTarget = args.heading && args.heading !== true
+        ? { heading: String(args.heading) }
+        : args.text && args.text !== true
+          ? { text: String(args.text) }
+          : percent !== null
+            ? { percent }
+            : null;
+      if (remoteUiTransport()) {
+        const data = await requestRemoteUi("/api/agent/ui/open", {
+          method: "POST",
+          body: JSON.stringify({
+            workspace: workspaceId,
+            ...(explicitSessionId ? { session: explicitSessionId } : {}),
+            recent: Boolean(args.recent),
+            label: args.label && args.label !== true ? String(args.label) : "",
+            navigation: {
+              view,
+              project: args.project && args.project !== true ? String(args.project) : agentFirstTarget?.project?.id || "",
+              proposal: args.proposal && args.proposal !== true ? String(args.proposal) : "",
+              file,
+              settingsSection: args.settings && args.settings !== true ? String(args.settings) : "",
+              search: args.search && args.search !== true ? String(args.search) : "",
+              filters,
+              ...(navigationTarget ? { target: navigationTarget } : {}),
+            },
+          }),
+        });
+        emitAgentFirstResult("ui.open", { target: agentFirstTarget, data }, { format: agentFirstFormat });
+        process.exit(0);
+      }
+      let workspace = null;
       if (workspaceId) {
-        const workspace = await resolveActiveWorkspace(agentFirstTarget, workspaceId);
+        workspace = await resolveActiveWorkspace(agentFirstTarget, workspaceId);
+      } else {
+        try {
+          workspace = await resolveActiveWorkspace(agentFirstTarget, "", {
+            project: args.project && args.project !== true ? String(args.project) : "",
+            location: args.location && args.location !== true ? String(args.location) : "",
+            session: sessionId,
+            fallbackWithoutSession: Boolean(sessionId && !(args.session && args.session !== true)),
+            recent: Boolean(args.recent),
+          });
+        } catch (error) {
+          if (error?.code !== "workspace-not-found") throw error;
+        }
+      }
+      if (workspace) {
         const browserCommand = await sendWorkspaceCommand(workspace.workspaceId, {
           action: "navigate",
           view,
+          projectId: args.project && args.project !== true ? String(args.project) : agentFirstTarget?.project?.id || "",
+          proposal: args.proposal && args.proposal !== true ? String(args.proposal) : "",
           path: file,
-          target: { heading: args.heading || null, text: args.text || null, percent: null },
+          settingsSection: args.settings && args.settings !== true ? String(args.settings) : "",
+          search: args.search && args.search !== true ? String(args.search) : "",
+          filters,
+          label: args.label && args.label !== true ? String(args.label) : "",
+          ...(navigationTarget ? { target: navigationTarget } : {}),
         });
         emitAgentFirstResult("ui.open", { target: agentFirstTarget, data: { workspace, command: browserCommand } }, { format: agentFirstFormat });
         process.exit(0);
@@ -742,10 +843,19 @@ if (command === "ui") {
       const url = new URL(runtime.url + "/");
       url.searchParams.set("hub", "1");
       url.searchParams.set("workspace", nextWorkspaceId);
-      if (agentFirstTarget?.project?.id) url.searchParams.set("project", agentFirstTarget.project.id);
+      const requestedProject = args.project && args.project !== true ? String(args.project) : agentFirstTarget?.project?.id || "";
+      if (requestedProject) url.searchParams.set("project", requestedProject);
       url.searchParams.set("view", view);
       if (file) url.searchParams.set("file", file);
-      emitAgentFirstResult("ui.open", { target: agentFirstTarget, data: { workspaceId: nextWorkspaceId, url: url.toString() } }, { format: agentFirstFormat });
+      if (args.proposal && args.proposal !== true) url.searchParams.set("proposal", String(args.proposal));
+      if (args.settings && args.settings !== true) url.searchParams.set("settings", String(args.settings));
+      if (filters[0]) url.searchParams.set("folder", filters[0]);
+      if (args.search && args.search !== true) url.searchParams.set("search", String(args.search));
+      const fragment = new URLSearchParams();
+      if (sessionId) fragment.set("session", sessionId);
+      if (args.label && args.label !== true) fragment.set("label", String(args.label));
+      if (fragment.size) url.hash = fragment.toString();
+      emitAgentFirstResult("ui.open", { target: agentFirstTarget, data: { status: "open_required", workspaceId: nextWorkspaceId, openUrl: url.toString() } }, { format: agentFirstFormat });
       process.exit(0);
     }
     throw new ContextRoomCliError("unknown-command", `Unknown ui command: ${action}`, { exitCode: 2 });
@@ -1701,14 +1811,26 @@ if (command === "review") {
 }
 
 async function resolveActiveWorkspace(target, explicitWorkspace = "", selectors = {}) {
-  const query = new URLSearchParams();
-  if (explicitWorkspace) query.set("workspace", explicitWorkspace);
-  else if (selectors.location) query.set("location", selectors.location);
-  else if (selectors.project) query.set("project", selectors.project);
-  else if (target?.location?.id) query.set("location", target.location.id);
-  else if (target?.project?.id) query.set("project", target.project.id);
-  const { data } = await requestWorkspaceApi("/api/workspaces?" + query.toString());
-  const candidates = data.workspaces || [];
+  const buildQuery = ({ session = selectors.session || "" } = {}) => {
+    const query = new URLSearchParams();
+    if (explicitWorkspace) query.set("workspace", explicitWorkspace);
+    else if (selectors.location) query.set("location", selectors.location);
+    else if (selectors.project) query.set("project", selectors.project);
+    else if (target?.location?.id) query.set("location", target.location.id);
+    else if (target?.project?.id) query.set("project", target.project.id);
+    if (!explicitWorkspace && session) query.set("session", session);
+    return query;
+  };
+  let { data } = await requestWorkspaceApi("/api/workspaces?" + buildQuery().toString());
+  let candidates = data.workspaces || [];
+  if (!candidates.length && selectors.session && selectors.fallbackWithoutSession) {
+    ({ data } = await requestWorkspaceApi("/api/workspaces?" + buildQuery({ session: "" }).toString()));
+    candidates = data.workspaces || [];
+  }
+  if (selectors.recent && candidates.length) return [...candidates].sort((left, right) => {
+    const focusOrder = String(right.focusedAt || "").localeCompare(String(left.focusedAt || ""));
+    return focusOrder || String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""));
+  })[0];
   if (candidates.length === 1) return candidates[0];
   if (!candidates.length) throw new ContextRoomCliError("workspace-not-found", "No active Context Room workspace matches this target.", {
     retryable: true,

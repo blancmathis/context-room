@@ -11,6 +11,9 @@ export const AGENT_CONTEXT_OPERATIONS = Object.freeze([
   "proposal:write",
   "proposal:checkout",
   "proposal:publish",
+  "ui:workspace:list",
+  "ui:workspace:navigate",
+  "ui:workspace:pair",
 ]);
 
 function gatewayError(message, statusCode, code, details) {

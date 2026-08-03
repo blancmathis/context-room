@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-const DEFAULT_ISSUER = "peerlab-qm";
+const DEFAULT_ISSUER = "context-room";
 const DEFAULT_AUDIENCE = "context-room";
 const MAX_TOKEN_BYTES = 16_384;
 
@@ -75,7 +75,7 @@ export function signRemoteIdentity(claims, secret, {
     exp: now + lifetime,
     jti: tokenId,
   };
-  const header = encode({ alg: "HS256", typ: "JWT", kid: "peerlab-context-v1" });
+  const header = encode({ alg: "HS256", typ: "JWT", kid: "context-room-v1" });
   const body = encode(payload);
   const unsigned = `${header}.${body}`;
   const signature = createHmac("sha256", signingSecret).update(unsigned).digest("base64url");

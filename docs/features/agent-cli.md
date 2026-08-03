@@ -135,6 +135,28 @@ means a registered Context Room project in the canonical interface.
 Context Room never scans the computer for worktrees. Ambiguous targets return
 structured candidates instead of guessing.
 
+Workspace navigation has its own deterministic target order:
+
+1. `--workspace` selects that exact tab;
+2. `--session` selects the page paired to that task or chat;
+3. the current `CODEX_THREAD_ID` is used when available;
+4. the only compatible page may be used;
+5. otherwise the command returns `workspace_ambiguous` and candidates.
+
+`--recent` is the explicit opt-in to choose the most recently focused
+compatible page. `ui list [--project] [--session] [--all]` returns structured
+Workspace metadata, including the short ID, project, view, proposal, file,
+focus, label, and pairing state. `ui open` accepts the same selectors plus
+`--project`, `--proposal`, `--file`, `--view`, `--settings`, `--search`,
+`--filter`, `--heading`, `--text`, and `--percent`.
+
+For a generic remote installation, set `CONTEXT_ROOM_REMOTE_URL` and provide a
+short-lived bearer token in `CONTEXT_ROOM_REMOTE_TOKEN`. Remote navigation uses
+`GET /api/agent/ui/workspaces` and `POST /api/agent/ui/open`. If a page must be
+opened, the result is `open_required` with a secure URL; the caller decides
+which browser or chat opens it. The scoped UI bearer can be reused for list and
+open requests until its expiration; the URL pairing ticket remains one-use.
+
 ## Effect Classes
 
 | Effect | Behavior | Examples |

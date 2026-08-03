@@ -520,6 +520,63 @@ test("@smoke Context Room keeps its critical workspace state stable", async ({ p
   });
 });
 
+test("@smoke an exact agent command changes only the targeted Workspace", async ({ page, context }) => {
+  const data = fixture();
+  const companion = await context.newPage();
+  await Promise.all([
+    page.goto(`${data.origin}/?hub=1&view=hub&label=primary`),
+    companion.goto(`${data.origin}/?hub=1&view=hub&label=companion`),
+  ]);
+  await Promise.all([waitForReady(page), waitForReady(companion)]);
+
+  const primaryWorkspace = workspaceId(page.url());
+  const companionWorkspace = workspaceId(companion.url());
+  expect(primaryWorkspace).toBeTruthy();
+  expect(companionWorkspace).toBeTruthy();
+  expect(companionWorkspace).not.toBe(primaryWorkspace);
+
+  const response = await page.request.post(`${data.origin}/api/workspaces/${companionWorkspace}/command`, {
+    data: {
+      id: "e2e-exact-workspace-command",
+      action: "navigate",
+      view: "settings",
+      settingsSection: "preferences",
+    },
+  });
+  expect(response.ok()).toBe(true);
+
+  await expect(companion).toHaveURL(/(?:\?|&)view=settings(?:&|$)/);
+  await expect(companion.locator("#settingsPage")).toBeVisible();
+  await expect(page).toHaveURL(/(?:\?|&)view=hub(?:&|$)/);
+  await expect(page.locator("#home")).toBeVisible();
+  expect(workspaceId(page.url())).toBe(primaryWorkspace);
+  expect(workspaceId(companion.url())).toBe(companionWorkspace);
+});
+
+test("@smoke an agent command opens the requested proposal file", async ({ page }) => {
+  const data = fixture();
+  await page.goto(`${data.origin}/?hub=1&view=hub&label=proposal-target`);
+  await waitForReady(page);
+  const targetWorkspace = workspaceId(page.url());
+  const roomPort = new URL(data.origin).port;
+
+  const response = await page.request.post(`${data.origin}/api/workspaces/${targetWorkspace}/command`, {
+    data: {
+      id: "e2e-proposal-file-command",
+      action: "navigate",
+      view: "proposal",
+      projectId: "atlas",
+      proposal: data.shared.proposal,
+      path: "projects/atlas/docs/README.md",
+    },
+  });
+  expect(response.ok()).toBe(true);
+
+  await expect(page).toHaveURL((url) => url.port !== roomPort && url.searchParams.get("file") === "projects/atlas/docs/README.md");
+  await waitForBoot(page);
+  await expect(page.locator("#viewer")).toBeVisible();
+});
+
 test("@smoke workbench gutters stay aligned on desktop and mobile", async ({ page }) => {
   const data = fixture();
   for (const width of [390, 640, 980, 981, 1024, 1440]) await assertWorkbenchGutters(page, data, width);

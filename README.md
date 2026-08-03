@@ -25,15 +25,24 @@ Setup maps the current project, registers it in the global Context Room, and ope
 
 There is only one Context Room application. **Local** and **Shared** describe where documentation is stored and how it is reviewed; they are not separate app modes.
 
-### Optional remote mode for QM
+### Optional authenticated remote mode
 
-Version 0.4.0 adds an opt-in multi-user server entrypoint without changing the local default:
+The opt-in multi-user server entrypoint does not change the local default:
 
 ```bash
 context-room-remote
 ```
 
-The entrypoint refuses to start unless `CONTEXT_ROOM_REMOTE=1` and all signed-identity, shared-repository, project, and persistent-data settings are present. Browser requests require a short-lived signed QM administrator identity. Agent requests require a separate project-scoped token and expose only accepted `main` plus proposal creation, editing, and publishing; agents cannot review, reject, or accept. The service is intended to stay on a private Docker network behind the QM Portal, with `/data` on a persistent encrypted volume. See [Remote QM deployment](docs/remote-qm.md).
+The entrypoint refuses to start unless `CONTEXT_ROOM_REMOTE=1` and all signed-identity, shared-repository, project, and persistent-data settings are present. Browser requests require a short-lived signed administrator identity. Agent requests require a separate user-, project-, and session-scoped token and expose only accepted `main`, proposal work, and ephemeral Workspace navigation; agents cannot review, reject, or accept. The service is intended to stay on a private network behind an authenticated Portal, with `/data` on a persistent encrypted volume. QM is one supported adapter, not a dependency of the protocol. See [Remote QM deployment](docs/remote-qm.md).
+
+Version 0.5.0 lets the same public CLI control one exact local or remote Context Room tab through the server:
+
+```bash
+context-room ui list --all --format json
+context-room ui open --workspace <workspace-id> --view file --project atlas --file docs/PRODUCT.md
+```
+
+Use `CONTEXT_ROOM_REMOTE_URL` and `CONTEXT_ROOM_REMOTE_TOKEN` for a generic remote installation. A missing compatible tab returns `open_required` and a five-minute one-use pairing URL; the CLI never chooses or launches a browser. Exact Workspace and session targeting win, `--recent` is explicit, and unresolved multiple matches return `workspace_ambiguous` without moving any page. Installations whose private proxy host differs from their public page set `CONTEXT_ROOM_BROWSER_HOST` for those pairing URLs.
 
 ## How it works
 
