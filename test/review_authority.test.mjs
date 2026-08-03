@@ -5,12 +5,22 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY,
   authorizeOwnerReviewScope,
   effectiveOwnerReviewScope,
   inspectOwnerProposalDecisions,
   inspectOwnerReviewScope,
   recordOwnerProposalDecision,
 } from "../src/review_authority.mjs";
+
+test("agent review decisions require two separate explicit user confirmations", () => {
+  assert.equal(HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.confirmationsRequired, 2);
+  assert.match(HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction, /must ask the user explicitly/i);
+  assert.match(HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction, /after the first yes/i);
+  assert.match(HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction, /restate the exact action, project, proposal or file scope, and effects/i);
+  assert.match(HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction, /second separate, unambiguous yes/i);
+  assert.match(HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.mutationRule, /do nothing/i);
+});
 
 function fixture(t) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-review-authority-"));

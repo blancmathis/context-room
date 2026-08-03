@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   applyAgentHandoff,
   applyCliReviewAnnotation,
+  agentInstructions,
   buildAgentEnvironment,
   buildAgentPrepare,
   classifyAgentChanges,
@@ -81,6 +82,7 @@ test("agent-first target, environment, review, handoff, and event contracts stay
   const review = reviews.queue.find((item) => item.path === "docs/guide.md");
   assert.ok(review);
   assert.equal(reviews.humanOwned, true);
+  assert.equal(reviews.humanDecisionPolicy.confirmationsRequired, 2);
 
   const annotationPlan = planCliReviewAnnotation(target, review.path, "Please confirm the terminology.");
   assert.match(annotationPlan.planId, /^plan-/);
@@ -90,7 +92,7 @@ test("agent-first target, environment, review, handoff, and event contracts stay
 
   const handoffPlan = planAgentHandoff(target, { task: "Clarify guide", sessionId: "test-session", idempotencyKey: "test-op" });
   assert.match(handoffPlan.planId, /^plan-/);
-  assert.match(handoffPlan.humanOwned, /accepted or rejected by a human/);
+  assert.match(handoffPlan.humanOwned, /second separate, unambiguous yes/i);
   const receipt = applyAgentHandoff(target, { planId: handoffPlan.planId, task: "Clarify guide", sessionId: "test-session", idempotencyKey: "test-op" });
   const repeated = applyAgentHandoff(target, { planId: handoffPlan.planId, task: "Clarify guide", sessionId: "test-session", idempotencyKey: "test-op" });
   assert.equal(receipt.operationId, repeated.operationId);
@@ -99,7 +101,12 @@ test("agent-first target, environment, review, handoff, and event contracts stay
   const prepared = buildAgentPrepare(target, { task: "Clarify guide", provider: "codex" });
   assert.equal(prepared.data.documentation.pendingSession instanceof Array, true);
   assert.equal(prepared.data.review.humanOwned, true);
+  assert.equal(prepared.data.review.humanDecisionPolicy.confirmationsRequired, 2);
+  assert.match(prepared.data.review.humanDecisionPolicy.instruction, /second separate, unambiguous yes/i);
   assert.equal(prepared.data.environment.selectedFolder.path, "docs/feature");
+
+  const instructions = agentInstructions(target, { provider: "codex" });
+  assert.match(instructions.prompt, /second separate, unambiguous yes/i);
 
   const projects = listCliProjects();
   assert.equal(projects.projects.length, 1);
@@ -124,6 +131,7 @@ test("machine envelopes and capabilities expose no agent review decision command
   const expanded = cliCapabilities({ version: "test", expand: true });
   assert.equal(expanded.commands.some((item) => /(?:accept|reject|verify)/.test(item.path)), false);
   assert.deepEqual(capabilities.humanOwned, ["accept-file-review", "reject-file-review"]);
+  assert.equal(capabilities.humanDecisionPolicy.confirmationsRequired, 2);
   const success = cliEnvelope("agent.prepare", { data: { ok: true } });
   assert.equal(success.schemaVersion, "context-room.cli/1");
   assert.equal(success.ok, true);

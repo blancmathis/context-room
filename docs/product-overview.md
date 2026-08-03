@@ -70,7 +70,7 @@ Feature-level docs live in [Features](features/index.md).
   optional task session. Never guess between multiple compatible pages;
   require an exact selector or explicit `--recent`.
 - Keep the edit surface narrow. Add paths only when Context Room should be allowed to read and write them.
-- Treat review as human-owned. Agents can surface the queue and widen review coverage, but they cannot accept, reject, verify, narrow, or remove the owner-authorized scope.
+- Treat review as human-owned. Agents can surface the queue and widen review coverage, but they cannot accept, reject, verify, narrow, or remove the owner-authorized scope. Before attempting any review decision through an available human surface, an agent must ask once, restate the exact action, project, proposal or file scope, and effects after the first yes, ask again, and do nothing without a second separate, unambiguous yes.
 - Fail closed on missing or inconsistent authority evidence. A direct config reduction keeps the prior owner scope effective; a missing shared proposal ref stays visible until its exact accepted or rejected evidence is restored.
 - State the same-user boundary honestly. Local nonces and signatures provide provenance and tamper detection, not physical user presence; provider-side ref rules or a separate authenticated reviewer provide the stronger boundary.
 - Let owners rank logical projects device-wide and temporarily snooze an exact review version without changing its decision, trust, or gate status. New content returns immediately to the active queue.

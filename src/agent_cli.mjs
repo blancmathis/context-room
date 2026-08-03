@@ -77,6 +77,7 @@ import {
   stableCliPlanId,
 } from "./cli_contract.mjs";
 import { appendContextRoomEvent } from "./event_journal.mjs";
+import { HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY } from "./review_authority.mjs";
 import { buildContextInventory } from "./context_inventory.mjs";
 import {
   buildContextGraph,
@@ -104,6 +105,10 @@ import {
 
 const DOCUMENT_EXTENSIONS = new Set([".md", ".mdx", ".html", ".htm", ".txt", ".csv", ".tsv", ".yaml", ".yml", ".json", ".jsonc", ".toml"]);
 const PROVIDERS = new Set(["auto", "codex", "claude-code", "opencode", "all"]);
+
+function humanReviewOwnershipText(prefix = "Review decisions stay human-owned.") {
+  return `${prefix} ${HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction}`;
+}
 
 function stablePath(value) {
   const resolved = path.resolve(value);
@@ -997,6 +1002,7 @@ function publicReviewReport(report) {
       dependencyChanges: item.dependencyChanges || [],
     })),
     humanOwned: true,
+    humanDecisionPolicy: HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY,
   };
 }
 
@@ -1054,7 +1060,7 @@ export function buildAgentPrepare(target, { task = "", sessionId = "", provider 
         accepted: (documentation.results || []).filter((item) => item.source !== "session-proposal"),
         pendingSession: proposals.map((proposal) => ({ source: "session-proposal", ...proposal })),
       },
-      review: { summary: review.summary, items: review.queue.slice(0, 20), humanOwned: true },
+      review: { summary: review.summary, items: review.queue.slice(0, 20), humanOwned: true, humanDecisionPolicy: HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY },
       proposals,
       health: { issues: doctor.issues.length, critical: doctor.issues.filter((item) => item.severity === "critical").length, high: doctor.issues.filter((item) => item.severity === "high").length, items: doctor.issues.slice(0, 20) },
     },
@@ -1100,7 +1106,7 @@ export function buildSharedOnlyAgentPrepare({ repository, projectId, task = "", 
       sessionId: String(sessionId || ""),
       environment: { selectedProvider: normalizedProvider(provider), localEnvironment: "unavailable", instructions: [], skills: [], hooks: [], summary: { instructions: 0, skills: 0, hooks: 0, inactive: 0 } },
       documentation: { query: String(task || ""), revision: accepted.revision, accepted: accepted.results || [], pendingSession: pending.results || [] },
-      review: { summary: null, items: [], humanOwned: true, unavailable: "A local registered location is required to inspect file reviews." },
+      review: { summary: null, items: [], humanOwned: true, humanDecisionPolicy: HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY, unavailable: "A local registered location is required to inspect file reviews." },
       proposals: [],
       health: { issues: 0, critical: 0, high: 0, items: [], unavailable: "A local registered location is required to calculate Context Health." },
     },
@@ -1148,7 +1154,7 @@ export function agentInstructions(target, { provider = "auto" } = {}) {
   const selectedProvider = normalizedProvider(provider);
   return {
     provider: selectedProvider,
-    prompt: `Use context-room ask "<complete research brief>" --root ${JSON.stringify(target.root)} for accepted project documentation. The brief must state the work context, questions to resolve, constraints to check, and expected output; never reduce it to keywords. When shared documentation must change, use context-room edit list, context-room edit open <branch>, or context-room edit create "<complete proposal description>"; edit only the returned proposal worktree. context-room capabilities lists the static advanced contract and never chooses a command. Only the human can accept or reject files awaiting review. Never write directly to shared main and never discover unregistered worktrees.`,
+    prompt: `Use context-room ask "<complete research brief>" --root ${JSON.stringify(target.root)} for accepted project documentation. The brief must state the work context, questions to resolve, constraints to check, and expected output; never reduce it to keywords. When shared documentation must change, use context-room edit list, context-room edit open <branch>, or context-room edit create "<complete proposal description>"; edit only the returned proposal worktree. context-room capabilities lists the static advanced contract and never chooses a command. ${humanReviewOwnershipText("Only the human can accept or reject files awaiting review.")} Never write directly to shared main and never discover unregistered worktrees.`,
   };
 }
 
@@ -1255,7 +1261,8 @@ export function planAgentHandoff(target, { task = "", description = "", sessionI
       ...changes.local.filter((item) => item.category === "local-review").map((item) => ({ type: "leave-in-local-review", path: item.path })),
     ].filter(Boolean),
     untouched: changes.local.filter((item) => item.category !== "local-review").map((item) => ({ path: item.path, reason: item.category })),
-    humanOwned: "Each file review must still be accepted or rejected by a human.",
+    humanOwned: humanReviewOwnershipText("Each file review must still be accepted or rejected by a human."),
+    humanDecisionPolicy: HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY,
   };
 }
 
@@ -1291,7 +1298,8 @@ export function applyAgentHandoff(target, { planId, task = "", description = "",
     registered,
     published,
     localReviews: current.changes.local.filter((item) => item.category === "local-review").map((item) => item.path),
-    humanOwned: "Only the human can accept or reject these file reviews.",
+    humanOwned: humanReviewOwnershipText("Only the human can accept or reject these file reviews."),
+    humanDecisionPolicy: HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY,
   };
   writeOperationReceipt(operationId, receipt);
   for (const reviewPath of receipt.localReviews) {
@@ -1455,14 +1463,15 @@ export function createDocumentationChange(target, { task = "", document = "", sc
       ? {
           state: "proposal-ready",
           writableRoot: proposal.root,
-          instruction: "Edit the documentation in this worktree. Context Room keeps acceptance or rejection in the human review UI.",
+          instruction: humanReviewOwnershipText("Edit the documentation in this worktree. Context Room keeps acceptance or rejection in the human review UI."),
         }
       : {
           state: "local-review-ready",
           writableRoot: target.root,
-          instruction: "Edit watched documentation in this project. Context Room will present each changed file for human review.",
+          instruction: humanReviewOwnershipText("Edit watched documentation in this project. Context Room will present each changed file for human review."),
         },
-    humanOwned: "Only a human can accept or reject the resulting file reviews.",
+    humanOwned: humanReviewOwnershipText("Only a human can accept or reject the resulting file reviews."),
+    humanDecisionPolicy: HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY,
   };
   writePrivateState(privateStatePath("documentation-changes", changeId), handle);
   return handle;
@@ -1540,9 +1549,10 @@ export function openSharedDocumentationProposal(target, { proposal = "" } = {}) 
     workflow: {
       state: "proposal-ready",
       writableRoot: workspace.root,
-      instruction: "Edit the documentation in this worktree. Context Room keeps acceptance or rejection in the human review UI.",
+      instruction: humanReviewOwnershipText("Edit the documentation in this worktree. Context Room keeps acceptance or rejection in the human review UI."),
     },
-    humanOwned: "Only a human can accept or reject the resulting file reviews.",
+    humanOwned: humanReviewOwnershipText("Only a human can accept or reject the resulting file reviews."),
+    humanDecisionPolicy: HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY,
   };
 }
 
@@ -1620,7 +1630,8 @@ export function publishDocumentationChange(changeId, { summary = "", description
     result = {
       localReviews: changes.local.filter((item) => item.category === "local-review").map((item) => ({ path: item.path, status: item.status })),
       untouched: changes.local.filter((item) => item.category !== "local-review").map((item) => ({ path: item.path, reason: item.category })),
-      humanOwned: "Each resulting file review remains pending until a human accepts or rejects it.",
+      humanOwned: humanReviewOwnershipText("Each resulting file review remains pending until a human accepts or rejects it."),
+      humanDecisionPolicy: HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY,
     };
   }
   const published = { ...handle, status: "published", publishedAt: new Date().toISOString(), result };
@@ -2064,22 +2075,23 @@ export function renderAgentCliHuman(command, payload) {
         ...(data.sections || []).map((section) => `  ${section.id} — ${section.summary}\n    ${section.inspect}`),
         "",
         "Human only: accept or reject file reviews.",
+        HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction,
       ].join("\n") + "\n";
     }
     if (["section", "namespace", "profile"].includes(data.view)) {
       const title = data.section?.id || data.namespace || data.profile || "Capabilities";
-      return `${title}\n` + (data.commands || []).map((entry) => `  ${entry.path} — ${entry.summary}`).join("\n") + "\n";
+      return `${title}\n` + (data.commands || []).map((entry) => `  ${entry.path} — ${entry.summary}`).join("\n") + `\n\nHuman review decisions\n  ${HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction}\n`;
     }
     if (data.view === "command" && data.commands?.[0]) {
       const entry = data.commands[0];
-      return `${entry.path}\n${entry.summary}\n\nUsage\n  ${entry.usage}\n`;
+      return `${entry.path}\n${entry.summary}\n\nUsage\n  ${entry.usage}\n\nHuman review decisions\n  ${HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction}\n`;
     }
   }
   if (command === "project.list" || command === "project.search" || command === "project.recent") {
     return (data.projects || []).map((project) => `${project.title} · ${project.locations.length} location${project.locations.length === 1 ? "" : "s"}\n${project.locations.map((item) => `  ${item.branch || "no branch"} · ${item.root}`).join("\n")}`).join("\n\n") + "\n";
   }
   if (command === "agent.instructions") return String(data.prompt || "") + "\n";
-  if (command === "review.list") return `${data.queue.length} file review${data.queue.length === 1 ? "" : "s"} awaiting a human decision\n` + data.queue.map((item) => `- ${item.reason} ${item.path}`).join("\n") + "\n";
+  if (command === "review.list") return `${data.queue.length} file review${data.queue.length === 1 ? "" : "s"} awaiting a human decision\n` + data.queue.map((item) => `- ${item.reason} ${item.path}`).join("\n") + `\n\n${HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction}\n`;
   if (command === "events") return (data.events || []).map((event) => `${event.occurredAt} ${event.type} ${event.resource?.path || event.resource?.proposal || ""}`.trim()).join("\n") + "\n";
   return JSON.stringify(data, null, 2) + "\n";
 }

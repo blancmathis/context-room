@@ -4,7 +4,7 @@ context_room:
   scope: context-room
   status: current
   canonical_for: repository agent instructions
-  last_verified: 2026-07-11
+  last_verified: 2026-08-03
   sources: [README.md, docs/product-overview.md, docs/features/index.md, docs/agent-configuration.md, package.json]
 ---
 
@@ -32,7 +32,7 @@ These instructions apply to this repository. Use them for Context Room product, 
 
 - Keep Context Room local-first and deterministic. Do not add LLM calls to `doctor`, `guard`, or `brief`.
 - Keep edit and review boundaries explicit. Changes to `allowedPaths`, `watchAllow`, or `reviewPaths` must be source-grounded.
-- Treat review as human-owned. Agents may expose the queue, but must not mark docs verified for the user.
+- Treat review as human-owned. Before any acceptance, rejection, verification, removal confirmation, or other review decision, an agent must ask the user explicitly. After the first yes, restate the exact action, project, proposal or file scope, and effects, ask again, and do nothing unless the user gives a second separate, unambiguous yes.
 - Keep executable hooks read-only by default. Only enable hook editing when the project owner asks.
 - Replace stale docs instead of adding competing notes.
 - Prefer fewer clearer words in docs and UI copy.

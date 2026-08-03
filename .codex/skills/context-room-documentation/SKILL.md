@@ -16,7 +16,7 @@ Create durable documentation that agents can resolve deterministically and human
 5. Keep formats complementary: Markdown or a native schema owns exact truth; a diagram maps a relationship; and an HTML `.view.html` guides exploration. A map is selective, a focused model may own one exact relation, and a view must not copy the full truth of its sources.
 6. Follow the official Context Room documentation profile: give every ordinary new Markdown or HTML document a stable `context_room.id`. Add `depends_on` only when a change to another document requires this document to be reconsidered. This is the skill's convention, not a universal metadata requirement of the Context Room core.
 7. Route local documents to their normal file review. For shared documentation, use `context-room edit list` to inspect open proposals, `context-room edit open <branch>` to resume the correct one, or `context-room edit create "<complete proposal description>"` to create a new one. Edit only the returned proposal worktree; never write directly to accepted shared main.
-8. Leave acceptance or rejection to the human.
+8. Leave every review decision to the human. Before any acceptance, rejection, verification, removal confirmation, or other review decision, ask the user explicitly. After the first yes, restate the exact action, project, proposal or file scope, and effects, ask again, and do nothing unless the user gives a second separate, unambiguous yes.
 
 Read [documentation-model.md](references/documentation-model.md) for the metadata contract and [formats-and-diagrams.md](references/formats-and-diagrams.md) for links, HTML, Mermaid, images, and schema files.
 
@@ -28,5 +28,5 @@ Read [documentation-model.md](references/documentation-model.md) for the metadat
 - Preserve coherent legacy `quality/`, `evolution/`, `_target.*`, or `target/` conventions until an explicit migration owns the path changes.
 - `AGENTS.md`, `CLAUDE.md`, and `SKILL.md` may use their provider-native contracts without a document ID.
 - Do not infer dependencies from vague thematic similarity. Record only dependencies that require human reconsideration when their accepted version changes.
-- Never mark a review verified for the user.
+- Never mark a review verified for the user. Never accept, reject, or confirm a removal after only one user approval; the two-confirmation rule in step 8 applies every time.
 - A dependency freshness task does not mean the accepted content became unverified. Update the document only when its meaning changed; otherwise leave **Confirm still current** to the human.

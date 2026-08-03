@@ -2069,6 +2069,7 @@ test("generated agent guide includes repository setup instructions and the canon
   assert.match(guide, /`context-room setup`, `context-room init`, and `context-room start`/);
   assert.match(guide, /Read the root README, every applicable `AGENTS\.md`/);
   assert.match(guide, /Do not copy paths or state from another Context Room/);
+  assert.match(guide, /second separate, unambiguous yes/i);
   assert.equal(fs.existsSync(copiedConfiguration), true);
   assert.deepEqual(fs.readFileSync(copiedConfiguration), canonicalConfiguration);
 
@@ -6743,15 +6744,24 @@ test("verification actions are limited to files opened from the review queue", (
   assert.match(html, /data-next-review/);
   assert.match(html, /openNextReviewManually\(\)\.catch\(\(error\) => setStatus\(error\.message\)\)/);
   assert.match(html, /requestReviewDecision\(state\.selected, event\.currentTarget\.dataset\.fileReviewDecision\)/);
-  assert.match(html, /VERIFY_CONFIRM_STORAGE_KEY = "context-room:skip-mark-verified-confirm"/);
-  assert.match(html, /checkboxLabel: "Do not ask again"/);
-  assert.match(html, /confirmVariant: "primary"/);
+  assert.doesNotMatch(html, /VERIFY_CONFIRM_STORAGE_KEY/);
+  assert.doesNotMatch(html, /Do not ask again/);
+  assert.match(html, /function showHumanReviewDecisionDialog\(/);
+  assert.match(html, /HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY/);
+  assert.match(html, /const checkboxLabel = "If an agent is operating, the user separately confirmed this exact action a second time"/);
+  assert.match(html, /checkboxLabel: additionalAcknowledgement \? checkboxLabel/);
+  assert.match(html, /checkboxRequired: true/);
+  assert.match(html, /confirmVariant: verifying \? "primary" : "danger"/);
   assert.match(html, /This marks the current content as trusted\. Use Next review when ready\./);
   assert.match(html, /<strong>First review<\/strong> <span>No previous baseline exists for this first review\./);
   assert.match(html, /label: "Accept document"/);
   assert.match(html, /label: "Request changes"/);
   assert.match(html, /if \(!reviewActionForSelectedFile\(\)\) return;/);
-  assert.match(html, /applyReviewDecision\(path, "verified"\)/);
+  assert.match(html, /applyReviewDecision\(path, normalizedStatus\)/);
+  assert.match(html, /function requestContextRoomReviewRejection\(ids\) \{[\s\S]*showHumanReviewDecisionDialog\(/);
+  assert.match(html, /function requestDeletionReviewBatchConfirmation\(\) \{[\s\S]*showHumanReviewDecisionDialog\(/);
+  assert.match(html, /function requestApplyExternalChange\(\) \{[\s\S]*showHumanReviewDecisionDialog\(/);
+  assert.match(html, /function promptRejectExternalChange\(\) \{[\s\S]*showHumanReviewDecisionDialog\(/);
   assert.match(html, /const previousQueue = options\.previousQueue \|\| state\.docqa\?\.queue \|\| \[\];/);
   assert.match(html, /function nextReviewItemAfter\(previousQueue = \[\], currentPath = null, nextQueue = \[\]\)/);
   assert.match(html, /function nextReviewItemForManualAdvance\(\) \{[\s\S]*return nextReviewItemAfter\(queue, state\.reviewModePath \|\| state\.selected \|\| state\.selectedReview, queue\);/);
@@ -6781,8 +6791,8 @@ test("review queue groups removed files into a selectable human-confirmed batch"
   assert.match(html, /data-review-deletion-select-all/);
   assert.match(html, /data-review-deletion-confirm/);
   assert.match(html, /preserveSelection \? previousSelection\.has\(item\.path\) : !item\.protected/);
-  assert.match(html, /checkboxLabel: protectedCount \? "I reviewed the protected paths" : ""/);
-  assert.match(html, /checkboxRequired: Boolean\(protectedCount\)/);
+  assert.match(html, /additionalAcknowledgement: protectedCount \? "I also reviewed the protected paths\." : ""/);
+  assert.match(html, /function showHumanReviewDecisionDialog\([\s\S]*checkboxRequired: true/);
   assert.match(html, /checkboxRequired \? ' disabled' : ''/);
   assert.match(html, /data-confirm-accept\]"\)\.disabled = !event\.currentTarget\.checked/);
   assert.match(html, /state\.deletionBatchKey !== String\(s\.deletedReviewKey \|\| ""\)/);
@@ -7057,6 +7067,7 @@ test("save preserves the editor scroll position after rerendering", () => {
   assert.match(html, /setDiffCollapsed\(false\)/);
   assert.match(html, /function updateExternalReviewBlockInPlace\(blocks, blockId, viewState\)/);
   assert.match(html, /function wireExternalReviewDecisionButtons\(root = document\)/);
+  assert.match(html, /requestExternalReviewBlockDecision\(event\.currentTarget\.dataset\.externalBlockDecision, event\.currentTarget\.dataset\.externalBlockId\)/);
   assert.match(html, /captureEditorViewState\(\{ anchorBlockId: blockId \}\)/);
   assert.match(html, /viewState\.visualAnchor = captureMarkdownVisualAnchor\(\);/);
   assert.match(html, /event\.stopPropagation\(\)/);
@@ -7183,6 +7194,7 @@ test("disk changes stay pending for review instead of silently reloading the ope
   assert.match(html, /chooseExternalReviewBlock/);
   assert.match(html, /function chooseAllExternalReviewBlocks\(decision\)/);
   assert.match(html, /function wireExternalReviewAllButtons\(root = document\)/);
+  assert.match(html, /requestAllExternalReviewBlocksDecision\(event\.currentTarget\.dataset\.externalReviewAll\)/);
   assert.match(html, /function wireExternalReviewJumpButtons\(root = document\)/);
   assert.match(html, /if \(focusFirstExternalReviewChange\(\)\) setStatus\("showing first change"\);/);
   assert.match(html, /updateExternalReviewBlockInPlace\(blocks, blockId, viewState\)/);
