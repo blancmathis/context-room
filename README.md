@@ -48,7 +48,7 @@ Use `CONTEXT_ROOM_REMOTE_URL` and `CONTEXT_ROOM_REMOTE_TOKEN` for a generic remo
 
 1. **Register the places that matter.** Add projects, explicit worktrees, and any shared documentation repositories you use.
 2. **Give agents accepted context.** Agents can search verified documentation, inspect active instructions and skills, and prepare documentation changes without taking review decisions.
-3. **Review every changed file.** Local files enter the review queue individually. Shared changes are grouped in a Git-backed proposal. A person accepts or rejects each file in the webapp.
+3. **Review every changed file.** Local files enter the review queue individually. Shared changes are grouped in a Git-backed proposal. A person accepts or rejects each file in the webapp. If an agent is operating the review surface, it must ask first, restate the exact action and effects after the first yes, ask again, and make no decision without a second separate, unambiguous yes.
 
 ## Product tour
 
@@ -148,7 +148,7 @@ The complete machine contract, output formats, targeting rules, and safety bound
 
 ## Trust model
 
-- **Review decisions and scope reductions are human-only.** The agent-facing CLI cannot accept, reject, verify, narrow, or remove owner-authorized review coverage.
+- **Review decisions and scope reductions are human-only.** The agent-facing CLI cannot accept, reject, verify, narrow, or remove owner-authorized review coverage. Before attempting any review decision through another surface, an agent must obtain two separate explicit confirmations: after the first yes it restates the exact action, scope, and effects, then waits for a second unambiguous yes.
 - **Authority failures stay visible.** Direct config narrowing fails closed, and a disappeared shared proposal remains a critical queue item instead of silently looking rejected.
 - **Local controls are defense in depth.** UI nonces and signed owner state do not prove physical human presence against an unrestricted process under the same OS account; provider-side rules or a separate authenticated reviewer provide the stronger boundary.
 - **Verification belongs to an exact content hash.** Any content change creates a new review state, including a change that was already committed.

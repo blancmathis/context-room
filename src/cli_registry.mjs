@@ -1,3 +1,10 @@
+import { HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY } from "./review_authority.mjs";
+
+const CLI_HUMAN_DECISION_POLICY = Object.freeze({
+  confirmationsRequired: HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.confirmationsRequired,
+  instruction: HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction,
+});
+
 export const CLI_REGISTRY_SCHEMA_VERSION = "context-room.cli-registry/4";
 export const CLI_MACHINE_SCHEMA_VERSION = "context-room.cli/1";
 export const CLI_MACHINE_SCHEMA_VERSION_V2 = "context-room.cli/2";
@@ -496,6 +503,7 @@ export function cliCapabilitiesFromRegistry({ version = "", installedPaths = nul
       }),
       sections: capabilitySections(),
       humanOwned: ["accept-file-review", "reject-file-review"],
+      humanDecisionPolicy: CLI_HUMAN_DECISION_POLICY,
     };
   }
   const exposed = selectedCommand
@@ -524,6 +532,7 @@ export function cliCapabilitiesFromRegistry({ version = "", installedPaths = nul
     ...(expand ? { namespaces: namespaceDescriptors(available) } : {}),
     commands,
     humanOwned: ["accept-file-review", "reject-file-review"],
+    humanDecisionPolicy: CLI_HUMAN_DECISION_POLICY,
   };
   if (selectedDetail === "compact") return compact;
   const standard = {

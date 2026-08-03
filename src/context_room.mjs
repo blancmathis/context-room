@@ -107,6 +107,7 @@ import {
   createCodexPromptCenterProvider,
 } from "./codex_prompt_center.mjs";
 import {
+  HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY,
   authorizeOwnerTrustedState,
   authorizeOwnerReviewScope,
   effectiveOwnerReviewScope,
@@ -6534,7 +6535,7 @@ Use \`context-room ask "<complete research brief>"\` when work needs accepted pr
 
 When shared documentation must change, use \`context-room edit list\` to inspect open proposals, \`context-room edit open <branch>\` to restore one, or \`context-room edit create "<complete proposal description>"\` to create one. Edit only the returned worktree. There is no agent-facing publish or acceptance step. \`context-room capabilities\` lists the complete static advanced contract; it never interprets an objective or chooses a command.
 
-Context Room never scans the computer for worktrees. Register a location explicitly with \`context-room project register\` when requested. Agents never accept, reject, or verify file reviews, and they never write directly to shared \`main\`.
+Context Room never scans the computer for worktrees. Register a location explicitly with \`context-room project register\` when requested. Agents never accept, reject, or verify file reviews, and they never write directly to shared \`main\`. ${HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction}
 
 ## Set Up This Repository
 
@@ -15427,7 +15428,6 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
 	state.activeProjectLocationId = IS_GLOBAL_CONTEXT_ROOM ? String(CONTEXT_ROOM_QUERY.get("project") || "") : "";
 	document.body.classList.toggle("global-context-room", IS_GLOBAL_CONTEXT_ROOM);
 	document.body.classList.toggle("focused-review-context-room", !IS_GLOBAL_CONTEXT_ROOM);
-	const VERIFY_CONFIRM_STORAGE_KEY = "context-room:skip-mark-verified-confirm";
 const LEGACY_NAVIGATION_STATE_STORAGE_PREFIX = "context-room:navigation:";
 const WORKSPACE_NAVIGATION_STATE_STORAGE_PREFIX = "context-room:workspace-navigation:";
 const WORKSPACE_ID_SESSION_KEY = "context-room:workspace-id";
@@ -15450,6 +15450,7 @@ const DEFAULT_CODEX_REFERENCE_SHORTCUT = "${DEFAULT_CODEX_REFERENCE_SHORTCUT}";
 const DEFAULT_COMPUTER_EXPLORER_ROOT = ${JSON.stringify(DEFAULT_EXPLORER.computerRoot)};
 const WATCH_RULE_MODES = ${JSON.stringify(WATCH_RULE_MODES)};
 const WATCH_RULE_MODE_OPTIONS = ${JSON.stringify(WATCH_RULE_MODE_OPTIONS)};
+const HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY = ${JSON.stringify(HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY)};
 const CONTEXT_HEALTH_STATUS_OPTIONS = [{ id: "open", label: "Open" }, { id: "all", label: "Open + OK" }, { id: "acknowledged", label: "OK only" }];
 const CONTEXT_HEALTH_SEVERITY_OPTIONS = [{ id: "triggered", label: "Triggered" }, { id: "all", label: "All severities" }, { id: "critical", label: "Critical" }, { id: "high", label: "High" }, { id: "medium", label: "Medium" }, { id: "low", label: "Low" }];
 const CONTEXT_HEALTH_CATEGORY_OPTIONS = [{ id: "all", label: "All areas" }, { id: "configuration", label: "Configuration" }, { id: "documentation", label: "Documentation" }, { id: "references", label: "References" }, { id: "review", label: "Review safety" }, { id: "startup", label: "Startup context" }, { id: "hooks", label: "Hooks" }];
@@ -15470,7 +15471,7 @@ const SETTINGS_SECTION_ALIASES = {
   hub: "project",
   "codex-prompts": "advanced-extensions",
 };
-const AGENT_CLI_HANDOFF_PROMPT = "Use context-room ask \"<complete research brief>\" for accepted project documentation. Include the work context, questions to resolve, constraints to check, and expected output; never reduce the request to keywords. When shared documentation must change, use context-room edit list, context-room edit open <branch>, or context-room edit create \"<complete proposal description>\"; edit only the returned proposal worktree. There is no agent-facing publish or acceptance step. Use context-room capabilities only when an advanced operation is genuinely required. Never discover unregistered worktrees, write directly to shared main, or accept or reject files awaiting review.";
+const AGENT_CLI_HANDOFF_PROMPT = "Use context-room ask \"<complete research brief>\" for accepted project documentation. Include the work context, questions to resolve, constraints to check, and expected output; never reduce the request to keywords. When shared documentation must change, use context-room edit list, context-room edit open <branch>, or context-room edit create \"<complete proposal description>\"; edit only the returned proposal worktree. There is no agent-facing publish or acceptance step. Use context-room capabilities only when an advanced operation is genuinely required. Never discover unregistered worktrees or write directly to shared main. " + HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction;
 const SETTINGS_DISCLOSURE_IDS = ["project-shared-explainer", "project-shared-repositories", "project-shared-connection", "review-agent-cli", "review-documents", "review-protection", "startup-context", "startup-skills", "startup-hooks", "shared-how", "shared-providers", "shared-collections", "shared-destinations", "shared-instructions-how", "shared-instructions-collections", "shared-instructions-assign", "shared-instructions-import", "appearance-theme", "appearance-explorer", "appearance-sounds", "appearance-shortcuts", "templates-list", "hub-project-priority", "hub-sections", "codex-prompts-editor"];
 const SETTINGS_DISCLOSURE_DEFAULTS = {
   "project-shared-explainer": false,
@@ -17851,7 +17852,7 @@ function requestContextRoomReviewRejection(ids) {
     proposals ? proposals + " active proposal" + (proposals === 1 ? "" : "s") + " will leave the queue. Each exact Git revision stays archived on a rejected branch." : "",
     localReviews ? localReviews + " local review" + (localReviews === 1 ? "" : "s") + " will be marked Needs changes. The local files will not be deleted." : "",
   ].filter(Boolean).join(" ");
-  showConfirmDialog({
+  showHumanReviewDecisionDialog({
     title: "Reject " + items.length + " selected item" + (items.length === 1 ? "" : "s") + "?",
     body: effects,
     confirmLabel: items.length === 1 ? "Reject item" : "Reject selected",
@@ -22842,12 +22843,11 @@ function requestDeletionReviewBatchConfirmation() {
   const batchKey = state.deletionBatchKey;
   const protectedCount = selected.filter((item) => item.protected).length;
   const protectedCopy = protectedCount ? " This selection includes " + protectedCount + " protected document" + (protectedCount === 1 ? "." : "s.") : "";
-  showConfirmDialog({
+  showHumanReviewDecisionDialog({
     title: "Confirm " + selected.length + " removals?",
     body: "These files are already absent. This records that their removal was intentional; it does not delete files." + protectedCopy,
     confirmLabel: "Confirm removals",
-    checkboxLabel: protectedCount ? "I reviewed the protected paths" : "",
-    checkboxRequired: Boolean(protectedCount),
+    additionalAcknowledgement: protectedCount ? "I also reviewed the protected paths." : "",
     onConfirm: ({ checked }) => confirmDeletionReviewBatch(selected.map((item) => item.path), { batchKey, protectedAcknowledged: checked }),
   });
 }
@@ -23167,7 +23167,7 @@ function renderAgentCliGuide() {
         + '<li>Inspect the complete advanced command contract only when it is needed.</li>'
       + '</ul></section>'
       + '<section><h4>What remains human-owned</h4><ul>'
-        + '<li>Accepting or rejecting each file awaiting review. A shared proposal is complete once every file review is complete; there is no separate proposal decision.</li>'
+        + '<li>Accepting or rejecting each file awaiting review. Before an agent attempts one of these decisions, it must ask once, restate the exact action, project, proposal or file scope, and effects after the first yes, ask again, and do nothing without a second separate, unambiguous yes. A shared proposal is complete once every file review is complete; there is no separate proposal decision.</li>'
       + '</ul></section>'
     + '</div>'
     + '<details class="agent-cli-more">'
@@ -23857,7 +23857,7 @@ function renderSharedContextHelpDialog() {
     + '</div><div class="shared-context-help-note"><strong>Hooks stay local</strong><span>Executable hooks are never distributed as shared resources. Context Room keeps them on the machine or inside the local project for safety.</span></div></section>'
     + '<section class="shared-context-help-section"><h3>How changes become accepted</h3><div class="shared-context-help-flow">'
     + '<div class="shared-context-help-step"><strong>Open an edit</strong><span>An agent or teammate works on a separate Git proposal branch and worktree.</span></div>'
-    + '<div class="shared-context-help-step"><strong>Review each file</strong><span>The proposal stays outside effective context while a human accepts or rejects its files.</span></div>'
+    + '<div class="shared-context-help-step"><strong>Review each file</strong><span>The proposal stays outside effective context while a human accepts or rejects its files. An operating agent must ask twice, restating the exact action, scope, and effects before the second separate confirmation.</span></div>'
     + '<div class="shared-context-help-step"><strong>Update the default branch</strong><span>After all required decisions, the proposal is finalized and the accepted branch becomes the new truth.</span></div>'
     + '</div></section>'
     + '<section class="shared-context-help-section"><h3>How Context Room recognizes the shared components</h3><p>The accepted repository declares its own structure. Context Room reads its manifest and mappings instead of guessing from arbitrary folders.</p><div class="shared-context-help-grid">'
@@ -24107,7 +24107,7 @@ function renderSettingsPanel() {
   const globalReviewCounts = globalSettingsReviewCounts();
   const agentCliGuideDisclosure = renderSettingsDisclosure({ id: "review-agent-cli", title: "Agent CLI guide", copy: "Learn what agents can do and copy a ready-to-send instruction.", status: "Ready to share", scope: "All rooms", body: renderAgentCliGuide() });
   const snoozedReviewDisclosure = renderSettingsDisclosure({ id: "review-snoozed", title: "Snoozed reviews", copy: "Find pending reviews hidden from Home until their chosen return time.", status: contextRoomSnoozedReviews().length + " snoozed", scope: "Device", body: renderSnoozedReviewSettings() });
-  const globalReviewBody = '<div class="settings-concept"><strong>Review stays human-owned.</strong><p>Your agent retrieves accepted documentation with <code>ask</code>. <code>edit</code> prepares a shared proposal worktree. <code>capabilities</code> is only a static command inventory and never chooses an operation. Human file decisions remain yours.</p><p>Home combines review work from every registered project. Each watched document stays in review until a person verifies its current content; proposals remain grouped shared reviews.</p></div><div class="settings-disclosure-list">'
+  const globalReviewBody = '<div class="settings-concept"><strong>Review stays human-owned.</strong><p>Your agent retrieves accepted documentation with <code>ask</code>. <code>edit</code> prepares a shared proposal worktree. <code>capabilities</code> is only a static command inventory and never chooses an operation. Human file decisions remain yours. An operating agent must ask once, restate the exact action, scope, and effects after the first yes, ask again, and do nothing without a second separate, unambiguous yes.</p><p>Home combines review work from every registered project. Each watched document stays in review until a person verifies its current content; proposals remain grouped shared reviews.</p></div><div class="settings-disclosure-list">'
     + agentCliGuideDisclosure
     + snoozedReviewDisclosure
     + renderSettingsDisclosure({ id: "review-documents", title: "Documents to review", copy: "See the aggregate queue, then select one project to choose its watched documents.", status: globalReviewCounts.local + " local files", scope: "All projects", body: renderGlobalProjectSettingsGate("Watched documents and folder modes") })
@@ -26464,46 +26464,35 @@ function nextReviewPath(queue = [], currentPath = null) {
   return paths[(index + 1) % paths.length] || null;
 }
 
-function skipVerifyConfirmEnabled() {
-  try { return window.localStorage?.getItem(VERIFY_CONFIRM_STORAGE_KEY) === "1"; }
-  catch { return false; }
-}
-
-function setSkipVerifyConfirm(enabled) {
-  try {
-    if (enabled) window.localStorage?.setItem(VERIFY_CONFIRM_STORAGE_KEY, "1");
-    else window.localStorage?.removeItem(VERIFY_CONFIRM_STORAGE_KEY);
-  } catch {}
-}
-
 async function requestReviewDecision(path, status) {
   const normalizedStatus = status === "unverified" ? "unverified" : status === "verified" ? "verified" : "needs_changes";
-  if (normalizedStatus !== "verified") {
-    await applyReviewDecision(path, normalizedStatus);
-    return;
-  }
+  const verifying = normalizedStatus === "verified";
   if (!path || state.reviewModePath !== path) return;
   if (!reviewActionForSelectedFile()) return;
-  if (state.dirty && !confirm("This file has unsaved changes. Mark verified without saving?")) return;
-  if (skipVerifyConfirmEnabled()) {
-    await applyReviewDecision(path, "verified");
-    return;
-  }
+  if (verifying && state.dirty && !confirm("This file has unsaved changes. Mark verified without saving?")) return;
   const reviewItem = state.docqa?.queue?.find((item) => item.path === path);
   const initialReview = Boolean(reviewItem?.initialReview);
   const freshnessReview = reviewItem?.reviewReason === "dependency-changed";
-  showConfirmDialog({
-    title: freshnessReview ? "Confirm still current?" : initialReview ? "Accept document?" : "Mark verified?",
-    body: freshnessReview
-      ? "The accepted content stays trusted. This only records that you reviewed the changed dependencies and the document is still current."
-      : initialReview ? "This accepts the current document as the first trusted baseline. Use Next review when ready." : "This marks the current content as trusted. Use Next review when ready.",
-    confirmLabel: freshnessReview ? "Confirm still current" : initialReview ? "Accept document" : "Mark verified",
-    confirmVariant: "primary",
-    checkboxLabel: "Do not ask again",
-    onConfirm: ({ checked } = {}) => {
-      if (checked) setSkipVerifyConfirm(true);
-      applyReviewDecision(path, "verified").catch((error) => setStatus(error.message));
-    },
+  showHumanReviewDecisionDialog({
+    title: normalizedStatus === "needs_changes"
+      ? "Request changes?"
+      : normalizedStatus === "unverified"
+        ? "Mark unverified?"
+        : freshnessReview ? "Confirm still current?" : initialReview ? "Accept document?" : "Mark verified?",
+    body: normalizedStatus === "needs_changes"
+      ? "This records that " + path + " needs changes and keeps it outside trusted context."
+      : normalizedStatus === "unverified"
+        ? "This removes trusted status from " + path + " and returns it to review."
+        : freshnessReview
+          ? "The accepted content stays trusted. This only records that you reviewed the changed dependencies and the document is still current."
+          : initialReview ? "This accepts the current document as the first trusted baseline. Use Next review when ready." : "This marks the current content as trusted. Use Next review when ready.",
+    confirmLabel: normalizedStatus === "needs_changes"
+      ? "Request changes"
+      : normalizedStatus === "unverified"
+        ? "Mark unverified"
+        : freshnessReview ? "Confirm still current" : initialReview ? "Accept document" : "Mark verified",
+    confirmVariant: verifying ? "primary" : "danger",
+    onConfirm: () => applyReviewDecision(path, normalizedStatus).catch((error) => setStatus(error.message)),
   });
 }
 
@@ -26881,7 +26870,7 @@ function renderViewer() {
   });
   document.querySelector("[data-revert-diff]")?.addEventListener("click", () => promptRevertCurrentDiff());
   document.querySelector("[data-file-retry]")?.addEventListener("click", () => selectFile(state.selected, { forceReload: true, pushHistory: false, revealInExplorer: false, reviewMode: state.reviewModePath === state.selected }).catch((error) => setStatus(error.message)));
-  document.querySelector("[data-apply-external-change]")?.addEventListener("click", () => applyExternalChange().catch((error) => setStatus(error.message)));
+  document.querySelector("[data-apply-external-change]")?.addEventListener("click", requestApplyExternalChange);
   document.querySelector("[data-reject-external-change]")?.addEventListener("click", () => promptRejectExternalChange());
   wireExternalReviewDecisionButtons();
   wireExternalReviewAllButtons();
@@ -28336,7 +28325,7 @@ function wireExternalReviewDecisionButtons(root = document) {
   root.querySelectorAll("[data-external-block-decision]").forEach((button) => button.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    chooseExternalReviewBlock(event.currentTarget.dataset.externalBlockDecision, event.currentTarget.dataset.externalBlockId).catch((error) => setStatus(error.message));
+    requestExternalReviewBlockDecision(event.currentTarget.dataset.externalBlockDecision, event.currentTarget.dataset.externalBlockId);
   }));
 }
 
@@ -28344,8 +28333,37 @@ function wireExternalReviewAllButtons(root = document) {
   root.querySelectorAll("[data-external-review-all]").forEach((button) => button.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    chooseAllExternalReviewBlocks(event.currentTarget.dataset.externalReviewAll).catch((error) => setStatus(error.message));
+    requestAllExternalReviewBlocksDecision(event.currentTarget.dataset.externalReviewAll);
   }));
+}
+
+function requestExternalReviewBlockDecision(decision, blockId) {
+  const change = activeExternalChange();
+  if (!change || !blockId || (decision !== "accept" && decision !== "reject")) return;
+  const verb = decision === "accept" ? "Accept" : "Reject";
+  showHumanReviewDecisionDialog({
+    title: verb + " this change?",
+    body: verb + " change block " + blockId + " in " + change.path + ". If this is the final pending block, the reviewed file will be saved.",
+    confirmLabel: verb + " change",
+    confirmVariant: decision === "accept" ? "primary" : "danger",
+    onConfirm: () => chooseExternalReviewBlock(decision, blockId).catch((error) => setStatus(error.message)),
+  });
+}
+
+function requestAllExternalReviewBlocksDecision(decision) {
+  const change = activeExternalChange();
+  if (!change || (decision !== "accept" && decision !== "reject")) return;
+  const blocks = buildExternalReviewBlocks(externalReviewBaseContent(change), change.diskContent || "", change.reviewDecisions || {});
+  const pending = blocks.filter((block) => block.kind === "change" && !block.decision).length;
+  if (!pending) return;
+  const verb = decision === "accept" ? "Accept" : "Reject";
+  showHumanReviewDecisionDialog({
+    title: verb + " all " + pending + " pending changes?",
+    body: verb + " every pending change in " + change.path + ". The reviewed file will then be saved.",
+    confirmLabel: verb + " all",
+    confirmVariant: decision === "accept" ? "primary" : "danger",
+    onConfirm: () => chooseAllExternalReviewBlocks(decision).catch((error) => setStatus(error.message)),
+  });
 }
 
 function wireExternalReviewJumpButtons(root = document) {
@@ -29686,6 +29704,19 @@ function showConfirmDialog({ title, body, confirmLabel = "Confirm", confirmVaria
   backdrop.querySelector(checkboxRequired ? "[data-confirm-checkbox]" : "[data-confirm-accept]")?.focus();
 }
 
+function showHumanReviewDecisionDialog({ title, body, confirmLabel = "Confirm", confirmVariant = "danger", additionalAcknowledgement = "", onConfirm }) {
+  const checkboxLabel = "If an agent is operating, the user separately confirmed this exact action a second time";
+  showConfirmDialog({
+    title,
+    body: HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction + " " + body,
+    confirmLabel,
+    confirmVariant,
+    checkboxLabel: additionalAcknowledgement ? checkboxLabel + ". " + additionalAcknowledgement : checkboxLabel,
+    checkboxRequired: true,
+    onConfirm,
+  });
+}
+
 async function revertCurrentDiff(path = state.selected) {
   if (state.selectedStartupContext || state.selectedReadOnly) return;
   if (!path || state.selected !== path || !state.selectedDiff?.changed || state.diffCollapsed) return;
@@ -30012,11 +30043,24 @@ async function applyExternalChange() {
   }
 }
 
+function requestApplyExternalChange() {
+  const change = activeExternalChange();
+  if (!change) return;
+  const unsavedNote = state.dirty && activeEditor().value !== state.saved ? " Any unsaved editor edits will be discarded." : "";
+  showHumanReviewDecisionDialog({
+    title: "Accept disk change?",
+    body: "Apply the current disk version for " + change.path + "." + unsavedNote,
+    confirmLabel: "Accept change",
+    confirmVariant: "primary",
+    onConfirm: () => applyExternalChange().catch((error) => setStatus(error.message)),
+  });
+}
+
 function promptRejectExternalChange() {
   const change = activeExternalChange();
   if (!change) return;
   const unsavedNote = state.dirty && activeEditor().value !== state.saved ? " Any unsaved editor edits will be discarded." : "";
-  showConfirmDialog({
+  showHumanReviewDecisionDialog({
     title: "Reject disk change",
     body: "Restore the version Context Room was showing before the disk change for " + change.path + "? A backup of the current disk version will be created." + unsavedNote,
     confirmLabel: "Reject change",

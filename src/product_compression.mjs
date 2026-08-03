@@ -26,7 +26,7 @@ export function buildAttentionItems({ reviews = [], freshness = [], decisions = 
       id: review.id || `review:${projectId}:${review.path || review.localFile || "unknown"}`,
       kind: "review",
       title: review.title || review.label || review.path || "Document review",
-      description: review.description || "Accept or reject the exact version shown.",
+      description: review.description || "A human must accept or reject the exact version shown; an operating agent needs two separate explicit confirmations for the exact action.",
       projectId: review.projectKey || projectId,
       resourceId: review.path || review.localFile || "",
       severity: "review",

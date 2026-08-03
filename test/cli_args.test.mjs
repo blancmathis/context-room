@@ -79,6 +79,8 @@ test("removed agent help is replaced by the compact static capabilities contract
   assert.equal(payload.schema, "context-room.cli/2");
   assert.deepEqual(payload.data.commands.map((entry) => entry.path), ["ask"]);
   assert.deepEqual(payload.data.humanOwned, ["accept-file-review", "reject-file-review"]);
+  assert.equal(payload.data.humanDecisionPolicy.confirmationsRequired, 2);
+  assert.match(payload.data.humanDecisionPolicy.instruction, /second separate, unambiguous yes/i);
   assert.equal(fs.existsSync(path.join(root, ".context-room")), false);
 
   const invalid = spawnSync(process.execPath, [cli, "capabilities", "--profile=unknown", "--contract=v2", "--format=json"], { encoding: "utf8" });
@@ -304,6 +306,8 @@ test("docs edit and docs publish expose one bounded local documentation change h
   assert.equal(published.data.status, "published");
   assert.deepEqual(published.data.result.localReviews.map((item) => item.path), ["docs/guide.md"]);
   assert.match(published.data.result.humanOwned, /human accepts or rejects/i);
+  assert.equal(published.data.result.humanDecisionPolicy.confirmationsRequired, 2);
+  assert.match(published.data.result.humanDecisionPolicy.instruction, /second separate, unambiguous yes/i);
 });
 
 test("primary edit routes directly to a shared proposal and never exposes publish", (t) => {

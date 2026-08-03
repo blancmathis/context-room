@@ -13,7 +13,7 @@ context_room:
 
 ## Summary
 
-Accepting, rejecting, or verifying documentation is a human-owned action. Context Room blocks agent-facing decision commands, refuses agent-driven reductions of the review scope, fails closed when project configuration narrows the last owner-authorized scope, and preserves evidence when a shared proposal ref disappears unexpectedly.
+Accepting, rejecting, verifying, or confirming removal of documentation is a human-owned action. Context Room blocks agent-facing decision commands, refuses agent-driven reductions of the review scope, fails closed when project configuration narrows the last owner-authorized scope, and preserves evidence when a shared proposal ref disappears unexpectedly. Every agent-facing instruction and decision surface states the same behavioral rule: ask the user once, then after the first yes restate the exact action, project, proposal or file scope, and effects, ask again, and make no mutation without a second separate, unambiguous yes.
 
 These controls are defense in depth. A process with unrestricted access to the same operating-system account can read local files, drive the browser, or invoke Git directly. Local nonces and signed receipts detect or block ordinary bypasses; they do not prove physical human presence. Strong enforcement against that process requires an external trust anchor such as provider-side rules with a separate reviewer identity, a passkey or hardware-backed user-presence check, or a separately sandboxed account.
 
@@ -28,13 +28,14 @@ The content-level review workflow, GitHub account administration, or a hardware-
 ## Invariants
 
 1. No agent-facing CLI command may accept, reject, verify, or merge documentation for the owner.
-2. An agent may add or widen review coverage, but only the owner interface may narrow or remove it.
-3. Editing `.context-room/config.json` cannot silently reduce effective review coverage below the last owner-authorized scope.
-4. A terminal shared-proposal decision is bound to the exact proposal branch and commit hash.
-5. Rejecting a shared proposal archives its exact commit without deleting the protected `proposal/*` ref.
-6. Disappearance of a previously observed proposal without exact accepted or rejected evidence remains visible as a critical authority violation.
-7. Shared acceptance requires current signed review evidence for every proposal-changed path, including a human-confirmed absent state for a rejected file.
-8. Missing, altered, recovered, or inconsistent evidence never means reviewed.
+2. Before an agent attempts any acceptance, rejection, verification, removal confirmation, or other review decision through a human surface, it must obtain two separate explicit user confirmations. The second request follows a restatement of the exact action, scope, and effects; without a second unambiguous yes, nothing changes.
+3. An agent may add or widen review coverage, but only the owner interface may narrow or remove it.
+4. Editing `.context-room/config.json` cannot silently reduce effective review coverage below the last owner-authorized scope.
+5. A terminal shared-proposal decision is bound to the exact proposal branch and commit hash.
+6. Rejecting a shared proposal archives its exact commit without deleting the protected `proposal/*` ref.
+7. Disappearance of a previously observed proposal without exact accepted or rejected evidence remains visible as a critical authority violation.
+8. Shared acceptance requires current signed review evidence for every proposal-changed path, including a human-confirmed absent state for a rejected file.
+9. Missing, altered, recovered, or inconsistent evidence never means reviewed.
 
 ## Control Layers
 
@@ -58,6 +59,7 @@ The diagram shows the intended chain, not a claim that local state authenticates
 | Bypass | Current behavior | Remaining limit |
 | --- | --- | --- |
 | Agent CLI calls `accept`, `reject`, or `verify` | No such decision command is exposed. | A same-user process can still target lower-level local resources unless the other layers also hold. |
+| Agent receives one conversational approval, then tries to use the owner UI | Agent instructions, machine capabilities, generated handoffs, and every review-decision confirmation require a second separate approval after the exact action, scope, and effects are restated. The UI removes the former persistent confirmation bypass and requires an explicit acknowledgement before enabling the mutation. | This is a behavioral guard and visible checkpoint, not proof that two human utterances occurred; browser automation under the same OS account can still imitate the acknowledgement. |
 | Agent removes or narrows `watchAllow`, `watchRules`, `allowedPaths`, Startup context, or Startup skills through typed settings | The plan is rejected with `human-authority-required`. | The owner may intentionally save a narrower scope in Settings. |
 | Agent runs `watch set --mode off`, `agent unwatch`, replaces a live rule with a narrower mode, or inserts a narrower child rule beneath a recursive parent | The command is rejected with `human-authority-required`. Direct config and typed-settings evaluation also widen an overriding child back to the protected semantics. Adding a new rule or widening an existing rule remains allowed. | Direct filesystem access is handled by the next layer, not by the CLI alone. |
 | Process edits `.context-room/config.json` directly | Context Room keeps the last owner-authorized scope effective and reports `review_authority_tamper` as critical. | The HMAC key is local to the same OS account; this detects tampering but is not a hostile same-user boundary. |

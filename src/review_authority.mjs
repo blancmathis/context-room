@@ -7,6 +7,14 @@ const REVIEW_AUTHORITY_VERSION = 1;
 const LIVE_MODES = new Set(["recursive-live", "direct-live"]);
 const CURRENT_MODES = new Set(["recursive-current", "direct-current"]);
 
+export const HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY = Object.freeze({
+  confirmationsRequired: 2,
+  firstConfirmation: "Ask the user explicitly whether they want the exact acceptance, rejection, verification, or removal confirmation.",
+  secondConfirmation: "After the first yes, restate the exact action, project, proposal or file scope, and effects, then ask again.",
+  mutationRule: "Do nothing unless the user gives a second separate, unambiguous yes.",
+  instruction: "Before any acceptance, rejection, verification, removal confirmation, or other review decision, an agent must ask the user explicitly. After the first yes, it must restate the exact action, project, proposal or file scope, and effects, ask again, and do nothing unless the user gives a second separate, unambiguous yes.",
+});
+
 function stableValue(value) {
   if (Array.isArray(value)) return value.map(stableValue);
   if (!value || typeof value !== "object") return value;

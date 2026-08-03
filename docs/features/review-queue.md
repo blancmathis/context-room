@@ -18,15 +18,16 @@ The review queue shows watched documentation that needs verification before it b
 
 1. Configure `watchAllow` and optional folder `watchRules`.
 2. Open a queued file.
-3. For a Git change, accept or reject each visible change, or use `Accept all` or `Reject all` even when only one change remains; the completed diff records the review.
-4. When several files were removed together, expand the deletion set, inspect or narrow the selected paths, then confirm their removal once.
-5. When Git has no diff, review the current document and use `Mark verified`.
-6. Review newly discovered startup instructions and skills once; they return only when their content changes.
+3. If an agent is operating, it asks whether the user wants the exact review action. After the first yes, it restates the project, proposal or file scope and effects, asks again, and stops unless the user gives a second separate, unambiguous yes.
+4. For a Git change, accept or reject each visible change, or use `Accept all` or `Reject all` even when only one change remains; the completed diff records the review.
+5. When several files were removed together, expand the deletion set, inspect or narrow the selected paths, then confirm their removal.
+6. When Git has no diff, review the current document and use `Mark verified`.
+7. Review newly discovered startup instructions and skills once; they return only when their content changes.
 
 ## Rules
 
 - Review owns the final trust decision.
-- Agents may surface the queue, but should never mark files verified for the user.
+- Agents may surface the queue, but should never decide for the user. The two separate confirmations are required before every acceptance, rejection, verification, removal confirmation, inline decision, and bulk decision; one approval never carries over to another action or scope.
 - Agent settings and watch commands may add or widen review coverage, but they cannot narrow or remove the owner-authorized scope. Those decisions belong to the current owner interface.
 - Context Room keeps the last owner-authorized scope outside project configuration. A direct config edit that narrows it fails closed, leaves the protected scope effective, and creates a critical `review_authority_tamper` issue.
 - Protected local review mutations require the current server-rendered owner-interface nonce. This blocks raw headerless requests but does not prove physical human presence against browser automation or another unrestricted process under the same OS account. See [Review authority](review-authority.md).

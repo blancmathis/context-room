@@ -73,10 +73,13 @@ test("capabilities expose the advanced catalog without choosing an operation", (
   assert.equal(catalog.view, "sections");
   assert.deepEqual(catalog.primaryCommands.map((entry) => entry.path), ["ask", "edit"]);
   assert.deepEqual(catalog.sections.map((entry) => entry.id), ["documentation", "context", "review", "shared", "workspace", "configuration"]);
+  assert.equal(catalog.humanDecisionPolicy.confirmationsRequired, 2);
+  assert.match(catalog.humanDecisionPolicy.instruction, /second separate, unambiguous yes/i);
   assert.equal(Object.hasOwn(catalog, "commands"), false);
 
   const editing = cliCapabilitiesFromRegistry({ version: "test", profile: "editing" });
   assert.deepEqual(editing.commands.map((entry) => entry.path), ["ask", "edit"]);
+  assert.equal(editing.humanDecisionPolicy.confirmationsRequired, 2);
 
   const admin = cliCapabilitiesFromRegistry({ version: "test", profile: "admin" });
   const expert = cliCapabilitiesFromRegistry({ version: "test", profile: "expert" });

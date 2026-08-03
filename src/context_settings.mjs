@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { reviewScopeReductions } from "./review_authority.mjs";
+import { HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY, reviewScopeReductions } from "./review_authority.mjs";
 
 export const CONTEXT_SETTINGS_SCHEMA_VERSION = "context-room.settings/1";
 
@@ -65,7 +65,7 @@ const FORBIDDEN_PREFIXES = Object.freeze([
   ["explorer", "Computer browsing preferences are not context configuration."],
   ["codexPrompts", "Codex prompt overrides are intentionally excluded from context Settings."],
   ["markdownTemplates", "Visual and document templates are intentionally excluded from context Settings."],
-  ["reviewDecisions", "Human review decisions cannot be changed by an agent command."],
+  ["reviewDecisions", `Human review decisions cannot be changed by an agent command. ${HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction}`],
   ["documents", "Document content must be edited and reviewed as a document, not as a setting."],
   ["hooks", "Hook content cannot be changed through the Settings CLI."],
   ["sharedSkills.collections", "Shared collections are shared intent and must change through a skills proposal."],
@@ -273,7 +273,7 @@ export function planContextSettingsChange(adapter, { set, target = null, expecte
     if (reductions.length) {
       throw new ContextSettingsError(
         "human-authority-required",
-        "Agent settings may widen review coverage but cannot reduce human review authority. Use the Context Room Settings UI for this owner decision.",
+        `Agent settings may widen review coverage but cannot reduce human review authority. Use the Context Room Settings UI for this owner decision. ${HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction}`,
         { details: { effect: "review-scope-reduction", reductions } },
       );
     }

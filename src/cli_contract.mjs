@@ -174,6 +174,7 @@ export function cliCapabilities({ version = "", include = "canonical", namespace
     ...capabilities,
     invariants: [
       "No CLI command accepts, rejects, or verifies a file review.",
+      capabilities.humanDecisionPolicy.instruction,
       "Shared main changes only after file-level human review completes.",
       "Worktrees are registered explicitly and are never discovered by scanning the computer.",
       "Unmanaged skill destinations are never replaced.",

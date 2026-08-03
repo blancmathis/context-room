@@ -19,6 +19,11 @@ Agents load only the profile required for their current responsibility.
 The webapp remains the human decision surface. No CLI command accepts, rejects,
 or verifies a file review. Agent configuration commands may add or widen review
 coverage, but they cannot narrow or remove the last owner-authorized scope.
+Every capabilities response includes `humanDecisionPolicy`. Before an agent
+attempts a decision through the human surface, it must ask the user explicitly;
+after the first yes it restates the exact action, project, proposal or file
+scope, and effects, asks again, and does nothing without a second separate,
+unambiguous yes.
 
 ## Three Root Commands
 
