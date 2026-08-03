@@ -96,7 +96,7 @@ test("capabilities expose the advanced catalog without choosing an operation", (
   assert.equal(exact.view, "command");
   assert.equal(exact.detail, "standard");
   assert.deepEqual(exact.commands.map((entry) => entry.path), ["watch set"]);
-  assert.ok(cliCommandArgumentNames(exact.commands[0]).includes("--apply"));
+  assert.equal(cliCommandArgumentNames(exact.commands[0]).includes("--apply"), false);
   assert.match(exact.commands[0].usage, /^context-room watch set/);
   assert.equal(exact.commands[0].authority, "local-reversible");
 
@@ -162,7 +162,7 @@ test("canonical effects use direct, dry-run, or same-path protected apply", () =
     ["ui open", "ephemeral"],
     ["project register", "reversible-local"],
     ["edit", "proposal-only"],
-    ["watch set", "protected"],
+    ["watch set", "reversible-local"],
     ["settings set", "protected"],
   ]);
   for (const [path, effect] of effects) assert.equal(getCliCommand(path).effect, effect, path);

@@ -139,7 +139,9 @@ The complete machine contract, output formats, targeting rules, and safety bound
 
 ## Trust model
 
-- **Review decisions are human-only.** The agent-facing CLI cannot accept or reject a file.
+- **Review decisions and scope reductions are human-only.** The agent-facing CLI cannot accept, reject, verify, narrow, or remove owner-authorized review coverage.
+- **Authority failures stay visible.** Direct config narrowing fails closed, and a disappeared shared proposal remains a critical queue item instead of silently looking rejected.
+- **Local controls are defense in depth.** UI nonces and signed owner state do not prove physical human presence against an unrestricted process under the same OS account; provider-side rules or a separate authenticated reviewer provide the stronger boundary.
 - **Verification belongs to an exact content hash.** Any content change creates a new review state, including a change that was already committed.
 - **`allowedPaths` is the editing boundary.** Context Room does not broaden it implicitly.
 - **Unmanaged files and links are preserved.** Managed Shared Skills and Shared Instructions stop at a collision instead of overwriting another source.
@@ -156,6 +158,7 @@ The complete machine contract, output formats, targeting rules, and safety bound
 - [Context Engine](docs/features/context-engine.md) — effective context, graph, trace, impact, snapshots, and diffs.
 - [Document Graph](docs/features/document-graph.md) — human navigation across proven document relations.
 - [Agent CLI](docs/features/agent-cli.md) — the complete agent-facing machine contract.
+- [Review authority](docs/features/review-authority.md) — threat model, controls, Git protections, recovery, and same-user limits.
 
 ## Development
 

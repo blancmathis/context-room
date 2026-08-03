@@ -114,8 +114,8 @@ import {
   initializeContextRoomProject,
   readAgentAnnotations,
   readCollaborationSessionState,
+  readResolvedContextRoomSettings,
   readReviewGateSettings,
-  removeFolderWatchRule,
   selectAvailableContextRoomPort,
   syncContextRoomGitHooks,
   writeAgentCommand,
@@ -123,6 +123,64 @@ import {
   CONFIG_FILE,
   WATCH_RULE_MODES,
 } from "../src/context_room.mjs";
+
+function normalizedWatchPath(value) {
+  return String(value || "").trim().replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+$/, "") + "/";
+}
+
+function watchModeCovers(previousMode, nextMode) {
+  if (nextMode === "recursive-live") return true;
+  if (previousMode === nextMode) return true;
+  if (nextMode === "direct-live") return ["direct-live", "direct-current"].includes(previousMode);
+  if (nextMode === "recursive-current") return ["recursive-current", "direct-current"].includes(previousMode);
+  return previousMode === "direct-current" && nextMode === "direct-current";
+}
+
+function assertAgentWatchExpansion(root, watchedPath, mode) {
+  if (mode === "off") {
+    throw new ContextRoomCliError(
+      "human-authority-required",
+      "Only the human owner may remove a folder from review. Use Context Room Settings.",
+      { details: { effect: "review-scope-reduction", path: String(watchedPath) }, exitCode: 4 },
+    );
+  }
+  const settings = readResolvedContextRoomSettings(root);
+  const rulePath = normalizedWatchPath(watchedPath);
+  const legacyLive = (settings.watchAllow || []).some((item) => normalizedWatchPath(item) === rulePath);
+  const previous = (settings.watchRules || []).find((item) => normalizedWatchPath(item.path) === rulePath);
+  const previousMode = legacyLive ? "recursive-live" : String(previous?.mode || "");
+  if (previousMode && !watchModeCovers(previousMode, mode)) {
+    throw new ContextRoomCliError(
+      "human-authority-required",
+      `Only the human owner may narrow ${rulePath} from ${previousMode} to ${mode}. Use Context Room Settings.`,
+      { details: { effect: "review-scope-reduction", path: rulePath, previousMode, mode }, exitCode: 4 },
+    );
+  }
+  const ancestorModes = [
+    ...(settings.watchAllow || []).flatMap((item) => {
+      const ancestorPath = normalizedWatchPath(item);
+      return ancestorPath !== rulePath && rulePath.startsWith(ancestorPath) ? ["recursive-live"] : [];
+    }),
+    ...(settings.watchRules || []).flatMap((item) => {
+      const ancestorPath = normalizedWatchPath(item.path);
+      return ancestorPath !== rulePath && rulePath.startsWith(ancestorPath) ? [String(item.mode || "")] : [];
+    }),
+  ];
+  const narrowsAncestor = ancestorModes.some((ancestorMode) => (
+    ancestorMode === "recursive-live"
+      ? mode !== "recursive-live"
+      : ancestorMode === "recursive-current"
+        ? !["recursive-current", "recursive-live"].includes(mode)
+        : false
+  ));
+  if (narrowsAncestor) {
+    throw new ContextRoomCliError(
+      "human-authority-required",
+      `Only the human owner may add a narrower child rule at ${rulePath}. Use Context Room Settings.`,
+      { details: { effect: "review-scope-reduction", path: rulePath, ancestorModes, mode }, exitCode: 4 },
+    );
+  }
+}
 
 function parseArgs(argv) {
   const args = { _: [] };
@@ -705,17 +763,8 @@ if (command === "watch") {
     if (!watchedPath || watchedPath === true) throw new ContextRoomCliError("missing-path", "watch set requires a folder path.", { exitCode: 2 });
     const mode = args.mode && args.mode !== true ? String(args.mode).trim() : "recursive-live";
     if (mode !== "off" && !WATCH_RULE_MODES.includes(mode)) throw new ContextRoomCliError("invalid-watch-mode", `Unknown folder watch mode: ${mode}.`, { details: { expected: [...WATCH_RULE_MODES, "off"] }, exitCode: 2 });
+    assertAgentWatchExpansion(root, watchedPath, mode);
     const plan = previewLegacyMutation("watch.set", { root, input: { path: String(watchedPath), mode }, affected: [CONFIG_FILE] });
-    if (mode === "off") {
-      if (args.apply === true) throw new ContextRoomCliError("missing-plan-id", "--apply requires the exact plan id returned by watch set.", { exitCode: 2 });
-      if (!args.apply) {
-        emitAgentFirstResult("watch.set", { target: agentFirstTarget, data: { ...plan, effect: "protected", action: "remove-watch-rule" } }, { format: agentFirstFormat });
-        process.exit(0);
-      }
-      if (String(args.apply) !== plan.planId) throw new ContextRoomCliError("stale-plan", "The project configuration changed after this watch removal was planned.", { retryable: true, details: { expectedPlanId: plan.planId, suppliedPlanId: String(args.apply) } });
-      emitAgentFirstResult("watch.set", { target: agentFirstTarget, data: { planId: plan.planId, result: removeFolderWatchRule(root, { path: String(watchedPath) }) } }, { format: agentFirstFormat });
-      process.exit(0);
-    }
     if (args["dry-run"]) {
       emitAgentFirstResult("watch.set", { target: agentFirstTarget, data: { ...plan, effect: "reversible-local", dryRun: true } }, { format: agentFirstFormat });
       process.exit(0);
@@ -1746,6 +1795,11 @@ if (command === "agent") {
       console.error(`Unknown folder watch mode: ${mode}. Expected one of: ${WATCH_RULE_MODES.join(", ")}.`);
       process.exit(2);
     }
+    try {
+      assertAgentWatchExpansion(root, args.path, mode);
+    } catch (error) {
+      failAgentFirstCommand("agent.watch", error, { format: agentFirstFormat, target: agentFirstTarget });
+    }
     if (args.apply) {
       failAgentFirstCommand("agent.watch", new ContextRoomCliError("legacy-apply-unsupported", "agent watch keeps its existing direct behavior in this release. Use --plan to preview, then omit --plan only when you intend to apply it.", { exitCode: 2 }), { format: agentFirstFormat });
     }
@@ -1766,20 +1820,11 @@ if (command === "agent") {
       console.error("Usage: context-room agent unwatch --root . --path docs/");
       process.exit(2);
     }
-    if (args.apply) {
-      failAgentFirstCommand("agent.unwatch", new ContextRoomCliError("legacy-apply-unsupported", "agent unwatch keeps its existing direct behavior in this release. Use --plan to preview, then omit --plan only when you intend to apply it.", { exitCode: 2 }), { format: agentFirstFormat });
-    }
-    if (args.plan) {
-      emitAgentFirstResult("agent.unwatch", { data: previewLegacyMutation("agent.unwatch", { root, input: { path: String(args.path) }, affected: [CONFIG_FILE] }) }, { format: agentFirstFormat });
-      process.exit(0);
-    }
-    try {
-      writeStdout(JSON.stringify(removeFolderWatchRule(root, { path: args.path }), null, 2));
-    } catch (error) {
-      console.error(`Unable to unwatch folder: ${error.message}`);
-      process.exit(1);
-    }
-    process.exit(0);
+    failAgentFirstCommand("agent.unwatch", new ContextRoomCliError(
+      "human-authority-required",
+      "Only the human owner may remove a folder from review. Use Context Room Settings.",
+      { details: { effect: "review-scope-reduction", path: String(args.path) }, exitCode: 4 },
+    ), { format: agentFirstFormat });
   }
   if (action === "open" || action === "scroll" || action === "highlight") {
     const targetType = args.heading ? "heading" : args.text ? "text" : args.percent !== undefined ? "percent" : "";

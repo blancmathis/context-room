@@ -4,8 +4,8 @@ context_room:
   scope: context-room
   status: current
   canonical_for: agent CLI
-  last_verified: 2026-07-29
-  sources: [bin/context-room.mjs, src/cli_registry.mjs, src/cli_contract.mjs, src/agent_cli.mjs, src/context_engine.mjs, src/context_settings.mjs, src/shared_context.mjs, test/cli_args.test.mjs, test/cli_registry.test.mjs]
+  last_verified: 2026-08-03
+  sources: [bin/context-room.mjs, src/cli_registry.mjs, src/cli_contract.mjs, src/agent_cli.mjs, src/context_engine.mjs, src/context_settings.mjs, src/review_authority.mjs, src/shared_context.mjs, test/cli_args.test.mjs, test/cli_registry.test.mjs]
 ---
 
 # Agent-First CLI
@@ -17,7 +17,8 @@ agents. It is not designed as one flat list of every internal primitive.
 Agents load only the profile required for their current responsibility.
 
 The webapp remains the human decision surface. No CLI command accepts, rejects,
-or verifies a file review.
+or verifies a file review. Agent configuration commands may add or widen review
+coverage, but they cannot narrow or remove the last owner-authorized scope.
 
 ## Three Root Commands
 
@@ -140,10 +141,10 @@ structured candidates instead of guessing.
 | --- | --- | --- |
 | `none` | Direct read | `ask`, list, show, `doctor` |
 | `ephemeral` | Direct UI navigation, no project truth change | `ui open` |
-| `reversible-local` | Direct and idempotent local change; optional `--dry-run` where useful | note, register, add watch |
+| `reversible-local` | Direct and idempotent local change; optional `--dry-run` where useful | note, register, add or widen watch |
 | `proposal-only` | Creates proposal-owned state, never accepted truth | `edit`, `shared assign` |
-| `protected` | Exact plan, then the same command with `--apply <plan-id>` | remove watch, settings, unlink, repository security |
-| `human-only` | Unavailable in the CLI | accept, reject, verify |
+| `protected` | Exact plan, then the same command with `--apply <plan-id>` | permitted typed settings, unlink, repository security |
+| `human-only` | Unavailable in the CLI | accept, reject, verify, narrow or remove review coverage |
 
 There is no canonical boolean `--plan`, no separate `settings apply`, and no
 plan for simple UI navigation. A stale protected plan returns `stale-plan`.
@@ -151,12 +152,17 @@ plan for simple UI navigation. A stale protected plan returns `stale-plan`.
 Example:
 
 ```bash
-context-room settings set --set 'startupSkills.enabled=false' --project <id>
+context-room settings set --set 'allowedPaths=["docs/","runbooks/"]' --project <id>
 context-room settings set --apply <plan-id> --project <id>
 
-context-room watch set docs/legacy --mode off --project <id>
-context-room watch set docs/legacy --mode off --project <id> --apply <plan-id>
+context-room watch set runbooks/ --mode recursive-live --project <id>
 ```
+
+`watch set --mode off`, `agent unwatch`, replacing a live rule with a narrower
+mode, disabling protected Startup scanners, or removing protected review paths
+returns `human-authority-required`. The owner performs an intentional reduction
+in the current Settings interface. Direct config edits still fail closed under
+the separate [Review authority](review-authority.md) control.
 
 ## Accepted Context Boundary
 

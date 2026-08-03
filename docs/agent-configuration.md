@@ -4,8 +4,8 @@ context_room:
   scope: context-room
   status: current
   canonical_for: agent configuration
-  last_verified: 2026-07-30
-  sources: [bin/context-room.mjs, src/context_room.mjs, src/context_settings.mjs, src/codex_prompt_center.mjs, src/shared_context.mjs, src/provider_profiles.mjs, schemas/config.schema.json, schemas/shared-repository.schema.json, schemas/shared-skill-locations.schema.json, schemas/shared-skill-local-state.schema.json, schemas/shared-resource-local-state.schema.json, schemas/shared-instruction-locations.schema.json, schemas/codex-prompt-catalog-v1.schema.json, schemas/codex-prompt-overrides-v1.schema.json, schemas/codex-prompt-publication-state-v2.schema.json, schemas/codex-prompt-runtime-receipt-v2.schema.json]
+  last_verified: 2026-08-03
+  sources: [bin/context-room.mjs, src/context_room.mjs, src/context_settings.mjs, src/review_authority.mjs, src/codex_prompt_center.mjs, src/shared_context.mjs, src/provider_profiles.mjs, schemas/config.schema.json, schemas/shared-repository.schema.json, schemas/shared-skill-locations.schema.json, schemas/shared-skill-local-state.schema.json, schemas/shared-resource-local-state.schema.json, schemas/shared-instruction-locations.schema.json, schemas/codex-prompt-catalog-v1.schema.json, schemas/codex-prompt-overrides-v1.schema.json, schemas/codex-prompt-publication-state-v2.schema.json, schemas/codex-prompt-runtime-receipt-v2.schema.json]
 ---
 
 # Agent configuration guide
@@ -16,7 +16,7 @@ Project behavior is configured with one JSON file:
 .context-room/config.json
 ```
 
-That file is the contract between the project owner, the UI, and AI agents. Fresh setup derives it from the documentation that actually exists in the project. If an agent later needs to curate a card or safe editable surface, it should use the typed Settings CLI and then run `context-room doctor`. For folder watch rules, prefer `context-room watch set` so snapshots are captured consistently.
+That file is the portable project contract between the owner, the UI, and AI agents. Fresh setup derives it from the documentation that actually exists in the project. Effective review coverage also includes the last owner-authorized scope stored outside the project; a direct config edit cannot silently narrow that scope. If an agent later needs to curate a card or safe editable surface, it should use the typed Settings CLI and then run `context-room doctor`. For folder watch rules, `context-room watch set` may add or widen coverage while capturing snapshots consistently; only the owner Settings interface may narrow or remove coverage.
 
 Interface preferences are shared across every Context Room on the computer and stored separately:
 
@@ -40,7 +40,9 @@ The human-owned review gate is also stored separately:
 .context-room/review-gate.json
 ```
 
-Use the Review tab in Settings to choose any combination of `commit`, `push`, `pull request`, and `merge`. This policy is local to the worktree, excluded from Git, omitted from project configuration, and not writable through the Context Room agent CLI. Context Room treats it as owner-controlled policy; it is not a security boundary against a process with unrestricted filesystem access.
+Use the Review tab in Settings to choose any combination of `commit`, `push`, `pull request`, and `merge`. This policy is local to the worktree, excluded from Git, omitted from project configuration, and not writable through the Context Room agent CLI. The last owner-authorized review scope and exact shared-proposal rejection receipts also live in private owner-local authority state, normally under `~/.context-room/hub/review-authority/` and `~/.context-room/shared/review-authority/`.
+
+Context Room signs that authority state and requires a current UI nonce for protected local mutations. These controls block normal CLI, config, and raw-HTTP bypasses, but they are not proof of physical human presence against a process with unrestricted access to the same OS account. Use provider-side rules and a separate authenticated reviewer, hardware-backed user presence, or OS isolation for that stronger boundary. The canonical security contract is `docs/features/review-authority.md`.
 
 ## Fresh project setup
 
@@ -198,7 +200,7 @@ The two `current` modes persist the eligible file paths in `files` when the rule
 
 Keep snapshot `files` inside their rule path. `recursive-current` may list descendants at any depth; `direct-current` lists only immediate file children. When rules overlap, the most specific matching path controls a file. An explicit structured rule wins a tie with a `watchAllow` folder entry at the same path.
 
-The Explorer and agent CLI require an existing folder covered by `allowedPaths`; adding a watch rule never widens the edit boundary. They remove that same folder from `watchAllow` when they upsert a structured rule, leaving one owner for the scope. Use those surfaces to create snapshot rules so Context Room records the eligible files correctly. Removing an exact folder rule does not create an exclusion; a broader ancestor rule may still watch files below it.
+The Explorer and agent CLI require an existing folder covered by `allowedPaths`; adding a watch rule never widens the edit boundary. They remove that same folder from `watchAllow` when they upsert a structured rule, leaving one owner for the scope. Use those surfaces to create snapshot rules so Context Room records the eligible files correctly. An agent may upsert only when the result preserves or widens the owner-authorized scope. Removing an exact folder rule, or replacing it with a narrower mode, requires the owner Settings interface. Removal does not create an exclusion; a broader ancestor rule may still watch files below it.
 
 External watched files are not assigned invented Git history. Their first appearance is a new-file first review. Accepting it records a local baseline; later edits and deletions are reviewed against that baseline. A live external rule also admits later eligible files according to its recursive or direct-child scope. The shared ledger still keys trust by canonical absolute path, so another room watching the same external file can reuse a matching verified content hash.
 
@@ -353,11 +355,11 @@ Keep metadata small. The goal is not bureaucracy; it lets Context Room find stal
 
 ## Rules for agents
 
-1. Treat `.context-room/config.json` as the source of truth for Context Room setup.
+1. Treat `.context-room/config.json` as the portable project intent. Effective review coverage is the union with the last owner-authorized local scope; do not try to reduce it outside the owner Settings interface.
 2. Start with `context-room setup`; edit the JSON directly only when the inferred project map needs deliberate curation.
 3. Keep `allowedPaths` conservative: documentation, skills, runbooks, agent instructions, and safe text files.
 4. Treat `readOnlyPaths` as context, not an edit surface. For shared accepted paths, create a shared proposal instead of removing the boundary.
-5. Put the truly important docs in `watchAllow` or an explicit `watchRules` mode, not every file in the repo. Use `context-room watch set <path> --mode <mode>` to create folder snapshots.
+5. Put the truly important docs in `watchAllow` or an explicit `watchRules` mode, not every file in the repo. Use `context-room watch set <path> --mode <mode>` to add or widen folder coverage and create snapshots. Never use an agent path to narrow or remove review coverage.
 6. Use stable lowercase IDs with dashes, for example `agent-context`, `architecture`, `release-runbooks`.
 7. Preserve the `$schema` field so editors and agents can validate the file shape.
 8. After editing config, run:
@@ -371,14 +373,16 @@ supported context setting. It validates values, previews the exact revision,
 and refuses stale apply operations:
 
 ```bash
-context-room settings get startupContext.projectOnly --detail standard --format json
-context-room settings set --set 'startupContext.projectOnly=true' --format json
-context-room settings set --set 'startupContext.projectOnly=true' --apply <plan-id> --format json
+context-room settings get allowedPaths --detail standard --format json
+context-room settings set --set 'allowedPaths=["docs/","runbooks/"]' --format json
+context-room settings set --apply <plan-id> --format json
 ```
 
 This surface intentionally excludes appearance, owner-controlled Git gates,
-review decisions, document or hook content, and shared collection or assignment
-intent. Root help exposes only `ask`, `edit`, and `capabilities`.
+review decisions, review-scope reductions, document or hook content, and shared
+collection or assignment intent. A reduction returns
+`human-authority-required`. Root help exposes only `ask`, `edit`, and
+`capabilities`.
 `context-room capabilities` returns a compact static index of the primary
 actions and capability sections. Exact command contracts are loaded only on
 request; the command does not interpret an objective or choose an operation.

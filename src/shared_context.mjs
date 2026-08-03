@@ -9,6 +9,7 @@ import { parse as parseJsonc } from "jsonc-parser";
 import { appendContextRoomEvent } from "./event_journal.mjs";
 import { parseDocMetadata } from "./doc_metadata.mjs";
 import { contextProviderProfile } from "./provider_profiles.mjs";
+import { inspectOwnerProposalDecisions, inspectOwnerTrustedState, recordOwnerProposalDecision } from "./review_authority.mjs";
 
 export const SHARED_REPOSITORY_CONFIG = ".context-room/shared-repository.json";
 export const SHARED_REVIEW_CONFIG = ".context-room/shared-review.json";
@@ -3491,6 +3492,14 @@ function githubRulesetName(defaultBranch) {
   return `${GITHUB_RULESET_PREFIX}${defaultBranch}`;
 }
 
+function githubReviewRulesetName(kind) {
+  return `${GITHUB_RULESET_PREFIX}${kind} review refs`;
+}
+
+function githubPrefixPattern(prefix) {
+  return `refs/heads/${String(prefix).replace(/\/$/, "")}/**/*`;
+}
+
 function githubRulesetPayload(defaultBranch) {
   return {
     name: githubRulesetName(defaultBranch),
@@ -3505,14 +3514,29 @@ function githubRulesetPayload(defaultBranch) {
         type: "pull_request",
         parameters: {
           allowed_merge_methods: ["merge", "squash", "rebase"],
-          dismiss_stale_reviews_on_push: false,
+          dismiss_stale_reviews_on_push: true,
           require_code_owner_review: false,
-          require_last_push_approval: false,
-          required_approving_review_count: 0,
+          require_last_push_approval: true,
+          required_approving_review_count: 1,
           required_review_thread_resolution: true,
         },
       },
     ],
+  };
+}
+
+function githubReviewRulesetPayload(config, kind) {
+  const rejected = kind === "rejected";
+  const prefix = rejected ? config.rejectionPrefix : config.proposalPrefix;
+  return {
+    name: githubReviewRulesetName(kind),
+    target: "branch",
+    enforcement: "active",
+    bypass_actors: [],
+    conditions: { ref_name: { include: [githubPrefixPattern(prefix)], exclude: [] } },
+    rules: rejected
+      ? [{ type: "deletion" }, { type: "non_fast_forward" }, { type: "update" }]
+      : [{ type: "deletion" }],
   };
 }
 
@@ -3525,11 +3549,42 @@ function inspectGitHubRuleset(ruleset, defaultBranch) {
     exactDefaultBranch: ruleset?.conditions?.ref_name?.include?.includes(`refs/heads/${defaultBranch}`) === true,
     noBypassActors: Array.isArray(ruleset?.bypass_actors) && ruleset.bypass_actors.length === 0,
     requiresPullRequest: Boolean(pullRequest),
+    requiresHumanApproval: Number(pullRequest?.parameters?.required_approving_review_count || 0) >= 1,
+    dismissesStaleApproval: pullRequest?.parameters?.dismiss_stale_reviews_on_push === true,
+    requiresLastPushApproval: pullRequest?.parameters?.require_last_push_approval === true,
     resolvesReviewThreads: pullRequest?.parameters?.required_review_thread_resolution === true,
     blocksDeletion: types.has("deletion"),
     blocksForcePush: types.has("non_fast_forward"),
   };
   return { verified: Object.values(checks).every(Boolean), checks };
+}
+
+function inspectGitHubReviewRuleset(ruleset, config, kind) {
+  const types = new Set((ruleset?.rules || []).map((rule) => rule.type));
+  const rejected = kind === "rejected";
+  const checks = {
+    active: ruleset?.enforcement === "active",
+    branchTarget: ruleset?.target === "branch",
+    exactPattern: ruleset?.conditions?.ref_name?.include?.includes(githubPrefixPattern(rejected ? config.rejectionPrefix : config.proposalPrefix)) === true,
+    noBypassActors: Array.isArray(ruleset?.bypass_actors) && ruleset.bypass_actors.length === 0,
+    blocksDeletion: types.has("deletion"),
+    ...(rejected ? { blocksForcePush: types.has("non_fast_forward"), blocksUpdates: types.has("update") } : {}),
+  };
+  return { verified: Object.values(checks).every(Boolean), checks };
+}
+
+function prefixedChecks(prefix, checks) {
+  return Object.fromEntries(Object.entries(checks).map(([name, value]) => [`${prefix}${name[0].toUpperCase()}${name.slice(1)}`, value]));
+}
+
+function findGitHubRulesetSummary(rulesets, name) {
+  return (rulesets || []).find((item) => item.name === name) || null;
+}
+
+function readGitHubRuleset(github, summary) {
+  return summary?.id
+    ? runGitHubApi(`repos/${github.fullName}/rulesets/${summary.id}?includes_parents=false`)
+    : null;
 }
 
 function writeGitHubSecurityState(repository, result) {
@@ -3540,20 +3595,32 @@ export function checkSharedGitHubSecurity(root) {
   const { repository, repositoryConfig, gitRoots } = sharedSecurityTarget(root);
   const github = githubRepositoryCoordinates(repository);
   const rulesets = runGitHubApi(`repos/${github.fullName}/rulesets?includes_parents=false&targets=branch`);
-  const summary = (rulesets || []).find((item) => item.name === githubRulesetName(repositoryConfig.defaultBranch));
-  let ruleset = null;
-  if (summary?.id) ruleset = runGitHubApi(`repos/${github.fullName}/rulesets/${summary.id}?includes_parents=false`);
-  const inspected = inspectGitHubRuleset(ruleset, repositoryConfig.defaultBranch);
+  const mainRuleset = readGitHubRuleset(github, findGitHubRulesetSummary(rulesets, githubRulesetName(repositoryConfig.defaultBranch)));
+  const proposalRuleset = readGitHubRuleset(github, findGitHubRulesetSummary(rulesets, githubReviewRulesetName("proposal")));
+  const rejectedRuleset = readGitHubRuleset(github, findGitHubRulesetSummary(rulesets, githubReviewRulesetName("rejected")));
+  const mainInspected = inspectGitHubRuleset(mainRuleset, repositoryConfig.defaultBranch);
+  const proposalInspected = inspectGitHubReviewRuleset(proposalRuleset, repositoryConfig, "proposal");
+  const rejectedInspected = inspectGitHubReviewRuleset(rejectedRuleset, repositoryConfig, "rejected");
   const deployKeys = runGitHubApi(`repos/${github.fullName}/keys?per_page=100`);
   const agentGit = inspectSharedAgentGit(repository, github, gitRoots, deployKeys);
-  const checks = { ...inspected.checks, ...agentGit.checks };
+  const checks = {
+    ...prefixedChecks("main", mainInspected.checks),
+    ...prefixedChecks("proposal", proposalInspected.checks),
+    ...prefixedChecks("rejected", rejectedInspected.checks),
+    ...agentGit.checks,
+  };
   return writeGitHubSecurityState(repository, {
     verified: Object.values(checks).every(Boolean),
     checkedAt: new Date().toISOString(),
     repository: github.fullName,
     defaultBranch: repositoryConfig.defaultBranch,
-    rulesetId: ruleset?.id || null,
-    rulesetUrl: ruleset?._links?.html?.href || `https://github.com/${github.fullName}/settings/rules`,
+    rulesetId: mainRuleset?.id || null,
+    rulesetIds: {
+      main: mainRuleset?.id || null,
+      proposal: proposalRuleset?.id || null,
+      rejected: rejectedRuleset?.id || null,
+    },
+    rulesetUrl: mainRuleset?._links?.html?.href || `https://github.com/${github.fullName}/settings/rules`,
     deployKeyId: agentGit.deployKey?.id || null,
     agentCredential: agentGit.credential,
     checks,
@@ -3564,10 +3631,23 @@ export function secureSharedGitHubRepository(root) {
   const { repository, repositoryConfig, gitRoots } = sharedSecurityTarget(root);
   const github = githubRepositoryCoordinates(repository);
   const rulesets = runGitHubApi(`repos/${github.fullName}/rulesets?includes_parents=false&targets=branch`);
-  const existing = (rulesets || []).find((item) => item.name === githubRulesetName(repositoryConfig.defaultBranch));
-  const payload = githubRulesetPayload(repositoryConfig.defaultBranch);
-  if (existing?.id) runGitHubApi(`repos/${github.fullName}/rulesets/${existing.id}`, { method: "PUT", body: payload });
-  else runGitHubApi(`repos/${github.fullName}/rulesets`, { method: "POST", body: payload });
+  const payloads = [
+    githubRulesetPayload(repositoryConfig.defaultBranch),
+    githubReviewRulesetPayload(repositoryConfig, "proposal"),
+    githubReviewRulesetPayload(repositoryConfig, "rejected"),
+  ];
+  let createdRulesets = 0;
+  let updatedRulesets = 0;
+  for (const payload of payloads) {
+    const existing = findGitHubRulesetSummary(rulesets, payload.name);
+    if (existing?.id) {
+      runGitHubApi(`repos/${github.fullName}/rulesets/${existing.id}`, { method: "PUT", body: payload });
+      updatedRulesets += 1;
+    } else {
+      runGitHubApi(`repos/${github.fullName}/rulesets`, { method: "POST", body: payload });
+      createdRulesets += 1;
+    }
+  }
   const credential = ensureSharedAgentCredential(repository);
   const deployKeys = runGitHubApi(`repos/${github.fullName}/keys?per_page=100`);
   let deployKey = (deployKeys || []).find((item) => (
@@ -3584,7 +3664,14 @@ export function secureSharedGitHubRepository(root) {
   configureSharedAgentGit(repository, github, gitRoots);
   const result = checkSharedGitHubSecurity(root);
   if (!result.verified) throw new Error("GitHub created the ruleset but its effective security checks did not pass");
-  return { ...result, rulesetCreated: !existing, rulesetUpdated: Boolean(existing), deployKeyId: deployKey.id || result.deployKeyId };
+  return {
+    ...result,
+    rulesetCreated: createdRulesets > 0,
+    rulesetUpdated: updatedRulesets > 0,
+    createdRulesets,
+    updatedRulesets,
+    deployKeyId: deployKey.id || result.deployKeyId,
+  };
 }
 
 function proposalScopePrefixes(config, projectId, scope, options = {}) {
@@ -3661,6 +3748,63 @@ function proposalBranch(config, projectId, title, scope, explicit = "") {
 
 function proposalRegistryPath(repository) {
   return path.join(repositoryCacheRoot(repository), "proposals.json");
+}
+
+function proposalObservationsPath(repository) {
+  return path.join(repositoryCacheRoot(repository), "proposal-observations.json");
+}
+
+function proposalDecisionAuthorityOptions() {
+  return { authorityHome: path.join(sharedHome(), "review-authority") };
+}
+
+function observedProposalValue(item, state = "active") {
+  return {
+    branch: String(item.branch || ""),
+    projectId: String(item.projectId || ""),
+    scope: String(item.scope || "project"),
+    repository: String(item.repository || ""),
+    repositoryName: String(item.repositoryName || ""),
+    projectTitle: String(item.projectTitle || ""),
+    head: String(item.head || ""),
+    baseRevision: String(item.baseRevision || ""),
+    updatedAt: String(item.updatedAt || ""),
+    author: item.author || { name: "", email: "" },
+    title: String(item.title || item.branch || "Shared context proposal"),
+    description: String(item.description || ""),
+    sessionId: String(item.sessionId || ""),
+    sourceRemote: String(item.sourceRemote || ""),
+    sourceBranch: String(item.sourceBranch || ""),
+    sourceCommit: String(item.sourceCommit || ""),
+    semanticReviewRequired: Boolean(item.semanticReviewRequired),
+    files: Array.isArray(item.files) ? item.files.map(String) : [],
+    fileCount: Number(item.fileCount || item.files?.length || 0),
+    state,
+    lastSeenAt: new Date().toISOString(),
+  };
+}
+
+function readProposalObservations(repository) {
+  const state = readJson(proposalObservationsPath(repository), { version: 1, repository, proposals: {} });
+  if (state?.version !== 1 || state?.repository !== repository || !state.proposals || typeof state.proposals !== "object") {
+    return { version: 1, repository, proposals: {} };
+  }
+  return state;
+}
+
+function writeProposalObservations(repository, state) {
+  return writePrivateJson(proposalObservationsPath(repository), {
+    version: 1,
+    repository,
+    proposals: state.proposals || {},
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+function rememberProposalObservation(repository, item, state = "active") {
+  const observations = readProposalObservations(repository);
+  observations.proposals[item.branch] = observedProposalValue(item, state);
+  writeProposalObservations(repository, observations);
 }
 
 export function createSharedProposal(root, { title, description = "", scope = "project", branch = "", sessionId = process.env.CODEX_THREAD_ID || "" } = {}) {
@@ -3966,6 +4110,24 @@ export function publishSharedProposal(root, { proposal, message = "", title, des
   entry.updatedAt = new Date().toISOString();
   entry.lastPublishedHead = head;
   writeJson(proposalRegistryPath(connection.repository), registry);
+  rememberProposalObservation(connection.repository, {
+    ...identity,
+    repository: connection.repository,
+    repositoryName: synced.repositoryConfig.name,
+    projectTitle: synced.catalog.projects.find((project) => project.id === identity.projectId)?.title || identity.projectId,
+    head,
+    baseRevision: entry.baseRevision,
+    updatedAt: entry.updatedAt,
+    title: entry.title,
+    description: entry.description,
+    sessionId: entry.sessionId,
+    sourceRemote: entry.sourceRemote,
+    sourceBranch: entry.sourceBranch,
+    sourceCommit: entry.sourceCommit,
+    semanticReviewRequired: Boolean(entry.semanticReviewRequired),
+    files,
+    fileCount: files.length,
+  });
   appendContextRoomEvent("proposal.published", {
     projectId: connection.projectId,
     sharedRepository: connection.repository,
@@ -4211,7 +4373,7 @@ export function listSharedRepositoryProposals(repository, { allowOffline = true,
   };
 }
 
-export function rejectSharedRepositoryProposal(repository, { proposal, expectedHead } = {}) {
+export function rejectSharedRepositoryProposal(repository, { proposal, expectedHead, actor = "human-ui" } = {}) {
   const synced = syncSharedRepositoryState(repository, { allowOffline: false });
   const identity = proposalIdentity(synced.repositoryConfig, proposal);
   const reviewedHead = safeRevision(expectedHead, "expected proposal head");
@@ -4246,20 +4408,20 @@ export function rejectSharedRepositoryProposal(repository, { proposal, expectedH
 
   runGit(checkout, [
     "push",
-    "--atomic",
     "origin",
     `${reviewedHead}:refs/heads/${rejectionBranch}`,
-    `:refs/heads/${identity.branch}`,
   ], { stdio: ["ignore", "ignore", "pipe"] });
+
+  recordOwnerProposalDecision(synced.connection.repository, {
+    proposal: identity.branch,
+    proposalHead: reviewedHead,
+    decision: "rejected",
+    archiveRef: rejectionBranch,
+  }, { ...proposalDecisionAuthorityOptions(), actor });
 
   if (localEntry?.root && fs.existsSync(localEntry.root)) {
     try {
-      runGit(checkout, ["worktree", "remove", "--force", localEntry.root], { stdio: ["ignore", "ignore", "ignore"] });
-    } catch {}
-  }
-  if (tryGit(checkout, ["rev-parse", "--verify", `refs/heads/${identity.branch}`])) {
-    try {
-      runGit(checkout, ["branch", "-D", identity.branch], { stdio: ["ignore", "ignore", "ignore"] });
+      runGit(checkout, ["worktree", "remove", localEntry.root], { stdio: ["ignore", "ignore", "ignore"] });
     } catch {}
   }
   if (registry.proposals?.[identity.branch]) {
@@ -4267,6 +4429,7 @@ export function rejectSharedRepositoryProposal(repository, { proposal, expectedH
     writeJson(registryFile, registry);
   }
   runGit(checkout, ["fetch", "--prune", "origin"], { stdio: ["ignore", "ignore", "pipe"] });
+  rememberProposalObservation(synced.connection.repository, current, "rejected");
   const result = {
     rejected: true,
     repository: synced.connection.repository,
@@ -4405,14 +4568,116 @@ export function listSharedMainAcceptances(repository, { refresh = true } = {}) {
   return [...sharedMainAcceptanceIndex(synced, main.checkout).entries()].map(([proposal, accepted]) => ({ proposal, ...accepted }));
 }
 
+function ownerProposalDecisionIndex(repository) {
+  const inspected = inspectOwnerProposalDecisions(repository, proposalDecisionAuthorityOptions());
+  const decisions = new Map();
+  if (inspected.integrity === "verified") {
+    for (const decision of inspected.decisions) {
+      decisions.set(`${decision.proposal}\0${decision.proposalHead}`, decision);
+    }
+  }
+  return { ...inspected, decisions };
+}
+
+function expectedRejectionBranch(config, proposal, proposalHead) {
+  const suffix = proposal.slice(config.proposalPrefix.length);
+  return safeBranchName(`${config.rejectionPrefix}${suffix}-${proposalHead.slice(0, 12)}`, "rejection branch");
+}
+
+function proposalRejectionEvidence(synced, checkout, proposal, proposalHead, decisionIndex) {
+  const expectedArchive = expectedRejectionBranch(synced.repositoryConfig, proposal, proposalHead);
+  const archiveHead = remoteBranchRevision(checkout, expectedArchive);
+  const decision = decisionIndex.decisions.get(`${proposal}\0${proposalHead}`) || null;
+  return {
+    expectedArchive,
+    archiveHead,
+    decision,
+    verified: decision?.decision === "rejected"
+      && decision.archiveRef === expectedArchive
+      && archiveHead === proposalHead,
+  };
+}
+
+function proposalAuthorityViolation(item, reviewStatus, authorityMessage) {
+  return {
+    ...item,
+    reviewStatus,
+    authorityViolation: true,
+    authorityMessage,
+    available: reviewStatus !== "externally_deleted",
+  };
+}
+
+function reconcileProposalObservations(synced, checkout, current, mainAcceptance, remoteAcceptance, decisionIndex) {
+  if (!synced.online) return current;
+  const repository = synced.connection.repository;
+  const observations = readProposalObservations(repository);
+  const visible = [];
+  const currentBranches = new Set();
+
+  for (const item of current) {
+    currentBranches.add(item.branch);
+    const rejection = proposalRejectionEvidence(synced, checkout, item.branch, item.head, decisionIndex);
+    observations.proposals[item.branch] = observedProposalValue(item, rejection.verified ? "rejected" : "active");
+    if (rejection.verified) continue;
+    if (rejection.archiveHead === item.head) {
+      visible.push(proposalAuthorityViolation(
+        item,
+        "unverified_rejection",
+        "A rejection archive exists, but this device has no intact owner-authorized decision receipt for the exact proposal revision.",
+      ));
+      continue;
+    }
+    if (rejection.decision?.decision === "rejected") {
+      visible.push(proposalAuthorityViolation(
+        item,
+        "rejection_archive_missing",
+        "The owner decision receipt says rejected, but the immutable remote rejection archive is missing or does not match the reviewed revision.",
+      ));
+      continue;
+    }
+    visible.push(item);
+  }
+
+  for (const previous of Object.values(observations.proposals || {})) {
+    if (!previous?.branch || currentBranches.has(previous.branch) || previous.state === "rejected") continue;
+    const accepted = mainAcceptance.get(previous.branch) || remoteAcceptance.get(previous.branch);
+    if (accepted?.proposalHead === previous.head) {
+      observations.proposals[previous.branch] = { ...previous, state: "accepted", lastCheckedAt: new Date().toISOString() };
+      continue;
+    }
+    const rejection = proposalRejectionEvidence(synced, checkout, previous.branch, previous.head, decisionIndex);
+    if (rejection.verified) {
+      observations.proposals[previous.branch] = { ...previous, state: "rejected", lastCheckedAt: new Date().toISOString() };
+      continue;
+    }
+    observations.proposals[previous.branch] = { ...previous, state: "missing", lastCheckedAt: new Date().toISOString() };
+    visible.push(proposalAuthorityViolation(
+      {
+        ...previous,
+        reviewActivity: null,
+        updatedSinceReview: false,
+        mainAdvancedBy: 0,
+        hasConflict: false,
+      },
+      "externally_deleted",
+      "The proposal ref disappeared without a recorded human terminal decision. Restore the exact ref and inspect repository protections before continuing review.",
+    ));
+  }
+
+  writeProposalObservations(repository, observations);
+  return visible;
+}
+
 function listRemoteSharedProposals(synced, { allProjects = true } = {}) {
   const checkout = repositoryCheckout(synced.connection.repository);
   const reviewActivity = sharedReviewActivityIndex(synced.connection.repository, checkout, synced.revision);
   const remoteAcceptance = sharedRemoteAcceptanceIndex(synced, checkout);
   const mainAcceptance = sharedMainAcceptanceIndex(synced, checkout);
   const prefix = `refs/remotes/origin/${synced.repositoryConfig.proposalPrefix}`;
+  const decisionIndex = ownerProposalDecisionIndex(synced.connection.repository);
   const output = tryGit(checkout, ["for-each-ref", "--format=%(refname:strip=3)%09%(objectname)%09%(committerdate:iso8601)%09%(authorname)%09%(authoremail)%09%(subject)", prefix]);
-  return output.split("\n").filter(Boolean).flatMap((line) => {
+  const current = output.split("\n").filter(Boolean).flatMap((line) => {
     const [branch, head, updatedAt, authorName, authorEmail, subject] = line.split("\t");
     try {
       const proposalHead = safeRevision(head, "proposal head");
@@ -4487,7 +4752,8 @@ function listRemoteSharedProposals(synced, { allProjects = true } = {}) {
     } catch {
       return [];
     }
-  })
+  });
+  return reconcileProposalObservations(synced, checkout, current, mainAcceptance, remoteAcceptance, decisionIndex)
     .filter((item) => allProjects || item.projectId === synced.connection.projectId || item.projectId === "global" || item.projectId === "skills")
     .sort((left, right) => String(right.updatedAt || "").localeCompare(String(left.updatedAt || "")));
 }
@@ -4678,10 +4944,40 @@ function auditTrailerValue(value, label) {
   return normalized;
 }
 
-export function acceptedProposalCommitMessage(review, message, actor = null) {
+function trustedSharedReviewState(reviewRoot) {
+  const raw = readJson(path.join(reviewRoot, ".context-room", "review-state.json"), { reviews: {} });
+  const state = { version: 2, reviews: raw?.reviews && typeof raw.reviews === "object" ? raw.reviews : {} };
+  const authority = inspectOwnerTrustedState(reviewRoot, "review-state", state);
+  if (!authority.trusted || authority.integrity === "recovered") {
+    throw new Error("Human review evidence is missing, altered, or recovered from a damaged authority record; reopen the review and re-establish the exact file decisions");
+  }
+  return state;
+}
+
+function assertExactSharedFileReviews(reviewRoot, proposalFiles, reviewState) {
+  const missing = [];
+  for (const filePath of proposalFiles) {
+    const abs = path.join(reviewRoot, ...filePath.split("/"));
+    const exists = fs.existsSync(abs) && fs.statSync(abs).isFile();
+    const contentHash = createHash("sha256").update(exists ? fs.readFileSync(abs) : Buffer.alloc(0)).digest("hex");
+    const review = reviewState.reviews?.[filePath];
+    const resourceState = exists ? "present" : "absent";
+    const stateMatches = review?.resourceState
+      ? review.resourceState === resourceState
+      : resourceState === "present";
+    if (review?.status !== "verified" || review.contentHash !== contentHash || !stateMatches || (resourceState === "absent" && !review.resourceVersion)) {
+      missing.push(filePath);
+    }
+  }
+  if (missing.length) {
+    throw new Error(`Human review evidence is incomplete or stale for: ${missing.join(", ")}`);
+  }
+}
+
+export function acceptedProposalCommitMessage(review, message, actor = null, providedReviewState = null) {
   let dependencyProof = "";
   try {
-    const reviewState = readJson(path.join(review.reviewRoot, ".context-room", "review-state.json"));
+    const reviewState = providedReviewState || trustedSharedReviewState(review.reviewRoot);
     const documents = (review.proposalFiles || []).flatMap((filePath) => {
       const item = reviewState?.reviews?.[filePath];
       if (item?.status !== "verified" || !item.contentHash) return [];
@@ -4720,6 +5016,12 @@ export function acceptSharedReview(reviewRoot, { message = "Accept shared contex
   const proposalFiles = gitChangedPaths(checkout, `${review.baseRevision}...${review.proposalHead}`);
   assertPathsInProposalScope(proposalFiles, policy);
   assertReviewableChangedPaths(checkout, review.baseRevision, review.proposalHead, proposalFiles);
+  const requiredReviewFiles = [...new Set([...(review.proposalFiles || []), ...proposalFiles])];
+  if (proposalFiles.some((filePath) => !(review.proposalFiles || []).includes(filePath))) {
+    throw new Error("Shared review authority does not include every proposal-changed file");
+  }
+  const reviewState = trustedSharedReviewState(resolvedReviewRoot);
+  assertExactSharedFileReviews(resolvedReviewRoot, requiredReviewFiles, reviewState);
   const currentMain = remoteRevision(checkout, review.defaultBranch);
   const workspace = reviewWorkspaceChanges(resolvedReviewRoot, review.baseRevision);
   assertPathsInProposalScope(workspace.files, policy);
@@ -4741,7 +5043,7 @@ export function acceptSharedReview(reviewRoot, { message = "Accept shared contex
       runGit(acceptanceRoot, ["diff", "--cached", "--quiet"]);
       return { accepted: false, reason: "Accepted result is already present on main", proposal: review.proposal };
     } catch {}
-    runGit(acceptanceRoot, ["commit", "-m", acceptedProposalCommitMessage(review, message, actor)], { stdio: ["ignore", "ignore", "pipe"] });
+    runGit(acceptanceRoot, ["commit", "-m", acceptedProposalCommitMessage(review, message, actor, reviewState)], { stdio: ["ignore", "ignore", "pipe"] });
     const acceptedCommit = safeRevision(tryGit(acceptanceRoot, ["rev-parse", "HEAD"]), "accepted commit");
     assertSafeTreeEntries(acceptanceRoot, acceptedCommit, policy.allowedPrefixes);
     assertReviewableChangedPaths(acceptanceRoot, currentMain, acceptedCommit, workspace.files);

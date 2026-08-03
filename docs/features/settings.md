@@ -4,8 +4,8 @@ context_room:
   scope: context-room
   status: current
   canonical_for: settings
-  last_verified: 2026-07-29
-  sources: [src/context_room.mjs, src/shared_context.mjs, src/codex_prompt_center.mjs, schemas/config.schema.json, schemas/shared-skill-locations.schema.json, schemas/shared-instruction-locations.schema.json, docs/agent-configuration.md, docs/features/codex-prompt-center.md]
+  last_verified: 2026-08-03
+  sources: [src/context_room.mjs, src/review_authority.mjs, src/context_settings.mjs, src/shared_context.mjs, src/codex_prompt_center.mjs, schemas/config.schema.json, schemas/shared-skill-locations.schema.json, schemas/shared-instruction-locations.schema.json, docs/agent-configuration.md, docs/features/codex-prompt-center.md]
 ---
 
 # Settings
@@ -78,7 +78,7 @@ Settings separates project setup from computer-wide preferences without exposing
   3. Continue accepting versions 1 and 2 with default pane values; this
   migration never writes project configuration.
 - Keep nested template and hub editors collapsed until selected.
-- Preserve structured `watchRules` when other settings are saved. Show each folder rule with its mode and snapshot size when applicable; removing a rule changes configuration, not project files or human review decisions.
+- Preserve structured `watchRules` when other settings are saved. Show each folder rule with its mode and snapshot size when applicable. Removing or narrowing a rule is an owner-authority decision available in the current Settings interface, never through the agent CLI; it changes configuration, not project files or past human review decisions.
 - Create folder rules from the Explorer or agent CLI. See [Agent configuration](../agent-configuration.md#watchrules) for the canonical four-mode contract.
 
 ## Context Settings CLI
@@ -88,14 +88,18 @@ Room organization:
 
 ```bash
 context-room settings get [key] --project <id> --format json
-context-room settings set --set 'startupContext.projectOnly=true' --project <id> --format json
-context-room settings set --set 'startupContext.projectOnly=true' --project <id> --apply <plan-id> --format json
+context-room settings set --set 'allowedPaths=["docs/","runbooks/"]' --project <id> --format json
+context-room settings set --apply <plan-id> --project <id> --format json
 ```
 
 Manageable keys cover `allowedPaths`, `watchAllow`, `watchRules`, Startup
 context, skill, and hook discovery, Shared Skills provider and assignment
 overrides, and Hub sections or card state. Values are validated by a typed
-registry; there is no arbitrary JSON mutation.
+registry; there is no arbitrary JSON mutation. For owner-review fields, the
+agent path is monotonic: it may add or widen coverage, but a plan that removes
+an allowed review path, narrows a folder mode, disables Startup context or
+Startup skills, or otherwise reduces the current review boundary fails with
+`human-authority-required`.
 
 Appearance, sounds, shortcuts, Codex prompts, templates, document or hook
 content, owner-controlled Git gates, and human review decisions are not exposed
@@ -105,6 +109,14 @@ and continue to change through a `shared skills` proposal.
 Plan captures the exact project or local-state revision. Apply rejects a stale
 plan instead of overwriting concurrent changes and emits only
 `settings.changed` in the existing event journal.
+
+Human Settings saves authorize the resulting normalized review scope for that
+device. Context Room stores this authority state outside the project config;
+later direct config narrowing stays ineffective and produces a critical health
+issue until the owner saves the intended scope. Protected local Settings and
+review requests also require the current UI session nonce. See
+[Review authority](review-authority.md) for the exact boundary and same-user
+limitations.
 
 ## Source Map
 
@@ -116,3 +128,4 @@ plan instead of overwriting concurrent changes and emits only
 - `/api/settings` separates project configuration from global appearance, sound, and shortcut preferences.
 - `/api/context-hub/project-settings` returns one project's compact revisioned settings and rejects stale saves.
 - `src/context_settings.mjs` owns the typed CLI registry, plan IDs, stale checks, and receipts.
+- `src/review_authority.mjs` owns the last owner-authorized review scope and tamper detection.

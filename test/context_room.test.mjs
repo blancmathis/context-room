@@ -15,6 +15,7 @@ import {
 import { registerContextHubProject } from "../src/context_hub.mjs";
 import { readContextRoomEvents } from "../src/event_journal.mjs";
 import { collectInlinePathReferences } from "../src/doc_metadata.mjs";
+import { authorizeOwnerReviewScope, inspectOwnerReviewScope } from "../src/review_authority.mjs";
 import {
   buildGlobalDocumentRelationsGraph,
   buildProjectDocumentRelationsGraph,
@@ -631,12 +632,19 @@ test("review decisions emitted by the UI API use registered Hub identities", asy
     title: "Event identity",
     shared: { repository: "https://example.test/shared.git", projectId: "shared-demo" },
   });
-  const { server } = createMemoryServer({ root });
+  const { server, ownerMutationNonce } = createMemoryServer({ root });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
-  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/docqa/review`, {
+  const denied = await fetch(`http://127.0.0.1:${server.address().port}/api/docqa/review`, {
     method: "POST",
     headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path: "docs/guide.md", status: "verified", expectedContentHash: createHash("sha256").update("# Guide\n").digest("hex") }),
+  });
+  assert.equal(denied.status, 403);
+  assert.equal((await denied.json()).code, "review_authority_nonce_required");
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/docqa/review`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-owner-nonce": ownerMutationNonce },
     body: JSON.stringify({ path: "docs/guide.md", status: "verified", expectedContentHash: createHash("sha256").update("# Guide\n").digest("hex") }),
   });
   assert.equal(response.status, 200);
@@ -982,7 +990,7 @@ test("optimistic file writes and review decisions reject unseen revisions", asyn
   fs.mkdirSync(path.join(root, "docs"));
   fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Original\n");
   initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: ["docs/guide.md"] });
-  const { server } = createMemoryServer({ root });
+  const { server, ownerMutationNonce } = createMemoryServer({ root });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -992,7 +1000,7 @@ test("optimistic file writes and review decisions reject unseen revisions", asyn
   const staleSave = await fetch(baseUrl + "/api/file", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: "docs/guide.md", content: "# Stale workspace\n", expectedContentHash: originalHash }) });
   assert.equal(staleSave.status, 409);
   assert.equal((await staleSave.json()).code, "file_revision_conflict");
-  const staleReview = await fetch(baseUrl + "/api/docqa/review", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: "docs/guide.md", status: "verified", expectedContentHash: originalHash }) });
+  const staleReview = await fetch(baseUrl + "/api/docqa/review", { method: "POST", headers: { "content-type": "application/json", "x-context-room-owner-nonce": ownerMutationNonce }, body: JSON.stringify({ path: "docs/guide.md", status: "verified", expectedContentHash: originalHash }) });
   assert.equal(staleReview.status, 409);
   assert.equal((await staleReview.json()).code, "review_revision_conflict");
   assert.equal(fs.readFileSync(path.join(root, "docs", "guide.md"), "utf8"), "# First workspace\n");
@@ -1288,7 +1296,8 @@ test("fresh project containment blocks allowed-path symlink escapes while legacy
 test("settings API preserves fresh and legacy project containment modes", async (t) => {
   const freshRoot = makeRoot();
   initializeContextRoomProject(freshRoot, { allowedPaths: [], watchAllow: [] });
-  const freshServer = createMemoryServer({ root: freshRoot }).server;
+  const freshRoom = createMemoryServer({ root: freshRoot });
+  const freshServer = freshRoom.server;
   await new Promise((resolve) => freshServer.listen(0, "127.0.0.1", resolve));
   t.after(() => freshServer.close());
   const freshSettings = readMemoryWebappSettings(freshRoot);
@@ -1296,7 +1305,7 @@ test("settings API preserves fresh and legacy project containment modes", async 
   delete freshPayload.projectOnly;
   const freshResponse = await fetch(`http://127.0.0.1:${freshServer.address().port}/api/settings`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-context-room-owner-nonce": freshRoom.ownerMutationNonce },
     body: JSON.stringify({ settings: freshPayload }),
   });
   assert.equal(freshResponse.status, 200);
@@ -1311,7 +1320,8 @@ test("settings API preserves fresh and legacy project containment modes", async 
     watchAllow: [],
     reviewPaths: [],
   }, null, 2) + "\n");
-  const legacyServer = createMemoryServer({ root: legacyRoot }).server;
+  const legacyRoom = createMemoryServer({ root: legacyRoot });
+  const legacyServer = legacyRoom.server;
   await new Promise((resolve) => legacyServer.listen(0, "127.0.0.1", resolve));
   t.after(() => legacyServer.close());
   const legacySettings = readMemoryWebappSettings(legacyRoot);
@@ -1320,12 +1330,101 @@ test("settings API preserves fresh and legacy project containment modes", async 
   delete legacyPayload.projectOnly;
   const legacyResponse = await fetch(`http://127.0.0.1:${legacyServer.address().port}/api/settings`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-context-room-owner-nonce": legacyRoom.ownerMutationNonce },
     body: JSON.stringify({ settings: legacyPayload }),
   });
   assert.equal(legacyResponse.status, 200);
   assert.equal((await legacyResponse.json()).settings.projectOnly, false);
   assert.equal(JSON.parse(fs.readFileSync(path.join(legacyRoot, CONFIG_FILE), "utf8")).projectOnly, false);
+});
+
+test("raw config narrowing fails closed until the human owner explicitly saves the reduced scope", async (t) => {
+  const root = makeRoot();
+  const hubHome = makeRoot();
+  const previousHubHome = process.env.CONTEXT_ROOM_HUB_HOME;
+  process.env.CONTEXT_ROOM_HUB_HOME = hubHome;
+  t.after(() => {
+    if (previousHubHome === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
+    else process.env.CONTEXT_ROOM_HUB_HOME = previousHubHome;
+  });
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\n");
+  fs.writeFileSync(path.join(root, "AGENTS.md"), "# Agent instructions\n");
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+
+  const initial = readResolvedContextRoomSettings(root);
+  assert.ok(initial.watchAllow.includes("docs/"));
+  const configPath = path.join(root, CONFIG_FILE);
+  const narrowed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  narrowed.allowedPaths = [];
+  narrowed.watchAllow = [];
+  narrowed.watchRules = [];
+  narrowed.startupContext.enabled = false;
+  narrowed.startupSkills.enabled = false;
+  fs.writeFileSync(configPath, JSON.stringify(narrowed, null, 2) + "\n");
+
+  const effective = readResolvedContextRoomSettings(root);
+  assert.ok(effective.watchAllow.includes("docs/"));
+  assert.ok(effective.allowedPaths.includes("docs/"));
+  assert.equal(effective.startupContext.enabled, true);
+  assert.equal(effective.startupSkills.enabled, true);
+  assert.ok(buildContextRoomDoctorReport(root).issues.some((issue) => issue.type === "review_authority_tamper" && issue.severity === "critical"));
+
+  const room = createMemoryServer({ root });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => room.server.close(resolve)));
+  const response = await fetch(`http://127.0.0.1:${room.server.address().port}/api/settings`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-owner-nonce": room.ownerMutationNonce },
+    body: JSON.stringify({ settings: narrowed }),
+  });
+  assert.equal(response.status, 200);
+  const ownerReduced = readResolvedContextRoomSettings(root);
+  assert.equal(ownerReduced.watchAllow.includes("docs/"), false);
+  assert.equal(ownerReduced.startupContext.enabled, false);
+  assert.equal(ownerReduced.startupSkills.enabled, false);
+  assert.equal(buildContextRoomDoctorReport(root).issues.some((issue) => issue.type === "review_authority_tamper"), false);
+});
+
+test("direct review-state and ledger forgery is ignored and reported as critical", () => {
+  const root = makeRoot();
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Original\n");
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: ["docs/guide.md"] });
+  writeDocReviewDecision(root, "docs/guide.md", { status: "verified", note: "Legitimate owner decision" });
+  assert.deepEqual(buildDocQaReport(root).queue, []);
+
+  fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Forged\n");
+  const forgedHash = createHash("sha256").update("# Forged\n").digest("hex");
+  for (const relPath of [".context-room/review-state.json", ".context-room/review-ledger.json"]) {
+    const filePath = path.join(root, relPath);
+    const forged = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    for (const review of Object.values(forged.reviews || {})) {
+      review.contentHash = forgedHash;
+      review.reviewHash = forgedHash;
+      review.reviewedAt = new Date().toISOString();
+    }
+    fs.writeFileSync(filePath, JSON.stringify(forged, null, 2) + "\n");
+  }
+
+  assert.equal(buildDocQaReport(root).queue.some((item) => item.path === "docs/guide.md"), true);
+  assert.ok(buildContextRoomDoctorReport(root).issues.some((issue) => issue.type === "review_evidence_tamper" && issue.severity === "critical"));
+});
+
+test("doctor stays available but closes protected context when both owner authority mirrors are corrupt", () => {
+  const root = makeRoot();
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+  const authorityPath = inspectOwnerReviewScope(root, readMemoryWebappSettings(root)).authorityPath;
+  for (const filePath of [authorityPath, authorityPath + ".backup"]) {
+    const record = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    record.scope.watchAllow = [];
+    fs.writeFileSync(filePath, JSON.stringify(record, null, 2) + "\n");
+  }
+
+  const doctor = buildContextRoomDoctorReport(root);
+  assert.ok(doctor.issues.some((issue) => issue.type === "review_authority_unavailable" && issue.severity === "critical"));
+  assert.equal(doctor.settings.allowedPaths, 0);
+  assert.equal(doctor.settings.watchAllow, 0);
 });
 
 test("setup and direct managed writers reject Context Room state symlink escapes", () => {
@@ -2096,12 +2195,12 @@ test("appearance, sound, and shortcut preferences are shared across Context Room
   assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).sounds, { enabled: false, volume: 0.6 });
   assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).explorer, { computerRoot: firstRoot });
 
-  const { server } = createMemoryServer({ root: firstRoot, globalPreferencesPath: preferencesPath });
+  const { server, ownerMutationNonce } = createMemoryServer({ root: firstRoot, globalPreferencesPath: preferencesPath });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
   const response = await fetch(`http://127.0.0.1:${server.address().port}/api/settings`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-context-room-owner-nonce": ownerMutationNonce },
     body: JSON.stringify({ settings: { ...readMemoryWebappSettings(firstRoot), appearance: { fileTheme: "github-dark", colorMode: "light", autoOpenGitDiff: false, showHiddenFiles: true }, shortcuts: { codexReference: "Mod+Shift+R" }, sounds: { enabled: true, volume: 0.2 }, explorer: { computerRoot: secondRoot } } }),
   });
   const payload = await response.json();
@@ -2188,20 +2287,20 @@ test("settings API cannot change the owner review gate through project settings"
   const root = makeRoot();
   initializeContextRoomProject(root, { allowedPaths: ["docs/"] });
   writeReviewGateSettings(root, { operations: ["push"] });
-  const { server } = createMemoryServer({ root });
+  const { server, ownerMutationNonce } = createMemoryServer({ root });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
   const base = `http://127.0.0.1:${server.address().port}`;
 
   const projectResponse = await fetch(`${base}/api/settings`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-context-room-owner-nonce": ownerMutationNonce },
     body: JSON.stringify({ settings: { ...readMemoryWebappSettings(root), reviewGate: { operations: ["commit"] } } }),
   });
   const projectPayload = await projectResponse.json();
   const ownerResponse = await fetch(`${base}/api/review-gate`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-context-room-owner-nonce": ownerMutationNonce },
     body: JSON.stringify({ reviewGate: { operations: ["merge", "pull-request"] } }),
   });
   const ownerPayload = await ownerResponse.json();
@@ -3441,7 +3540,8 @@ test("human Settings save migrates allowed legacy reviewPaths without widening a
   legacy.reviewAgentInstructions = false;
   fs.writeFileSync(configPath, JSON.stringify(legacy, null, 2) + "\n");
 
-  const server = createMemoryServer({ root }).server;
+  const room = createMemoryServer({ root });
+  const server = room.server;
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => server.close());
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -3452,7 +3552,7 @@ test("human Settings save migrates allowed legacy reviewPaths without widening a
 
   const response = await fetch(baseUrl + "/api/settings", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-context-room-owner-nonce": room.ownerMutationNonce },
     body: JSON.stringify({ settings: current.settings }),
   });
   assert.equal(response.status, 200);
@@ -3996,7 +4096,7 @@ test("current-only folder watch snapshots keep later files out but retain tracke
   assert.equal(watchStateForPath("docs/delete.md", readMemoryWebappSettings(root)), "watched-inherited");
 });
 
-test("the most-specific structured child rule narrows a broad legacy parent", () => {
+test("the human owner may authorize a most-specific child rule that narrows a broad legacy parent", () => {
   const root = makeRoot();
   fs.mkdirSync(path.join(root, "docs", "narrow", "deeper"), { recursive: true });
   fs.writeFileSync(path.join(root, "docs", "outside.md"), "# Outside\n");
@@ -4010,6 +4110,7 @@ test("the most-specific structured child rule narrows a broad legacy parent", ()
   execFileSync("git", ["commit", "-m", "initial"], { cwd: root, stdio: "ignore" });
 
   writeFolderWatchRule(root, { path: "docs/narrow/", mode: "direct-live" });
+  authorizeOwnerReviewScope(root, readMemoryWebappSettings(root), { actor: "test-human-owner" });
   fs.writeFileSync(path.join(root, "docs", "outside.md"), "# Outside\n\nChanged.\n");
   fs.writeFileSync(path.join(root, "docs", "narrow", "direct.md"), "# Direct\n\nChanged.\n");
   fs.writeFileSync(path.join(root, "docs", "narrow", "deeper", "deep.md"), "# Deep\n\nChanged.\n");
@@ -4049,14 +4150,14 @@ test("folder watch helpers and API add, replace, expose, and remove structured r
   assert.equal(removeFolderWatchRule(root, { path: "docs" }).removed, true);
   assert.deepEqual(readMemoryWebappSettings(root).watchRules, []);
 
-  const { server } = createMemoryServer({ root });
+  const { server, ownerMutationNonce } = createMemoryServer({ root });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
   const addResponse = await fetch(baseUrl + "/api/watch-rule", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-context-room-owner-nonce": ownerMutationNonce },
     body: JSON.stringify({ path: "docs/", mode: "direct-current" }),
   });
   const added = await addResponse.json();
@@ -4072,7 +4173,7 @@ test("folder watch helpers and API add, replace, expose, and remove structured r
 
   const removeResponse = await fetch(baseUrl + "/api/watch-rule", {
     method: "DELETE",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-context-room-owner-nonce": ownerMutationNonce },
     body: JSON.stringify({ path: "docs" }),
   });
   const removed = await removeResponse.json();
@@ -4438,7 +4539,7 @@ test("deleted review batch API lists and confirms the current server-validated s
   execFileSync("git", ["commit", "-m", "initial"], { cwd: root, stdio: "ignore" });
   fs.unlinkSync(path.join(root, "docs/one.md"));
   fs.unlinkSync(path.join(root, "docs/two.md"));
-  const { server } = createMemoryServer({ root });
+  const { server, ownerMutationNonce } = createMemoryServer({ root });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -4448,13 +4549,13 @@ test("deleted review batch API lists and confirms the current server-validated s
 
   const firstConfirmation = await fetch(baseUrl + "/api/docqa/review-deletions", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-context-room-owner-nonce": ownerMutationNonce },
     body: JSON.stringify({ paths: ["docs/two.md"], key: listed.key }),
   });
   assert.equal(firstConfirmation.status, 200);
   const staleResponse = await fetch(baseUrl + "/api/docqa/review-deletions", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-context-room-owner-nonce": ownerMutationNonce },
     body: JSON.stringify({ paths: ["docs/one.md"], key: listed.key, protectedAcknowledged: true }),
   });
   assert.equal(staleResponse.status, 409);
@@ -4466,7 +4567,7 @@ test("deleted review batch API lists and confirms the current server-validated s
 
   const confirmed = await (await fetch(baseUrl + "/api/docqa/review-deletions", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-context-room-owner-nonce": ownerMutationNonce },
     body: JSON.stringify({ paths: ["docs/one.md", "docs/missing.md"], key: relisted.key, protectedAcknowledged: true }),
   })).json();
   assert.deepEqual(confirmed.confirmed, ["docs/one.md"]);
@@ -5691,9 +5792,9 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.doesNotMatch(html, /Changing the owner-controlled Git review gate\./);
   assert.match(html, /globalReviewBody = '[^']*<code>ask<\/code>[^']*static command inventory/);
   assert.doesNotMatch(html, /capabilities --intent/);
-  assert.match(html, /Your agent can manage one explicit rule with/);
+  assert.match(html, /Your agent can add or widen one explicit rule with/);
   assert.match(html, /context-room watch set/);
-  assert.match(html, /Removing a rule uses/);
+  assert.match(html, /Only you can narrow or remove review coverage/);
   assert.match(html, /Human verification remains yours/);
   assert.match(html, /title:\s*"Protect Git actions"/);
   assert.match(html, /title: showGlobalProjectPicker \? "Global review overview" : "Review rules"/);

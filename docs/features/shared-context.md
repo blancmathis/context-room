@@ -4,8 +4,8 @@ context_room:
   scope: context-room
   status: current
   canonical_for: shared context repositories
-  last_verified: 2026-07-30
-  sources: [src/shared_context.mjs, src/provider_profiles.mjs, src/context_engine.mjs, src/context_inventory.mjs, src/context_snapshots.mjs, src/context_diagnostics.mjs, src/context_hub.mjs, bin/context-room.mjs, src/context_room.mjs, schemas/shared-repository.schema.json, schemas/shared-projects.schema.json, schemas/shared-skill-locations.schema.json, schemas/shared-skill-local-state.schema.json, schemas/shared-resource-local-state.schema.json, schemas/shared-instruction-locations.schema.json, schemas/config.schema.json]
+  last_verified: 2026-08-03
+  sources: [src/shared_context.mjs, src/review_authority.mjs, src/provider_profiles.mjs, src/context_engine.mjs, src/context_inventory.mjs, src/context_snapshots.mjs, src/context_diagnostics.mjs, src/context_hub.mjs, bin/context-room.mjs, src/context_room.mjs, schemas/shared-repository.schema.json, schemas/shared-projects.schema.json, schemas/shared-skill-locations.schema.json, schemas/shared-skill-local-state.schema.json, schemas/shared-resource-local-state.schema.json, schemas/shared-instruction-locations.schema.json, schemas/config.schema.json]
 ---
 
 # Shared Context
@@ -245,9 +245,11 @@ The opened file uses the proposal room's Explorer, file-history arrows, diff con
 
 The Context Room logo returns to the global room URL carried into the review; browser Back provides the same escape route. Reopening the same unchanged proposal reuses its existing review worktree—even after the main room restarts—when the exact proposal hash and shared `main` revision are unchanged. This avoids repeated materialization and preserves review progress. If either revision moved, Context Room creates a fresh exact review instead. Deleted and otherwise non-openable paths remain visible in the summary instead of being hidden by a first-file redirect.
 
-Context Room records whether the current proposal hash is new, updated after an earlier review, accepted into the default branch, or rejected. If the default branch advanced since the proposal base, the review queue shows the commit distance and a merge-conflict signal when Git can calculate it. Accepted and rejected proposals leave the active queue while their Git refs and commits retain the durable history.
+Context Room records whether the current proposal hash is new, updated after an earlier review, accepted into the default branch, rejected, or missing in violation of review authority. If the default branch advanced since the proposal base, the review queue shows the commit distance and a merge-conflict signal when Git can calculate it. Accepted and rejected proposals leave the active queue only when their exact durable evidence agrees.
 
-The owner can right-click a proposal row to start a selection, then reject one or several proposals and local reviews from the mixed queue. Proposal rejection is bound to the exact head displayed at confirmation time. Context Room atomically creates `rejected/<proposal-suffix>-<short-hash>` at that commit and removes the active `proposal/...` ref, so the rejected work disappears from the active queue without losing its Git history. A moved proposal must be refreshed first, and a local proposal workspace with unpublished changes blocks rejection instead of discarding them. In the same mixed action, local files are marked **Needs changes** rather than deleted.
+The owner can right-click a proposal row to start a selection, then reject one or several proposals and local reviews from the mixed queue. Proposal rejection is bound to the exact head displayed at confirmation time. Context Room creates `rejected/<proposal-suffix>-<short-hash>` at that commit, records an exact owner decision receipt, and deliberately keeps the original `proposal/...` ref. The rejected work leaves the active queue while both remote refs and the receipt agree. A moved proposal must be refreshed first, and a local proposal workspace with unpublished changes blocks rejection instead of discarding them. In the same mixed action, local files are marked **Needs changes** rather than deleted.
+
+Context Room records proposals when it publishes them and whenever it refreshes the remote queue. If a previously observed `proposal/*` ref disappears without an exact acceptance or verified rejection, its last-known metadata remains visible as `externally_deleted`, review controls are disabled, and the owner must restore the exact ref. A matching `rejected/*` branch without an intact owner receipt is `unverified_rejection`; a receipt whose archive is missing or mismatched is `rejection_archive_missing`. Absence or a marker branch alone never creates a terminal review state. See [Review authority](review-authority.md).
 
 Use the existing inline controls to accept or reject each change. Rejecting a change block rewrites the review worktree to remove that block; accepting it keeps the proposed result. This means the final worktree diff contains only the parts the human chose to accept.
 
@@ -468,15 +470,18 @@ context-room shared secure-github --root .
 context-room shared security-check --root .
 ```
 
-`secure-github` is the legacy pull-request protection setup. Its no-bypass pull-request rule blocks automatic in-app finalization and should not be enabled for a repository that uses the file-review flow described above. Finalization requires the configured shared-repository Git credential to be allowed to fast-forward the default branch.
+`secure-github` installs or updates three no-bypass branch rulesets: default-branch pull-request protection with one approval, stale-approval dismissal, last-push approval, resolved review threads, deletion protection, and force-push protection; deletion protection for the configured `proposal/*` pattern; and deletion, force-push, and update protection for the configured `rejected/*` pattern. The default-branch rule deliberately blocks automatic direct in-app finalization. A repository that enables it needs a delivery path with a distinct authenticated human reviewer whose permissions agree with the branch policy.
 
-`security-check` reads the live GitHub rule, exits non-zero unless every required protection is present, and records the last successful remote check for `shared status`. Re-run it after repository or permission changes. If the GitHub plan does not support rulesets for that private repository, setup fails instead of claiming protection.
+`security-check` reads all three live GitHub rulesets, exits non-zero unless every required protection and the configured agent deploy key are present, and records the last successful remote check for `shared status`. Re-run it after repository or permission changes. If the GitHub plan does not support rulesets for that private repository, setup fails instead of claiming protection.
 
 The generated deploy key used by the legacy setup can push proposal branches but cannot complete direct acceptance while its pull-request rule protects `main`. Context Room reports the rejected push instead of falling back to another delivery path.
+
+Provider rules are the durable prevention layer for direct `git push --delete`, alternate clones, and skipped local hooks. Local receipts and UI nonces remain defense in depth rather than proof of physical human presence. The complete threat model and recovery procedure live in [Review authority](review-authority.md).
 
 ## Source Map
 
 - `src/shared_context.mjs`: repository format, connections, cache, snapshots, skill links, proposals, reviews, and acceptance.
+- `src/review_authority.mjs`: owner-authorized review scope and exact shared-proposal decision receipts.
 - `bin/context-room.mjs`: shared CLI commands and automatic refresh before context-dependent commands.
 - `schemas/shared-repository.schema.json`: shared repository manifest contract.
 - `schemas/shared-projects.schema.json`: project catalog and cwd-resolution contract.

@@ -4,8 +4,8 @@ context_room:
   scope: context-room
   status: current
   canonical_for: features
-  last_verified: 2026-07-27
-  sources: [README.md, docs/product-overview.md, bin/context-room.mjs, src/context_room.mjs, src/context_engine.mjs, src/context_hub.mjs, src/codex_prompt_center.mjs, src/doc_agent.mjs, src/shared_context.mjs, schemas/config.schema.json]
+  last_verified: 2026-08-03
+  sources: [README.md, docs/product-overview.md, bin/context-room.mjs, src/context_room.mjs, src/review_authority.mjs, src/context_engine.mjs, src/context_hub.mjs, src/codex_prompt_center.mjs, src/doc_agent.mjs, src/shared_context.mjs, schemas/config.schema.json]
 ---
 
 # Features
@@ -21,6 +21,7 @@ This folder explains Context Room by user-facing feature. Read this when changin
 - [Document Graph](document-graph.md)
 - [HTML visual documents](html-visual-documents.md)
 - [Review queue](review-queue.md)
+- [Review authority](review-authority.md)
 - [Startup context](startup-context.md)
 - [Startup skills](startup-skills.md)
 - [Startup hooks](startup-hooks.md)

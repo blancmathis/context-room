@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { reviewScopeReductions } from "./review_authority.mjs";
 
 export const CONTEXT_SETTINGS_SCHEMA_VERSION = "context-room.settings/1";
 
@@ -267,8 +268,18 @@ export function planContextSettingsChange(adapter, { set, target = null, expecte
     nextSettings = writeAtPath(nextSettings, key, value);
     return { key, before, after: deepClone(value), scope: definition.scope, store: definition.store };
   });
+  if (store === "project") {
+    const reductions = reviewScopeReductions(state.settings || {}, nextSettings);
+    if (reductions.length) {
+      throw new ContextSettingsError(
+        "human-authority-required",
+        "Agent settings may widen review coverage but cannot reduce human review authority. Use the Context Room Settings UI for this owner decision.",
+        { details: { effect: "review-scope-reduction", reductions } },
+      );
+    }
+  }
   const planBody = { schemaVersion: CONTEXT_SETTINGS_SCHEMA_VERSION, command: "settings.apply", target: deepClone(target), store, baseRevision: revision, operations };
-  const plan = { ...planBody, planId: digest("plan", planBody), changes: operations.length, sharedIntentChanged: false, humanReviewDecisionChanged: false };
+  const plan = { ...planBody, planId: digest("plan", planBody), changes: operations.length, effect: "protected", sharedIntentChanged: false, humanReviewDecisionChanged: false };
   adapter.savePlan(deepClone(plan));
   return deepClone(plan);
 }

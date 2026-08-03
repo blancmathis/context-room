@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 import { CONFIG_FILE, REVIEW_GATE_FILE } from "../src/context_room.mjs";
+import { authorizeOwnerReviewScope } from "../src/review_authority.mjs";
 
 const cli = path.resolve("bin/context-room.mjs");
 const packageVersion = JSON.parse(fs.readFileSync(path.resolve("package.json"), "utf8")).version;
@@ -160,7 +161,7 @@ test("agent-first CLI emits versioned envelopes, caches prepare, and previews mu
   const exactCapability = JSON.parse(result.stdout).data;
   assert.equal(exactCapability.view, "command");
   assert.equal(exactCapability.detail, "standard");
-  assert.ok(exactCapability.commands[0].arguments.some((argument) => argument.name === "--apply"));
+  assert.equal(exactCapability.commands[0].arguments.some((argument) => argument.name === "--apply"), false);
   assert.ok(Buffer.byteLength(result.stdout) < 4_000);
 
   result = spawnSync(process.execPath, [cli, "capabilities", "--profile=editing", "--contract=v2", "--detail=compact", "--format=json"], { encoding: "utf8", env });
@@ -332,21 +333,21 @@ test("Settings CLI uses the same command path for an exact typed plan and apply"
   let result = spawnSync(process.execPath, [cli, "init", `--root=${root}`, "--allow=docs/", "--watch=docs/"], { encoding: "utf8", env });
   assert.equal(result.status, 0, result.stderr);
 
-  result = spawnSync(process.execPath, [cli, "settings", "set", `--root=${root}`, "--set=startupSkills.enabled=false", "--contract=v2", "--format=json"], { encoding: "utf8", env });
+  result = spawnSync(process.execPath, [cli, "settings", "set", `--root=${root}`, '--set=allowedPaths=["docs/","README.md"]', "--contract=v2", "--format=json"], { encoding: "utf8", env });
   assert.equal(result.status, 0, result.stderr);
   const planPayload = JSON.parse(result.stdout);
   assert.equal(planPayload.schema, "context-room.cli/2");
   const plan = planPayload.data;
   assert.match(plan.planId, /^plan-/);
-  assert.equal(JSON.parse(fs.readFileSync(path.join(root, CONFIG_FILE), "utf8")).startupSkills.enabled, true);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, CONFIG_FILE), "utf8")).allowedPaths, ["docs/"]);
 
   result = spawnSync(process.execPath, [cli, "settings", "set", `--root=${root}`, `--apply=${plan.planId}`, "--contract=v2", "--format=json"], { encoding: "utf8", env });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).data.settingsChangedEvent, "settings.changed");
 
-  result = spawnSync(process.execPath, [cli, "settings", "get", "startupSkills.enabled", `--root=${root}`, "--format=json"], { encoding: "utf8", env });
+  result = spawnSync(process.execPath, [cli, "settings", "get", "allowedPaths", `--root=${root}`, "--format=json"], { encoding: "utf8", env });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(JSON.parse(result.stdout).data.value, false);
+  assert.deepEqual(JSON.parse(result.stdout).data.value, ["docs/", "README.md"]);
 
   result = spawnSync(process.execPath, [cli, "settings", "set", `--root=${root}`, "--set=appearance.theme=dark", "--contract=v2", "--format=json"], { encoding: "utf8", env });
   assert.notEqual(result.status, 0);
@@ -443,15 +444,7 @@ test("CLI rejects empty or missing option values before setup", (t) => {
   assert.equal(fs.existsSync(path.join(scratch, CONFIG_FILE)), false);
 });
 
-test("agent watch exposes every folder mode, defaults to recursive live, and unwatch removes the rule", (t) => {
-  const root = makeRoot(t);
-  fs.mkdirSync(path.join(root, "docs", "nested"), { recursive: true });
-  fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\n");
-  fs.writeFileSync(path.join(root, "docs", "nested", "deep.md"), "# Deep\n");
-
-  const initialized = spawnSync(process.execPath, [cli, "init", `--root=${root}`, "--allow=docs/"], { encoding: "utf8" });
-  assert.equal(initialized.status, 0, initialized.stderr);
-
+test("agent watch exposes every folder mode when it does not narrow an existing rule", (t) => {
   const modes = ["recursive-live", "recursive-current", "direct-current", "direct-live"];
   const expectedMatchedFiles = new Map([
     ["recursive-live", null],
@@ -460,6 +453,18 @@ test("agent watch exposes every folder mode, defaults to recursive live, and unw
     ["direct-live", null],
   ]);
   for (const mode of modes) {
+    const root = makeRoot(t, `project-${mode}`);
+    fs.mkdirSync(path.join(root, "docs", "nested"), { recursive: true });
+    fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\n");
+    fs.writeFileSync(path.join(root, "docs", "nested", "deep.md"), "# Deep\n");
+    const initialized = spawnSync(process.execPath, [cli, "init", `--root=${root}`, "--allow=docs/"], { encoding: "utf8" });
+    assert.equal(initialized.status, 0, initialized.stderr);
+    const configPath = path.join(root, CONFIG_FILE);
+    const ownerSettings = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    ownerSettings.watchAllow = [];
+    ownerSettings.watchRules = [];
+    fs.writeFileSync(configPath, JSON.stringify(ownerSettings, null, 2) + "\n");
+    authorizeOwnerReviewScope(root, ownerSettings, { actor: "test-human-owner" });
     const modeArgs = mode === "recursive-live" ? [] : [`--mode=${mode}`];
     const watched = spawnSync(
       process.execPath,
@@ -472,25 +477,12 @@ test("agent watch exposes every folder mode, defaults to recursive live, and unw
     assert.equal(output.rule.path, "docs/");
     assert.equal(output.rule.mode, mode);
     assert.equal(output.matchedFiles, expectedMatchedFiles.get(mode));
-    const saved = JSON.parse(fs.readFileSync(path.join(root, CONFIG_FILE), "utf8"));
+    const saved = JSON.parse(fs.readFileSync(configPath, "utf8"));
     assert.equal(saved.watchRules.at(-1).path, "docs/");
     assert.equal(saved.watchRules.at(-1).mode, mode);
     if (mode.endsWith("-current")) assert.ok(Array.isArray(output.rule.files));
     else assert.equal("files" in output.rule, false);
   }
-
-  const unwatched = spawnSync(
-    process.execPath,
-    [cli, "agent", "unwatch", `--root=${root}`, "--path=docs/"],
-    { encoding: "utf8" },
-  );
-  assert.equal(unwatched.status, 0, unwatched.stderr);
-  const output = JSON.parse(unwatched.stdout);
-  assert.equal(output.path, "docs/");
-  assert.equal(output.removed, true);
-  const saved = JSON.parse(fs.readFileSync(path.join(root, CONFIG_FILE), "utf8"));
-  assert.equal(saved.watchRules.some((rule) => rule.path === "docs/"), false);
-  assert.equal(saved.watchAllow.includes("docs/"), false);
 });
 
 test("agent watch accepts an explicitly allowed external home folder", (t) => {
@@ -526,7 +518,7 @@ test("agent watch accepts an explicitly allowed external home folder", (t) => {
 
 test("agent watch validates its path and mode before changing configuration", (t) => {
   const root = makeRoot(t);
-  fs.mkdirSync(path.join(root, "docs"));
+  fs.mkdirSync(path.join(root, "docs", "private"), { recursive: true });
   fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\n");
 
   const initialized = spawnSync(process.execPath, [cli, "init", `--root=${root}`, "--allow=docs/"], { encoding: "utf8" });
@@ -563,6 +555,31 @@ test("agent watch validates its path and mode before changing configuration", (t
   assert.match(missingUnwatchPath.stderr, /Usage: context-room agent unwatch/);
 
   assert.equal(fs.readFileSync(configPath, "utf8"), before);
+});
+
+test("agent watch commands may widen but never reduce human review coverage", (t) => {
+  const root = makeRoot(t);
+  fs.mkdirSync(path.join(root, "docs"));
+  fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\n");
+  const env = { ...process.env, CONTEXT_ROOM_HUB_HOME: path.join(path.dirname(root), "hub-home") };
+  const initialized = spawnSync(process.execPath, [cli, "init", `--root=${root}`, "--watch=docs/"], { encoding: "utf8", env });
+  assert.equal(initialized.status, 0, initialized.stderr);
+  const configPath = path.join(root, CONFIG_FILE);
+  const before = fs.readFileSync(configPath, "utf8");
+
+  for (const argv of [
+    ["watch", "set", "docs/", "--mode=off"],
+    ["watch", "set", "docs/", "--mode=direct-current"],
+    ["agent", "unwatch", "--path=docs/"],
+    ["agent", "watch", "--path=docs/", "--mode=direct-live"],
+    ["watch", "set", "docs/private/", "--mode=direct-current"],
+    ["agent", "watch", "--path=docs/private/", "--mode=direct-live"],
+  ]) {
+    const result = spawnSync(process.execPath, [cli, ...argv, `--root=${root}`, "--format=json"], { encoding: "utf8", env });
+    assert.equal(result.status, 4, `${argv.join(" ")}\n${result.stderr}`);
+    assert.equal(JSON.parse(result.stderr).error.code, "human-authority-required");
+    assert.equal(fs.readFileSync(configPath, "utf8"), before);
+  }
 });
 
 test("CLI rejects unknown options, invalid ports, and missing roots before writing", (t) => {
