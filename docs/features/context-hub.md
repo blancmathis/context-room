@@ -75,15 +75,30 @@ appear.
 
 `hub proposals` exposes the aggregated proposal index to agents and can filter by project or Codex task ID. `hub open` prints a deep link into the running Context Room with the same focus.
 
-Use `context-room ui open --project <id>` to create a deep link for a new
-Workspace, or add `--file <path>` to focus a document. A normal project
-click reuses the current Workspace. Modified clicks, middle-click, and **Open
-in new workspace** preserve independent browser-tab behavior.
+Use `context-room ui list --all --format json` to inspect the active Workspaces,
+then `context-room ui open --workspace <id> --project <id>` to target one exact
+tab. `--session` targets the Workspace paired to a task, and `--recent`
+explicitly selects the most recently focused compatible page. Without an exact
+selector, Context Room uses the current task session, then the only compatible
+Workspace. Several remaining candidates return `workspace_ambiguous` without
+moving a page. No compatible page returns `open_required` with a five-minute,
+one-use pairing URL; the CLI never chooses or launches a browser.
+
+`ui open` can navigate Home, a project, proposal, file, diff, Graph, Prompt
+Center, or a Settings section. It can also apply ephemeral search, filters,
+scroll, highlight, and a human-readable tab label. A normal project click
+reuses the current Workspace. Modified clicks, middle-click, and **Open in new
+workspace** preserve independent browser-tab behavior.
 
 Workspace navigation is stored per tab in `sessionStorage`. Theme, sounds, and
 other device-wide preferences remain shared. Duplicate tabs keep their view
-but receive a new Workspace identity. The server stores only ephemeral
-navigation metadata; it never stores editor drafts or document content there.
+but receive a new Workspace identity. In remote mode the server associates a
+Workspace with the authenticated user, its project, and an optional task
+session. Pairing uses a signed one-use ticket in the URL fragment; the page
+checks the human session, exchanges it, and removes the fragment immediately.
+The server stores only ephemeral presence and navigation metadata; it never
+stores editor drafts, navigation history, pairing tokens, search text in the
+audit journal, or document content there.
 
 ## Primary Room And Secondary Tools
 

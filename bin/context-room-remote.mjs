@@ -64,8 +64,10 @@ const { server } = createMemoryServer({
   persistentDocumentGraphLayout: true,
   remoteAccess: {
     expectedHost: required("CONTEXT_ROOM_PUBLIC_HOST"),
+    browserHost: String(process.env.CONTEXT_ROOM_BROWSER_HOST || process.env.CONTEXT_ROOM_PUBLIC_HOST || "").trim(),
     humanSecret: secret("CONTEXT_ROOM_HUMAN_SECRET"),
     agentSecret: secret("CONTEXT_ROOM_AGENT_SECRET"),
+    issuer: String(process.env.CONTEXT_ROOM_IDENTITY_ISSUER || "context-room").trim(),
     healthSecret: secret("CONTEXT_ROOM_HEALTH_SECRET"),
     adminSubjects: required("CONTEXT_ROOM_ADMIN_SUBJECTS").split(",").map((value) => value.trim()).filter(Boolean),
     projectRoots,

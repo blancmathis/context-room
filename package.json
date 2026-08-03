@@ -1,6 +1,6 @@
 {
   "name": "context-room",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Local-first documentation control room for AI-assisted projects.",
   "type": "module",
   "homepage": "https://www.npmjs.com/package/context-room",
@@ -31,7 +31,7 @@
     "start": "node bin/context-room.mjs start",
     "init": "node bin/context-room.mjs init",
     "doctor": "node bin/context-room.mjs doctor",
-    "test": "node --check src/context_room.mjs && node --check bin/context-room.mjs && node --check scripts/update-context-rooms.mjs && node --check scripts/run-tests.mjs && node --check scripts/audit-layout-css.mjs && node scripts/audit-layout-css.mjs && node scripts/run-tests.mjs",
+    "test": "node --check src/context_room.mjs && node --check bin/context-room.mjs && node --check bin/context-room-remote.mjs && node --check scripts/update-context-rooms.mjs && node --check scripts/run-tests.mjs && node --check scripts/audit-layout-css.mjs && node scripts/audit-layout-css.mjs && node scripts/run-tests.mjs",
     "test:ux-smoke": "playwright test --grep @smoke",
     "test:ux-soak": "playwright test --project=chromium-desktop --grep @soak",
     "test:perf": "playwright test --project=chromium-desktop --grep @perf",

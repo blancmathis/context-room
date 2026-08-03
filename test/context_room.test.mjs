@@ -549,14 +549,14 @@ test("app reveals one complete initial frame and keeps recurring refreshes in th
   assert.match(loadFilesSource, /const restored = await restoreRequest;/);
   assert.doesNotMatch(loadFilesSource, /await reportsRequest/);
   assert.match(loadFilesSource, /else if \(reportsRequest\) applyInitialReportsWhenReady\(reportsRequest\);/);
-  assert.match(loadFilesSource, /applyInitialContextHubWhenReady\(loadInitialContextHubData\(\)\)/);
+  assert.match(loadFilesSource, /state\.contextHubReadyPromise = new Promise[\s\S]*applyInitialContextHubWhenReady\(loadInitialContextHubData\(\)\)/);
   assert.match(script, /function applyInitialReportsWhenReady\(reportsRequest\) \{[\s\S]*reportsRequest\.then\(\(reports\) => \{[\s\S]*requestAnimationFrame\(\(\) => window\.requestAnimationFrame\(\(\) => \{[\s\S]*applyBackgroundReportPayload\(reports\);[\s\S]*renderAfterBackgroundReportPayload\(\);/);
   assert.match(script, /function renderAfterBackgroundReportPayload\(\) \{[\s\S]*if \(state\.page === "file" && state\.selected && !state\.openingFilePath\) \{[\s\S]*renderViewer\(\);[\s\S]*restoreEditorViewState\(viewState\);/);
   assert.match(script, /function restoreNavigationAfterInitialLoad\(\)[\s\S]*void openRequest\.then\(\(\) => setStatus\("restored"\)\)/);
   assert.doesNotMatch(script, /await selectFile\(persisted\.selectedPath, options\)/);
   assert.match(html, /<body class="app-booting">/);
   assert.match(script, /setMode\("view"\);\s*initializeWorkspaceDiagnostics\(\);\s*finishInitialBoot\(\);\s*establishWorkspaceIdentity\(\)\.then\(\(\) => \{/);
-  assert.match(script, /return Promise\.all\(\[loadFiles\(\{ initial: true \}\), graphRequest\]\);\s*\}\)\.catch\([\s\S]*\.finally\(finishInitialBoot\);/);
+  assert.match(script, /const pairingRequest = completeWorkspacePairing\(\);[\s\S]*const initialLoad = Promise\.all\(\[loadFiles\(\{ initial: true \}\), graphRequest\]\);[\s\S]*await state\.contextHubReadyPromise;[\s\S]*handleAgentCommand\(pairedCommand\)[\s\S]*return initialLoad;\s*\}\)\.catch\([\s\S]*\.finally\(finishInitialBoot\);/);
   const globalQueueSource = script.slice(script.indexOf("function renderContextRoomGlobalReviewQueue"), script.indexOf("function renderSingleProjectWorktreeSwitch"));
   assert.doesNotMatch(globalQueueSource, /renderGlobalProjectExplorer\(\)/);
   assert.match(html, /body\.app-booting \.app \{ visibility: hidden; opacity: 0; pointer-events: none; \}/);
@@ -6259,6 +6259,8 @@ test("browser refresh restores the last Context Room page", () => {
   assert.match(html, /window\.addEventListener\("popstate", \(\) => \{[\s\S]*if \(!state\.workspaceIdentityReady\) return;[\s\S]*window\.location\.href === state\.workspaceSyncedUrl\) return;[\s\S]*applyWorkspaceUrlState\(\{ reason: "history" \}\)/);
   assert.doesNotMatch(html, /window\.addEventListener\("popstate",[\s\S]{0,300}window\.location\.reload\(\)/);
   assert.match(html, /window\.addEventListener\("beforeunload", \(event\) => \{[\s\S]*stopWorkspaceRuntime\(\);/);
+  assert.doesNotMatch(html, /window\.addEventListener\("beforeunload", \(event\) => \{[\s\S]{0,500}\/api\/workspaces\/register/);
+  assert.match(html, /async function completeWorkspacePairing\(\)[\s\S]*const fragment = workspaceFragmentValues\(\);[\s\S]*clearWorkspacePairingFragment\(\);[\s\S]*await publishSessionState\(\);/);
   assert.match(html, /if \(state\.projectId\) headers\.set\("x-context-room-project", state\.projectId\);/);
   assert.match(html, /if \(responseAction === "initialize"\) state\.projectId = responseProjectId;/);
   assert.match(html, /function handleContextRoomProjectChange\([\s\S]*if \(IS_GLOBAL_CONTEXT_ROOM\)[\s\S]*loadFiles\(\{ identityRefresh: true \}\)/);
@@ -6294,6 +6296,7 @@ test("workspace URL restoration parses every supported destination without brows
     projectId: "hicharlie-wt",
     view: "settings",
     folder: "apps/calls",
+    search: "",
     file: "apps/calls/AGENTS.md",
     proposal: "proposal_123",
     settingsSection: "shared-skills",
@@ -6318,6 +6321,7 @@ test("workspace URL restoration parses every supported destination without brows
     projectId: "",
     view: "graph",
     folder: "",
+    search: "",
     file: "",
     proposal: "",
     settingsSection: "",
@@ -7140,7 +7144,8 @@ test("rendered app exposes agent collaboration hooks without human review bypass
   assert.match(html, /function rememberAgentCommandId\(id\)/);
   assert.match(html, /function isStaleAgentCommand\(command\)/);
   assert.match(html, /function executeAgentCommand\(command\)/);
-  assert.match(html, /if \(command\?\.id\) rememberAgentCommandId\(command\.id\);/);
+  assert.match(html, /const navigated = await applyWorkspaceUrlState[\s\S]*if \(!navigated\)[\s\S]*throw new Error\(state\.workspaceLastNavigationError \|\| "Agent navigation failed"\)[\s\S]*if \(command\?\.id\) rememberAgentCommandId\(command\.id\);/);
+  assert.match(html, /openSharedProposal\(proposal\.branch, proposal\.repository \|\| "", \{ file: target\.file \|\| "" \}\)/);
   assert.match(html, /function applyAgentScrollTarget\(command\)/);
   assert.match(html, /function renderAgentAnnotations\(path\)/);
   assert.match(html, /api\("\/api\/agent\/annotations\?path="/);
