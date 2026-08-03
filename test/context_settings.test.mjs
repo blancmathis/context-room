@@ -19,7 +19,7 @@ function adapterFixture() {
     settings: {
       allowedPaths: ["docs/"],
       watchAllow: ["docs/"],
-      watchRules: [],
+      watchRules: [{ path: "docs/", mode: "recursive-live" }],
       startupContext: { enabled: true, fileNames: ["AGENTS.md"], globalPaths: [] },
       startupSkills: { enabled: true, folderNames: [".codex/skills"] },
       startupHooks: { enabled: true, gitHooks: true },
@@ -60,16 +60,47 @@ test("plan is content-addressed and never mutates settings", () => {
   assert.deepEqual(getContextSettings(adapter, { key: "watchAllow", target }).value, ["docs/"]);
 });
 
-test("apply enforces revision and is idempotent", () => {
+test("apply enforces revision and is idempotent for review-scope expansion", () => {
   const { adapter, target } = adapterFixture();
-  const plan = planContextSettingsChange(adapter, { target, expectedRevision: "project-r1", set: { "startupSkills.enabled": false } });
+  const plan = planContextSettingsChange(adapter, { target, expectedRevision: "project-r1", set: { watchAllow: ["docs/", "AGENTS.md"] } });
   const first = applyContextSettingsPlan(adapter, plan.planId, { idempotencyKey: "voice-1" });
   const second = applyContextSettingsPlan(adapter, plan.planId, { idempotencyKey: "voice-1" });
   assert.equal(first.operationId, second.operationId);
   assert.equal(second.idempotentReplay, true);
   assert.equal(adapter.stats().writes, 1);
-  assert.equal(getContextSettings(adapter, { key: "startupSkills.enabled", target }).value, false);
+  assert.deepEqual(getContextSettings(adapter, { key: "watchAllow", target }).value, ["docs/", "AGENTS.md"]);
   assert.equal(first.settingsChangedEvent, "settings.changed");
+});
+
+test("agent settings cannot narrow human review authority", () => {
+  const { adapter, target } = adapterFixture();
+  const expectHumanOnly = (set) => assert.throws(
+    () => planContextSettingsChange(adapter, { target, set }),
+    (error) => error instanceof ContextSettingsError
+      && error.code === "human-authority-required"
+      && error.details?.effect === "review-scope-reduction",
+  );
+
+  expectHumanOnly({ watchAllow: [], watchRules: [] });
+  expectHumanOnly({ allowedPaths: [] });
+  expectHumanOnly({ "startupContext.enabled": false });
+  expectHumanOnly({ "startupSkills.enabled": false });
+  expectHumanOnly({ watchRules: [{ path: "docs/", mode: "direct-current", files: [] }] });
+  expectHumanOnly({ watchRules: [
+    { path: "docs/", mode: "recursive-live" },
+    { path: "docs/private/", mode: "direct-current", files: ["docs/private/one.md"] },
+  ] });
+
+  const expansion = planContextSettingsChange(adapter, {
+    target,
+    set: {
+      watchAllow: ["docs/", "AGENTS.md"],
+      allowedPaths: ["docs/", "AGENTS.md"],
+      "startupContext.fileNames": ["AGENTS.md", "CLAUDE.md"],
+      "startupSkills.folderNames": [".codex/skills", ".agents/skills"],
+    },
+  });
+  assert.equal(expansion.effect, "protected");
 });
 
 test("stale plans are refused before any write", () => {
@@ -94,9 +125,9 @@ test("watch rules accept the four current product modes and reject legacy snapsh
   const modes = ["recursive-live", "recursive-current", "direct-live", "direct-current"];
   const plan = planContextSettingsChange(adapter, {
     target,
-    set: { watchRules: modes.map((mode, index) => ({ path: `docs/${index}/`, mode })) },
+    set: { watchRules: [{ path: "docs/", mode: "recursive-live" }, ...modes.map((mode, index) => ({ path: `mode-${index}/`, mode }))] },
   });
-  assert.deepEqual(plan.operations[0].after.map((rule) => rule.mode), modes);
+  assert.deepEqual(plan.operations[0].after.slice(1).map((rule) => rule.mode), modes);
   assert.throws(
     () => planContextSettingsChange(adapter, { target, set: { watchRules: [{ path: "docs/", mode: "recursive-snapshot" }] } }),
     (error) => error.code === "invalid-setting-value",

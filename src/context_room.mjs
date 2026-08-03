@@ -106,6 +106,13 @@ import {
   MAX_CODEX_PROMPT_REQUEST_BYTES,
   createCodexPromptCenterProvider,
 } from "./codex_prompt_center.mjs";
+import {
+  authorizeOwnerTrustedState,
+  authorizeOwnerReviewScope,
+  effectiveOwnerReviewScope,
+  inspectOwnerTrustedState,
+  inspectOwnerReviewScope,
+} from "./review_authority.mjs";
 
 export { DOC_METADATA_KINDS, DOC_METADATA_STATUSES, parseDocMetadata } from "./doc_metadata.mjs";
 
@@ -189,6 +196,7 @@ const AGENT_CONTEXT_ASSET_FILENAMES = [
   "context-room-visual-components.html",
   "context-room-data-visual-components.html",
   "features/shared-context.md",
+  "features/review-authority.md",
 ];
 export const GLOBAL_PREFERENCES_FILE = "~/.context-room/preferences.json";
 const CONFIG_SCHEMA_URL = "https://unpkg.com/context-room@latest/schemas/config.schema.json";
@@ -1329,7 +1337,8 @@ function startupSkillNamespaceFolders(abs, folderName, containmentRoot = null) {
 }
 
 function effectiveMemoryWebappSettings(root = process.cwd()) {
-  const settings = settingsWithUnifiedReviewPaths(withProjectAgentInstructionPaths(root, readMemoryWebappSettings(root)));
+  const protectedSettings = effectiveOwnerReviewScope(root, readMemoryWebappSettings(root));
+  const settings = settingsWithUnifiedReviewPaths(withProjectAgentInstructionPaths(root, protectedSettings));
   return withStartupSkillExternalPaths(root, settings);
 }
 
@@ -2780,13 +2789,25 @@ export function revertMemoryFile(root, relPath) {
 export function readDocReviewState(root = process.cwd()) {
   const statePath = path.join(root, DOCQA_REVIEW_STATE);
   assertManagedProjectPath(root, statePath, DOCQA_REVIEW_STATE);
-  if (!fs.existsSync(statePath)) return { version: 2, reviews: {} };
+  let state = { version: 2, reviews: {} };
   try {
-    const parsed = JSON.parse(fs.readFileSync(statePath, "utf8"));
-    return { version: 2, reviews: parsed.reviews && typeof parsed.reviews === "object" ? parsed.reviews : {} };
-  } catch {
-    return { version: 2, reviews: {} };
+    if (fs.existsSync(statePath)) {
+      const parsed = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      state = { version: 2, reviews: parsed.reviews && typeof parsed.reviews === "object" ? parsed.reviews : {} };
+    }
+  } catch {}
+  let authority = inspectOwnerTrustedState(root, "review-state", state);
+  if (!authority.configured && authority.integrity === "missing") {
+    authorizeOwnerTrustedState(root, "review-state", state, { actor: "legacy-bootstrap" });
+    authority = inspectOwnerTrustedState(root, "review-state", state);
   }
+  if (!authority.trusted) {
+    return { version: 2, reviews: {}, authorityViolation: { kind: "review-state", ...authority } };
+  }
+  return {
+    ...state,
+    ...(authority.integrity === "recovered" ? { authorityViolation: { kind: "review-state", ...authority } } : {}),
+  };
 }
 
 function writeDocReviewState(root, state) {
@@ -2795,19 +2816,32 @@ function writeDocReviewState(root, state) {
   fs.mkdirSync(path.dirname(statePath), { recursive: true });
   assertManagedProjectPath(root, statePath, DOCQA_REVIEW_STATE);
   fs.writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n", "utf8");
+  authorizeOwnerTrustedState(root, "review-state", { version: 2, reviews: state.reviews || {} }, { actor: "context-room-review-write" });
 }
 
 export function readGlobalReviewLedger(root = process.cwd()) {
   const ledgerRoot = globalReviewLedgerRoot(root);
   const ledgerPath = globalReviewLedgerPath(root);
   assertManagedProjectPath(ledgerRoot, ledgerPath, DOCQA_GLOBAL_REVIEW_LEDGER);
-  if (!fs.existsSync(ledgerPath)) return { version: 2, reviews: {} };
+  let ledger = { version: 2, reviews: {} };
   try {
-    const parsed = JSON.parse(fs.readFileSync(ledgerPath, "utf8"));
-    return { version: 2, reviews: parsed.reviews && typeof parsed.reviews === "object" ? parsed.reviews : {} };
-  } catch {
-    return { version: 2, reviews: {} };
+    if (fs.existsSync(ledgerPath)) {
+      const parsed = JSON.parse(fs.readFileSync(ledgerPath, "utf8"));
+      ledger = { version: 2, reviews: parsed.reviews && typeof parsed.reviews === "object" ? parsed.reviews : {} };
+    }
+  } catch {}
+  let authority = inspectOwnerTrustedState(ledgerRoot, "review-ledger", ledger);
+  if (!authority.configured && authority.integrity === "missing") {
+    authorizeOwnerTrustedState(ledgerRoot, "review-ledger", ledger, { actor: "legacy-bootstrap" });
+    authority = inspectOwnerTrustedState(ledgerRoot, "review-ledger", ledger);
   }
+  if (!authority.trusted) {
+    return { version: 2, reviews: {}, authorityViolation: { kind: "review-ledger", ...authority } };
+  }
+  return {
+    ...ledger,
+    ...(authority.integrity === "recovered" ? { authorityViolation: { kind: "review-ledger", ...authority } } : {}),
+  };
 }
 
 function writeGlobalReviewLedger(root, ledger) {
@@ -2817,6 +2851,7 @@ function writeGlobalReviewLedger(root, ledger) {
   fs.mkdirSync(path.dirname(ledgerPath), { recursive: true });
   assertManagedProjectPath(ledgerRoot, ledgerPath, DOCQA_GLOBAL_REVIEW_LEDGER);
   fs.writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2) + "\n", "utf8");
+  authorizeOwnerTrustedState(ledgerRoot, "review-ledger", { version: 2, reviews: ledger.reviews || {} }, { actor: "context-room-review-write" });
 }
 
 function globalReviewLedgerPath(root = process.cwd()) {
@@ -4376,6 +4411,15 @@ function graphIssuesForDocument({ root, file, content, metadata, watched, inHub,
 
 export function buildConfigDiagnostics(root = process.cwd(), settings = readMemoryWebappSettings(root), files = listMemoryFiles(root), startupFiles = listStartupContextFiles(root, settings), hubInfo = collectHubPathMatchers(settings.hubSections || []), startupHooks = listStartupHookFiles(root, settings)) {
   const issues = [];
+  const reviewAuthority = inspectOwnerReviewScope(root, settings);
+  if (reviewAuthority.tampered) {
+    const fields = [...new Set(reviewAuthority.reductions.map((item) => item.field))];
+    issues.push({
+      type: "review_authority_tamper",
+      severity: "critical",
+      message: `Owner review authority is damaged or project configuration attempted to reduce it${fields.length ? `: ${fields.join(", ")}` : ""}. The last recoverable owner-authorized scope remains effective.`,
+    });
+  }
   const configPath = path.join(root, CONFIG_FILE);
   const projectPathEscapes = (relPath) => {
     if (!settings.projectOnly || resolveExternalPath(relPath)) return false;
@@ -4478,12 +4522,31 @@ export function buildContextRoomDoctorReport(root = process.cwd(), options = {})
       configurationIssues.push({ type: "invalid_config", severity: "critical", message: error.message });
     }
   }
+  if (!configurationIssues.some((issue) => issue.type === "invalid_config")) {
+    try {
+      effectiveOwnerReviewScope(root, settings);
+    } catch (error) {
+      settings = closedDiagnosticSettings();
+      configurationIssues.push({
+        type: "review_authority_unavailable",
+        severity: "critical",
+        message: `${error.message}. Context Room remains closed until an intact owner authority mirror is restored.`,
+      });
+    }
+  }
   try {
     readReviewGateSettings(root);
   } catch (error) {
     configurationIssues.push({ type: "invalid_review_gate", severity: "critical", message: error.message });
   }
-  const invalidConfig = configurationIssues.some((issue) => issue.type === "invalid_config");
+  for (const authority of [readDocReviewState(root).authorityViolation, readGlobalReviewLedger(root).authorityViolation].filter(Boolean)) {
+    configurationIssues.push({
+      type: "review_evidence_tamper",
+      severity: "critical",
+      message: `Owner review evidence for ${authority.kind} failed integrity verification. Its claimed verified entries are ignored until the owner repairs or re-establishes the evidence.`,
+    });
+  }
+  const invalidConfig = configurationIssues.some((issue) => ["invalid_config", "review_authority_unavailable"].includes(issue.type));
   const graph = options.graph || (invalidConfig
     ? buildDocumentationGraph(root, { settings, files: [], gitStatuses: new Map(), startupFiles: [], startupHooks: [] })
     : buildDocumentationGraph(root, { settings }));
@@ -5882,6 +5945,10 @@ export function initializeContextRoomProject(root = process.cwd(), options = {})
     const config = normalizeMemoryWebappSettings(defaults);
     saved = writeMemoryWebappSettings(projectRoot, config);
   }
+  const ownerAuthority = inspectOwnerReviewScope(projectRoot, saved);
+  if (!ownerAuthority.configured && ownerAuthority.integrity === "missing") {
+    authorizeOwnerReviewScope(projectRoot, saved, { actor: "project-initialization" });
+  }
   if (!fs.existsSync(path.join(projectRoot, REVIEW_GATE_FILE))) writeReviewGateSettings(projectRoot, DEFAULT_REVIEW_GATE);
   const agentContext = syncContextRoomAgentContext(projectRoot);
   ensureRuntimeGitExcludes(projectRoot);
@@ -6303,6 +6370,7 @@ export function syncContextRoomAgentContext(root = process.cwd()) {
     [path.join(sourceRoot, "context-room-visual-components.html"), AGENT_CONTEXT_ASSET_FILENAMES[4]],
     [path.join(sourceRoot, "context-room-data-visual-components.html"), AGENT_CONTEXT_ASSET_FILENAMES[5]],
     [path.join(sourceRoot, "features", "shared-context.md"), AGENT_CONTEXT_ASSET_FILENAMES[6]],
+    [path.join(sourceRoot, "features", "review-authority.md"), AGENT_CONTEXT_ASSET_FILENAMES[7]],
   ];
   const missing = assets.filter(([source]) => !fs.existsSync(source)).map(([source]) => source);
   if (missing.length) throw new Error(`Context Room agent context is incomplete: ${missing.join(", ")}`);
@@ -6331,7 +6399,7 @@ Before declaring setup complete:
 
 1. Read the root README, every applicable \`AGENTS.md\`, \`CLAUDE.md\`, or \`.hermes.md\`, and the existing documentation indexes.
 2. Inspect the project-owned documentation, runbooks, decisions, research, incident records, and local skills. Do not copy paths or state from another Context Room.
-3. Refine only \`.context-room/config.json\`: keep top-level \`projectOnly: true\` for physical project containment unless the owner explicitly requires a trusted, established symlink hub. False or omitted legacy mode can make configured external symlink targets readable and editable. Keep safe documentation in \`allowedPaths\`, then use \`context-room watch set <folder> --mode <mode> --root <project>\` for explicit folder behavior. The default \`recursive-live\` mode reviews current and future files at any depth; choose a current-only or direct-only mode only when the project evidence requires that narrower scope. Keep exact files and legacy recursive-live folders in \`watchAllow\`, structured folder modes in \`watchRules\`, and organize \`hubSections\` around the project's real ownership and truth states.
+3. Refine project intent conservatively: keep top-level \`projectOnly: true\` for physical project containment unless the owner explicitly requires a trusted, established symlink hub. False or omitted legacy mode can make configured external symlink targets readable and editable. Keep safe documentation in \`allowedPaths\`, then use \`context-room watch set <folder> --mode <mode> --root <project>\` only to add or widen explicit folder behavior. The default \`recursive-live\` mode reviews current and future files at any depth. Only the owner Settings interface may narrow a protected mode, remove a watched path, or disable a protected Startup scanner; direct config narrowing fails closed. Keep exact files and legacy recursive-live folders in \`watchAllow\`, structured folder modes in \`watchRules\`, and organize \`hubSections\` around the project's real ownership and truth states.
 4. Preserve an existing configuration, including intentionally empty lists, and preserve the owner-controlled \`.context-room/review-gate.json\`.
 5. Keep current implementation truth separate from target plans and from research, history, decisions, and incidents. Never promote a target claim without implementation evidence.
 6. Run \`context-room doctor --root <project>\`, start without taking over another room, and verify \`/api/health\` reports the intended root.
@@ -6457,6 +6525,12 @@ This compatibility file is generated by Context Room.
           `](https://unpkg.com/context-room@latest/docs/features/${linkedFeature})`,
         );
       }
+    }
+    if (fileName === "features/review-authority.md") {
+      relocatedContent = relocatedContent.replaceAll(
+        "](review-queue.md)",
+        "](https://unpkg.com/context-room@latest/docs/features/review-queue.md)",
+      );
     }
     files.push([path.join(targetRoot, fileName), relocatedContent]);
   }
@@ -6683,7 +6757,8 @@ export function writeGlobalContextRoomPreferences(next = {}, preferencesPath = n
 }
 
 export function readResolvedContextRoomSettings(root = process.cwd(), { preferencesPath = null } = {}) {
-  const projectSettings = settingsWithUnifiedReviewPaths(withProjectAgentInstructionPaths(root, readMemoryWebappSettings(root)), { stripLegacy: true });
+  const protectedSettings = effectiveOwnerReviewScope(root, readMemoryWebappSettings(root));
+  const projectSettings = settingsWithUnifiedReviewPaths(withProjectAgentInstructionPaths(root, protectedSettings), { stripLegacy: true });
   const preferences = readGlobalContextRoomPreferences(preferencesPath);
   return {
     ...projectSettings,
@@ -8301,7 +8376,7 @@ export function contextHubUiState(root, { refreshShared = true, refreshGit = fal
     reviews: project.localReviews,
   }));
   const items = [...proposals, ...localItems].sort((left, right) => {
-    const rank = { updated: 0, ready: 1, local_changes: 1, in_review: 2, accepted: 3, clean: 4, merged: 5, unavailable: 6 };
+    const rank = { externally_deleted: 0, unverified_rejection: 0, rejection_archive_missing: 0, updated: 1, ready: 2, local_changes: 2, in_review: 3, accepted: 4, clean: 5, merged: 6, unavailable: 7 };
     const statusRank = (rank[left.reviewStatus] ?? 4) - (rank[right.reviewStatus] ?? 4);
     return statusRank || String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""));
   });
@@ -8373,13 +8448,15 @@ function contextHubAttentionItems(root, requestedId = "") {
   }
   const decisions = (state.proposals || []).filter((proposal) => (
     (!selection.project || proposal.projectKey === selection.project.projectKey)
-    && (proposal.hasConflict || proposal.reviewStatus === "conflict")
+    && (proposal.authorityViolation || proposal.hasConflict || proposal.reviewStatus === "conflict")
   )).map((proposal) => ({
     id: `proposal-decision:${proposal.id}`,
     title: proposal.title || proposal.branch,
-    description: "Resolve the proposal conflict before file review can continue.",
+    description: proposal.authorityViolation
+      ? proposal.authorityMessage || "Review authority evidence is inconsistent. Restore the protected proposal revision before continuing."
+      : "Resolve the proposal conflict before file review can continue.",
     resourceId: proposal.id,
-    severity: "high",
+    severity: proposal.authorityViolation ? "critical" : "high",
   }));
   return buildAttentionItems({ reviews, freshness, decisions, healthIssues, project: selection.project });
 }
@@ -8590,6 +8667,23 @@ function isCodexPromptRequest(req) {
   return new URL(req.url || "/", "http://localhost").pathname.startsWith("/api/codex-prompts");
 }
 
+function isOwnerReviewAuthorityMutation(pathname = "", method = "GET") {
+  const key = `${String(method || "GET").toUpperCase()} ${String(pathname || "")}`;
+  return new Set([
+    "POST /api/settings",
+    "POST /api/context-hub/project-settings",
+    "POST /api/context-hub/project-explorer/action",
+    "POST /api/watch-rule",
+    "DELETE /api/watch-rule",
+    "POST /api/review-gate",
+    "POST /api/docqa/review",
+    "POST /api/docqa/review-baseline",
+    "POST /api/docqa/review-deletions",
+    "POST /api/context-hub/reject",
+    "POST /api/shared-context/accept",
+  ]).has(key);
+}
+
 function isGlobalProjectScopedRequestPath(pathname = "") {
   return String(pathname).startsWith("/api/")
     && !String(pathname).startsWith("/api/context-hub")
@@ -8652,7 +8746,8 @@ export function createMemoryServer({
 } = {}) {
   const projectId = contextRoomProjectId(root);
   const promptMutationNonce = randomBytes(32).toString("base64url");
-  contextRoomWebAssetBundle(promptMutationNonce);
+  const ownerMutationNonce = randomBytes(32).toString("base64url");
+  contextRoomWebAssetBundle(promptMutationNonce, ownerMutationNonce);
   const trustedFrameAncestorPorts = normalizeFrameAncestorPorts(frameAncestorPorts);
   if (registerInHub && !process.env.NODE_TEST_CONTEXT && !fs.existsSync(path.join(path.resolve(root), SHARED_REVIEW_CONFIG))) {
     try {
@@ -8722,6 +8817,7 @@ export function createMemoryServer({
     }
     const promptRequest = isCodexPromptRequest(req);
     const requestMutation = !["GET", "HEAD", "OPTIONS"].includes(req.method || "GET");
+    const ownerAuthorityMutation = isOwnerReviewAuthorityMutation(requestUrl.pathname, req.method);
     const projectIdentityMutation = requestMutation && !requestUrl.pathname.startsWith("/api/workspaces");
     const trustedHost = remoteAccess || isLoopbackPromptAuthority(req.headers.host, server, port);
     const trustedPeer = remoteAccess || isLoopbackRemoteAddress(req.socket.remoteAddress);
@@ -8797,6 +8893,13 @@ export function createMemoryServer({
         return;
       }
     }
+    if (!remoteAccess && ownerAuthorityMutation && !secretHeaderMatches(ownerMutationNonce, req.headers["x-context-room-owner-nonce"])) {
+      sendJson(res, 403, {
+        error: "This review-authority action must come from the current Context Room owner interface.",
+        code: "review_authority_nonce_required",
+      });
+      return;
+    }
     let requestRoot = remoteReview?.reviewRoot || root;
     if (requestIdentity?.kind === "agent") {
       const scopedRoot = remoteAccess?.projectRoots?.[requestIdentity.projectId];
@@ -8858,6 +8961,7 @@ export function createMemoryServer({
         codexReferenceInsert,
         codexPromptCenter,
         promptMutationNonce,
+        ownerMutationNonce,
         frameAncestorPorts: trustedFrameAncestorPorts,
         requestIdentity,
         remoteReviewBase: remoteReview ? `/reviews/${encodeURIComponent(remoteReview.metadata.authorityId)}` : "",
@@ -8985,7 +9089,7 @@ export function createMemoryServer({
     }
     if (persistentDocumentGraphLayout) releaseDocumentRelationsGraphLayout();
   });
-  return { server, root, port, projectId, promptMutationNonce };
+  return { server, root, port, projectId, promptMutationNonce, ownerMutationNonce };
 }
 
 function contextApiTarget(root, url) {
@@ -9554,6 +9658,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   codexReferenceInsert = insertFileReferenceIntoActiveCodexComposer,
   codexPromptCenter = createCodexPromptCenterProvider(),
   promptMutationNonce = "",
+  ownerMutationNonce = "",
   frameAncestorPorts = [],
   startSharedReview = null,
   startContextHubProject = null,
@@ -9645,7 +9750,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
 
   if (req.method === "GET" && url.pathname === "/") {
-    const bundle = contextRoomWebAssetBundle(promptMutationNonce);
+    const bundle = contextRoomWebAssetBundle(promptMutationNonce, ownerMutationNonce);
     sendHtml(
       res,
       bundle.html,
@@ -10202,7 +10307,8 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       const currentSettings = readMemoryWebappSettings(project.root);
       const nextSettings = normalizeMemoryWebappSettings(projectInput, currentSettings);
       if (JSON.stringify(nextSettings) !== JSON.stringify(currentSettings) || currentSettings.reviewPaths?.length || Object.prototype.hasOwnProperty.call(currentSettings, "reviewAgentInstructions")) {
-        writeMemoryWebappSettings(project.root, projectInput, { migrateLegacyReview: true });
+        const writtenSettings = writeMemoryWebappSettings(project.root, projectInput, { migrateLegacyReview: true });
+        authorizeOwnerReviewScope(project.root, writtenSettings, { actor: requestIdentity?.sub || "human-ui" });
       }
       if (body.reviewGate) {
         const reviewGate = writeReviewGateSettings(project.root, body.reviewGate);
@@ -10381,6 +10487,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
           const result = rejectSharedRepositoryProposal(candidate.proposal.repository, {
             proposal: candidate.proposal.branch,
             expectedHead: item.expectedHead,
+            actor: requestIdentity?.sub || "human-ui",
           });
           rejected.push({ id: item.id, kind: "shared", ...result });
         } else {
@@ -10554,6 +10661,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       throw sharedRequestError(`Computer Explorer root is not a folder: ${requestedComputerRoot}`, 400, "context_hub_computer_root_invalid");
     }
     const projectSettings = writeMemoryWebappSettings(root, projectInput, { migrateLegacyReview: true });
+    authorizeOwnerReviewScope(root, projectSettings, { actor: requestIdentity?.sub || "human-ui" });
     const preferences = writeGlobalContextRoomPreferences({ appearance: incoming.appearance, shortcuts: incoming.shortcuts, sounds: incoming.sounds, explorer: incoming.explorer }, globalPreferencesPath);
     const settings = {
       ...projectSettings,
@@ -11401,6 +11509,7 @@ function sendVersionedAsset(req, res, variants, contentType, etag) {
 }
 
 const CONTEXT_ROOM_PROMPT_NONCE_PLACEHOLDER = "__CONTEXT_ROOM_PROMPT_NONCE__";
+const CONTEXT_ROOM_OWNER_NONCE_PLACEHOLDER = "__CONTEXT_ROOM_OWNER_NONCE__";
 let contextRoomWebAssetCache = null;
 let mermaidWebAssetCache = null;
 
@@ -11413,9 +11522,12 @@ function mermaidWebAssetBundle() {
   return mermaidWebAssetCache;
 }
 
-export function contextRoomWebAssetBundle(codexPromptMutationNonce = "") {
+export function contextRoomWebAssetBundle(codexPromptMutationNonce = "", ownerMutationNonce = "") {
   if (!contextRoomWebAssetCache) {
-    const source = renderAppHtml({ codexPromptMutationNonce: CONTEXT_ROOM_PROMPT_NONCE_PLACEHOLDER });
+    const source = renderAppHtml({
+      codexPromptMutationNonce: CONTEXT_ROOM_PROMPT_NONCE_PLACEHOLDER,
+      ownerMutationNonce: CONTEXT_ROOM_OWNER_NONCE_PLACEHOLDER,
+    });
     const style = source.match(/<style>([\s\S]*?)<\/style>/);
     const script = source.match(/<script>([\s\S]*?)<\/script>\s*<\/body>/);
     if (!style || !script) throw new Error("Context Room web assets could not be extracted from the application shell");
@@ -11442,10 +11554,9 @@ export function contextRoomWebAssetBundle(codexPromptMutationNonce = "") {
   }
   return {
     ...contextRoomWebAssetCache,
-    html: contextRoomWebAssetCache.htmlTemplate.replace(
-      CONTEXT_ROOM_PROMPT_NONCE_PLACEHOLDER,
-      escapeHtmlServer(String(codexPromptMutationNonce || "")),
-    ),
+    html: contextRoomWebAssetCache.htmlTemplate
+      .replace(CONTEXT_ROOM_PROMPT_NONCE_PLACEHOLDER, escapeHtmlServer(String(codexPromptMutationNonce || "")))
+      .replace(CONTEXT_ROOM_OWNER_NONCE_PLACEHOLDER, escapeHtmlServer(String(ownerMutationNonce || ""))),
   };
 }
 
@@ -11466,13 +11577,14 @@ export function renderReviewSummary(summary = {}) {
     '<div class="review-summary-item"><strong>' + changed + '</strong><span>changed</span></div>';
 }
 
-export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
+export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonce = "" } = {}) {
   return String.raw`<!doctype html>
 <html lang="en" data-file-theme="${DEFAULT_FILE_THEME}">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="context-room-prompt-nonce" content="${escapeHtmlServer(codexPromptMutationNonce)}" />
+  <meta name="context-room-owner-nonce" content="${escapeHtmlServer(ownerMutationNonce)}" />
   <title>Context Room</title>
   <style>
     :root {
@@ -13183,6 +13295,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .context-room-proposal-more { align-self: center; color: var(--muted); font-size: 9px; line-height: 1.35; white-space: nowrap; }
     .context-room-proposal-state { display: flex; align-items: center; gap: 8px; padding-top: 3px; color: var(--muted); font-size: 10px; white-space: nowrap; }
     .context-room-proposal-state[data-state="conflict"] { color: var(--danger); }
+    .context-room-proposal-state[data-state="critical"] { color: var(--danger); font-weight: 760; }
     .context-room-proposal-state[data-state="updated"] { color: var(--accent-2); }
     .context-room-proposal-arrow { color: currentColor; font-size: 13px; }
     .context-room-proposal-opening-indicator { width: 12px; height: 12px; border: 1.5px solid color-mix(in srgb, var(--accent) 24%, var(--line)); border-top-color: var(--accent); border-radius: 50%; animation: bootSpin 700ms linear infinite; }
@@ -13274,7 +13387,10 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
     .shared-proposal-card-state { margin-left: auto; color: var(--muted); font: 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
     .shared-proposal-card-state[data-state="updated"], .shared-proposal-card-state[data-state="local_changes"] { color: var(--accent-2); }
     .shared-proposal-card-state[data-state="accepted"], .shared-proposal-card-state[data-state="merged"], .shared-proposal-card-state[data-state="clean"] { color: var(--good); }
-    .shared-proposal-card-state[data-state="unavailable"] { color: var(--danger); }
+    .shared-proposal-card-state[data-state="unavailable"],
+    .shared-proposal-card-state[data-state="externally_deleted"],
+    .shared-proposal-card-state[data-state="unverified_rejection"],
+    .shared-proposal-card-state[data-state="rejection_archive_missing"] { color: var(--danger); font-weight: 760; }
     .shared-proposal-empty { padding: 18px 10px; color: var(--muted); text-align: center; }
     .shared-proposal-review-panel { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(220px, 1fr); background: var(--bg); }
     .shared-proposal-overview { min-width: 0; padding: 18px 22px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
@@ -14968,6 +15084,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "" } = {}) {
 				state.codexPromptActionTargetId = "";
 			state.codexPromptRequest = 0;
 			state.codexPromptMutationNonce = document.querySelector('meta[name="context-room-prompt-nonce"]')?.content || "";
+			state.ownerMutationNonce = document.querySelector('meta[name="context-room-owner-nonce"]')?.content || "";
 			const CODEX_PROMPT_MAX_BYTES = ${MAX_CODEX_PROMPT_BYTES};
 			const CODEX_PROMPT_MAX_ESTIMATED_TOKENS = ${MAX_CODEX_PROMPT_ESTIMATED_TOKENS};
 			const CODEX_PROMPT_HIGH_CONTEXT_TOKENS = ${CODEX_PROMPT_HIGH_CONTEXT_CONFIRM_TOKENS};
@@ -15315,6 +15432,9 @@ async function api(path, options) {
     headers.set("x-context-room-target-project", state.activeProjectLocationId);
   }
   const method = String(requestOptions.method || "GET").toUpperCase();
+  if (!["GET", "HEAD", "OPTIONS"].includes(method) && state.ownerMutationNonce) {
+    headers.set("x-context-room-owner-nonce", state.ownerMutationNonce);
+  }
   if (
     path.startsWith("/api/codex-prompts")
     && !["GET", "HEAD", "OPTIONS"].includes(method)
@@ -15386,6 +15506,9 @@ function sharedProposalSearchText(item) {
 
 function contextHubStatusLabel(status, count = 0) {
   return ({
+    externally_deleted: "Authority violation",
+    unverified_rejection: "Unverified rejection",
+    rejection_archive_missing: "Rejection archive missing",
     updated: "Updated after review",
     ready: "Ready to review",
     in_review: "Review in progress",
@@ -16100,11 +16223,12 @@ function contextHubProjectSearchText(project) {
 }
 
 function contextRoomReviewPriority(item) {
-  if (item.type === "shared" && item.hasConflict) return 0;
-  if (item.type === "shared" && (item.reviewStatus === "updated" || Number(item.mainAdvancedBy || 0) > 0)) return 1;
-  if (item.type === "shared" && ["ready", "in_review"].includes(item.reviewStatus)) return 2;
-  if (item.type !== "shared") return 3;
-  return 4;
+  if (item.type === "shared" && item.authorityViolation) return 0;
+  if (item.type === "shared" && item.hasConflict) return 1;
+  if (item.type === "shared" && (item.reviewStatus === "updated" || Number(item.mainAdvancedBy || 0) > 0)) return 2;
+  if (item.type === "shared" && ["ready", "in_review"].includes(item.reviewStatus)) return 3;
+  if (item.type !== "shared") return 4;
+  return 5;
 }
 
 function contextHubHomeReviewItems(needle = "", visibility = "active") {
@@ -17099,6 +17223,7 @@ function selectContextHubProjectPickerChoice(projectKey = "") {
 }
 
 function contextRoomProposalReviewState(item) {
+  if (item.authorityViolation) return { key: "critical", label: contextHubStatusLabel(item.reviewStatus, item.fileCount || 0) };
   if (item.hasConflict) return { key: "conflict", label: "Conflict" };
   if (Number(item.mainAdvancedBy || 0) > 0) return { key: "updated", label: "Re-review required" };
   return {
@@ -17109,7 +17234,7 @@ function contextRoomProposalReviewState(item) {
 
 function contextRoomReviewCanReject(item) {
   if (!item) return false;
-  if (item.type === "shared") return !["accepted", "merged"].includes(item.reviewStatus);
+  if (item.type === "shared") return !item.authorityViolation && !["accepted", "merged"].includes(item.reviewStatus);
   return item.localReview?.reviewStatus !== "needs_changes";
 }
 
@@ -17135,11 +17260,12 @@ function renderContextRoomReviewRow(item) {
     const moreFiles = fileCount > 4
       ? '<span class="context-room-proposal-more">+' + (fileCount - 4) + ' more</span>'
       : "";
-    const description = item.description || "Review the files together, then accept or reject the proposal as one shared change.";
+    const unavailable = item.available === false || item.authorityViolation;
+    const description = item.authorityMessage || item.description || "Review the files together, then accept or reject the proposal as one shared change.";
     const descriptionId = "contextRoomProposalDescription-" + item.id.replace(/[^A-Za-z0-9_-]/g, "-");
     const proposalLabel = item.title || item.branch || projectLabel;
     return entryStart + '<article class="context-room-review-proposal' + active + '" aria-busy="' + String(opening) + '">'
-      + '<button class="context-room-proposal-hitbox" type="button" data-context-room-review="' + escapeHtml(item.id) + '" aria-label="Open proposal ' + escapeHtml(proposalLabel) + '"' + (opening ? " disabled" : "") + '></button>'
+      + '<button class="context-room-proposal-hitbox" type="button" data-context-room-review="' + escapeHtml(item.id) + '" aria-label="' + escapeHtml(unavailable ? "Proposal unavailable because review authority evidence is inconsistent" : "Open proposal " + proposalLabel) + '"' + (opening || unavailable ? " disabled" : "") + '></button>'
       + '<div class="context-room-proposal-content">'
       + '<span class="context-room-proposal-stack" aria-hidden="true">P</span>'
       + '<span class="context-room-proposal-copy"><span class="context-room-proposal-topline"><span class="context-hub-source" data-source="shared">Proposal</span><span class="context-room-proposal-title">' + escapeHtml(proposalLabel) + '</span></span>'
@@ -17147,7 +17273,7 @@ function renderContextRoomReviewRow(item) {
       + '<span class="context-room-proposal-description-row"><span id="' + escapeHtml(descriptionId) + '" class="context-room-proposal-description" data-context-room-proposal-description="' + escapeHtml(item.id) + '" data-expanded="' + String(expanded) + '">' + escapeHtml(description) + '</span>'
       + '<button class="context-room-proposal-description-toggle" type="button" data-context-room-proposal-description-toggle="' + escapeHtml(item.id) + '" aria-expanded="' + String(expanded) + '" aria-controls="' + escapeHtml(descriptionId) + '" aria-label="' + (expanded ? "Collapse proposal description" : "Show full proposal description") + '" title="' + (expanded ? "Collapse description" : "Show full description") + '"' + (expanded ? "" : " hidden") + '>' + (expanded ? "−" : "+") + '</button></span>'
       + '<span class="context-room-proposal-preview-files">' + (previewFiles || '<span class="context-room-proposal-more">No changed files reported.</span>') + moreFiles + '</span></span>'
-      + '<span class="context-room-proposal-state" data-state="' + escapeHtml(reviewState.key) + '">' + snoozeBadge + '<span>' + escapeHtml(opening ? "Opening review…" : reviewState.label) + '</span>' + (opening ? '<span class="context-room-proposal-opening-indicator" aria-hidden="true"></span>' : '<span class="context-room-proposal-arrow" aria-hidden="true">→</span>') + '</span>'
+      + '<span class="context-room-proposal-state" data-state="' + escapeHtml(reviewState.key) + '">' + snoozeBadge + '<span>' + escapeHtml(opening ? "Opening review…" : reviewState.label) + '</span>' + (opening ? '<span class="context-room-proposal-opening-indicator" aria-hidden="true"></span>' : unavailable ? '<span class="context-room-proposal-arrow" aria-hidden="true">!</span>' : '<span class="context-room-proposal-arrow" aria-hidden="true">→</span>') + '</span>'
       + '</div>'
       + '</article></div>';
   }
@@ -17710,9 +17836,9 @@ function renderSharedProposalWorkspace() {
         ["Shared only", visible.filter((item) => item.project?.mode === "shared")],
       ]
     : [
-        ["Needs attention", visible.filter((item) => ["updated", "ready", "local_changes"].includes(item.reviewStatus))],
+        ["Needs attention", visible.filter((item) => item.authorityViolation || ["updated", "ready", "local_changes"].includes(item.reviewStatus))],
         ["In progress", visible.filter((item) => ["in_review", "accepted"].includes(item.reviewStatus))],
-        ["Other", visible.filter((item) => !["updated", "ready", "local_changes", "in_review", "accepted"].includes(item.reviewStatus))],
+        ["Other", visible.filter((item) => !item.authorityViolation && !["updated", "ready", "local_changes", "in_review", "accepted"].includes(item.reviewStatus))],
       ];
   const renderItem = (item) => {
     const project = item.project || contextHubProjectForItem(item);
@@ -17733,7 +17859,7 @@ function renderSharedProposalWorkspace() {
     return '<button class="shared-proposal-card' + (active ? ' active' : '') + '" data-source="' + source + '" type="button" data-context-hub-item="' + escapeHtml(item.id) + '" title="Inspect ' + escapeHtml(item.title || item.branch) + '">'
       + '<span class="shared-proposal-card-top">' + sourceMarkup + '<span class="shared-proposal-project">' + escapeHtml(projectLabel) + '</span><span class="shared-proposal-card-state" data-state="' + escapeHtml(item.reviewStatus || "") + '">' + escapeHtml(statusLabel) + '</span></span>'
       + '<span class="shared-proposal-card-title">' + escapeHtml(item.title || item.branch || projectLabel) + '</span>'
-      + '<span class="shared-proposal-card-description">' + escapeHtml(item.description || "No description supplied for this proposal.") + '</span>'
+      + '<span class="shared-proposal-card-description">' + escapeHtml(item.authorityMessage || item.description || "No description supplied for this proposal.") + '</span>'
       + '<span class="shared-proposal-card-files">' + previewFiles + moreFiles + '</span>'
       + '<span class="shared-proposal-card-meta">' + escapeHtml(author + " · " + updated) + '</span>'
       + '</button>';
@@ -17773,7 +17899,7 @@ function renderContextHubOverview(item) {
   el("sharedProposalOverviewRecapLabel").textContent = item.type === "shared"
     ? "Agent recap · updated with the latest publish"
     : item.localFile ? "Local file" : "Local project";
-  el("sharedProposalOverviewDescription").textContent = item.description || (item.type === "shared" ? "No description was supplied for this legacy proposal. Republish it through the CLI to attach an up-to-date description." : "Open the project to work with its normal local files and review queue.");
+  el("sharedProposalOverviewDescription").textContent = item.authorityMessage || item.description || (item.type === "shared" ? "No description was supplied for this legacy proposal. Republish it through the CLI to attach an up-to-date description." : "Open the project to work with its normal local files and review queue.");
   el("sharedProposalOverviewMeta").innerHTML = item.type === "shared"
     ? '<span>' + escapeHtml(author + " · " + updated) + '</span><span>' + escapeHtml(item.repositoryName + " · " + item.branch + " · @" + shortSharedHash(item.head)) + '</span><span>' + escapeHtml(session) + '</span>'
     : '<span>' + escapeHtml(author) + '</span><span>' + escapeHtml(updated) + '</span><span>' + escapeHtml(session) + '</span>';
@@ -17791,7 +17917,7 @@ function renderContextHubOverview(item) {
   const openButton = el("sharedProposalOpenReview");
   const proposalOpening = item.type === "shared" && state.contextRoomOpeningProposalId === item.id;
   openButton.hidden = false;
-  openButton.disabled = proposalOpening;
+  openButton.disabled = proposalOpening || Boolean(item.authorityViolation) || item.available === false;
   openButton.dataset.contextHubAction = item.type === "shared" ? "proposal" : "project";
   openButton.dataset.sharedProposal = item.branch || "";
   openButton.dataset.sharedRepository = item.repository || "";
@@ -17799,7 +17925,9 @@ function renderContextHubOverview(item) {
   openButton.dataset.contextHubFile = item.localFile || "";
   openButton.dataset.contextHubReview = item.localFile ? item.id : "";
   if (item.type === "shared") {
-    openButton.textContent = proposalOpening ? "Opening review…" : "Open " + fileCount + " file" + (fileCount === 1 ? "" : "s") + " to review";
+    openButton.textContent = item.authorityViolation
+      ? "Restore protected proposal before review"
+      : proposalOpening ? "Opening review…" : "Open " + fileCount + " file" + (fileCount === 1 ? "" : "s") + " to review";
     el("sharedProposalChangeSummary").textContent = "Bound to @" + shortSharedHash(item.head);
   } else if (project?.mode === "shared" || !item.available && !project?.available) {
     openButton.textContent = "Show this project's proposals";
@@ -17844,6 +17972,9 @@ async function openSharedProposal(proposal, repository = "") {
   const item = (state.contextHub?.proposals || []).find((candidate) => candidate.branch === proposal && (!currentRepository || candidate.repository === currentRepository))
     || (state.sharedContext?.proposals || []).find((candidate) => candidate.branch === proposal);
   if (!item) throw new Error("Proposal is no longer available: " + proposal);
+  if (item.authorityViolation || item.available === false) {
+    throw new Error(item.authorityMessage || "Proposal review is blocked because owner-authority evidence is inconsistent.");
+  }
   state.contextHubSelection = item.id || state.contextHubSelection;
   state.contextRoomOpeningProposalId = item.id || sharedProposalKey(item);
   state.contextRoomPreparedReview = null;
@@ -23603,7 +23734,7 @@ function renderSettingsPanel() {
     renderSettingsDisclosure({ id: "review-documents", title: "Documents to review", copy: "Choose files and folders whose current versions require human verification.", status: watchCount + " watched", scope: "Project", trackDirty: true, body:
       '<div class="settings-grid">' +
         '<div class="settings-field large"><label for="watchAllow">Watched documents and folders</label><span class="settings-field-note">One path per line. Every current content version stays in review until a person verifies it. Folder entries use the recursive current-and-future default.</span><textarea id="watchAllow" placeholder="docs/&#10;website/docs/">' + escapeHtml(watchAllow) + '</textarea></div>' +
-        '<div class="settings-field large"><label>Folder watch modes</label><span class="settings-field-note">Your agent can manage one explicit rule with <code>context-room watch set &lt;path&gt; --mode &lt;mode&gt;</code>. Removing a rule uses <code>--mode off</code> and requires the returned protected plan. Human verification remains yours.</span>' + watchRulesMarkup + '</div>' +
+        '<div class="settings-field large"><label>Folder watch modes</label><span class="settings-field-note">Your agent can add or widen one explicit rule with <code>context-room watch set &lt;path&gt; --mode &lt;mode&gt;</code>. Only you can narrow or remove review coverage here in Settings. Human verification remains yours.</span>' + watchRulesMarkup + '</div>' +
       '</div>'
     }) +
     renderSettingsDisclosure({ id: "review-protection", title: "Protect Git actions", copy: "Pause selected Git checkpoints while documentation review is pending.", status: reviewGateCount ? reviewGateCount + " active" : "Optional", scope: "Owner control", trackDirty: true, body:

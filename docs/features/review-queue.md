@@ -4,8 +4,8 @@ context_room:
   scope: context-room
   status: current
   canonical_for: review queue
-  last_verified: 2026-07-26
-  sources: [src/context_room.mjs, bin/context-room.mjs, docs/agent-configuration.md]
+  last_verified: 2026-08-03
+  sources: [src/context_room.mjs, src/review_authority.mjs, src/context_settings.mjs, bin/context-room.mjs, docs/agent-configuration.md]
 ---
 
 # Review Queue
@@ -27,6 +27,9 @@ The review queue shows watched documentation that needs verification before it b
 
 - Review owns the final trust decision.
 - Agents may surface the queue, but should never mark files verified for the user.
+- Agent settings and watch commands may add or widen review coverage, but they cannot narrow or remove the owner-authorized scope. Those decisions belong to the current owner interface.
+- Context Room keeps the last owner-authorized scope outside project configuration. A direct config edit that narrows it fails closed, leaves the protected scope effective, and creates a critical `review_authority_tamper` issue.
+- Protected local review mutations require the current server-rendered owner-interface nonce. This blocks raw headerless requests but does not prove physical human presence against browser automation or another unrestricted process under the same OS account. See [Review authority](review-authority.md).
 - Snooze is a visibility preference, never a review decision. It hides only the exact displayed local content hash or shared proposal head from Home until its return time. The item remains pending and is listed under **Settings → Review and trust → Snoozed reviews**.
 - Snoozed reviews continue to block configured review gates and prevent a false all-clear state. A changed file hash or proposal head returns immediately; expiry or **Return now** also restores the item without changing its review state.
 - Home selection can combine local file reviews with shared proposals. Its rejection action marks local files **Needs changes** without deleting them; shared proposal rejection follows the separate Git archive contract in [Global Context Room](context-hub.md).

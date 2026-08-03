@@ -118,13 +118,13 @@ test("Context snapshots are content-addressed and diff the same exact target", a
 
 test("Context Settings filesystem adapter plans, applies once, and Doctor paginates before inspection", (t) => {
   const { target } = fixture(t);
-  assert.equal(getCliContextSettings(target, { key: "startupSkills.enabled" }).value, true);
-  const plan = planCliContextSettings(target, { set: { "startupSkills.enabled": false } });
+  assert.deepEqual(getCliContextSettings(target, { key: "allowedPaths" }).value, ["AGENTS.md", "apps/"]);
+  const plan = planCliContextSettings(target, { set: { allowedPaths: ["AGENTS.md", "apps/", "README.md"] } });
   const first = applyCliContextSettings(target, { planId: plan.planId, idempotencyKey: "test" });
   const replay = applyCliContextSettings(target, { planId: plan.planId, idempotencyKey: "test" });
   assert.equal(first.operationId, replay.operationId);
   assert.equal(replay.idempotentReplay, true);
-  assert.equal(getCliContextSettings(target, { key: "startupSkills.enabled" }).value, false);
+  assert.deepEqual(getCliContextSettings(target, { key: "allowedPaths" }).value, ["AGENTS.md", "apps/", "README.md"]);
 
   const page = doctorAllProjects({ limit: 1 });
   assert.equal(page.projects.length, 1);

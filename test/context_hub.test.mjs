@@ -380,7 +380,7 @@ test("Context Room Home combines global review queues without nesting another Ho
 
   const rejectedLocal = await fetch(origin + "/api/context-hub/reject", {
     method: "POST",
-    headers: { "content-type": "application/json", "x-context-room-project": room.projectId },
+    headers: { "content-type": "application/json", "x-context-room-project": room.projectId, "x-context-room-owner-nonce": room.ownerMutationNonce },
     body: JSON.stringify({ items: [{ id: `local:${secondEntry.id}:file:docs/SECOND.md` }] }),
   });
   assert.equal(rejectedLocal.status, 200);
@@ -432,7 +432,7 @@ test("global Explorer context actions stay scoped to the selected local project"
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   const request = (body) => fetch(origin + "/api/context-hub/project-explorer/action", {
     method: "POST",
-    headers: { "content-type": "application/json", "x-context-room-project": room.projectId },
+    headers: { "content-type": "application/json", "x-context-room-project": room.projectId, "x-context-room-owner-nonce": room.ownerMutationNonce },
     body: JSON.stringify({ projectId: target.id, ...body }),
   });
 
@@ -472,7 +472,7 @@ test("global Explorer context actions stay scoped to the selected local project"
   assert.equal(notModified.status, 304);
   const staleSave = await fetch(origin + "/api/context-hub/project-settings", {
     method: "POST",
-    headers: { "content-type": "application/json", "x-context-room-project": room.projectId },
+    headers: { "content-type": "application/json", "x-context-room-project": room.projectId, "x-context-room-owner-nonce": room.ownerMutationNonce },
     body: JSON.stringify({ projectId: target.id, expectedRevision: "stale", settings: settingsPayload.settings }),
   });
   assert.equal(staleSave.status, 409);
