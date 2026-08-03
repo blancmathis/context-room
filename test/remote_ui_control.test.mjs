@@ -116,6 +116,38 @@ test("remote workspace listing and commands are isolated by user and project", a
   assert.equal(crossProject.status, 404);
 });
 
+test("an exact project agent can claim one neutral manual workspace without exposing it cross-project", async (t) => {
+  const origin = await startRemoteRoom(t);
+  await register(origin, "mathis", {
+    workspaceId: "workspace-manual-global",
+    projectId: "internal-context-room-root",
+    scopeProjectId: "internal-context-room-root",
+    view: "hub",
+    focused: true,
+  });
+
+  const listedResponse = await fetch(`${origin}/api/agent/ui/workspaces?all=1`, { headers: agentHeaders() });
+  assert.equal(listedResponse.status, 200);
+  assert.deepEqual((await listedResponse.json()).workspaces.map((workspace) => workspace.workspaceId), ["workspace-manual-global"]);
+
+  const openedResponse = await fetch(`${origin}/api/agent/ui/open`, {
+    method: "POST",
+    headers: agentHeaders(),
+    body: JSON.stringify({ workspace: "workspace-manual-global", navigation: { view: "settings" } }),
+  });
+  assert.equal(openedResponse.status, 200);
+  const opened = await openedResponse.json();
+  assert.equal(opened.workspace.pairedProjectId, "hicharlie");
+  assert.equal(opened.workspace.sessionId, "chat-one");
+
+  const crossProject = await fetch(`${origin}/api/agent/ui/open`, {
+    method: "POST",
+    headers: agentHeaders({ projectId: "peerlab", sessionId: "chat-two" }),
+    body: JSON.stringify({ workspace: "workspace-manual-global", navigation: { view: "home" } }),
+  });
+  assert.equal(crossProject.status, 404);
+});
+
 test("remote UI capabilities remain usable for multiple scoped requests during their lifetime", async (t) => {
   const origin = await startRemoteRoom(t);
   await register(origin, "mathis", { workspaceId: "workspace-reusable-hc", projectId: "hicharlie", view: "hub" });

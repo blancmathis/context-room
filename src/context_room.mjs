@@ -3245,9 +3245,10 @@ function sanitizeWorkspaceCommand(next = {}, workspaceId = "") {
   };
 }
 
-function createWorkspaceRegistry({ ttlMs = 20_000, onCommand = null } = {}) {
+function createWorkspaceRegistry({ ttlMs = 20_000, onCommand = null, knownProjectIds = [] } = {}) {
   const workspaces = new Map();
   const commands = new Map();
+  const knownProjects = new Set(knownProjectIds.map((item) => String(item || "").trim()).filter(Boolean));
   const prune = () => {
     const cutoff = Date.now() - ttlMs;
     for (const [workspaceId, workspace] of workspaces) {
@@ -3264,7 +3265,12 @@ function createWorkspaceRegistry({ ttlMs = 20_000, onCommand = null } = {}) {
         (!filters.workspaceId || workspace.workspaceId === filters.workspaceId)
         && (!filters.ownerSub || workspace.ownerSub === filters.ownerSub)
         && (!filters.sessionId || workspace.sessionId === filters.sessionId)
-        && (!filters.scopeProjectId || workspace.pairedProjectId === filters.scopeProjectId || (!workspace.pairedProjectId && [workspace.scopeProjectId, workspace.projectId].includes(filters.scopeProjectId)))
+        && (!filters.scopeProjectId
+          || workspace.pairedProjectId === filters.scopeProjectId
+          || (!workspace.pairedProjectId && [workspace.scopeProjectId, workspace.projectId].includes(filters.scopeProjectId))
+          || (filters.allowUnpairedNeutral === true
+            && !workspace.pairedProjectId
+            && ![workspace.scopeProjectId, workspace.projectId].filter(Boolean).some((item) => knownProjects.has(item))))
         && (!filters.projectId || [workspace.projectId, workspace.scopeProjectId, workspace.pairedProjectId].includes(filters.projectId) || workspace.projectTitle.toLowerCase() === String(filters.projectId).toLowerCase())
         && (!filters.locationId || workspace.locationId === filters.locationId)
         && (!query || [workspace.label, workspace.projectTitle, workspace.projectId, workspace.scopeProjectId, workspace.locationId, workspace.view, workspace.folder, workspace.file, workspace.proposal, workspace.title].filter(Boolean).join(" ").toLowerCase().includes(query))
@@ -3293,6 +3299,7 @@ function createWorkspaceRegistry({ ttlMs = 20_000, onCommand = null } = {}) {
       const current = id ? workspaces.get(id) : null;
       if (!current) throw sharedRequestError(`Unknown or expired workspace: ${workspaceId}`, 404, "workspace_not_found");
       if (!ownerSub || current.ownerSub !== ownerSub) throw sharedRequestError("This pairing ticket belongs to another user", 403, "workspace_pair_owner_denied");
+      if (current.pairedProjectId && projectId && current.pairedProjectId !== projectId) throw sharedRequestError("This workspace is paired to another project", 403, "workspace_pair_project_denied");
       const next = {
         ...current,
         sessionId: shortString(sessionId, 200) || "",
@@ -8919,6 +8926,7 @@ export function createMemoryServer({
   };
   const workspaceRegistry = createWorkspaceRegistry({
     onCommand: (command) => runtimeEvents.publish("workspace-command", { command }),
+    knownProjectIds: Object.keys(remoteAccess?.projectRoots || {}),
   });
   const serverBackgroundRoots = new Set([path.resolve(root)]);
   const backgroundWatchStops = new Map();
@@ -9844,6 +9852,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       const workspaces = workspaceRegistry.list({
         ownerSub: agent.sub,
         scopeProjectId: agent.projectId,
+        allowUnpairedNeutral: true,
         sessionId,
         locationId: String(url.searchParams.get("location") || "").trim(),
         query: String(url.searchParams.get("query") || "").trim(),
@@ -9869,16 +9878,16 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       const requestedSessionId = shortString(body.session || body.sessionId, 200) || "";
       let candidates = [];
       if (workspaceId) {
-        const exact = workspaceRegistry.find(workspaceId, { ownerSub: agent.sub, scopeProjectId: agent.projectId });
+        const exact = workspaceRegistry.find(workspaceId, { ownerSub: agent.sub, scopeProjectId: agent.projectId, allowUnpairedNeutral: true });
         if (!exact) throw sharedRequestError(`Unknown or expired workspace: ${workspaceId}`, 404, "workspace_not_found");
         candidates = [exact];
       } else if (requestedSessionId) {
-        candidates = workspaceRegistry.list({ ownerSub: agent.sub, scopeProjectId: agent.projectId, sessionId: requestedSessionId });
+        candidates = workspaceRegistry.list({ ownerSub: agent.sub, scopeProjectId: agent.projectId, allowUnpairedNeutral: true, sessionId: requestedSessionId });
       } else if (agent.sessionId) {
-        candidates = workspaceRegistry.list({ ownerSub: agent.sub, scopeProjectId: agent.projectId, sessionId: agent.sessionId });
+        candidates = workspaceRegistry.list({ ownerSub: agent.sub, scopeProjectId: agent.projectId, allowUnpairedNeutral: true, sessionId: agent.sessionId });
       }
       if (!workspaceId && !requestedSessionId && !candidates.length) {
-        candidates = workspaceRegistry.list({ ownerSub: agent.sub, scopeProjectId: agent.projectId });
+        candidates = workspaceRegistry.list({ ownerSub: agent.sub, scopeProjectId: agent.projectId, allowUnpairedNeutral: true });
       }
       if (body.recent === true && candidates.length) candidates = [recentWorkspace(candidates)];
       if (candidates.length > 1) {
@@ -9894,7 +9903,15 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
         });
       }
       if (candidates.length === 1) {
-        const workspace = candidates[0];
+        let workspace = candidates[0];
+        if (!workspace.pairedProjectId) {
+          workspace = workspaceRegistry.pair(workspace.workspaceId, {
+            ownerSub: agent.sub,
+            sessionId: workspace.sessionId || requestedSessionId || agent.sessionId || "",
+            projectId: agent.projectId,
+            label: body.label || workspace.label || "",
+          });
+        }
         const command = workspaceRegistry.writeCommand(workspace.workspaceId, {
           action: "navigate",
           ...navigation,
