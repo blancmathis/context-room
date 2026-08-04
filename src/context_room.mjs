@@ -9457,15 +9457,12 @@ export function createMemoryServer({
               reviewHead = cachedProposals.find((item) => item.branch === proposal)?.head || "";
             } catch {}
           }
-          const requestedReviewKey = reviewHead && reviewRepository
-            ? `${reviewRepository}\0${proposal}@${reviewHead}`
-            : "";
-          const existing = requestedReviewKey ? sharedReviewRooms.get(requestedReviewKey) : null;
-          if (existing) return existing;
           const result = repository
             ? materializeSharedRepositoryReview(repository, { proposal, expectedHead: reviewHead })
             : materializeSharedReview(sourceRoot, { proposal, expectedHead: reviewHead });
-          const reviewKey = `${result.metadata.repository}\0${result.metadata.proposal}@${result.metadata.proposalHead}`;
+          const reviewKey = `${result.metadata.repository}\0${result.metadata.proposal}@${result.metadata.proposalHead}~${result.metadata.baseRevision}`;
+          const existing = sharedReviewRooms.get(reviewKey);
+          if (existing) return existing;
           const allowedPaths = sharedReviewAllowedPaths(result.repositoryConfig, result.metadata.projectId);
           initializeContextRoomProject(result.reviewRoot, {
             title: `Review · ${proposal}`,
