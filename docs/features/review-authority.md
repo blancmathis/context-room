@@ -119,7 +119,7 @@ For `externally_deleted`:
 6. refresh Context Room and confirm that the proposal returns at the same head; and
 7. continue review only after the authority warning clears.
 
-For `unverified_rejection` or `rejection_archive_missing`, preserve both refs, compare the exact hashes, and have the owner repeat or repair the decision through the current Context Room interface. Never delete evidence to clear the warning.
+For `unverified_rejection` or `rejection_archive_missing`, preserve both refs and open the warning row for inspection. Context Room may materialize the still-present exact proposal revision, but it keeps acceptance disabled and displays the authority warning. If the expected rejection archive already points to that exact head, the owner's double-confirmed **Reject proposal** action records a new intact receipt without rewriting the archive. A mismatched archive still fails closed. Never delete evidence to clear the warning.
 
 ## Verification
 

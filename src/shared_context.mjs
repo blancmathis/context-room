@@ -4402,15 +4402,17 @@ export function rejectSharedRepositoryProposal(repository, { proposal, expectedH
     `${synced.repositoryConfig.rejectionPrefix}${proposalSuffix}-${reviewedHead.slice(0, 12)}`,
     "rejection branch",
   );
-  if (remoteBranchRevision(checkout, rejectionBranch)) {
-    throw new Error(`Rejected proposal archive already exists: ${rejectionBranch}`);
+  const existingArchiveHead = remoteBranchRevision(checkout, rejectionBranch);
+  if (existingArchiveHead && existingArchiveHead !== reviewedHead) {
+    throw new Error(`Rejected proposal archive does not match the exact proposal revision: ${rejectionBranch}`);
   }
-
-  runGit(checkout, [
-    "push",
-    "origin",
-    `${reviewedHead}:refs/heads/${rejectionBranch}`,
-  ], { stdio: ["ignore", "ignore", "pipe"] });
+  if (!existingArchiveHead) {
+    runGit(checkout, [
+      "push",
+      "origin",
+      `${reviewedHead}:refs/heads/${rejectionBranch}`,
+    ], { stdio: ["ignore", "ignore", "pipe"] });
+  }
 
   recordOwnerProposalDecision(synced.connection.repository, {
     proposal: identity.branch,

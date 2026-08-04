@@ -188,8 +188,13 @@ test("shared proposal review keeps navigation and explicit completion in the pro
   assert.match(html, /id="proposalReviewFiles"/);
   assert.match(html, /function showProposalReview\(\{ preparingItem = null \} = \{\}\)/);
   assert.match(html, /function renderProposalReviewPage\(\)/);
+  assert.match(html, /function contextRoomHubReturnUrl\(url\)/);
   assert.match(html, /function contextRoomProposalReviewUrl\(url\)/);
-  assert.match(html, /target\.searchParams\.set\("returnTo", window\.location\.href\)/);
+  assert.match(html, /target\.searchParams\.set\("returnTo", contextRoomHubReturnUrl\(window\.location\.href\)\)/);
+  assert.match(html, /target\.origin === window\.location\.origin/);
+  assert.match(html, /searchParams\.set\("view", "hub"\)/);
+  assert.match(html, /searchParams\.delete\("proposal"\)/);
+  assert.match(html, /searchParams\.delete\("returnTo"\)/);
   assert.doesNotMatch(html, /target\.searchParams\.set\("file", firstReviewFile\)/);
   assert.match(html, /function contextRoomProposalFileUrl\(url, filePath\)/);
   assert.match(html, /state\.contextRoomPreparedReview = result/);
@@ -229,13 +234,31 @@ test("shared proposal review keeps navigation and explicit completion in the pro
   assert.match(html, /function requestSharedProposalRejection/);
   assert.match(html, /\/api\/shared-context\/accept/);
   assert.match(html, /\/api\/shared-context\/reject/);
-  assert.match(html, /data-proposal-review-select/);
+  assert.doesNotMatch(html, /class="proposal-review-file-select"/);
+  assert.doesNotMatch(html, /type="checkbox" data-proposal-review-select/);
+  assert.match(html, /toolbar\.hidden = !selected\.length/);
+  assert.match(html, /proposalReviewFiles"\)\?\.addEventListener\("contextmenu"/);
+  assert.match(html, /proposalReviewFiles"\)\?\.addEventListener\("pointerdown"/);
+  assert.match(html, /PROPOSAL_REVIEW_LONG_PRESS_MS/);
+  assert.match(html, /Right-click or press and hold to select/);
+  assert.match(html, /data-proposal-review-selected/);
   assert.match(html, /Accept selected/);
   assert.match(html, /Reject selected/);
   assert.match(html, /Created|Modified|Deleted|Renamed|Copied|Dependency review/);
   assert.doesNotMatch(html, /\.proposal-review-file-open\s*\{[^}]*display:\s*contents/);
   assert.match(html, /\.proposal-review-file-open\s*\{[^}]*display:\s*grid/);
   assert.match(html, /el\("proposalDockBack"\)\?\.addEventListener\("click", \(\) => showProposalReview\(\)\)/);
+});
+
+test("recoverable proposal authority warnings stay inspectable without enabling acceptance", () => {
+  const html = renderAppHtml();
+
+  assert.match(html, /const unavailable = item\.available === false/);
+  assert.match(html, /const recoverableAuthority = \["unverified_rejection", "rejection_archive_missing"\]\.includes\(item\.reviewStatus\)/);
+  assert.match(html, /if \(item\.authorityViolation && !recoverableAuthority\)/);
+  assert.match(html, /state\.proposalAuthorityStatus/);
+  assert.match(html, /acceptButton\.hidden = !actionable \|\| queueCount > 0 \|\| Boolean\(state\.proposalAuthorityStatus\)/);
+  assert.match(html, /state\.proposalAuthorityMessage/);
 });
 
 test("accepted proposal commit records the human reviewer identity", () => {
@@ -2092,6 +2115,36 @@ test("rejecting a proposal removes it from the active queue without deleting its
     git(fixture.seed, ["ls-remote", "--heads", "origin", rejected.rejectionBranch]).split(/\s+/)[0],
     published.head,
   );
+});
+
+test("a human rejection can repair an exact pre-existing rejection archive", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Repair rejection evidence",
+    description: "Let the owner verify an exact archive created without an intact local receipt.",
+    branch: "proposal/demo/repair-rejection-evidence",
+  });
+  configureGit(proposal.root);
+  writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nRejected outside the owner UI.\n");
+  const published = publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const rejectionBranch = `rejected/demo/repair-rejection-evidence-${published.head.slice(0, 12)}`;
+  git(proposal.root, ["push", "origin", `${published.head}:refs/heads/${rejectionBranch}`]);
+
+  const unverified = listSharedRepositoryProposals(fixture.remote, { allowOffline: false }).proposals.find((item) => item.branch === proposal.branch);
+  assert.equal(unverified.reviewStatus, "unverified_rejection");
+  assert.equal(unverified.available, true);
+
+  const repaired = rejectSharedRepositoryProposal(fixture.remote, {
+    proposal: proposal.branch,
+    expectedHead: published.head,
+    actor: "human-ui-test",
+  });
+
+  assert.equal(repaired.rejected, true);
+  assert.equal(repaired.rejectionBranch, rejectionBranch);
+  assert.equal(listSharedRepositoryProposals(fixture.remote, { allowOffline: false }).proposals.some((item) => item.branch === proposal.branch), false);
 });
 
 test("an externally deleted proposal remains visible as a critical authority violation", (t) => {
