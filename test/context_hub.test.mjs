@@ -18,6 +18,7 @@ import {
   removeContextHubReviewSnoozes,
   setContextHubProjectOrder,
   setContextHubReviewSnoozes,
+  unregisterContextHubProject,
   unregisterContextHubSharedRepository,
   writeContextHubSnapshot,
   writeContextHubRuntime,
@@ -72,6 +73,20 @@ test("Context Hub registry keeps local projects and shared repositories independ
   assert.equal(readContextHubRuntime().url, "http://127.0.0.1:4319");
   assert.equal(clearContextHubRuntime(43210), true);
   assert.equal(readContextHubRuntime(), null);
+});
+
+test("Context Hub can remove a technical project root without removing its Shared Context repository", (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-technical-root-"));
+  withHubHome(t, path.join(base, "hub"));
+  const root = makeProject(base, "Remote shared project root");
+  const repository = "git@github.com:example/shared-context.git";
+  const registered = registerContextHubProject(root, { shared: { repository, projectId: "shared-project" } });
+
+  assert.equal(listContextHubProjects().length, 1);
+  assert.deepEqual(unregisterContextHubProject(root), { projectId: registered.id, removed: true });
+  assert.equal(listContextHubProjects().length, 0);
+  assert.equal(readContextHubRegistry().sharedRepositories[0].repository, repository);
+  assert.deepEqual(unregisterContextHubProject(root), { projectId: registered.id, removed: false });
 });
 
 test("Context Hub removes a shared repository only after its local projects disconnect", (t) => {

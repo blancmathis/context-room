@@ -17,6 +17,16 @@ Remote mode is an explicit deployment profile for a trusted QM Portal. Local Con
 
 Mount the encrypted Docker volume at `/data`. It contains the Context Hub registry, shared accepted snapshots, proposal review worktrees, review state, and audit journals. Back up this volume, but exclude every mounted secret file. The `Dockerfile.remote` image runs as an unprivileged user and declares `/data` as its only persistent volume.
 
+The remote entry point also maintains private technical roots under
+`/data/projects/<project-id>` for project-scoped agent capabilities, Shared
+Context synchronization, and proposal materialization. These directories are
+not source checkouts and must never be registered as local Context Room
+projects. The visible project catalog comes from the Shared Context repository,
+so remote projects remain shared-only unless a real local checkout is connected
+by another deployment profile. On startup, the remote entry point removes any
+legacy registry entries that exposed these technical roots as writable local
+projects and rebuilds the catalog snapshot before accepting browser requests.
+
 ## Peerlab image deployment
 
 For the Peerlab installation, every successful signed image build dispatches the exact commit and digest to the private `peerlab-qm` deployment repository. A dedicated GitHub App token is limited to `Actions: write` on that repository; it cannot read or change its contents. `peerlab-qm` independently checks that the commit tag resolves to the dispatched digest, verifies the Cosign signer, changes only the immutable image pin, runs its deployment contracts, and auto-merges the technical update. The resulting `main` push uses the existing validated OVH deployment and rollback path. No polling is involved.

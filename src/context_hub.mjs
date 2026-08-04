@@ -333,6 +333,18 @@ export function registerContextHubProject(root, { title = "", shared = null } = 
   return entry;
 }
 
+export function unregisterContextHubProject(root) {
+  const projectRoot = stableRoot(root);
+  const projectId = stableProjectId(projectRoot);
+  const registry = readContextHubRegistry();
+  const removed = registry.projects.some((entry) => entry.id === projectId);
+  if (removed) {
+    registry.projects = registry.projects.filter((entry) => entry.id !== projectId);
+    writeJson(registryPath(), registry);
+  }
+  return { projectId, removed };
+}
+
 export function disconnectContextHubProjectShared(root) {
   const projectRoot = stableRoot(root);
   const registry = readContextHubRegistry();

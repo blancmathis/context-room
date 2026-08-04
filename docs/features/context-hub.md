@@ -4,8 +4,8 @@ context_room:
   scope: context-room
   status: current
   canonical_for: global Context Room registry and views
-  last_verified: 2026-07-27
-  sources: [src/context_hub.mjs, src/context_room.mjs, src/context_engine.mjs, src/context_inventory.mjs, src/codex_prompt_center.mjs, src/shared_context.mjs, bin/context-room.mjs, docs/features/shared-context.md, docs/features/codex-prompt-center.md]
+  last_verified: 2026-08-04
+  sources: [src/context_hub.mjs, src/context_room.mjs, src/context_engine.mjs, src/context_inventory.mjs, src/codex_prompt_center.mjs, src/shared_context.mjs, bin/context-room.mjs, bin/context-room-remote.mjs, docs/features/shared-context.md, docs/features/codex-prompt-center.md, docs/remote-qm.md]
 ---
 
 # Global Context Room
@@ -32,6 +32,13 @@ room mode.
 | Shared repository | The accepted configured default-branch snapshot | Open an exact proposal commit and accept or reject its file reviews; completing those decisions finalizes the reviewed result into the default branch |
 
 A project may be local-only, shared-only, or local and connected to shared docs and skills. The UI labels every item by source and explains which review path it uses.
+
+Remote deployments may keep private technical directories for project-scoped
+agent capabilities and Shared Context caches. A directory created only for
+that purpose is not a local project: it is excluded from the project registry,
+local Explorer, editor, and file review queue. When no real checkout is
+connected, the project appears as shared-only and all documentation changes go
+through Shared Context proposals.
 
 ## Start Or Reuse The Global Room
 
