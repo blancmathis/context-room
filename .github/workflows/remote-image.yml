@@ -61,3 +61,26 @@ jobs:
           path: context-room-remote.image
           if-no-files-found: error
           retention-days: 30
+      - name: Create the Peerlab QM deployment token
+        id: qm-deploy-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.PEERLAB_QM_DEPLOY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PEERLAB_QM_DEPLOY_APP_PRIVATE_KEY }}
+          owner: blancmathis
+          repositories: peerlab-qm
+          permission-actions: write
+      - name: Dispatch the exact signed image to Peerlab QM
+        env:
+          GH_TOKEN: ${{ steps.qm-deploy-token.outputs.token }}
+        run: |
+          image="$(tr -d '\n' < context-room-remote.image)"
+          if [[ ! "${image}" =~ ^ghcr\.io/blancmathis/context-room/remote@sha256:[0-9a-f]{64}$ ]]; then
+            echo "The signed Context Room image reference is invalid." >&2
+            exit 1
+          fi
+          gh workflow run update-context-room-image.yml \
+            --repo blancmathis/peerlab-qm \
+            --ref main \
+            -f source_sha="${GITHUB_SHA}" \
+            -f image="${image}"
