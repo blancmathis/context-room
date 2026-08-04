@@ -9040,6 +9040,138 @@ function githubHttpsRemote(repository) {
   return { owner: match[1], repository: match[2], url: `https://github.com/${match[1]}/${match[2]}.git` };
 }
 
+function remoteReviewRecoveryHref(requestUrl) {
+  let returnParams = null;
+  const rawReturnTo = requestUrl.searchParams.get("returnTo");
+  if (rawReturnTo) {
+    try {
+      returnParams = new URL(rawReturnTo, "https://context-room.invalid/").searchParams;
+    } catch {}
+  }
+  const target = new URL("https://context-room.invalid/");
+  target.searchParams.set("hub", "1");
+  for (const key of ["workspace", "project"]) {
+    const value = returnParams?.get(key) || requestUrl.searchParams.get(key) || "";
+    if (value) target.searchParams.set(key, value);
+  }
+  target.searchParams.set("view", "hub");
+  const explorer = returnParams?.get("explorer") || requestUrl.searchParams.get("explorer") || "";
+  if (["expanded", "collapsed"].includes(explorer)) target.searchParams.set("explorer", explorer);
+  return `${target.pathname}${target.search}`;
+}
+
+function remoteReviewUnavailableHtml(requestUrl) {
+  const returnHref = escapeHtmlServer(remoteReviewRecoveryHref(requestUrl));
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark light" />
+  <title>Review unavailable · Context Room</title>
+  <style data-context-room-recovery>
+    :root {
+      color-scheme: dark light;
+      --canvas: #0e1113;
+      --surface: #151a1d;
+      --separator: #2b3337;
+      --text: #f2f5f6;
+      --muted: #a8b1b5;
+      --accent: #69d3df;
+      --accent-text: #071214;
+      --focus: #9ce9f1;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--canvas);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      height: 46px;
+      display: flex;
+      align-items: center;
+      padding-inline: 20px;
+      border-bottom: 1px solid var(--separator);
+      background: var(--surface);
+    }
+    header strong { font-size: 15px; font-weight: 650; }
+    main {
+      min-height: calc(100vh - 46px);
+      display: grid;
+      place-items: center;
+      padding: 24px 20px;
+    }
+    section { width: min(100%, 560px); }
+    .status {
+      margin: 0 0 12px;
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 650;
+    }
+    h1 {
+      margin: 0 0 12px;
+      font-size: clamp(28px, 5vw, 40px);
+      line-height: 1.08;
+      letter-spacing: -0.03em;
+    }
+    p {
+      max-width: 62ch;
+      margin: 0;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.6;
+    }
+    a {
+      min-height: 40px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-top: 24px;
+      padding: 0 16px;
+      border-radius: 6px;
+      background: var(--accent);
+      color: var(--accent-text);
+      font-size: 14px;
+      font-weight: 700;
+      text-decoration: none;
+    }
+    a:hover { filter: brightness(1.06); }
+    a:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --canvas: #f6f8f9;
+        --surface: #ffffff;
+        --separator: #d9e0e3;
+        --text: #172024;
+        --muted: #536168;
+        --accent: #087f8c;
+        --accent-text: #ffffff;
+        --focus: #075f69;
+      }
+    }
+    @media (max-width: 639px) {
+      header { padding-inline: 12px; }
+      main { place-items: start; padding: 64px 12px 24px; }
+    }
+  </style>
+</head>
+<body>
+  <header><strong>Context Room</strong></header>
+  <main>
+    <section aria-labelledby="review-unavailable-title">
+      <p class="status">Review unavailable</p>
+      <h1 id="review-unavailable-title">This review no longer exists.</h1>
+      <p>It may have been completed, replaced, or cleaned up. Return to the Context Room hub to see the current review queue.</p>
+      <a href="${returnHref}">Return to Context Room</a>
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
 export function createMemoryServer({
   root = process.cwd(),
   port = DEFAULT_PORT,
@@ -9117,7 +9249,17 @@ export function createMemoryServer({
       if (match) {
         remoteReview = remoteReviewRoutes.get(decodeURIComponent(match[1])) || null;
         if (!remoteReview) {
-          sendJson(res, 404, { error: "This exact proposal review is no longer available.", code: "remote_review_not_found" });
+          const reviewPath = match[2] || "/";
+          const isReviewPage = ["GET", "HEAD"].includes(String(req.method || "GET").toUpperCase()) && reviewPath === "/";
+          if (isReviewPage) {
+            sendHtml(res, remoteReviewUnavailableHtml(requestUrl), {
+              frameAncestorPorts: trustedFrameAncestorPorts,
+              status: 404,
+              method: req.method,
+            });
+          } else {
+            sendJson(res, 404, { error: "This exact proposal review is no longer available.", code: "remote_review_not_found" });
+          }
           return;
         }
         req.url = `${match[2] || "/"}${requestUrl.search}`;
@@ -11967,13 +12109,13 @@ function sendNotModified(res, headers = {}) {
   res.end();
 }
 
-function sendHtml(res, body, { frameAncestorPorts = [] } = {}) {
-  res.writeHead(200, {
+function sendHtml(res, body, { frameAncestorPorts = [], status = 200, method = "GET" } = {}) {
+  res.writeHead(status, {
     "content-type": "text/html; charset=utf-8",
     "cache-control": "no-store",
     "content-security-policy": frameAncestorsPolicy(frameAncestorPorts),
   });
-  res.end(body);
+  res.end(String(method || "GET").toUpperCase() === "HEAD" ? undefined : body);
 }
 
 function compressedAssetVariants(body) {
