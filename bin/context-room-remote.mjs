@@ -3,8 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { connectSharedContext, readSharedProjectConnection, syncSharedContext } from "../src/shared_context.mjs";
-import { contextHubHostRoot, registerContextHubProject, registerContextHubSharedRepository } from "../src/context_hub.mjs";
-import { createMemoryServer, initializeContextRoomProject } from "../src/context_room.mjs";
+import { contextHubHostRoot, registerContextHubSharedRepository, unregisterContextHubProject, writeContextHubSnapshot } from "../src/context_hub.mjs";
+import { contextHubUiState, createMemoryServer, initializeContextRoomProject } from "../src/context_room.mjs";
 
 function required(name) {
   const value = String(process.env[name] || "").trim();
@@ -41,13 +41,15 @@ for (const projectId of projectIds) {
   initializeContextRoomProject(root, { title: projectId });
   if (!readSharedProjectConnection(root)) connectSharedContext(root, { repository, projectId });
   syncSharedContext(root, { allowOffline: true });
-  registerContextHubProject(root, { shared: { repository, projectId } });
+  unregisterContextHubProject(root);
   projectRoots[projectId] = root;
 }
 
 const hostRoot = contextHubHostRoot();
 fs.mkdirSync(hostRoot, { recursive: true });
 initializeContextRoomProject(hostRoot, { title: "Peerlab Context Room", allowedPaths: [], watchAllow: [] });
+const initialContextHub = contextHubUiState(hostRoot, { refreshShared: false, refreshGit: true, force: true });
+writeContextHubSnapshot(initialContextHub, { generatedAt: initialContextHub.generatedAt });
 const port = Number(process.env.CONTEXT_ROOM_PORT || 4317);
 const host = String(process.env.CONTEXT_ROOM_HOST || "0.0.0.0");
 const githubPrivateKeyFile = String(process.env.CONTEXT_ROOM_GITHUB_APP_PRIVATE_KEY_FILE || "").trim();
