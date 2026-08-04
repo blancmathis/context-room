@@ -178,6 +178,7 @@ const PROJECT_EXPLORER_MAX_FILES = 20000;
 const PROJECT_EXPLORER_PAGE_SIZE = 250;
 const PROJECT_EXPLORER_MAX_PAGE_SIZE = 500;
 const MAX_BATCH_REVIEW_PATHS = 5000;
+const MAX_SHARED_REVIEW_BATCH_PATHS = 200;
 const MAX_GIT_HEAD_SNAPSHOT_BYTES = 64_000_000;
 const DELETED_REVIEW_SCAN_CHUNK_PATHS = 250;
 const MAX_RENAME_SIMILARITY_COMPARISONS = 100_000;
@@ -375,6 +376,8 @@ const BACKGROUND_REPORT_INVALIDATING_PATHS = new Set([
   "/api/markdown/apply-template",
   "/api/files/delete",
   "/api/shared-context/accept",
+  "/api/shared-context/reject",
+  "/api/shared-context/review-files",
   "/api/shared-context/refresh",
   "/api/context-hub/reject",
 ]);
@@ -3174,6 +3177,157 @@ export function writeDocReviewDecision(root, relPath, { status, note = "", expec
   const result = { path: normalized, ...decision };
   appendContextRoomEvent("review.decision", { ...contextRoomEventIdentity(root), resource: { path: normalized }, data: { status, resourceState, resourceVersion } });
   return result;
+}
+
+function snapshotRegularFile(filePath) {
+  try {
+    const stat = fs.lstatSync(filePath);
+    if (!stat.isFile()) throw new Error(`Batch review target is not a regular file: ${filePath}`);
+    return { exists: true, content: fs.readFileSync(filePath), mode: stat.mode };
+  } catch (error) {
+    if (error.code === "ENOENT") return { exists: false, content: null, mode: null };
+    throw error;
+  }
+}
+
+function restoreRegularFileSnapshot(filePath, snapshot) {
+  if (!snapshot?.exists) {
+    try { fs.unlinkSync(filePath); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    return;
+  }
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, snapshot.content, { mode: snapshot.mode });
+}
+
+function gitFileAtRevision(root, revision, relPath) {
+  const result = execFileSync("git", ["show", `${revision}:${normalizeRelPath(relPath)}`], {
+    cwd: root,
+    encoding: null,
+    stdio: ["ignore", "pipe", "ignore"],
+    maxBuffer: MAX_FILE_BYTES + 64_000,
+  });
+  return Buffer.from(result);
+}
+
+function restoreSharedReviewPathFromBase(root, revision, relPath) {
+  const normalized = normalizeRelPath(relPath);
+  const target = path.join(path.resolve(root), ...normalized.split("/"));
+  assertManagedProjectPath(root, target, normalized);
+  try {
+    const content = gitFileAtRevision(root, revision, normalized);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    assertManagedProjectPath(root, target, normalized);
+    fs.writeFileSync(target, content);
+  } catch (error) {
+    if (error.status != null || error.code === 128) {
+      try { fs.unlinkSync(target); } catch (unlinkError) { if (unlinkError.code !== "ENOENT") throw unlinkError; }
+      return;
+    }
+    throw error;
+  }
+}
+
+function sharedReviewBatchConflict(message, details = {}) {
+  const error = new Error(message);
+  error.statusCode = 409;
+  error.code = "shared_context_review_batch_stale";
+  error.details = details;
+  return error;
+}
+
+export function writeSharedProposalFileBatchDecision(root, {
+  expectedProposalHead = "",
+  decision = "",
+  files = [],
+} = {}) {
+  const resolvedRoot = path.resolve(root);
+  const review = readSharedReview(resolvedRoot);
+  if (!expectedProposalHead) throw sharedRequestError("expectedProposalHead is required", 400, "shared_context_proposal_head_required");
+  if (String(expectedProposalHead) !== review.proposalHead) throw sharedReviewBatchConflict("The reviewed proposal commit does not match this batch request", { expectedProposalHead, currentProposalHead: review.proposalHead });
+  if (!['accept', 'reject'].includes(decision)) throw sharedRequestError("decision must be accept or reject", 400, "shared_context_review_batch_decision_required");
+  if (!Array.isArray(files) || files.length === 0) throw sharedRequestError("At least one proposal file is required", 400, "shared_context_review_batch_files_required");
+  if (files.length > MAX_SHARED_REVIEW_BATCH_PATHS) throw sharedRequestError(`Too many proposal files selected (maximum ${MAX_SHARED_REVIEW_BATCH_PATHS})`, 400, "shared_context_review_batch_too_large");
+
+  const allowed = new Set(review.proposalFiles || []);
+  const changes = new Map((review.proposalChanges || []).map((change) => [change.path, change]));
+  const reviewState = readDocReviewState(resolvedRoot);
+  const reviewed = new Set(buildDocQaReport(resolvedRoot).reviewedPaths || []);
+  const dependencyState = buildAcceptedDependencyState(resolvedRoot, listMemoryFiles(resolvedRoot), reviewState);
+  const seen = new Set();
+  const prepared = [];
+  for (const raw of files) {
+    const requested = raw && typeof raw === "object" ? raw : { path: raw };
+    const filePath = normalizeRelPath(String(requested.path || ""));
+    if (!filePath || !allowed.has(filePath) || seen.has(filePath)) {
+      throw sharedRequestError(`Invalid or duplicate proposal review path: ${filePath || requested.path || "(empty)"}`, 400, "shared_context_review_batch_path_invalid");
+    }
+    seen.add(filePath);
+    if (reviewed.has(filePath)) throw sharedReviewBatchConflict(`Proposal file is already reviewed: ${filePath}`, { path: filePath });
+    const change = changes.get(filePath) || { path: filePath, status: null, fromPath: null, reviewKind: "proposal-change" };
+    if (decision === "reject" && change.reviewKind === "dependency-review") {
+      throw sharedRequestError(`Dependency-only review cannot reject file changes: ${filePath}`, 400, "shared_context_dependency_reject_unsupported");
+    }
+    const file = readReviewTrackedFile(resolvedRoot, filePath);
+    const resourceState = resourceStateForReviewFile(file);
+    const existing = readDocReviewState(resolvedRoot).reviews?.[filePath] || null;
+    const resourceVersion = resourceVersionForReviewFile(resolvedRoot, filePath, file, existing);
+    const currentContentHash = hashContent(file.content);
+    const metadata = parseDocMetadata(file.content || "", filePath);
+    const dependencyVersions = directDependencyVersions(metadata, dependencyState.byId);
+    if (typeof requested.expectedContentHash !== "string" || requested.expectedContentHash !== currentContentHash) {
+      throw sharedReviewBatchConflict(`Review target content changed before the batch was saved: ${filePath}`, { path: filePath, expectedContentHash: requested.expectedContentHash || null, currentContentHash });
+    }
+    if (requested.expectedResourceState && requested.expectedResourceState !== resourceState) {
+      throw sharedReviewBatchConflict(`Review target state changed before the batch was saved: ${filePath}`, { path: filePath, expectedResourceState: requested.expectedResourceState, currentResourceState: resourceState });
+    }
+    if (requested.expectedResourceVersion && requested.expectedResourceVersion !== resourceVersion) {
+      throw sharedReviewBatchConflict(`Review target version changed before the batch was saved: ${filePath}`, { path: filePath, expectedResourceVersion: requested.expectedResourceVersion, currentResourceVersion: resourceVersion });
+    }
+    if (!requested.expectedDependencyVersions || JSON.stringify(requested.expectedDependencyVersions) !== JSON.stringify(dependencyVersions)) {
+      throw sharedReviewBatchConflict(`Document dependencies changed before the batch was saved: ${filePath}`, { path: filePath, expectedDependencyVersions: requested.expectedDependencyVersions || null, currentDependencyVersions: dependencyVersions });
+    }
+    prepared.push({ path: filePath, change });
+  }
+
+  const touchedPaths = new Set(prepared.flatMap((item) => [item.path, item.change.fromPath].filter(Boolean)));
+  const stateFile = path.join(resolvedRoot, DOCQA_REVIEW_STATE);
+  const ledgerFile = globalReviewLedgerPath(resolvedRoot);
+  const mutationFiles = new Set([stateFile, ledgerFile]);
+  for (const item of prepared) mutationFiles.add(path.join(resolvedRoot, reviewBaselinePathFor(item.path)));
+  const snapshots = new Map();
+  for (const relPath of touchedPaths) {
+    const target = path.join(resolvedRoot, ...normalizeRelPath(relPath).split("/"));
+    assertManagedProjectPath(resolvedRoot, target, relPath);
+    snapshots.set(target, snapshotRegularFile(target));
+  }
+  for (const filePath of mutationFiles) snapshots.set(filePath, snapshotRegularFile(filePath));
+
+  const results = [];
+  try {
+    if (decision === "reject") {
+      for (const item of prepared) {
+        restoreSharedReviewPathFromBase(resolvedRoot, review.baseRevision, item.path);
+        if (item.change.fromPath) restoreSharedReviewPathFromBase(resolvedRoot, review.baseRevision, item.change.fromPath);
+      }
+    }
+    for (const item of prepared) {
+      const current = readReviewTrackedFile(resolvedRoot, item.path);
+      results.push(writeDocReviewDecision(resolvedRoot, item.path, {
+        status: "verified",
+        note: decision === "accept" ? "Accepted in proposal file batch." : "Rejected in proposal file batch; proposal change restored to main.",
+        expectedResourceState: resourceStateForReviewFile(current),
+        expectedResourceVersion: resourceVersionForReviewFile(resolvedRoot, item.path, current),
+        expectedContentHash: hashContent(current.content),
+      }));
+    }
+  } catch (error) {
+    for (const [filePath, snapshot] of [...snapshots.entries()].reverse()) restoreRegularFileSnapshot(filePath, snapshot);
+    authorizeOwnerTrustedState(resolvedRoot, "review-state", readDocReviewState(resolvedRoot), { actor: "context-room-review-batch-rollback" });
+    const ledgerRoot = globalReviewLedgerRoot(resolvedRoot);
+    authorizeOwnerTrustedState(ledgerRoot, "review-ledger", readGlobalReviewLedger(resolvedRoot), { actor: "context-room-review-batch-rollback" });
+    throw error;
+  }
+  return { decision, files: results, reviewedPaths: results.map((item) => item.path) };
 }
 
 function normalizeWorkspaceId(value = "") {
@@ -8050,6 +8204,10 @@ function sharedContextUiState(root, { refreshShared = false } = {}) {
       mode: "review",
       review,
       accepted: review.accepted || null,
+      acceptedChangesRemain: execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+        .split("\n")
+        .map((line) => line.slice(3).trim())
+        .some((filePath) => filePath && filePath !== ".context-room" && !filePath.startsWith(".context-room/")),
     };
   }
   const connection = readSharedProjectConnection(root);
@@ -8827,6 +8985,8 @@ function isOwnerReviewAuthorityMutation(pathname = "", method = "GET") {
     "POST /api/docqa/review-deletions",
     "POST /api/context-hub/reject",
     "POST /api/shared-context/accept",
+    "POST /api/shared-context/reject",
+    "POST /api/shared-context/review-files",
   ]).has(key);
 }
 
@@ -10863,6 +11023,18 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     });
     return;
   }
+  if (req.method === "POST" && url.pathname === "/api/shared-context/review-files") {
+    const body = await readJsonBody(req);
+    let result;
+    try {
+      result = writeSharedProposalFileBatchDecision(root, body);
+    } catch (error) {
+      if (error.statusCode) throw error;
+      throw sharedRequestError(error.message, 409, error.code || "shared_context_review_batch_failed");
+    }
+    sendJson(res, 200, { ...result, docqa: buildDocQaReport(root), sharedContext: sharedContextUiState(root) });
+    return;
+  }
   if (req.method === "POST" && url.pathname === "/api/shared-context/accept") {
     const body = await readJsonBody(req);
     const review = readSharedReview(root);
@@ -10886,6 +11058,29 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       result = acceptSharedReview(root, { message: body.message, actor: requestIdentity?.kind === "human" ? requestIdentity : null, push });
     } catch (error) {
       throw sharedRequestError(error.message, 409, "shared_context_acceptance_stale");
+    }
+    sendJson(res, 200, result);
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/shared-context/reject") {
+    const body = await readJsonBody(req);
+    const review = readSharedReview(root);
+    const expectedProposalHead = String(body.expectedProposalHead || "").trim();
+    if (!expectedProposalHead) {
+      throw sharedRequestError("expectedProposalHead is required", 400, "shared_context_proposal_head_required");
+    }
+    if (expectedProposalHead !== review.proposalHead) {
+      throw sharedRequestError("The reviewed proposal commit does not match this rejection request", 409, "shared_context_proposal_head_mismatch");
+    }
+    let result;
+    try {
+      result = rejectSharedRepositoryProposal(review.repository, {
+        proposal: review.proposal,
+        expectedHead: review.proposalHead,
+        actor: requestIdentity?.kind === "human" ? requestIdentity.sub || requestIdentity.email || "human-ui" : "human-ui",
+      });
+    } catch (error) {
+      throw sharedRequestError(error.message, 409, "shared_context_rejection_stale");
     }
     sendJson(res, 200, result);
     return;
@@ -11164,27 +11359,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       expectedContentHash: body.expectedContentHash,
       expectedDependencyVersions: body.expectedDependencyVersions || null,
     });
-    let proposalFinalization = null;
-    if (body.status === "verified" && fs.existsSync(path.join(path.resolve(root), SHARED_REVIEW_CONFIG))) {
-      try {
-        const review = readSharedReview(root);
-        const report = buildDocQaReport(root);
-        const reviewedPaths = new Set(report.reviewedPaths || []);
-        const remaining = (review.proposalFiles || []).filter((filePath) => !reviewedPaths.has(filePath));
-        if (!remaining.length) {
-          const push = acceptancePush ? await acceptancePush(readSharedReview(root)) : null;
-          proposalFinalization = acceptSharedReview(root, { message: "Complete reviewed shared proposal", actor: requestIdentity?.kind === "human" ? requestIdentity : null, push });
-        }
-      } catch (error) {
-        proposalFinalization = { accepted: false, blocked: true, error: error.message };
-        appendContextRoomEvent("proposal.finalization-blocked", {
-          locationId: path.resolve(root),
-          resource: { path: decision.path },
-          data: { message: error.message },
-        });
-      }
-    }
-    sendJson(res, 200, { ...decision, proposalFinalization });
+    sendJson(res, 200, { ...decision, proposalFinalization: null });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/docqa/review-baseline") {
@@ -13637,6 +13812,13 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
     .proposal-review-progress strong { color: var(--text); font-size: 22px; line-height: 1; letter-spacing: -0.025em; }
     .proposal-review-meta { color: var(--muted); font-size: 10px; line-height: 1.35; }
     .proposal-review-meta code { color: var(--text-soft); font-size: 9px; }
+    .proposal-review-notice { margin: 12px var(--workbench-gutter); padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--danger) 44%, var(--line)); border-radius: 9px; background: color-mix(in srgb, var(--danger) 8%, var(--panel)); color: var(--text); font-size: 11px; line-height: 1.45; }
+    .proposal-review-selection { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px var(--workbench-gutter); border-bottom: 1px solid var(--line); background: var(--surface); }
+    .proposal-review-selection[hidden] { display: none !important; }
+    .proposal-review-selection-copy { color: var(--muted); font-size: 11px; }
+    .proposal-review-selection-copy strong { color: var(--text); }
+    .proposal-review-selection-actions { display: flex; flex-wrap: wrap; gap: 7px; justify-content: flex-end; }
+    .proposal-review-selection-actions button { min-height: 30px; padding: 0 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--text); }
     .proposal-review-technical { flex-basis: 100%; }
     .proposal-review-technical summary { width: fit-content; color: var(--muted); cursor: pointer; font-size: 10px; }
     .proposal-review-technical div { display: flex; flex-wrap: wrap; gap: 8px 14px; padding-top: 8px; }
@@ -14613,7 +14795,10 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
     .proposal-review-copy p { max-width: 72ch; color: var(--muted); }
     .proposal-review-meta { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 12px var(--workbench-gutter); border-bottom: 1px solid var(--line); background: var(--panel); }
     .proposal-review-files { display: grid; gap: 0; padding: 0; }
-    .proposal-review-file { width: 100%; min-width: 0; min-height: 44px; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 12px var(--workbench-gutter); border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; box-shadow: none; }
+    .proposal-review-file { width: 100%; min-width: 0; min-height: 44px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 12px var(--workbench-gutter); border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; box-shadow: none; }
+    .proposal-review-file-open { display: contents; color: inherit; text-align: left; }
+    .proposal-review-file-select { display: grid; place-items: center; width: 22px; min-height: 22px; }
+    .proposal-review-file-select input { width: 16px; height: 16px; accent-color: var(--accent); }
     .proposal-review-empty { padding-inline: var(--workbench-gutter); }
     .proposal-review-file:hover { transform: none; background: var(--native-hover); }
     .shared-proposal-workspace {
@@ -14845,7 +15030,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
       .proposal-review-meta, .proposal-review-file,
       .shared-proposal-card { padding-inline: var(--workbench-gutter-compact); }
       .proposal-review-head { flex-direction: column; }
-      .proposal-review-file { grid-template-columns: minmax(0, 1fr) auto; }
+      .proposal-review-file { grid-template-columns: auto minmax(0, 1fr) auto; }
       .proposal-review-file-change { display: none; }
       .proposal-review-empty { padding-inline: var(--workbench-gutter-compact); }
       .diff-header, .file-panel header { padding-inline: var(--workbench-gutter-compact); }
@@ -14950,7 +15135,8 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
           <button id="deleteCurrent" class="dock-button danger-action" type="button" hidden>Delete</button>
           <button id="save" class="dock-button primary" hidden disabled>Save</button>
           <div id="workspaceTitle" class="workspace-title">Context Room</div>
-          <button id="proposalDockAccept" class="dock-button primary" type="button" hidden aria-hidden="true" tabindex="-1">Proposal completion is automatic</button>
+          <button id="proposalDockReject" class="dock-button danger-action" type="button" hidden>Reject proposal</button>
+          <button id="proposalDockAccept" class="dock-button primary" type="button" hidden>Put on main</button>
           <div id="status" class="dock-status" aria-live="polite">Ready</div>
         </div>
         <div id="sharedContextControls" class="shared-context-controls" hidden>
@@ -15056,6 +15242,8 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
               <div id="proposalReviewProgress" class="proposal-review-progress" aria-live="polite"></div>
             </header>
             <div id="proposalReviewMeta" class="proposal-review-meta"></div>
+            <div id="proposalReviewNotice" class="proposal-review-notice" aria-live="polite" hidden></div>
+            <div id="proposalReviewSelection" class="proposal-review-selection" hidden></div>
             <div id="proposalReviewFiles" class="proposal-review-files"></div>
           </section>
         </div>
@@ -15391,6 +15579,10 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
 		state.contextRoomQueuedProposalFile = "";
 		state.proposalReviewKey = "";
 		state.proposalReviewVisibleCount = 40;
+		state.proposalSelectedFiles = new Set();
+		state.proposalBatchBusy = false;
+		state.proposalActionBusy = false;
+		state.proposalActionError = "";
 		state.contextRoomProposalRequest = 0;
 		state.contextRoomSelectedReviews = new Set();
 		state.contextRoomBulkBusy = false;
@@ -17852,6 +18044,10 @@ function requestContextRoomReviewRejection(ids) {
     proposals ? proposals + " active proposal" + (proposals === 1 ? "" : "s") + " will leave the queue. Each exact Git revision stays archived on a rejected branch." : "",
     localReviews ? localReviews + " local review" + (localReviews === 1 ? "" : "s") + " will be marked Needs changes. The local files will not be deleted." : "",
   ].filter(Boolean).join(" ");
+  if (items.length === 1 && items[0].type !== "shared") {
+    rejectContextRoomReviews(items).catch((error) => setStatus(error.message));
+    return;
+  }
   showHumanReviewDecisionDialog({
     title: "Reject " + items.length + " selected item" + (items.length === 1 ? "" : "s") + "?",
     body: effects,
@@ -18507,7 +18703,8 @@ function renderSharedContextControls() {
 function renderProposalDockControls() {
   const backButton = el("proposalDockBack");
   const acceptButton = el("proposalDockAccept");
-  if (!backButton || !acceptButton) return;
+  const rejectButton = el("proposalDockReject");
+  if (!backButton || !acceptButton || !rejectButton) return;
   const shared = state.sharedContext;
   const preview = state.contextRoomPreparingProposal;
   const inProposalContext = shared?.mode === "review" || Boolean(preview);
@@ -18520,15 +18717,106 @@ function renderProposalDockControls() {
   const unprovenProposalCount = shared?.mode === "review"
     ? (review.proposalFiles || []).filter((filePath) => !reviewedPaths.has(filePath)).length
     : 0;
-  const queueCount = Math.max(reportedQueueCount, unprovenProposalCount);
+  const queueCount = shared?.mode === "review" ? unprovenProposalCount : reportedQueueCount;
   const previewCount = Array.isArray(preview?.files) ? preview.files.length : 0;
-  acceptButton.hidden = true;
-  acceptButton.disabled = true;
+  const rejected = Boolean(shared?.rejected?.rejected);
+  const terminal = Boolean(delivered || rejected);
+  const actionable = shared?.mode === "review" && !preview && !terminal;
+  const noAcceptedChanges = actionable && shared?.acceptedChangesRemain === false;
+  acceptButton.hidden = !actionable || queueCount > 0;
+  acceptButton.disabled = Boolean(state.proposalActionBusy || queueCount > 0 || noAcceptedChanges);
   acceptButton.title = delivered
     ? "This exact proposal revision is already in " + (delivered.defaultBranch || review.defaultBranch || "main")
     : queueCount
       ? queueCount + " file(s) still need a human decision"
-      : "Context Room finalizes the proposal automatically after the last file decision";
+      : noAcceptedChanges
+        ? "No accepted changes remain. Reject the proposal to close it."
+        : "Put the exact reviewed result on " + (review.defaultBranch || "main");
+  rejectButton.hidden = !actionable;
+  rejectButton.disabled = Boolean(state.proposalActionBusy);
+  rejectButton.title = "Reject and archive this exact proposal revision";
+}
+
+async function completeSharedProposalAcceptance() {
+  const review = state.sharedContext?.mode === "review" ? state.sharedContext.review || {} : {};
+  if (!review.proposalHead || state.proposalActionBusy) return;
+  state.proposalActionBusy = true;
+  state.proposalActionError = "";
+  renderProposalDockControls();
+  renderProposalReviewPage();
+  setStatus("putting reviewed proposal on main...");
+  try {
+    const result = await api("/api/shared-context/accept", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedProposalHead: review.proposalHead }),
+    });
+    if (!result.accepted) {
+      state.proposalActionError = result.reason || "No accepted changes remain. Reject the proposal to close it.";
+      setStatus("proposal not accepted · " + state.proposalActionError);
+      return;
+    }
+    state.sharedContext = { ...state.sharedContext, accepted: result };
+    playContextRoomSound("proposal-accepted");
+    setStatus("proposal put on " + (result.defaultBranch || review.defaultBranch || "main"));
+  } catch (error) {
+    state.proposalActionError = error.message || "The proposal could not be put on main.";
+    setStatus("proposal acceptance blocked · " + state.proposalActionError);
+  } finally {
+    state.proposalActionBusy = false;
+    renderProposalDockControls();
+    renderProposalReviewPage();
+  }
+}
+
+function requestSharedProposalAcceptance() {
+  const review = state.sharedContext?.mode === "review" ? state.sharedContext.review || {} : {};
+  const remaining = proposalReviewFileEntries().filter((entry) => !entry.reviewed).length;
+  if (!review.proposalHead || remaining || state.proposalActionBusy) return;
+  showHumanReviewDecisionDialog({
+    title: "Put this proposal on " + (review.defaultBranch || "main") + "?",
+    body: "Put proposal " + (review.proposal || "") + " at exact revision " + review.proposalHead + " on " + (review.defaultBranch || "main") + " for " + (review.projectId || "this shared project") + ". Only the file changes kept during review will be committed and pushed.",
+    confirmLabel: "Put on main",
+    confirmVariant: "primary",
+    onConfirm: () => completeSharedProposalAcceptance(),
+  });
+}
+
+async function completeSharedProposalRejection() {
+  const review = state.sharedContext?.mode === "review" ? state.sharedContext.review || {} : {};
+  if (!review.proposalHead || state.proposalActionBusy) return;
+  state.proposalActionBusy = true;
+  state.proposalActionError = "";
+  renderProposalDockControls();
+  renderProposalReviewPage();
+  setStatus("rejecting exact proposal revision...");
+  try {
+    const result = await api("/api/shared-context/reject", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedProposalHead: review.proposalHead }),
+    });
+    state.sharedContext = { ...state.sharedContext, rejected: result };
+    setStatus("proposal rejected and archived");
+  } catch (error) {
+    state.proposalActionError = error.message || "The proposal could not be rejected.";
+    setStatus("proposal rejection blocked · " + state.proposalActionError);
+  } finally {
+    state.proposalActionBusy = false;
+    renderProposalDockControls();
+    renderProposalReviewPage();
+  }
+}
+
+function requestSharedProposalRejection() {
+  const review = state.sharedContext?.mode === "review" ? state.sharedContext.review || {} : {};
+  if (!review.proposalHead || state.proposalActionBusy) return;
+  showHumanReviewDecisionDialog({
+    title: "Reject this proposal?",
+    body: "Reject proposal " + (review.proposal || "") + " at exact revision " + review.proposalHead + " for " + (review.projectId || "this shared project") + ". The exact Git revision will stay archived on a rejected branch and will not be put on main.",
+    confirmLabel: "Reject proposal",
+    onConfirm: () => completeSharedProposalRejection(),
+  });
 }
 
 async function refreshSharedContextUi() {
@@ -21719,15 +22007,25 @@ function renderDocQaDashboard() {
 
 function proposalReviewFileEntries() {
   const preview = state.contextRoomPreparingProposal;
+  const review = state.sharedContext?.mode === "review" ? state.sharedContext?.review || {} : preview || {};
   const proposalFiles = state.sharedContext?.mode === "review"
-    ? state.sharedContext?.review?.proposalFiles || []
+    ? review.proposalFiles || []
     : preview?.files || [];
+  const changeByPath = new Map((review.proposalChanges || []).map((change) => [change.path, change]));
+  const dependencyPaths = new Set((review.dependencyReviews || []).map((item) => item.path));
   const queueByPath = new Map((state.docqa?.queue || []).map((item) => [item.path, item]));
   const pendingPaths = new Set(state.docqa?.pendingPaths || (state.docqa?.queue || []).map((item) => item.path));
   const reviewedPaths = new Set(state.docqa?.reviewedPaths || []);
   return proposalFiles.map((filePath) => {
     const reviewItem = state.sharedContext?.mode === "review" ? queueByPath.get(filePath) || null : null;
     const file = state.files.find((candidate) => candidate.path === filePath) || null;
+    const change = changeByPath.get(filePath) || {
+      path: filePath,
+      status: null,
+      fromPath: null,
+      score: null,
+      reviewKind: dependencyPaths.has(filePath) || reviewItem?.reviewReason === "dependency-changed" ? "dependency-review" : "proposal-change",
+    };
     return {
       path: filePath,
       label: reviewItem?.label || file?.label || filePath.split("/").pop() || filePath,
@@ -21735,7 +22033,102 @@ function proposalReviewFileEntries() {
       canOpen: preview ? true : Boolean(reviewItem || file),
       pending: Boolean(preview || pendingPaths.has(filePath) || !reviewedPaths.has(filePath)),
       reviewed: Boolean(!preview && state.docqa && reviewedPaths.has(filePath)),
+      change,
+      selectable: Boolean(!preview && reviewItem && !reviewedPaths.has(filePath)),
     };
+  });
+}
+
+function proposalReviewChangeLabel(entry) {
+  if (entry?.change?.reviewKind === "dependency-review") return "Dependency review";
+  return ({ A: "Created", M: "Modified", D: "Deleted", R: "Renamed", C: "Copied" })[entry?.change?.status]
+    || gitStatusLabel(entry?.reviewItem?.gitStatus, entry?.reviewItem?.reviewRequired)
+    || "Modified";
+}
+
+function renderProposalReviewSelection(entries) {
+  const toolbar = el("proposalReviewSelection");
+  if (!toolbar) return;
+  const selectable = entries.filter((entry) => entry.selectable);
+  const selectablePaths = new Set(selectable.map((entry) => entry.path));
+  for (const filePath of state.proposalSelectedFiles) if (!selectablePaths.has(filePath)) state.proposalSelectedFiles.delete(filePath);
+  const selected = selectable.filter((entry) => state.proposalSelectedFiles.has(entry.path));
+  const allSelected = selectable.length > 0 && selected.length === selectable.length;
+  const containsDependency = selected.some((entry) => entry.change?.reviewKind === "dependency-review");
+  toolbar.hidden = !selectable.length;
+  if (!selectable.length) {
+    toolbar.innerHTML = "";
+    return;
+  }
+  const disabled = state.proposalBatchBusy ? " disabled" : "";
+  toolbar.innerHTML = '<div class="proposal-review-selection-copy"><strong>' + selected.length + ' selected</strong><span> · ' + selectable.length + ' available</span></div>'
+    + '<div class="proposal-review-selection-actions">'
+    + '<button type="button" data-proposal-review-select-all="' + (allSelected ? 'clear' : 'select') + '"' + disabled + '>' + (allSelected ? 'Clear all' : 'Select all') + '</button>'
+    + (selected.length ? '<button type="button" data-proposal-review-clear' + disabled + '>Clear</button>' : '')
+    + (selected.length ? '<button type="button" data-proposal-review-batch="accept"' + disabled + '>' + (state.proposalBatchBusy ? 'Saving…' : 'Accept selected') + '</button>' : '')
+    + (selected.length ? '<button class="danger-action" type="button" data-proposal-review-batch="reject"' + (disabled || containsDependency ? ' disabled' : '') + ' title="' + (containsDependency ? 'Dependency-only reviews have no proposal change to reject.' : 'Exclude the selected changes from the final proposal result.') + '">' + (state.proposalBatchBusy ? 'Saving…' : 'Reject selected') + '</button>' : '')
+    + '</div>';
+}
+
+function selectedProposalReviewEntries() {
+  return proposalReviewFileEntries().filter((entry) => entry.selectable && state.proposalSelectedFiles.has(entry.path));
+}
+
+async function applySharedProposalFileBatch(decision, entries) {
+  const review = state.sharedContext?.mode === "review" ? state.sharedContext.review || {} : {};
+  if (!review.proposalHead || !entries.length || state.proposalBatchBusy) return;
+  state.proposalBatchBusy = true;
+  state.proposalActionError = "";
+  renderProposalReviewPage();
+  setStatus((decision === "accept" ? "accepting " : "rejecting ") + entries.length + " proposal file" + (entries.length === 1 ? "" : "s") + "...");
+  try {
+    const result = await api("/api/shared-context/review-files", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        expectedProposalHead: review.proposalHead,
+        decision,
+        files: entries.map((entry) => ({
+          path: entry.path,
+          expectedContentHash: entry.reviewItem.currentHash,
+          expectedResourceState: entry.reviewItem.resourceState,
+          expectedResourceVersion: entry.reviewItem.resourceVersion,
+          expectedDependencyVersions: entry.reviewItem.dependencyVersions || {},
+        })),
+      }),
+    });
+    state.docqa = result.docqa;
+    if (result.sharedContext) state.sharedContext = result.sharedContext;
+    for (const entry of entries) state.proposalSelectedFiles.delete(entry.path);
+    workspaceUpdate("review-decided", { proposal: review.proposal, paths: entries.map((entry) => entry.path) });
+    playContextRoomSound((result.docqa?.pendingPaths || []).length ? "review-complete" : "all-clear");
+    setStatus(entries.length + " proposal file" + (entries.length === 1 ? "" : "s") + (decision === "accept" ? " accepted" : " rejected"));
+  } catch (error) {
+    state.proposalActionError = error.message || "The selected proposal files could not be reviewed.";
+    setStatus("batch review blocked · " + state.proposalActionError);
+  } finally {
+    state.proposalBatchBusy = false;
+    renderProposalDockControls();
+    renderProposalReviewPage();
+  }
+}
+
+function requestSharedProposalFileBatch(decision) {
+  const entries = selectedProposalReviewEntries();
+  if (!entries.length || !["accept", "reject"].includes(decision)) return;
+  if (decision === "reject" && entries.some((entry) => entry.change?.reviewKind === "dependency-review")) return;
+  if (entries.length === 1) {
+    applySharedProposalFileBatch(decision, entries);
+    return;
+  }
+  const review = state.sharedContext?.review || {};
+  const verb = decision === "accept" ? "Accept" : "Reject";
+  showHumanReviewDecisionDialog({
+    title: verb + " " + entries.length + " selected files?",
+    body: verb + " the selected file changes in proposal " + (review.proposal || "") + " at exact revision " + (review.proposalHead || "") + " for " + (review.projectId || "this shared project") + ". " + (decision === "reject" ? "Their proposal changes will be restored to the accepted main state and omitted from final delivery." : "Their current proposal versions will be kept for final delivery."),
+    confirmLabel: verb + " selected",
+    confirmVariant: decision === "accept" ? "primary" : "danger",
+    onConfirm: () => applySharedProposalFileBatch(decision, entries),
   });
 }
 
@@ -21744,8 +22137,9 @@ function renderProposalReviewPage() {
   const description = el("proposalReviewDescription");
   const progress = el("proposalReviewProgress");
   const meta = el("proposalReviewMeta");
+  const notice = el("proposalReviewNotice");
   const files = el("proposalReviewFiles");
-  if (!title || !description || !progress || !meta || !files) return;
+  if (!title || !description || !progress || !meta || !files || !notice) return;
   const preview = state.contextRoomPreparingProposal;
   const preparing = Boolean(preview && !state.contextRoomPreparedReview);
   const prepared = Boolean(preview && state.contextRoomPreparedReview);
@@ -21766,23 +22160,27 @@ function renderProposalReviewPage() {
       ? '<strong>Ready</strong><span>Choose a file to begin reviewing</span>'
     : '<strong>' + pending + '</strong><span>' + (state.docqa ? "file" + (pending === 1 ? "" : "s") + " remaining · " + reviewed + " reviewed" : "loading review state…") + '</span>';
   meta.innerHTML = '<span>Shared proposal' + (review.projectTitle || review.projectId ? ' · ' + escapeHtml(review.projectTitle || review.projectId) : '') + '</span>'
-    + '<span>' + entries.length + ' changed file' + (entries.length === 1 ? '' : 's') + '</span>'
+    + '<span>' + entries.length + ' file' + (entries.length === 1 ? '' : 's') + ' to review</span>'
     + '<details class="proposal-review-technical"><summary>Git revision details</summary><div><code title="' + escapeHtml(review.proposal || review.branch || "") + '">' + escapeHtml(review.proposal || review.branch || "Proposal") + '</code><code title="' + escapeHtml(review.proposalHead || review.head || "") + '">@' + escapeHtml(shortSharedHash(review.proposalHead || review.head)) + '</code></div></details>'
     + (impactKey ? renderProposalContextImpactDisclosure({ key: impactKey, repository: impactRepository, selector: impactSelector }) : '');
+  const noAcceptedChanges = !pending && state.sharedContext?.mode === "review" && state.sharedContext?.acceptedChangesRemain === false;
+  const noticeText = state.proposalActionError || (noAcceptedChanges ? "No accepted changes remain. Reject the proposal to close it without changing main." : "");
+  notice.hidden = !noticeText;
+  notice.textContent = noticeText;
+  renderProposalReviewSelection(entries);
   files.innerHTML = entries.length ? visibleEntries.map((entry) => {
-    const changeLabel = preview
-      ? "changed"
-      : entry.reviewed
-        ? "reviewed"
-        : entry.reviewItem ? gitStatusLabel(entry.reviewItem.gitStatus, entry.reviewItem.reviewRequired) : "changed";
+    const changeLabel = preview ? "Modified" : proposalReviewChangeLabel(entry);
     const stateLabel = preview
       ? state.contextRoomQueuedProposalFile === entry.path ? "Opening…" : "Review"
       : state.docqa ? (entry.reviewed ? "Reviewed" : "Review") : "Loading…";
-    return '<button class="proposal-review-file" type="button" data-proposal-review-path="' + escapeHtml(entry.path) + '" data-reviewed="' + String(entry.reviewed) + '"' + (entry.canOpen ? '' : ' disabled') + '>'
+    const selected = state.proposalSelectedFiles.has(entry.path);
+    return '<div class="proposal-review-file" data-reviewed="' + String(entry.reviewed) + '">'
+      + '<label class="proposal-review-file-select" title="Select this file for a batch decision"><input type="checkbox" data-proposal-review-select="' + escapeHtml(entry.path) + '"' + (selected ? ' checked' : '') + (entry.selectable ? '' : ' disabled') + ' aria-label="Select ' + escapeHtml(entry.path) + '" /></label>'
+      + '<button class="proposal-review-file-open" type="button" data-proposal-review-path="' + escapeHtml(entry.path) + '"' + (entry.canOpen ? '' : ' disabled') + '>'
       + '<span class="proposal-review-file-copy"><strong>' + escapeHtml(entry.label) + '</strong><code>' + escapeHtml(entry.path) + '</code></span>'
-      + '<span class="proposal-review-file-change">' + escapeHtml(changeLabel) + '</span>'
+      + '<span class="proposal-review-file-change" title="' + escapeHtml(entry.change?.fromPath ? 'From ' + entry.change.fromPath : changeLabel) + '">' + escapeHtml(changeLabel) + '</span>'
       + '<span class="proposal-review-file-state">' + escapeHtml(stateLabel) + '</span>'
-      + '</button>';
+      + '</button></div>';
   }).join("") + (entries.length > visibleEntries.length
     ? '<button class="proposal-review-file" type="button" data-proposal-review-more><span class="proposal-review-file-copy"><strong>Load more files</strong><code>' + (entries.length - visibleEntries.length) + ' remaining</code></span><span class="proposal-review-file-state">Show 40 more</span></button>'
     : '') : '<div class="proposal-review-empty">No changed files are available in this exact proposal revision.</div>';
@@ -21879,6 +22277,8 @@ function showProposalReview({ preparingItem = null } = {}) {
   if (state.proposalReviewKey !== nextReviewKey) {
     state.proposalReviewKey = nextReviewKey;
     state.proposalReviewVisibleCount = 40;
+    state.proposalSelectedFiles.clear();
+    state.proposalActionError = "";
   }
   state.page = "proposal";
   state.contextRoomPreparingProposal = preparingItem;
@@ -23167,7 +23567,7 @@ function renderAgentCliGuide() {
         + '<li>Inspect the complete advanced command contract only when it is needed.</li>'
       + '</ul></section>'
       + '<section><h4>What remains human-owned</h4><ul>'
-        + '<li>Accepting or rejecting each file awaiting review. Before an agent attempts one of these decisions, it must ask once, restate the exact action, project, proposal or file scope, and effects after the first yes, ask again, and do nothing without a second separate, unambiguous yes. A shared proposal is complete once every file review is complete; there is no separate proposal decision.</li>'
+        + '<li>Accepting or rejecting each file awaiting review through direct human controls. Multi-file batches and whole-proposal acceptance or rejection keep the double-confirmation checkpoint. Once every file is reviewed, the human explicitly puts the selected result on main or rejects the exact proposal.</li>'
       + '</ul></section>'
     + '</div>'
     + '<details class="agent-cli-more">'
@@ -26391,9 +26791,8 @@ async function applyReviewDecision(path, status, options = {}) {
   const reviewItem = reviewQueueItemForPath(path);
   const expectedContentHash = state.selected === path && state.savedHash ? state.savedHash : reviewItem?.currentHash;
   if (!expectedContentHash) throw new Error("Refresh this review before deciding it.");
-  let decisionResult;
   try {
-    decisionResult = await api("/api/docqa/review", {
+    await api("/api/docqa/review", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -26421,13 +26820,6 @@ async function applyReviewDecision(path, status, options = {}) {
   const reviewQueueCleared = reviewCompleted && previousQueue.length > 0 && nextQueue.length === 0;
   state.docqa = docqa;
   workspaceUpdate("review-decided", { path });
-  const finalizationBlocked = decisionResult?.proposalFinalization?.blocked ? decisionResult.proposalFinalization.error : "";
-  if (decisionResult?.proposalFinalization) {
-    if (decisionResult.proposalFinalization.accepted) {
-      state.sharedContext = { ...state.sharedContext, accepted: decisionResult.proposalFinalization };
-      playContextRoomSound("proposal-accepted");
-    }
-  }
   if (state.reviewModePath === path) state.reviewModeStatus = normalizedStatus === "verified" ? "verified" : null;
   state.selectedReview = docqa.queue.find((item) => item.path === path)?.path || nextReviewItemAfter(previousQueue, path, docqa.queue || [])?.path || docqa.queue[0]?.path || null;
   if (state.selected === path) {
@@ -26444,7 +26836,10 @@ async function applyReviewDecision(path, status, options = {}) {
     setStatus(normalizedStatus === "verified" ? "verified" : normalizedStatus === "unverified" ? "unverified" : "needs changes");
   }
   if (reviewCompleted) playContextRoomSound(reviewQueueCleared ? "all-clear" : "review-complete");
-  if (finalizationBlocked) setStatus("proposal finalization blocked · " + finalizationBlocked);
+  if (state.sharedContext?.mode === "review") {
+    renderProposalDockControls();
+    renderProposalReviewPage();
+  }
 }
 
 async function advanceAfterInlineReviewRemoval(path, previousQueue, statusWhenDone) {
@@ -26470,30 +26865,7 @@ async function requestReviewDecision(path, status) {
   if (!path || state.reviewModePath !== path) return;
   if (!reviewActionForSelectedFile()) return;
   if (verifying && state.dirty && !confirm("This file has unsaved changes. Mark verified without saving?")) return;
-  const reviewItem = state.docqa?.queue?.find((item) => item.path === path);
-  const initialReview = Boolean(reviewItem?.initialReview);
-  const freshnessReview = reviewItem?.reviewReason === "dependency-changed";
-  showHumanReviewDecisionDialog({
-    title: normalizedStatus === "needs_changes"
-      ? "Request changes?"
-      : normalizedStatus === "unverified"
-        ? "Mark unverified?"
-        : freshnessReview ? "Confirm still current?" : initialReview ? "Accept document?" : "Mark verified?",
-    body: normalizedStatus === "needs_changes"
-      ? "This records that " + path + " needs changes and keeps it outside trusted context."
-      : normalizedStatus === "unverified"
-        ? "This removes trusted status from " + path + " and returns it to review."
-        : freshnessReview
-          ? "The accepted content stays trusted. This only records that you reviewed the changed dependencies and the document is still current."
-          : initialReview ? "This accepts the current document as the first trusted baseline. Use Next review when ready." : "This marks the current content as trusted. Use Next review when ready.",
-    confirmLabel: normalizedStatus === "needs_changes"
-      ? "Request changes"
-      : normalizedStatus === "unverified"
-        ? "Mark unverified"
-        : freshnessReview ? "Confirm still current" : initialReview ? "Accept document" : "Mark verified",
-    confirmVariant: verifying ? "primary" : "danger",
-    onConfirm: () => applyReviewDecision(path, normalizedStatus).catch((error) => setStatus(error.message)),
-  });
+  await applyReviewDecision(path, normalizedStatus);
 }
 
 async function verifyCurrentFile() {
@@ -28340,14 +28712,7 @@ function wireExternalReviewAllButtons(root = document) {
 function requestExternalReviewBlockDecision(decision, blockId) {
   const change = activeExternalChange();
   if (!change || !blockId || (decision !== "accept" && decision !== "reject")) return;
-  const verb = decision === "accept" ? "Accept" : "Reject";
-  showHumanReviewDecisionDialog({
-    title: verb + " this change?",
-    body: verb + " change block " + blockId + " in " + change.path + ". If this is the final pending block, the reviewed file will be saved.",
-    confirmLabel: verb + " change",
-    confirmVariant: decision === "accept" ? "primary" : "danger",
-    onConfirm: () => chooseExternalReviewBlock(decision, blockId).catch((error) => setStatus(error.message)),
-  });
+  chooseExternalReviewBlock(decision, blockId).catch((error) => setStatus(error.message));
 }
 
 function requestAllExternalReviewBlocksDecision(decision) {
@@ -28356,14 +28721,7 @@ function requestAllExternalReviewBlocksDecision(decision) {
   const blocks = buildExternalReviewBlocks(externalReviewBaseContent(change), change.diskContent || "", change.reviewDecisions || {});
   const pending = blocks.filter((block) => block.kind === "change" && !block.decision).length;
   if (!pending) return;
-  const verb = decision === "accept" ? "Accept" : "Reject";
-  showHumanReviewDecisionDialog({
-    title: verb + " all " + pending + " pending changes?",
-    body: verb + " every pending change in " + change.path + ". The reviewed file will then be saved.",
-    confirmLabel: verb + " all",
-    confirmVariant: decision === "accept" ? "primary" : "danger",
-    onConfirm: () => chooseAllExternalReviewBlocks(decision).catch((error) => setStatus(error.message)),
-  });
+  chooseAllExternalReviewBlocks(decision).catch((error) => setStatus(error.message));
 }
 
 function wireExternalReviewJumpButtons(root = document) {
@@ -30046,26 +30404,13 @@ async function applyExternalChange() {
 function requestApplyExternalChange() {
   const change = activeExternalChange();
   if (!change) return;
-  const unsavedNote = state.dirty && activeEditor().value !== state.saved ? " Any unsaved editor edits will be discarded." : "";
-  showHumanReviewDecisionDialog({
-    title: "Accept disk change?",
-    body: "Apply the current disk version for " + change.path + "." + unsavedNote,
-    confirmLabel: "Accept change",
-    confirmVariant: "primary",
-    onConfirm: () => applyExternalChange().catch((error) => setStatus(error.message)),
-  });
+  applyExternalChange().catch((error) => setStatus(error.message));
 }
 
 function promptRejectExternalChange() {
   const change = activeExternalChange();
   if (!change) return;
-  const unsavedNote = state.dirty && activeEditor().value !== state.saved ? " Any unsaved editor edits will be discarded." : "";
-  showHumanReviewDecisionDialog({
-    title: "Reject disk change",
-    body: "Restore the version Context Room was showing before the disk change for " + change.path + "? A backup of the current disk version will be created." + unsavedNote,
-    confirmLabel: "Reject change",
-    onConfirm: () => rejectExternalChange(change.path).catch((error) => setStatus(error.message)),
-  });
+  rejectExternalChange(change.path).catch((error) => setStatus(error.message));
 }
 
 async function rejectExternalChange(path) {
@@ -31174,6 +31519,7 @@ el("reviewQueue")?.addEventListener("click", (event) => {
   }).catch((error) => setStatus(error.message));
 });
 el("proposalReviewFiles")?.addEventListener("click", (event) => {
+  if (event.target.closest("[data-proposal-review-select]")) return;
   if (event.target.closest("[data-proposal-review-more]")) {
     state.proposalReviewVisibleCount = Math.max(40, Number(state.proposalReviewVisibleCount || 40)) + 40;
     renderProposalReviewPage();
@@ -31199,6 +31545,32 @@ el("proposalReviewFiles")?.addEventListener("click", (event) => {
     : selectFile(filePath, { reviewMode: true });
   open.catch((error) => setStatus(error.message));
 });
+el("proposalReviewFiles")?.addEventListener("change", (event) => {
+  const checkbox = event.target.closest("[data-proposal-review-select]");
+  if (!checkbox || checkbox.disabled) return;
+  if (checkbox.checked) state.proposalSelectedFiles.add(checkbox.dataset.proposalReviewSelect);
+  else state.proposalSelectedFiles.delete(checkbox.dataset.proposalReviewSelect);
+  renderProposalReviewPage();
+});
+el("proposalReviewSelection")?.addEventListener("click", (event) => {
+  const selectAll = event.target.closest("[data-proposal-review-select-all]");
+  if (selectAll) {
+    const entries = proposalReviewFileEntries().filter((entry) => entry.selectable);
+    if (selectAll.dataset.proposalReviewSelectAll === "clear") state.proposalSelectedFiles.clear();
+    else for (const entry of entries) state.proposalSelectedFiles.add(entry.path);
+    renderProposalReviewPage();
+    return;
+  }
+  if (event.target.closest("[data-proposal-review-clear]")) {
+    state.proposalSelectedFiles.clear();
+    renderProposalReviewPage();
+    return;
+  }
+  const batch = event.target.closest("[data-proposal-review-batch]");
+  if (batch && !batch.disabled) requestSharedProposalFileBatch(batch.dataset.proposalReviewBatch);
+});
+el("proposalDockAccept")?.addEventListener("click", requestSharedProposalAcceptance);
+el("proposalDockReject")?.addEventListener("click", requestSharedProposalRejection);
 el("sharedProposalSearch")?.addEventListener("input", (event) => {
       if (state.contextHubView === "codex-prompts") {
         state.codexPromptSearch = event.target.value;

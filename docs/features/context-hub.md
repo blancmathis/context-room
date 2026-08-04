@@ -29,7 +29,7 @@ room mode.
 | Source | Trusted content | Owner workflow |
 | --- | --- | --- |
 | Local project | Files inside that project's allowed paths | Select the project in Explorer, edit in the global room, then complete its local review queue |
-| Shared repository | The accepted configured default-branch snapshot | Open an exact proposal commit and accept or reject its file reviews; completing those decisions finalizes the reviewed result into the default branch |
+| Shared repository | The accepted configured default-branch snapshot | Open an exact proposal commit, accept or reject its file reviews, then explicitly put the fully reviewed result on the default branch or reject the proposal |
 
 A project may be local-only, shared-only, or local and connected to shared docs and skills. The UI labels every item by source and explains which review path it uses.
 
@@ -133,11 +133,11 @@ Each local file waiting for review gets its own compact row and opens directly i
 
 Clicking anywhere on the row shows that proposal's file-review summary immediately while Context Room materializes the exact commit in the background. Every changed path is listed with its change type and review state, and no file is chosen for the owner. Selecting a file opens it in the exact proposal room once ready, with that room's Explorer, file-history arrows, diff control, path, and normal document review UI.
 
-Proposal navigation is integrated into the single workspace bar: a file shows **← Proposal**, and the grouped summary shows progress without a separate proposal decision. Context Room finalizes the reviewed result automatically after the last human file decision. The Context Room logo returns to the global Home. When the description exceeds its two-line preview, a compact **+** appears beside it and expands or collapses only the description without opening the proposal.
+Proposal navigation is integrated into the single workspace bar: a file shows **← Proposal**, and the grouped summary shows progress. **Reject proposal** remains available throughout review. When the last file receives a current decision, **Put on main** appears; Context Room never runs that terminal action automatically. The Context Room logo returns to the global Home. When the description exceeds its two-line preview, a compact **+** appears beside it and expands or collapses only the description without opening the proposal.
 
 Rows stay visually clean until the owner starts a selection. Right-clicking an actionable local file or shared proposal opens a compact menu for selecting that item, selecting every visible item, or clearing the current selection. Once one item is selected, left-clicking another row adds or removes it instead of opening it; the proposal description control remains usable.
 
-The selection bar can select or unselect every currently visible item, clear the selection, or reject the selected set after one human confirmation. Selection may span projects and sources while filters change. Shared proposals leave the active queue while their exact revisions remain archived on `rejected/...` branches.
+The selection bar can select or unselect every currently visible item, clear the selection, or reject the selected set. Multi-item and whole-proposal decisions use the explicit double-confirmation checkpoint. Selection may span projects and sources while filters change. Shared proposals leave the active queue while their exact revisions remain archived on `rejected/...` branches.
 
 Local files are not deleted: their reviews are marked **Needs changes** and remain visible until the underlying work is corrected and reviewed again. Accepted proposals and local reviews already marked **Needs changes** cannot be selected for the same rejection action.
 

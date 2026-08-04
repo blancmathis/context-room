@@ -13,9 +13,12 @@ import {
   recordOwnerProposalDecision,
 } from "../src/review_authority.mjs";
 
-test("agent review decisions require two separate explicit user confirmations", () => {
+test("agent review authority reserves double confirmation for batch and terminal proposal decisions", () => {
   assert.equal(HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.confirmationsRequired, 2);
-  assert.match(HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction, /must ask the user explicitly/i);
+  assert.deepEqual(HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.appliesTo, ["multi-file-batch", "proposal-terminal"]);
+  assert.equal(HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.singleFileDecision, "direct-human-ui");
+  assert.match(HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction, /batch/i);
+  assert.match(HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction, /proposal/i);
   assert.match(HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction, /after the first yes/i);
   assert.match(HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction, /restate the exact action, project, proposal or file scope, and effects/i);
   assert.match(HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction, /second separate, unambiguous yes/i);

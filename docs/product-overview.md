@@ -4,7 +4,7 @@ context_room:
   scope: context-room
   status: current
   canonical_for: product overview
-  last_verified: 2026-08-03
+  last_verified: 2026-08-04
   sources: [README.md, bin/context-room.mjs, src/context_room.mjs, src/review_authority.mjs, src/context_engine.mjs, src/context_inventory.mjs, src/context_snapshots.mjs, src/context_settings.mjs, src/context_diagnostics.mjs, src/provider_profiles.mjs, src/codex_prompt_center.mjs, src/context_hub.mjs, src/doc_agent.mjs, src/shared_context.mjs, schemas/config.schema.json, schemas/codex-prompt-catalog-v1.schema.json, schemas/codex-prompt-overrides-v1.schema.json, schemas/codex-prompt-publication-state-v2.schema.json, schemas/codex-prompt-runtime-receipt-v2.schema.json, schemas/doc-context.schema.json, schemas/shared-repository.schema.json, schemas/shared-skill-locations.schema.json, schemas/shared-instruction-locations.schema.json, docs/agent-configuration.md]
 ---
 
@@ -28,8 +28,9 @@ Projects that need cross-project documentation or skills can add the optional
 [Shared context](features/shared-context.md) loop. The accepted configured
 default branch is mounted as read-only context. Agents propose changes on
 scoped `proposal/*` branches; human decisions apply to the proposal's files,
-and completing them finalizes the reviewed result without a separate
-agent-facing proposal decision.
+then the human explicitly puts the fully reviewed result on the configured
+default branch or rejects the exact proposal revision. No terminal proposal
+decision is exposed to agents.
 
 ## Main Surfaces
 
@@ -70,7 +71,7 @@ Feature-level docs live in [Features](features/index.md).
   optional task session. Never guess between multiple compatible pages;
   require an exact selector or explicit `--recent`.
 - Keep the edit surface narrow. Add paths only when Context Room should be allowed to read and write them.
-- Treat review as human-owned. Agents can surface the queue and widen review coverage, but they cannot accept, reject, verify, narrow, or remove the owner-authorized scope. Before attempting any review decision through an available human surface, an agent must ask once, restate the exact action, project, proposal or file scope, and effects after the first yes, ask again, and do nothing without a second separate, unambiguous yes.
+- Treat review as human-owned. Agents can surface the queue and widen review coverage, but they cannot accept, reject, verify, narrow, or remove the owner-authorized scope. Individual file and change decisions are direct actions in the human UI. Before attempting a multi-file batch or terminal proposal decision through that surface, an agent must ask once, restate the exact action, project, proposal or file scope, and effects after the first yes, ask again, and do nothing without a second separate, unambiguous yes.
 - Fail closed on missing or inconsistent authority evidence. A direct config reduction keeps the prior owner scope effective; a missing shared proposal ref stays visible until its exact accepted or rejected evidence is restored.
 - State the same-user boundary honestly. Local nonces and signatures provide provenance and tamper detection, not physical user presence; provider-side ref rules or a separate authenticated reviewer provide the stronger boundary.
 - Let owners rank logical projects device-wide and temporarily snooze an exact review version without changing its decision, trust, or gate status. New content returns immediately to the active queue.
@@ -81,7 +82,7 @@ Feature-level docs live in [Features](features/index.md).
   visible, but proposal content never enters effective build context before
   human review and integration into the configured shared default branch.
 - Keep config changes source-grounded. Run `context-room doctor` after changing `.context-room/config.json`.
-- Keep accepted shared context read-only. Changes belong in a proposal worktree; only human file decisions can make its reviewed result eligible for automatic finalization into the shared default branch.
+- Keep accepted shared context read-only. Changes belong in a proposal worktree; human file decisions make the selected result eligible, and a separate explicit human action puts that exact reviewed result on the shared default branch.
 - Resolve worktrees only from the current directory or explicit registration. Context Room does not scan the computer for new worktrees.
 - Keep CLI output machine-stable: compact versioned envelopes, effect-aware
   mutations, same-path apply for protected operations, and structured
