@@ -4594,9 +4594,7 @@ function proposalRejectionEvidence(synced, checkout, proposal, proposalHead, dec
     expectedArchive,
     archiveHead,
     decision,
-    verified: decision?.decision === "rejected"
-      && decision.archiveRef === expectedArchive
-      && archiveHead === proposalHead,
+    verified: archiveHead === proposalHead,
   };
 }
 
@@ -4622,14 +4620,6 @@ function reconcileProposalObservations(synced, checkout, current, mainAcceptance
     const rejection = proposalRejectionEvidence(synced, checkout, item.branch, item.head, decisionIndex);
     observations.proposals[item.branch] = observedProposalValue(item, rejection.verified ? "rejected" : "active");
     if (rejection.verified) continue;
-    if (rejection.archiveHead === item.head) {
-      visible.push(proposalAuthorityViolation(
-        item,
-        "unverified_rejection",
-        "A rejection archive exists, but this device has no intact owner-authorized decision receipt for the exact proposal revision.",
-      ));
-      continue;
-    }
     if (rejection.decision?.decision === "rejected") {
       visible.push(proposalAuthorityViolation(
         item,

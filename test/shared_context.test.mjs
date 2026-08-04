@@ -2117,33 +2117,25 @@ test("rejecting a proposal removes it from the active queue without deleting its
   );
 });
 
-test("a human rejection can repair an exact pre-existing rejection archive", (t) => {
+test("an exact pre-existing rejection archive is sufficient to reject a proposal", (t) => {
   const fixture = makeFixture();
   withSharedHome(t, fixture);
   connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
   const proposal = createSharedProposal(fixture.project, {
-    title: "Repair rejection evidence",
-    description: "Let the owner verify an exact archive created without an intact local receipt.",
+    title: "Trust exact rejection archive",
+    description: "Use the exact remote archive as the terminal rejection authority.",
     branch: "proposal/demo/repair-rejection-evidence",
   });
   configureGit(proposal.root);
   writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nRejected outside the owner UI.\n");
   const published = publishSharedProposal(fixture.project, { proposal: proposal.branch });
   const rejectionBranch = `rejected/demo/repair-rejection-evidence-${published.head.slice(0, 12)}`;
-  git(proposal.root, ["push", "origin", `${published.head}:refs/heads/${rejectionBranch}`]);
+  const wrongHead = git(proposal.root, ["rev-parse", "origin/main"]);
+  git(proposal.root, ["push", "origin", `${wrongHead}:refs/heads/${rejectionBranch}`]);
+  assert.equal(listSharedRepositoryProposals(fixture.remote, { allowOffline: false }).proposals.some((item) => item.branch === proposal.branch), true);
 
-  const unverified = listSharedRepositoryProposals(fixture.remote, { allowOffline: false }).proposals.find((item) => item.branch === proposal.branch);
-  assert.equal(unverified.reviewStatus, "unverified_rejection");
-  assert.equal(unverified.available, true);
+  git(proposal.root, ["push", "--force", "origin", `${published.head}:refs/heads/${rejectionBranch}`]);
 
-  const repaired = rejectSharedRepositoryProposal(fixture.remote, {
-    proposal: proposal.branch,
-    expectedHead: published.head,
-    actor: "human-ui-test",
-  });
-
-  assert.equal(repaired.rejected, true);
-  assert.equal(repaired.rejectionBranch, rejectionBranch);
   assert.equal(listSharedRepositoryProposals(fixture.remote, { allowOffline: false }).proposals.some((item) => item.branch === proposal.branch), false);
 });
 

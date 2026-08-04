@@ -67,7 +67,7 @@ The diagram shows the intended chain, not a claim that local state authenticates
 | Process edits the project review-state JSON or the global review ledger | Context Room compares the normalized state with its mirrored signed digest. Altered claims are ignored and `review_evidence_tamper` is reported as critical. | A same-user process that can erase both authority mirrors and the key is outside the local trust boundary. |
 | Process calls shared acceptance directly | Acceptance reloads trusted review evidence and requires a current exact `verified` decision for every proposal-changed path and unchanged direct dependency selected for review. Missing, stale, altered, recovered, or absent-without-version evidence fails closed. | A same-user process can invoke lower-level review writers or drive the owner UI; external human identity is stronger. |
 | Process deletes a remote `proposal/*` ref | A Context Room-published or previously observed proposal remains in the queue as `externally_deleted`; review actions are disabled and recovery is required. | A never-observed branch cannot be reconstructed from local evidence. Provider-side deletion protection closes this gap. |
-| Process creates a fake `rejected/*` marker | The proposal stays visible as `unverified_rejection` unless the exact archive matches an intact owner decision receipt. | A fully privileged same-user process can read the signing key; external identity remains stronger. |
+| Process creates `rejected/*` at the exact expected name and proposal head | Context Room treats the proposal as rejected. Repository write protection is the authority boundary for this terminal state; the local receipt is audit metadata only. | Any actor allowed to create that exact remote ref can reject the proposal. |
 | Rejection archive is changed or removed | The proposal stays visible as `rejection_archive_missing`; rejected refs are intended to be immutable. | Remote enforcement depends on the repository rulesets being installed and verified. |
 | Local cache or observation ledger is deleted | The accepted remote and still-present proposal refs can be fetched again. | Local-only observation history is lost; provider-side ref protection is the durable prevention layer. |
 | Local Git hook is skipped or another clone is used | No local hook is treated as the final authority boundary. | Provider rules or a separate authenticated reviewer are required. |
@@ -78,7 +78,7 @@ The last owner-authorized review scope is stored outside the project config unde
 
 The exact normalized project review state and global review ledger are also bound to owner-local signed digests. Directly editing either JSON file does not create trusted review evidence. Shared acceptance rejects authority recovered from a damaged primary record until the decisions are re-established through the owner flow.
 
-Shared proposal rejection receipts use the corresponding private authority directory under `~/.context-room/shared/`. They record the repository, proposal branch, exact head, terminal decision, archive ref, actor label, and time. Invalid JSON, missing signatures, signature mismatch, or repository mismatch cannot create a trusted terminal state.
+Shared proposal rejection receipts use the corresponding private authority directory under `~/.context-room/shared/`. They record the repository, proposal branch, exact head, terminal decision, archive ref, actor label, and time. They remain useful audit metadata, but invalid JSON, missing signatures, signature mismatch, or repository mismatch cannot override the remote archive state and do not prevent an exact matching archive from being terminal.
 
 Project configuration remains portable intent. Owner-local authority state is the anti-silent-narrowing control for this device; it is intentionally not committed to the project.
 
@@ -89,11 +89,11 @@ Context Room records a proposal observation when it publishes the proposal and r
 1. verifies that the displayed head is still current;
 2. refuses to discard unpublished worktree changes;
 3. creates `rejected/<proposal-suffix>-<short-hash>` at the exact reviewed commit;
-4. records the exact owner decision receipt;
+4. records the exact owner decision receipt as additional audit metadata;
 5. leaves `proposal/<scope>/<name>` intact; and
-6. removes the item from the active queue only while the receipt and archive agree.
+6. removes the item from the active queue while the expected archive still points to the exact proposal head.
 
-If a proposal ref disappears without an exact accepted-main commit, accepted ref, or verified rejection receipt and archive, the last known proposal metadata remains visible. The owner must restore the ref before review continues.
+If a proposal ref disappears without an exact accepted-main commit, accepted ref, or exact matching rejection archive, the last known proposal metadata remains visible. The owner must restore the ref before review continues.
 
 ## GitHub Repository Protection
 
@@ -105,7 +105,7 @@ If a proposal ref disappears without an exact accepted-main commit, accepted ref
 
 `context-room shared security-check --root .` verifies all three rulesets plus the configured agent deploy key. This command changes or inspects the live GitHub repository and therefore remains a protected owner operation. The default-branch rule deliberately requires a distinct approving review and can block direct in-app finalization; repository owners must choose a delivery model whose reviewer identity and branch rules agree.
 
-Do not treat local hooks, filesystem permissions within one user account, or the presence of an archive branch as equivalent to these provider-side controls.
+Do not treat local hooks or filesystem permissions within one user account as equivalent to these provider-side controls. Context Room treats an exact matching archive branch as terminal under the explicit assumption that repository write protection owns rejection authority.
 
 ## Recovery
 
@@ -119,7 +119,7 @@ For `externally_deleted`:
 6. refresh Context Room and confirm that the proposal returns at the same head; and
 7. continue review only after the authority warning clears.
 
-For `unverified_rejection` or `rejection_archive_missing`, preserve both refs and open the warning row for inspection. Context Room may materialize the still-present exact proposal revision, but it keeps acceptance disabled and displays the authority warning. If the expected rejection archive already points to that exact head, the owner's double-confirmed **Reject proposal** action records a new intact receipt without rewriting the archive. A mismatched archive still fails closed. Never delete evidence to clear the warning.
+For `rejection_archive_missing`, preserve both refs and compare their exact hashes. A mismatched or missing archive still fails closed even when a local receipt says rejected. Never delete evidence to clear the warning. When the expected rejection archive already points to the exact proposal head, rejection is terminal without a local receipt and the proposal leaves the active queue on refresh.
 
 ## Verification
 
