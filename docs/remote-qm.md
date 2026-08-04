@@ -17,6 +17,12 @@ Remote mode is an explicit deployment profile for a trusted QM Portal. Local Con
 
 Mount the encrypted Docker volume at `/data`. It contains the Context Hub registry, shared accepted snapshots, proposal review worktrees, review state, and audit journals. Back up this volume, but exclude every mounted secret file. The `Dockerfile.remote` image runs as an unprivileged user and declares `/data` as its only persistent volume.
 
+## Peerlab image deployment
+
+For the Peerlab installation, every successful signed image build dispatches the exact commit and digest to the private `peerlab-qm` deployment repository. A dedicated GitHub App token is limited to `Actions: write` on that repository; it cannot read or change its contents. `peerlab-qm` independently checks that the commit tag resolves to the dispatched digest, verifies the Cosign signer, changes only the immutable image pin, runs its deployment contracts, and auto-merges the technical update. The resulting `main` push uses the existing validated OVH deployment and rollback path. No polling is involved.
+
+This event-driven adapter is Peerlab-specific. Other installations may consume the signed image artifact with their own deployment system; Context Room's local and generic remote modes do not depend on QM or this GitHub App.
+
 ## Required configuration
 
 ```text
