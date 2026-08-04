@@ -2589,6 +2589,68 @@ test("shared Context Room API lists proposals and opens an exact review room", a
   assert.equal((await staleResponse.json()).code, "shared_context_proposal_head_mismatch");
 });
 
+test("reopening the same proposal head after shared main advances creates a fresh pending review", async (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Re-review after main advances",
+    branch: "proposal/demo/rereview-after-main",
+  });
+  configureGit(proposal.root);
+  writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nProposal revision.\n");
+  const published = publishSharedProposal(fixture.project, { proposal: proposal.branch });
+
+  const room = createMemoryServer({ root: fixture.project });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const openReview = () => fetch(origin + "/api/shared-context/review", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-project": room.projectId },
+    body: JSON.stringify({ proposal: proposal.branch, expectedHead: published.head }),
+  });
+
+  const openedResponse = await openReview();
+  assert.equal(openedResponse.status, 201);
+  const opened = await openedResponse.json();
+  const exactResponse = await fetch(opened.url + "/api/shared-context");
+  const exactProjectId = exactResponse.headers.get("x-context-room-project");
+  const reviewPage = await fetch(opened.url + "/");
+  const reviewOwnerNonce = /<meta name="context-room-owner-nonce" content="([^"]+)"/.exec(await reviewPage.text())?.[1] || "";
+  assert.ok(reviewOwnerNonce);
+  const decisionResponse = await fetch(opened.url + "/api/docqa/review", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-context-room-project": exactProjectId,
+      "x-context-room-owner-nonce": reviewOwnerNonce,
+    },
+    body: JSON.stringify({
+      path: "projects/demo/docs/README.md",
+      status: "verified",
+      note: "Review the original base",
+      expectedContentHash: createHash("sha256")
+        .update(fs.readFileSync(path.join(opened.reviewRoot, "projects/demo/docs/README.md"), "utf8"), "utf8")
+        .digest("hex"),
+    }),
+  });
+  assert.equal(decisionResponse.status, 200);
+
+  writeFile(fixture.seed, "projects/demo/docs/BASELINE.md", "# Accepted baseline\n");
+  git(fixture.seed, ["add", "-A"]);
+  git(fixture.seed, ["commit", "-m", "Advance accepted shared context"]);
+  git(fixture.seed, ["push", "origin", "main"]);
+
+  const reopenedResponse = await openReview();
+  assert.equal(reopenedResponse.status, 201);
+  const reopened = await reopenedResponse.json();
+  assert.notEqual(reopened.reviewRoot, opened.reviewRoot);
+  assert.notEqual(reopened.review.baseRevision, opened.review.baseRevision);
+  assert.deepEqual(reopened.docqa.pendingPaths, ["projects/demo/docs/README.md"]);
+  assert.deepEqual(reopened.docqa.reviewedPaths, []);
+});
+
 test("shared proposal file batches preflight every file before accepting or rejecting changes", async (t) => {
   const fixture = makeFixture();
   withSharedHome(t, fixture);
