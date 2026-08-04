@@ -240,6 +240,12 @@ test("shared proposal review keeps navigation and explicit completion in the pro
   assert.match(html, /proposalReviewFiles"\)\?\.addEventListener\("contextmenu"/);
   assert.match(html, /proposalReviewFiles"\)\?\.addEventListener\("pointerdown"/);
   assert.match(html, /PROPOSAL_REVIEW_LONG_PRESS_MS/);
+  assert.match(html, /function contextRoomProposalSelectionUrl\(url, filePath\)/);
+  assert.match(html, /state\.contextRoomQueuedProposalSelection = filePath/);
+  assert.match(html, /const requestedProposalSelection = normalizeUiPath\(initialQuery\?\.get\("select"\) \|\| ""\)/);
+  assert.match(html, /state\.proposalSelectedFiles\.add\(requestedProposalSelection\)/);
+  assert.match(html, /proposalSelectionUrl\.searchParams\.delete\("select"\)/);
+  assert.match(html, /selectOrQueueProposalReviewFile\(button\.dataset\.proposalReviewPath\)/);
   assert.match(html, /Right-click or press and hold to select/);
   assert.match(html, /data-proposal-review-selected/);
   assert.match(html, /Accept selected/);

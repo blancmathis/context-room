@@ -15722,6 +15722,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
 		state.contextRoomPreparingProposal = null;
 		state.contextRoomPreparedReview = null;
 		state.contextRoomQueuedProposalFile = "";
+		state.contextRoomQueuedProposalSelection = "";
 		state.proposalReviewKey = "";
 		state.proposalReviewVisibleCount = 40;
 		state.proposalSelectedFiles = new Set();
@@ -18674,6 +18675,14 @@ function contextRoomProposalFileUrl(url, filePath) {
   return target.toString();
 }
 
+function contextRoomProposalSelectionUrl(url, filePath) {
+  const target = new URL(contextRoomProposalReviewUrl(url));
+  target.searchParams.set("view", "proposal");
+  target.searchParams.delete("file");
+  target.searchParams.set("select", filePath);
+  return target.toString();
+}
+
 async function openSharedProposal(proposal, repository = "", { file = "" } = {}) {
   if (!proposal || state.sharedContextBusy) return;
   const requestId = ++state.contextRoomProposalRequest;
@@ -18692,6 +18701,7 @@ async function openSharedProposal(proposal, repository = "", { file = "" } = {})
   state.contextRoomOpeningProposalId = item.id || sharedProposalKey(item);
   state.contextRoomPreparedReview = null;
   state.contextRoomQueuedProposalFile = normalizeUiPath(file);
+  state.contextRoomQueuedProposalSelection = "";
   state.sharedContextBusy = true;
   renderSharedContextControls();
   renderContextRoomGlobalReviewQueue();
@@ -18716,6 +18726,11 @@ async function openSharedProposal(proposal, repository = "", { file = "" } = {})
       window.location.assign(contextRoomProposalFileUrl(result.url, queuedFile));
       return;
     }
+    const queuedSelection = state.contextRoomQueuedProposalSelection;
+    if (queuedSelection) {
+      window.location.assign(contextRoomProposalSelectionUrl(result.url, queuedSelection));
+      return;
+    }
     setStatus("exact proposal review ready");
   } catch (error) {
     if (requestId !== state.contextRoomProposalRequest) return;
@@ -18723,6 +18738,7 @@ async function openSharedProposal(proposal, repository = "", { file = "" } = {})
     state.contextRoomPreparingProposal = null;
     state.contextRoomPreparedReview = null;
     state.contextRoomQueuedProposalFile = "";
+    state.contextRoomQueuedProposalSelection = "";
     state.sharedContextBusy = false;
     renderSharedContextControls();
     renderContextRoomGlobalReviewQueue();
@@ -21454,6 +21470,7 @@ async function loadFiles(options = {}) {
   const requestedWorkspaceView = initialQuery?.get("view") || "";
   const requestedHubCard = initialQuery?.get("hubCard") || "";
   const requestedReviewFile = initialQuery?.get("file") || "";
+  const requestedProposalSelection = normalizeUiPath(initialQuery?.get("select") || "");
   const requestedStartupKind = initialQuery?.get("startupKind") || "";
   const requestedStartupOrder = initialQuery?.get("startupOrder") || "";
   const requestedStartupSkill = initialQuery?.get("startupSkill") || "";
@@ -21477,6 +21494,12 @@ async function loadFiles(options = {}) {
     restoredContextHubTarget = true;
   } else if (options.initial && state.sharedContext?.mode === "review") {
     showProposalReview();
+    if (requestedProposalSelection) {
+      state.proposalSelectedFiles.add(requestedProposalSelection);
+      const proposalSelectionUrl = new URL(window.location.href);
+      proposalSelectionUrl.searchParams.delete("select");
+      window.history.replaceState(window.history.state, "", proposalSelectionUrl);
+    }
     restoredContextHubTarget = true;
   } else if (requestedHubCard && findHubCardById(state.rootHubSections || state.hubSections || [], requestedHubCard)) {
     showHome();
@@ -22356,10 +22379,10 @@ function renderProposalReviewPage() {
   files.innerHTML = entries.length ? visibleEntries.map((entry) => {
     const changeLabel = preview ? "Modified" : proposalReviewChangeLabel(entry);
     const stateLabel = preview
-      ? state.contextRoomQueuedProposalFile === entry.path ? "Opening…" : "Review"
+      ? state.contextRoomQueuedProposalFile === entry.path ? "Opening…" : state.contextRoomQueuedProposalSelection === entry.path ? "Selecting…" : "Review"
       : state.docqa ? (entry.reviewed ? "Reviewed" : "Review") : "Loading…";
     const selected = state.proposalSelectedFiles.has(entry.path);
-    const selectionHint = entry.selectable ? " Right-click or press and hold to select." : "";
+    const selectionHint = entry.selectable || preview ? " Right-click or press and hold to select." : "";
     return '<div class="proposal-review-file" data-reviewed="' + String(entry.reviewed) + '" data-proposal-review-selected="' + String(selected) + '">'
       + '<button class="proposal-review-file-open" type="button" data-proposal-review-path="' + escapeHtml(entry.path) + '" aria-label="Open ' + escapeHtml(entry.path + "." + selectionHint) + '" title="Open file.' + escapeHtml(selectionHint) + '"' + (entry.canOpen ? '' : ' disabled') + '>'
       + '<span class="proposal-review-file-copy"><strong>' + escapeHtml(entry.label) + '</strong><code>' + escapeHtml(entry.path) + '</code></span>'
@@ -27212,6 +27235,7 @@ function goHub() {
     state.contextRoomPreparingProposal = null;
     state.contextRoomPreparedReview = null;
     state.contextRoomQueuedProposalFile = "";
+    state.contextRoomQueuedProposalSelection = "";
     state.sharedContextBusy = false;
   }
   state.contextHubView = "home";
@@ -31729,6 +31753,7 @@ el("proposalReviewFiles")?.addEventListener("click", (event) => {
       return;
     }
     state.contextRoomQueuedProposalFile = filePath;
+    state.contextRoomQueuedProposalSelection = "";
     renderProposalReviewPage();
     setStatus("opening this file as soon as the exact review is ready...");
     return;
@@ -31747,6 +31772,24 @@ function toggleProposalReviewFileSelection(filePath) {
   renderProposalReviewPage();
   return true;
 }
+function selectOrQueueProposalReviewFile(filePath) {
+  filePath = normalizeUiPath(filePath);
+  if (!filePath) return false;
+  if (state.contextRoomPreparingProposal) {
+    if (!proposalReviewFileEntries().some((entry) => entry.path === filePath)) return false;
+    const prepared = state.contextRoomPreparedReview;
+    if (prepared?.url) {
+      window.location.assign(contextRoomProposalSelectionUrl(prepared.url, filePath));
+      return true;
+    }
+    state.contextRoomQueuedProposalSelection = filePath;
+    state.contextRoomQueuedProposalFile = "";
+    renderProposalReviewPage();
+    setStatus("selecting this file as soon as the exact review is ready...");
+    return true;
+  }
+  return toggleProposalReviewFileSelection(filePath);
+}
 function clearProposalReviewLongPress() {
   if (!proposalReviewLongPress) return;
   window.clearTimeout(proposalReviewLongPress.timer);
@@ -31754,14 +31797,14 @@ function clearProposalReviewLongPress() {
 }
 el("proposalReviewFiles")?.addEventListener("contextmenu", (event) => {
   const button = event.target.closest("[data-proposal-review-path]");
-  if (!button || !toggleProposalReviewFileSelection(button.dataset.proposalReviewPath)) return;
+  if (!button || !selectOrQueueProposalReviewFile(button.dataset.proposalReviewPath)) return;
   event.preventDefault();
 });
 el("proposalReviewFiles")?.addEventListener("pointerdown", (event) => {
   if (event.pointerType === "mouse" || event.button !== 0) return;
   const button = event.target.closest("[data-proposal-review-path]");
   const entry = button && proposalReviewFileEntries().find((candidate) => candidate.path === button.dataset.proposalReviewPath);
-  if (!entry?.selectable) return;
+  if (!entry || (!state.contextRoomPreparingProposal && !entry.selectable)) return;
   clearProposalReviewLongPress();
   proposalReviewLongPress = {
     pointerId: event.pointerId,
@@ -31773,7 +31816,7 @@ el("proposalReviewFiles")?.addEventListener("pointerdown", (event) => {
       window.setTimeout(() => {
         if (proposalReviewSuppressClickPath === entry.path) proposalReviewSuppressClickPath = "";
       }, 900);
-      toggleProposalReviewFileSelection(entry.path);
+      selectOrQueueProposalReviewFile(entry.path);
       proposalReviewLongPress = null;
     }, PROPOSAL_REVIEW_LONG_PRESS_MS),
   };
