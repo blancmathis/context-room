@@ -4,7 +4,7 @@ context_room:
   scope: context-room
   status: current
   canonical_for: shared context repositories
-  last_verified: 2026-08-03
+  last_verified: 2026-08-04
   sources: [src/shared_context.mjs, src/review_authority.mjs, src/provider_profiles.mjs, src/context_engine.mjs, src/context_inventory.mjs, src/context_snapshots.mjs, src/context_diagnostics.mjs, src/context_hub.mjs, bin/context-room.mjs, src/context_room.mjs, schemas/shared-repository.schema.json, schemas/shared-projects.schema.json, schemas/shared-skill-locations.schema.json, schemas/shared-skill-local-state.schema.json, schemas/shared-resource-local-state.schema.json, schemas/shared-instruction-locations.schema.json, schemas/config.schema.json]
 ---
 
@@ -241,7 +241,7 @@ See [Global Context Room](context-hub.md).
 
 Pressing **Open files to review**, or clicking the proposal row on Home, displays a ready-to-select proposal summary immediately while a dedicated exact-hash review server and worktree are prepared in the background. Every changed path is actionable at once; choosing one during preparation queues that exact file and opens it as soon as the review room is ready. Context Room never makes the proposal summary wait on remote Git or server startup, and never chooses the first file for the owner.
 
-The opened file uses the proposal room's Explorer, file-history arrows, diff control, path, and existing document review controls. Proposal context never creates a second banner: the normal workspace bar shows **← Proposal** in a file. There is no separate proposal decision control.
+The opened file uses the proposal room's Explorer, file-history arrows, diff control, path, and existing document review controls. Proposal context never creates a second banner: the normal workspace bar shows **← Proposal** in a file. Terminal proposal controls stay in that bar: rejection is always available, while **Put on main** appears only after every required file has current review proof.
 
 The Context Room logo returns to the global room URL carried into the review; browser Back provides the same escape route. Reopening the same unchanged proposal reuses its existing review worktree—even after the main room restarts—when the exact proposal hash and shared `main` revision are unchanged. This avoids repeated materialization and preserves review progress. If either revision moved, Context Room creates a fresh exact review instead. Deleted and otherwise non-openable paths remain visible in the summary instead of being hidden by a first-file redirect.
 
@@ -253,7 +253,9 @@ Context Room records proposals when it publishes them and whenever it refreshes 
 
 Use the existing inline controls to accept or reject each change. Rejecting a change block rewrites the review worktree to remove that block; accepting it keeps the proposed result. This means the final worktree diff contains only the parts the human chose to accept.
 
-After the final current file version receives its human decision, Context Room automatically finalizes the selected review result against the latest `main`. Remaining and reviewed counts use the complete proposal review state, even when the general detailed queue is capped at 80 entries for responsiveness.
+The proposal summary labels each path as created, modified, deleted, renamed, copied, or dependency-only review. Pending files can be selected together. Accepting a selection keeps their proposal versions; rejecting a selection restores their accepted-main versions, including add, delete, rename, and copy semantics. Dependency-only reviews can be batch-accepted but have no proposal delta to reject. A batch is limited to 200 files and is preflighted as one exact-revision operation before any file changes.
+
+After the final current file version receives its human decision, Context Room reveals **Put on main** but does not finalize automatically. **Reject proposal** remains available at every stage. Both terminal actions are bound to the displayed proposal head and use the double-confirmation checkpoint. Remaining and reviewed counts use the complete proposal review state, even when the general detailed queue is capped at 80 entries for responsiveness.
 
 **Reviewed is a positive-proof state**: Context Room emits it only when the current file content or current deletion identity has an explicit, still-valid human verification record. Files outside the first detailed page, missing state, incomplete coverage, stale hashes, and report inconsistencies all remain pending and block acceptance. Absence from a queue page never means reviewed.
 
@@ -261,7 +263,7 @@ File views show only the return to proposal files. The agent-facing CLI delibera
 
 Acceptance is bound to the recorded proposal hash. If the proposal branch moved after the room was created, acceptance expires and the new commit must be reviewed in a new room. The cockpit makes this visible by showing the old exact hash and offering the branch's new hash as a separate review.
 
-An exact review authority is single-use after successful finalization. Reopen the proposal if another reviewed result is needed.
+An exact review authority is single-use after successful acceptance. Reopen the proposal if another reviewed result is needed.
 
 Before publishing, Context Room fetches the latest default branch and applies only the reviewed result onto that newer commit. Unrelated accepted changes already on the default branch are preserved. If the selected result conflicts with the latest default branch, nothing is pushed and the resolved result must be reviewed again. If no selected change remains, no commit is created.
 
@@ -461,7 +463,7 @@ The recommended global documentation-maintenance and audit skills are described 
 
 ## Permission Boundary
 
-Proposal publication writes only `proposal/*`. The agent-facing CLI can create and publish proposals but cannot make file decisions. Human file review drives automatic finalization of the selected result onto the latest default branch with a normal fast-forward push; Context Room never force-pushes `main`.
+Proposal publication writes only `proposal/*`. The agent-facing CLI can create and publish proposals but cannot make file or terminal proposal decisions. Human file review prepares the selected result; a separate explicit human action puts it onto the latest default branch with a normal fast-forward push. Context Room never force-pushes `main`.
 
 For a GitHub shared repository, an owner runs this once from the shared repository or a connected project:
 
@@ -470,7 +472,7 @@ context-room shared secure-github --root .
 context-room shared security-check --root .
 ```
 
-`secure-github` installs or updates three no-bypass branch rulesets: default-branch pull-request protection with one approval, stale-approval dismissal, last-push approval, resolved review threads, deletion protection, and force-push protection; deletion protection for the configured `proposal/*` pattern; and deletion, force-push, and update protection for the configured `rejected/*` pattern. The default-branch rule deliberately blocks automatic direct in-app finalization. A repository that enables it needs a delivery path with a distinct authenticated human reviewer whose permissions agree with the branch policy.
+`secure-github` installs or updates three no-bypass branch rulesets: default-branch pull-request protection with one approval, stale-approval dismissal, last-push approval, resolved review threads, deletion protection, and force-push protection; deletion protection for the configured `proposal/*` pattern; and deletion, force-push, and update protection for the configured `rejected/*` pattern. The default-branch rule deliberately blocks direct in-app acceptance. A repository that enables it needs a delivery path with a distinct authenticated human reviewer whose permissions agree with the branch policy.
 
 `security-check` reads all three live GitHub rulesets, exits non-zero unless every required protection and the configured agent deploy key are present, and records the last successful remote check for `shared status`. Re-run it after repository or permission changes. If the GitHub plan does not support rulesets for that private repository, setup fails instead of claiming protection.
 

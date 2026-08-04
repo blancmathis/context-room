@@ -80,7 +80,7 @@ import {
 
 const cli = fileURLToPath(new URL("../bin/context-room.mjs", import.meta.url));
 
-test("shared proposal review keeps navigation and automatic completion in the proposal workspace", () => {
+test("shared proposal review keeps navigation and explicit completion in the proposal workspace", () => {
   const html = renderAppHtml();
   assert.match(html, /class="workspace-chrome"/);
   assert.match(html, /class="shared-context-heading"/);
@@ -205,7 +205,7 @@ test("shared proposal review keeps navigation and automatic completion in the pr
   assert.match(html, /const reviewedPaths = new Set\(state\.docqa\?\.reviewedPaths/);
   assert.match(html, /reviewed: Boolean\(!preview && state\.docqa && reviewedPaths\.has\(filePath\)\)/);
   assert.doesNotMatch(html, /reviewed: Boolean\([^\n]*!pendingPaths\.has/);
-  assert.match(html, /const queueCount = Math\.max\(reportedQueueCount, unprovenProposalCount\)/);
+  assert.match(html, /const queueCount = shared\?\.mode === "review" \? unprovenProposalCount : reportedQueueCount/);
   assert.match(html, /Review work is still pending\. Clear the filters or refresh to show it\./);
   assert.match(html, /function contextRoomReturnUrl\(\)/);
   assert.match(html, /Back to main Context Room/);
@@ -214,15 +214,25 @@ test("shared proposal review keeps navigation and automatic completion in the pr
   assert.match(html, /id="sharedProposalReview"/);
   assert.match(html, /id="proposalDockBack"/);
   assert.match(html, /id="proposalDockAccept"/);
-  assert.match(html, /Proposal completion is automatic/);
+  assert.match(html, /id="proposalDockReject"/);
+  assert.match(html, /Put on main/);
+  assert.match(html, /Reject proposal/);
   assert.match(html, /Open review/);
   assert.match(html, /const wasOpen = state\.sharedProposalWorkspaceOpen/);
   assert.doesNotMatch(html, /Accept proposal/);
   assert.doesNotMatch(html, /Prepare pull request|Open pull request|Accepted branch ready/);
   assert.match(html, /if \(shared\?\.mode === "review" \|\| proposalPreview\) \{\s*controls\.hidden = true;/);
   assert.match(html, /backButton\.hidden = !inProposalContext \|\| onProposalPage/);
-  assert.match(html, /acceptButton\.hidden = true/);
-  assert.match(html, /finalizes the proposal automatically after the last file decision/);
+  assert.doesNotMatch(html, /acceptButton\.hidden = true/);
+  assert.doesNotMatch(html, /finalizes the proposal automatically after the last file decision/);
+  assert.match(html, /function requestSharedProposalAcceptance/);
+  assert.match(html, /function requestSharedProposalRejection/);
+  assert.match(html, /\/api\/shared-context\/accept/);
+  assert.match(html, /\/api\/shared-context\/reject/);
+  assert.match(html, /data-proposal-review-select/);
+  assert.match(html, /Accept selected/);
+  assert.match(html, /Reject selected/);
+  assert.match(html, /Created|Modified|Deleted|Renamed|Copied|Dependency review/);
   assert.match(html, /el\("proposalDockBack"\)\?\.addEventListener\("click", \(\) => showProposalReview\(\)\)/);
 });
 
@@ -1670,6 +1680,22 @@ test("shared proposal reviews include unchanged direct dependents", (t) => {
     "projects/demo/docs/REVIEW.md",
     "projects/demo/docs/TRUST.md",
   ]);
+  assert.deepEqual(review.metadata.proposalChanges, [
+    {
+      path: "projects/demo/docs/TRUST.md",
+      status: "M",
+      fromPath: null,
+      score: null,
+      reviewKind: "proposal-change",
+    },
+    {
+      path: "projects/demo/docs/REVIEW.md",
+      status: null,
+      fromPath: null,
+      score: null,
+      reviewKind: "dependency-review",
+    },
+  ]);
   writeDocReviewDecision(review.reviewRoot, "projects/demo/docs/TRUST.md", { status: "verified", note: "Reviewed changed trust state" });
   configureGit(review.reviewRoot);
   assert.throws(
@@ -1681,6 +1707,41 @@ test("shared proposal reviews include unchanged direct dependents", (t) => {
   const main = readSharedMainRevision(fixture.remote, { refresh: true });
   assert.equal(main.commit.dependencyReviewRequired.length, 0);
   assert.equal(main.commit.dependencyProof.documents.some((item) => item.path === "projects/demo/docs/REVIEW.md" && /^[a-f0-9]{40}$/.test(item.blob)), true);
+});
+
+test("shared acceptance uses a deterministic command-local Git identity", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, { title: "Service identity", branch: "proposal/demo/service-identity" });
+  configureGit(proposal.root);
+  writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nAccepted without ambient Git identity.\n");
+  publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  initializeContextRoomProject(review.reviewRoot, {
+    title: `Review · ${proposal.branch}`,
+    allowedPaths: ["projects/demo/"],
+    watchAllow: ["projects/demo/"],
+  });
+  writeDocReviewDecision(review.reviewRoot, "projects/demo/docs/README.md", { status: "verified", note: "Exact proposal file reviewed" });
+
+  const emptyGlobalConfig = path.join(fixture.base, "empty-global-gitconfig");
+  const previousGlobal = process.env.GIT_CONFIG_GLOBAL;
+  const previousNoSystem = process.env.GIT_CONFIG_NOSYSTEM;
+  process.env.GIT_CONFIG_GLOBAL = emptyGlobalConfig;
+  process.env.GIT_CONFIG_NOSYSTEM = "1";
+  try {
+    const accepted = acceptSharedReview(review.reviewRoot, { message: "Accept with Context Room identity" });
+    assert.equal(accepted.accepted, true);
+  } finally {
+    if (previousGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+    else process.env.GIT_CONFIG_GLOBAL = previousGlobal;
+    if (previousNoSystem === undefined) delete process.env.GIT_CONFIG_NOSYSTEM;
+    else process.env.GIT_CONFIG_NOSYSTEM = previousNoSystem;
+  }
+  assert.equal(fs.existsSync(emptyGlobalConfig), false);
+  git(fixture.seed, ["fetch", "origin"]);
+  assert.equal(git(fixture.seed, ["show", "-s", "--format=%an <%ae>", "origin/main"]), "Context Room <context-room@peerlab.fr>");
 });
 
 test("proposal updates require and expose fresh descriptive metadata, and expire an earlier review", (t) => {
@@ -2436,8 +2497,19 @@ test("shared Context Room API lists proposals and opens an exact review room", a
   });
   assert.equal(decisionResponse.status, 200);
   const decision = await decisionResponse.json();
-  assert.equal(decision.proposalFinalization.accepted, true);
-  assert.equal(decision.proposalFinalization.proposalHead, published.head);
+  assert.equal(decision.proposalFinalization, null);
+  git(fixture.seed, ["fetch", "origin"]);
+  assert.doesNotMatch(git(fixture.seed, ["show", "origin/main:projects/demo/docs/README.md"]), /API review/);
+
+  const acceptResponse = await fetch(opened.url + "/api/shared-context/accept", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-project": exactResponse.headers.get("x-context-room-project"), "x-context-room-owner-nonce": reviewOwnerNonce },
+    body: JSON.stringify({ expectedProposalHead: published.head }),
+  });
+  assert.equal(acceptResponse.status, 200);
+  const accepted = await acceptResponse.json();
+  assert.equal(accepted.accepted, true);
+  assert.equal(accepted.proposalHead, published.head);
   git(fixture.seed, ["fetch", "origin"]);
   assert.match(git(fixture.seed, ["show", "origin/main:projects/demo/docs/README.md"]), /API review/);
 
@@ -2448,4 +2520,106 @@ test("shared Context Room API lists proposals and opens an exact review room", a
   });
   assert.equal(staleResponse.status, 409);
   assert.equal((await staleResponse.json()).code, "shared_context_proposal_head_mismatch");
+});
+
+test("shared proposal file batches preflight every file before accepting or rejecting changes", async (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, { title: "Batch review", branch: "proposal/demo/batch-review" });
+  configureGit(proposal.root);
+  writeFile(proposal.root, "projects/demo/docs/KEEP.md", "# Keep\n");
+  writeFile(proposal.root, "projects/demo/docs/DROP.md", "# Drop\n");
+  const published = publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  initializeContextRoomProject(review.reviewRoot, {
+    title: `Review · ${proposal.branch}`,
+    allowedPaths: ["projects/demo/"],
+    watchAllow: ["projects/demo/"],
+  });
+
+  const room = createMemoryServer({ root: review.reviewRoot });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const html = await (await fetch(origin + "/")).text();
+  const nonce = /<meta name="context-room-owner-nonce" content="([^"]+)"/.exec(html)?.[1] || "";
+  const projectHeader = { "x-context-room-project": room.projectId, "x-context-room-owner-nonce": nonce, "content-type": "application/json" };
+  const report = await (await fetch(origin + "/api/docqa")).json();
+  const byPath = new Map(report.queue.map((item) => [item.path, item]));
+  const payloadFile = (filePath) => ({
+    path: filePath,
+    expectedContentHash: byPath.get(filePath).currentHash,
+    expectedResourceState: byPath.get(filePath).resourceState,
+    expectedResourceVersion: byPath.get(filePath).resourceVersion,
+    expectedDependencyVersions: byPath.get(filePath).dependencyVersions || {},
+  });
+
+  const staleResponse = await fetch(origin + "/api/shared-context/review-files", {
+    method: "POST",
+    headers: projectHeader,
+    body: JSON.stringify({
+      expectedProposalHead: published.head,
+      decision: "accept",
+      files: [payloadFile("projects/demo/docs/KEEP.md"), { ...payloadFile("projects/demo/docs/DROP.md"), expectedContentHash: "0".repeat(64) }],
+    }),
+  });
+  assert.equal(staleResponse.status, 409);
+  assert.deepEqual((await (await fetch(origin + "/api/docqa")).json()).reviewedPaths, []);
+
+  const staleDependencyResponse = await fetch(origin + "/api/shared-context/review-files", {
+    method: "POST",
+    headers: projectHeader,
+    body: JSON.stringify({
+      expectedProposalHead: published.head,
+      decision: "accept",
+      files: [{ ...payloadFile("projects/demo/docs/KEEP.md"), expectedDependencyVersions: { "stale-dependency": "0".repeat(64) } }],
+    }),
+  });
+  assert.equal(staleDependencyResponse.status, 409);
+  assert.deepEqual((await (await fetch(origin + "/api/docqa")).json()).reviewedPaths, []);
+
+  const acceptResponse = await fetch(origin + "/api/shared-context/review-files", {
+    method: "POST",
+    headers: projectHeader,
+    body: JSON.stringify({ expectedProposalHead: published.head, decision: "accept", files: [payloadFile("projects/demo/docs/KEEP.md")] }),
+  });
+  assert.equal(acceptResponse.status, 200);
+  const rejectResponse = await fetch(origin + "/api/shared-context/review-files", {
+    method: "POST",
+    headers: projectHeader,
+    body: JSON.stringify({ expectedProposalHead: published.head, decision: "reject", files: [payloadFile("projects/demo/docs/DROP.md")] }),
+  });
+  assert.equal(rejectResponse.status, 200);
+  const result = await rejectResponse.json();
+  assert.deepEqual(result.docqa.reviewedPaths.sort(), ["projects/demo/docs/DROP.md", "projects/demo/docs/KEEP.md"]);
+  assert.equal(fs.existsSync(path.join(review.reviewRoot, "projects/demo/docs/KEEP.md")), true);
+  assert.equal(fs.existsSync(path.join(review.reviewRoot, "projects/demo/docs/DROP.md")), false);
+});
+
+test("shared review endpoint rejects only the exact opened proposal revision", async (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, { title: "Reject exact", branch: "proposal/demo/reject-exact" });
+  configureGit(proposal.root);
+  writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nReject this exact version.\n");
+  const published = publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  initializeContextRoomProject(review.reviewRoot, { allowedPaths: ["projects/demo/"], watchAllow: ["projects/demo/"] });
+  const room = createMemoryServer({ root: review.reviewRoot });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const html = await (await fetch(origin + "/")).text();
+  const nonce = /<meta name="context-room-owner-nonce" content="([^"]+)"/.exec(html)?.[1] || "";
+  const headers = { "content-type": "application/json", "x-context-room-project": room.projectId, "x-context-room-owner-nonce": nonce };
+  const stale = await fetch(origin + "/api/shared-context/reject", { method: "POST", headers, body: JSON.stringify({ expectedProposalHead: "0".repeat(40) }) });
+  assert.equal(stale.status, 409);
+  const response = await fetch(origin + "/api/shared-context/reject", { method: "POST", headers, body: JSON.stringify({ expectedProposalHead: published.head }) });
+  assert.equal(response.status, 200);
+  const rejected = await response.json();
+  assert.equal(rejected.rejected, true);
+  assert.equal(rejected.proposalHead, published.head);
+  assert.match(rejected.rejectionBranch, /^rejected\/demo\/reject-exact-/);
 });

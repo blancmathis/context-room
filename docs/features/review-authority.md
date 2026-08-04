@@ -5,7 +5,7 @@ context_room:
   scope: context-room
   status: current
   canonical_for: human review authority and its security boundary
-  last_verified: 2026-08-03
+  last_verified: 2026-08-04
   sources: [src/review_authority.mjs, src/context_room.mjs, src/context_settings.mjs, src/shared_context.mjs, src/cli_registry.mjs, bin/context-room.mjs, test/review_authority.test.mjs, test/context_settings.test.mjs, test/context_room.test.mjs, test/shared_context.test.mjs]
 ---
 
@@ -13,7 +13,7 @@ context_room:
 
 ## Summary
 
-Accepting, rejecting, verifying, or confirming removal of documentation is a human-owned action. Context Room blocks agent-facing decision commands, refuses agent-driven reductions of the review scope, fails closed when project configuration narrows the last owner-authorized scope, and preserves evidence when a shared proposal ref disappears unexpectedly. Every agent-facing instruction and decision surface states the same behavioral rule: ask the user once, then after the first yes restate the exact action, project, proposal or file scope, and effects, ask again, and make no mutation without a second separate, unambiguous yes.
+Accepting, rejecting, verifying, or confirming removal of documentation is a human-owned action. Context Room blocks agent-facing decision commands, refuses agent-driven reductions of the review scope, fails closed when project configuration narrows the last owner-authorized scope, and preserves evidence when a shared proposal ref disappears unexpectedly. Individual file decisions are direct actions in the human UI. Multi-file batches and terminal proposal decisions require the agent operating that surface to ask once, then after the first yes restate the exact action, project, proposal or file scope, and effects, ask again, and make no mutation without a second separate, unambiguous yes.
 
 These controls are defense in depth. A process with unrestricted access to the same operating-system account can read local files, drive the browser, or invoke Git directly. Local nonces and signed receipts detect or block ordinary bypasses; they do not prove physical human presence. Strong enforcement against that process requires an external trust anchor such as provider-side rules with a separate reviewer identity, a passkey or hardware-backed user-presence check, or a separately sandboxed account.
 
@@ -28,7 +28,7 @@ The content-level review workflow, GitHub account administration, or a hardware-
 ## Invariants
 
 1. No agent-facing CLI command may accept, reject, verify, or merge documentation for the owner.
-2. Before an agent attempts any acceptance, rejection, verification, removal confirmation, or other review decision through a human surface, it must obtain two separate explicit user confirmations. The second request follows a restatement of the exact action, scope, and effects; without a second unambiguous yes, nothing changes.
+2. A single-file decision is available only through the direct human UI and does not require the agent-confirmation modal. Before an agent attempts a multi-file batch or terminal proposal decision through a human surface, it must obtain two separate explicit user confirmations. The second request follows a restatement of the exact action, scope, and effects; without a second unambiguous yes, nothing changes.
 3. An agent may add or widen review coverage, but only the owner interface may narrow or remove it.
 4. Editing `.context-room/config.json` cannot silently reduce effective review coverage below the last owner-authorized scope.
 5. A terminal shared-proposal decision is bound to the exact proposal branch and commit hash.
@@ -59,7 +59,7 @@ The diagram shows the intended chain, not a claim that local state authenticates
 | Bypass | Current behavior | Remaining limit |
 | --- | --- | --- |
 | Agent CLI calls `accept`, `reject`, or `verify` | No such decision command is exposed. | A same-user process can still target lower-level local resources unless the other layers also hold. |
-| Agent receives one conversational approval, then tries to use the owner UI | Agent instructions, machine capabilities, generated handoffs, and every review-decision confirmation require a second separate approval after the exact action, scope, and effects are restated. The UI removes the former persistent confirmation bypass and requires an explicit acknowledgement before enabling the mutation. | This is a behavioral guard and visible checkpoint, not proof that two human utterances occurred; browser automation under the same OS account can still imitate the acknowledgement. |
+| Agent receives one conversational approval, then tries a batch or terminal proposal decision in the owner UI | Agent instructions, machine capabilities, generated handoffs, and those higher-impact decision surfaces require a second separate approval after the exact action, scope, and effects are restated. Individual file controls remain direct human actions and are never exposed as agent commands. | This is a behavioral guard and visible checkpoint, not proof that two human utterances occurred; browser automation under the same OS account can still imitate the acknowledgement. |
 | Agent removes or narrows `watchAllow`, `watchRules`, `allowedPaths`, Startup context, or Startup skills through typed settings | The plan is rejected with `human-authority-required`. | The owner may intentionally save a narrower scope in Settings. |
 | Agent runs `watch set --mode off`, `agent unwatch`, replaces a live rule with a narrower mode, or inserts a narrower child rule beneath a recursive parent | The command is rejected with `human-authority-required`. Direct config and typed-settings evaluation also widen an overriding child back to the protected semantics. Adding a new rule or widening an existing rule remains allowed. | Direct filesystem access is handled by the next layer, not by the CLI alone. |
 | Process edits `.context-room/config.json` directly | Context Room keeps the last owner-authorized scope effective and reports `review_authority_tamper` as critical. | The HMAC key is local to the same OS account; this detects tampering but is not a hostile same-user boundary. |

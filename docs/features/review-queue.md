@@ -4,7 +4,7 @@ context_room:
   scope: context-room
   status: current
   canonical_for: review queue
-  last_verified: 2026-08-03
+  last_verified: 2026-08-04
   sources: [src/context_room.mjs, src/review_authority.mjs, src/context_settings.mjs, bin/context-room.mjs, docs/agent-configuration.md]
 ---
 
@@ -18,8 +18,8 @@ The review queue shows watched documentation that needs verification before it b
 
 1. Configure `watchAllow` and optional folder `watchRules`.
 2. Open a queued file.
-3. If an agent is operating, it asks whether the user wants the exact review action. After the first yes, it restates the project, proposal or file scope and effects, asks again, and stops unless the user gives a second separate, unambiguous yes.
-4. For a Git change, accept or reject each visible change, or use `Accept all` or `Reject all` even when only one change remains; the completed diff records the review.
+3. For one file, use the direct human controls to accept or reject each visible change, or use `Accept all` or `Reject all`; the completed diff records the review without an agent-confirmation modal.
+4. If an agent is operating a multi-file selection or a terminal proposal action, it asks whether the user wants that exact action. After the first yes, it restates the project, proposal or file scope and effects, asks again, and stops unless the user gives a second separate, unambiguous yes.
 5. When several files were removed together, expand the deletion set, inspect or narrow the selected paths, then confirm their removal.
 6. When Git has no diff, review the current document and use `Mark verified`.
 7. Review newly discovered startup instructions and skills once; they return only when their content changes.
@@ -27,7 +27,7 @@ The review queue shows watched documentation that needs verification before it b
 ## Rules
 
 - Review owns the final trust decision.
-- Agents may surface the queue, but should never decide for the user. The two separate confirmations are required before every acceptance, rejection, verification, removal confirmation, inline decision, and bulk decision; one approval never carries over to another action or scope.
+- Agents may surface the queue, but should never decide for the user. A single-file decision is available only in the direct human UI. Two separate confirmations are required for a selection containing several files and for accepting or rejecting an entire proposal; one approval never carries over to another action or scope.
 - Agent settings and watch commands may add or widen review coverage, but they cannot narrow or remove the owner-authorized scope. Those decisions belong to the current owner interface.
 - Context Room keeps the last owner-authorized scope outside project configuration. A direct config edit that narrows it fails closed, leaves the protected scope effective, and creates a critical `review_authority_tamper` issue.
 - Protected local review mutations require the current server-rendered owner-interface nonce. This blocks raw headerless requests but does not prove physical human presence against browser automation or another unrestricted process under the same OS account. See [Review authority](review-authority.md).
@@ -56,6 +56,7 @@ The review queue shows watched documentation that needs verification before it b
 - After the final inline decision, navigation waits until the review is saved.
 - Pending review changes never block Hub, history, settings, reload, or another file. Partial decisions remain available when the file is reopened in the same session.
 - Accepting or rejecting a change keeps the current reading position throughout the animation and final render.
+- A Shared proposal file list supports up to 200 files in one exact-revision batch. The server preflights every selected content hash, resource state, resource version, and direct-dependency version before changing any file. Accept keeps the proposal version; reject restores the accepted-main version and omits that file's proposal delta. Dependency-only re-reviews can be accepted in a batch but have no change to reject.
 - Review navigation is manual: use `Next review` to open another queued doc.
 - High-confidence one-to-one renames stay a single `old path -> new path` review item. Unmatched deletions remain explicit.
 - Two or more unmatched Git deletions are grouped into one expandable change set. New, modified, and rewritten replacement documents stay individually reviewable.

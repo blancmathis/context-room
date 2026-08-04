@@ -1126,7 +1126,7 @@ export function diffSharedMainRevisions(repository, { fromRevision, toRevision =
 }
 
 function gitNameStatusChanges(checkout, fromRevision, toRevision) {
-  const records = splitNull(runGit(checkout, ["diff", "--name-status", "-z", "-M", `${fromRevision}..${toRevision}`, "--"], { encoding: null }));
+  const records = splitNull(runGit(checkout, ["diff", "--name-status", "-z", "-M", "-C", "--find-copies-harder", `${fromRevision}..${toRevision}`, "--"], { encoding: null }));
   const changes = [];
   for (let index = 0; index < records.length;) {
     const rawStatus = records[index++];
@@ -4810,6 +4810,13 @@ function materializeSharedReviewFromState(synced, { proposal, expectedHead = "" 
   if (reusable) return reusable;
   const checkout = repositoryCheckout(synced.connection.repository);
   const changedFiles = gitChangedPaths(checkout, `${synced.revision}...${match.head}`);
+  const proposalChanges = gitNameStatusChanges(checkout, synced.revision, match.head).map((change) => ({
+    path: change.path,
+    status: change.status,
+    fromPath: change.fromPath || null,
+    score: change.score || null,
+    reviewKind: "proposal-change",
+  }));
   if (!changedFiles.length) throw new Error("Proposal has no changes relative to shared main");
   assertPathsInProposalScope(changedFiles, match);
   const scopePaths = [...(match.allowedExact || []), ...match.allowedPrefixes];
@@ -4841,6 +4848,12 @@ function materializeSharedReviewFromState(synced, { proposal, expectedHead = "" 
       allowedPrefixes: match.allowedPrefixes,
       proposalFiles: proposalReviewFiles,
       dependencyReviews,
+      proposalChanges: [
+        ...proposalChanges,
+        ...dependencyReviews
+          .filter((item) => !proposalChanges.some((change) => change.path === item.path))
+          .map((item) => ({ path: item.path, status: null, fromPath: null, score: null, reviewKind: "dependency-review" })),
+      ],
       proposal: match.branch,
       proposalHead: match.head,
       title: match.title,
@@ -4880,6 +4893,33 @@ export function readSharedReview(root) {
   safeBranchName(metadata.defaultBranch, "default branch");
   safeRevision(metadata.proposalHead, "proposal head");
   safeRevision(metadata.baseRevision, "review base");
+  if (!Array.isArray(metadata.proposalChanges)) {
+    const dependencyPaths = new Set((metadata.dependencyReviews || []).map((item) => item.path));
+    let changes = [];
+    try {
+      const checkout = ensureRepositoryClone(metadata.repository);
+      changes = gitNameStatusChanges(checkout, metadata.baseRevision, metadata.proposalHead).map((change) => ({
+        path: change.path,
+        status: change.status,
+        fromPath: change.fromPath || null,
+        score: change.score || null,
+        reviewKind: "proposal-change",
+      }));
+    } catch {}
+    const changedPaths = new Set(changes.map((change) => change.path));
+    metadata.proposalChanges = [
+      ...changes,
+      ...(metadata.proposalFiles || [])
+        .filter((filePath) => !changedPaths.has(filePath))
+        .map((filePath) => ({
+          path: filePath,
+          status: null,
+          fromPath: null,
+          score: null,
+          reviewKind: dependencyPaths.has(filePath) ? "dependency-review" : "proposal-change",
+        })),
+    ];
+  }
   return metadata;
 }
 
@@ -5043,7 +5083,15 @@ export function acceptSharedReview(reviewRoot, { message = "Accept shared contex
       runGit(acceptanceRoot, ["diff", "--cached", "--quiet"]);
       return { accepted: false, reason: "Accepted result is already present on main", proposal: review.proposal };
     } catch {}
-    runGit(acceptanceRoot, ["commit", "-m", acceptedProposalCommitMessage(review, message, actor, reviewState)], { stdio: ["ignore", "ignore", "pipe"] });
+    runGit(acceptanceRoot, ["commit", "-m", acceptedProposalCommitMessage(review, message, actor, reviewState)], {
+      stdio: ["ignore", "ignore", "pipe"],
+      env: {
+        GIT_AUTHOR_NAME: "Context Room",
+        GIT_AUTHOR_EMAIL: "context-room@peerlab.fr",
+        GIT_COMMITTER_NAME: "Context Room",
+        GIT_COMMITTER_EMAIL: "context-room@peerlab.fr",
+      },
+    });
     const acceptedCommit = safeRevision(tryGit(acceptanceRoot, ["rev-parse", "HEAD"]), "accepted commit");
     assertSafeTreeEntries(acceptanceRoot, acceptedCommit, policy.allowedPrefixes);
     assertReviewableChangedPaths(acceptanceRoot, currentMain, acceptedCommit, workspace.files);

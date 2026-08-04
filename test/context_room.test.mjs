@@ -5789,7 +5789,7 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /Ask:<\/strong> research accepted project documentation from a complete task-specific brief, not keywords/);
   assert.match(html, /Edit:<\/strong> create, list, or open shared proposal worktrees without making review decisions/);
   assert.match(html, /Accepting or rejecting each file awaiting review/);
-  assert.match(html, /there is no separate proposal decision/);
+  assert.match(html, /the human explicitly puts the selected result on main or rejects the exact proposal/);
   assert.doesNotMatch(html, /Changing the owner-controlled Git review gate\./);
   assert.match(html, /globalReviewBody = '[^']*<code>ask<\/code>[^']*static command inventory/);
   assert.doesNotMatch(html, /capabilities --intent/);
@@ -6526,7 +6526,8 @@ test("interface sounds add restrained button feedback and richer cues only for m
   assert.match(script, /document\.addEventListener\("click", playContextRoomButtonBeat\)/);
   assert.match(reviewSource, /const reviewCompleted = normalizedStatus === "verified"/);
   assert.match(reviewSource, /playContextRoomSound\(reviewQueueCleared \? "all-clear" : "review-complete"\)/);
-  assert.match(reviewSource, /decisionResult\.proposalFinalization\.accepted[\s\S]*playContextRoomSound\("proposal-accepted"\)/);
+  assert.doesNotMatch(reviewSource, /proposalFinalization|proposal-accepted/);
+  assert.match(script, /async function completeSharedProposalAcceptance\([\s\S]*playContextRoomSound\("proposal-accepted"\)/);
   assert.match(conflictSource, /const existingConflict = activeFileConflict\(\);[\s\S]*if \(existingConflict && existingConflict\.diskHash === data\.contentHash[\s\S]*return true;[\s\S]*playContextRoomSound\("attention"\)/);
   assert.doesNotMatch(saveSource, /playContextRoomSound/);
 });
@@ -6751,8 +6752,9 @@ test("verification actions are limited to files opened from the review queue", (
   assert.match(html, /const checkboxLabel = "If an agent is operating, the user separately confirmed this exact action a second time"/);
   assert.match(html, /checkboxLabel: additionalAcknowledgement \? checkboxLabel/);
   assert.match(html, /checkboxRequired: true/);
-  assert.match(html, /confirmVariant: verifying \? "primary" : "danger"/);
-  assert.match(html, /This marks the current content as trusted\. Use Next review when ready\./);
+  const singleFileDecisionSource = html.slice(html.indexOf("async function requestReviewDecision"), html.indexOf("async function verifyCurrentFile"));
+  assert.doesNotMatch(singleFileDecisionSource, /showHumanReviewDecisionDialog/);
+  assert.match(singleFileDecisionSource, /await applyReviewDecision\(path, normalizedStatus\)/);
   assert.match(html, /<strong>First review<\/strong> <span>No previous baseline exists for this first review\./);
   assert.match(html, /label: "Accept document"/);
   assert.match(html, /label: "Request changes"/);
@@ -6760,8 +6762,10 @@ test("verification actions are limited to files opened from the review queue", (
   assert.match(html, /applyReviewDecision\(path, normalizedStatus\)/);
   assert.match(html, /function requestContextRoomReviewRejection\(ids\) \{[\s\S]*showHumanReviewDecisionDialog\(/);
   assert.match(html, /function requestDeletionReviewBatchConfirmation\(\) \{[\s\S]*showHumanReviewDecisionDialog\(/);
-  assert.match(html, /function requestApplyExternalChange\(\) \{[\s\S]*showHumanReviewDecisionDialog\(/);
-  assert.match(html, /function promptRejectExternalChange\(\) \{[\s\S]*showHumanReviewDecisionDialog\(/);
+  const externalApplySource = html.slice(html.indexOf("function requestApplyExternalChange"), html.indexOf("async function rejectExternalChange"));
+  assert.doesNotMatch(externalApplySource, /showHumanReviewDecisionDialog/);
+  assert.match(externalApplySource, /applyExternalChange\(\)/);
+  assert.match(externalApplySource, /rejectExternalChange\(change\.path\)/);
   assert.match(html, /const previousQueue = options\.previousQueue \|\| state\.docqa\?\.queue \|\| \[\];/);
   assert.match(html, /function nextReviewItemAfter\(previousQueue = \[\], currentPath = null, nextQueue = \[\]\)/);
   assert.match(html, /function nextReviewItemForManualAdvance\(\) \{[\s\S]*return nextReviewItemAfter\(queue, state\.reviewModePath \|\| state\.selected \|\| state\.selectedReview, queue\);/);
