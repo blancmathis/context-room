@@ -14795,8 +14795,10 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
     .proposal-review-copy p { max-width: 72ch; color: var(--muted); }
     .proposal-review-meta { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 12px var(--workbench-gutter); border-bottom: 1px solid var(--line); background: var(--panel); }
     .proposal-review-files { display: grid; gap: 0; padding: 0; }
-    .proposal-review-file { width: 100%; min-width: 0; min-height: 44px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 12px var(--workbench-gutter); border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; box-shadow: none; }
-    .proposal-review-file-open { display: contents; color: inherit; text-align: left; }
+    .proposal-review-file { width: 100%; min-width: 0; min-height: 44px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 12px; padding: 0 var(--workbench-gutter); border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; box-shadow: none; }
+    .proposal-review-file-open { width: 100%; min-width: 0; min-height: 44px; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 12px 0; border: 0; background: transparent; color: inherit; cursor: pointer; text-align: left; }
+    .proposal-review-file-open:focus-visible { position: relative; z-index: 1; outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: -3px; }
+    .proposal-review-file-open:disabled { cursor: default; opacity: .62; }
     .proposal-review-file-select { display: grid; place-items: center; width: 22px; min-height: 22px; }
     .proposal-review-file-select input { width: 16px; height: 16px; accent-color: var(--accent); }
     .proposal-review-empty { padding-inline: var(--workbench-gutter); }
@@ -15030,7 +15032,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
       .proposal-review-meta, .proposal-review-file,
       .shared-proposal-card { padding-inline: var(--workbench-gutter-compact); }
       .proposal-review-head { flex-direction: column; }
-      .proposal-review-file { grid-template-columns: auto minmax(0, 1fr) auto; }
+      .proposal-review-file-open { grid-template-columns: minmax(0, 1fr) auto; }
       .proposal-review-file-change { display: none; }
       .proposal-review-empty { padding-inline: var(--workbench-gutter-compact); }
       .diff-header, .file-panel header { padding-inline: var(--workbench-gutter-compact); }

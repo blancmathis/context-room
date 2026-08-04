@@ -233,6 +233,8 @@ test("shared proposal review keeps navigation and explicit completion in the pro
   assert.match(html, /Accept selected/);
   assert.match(html, /Reject selected/);
   assert.match(html, /Created|Modified|Deleted|Renamed|Copied|Dependency review/);
+  assert.doesNotMatch(html, /\.proposal-review-file-open\s*\{[^}]*display:\s*contents/);
+  assert.match(html, /\.proposal-review-file-open\s*\{[^}]*display:\s*grid/);
   assert.match(html, /el\("proposalDockBack"\)\?\.addEventListener\("click", \(\) => showProposalReview\(\)\)/);
 });
 
