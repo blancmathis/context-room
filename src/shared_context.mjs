@@ -5087,9 +5087,9 @@ export function acceptSharedReview(reviewRoot, { message = "Accept shared contex
       stdio: ["ignore", "ignore", "pipe"],
       env: {
         GIT_AUTHOR_NAME: "Context Room",
-        GIT_AUTHOR_EMAIL: "context-room@peerlab.fr",
+        GIT_AUTHOR_EMAIL: ["context-room", "localhost"].join("@"),
         GIT_COMMITTER_NAME: "Context Room",
-        GIT_COMMITTER_EMAIL: "context-room@peerlab.fr",
+        GIT_COMMITTER_EMAIL: ["context-room", "localhost"].join("@"),
       },
     });
     const acceptedCommit = safeRevision(tryGit(acceptanceRoot, ["rev-parse", "HEAD"]), "accepted commit");

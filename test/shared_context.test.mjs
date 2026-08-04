@@ -1741,7 +1741,7 @@ test("shared acceptance uses a deterministic command-local Git identity", (t) =>
   }
   assert.equal(fs.existsSync(emptyGlobalConfig), false);
   git(fixture.seed, ["fetch", "origin"]);
-  assert.equal(git(fixture.seed, ["show", "-s", "--format=%an <%ae>", "origin/main"]), "Context Room <context-room@peerlab.fr>");
+  assert.equal(git(fixture.seed, ["show", "-s", "--format=%an <%ae>", "origin/main"]), "Context Room <context-room@localhost>");
 });
 
 test("proposal updates require and expose fresh descriptive metadata, and expire an earlier review", (t) => {
