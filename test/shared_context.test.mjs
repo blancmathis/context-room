@@ -246,6 +246,8 @@ test("shared proposal review keeps navigation and explicit completion in the pro
   assert.match(html, /state\.proposalSelectedFiles\.add\(requestedProposalSelection\)/);
   assert.match(html, /proposalSelectionUrl\.searchParams\.delete\("select"\)/);
   assert.match(html, /selectOrQueueProposalReviewFile\(button\.dataset\.proposalReviewPath\)/);
+  assert.match(html, /const previewDocqa = state\.contextRoomPreparedReview\?\.docqa \|\| null/);
+  assert.match(html, /This file is already reviewed\. Only pending files can be selected\./);
   assert.match(html, /Right-click or press and hold to select/);
   assert.match(html, /data-proposal-review-selected/);
   assert.match(html, /Accept selected/);
@@ -2503,6 +2505,8 @@ test("shared Context Room API lists proposals and opens an exact review room", a
   assert.equal(opened.review.proposalHead, published.head);
   assert.equal(opened.review.title, "API review");
   assert.equal(opened.review.description, "");
+  assert.deepEqual(opened.docqa.pendingPaths, ["projects/demo/docs/README.md"]);
+  assert.deepEqual(opened.docqa.reviewedPaths, []);
   assert.equal("reviewAgentInstructions" in readMemoryWebappSettings(opened.reviewRoot), false);
   const reviewPage = await fetch(opened.url + "/");
   assert.equal(
@@ -2553,6 +2557,16 @@ test("shared Context Room API lists proposals and opens an exact review room", a
   assert.equal(decision.proposalFinalization, null);
   git(fixture.seed, ["fetch", "origin"]);
   assert.doesNotMatch(git(fixture.seed, ["show", "origin/main:projects/demo/docs/README.md"]), /API review/);
+
+  const reviewedPreviewResponse = await fetch(origin + "/api/shared-context/review", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-project": room.projectId },
+    body: JSON.stringify({ proposal: proposal.branch, expectedHead: published.head }),
+  });
+  assert.equal(reviewedPreviewResponse.status, 201);
+  const reviewedPreview = await reviewedPreviewResponse.json();
+  assert.deepEqual(reviewedPreview.docqa.pendingPaths, []);
+  assert.deepEqual(reviewedPreview.docqa.reviewedPaths, ["projects/demo/docs/README.md"]);
 
   const acceptResponse = await fetch(opened.url + "/api/shared-context/accept", {
     method: "POST",

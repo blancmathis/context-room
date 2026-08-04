@@ -5225,6 +5225,21 @@ export function buildDocQaReport(root = process.cwd(), options = {}) {
   };
 }
 
+function buildSharedReviewDocQaReport(reviewRoot, review = {}) {
+  const report = buildDocQaReport(reviewRoot);
+  const proposalPaths = new Set(review.proposalFiles || []);
+  const queue = (report.queue || []).filter((item) => proposalPaths.has(item.path));
+  const pendingPaths = (report.pendingPaths || []).filter((filePath) => proposalPaths.has(filePath));
+  const reviewedPaths = (report.reviewedPaths || []).filter((filePath) => proposalPaths.has(filePath));
+  return {
+    ...report,
+    summary: { ...report.summary, needsReview: pendingPaths.length },
+    pendingPaths,
+    reviewedPaths,
+    queue,
+  };
+}
+
 function inferGitRenames(root, gitStatuses, files, settings, gitHeadContents = null) {
   const inferredRenames = new Map();
   const renamedDeletedPaths = new Set();
@@ -11065,6 +11080,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       port: result.port,
       reviewRoot: result.reviewRoot,
       review: result.metadata,
+      docqa: buildSharedReviewDocQaReport(result.reviewRoot, result.metadata),
     });
     return;
   }
@@ -11162,6 +11178,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       port: result.port,
       reviewRoot: result.reviewRoot,
       review: result.metadata,
+      docqa: buildSharedReviewDocQaReport(result.reviewRoot, result.metadata),
     });
     return;
   }
@@ -15760,6 +15777,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
 			const CODEX_PROMPT_MAX_ESTIMATED_TOKENS = ${MAX_CODEX_PROMPT_ESTIMATED_TOKENS};
 			const CODEX_PROMPT_HIGH_CONTEXT_TOKENS = ${CODEX_PROMPT_HIGH_CONTEXT_CONFIRM_TOKENS};
 			const PROPOSAL_REVIEW_LONG_PRESS_MS = 520;
+			const PROPOSAL_REVIEW_ALREADY_REVIEWED_MESSAGE = "This file is already reviewed. Only pending files can be selected.";
 			let proposalReviewLongPress = null;
 			let proposalReviewSuppressClickPath = "";
 		state.sharedProposalWorkspaceOpen = false;
@@ -18728,6 +18746,13 @@ async function openSharedProposal(proposal, repository = "", { file = "" } = {})
     }
     const queuedSelection = state.contextRoomQueuedProposalSelection;
     if (queuedSelection) {
+      const queuedEntry = proposalReviewFileEntries().find((entry) => entry.path === queuedSelection);
+      if (!queuedEntry?.selectable) {
+        state.contextRoomQueuedProposalSelection = "";
+        renderProposalReviewPage();
+        setStatus(queuedEntry?.reviewed ? PROPOSAL_REVIEW_ALREADY_REVIEWED_MESSAGE : "Only pending files can be selected.");
+        return;
+      }
       window.location.assign(contextRoomProposalSelectionUrl(result.url, queuedSelection));
       return;
     }
@@ -22214,6 +22239,7 @@ function renderDocQaDashboard() {
 
 function proposalReviewFileEntries() {
   const preview = state.contextRoomPreparingProposal;
+  const previewDocqa = state.contextRoomPreparedReview?.docqa || null;
   const review = state.sharedContext?.mode === "review" ? state.sharedContext?.review || {} : preview || {};
   const proposalFiles = state.sharedContext?.mode === "review"
     ? review.proposalFiles || []
@@ -22221,10 +22247,13 @@ function proposalReviewFileEntries() {
   const changeByPath = new Map((review.proposalChanges || []).map((change) => [change.path, change]));
   const dependencyPaths = new Set((review.dependencyReviews || []).map((item) => item.path));
   const queueByPath = new Map((state.docqa?.queue || []).map((item) => [item.path, item]));
+  const previewQueueByPath = new Map((previewDocqa?.queue || []).map((item) => [item.path, item]));
   const pendingPaths = new Set(state.docqa?.pendingPaths || (state.docqa?.queue || []).map((item) => item.path));
+  const previewPendingPaths = new Set(previewDocqa?.pendingPaths || (previewDocqa?.queue || []).map((item) => item.path));
   const reviewedPaths = new Set(state.docqa?.reviewedPaths || []);
+  const previewReviewedPaths = new Set(previewDocqa?.reviewedPaths || []);
   return proposalFiles.map((filePath) => {
-    const reviewItem = state.sharedContext?.mode === "review" ? queueByPath.get(filePath) || null : null;
+    const reviewItem = state.sharedContext?.mode === "review" ? queueByPath.get(filePath) || null : previewQueueByPath.get(filePath) || null;
     const file = state.files.find((candidate) => candidate.path === filePath) || null;
     const change = changeByPath.get(filePath) || {
       path: filePath,
@@ -22238,10 +22267,10 @@ function proposalReviewFileEntries() {
       label: reviewItem?.label || file?.label || filePath.split("/").pop() || filePath,
       reviewItem,
       canOpen: preview ? true : Boolean(reviewItem || file),
-      pending: Boolean(preview || pendingPaths.has(filePath) || !reviewedPaths.has(filePath)),
-      reviewed: Boolean(!preview && state.docqa && reviewedPaths.has(filePath)),
+      pending: Boolean(preview ? !previewDocqa || previewPendingPaths.has(filePath) : pendingPaths.has(filePath) || !reviewedPaths.has(filePath)),
+      reviewed: Boolean(!preview && state.docqa && reviewedPaths.has(filePath)) || Boolean(preview && previewDocqa && previewReviewedPaths.has(filePath)),
       change,
-      selectable: Boolean(!preview && reviewItem && !reviewedPaths.has(filePath)),
+      selectable: Boolean(reviewItem && (preview ? previewPendingPaths.has(filePath) : !reviewedPaths.has(filePath))),
     };
   });
 }
@@ -22348,13 +22377,15 @@ function renderProposalReviewPage() {
   const files = el("proposalReviewFiles");
   if (!title || !description || !progress || !meta || !files || !notice) return;
   const preview = state.contextRoomPreparingProposal;
+  const previewDocqa = state.contextRoomPreparedReview?.docqa || null;
   const preparing = Boolean(preview && !state.contextRoomPreparedReview);
   const prepared = Boolean(preview && state.contextRoomPreparedReview);
+  const activeDocqa = preview ? previewDocqa : state.docqa;
   const review = state.sharedContext?.mode === "review" ? state.sharedContext?.review || {} : preview || {};
   const entries = proposalReviewFileEntries();
   const visibleEntries = entries.slice(0, Math.max(40, Number(state.proposalReviewVisibleCount || 40)));
-  const reviewReady = !preparing && Boolean(state.docqa);
-  const pending = reviewReady ? entries.filter((entry) => !entry.reviewed).length : entries.length;
+  const reviewReady = !preparing && Boolean(activeDocqa);
+  const pending = reviewReady ? entries.filter((entry) => entry.pending).length : entries.length;
   const reviewed = Math.max(0, entries.length - pending);
   const impactRepository = review.repository || review.sharedRepository || review.sourceRepository || "";
   const impactSelector = review.proposal || review.branch || "";
@@ -22363,9 +22394,7 @@ function renderProposalReviewPage() {
   description.textContent = review.description || "Review every changed file as one proposal. Open a file to inspect and decide its changes.";
   progress.innerHTML = preparing
     ? '<strong>Ready</strong><span>Choose a file to begin reviewing · exact review preparing in background</span><span class="context-room-proposal-opening-indicator" aria-hidden="true"></span>'
-    : prepared
-      ? '<strong>Ready</strong><span>Choose a file to begin reviewing</span>'
-    : '<strong>' + pending + '</strong><span>' + (state.docqa ? "file" + (pending === 1 ? "" : "s") + " remaining · " + reviewed + " reviewed" : "loading review state…") + '</span>';
+    : '<strong>' + pending + '</strong><span>' + (activeDocqa ? "file" + (pending === 1 ? "" : "s") + " remaining · " + reviewed + " reviewed" : prepared ? "Choose a file to begin reviewing" : "loading review state…") + '</span>';
   meta.innerHTML = '<span>Shared proposal' + (review.projectTitle || review.projectId ? ' · ' + escapeHtml(review.projectTitle || review.projectId) : '') + '</span>'
     + '<span>' + entries.length + ' file' + (entries.length === 1 ? '' : 's') + ' to review</span>'
     + '<details class="proposal-review-technical"><summary>Git revision details</summary><div><code title="' + escapeHtml(review.proposal || review.branch || "") + '">' + escapeHtml(review.proposal || review.branch || "Proposal") + '</code><code title="' + escapeHtml(review.proposalHead || review.head || "") + '">@' + escapeHtml(shortSharedHash(review.proposalHead || review.head)) + '</code></div></details>'
@@ -22379,10 +22408,10 @@ function renderProposalReviewPage() {
   files.innerHTML = entries.length ? visibleEntries.map((entry) => {
     const changeLabel = preview ? "Modified" : proposalReviewChangeLabel(entry);
     const stateLabel = preview
-      ? state.contextRoomQueuedProposalFile === entry.path ? "Opening…" : state.contextRoomQueuedProposalSelection === entry.path ? "Selecting…" : "Review"
+      ? state.contextRoomQueuedProposalFile === entry.path ? "Opening…" : state.contextRoomQueuedProposalSelection === entry.path ? "Selecting…" : entry.reviewed ? "Reviewed" : "Review"
       : state.docqa ? (entry.reviewed ? "Reviewed" : "Review") : "Loading…";
     const selected = state.proposalSelectedFiles.has(entry.path);
-    const selectionHint = entry.selectable || preview ? " Right-click or press and hold to select." : "";
+    const selectionHint = entry.selectable || preparing ? " Right-click or press and hold to select." : "";
     return '<div class="proposal-review-file" data-reviewed="' + String(entry.reviewed) + '" data-proposal-review-selected="' + String(selected) + '">'
       + '<button class="proposal-review-file-open" type="button" data-proposal-review-path="' + escapeHtml(entry.path) + '" aria-label="Open ' + escapeHtml(entry.path + "." + selectionHint) + '" title="Open file.' + escapeHtml(selectionHint) + '"' + (entry.canOpen ? '' : ' disabled') + '>'
       + '<span class="proposal-review-file-copy"><strong>' + escapeHtml(entry.label) + '</strong><code>' + escapeHtml(entry.path) + '</code></span>'
@@ -31775,10 +31804,16 @@ function toggleProposalReviewFileSelection(filePath) {
 function selectOrQueueProposalReviewFile(filePath) {
   filePath = normalizeUiPath(filePath);
   if (!filePath) return false;
+  const entry = proposalReviewFileEntries().find((candidate) => candidate.path === filePath);
+  if (!entry) return false;
+  if (entry.reviewed) {
+    setStatus(PROPOSAL_REVIEW_ALREADY_REVIEWED_MESSAGE);
+    return true;
+  }
   if (state.contextRoomPreparingProposal) {
-    if (!proposalReviewFileEntries().some((entry) => entry.path === filePath)) return false;
     const prepared = state.contextRoomPreparedReview;
     if (prepared?.url) {
+      if (!entry.selectable) return false;
       window.location.assign(contextRoomProposalSelectionUrl(prepared.url, filePath));
       return true;
     }
