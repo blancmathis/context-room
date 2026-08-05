@@ -15736,7 +15736,6 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
 		state.contextRoomPreparingProposal = null;
 		state.contextRoomPreparedReview = null;
 		state.contextRoomQueuedProposalFile = "";
-		state.contextRoomQueuedProposalSelection = "";
 		state.proposalReviewKey = "";
 		state.proposalReviewVisibleCount = 40;
 		state.proposalSelectedFiles = new Set();
@@ -18716,7 +18715,6 @@ async function openSharedProposal(proposal, repository = "", { file = "" } = {})
   state.contextRoomOpeningProposalId = item.id || sharedProposalKey(item);
   state.contextRoomPreparedReview = null;
   state.contextRoomQueuedProposalFile = normalizeUiPath(file);
-  state.contextRoomQueuedProposalSelection = "";
   state.sharedContextBusy = true;
   renderSharedContextControls();
   renderContextRoomGlobalReviewQueue();
@@ -18741,18 +18739,6 @@ async function openSharedProposal(proposal, repository = "", { file = "" } = {})
       window.location.assign(contextRoomProposalFileUrl(result.url, queuedFile));
       return;
     }
-    const queuedSelection = state.contextRoomQueuedProposalSelection;
-    if (queuedSelection) {
-      const queuedEntry = proposalReviewFileEntries().find((entry) => entry.path === queuedSelection);
-      if (!queuedEntry?.selectable) {
-        state.contextRoomQueuedProposalSelection = "";
-        renderProposalReviewPage();
-        setStatus(queuedEntry?.reviewed ? PROPOSAL_REVIEW_ALREADY_REVIEWED_MESSAGE : "Only pending files can be selected.");
-        return;
-      }
-      window.location.assign(contextRoomProposalSelectionUrl(result.url, queuedSelection));
-      return;
-    }
     setStatus("exact proposal review ready");
   } catch (error) {
     if (requestId !== state.contextRoomProposalRequest) return;
@@ -18760,7 +18746,6 @@ async function openSharedProposal(proposal, repository = "", { file = "" } = {})
     state.contextRoomPreparingProposal = null;
     state.contextRoomPreparedReview = null;
     state.contextRoomQueuedProposalFile = "";
-    state.contextRoomQueuedProposalSelection = "";
     state.sharedContextBusy = false;
     renderSharedContextControls();
     renderContextRoomGlobalReviewQueue();
@@ -22376,6 +22361,7 @@ function renderProposalReviewPage() {
   const preview = state.contextRoomPreparingProposal;
   const previewDocqa = state.contextRoomPreparedReview?.docqa || null;
   const preparing = Boolean(preview && !state.contextRoomPreparedReview);
+  const reviewStateLoading = Boolean(preview && !previewDocqa);
   const prepared = Boolean(preview && state.contextRoomPreparedReview);
   const activeDocqa = preview ? previewDocqa : state.docqa;
   const review = state.sharedContext?.mode === "review" ? state.sharedContext?.review || {} : preview || {};
@@ -22405,10 +22391,10 @@ function renderProposalReviewPage() {
   files.innerHTML = entries.length ? visibleEntries.map((entry) => {
     const changeLabel = preview ? "Modified" : proposalReviewChangeLabel(entry);
     const stateLabel = preview
-      ? state.contextRoomQueuedProposalFile === entry.path ? "Opening…" : state.contextRoomQueuedProposalSelection === entry.path ? "Selecting…" : entry.reviewed ? "Reviewed" : "Review"
+      ? state.contextRoomQueuedProposalFile === entry.path ? "Opening…" : reviewStateLoading ? "Checking…" : entry.reviewed ? "Reviewed" : "Review"
       : state.docqa ? (entry.reviewed ? "Reviewed" : "Review") : "Loading…";
     const selected = state.proposalSelectedFiles.has(entry.path);
-    const selectionHint = entry.selectable || preparing ? " Right-click or press and hold to select." : "";
+    const selectionHint = entry.selectable ? " Right-click or press and hold to select." : "";
     return '<div class="proposal-review-file" data-reviewed="' + String(entry.reviewed) + '" data-proposal-review-selected="' + String(selected) + '">'
       + '<button class="proposal-review-file-open" type="button" data-proposal-review-path="' + escapeHtml(entry.path) + '" aria-label="Open ' + escapeHtml(entry.path + "." + selectionHint) + '" title="Open file.' + escapeHtml(selectionHint) + '"' + (entry.canOpen ? '' : ' disabled') + '>'
       + '<span class="proposal-review-file-copy"><strong>' + escapeHtml(entry.label) + '</strong><code>' + escapeHtml(entry.path) + '</code></span>'
@@ -27261,7 +27247,6 @@ function goHub() {
     state.contextRoomPreparingProposal = null;
     state.contextRoomPreparedReview = null;
     state.contextRoomQueuedProposalFile = "";
-    state.contextRoomQueuedProposalSelection = "";
     state.sharedContextBusy = false;
   }
   state.contextHubView = "home";
@@ -31779,7 +31764,6 @@ el("proposalReviewFiles")?.addEventListener("click", (event) => {
       return;
     }
     state.contextRoomQueuedProposalFile = filePath;
-    state.contextRoomQueuedProposalSelection = "";
     renderProposalReviewPage();
     setStatus("opening this file as soon as the exact review is ready...");
     return;
@@ -31809,16 +31793,15 @@ function selectOrQueueProposalReviewFile(filePath) {
   }
   if (state.contextRoomPreparingProposal) {
     const prepared = state.contextRoomPreparedReview;
+    if (!prepared?.docqa) {
+      setStatus("Review status is still loading. Try again when the row shows Review.");
+      return true;
+    }
     if (prepared?.url) {
       if (!entry.selectable) return false;
       window.location.assign(contextRoomProposalSelectionUrl(prepared.url, filePath));
       return true;
     }
-    state.contextRoomQueuedProposalSelection = filePath;
-    state.contextRoomQueuedProposalFile = "";
-    renderProposalReviewPage();
-    setStatus("selecting this file as soon as the exact review is ready...");
-    return true;
   }
   return toggleProposalReviewFileSelection(filePath);
 }
@@ -31836,7 +31819,7 @@ el("proposalReviewFiles")?.addEventListener("pointerdown", (event) => {
   if (event.pointerType === "mouse" || event.button !== 0) return;
   const button = event.target.closest("[data-proposal-review-path]");
   const entry = button && proposalReviewFileEntries().find((candidate) => candidate.path === button.dataset.proposalReviewPath);
-  if (!entry || (!state.contextRoomPreparingProposal && !entry.selectable)) return;
+  if (!entry?.selectable) return;
   clearProposalReviewLongPress();
   proposalReviewLongPress = {
     pointerId: event.pointerId,
