@@ -241,7 +241,12 @@ test("shared proposal review keeps navigation and explicit completion in the pro
   assert.match(html, /proposalReviewFiles"\)\?\.addEventListener\("pointerdown"/);
   assert.match(html, /PROPOSAL_REVIEW_LONG_PRESS_MS/);
   assert.match(html, /function contextRoomProposalSelectionUrl\(url, filePath\)/);
-  assert.match(html, /state\.contextRoomQueuedProposalSelection = filePath/);
+  assert.match(html, /Review status is still loading\. Try again when the row shows Review\./);
+  assert.match(html, /reviewStateLoading \? "Checking…"/);
+  assert.doesNotMatch(html, /"Selecting…"/);
+  assert.doesNotMatch(html, /state\.contextRoomQueuedProposalSelection = filePath/);
+  assert.doesNotMatch(html, /entry\.selectable \|\| preparing \? " Right-click or press and hold to select\."/);
+  assert.match(html, /if \(!entry\?\.selectable\) return;/);
   assert.match(html, /const requestedProposalSelection = normalizeUiPath\(initialQuery\?\.get\("select"\) \|\| ""\)/);
   assert.match(html, /state\.proposalSelectedFiles\.add\(requestedProposalSelection\)/);
   assert.match(html, /proposalSelectionUrl\.searchParams\.delete\("select"\)/);

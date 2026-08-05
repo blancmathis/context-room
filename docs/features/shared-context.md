@@ -4,7 +4,7 @@ context_room:
   scope: context-room
   status: current
   canonical_for: shared context repositories
-  last_verified: 2026-08-04
+  last_verified: 2026-08-05
   sources: [src/shared_context.mjs, src/review_authority.mjs, src/provider_profiles.mjs, src/context_engine.mjs, src/context_inventory.mjs, src/context_snapshots.mjs, src/context_diagnostics.mjs, src/context_hub.mjs, bin/context-room.mjs, src/context_room.mjs, schemas/shared-repository.schema.json, schemas/shared-projects.schema.json, schemas/shared-skill-locations.schema.json, schemas/shared-skill-local-state.schema.json, schemas/shared-resource-local-state.schema.json, schemas/shared-instruction-locations.schema.json, schemas/config.schema.json]
 ---
 
@@ -239,7 +239,7 @@ described below. The proposal manager labels the latest description as the
 agent recap and keeps the full task ID visible before the owner opens files.
 See [Global Context Room](context-hub.md).
 
-Pressing **Open files to review**, or clicking the proposal row on Home, displays a ready-to-select proposal summary immediately while a dedicated exact-hash review server and worktree are prepared in the background. Every changed path is actionable at once; choosing one during preparation queues that exact file and opens it as soon as the review room is ready. Context Room never makes the proposal summary wait on remote Git or server startup, and never chooses the first file for the owner.
+Pressing **Open files to review**, or clicking the proposal row on Home, displays the proposal summary immediately while a dedicated exact-hash review server and worktree are prepared in the background. Every changed path is visible at once. Until the exact review report arrives, its state reads **Checking…** and selection stays unavailable; opening a file normally can still queue that exact path and enter it as soon as the review room is ready. Context Room never makes the proposal summary wait on remote Git or server startup, and never chooses the first file for the owner.
 
 The opened file uses the proposal room's Explorer, file-history arrows, diff control, path, and existing document review controls. Proposal context never creates a second banner: the normal workspace bar shows **← Proposal** in a file. Terminal proposal controls stay in that bar: rejection is always available, while **Put on main** appears only after every required file has current review proof.
 
@@ -253,7 +253,7 @@ Context Room records proposals when it publishes them and whenever it refreshes 
 
 Use the existing inline controls to accept or reject each change. Rejecting a change block rewrites the review worktree to remove that block; accepting it keeps the proposed result. This means the final worktree diff contains only the parts the human chose to accept.
 
-The proposal summary labels each path as created, modified, deleted, renamed, copied, or dependency-only review. Pending files can be selected together without permanent checkbox columns: right-click a row, or press and hold it on touch screens, to enter selection mode. When selection starts in the immediate Hub preview, Context Room carries that exact path into the dedicated review room; if materialization is still running, it remembers the path and navigates as soon as the exact review is ready. Accepting a selection keeps their proposal versions; rejecting a selection restores their accepted-main versions, including add, delete, rename, and copy semantics. Dependency-only reviews can be batch-accepted but have no proposal delta to reject. A batch is limited to 200 files and is preflighted as one exact-revision operation before any file changes.
+The proposal summary labels each path as created, modified, deleted, renamed, copied, or dependency-only review. Once the exact report identifies a file as pending, it can be selected with no permanent checkbox column: right-click its row, or press and hold it on touch screens, to enter selection mode. A selection started in the immediate Hub preview carries that exact path into the dedicated review room. Right-clicking while a row still reads **Checking…** only explains that the review state is loading; it never queues or applies a review decision. Accepting a selection keeps the proposal versions; rejecting it restores the accepted-main versions, including add, delete, rename, and copy semantics. Dependency-only reviews can be batch-accepted but have no proposal delta to reject. A batch is limited to 200 files and is preflighted as one exact-revision operation before any file changes.
 
 After the final current file version receives its human decision, Context Room reveals **Put on main** but does not finalize automatically. **Reject proposal** remains available at every stage. Both terminal actions are bound to the displayed proposal head and use the double-confirmation checkpoint. Remaining and reviewed counts use the complete proposal review state, even when the general detailed queue is capped at 80 entries for responsiveness.
 
