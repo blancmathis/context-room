@@ -13969,6 +13969,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
     .proposal-review-meta { color: var(--muted); font-size: 10px; line-height: 1.35; }
     .proposal-review-meta code { color: var(--text-soft); font-size: 9px; }
     .proposal-review-notice { margin: 12px var(--workbench-gutter); padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--danger) 44%, var(--line)); border-radius: 9px; background: color-mix(in srgb, var(--danger) 8%, var(--panel)); color: var(--text); font-size: 11px; line-height: 1.45; }
+    .proposal-review-notice[data-kind="info"] { border-color: color-mix(in srgb, var(--accent) 48%, var(--line)); background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
     .proposal-review-selection { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px var(--workbench-gutter); border-bottom: 1px solid var(--line); background: var(--surface); }
     .proposal-review-selection[hidden] { display: none !important; }
     .proposal-review-selection-copy { color: var(--muted); font-size: 11px; }
@@ -15742,6 +15743,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
 		state.proposalBatchBusy = false;
 		state.proposalActionBusy = false;
 		state.proposalActionError = "";
+		state.proposalSelectionNotice = "";
 		state.proposalAuthorityStatus = "";
 		state.proposalAuthorityMessage = "";
 		state.contextRoomProposalRequest = 0;
@@ -15773,7 +15775,8 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
 			const CODEX_PROMPT_MAX_ESTIMATED_TOKENS = ${MAX_CODEX_PROMPT_ESTIMATED_TOKENS};
 			const CODEX_PROMPT_HIGH_CONTEXT_TOKENS = ${CODEX_PROMPT_HIGH_CONTEXT_CONFIRM_TOKENS};
 			const PROPOSAL_REVIEW_LONG_PRESS_MS = 520;
-			const PROPOSAL_REVIEW_ALREADY_REVIEWED_MESSAGE = "This file is already reviewed. Only pending files can be selected.";
+			const PROPOSAL_REVIEW_ALREADY_REVIEWED_MESSAGE = "This file is already Reviewed. Selection only applies to files still marked Review.";
+			const PROPOSAL_REVIEW_ALREADY_REVIEWED_NOTICE = "This file is already Reviewed, so it cannot be selected again. Selection only applies to files still marked Review. Open the file normally to inspect it.";
 			let proposalReviewLongPress = null;
 			let proposalReviewSuppressClickPath = "";
 		state.sharedProposalWorkspaceOpen = false;
@@ -18715,6 +18718,7 @@ async function openSharedProposal(proposal, repository = "", { file = "" } = {})
   state.contextRoomOpeningProposalId = item.id || sharedProposalKey(item);
   state.contextRoomPreparedReview = null;
   state.contextRoomQueuedProposalFile = normalizeUiPath(file);
+  state.proposalSelectionNotice = "";
   state.sharedContextBusy = true;
   renderSharedContextControls();
   renderContextRoomGlobalReviewQueue();
@@ -22384,8 +22388,9 @@ function renderProposalReviewPage() {
     + (impactKey ? renderProposalContextImpactDisclosure({ key: impactKey, repository: impactRepository, selector: impactSelector }) : '');
   const noAcceptedChanges = !pending && state.sharedContext?.mode === "review" && state.sharedContext?.acceptedChangesRemain === false;
   const authorityMessage = preview?.authorityMessage || state.proposalAuthorityMessage;
-  const noticeText = state.proposalActionError || authorityMessage || (noAcceptedChanges ? "No accepted changes remain. Reject the proposal to close it without changing main." : "");
+  const noticeText = state.proposalActionError || authorityMessage || state.proposalSelectionNotice || (noAcceptedChanges ? "No accepted changes remain. Reject the proposal to close it without changing main." : "");
   notice.hidden = !noticeText;
+  notice.dataset.kind = state.proposalSelectionNotice && noticeText === state.proposalSelectionNotice ? "info" : "warning";
   notice.textContent = noticeText;
   renderProposalReviewSelection(entries);
   files.innerHTML = entries.length ? visibleEntries.map((entry) => {
@@ -22500,6 +22505,7 @@ function showProposalReview({ preparingItem = null } = {}) {
     state.proposalReviewVisibleCount = 40;
     state.proposalSelectedFiles.clear();
     state.proposalActionError = "";
+    state.proposalSelectionNotice = "";
   }
   state.page = "proposal";
   state.contextRoomPreparingProposal = preparingItem;
@@ -31777,6 +31783,7 @@ el("proposalReviewFiles")?.addEventListener("click", (event) => {
 function toggleProposalReviewFileSelection(filePath) {
   const entry = proposalReviewFileEntries().find((candidate) => candidate.path === filePath);
   if (!entry?.selectable) return false;
+  state.proposalSelectionNotice = "";
   if (state.proposalSelectedFiles.has(filePath)) state.proposalSelectedFiles.delete(filePath);
   else state.proposalSelectedFiles.add(filePath);
   renderProposalReviewPage();
@@ -31788,6 +31795,8 @@ function selectOrQueueProposalReviewFile(filePath) {
   const entry = proposalReviewFileEntries().find((candidate) => candidate.path === filePath);
   if (!entry) return false;
   if (entry.reviewed) {
+    state.proposalSelectionNotice = PROPOSAL_REVIEW_ALREADY_REVIEWED_NOTICE;
+    renderProposalReviewPage();
     setStatus(PROPOSAL_REVIEW_ALREADY_REVIEWED_MESSAGE);
     return true;
   }
@@ -31819,7 +31828,7 @@ el("proposalReviewFiles")?.addEventListener("pointerdown", (event) => {
   if (event.pointerType === "mouse" || event.button !== 0) return;
   const button = event.target.closest("[data-proposal-review-path]");
   const entry = button && proposalReviewFileEntries().find((candidate) => candidate.path === button.dataset.proposalReviewPath);
-  if (!entry?.selectable) return;
+  if (!entry || (!entry.selectable && !entry.reviewed)) return;
   clearProposalReviewLongPress();
   proposalReviewLongPress = {
     pointerId: event.pointerId,
