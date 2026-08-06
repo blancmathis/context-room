@@ -463,6 +463,11 @@ test("@smoke Context Room keeps its critical workspace state stable", async ({ p
   await page.goto(`${data.origin}/?hub=1&view=hub`);
   await waitForReady(page);
 
+  const reusedSummaryUrl = await page.evaluate(() => contextRoomProposalReviewUrl(`${window.location.origin}/?view=hub&file=stale.md&select=stale.md`));
+  expect(new URL(reusedSummaryUrl).searchParams.get("view")).toBe("proposal");
+  expect(new URL(reusedSummaryUrl).searchParams.has("file")).toBe(false);
+  expect(new URL(reusedSummaryUrl).searchParams.has("select")).toBe(false);
+
   const proposal = page.locator('[data-context-room-review-entry]:has([data-source="shared"])').first();
   await expect(proposal).toBeVisible();
   await proposal.click();
