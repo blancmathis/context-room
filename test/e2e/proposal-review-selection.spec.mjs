@@ -21,7 +21,7 @@ test("@smoke a reviewed proposal row explains why it cannot be selected", async 
   await page.goto(origin + "/?hub=1");
   await waitForBoot(page);
 
-  await page.evaluate(() => {
+  const selectionResult = await page.evaluate(() => {
     state.files = [{ path: "README.md", label: "README.md" }];
     state.sharedContext = {
       mode: "review",
@@ -52,16 +52,78 @@ test("@smoke a reviewed proposal row explains why it cannot be selected", async 
     state.proposalReviewKey = "";
     state.proposalSelectionNotice = "";
     showProposalReview();
+    const target = document.querySelector('[data-proposal-review-path="README.md"]');
+    target.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 }));
+    const notice = document.querySelector("#proposalReviewNotice");
+    return {
+      noticeVisible: !notice.hidden,
+      noticeKind: notice.dataset.kind,
+      noticeText: notice.textContent,
+      rowText: target.textContent,
+      selectedCount: document.querySelectorAll('[data-proposal-review-selected="true"]').length,
+    };
+  });
+  expect(selectionResult).toEqual({
+    noticeVisible: true,
+    noticeKind: "info",
+    noticeText: "This file is already Reviewed, so it cannot be selected again. Selection only applies to files still marked Review. Open the file normally to inspect it.",
+    rowText: expect.stringContaining("Reviewed"),
+    selectedCount: 0,
+  });
+});
+
+test("@smoke terminal proposal acceptance keeps progress and server errors visible", async ({ page }) => {
+  const { origin } = fixture();
+  await page.goto(origin + "/?hub=1");
+  await waitForBoot(page);
+
+  await page.route("**/api/shared-context/accept", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    await route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "GitHub refused the proposal push.", code: "shared_context_acceptance_stale" }),
+    });
   });
 
-  const row = page.locator('[data-proposal-review-path="README.md"]');
-  await expect(row).toContainText("Reviewed");
-  await row.click({ button: "right" });
+  await page.evaluate(() => {
+    state.files = [{ path: "README.md", label: "README.md" }];
+    state.sharedContext = {
+      mode: "review",
+      acceptedChangesRemain: true,
+      review: {
+        projectId: "demo-project",
+        proposal: "proposal/demo/terminal-action",
+        proposalHead: "0123456789abcdef",
+        defaultBranch: "main",
+        title: "Terminal action feedback",
+        description: "Keep delivery feedback visible.",
+        proposalFiles: ["README.md"],
+        proposalChanges: [{ path: "README.md", status: "M", reviewKind: "proposal-change" }],
+      },
+    };
+    state.docqa = {
+      generatedAt: new Date().toISOString(),
+      queue: [],
+      pendingPaths: [],
+      reviewedPaths: ["README.md"],
+      summary: { needsReview: 0 },
+    };
+    state.proposalReviewKey = "";
+    state.proposalActionBusy = false;
+    state.proposalActionError = "";
+    showProposalReview();
+    document.querySelector("#proposalDockAccept").dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  });
+  const dialog = page.locator(".confirm-dialog");
+  await dialog.locator("[data-confirm-checkbox]").check();
+  await dialog.locator("[data-confirm-accept]").click();
 
-  const notice = page.locator("#proposalReviewNotice");
-  await expect(notice).toBeVisible();
-  await expect(notice).toHaveAttribute("data-kind", "info");
-  await expect(notice).toHaveText("This file is already Reviewed, so it cannot be selected again. Selection only applies to files still marked Review. Open the file normally to inspect it.");
-  await expect(page.locator('[data-proposal-review-selected="true"]')).toHaveCount(0);
-  await expect(row).toContainText("Reviewed");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator("[data-confirm-accept]")).toBeDisabled();
+  await expect(dialog.locator("[data-confirm-accept]")).toHaveText("Putting on main…");
+
+  await expect(dialog.locator("[data-confirm-error]")).toHaveText("GitHub refused the proposal push.");
+  await expect(dialog.locator("[data-confirm-accept]")).toBeEnabled();
+  await expect(dialog.locator("[data-confirm-accept]")).toHaveText("Put on main");
 });

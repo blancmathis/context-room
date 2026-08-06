@@ -310,11 +310,24 @@ async function assertWorkbenchGutters(page, data, width) {
   await expectHorizontalPadding(page, "#reviewQueuePanel > header", gutter);
   await expectHorizontalPadding(page, ".context-room-review-toolbar", gutter);
   await expectHorizontalPadding(page, "#reviewQueue :is(.context-room-proposal-row, .context-hub-review-item, .review-item)", gutter, { first: true });
-  const hubFolders = page.locator("#hubFolders");
-  if (await hubFolders.evaluate((node) => node.childElementCount > 0)) {
-    await expectHorizontalPadding(page, "#hubFolders", gutter);
+  const hubFolders = await page.locator("#hubFolders").evaluate((node) => {
+    const style = getComputedStyle(node);
+    const rect = node.getBoundingClientRect();
+    return {
+      childCount: node.childElementCount,
+      visible: node.getClientRects().length > 0 && style.visibility !== "hidden",
+      paddingLeft: Number.parseFloat(style.paddingLeft),
+      paddingRight: Number.parseFloat(style.paddingRight),
+      insideViewport: rect.left >= -1 && rect.right <= window.innerWidth + 1,
+    };
+  });
+  if (hubFolders.childCount > 0) {
+    expect(hubFolders.visible).toBe(true);
+    expect(hubFolders.paddingLeft).toBe(gutter);
+    expect(hubFolders.paddingRight).toBe(gutter);
+    expect(hubFolders.insideViewport).toBe(true);
   } else {
-    await expect(hubFolders).toBeHidden();
+    expect(hubFolders.visible).toBe(false);
   }
   const projectInspection = page.locator(".global-project-inspection");
   if (await projectInspection.isVisible().catch(() => false)) {
