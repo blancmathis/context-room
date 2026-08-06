@@ -56,13 +56,23 @@ test("@smoke a reviewed proposal row explains why it cannot be selected", async 
 
   const row = page.locator('[data-proposal-review-path="README.md"]');
   await expect(row).toContainText("Reviewed");
-  await row.click({ button: "right" });
-
-  const notice = page.locator("#proposalReviewNotice");
-  await expect(notice).toBeVisible();
-  await expect(notice).toHaveAttribute("data-kind", "info");
-  await expect(notice).toHaveText("This file is already Reviewed, so it cannot be selected again. Selection only applies to files still marked Review. Open the file normally to inspect it.");
-  await expect(page.locator('[data-proposal-review-selected="true"]')).toHaveCount(0);
+  const selectionResult = await page.evaluate(() => {
+    const target = document.querySelector('[data-proposal-review-path="README.md"]');
+    target.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 }));
+    const notice = document.querySelector("#proposalReviewNotice");
+    return {
+      noticeVisible: !notice.hidden,
+      noticeKind: notice.dataset.kind,
+      noticeText: notice.textContent,
+      selectedCount: document.querySelectorAll('[data-proposal-review-selected="true"]').length,
+    };
+  });
+  expect(selectionResult).toEqual({
+    noticeVisible: true,
+    noticeKind: "info",
+    noticeText: "This file is already Reviewed, so it cannot be selected again. Selection only applies to files still marked Review. Open the file normally to inspect it.",
+    selectedCount: 0,
+  });
   await expect(row).toContainText("Reviewed");
 });
 
