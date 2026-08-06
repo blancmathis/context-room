@@ -13509,6 +13509,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
     .confirm-dialog { width: min(420px, 100%); border: 1px solid var(--line); border-radius: 18px; background: var(--surface-floating); box-shadow: 0 22px 80px rgba(0,0,0,0.45); padding: var(--space-6); color: var(--text); }
     .confirm-dialog strong { display: block; font-size: 18px; line-height: 1.2; margin-bottom: 8px; }
 	    .confirm-dialog p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.45; overflow-wrap: anywhere; }
+	    .confirm-dialog [data-confirm-error] { margin-top: 14px; color: var(--danger); }
 	    .confirm-option { display: flex; align-items: flex-start; gap: 10px; margin-top: 16px; color: var(--text); font-size: 13px; line-height: 1.35; }
 	    .confirm-option input { margin-top: 2px; accent-color: var(--accent); }
 	    .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
@@ -18958,9 +18959,7 @@ async function completeSharedProposalAcceptance() {
       body: JSON.stringify({ expectedProposalHead: review.proposalHead }),
     });
     if (!result.accepted) {
-      state.proposalActionError = result.reason || "No accepted changes remain. Reject the proposal to close it.";
-      setStatus("proposal not accepted · " + state.proposalActionError);
-      return;
+      throw new Error(result.reason || "No accepted changes remain. Reject the proposal to close it.");
     }
     state.sharedContext = { ...state.sharedContext, accepted: result };
     playContextRoomSound("proposal-accepted");
@@ -18968,6 +18967,7 @@ async function completeSharedProposalAcceptance() {
   } catch (error) {
     state.proposalActionError = error.message || "The proposal could not be put on main.";
     setStatus("proposal acceptance blocked · " + state.proposalActionError);
+    throw error;
   } finally {
     state.proposalActionBusy = false;
     renderProposalDockControls();
@@ -18983,6 +18983,7 @@ function requestSharedProposalAcceptance() {
     title: "Put this proposal on " + (review.defaultBranch || "main") + "?",
     body: "Put proposal " + (review.proposal || "") + " at exact revision " + review.proposalHead + " on " + (review.defaultBranch || "main") + " for " + (review.projectId || "this shared project") + ". Only the file changes kept during review will be committed and pushed.",
     confirmLabel: "Put on main",
+    confirmPendingLabel: "Putting on main…",
     confirmVariant: "primary",
     onConfirm: () => completeSharedProposalAcceptance(),
   });
@@ -19009,6 +19010,7 @@ async function completeSharedProposalRejection() {
   } catch (error) {
     state.proposalActionError = error.message || "The proposal could not be rejected.";
     setStatus("proposal rejection blocked · " + state.proposalActionError);
+    throw error;
   } finally {
     state.proposalActionBusy = false;
     renderProposalDockControls();
@@ -19023,6 +19025,7 @@ function requestSharedProposalRejection() {
     title: "Reject this proposal?",
     body: "Reject proposal " + (review.proposal || "") + " at exact revision " + review.proposalHead + " for " + (review.projectId || "this shared project") + ". The exact Git revision will stay archived on a rejected branch and will not be put on main.",
     confirmLabel: "Reject proposal",
+    confirmPendingLabel: "Rejecting proposal…",
     onConfirm: () => completeSharedProposalRejection(),
   });
 }
@@ -22299,7 +22302,7 @@ function selectedProposalReviewEntries() {
   return proposalReviewFileEntries().filter((entry) => entry.selectable && state.proposalSelectedFiles.has(entry.path));
 }
 
-async function applySharedProposalFileBatch(decision, entries) {
+async function applySharedProposalFileBatch(decision, entries, { rethrow = false } = {}) {
   const review = state.sharedContext?.mode === "review" ? state.sharedContext.review || {} : {};
   if (!review.proposalHead || !entries.length || state.proposalBatchBusy) return;
   state.proposalBatchBusy = true;
@@ -22331,6 +22334,7 @@ async function applySharedProposalFileBatch(decision, entries) {
   } catch (error) {
     state.proposalActionError = error.message || "The selected proposal files could not be reviewed.";
     setStatus("batch review blocked · " + state.proposalActionError);
+    if (rethrow) throw error;
   } finally {
     state.proposalBatchBusy = false;
     renderProposalDockControls();
@@ -22352,8 +22356,9 @@ function requestSharedProposalFileBatch(decision) {
     title: verb + " " + entries.length + " selected files?",
     body: verb + " the selected file changes in proposal " + (review.proposal || "") + " at exact revision " + (review.proposalHead || "") + " for " + (review.projectId || "this shared project") + ". " + (decision === "reject" ? "Their proposal changes will be restored to the accepted main state and omitted from final delivery." : "Their current proposal versions will be kept for final delivery."),
     confirmLabel: verb + " selected",
+    confirmPendingLabel: (decision === "accept" ? "Accepting" : "Rejecting") + " selection…",
     confirmVariant: decision === "accept" ? "primary" : "danger",
-    onConfirm: () => applySharedProposalFileBatch(decision, entries),
+    onConfirm: () => applySharedProposalFileBatch(decision, entries, { rethrow: true }),
   });
 }
 
@@ -30230,7 +30235,7 @@ function promptRevertCurrentDiff() {
   });
 }
 
-function showConfirmDialog({ title, body, confirmLabel = "Confirm", confirmVariant = "danger", checkboxLabel = "", checkboxRequired = false, onConfirm }) {
+function showConfirmDialog({ title, body, confirmLabel = "Confirm", confirmPendingLabel = "Working…", confirmVariant = "danger", checkboxLabel = "", checkboxRequired = false, onConfirm }) {
   document.querySelector(".app")?.removeAttribute("inert");
   document.querySelector(".confirm-backdrop")?.remove();
   const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -30245,8 +30250,27 @@ function showConfirmDialog({ title, body, confirmLabel = "Confirm", confirmVaria
     '<strong>' + escapeHtml(title) + '</strong>' +
     '<p>' + escapeHtml(body) + '</p>' +
     checkboxMarkup +
+    '<p data-confirm-error role="alert" hidden></p>' +
     '<div class="confirm-actions"><button class="file-action" type="button" data-confirm-cancel>Cancel</button><button class="file-action ' + confirmClass + '" type="button" data-confirm-accept' + (checkboxRequired ? ' disabled' : '') + '>' + escapeHtml(confirmLabel) + '</button></div>' +
   '</section>';
+  const cancelButton = backdrop.querySelector("[data-confirm-cancel]");
+  const confirmButton = backdrop.querySelector("[data-confirm-accept]");
+  const checkbox = backdrop.querySelector("[data-confirm-checkbox]");
+  const errorMessage = backdrop.querySelector("[data-confirm-error]");
+  let busy = false;
+  const setBusy = (nextBusy) => {
+    busy = nextBusy;
+    cancelButton.disabled = nextBusy;
+    if (checkbox) checkbox.disabled = nextBusy;
+    confirmButton.textContent = nextBusy ? confirmPendingLabel : confirmLabel;
+    confirmButton.disabled = nextBusy || (checkboxRequired && !checkbox?.checked);
+  };
+  const showError = (error) => {
+    setBusy(false);
+    errorMessage.textContent = error?.message || "This action could not be completed.";
+    errorMessage.hidden = false;
+    confirmButton.focus();
+  };
   const close = ({ restoreFocus = true } = {}) => {
     backdrop.remove();
     appShell?.removeAttribute("inert");
@@ -30255,6 +30279,7 @@ function showConfirmDialog({ title, body, confirmLabel = "Confirm", confirmVaria
   };
   const onKeydown = (event) => {
     if (event.key === "Escape") {
+      if (busy) return;
       close();
       return;
     }
@@ -30275,16 +30300,31 @@ function showConfirmDialog({ title, body, confirmLabel = "Confirm", confirmVaria
     }
   };
   backdrop.addEventListener("click", (event) => {
-    if (event.target === backdrop) close();
+    if (event.target === backdrop && !busy) close();
   });
-  backdrop.querySelector("[data-confirm-cancel]").addEventListener("click", close);
-  if (checkboxRequired) backdrop.querySelector("[data-confirm-checkbox]")?.addEventListener("change", (event) => {
-    backdrop.querySelector("[data-confirm-accept]").disabled = !event.currentTarget.checked;
+  cancelButton.addEventListener("click", close);
+  if (checkboxRequired) checkbox?.addEventListener("change", (event) => {
+    confirmButton.disabled = !event.currentTarget.checked;
   });
-  backdrop.querySelector("[data-confirm-accept]").addEventListener("click", () => {
-    const checked = Boolean(backdrop.querySelector("[data-confirm-checkbox]")?.checked);
-    close({ restoreFocus: false });
-    onConfirm?.({ checked });
+  confirmButton.addEventListener("click", () => {
+    if (busy) return;
+    const checked = Boolean(checkbox?.checked);
+    errorMessage.hidden = true;
+    let result;
+    try {
+      result = onConfirm?.({ checked });
+    } catch (error) {
+      showError(error);
+      return;
+    }
+    if (!result || typeof result.then !== "function") {
+      close({ restoreFocus: false });
+      return;
+    }
+    setBusy(true);
+    Promise.resolve(result)
+      .then(() => close({ restoreFocus: false }))
+      .catch(showError);
   });
   document.addEventListener("keydown", onKeydown);
   appShell?.setAttribute("inert", "");
@@ -30292,12 +30332,13 @@ function showConfirmDialog({ title, body, confirmLabel = "Confirm", confirmVaria
   backdrop.querySelector(checkboxRequired ? "[data-confirm-checkbox]" : "[data-confirm-accept]")?.focus();
 }
 
-function showHumanReviewDecisionDialog({ title, body, confirmLabel = "Confirm", confirmVariant = "danger", additionalAcknowledgement = "", onConfirm }) {
+function showHumanReviewDecisionDialog({ title, body, confirmLabel = "Confirm", confirmPendingLabel = "Working…", confirmVariant = "danger", additionalAcknowledgement = "", onConfirm }) {
   const checkboxLabel = "If an agent is operating, the user separately confirmed this exact action a second time";
   showConfirmDialog({
     title,
     body: HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction + " " + body,
     confirmLabel,
+    confirmPendingLabel,
     confirmVariant,
     checkboxLabel: additionalAcknowledgement ? checkboxLabel + ". " + additionalAcknowledgement : checkboxLabel,
     checkboxRequired: true,

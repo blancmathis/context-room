@@ -4,6 +4,21 @@ function encode(value) {
   return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
 }
 
+export function gitHubAppGitEnvironment(token, baseEnvironment = process.env) {
+  const installationToken = String(token || "").trim();
+  if (!installationToken || /[\r\n\0]/.test(installationToken)) {
+    throw new Error("GitHub App installation token is required");
+  }
+  const credentials = Buffer.from(`x-access-token:${installationToken}`, "utf8").toString("base64");
+  return {
+    ...baseEnvironment,
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "http.https://github.com/.extraHeader",
+    GIT_CONFIG_VALUE_0: `Authorization: Basic ${credentials}`,
+  };
+}
+
 export function createGitHubAppJwt({ appId, privateKey, now = Math.floor(Date.now() / 1000) }) {
   const issuer = String(appId || "").trim();
   const key = String(privateKey || "").replaceAll("\\n", "\n").trim();

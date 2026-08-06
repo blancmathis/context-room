@@ -7,6 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { parseDocument } from "yaml";
 import { parse as parseJsonc } from "jsonc-parser";
 import { appendContextRoomEvent } from "./event_journal.mjs";
+import { gitHubAppGitEnvironment } from "./github_app_token.mjs";
 import { parseDocMetadata } from "./doc_metadata.mjs";
 import { contextProviderProfile } from "./provider_profiles.mjs";
 import { inspectOwnerProposalDecisions, inspectOwnerTrustedState, recordOwnerProposalDecision } from "./review_authority.mjs";
@@ -5090,11 +5091,7 @@ export function acceptSharedReview(reviewRoot, { message = "Accept shared contex
     if (push?.token && push?.url) {
       runGit(acceptanceRoot, ["push", String(push.url), `HEAD:refs/heads/${review.defaultBranch}`], {
         stdio: ["ignore", "ignore", "pipe"],
-        env: {
-          GIT_CONFIG_COUNT: "1",
-          GIT_CONFIG_KEY_0: "http.extraHeader",
-          GIT_CONFIG_VALUE_0: `Authorization: Bearer ${String(push.token)}`,
-        },
+        env: gitHubAppGitEnvironment(push.token),
       });
     } else {
       runGit(acceptanceRoot, ["push", "origin", `HEAD:refs/heads/${review.defaultBranch}`], { stdio: ["ignore", "ignore", "pipe"] });

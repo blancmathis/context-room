@@ -4,7 +4,7 @@ context_room:
   scope: context-room
   status: current
   canonical_for: shared context repositories
-  last_verified: 2026-08-05
+  last_verified: 2026-08-06
   sources: [src/shared_context.mjs, src/review_authority.mjs, src/provider_profiles.mjs, src/context_engine.mjs, src/context_inventory.mjs, src/context_snapshots.mjs, src/context_diagnostics.mjs, src/context_hub.mjs, bin/context-room.mjs, src/context_room.mjs, schemas/shared-repository.schema.json, schemas/shared-projects.schema.json, schemas/shared-skill-locations.schema.json, schemas/shared-skill-local-state.schema.json, schemas/shared-resource-local-state.schema.json, schemas/shared-instruction-locations.schema.json, schemas/config.schema.json]
 ---
 
@@ -255,7 +255,7 @@ Use the existing inline controls to accept or reject each change. Rejecting a ch
 
 The proposal summary labels each path as created, modified, deleted, renamed, copied, or dependency-only review. Once the exact report identifies a file as pending, it can be selected with no permanent checkbox column: right-click its row, or press and hold it on touch screens, to enter selection mode. A selection started in the immediate Hub preview carries that exact path into the dedicated review room. Right-clicking while a row still reads **Checking…** only explains that the review state is loading; it never queues or applies a review decision. Trying to select a row already marked **Reviewed** shows an inline explanation that selection only applies to rows still marked **Review**; the reviewed file stays unchanged and can still be opened normally for inspection. Accepting a selection keeps the proposal versions; rejecting it restores the accepted-main versions, including add, delete, rename, and copy semantics. Dependency-only reviews can be batch-accepted but have no proposal delta to reject. A batch is limited to 200 files and is preflighted as one exact-revision operation before any file changes.
 
-After the final current file version receives its human decision, Context Room reveals **Put on main** but does not finalize automatically. **Reject proposal** remains available at every stage. Both terminal actions are bound to the displayed proposal head and use the double-confirmation checkpoint. Remaining and reviewed counts use the complete proposal review state, even when the general detailed queue is capped at 80 entries for responsiveness.
+After the final current file version receives its human decision, Context Room reveals **Put on main** but does not finalize automatically. **Reject proposal** remains available at every stage. Both terminal actions are bound to the displayed proposal head and use the double-confirmation checkpoint. The confirmation remains visible and disabled while the server runs the terminal action; a stale head, conflict, authentication failure, or rejected push is reported inside that same dialog and can be retried after the cause is resolved. Remaining and reviewed counts use the complete proposal review state, even when the general detailed queue is capped at 80 entries for responsiveness.
 
 **Reviewed is a positive-proof state**: Context Room emits it only when the current file content or current deletion identity has an explicit, still-valid human verification record. Files outside the first detailed page, missing state, incomplete coverage, stale hashes, and report inconsistencies all remain pending and block acceptance. Absence from a queue page never means reviewed.
 

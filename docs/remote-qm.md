@@ -10,7 +10,7 @@ Remote mode is an explicit deployment profile for a trusted QM Portal. Local Con
 - Remote UI capabilities add `ui:workspace:list`, `ui:workspace:navigate`, and `ui:workspace:pair`. The Portal and server inject the authenticated user; browser-provided user identity is ignored.
 - Human and agent signing secrets are distinct, at least 32 bytes, and mounted as files.
 - The private health endpoint requires its own secret.
-- Human acceptance obtains a one-hour GitHub App installation token only for the exact repository. The private key is mounted as a secret and is never stored under `/data`.
+- Human acceptance obtains a one-hour GitHub App installation token only for the exact repository. Git receives it non-interactively through a request-scoped HTTPS Basic authorization header using the `x-access-token` username; the token never enters the remote URL, command arguments, or persistent Git configuration. The private key is mounted as a secret and is never stored under `/data`.
 - Proposal Git SSH credentials are mounted outside `/data`; branch protection must reject that credential on `main`.
 
 ## Persistent state
@@ -85,4 +85,4 @@ their one-request anti-replay enforcement.
 
 ## Acceptance authority
 
-The proposal SSH key publishes only `proposal/*`. Human acceptance rechecks the proposal head and current `main`, requires every current proposal file to have review proof, creates the canonical commit with reviewer trailers, and pushes directly to `main` with the repository-limited GitHub App token. A changed proposal or concurrent `main` returns `409`; no force push is performed.
+The proposal SSH key publishes only `proposal/*`. Human acceptance rechecks the proposal head and current `main`, requires every current proposal file to have review proof, creates the canonical commit with reviewer trailers, and pushes directly to `main` with the repository-limited GitHub App token. A changed proposal or concurrent `main` returns `409`; no force push is performed. The terminal confirmation stays open while this operation runs and shows any server rejection in place so a failed delivery cannot look successful or disappear silently.

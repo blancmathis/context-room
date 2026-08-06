@@ -6798,7 +6798,7 @@ test("review queue groups removed files into a selectable human-confirmed batch"
   assert.match(html, /additionalAcknowledgement: protectedCount \? "I also reviewed the protected paths\." : ""/);
   assert.match(html, /function showHumanReviewDecisionDialog\([\s\S]*checkboxRequired: true/);
   assert.match(html, /checkboxRequired \? ' disabled' : ''/);
-  assert.match(html, /data-confirm-accept\]"\)\.disabled = !event\.currentTarget\.checked/);
+  assert.match(html, /if \(checkboxRequired\) checkbox\?\.addEventListener\("change"[\s\S]*confirmButton\.disabled = !event\.currentTarget\.checked/);
   assert.match(html, /state\.deletionBatchKey !== String\(s\.deletedReviewKey \|\| ""\)/);
   assert.match(html, /const restoreDeletionBatchFocus = Boolean\(loadedBatchChanged/);
   assert.match(html, /if \(restoreDeletionBatchFocus\) document\.querySelector\("\[data-review-deletion-batch\] > summary"\)\?\.focus\(\);/);
