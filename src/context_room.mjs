@@ -18677,6 +18677,9 @@ function contextRoomProposalReviewUrl(url) {
   const target = new URL(url, window.location.href);
   target.searchParams.set("returnTo", contextRoomHubReturnUrl(window.location.href));
   target.searchParams.set("explorer", (isExplorerDrawerViewport() || isExplorerCollapsed()) ? "collapsed" : "expanded");
+  target.searchParams.set("view", "proposal");
+  target.searchParams.delete("file");
+  target.searchParams.delete("select");
   const authority = state.contextRoomPreparingProposal;
   if (authority?.authorityViolation && ["unverified_rejection", "rejection_archive_missing"].includes(authority.reviewStatus)) {
     target.searchParams.set("authorityStatus", authority.reviewStatus);

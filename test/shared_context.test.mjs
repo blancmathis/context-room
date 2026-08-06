@@ -191,6 +191,7 @@ test("shared proposal review keeps navigation and explicit completion in the pro
   assert.match(html, /function contextRoomHubReturnUrl\(url\)/);
   assert.match(html, /function contextRoomProposalReviewUrl\(url\)/);
   assert.match(html, /target\.searchParams\.set\("returnTo", contextRoomHubReturnUrl\(window\.location\.href\)\)/);
+  assert.match(html, /function contextRoomProposalReviewUrl\(url\) \{[\s\S]*?target\.searchParams\.set\("view", "proposal"\);[\s\S]*?target\.searchParams\.delete\("file"\);[\s\S]*?target\.searchParams\.delete\("select"\);/);
   assert.match(html, /target\.origin === window\.location\.origin/);
   assert.match(html, /searchParams\.set\("view", "hub"\)/);
   assert.match(html, /searchParams\.delete\("proposal"\)/);
