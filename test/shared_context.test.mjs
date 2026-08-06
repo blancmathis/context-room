@@ -246,13 +246,16 @@ test("shared proposal review keeps navigation and explicit completion in the pro
   assert.doesNotMatch(html, /"Selecting…"/);
   assert.doesNotMatch(html, /state\.contextRoomQueuedProposalSelection = filePath/);
   assert.doesNotMatch(html, /entry\.selectable \|\| preparing \? " Right-click or press and hold to select\."/);
-  assert.match(html, /if \(!entry\?\.selectable\) return;/);
+  assert.match(html, /if \(!entry \|\| \(!entry\.selectable && !entry\.reviewed\)\) return;/);
+  assert.match(html, /timer: window\.setTimeout\(\(\) => \{[\s\S]*?selectOrQueueProposalReviewFile\(entry\.path\)/);
   assert.match(html, /const requestedProposalSelection = normalizeUiPath\(initialQuery\?\.get\("select"\) \|\| ""\)/);
   assert.match(html, /state\.proposalSelectedFiles\.add\(requestedProposalSelection\)/);
   assert.match(html, /proposalSelectionUrl\.searchParams\.delete\("select"\)/);
   assert.match(html, /selectOrQueueProposalReviewFile\(button\.dataset\.proposalReviewPath\)/);
   assert.match(html, /const previewDocqa = state\.contextRoomPreparedReview\?\.docqa \|\| null/);
-  assert.match(html, /This file is already reviewed\. Only pending files can be selected\./);
+  assert.match(html, /This file is already Reviewed, so it cannot be selected again\. Selection only applies to files still marked Review\. Open the file normally to inspect it\./);
+  assert.match(html, /state\.proposalSelectionNotice = PROPOSAL_REVIEW_ALREADY_REVIEWED_NOTICE;\s*renderProposalReviewPage\(\);\s*setStatus\(PROPOSAL_REVIEW_ALREADY_REVIEWED_MESSAGE\)/);
+  assert.match(html, /state\.proposalActionError \|\| authorityMessage \|\| state\.proposalSelectionNotice/);
   assert.match(html, /Right-click or press and hold to select/);
   assert.match(html, /data-proposal-review-selected/);
   assert.match(html, /Accept selected/);
