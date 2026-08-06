@@ -21,7 +21,7 @@ test("@smoke a reviewed proposal row explains why it cannot be selected", async 
   await page.goto(origin + "/?hub=1");
   await waitForBoot(page);
 
-  await page.evaluate(() => {
+  const selectionResult = await page.evaluate(() => {
     state.files = [{ path: "README.md", label: "README.md" }];
     state.sharedContext = {
       mode: "review",
@@ -52,11 +52,6 @@ test("@smoke a reviewed proposal row explains why it cannot be selected", async 
     state.proposalReviewKey = "";
     state.proposalSelectionNotice = "";
     showProposalReview();
-  });
-
-  const row = page.locator('[data-proposal-review-path="README.md"]');
-  await expect(row).toContainText("Reviewed");
-  const selectionResult = await page.evaluate(() => {
     const target = document.querySelector('[data-proposal-review-path="README.md"]');
     target.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 }));
     const notice = document.querySelector("#proposalReviewNotice");
@@ -64,6 +59,7 @@ test("@smoke a reviewed proposal row explains why it cannot be selected", async 
       noticeVisible: !notice.hidden,
       noticeKind: notice.dataset.kind,
       noticeText: notice.textContent,
+      rowText: target.textContent,
       selectedCount: document.querySelectorAll('[data-proposal-review-selected="true"]').length,
     };
   });
@@ -71,9 +67,9 @@ test("@smoke a reviewed proposal row explains why it cannot be selected", async 
     noticeVisible: true,
     noticeKind: "info",
     noticeText: "This file is already Reviewed, so it cannot be selected again. Selection only applies to files still marked Review. Open the file normally to inspect it.",
+    rowText: expect.stringContaining("Reviewed"),
     selectedCount: 0,
   });
-  await expect(row).toContainText("Reviewed");
 });
 
 test("@smoke terminal proposal acceptance keeps progress and server errors visible", async ({ page }) => {
@@ -117,9 +113,6 @@ test("@smoke terminal proposal acceptance keeps progress and server errors visib
     state.proposalActionBusy = false;
     state.proposalActionError = "";
     showProposalReview();
-  });
-
-  await page.evaluate(() => {
     document.querySelector("#proposalDockAccept").dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
   });
   const dialog = page.locator(".confirm-dialog");
