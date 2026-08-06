@@ -198,6 +198,7 @@ test("shared proposal review keeps navigation and explicit completion in the pro
   assert.doesNotMatch(html, /target\.searchParams\.set\("file", firstReviewFile\)/);
   assert.match(html, /function contextRoomProposalFileUrl\(url, filePath\)/);
   assert.match(html, /state\.contextRoomPreparedReview = result/);
+  assert.match(html, /if \(queuedFile\) \{[\s\S]*?window\.location\.assign\(contextRoomProposalFileUrl\(result\.url, queuedFile\)\);[\s\S]*?return;[\s\S]*?\}[\s\S]*?window\.location\.assign\(contextRoomProposalReviewUrl\(result\.url\)\);/);
   assert.match(html, /window\.location\.assign\(contextRoomProposalFileUrl\(prepared\.url, filePath\)\)/);
   assert.match(html, /const requestedReviewFile = initialQuery\?\.get\("file"\) \|\| ""/);
   assert.match(html, /state\.sharedContext\?\.mode === "review"\) \{\s*showProposalReview\(\)/);
