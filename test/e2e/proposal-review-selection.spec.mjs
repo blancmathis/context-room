@@ -81,10 +81,8 @@ test("@smoke terminal proposal acceptance keeps progress and server errors visib
   await page.goto(origin + "/?hub=1");
   await waitForBoot(page);
 
-  let resolveResponse;
-  const responseGate = new Promise((resolve) => { resolveResponse = resolve; });
   await page.route("**/api/shared-context/accept", async (route) => {
-    await responseGate;
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
     await route.fulfill({
       status: 409,
       contentType: "application/json",
@@ -130,7 +128,6 @@ test("@smoke terminal proposal acceptance keeps progress and server errors visib
   await expect(dialog.locator("[data-confirm-accept]")).toBeDisabled();
   await expect(dialog.locator("[data-confirm-accept]")).toHaveText("Putting on main…");
 
-  resolveResponse();
   await expect(dialog.locator("[data-confirm-error]")).toHaveText("GitHub refused the proposal push.");
   await expect(dialog.locator("[data-confirm-accept]")).toBeEnabled();
   await expect(dialog.locator("[data-confirm-accept]")).toHaveText("Put on main");
