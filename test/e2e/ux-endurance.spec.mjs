@@ -466,7 +466,11 @@ test("@smoke Context Room keeps its critical workspace state stable", async ({ p
   const proposal = page.locator('[data-context-room-review-entry]:has([data-source="shared"])').first();
   await expect(proposal).toBeVisible();
   await proposal.click();
+  await expect(page).toHaveURL((url) => url.port !== new URL(data.origin).port
+    && url.searchParams.get("view") === "proposal"
+    && Boolean(url.searchParams.get("returnTo")));
   await expect(page.locator("#proposalReviewPage")).toBeVisible();
+  await expect(page.locator("#proposalDockReject")).toBeVisible();
   await openHome(page);
 
   await openProject(page, "Atlas");

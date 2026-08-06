@@ -18743,7 +18743,7 @@ async function openSharedProposal(proposal, repository = "", { file = "" } = {})
       window.location.assign(contextRoomProposalFileUrl(result.url, queuedFile));
       return;
     }
-    setStatus("exact proposal review ready");
+    window.location.assign(contextRoomProposalReviewUrl(result.url));
   } catch (error) {
     if (requestId !== state.contextRoomProposalRequest) return;
     state.contextRoomOpeningProposalId = "";
