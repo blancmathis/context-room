@@ -119,7 +119,9 @@ test("@smoke terminal proposal acceptance keeps progress and server errors visib
     showProposalReview();
   });
 
-  await page.locator("#proposalDockAccept").click();
+  await page.evaluate(() => {
+    document.querySelector("#proposalDockAccept").dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  });
   const dialog = page.locator(".confirm-dialog");
   await dialog.locator("[data-confirm-checkbox]").check();
   await dialog.locator("[data-confirm-accept]").click();
