@@ -10,8 +10,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      # Node 22.23.1 can SIGTRAP in V8 SourceTextModule on the Linux runner while
+      # the parallel test suite is active. Keep the last verified patch release.
       matrix:
-        node-version: [20, 22]
+        node-version: [20, 22.23.0]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -26,7 +28,7 @@ jobs:
       - name: Install Chromium for UX smoke test
         run: npx playwright install --with-deps chromium
       - name: Test executable layout contract
-        if: matrix.node-version == 22
+        if: matrix.node-version == '22.23.0'
         run: npm run test:layout
       - name: Test critical UX flows
         run: npm run test:ux-smoke
