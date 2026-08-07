@@ -9500,18 +9500,24 @@ export function createMemoryServer({
   const remoteReplayStore = remoteAccess?.replayStore || (remoteAccess ? createReplayStore() : null);
   const runtimeEvents = createRuntimeEventBus();
   const contextHubRefreshNotifications = new Map();
+  const contextHubLastNotifiedGenerations = new Map();
   const scheduleContextHubSnapshotRefresh = (targetRoot, options = {}) => {
     const resolvedRoot = path.resolve(targetRoot);
     const shouldNotify = Boolean(options.force || readFastContextHubState(resolvedRoot).freshness?.refreshing);
     const refresh = Promise.resolve().then(() => contextHubSnapshotRefresh(resolvedRoot, options));
     if (!shouldNotify || contextHubRefreshNotifications.has(resolvedRoot)) return refresh;
     contextHubRefreshNotifications.set(resolvedRoot, refresh);
-    void refresh.then((snapshot) => runtimeEvents.publish("state-invalidated", {
-      root: resolvedRoot,
-      projectId: contextRoomProjectId(resolvedRoot),
-      source: "context-hub-refresh",
-      generatedAt: snapshot.freshness?.generatedAt || snapshot.generatedAt || "",
-    })).catch(() => {}).finally(() => {
+    void refresh.then((snapshot) => {
+      const generatedAt = String(snapshot.freshness?.generatedAt || snapshot.generatedAt || "");
+      if (generatedAt && contextHubLastNotifiedGenerations.get(resolvedRoot) === generatedAt) return;
+      if (generatedAt) contextHubLastNotifiedGenerations.set(resolvedRoot, generatedAt);
+      runtimeEvents.publish("state-invalidated", {
+        root: resolvedRoot,
+        projectId: contextRoomProjectId(resolvedRoot),
+        source: "context-hub-refresh",
+        generatedAt,
+      });
+    }).catch(() => {}).finally(() => {
       if (contextHubRefreshNotifications.get(resolvedRoot) === refresh) contextHubRefreshNotifications.delete(resolvedRoot);
     });
     return refresh;
@@ -9863,6 +9869,7 @@ export function createMemoryServer({
     workspaceRegistry.clear();
     runtimeEvents.clear();
     contextHubRefreshNotifications.clear();
+    contextHubLastNotifiedGenerations.clear();
     for (const stopWatch of backgroundWatchStops.values()) stopWatch();
     backgroundWatchStops.clear();
     for (const workerRoot of serverBackgroundRoots) {
