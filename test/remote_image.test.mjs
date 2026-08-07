@@ -13,8 +13,10 @@ test("the remote image contains the built-in documentation profile required at b
 
   assert.match(dockerfile, /^COPY docs \.\/docs$/m);
   assert.match(dockerfile, /^COPY profiles \.\/profiles$/m);
-  assert.match(workflow, /^      - docs\/\*\*$/m);
-  assert.match(workflow, /^      - profiles\/\*\*$/m);
+  assert.match(workflow, /^  workflow_run:$/m);
+  assert.match(workflow, /^    workflows: \[CI\]$/m);
+  assert.match(workflow, /github\.event\.workflow_run\.head_sha/);
+  assert.doesNotMatch(workflow, /^  push:$/m);
   assert.match(workflow, /initializeContextRoomProject/);
   assert.match(entrypoint, /unregisterContextHubProject\(root\)/);
   assert.doesNotMatch(entrypoint, /(?:^|[^A-Za-z])registerContextHubProject\(root/m);

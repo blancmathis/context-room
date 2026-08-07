@@ -1,19 +1,10 @@
 name: Build remote Context Room image
 
 on:
-  workflow_dispatch:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
-    paths:
-      - Dockerfile.remote
-      - bin/context-room-remote.mjs
-      - docs/**
-      - package.json
-      - package-lock.json
-      - profiles/**
-      - schemas/**
-      - src/**
-      - .github/workflows/remote-image.yml
 
 permissions:
   contents: read
@@ -21,18 +12,76 @@ permissions:
   id-token: write
 
 jobs:
-  image:
+  eligibility:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      current: ${{ steps.source-current.outputs.current }}
+    env:
+      SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Admit only the current main revision
+        id: source-current
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_main="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          if [[ ! "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]] || [[ ! "${current_main}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Could not resolve an exact source and remote main revision." >&2
+            exit 1
+          fi
+          if [[ "${current_main}" != "${SOURCE_SHA}" ]]; then
+            echo "current=false" >> "${GITHUB_OUTPUT}"
+            echo "::notice::Ignoring obsolete CI source ${SOURCE_SHA}; current main is ${current_main}."
+            exit 0
+          fi
+          echo "current=true" >> "${GITHUB_OUTPUT}"
+
+  image:
+    needs: eligibility
+    if: needs.eligibility.outputs.current == 'true'
+    concurrency:
+      group: context-room-remote-main
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+      CORRELATION_ID: context-room-${{ github.event.workflow_run.head_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
-      - uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - name: Verify the CI source is still current main before build
+        id: source-current-before-build
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_main="$(git ls-remote --exit-code origin refs/heads/main | awk 'NR == 1 { print $1 }')"
+          if [[ ! "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]] || [[ ! "${current_main}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Could not resolve an exact source and remote main revision." >&2
+            exit 1
+          fi
+          if [[ "${current_main}" != "${SOURCE_SHA}" ]]; then
+            echo "current=false" >> "${GITHUB_OUTPUT}"
+            echo "::notice::Skipping obsolete CI source ${SOURCE_SHA}; current main is ${current_main}."
+            exit 0
+          fi
+          echo "current=true" >> "${GITHUB_OUTPUT}"
+      - if: steps.source-current-before-build.outputs.current == 'true'
+        uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad
+      - if: steps.source-current-before-build.outputs.current == 'true'
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - if: steps.source-current-before-build.outputs.current == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
       - id: build
+        if: steps.source-current-before-build.outputs.current == 'true'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
           context: .
@@ -40,14 +89,16 @@ jobs:
           platforms: linux/amd64
           provenance: false
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/context-room/remote:${{ github.sha }}
+          tags: ghcr.io/${{ github.repository_owner }}/context-room/remote:${{ env.SOURCE_SHA }}
           cache-from: type=gha,scope=context-room-remote
           cache-to: type=gha,mode=max,scope=context-room-remote
       - name: Verify boot-critical runtime assets
+        if: steps.source-current-before-build.outputs.current == 'true'
         run: |
           image='ghcr.io/${{ github.repository_owner }}/context-room/remote@${{ steps.build.outputs.digest }}'
           docker run --rm "$image" node --input-type=module --eval "import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'; import { initializeContextRoomProject } from './src/context_room.mjs'; initializeContextRoomProject(fs.mkdtempSync(path.join(os.tmpdir(), 'context-room-image-')));"
       - name: Sign and record exact image
+        if: steps.source-current-before-build.outputs.current == 'true'
         run: |
           image='ghcr.io/${{ github.repository_owner }}/context-room/remote@${{ steps.build.outputs.digest }}'
           cosign sign --yes "$image"
@@ -55,14 +106,16 @@ jobs:
             --certificate-identity='https://github.com/${{ github.repository }}/.github/workflows/remote-image.yml@refs/heads/main' \
             --certificate-oidc-issuer=https://token.actions.githubusercontent.com
           printf '%s\n' "$image" > context-room-remote.image
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - if: steps.source-current-before-build.outputs.current == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: context-room-remote-${{ github.sha }}
+          name: context-room-remote-${{ env.SOURCE_SHA }}
           path: context-room-remote.image
           if-no-files-found: error
           retention-days: 30
       - name: Create the Peerlab QM deployment token
         id: qm-deploy-token
+        if: steps.source-current-before-build.outputs.current == 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         with:
           client-id: ${{ vars.PEERLAB_QM_DEPLOY_APP_CLIENT_ID }}
@@ -71,16 +124,102 @@ jobs:
           repositories: peerlab-qm
           permission-actions: write
       - name: Dispatch the exact signed image to Peerlab QM
+        id: qm-dispatch
+        if: steps.source-current-before-build.outputs.current == 'true'
         env:
           GH_TOKEN: ${{ steps.qm-deploy-token.outputs.token }}
         run: |
+          set -euo pipefail
           image="$(tr -d '\n' < context-room-remote.image)"
           if [[ ! "${image}" =~ ^ghcr\.io/blancmathis/context-room/remote@sha256:[0-9a-f]{64}$ ]]; then
             echo "The signed Context Room image reference is invalid." >&2
             exit 1
           fi
+          if [[ ! "${CORRELATION_ID}" =~ ^context-room-[0-9a-f]{40}-[0-9]+-[0-9]+$ ]]; then
+            echo "The Peerlab QM deployment correlation ID is invalid." >&2
+            exit 1
+          fi
+
+          expected_title="Update Context Room image · ${CORRELATION_ID}"
+          matching_updater_runs() {
+            gh run list \
+              --repo blancmathis/peerlab-qm \
+              --workflow update-context-room-image.yml \
+              --event workflow_dispatch \
+              --branch main \
+              --limit 100 \
+              --json databaseId,displayTitle \
+              --jq ".[] | select(.displayTitle == \"${expected_title}\") | .databaseId"
+          }
+
+          current_main="$(git ls-remote --exit-code origin refs/heads/main | awk 'NR == 1 { print $1 }')"
+          if [[ ! "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]] || [[ ! "${current_main}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Could not resolve an exact source and remote main revision." >&2
+            exit 1
+          fi
+          if [[ "${current_main}" != "${SOURCE_SHA}" ]]; then
+            echo "::notice::Not dispatching obsolete CI source ${SOURCE_SHA}; current main is ${current_main}."
+            exit 0
+          fi
+
           gh workflow run update-context-room-image.yml \
             --repo blancmathis/peerlab-qm \
             --ref main \
-            -f source_sha="${GITHUB_SHA}" \
-            -f image="${image}"
+            -f source_sha="${SOURCE_SHA}" \
+            -f image="${image}" \
+            -f correlation_id="${CORRELATION_ID}"
+
+          run_id=''
+          for attempt in $(seq 1 30); do
+            mapfile -t candidate_runs < <(matching_updater_runs)
+
+            if (( ${#candidate_runs[@]} > 1 )); then
+              echo "More than one Peerlab QM updater run matched the exact correlation ID; refusing ambiguity." >&2
+              printf 'Candidate run IDs: %s\n' "${candidate_runs[*]}" >&2
+              exit 1
+            fi
+            if (( ${#candidate_runs[@]} == 1 )); then
+              run_id="${candidate_runs[0]}"
+              break
+            fi
+            sleep 2
+          done
+
+          if [[ -z "${run_id}" ]]; then
+            echo "The exact Peerlab QM updater run did not appear within 60 seconds." >&2
+            exit 1
+          fi
+
+          sleep 2
+          mapfile -t settled_runs < <(matching_updater_runs)
+          if (( ${#settled_runs[@]} != 1 )) || [[ "${settled_runs[0]}" != "${run_id}" ]]; then
+            echo "The Peerlab QM updater run became ambiguous; refusing to watch an unverified run." >&2
+            printf 'Candidate run IDs: %s\n' "${settled_runs[*]}" >&2
+            exit 1
+          fi
+
+          printf 'run_id=%s\n' "${run_id}" >> "${GITHUB_OUTPUT}"
+      - name: Refresh the Peerlab QM deployment token for monitoring
+        id: qm-watch-token
+        if: steps.source-current-before-build.outputs.current == 'true' && steps.qm-dispatch.outputs.run_id != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.PEERLAB_QM_DEPLOY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PEERLAB_QM_DEPLOY_APP_PRIVATE_KEY }}
+          owner: blancmathis
+          repositories: peerlab-qm
+          permission-actions: write
+      - name: Watch the exact Peerlab QM deployment
+        if: steps.source-current-before-build.outputs.current == 'true' && steps.qm-dispatch.outputs.run_id != ''
+        env:
+          GH_TOKEN: ${{ steps.qm-watch-token.outputs.token }}
+          QM_RUN_ID: ${{ steps.qm-dispatch.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${QM_RUN_ID}" =~ ^[0-9]+$ ]]; then
+            echo "The exact Peerlab QM updater run ID is invalid." >&2
+            exit 1
+          fi
+          gh run watch "${QM_RUN_ID}" \
+            --repo blancmathis/peerlab-qm \
+            --exit-status
