@@ -118,6 +118,37 @@ export async function collectLayoutViolations(page, { label = "layout" } = {}) {
     const pageOverflow = Math.max(document.documentElement.scrollWidth - document.documentElement.clientWidth, document.body.scrollWidth - document.body.clientWidth);
     if (pageOverflow > contract.tolerance.edge) add("page-overflow", "html", 0, pageOverflow, document.documentElement);
 
+    // Terminal proposal decisions must never be hidden inside the dock's
+    // intentional horizontal overflow. They are the only path from a fully
+    // reviewed proposal to main, so clipping them is a blocked workflow rather
+    // than an acceptable scroll region.
+    const proposalTerminalAction = document.querySelector("#proposalDockAccept:not([hidden])");
+    if (activeSurface(proposalTerminalAction)) {
+      const rect = proposalTerminalAction.getBoundingClientRect();
+      const dock = proposalTerminalAction.closest(".workspace-dock")?.getBoundingClientRect();
+      const viewportHeight = window.innerHeight;
+      const viewportVisible = rect.left >= -contract.tolerance.edge
+        && rect.right <= width + contract.tolerance.edge
+        && rect.top >= -contract.tolerance.edge
+        && rect.bottom <= viewportHeight + contract.tolerance.edge;
+      const dockVisible = !dock || (
+        rect.left >= dock.left - contract.tolerance.edge
+        && rect.right <= dock.right + contract.tolerance.edge
+        && rect.top >= dock.top - contract.tolerance.edge
+        && rect.bottom <= dock.bottom + contract.tolerance.edge
+      );
+      if (!viewportVisible || !dockVisible) {
+        add(
+          "terminal-action-clipped",
+          "#proposalDockAccept",
+          `visible inside viewport 0..${width} × 0..${viewportHeight}`,
+          `x ${round(rect.left)}..${round(rect.right)}, y ${round(rect.top)}..${round(rect.bottom)}`,
+          proposalTerminalAction,
+          dock ? `dock x ${round(dock.left)}..${round(dock.right)}, y ${round(dock.top)}..${round(dock.bottom)}` : "dock unavailable",
+        );
+      }
+    }
+
     const majorContainers = ["main", ".workspace-page:not([hidden])", ".settings-panel", ".settings-content", ".review-queue", ".file-panel", ".proposal-review-shell", ".graph-page"];
     for (const selector of majorContainers) {
       for (const element of [...document.querySelectorAll(selector)].filter(activeSurface)) {

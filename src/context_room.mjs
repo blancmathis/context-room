@@ -28,6 +28,7 @@ import {
 } from "./codex_composer_bridge.mjs";
 import {
   SHARED_REVIEW_CONFIG,
+  DEFAULT_SHARED_DELIVERY_TIMEOUT_MS,
   acceptSharedReview,
   connectSharedContext,
   detectSharedProject,
@@ -74,7 +75,7 @@ import {
   resolveSharedDocumentationTarget,
 } from "./shared_context.mjs";
 import { bearerToken, createReplayStore, signRemoteIdentity, verifyRemoteIdentity } from "./remote_identity.mjs";
-import { createGitHubInstallationToken } from "./github_app_token.mjs";
+import { createGitHubInstallationToken, DEFAULT_GITHUB_APP_TOKEN_TIMEOUT_MS } from "./github_app_token.mjs";
 import {
   AGENT_CONTEXT_OPERATIONS,
   MAX_CONTEXT_TEXT_BYTES,
@@ -111,6 +112,8 @@ import {
   HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY,
   authorizeOwnerTrustedState,
   authorizeOwnerReviewScope,
+  createTerminalDecisionChallengeStore,
+  createVerifiedAcceptanceFlashStore,
   effectiveOwnerReviewScope,
   inspectOwnerTrustedState,
   inspectOwnerReviewScope,
@@ -355,6 +358,19 @@ const FILE_TASK_CACHE_TTL_MS = 30_000;
 const CONTEXT_HUB_PROJECT_SUMMARY_CACHE_TTL_MS = 60_000;
 const CONTEXT_HUB_STATE_CACHE_TTL_MS = 30_000;
 const CONTEXT_HUB_SNAPSHOT_TTL_MS = 30_000;
+const CONTEXT_HUB_ACCEPT_REFRESH_TIMEOUT_MS = 1_500;
+
+function positiveTimeoutMs(value, fallback) {
+  const timeoutMs = Number(value);
+  return Number.isFinite(timeoutMs) && timeoutMs > 0 ? Math.floor(timeoutMs) : fallback;
+}
+
+export function remoteAcceptanceTimeouts(githubApp = {}) {
+  return {
+    tokenTimeoutMs: positiveTimeoutMs(githubApp.tokenTimeoutMs, DEFAULT_GITHUB_APP_TOKEN_TIMEOUT_MS),
+    deliveryTimeoutMs: positiveTimeoutMs(githubApp.deliveryTimeoutMs, DEFAULT_SHARED_DELIVERY_TIMEOUT_MS),
+  };
+}
 const BACKGROUND_REPORT_INVALIDATING_PATHS = new Set([
   "/api/startup-skills/create",
   "/api/startup-skills/delete",
@@ -2889,6 +2905,30 @@ function resourceStateForReviewFile(file) {
   return file?.exists === false ? "absent" : "present";
 }
 
+function resourceModeForReviewFile(root, relPath, file) {
+  const normalized = normalizeRelPath(relPath);
+  const external = resolveExternalPath(normalized);
+  const resolvedRoot = path.resolve(root);
+  const absolute = external || path.resolve(resolvedRoot, normalized);
+  if (!external && absolute !== resolvedRoot && !absolute.startsWith(`${resolvedRoot}${path.sep}`)) {
+    throw new Error(`Path escapes repository root: ${relPath}`);
+  }
+  let stats;
+  try {
+    stats = fs.lstatSync(absolute);
+  } catch (error) {
+    if (error?.code === "ENOENT" && resourceStateForReviewFile(file) === "absent") return "absent";
+    throw error;
+  }
+  if (stats.isSymbolicLink() || !stats.isFile()) {
+    throw new Error(`Review target must be a regular file or an exact deletion: ${normalized}`);
+  }
+  if (resourceStateForReviewFile(file) === "absent") {
+    throw new Error(`Review target changed before the decision was saved: ${normalized}`);
+  }
+  return (stats.mode & 0o111) !== 0 ? "100755" : "100644";
+}
+
 function resourceVersionForReviewFile(root, relPath, file, review = null) {
   if (resourceStateForReviewFile(file) === "present") return null;
   if (review?.resourceState === "absent" && typeof review.resourceVersion === "string" && review.resourceVersion) {
@@ -2913,6 +2953,49 @@ function reviewResourceIdentityMatches(review, resourceState, resourceVersion = 
   return true;
 }
 
+function currentReviewResourceMode(root, relPath, resourceState) {
+  try {
+    return resourceModeForReviewFile(root, relPath, { exists: resourceState === "present" });
+  } catch {
+    return null;
+  }
+}
+
+function legacySharedReviewResourceMode(root, relPath, review, resourceState) {
+  const reviewConfigPath = path.join(path.resolve(root), SHARED_REVIEW_CONFIG);
+  if (!fs.existsSync(reviewConfigPath)) return null;
+  if (resourceState === "absent") return "absent";
+  try {
+    const metadata = readSharedReview(root);
+    const normalized = normalizeRelPath(relPath);
+    const modes = new Set();
+    for (const revision of [metadata.baseRevision, metadata.proposalHead]) {
+      const line = execFileSync("git", ["ls-tree", revision, "--", normalized], {
+        cwd: root,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      const match = line.match(/^(100644|100755) blob ([0-9a-f]+)\t/);
+      if (!match) continue;
+      const content = execFileSync("git", ["cat-file", "blob", match[2]], {
+        cwd: root,
+        encoding: null,
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      if (createHash("sha256").update(content).digest("hex") === review?.contentHash) modes.add(match[1]);
+    }
+    return modes.size === 1 ? [...modes][0] : "";
+  } catch {
+    return "";
+  }
+}
+
+function reviewResourceModeMatches(review, currentMode, { root = "", relPath = "", resourceState = "present" } = {}) {
+  if (review?.resourceMode) return Boolean(currentMode) && review.resourceMode === currentMode;
+  const legacyMode = legacySharedReviewResourceMode(root, relPath, review, resourceState);
+  return legacyMode === null ? true : Boolean(currentMode) && legacyMode === currentMode;
+}
+
 function absentReviewDecisionIsCurrent(review, resourceVersion) {
   if (!review || review.status !== "verified" || !reviewResourceIdentityMatches(review, "absent", resourceVersion)) return false;
   const emptyContentHash = hashContent("");
@@ -2925,6 +3008,7 @@ function applyGlobalReviewDecision(ledger, root, relPath, file, decision) {
   const reviewHash = reviewContentHash(file?.content || "");
   const resourceState = resourceStateForReviewFile(file);
   const resourceVersion = decision.resourceVersion ?? resourceVersionForReviewFile(root, relPath, file);
+  const resourceMode = decision.resourceMode ?? resourceModeForReviewFile(root, relPath, file);
   const existing = ledger.reviews[key];
   if (decision.status !== "verified") {
     if (reviewResourceIdentityMatches(existing, resourceState, resourceVersion) && (existing?.contentHash === contentHash || existing?.reviewHash === reviewHash)) {
@@ -2933,9 +3017,9 @@ function applyGlobalReviewDecision(ledger, root, relPath, file, decision) {
     }
     return { entry: null, changed: false };
   }
-  if (existing?.status === "verified" && reviewResourceIdentityMatches(existing, resourceState, resourceVersion) && (existing.contentHash === contentHash || existing.reviewHash === reviewHash)) {
-    const current = { ...existing, contentHash, reviewHash, resourceState, resourceVersion, dependencyVersions: decision.dependencyVersions || existing.dependencyVersions || {} };
-    if (existing.contentHash !== contentHash || existing.reviewHash !== reviewHash || existing.resourceState !== resourceState || existing.resourceVersion !== resourceVersion || JSON.stringify(existing.dependencyVersions || {}) !== JSON.stringify(current.dependencyVersions)) {
+  if (existing?.status === "verified" && reviewResourceIdentityMatches(existing, resourceState, resourceVersion) && reviewResourceModeMatches(existing, resourceMode, { root, relPath, resourceState }) && (existing.contentHash === contentHash || existing.reviewHash === reviewHash)) {
+    const current = { ...existing, contentHash, reviewHash, resourceState, resourceVersion, resourceMode, dependencyVersions: decision.dependencyVersions || existing.dependencyVersions || {} };
+    if (existing.contentHash !== contentHash || existing.reviewHash !== reviewHash || existing.resourceState !== resourceState || existing.resourceVersion !== resourceVersion || existing.resourceMode !== resourceMode || JSON.stringify(existing.dependencyVersions || {}) !== JSON.stringify(current.dependencyVersions)) {
       ledger.reviews[key] = current;
       return { entry: current, changed: true };
     }
@@ -2949,6 +3033,7 @@ function applyGlobalReviewDecision(ledger, root, relPath, file, decision) {
     reviewHash,
     resourceState,
     resourceVersion,
+    resourceMode,
     absolutePath: canonicalReviewAbsolutePath(root, relPath),
     relPath: normalizeRelPath(relPath),
     root: path.resolve(root),
@@ -3020,11 +3105,13 @@ function currentGlobalReviewFor(root, relPath, content, resourceState = "present
   const ledger = providedLedger || readGlobalReviewLedger(root);
   const entry = ledger.reviews[globalReviewKeyFor(root, relPath)];
   const contentHash = hashContent(content);
-  if (!entry || entry.status !== "verified" || !reviewResourceIdentityMatches(entry, resourceState, resourceVersion) || entry.contentHash !== contentHash) return null;
+  const resourceMode = currentReviewResourceMode(root, relPath, resourceState);
+  if (!entry || entry.status !== "verified" || !reviewResourceIdentityMatches(entry, resourceState, resourceVersion) || !reviewResourceModeMatches(entry, resourceMode, { root, relPath, resourceState }) || entry.contentHash !== contentHash) return null;
   return {
     ...entry,
     resourceState,
     resourceVersion,
+    resourceMode: resourceMode || entry.resourceMode,
     status: "verified",
     current: true,
     global: true,
@@ -3129,6 +3216,7 @@ export function writeDocReviewDecision(root, relPath, { status, note = "", expec
   if (status !== "unverified" && !allowedStatuses.has(status)) throw new Error(`Invalid review status: ${status}`);
   preflightDocReviewMutationPaths(root, normalized, { baseline: status !== "unverified", globalLedger: true });
   const resourceState = resourceStateForReviewFile(file);
+  const resourceMode = resourceModeForReviewFile(root, normalized, file);
   const state = readDocReviewState(root);
   const existing = state.reviews[normalized] && typeof state.reviews[normalized] === "object" ? state.reviews[normalized] : null;
   const resourceVersion = resourceVersionForReviewFile(root, normalized, file, existing);
@@ -3156,7 +3244,7 @@ export function writeDocReviewDecision(root, relPath, { status, note = "", expec
     delete state.reviews[normalized];
     writeDocReviewState(root, state);
     writeGlobalReviewDecision(root, normalized, file, { status: "unverified" });
-    const result = { path: normalized, status: "unverified", note: "", reviewedAt: new Date().toISOString(), contentHash: hashContent(file.content), reviewHash: reviewContentHash(file.content), resourceState, resourceVersion };
+    const result = { path: normalized, status: "unverified", note: "", reviewedAt: new Date().toISOString(), contentHash: hashContent(file.content), reviewHash: reviewContentHash(file.content), resourceState, resourceMode, resourceVersion };
     appendContextRoomEvent("review.decision", { ...contextRoomEventIdentity(root), resource: { path: normalized }, data: { status: "unverified", resourceState, resourceVersion } });
     return result;
   }
@@ -3168,6 +3256,7 @@ export function writeDocReviewDecision(root, relPath, { status, note = "", expec
     contentHash: hashContent(file.content),
     reviewHash: reviewContentHash(file.content),
     resourceState,
+    resourceMode,
     resourceVersion,
     baselinePath: baseline.baselinePath,
     baselineHash: baseline.baselineHash,
@@ -3962,23 +4051,26 @@ function currentReviewFor(root, reviews, relPath, content, resourceState = "pres
   if (review) {
     const baseline = readDocReviewBaseline(root, relPath, review);
     const baselineReviewHash = review.baselineReviewHash || baseline?.reviewHash || null;
-    const resourceCurrent = reviewResourceIdentityMatches(review, resourceState, resourceVersion);
+    const resourceMode = currentReviewResourceMode(root, relPath, resourceState);
+    const resourceCurrent = reviewResourceIdentityMatches(review, resourceState, resourceVersion)
+      && reviewResourceModeMatches(review, resourceMode, { root, relPath, resourceState });
     const explicitCurrent = resourceCurrent && review.contentHash === contentHash;
     const inlineBaselineCurrent = resourceCurrent && review.note === "inline review applied" && review.baselineHash === contentHash;
     let local = {
       ...review,
       resourceState,
       resourceVersion,
+      resourceMode: resourceMode || review.resourceMode,
       status: review.status || (inlineBaselineCurrent ? "verified" : undefined),
       current: explicitCurrent || inlineBaselineCurrent,
     };
     if (local.current && local.status !== "verified") return local;
     if (local.current && local.status === "verified") {
-      if (review.status === "verified" && (review.contentHash !== contentHash || review.reviewHash !== reviewHash || review.baselineReviewHash !== baselineReviewHash || review.resourceState !== resourceState || review.resourceVersion !== resourceVersion)) {
-        local = { ...local, contentHash, reviewHash, baselineReviewHash, resourceState, resourceVersion };
+      if (review.status === "verified" && (review.contentHash !== contentHash || review.reviewHash !== reviewHash || review.baselineReviewHash !== baselineReviewHash || review.resourceState !== resourceState || review.resourceVersion !== resourceVersion || review.resourceMode !== resourceMode)) {
+        local = { ...local, contentHash, reviewHash, baselineReviewHash, resourceState, resourceVersion, resourceMode };
         try {
           preflightDocReviewMutationPaths(root, relPath, { globalLedger: true });
-          reviews[relPath] = { ...review, contentHash, reviewHash, baselineReviewHash, resourceState, resourceVersion };
+          reviews[relPath] = { ...review, contentHash, reviewHash, baselineReviewHash, resourceState, resourceVersion, resourceMode };
           writeDocReviewState(root, { version: 2, reviews });
           writeGlobalReviewDecision(root, relPath, { content, exists: resourceState === "present" }, local);
         } catch {}
@@ -5182,10 +5274,45 @@ export function buildDocQaReport(root = process.cwd(), options = {}) {
   const gitStatuses = options.gitStatuses || readGitStatusEntries(root);
   const gitHeadContents = options.gitHeadContents || null;
   const reviewState = options.reviewState || readDocReviewState(root);
-  const settings = options.settings
+  let settings = options.settings
     ? withStartupSkillExternalPaths(root, withProjectAgentInstructionPaths(root, options.settings))
     : effectiveMemoryWebappSettings(root);
-  const files = options.files || listMemoryFiles(root);
+  let sharedReviewMetadata = null;
+  try {
+    if (fs.existsSync(path.join(path.resolve(root), SHARED_REVIEW_CONFIG))) {
+      sharedReviewMetadata = readSharedReview(root);
+      const proposalFiles = (sharedReviewMetadata.proposalFiles || []).map((filePath) => normalizeRelPath(filePath));
+      settings = {
+        ...settings,
+        allowedPaths: appendUniquePaths(settings.allowedPaths || [], proposalFiles),
+        watchAllow: appendUniquePaths(settings.watchAllow || [], proposalFiles),
+      };
+    }
+  } catch {}
+  const files = [...(options.files || listMemoryFiles(root))];
+  if (sharedReviewMetadata) {
+    const knownPaths = new Set(files.map((file) => file.path));
+    for (const proposalPath of sharedReviewMetadata.proposalFiles || []) {
+      const normalized = normalizeRelPath(proposalPath);
+      if (knownPaths.has(normalized)) continue;
+      try {
+        const file = readReviewTrackedFile(root, normalized);
+        const absolute = path.join(root, normalized);
+        let bytes = 0;
+        try { bytes = fs.lstatSync(absolute).isFile() ? fs.lstatSync(absolute).size : 0; } catch {}
+        files.push({
+          ...file,
+          path: normalized,
+          label: path.basename(normalized),
+          category: categoryForPath(normalized),
+          bytes,
+          kind: fileKindForPath(normalized),
+          summary: summarizeContent(file.content || ""),
+        });
+        knownPaths.add(normalized);
+      } catch {}
+    }
+  }
   invalidateAbsentReviewsForPresentFiles(root, reviewState, files);
   const acceptedDependencyState = buildAcceptedDependencyState(root, files, reviewState);
   const startupFiles = options.startupFiles || listStartupContextFiles(root, settings);
@@ -8700,6 +8827,7 @@ export function contextHubUiState(root, { refreshShared = true, refreshGit = fal
         projects: shared.projects,
       });
       for (const proposal of shared.proposals) {
+        if (proposal.reviewStatus === "merged") continue;
         proposals.push({
           ...proposal,
           id: `proposal:${repositoryId}:${proposal.branch}`,
@@ -8941,6 +9069,27 @@ function markContextHubSnapshotStale() {
   if (snapshot?.state) writeContextHubSnapshot(snapshot.state, { generatedAt: "1970-01-01T00:00:00.000Z" });
 }
 
+function waitForContextHubAcceptRefresh(refresh, timeoutMs = CONTEXT_HUB_ACCEPT_REFRESH_TIMEOUT_MS) {
+  const parsedTimeoutMs = Number(timeoutMs);
+  const boundedTimeoutMs = Number.isFinite(parsedTimeoutMs)
+    ? Math.max(1, parsedTimeoutMs)
+    : CONTEXT_HUB_ACCEPT_REFRESH_TIMEOUT_MS;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (outcome) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(outcome);
+    };
+    const timer = setTimeout(() => finish({ status: "pending", reason: "timeout" }), boundedTimeoutMs);
+    Promise.resolve(refresh).then(
+      (refreshed) => finish({ status: "complete", refreshed }),
+      (error) => finish({ status: "pending", reason: "error", error }),
+    );
+  });
+}
+
 function refreshContextHubSnapshot(root, { refreshShared = true, force = false } = {}) {
   const key = path.resolve(root);
   const snapshot = readContextHubSnapshot();
@@ -9103,6 +9252,8 @@ function isOwnerReviewAuthorityMutation(pathname = "", method = "GET") {
     "POST /api/docqa/review-baseline",
     "POST /api/docqa/review-deletions",
     "POST /api/context-hub/reject",
+    "POST /api/context-hub/flash",
+    "POST /api/shared-context/accept-challenge",
     "POST /api/shared-context/accept",
     "POST /api/shared-context/reject",
     "POST /api/shared-context/review-files",
@@ -9136,9 +9287,29 @@ function remoteAgentOperation(pathname, method) {
 
 function remoteHumanOperation(pathname, method) {
   if (["GET", "HEAD", "OPTIONS"].includes(String(method || "GET").toUpperCase())) return "view";
-  if (pathname.endsWith("/accept")) return "accept";
+  if (pathname.endsWith("/accept") || pathname.endsWith("/accept-challenge")) return "accept";
   if (pathname.includes("/reject")) return "reject";
   return "review";
+}
+
+function terminalDecisionPrincipal(requestIdentity, ownerMutationNonce) {
+  if (requestIdentity?.kind === "human") {
+    return `remote-human:${String(requestIdentity.sub || requestIdentity.email || "unknown").trim().toLowerCase()}`;
+  }
+  return `local-human:${createHash("sha256").update(String(ownerMutationNonce || "")).digest("hex")}`;
+}
+
+function sharedAcceptanceChallengeError(error) {
+  const prefix = "terminal_decision_challenge_";
+  const code = String(error?.code || "");
+  if (!code.startsWith(prefix)) return error;
+  const reason = code.slice(prefix.length) || "invalid";
+  const statusCode = ["replayed", "expired"].includes(reason) ? 409 : Number(error.statusCode) || 403;
+  return sharedRequestError(
+    error.message || "The terminal acceptance challenge is invalid",
+    statusCode,
+    `shared_context_acceptance_challenge_${reason}`,
+  );
 }
 
 function requestHeader(req, name) {
@@ -9294,6 +9465,9 @@ function remoteReviewUnavailableHtml(requestUrl) {
 
 export function createMemoryServer({
   root = process.cwd(),
+  contextHubRoot = root,
+  contextHubSnapshotRefresh = refreshContextHubSnapshot,
+  contextHubAcceptRefreshTimeoutMs = CONTEXT_HUB_ACCEPT_REFRESH_TIMEOUT_MS,
   port = DEFAULT_PORT,
   globalPreferencesPath = null,
   codexComposerInsert = insertIntoActiveCodexComposer,
@@ -9303,10 +9477,15 @@ export function createMemoryServer({
   frameAncestorPorts = [],
   persistentDocumentGraphLayout = false,
   remoteAccess = null,
+  verifiedAcceptanceFlashes = null,
 } = {}) {
   const projectId = contextRoomProjectId(root);
   const promptMutationNonce = randomBytes(32).toString("base64url");
   const ownerMutationNonce = randomBytes(32).toString("base64url");
+  const terminalDecisionChallenges = createTerminalDecisionChallengeStore();
+  const ownsVerifiedAcceptanceFlashes = !verifiedAcceptanceFlashes;
+  const acceptanceFlashStore = verifiedAcceptanceFlashes || createVerifiedAcceptanceFlashStore();
+  const resolvedContextHubRoot = path.resolve(contextHubRoot || root);
   contextRoomWebAssetBundle(promptMutationNonce, ownerMutationNonce);
   const trustedFrameAncestorPorts = normalizeFrameAncestorPorts(frameAncestorPorts);
   if (registerInHub && !process.env.NODE_TEST_CONTEXT && !fs.existsSync(path.join(path.resolve(root), SHARED_REVIEW_CONFIG))) {
@@ -9324,7 +9503,7 @@ export function createMemoryServer({
   const scheduleContextHubSnapshotRefresh = (targetRoot, options = {}) => {
     const resolvedRoot = path.resolve(targetRoot);
     const shouldNotify = Boolean(options.force || readFastContextHubState(resolvedRoot).freshness?.refreshing);
-    const refresh = refreshContextHubSnapshot(resolvedRoot, options);
+    const refresh = Promise.resolve().then(() => contextHubSnapshotRefresh(resolvedRoot, options));
     if (!shouldNotify || contextHubRefreshNotifications.has(resolvedRoot)) return refresh;
     contextHubRefreshNotifications.set(resolvedRoot, refresh);
     void refresh.then((snapshot) => runtimeEvents.publish("state-invalidated", {
@@ -9365,6 +9544,12 @@ export function createMemoryServer({
     let requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
     let remoteReview = null;
     if (remoteAccess) {
+      try {
+        assertRemoteHost(req, remoteAccess.expectedHost);
+      } catch (error) {
+        sendJson(res, Number(error.statusCode) || 403, { error: error.message, code: error.code || "remote_identity_invalid" });
+        return;
+      }
       const match = /^\/reviews\/([^/]+)(\/.*)?$/.exec(requestUrl.pathname);
       if (match) {
         remoteReview = remoteReviewRoutes.get(decodeURIComponent(match[1])) || null;
@@ -9389,7 +9574,9 @@ export function createMemoryServer({
     const promptRequest = isCodexPromptRequest(req);
     const requestMutation = !["GET", "HEAD", "OPTIONS"].includes(req.method || "GET");
     const ownerAuthorityMutation = isOwnerReviewAuthorityMutation(requestUrl.pathname, req.method);
-    const projectIdentityMutation = requestMutation && !requestUrl.pathname.startsWith("/api/workspaces");
+    const projectIdentityMutation = requestMutation
+      && !requestUrl.pathname.startsWith("/api/workspaces")
+      && requestUrl.pathname !== "/api/context-hub/flash";
     const trustedHost = remoteAccess || isLoopbackPromptAuthority(req.headers.host, server, port);
     const trustedPeer = remoteAccess || isLoopbackRemoteAddress(req.socket.remoteAddress);
     if (!trustedHost || !trustedPeer) {
@@ -9402,7 +9589,6 @@ export function createMemoryServer({
     let requestIdentity = null;
     if (remoteAccess) {
       try {
-        assertRemoteHost(req, remoteAccess.expectedHost);
         const healthAuthorized = requestUrl.pathname === "/api/health"
           && remoteAccess.healthSecret
           && secretHeaderMatches(remoteAccess.healthSecret, requestHeader(req, "x-peerlab-context-health"));
@@ -9536,16 +9722,28 @@ export function createMemoryServer({
         codexPromptCenter,
         promptMutationNonce,
         ownerMutationNonce,
+        contextHubRoot: resolvedContextHubRoot,
+        contextHubAcceptRefreshTimeoutMs,
+        terminalDecisionChallenges,
+        verifiedAcceptanceFlashes: acceptanceFlashStore,
         frameAncestorPorts: trustedFrameAncestorPorts,
         requestIdentity,
         remoteReviewBase: remoteReview ? `/reviews/${encodeURIComponent(remoteReview.metadata.authorityId)}` : "",
+        remoteAcceptanceRequired: Boolean(remoteAccess),
         acceptancePush: remoteAccess?.githubApp ? async (review) => {
           const target = githubHttpsRemote(review.repository);
+          const timeouts = remoteAcceptanceTimeouts(remoteAccess.githubApp);
           const installation = await createGitHubInstallationToken({
             ...remoteAccess.githubApp,
             repository: target.repository,
+            timeoutMs: timeouts.tokenTimeoutMs,
           });
-          return { url: target.url, token: installation.token, expiresAt: installation.expiresAt };
+          return {
+            url: target.url,
+            token: installation.token,
+            expiresAt: installation.expiresAt,
+            timeoutMs: timeouts.deliveryTimeoutMs,
+          };
         } : null,
         startSharedReview: async ({ proposal, repository = "", expectedHead = "", projectRoot = requestRoot }) => {
           const sourceRoot = path.resolve(projectRoot || requestRoot);
@@ -9588,6 +9786,9 @@ export function createMemoryServer({
           const reviewPort = await selectAvailableContextRoomPort(DEFAULT_PORT, { allowFallback: true });
           const reviewRoom = createMemoryServer({
             root: result.reviewRoot,
+            contextHubRoot: resolvedContextHubRoot,
+            contextHubSnapshotRefresh,
+            contextHubAcceptRefreshTimeoutMs,
             port: reviewPort,
             globalPreferencesPath,
             registerInHub: false,
@@ -9596,6 +9797,7 @@ export function createMemoryServer({
               ...trustedFrameAncestorPorts,
               contextRoomServerPort(server, port),
             ],
+            verifiedAcceptanceFlashes: acceptanceFlashStore,
           });
           await listenContextRoomServer(reviewRoom.server, reviewPort);
           sharedReviewServers.add(reviewRoom.server);
@@ -9637,6 +9839,7 @@ export function createMemoryServer({
         error: error.message,
         ...(error.code ? { code: error.code } : {}),
         ...(error.details !== undefined ? { details: error.details } : {}),
+        ...(error.retryable === true ? { retryable: true } : {}),
       });
     } finally {
       if (requestInvalidatesBackgroundCaches(req)) {
@@ -9651,6 +9854,8 @@ export function createMemoryServer({
     }
   });
   server.once("close", () => {
+    terminalDecisionChallenges.clear();
+    if (ownsVerifiedAcceptanceFlashes) acceptanceFlashStore.clear();
     for (const reviewServer of sharedReviewServers) reviewServer.close();
     sharedReviewServers.clear();
     sharedReviewRooms.clear();
@@ -10236,6 +10441,10 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   codexPromptCenter = createCodexPromptCenterProvider(),
   promptMutationNonce = "",
   ownerMutationNonce = "",
+  contextHubRoot = root,
+  contextHubAcceptRefreshTimeoutMs = CONTEXT_HUB_ACCEPT_REFRESH_TIMEOUT_MS,
+  terminalDecisionChallenges = null,
+  verifiedAcceptanceFlashes = null,
   frameAncestorPorts = [],
   startSharedReview = null,
   startContextHubProject = null,
@@ -10245,6 +10454,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   scheduleContextHubSnapshotRefresh = null,
   requestIdentity = null,
   remoteReviewBase = "",
+  remoteAcceptanceRequired = false,
   acceptancePush = null,
 } = {}) {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
@@ -10728,6 +10938,24 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       ...settings,
       items: contextHubAttentionItems(root, url.searchParams.get("projectId") || ""),
     });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/context-hub/flash") {
+    if (!verifiedAcceptanceFlashes) {
+      throw sharedRequestError("Verified acceptance feedback is unavailable", 503, "verified_acceptance_flash_unavailable");
+    }
+    const body = await readJsonBody(req);
+    let payload;
+    try {
+      payload = verifiedAcceptanceFlashes.consume(body.token);
+    } catch (error) {
+      throw sharedRequestError(
+        error.message || "Verified acceptance feedback is unavailable",
+        Number(error.statusCode) || 404,
+        error.code || "verified_acceptance_flash_invalid",
+      );
+    }
+    sendJson(res, 200, payload);
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/context-hub/project-order") {
@@ -11366,7 +11594,14 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     sendJson(res, 200, { ...result, docqa: buildSharedReviewDocQaReport(root, readSharedReview(root)), sharedContext: sharedContextUiState(root) });
     return;
   }
-  if (req.method === "POST" && url.pathname === "/api/shared-context/accept") {
+  if (req.method === "POST" && url.pathname === "/api/shared-context/accept-challenge") {
+    if (remoteAcceptanceRequired && !acceptancePush) {
+      throw sharedRequestError(
+        "Remote acceptance requires a configured GitHub App.",
+        503,
+        "shared_context_remote_acceptance_unavailable",
+      );
+    }
     const body = await readJsonBody(req);
     const review = readSharedReview(root);
     const expectedProposalHead = String(body.expectedProposalHead || "").trim();
@@ -11383,14 +11618,118 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     if (remainingReviews) {
       throw sharedRequestError(`Human review is incomplete: ${remainingReviews} file(s) remain without current review proof`, 409, "shared_context_review_incomplete");
     }
+    if (!terminalDecisionChallenges) {
+      throw sharedRequestError("Terminal acceptance confirmation is unavailable", 503, "shared_context_acceptance_challenge_unavailable");
+    }
+    if (!verifiedAcceptanceFlashes) {
+      throw sharedRequestError("Verified acceptance feedback is unavailable", 503, "verified_acceptance_flash_unavailable");
+    }
+    const principal = terminalDecisionPrincipal(requestIdentity, ownerMutationNonce);
+    const challenge = terminalDecisionChallenges.issue({
+      principal,
+      authorityId: review.authorityId,
+      proposal: review.proposal,
+      proposalHead: review.proposalHead,
+      action: "accept",
+    });
+    appendContextRoomEvent("proposal.acceptance.confirmation_opened", {
+      actor: principal,
+      projectId: review.projectId,
+      sharedProjectId: review.projectId,
+      sharedRepository: review.repository,
+      resource: { proposal: review.proposal, proposalHead: review.proposalHead },
+      data: { action: "accept", authorityId: review.authorityId },
+    });
+    sendJson(res, 201, challenge);
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/shared-context/accept") {
+    if (remoteAcceptanceRequired && !acceptancePush) {
+      throw sharedRequestError(
+        "Remote acceptance requires a configured GitHub App.",
+        503,
+        "shared_context_remote_acceptance_unavailable",
+      );
+    }
+    const body = await readJsonBody(req);
+    const challengeId = String(body.challengeId || "").trim();
+    if (!challengeId) {
+      throw sharedRequestError("A terminal acceptance challenge is required", 403, "shared_context_acceptance_challenge_required");
+    }
+    const review = readSharedReview(root);
+    const expectedProposalHead = String(body.expectedProposalHead || "").trim();
+    if (!expectedProposalHead) {
+      throw sharedRequestError("expectedProposalHead is required", 400, "shared_context_proposal_head_required");
+    }
+    if (expectedProposalHead !== review.proposalHead) {
+      throw sharedRequestError("The reviewed proposal commit does not match this acceptance request", 409, "shared_context_proposal_head_mismatch");
+    }
+    if (!terminalDecisionChallenges) {
+      throw sharedRequestError("Terminal acceptance confirmation is unavailable", 503, "shared_context_acceptance_challenge_unavailable");
+    }
+    const principal = terminalDecisionPrincipal(requestIdentity, ownerMutationNonce);
+    try {
+      terminalDecisionChallenges.consume(challengeId, {
+        principal,
+        authorityId: review.authorityId,
+        proposal: review.proposal,
+        proposalHead: review.proposalHead,
+        action: "accept",
+      });
+    } catch (error) {
+      throw sharedAcceptanceChallengeError(error);
+    }
+    appendContextRoomEvent("proposal.acceptance.confirmed", {
+      actor: principal,
+      projectId: review.projectId,
+      sharedProjectId: review.projectId,
+      sharedRepository: review.repository,
+      resource: { proposal: review.proposal, proposalHead: review.proposalHead },
+      data: { action: "accept", authorityId: review.authorityId },
+    });
+    const report = buildDocQaReport(root);
+    const reviewedPaths = new Set(report.reviewedPaths || []);
+    const unreviewedProposalFiles = (review.proposalFiles || []).filter((filePath) => !reviewedPaths.has(filePath));
+    const remainingReviews = unreviewedProposalFiles.length;
+    if (remainingReviews) {
+      throw sharedRequestError(`Human review is incomplete: ${remainingReviews} file(s) remain without current review proof`, 409, "shared_context_review_incomplete");
+    }
     let result;
     try {
       const push = acceptancePush ? await acceptancePush(review) : null;
       result = acceptSharedReview(root, { message: body.message, actor: requestIdentity?.kind === "human" ? requestIdentity : null, push });
     } catch (error) {
-      throw sharedRequestError(error.message, 409, "shared_context_acceptance_stale");
+      const retryable = error?.retryable === true;
+      const requestError = sharedRequestError(
+        error.message,
+        retryable ? 504 : 409,
+        retryable && error.code ? error.code : "shared_context_acceptance_stale",
+        error.details,
+      );
+      if (retryable) requestError.retryable = true;
+      throw requestError;
     }
-    sendJson(res, 200, result);
+    contextHubStateCache.clear();
+    contextHubProjectSummaryCache.clear();
+    markContextHubSnapshotStale();
+    const refresh = scheduleContextHubSnapshotRefresh?.(contextHubRoot, { refreshShared: true, force: true })
+      || Promise.resolve().then(() => refreshContextHubSnapshot(contextHubRoot, { refreshShared: true, force: true }));
+    const refreshOutcome = await waitForContextHubAcceptRefresh(refresh, contextHubAcceptRefreshTimeoutMs);
+    const hubRefresh = refreshOutcome.status === "complete"
+      ? {
+        status: "complete",
+        generatedAt: refreshOutcome.refreshed?.freshness?.generatedAt || refreshOutcome.refreshed?.generatedAt || new Date().toISOString(),
+      }
+      : {
+        status: "pending",
+        ...(refreshOutcome.reason === "error"
+          ? { error: String(refreshOutcome.error?.message || refreshOutcome.error || "Hub refresh pending") }
+          : { reason: "timeout" }),
+      };
+    const flash = result.accepted === true && result.deliveryVerified === true
+      ? verifiedAcceptanceFlashes.issue({ outcome: "merge", commit: result.commit, hubRefresh })
+      : null;
+    sendJson(res, 200, { ...result, hubRefresh, ...(flash ? { flashToken: flash.token } : {}) });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/shared-context/reject") {
@@ -13634,6 +13973,12 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
     .agent-toast { position: fixed; right: var(--space-5); bottom: var(--space-5); z-index: 60; max-width: min(420px, calc(100vw - 40px)); border: 1px solid rgba(139,211,255,0.34); border-radius: 18px; background: rgba(13,22,42,0.96); box-shadow: var(--shadow); padding: var(--space-3); color: var(--text); font: 13px/1.4 Inter, ui-sans-serif, system-ui, sans-serif; }
     .agent-toast strong { display: block; margin-bottom: 4px; }
     .agent-toast-actions { display: flex; gap: var(--space-2); justify-content: flex-end; margin-top: var(--space-3); }
+    .context-room-toast { position: fixed; right: var(--space-5); bottom: var(--space-5); z-index: 100; display: grid; gap: var(--space-2); width: min(440px, calc(100vw - 40px)); border: 1px solid color-mix(in srgb, var(--accent) 44%, var(--line)); border-radius: 16px; background: var(--surface-floating); box-shadow: var(--shadow); padding: var(--space-4); color: var(--text); font-size: 13px; line-height: 1.45; }
+    .context-room-toast[hidden] { display: none !important; }
+    .context-room-toast[role="alert"] { border-color: color-mix(in srgb, var(--danger) 58%, var(--line)); }
+    .context-room-toast strong { font-size: 14px; }
+    .context-room-toast-message { color: var(--muted); overflow-wrap: anywhere; }
+    .context-room-toast-actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
     .agent-focus-pulse { animation: agentFocusPulse 1.5s ease; }
     @keyframes externalReviewAttention { 0%, 100% { box-shadow: 0 0 0 rgba(139,211,255,0); } 28% { box-shadow: 0 0 0 6px rgba(139,211,255,0.16); } 56% { box-shadow: 0 0 0 2px rgba(139,211,255,0.08); } }
     @keyframes agentFocusPulse { 0%, 100% { box-shadow: 0 0 0 rgba(182,156,255,0); } 25% { box-shadow: 0 0 0 5px rgba(182,156,255,0.16), inset 0 0 0 1px rgba(182,156,255,0.34); } 60% { box-shadow: 0 0 0 2px rgba(182,156,255,0.1), inset 0 0 0 1px rgba(182,156,255,0.2); } }
@@ -13681,7 +14026,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
     .shortcut-recorder input.recording { border-color: color-mix(in srgb, var(--accent) 68%, transparent); color: var(--accent); }
     .file-action.primary { color: var(--on-accent); border: 0; background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
     .confirm-backdrop, .shared-context-help-backdrop { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; padding: var(--space-5); background: rgba(2,6,23,0.72); backdrop-filter: blur(14px); }
-    .confirm-dialog { width: min(420px, 100%); border: 1px solid var(--line); border-radius: 18px; background: var(--surface-floating); box-shadow: 0 22px 80px rgba(0,0,0,0.45); padding: var(--space-6); color: var(--text); }
+    .confirm-dialog { width: min(420px, 100%); max-height: 100%; overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--line); border-radius: 18px; background: var(--surface-floating); box-shadow: 0 22px 80px rgba(0,0,0,0.45); padding: var(--space-6); color: var(--text); }
     .confirm-dialog strong { display: block; font-size: 18px; line-height: 1.2; margin-bottom: 8px; }
 	    .confirm-dialog p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.45; overflow-wrap: anywhere; }
 	    .confirm-dialog [data-confirm-error] { margin-top: 14px; color: var(--danger); }
@@ -14631,7 +14976,12 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
       scrollbar-gutter: stable;
       transition: background 160ms ease;
     }
-    .app.sidebar-collapsed > aside { padding: 7px 5px; overflow: hidden; scrollbar-gutter: auto; }
+    .app.sidebar-collapsed > aside {
+      /* The trailing inset is one pixel smaller to offset the rail divider. */
+      padding: 7px 4px 7px 5px;
+      overflow: hidden;
+      scrollbar-gutter: auto;
+    }
     .app.sidebar-collapsed .sidebar-head { display: flex; justify-content: center; padding: 0 0 8px; }
     .app.sidebar-collapsed .graph-open { display: none; }
     .app.sidebar-collapsed .sidebar-toggle { position: static; margin: 0; }
@@ -14840,6 +15190,12 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
       transition: background 130ms ease, color 130ms ease, opacity 130ms ease;
     }
     .workspace-dock > .dock-button { flex: 0 0 auto; }
+    #proposalDockAccept:not([hidden]) {
+      position: sticky;
+      left: 0;
+      z-index: 2;
+      order: -1;
+    }
     .quiet-button { min-height: 32px; padding: 0 10px; border: 0; border-radius: var(--native-radius-control); background: transparent; color: var(--text-soft); font-size: 12px; font-weight: 600; }
     .quiet-button:hover { background: var(--native-hover); color: var(--text); }
     .workspace-switch { min-width: auto; margin: 0 4px 0 0; border-left: 0; }
@@ -15797,6 +16153,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
   </div>
   <div id="explorerContextMenu" class="explorer-context-menu" hidden></div>
 	  <div id="agentToast" class="agent-toast" hidden></div>
+    <div id="contextRoomToast" class="context-room-toast" data-context-room-toast hidden></div>
   <button id="codexReferencePopover" class="codex-reference-popover" type="button" hidden aria-label="Reference selection in Codex" title="Add a file mention and source lines to the active Codex composer. Nothing is sent.">
     <span class="codex-reference-at" aria-hidden="true">@</span>
     <span>Codex</span>
@@ -15808,7 +16165,8 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
 		${workspaceReloadCircuitDecision.toString()}
 		${shouldReplaceDuplicatedWorkspaceIdentity.toString()}
 		${contextRoomProjectResponseAction.toString()}
-		const state = { root: null, projectId: null, projectReloading: false, files: [], directories: [], startupContextFiles: [], startupSkillFolders: [], startupHookFiles: [], startupHooksHelpOpen: false, startupHookFilter: "all", hubDisclosuresOpen: new Set(), activeStartupSkillExplorer: null, activeStartupContextExplorer: null, startupSkillCreateFolder: null, startupContextContextTarget: null, selectedStartupContext: null, docqa: null, doctor: null, backgroundReportRenderKey: "", contextHealthStatusFilter: "open", contextHealthSeverityFilter: "triggered", contextHealthCategoryFilter: "all", contextHealthRefreshing: false, contextHealthCodexSending: false, settings: null, settingsOpen: false, settingsSection: "review-trust", settingsDisclosureState: {}, settingsBaselineByGroup: new Map(), settingsDirtyGroups: new Set(), settingsSearchQuery: "", settingsSearchIndex: -1, page: "hub", pendingMarkdown: null, availableHubCards: [], hubFolders: [], hubSections: [], rootHubSections: [], activeHubCardId: null, selectedReview: null, deletionBatchExpanded: false, deletionBatchLoading: false, deletionBatchItems: [], deletionBatchKey: "", deletionBatchReportedCount: 0, deletionBatchError: "", selectedDeletionReviews: new Set(), reviewModePath: null, reviewModeStatus: null, reviewSessions: {}, reviewFinalizationPromise: null, selected: null, selectedReadOnly: false, selectedDiff: null, fileLoadError: null, fileConflict: null, externalChange: null, conflictCompare: false, conflictMergeText: null, conflictMergeKey: "", conflictMergeMode: "auto", diffCollapsed: false, saved: "", savedHash: null, dirty: false, mode: "view", homeView: "root", planetStack: ["root"], filePanel: false, history: [], historyIndex: -1, pathFilters: [], explorerWatchFilter: "all", explorerRenderKey: "", explorerSearchFrame: 0, explorerWidth: 272, explorerStoredCollapsed: null, explorerNavigationOverride: null, inspectorWidth: 320, inspectorOpen: false, documentInspection: null, documentInspectionPath: "", documentInspectionLoading: false, focusMode: false, selectedForDelete: new Set(), selectionRequest: 0, openingFilePath: null, fileContentReadyPath: null, sessionStateTimer: null, agentCommandTimer: null, lastAgentCommandId: "", pendingAgentCommand: null, agentAnnotations: {}, userActiveAt: 0, userScrollIntentAt: 0, refreshInFlight: false, reportsRefreshInFlight: false, backgroundRefreshTimer: null, backgroundRefreshTimerKind: "", filePrefetches: new Map(), prefetchTimer: null, prefetchPath: "", lastDiffRefreshAt: 0, lastReportRefreshAt: 0, lastFullRefreshAt: 0, navigationRestoreAttempted: false, bootStartedAt: Date.now(), bootMilestones: {}, markdownHighlightFrame: 0, markdownHighlightText: "", markdownHighlightLastText: "", docLinkModifierActive: false, workspaceId: "", workspaceClientInstanceId: "", workspaceChannel: null, workspaceHeartbeatTimer: null, runtimeEventSource: null, runtimeEventCursor: 0, runtimeEventsConnected: false, runtimeFallbackTimer: null, workspaceIdentityReady: false, workspaceSyncedUrl: "", expanded: new Set(["data", "automations", "integrations", "skills", "tools", "~", "~/.hermes", "~/.hermes/memories", "~/.hermes/skills"]) };
+		const INITIAL_CONTEXT_ROOM_URL = window.location.href;
+		const state = { root: null, projectId: null, projectReloading: false, files: [], directories: [], startupContextFiles: [], startupSkillFolders: [], startupHookFiles: [], startupHooksHelpOpen: false, startupHookFilter: "all", hubDisclosuresOpen: new Set(), activeStartupSkillExplorer: null, activeStartupContextExplorer: null, startupSkillCreateFolder: null, startupContextContextTarget: null, selectedStartupContext: null, docqa: null, doctor: null, backgroundReportRenderKey: "", contextHealthStatusFilter: "open", contextHealthSeverityFilter: "triggered", contextHealthCategoryFilter: "all", contextHealthRefreshing: false, contextHealthCodexSending: false, settings: null, settingsOpen: false, settingsSection: "review-trust", settingsDisclosureState: {}, settingsBaselineByGroup: new Map(), settingsDirtyGroups: new Set(), settingsSearchQuery: "", settingsSearchIndex: -1, page: "hub", pendingMarkdown: null, availableHubCards: [], hubFolders: [], hubSections: [], rootHubSections: [], activeHubCardId: null, selectedReview: null, deletionBatchExpanded: false, deletionBatchLoading: false, deletionBatchItems: [], deletionBatchKey: "", deletionBatchReportedCount: 0, deletionBatchError: "", selectedDeletionReviews: new Set(), reviewModePath: null, reviewModeStatus: null, reviewSessions: {}, reviewFinalizationPromise: null, selected: null, selectedReadOnly: false, selectedDiff: null, fileLoadError: null, fileConflict: null, externalChange: null, conflictCompare: false, conflictMergeText: null, conflictMergeKey: "", conflictMergeMode: "auto", diffCollapsed: false, saved: "", savedHash: null, dirty: false, mode: "view", homeView: "root", planetStack: ["root"], filePanel: false, history: [], historyIndex: -1, pathFilters: [], explorerWatchFilter: "all", explorerRenderKey: "", explorerSearchFrame: 0, explorerWidth: 272, explorerStoredCollapsed: null, explorerNavigationOverride: null, inspectorWidth: 320, inspectorOpen: false, documentInspection: null, documentInspectionPath: "", documentInspectionLoading: false, focusMode: false, selectedForDelete: new Set(), selectionRequest: 0, openingFilePath: null, fileContentReadyPath: null, sessionStateTimer: null, agentCommandTimer: null, lastAgentCommandId: "", pendingAgentCommand: null, agentAnnotations: {}, userActiveAt: 0, userScrollIntentAt: 0, refreshInFlight: false, reportsRefreshInFlight: false, backgroundRefreshTimer: null, backgroundRefreshTimerKind: "", backgroundRefreshPendingOptions: null, filePrefetches: new Map(), prefetchTimer: null, prefetchPath: "", lastDiffRefreshAt: 0, lastReportRefreshAt: 0, lastFullRefreshAt: 0, navigationRestoreAttempted: false, bootStartedAt: Date.now(), bootMilestones: {}, markdownHighlightFrame: 0, markdownHighlightText: "", markdownHighlightLastText: "", docLinkModifierActive: false, workspaceId: "", workspaceClientInstanceId: "", workspaceChannel: null, workspaceHeartbeatTimer: null, runtimeEventSource: null, runtimeEventCursor: 0, runtimeEventsConnected: false, runtimeFallbackTimer: null, workspaceIdentityReady: false, workspaceSyncedUrl: "", expanded: new Set(["data", "automations", "integrations", "skills", "tools", "~", "~/.hermes", "~/.hermes/memories", "~/.hermes/skills"]) };
 		Object.assign(state, {
 		  graph: null,
 		  graphLoading: false,
@@ -15975,6 +16333,15 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
 		state.sharedProposalSelection = "";
 	const CONTEXT_ROOM_QUERY = new URLSearchParams(window.location.search);
 	const IS_GLOBAL_CONTEXT_ROOM = CONTEXT_ROOM_QUERY.get("hub") === "1";
+	const CONTEXT_ROOM_FLASH_QUERY_KEYS = ["crFlash", "crOutcome", "crCommit", "crHubRefresh"];
+	const CONTEXT_ROOM_INITIAL_FLASH_TOKEN = (() => {
+	  const target = new URL(window.location.href);
+	  const token = String(target.searchParams.get("crFlash") || "").trim();
+	  const changed = CONTEXT_ROOM_FLASH_QUERY_KEYS.some((key) => target.searchParams.has(key));
+	  for (const key of CONTEXT_ROOM_FLASH_QUERY_KEYS) target.searchParams.delete(key);
+	  if (changed) window.history.replaceState(window.history.state, "", target);
+	  return /^[A-Za-z0-9_-]{32}$/.test(token) ? token : "";
+	})();
 	state.activeProjectLocationId = IS_GLOBAL_CONTEXT_ROOM ? String(CONTEXT_ROOM_QUERY.get("project") || "") : "";
 	document.body.classList.toggle("global-context-room", IS_GLOBAL_CONTEXT_ROOM);
 	document.body.classList.toggle("focused-review-context-room", !IS_GLOBAL_CONTEXT_ROOM);
@@ -15984,6 +16351,7 @@ const WORKSPACE_ID_SESSION_KEY = "context-room:workspace-id";
 const WORKSPACE_CHANNEL_NAME = "context-room:workspaces";
 const WORKSPACE_RELOAD_GUARD_KEY = "context-room:auto-reload-guard:v1";
 const WORKSPACE_BOOT_COUNT_KEY = "context-room:boot-count:v1";
+const CONTEXT_ROOM_TOAST_STORAGE_KEY = "context-room:toast:v1";
 const AGENT_COMMAND_ACK_STORAGE_PREFIX = "context-room:last-agent-command-id:";
 const AGENT_COMMAND_MAX_AGE_MS = 60_000;
 const CONTEXT_HUB_HOME_REVIEW_LIMIT = 80;
@@ -18866,6 +19234,7 @@ function selectContextHubItem(itemId) {
 
 function contextRoomHubReturnUrl(url) {
   const target = new URL(url, window.location.href);
+  target.pathname = "/";
   target.searchParams.set("hub", "1");
   target.searchParams.set("view", "hub");
   target.searchParams.delete("proposal");
@@ -19149,30 +19518,88 @@ function renderProposalDockControls() {
     : "Reject and archive this exact proposal revision";
 }
 
-async function completeSharedProposalAcceptance() {
+function terminalAcceptanceResponseIsVerified(result, review) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return false;
+  const exactCommit = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+  const expectedDefaultBranch = String(review?.defaultBranch || "main").trim() || "main";
+  const hubRefreshStatus = result.hubRefresh?.status;
+  return result.accepted === true
+    && result.deliveryVerified === true
+    && result.proposal === review?.proposal
+    && result.proposalHead === review?.proposalHead
+    && typeof result.commit === "string"
+    && exactCommit.test(result.commit)
+    && typeof result.verifiedRemoteHead === "string"
+    && exactCommit.test(result.verifiedRemoteHead)
+    && result.defaultBranch === expectedDefaultBranch
+    && (hubRefreshStatus === "complete" || hubRefreshStatus === "pending")
+    && typeof result.flashToken === "string"
+    && /^[A-Za-z0-9_-]{32}$/.test(result.flashToken);
+}
+
+function keepFailedTerminalAcceptanceOnProposal(review) {
+  const initialUrl = new URL(INITIAL_CONTEXT_ROOM_URL);
+  const currentUrl = new URL(window.location.href);
+  const initialMatchesProposal = initialUrl.searchParams.get("view") === "proposal"
+    && initialUrl.searchParams.get("proposal") === review.proposal;
+  const target = initialMatchesProposal ? initialUrl : currentUrl;
+  target.searchParams.set("hub", "1");
+  target.searchParams.set("view", "proposal");
+  target.searchParams.set("proposal", review.proposal);
+  state.contextHubSelection = review.proposal;
+  window.clearTimeout(state.sessionStateTimer);
+  state.sessionStateTimer = null;
+  window.history.replaceState(window.history.state, "", target);
+  state.workspaceSyncedUrl = target.href;
+}
+
+async function completeSharedProposalAcceptance(challengeId) {
   const review = state.sharedContext?.mode === "review" ? state.sharedContext.review || {} : {};
-  if (!review.proposalHead || state.proposalActionBusy) return;
+  if (!review.proposalHead || !challengeId || state.proposalActionBusy) return;
   state.proposalActionBusy = true;
   state.proposalActionError = "";
   renderProposalDockControls();
   renderProposalReviewPage();
-  setStatus("putting reviewed proposal on main...");
+  setStatus("Putting on main…");
   try {
     const result = await api("/api/shared-context/accept", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ expectedProposalHead: review.proposalHead }),
+      body: JSON.stringify({ expectedProposalHead: review.proposalHead, challengeId }),
     });
-    if (!result.accepted) {
+    if (result?.accepted === false) {
       throw new Error(result.reason || "No accepted changes remain. Reject the proposal to close it.");
+    }
+    if (!terminalAcceptanceResponseIsVerified(result, review)) {
+      throw new Error("Context Room could not verify this proposal on the remote main branch.");
     }
     state.sharedContext = { ...state.sharedContext, accepted: result };
     playContextRoomSound("proposal-accepted");
-    setStatus("proposal put on " + (result.defaultBranch || review.defaultBranch || "main"));
+    const hubRefreshPending = result.hubRefresh?.status !== "complete";
+    const title = hubRefreshPending ? "Merged into main · Hub refresh pending" : "Proposal merged into main";
+    const message = "Commit " + result.commit;
+    const target = new URL(contextRoomReturnUrl() || contextRoomHubReturnUrl(window.location.href));
+    const flashToken = typeof result.flashToken === "string" ? result.flashToken : "";
+    if (/^[A-Za-z0-9_-]{32}$/.test(flashToken)) {
+      target.searchParams.set("crFlash", flashToken);
+    } else if (target.origin === window.location.origin) {
+      rememberContextRoomToast({ title, message, kind: "status" });
+    }
+    showContextRoomToast({ title, message, kind: "status" });
+    setStatus(title + " · " + result.commit);
+    window.location.assign(target.toString());
   } catch (error) {
     state.proposalActionError = error.message || "The proposal could not be put on main.";
+    keepFailedTerminalAcceptanceOnProposal(review);
     setStatus("proposal acceptance blocked · " + state.proposalActionError);
-    throw error;
+    showContextRoomToast({
+      title: "Proposal could not be merged",
+      message: state.proposalActionError,
+      kind: "alert",
+      actionLabel: "Retry",
+      onAction: requestSharedProposalAcceptance,
+    });
+    return null;
   } finally {
     state.proposalActionBusy = false;
     renderProposalDockControls();
@@ -19180,18 +19607,47 @@ async function completeSharedProposalAcceptance() {
   }
 }
 
-function requestSharedProposalAcceptance() {
+async function requestSharedProposalAcceptance() {
   const review = state.sharedContext?.mode === "review" ? state.sharedContext.review || {} : {};
   const remaining = proposalReviewFileEntries().filter((entry) => !entry.reviewed).length;
   if (!review.proposalHead || remaining || state.proposalActionBusy) return;
-  showHumanReviewDecisionDialog({
-    title: "Put this proposal on " + (review.defaultBranch || "main") + "?",
-    body: "Put proposal " + (review.proposal || "") + " at exact revision " + review.proposalHead + " on " + (review.defaultBranch || "main") + " for " + (review.projectId || "this shared project") + ". Only the file changes kept during review will be committed and pushed.",
-    confirmLabel: "Put on main",
-    confirmPendingLabel: "Putting on main…",
-    confirmVariant: "primary",
-    onConfirm: () => completeSharedProposalAcceptance(),
-  });
+  state.proposalActionBusy = true;
+  state.proposalActionError = "";
+  renderProposalDockControls();
+  try {
+    const challenge = await api("/api/shared-context/accept-challenge", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedProposalHead: review.proposalHead }),
+    });
+    if (!challenge.challengeId || challenge.proposalHead !== review.proposalHead) {
+      throw new Error("Context Room could not prepare an exact terminal confirmation.");
+    }
+    state.proposalActionBusy = false;
+    renderProposalDockControls();
+    showHumanReviewDecisionDialog({
+      title: "Put this proposal on " + (review.defaultBranch || "main") + "?",
+      body: "Put proposal " + (review.proposal || "") + " at exact revision " + review.proposalHead + " on " + (review.defaultBranch || "main") + " for " + (review.projectId || "this shared project") + ". Only the file changes kept during review will be committed and pushed.",
+      confirmLabel: "Put on main",
+      confirmPendingLabel: "Putting on main…",
+      confirmVariant: "primary",
+      onConfirm: () => completeSharedProposalAcceptance(challenge.challengeId),
+    });
+  } catch (error) {
+    state.proposalActionError = error.message || "The terminal confirmation could not be prepared.";
+    setStatus("proposal acceptance blocked · " + state.proposalActionError);
+    showContextRoomToast({
+      title: "Proposal could not be merged",
+      message: state.proposalActionError,
+      kind: "alert",
+      actionLabel: "Retry",
+      onAction: requestSharedProposalAcceptance,
+    });
+  } finally {
+    state.proposalActionBusy = false;
+    renderProposalDockControls();
+    renderProposalReviewPage();
+  }
 }
 
 async function completeSharedProposalRejection() {
@@ -20325,6 +20781,75 @@ function hideAgentToast() {
   state.pendingAgentCommand = null;
   const toast = el("agentToast");
   if (toast) toast.hidden = true;
+}
+
+function hideContextRoomToast() {
+  const toast = el("contextRoomToast");
+  if (!toast) return;
+  toast.hidden = true;
+  toast.removeAttribute("role");
+  toast.replaceChildren();
+}
+
+function showContextRoomToast({ title = "Context Room", message = "", kind = "status", actionLabel = "", onAction = null } = {}) {
+  const toast = el("contextRoomToast");
+  if (!toast) return;
+  const alert = kind === "alert";
+  toast.setAttribute("role", alert ? "alert" : "status");
+  toast.setAttribute("aria-live", alert ? "assertive" : "polite");
+  toast.innerHTML = '<strong>' + escapeHtml(title) + '</strong>'
+    + (message ? '<div class="context-room-toast-message">' + escapeHtml(message) + '</div>' : '')
+    + '<div class="context-room-toast-actions">'
+      + (actionLabel ? '<button class="file-action primary" type="button" data-context-room-toast-action>' + escapeHtml(actionLabel) + '</button>' : '')
+      + '<button class="file-action" type="button" data-context-room-toast-dismiss>Dismiss</button>'
+    + '</div>';
+  toast.hidden = false;
+  toast.querySelector("[data-context-room-toast-dismiss]")?.addEventListener("click", hideContextRoomToast);
+  toast.querySelector("[data-context-room-toast-action]")?.addEventListener("click", () => {
+    hideContextRoomToast();
+    Promise.resolve(onAction?.()).catch((error) => {
+      showContextRoomToast({ title: "Proposal could not be merged", message: error?.message || "Try again.", kind: "alert", actionLabel, onAction });
+    });
+  });
+}
+
+function rememberContextRoomToast(toast) {
+  try {
+    window.sessionStorage?.setItem(CONTEXT_ROOM_TOAST_STORAGE_KEY, JSON.stringify({
+      ...toast,
+      storedAt: Date.now(),
+    }));
+  } catch {}
+}
+
+function restoreContextRoomToast() {
+  let stored = null;
+  try {
+    const raw = window.sessionStorage?.getItem(CONTEXT_ROOM_TOAST_STORAGE_KEY) || "";
+    window.sessionStorage?.removeItem(CONTEXT_ROOM_TOAST_STORAGE_KEY);
+    stored = raw ? JSON.parse(raw) : null;
+  } catch {}
+  if (!stored || Date.now() - Number(stored.storedAt || 0) > 120_000) return;
+  showContextRoomToast({ title: stored.title, message: stored.message, kind: stored.kind });
+}
+
+async function consumeContextRoomAcceptanceFlash(token) {
+  if (!IS_GLOBAL_CONTEXT_ROOM || !/^[A-Za-z0-9_-]{32}$/.test(String(token || ""))) return;
+  try {
+    const payload = await api("/api/context-hub/flash", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    const commit = String(payload?.commit || "").trim().toLowerCase();
+    const hubRefreshStatus = String(payload?.hubRefresh?.status || "").trim();
+    if (payload?.outcome !== "merge" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit) || !["complete", "pending"].includes(hubRefreshStatus)) return;
+    showContextRoomToast({
+      title: hubRefreshStatus === "pending" ? "Merged into main · Hub refresh pending" : "Proposal merged into main",
+      message: "Commit " + commit,
+      kind: "status",
+    });
+  } catch {}
 }
 
 async function executeAgentCommand(command) {
@@ -30499,12 +31024,14 @@ function showConfirmDialog({ title, body, confirmLabel = "Confirm", confirmPendi
     '<strong>' + escapeHtml(title) + '</strong>' +
     '<p>' + escapeHtml(body) + '</p>' +
     checkboxMarkup +
+    '<p data-confirm-status role="status" aria-live="polite" hidden></p>' +
     '<p data-confirm-error role="alert" hidden></p>' +
     '<div class="confirm-actions"><button class="file-action" type="button" data-confirm-cancel>Cancel</button><button class="file-action ' + confirmClass + '" type="button" data-confirm-accept' + (checkboxRequired ? ' disabled' : '') + '>' + escapeHtml(confirmLabel) + '</button></div>' +
   '</section>';
   const cancelButton = backdrop.querySelector("[data-confirm-cancel]");
   const confirmButton = backdrop.querySelector("[data-confirm-accept]");
   const checkbox = backdrop.querySelector("[data-confirm-checkbox]");
+  const pendingStatus = backdrop.querySelector("[data-confirm-status]");
   const errorMessage = backdrop.querySelector("[data-confirm-error]");
   let busy = false;
   const setBusy = (nextBusy) => {
@@ -30513,6 +31040,10 @@ function showConfirmDialog({ title, body, confirmLabel = "Confirm", confirmPendi
     if (checkbox) checkbox.disabled = nextBusy;
     confirmButton.textContent = nextBusy ? confirmPendingLabel : confirmLabel;
     confirmButton.disabled = nextBusy || (checkboxRequired && !checkbox?.checked);
+    confirmButton.setAttribute("aria-busy", String(nextBusy));
+    backdrop.querySelector(".confirm-dialog")?.setAttribute("aria-busy", String(nextBusy));
+    pendingStatus.textContent = nextBusy ? confirmPendingLabel : "";
+    pendingStatus.hidden = !nextBusy;
   };
   const showError = (error) => {
     setBusy(false);
@@ -31292,11 +31823,20 @@ async function refreshFromDisk() {
 }
 
 function scheduleBackgroundRefresh(options = {}) {
-  if (document.hidden || state.backgroundRefreshTimer) return;
+  if (document.hidden) return;
+  const pending = state.backgroundRefreshPendingOptions || {};
+  state.backgroundRefreshPendingOptions = {
+    forceReports: Boolean(pending.forceReports || options.forceReports),
+    forceFull: Boolean(pending.forceFull || options.forceFull),
+  };
+  if (state.backgroundRefreshTimer || state.reportsRefreshInFlight) return;
   const run = () => {
     state.backgroundRefreshTimer = null;
     state.backgroundRefreshTimerKind = "";
-    refreshBackgroundReports(options).catch((error) => setStatus(error.message));
+    if (document.hidden || state.reportsRefreshInFlight) return;
+    const pendingOptions = state.backgroundRefreshPendingOptions || {};
+    state.backgroundRefreshPendingOptions = null;
+    refreshBackgroundReports(pendingOptions).catch((error) => setStatus(error.message));
   };
   if ("requestIdleCallback" in window) {
     state.backgroundRefreshTimerKind = "idle";
@@ -31308,6 +31848,7 @@ function scheduleBackgroundRefresh(options = {}) {
 }
 
 function cancelBackgroundRefresh() {
+  state.backgroundRefreshPendingOptions = null;
   if (!state.backgroundRefreshTimer) return;
   if (state.backgroundRefreshTimerKind === "idle" && "cancelIdleCallback" in window) {
     window.cancelIdleCallback(state.backgroundRefreshTimer);
@@ -31362,6 +31903,7 @@ async function refreshBackgroundReports(options = {}) {
     }
   } finally {
     state.reportsRefreshInFlight = false;
+    if (state.backgroundRefreshPendingOptions) scheduleBackgroundRefresh();
   }
 }
 
@@ -32628,6 +33170,12 @@ window.addEventListener("resize", () => {
   el("viewer")?.toggleAttribute("inert", state.inspectorOpen && !window.matchMedia("(min-width: 1280px)").matches);
   if (state.page === "graph") renderGraphCanvas();
 });
+if (CONTEXT_ROOM_INITIAL_FLASH_TOKEN) {
+  try { window.sessionStorage?.removeItem(CONTEXT_ROOM_TOAST_STORAGE_KEY); } catch {}
+} else {
+  restoreContextRoomToast();
+}
+void consumeContextRoomAcceptanceFlash(CONTEXT_ROOM_INITIAL_FLASH_TOKEN);
 setMode("view");
 initializeWorkspaceDiagnostics();
 finishInitialBoot();

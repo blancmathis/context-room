@@ -51,6 +51,33 @@ test("event identities and location/shared filters use structured fields", { con
   assert.equal(readContextRoomEvents({ sharedRepository: "/shared/other.git" }).events[0].sharedProjectId, "shared-b");
 });
 
+test("terminal confirmation events persist the actor but never persist a challenge identifier", { concurrency: false }, (t) => {
+  isolatedJournal(t);
+  const event = appendContextRoomEvent("proposal.acceptance.confirmation_opened", {
+    actor: " remote-human:mathis ",
+    projectId: "project-a",
+    data: {
+      action: "accept",
+      proposalHead: "a".repeat(40),
+      challengeId: "opaque-top-level-challenge",
+      nested: { challengeID: "opaque-nested-challenge" },
+    },
+  });
+
+  assert.equal(event.actor, "remote-human:mathis");
+  assert.equal(Object.hasOwn(event.data, "challengeId"), false);
+  assert.equal(Object.hasOwn(event.data.nested, "challengeID"), false);
+
+  const persisted = readContextRoomEvents({ types: "proposal.acceptance.*" }).events[0];
+  assert.equal(persisted.actor, "remote-human:mathis");
+  assert.equal(Object.hasOwn(persisted.data, "challengeId"), false);
+  assert.equal(Object.hasOwn(persisted.data.nested, "challengeID"), false);
+
+  const rawJournal = fs.readFileSync(contextRoomEventJournalPath(), "utf8");
+  assert.doesNotMatch(rawJournal, /challengeid/i);
+  assert.doesNotMatch(rawJournal, /opaque-(?:top-level|nested)-challenge/);
+});
+
 test("pagination advances from the last delivered event without gaps or duplicates", { concurrency: false }, (t) => {
   isolatedJournal(t);
   const written = Array.from({ length: 7 }, (_, index) => appendContextRoomEvent("review.decision", {

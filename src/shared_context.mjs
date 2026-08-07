@@ -19,6 +19,8 @@ export const SHARED_SKILL_LOCATIONS_SCHEMA_VERSION = 1;
 export const SHARED_RESOURCE_LOCAL_STATE_VERSION = 3;
 export const SHARED_SKILL_LOCAL_STATE_VERSION = SHARED_RESOURCE_LOCAL_STATE_VERSION;
 export const SHARED_INSTRUCTION_LOCATIONS_SCHEMA_VERSION = 1;
+export const DEFAULT_SHARED_DELIVERY_TIMEOUT_MS = 120_000;
+const SHARED_ACCEPTANCE_LEASE_MS = 15 * 60_000;
 const MAX_SHARED_TEXT_BYTES = 750_000;
 const SHARED_REPOSITORY_SCHEMA_URL = "https://unpkg.com/context-room@latest/schemas/shared-repository.schema.json";
 const SHARED_PROJECTS_SCHEMA_URL = "https://unpkg.com/context-room@latest/schemas/shared-projects.schema.json";
@@ -160,12 +162,16 @@ function removeManagedResourceLink(linkPath, { managedRoot, repository, assignme
 }
 
 function runGit(cwd, args, options = {}) {
+  const timeoutMs = Number(options.timeoutMs);
   return execFileSync("git", args, {
     cwd,
     encoding: options.encoding === null ? null : "utf8",
     stdio: options.stdio || ["ignore", "pipe", "pipe"],
     maxBuffer: options.maxBuffer || 64 * 1024 * 1024,
     env: { ...process.env, ...options.env },
+    ...(Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? { timeout: Math.floor(timeoutMs), killSignal: "SIGTERM" }
+      : {}),
   });
 }
 
@@ -891,7 +897,7 @@ function cachedSharedRepositoryState(repository, { projectId = "global", project
   };
 }
 
-function ensureRepositoryClone(repository) {
+function ensureRepositoryClone(repository, { timeoutMs = 0, env = null } = {}) {
   const checkout = repositoryCheckout(repository);
   if (fs.existsSync(path.join(checkout, ".git"))) {
     configureExistingSharedAgentGit(repository, checkout);
@@ -899,7 +905,16 @@ function ensureRepositoryClone(repository) {
   }
   if (fs.existsSync(checkout)) throw new Error(`Shared cache path already exists and is not a Git clone: ${checkout}`);
   fs.mkdirSync(path.dirname(checkout), { recursive: true });
-  runGit(path.dirname(checkout), ["clone", "--origin", "origin", "--no-checkout", repository, checkout], { stdio: ["ignore", "ignore", "pipe"] });
+  const options = { stdio: ["ignore", "ignore", "pipe"], ...(env ? { env } : {}) };
+  if (Number(timeoutMs) > 0) {
+    runSharedDeliveryGit(
+      path.dirname(checkout),
+      ["clone", "--origin", "origin", "--no-checkout", repository, checkout],
+      { ...options, operation: "Git clone", timeoutMs },
+    );
+  } else {
+    runGit(path.dirname(checkout), ["clone", "--origin", "origin", "--no-checkout", repository, checkout], options);
+  }
   configureExistingSharedAgentGit(repository, checkout);
   return checkout;
 }
@@ -936,6 +951,40 @@ function sharedContextError(code, message, details = {}) {
   error.code = code;
   error.details = details;
   return error;
+}
+
+function sharedDeliveryTimeoutError(operation, timeoutMs, cause = null) {
+  const error = sharedContextError(
+    "shared-delivery-timeout",
+    `${operation} timed out after ${Math.floor(Number(timeoutMs))} ms`,
+    { timeoutMs: Math.floor(Number(timeoutMs)) },
+  );
+  error.retryable = true;
+  if (cause) error.cause = cause;
+  return error;
+}
+
+function isGitCommandTimeout(error) {
+  return error?.code === "ETIMEDOUT" || error?.signal === "SIGTERM";
+}
+
+function runSharedDeliveryGit(cwd, args, { operation, timeoutMs = 0, ...options }) {
+  try {
+    return runGit(cwd, args, { ...options, timeoutMs });
+  } catch (error) {
+    if (Number(timeoutMs) > 0 && isGitCommandTimeout(error)) {
+      throw sharedDeliveryTimeoutError(operation, timeoutMs, error);
+    }
+    throw error;
+  }
+}
+
+export function sharedDeliveryTimeoutBudget(push = null, overrideTimeoutMs = 0) {
+  for (const value of [push?.timeoutMs, overrideTimeoutMs]) {
+    const configured = Number(value);
+    if (Number.isFinite(configured) && configured > 0) return Math.floor(configured);
+  }
+  return DEFAULT_SHARED_DELIVERY_TIMEOUT_MS;
 }
 
 function commitTrailerMap(checkout, revision) {
@@ -4561,6 +4610,16 @@ function gitIsAncestor(cwd, ancestor, descendant) {
   return result.status === 0;
 }
 
+function commitHasExactProposalAcceptance(checkout, revision, proposal, proposalHead) {
+  try {
+    const trailers = commitTrailerMap(checkout, revision);
+    return trailers["Context-Room-Proposal"] === proposal
+      && trailers["Context-Room-Proposal-Head"] === proposalHead;
+  } catch {
+    return false;
+  }
+}
+
 function proposalHasConflict(cwd, mainRevision, proposalHead) {
   const result = spawnSync("git", ["merge-tree", "--write-tree", mainRevision, proposalHead], {
     cwd,
@@ -4572,7 +4631,7 @@ function proposalHasConflict(cwd, mainRevision, proposalHead) {
   return null;
 }
 
-function sharedReviewActivityIndex(repository, checkout, mainRevision) {
+function sharedReviewActivityIndex(repository, checkout, mainRevision, decisionIndex = ownerProposalDecisionIndex(repository)) {
   const authorityRoot = path.join(sharedHome(), "review-authority");
   const index = new Map();
   if (!fs.existsSync(authorityRoot)) return index;
@@ -4583,19 +4642,46 @@ function sharedReviewActivityIndex(repository, checkout, mainRevision) {
       if (!review || safeRepository(review.repository) !== repository) continue;
       const proposal = safeBranchName(review.proposal, "proposal branch");
       const proposalHead = safeRevision(review.proposalHead, "reviewed proposal head");
-      const acceptedCommit = review.accepted?.accepted
-        ? safeRevision(review.accepted.commit, "accepted commit")
+      const receipt = review.accepted?.accepted ? review.accepted : null;
+      const acceptedCommit = receipt
+        ? safeRevision(receipt.commit, "accepted commit")
         : "";
+      const signedDecision = decisionIndex.decisions.get(`${proposal}\0${proposalHead}`) || null;
+      const receiptMatches = Boolean(
+        receipt
+        && receipt.proposal === proposal
+        && receipt.proposalHead === proposalHead
+        && receipt.defaultBranch === review.defaultBranch
+        && ["main", "pull-request"].includes(receipt.delivery),
+      );
+      let exactTreeVerified = false;
+      if (acceptedCommit && receiptMatches && fs.existsSync(review.reviewRoot || "")) {
+        try {
+          const reviewed = reviewedAcceptanceState(review.reviewRoot, review, review, review.proposalFiles || []);
+          exactTreeVerified = Boolean(
+            reviewed.acceptedPatch.length
+            && commitMatchesExactReviewedResult(checkout, acceptedCommit, reviewed.acceptedPatch, reviewed.policyPaths),
+          );
+        } catch {}
+      }
+      const signedDecisionMatches = Boolean(
+        signedDecision
+        && signedDecision.decision === "accepted"
+        && signedDecision.acceptedCommit === acceptedCommit,
+      );
       const accepted = acceptedCommit ? {
         accepted: true,
         acceptedAt: review.acceptedAt || null,
         commit: acceptedCommit,
-        delivery: review.accepted.delivery === "main" ? "main" : "pull-request",
-        acceptanceBranch: review.accepted.acceptanceBranch
-          ? safeBranchName(review.accepted.acceptanceBranch, "acceptance branch")
+        delivery: receipt.delivery === "main" ? "main" : "pull-request",
+        acceptanceBranch: receipt.acceptanceBranch
+          ? safeBranchName(receipt.acceptanceBranch, "acceptance branch")
           : "",
-        pullRequestUrl: String(review.accepted.pullRequestUrl || ""),
-        merged: review.accepted.delivery === "main" || gitIsAncestor(checkout, acceptedCommit, mainRevision),
+        pullRequestUrl: String(receipt.pullRequestUrl || ""),
+        merged: receiptMatches
+          && gitIsAncestor(checkout, acceptedCommit, mainRevision)
+          && commitHasExactProposalAcceptance(checkout, acceptedCommit, proposal, proposalHead)
+          && (signedDecisionMatches || exactTreeVerified),
       } : null;
       const activity = {
         proposalHead,
@@ -4646,8 +4732,8 @@ function sharedRemoteAcceptanceIndex(synced, checkout) {
   return index;
 }
 
-function sharedMainAcceptanceIndex(synced, checkout) {
-  const index = new Map();
+function sharedMainAcceptanceCandidates(synced, checkout) {
+  const candidates = new Map();
   const commits = tryGit(checkout, ["rev-list", "--first-parent", synced.revision]).split("\n").filter(Boolean);
   for (const revision of commits) {
     try {
@@ -4659,12 +4745,40 @@ function sharedMainAcceptanceIndex(synced, checkout) {
         commit: item.revision,
         acceptanceBranch: "",
         pullRequestUrl: "",
-        merged: true,
+        merged: false,
         proposalHead: item.acceptance.proposalHead,
         sessionId: item.acceptance.sessionId,
       };
-      if (!index.has(item.acceptance.proposal)) index.set(item.acceptance.proposal, accepted);
+      if (!candidates.has(item.acceptance.proposal)) candidates.set(item.acceptance.proposal, accepted);
     } catch {}
+  }
+  return candidates;
+}
+
+function sharedMainAcceptanceIndex(synced, checkout, reviewActivity = null, decisionIndex = null) {
+  const index = new Map();
+  const decisions = decisionIndex || ownerProposalDecisionIndex(synced.connection.repository);
+  const activities = reviewActivity || sharedReviewActivityIndex(
+    synced.connection.repository,
+    checkout,
+    synced.revision,
+    decisions,
+  );
+  for (const [proposal, candidate] of sharedMainAcceptanceCandidates(synced, checkout)) {
+    const signedDecision = decisions.decisions.get(`${proposal}\0${candidate.proposalHead}`) || null;
+    const signedDecisionMatches = Boolean(
+      signedDecision
+      && signedDecision.decision === "accepted"
+      && signedDecision.acceptedCommit === candidate.commit,
+    );
+    const exactReviewMatches = (activities.get(proposal) || []).some((activity) => (
+      activity.proposalHead === candidate.proposalHead
+      && activity.accepted?.merged === true
+      && activity.accepted.commit === candidate.commit
+    ));
+    if (signedDecisionMatches || exactReviewMatches) {
+      index.set(proposal, { ...candidate, merged: true });
+    }
   }
   return index;
 }
@@ -4676,7 +4790,13 @@ export function listSharedMainAcceptances(repository, { refresh = true } = {}) {
     repositoryConfig: main.repositoryConfig,
     revision: main.revision,
   };
-  return [...sharedMainAcceptanceIndex(synced, main.checkout).entries()].map(([proposal, accepted]) => ({ proposal, ...accepted }));
+  const decisionIndex = ownerProposalDecisionIndex(main.repository);
+  const reviewActivity = sharedReviewActivityIndex(main.repository, main.checkout, main.revision, decisionIndex);
+  const verified = sharedMainAcceptanceIndex(synced, main.checkout, reviewActivity, decisionIndex);
+  return [...sharedMainAcceptanceCandidates(synced, main.checkout).entries()].map(([proposal, accepted]) => ({
+    proposal,
+    ...(verified.get(proposal) || accepted),
+  }));
 }
 
 function ownerProposalDecisionIndex(repository) {
@@ -4772,11 +4892,11 @@ function reconcileProposalObservations(synced, checkout, current, mainAcceptance
 
 function listRemoteSharedProposals(synced, { allProjects = true } = {}) {
   const checkout = repositoryCheckout(synced.connection.repository);
-  const reviewActivity = sharedReviewActivityIndex(synced.connection.repository, checkout, synced.revision);
-  const remoteAcceptance = sharedRemoteAcceptanceIndex(synced, checkout);
-  const mainAcceptance = sharedMainAcceptanceIndex(synced, checkout);
-  const prefix = `refs/remotes/origin/${synced.repositoryConfig.proposalPrefix}`;
   const decisionIndex = ownerProposalDecisionIndex(synced.connection.repository);
+  const reviewActivity = sharedReviewActivityIndex(synced.connection.repository, checkout, synced.revision, decisionIndex);
+  const remoteAcceptance = sharedRemoteAcceptanceIndex(synced, checkout);
+  const mainAcceptance = sharedMainAcceptanceIndex(synced, checkout, reviewActivity, decisionIndex);
+  const prefix = `refs/remotes/origin/${synced.repositoryConfig.proposalPrefix}`;
   const output = tryGit(checkout, ["for-each-ref", "--format=%(refname:strip=3)%09%(objectname)%09%(committerdate:iso8601)%09%(authorname)%09%(authoremail)%09%(subject)", prefix]);
   const current = output.split("\n").filter(Boolean).flatMap((line) => {
     const [branch, head, updatedAt, authorName, authorEmail, subject] = line.split("\t");
@@ -5045,8 +5165,13 @@ function assertReviewWorkspaceFiles(reviewRoot, files) {
       throw new Error(`Shared review file type is not reviewable in Context Room: ${filePath}`);
     }
     const absolute = path.join(reviewRoot, ...filePath.split("/"));
-    if (!fs.existsSync(absolute)) continue;
-    const stats = fs.lstatSync(absolute);
+    let stats;
+    try {
+      stats = fs.lstatSync(absolute);
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      throw error;
+    }
     if (stats.isSymbolicLink() || !stats.isFile()) throw new Error(`Shared reviews reject symlinks and special files: ${filePath}`);
     const real = fs.realpathSync(absolute);
     if (real !== stableReviewRoot && !real.startsWith(stableReviewRoot + path.sep)) throw new Error(`Shared review path escapes its worktree: ${filePath}`);
@@ -5095,18 +5220,63 @@ function trustedSharedReviewState(reviewRoot) {
   return state;
 }
 
-function assertExactSharedFileReviews(reviewRoot, proposalFiles, reviewState) {
+function reviewWorkspaceResourceMode(reviewRoot, filePath) {
+  const absolute = path.join(reviewRoot, ...filePath.split("/"));
+  let stats;
+  try {
+    stats = fs.lstatSync(absolute);
+  } catch (error) {
+    if (error?.code === "ENOENT") return "absent";
+    throw error;
+  }
+  if (stats.isSymbolicLink() || !stats.isFile()) {
+    throw new Error(`Shared reviews reject symlinks and special files: ${filePath}`);
+  }
+  return (stats.mode & 0o111) !== 0 ? "100755" : "100644";
+}
+
+function legacyReviewedResourceMode(reviewRoot, review, filePath, contentHash) {
+  const modes = new Set();
+  for (const revision of [review.baseRevision, review.proposalHead]) {
+    let entries;
+    try {
+      entries = gitTreeEntries(reviewRoot, safeRevision(revision, "reviewed resource revision"), [filePath]);
+    } catch {
+      continue;
+    }
+    const entry = entries.find((item) => item.path === filePath);
+    if (!entry || entry.type !== "blob" || !["100644", "100755"].includes(entry.mode)) continue;
+    const content = runGit(reviewRoot, ["cat-file", "blob", entry.object], { encoding: null, maxBuffer: MAX_SHARED_TEXT_BYTES + 1 });
+    const revisionContentHash = createHash("sha256").update(content).digest("hex");
+    if (revisionContentHash === contentHash) modes.add(entry.mode);
+  }
+  return modes.size === 1 ? [...modes][0] : "";
+}
+
+function assertExactSharedFileReviews(reviewRoot, proposalFiles, reviewState, reviewMetadata) {
   const missing = [];
   for (const filePath of proposalFiles) {
     const abs = path.join(reviewRoot, ...filePath.split("/"));
-    const exists = fs.existsSync(abs) && fs.statSync(abs).isFile();
+    const resourceMode = reviewWorkspaceResourceMode(reviewRoot, filePath);
+    const exists = resourceMode !== "absent";
     const contentHash = createHash("sha256").update(exists ? fs.readFileSync(abs) : Buffer.alloc(0)).digest("hex");
     const review = reviewState.reviews?.[filePath];
     const resourceState = exists ? "present" : "absent";
     const stateMatches = review?.resourceState
       ? review.resourceState === resourceState
       : resourceState === "present";
-    if (review?.status !== "verified" || review.contentHash !== contentHash || !stateMatches || (resourceState === "absent" && !review.resourceVersion)) {
+    const reviewedMode = typeof review?.resourceMode === "string" && review.resourceMode
+      ? review.resourceMode
+      : resourceState === "absent"
+        ? "absent"
+        : legacyReviewedResourceMode(reviewRoot, reviewMetadata, filePath, contentHash);
+    if (
+      review?.status !== "verified"
+      || review.contentHash !== contentHash
+      || !stateMatches
+      || reviewedMode !== resourceMode
+      || (resourceState === "absent" && !review.resourceVersion)
+    ) {
       missing.push(filePath);
     }
   }
@@ -5139,12 +5309,330 @@ export function acceptedProposalCommitMessage(review, message, actor = null, pro
   return `${String(message || "Accept shared context proposal").trim()}\n\n${trailers.join("\n")}`;
 }
 
-export function acceptSharedReview(reviewRoot, { message = "Accept shared context proposal", actor = null, push = null } = {}) {
-  const resolvedReviewRoot = path.resolve(reviewRoot);
+function verifySharedMainDelivery(
+  checkout,
+  acceptedCommit,
+  defaultBranch,
+  push = null,
+  timeoutMs = DEFAULT_SHARED_DELIVERY_TIMEOUT_MS,
+) {
+  const branch = safeBranchName(defaultBranch, "shared default branch");
+  const authenticatedRemote = Boolean(push?.token && push?.url);
+  const remote = authenticatedRemote ? String(push.url) : "origin";
+  const options = {
+    stdio: ["ignore", "ignore", "pipe"],
+    ...(authenticatedRemote ? { env: gitHubAppGitEnvironment(push.token) } : {}),
+  };
+  try {
+    runSharedDeliveryGit(checkout, [
+      "fetch",
+      "--force",
+      "--prune",
+      "--no-tags",
+      remote,
+      `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+    ], {
+      ...options,
+      operation: "Git fetch delivery verification",
+      timeoutMs: sharedDeliveryTimeoutBudget(push, timeoutMs),
+    });
+  } catch (error) {
+    if (error?.code === "shared-delivery-timeout") throw error;
+    throw sharedContextError(
+      "shared-delivery-unverified",
+      `Unable to verify the accepted commit on origin/${branch}: ${String(error.stderr || error.message || error).trim()}`,
+      { acceptedCommit, defaultBranch: branch },
+    );
+  }
+  const verifiedRemoteHead = remoteRevision(checkout, branch);
+  if (!gitIsAncestor(checkout, acceptedCommit, verifiedRemoteHead)) {
+    throw sharedContextError(
+      "shared-delivery-unverified",
+      `The accepted commit is not reachable from origin/${branch} after push`,
+      { acceptedCommit, verifiedRemoteHead, defaultBranch: branch },
+    );
+  }
+  return verifiedRemoteHead;
+}
+
+function reviewedAcceptanceState(reviewRoot, review, policy, requiredReviewFiles = review.proposalFiles || []) {
+  const workspace = reviewWorkspaceChanges(reviewRoot, review.baseRevision);
+  assertPathsInProposalScope(workspace.files, policy);
+  const authorityFiles = new Set(review.proposalFiles || []);
+  const unauthorizedFiles = workspace.files.filter((filePath) => !authorityFiles.has(filePath));
+  if (unauthorizedFiles.length) {
+    throw new Error(`Shared review workspace contains files outside its review authority: ${unauthorizedFiles.join(", ")}`);
+  }
+  assertReviewWorkspaceFiles(reviewRoot, workspace.files);
+  const reviewState = trustedSharedReviewState(reviewRoot);
+  assertExactSharedFileReviews(reviewRoot, requiredReviewFiles, reviewState, review);
+  addIntentToAdd(reviewRoot, workspace.untracked);
+  const policyPaths = [...new Set([...(policy.allowedExact || []), ...(policy.allowedPrefixes || [])])];
+  if (!policyPaths.length) throw new Error("Shared review scope has no allowed paths");
+  const acceptedPatch = runGit(reviewRoot, ["diff", "--binary", "--full-index", review.baseRevision, "--", ...policyPaths], { encoding: null });
+  return { workspace, reviewState, policyPaths, acceptedPatch };
+}
+
+function withSharedAcceptanceLock(review, callback) {
+  const identity = `${review.repository}\0${review.proposal}\0${review.proposalHead}`;
+  const lock = path.join(sharedHome(), "locks", `accept-${hashKey(identity, 24)}.lock`);
+  const ownerToken = randomUUID();
+  const ownerHost = os.hostname();
+  fs.mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 });
+  while (true) {
+    let lockCreated = false;
+    try {
+      fs.mkdirSync(lock, { mode: 0o700 });
+      lockCreated = true;
+      writePrivateJson(path.join(lock, "owner.json"), {
+        pid: process.pid,
+        host: ownerHost,
+        token: ownerToken,
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + SHARED_ACCEPTANCE_LEASE_MS).toISOString(),
+        proposal: review.proposal,
+        proposalHead: review.proposalHead,
+      });
+      break;
+    } catch (error) {
+      if (lockCreated) {
+        try { fs.rmSync(lock, { recursive: true, force: true }); } catch {}
+      }
+      if (error.code !== "EEXIST") throw error;
+      let owner = {};
+      try { owner = readJson(path.join(lock, "owner.json"), {}) || {}; } catch {}
+      const now = Date.now();
+      const createdAt = Date.parse(owner.createdAt || 0);
+      const explicitExpiry = Date.parse(owner.expiresAt || 0);
+      let lockMtime = Number.NaN;
+      try { lockMtime = fs.statSync(lock).mtimeMs; } catch {}
+      const fallbackCreatedAt = Number.isFinite(createdAt)
+        ? createdAt
+        : (Number.isFinite(lockMtime) ? lockMtime : now);
+      const expiresAt = Number.isFinite(explicitExpiry)
+        ? explicitExpiry
+        : fallbackCreatedAt + SHARED_ACCEPTANCE_LEASE_MS;
+      const age = now - fallbackCreatedAt;
+      const expired = now >= expiresAt;
+      const abandonedLocalOwner = age > 5_000 && owner.host === ownerHost && !processExists(Number(owner.pid));
+      if (expired || abandonedLocalOwner) {
+        const staleLock = `${lock}.stale-${process.pid}-${randomUUID()}`;
+        try {
+          fs.renameSync(lock, staleLock);
+          fs.rmSync(staleLock, { recursive: true, force: true });
+        } catch {}
+        continue;
+      }
+      const busy = sharedContextError(
+        "shared-acceptance-busy",
+        "Another exact acceptance attempt is still in progress; retry after it finishes",
+        {
+          proposal: review.proposal,
+          proposalHead: review.proposalHead,
+          retryAfterMs: Number.isFinite(expiresAt) ? Math.max(0, expiresAt - now) : SHARED_ACCEPTANCE_LEASE_MS,
+        },
+      );
+      busy.retryable = true;
+      throw busy;
+    }
+  }
+  try {
+    return callback();
+  } finally {
+    const owner = readJson(path.join(lock, "owner.json"), {});
+    if (owner.token === ownerToken) {
+      try { fs.rmSync(lock, { recursive: true, force: true }); } catch {}
+    }
+  }
+}
+
+function commitMatchesExactReviewedResult(checkout, revision, acceptedPatch, policyPaths) {
+  const commit = safeRevision(revision, "shared acceptance commit");
+  try {
+    assertSafeTreeEntries(checkout, commit, policyPaths);
+  } catch {
+    return false;
+  }
+  const ancestry = tryGit(checkout, ["rev-list", "--parents", "-n", "1", commit]).split(/\s+/).filter(Boolean);
+  if (ancestry.length !== 2 || ancestry[0] !== commit) return false;
+  const parent = safeRevision(ancestry[1], "shared acceptance parent");
+  const comparisonRoot = path.join(
+    path.dirname(checkout),
+    "accept-verification",
+    `${hashKey(commit)}-${Date.now()}-${randomUUID()}`,
+  );
+  fs.mkdirSync(path.dirname(comparisonRoot), { recursive: true });
+  let worktreeCreated = false;
+  try {
+    runGit(checkout, ["worktree", "add", "--detach", comparisonRoot, parent], { stdio: ["ignore", "ignore", "pipe"] });
+    worktreeCreated = true;
+    const applied = spawnSync("git", ["apply", "--3way", "--whitespace=nowarn", "-"], {
+      cwd: comparisonRoot,
+      input: acceptedPatch,
+      encoding: "utf8",
+    });
+    if (applied.status !== 0 || tryGit(comparisonRoot, ["diff", "--name-only", "--diff-filter=U"])) return false;
+    runGit(comparisonRoot, ["add", "-A", "--", ...policyPaths]);
+    const staged = spawnSync("git", ["diff", "--cached", "--quiet"], {
+      cwd: comparisonRoot,
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    if (staged.status !== 1) return false;
+    const expectedTree = safeRevision(tryGit(comparisonRoot, ["write-tree"]), "expected shared acceptance tree");
+    const commitTree = safeRevision(tryGit(checkout, ["rev-parse", `${commit}^{tree}`]), "shared acceptance tree");
+    return expectedTree === commitTree;
+  } finally {
+    if (worktreeCreated) {
+      try { runGit(checkout, ["worktree", "remove", "--force", comparisonRoot], { stdio: ["ignore", "ignore", "ignore"] }); } catch {}
+    }
+  }
+}
+
+function exactProposalAcceptanceOnMain(checkout, mainRevision, proposal, proposalHead, acceptedPatch, policyPaths) {
+  const revisions = tryGit(checkout, ["rev-list", "--first-parent", safeRevision(mainRevision, "shared main revision")])
+    .split("\n")
+    .filter(Boolean);
+  for (const revision of revisions) {
+    const commit = safeRevision(revision, "shared acceptance commit");
+    if (!commitHasExactProposalAcceptance(checkout, commit, proposal, proposalHead)) continue;
+    if (!commitMatchesExactReviewedResult(checkout, commit, acceptedPatch, policyPaths)) continue;
+    const previousMain = tryGit(checkout, ["rev-parse", `${commit}^1`]);
+    return {
+      commit,
+      previousMain: previousMain ? safeRevision(previousMain, "shared acceptance parent") : "",
+    };
+  }
+  return null;
+}
+
+function recordAcceptedSharedReview(review, { commit, previousMain, verifiedRemoteHead, actor = null } = {}) {
+  const acceptedCommit = safeRevision(commit, "accepted commit");
+  const verifiedHead = safeRevision(verifiedRemoteHead, "verified remote head");
+  const normalizedActor = actor ? {
+    sub: auditTrailerValue(actor.sub, "reviewer identity"),
+    email: auditTrailerValue(actor.email, "reviewer email"),
+  } : null;
+  const result = {
+    accepted: true,
+    delivery: "main",
+    deliveryVerified: true,
+    proposal: review.proposal,
+    proposalHead: review.proposalHead,
+    previousMain: previousMain ? safeRevision(previousMain, "previous main") : "",
+    commit: acceptedCommit,
+    verifiedRemoteHead: verifiedHead,
+    defaultBranch: review.defaultBranch,
+    actor: normalizedActor,
+  };
+  recordOwnerProposalDecision(review.repository, {
+    proposal: review.proposal,
+    proposalHead: review.proposalHead,
+    decision: "accepted",
+    acceptedCommit,
+  }, {
+    ...proposalDecisionAuthorityOptions(),
+    actor: normalizedActor?.sub || normalizedActor?.email || "human-ui",
+  });
+  writePrivateJson(path.join(sharedHome(), "review-authority", `${review.authorityId}.json`), { ...review, accepted: result, acceptedAt: new Date().toISOString() });
+  appendContextRoomEvent("proposal.completed", {
+    projectId: review.projectId,
+    sharedRepository: review.repository,
+    resource: { proposal: review.proposal, proposalHead: review.proposalHead },
+    actor: normalizedActor,
+    data: {
+      commit: acceptedCommit,
+      previousMain: result.previousMain,
+      verifiedRemoteHead: verifiedHead,
+      defaultBranch: review.defaultBranch,
+      deliveryVerified: true,
+    },
+  });
+  return result;
+}
+
+function revalidateAcceptedSharedReview(
+  review,
+  checkout,
+  reviewRoot,
+  push = null,
+  timeoutMs = DEFAULT_SHARED_DELIVERY_TIMEOUT_MS,
+) {
+  const receipt = review.accepted;
+  const invalidReceipt = (message) => sharedContextError(
+    "shared-acceptance-receipt-invalid",
+    message,
+    { proposal: review.proposal, proposalHead: review.proposalHead },
+  );
+  if (
+    !receipt
+    || receipt.accepted !== true
+    || receipt.delivery !== "main"
+    || receipt.proposal !== review.proposal
+    || receipt.proposalHead !== review.proposalHead
+    || receipt.defaultBranch !== review.defaultBranch
+  ) {
+    throw invalidReceipt("The stored shared review acceptance receipt does not match this exact proposal revision");
+  }
+  let acceptedCommit;
+  try {
+    acceptedCommit = safeRevision(receipt.commit, "accepted commit");
+  } catch {
+    throw invalidReceipt("The stored shared review acceptance receipt has an invalid commit");
+  }
+  const verifiedRemoteHead = verifySharedMainDelivery(checkout, acceptedCommit, review.defaultBranch, push, timeoutMs);
+  if (!commitHasExactProposalAcceptance(checkout, acceptedCommit, review.proposal, review.proposalHead)) {
+    throw invalidReceipt("The stored shared review acceptance commit does not contain the exact proposal trailers");
+  }
+  let reviewed;
+  try {
+    reviewed = reviewedAcceptanceState(reviewRoot, review, review, review.proposalFiles || []);
+  } catch (error) {
+    throw invalidReceipt(`The stored shared review acceptance cannot be matched to its reviewed result: ${error.message}`);
+  }
+  if (!reviewed.acceptedPatch.length || !commitMatchesExactReviewedResult(checkout, acceptedCommit, reviewed.acceptedPatch, reviewed.policyPaths)) {
+    throw invalidReceipt("The stored shared review acceptance commit does not match the exact reviewed result");
+  }
+  const previousMain = tryGit(checkout, ["rev-parse", `${acceptedCommit}^1`]);
+  const normalizedActor = receipt.actor && typeof receipt.actor === "object" ? {
+    sub: auditTrailerValue(receipt.actor.sub, "reviewer identity"),
+    email: auditTrailerValue(receipt.actor.email, "reviewer email"),
+  } : null;
+  return {
+    accepted: true,
+    delivery: "main",
+    deliveryVerified: true,
+    proposal: review.proposal,
+    proposalHead: review.proposalHead,
+    previousMain: previousMain ? safeRevision(previousMain, "previous main") : "",
+    commit: acceptedCommit,
+    verifiedRemoteHead,
+    defaultBranch: review.defaultBranch,
+    actor: normalizedActor,
+  };
+}
+
+function acceptSharedReviewUnderLock(resolvedReviewRoot, {
+  message = "Accept shared context proposal",
+  actor = null,
+  push = null,
+  deliveryTimeoutMs = DEFAULT_SHARED_DELIVERY_TIMEOUT_MS,
+} = {}) {
   const review = readSharedReview(resolvedReviewRoot);
-  if (review.accepted) throw new Error("This exact shared review was already accepted and cannot be reused");
-  const checkout = ensureRepositoryClone(review.repository);
-  runGit(checkout, ["fetch", "--prune", "origin"], { stdio: ["ignore", "ignore", "pipe"] });
+  const boundedDeliveryTimeoutMs = sharedDeliveryTimeoutBudget(push, deliveryTimeoutMs);
+  const authenticatedEnvironment = push?.token && push?.url ? gitHubAppGitEnvironment(push.token) : null;
+  const checkout = ensureRepositoryClone(review.repository, {
+    timeoutMs: boundedDeliveryTimeoutMs,
+    env: authenticatedEnvironment,
+  });
+  if (review.accepted) {
+    return revalidateAcceptedSharedReview(review, checkout, resolvedReviewRoot, push, boundedDeliveryTimeoutMs);
+  }
+  runSharedDeliveryGit(checkout, ["fetch", "--prune", "origin"], {
+    stdio: ["ignore", "ignore", "pipe"],
+    ...(authenticatedEnvironment ? { env: authenticatedEnvironment } : {}),
+    operation: "Git fetch",
+    timeoutMs: boundedDeliveryTimeoutMs,
+  });
   const reviewHead = safeRevision(tryGit(resolvedReviewRoot, ["rev-parse", "HEAD"]), "review worktree head");
   if (reviewHead !== review.baseRevision) throw new Error("Review worktree history changed; materialize the proposal again");
   const configText = runGit(checkout, ["show", `${review.baseRevision}:${SHARED_REPOSITORY_CONFIG}`]);
@@ -5161,16 +5649,33 @@ export function acceptSharedReview(reviewRoot, { message = "Accept shared contex
   if (proposalFiles.some((filePath) => !(review.proposalFiles || []).includes(filePath))) {
     throw new Error("Shared review authority does not include every proposal-changed file");
   }
-  const reviewState = trustedSharedReviewState(resolvedReviewRoot);
-  assertExactSharedFileReviews(resolvedReviewRoot, requiredReviewFiles, reviewState);
-  const currentMain = remoteRevision(checkout, review.defaultBranch);
-  const workspace = reviewWorkspaceChanges(resolvedReviewRoot, review.baseRevision);
-  assertPathsInProposalScope(workspace.files, policy);
-  assertReviewWorkspaceFiles(resolvedReviewRoot, workspace.files);
-  addIntentToAdd(resolvedReviewRoot, workspace.untracked);
-  const policyPaths = [...(policy.allowedExact || []), ...policy.allowedPrefixes];
-  const acceptedPatch = runGit(resolvedReviewRoot, ["diff", "--binary", "--full-index", review.baseRevision, "--", ...policyPaths], { encoding: null });
+  const reviewed = reviewedAcceptanceState(resolvedReviewRoot, review, policy, requiredReviewFiles);
+  const { workspace, reviewState, policyPaths, acceptedPatch } = reviewed;
   if (!acceptedPatch.length) return { accepted: false, reason: "No accepted changes remain", proposal: review.proposal };
+  const currentMain = remoteRevision(checkout, review.defaultBranch);
+  const delivered = exactProposalAcceptanceOnMain(
+    checkout,
+    currentMain,
+    review.proposal,
+    review.proposalHead,
+    acceptedPatch,
+    policyPaths,
+  );
+  if (delivered) {
+    const verifiedRemoteHead = verifySharedMainDelivery(
+      checkout,
+      delivered.commit,
+      review.defaultBranch,
+      push,
+      boundedDeliveryTimeoutMs,
+    );
+    return recordAcceptedSharedReview(review, {
+      commit: delivered.commit,
+      previousMain: delivered.previousMain,
+      verifiedRemoteHead,
+      actor,
+    });
+  }
   const acceptanceRoot = path.join(repositoryCacheRoot(review.repository), "accept", `${hashKey(review.proposal)}-${Date.now()}`);
   runGit(checkout, ["worktree", "add", "--detach", acceptanceRoot, currentMain], { stdio: ["ignore", "ignore", "pipe"] });
   try {
@@ -5194,36 +5699,85 @@ export function acceptSharedReview(reviewRoot, { message = "Accept shared contex
       },
     });
     const acceptedCommit = safeRevision(tryGit(acceptanceRoot, ["rev-parse", "HEAD"]), "accepted commit");
-    assertSafeTreeEntries(acceptanceRoot, acceptedCommit, policy.allowedPrefixes);
+    assertSafeTreeEntries(acceptanceRoot, acceptedCommit, policyPaths);
     assertReviewableChangedPaths(acceptanceRoot, currentMain, acceptedCommit, workspace.files);
-    if (push?.token && push?.url) {
-      runGit(acceptanceRoot, ["push", String(push.url), `HEAD:refs/heads/${review.defaultBranch}`], {
-        stdio: ["ignore", "ignore", "pipe"],
-        env: gitHubAppGitEnvironment(push.token),
-      });
-    } else {
-      runGit(acceptanceRoot, ["push", "origin", `HEAD:refs/heads/${review.defaultBranch}`], { stdio: ["ignore", "ignore", "pipe"] });
+    if (
+      !commitHasExactProposalAcceptance(acceptanceRoot, acceptedCommit, review.proposal, review.proposalHead)
+      || !commitMatchesExactReviewedResult(acceptanceRoot, acceptedCommit, acceptedPatch, policyPaths)
+    ) {
+      throw sharedContextError(
+        "shared-acceptance-tree-mismatch",
+        "The generated acceptance commit does not match the exact reviewed result",
+        { proposal: review.proposal, proposalHead: review.proposalHead, acceptedCommit },
+      );
     }
-    const result = {
-      accepted: true,
-      delivery: "main",
-      proposal: review.proposal,
-      proposalHead: review.proposalHead,
-      previousMain: currentMain,
+    let pushError = null;
+    try {
+      if (push?.token && push?.url) {
+        runSharedDeliveryGit(acceptanceRoot, ["push", String(push.url), `${acceptedCommit}:refs/heads/${review.defaultBranch}`], {
+          stdio: ["ignore", "ignore", "pipe"],
+          env: gitHubAppGitEnvironment(push.token),
+          operation: "Git push",
+          timeoutMs: boundedDeliveryTimeoutMs,
+        });
+      } else {
+        runSharedDeliveryGit(acceptanceRoot, ["push", "origin", `${acceptedCommit}:refs/heads/${review.defaultBranch}`], {
+          stdio: ["ignore", "ignore", "pipe"],
+          operation: "Git push",
+          timeoutMs: boundedDeliveryTimeoutMs,
+        });
+      }
+    } catch (error) {
+      pushError = error;
+    }
+    if (pushError) {
+      try {
+        const refreshedRemoteHead = verifySharedMainDelivery(
+          checkout,
+          currentMain,
+          review.defaultBranch,
+          push,
+          boundedDeliveryTimeoutMs,
+        );
+        const competingDelivery = exactProposalAcceptanceOnMain(
+          checkout,
+          refreshedRemoteHead,
+          review.proposal,
+          review.proposalHead,
+          acceptedPatch,
+          policyPaths,
+        );
+        if (competingDelivery) {
+          return recordAcceptedSharedReview(review, {
+            commit: competingDelivery.commit,
+            previousMain: competingDelivery.previousMain,
+            verifiedRemoteHead: refreshedRemoteHead,
+            actor,
+          });
+        }
+      } catch {}
+      throw pushError;
+    }
+    const verifiedRemoteHead = verifySharedMainDelivery(
+      checkout,
+      acceptedCommit,
+      review.defaultBranch,
+      push,
+      boundedDeliveryTimeoutMs,
+    );
+    return recordAcceptedSharedReview(review, {
       commit: acceptedCommit,
-      defaultBranch: review.defaultBranch,
-      actor: actor ? { sub: auditTrailerValue(actor.sub, "reviewer identity"), email: auditTrailerValue(actor.email, "reviewer email") } : null,
-    };
-    writeJson(path.join(sharedHome(), "review-authority", `${review.authorityId}.json`), { ...review, accepted: result, acceptedAt: new Date().toISOString() });
-    appendContextRoomEvent("proposal.completed", {
-      projectId: review.projectId,
-      sharedRepository: review.repository,
-      resource: { proposal: review.proposal, proposalHead: review.proposalHead },
-      actor: actor ? { sub: auditTrailerValue(actor.sub, "reviewer identity"), email: auditTrailerValue(actor.email, "reviewer email") } : null,
-      data: { commit: acceptedCommit, previousMain: currentMain, defaultBranch: review.defaultBranch },
+      previousMain: currentMain,
+      verifiedRemoteHead,
+      actor,
     });
-    return result;
   } finally {
     try { runGit(checkout, ["worktree", "remove", "--force", acceptanceRoot], { stdio: ["ignore", "ignore", "ignore"] }); } catch {}
   }
+}
+
+export function acceptSharedReview(reviewRoot, options = {}) {
+  const resolvedReviewRoot = path.resolve(reviewRoot);
+  const review = readSharedReview(resolvedReviewRoot);
+  return withSharedAcceptanceLock(review, () => acceptSharedReviewUnderLock(resolvedReviewRoot, options));
 }

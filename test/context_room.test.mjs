@@ -3566,6 +3566,16 @@ test("a watched document stays reviewed only for its exact current content hash"
   writeDocReviewDecision(root, "docs/guide.md", { status: "verified", note: "reviewed" });
   assert.deepEqual(buildDocQaReport(root).queue, []);
 
+  fs.chmodSync(path.join(root, "docs", "guide.md"), 0o755);
+  const modeChanged = buildDocQaReport(root);
+  assert.equal(modeChanged.queue.length, 1);
+  assert.equal(modeChanged.queue[0].path, "docs/guide.md");
+  assert.equal(modeChanged.queue[0].reviewReason, "unverified-current");
+  assert.equal(modeChanged.reviewedPaths.includes("docs/guide.md"), false);
+  assert.equal(modeChanged.pendingPaths.includes("docs/guide.md"), true);
+  fs.chmodSync(path.join(root, "docs", "guide.md"), 0o644);
+  assert.deepEqual(buildDocQaReport(root).queue, []);
+
   fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\n\nVersion two.\n");
   execFileSync("git", ["add", "docs/guide.md"], { cwd: root, stdio: "ignore" });
   execFileSync("git", ["commit", "-m", "update guide"], { cwd: root, stdio: "ignore" });

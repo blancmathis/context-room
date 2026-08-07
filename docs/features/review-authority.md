@@ -5,8 +5,8 @@ context_room:
   scope: context-room
   status: current
   canonical_for: human review authority and its security boundary
-  last_verified: 2026-08-04
-  sources: [src/review_authority.mjs, src/context_room.mjs, src/context_settings.mjs, src/shared_context.mjs, src/cli_registry.mjs, bin/context-room.mjs, test/review_authority.test.mjs, test/context_settings.test.mjs, test/context_room.test.mjs, test/shared_context.test.mjs]
+  last_verified: 2026-08-07
+  sources: [src/review_authority.mjs, src/context_room.mjs, src/context_settings.mjs, src/shared_context.mjs, src/github_app_token.mjs, src/event_journal.mjs, src/cli_registry.mjs, bin/context-room.mjs, test/review_authority.test.mjs, test/context_settings.test.mjs, test/context_room.test.mjs, test/shared_context.test.mjs, test/remote_accept_challenge.test.mjs, test/acceptance_timeout.test.mjs, test/event_journal_context_engine.test.mjs]
 ---
 
 # Review Authority
@@ -15,7 +15,7 @@ context_room:
 
 Accepting, rejecting, verifying, or confirming removal of documentation is a human-owned action. Context Room blocks agent-facing decision commands, refuses agent-driven reductions of the review scope, fails closed when project configuration narrows the last owner-authorized scope, and preserves evidence when a shared proposal ref disappears unexpectedly. Individual file decisions are direct actions in the human UI. Multi-file batches and terminal proposal decisions require the agent operating that surface to ask once, then after the first yes restate the exact action, project, proposal or file scope, and effects, ask again, and make no mutation without a second separate, unambiguous yes.
 
-These controls are defense in depth. A process with unrestricted access to the same operating-system account can read local files, drive the browser, or invoke Git directly. Local nonces and signed receipts detect or block ordinary bypasses; they do not prove physical human presence. Strong enforcement against that process requires an external trust anchor such as provider-side rules with a separate reviewer identity, a passkey or hardware-backed user-presence check, or a separately sandboxed account.
+These controls are defense in depth. A process with unrestricted access to the same operating-system account can read local files, drive the browser, or invoke Git directly. Local nonces, one-use terminal challenges, and signed receipts detect or block ordinary bypasses; they do not prove physical human presence. Strong enforcement against that process requires an external trust anchor such as provider-side rules with a separate reviewer identity, a passkey or hardware-backed user-presence check, or a separately sandboxed account.
 
 ## Defines
 
@@ -32,19 +32,24 @@ The content-level review workflow, GitHub account administration, or a hardware-
 3. An agent may add or widen review coverage, but only the owner interface may narrow or remove it.
 4. Editing `.context-room/config.json` cannot silently reduce effective review coverage below the last owner-authorized scope.
 5. A terminal shared-proposal decision is bound to the exact proposal branch and commit hash.
-6. Rejecting a shared proposal archives its exact commit without deleting the protected `proposal/*` ref.
-7. Disappearance of a previously observed proposal without exact accepted or rejected evidence remains visible as a critical authority violation.
-8. Shared acceptance requires current signed review evidence for every proposal-changed path, including a human-confirmed absent state for a rejected file.
-9. Missing, altered, recovered, or inconsistent evidence never means reviewed.
+6. Shared acceptance additionally requires one fresh, one-use server challenge bound to the signed administrator identity on remote QM, or to the current owner-interface nonce instance in local mode, plus the review authority, `accept` action, and exact proposal head. The local binding proves continuity with that interface instance, not a person's physical identity.
+7. Rejecting a shared proposal archives its exact commit without deleting the protected `proposal/*` ref.
+8. Disappearance of a previously observed proposal without exact accepted or rejected evidence remains visible as a critical authority violation.
+9. Shared acceptance requires current signed review evidence for every proposal-changed path. That evidence binds the present or absent state, exact content, and safe Git resource mode; a rejected file additionally requires a human-confirmed absent version.
+10. Recovery after an uncertain delivery requires both the exact proposal trailers and a commit tree that equals the reviewed result applied to that commit's single parent. Symlinks, gitlinks, special entries, an unexpected executable-bit change, or any other tree mismatch fail closed.
+11. Missing, altered, recovered, or inconsistent evidence never means reviewed.
+12. A verified terminal decision removes a proposal from active queues only for the authority installation that holds its signed evidence. Another installation without that evidence keeps the proposal visible; matching Git trailers alone never confer terminal authority.
 
 ## Control Layers
 
 ```mermaid
 flowchart LR
   agent["Agent or local process"] -->|may propose or widen scope| app["Context Room"]
-  human["Human owner interface"] -->|nonce-bound decision request| app
+  human["Human owner interface"] -->|opens terminal confirmation| challenge["One-use terminal challenge"]
+  challenge -->|remote admin or local UI instance, authority, action, proposal head| app
   app -->|signed owner scope and rejection receipt| local["Owner-local authority state"]
   app -->|signed digest of exact review state| evidence["Project and global review evidence"]
+  app -->|consumes challenge once| challenge
   app -->|proposal and immutable rejection archive| git["Shared Git repository"]
   provider["GitHub rulesets"] -->|block proposal deletion and rejected-ref mutation| git
   git -->|missing ref or inconsistent archive| alert["Critical authority violation"]
@@ -63,9 +68,9 @@ The diagram shows the intended chain, not a claim that local state authenticates
 | Agent removes or narrows `watchAllow`, `watchRules`, `allowedPaths`, Startup context, or Startup skills through typed settings | The plan is rejected with `human-authority-required`. | The owner may intentionally save a narrower scope in Settings. |
 | Agent runs `watch set --mode off`, `agent unwatch`, replaces a live rule with a narrower mode, or inserts a narrower child rule beneath a recursive parent | The command is rejected with `human-authority-required`. Direct config and typed-settings evaluation also widen an overriding child back to the protected semantics. Adding a new rule or widening an existing rule remains allowed. | Direct filesystem access is handled by the next layer, not by the CLI alone. |
 | Process edits `.context-room/config.json` directly | Context Room keeps the last owner-authorized scope effective and reports `review_authority_tamper` as critical. | The HMAC key is local to the same OS account; this detects tampering but is not a hostile same-user boundary. |
-| Process sends a raw review or owner-settings HTTP request | Protected local mutations require the per-server owner nonce injected into the current UI. Headerless requests fail with `review_authority_nonce_required`. | Browser automation or a process that can read the page can obtain the nonce. It is request provenance, not user-presence proof. |
+| Process sends a raw review or owner-settings HTTP request | Protected local mutations require the per-server owner nonce injected into the current UI. Headerless requests fail with `review_authority_nonce_required`. Terminal acceptance also requires its separate one-use challenge. | Browser automation or a process that can read the page can obtain the nonce. It is request provenance, not user-presence proof. |
 | Process edits the project review-state JSON or the global review ledger | Context Room compares the normalized state with its mirrored signed digest. Altered claims are ignored and `review_evidence_tamper` is reported as critical. | A same-user process that can erase both authority mirrors and the key is outside the local trust boundary. |
-| Process calls shared acceptance directly | Acceptance reloads trusted review evidence and requires a current exact `verified` decision for every proposal-changed path and unchanged direct dependency selected for review. Missing, stale, altered, recovered, or absent-without-version evidence fails closed. | A same-user process can invoke lower-level review writers or drive the owner UI; external human identity is stronger. |
+| Process calls shared acceptance directly | Acceptance reloads trusted review evidence and requires both a current exact `verified` decision for every proposal-changed path and unchanged direct dependency selected for review, and a fresh matching terminal challenge. Missing, stale, altered, recovered, absent-without-version, expired, reused, or mismatched evidence fails closed. In remote QM mode, both challenge creation and direct acceptance return `503 shared_context_remote_acceptance_unavailable` when the repository-scoped GitHub App is not configured. | A same-user process can drive the owner UI and obtain a challenge; external human-presence proof is stronger. |
 | Process deletes a remote `proposal/*` ref | A Context Room-published or previously observed proposal remains in the queue as `externally_deleted`; review actions are disabled and recovery is required. | A never-observed branch cannot be reconstructed from local evidence. Provider-side deletion protection closes this gap. |
 | Process creates `rejected/*` at the exact expected name and proposal head | Context Room treats the proposal as rejected. Repository write protection is the authority boundary for this terminal state; the local receipt is audit metadata only. | Any actor allowed to create that exact remote ref can reject the proposal. |
 | Rejection archive is changed or removed | The proposal stays visible as `rejection_archive_missing`; rejected refs are intended to be immutable. | Remote enforcement depends on the repository rulesets being installed and verified. |
@@ -80,7 +85,15 @@ The exact normalized project review state and global review ledger are also boun
 
 Shared proposal rejection receipts use the corresponding private authority directory under `~/.context-room/shared/`. They record the repository, proposal branch, exact head, terminal decision, archive ref, actor label, and time. They remain useful audit metadata, but invalid JSON, missing signatures, signature mismatch, or repository mismatch cannot override the remote archive state and do not prevent an exact matching archive from being terminal.
 
+Successful acceptance records its exact proposal, proposal head, accepted commit, verified remote head, default branch, and reviewer metadata in the same private authority area. The receipt is written to a private temporary file and atomically renamed only after remote delivery is proved. A missing or corrupt receipt can therefore be rebuilt only from stronger Git evidence: the exact proposal trailers, a single-parent commit whose complete tree equals the reviewed result applied to that parent, safe blob modes and entry types, and renewed proof that the remote default branch contains that commit. Matching trailers alone never authorize recovery.
+
 Project configuration remains portable intent. Owner-local authority state is the anti-silent-narrowing control for this device; it is intentionally not committed to the project.
+
+## Terminal Acceptance Challenges
+
+Opening **Put on main** records `proposal.acceptance.confirmation_opened` and issues a short-lived challenge for the signed QM administrator identity, or the current owner-interface nonce instance in local mode, together with the review authority, `accept` action, and proposal head. Confirming the dialog records `proposal.acceptance.confirmed` and consumes that challenge before any Git acceptance work begins. A challenge cannot authorize another proposal, revision, action, remote administrator, local interface instance, or recovered authority state, and a consumed or expired challenge cannot be replayed. These audit entries contain decision metadata, not document content, and never replace the signed per-file review evidence.
+
+The GitHub App installation-token request has a 15-second budget. Clone, initial fetch, push, and delivery-verification fetch each use a non-zero 120-second Git delivery budget in both remote and local acceptance. A timeout returns HTTP `504` with `retryable: true` and either `github-app-token-timeout` or `shared-delivery-timeout`; the consumed challenge is not replayed, so **Retry** opens a fresh terminal confirmation.
 
 ## Shared Proposal Evidence
 
@@ -130,6 +143,10 @@ The security regression suite covers:
 - direct review-state and global-ledger forgery being ignored and reported as critical;
 - protected local HTTP mutations requiring the current UI nonce;
 - exact-revision decision receipts detecting tampering;
+- terminal acceptance endpoints recording `proposal.acceptance.confirmation_opened` then `proposal.acceptance.confirmed`, with the signed remote administrator or local owner-interface principal and no challenge identifier;
+- remote challenge and acceptance endpoints returning `503` before authority or Git mutation when no GitHub App is configured;
+- 15-second GitHub App token and 120-second Git delivery budgets surfacing retryable timeouts without reporting or recording success;
+- uncertain-delivery recovery requiring exact proposal trailers, the exact reviewed single-parent tree, and safe resource modes and entry types before an atomic acceptance receipt is reconciled;
 - direct shared acceptance refusing incomplete exact human file decisions;
 - human rejection preserving the proposal ref;
 - external proposal deletion remaining visible; and
@@ -140,4 +157,6 @@ Run the focused checks with:
 ```bash
 node --test test/review_authority.test.mjs test/context_settings.test.mjs
 node --test --test-name-pattern='review authority|externally deleted proposal|rejecting a proposal|GitHub security setup' test/context_room.test.mjs test/shared_context.test.mjs
+node --test --test-name-pattern='terminal acceptance endpoints journal' test/shared_context.test.mjs
+node --test test/remote_accept_challenge.test.mjs test/acceptance_timeout.test.mjs
 ```

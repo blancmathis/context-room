@@ -32,11 +32,18 @@ function sanitizedEventValue(value, depth = 0) {
   if (Array.isArray(value)) return value.slice(0, 100).map((item) => sanitizedEventValue(item, depth + 1));
   if (typeof value === "object") {
     return Object.fromEntries(Object.entries(value)
-      .filter(([key]) => !["content", "text", "patch", "diff", "token", "secret"].includes(String(key).toLowerCase()))
+      .filter(([key]) => !["content", "text", "patch", "diff", "token", "secret", "challengeid"].includes(
+        String(key).toLowerCase().replace(/[^a-z0-9]/g, ""),
+      ))
       .slice(0, 100)
       .map(([key, item]) => [String(key).slice(0, 120), sanitizedEventValue(item, depth + 1)]));
   }
   return String(value).slice(0, 2_000);
+}
+
+function normalizedEventActor(value) {
+  if (value && typeof value === "object") return sanitizedEventValue(value);
+  return normalizedIdentity(value);
 }
 
 function readJournalLines() {
@@ -58,6 +65,7 @@ function rotateJournalIfNeeded() {
 }
 
 export function appendContextRoomEvent(type, {
+  actor = "",
   projectId = "",
   locationId = "",
   sharedProjectId = "",
@@ -68,6 +76,7 @@ export function appendContextRoomEvent(type, {
 } = {}) {
   ensureJournalDirectory();
   rotateJournalIfNeeded();
+  const normalizedActor = normalizedEventActor(actor);
   const event = {
     schemaVersion: CLI_EVENT_SCHEMA_VERSION,
     cursor: `${Date.now().toString(36)}-${process.pid.toString(36)}-${randomUUID().slice(0, 8)}`,
@@ -79,6 +88,7 @@ export function appendContextRoomEvent(type, {
     sharedRepository: normalizedIdentity(sharedRepository, 1_000),
     resource: sanitizedEventValue(resource),
     data: sanitizedEventValue(data),
+    ...(normalizedActor ? { actor: normalizedActor } : {}),
   };
   const file = contextRoomEventJournalPath();
   fs.appendFileSync(file, JSON.stringify(event) + "\n", { encoding: "utf8", mode: 0o600 });
@@ -108,6 +118,7 @@ function normalizeStoredEvent(event) {
     locationId: normalizedIdentity(event.locationId, 1_000),
     sharedProjectId: normalizedIdentity(event.sharedProjectId),
     sharedRepository: normalizedIdentity(event.sharedRepository, 1_000),
+    ...(event.actor != null ? { actor: normalizedEventActor(event.actor) } : {}),
   };
 }
 
