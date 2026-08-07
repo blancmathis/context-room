@@ -299,13 +299,7 @@ async function assertWorkbenchGutters(page, data, width) {
   const compact = width <= 639;
   const gutter = compact ? 12 : 20;
   await page.setViewportSize({ width, height: compact ? 844 : 900 });
-  const workspaceUrl = `${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=hub`;
-  try {
-    await page.goto(workspaceUrl);
-  } catch (error) {
-    if (!String(error?.message || error).includes("net::ERR_ABORTED")) throw error;
-    await page.goto(workspaceUrl);
-  }
+  await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=hub`);
   await waitForReady(page);
   await ensureExplorerOpen(page);
   await expectHorizontalPadding(page, ".app > aside", 8);
@@ -467,6 +461,8 @@ async function assertWorkbenchGutters(page, data, width) {
 
     const proposal = page.locator('[data-context-room-review-entry]:has([data-source="shared"])').first();
     await proposal.click();
+    await expect(page).toHaveURL((url) => url.port !== new URL(data.origin).port && url.searchParams.get("view") === "proposal");
+    await waitForBoot(page);
     await expect(page.locator("#proposalReviewPage")).toBeVisible();
     await expectHorizontalPadding(page, ".proposal-review-head", gutter);
     await expectHorizontalPadding(page, ".proposal-review-meta", gutter);
