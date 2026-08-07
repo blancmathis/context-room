@@ -4,7 +4,7 @@ context_room:
   scope: context-room
   status: current
   canonical_for: global Context Room registry and views
-  last_verified: 2026-08-04
+  last_verified: 2026-08-06
   sources: [src/context_hub.mjs, src/context_room.mjs, src/context_engine.mjs, src/context_inventory.mjs, src/codex_prompt_center.mjs, src/shared_context.mjs, bin/context-room.mjs, bin/context-room-remote.mjs, docs/features/shared-context.md, docs/features/codex-prompt-center.md, docs/remote-qm.md]
 ---
 
@@ -71,6 +71,15 @@ Room cannot infer the match, add `--shared-project <shared-project-id>`.
 global room. `init` remains write-only. Shared setup records the repository and
 links the local project to its shared project ID. The legacy `--no-local` flag
 is still accepted by `hub` for compatibility but is no longer needed.
+
+The owner can also open **Manage projects…** and choose **New project**. Context
+Room creates one new folder below the configured Computer Explorer root,
+creates its `docs/` directory, initializes `docs/` as both allowed and watched,
+registers the exact canonical root, and selects the new project in the same
+Workspace. The parent must already exist inside the configured root, symbolic
+link parents are rejected, and Context Room never reuses or overwrites an
+existing target folder. This flow initializes Context Room only; it does not
+invent a Git repository or application scaffold.
 
 Every registered Git worktree keeps its own root, branch, configuration, and
 local review state. Context Room groups those locations under one logical
@@ -198,7 +207,7 @@ parents and returns to the tree.
 
 Every review item has exactly one source: **Local** for a file or **Shared** for a proposal. A project may be available through both independent sources, in which case the project catalog shows two separate badges rather than inventing a combined source. When the owner selects such a mixed project, Home keeps both review types visible but warns that two documentation review flows are active. **Keep Shared** and **Keep Local** prepare a source-grounded migration prompt in the active Codex composer; they never send the prompt or mutate the project directly.
 
-**Manage projects…** shows every registered project, including clean local projects and shared projects with no local folder. Filters can narrow by project or by local versus shared source. Search covers project names, proposal metadata, paths, sessions, hashes, roots, and repositories.
+**Manage projects…** shows every registered project, including clean local projects and shared projects with no local folder. **New project** creates and registers a documentation-ready local folder. Selecting a connected or shared-only project also exposes **New shared document**, which creates a proposal without changing accepted shared truth. Filters can narrow by project or by local versus shared source. Search covers project names, proposal metadata, paths, sessions, hashes, roots, and repositories.
 
 Repository-wide proposal scopes appear as a dedicated **Global skills** project. They stay searchable and filterable without being duplicated under every project that consumes them.
 

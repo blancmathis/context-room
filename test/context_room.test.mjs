@@ -49,6 +49,7 @@ import {
   buildDocQaReport,
   buildDocumentationGraph,
   createStartupSkillFile,
+  createContextHubProject,
   createFolder,
   createMarkdownFile,
   createMemoryServer,
@@ -464,6 +465,8 @@ test("the global Context Room keeps project targeting inside one workspace", () 
   assert.match(html, /id="globalProjectSearch"[\s\S]*id="globalProjectList"/);
   assert.match(html, /\.shared-proposal-workspace \{ position: fixed; inset: 0 0 0 320px;/);
   assert.match(html, /\.app\.sidebar-collapsed ~ \.shared-proposal-workspace \{ left: 56px; \}/);
+  assert.match(html, /id="contextHubCreateProject"[\s\S]*New project/);
+  assert.match(html, /id="contextHubCreateSharedDocument"[\s\S]*New shared document/);
   assert.doesNotMatch(html, /id="sharedProposalBrowser"/);
   assert.match(html, /body\.focused-review-context-room \.context-room-review-toolbar \{ grid-template-columns:/);
   assert.match(html, /\.context-hub-review-filter\[hidden\] \{ display: none !important; \}/);
@@ -504,6 +507,9 @@ test("the global Context Room keeps project targeting inside one workspace", () 
   assert.doesNotMatch(script, /function contextHubProjectDirectUrl/);
   assert.doesNotMatch(script, /function revealRequested(?:StartupEnvironment|ContextHealth)/);
   assert.match(script, /\/api\/context-hub\/project-explorer\/action/);
+  assert.match(script, /function showContextHubCreateProjectDialog\([\s\S]*\/api\/context-hub\/projects/);
+  assert.match(script, /function showContextHubCreateSharedDocumentDialog\([\s\S]*\/api\/context-hub\/shared-documents/);
+  assert.match(script, /Accepted shared main stays unchanged/);
   assert.match(script, /\/api\/context-hub\/project-inspection\?projectId=/);
   assert.match(script, /data-global-project-shared[\s\S]*state\.sharedProposalProject = sharedButton\.dataset\.globalProjectShared/);
   assert.match(script, /function renderContextHealth\(\)[\s\S]*if \(IS_GLOBAL_CONTEXT_ROOM\) \{[\s\S]*renderGlobalProjectInspection\(panel, holder\);[\s\S]*return;/);
@@ -2168,6 +2174,48 @@ test("allowed paths are driven by project config", () => {
   assert.equal(isAllowedMemoryPath("README.md", settings), true);
   assert.equal(isAllowedMemoryPath("src/private.js", settings), false);
   assert.equal(isAllowedMemoryPath("../secret.md", settings), false);
+});
+
+test("Context Hub creates and registers a new documentation-ready project inside Computer Explorer", async (t) => {
+  const computerRoot = makeRoot();
+  const parent = path.join(computerRoot, "projects");
+  fs.mkdirSync(parent);
+
+  const created = createContextHubProject({
+    computerRoot,
+    parent,
+    folderName: "atlas",
+    title: "Atlas",
+  });
+
+  assert.equal(created.projectRoot, fs.realpathSync(path.join(parent, "atlas")));
+  assert.equal(created.registered.title, "Atlas");
+  assert.equal(fs.statSync(path.join(created.projectRoot, "docs")).isDirectory(), true);
+  const settings = readMemoryWebappSettings(created.projectRoot);
+  assert.deepEqual(settings.allowedPaths, ["docs/"]);
+  assert.deepEqual(settings.watchAllow, ["docs/"]);
+  assert.throws(() => createContextHubProject({ computerRoot, parent, folderName: "atlas", title: "Atlas" }), /already exists/);
+  assert.throws(() => createContextHubProject({ computerRoot, parent: path.dirname(computerRoot), folderName: "escape", title: "Escape" }), /inside the configured Computer Explorer root/);
+
+  const hostRoot = makeRoot();
+  const preferencesPath = path.join(makeRoot(), "preferences.json");
+  initializeContextRoomProject(hostRoot, { allowedPaths: [], watchAllow: [] });
+  writeGlobalContextRoomPreferences({ explorer: { computerRoot } }, preferencesPath);
+  const { server } = createMemoryServer({ root: hostRoot, globalPreferencesPath: preferencesPath });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/context-hub/projects`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ parent, folderName: "beacon", title: "Beacon" }),
+  });
+  const apiCreated = await response.json();
+  assert.equal(response.status, 201, JSON.stringify(apiCreated));
+  assert.equal(apiCreated.projectRoot, fs.realpathSync(path.join(parent, "beacon")));
+  assert.equal(apiCreated.catalog.projects.some((project) => (
+    project.root === apiCreated.projectRoot
+    || (project.worktrees || []).some((worktree) => worktree.root === apiCreated.projectRoot)
+  )), true, JSON.stringify(apiCreated.catalog.projects));
 });
 
 test("appearance, sound, and shortcut preferences are shared across Context Rooms and stay out of project config", async (t) => {

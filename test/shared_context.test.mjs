@@ -29,6 +29,7 @@ import {
   materializeSharedReview,
   previewSharedSkillAssignment,
   previewSharedInstructionAssignment,
+  proposeSharedDocumentationFile,
   proposeSharedInstructionAssignment,
   proposeSharedInstructionUnassignment,
   proposeSharedSkillAssignment,
@@ -262,6 +263,10 @@ test("shared proposal review keeps navigation and explicit completion in the pro
   assert.match(html, /data-proposal-review-selected/);
   assert.match(html, /Accept selected/);
   assert.match(html, /Reject selected/);
+  assert.match(html, /data-proposal-unreview-path/);
+  assert.match(html, /function requestSharedProposalFileUnreview/);
+  assert.match(html, /\/api\/shared-context\/unreview-file/);
+  assert.match(html, /Accepted shared main and the proposal branch remain unchanged/);
   assert.match(html, /Created|Modified|Deleted|Renamed|Copied|Dependency review/);
   assert.doesNotMatch(html, /\.proposal-review-file-open\s*\{[^}]*display:\s*contents/);
   assert.match(html, /\.proposal-review-file-open\s*\{[^}]*display:\s*grid/);
@@ -2103,6 +2108,65 @@ test("a registered shared repository can be browsed and reviewed without a local
   assert.equal(review.metadata.repository, fixture.remote);
 });
 
+test("a shared-only project can create a Markdown document as a published proposal", async (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+
+  const created = proposeSharedDocumentationFile(fixture.remote, {
+    projectId: "demo",
+    path: "product/principles",
+    title: "Product principles",
+    description: "Define the durable product principles and boundaries future implementation must preserve.",
+  });
+
+  assert.equal(created.documentPath, "product/principles.md");
+  assert.equal(created.repositoryPath, "projects/demo/docs/product/principles.md");
+  assert.match(created.proposal.branch, /^proposal\/demo\//);
+  assert.deepEqual(created.proposal.files, ["projects/demo/docs/product/principles.md"]);
+  const proposed = git(fixture.base, ["--git-dir", fixture.remote, "show", `refs/heads/${created.proposal.branch}:${created.repositoryPath}`]);
+  assert.match(proposed, /id: demo\.docs\.product\.principles/);
+  assert.match(proposed, /# Product principles/);
+  assert.notEqual(spawnSync("git", ["--git-dir", fixture.remote, "cat-file", "-e", `refs/heads/main:${created.repositoryPath}`]).status, 0);
+  assert.throws(() => proposeSharedDocumentationFile(fixture.remote, {
+    projectId: "demo",
+    path: "../escape.md",
+    title: "Escape",
+    description: "This invalid path must never leave the shared project documentation root.",
+  }), /safe repository-relative path/);
+  assert.throws(() => proposeSharedDocumentationFile(fixture.remote, {
+    projectId: "demo",
+    path: "product/principles.txt",
+    title: "Wrong format",
+    description: "This invalid format must not create a shared documentation proposal.",
+  }), /must use the \.md extension/);
+
+  const room = createMemoryServer({ root: fixture.project });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve, reject) => room.server.close((error) => error ? reject(error) : resolve())));
+  const baseUrl = `http://127.0.0.1:${room.server.address().port}`;
+  const repositoryResponse = await fetch(baseUrl + "/api/context-hub/shared-repositories", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ repository: fixture.remote }),
+  });
+  assert.equal(repositoryResponse.status, 201, JSON.stringify(await repositoryResponse.json()));
+  const apiResponse = await fetch(baseUrl + "/api/context-hub/shared-documents", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      repository: fixture.remote,
+      projectId: "demo",
+      path: "operations/runbook.md",
+      title: "Operations runbook",
+      description: "Define the shared operating sequence, owner boundaries, and recovery checks.",
+    }),
+  });
+  const apiCreated = await apiResponse.json();
+  assert.equal(apiResponse.status, 201, JSON.stringify(apiCreated));
+  assert.equal(apiCreated.repositoryPath, "projects/demo/docs/operations/runbook.md");
+  assert.equal(apiCreated.catalog.projects.some((project) => project.shared?.projectId === "demo"), true);
+});
+
 test("rejecting a proposal removes it from the active queue without deleting its protected proposal ref", (t) => {
   const fixture = makeFixture();
   withSharedHome(t, fixture);
@@ -2734,6 +2798,42 @@ test("shared proposal file batches preflight every file before accepting or reje
   assert.deepEqual(result.docqa.reviewedPaths.sort(), ["projects/demo/docs/DROP.md", "projects/demo/docs/KEEP.md"]);
   assert.equal(fs.existsSync(path.join(review.reviewRoot, "projects/demo/docs/KEEP.md")), true);
   assert.equal(fs.existsSync(path.join(review.reviewRoot, "projects/demo/docs/DROP.md")), false);
+
+  const staleUnreviewResponse = await fetch(origin + "/api/shared-context/unreview-file", {
+    method: "POST",
+    headers: projectHeader,
+    body: JSON.stringify({ expectedProposalHead: "0".repeat(40), path: "projects/demo/docs/DROP.md" }),
+  });
+  assert.equal(staleUnreviewResponse.status, 409);
+  assert.equal((await staleUnreviewResponse.json()).code, "shared_context_review_batch_stale");
+
+  const unreviewDropResponse = await fetch(origin + "/api/shared-context/unreview-file", {
+    method: "POST",
+    headers: projectHeader,
+    body: JSON.stringify({ expectedProposalHead: published.head, path: "projects/demo/docs/DROP.md" }),
+  });
+  assert.equal(unreviewDropResponse.status, 200);
+  const unreviewedDrop = await unreviewDropResponse.json();
+  assert.deepEqual(unreviewedDrop.docqa.reviewedPaths, ["projects/demo/docs/KEEP.md"]);
+  assert.deepEqual(unreviewedDrop.docqa.pendingPaths, ["projects/demo/docs/DROP.md"]);
+  assert.equal(fs.readFileSync(path.join(review.reviewRoot, "projects/demo/docs/DROP.md"), "utf8"), "# Drop\n");
+
+  const duplicateUnreviewResponse = await fetch(origin + "/api/shared-context/unreview-file", {
+    method: "POST",
+    headers: projectHeader,
+    body: JSON.stringify({ expectedProposalHead: published.head, path: "projects/demo/docs/DROP.md" }),
+  });
+  assert.equal(duplicateUnreviewResponse.status, 409);
+
+  const unreviewKeepResponse = await fetch(origin + "/api/shared-context/unreview-file", {
+    method: "POST",
+    headers: projectHeader,
+    body: JSON.stringify({ expectedProposalHead: published.head, path: "projects/demo/docs/KEEP.md" }),
+  });
+  assert.equal(unreviewKeepResponse.status, 200);
+  const unreviewedKeep = await unreviewKeepResponse.json();
+  assert.deepEqual(unreviewedKeep.docqa.reviewedPaths, []);
+  assert.deepEqual(unreviewedKeep.docqa.pendingPaths.sort(), ["projects/demo/docs/DROP.md", "projects/demo/docs/KEEP.md"]);
 });
 
 test("shared review endpoint rejects only the exact opened proposal revision", async (t) => {

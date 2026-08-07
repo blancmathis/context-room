@@ -3808,8 +3808,22 @@ function rememberProposalObservation(repository, item, state = "active") {
   writeProposalObservations(repository, observations);
 }
 
-export function createSharedProposal(root, { title, description = "", scope = "project", branch = "", sessionId = process.env.CODEX_THREAD_ID || "" } = {}) {
-  const synced = syncSharedContext(root, { allowOffline: false });
+function sharedProjectRepositoryState(repository, projectId) {
+  const synced = syncSharedRepositoryState(repository, { allowOffline: false });
+  const normalizedProjectId = safeId(projectId, "projectId");
+  const project = synced.catalog.projects.find((item) => item.id === normalizedProjectId);
+  if (!project) throw new Error(`Shared project is not registered in ${synced.repositoryConfig.projectsFile}: ${normalizedProjectId}`);
+  return {
+    ...synced,
+    connection: {
+      repository: synced.connection.repository,
+      projectId: normalizedProjectId,
+      projectRoot: "",
+    },
+  };
+}
+
+function createSharedProposalFromState(synced, { sourceRoot = "", title, description = "", scope = "project", branch = "", sessionId = process.env.CODEX_THREAD_ID || "" } = {}) {
   const { connection, repositoryConfig, revision } = synced;
   const safeTitle = proposalTitle(title);
   const safeDescription = proposalDescription(description);
@@ -3818,10 +3832,10 @@ export function createSharedProposal(root, { title, description = "", scope = "p
   const proposalRoot = path.join(repositoryCacheRoot(connection.repository), "proposals", hashKey(proposal));
   if (fs.existsSync(proposalRoot)) throw new Error(`Proposal workspace already exists: ${proposalRoot}`);
   runGit(checkout, ["worktree", "add", "-b", proposal, proposalRoot, revision], { stdio: ["ignore", "ignore", "pipe"] });
-  const sourceRoot = connection.projectRoot || path.resolve(root);
-  const source = sourceIdentity(sourceRoot);
-  const sourceCommit = tryGit(sourceRoot, ["rev-parse", "HEAD"]);
-  const sourceBranch = tryGit(sourceRoot, ["branch", "--show-current"]);
+  const resolvedSourceRoot = connection.projectRoot || (sourceRoot ? path.resolve(sourceRoot) : "");
+  const source = resolvedSourceRoot ? sourceIdentity(resolvedSourceRoot) : null;
+  const sourceCommit = resolvedSourceRoot ? tryGit(resolvedSourceRoot, ["rev-parse", "HEAD"]) : "";
+  const sourceBranch = resolvedSourceRoot ? tryGit(resolvedSourceRoot, ["branch", "--show-current"]) : "";
   const registry = readJson(proposalRegistryPath(connection.repository), { version: 1, proposals: {} });
   registry.proposals[proposal] = {
     branch: proposal,
@@ -3839,6 +3853,10 @@ export function createSharedProposal(root, { title, description = "", scope = "p
   };
   writeJson(proposalRegistryPath(connection.repository), registry);
   return registry.proposals[proposal];
+}
+
+export function createSharedProposal(root, options = {}) {
+  return createSharedProposalFromState(syncSharedContext(root, { allowOffline: false }), { ...options, sourceRoot: root });
 }
 
 function proposalScopeId(connection, scope) {
@@ -3956,13 +3974,17 @@ function proposalCommitMessage(entry, message) {
   return `${String(message || entry.title || "Propose shared context changes").trim()}\n\n${trailers.join("\n")}`;
 }
 
-function proposalEntry(root, branch) {
-  const connection = readSharedProjectConnection(root);
-  if (!connection) throw new Error("This project has no approved shared-context binding");
+function proposalEntryForConnection(connection, branch) {
   const registry = readJson(proposalRegistryPath(connection.repository), { proposals: {} });
   const entry = registry.proposals?.[branch];
   if (!entry || !fs.existsSync(entry.root)) throw new Error(`Unknown local proposal workspace: ${branch}`);
   return { connection, entry, registry };
+}
+
+function proposalEntry(root, branch) {
+  const connection = readSharedProjectConnection(root);
+  if (!connection) throw new Error("This project has no approved shared-context binding");
+  return proposalEntryForConnection(connection, branch);
 }
 
 export function listSharedProposalWorkspaces(root, { sessionId = "", scope = "" } = {}) {
@@ -4040,9 +4062,14 @@ function changedFiles(cwd, base) {
   return [...new Set([...committed, ...working, ...untracked])];
 }
 
-export function publishSharedProposal(root, { proposal, message = "", title, description } = {}) {
-  const synced = syncSharedContext(root, { allowOffline: false });
-  const { connection, entry, registry } = proposalEntry(root, proposal);
+function publishSharedProposalFromState(synced, { proposal, message = "", title, description, author = null } = {}) {
+  const { connection, entry, registry } = proposalEntryForConnection(synced.connection, proposal);
+  const commitEnv = author?.name && author?.email ? {
+    GIT_AUTHOR_NAME: String(author.name),
+    GIT_AUTHOR_EMAIL: String(author.email),
+    GIT_COMMITTER_NAME: String(author.name),
+    GIT_COMMITTER_EMAIL: String(author.email),
+  } : {};
   const config = readSharedRepositoryConfig(entry.root);
   const identity = proposalIdentity(config, entry.branch, { root: entry.root });
   const expectedScopeId = ["global", "skills", "instructions"].includes(entry.scope) ? entry.scope : entry.projectId;
@@ -4070,7 +4097,7 @@ export function publishSharedProposal(root, { proposal, message = "", title, des
     const commitArgs = ["commit"];
     if (!hasStagedChanges) commitArgs.push("--allow-empty");
     commitArgs.push("-m", proposalCommitMessage(entry, message));
-    runGit(entry.root, commitArgs, { stdio: ["ignore", "ignore", "pipe"] });
+    runGit(entry.root, commitArgs, { stdio: ["ignore", "ignore", "pipe"], env: commitEnv });
   }
   const unmerged = tryGit(entry.root, ["diff", "--name-only", "--diff-filter=U"]);
   if (unmerged) {
@@ -4082,7 +4109,7 @@ export function publishSharedProposal(root, { proposal, message = "", title, des
   const rebased = synced.revision !== previousBaseRevision;
   if (rebased) {
     try {
-      runGit(entry.root, ["rebase", "--onto", synced.revision, previousBaseRevision, entry.branch], { stdio: ["ignore", "ignore", "pipe"] });
+      runGit(entry.root, ["rebase", "--onto", synced.revision, previousBaseRevision, entry.branch], { stdio: ["ignore", "ignore", "pipe"], env: commitEnv });
     } catch (error) {
       const files = tryGit(entry.root, ["diff", "--name-only", "--diff-filter=U"]).split("\n").filter(Boolean);
       entry.conflict = { status: "conflict", mainRevision: synced.revision, files, updatedAt: new Date().toISOString() };
@@ -4098,7 +4125,7 @@ export function publishSharedProposal(root, { proposal, message = "", title, des
     entry.baseRevision = synced.revision;
     entry.semanticReviewRequired = true;
     delete entry.conflict;
-    runGit(entry.root, ["commit", "--allow-empty", "-m", proposalCommitMessage(entry, "Rebase proposal onto current shared main")], { stdio: ["ignore", "ignore", "pipe"] });
+    runGit(entry.root, ["commit", "--allow-empty", "-m", proposalCommitMessage(entry, "Rebase proposal onto current shared main")], { stdio: ["ignore", "ignore", "pipe"], env: commitEnv });
   }
   const head = safeRevision(tryGit(entry.root, ["rev-parse", "HEAD"]), "proposal head");
   const files = gitChangedPaths(entry.root, `${entry.baseRevision}...${head}`);
@@ -4136,6 +4163,87 @@ export function publishSharedProposal(root, { proposal, message = "", title, des
     data: { head, baseRevision: entry.baseRevision, semanticReviewRequired: Boolean(entry.semanticReviewRequired) },
   });
   return { ...entry, head, files, rebased };
+}
+
+export function publishSharedProposal(root, options = {}) {
+  return publishSharedProposalFromState(syncSharedContext(root, { allowOffline: false }), options);
+}
+
+function sharedDocumentSlug(value, fallback = "document") {
+  return String(value || fallback)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || fallback;
+}
+
+function sharedDocumentId(projectId, relPath) {
+  const withoutExtension = relPath.replace(/\.md$/i, "");
+  const segments = withoutExtension.split("/").map((segment) => sharedDocumentSlug(segment)).filter(Boolean);
+  return [safeId(projectId, "projectId"), "docs", ...segments].join(".");
+}
+
+function sharedMarkdownTemplate(projectId, relPath, title) {
+  return [
+    "---",
+    "context_room:",
+    `  id: ${sharedDocumentId(projectId, relPath)}`,
+    "---",
+    "",
+    `# ${proposalTitle(title, "New document")}`,
+    "",
+    "## Summary",
+    "",
+    "## Defines",
+    "",
+    "## Does not define",
+    "",
+  ].join("\n");
+}
+
+export function proposeSharedDocumentationFile(repository, { projectId, path: requestedPath, title, description, sessionId = "" } = {}) {
+  const safeTitle = proposalTitle(title, "New shared document");
+  const safeDescription = proposalDescription(description, { optional: false });
+  const suggestedPath = sharedDocumentSlug(safeTitle) + ".md";
+  let documentPath = safeRelativePath(requestedPath || suggestedPath, "shared document path");
+  const extension = path.posix.extname(documentPath);
+  if (!extension) documentPath += ".md";
+  else if (extension.toLowerCase() !== ".md") throw new Error("shared documents must use the .md extension");
+  if (documentPath.split("/").some((segment) => segment.startsWith("."))) {
+    throw new Error("shared document path must not use hidden files or folders");
+  }
+  const synced = sharedProjectRepositoryState(repository, projectId);
+  const repositoryPath = safeRelativePath(
+    `${synced.repositoryConfig.projectsPath}/${synced.connection.projectId}/docs/${documentPath}`,
+    "shared document repository path",
+  );
+  const acceptedTarget = path.join(synced.snapshot, ...repositoryPath.split("/"));
+  if (fs.existsSync(acceptedTarget)) throw new Error(`Shared document already exists: ${repositoryPath}`);
+  const proposal = createSharedProposalFromState(synced, {
+    title: `Create ${safeTitle}`,
+    description: safeDescription,
+    scope: "project",
+    sessionId,
+  });
+  const target = path.join(proposal.root, ...repositoryPath.split("/"));
+  if (fs.existsSync(target)) throw new Error(`Shared document already exists: ${repositoryPath}`);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, sharedMarkdownTemplate(synced.connection.projectId, documentPath, safeTitle), "utf8");
+  const published = publishSharedProposalFromState(synced, {
+    proposal: proposal.branch,
+    title: proposal.title,
+    description: safeDescription,
+    message: `Create shared document ${documentPath}`,
+    author: { name: "Context Room", email: ["context-room", "local.invalid"].join("@") },
+  });
+  return {
+    repository: synced.connection.repository,
+    projectId: synced.connection.projectId,
+    repositoryPath,
+    documentPath,
+    proposal: published,
+  };
 }
 
 export function listSharedProposals(root, { allProjects = true, refresh = true } = {}) {

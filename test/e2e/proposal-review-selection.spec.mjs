@@ -15,11 +15,14 @@ async function waitForBoot(page) {
   }).toBe("ready");
 }
 
-test("@smoke a reviewed proposal row explains why it cannot be selected", async ({ page }, testInfo) => {
+test("@smoke a reviewed proposal row explains selection and can return to review", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === "chromium-mobile", "The touch path shares the selection helper and is covered by the source contract test.");
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
   const { origin } = fixture();
   await page.goto(origin + "/?hub=1");
   await waitForBoot(page);
+  await page.waitForTimeout(500);
 
   const selectionResult = await page.evaluate(() => {
     state.files = [{ path: "README.md", label: "README.md" }];
@@ -70,6 +73,19 @@ test("@smoke a reviewed proposal row explains why it cannot be selected", async 
     rowText: expect.stringContaining("Reviewed"),
     selectedCount: 0,
   });
+
+  const unreview = page.getByRole("button", { name: "Unreview README.md and return it to Review" });
+  await expect(unreview).toBeVisible();
+  await unreview.click();
+  expect(pageErrors).toEqual([]);
+  const dialog = page.getByRole("dialog", { name: "Unreview this document?" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("Accepted shared main and the proposal branch remain unchanged.");
+  const confirm = dialog.getByRole("button", { name: "Unreview", exact: true });
+  await expect(confirm).toBeEnabled();
+  await expect(dialog.getByRole("checkbox")).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toBeHidden();
 });
 
 test("@smoke terminal proposal acceptance keeps progress and server errors visible", async ({ page }) => {

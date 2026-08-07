@@ -49,6 +49,7 @@ import {
   previewSharedInstructionAssignment,
   previewSharedInstructionImport,
   previewSharedInstructionUnassignment,
+  proposeSharedDocumentationFile,
   proposeSharedInstructionAssignment,
   proposeSharedInstructionUnassignment,
   proposeSharedSkillAssignment,
@@ -364,6 +365,8 @@ const BACKGROUND_REPORT_INVALIDATING_PATHS = new Set([
   "/api/settings",
   "/api/watch-rule",
   "/api/context-hub/project-settings",
+  "/api/context-hub/projects",
+  "/api/context-hub/shared-documents",
   "/api/context-hub/project-explorer/action",
   "/api/doctor/ack",
   "/api/docqa/review",
@@ -378,6 +381,7 @@ const BACKGROUND_REPORT_INVALIDATING_PATHS = new Set([
   "/api/shared-context/accept",
   "/api/shared-context/reject",
   "/api/shared-context/review-files",
+  "/api/shared-context/unreview-file",
   "/api/shared-context/refresh",
   "/api/context-hub/reject",
 ]);
@@ -3209,7 +3213,7 @@ function gitFileAtRevision(root, revision, relPath) {
   return Buffer.from(result);
 }
 
-function restoreSharedReviewPathFromBase(root, revision, relPath) {
+function restoreSharedReviewPathFromRevision(root, revision, relPath) {
   const normalized = normalizeRelPath(relPath);
   const target = path.join(path.resolve(root), ...normalized.split("/"));
   assertManagedProjectPath(root, target, normalized);
@@ -3306,8 +3310,8 @@ export function writeSharedProposalFileBatchDecision(root, {
   try {
     if (decision === "reject") {
       for (const item of prepared) {
-        restoreSharedReviewPathFromBase(resolvedRoot, review.baseRevision, item.path);
-        if (item.change.fromPath) restoreSharedReviewPathFromBase(resolvedRoot, review.baseRevision, item.change.fromPath);
+        restoreSharedReviewPathFromRevision(resolvedRoot, review.baseRevision, item.path);
+        if (item.change.fromPath) restoreSharedReviewPathFromRevision(resolvedRoot, review.baseRevision, item.change.fromPath);
       }
     }
     for (const item of prepared) {
@@ -3328,6 +3332,60 @@ export function writeSharedProposalFileBatchDecision(root, {
     throw error;
   }
   return { decision, files: results, reviewedPaths: results.map((item) => item.path) };
+}
+
+export function writeSharedProposalFileUnreview(root, {
+  expectedProposalHead = "",
+  path: requestedPath = "",
+} = {}) {
+  const resolvedRoot = path.resolve(root);
+  const review = readSharedReview(resolvedRoot);
+  if (!expectedProposalHead) throw sharedRequestError("expectedProposalHead is required", 400, "shared_context_proposal_head_required");
+  if (String(expectedProposalHead) !== review.proposalHead) {
+    throw sharedReviewBatchConflict("The reviewed proposal commit does not match this unreview request", { expectedProposalHead, currentProposalHead: review.proposalHead });
+  }
+  const filePath = normalizeRelPath(String(requestedPath || ""));
+  if (!filePath || !(review.proposalFiles || []).includes(filePath)) {
+    throw sharedRequestError(`Invalid proposal review path: ${filePath || requestedPath || "(empty)"}`, 400, "shared_context_review_path_invalid");
+  }
+  const reviewedPaths = new Set(buildDocQaReport(resolvedRoot).reviewedPaths || []);
+  if (!reviewedPaths.has(filePath)) {
+    throw sharedReviewBatchConflict(`Proposal file is not currently reviewed: ${filePath}`, { path: filePath });
+  }
+  const change = (review.proposalChanges || []).find((item) => item.path === filePath) || { path: filePath, fromPath: null };
+  const touchedPaths = [filePath, change.fromPath].filter(Boolean);
+  const stateFile = path.join(resolvedRoot, DOCQA_REVIEW_STATE);
+  const ledgerFile = globalReviewLedgerPath(resolvedRoot);
+  const snapshots = new Map();
+  for (const relPath of touchedPaths) {
+    const target = path.join(resolvedRoot, ...normalizeRelPath(relPath).split("/"));
+    assertManagedProjectPath(resolvedRoot, target, relPath);
+    snapshots.set(target, snapshotRegularFile(target));
+  }
+  for (const filePathToSnapshot of [stateFile, ledgerFile]) snapshots.set(filePathToSnapshot, snapshotRegularFile(filePathToSnapshot));
+
+  try {
+    const current = readReviewTrackedFile(resolvedRoot, filePath);
+    const decision = writeDocReviewDecision(resolvedRoot, filePath, {
+      status: "unverified",
+      expectedResourceState: resourceStateForReviewFile(current),
+      expectedResourceVersion: resourceVersionForReviewFile(resolvedRoot, filePath, current),
+      expectedContentHash: hashContent(current.content),
+    });
+    restoreSharedReviewPathFromRevision(resolvedRoot, review.proposalHead, filePath);
+    if (change.fromPath) restoreSharedReviewPathFromRevision(resolvedRoot, review.proposalHead, change.fromPath);
+    return {
+      ...decision,
+      proposalHead: review.proposalHead,
+      restoredPaths: touchedPaths,
+    };
+  } catch (error) {
+    for (const [filePathToRestore, snapshot] of [...snapshots.entries()].reverse()) restoreRegularFileSnapshot(filePathToRestore, snapshot);
+    authorizeOwnerTrustedState(resolvedRoot, "review-state", readDocReviewState(resolvedRoot), { actor: "context-room-unreview-rollback" });
+    const ledgerRoot = globalReviewLedgerRoot(resolvedRoot);
+    authorizeOwnerTrustedState(ledgerRoot, "review-ledger", readGlobalReviewLedger(resolvedRoot), { actor: "context-room-unreview-rollback" });
+    throw error;
+  }
 }
 
 function normalizeWorkspaceId(value = "") {
@@ -6277,6 +6335,52 @@ export function initializeContextRoomProject(root = process.cwd(), options = {})
   };
 }
 
+function contextHubProjectFolderName(value) {
+  const folderName = String(value || "").trim();
+  if (!folderName || folderName.length > 120 || folderName === "." || folderName === ".." || folderName.startsWith(".")) {
+    throw new Error("Project folder name must be 1 to 120 visible characters and must not be hidden");
+  }
+  if (/[\\/\u0000-\u001f\u007f]/.test(folderName) || path.basename(folderName) !== folderName) {
+    throw new Error("Project folder name must be one safe folder name");
+  }
+  return folderName;
+}
+
+export function createContextHubProject({ computerRoot, parent, folderName, title = "" } = {}) {
+  const explorerRoot = path.resolve(String(computerRoot || ""));
+  const parentRoot = path.resolve(String(parent || explorerRoot));
+  if (!pathEntryExists(explorerRoot) || !fs.statSync(explorerRoot).isDirectory()) {
+    throw new Error(`Computer Explorer root is not a folder: ${explorerRoot}`);
+  }
+  if (!pathEntryExists(parentRoot) || !fs.statSync(parentRoot).isDirectory() || !projectPathIsContained(explorerRoot, parentRoot)) {
+    throw new Error("Project parent must be an existing folder inside the configured Computer Explorer root");
+  }
+  if (projectPathHasSymlinkComponent(explorerRoot, parentRoot)) {
+    throw new Error("Project parent must not use symbolic links");
+  }
+  const safeFolderName = contextHubProjectFolderName(folderName);
+  const projectRoot = path.join(parentRoot, safeFolderName);
+  if (!projectPathIsContained(explorerRoot, projectRoot, { allowMissing: true })) {
+    throw new Error("Project folder must stay inside the configured Computer Explorer root");
+  }
+  if (pathEntryExists(projectRoot)) throw new Error(`Project folder already exists: ${projectRoot}`);
+  const projectTitle = String(title || safeFolderName).trim().slice(0, 160) || safeFolderName;
+  fs.mkdirSync(projectRoot);
+  try {
+    fs.mkdirSync(path.join(projectRoot, "docs"));
+    const initialized = initializeContextRoomProject(projectRoot, {
+      title: projectTitle,
+      allowedPaths: ["docs/"],
+      watchAllow: ["docs/"],
+    });
+    const registered = registerContextHubProject(projectRoot, { title: projectTitle });
+    return { projectRoot: registered.root, initialized, registered };
+  } catch (error) {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    throw error;
+  }
+}
+
 function filterInferredHubSectionsForAllowedPaths(sections = [], allowedPaths = []) {
   const allowed = sanitizePathList(allowedPaths);
   const filterCard = (card) => {
@@ -9002,6 +9106,7 @@ function isOwnerReviewAuthorityMutation(pathname = "", method = "GET") {
     "POST /api/shared-context/accept",
     "POST /api/shared-context/reject",
     "POST /api/shared-context/review-files",
+    "POST /api/shared-context/unreview-file",
   ]).has(key);
 }
 
@@ -10637,6 +10742,64 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     sendJson(res, 200, attention);
     return;
   }
+  if (req.method === "POST" && url.pathname === "/api/context-hub/projects") {
+    const body = await readJsonBody(req);
+    const preferences = readGlobalContextRoomPreferences(globalPreferencesPath);
+    let created;
+    try {
+      created = createContextHubProject({
+        computerRoot: preferences.explorer.computerRoot,
+        parent: body.parent,
+        folderName: body.folderName,
+        title: body.title,
+      });
+    } catch (error) {
+      const status = /already exists/i.test(error.message) ? 409 : 400;
+      throw sharedRequestError(error.message, status, "context_hub_project_create_failed");
+    }
+    markContextHubSnapshotStale();
+    const catalog = await refreshContextHubSnapshot(root, { refreshShared: false, force: true });
+    appendContextRoomEvent("project.created", {
+      projectId: created.registered.logicalProjectId || created.registered.id,
+      locationId: created.registered.id,
+      resource: { path: created.projectRoot },
+      data: { title: created.registered.title },
+    });
+    sendJson(res, 201, {
+      project: created.registered,
+      projectRoot: created.projectRoot,
+      catalog,
+    });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/context-hub/shared-documents") {
+    const body = await readJsonBody(req);
+    const repository = String(body.repository || "").trim();
+    const projectId = String(body.projectId || "").trim();
+    const current = readFastContextHubState(root);
+    const selected = (current.projects || []).find((project) => (
+      project.shared?.repository === repository
+      && project.shared?.projectId === projectId
+      && projectId !== "global"
+    ));
+    if (!selected) throw sharedRequestError("Choose a registered shared project first", 404, "shared_project_not_found");
+    let created;
+    try {
+      created = proposeSharedDocumentationFile(repository, {
+        projectId,
+        path: body.path,
+        title: body.title,
+        description: body.description,
+        sessionId: body.sessionId,
+      });
+    } catch (error) {
+      throw sharedRequestError(`Could not create this shared document: ${error.message}`, 400, "shared_document_create_failed");
+    }
+    markContextHubSnapshotStale();
+    const catalog = await refreshContextHubSnapshot(root, { refreshShared: true, force: true });
+    sendJson(res, 201, { ...created, catalog });
+    return;
+  }
   if (req.method === "POST" && url.pathname === "/api/context-hub/shared-repositories") {
     const body = await readJsonBody(req);
     const repository = String(body.repository || "").trim();
@@ -11188,7 +11351,19 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       if (error.statusCode) throw error;
       throw sharedRequestError(error.message, 409, error.code || "shared_context_review_batch_failed");
     }
-    sendJson(res, 200, { ...result, docqa: buildDocQaReport(root), sharedContext: sharedContextUiState(root) });
+    sendJson(res, 200, { ...result, docqa: buildSharedReviewDocQaReport(root, readSharedReview(root)), sharedContext: sharedContextUiState(root) });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/shared-context/unreview-file") {
+    const body = await readJsonBody(req);
+    let result;
+    try {
+      result = writeSharedProposalFileUnreview(root, body);
+    } catch (error) {
+      if (error.statusCode) throw error;
+      throw sharedRequestError(error.message, 409, error.code || "shared_context_unreview_failed");
+    }
+    sendJson(res, 200, { ...result, docqa: buildSharedReviewDocQaReport(root, readSharedReview(root)), sharedContext: sharedContextUiState(root) });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/shared-context/accept") {
@@ -13719,7 +13894,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
     .app.sidebar-collapsed ~ .shared-proposal-workspace { left: 56px; }
     .shared-proposal-workspace[data-local-project-open="true"] { left: 0; }
     .shared-proposal-workspace[hidden] { display: none !important; }
-    .shared-proposal-workspace-head { display: grid; grid-template-columns: minmax(170px, .65fr) minmax(240px, 1.35fr) minmax(130px, .48fr) minmax(150px, .55fr) auto auto; align-items: center; gap: 8px; min-height: 68px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--panel-strong); }
+    .shared-proposal-workspace-head { display: grid; grid-template-columns: minmax(170px, .65fr) minmax(240px, 1.35fr) minmax(130px, .48fr) minmax(150px, .55fr) auto auto auto; align-items: center; gap: 8px; min-height: 68px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--panel-strong); }
     .shared-proposal-workspace-title { min-width: 0; }
     .shared-proposal-workspace-title strong { display: block; font-size: 15px; }
     .shared-proposal-workspace-title span { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; line-height: 1.25; }
@@ -14073,6 +14248,14 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
     .context-hub-relationship span { padding: 6px 8px; border-radius: 6px; background: var(--surface-floating-soft); }
     .shared-proposal-overview-actions { display: flex; align-items: center; gap: 10px; margin-top: 13px; }
     .shared-proposal-overview-actions .primary { min-height: 36px; }
+    .creation-dialog { width: min(520px, 100%); }
+    .creation-dialog-form { display: grid; gap: 13px; margin-top: 18px; }
+    .creation-dialog-field { display: grid; gap: 6px; color: var(--muted); font-size: 11px; }
+    .creation-dialog-field > span:first-child { color: var(--text-soft); font-weight: 720; }
+    .creation-dialog-field input, .creation-dialog-field textarea { width: 100%; min-height: 38px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); }
+    .creation-dialog-field textarea { min-height: 92px; resize: vertical; }
+    .creation-dialog-note { color: var(--muted); font-size: 10px; line-height: 1.45; }
+    .creation-dialog-status { min-height: 16px; color: var(--danger); font-size: 11px; }
     .shared-proposal-change-summary { color: var(--muted); font-size: 11px; }
     .shared-proposal-files { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 14px; max-height: 84px; margin-top: 12px; overflow: auto; }
     .shared-proposal-file { min-width: 0; overflow: hidden; color: var(--text-soft); font: 10px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
@@ -14117,7 +14300,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
     .codex-prompt-card-status[data-status="conflict"], .codex-prompt-card-status[data-status="mixed_versions"] { color: var(--danger); }
     .codex-prompt-card-status[data-status="restart_required"], .codex-prompt-card-status[data-status="pending_next_launch"], .codex-prompt-card-status[data-status="loaded_differs"] { color: var(--accent-2); }
     @media (max-width: 980px) {
-      .shared-proposal-workspace-head { grid-template-columns: minmax(170px, .65fr) minmax(0, 1fr) minmax(130px, .45fr) minmax(150px, .55fr) auto auto; }
+      .shared-proposal-workspace-head { grid-template-columns: minmax(170px, .65fr) minmax(0, 1fr) minmax(130px, .45fr) minmax(150px, .55fr) auto auto auto; }
       .shared-proposal-workspace-body { grid-template-columns: minmax(280px, 340px) minmax(0, 1fr); }
       .shared-proposal-files { grid-template-columns: 1fr; }
       .codex-prompt-surfaces { grid-template-columns: 1fr; }
@@ -14128,6 +14311,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
       .shared-proposal-workspace-head { grid-template-columns: minmax(0, 1fr) auto; gap: 7px; padding: 8px; }
       .shared-proposal-workspace-close { grid-column: 2; grid-row: 1; }
       #sharedProposalWorkspaceRefresh { grid-column: 1; grid-row: 2; justify-self: start; }
+      #contextHubCreateProject { grid-column: 2; grid-row: 2; }
       .shared-proposal-search { grid-column: 1 / -1; grid-row: 3; }
       .context-hub-source-filter { grid-column: 1; grid-row: 4; }
       #sharedProposalProjectFilter { grid-column: 2; grid-row: 4; }
@@ -14953,11 +15137,14 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
     .proposal-review-copy p { max-width: 72ch; color: var(--muted); }
     .proposal-review-meta { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 12px var(--workbench-gutter); border-bottom: 1px solid var(--line); background: var(--panel); }
     .proposal-review-files { display: grid; gap: 0; padding: 0; }
-    .proposal-review-file { width: 100%; min-width: 0; min-height: 44px; display: grid; align-items: center; padding: 0 var(--workbench-gutter); border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; box-shadow: none; }
+    .proposal-review-file { width: 100%; min-width: 0; min-height: 44px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 0 var(--workbench-gutter); border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; box-shadow: none; cursor: default; }
     .proposal-review-file[data-proposal-review-selected="true"] { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); box-shadow: inset 1px 0 0 var(--accent); }
     .proposal-review-file-open { width: 100%; min-width: 0; min-height: 44px; display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: 12px; padding: 12px 0; border: 0; background: transparent; color: inherit; cursor: pointer; text-align: left; touch-action: pan-y; }
     .proposal-review-file-open:focus-visible { position: relative; z-index: 1; outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: -3px; }
     .proposal-review-file-open:disabled { cursor: default; opacity: .62; }
+    .proposal-review-file-unreview { min-height: 30px; padding: 0 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-sidebar); color: var(--muted); cursor: pointer; font-size: 10px; font-weight: 760; white-space: nowrap; }
+    .proposal-review-file-unreview:hover { border-color: color-mix(in srgb, var(--accent) 38%, var(--line)); background: var(--surface-card-hover); color: var(--text); }
+    .proposal-review-file-unreview:disabled { cursor: wait; opacity: .5; }
     .proposal-review-file-selected-mark { width: 14px; color: var(--accent); font-size: 12px; font-weight: 800; text-align: center; }
     .proposal-review-file-selected-mark[hidden] { display: none !important; }
     .proposal-review-empty { padding-inline: var(--workbench-gutter); }
@@ -15505,6 +15692,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
         <span class="context-hub-project-trigger-label" data-context-hub-project-trigger-label>All projects</span>
         <span class="context-hub-project-trigger-icon" aria-hidden="true">⌄</span>
       </button>
+      <button id="contextHubCreateProject" class="dock-button primary" type="button" hidden>New project</button>
       <button id="sharedProposalWorkspaceRefresh" class="dock-button" type="button">Refresh</button>
       <button id="sharedProposalWorkspaceClose" class="dock-button shared-proposal-workspace-close" type="button" aria-label="Close this secondary view">Close</button>
     </header>
@@ -15568,6 +15756,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
           <div id="sharedProposalFiles" class="shared-proposal-files"></div>
           <div class="shared-proposal-overview-actions">
             <button id="sharedProposalOpenReview" class="dock-button primary" type="button">Open files to review</button>
+            <button id="contextHubCreateSharedDocument" class="dock-button" type="button" hidden>New shared document</button>
             <span id="sharedProposalChangeSummary" class="shared-proposal-change-summary"></span>
           </div>
         </article>
@@ -16940,7 +17129,7 @@ function contextHubHomeReviewItems(needle = "", visibility = "active") {
     .filter((item) => {
       if (["clean", "merged", "unavailable"].includes(item.reviewStatus)) return false;
       const project = contextHubProjectForItem(item);
-      const source = item.type === "shared" ? "shared" : "local";
+      const source = item.type === "shared" || project?.mode === "shared" ? "shared" : "local";
       const snoozed = Boolean(contextRoomReviewSnooze(item));
       return (
         (IS_GLOBAL_CONTEXT_ROOM
@@ -18471,6 +18660,8 @@ function renderSharedProposalWorkspace() {
   const homeMode = state.contextHubView === "home";
   const promptMode = state.contextHubView === "codex-prompts";
   const projectManagerMode = state.contextHubView === "project-manager";
+  const createProjectButton = el("contextHubCreateProject");
+  if (createProjectButton) createProjectButton.hidden = !projectManagerMode;
   heading.textContent = promptMode
     ? "Codex prompts"
     : projectManagerMode
@@ -18589,7 +18780,7 @@ function renderContextHubOverview(item) {
     return;
   }
   const project = item.project || contextHubProjectForItem(item);
-  const source = item.type === "shared" ? "shared" : "local";
+  const source = item.type === "shared" || project?.mode === "shared" ? "shared" : "local";
   const files = Array.isArray(item.files) ? item.files : [];
   const fileCount = Number(item.fileCount || files.length || 0);
   const author = item.type === "shared" ? (item.author?.name || item.author?.email || "Unknown author") : (item.localReview?.worktreeRoot || item.root || project?.root || "No local folder connected");
@@ -18597,7 +18788,7 @@ function renderContextHubOverview(item) {
   const session = item.type === "shared" ? (item.sessionId ? "session " + item.sessionId : "no linked session") : "local file review";
   const sourceBadge = el("contextHubOverviewSource");
   sourceBadge.dataset.source = source;
-  sourceBadge.textContent = item.type === "shared" ? "Shared" : "Local";
+  sourceBadge.textContent = source === "shared" ? "Shared" : "Local";
   el("sharedProposalOverviewProject").textContent = item.type === "shared" ? (item.projectTitle || item.projectId || "global") : (project?.title || item.title);
   el("sharedProposalOverviewState").textContent = item.localFile
       ? "Ready to review"
@@ -18622,6 +18813,20 @@ function renderContextHubOverview(item) {
       + (files.length > overviewFiles.length ? '<span class="shared-proposal-file">+' + (files.length - overviewFiles.length) + ' more files</span>' : '')
     : '<span class="shared-proposal-file">Changed-file details unavailable for this legacy proposal.</span>';
   const openButton = el("sharedProposalOpenReview");
+  const createSharedDocumentButton = el("contextHubCreateSharedDocument");
+  const sharedProject = item.type === "project" ? project?.shared : null;
+  const canCreateSharedDocument = Boolean(
+    state.contextHubView === "project-manager"
+    && sharedProject?.repository
+    && sharedProject?.projectId
+    && sharedProject.projectId !== "global"
+  );
+  if (createSharedDocumentButton) {
+    createSharedDocumentButton.hidden = !canCreateSharedDocument;
+    createSharedDocumentButton.dataset.sharedRepository = canCreateSharedDocument ? sharedProject.repository : "";
+    createSharedDocumentButton.dataset.sharedProject = canCreateSharedDocument ? sharedProject.projectId : "";
+    createSharedDocumentButton.dataset.contextHubProjectKey = canCreateSharedDocument ? project.projectKey : "";
+  }
   const proposalOpening = item.type === "shared" && state.contextRoomOpeningProposalId === item.id;
   openButton.hidden = false;
   openButton.disabled = proposalOpening || Boolean(item.authorityViolation) || item.available === false;
@@ -22263,6 +22468,7 @@ function proposalReviewFileEntries() {
       reviewed: Boolean(!preview && state.docqa && reviewedPaths.has(filePath)) || Boolean(preview && previewDocqa && previewReviewedPaths.has(filePath)),
       change,
       selectable: Boolean(reviewItem && (preview ? previewPendingPaths.has(filePath) : !reviewedPaths.has(filePath))),
+      unreviewable: Boolean(!preview && state.sharedContext?.mode === "review" && reviewedPaths.has(filePath)),
     };
   });
 }
@@ -22362,6 +22568,47 @@ function requestSharedProposalFileBatch(decision) {
   });
 }
 
+async function applySharedProposalFileUnreview(entry) {
+  const review = state.sharedContext?.mode === "review" ? state.sharedContext.review || {} : {};
+  if (!review.proposalHead || !entry?.unreviewable || state.proposalBatchBusy) return;
+  state.proposalBatchBusy = true;
+  state.proposalActionError = "";
+  renderProposalReviewPage();
+  setStatus("removing exact review proof for " + entry.path + "...");
+  try {
+    const result = await api("/api/shared-context/unreview-file", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedProposalHead: review.proposalHead, path: entry.path }),
+    });
+    state.docqa = result.docqa;
+    if (result.sharedContext) state.sharedContext = result.sharedContext;
+    state.proposalSelectedFiles.delete(entry.path);
+    workspaceUpdate("review-reset", { proposal: review.proposal, paths: [entry.path] });
+    setStatus("review removed · " + entry.path + " is pending again");
+  } catch (error) {
+    state.proposalActionError = error.message || "This proposal file could not be returned to review.";
+    setStatus("unreview blocked · " + state.proposalActionError);
+  } finally {
+    state.proposalBatchBusy = false;
+    renderProposalDockControls();
+    renderProposalReviewPage();
+  }
+}
+
+function requestSharedProposalFileUnreview(filePath) {
+  const entry = proposalReviewFileEntries().find((candidate) => candidate.path === normalizeUiPath(filePath));
+  if (!entry?.unreviewable) return;
+  const review = state.sharedContext?.review || {};
+  showConfirmDialog({
+    title: "Unreview this document?",
+    body: "Remove the current human review proof for " + entry.path + " in proposal " + (review.proposal || "") + " at exact revision " + (review.proposalHead || "") + " for " + (review.projectId || "this shared project") + ". Context Room will restore the proposal version in the review workspace and return the document to Review. Accepted shared main and the proposal branch remain unchanged.",
+    confirmLabel: "Unreview",
+    confirmVariant: "secondary",
+    onConfirm: () => applySharedProposalFileUnreview(entry),
+  });
+}
+
 function renderProposalReviewPage() {
   const title = el("proposalReviewTitle");
   const description = el("proposalReviewDescription");
@@ -22414,7 +22661,9 @@ function renderProposalReviewPage() {
       + '<span class="proposal-review-file-change" title="' + escapeHtml(entry.change?.fromPath ? 'From ' + entry.change.fromPath : changeLabel) + '">' + escapeHtml(changeLabel) + '</span>'
       + '<span class="proposal-review-file-state">' + escapeHtml(stateLabel) + '</span>'
       + '<span class="proposal-review-file-selected-mark"' + (selected ? '' : ' hidden') + ' aria-hidden="true">✓</span>'
-      + '</button></div>';
+      + '</button>'
+      + (entry.unreviewable ? '<button class="proposal-review-file-unreview" type="button" data-proposal-unreview-path="' + escapeHtml(entry.path) + '"' + (state.proposalBatchBusy ? ' disabled' : '') + ' aria-label="Unreview ' + escapeHtml(entry.path) + ' and return it to Review">Unreview</button>' : '')
+      + '</div>';
   }).join("") + (entries.length > visibleEntries.length
     ? '<button class="proposal-review-file" type="button" data-proposal-review-more><span class="proposal-review-file-copy"><strong>Load more files</strong><code>' + (entries.length - visibleEntries.length) + ' remaining</code></span><span class="proposal-review-file-state">Show 40 more</span></button>'
     : '') : '<div class="proposal-review-empty">No changed files are available in this exact proposal revision.</div>';
@@ -30332,6 +30581,140 @@ function showConfirmDialog({ title, body, confirmLabel = "Confirm", confirmPendi
   backdrop.querySelector(checkboxRequired ? "[data-confirm-checkbox]" : "[data-confirm-accept]")?.focus();
 }
 
+function showContextHubCreationDialog({ title, body, submitLabel, fields = [], onSubmit }) {
+  document.querySelector(".app")?.removeAttribute("inert");
+  document.querySelector(".confirm-backdrop")?.remove();
+  const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const backdrop = document.createElement("div");
+  const appShell = document.querySelector(".app");
+  backdrop.className = "confirm-backdrop";
+  const fieldMarkup = fields.map((field) => {
+    const input = field.multiline
+      ? '<textarea name="' + escapeHtml(field.name) + '" placeholder="' + escapeHtml(field.placeholder || "") + '"' + (field.required ? ' required' : '') + '>' + escapeHtml(field.value || "") + '</textarea>'
+      : '<input name="' + escapeHtml(field.name) + '" type="text" value="' + escapeHtml(field.value || "") + '" placeholder="' + escapeHtml(field.placeholder || "") + '"' + (field.required ? ' required' : '') + ' />';
+    return '<label class="creation-dialog-field"><span>' + escapeHtml(field.label) + '</span>' + input + (field.note ? '<span class="creation-dialog-note">' + escapeHtml(field.note) + '</span>' : '') + '</label>';
+  }).join("");
+  backdrop.innerHTML = '<section class="confirm-dialog creation-dialog" role="dialog" aria-modal="true" aria-label="' + escapeHtml(title) + '">'
+    + '<strong>' + escapeHtml(title) + '</strong>'
+    + '<p>' + escapeHtml(body) + '</p>'
+    + '<form class="creation-dialog-form">' + fieldMarkup
+    + '<div class="creation-dialog-status" aria-live="polite"></div>'
+    + '<div class="confirm-actions"><button class="file-action" type="button" data-creation-cancel>Cancel</button><button class="file-action primary" type="submit" data-creation-submit>' + escapeHtml(submitLabel) + '</button></div>'
+    + '</form></section>';
+  const form = backdrop.querySelector("form");
+  const close = ({ restoreFocus = true } = {}) => {
+    backdrop.remove();
+    appShell?.removeAttribute("inert");
+    document.removeEventListener("keydown", onKeydown);
+    if (restoreFocus && returnFocus?.isConnected) returnFocus.focus();
+  };
+  const onKeydown = (event) => {
+    if (event.key === "Escape") {
+      close();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = [...backdrop.querySelectorAll('button:not([disabled]), input:not([disabled]), textarea:not([disabled])')];
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+  backdrop.addEventListener("click", (event) => { if (event.target === backdrop) close(); });
+  backdrop.querySelector("[data-creation-cancel]")?.addEventListener("click", () => close());
+  form?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const submit = backdrop.querySelector("[data-creation-submit]");
+    const status = backdrop.querySelector(".creation-dialog-status");
+    submit.disabled = true;
+    status.textContent = "";
+    try {
+      const values = Object.fromEntries(new FormData(form).entries());
+      await onSubmit(values);
+      close({ restoreFocus: false });
+    } catch (error) {
+      status.textContent = error.message || "Creation failed.";
+      submit.disabled = false;
+    }
+  });
+  document.addEventListener("keydown", onKeydown);
+  appShell?.setAttribute("inert", "");
+  document.body.appendChild(backdrop);
+  backdrop.querySelector("input, textarea")?.focus();
+}
+
+function applyContextHubCreationCatalog(catalog, projectId = "") {
+  if (catalog) state.contextHub = catalog;
+  const selected = projectId ? (state.contextHub?.projects || []).find((project) => (
+    project.id === projectId || (project.worktrees || []).some((worktree) => worktree.id === projectId)
+  )) : null;
+  if (selected) {
+    state.sharedProposalProject = selected.projectKey;
+    state.contextHubSelection = "project:" + selected.projectKey;
+  }
+  state.globalProjectExplorerDetails.clear();
+  state.globalProjectExplorerErrors.clear();
+  renderGlobalProjectExplorer();
+  renderContextRoomGlobalReviewQueue();
+  renderSharedProposalWorkspace();
+  workspaceUpdate("catalog-refreshed");
+}
+
+function showContextHubCreateProjectDialog() {
+  const computerRoot = state.settings?.explorer?.computerRoot || DEFAULT_COMPUTER_EXPLORER_ROOT;
+  showContextHubCreationDialog({
+    title: "Create a project",
+    body: "Context Room will create this folder, initialize it, and register it in Projects.",
+    submitLabel: "Create project",
+    fields: [
+      { name: "title", label: "Project name", placeholder: "Atlas", required: true },
+      { name: "folderName", label: "Folder name", placeholder: "atlas", required: true, note: "One new folder name, without slashes." },
+      { name: "parent", label: "Parent folder", value: computerRoot, required: true, note: "Must stay inside the Computer Explorer root." },
+    ],
+    onSubmit: async (values) => {
+      const result = await api("/api/context-hub/projects", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(values),
+      });
+      applyContextHubCreationCatalog(result.catalog, result.project?.id || "");
+      setStatus("project created and registered");
+    },
+  });
+}
+
+function showContextHubCreateSharedDocumentDialog(button) {
+  const repository = button?.dataset.sharedRepository || "";
+  const projectId = button?.dataset.sharedProject || "";
+  const project = (state.contextHub?.projects || []).find((item) => item.projectKey === button?.dataset.contextHubProjectKey);
+  if (!repository || !projectId || !project) throw new Error("Choose a shared project first");
+  showContextHubCreationDialog({
+    title: "Create a shared document",
+    body: "The new file will be published on a proposal branch for human review. Accepted shared main stays unchanged.",
+    submitLabel: "Create proposal",
+    fields: [
+      { name: "title", label: "Document title", placeholder: "Product principles", required: true },
+      { name: "path", label: "Path inside docs", placeholder: "product/principles.md", required: true, note: "Markdown only. Context Room keeps the file inside this shared project's docs folder." },
+      { name: "description", label: "Why this document is needed", placeholder: "Define the durable product principles and the boundaries future implementation must preserve.", required: true, multiline: true },
+    ],
+    onSubmit: async (values) => {
+      const result = await api("/api/context-hub/shared-documents", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...values, repository, projectId }),
+      });
+      applyContextHubCreationCatalog(result.catalog, project.id || "");
+      setStatus("shared document proposal created: " + (result.proposal?.branch || result.documentPath));
+    },
+  });
+}
+
 function showHumanReviewDecisionDialog({ title, body, confirmLabel = "Confirm", confirmPendingLabel = "Working…", confirmVariant = "danger", additionalAcknowledgement = "", onConfirm }) {
   const checkboxLabel = "If an agent is operating, the user separately confirmed this exact action a second time";
   showConfirmDialog({
@@ -31529,6 +31912,11 @@ el("proposalDockBack")?.addEventListener("click", () => showProposalReview());
 el("sharedProposalSelect")?.addEventListener("change", renderSharedContextControls);
 el("sharedProposalWorkspaceRefresh")?.addEventListener("click", () => refreshContextHubUi().catch((error) => setStatus(error.message)));
 el("sharedProposalWorkspaceClose")?.addEventListener("click", closeContextRoomSecondaryView);
+el("contextHubCreateProject")?.addEventListener("click", showContextHubCreateProjectDialog);
+el("contextHubCreateSharedDocument")?.addEventListener("click", (event) => {
+  try { showContextHubCreateSharedDocumentDialog(event.currentTarget); }
+  catch (error) { setStatus(error.message); }
+});
 document.addEventListener("click", (event) => {
   const trigger = event.target.closest("[data-context-hub-project-picker-trigger]");
   if (!trigger) return;
@@ -31793,6 +32181,11 @@ el("proposalReviewFiles")?.addEventListener("click", (event) => {
   if (event.target.closest("[data-proposal-review-more]")) {
     state.proposalReviewVisibleCount = Math.max(40, Number(state.proposalReviewVisibleCount || 40)) + 40;
     renderProposalReviewPage();
+    return;
+  }
+  const unreview = event.target.closest("[data-proposal-unreview-path]");
+  if (unreview && !unreview.disabled) {
+    requestSharedProposalFileUnreview(unreview.dataset.proposalUnreviewPath);
     return;
   }
   const button = event.target.closest("[data-proposal-review-path]");

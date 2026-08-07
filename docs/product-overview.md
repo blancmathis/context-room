@@ -4,7 +4,7 @@ context_room:
   scope: context-room
   status: current
   canonical_for: product overview
-  last_verified: 2026-08-04
+  last_verified: 2026-08-06
   sources: [README.md, bin/context-room.mjs, src/context_room.mjs, src/review_authority.mjs, src/context_engine.mjs, src/context_inventory.mjs, src/context_snapshots.mjs, src/context_settings.mjs, src/context_diagnostics.mjs, src/provider_profiles.mjs, src/codex_prompt_center.mjs, src/context_hub.mjs, src/doc_agent.mjs, src/shared_context.mjs, schemas/config.schema.json, schemas/codex-prompt-catalog-v1.schema.json, schemas/codex-prompt-overrides-v1.schema.json, schemas/codex-prompt-publication-state-v2.schema.json, schemas/codex-prompt-runtime-receipt-v2.schema.json, schemas/doc-context.schema.json, schemas/shared-repository.schema.json, schemas/shared-skill-locations.schema.json, schemas/shared-instruction-locations.schema.json, docs/agent-configuration.md]
 ---
 
@@ -16,7 +16,7 @@ Context Room is a local browser UI for keeping project context visible, editable
 
 ## Product Loop
 
-1. Run `context-room setup` to initialize and register a project, or `context-room hub` to open the computer-wide room without adding the current directory. Both commands use the same global Context Room service.
+1. Run `context-room setup` to initialize and register an existing project, create a new project from **Manage projects… → New project**, or run `context-room hub` to open the computer-wide room without adding the current directory. Every entry point uses the same global Context Room service.
 2. Use the truth-aware hub to find current docs, targets, records, and source areas that matter.
 3. Edit safe text files inside `allowedPaths`.
 4. Review the current content versions covered by `watchAllow` and folder `watchRules`.
@@ -35,7 +35,7 @@ decision is exposed to agents.
 ## Main Surfaces
 
 - Context Room Home: one compact project-filterable queue that lists local files individually and shared changes by proposal, followed directly by the current project's Context Health, `hubSections`, and startup panels.
-- History and project management: secondary routes from the queue and project picker; every selected project and worktree keeps its own identity while remaining inside the single global room.
+- History and project management: secondary routes from the queue and project picker; owners can create a documentation-ready local project or propose a new document for a selected shared project while every project and worktree keeps its own identity inside the single global room.
 - Codex Prompt Center: an advanced global tool opened from Settings, with runtime-published official, effective-after-restart, and runtime-loaded views; exact overrides remain private to `$CODEX_HOME`, while protected and server-owned targets stay visible and read-only.
 - Explorer and editor: safe project text, with progressive folder loading in the global room, editing limited by `allowedPaths`, and four explicit folder watch modes.
 - Document Graph: progressive global, project, and local Canvas views of explicit document references and applicable context, with accepted truth visible by default and pending layers opt-in.

@@ -154,6 +154,17 @@ If an older revision is no longer an ancestor, Context Room reports
 
 ## Propose A Change
 
+An owner can create a shared Markdown document without a local code checkout.
+Open **Manage projects…**, select a connected or shared-only project, then choose
+**New shared document**. Context Room requires a title, a path relative to that
+project's `docs/` directory, and a current proposal description. It creates the
+file with a stable project-scoped `context_room.id`, `Summary`, `Defines`, and
+`Does not define` sections, then publishes the exact addition on a project-scoped
+`proposal/*` branch. The accepted default branch remains unchanged until the
+normal human file review and terminal acceptance flow completes. Unsafe,
+hidden, non-Markdown, escaping, or already-existing paths are rejected before
+publication.
+
 Open a bounded shared documentation change from the latest accepted remote
 commit:
 
@@ -253,7 +264,7 @@ Context Room records proposals when it publishes them and whenever it refreshes 
 
 Use the existing inline controls to accept or reject each change. Rejecting a change block rewrites the review worktree to remove that block; accepting it keeps the proposed result. This means the final worktree diff contains only the parts the human chose to accept.
 
-The proposal summary labels each path as created, modified, deleted, renamed, copied, or dependency-only review. Once the exact report identifies a file as pending, it can be selected with no permanent checkbox column: right-click its row, or press and hold it on touch screens, to enter selection mode. A selection started in the immediate Hub preview carries that exact path into the dedicated review room. Right-clicking while a row still reads **Checking…** only explains that the review state is loading; it never queues or applies a review decision. Trying to select a row already marked **Reviewed** shows an inline explanation that selection only applies to rows still marked **Review**; the reviewed file stays unchanged and can still be opened normally for inspection. Accepting a selection keeps the proposal versions; rejecting it restores the accepted-main versions, including add, delete, rename, and copy semantics. Dependency-only reviews can be batch-accepted but have no proposal delta to reject. A batch is limited to 200 files and is preflighted as one exact-revision operation before any file changes.
+The proposal summary labels each path as created, modified, deleted, renamed, copied, or dependency-only review. Once the exact report identifies a file as pending, it can be selected with no permanent checkbox column: right-click its row, or press and hold it on touch screens, to enter selection mode. A selection started in the immediate Hub preview carries that exact path into the dedicated review room. Right-clicking while a row still reads **Checking…** only explains that the review state is loading; it never queues or applies a review decision. Trying to select a row already marked **Reviewed** shows an inline explanation that selection only applies to rows still marked **Review**; the reviewed file stays unchanged and can still be opened normally for inspection. In the exact review room, **Unreview** asks the human directly, removes that document's current exact review proof, restores its proposal version when a previous rejection changed the review workspace, and returns it to **Review**. The accepted shared branch and proposal branch stay unchanged. Accepting a selection keeps the proposal versions; rejecting it restores the accepted-main versions, including add, delete, rename, and copy semantics. Dependency-only reviews can be batch-accepted but have no proposal delta to reject. A batch is limited to 200 files and is preflighted as one exact-revision operation before any file changes.
 
 After the final current file version receives its human decision, Context Room reveals **Put on main** but does not finalize automatically. **Reject proposal** remains available at every stage. Both terminal actions are bound to the displayed proposal head and use the double-confirmation checkpoint. The confirmation remains visible and disabled while the server runs the terminal action; a stale head, conflict, authentication failure, or rejected push is reported inside that same dialog and can be retried after the cause is resolved. Remaining and reviewed counts use the complete proposal review state, even when the general detailed queue is capped at 80 entries for responsiveness.
 
