@@ -55,6 +55,15 @@ async function startLoopbackProxy(targetOrigin) {
 }
 
 async function showTerminalProposal(page, overrides = {}) {
+  await page.evaluate(() => {
+    cancelBackgroundRefresh();
+    state.runtimeEventSource?.close();
+    state.runtimeEventSource = null;
+    state.runtimeEventsConnected = true;
+    window.clearInterval(state.runtimeFallbackTimer);
+    state.runtimeFallbackTimer = null;
+  });
+  await expect.poll(async () => page.evaluate(() => Boolean(state.refreshInFlight || state.reportsRefreshInFlight))).toBe(false);
   await page.evaluate((next) => {
     const proposal = next.proposal || "proposal/demo/terminal-action";
     const proposalHead = next.proposalHead || "0123456789abcdef0123456789abcdef01234567";
@@ -608,6 +617,7 @@ test("@smoke terminal acceptance without a valid returnTo falls back to the root
   const { origin } = fixture();
   await page.goto(origin + "/?hub=1");
   await waitForBoot(page);
+  await expect.poll(async () => page.evaluate(() => Boolean(state.bootMilestones.initialDataReady))).toBe(true);
 
   const reviewUrl = new URL(origin + "/reviews/authority-demo/");
   reviewUrl.searchParams.set("hub", "1");
@@ -660,6 +670,8 @@ test("@smoke terminal acceptance without a valid returnTo falls back to the root
   });
 
   await showTerminalProposal(page);
+  const explorerClose = page.getByRole("button", { name: "Close explorer" });
+  if (await explorerClose.isVisible()) await explorerClose.click();
   await page.getByRole("button", { name: "Put on main", exact: true }).click();
   await confirmTerminalAcceptance(page);
   await page.waitForURL((url) => url.searchParams.get("view") === "hub");
