@@ -22,8 +22,14 @@ async function ensureExplorerOpen(page) {
 async function closeExplorerDrawer(page) {
   if (await page.evaluate(() => window.innerWidth) > LAYOUT_CONTRACT.breakpoints.drawerMax) return;
   const app = page.locator(".app");
-  if (!await app.evaluate((node) => node.classList.contains("sidebar-collapsed"))) await page.locator("#sidebarToggle").click();
+  const needsClosing = !await app.evaluate((node) => node.classList.contains("sidebar-collapsed"));
+  if (needsClosing) await page.locator("#sidebarToggle").click();
   await expect(app).toHaveClass(/sidebar-collapsed/);
+  if (needsClosing) {
+    // Closing the responsive drawer intentionally restores focus on the next
+    // animation frame. Let that handoff finish before testing another control.
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  }
 }
 
 async function openSettings(page) {
@@ -280,6 +286,11 @@ test("@layout themes, zoom, files, graph, proposals, and dialogs preserve geomet
     await closeExplorerDrawer(page);
     const proposal = page.locator('[data-context-room-review-entry]:has([data-source="shared"])').first();
     await proposal.click();
+    await expect(page).toHaveURL((url) => (
+      url.port !== new URL(data.origin).port
+      && url.searchParams.get("view") === "proposal"
+    ));
+    await waitForBoot(page);
     await expect(page.locator("#proposalReviewPage")).toBeVisible();
     await audit(page, testInfo, `proposal-${width}`);
     const removeTerminalReadyReportsFixture = await installTerminalReadyReportsFixture(page);
