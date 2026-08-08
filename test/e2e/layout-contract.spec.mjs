@@ -20,15 +20,175 @@ async function ensureExplorerOpen(page) {
 }
 
 async function closeExplorerDrawer(page) {
-  if ((page.viewportSize()?.width || 0) > LAYOUT_CONTRACT.breakpoints.drawerMax) return;
+  if (await page.evaluate(() => window.innerWidth) > LAYOUT_CONTRACT.breakpoints.drawerMax) return;
   const app = page.locator(".app");
-  if (!await app.evaluate((node) => node.classList.contains("sidebar-collapsed"))) await page.locator("#sidebarToggle").click();
+  const needsClosing = !await app.evaluate((node) => node.classList.contains("sidebar-collapsed"));
+  if (needsClosing) await page.locator("#sidebarToggle").click();
   await expect(app).toHaveClass(/sidebar-collapsed/);
+  if (needsClosing) {
+    // Closing the responsive drawer intentionally restores focus on the next
+    // animation frame. Let that handoff finish before testing another control.
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  }
 }
 
 async function openSettings(page) {
   await page.locator("#settingsButton").click();
   await expect(page.locator("#settingsPage")).toBeVisible();
+}
+
+async function emulateDesktopBrowserZoom(page, factor) {
+  const baseline = await page.evaluate(() => ({
+    devicePixelRatio: window.devicePixelRatio,
+    layoutViewportWidth: window.innerWidth,
+    layoutViewportHeight: window.innerHeight,
+    screenWidth: window.screen.width,
+    screenHeight: window.screen.height,
+    visualViewportScale: window.visualViewport?.scale || 1,
+  }));
+  const session = await page.context().newCDPSession(page);
+  const zoomedViewport = {
+    width: Math.ceil(baseline.layoutViewportWidth / factor),
+    height: Math.ceil(baseline.layoutViewportHeight / factor),
+  };
+
+  // Chromium browser zoom keeps the physical screen fixed while reducing the
+  // layout viewport and increasing the CSS pixel density by the same factor.
+  // CDP reproduces those native metrics; a plain viewport resize or CSS zoom
+  // would fail the assertions below.
+  await session.send("Emulation.setDeviceMetricsOverride", {
+    width: zoomedViewport.width,
+    height: zoomedViewport.height,
+    deviceScaleFactor: baseline.devicePixelRatio * factor,
+    mobile: false,
+    screenWidth: baseline.screenWidth,
+    screenHeight: baseline.screenHeight,
+  });
+
+  await expect.poll(async () => page.evaluate(() => ({
+    devicePixelRatio: window.devicePixelRatio,
+    layoutViewportWidth: window.innerWidth,
+    layoutViewportHeight: window.innerHeight,
+    screenWidth: window.screen.width,
+    screenHeight: window.screen.height,
+    visualViewportScale: window.visualViewport?.scale || 1,
+    inlineRootZoom: document.documentElement.style.zoom,
+  }))).toEqual({
+    devicePixelRatio: baseline.devicePixelRatio * factor,
+    layoutViewportWidth: zoomedViewport.width,
+    layoutViewportHeight: zoomedViewport.height,
+    screenWidth: baseline.screenWidth,
+    screenHeight: baseline.screenHeight,
+    visualViewportScale: 1,
+    inlineRootZoom: "",
+  });
+
+  return {
+    baseline,
+    zoomedViewport,
+    async restore() {
+      await session.send("Emulation.setDeviceMetricsOverride", {
+        width: baseline.layoutViewportWidth,
+        height: baseline.layoutViewportHeight,
+        deviceScaleFactor: baseline.devicePixelRatio,
+        mobile: false,
+        screenWidth: baseline.screenWidth,
+        screenHeight: baseline.screenHeight,
+      });
+      await session.detach();
+    },
+  };
+}
+
+async function expectInsideNativeViewport(page, selector) {
+  const geometry = await page.locator(selector).evaluate((node) => {
+    const rect = node.getBoundingClientRect();
+    const style = getComputedStyle(node);
+    return {
+      rendered: !node.hidden && style.display !== "none" && style.visibility !== "hidden",
+      rect: { top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left },
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+    };
+  });
+  expect(geometry.rendered).toBe(true);
+  expect(geometry.rect.left).toBeGreaterThanOrEqual(0);
+  expect(geometry.rect.top).toBeGreaterThanOrEqual(0);
+  expect(geometry.rect.right).toBeLessThanOrEqual(geometry.viewport.width);
+  expect(geometry.rect.bottom).toBeLessThanOrEqual(geometry.viewport.height);
+}
+
+async function makeProposalTerminalReady(page) {
+  await page.evaluate(() => {
+    cancelBackgroundRefresh();
+    state.runtimeEventSource?.close();
+    state.runtimeEventSource = null;
+    state.runtimeEventsConnected = true;
+    window.clearInterval(state.runtimeFallbackTimer);
+    state.runtimeFallbackTimer = null;
+  });
+  await expect.poll(async () => page.evaluate(() => Boolean(state.refreshInFlight || state.reportsRefreshInFlight))).toBe(false);
+  await page.evaluate(() => {
+    const review = state.sharedContext?.review || {};
+    const reviewedPaths = review.proposalFiles?.length ? [...review.proposalFiles] : ["docs/README.md"];
+    state.files = reviewedPaths.map((path) => ({ path, label: path.split("/").at(-1) || path }));
+    state.sharedContext = {
+      ...(state.sharedContext || {}),
+      mode: "review",
+      accepted: null,
+      rejected: null,
+      acceptedChangesRemain: true,
+      review: {
+        ...review,
+        projectId: review.projectId || "atlas",
+        proposal: review.proposal || "proposal/atlas/layout-terminal-action",
+        proposalHead: review.proposalHead || "0123456789abcdef0123456789abcdef01234567",
+        defaultBranch: review.defaultBranch || "main",
+        proposalFiles: reviewedPaths,
+        proposalChanges: review.proposalChanges?.length
+          ? review.proposalChanges
+          : reviewedPaths.map((path) => ({ path, status: "M", reviewKind: "proposal-change" })),
+      },
+    };
+    state.docqa = {
+      ...(state.docqa || {}),
+      queue: [],
+      pendingPaths: [],
+      reviewedPaths,
+      summary: { ...(state.docqa?.summary || {}), needsReview: 0 },
+    };
+    state.proposalAuthorityStatus = "";
+    state.proposalActionBusy = false;
+    state.proposalActionError = "";
+    showProposalReview();
+  });
+}
+
+async function installTerminalReadyReportsFixture(page) {
+  const reviewedPaths = await page.evaluate(() => {
+    const proposalFiles = state.sharedContext?.review?.proposalFiles || [];
+    return proposalFiles.length ? proposalFiles : ["projects/atlas/docs/README.md"];
+  });
+  const handler = async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        docqa: {
+          generatedAt: new Date().toISOString(),
+          queue: [],
+          pendingPaths: [],
+          reviewedPaths,
+          summary: { needsReview: 0 },
+        },
+        doctor: { issues: [] },
+        startupContext: [],
+        startupSkills: [],
+        startupHooks: [],
+      }),
+    });
+  };
+  await page.route("**/api/reports*", handler);
+  return () => page.unroute("**/api/reports*", handler);
 }
 
 async function audit(page, testInfo, label) {
@@ -81,9 +241,14 @@ test("@layout themes, zoom, files, graph, proposals, and dialogs preserve geomet
       await audit(page, testInfo, `theme-${theme}-${width}`);
     }
 
-    await page.evaluate(() => { document.documentElement.style.zoom = "2"; });
-    await audit(page, testInfo, `zoom-200-${width}`);
-    await page.evaluate(() => { document.documentElement.style.zoom = ""; });
+    if (width > LAYOUT_CONTRACT.breakpoints.mobileMax) {
+      const browserZoom = await emulateDesktopBrowserZoom(page, 2);
+      try {
+        await audit(page, testInfo, `native-browser-zoom-200-${width}`);
+      } finally {
+        await browserZoom.restore();
+      }
+    }
 
     await page.locator("#contextRoomReviewProjectFilter").click();
     await audit(page, testInfo, `project-picker-${width}`);
@@ -118,9 +283,85 @@ test("@layout themes, zoom, files, graph, proposals, and dialogs preserve geomet
     await waitForBoot(page);
     await closeExplorerDrawer(page);
     const proposal = page.locator('[data-context-room-review-entry]:has([data-source="shared"])').first();
+    const removeTerminalReadyReportsFixture = await installTerminalReadyReportsFixture(page);
     await proposal.click();
+    await expect(page).toHaveURL((url) => (
+      url.port !== new URL(data.origin).port
+      && url.searchParams.get("view") === "proposal"
+    ));
+    await waitForBoot(page);
     await expect(page.locator("#proposalReviewPage")).toBeVisible();
     await audit(page, testInfo, `proposal-${width}`);
+
+    await page.route("**/api/shared-context/accept-challenge", async (route) => {
+      const { expectedProposalHead } = route.request().postDataJSON();
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({
+          challengeId: `layout-challenge-${width}`,
+          action: "accept",
+          authorityId: "layout-authority",
+          proposalHead: expectedProposalHead,
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        }),
+      });
+    });
+    await makeProposalTerminalReady(page);
+    const terminalAction = page.locator("#proposalDockAccept");
+    await expect(terminalAction).toBeVisible();
+    await expect(terminalAction).toHaveAccessibleName("Put on main");
+    await expect(terminalAction).toBeInViewport({ ratio: 1 });
+    await audit(page, testInfo, `proposal-terminal-${width}`);
+
+    const browserZoom = width > LAYOUT_CONTRACT.breakpoints.mobileMax
+      ? await emulateDesktopBrowserZoom(page, 2)
+      : null;
+    try {
+      if (browserZoom) {
+        await closeExplorerDrawer(page);
+      }
+      if (browserZoom) await expectInsideNativeViewport(page, "#proposalDockAccept");
+      else await expect(terminalAction).toBeInViewport({ ratio: 1 });
+      await audit(
+        page,
+        testInfo,
+        browserZoom ? `proposal-terminal-native-browser-zoom-200-${width}` : `proposal-terminal-mobile-viewport-${width}`,
+      );
+      const terminalControl = page.locator("#proposalDockAccept");
+      await expect(terminalControl).toBeVisible();
+      if (browserZoom) {
+        const terminalLabel = () => terminalControl.evaluate((node) => node.getAttribute("aria-label") || node.textContent?.trim() || "");
+        expect(await terminalLabel()).toBe("Put on main");
+        await terminalControl.evaluate((node) => node.focus());
+        expect(await page.evaluate(() => document.activeElement?.id)).toBe("proposalDockAccept");
+        expect(await terminalLabel()).toBe("Put on main");
+      } else {
+        await expect(terminalControl).toHaveAccessibleName("Put on main");
+        await terminalControl.focus();
+        await expect(terminalControl).toBeFocused();
+      }
+      await page.keyboard.press("Enter");
+      const terminalDialog = page.getByRole("dialog", { name: /Put this proposal on main\?/ });
+      await expect(terminalDialog).toBeVisible();
+      if (browserZoom) await expectInsideNativeViewport(page, ".confirm-dialog");
+      else await expect(terminalDialog).toBeInViewport({ ratio: 1 });
+      await audit(
+        page,
+        testInfo,
+        browserZoom ? `proposal-terminal-dialog-native-browser-zoom-200-${width}` : `proposal-terminal-dialog-mobile-viewport-${width}`,
+      );
+      const cancelTerminalDecision = terminalDialog.getByRole("button", { name: "Cancel" });
+      if (browserZoom) await expectInsideNativeViewport(page, ".confirm-dialog [data-confirm-cancel]");
+      else {
+        await cancelTerminalDecision.scrollIntoViewIfNeeded();
+        await expect(cancelTerminalDecision).toBeInViewport({ ratio: 1 });
+      }
+      await cancelTerminalDecision.click();
+    } finally {
+      await browserZoom?.restore();
+      await removeTerminalReadyReportsFixture();
+    }
   }
 });
 

@@ -10,7 +10,7 @@ Remote mode is an explicit deployment profile for a trusted QM Portal. Local Con
 - Remote UI capabilities add `ui:workspace:list`, `ui:workspace:navigate`, and `ui:workspace:pair`. The Portal and server inject the authenticated user; browser-provided user identity is ignored.
 - Human and agent signing secrets are distinct, at least 32 bytes, and mounted as files.
 - The private health endpoint requires its own secret.
-- Human acceptance obtains a one-hour GitHub App installation token only for the exact repository. Git receives it non-interactively through a request-scoped HTTPS Basic authorization header using the `x-access-token` username; the token never enters the remote URL, command arguments, or persistent Git configuration. The private key is mounted as a secret and is never stored under `/data`.
+- Human acceptance requests a one-hour GitHub App installation token only for the exact repository, with a 15-second request timeout. Git receives it non-interactively through a request-scoped HTTPS Basic authorization header using the `x-access-token` username; the token never enters the remote URL, command arguments, or persistent Git configuration. The private key is mounted as a secret and is never stored under `/data`.
 - Proposal Git SSH credentials are mounted outside `/data`; branch protection must reject that credential on `main`.
 
 ## Persistent state
@@ -42,7 +42,7 @@ CONTEXT_ROOM_REMOTE=1
 CONTEXT_ROOM_SHARED_REPOSITORY=git@github.com:blancmathis/peerlab-shared-context.git
 CONTEXT_ROOM_DATA_ROOT=/data
 CONTEXT_ROOM_PROJECT_IDS=peerlab,hicharlie,hicharlie-her,makemydoc,auditia,prospection,agent-factory,qm-operations
-CONTEXT_ROOM_PUBLIC_HOST=context.qm.peerlab.fr
+CONTEXT_ROOM_PUBLIC_HOST=context.peerlab.fr
 CONTEXT_ROOM_BROWSER_HOST=context.qm.peerlab.fr
 CONTEXT_ROOM_IDENTITY_ISSUER=peerlab-qm
 CONTEXT_ROOM_ADMIN_SUBJECTS=<Mathis principal>,<Florent principal>
@@ -56,15 +56,20 @@ CONTEXT_ROOM_GITHUB_APP_INSTALLATION_ID=<installation id>
 CONTEXT_ROOM_GITHUB_APP_PRIVATE_KEY_FILE=/run/secrets/context-room-review-app.pem
 ```
 
-`CONTEXT_ROOM_PUBLIC_HOST` is the trusted host asserted by the private proxy.
-When that proxy uses a different upstream hostname, set
-`CONTEXT_ROOM_BROWSER_HOST` to the public hostname that pairing URLs must open.
+`CONTEXT_ROOM_PUBLIC_HOST` is the trusted upstream host asserted by the private
+proxy. Peerlab's Portal reaches Context Room through `context.peerlab.fr`, while
+`CONTEXT_ROOM_BROWSER_HOST` names the public `context.qm.peerlab.fr` page that
+pairing and return URLs must open.
 The open-source default issuer is `context-room`; an adapter whose signed
 identities use another issuer must set `CONTEXT_ROOM_IDENTITY_ISSUER` to the
 same value.
 `CONTEXT_ROOM_ADMIN_SUBJECTS` must use the exact identities produced by QM. The
 three signing secrets must be different. GitHub App configuration may be
-omitted only when acceptance is intentionally unavailable.
+omitted only when acceptance is intentionally unavailable; in that state both
+`POST /api/shared-context/accept-challenge` and
+`POST /api/shared-context/accept` return
+`503 shared_context_remote_acceptance_unavailable` before issuing authority or
+starting Git work.
 
 ## Remote Workspace control
 
@@ -87,4 +92,8 @@ their one-request anti-replay enforcement.
 
 ## Acceptance authority
 
-The proposal SSH key publishes only `proposal/*`. Human acceptance rechecks the proposal head and current `main`, requires every current proposal file to have review proof, creates the canonical commit with reviewer trailers, and pushes directly to `main` with the repository-limited GitHub App token. A changed proposal or concurrent `main` returns `409`; no force push is performed. The terminal confirmation stays open while this operation runs and shows any server rejection in place so a failed delivery cannot look successful or disappear silently.
+The proposal SSH key publishes only `proposal/*`. Opening the terminal acceptance confirmation creates a short-lived, one-use challenge bound to the signed QM administrator, current review authority, `accept` action, and exact proposal head. Human acceptance consumes that challenge, rechecks the proposal head and current `main`, requires every current proposal file to have review proof for its exact content or absence and safe Git mode, creates the canonical commit with reviewer trailers, and pushes directly to `main` with the repository-limited GitHub App token. A missing, expired, reused, or mismatched challenge, changed proposal, unsafe entry type, mode mismatch, or concurrent `main` fails closed; no force push is performed.
+
+After the push, Context Room fetches the remote default branch again and proves that it contains the accepted commit before returning `deliveryVerified: true`. Clone, initial fetch, push, and delivery-verification fetch each have a 120-second budget. The GitHub App token request has a 15-second budget. Either expiry returns HTTP `504` with `retryable: true` and `github-app-token-timeout` or `shared-delivery-timeout`. The response also carries the exact proposal and head, commit, verified remote head, default branch, Hub refresh state, and a one-use flash token of exactly 32 URL-safe characters; the UI accepts terminal success only when every field matches the open review.
+
+The terminal confirmation stays open with **Putting on main…** while this operation runs. A server rejection or incomplete success response closes that consumed confirmation and leaves a persistent accessible error with **Retry**; retry opens a fresh challenge and confirmation so a failed delivery cannot look successful or replay stale authority. If the push succeeded but local delivery proof or response recording failed, a retry locates a candidate by the exact `Context-Room-Proposal` and `Context-Room-Proposal-Head` trailers, reapplies the reviewed result to that commit's single parent, and requires the complete expected tree—including content, paths, executable modes, and safe entry types—to equal the candidate tree. Matching trailers alone are insufficient. Only renewed remote containment proof permits an atomic acceptance-receipt write, without a second commit or push. If delivery is verified but the Hub snapshot cannot be rebuilt, the UI reports **Merged into main · Hub refresh pending** instead of presenting the merge as failed; the proposal row and active counters may remain stale until the Hub refresh completes.

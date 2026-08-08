@@ -6,6 +6,17 @@ import path from "node:path";
 const REVIEW_AUTHORITY_VERSION = 1;
 const LIVE_MODES = new Set(["recursive-live", "direct-live"]);
 const CURRENT_MODES = new Set(["recursive-current", "direct-current"]);
+const TERMINAL_DECISION_CHALLENGE_FIELDS = Object.freeze([
+  "principal",
+  "authorityId",
+  "proposal",
+  "proposalHead",
+  "action",
+]);
+const DEFAULT_TERMINAL_DECISION_CHALLENGE_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_VERIFIED_ACCEPTANCE_FLASH_TTL_MS = 2 * 60 * 1000;
+const VERIFIED_ACCEPTANCE_FLASH_TOKEN_PATTERN = /^[A-Za-z0-9_-]{32}$/;
+const GIT_OBJECT_ID_PATTERN = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i;
 
 export const HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY = Object.freeze({
   confirmationsRequired: 2,
@@ -16,6 +27,217 @@ export const HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY = Object.freeze({
   mutationRule: "Do nothing unless the user gives a second separate, unambiguous yes.",
   instruction: "Before a multi-file batch or terminal proposal decision, an agent must ask the user explicitly. After the first yes, it must restate the exact action, project, proposal or file scope, and effects, ask again, and do nothing without a second separate, unambiguous yes. Single-file decisions stay in the direct human UI and never become agent-facing commands.",
 });
+
+function terminalDecisionChallengeError(code, message, statusCode = 403) {
+  const error = new Error(message);
+  error.code = code;
+  error.statusCode = statusCode;
+  return error;
+}
+
+function normalizeTerminalDecisionChallengeBinding(binding = {}) {
+  const normalized = Object.fromEntries(TERMINAL_DECISION_CHALLENGE_FIELDS.map((field) => [
+    field,
+    String(binding?.[field] || "").trim(),
+  ]));
+  const missing = TERMINAL_DECISION_CHALLENGE_FIELDS.filter((field) => !normalized[field]);
+  if (missing.length) {
+    throw terminalDecisionChallengeError(
+      "terminal_decision_challenge_binding_invalid",
+      `Terminal decision challenge binding is missing: ${missing.join(", ")}`,
+      400,
+    );
+  }
+  return normalized;
+}
+
+export function createTerminalDecisionChallengeStore({
+  now = Date.now,
+  ttlMs = DEFAULT_TERMINAL_DECISION_CHALLENGE_TTL_MS,
+} = {}) {
+  if (typeof now !== "function") throw new TypeError("Terminal decision challenge clock must be a function");
+  const normalizedTtlMs = Number(ttlMs);
+  if (!Number.isFinite(normalizedTtlMs) || normalizedTtlMs <= 0) {
+    throw new TypeError("Terminal decision challenge TTL must be a positive number");
+  }
+
+  const records = new Map();
+  const retentionMs = Math.max(DEFAULT_TERMINAL_DECISION_CHALLENGE_TTL_MS, normalizedTtlMs * 2);
+  const currentTime = () => {
+    const value = Number(now());
+    if (!Number.isFinite(value)) throw new TypeError("Terminal decision challenge clock returned an invalid time");
+    return value;
+  };
+  const prune = (timestamp) => {
+    for (const [challengeId, record] of records) {
+      const terminalAt = record.consumedAt ?? record.expiresAt;
+      if (timestamp - terminalAt > retentionMs) records.delete(challengeId);
+    }
+  };
+
+  return {
+    issue(binding = {}) {
+      const timestamp = currentTime();
+      prune(timestamp);
+      const normalized = normalizeTerminalDecisionChallengeBinding(binding);
+      const challengeId = randomBytes(32).toString("base64url");
+      const record = {
+        ...normalized,
+        issuedAt: timestamp,
+        expiresAt: timestamp + normalizedTtlMs,
+        consumedAt: null,
+      };
+      records.set(challengeId, record);
+      return {
+        challengeId,
+        authorityId: record.authorityId,
+        proposal: record.proposal,
+        proposalHead: record.proposalHead,
+        action: record.action,
+        expiresAt: new Date(record.expiresAt).toISOString(),
+      };
+    },
+
+    consume(challengeId, binding = {}) {
+      const id = String(challengeId || "").trim();
+      if (!id) {
+        throw terminalDecisionChallengeError(
+          "terminal_decision_challenge_required",
+          "A terminal decision challenge is required",
+        );
+      }
+      const timestamp = currentTime();
+      prune(timestamp);
+      const record = records.get(id);
+      if (!record) {
+        throw terminalDecisionChallengeError(
+          "terminal_decision_challenge_invalid",
+          "The terminal decision challenge is invalid",
+        );
+      }
+      if (record.consumedAt != null) {
+        throw terminalDecisionChallengeError(
+          "terminal_decision_challenge_replayed",
+          "The terminal decision challenge has already been used",
+        );
+      }
+      if (timestamp >= record.expiresAt) {
+        throw terminalDecisionChallengeError(
+          "terminal_decision_challenge_expired",
+          "The terminal decision challenge has expired",
+        );
+      }
+
+      const normalized = normalizeTerminalDecisionChallengeBinding(binding);
+      if (TERMINAL_DECISION_CHALLENGE_FIELDS.some((field) => normalized[field] !== record[field])) {
+        throw terminalDecisionChallengeError(
+          "terminal_decision_challenge_mismatch",
+          "The terminal decision challenge does not match this exact action",
+        );
+      }
+
+      record.consumedAt = timestamp;
+      return {
+        authorityId: record.authorityId,
+        proposal: record.proposal,
+        proposalHead: record.proposalHead,
+        action: record.action,
+        consumedAt: new Date(record.consumedAt).toISOString(),
+      };
+    },
+
+    clear() {
+      records.clear();
+    },
+  };
+}
+
+function verifiedAcceptanceFlashError(code, message, statusCode = 404) {
+  const error = new Error(message);
+  error.code = code;
+  error.statusCode = statusCode;
+  return error;
+}
+
+function normalizeVerifiedAcceptanceFlash(payload = {}) {
+  const outcome = String(payload?.outcome || "").trim();
+  const commit = String(payload?.commit || "").trim().toLowerCase();
+  const hubRefreshStatus = String(payload?.hubRefresh?.status || payload?.hubRefresh || "").trim();
+  if (outcome !== "merge" || !GIT_OBJECT_ID_PATTERN.test(commit) || !["complete", "pending"].includes(hubRefreshStatus)) {
+    throw verifiedAcceptanceFlashError(
+      "verified_acceptance_flash_payload_invalid",
+      "Verified acceptance flash payload is invalid",
+      400,
+    );
+  }
+  return {
+    outcome: "merge",
+    commit,
+    hubRefresh: { status: hubRefreshStatus },
+  };
+}
+
+export function createVerifiedAcceptanceFlashStore({
+  now = Date.now,
+  ttlMs = DEFAULT_VERIFIED_ACCEPTANCE_FLASH_TTL_MS,
+} = {}) {
+  if (typeof now !== "function") throw new TypeError("Verified acceptance flash clock must be a function");
+  const normalizedTtlMs = Number(ttlMs);
+  if (!Number.isFinite(normalizedTtlMs) || normalizedTtlMs <= 0) {
+    throw new TypeError("Verified acceptance flash TTL must be a positive number");
+  }
+
+  const records = new Map();
+  const currentTime = () => {
+    const value = Number(now());
+    if (!Number.isFinite(value)) throw new TypeError("Verified acceptance flash clock returned an invalid time");
+    return value;
+  };
+  const prune = (timestamp) => {
+    for (const [token, record] of records) {
+      if (timestamp >= record.expiresAt) records.delete(token);
+    }
+  };
+
+  return {
+    issue(payload = {}) {
+      const timestamp = currentTime();
+      prune(timestamp);
+      const normalized = normalizeVerifiedAcceptanceFlash(payload);
+      const token = randomBytes(24).toString("base64url");
+      records.set(token, {
+        payload: normalized,
+        expiresAt: timestamp + normalizedTtlMs,
+      });
+      return { token, expiresAt: new Date(timestamp + normalizedTtlMs).toISOString() };
+    },
+
+    consume(token) {
+      const id = String(token || "").trim();
+      const timestamp = currentTime();
+      prune(timestamp);
+      if (!VERIFIED_ACCEPTANCE_FLASH_TOKEN_PATTERN.test(id)) {
+        throw verifiedAcceptanceFlashError(
+          "verified_acceptance_flash_invalid",
+          "Verified acceptance flash is unavailable",
+        );
+      }
+      const record = records.get(id);
+      if (!record) {
+        throw verifiedAcceptanceFlashError(
+          "verified_acceptance_flash_invalid",
+          "Verified acceptance flash is unavailable",
+        );
+      }
+      records.delete(id);
+      return record.payload;
+    },
+
+    clear() {
+      records.clear();
+    },
+  };
+}
 
 function stableValue(value) {
   if (Array.isArray(value)) return value.map(stableValue);

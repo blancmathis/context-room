@@ -4,25 +4,26 @@ context_room:
   scope: context-room
   status: current
   canonical_for: review queue
-  last_verified: 2026-08-05
-  sources: [src/context_room.mjs, src/review_authority.mjs, src/context_settings.mjs, bin/context-room.mjs, docs/agent-configuration.md]
+  last_verified: 2026-08-07
+  sources: [src/context_room.mjs, src/review_authority.mjs, src/shared_context.mjs, src/context_settings.mjs, bin/context-room.mjs, docs/agent-configuration.md]
 ---
 
 # Review Queue
 
 ## Purpose
 
-The review queue shows watched documentation that needs verification before it becomes trusted context.
+The review queue shows watched local documentation and Shared proposal files that need human verification before they become trusted context.
 
 ## Example Flow
 
 1. Configure `watchAllow` and optional folder `watchRules`.
 2. Open a queued file.
 3. For one file, use the direct human controls to accept or reject each visible change, or use `Accept all` or `Reject all`; the completed diff records the review without an agent-confirmation modal.
-4. If an agent is operating a multi-file selection or a terminal proposal action, it asks whether the user wants that exact action. After the first yes, it restates the project, proposal or file scope and effects, asks again, and stops unless the user gives a second separate, unambiguous yes.
-5. When several files were removed together, expand the deletion set, inspect or narrow the selected paths, then confirm their removal.
-6. When Git has no diff, review the current document and use `Mark verified`.
-7. Review newly discovered startup instructions and skills once; they return only when their content changes.
+4. After the last required Shared proposal file is reviewed, use the newly visible `Put on main` action; the file decision never merges the proposal automatically.
+5. If an agent is operating a multi-file selection or a terminal proposal action, it asks whether the user wants that exact action. After the first yes, it restates the project, proposal or file scope and effects, asks again, and stops unless the user gives a second separate, unambiguous yes.
+6. When several files were removed together, expand the deletion set, inspect or narrow the selected paths, then confirm their removal.
+7. When Git has no diff, review the current document and use `Mark verified`.
+8. Review newly discovered startup instructions and skills once; they return only when their content changes.
 
 ## Rules
 
@@ -57,6 +58,11 @@ The review queue shows watched documentation that needs verification before it b
 - Pending review changes never block Hub, history, settings, reload, or another file. Partial decisions remain available when the file is reopened in the same session.
 - Accepting or rejecting a change keeps the current reading position throughout the animation and final render.
 - A Shared proposal file list supports up to 200 files in one exact-revision batch. Rows stay free of persistent checkboxes: after the exact report marks a file pending, right-click it or press and hold it on touch screens to begin selection. A row shows **Checking…** and cannot be selected while that report is loading. A row already marked **Reviewed** cannot be selected again; trying to do so shows an inline explanation beside the proposal files and leaves the row unchanged. While selection is active, a normal click toggles additional pending rows instead of opening them. The server preflights every selected content hash, resource state, resource version, and direct-dependency version before changing any file. Accept keeps the proposal version; reject restores the accepted-main version and omits that file's proposal delta. Dependency-only re-reviews can be accepted in a batch but have no change to reject.
+- The final Shared file decision only saves the review and reveals **Put on main**; it never calls acceptance automatically. The terminal action remains reachable on narrow screens and at 200% zoom, while **Reject proposal** stays available throughout review. When every proposed delta was rejected, `acceptedChangesRemain` is `false`: **Put on main** stays disabled and the owner uses **Reject proposal** to close the proposal without changing the accepted branch.
+- Opening the terminal acceptance confirmation issues a short-lived, one-use server challenge bound to the signed administrator identity on remote QM, or to the current owner-interface nonce instance locally, plus the review authority, `accept` action, proposal branch, and exact proposal head. The local binding proves continuity with that interface instance, not physical human identity. A missing, expired, reused, or mismatched challenge fails closed. After immutable request binding, the server consumes the challenge before it rechecks mutable review completeness or starts Git work; every retry opens a new challenge. This request binding does not turn acceptance into an agent authority: the final decision remains human-owned and the agent-facing CLI exposes no review or terminal-decision command.
+- During acceptance, the action reads **Putting on main…**, is disabled, and exposes its pending state. A network error, stale head, conflict, rejected push, or failed delivery proof keeps the owner on the proposal, appears as a persistent accessible error, and offers retry with a fresh challenge. Context Room does not play the success sound or navigate away on failure.
+- Success is returned only after Context Room fetches the configured remote default branch and proves that it contains the accepted commit. The response identifies `deliveryVerified`, the exact `proposal` and `proposalHead`, `commit`, `verifiedRemoteHead`, `defaultBranch`, and the Hub refresh state, plus a one-use flash token of exactly 32 URL-safe characters. Every field must match the open review before the accessible success toast can say **Proposal merged into main**, include the commit, survive the return to the originating Hub, and remove the proposal from active rows and counters. An incomplete or mismatched HTTP `200` remains a visible retryable failure. If the push reached the remote but local verification or response recording failed, a retry finds a candidate by its exact `Context-Room-Proposal` and `Context-Room-Proposal-Head` trailers, then requires its single-parent tree to equal the complete reviewed result, including content, paths, safe entry types, and executable modes. Only then does renewed remote delivery proof reconcile the acceptance receipt atomically without creating or pushing another commit. If delivery is proved but the Hub rebuild is delayed, the success instead says **Merged into main · Hub refresh pending**; the row and counters may remain stale until that refresh completes, and the next refresh retries only the Hub rebuild.
+- Acceptance keeps the original `proposal/*` branch as Git evidence. It removes only the exact remotely verified proposal revision from the active queue; it does not delete that branch.
 - Review navigation is manual: use `Next review` to open another queued doc.
 - High-confidence one-to-one renames stay a single `old path -> new path` review item. Unmatched deletions remain explicit.
 - Two or more unmatched Git deletions are grouped into one expandable change set. New, modified, and rewritten replacement documents stay individually reviewable.
@@ -75,6 +81,8 @@ The review queue shows watched documentation that needs verification before it b
 - `buildDeletedReviewBatch` builds the current on-demand deletion page.
 - `writeDeletedReviewBatchDecision` revalidates and records selected removals.
 - `writeDocReviewDecision` records review decisions.
+- `createTerminalDecisionChallengeStore` binds terminal acceptance to one exact remote administrator or local owner-interface principal, authority, action, proposal, and head, and prevents replay.
+- `acceptSharedReview` pushes the reviewed result and proves its accepted commit on the fetched remote default branch before success is returned.
 - `readGlobalReviewLedger` lets multiple Context Rooms trust the same absolute path and content hash.
 - `readFileDiff`, `readReviewBaseFile`, and `startChangedFileInlineReview` power Git-backed and external-baseline review diffs.
 - `context-room guard` and `review-only` report pending review without blocking; only strict mode can fail.

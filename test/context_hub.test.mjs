@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   clearContextHubRuntime,
+  contextHubHostRoot,
   disconnectContextHubProjectShared,
   listContextHubProjects,
   readContextHubRegistry,
@@ -51,6 +52,15 @@ function withHubHome(t, hubHome) {
     if (previous === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
     else process.env.CONTEXT_ROOM_HUB_HOME = previous;
   });
+}
+
+async function waitForRuntimeEvent(events, index, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (events[index]) return events[index];
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return null;
 }
 
 test("Context Hub registry keeps local projects and shared repositories independent", (t) => {
@@ -114,6 +124,85 @@ test("Context Hub snapshot is private, atomic, versioned, and fails closed when 
   assert.equal(readContextHubSnapshot().generatedAt, "2026-07-26T12:00:00.000Z");
   fs.writeFileSync(snapshotPath, "{broken", "utf8");
   assert.equal(readContextHubSnapshot(), null);
+});
+
+test("Context Hub snapshot reads do not republish the same refresh generation", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-refresh-events-"));
+  withHubHome(t, path.join(base, "hub"));
+  const project = makeProject(base, "Refresh events project");
+  registerContextHubProject(project);
+  const hostRoot = contextHubHostRoot();
+  fs.mkdirSync(hostRoot, { recursive: true });
+  initializeContextRoomProject(hostRoot, { title: "Context Room", allowedPaths: [], watchAllow: [] });
+  let generation = "2026-08-07T19:29:08.160Z";
+  const { server } = createMemoryServer({
+    root: hostRoot,
+    registerInHub: false,
+    contextHubSnapshotRefresh: async () => ({
+      enabled: true,
+      generatedAt: generation,
+      freshness: { generatedAt: generation, refreshing: false, fresh: true },
+      currentProjectId: "",
+      projects: [],
+      proposals: [],
+      items: [],
+      sharedRepositories: [],
+      repositoryErrors: [],
+      summary: { projects: 0, proposals: 0, localReviews: 0 },
+    }),
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const controller = new AbortController();
+  t.after(async () => {
+    controller.abort();
+    if (server.listening) await new Promise((resolve) => server.close(() => resolve()));
+  });
+
+  const stream = await fetch(origin + "/api/runtime-events?workspace=refresh-events&since=0", { signal: controller.signal });
+  assert.equal(stream.status, 200);
+  const reader = stream.body.getReader();
+  const runtimeEvents = [];
+  const readEvents = (async () => {
+    const decoder = new TextDecoder();
+    let payload = "";
+    try {
+      while (true) {
+        const next = await reader.read();
+        if (next.done) return;
+        payload += decoder.decode(next.value, { stream: true });
+        let match = payload.match(/event: runtime\ndata: ([^\n]+)\n\n/);
+        while (match) {
+          runtimeEvents.push(JSON.parse(match[1]));
+          payload = payload.slice((match.index || 0) + match[0].length);
+          match = payload.match(/event: runtime\ndata: ([^\n]+)\n\n/);
+        }
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) throw error;
+    }
+  })();
+  await fetch(origin + "/api/context-hub/catalog");
+  const first = await waitForRuntimeEvent(runtimeEvents, 0);
+  assert.equal(first?.type, "state-invalidated");
+  assert.equal(first?.data?.source, "context-hub-refresh");
+  assert.equal(first?.data?.generatedAt, generation);
+
+  await Promise.all([
+    fetch(origin + "/api/context-hub/catalog"),
+    fetch(origin + "/api/context-hub/review-queue?limit=80"),
+    fetch(origin + "/api/context-hub/sections"),
+  ]);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(runtimeEvents.length, 1, `duplicate refresh generation published: ${runtimeEvents[1]?.data?.generatedAt || ""}`);
+
+  generation = "2026-08-07T19:29:09.160Z";
+  await fetch(origin + "/api/context-hub/catalog");
+  const changed = await waitForRuntimeEvent(runtimeEvents, 1);
+  assert.equal(changed?.type, "state-invalidated");
+  assert.equal(changed?.data?.generatedAt, generation);
+  controller.abort();
+  await readEvents;
 });
 
 test("Context Hub attention keeps project order and exact-version snoozes private and revision-safe", (t) => {

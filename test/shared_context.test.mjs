@@ -78,6 +78,11 @@ import {
   writeDocReviewDecision,
   writeMemoryFile,
 } from "../src/context_room.mjs";
+import {
+  contextRoomEventJournalPath,
+  readContextRoomEvents,
+} from "../src/event_journal.mjs";
+import { authorizeOwnerTrustedState, inspectOwnerTrustedState } from "../src/review_authority.mjs";
 
 const cli = fileURLToPath(new URL("../bin/context-room.mjs", import.meta.url));
 
@@ -477,6 +482,56 @@ function withSharedHome(t, fixture) {
   });
 }
 
+function sharedAcceptanceLockPath(review) {
+  const identity = `${review.metadata.repository}\0${review.metadata.proposal}\0${review.metadata.proposalHead}`;
+  const lockKey = createHash("sha256").update(identity).digest("hex").slice(0, 24);
+  return path.join(process.env.CONTEXT_ROOM_SHARED_HOME, "locks", `accept-${lockKey}.lock`);
+}
+
+function sharedAcceptanceChild(reviewRoot, { timeout = 2_000 } = {}) {
+  const moduleUrl = new URL("../src/shared_context.mjs", import.meta.url).href;
+  const source = `
+    import { acceptSharedReview } from ${JSON.stringify(moduleUrl)};
+    try {
+      const result = acceptSharedReview(process.argv[1], { message: "Accept from child" });
+      process.stdout.write(JSON.stringify({ result }) + "\\n");
+    } catch (error) {
+      process.stdout.write(JSON.stringify({ error: { code: error.code || "", message: error.message, retryable: error.retryable === true } }) + "\\n");
+    }
+  `;
+  return spawnSync(process.execPath, ["--input-type=module", "-e", source, reviewRoot], {
+    encoding: "utf8",
+    timeout,
+    env: { ...process.env },
+  });
+}
+
+function withIsolatedEventJournal(t, fixture) {
+  const previousHubHome = process.env.CONTEXT_ROOM_HUB_HOME;
+  const hubHome = path.join(fixture.base, "event-journal");
+  process.env.CONTEXT_ROOM_HUB_HOME = hubHome;
+  t.after(() => {
+    if (previousHubHome === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
+    else process.env.CONTEXT_ROOM_HUB_HOME = previousHubHome;
+  });
+  return hubHome;
+}
+
+function rewriteAsLegacyReviewWithoutResourceMode(reviewRoot, filePath) {
+  const statePath = path.join(reviewRoot, ".context-room", "review-state.json");
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  if (state.reviews?.[filePath]) delete state.reviews[filePath].resourceMode;
+  fs.writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n", "utf8");
+  authorizeOwnerTrustedState(reviewRoot, "review-state", { version: 2, reviews: state.reviews || {} }, { actor: "legacy-test-fixture" });
+  const ledgerPath = path.join(reviewRoot, ".context-room", "review-ledger.json");
+  if (fs.existsSync(ledgerPath)) {
+    const ledger = JSON.parse(fs.readFileSync(ledgerPath, "utf8"));
+    for (const entry of Object.values(ledger.reviews || {})) delete entry.resourceMode;
+    fs.writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2) + "\n", "utf8");
+    authorizeOwnerTrustedState(reviewRoot, "review-ledger", { version: 2, reviews: ledger.reviews || {} }, { actor: "legacy-test-fixture" });
+  }
+}
+
 test("disconnecting a shared context clears only the local binding and project configuration", (t) => {
   const fixture = makeFixture();
   withSharedHome(t, fixture);
@@ -569,7 +624,7 @@ test("shared main primitives follow the configured remote branch and ignore prop
   );
 });
 
-test("shared main trailers expose cross-device proposal completion without local review state", (t) => {
+test("shared main trailers remain historical evidence without authorizing completion on another device", (t) => {
   const fixture = makeFixture();
   withSharedHome(t, fixture);
   const proposalHead = "a".repeat(40);
@@ -578,7 +633,844 @@ test("shared main trailers expose cross-device proposal completion without local
   git(fixture.seed, ["commit", "-m", `Accept elsewhere\n\nContext-Room-Proposal: proposal/demo/elsewhere\nContext-Room-Proposal-Head: ${proposalHead}\nContext-Room-Project: demo`]);
   git(fixture.seed, ["push", "origin", "main"]);
   const accepted = listSharedMainAcceptances(fixture.remote, { refresh: true });
-  assert.equal(accepted.some((item) => item.proposal === "proposal/demo/elsewhere" && item.proposalHead === proposalHead && item.merged), true);
+  const historical = accepted.find((item) => item.proposal === "proposal/demo/elsewhere" && item.proposalHead === proposalHead);
+  assert.ok(historical, "trailer evidence remains inspectable for historical reconciliation");
+  assert.equal(historical.merged, false, "trailers alone must not authorize a merged classification");
+});
+
+test("matching main trailers never hide a proposal when the commit contains an unreviewed extra change", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Keep tainted main evidence visible",
+    branch: "proposal/demo/keep-tainted-main-evidence-visible",
+  });
+  configureGit(proposal.root);
+  const reviewedContent = "# Demo\n\nOnly this proposal change may be accepted.\n";
+  writeFile(proposal.root, "projects/demo/docs/README.md", reviewedContent);
+  const published = publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  materializeSharedReview(fixture.project, { proposal: proposal.branch });
+
+  writeFile(fixture.seed, "projects/demo/docs/README.md", reviewedContent);
+  writeFile(fixture.seed, "projects/demo/docs/UNREVIEWED-EXTRA.md", "# Never reviewed\n");
+  git(fixture.seed, ["add", "."]);
+  git(fixture.seed, [
+    "commit",
+    "-m",
+    `Tainted main acceptance\n\nContext-Room-Proposal: ${proposal.branch}\nContext-Room-Proposal-Head: ${published.head}\nContext-Room-Project: demo`,
+  ]);
+  git(fixture.seed, ["push", "origin", "main"]);
+
+  const listed = listSharedProposals(fixture.project).find((item) => item.branch === proposal.branch);
+  assert.ok(listed, "the proposal must remain visible while acceptance evidence is invalid");
+  assert.notEqual(listed.reviewStatus, "merged");
+
+  const hub = contextHubUiState(fixture.project, { refreshShared: true, force: true });
+  assert.equal(
+    hub.proposals.some((item) => item.branch === proposal.branch),
+    true,
+    "the Hub must not hide a proposal on tainted trailer-only evidence",
+  );
+});
+
+test("a delivery receipt cannot mark a proposal merged when its commit is not on remote main", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Unverified delivery receipt",
+    branch: "proposal/demo/unverified-delivery-receipt",
+  });
+  configureGit(proposal.root);
+  writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nNot on main.\n");
+  const published = publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  const authorityPath = path.join(
+    process.env.CONTEXT_ROOM_SHARED_HOME,
+    "review-authority",
+    `${review.metadata.authorityId}.json`,
+  );
+  const authority = JSON.parse(fs.readFileSync(authorityPath, "utf8"));
+  fs.writeFileSync(authorityPath, JSON.stringify({
+    ...authority,
+    acceptedAt: "2026-08-07T08:00:00.000Z",
+    accepted: {
+      accepted: true,
+      delivery: "main",
+      deliveryVerified: true,
+      proposal: proposal.branch,
+      proposalHead: published.head,
+      previousMain: review.metadata.baseRevision,
+      commit: published.head,
+      defaultBranch: "main",
+      actor: null,
+    },
+  }, null, 2) + "\n", "utf8");
+
+  const listed = listSharedProposals(fixture.project).find((item) => item.branch === proposal.branch);
+  assert.equal(listed.reviewStatus, "accepted");
+  assert.equal(listed.reviewActivity.accepted.merged, false);
+  git(fixture.seed, ["fetch", "origin", proposal.branch]);
+  assert.equal(
+    spawnSync("git", ["merge-base", "--is-ancestor", published.head, "origin/main"], { cwd: fixture.seed }).status,
+    1,
+  );
+  assert.throws(
+    () => acceptSharedReview(review.reviewRoot),
+    (error) => error?.code === "shared-delivery-unverified",
+  );
+});
+
+test("a delivery receipt cannot mark a proposal merged when the main commit lacks the exact proposal trailers", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Mismatched delivery receipt",
+    branch: "proposal/demo/mismatched-delivery-receipt",
+  });
+  configureGit(proposal.root);
+  writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nProposed but not accepted.\n");
+  const published = publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  const remoteMain = readSharedMainRevision(fixture.remote, { refresh: true }).revision;
+  const authorityPath = path.join(
+    process.env.CONTEXT_ROOM_SHARED_HOME,
+    "review-authority",
+    `${review.metadata.authorityId}.json`,
+  );
+  const authority = JSON.parse(fs.readFileSync(authorityPath, "utf8"));
+  fs.writeFileSync(authorityPath, JSON.stringify({
+    ...authority,
+    acceptedAt: "2026-08-07T08:00:00.000Z",
+    accepted: {
+      accepted: true,
+      delivery: "main",
+      deliveryVerified: true,
+      proposal: proposal.branch,
+      proposalHead: published.head,
+      previousMain: review.metadata.baseRevision,
+      commit: remoteMain,
+      verifiedRemoteHead: remoteMain,
+      defaultBranch: "main",
+      actor: null,
+    },
+  }, null, 2) + "\n", "utf8");
+
+  assert.doesNotMatch(git(fixture.seed, ["show", "-s", "--format=%B", remoteMain]), /Context-Room-Proposal:/);
+  const listed = listSharedProposals(fixture.project).find((item) => item.branch === proposal.branch);
+  assert.equal(listed.reviewStatus, "accepted");
+  assert.equal(listed.reviewActivity.accepted.merged, false);
+  assert.throws(
+    () => acceptSharedReview(review.reviewRoot),
+    (error) => error?.code === "shared-acceptance-receipt-invalid",
+  );
+});
+
+test("shared acceptance reconciles an exact pushed commit after verification failed before the receipt", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Recover accepted delivery",
+    branch: "proposal/demo/recover-accepted-delivery",
+  });
+  configureGit(proposal.root);
+  writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nAccepted despite a transient verification outage.\n");
+  const published = publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  writeDocReviewDecision(review.reviewRoot, "projects/demo/docs/README.md", {
+    status: "verified",
+    note: "Exact proposal file reviewed",
+  });
+
+  const ephemeralRemote = path.join(fixture.base, "ephemeral-remote.git");
+  fs.symlinkSync(fixture.remote, ephemeralRemote, "dir");
+  const postReceive = path.join(fixture.remote, "hooks", "post-receive");
+  fs.writeFileSync(postReceive, `#!/bin/sh\nrm -f ${JSON.stringify(ephemeralRemote)}\n`, "utf8");
+  fs.chmodSync(postReceive, 0o755);
+  const push = { token: "test-installation-token", url: ephemeralRemote };
+
+  assert.throws(
+    () => acceptSharedReview(review.reviewRoot, { message: "Accept recoverable delivery", push }),
+    (error) => error?.code === "shared-delivery-unverified",
+  );
+  assert.equal(fs.existsSync(ephemeralRemote), false);
+  const pushedHead = git(fixture.remote, ["rev-parse", "refs/heads/main"]);
+  assert.equal(git(fixture.remote, ["rev-list", "--count", `${review.metadata.baseRevision}..${pushedHead}`]), "1");
+  const pushedMessage = git(fixture.remote, ["show", "-s", "--format=%B", pushedHead]);
+  assert.match(pushedMessage, new RegExp(`^Context-Room-Proposal: ${proposal.branch}$`, "m"));
+  assert.match(pushedMessage, new RegExp(`^Context-Room-Proposal-Head: ${published.head}$`, "m"));
+  const authorityPath = path.join(
+    process.env.CONTEXT_ROOM_SHARED_HOME,
+    "review-authority",
+    `${review.metadata.authorityId}.json`,
+  );
+  assert.equal(Boolean(JSON.parse(fs.readFileSync(authorityPath, "utf8")).accepted), false);
+
+  fs.symlinkSync(fixture.remote, ephemeralRemote, "dir");
+  const reconciled = acceptSharedReview(review.reviewRoot, { message: "Accept recoverable delivery", push });
+  assert.equal(reconciled.accepted, true);
+  assert.equal(reconciled.deliveryVerified, true);
+  assert.equal(reconciled.commit, pushedHead);
+  assert.equal(reconciled.verifiedRemoteHead, pushedHead);
+  assert.equal(fs.existsSync(ephemeralRemote), true, "retry must not push a second commit");
+  assert.equal(git(fixture.remote, ["rev-parse", "refs/heads/main"]), pushedHead);
+  assert.equal(git(fixture.remote, ["rev-list", "--count", `${review.metadata.baseRevision}..refs/heads/main`]), "1");
+});
+
+test("shared acceptance never reconciles matching trailers when the commit contains an unreviewed extra change", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Reject tainted acceptance recovery",
+    branch: "proposal/demo/reject-tainted-acceptance-recovery",
+  });
+  configureGit(proposal.root);
+  const reviewedContent = "# Demo\n\nOnly this reviewed change may be accepted.\n";
+  writeFile(proposal.root, "projects/demo/docs/README.md", reviewedContent);
+  const published = publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  writeDocReviewDecision(review.reviewRoot, "projects/demo/docs/README.md", {
+    status: "verified",
+    note: "Reviewed exact proposal file",
+  });
+
+  writeFile(fixture.seed, "projects/demo/docs/README.md", reviewedContent);
+  writeFile(fixture.seed, "projects/demo/docs/UNREVIEWED-EXTRA.md", "# This file was never reviewed\n");
+  git(fixture.seed, ["add", "."]);
+  git(fixture.seed, [
+    "commit",
+    "-m",
+    `Tainted acceptance recovery\n\nContext-Room-Proposal: ${proposal.branch}\nContext-Room-Proposal-Head: ${published.head}\nContext-Room-Project: demo`,
+  ]);
+  git(fixture.seed, ["push", "origin", "main"]);
+  const taintedCommit = git(fixture.seed, ["rev-parse", "HEAD"]);
+  assert.match(
+    git(fixture.seed, ["diff-tree", "--no-commit-id", "--name-only", "-r", taintedCommit]),
+    /^projects\/demo\/docs\/UNREVIEWED-EXTRA\.md$/m,
+  );
+
+  let recovered;
+  try {
+    recovered = acceptSharedReview(review.reviewRoot, { message: "Do not reconcile tainted delivery" });
+  } catch {
+    // Failing closed is also valid: the invariant is that this commit is never accepted.
+  }
+  assert.equal(
+    recovered?.commit === taintedCommit,
+    false,
+    "matching proposal trailers must not reconcile a commit whose tree differs from the exact reviewed result",
+  );
+  const authorityPath = path.join(
+    process.env.CONTEXT_ROOM_SHARED_HOME,
+    "review-authority",
+    `${review.metadata.authorityId}.json`,
+  );
+  const authority = JSON.parse(fs.readFileSync(authorityPath, "utf8"));
+  assert.notEqual(
+    authority.accepted?.commit,
+    taintedCommit,
+    "the tainted commit must not be persisted as the accepted proposal receipt",
+  );
+});
+
+test("a delivery receipt cannot hide an unreviewed extra change behind exact proposal trailers", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Reject tainted acceptance receipt",
+    branch: "proposal/demo/reject-tainted-acceptance-receipt",
+  });
+  configureGit(proposal.root);
+  const reviewedContent = "# Demo\n\nOnly this reviewed change may be accepted.\n";
+  writeFile(proposal.root, "projects/demo/docs/README.md", reviewedContent);
+  const published = publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  writeDocReviewDecision(review.reviewRoot, "projects/demo/docs/README.md", {
+    status: "verified",
+    note: "Reviewed exact proposal file",
+  });
+
+  writeFile(fixture.seed, "projects/demo/docs/README.md", reviewedContent);
+  writeFile(fixture.seed, "projects/demo/docs/UNREVIEWED-EXTRA.md", "# This file was never reviewed\n");
+  git(fixture.seed, ["add", "."]);
+  git(fixture.seed, [
+    "commit",
+    "-m",
+    `Tainted acceptance receipt\n\nContext-Room-Proposal: ${proposal.branch}\nContext-Room-Proposal-Head: ${published.head}\nContext-Room-Project: demo`,
+  ]);
+  git(fixture.seed, ["push", "origin", "main"]);
+  const taintedCommit = git(fixture.seed, ["rev-parse", "HEAD"]);
+  const authorityPath = path.join(
+    process.env.CONTEXT_ROOM_SHARED_HOME,
+    "review-authority",
+    `${review.metadata.authorityId}.json`,
+  );
+  const authority = JSON.parse(fs.readFileSync(authorityPath, "utf8"));
+  fs.writeFileSync(authorityPath, JSON.stringify({
+    ...authority,
+    acceptedAt: "2026-08-07T08:00:00.000Z",
+    accepted: {
+      accepted: true,
+      delivery: "main",
+      deliveryVerified: true,
+      proposal: proposal.branch,
+      proposalHead: published.head,
+      previousMain: review.metadata.baseRevision,
+      commit: taintedCommit,
+      verifiedRemoteHead: taintedCommit,
+      defaultBranch: "main",
+      actor: null,
+    },
+  }, null, 2) + "\n", "utf8");
+
+  const listed = listSharedProposals(fixture.project).find((item) => item.branch === proposal.branch);
+  assert.ok(listed, "a forged receipt for a tainted commit must leave the proposal visible");
+  assert.notEqual(listed.reviewStatus, "merged");
+  assert.throws(
+    () => acceptSharedReview(review.reviewRoot),
+    (error) => error?.code === "shared-acceptance-receipt-invalid",
+  );
+});
+
+test("shared acceptance rejects an executable-bit change made after the file decision", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Reject mode tampering after review",
+    branch: "proposal/demo/reject-mode-tampering",
+  });
+  configureGit(proposal.root);
+  writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nReviewed content with a stable mode.\n");
+  publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  const reviewedPath = path.join(review.reviewRoot, "projects/demo/docs/README.md");
+  writeDocReviewDecision(review.reviewRoot, "projects/demo/docs/README.md", {
+    status: "verified",
+    note: "Reviewed before executable-bit tampering",
+  });
+  const signedReviewState = JSON.parse(fs.readFileSync(path.join(review.reviewRoot, ".context-room", "review-state.json"), "utf8"));
+  assert.equal(signedReviewState.reviews["projects/demo/docs/README.md"].resourceMode, "100644");
+  assert.equal(inspectOwnerTrustedState(review.reviewRoot, "review-state", signedReviewState).trusted, true);
+
+  fs.chmodSync(reviewedPath, 0o755);
+  assert.match(git(review.reviewRoot, ["diff", "--summary"]), /mode change 100644 => 100755/);
+  assert.throws(
+    () => acceptSharedReview(review.reviewRoot),
+    /mode|review evidence|stale/i,
+  );
+  assert.equal(git(fixture.remote, ["rev-parse", "refs/heads/main"]), review.metadata.baseRevision);
+});
+
+test("legacy review evidence remains valid when content identifies one unambiguous Git mode", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Accept safe legacy review mode",
+    branch: "proposal/demo/accept-safe-legacy-mode",
+  });
+  configureGit(proposal.root);
+  writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nLegacy content uniquely identifies its reviewed mode.\n");
+  publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  writeDocReviewDecision(review.reviewRoot, "projects/demo/docs/README.md", {
+    status: "verified",
+    note: "Legacy decision with an unambiguous mode",
+  });
+  rewriteAsLegacyReviewWithoutResourceMode(review.reviewRoot, "projects/demo/docs/README.md");
+
+  const accepted = acceptSharedReview(review.reviewRoot);
+  assert.equal(accepted.accepted, true);
+  assert.equal(accepted.deliveryVerified, true);
+});
+
+test("legacy review evidence refuses an ambiguous mode-only proposal", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Reject ambiguous legacy mode",
+    branch: "proposal/demo/reject-ambiguous-legacy-mode",
+  });
+  configureGit(proposal.root);
+  fs.chmodSync(path.join(proposal.root, "projects/demo/docs/README.md"), 0o755);
+  assert.match(git(proposal.root, ["diff", "--summary"]), /mode change 100644 => 100755/);
+  publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  writeDocReviewDecision(review.reviewRoot, "projects/demo/docs/README.md", {
+    status: "verified",
+    note: "Legacy mode-only decision",
+  });
+  rewriteAsLegacyReviewWithoutResourceMode(review.reviewRoot, "projects/demo/docs/README.md");
+
+  const report = buildDocQaReport(review.reviewRoot);
+  assert.equal(report.pendingPaths.includes("projects/demo/docs/README.md"), true, JSON.stringify({ pendingPaths: report.pendingPaths, reviewedPaths: report.reviewedPaths, queue: report.queue }));
+  assert.equal(report.reviewedPaths.includes("projects/demo/docs/README.md"), false, JSON.stringify({ pendingPaths: report.pendingPaths, reviewedPaths: report.reviewedPaths, queue: report.queue }));
+
+  assert.throws(
+    () => acceptSharedReview(review.reviewRoot),
+    /mode|review evidence|stale/i,
+  );
+  assert.equal(git(fixture.remote, ["rev-parse", "refs/heads/main"]), review.metadata.baseRevision);
+});
+
+test("shared acceptance never reconciles a dangling symlink as a reviewed deletion", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Reject dangling symlink recovery",
+    branch: "proposal/demo/reject-dangling-symlink-recovery",
+  });
+  configureGit(proposal.root);
+  fs.unlinkSync(path.join(proposal.root, "projects/demo/docs/README.md"));
+  const published = publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  initializeContextRoomProject(review.reviewRoot, {
+    title: `Review · ${proposal.branch}`,
+    allowedPaths: ["projects/demo/"],
+    watchAllow: ["projects/demo/"],
+  });
+  writeDocReviewDecision(review.reviewRoot, "projects/demo/docs/README.md", {
+    status: "verified",
+    note: "Reviewed exact deletion",
+  });
+  const reviewedPath = path.join(review.reviewRoot, "projects/demo/docs/README.md");
+  fs.mkdirSync(path.dirname(reviewedPath), { recursive: true });
+  fs.symlinkSync("missing-target.md", reviewedPath);
+
+  fs.unlinkSync(path.join(fixture.seed, "projects/demo/docs/README.md"));
+  fs.symlinkSync("missing-target.md", path.join(fixture.seed, "projects/demo/docs/README.md"));
+  git(fixture.seed, ["add", "."]);
+  git(fixture.seed, [
+    "commit",
+    "-m",
+    `Tainted dangling symlink recovery\n\nContext-Room-Proposal: ${proposal.branch}\nContext-Room-Proposal-Head: ${published.head}\nContext-Room-Project: demo`,
+  ]);
+  git(fixture.seed, ["push", "origin", "main"]);
+  const taintedCommit = git(fixture.seed, ["rev-parse", "HEAD"]);
+
+  let recovered;
+  try {
+    recovered = acceptSharedReview(review.reviewRoot);
+  } catch {
+    // Failing closed is valid; accepting the symlink is not.
+  }
+  assert.equal(recovered?.commit === taintedCommit, false);
+  const authorityPath = path.join(
+    process.env.CONTEXT_ROOM_SHARED_HOME,
+    "review-authority",
+    `${review.metadata.authorityId}.json`,
+  );
+  const authority = JSON.parse(fs.readFileSync(authorityPath, "utf8"));
+  assert.notEqual(authority.accepted?.commit, taintedCommit);
+});
+
+test("shared acceptance persists its post-push receipt through an atomic replacement", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Persist acceptance atomically",
+    branch: "proposal/demo/persist-acceptance-atomically",
+  });
+  configureGit(proposal.root);
+  writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nPersist this accepted result atomically.\n");
+  publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  writeDocReviewDecision(review.reviewRoot, "projects/demo/docs/README.md", {
+    status: "verified",
+    note: "Exact result reviewed",
+  });
+  const authorityPath = path.join(
+    process.env.CONTEXT_ROOM_SHARED_HOME,
+    "review-authority",
+    `${review.metadata.authorityId}.json`,
+  );
+  const originalRenameSync = fs.renameSync;
+  let atomicReplacementObserved = false;
+  fs.renameSync = (source, destination) => {
+    if (path.resolve(destination) === path.resolve(authorityPath) && String(source).startsWith(`${authorityPath}.`)) {
+      atomicReplacementObserved = true;
+    }
+    return originalRenameSync(source, destination);
+  };
+  let accepted;
+  try {
+    accepted = acceptSharedReview(review.reviewRoot);
+  } finally {
+    fs.renameSync = originalRenameSync;
+  }
+
+  assert.equal(accepted.accepted, true);
+  assert.equal(atomicReplacementObserved, true, "the durable receipt must replace the authority file atomically");
+  assert.equal(JSON.parse(fs.readFileSync(authorityPath, "utf8")).accepted.commit, accepted.commit);
+});
+
+test("shared acceptance refuses a post-commit hook descendant outside the exact reviewed tree", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Reject post-commit tree injection",
+    branch: "proposal/demo/reject-post-commit-tree-injection",
+  });
+  configureGit(proposal.root);
+  writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nOnly this reviewed tree may be accepted.\n");
+  publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  writeDocReviewDecision(review.reviewRoot, "projects/demo/docs/README.md", {
+    status: "verified",
+    note: "Exact tree reviewed",
+  });
+
+  const repositoryKey = createHash("sha256").update(review.metadata.repository).digest("hex").slice(0, 16);
+  const checkout = path.join(process.env.CONTEXT_ROOM_SHARED_HOME, repositoryKey, "repository");
+  const hooks = path.join(checkout, ".git", "hooks");
+  const hook = path.join(hooks, "post-commit");
+  fs.mkdirSync(hooks, { recursive: true });
+  fs.writeFileSync(hook, `#!/bin/sh
+guard="$(git rev-parse --git-path context-room-taint-once)"
+if [ -f "$guard" ]; then exit 0; fi
+: > "$guard"
+mkdir -p projects/demo/docs
+printf '# Unreviewed hook child\\n' > projects/demo/docs/UNREVIEWED-HOOK.md
+git add projects/demo/docs/UNREVIEWED-HOOK.md
+git -c user.name='Hook' -c user.email='hook@example.test' commit --no-verify -m 'Unreviewed hook child'
+`, "utf8");
+  fs.chmodSync(hook, 0o755);
+
+  assert.throws(
+    () => acceptSharedReview(review.reviewRoot),
+    /exact reviewed result|reviewed tree/i,
+  );
+  assert.equal(git(fixture.remote, ["rev-parse", "refs/heads/main"]), review.metadata.baseRevision);
+});
+
+test("shared acceptance refuses a pre-commit hook file injected into the terminal commit", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Reject pre-commit tree injection",
+    branch: "proposal/demo/reject-pre-commit-tree-injection",
+  });
+  configureGit(proposal.root);
+  writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nOnly the reviewed file belongs in the terminal commit.\n");
+  publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  writeDocReviewDecision(review.reviewRoot, "projects/demo/docs/README.md", {
+    status: "verified",
+    note: "Exact terminal tree reviewed",
+  });
+
+  const repositoryKey = createHash("sha256").update(review.metadata.repository).digest("hex").slice(0, 16);
+  const checkout = path.join(process.env.CONTEXT_ROOM_SHARED_HOME, repositoryKey, "repository");
+  const hooks = path.join(checkout, ".git", "hooks");
+  const hook = path.join(hooks, "pre-commit");
+  fs.mkdirSync(hooks, { recursive: true });
+  fs.writeFileSync(hook, `#!/bin/sh
+guard="$(git rev-parse --git-path context-room-precommit-taint-once)"
+if [ -f "$guard" ]; then exit 0; fi
+: > "$guard"
+mkdir -p projects/demo/docs
+printf '# Unreviewed pre-commit injection\\n' > projects/demo/docs/UNREVIEWED-PRECOMMIT.md
+git add projects/demo/docs/UNREVIEWED-PRECOMMIT.md
+`, "utf8");
+  fs.chmodSync(hook, 0o755);
+
+  assert.throws(
+    () => acceptSharedReview(review.reviewRoot),
+    (error) => error?.code === "shared-acceptance-tree-mismatch",
+  );
+  assert.equal(git(fixture.remote, ["rev-parse", "refs/heads/main"]), review.metadata.baseRevision);
+});
+
+test("an active acceptance lease fails fast with a retryable busy response", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Fail fast under active acceptance lease",
+    branch: "proposal/demo/fail-fast-active-lease",
+  });
+  configureGit(proposal.root);
+  writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nWait for the active owner.\n");
+  publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  writeDocReviewDecision(review.reviewRoot, "projects/demo/docs/README.md", { status: "verified", note: "Reviewed" });
+
+  const lock = sharedAcceptanceLockPath(review);
+  fs.mkdirSync(lock, { recursive: true });
+  fs.writeFileSync(path.join(lock, "owner.json"), JSON.stringify({
+    pid: 42,
+    host: "another-live-qm-instance",
+    token: "foreign-owner",
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    proposal: review.metadata.proposal,
+    proposalHead: review.metadata.proposalHead,
+  }, null, 2) + "\n", "utf8");
+  t.after(() => fs.rmSync(lock, { recursive: true, force: true }));
+
+  const startedAt = Date.now();
+  const child = sharedAcceptanceChild(review.reviewRoot, { timeout: 1_000 });
+  const elapsed = Date.now() - startedAt;
+  assert.equal(child.status, 0, child.stderr || child.error?.message);
+  const response = JSON.parse(child.stdout.trim());
+  assert.equal(response.error?.code, "shared-acceptance-busy");
+  assert.equal(response.error?.retryable, true);
+  assert.ok(elapsed < 750, `busy response should be fail-fast, took ${elapsed} ms`);
+});
+
+test("a stale acceptance lease from a retired host is reclaimed", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Recover retired instance lease",
+    branch: "proposal/demo/recover-retired-instance-lease",
+  });
+  configureGit(proposal.root);
+  writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nRecover this stale lease.\n");
+  publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  writeDocReviewDecision(review.reviewRoot, "projects/demo/docs/README.md", { status: "verified", note: "Reviewed" });
+
+  const lock = sharedAcceptanceLockPath(review);
+  fs.mkdirSync(lock, { recursive: true });
+  fs.writeFileSync(path.join(lock, "owner.json"), JSON.stringify({
+    pid: 42,
+    host: "retired-qm-instance",
+    token: "stale-owner",
+    createdAt: new Date(Date.now() - 60 * 60_000).toISOString(),
+    expiresAt: new Date(Date.now() - 45 * 60_000).toISOString(),
+    proposal: review.metadata.proposal,
+    proposalHead: review.metadata.proposalHead,
+  }, null, 2) + "\n", "utf8");
+
+  const child = sharedAcceptanceChild(review.reviewRoot, { timeout: 5_000 });
+  assert.equal(child.status, 0, child.stderr || child.error?.message);
+  const response = JSON.parse(child.stdout.trim());
+  assert.equal(response.result?.accepted, true, response.error?.message);
+  assert.equal(response.result?.deliveryVerified, true);
+  assert.equal(fs.existsSync(lock), false);
+});
+
+test("a stale ownerless or malformed acceptance lease is reclaimed", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Recover incomplete acceptance lease",
+    branch: "proposal/demo/recover-incomplete-acceptance-lease",
+  });
+  configureGit(proposal.root);
+  writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nRecover incomplete lock ownership.\n");
+  publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  writeDocReviewDecision(review.reviewRoot, "projects/demo/docs/README.md", { status: "verified", note: "Reviewed" });
+
+  const lock = sharedAcceptanceLockPath(review);
+  const staleTime = new Date(Date.now() - 30 * 60_000);
+  fs.mkdirSync(lock, { recursive: true });
+  fs.utimesSync(lock, staleTime, staleTime);
+  let child = sharedAcceptanceChild(review.reviewRoot, { timeout: 5_000 });
+  assert.equal(child.status, 0, child.stderr || child.error?.message);
+  let response = JSON.parse(child.stdout.trim());
+  assert.equal(response.result?.accepted, true, response.error?.message);
+  assert.equal(fs.existsSync(lock), false);
+
+  fs.mkdirSync(lock, { recursive: true });
+  fs.writeFileSync(path.join(lock, "owner.json"), "{not-json", "utf8");
+  fs.utimesSync(lock, staleTime, staleTime);
+  child = sharedAcceptanceChild(review.reviewRoot, { timeout: 5_000 });
+  assert.equal(child.status, 0, child.stderr || child.error?.message);
+  response = JSON.parse(child.stdout.trim());
+  assert.equal(response.result?.accepted, true, response.error?.message);
+  assert.equal(fs.existsSync(lock), false);
+});
+
+test("a rejected push recovers an exact competing acceptance from remote main", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Recover exact competing delivery",
+    branch: "proposal/demo/recover-exact-competing-delivery",
+  });
+  configureGit(proposal.root);
+  const reviewedContent = "# Demo\n\nAccept this result once across instances.\n";
+  writeFile(proposal.root, "projects/demo/docs/README.md", reviewedContent);
+  publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  writeDocReviewDecision(review.reviewRoot, "projects/demo/docs/README.md", {
+    status: "verified",
+    note: "Exact competing result reviewed",
+  });
+
+  writeFile(fixture.seed, "projects/demo/docs/README.md", reviewedContent);
+  git(fixture.seed, ["add", "projects/demo/docs/README.md"]);
+  git(fixture.seed, ["commit", "-m", acceptedProposalCommitMessage(review.metadata, "Competing exact acceptance")]);
+  const competingCommit = git(fixture.seed, ["rev-parse", "HEAD"]);
+  git(fixture.seed, ["push", "origin", `${competingCommit}:refs/context-room-tests/competing-acceptance`]);
+
+  const repositoryKey = createHash("sha256").update(review.metadata.repository).digest("hex").slice(0, 16);
+  const checkout = path.join(process.env.CONTEXT_ROOM_SHARED_HOME, repositoryKey, "repository");
+  const hooks = path.join(checkout, ".git", "hooks");
+  const hook = path.join(hooks, "pre-push");
+  fs.mkdirSync(hooks, { recursive: true });
+  fs.writeFileSync(hook, `#!/bin/sh
+guard="$(git rev-parse --git-path context-room-competing-push-once)"
+if [ -f "$guard" ]; then exit 0; fi
+: > "$guard"
+git --git-dir=${JSON.stringify(fixture.remote)} fetch ${JSON.stringify(fixture.seed)} ${competingCommit}
+git --git-dir=${JSON.stringify(fixture.remote)} update-ref refs/heads/main ${competingCommit} ${review.metadata.baseRevision}
+`, "utf8");
+  fs.chmodSync(hook, 0o755);
+
+  const accepted = acceptSharedReview(review.reviewRoot, { message: "Acceptance racing another instance" });
+  assert.equal(accepted.accepted, true);
+  assert.equal(accepted.deliveryVerified, true);
+  assert.equal(accepted.commit, competingCommit);
+  assert.equal(accepted.verifiedRemoteHead, competingCommit);
+  assert.equal(git(fixture.remote, ["rev-list", "--count", `${review.metadata.baseRevision}..refs/heads/main`]), "1");
+});
+
+test("concurrent shared acceptance attempts serialize and recover the same delivered commit", async (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  withIsolatedEventJournal(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Serialize concurrent acceptance",
+    branch: "proposal/demo/serialize-concurrent-acceptance",
+  });
+  configureGit(proposal.root);
+  writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nAccept exactly once under concurrency.\n");
+  publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  writeDocReviewDecision(review.reviewRoot, "projects/demo/docs/README.md", {
+    status: "verified",
+    note: "Exact concurrent result reviewed",
+  });
+  const contentionStarted = path.join(fixture.base, "acceptance-contention-started");
+  const releaseContention = path.join(fixture.base, "release-acceptance-contention");
+  t.after(() => fs.writeFileSync(releaseContention, "release\n", "utf8"));
+  const postReceive = path.join(fixture.remote, "hooks", "post-receive");
+  fs.writeFileSync(postReceive, `#!/bin/sh
+: > ${JSON.stringify(contentionStarted)}
+while [ ! -f ${JSON.stringify(releaseContention)} ]; do sleep 0.05; done
+`, "utf8");
+  fs.chmodSync(postReceive, 0o755);
+
+  const moduleUrl = new URL("../src/shared_context.mjs", import.meta.url).href;
+  const source = `
+    import { acceptSharedReview } from ${JSON.stringify(moduleUrl)};
+    try {
+      const actor = process.argv[2];
+      const result = acceptSharedReview(process.argv[1], {
+        message: "Accept concurrent delivery",
+        actor: { sub: actor, email: actor + "@example.test" },
+      });
+      process.stdout.write(JSON.stringify(result) + "\\n");
+    } catch (error) {
+      process.stderr.write(JSON.stringify({ code: error.code || "", message: error.message }) + "\\n");
+      process.exitCode = 1;
+    }
+  `;
+  const runAttempt = (actor) => new Promise((resolve) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", source, review.reviewRoot, actor], {
+      cwd: fixture.project,
+      env: { ...process.env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+  });
+
+  const firstAttemptPromise = runAttempt("reviewer-alpha");
+  const contentionDeadline = Date.now() + 5_000;
+  while (!fs.existsSync(contentionStarted) && Date.now() < contentionDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(fs.existsSync(contentionStarted), true, "the first acceptance must hold its lease before the contender starts");
+  const busyAttempt = await runAttempt("reviewer-beta");
+  assert.equal(busyAttempt.code, 1, busyAttempt.stderr);
+  assert.equal(JSON.parse(busyAttempt.stderr.trim()).code, "shared-acceptance-busy");
+  fs.writeFileSync(releaseContention, "release\n", "utf8");
+  const successfulAttempt = await firstAttemptPromise;
+  assert.equal(successfulAttempt.code, 0, successfulAttempt.stderr);
+  const delivered = JSON.parse(successfulAttempt.stdout.trim());
+  assert.equal(delivered.accepted, true);
+  const retried = acceptSharedReview(review.reviewRoot, {
+    message: "Retry concurrent delivery",
+    actor: { sub: "reviewer-retry", email: "reviewer-retry@example.test" },
+  });
+  assert.equal(retried.accepted, true);
+  assert.equal(retried.commit, delivered.commit, "a busy caller retry must recover the one delivered commit");
+  assert.equal(git(fixture.remote, ["rev-list", "--count", `${review.metadata.baseRevision}..refs/heads/main`]), "1");
+});
+
+test("shared acceptance retry after a lost browser response revalidates the delivered receipt without another commit or push", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  withIsolatedEventJournal(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Retry accepted delivery",
+    branch: "proposal/demo/retry-accepted-delivery",
+  });
+  configureGit(proposal.root);
+  writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nAccepted before the browser lost its response.\n");
+  const published = publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  writeDocReviewDecision(review.reviewRoot, "projects/demo/docs/README.md", {
+    status: "verified",
+    note: "Exact proposal file reviewed",
+  });
+
+  const pushLog = path.join(fixture.base, "accepted-pushes.log");
+  const postReceive = path.join(fixture.remote, "hooks", "post-receive");
+  fs.writeFileSync(postReceive, `#!/bin/sh\nprintf 'push\\n' >> ${JSON.stringify(pushLog)}\n`, "utf8");
+  fs.chmodSync(postReceive, 0o755);
+  const push = { token: "test-installation-token", url: fixture.remote };
+
+  const accepted = acceptSharedReview(review.reviewRoot, { message: "Accept retryable delivery", push });
+  assert.equal(accepted.accepted, true);
+  assert.equal(accepted.deliveryVerified, true);
+  assert.equal(accepted.proposalHead, published.head);
+  const authorityPath = path.join(
+    process.env.CONTEXT_ROOM_SHARED_HOME,
+    "review-authority",
+    `${review.metadata.authorityId}.json`,
+  );
+  const receipt = JSON.parse(fs.readFileSync(authorityPath, "utf8")).accepted;
+  assert.equal(receipt.commit, accepted.commit, "the successful acceptance must be durable before the response is lost");
+  assert.equal(fs.readFileSync(pushLog, "utf8"), "push\n");
+  const authorityAfterAcceptance = fs.readFileSync(authorityPath, "utf8");
+  const journalAfterAcceptance = fs.readFileSync(contextRoomEventJournalPath(), "utf8");
+
+  const retry = acceptSharedReview(review.reviewRoot, { message: "Accept retryable delivery", push });
+  assert.equal(retry.accepted, true);
+  assert.equal(retry.deliveryVerified, true);
+  assert.equal(retry.commit, accepted.commit);
+  assert.equal(retry.verifiedRemoteHead, accepted.verifiedRemoteHead);
+  assert.equal(retry.defaultBranch, accepted.defaultBranch);
+  assert.equal(git(fixture.remote, ["rev-parse", "refs/heads/main"]), accepted.verifiedRemoteHead);
+  assert.equal(git(fixture.remote, ["rev-list", "--count", `${review.metadata.baseRevision}..refs/heads/main`]), "1");
+  assert.equal(fs.readFileSync(pushLog, "utf8"), "push\n", "retry must not push again");
+  assert.equal(fs.readFileSync(authorityPath, "utf8"), authorityAfterAcceptance, "retry must not rewrite the receipt");
+  assert.equal(fs.readFileSync(contextRoomEventJournalPath(), "utf8"), journalAfterAcceptance, "retry must not append another event");
 });
 
 test("direct shared main commits expose dependent reviews when no dependency proof exists", (t) => {
@@ -1696,7 +2588,10 @@ test("proposal branches stay scoped and partial acceptance reaches newer non-con
     git(fixture.seed, ["show", "origin/main:projects/demo/docs/OTHER.md"]),
     "# Other\n\nAlready accepted on main.",
   );
-  assert.throws(() => acceptSharedReview(review.reviewRoot), /already accepted/);
+  const retried = acceptSharedReview(review.reviewRoot);
+  assert.equal(retried.accepted, true);
+  assert.equal(retried.deliveryVerified, true);
+  assert.equal(retried.commit, accepted.commit);
 });
 
 test("shared proposal reviews include unchanged direct dependents", (t) => {
@@ -2594,15 +3489,24 @@ test("shared Context Room API lists proposals and opens an exact review room", a
   const exact = await exactResponse.json();
   assert.equal(exact.mode, "review");
   assert.equal(exact.review.proposalHead, published.head);
-  const incompleteResponse = await fetch(opened.url + "/api/shared-context/accept", {
+  const acceptWithoutChallenge = await fetch(opened.url + "/api/shared-context/accept", {
     method: "POST",
     headers: { "content-type": "application/json", "x-context-room-project": exactResponse.headers.get("x-context-room-project"), "x-context-room-owner-nonce": reviewOwnerNonce },
     body: JSON.stringify({ expectedProposalHead: published.head }),
   });
-  assert.equal(incompleteResponse.status, 409);
-  const incomplete = await incompleteResponse.json();
-  assert.equal(incomplete.code, "shared_context_review_incomplete");
-  assert.match(incomplete.error, /1 file\(s\) remain without current review proof/);
+  assert.equal(acceptWithoutChallenge.status, 403);
+  assert.equal((await acceptWithoutChallenge.json()).code, "shared_context_acceptance_challenge_required");
+  assert.doesNotMatch(git(fixture.seed, ["show", "origin/main:projects/demo/docs/README.md"]), /API review/);
+
+  const incompleteChallengeResponse = await fetch(opened.url + "/api/shared-context/accept-challenge", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-project": exactResponse.headers.get("x-context-room-project"), "x-context-room-owner-nonce": reviewOwnerNonce },
+    body: JSON.stringify({ expectedProposalHead: published.head }),
+  });
+  assert.equal(incompleteChallengeResponse.status, 409);
+  const incompleteChallenge = await incompleteChallengeResponse.json();
+  assert.equal(incompleteChallenge.code, "shared_context_review_incomplete");
+  assert.match(incompleteChallenge.error, /1 file\(s\) remain without current review proof/);
 
   const reopenedResponse = await fetch(origin + "/api/shared-context/review", {
     method: "POST",
@@ -2641,26 +3545,383 @@ test("shared Context Room API lists proposals and opens an exact review room", a
   const reviewedPreview = await reviewedPreviewResponse.json();
   assert.deepEqual(reviewedPreview.docqa.pendingPaths, []);
   assert.deepEqual(reviewedPreview.docqa.reviewedPaths, ["projects/demo/docs/README.md"]);
+  const preAcceptHub = contextHubUiState(fixture.project, { refreshShared: true, force: true });
+  assert.equal(preAcceptHub.proposals.some((item) => item.branch === proposal.branch), true);
+
+  const directAcceptResponse = await fetch(opened.url + "/api/shared-context/accept", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-project": exactResponse.headers.get("x-context-room-project"), "x-context-room-owner-nonce": reviewOwnerNonce },
+    body: JSON.stringify({ expectedProposalHead: published.head }),
+  });
+  assert.equal(directAcceptResponse.status, 403);
+  assert.equal((await directAcceptResponse.json()).code, "shared_context_acceptance_challenge_required");
+
+  const staleChallengeResponse = await fetch(opened.url + "/api/shared-context/accept-challenge", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-project": exactResponse.headers.get("x-context-room-project"), "x-context-room-owner-nonce": reviewOwnerNonce },
+    body: JSON.stringify({ expectedProposalHead: "0".repeat(40) }),
+  });
+  assert.equal(staleChallengeResponse.status, 409);
+  assert.equal((await staleChallengeResponse.json()).code, "shared_context_proposal_head_mismatch");
+
+  const challengeResponse = await fetch(opened.url + "/api/shared-context/accept-challenge", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-project": exactResponse.headers.get("x-context-room-project"), "x-context-room-owner-nonce": reviewOwnerNonce },
+    body: JSON.stringify({ expectedProposalHead: published.head }),
+  });
+  assert.equal(challengeResponse.status, 201);
+  const challenge = await challengeResponse.json();
+  assert.ok(challenge.challengeId);
+  assert.equal(challenge.action, "accept");
+  assert.equal(challenge.authorityId, opened.review.authorityId);
+  assert.equal(challenge.proposalHead, published.head);
+  assert.ok(Date.parse(challenge.expiresAt) > Date.now());
+
+  const mismatchedAcceptResponse = await fetch(opened.url + "/api/shared-context/accept", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-project": exactResponse.headers.get("x-context-room-project"), "x-context-room-owner-nonce": reviewOwnerNonce },
+    body: JSON.stringify({ expectedProposalHead: "0".repeat(40), challengeId: challenge.challengeId }),
+  });
+  assert.equal(mismatchedAcceptResponse.status, 409);
+  assert.equal((await mismatchedAcceptResponse.json()).code, "shared_context_proposal_head_mismatch");
 
   const acceptResponse = await fetch(opened.url + "/api/shared-context/accept", {
     method: "POST",
     headers: { "content-type": "application/json", "x-context-room-project": exactResponse.headers.get("x-context-room-project"), "x-context-room-owner-nonce": reviewOwnerNonce },
-    body: JSON.stringify({ expectedProposalHead: published.head }),
+    body: JSON.stringify({ expectedProposalHead: published.head, challengeId: challenge.challengeId }),
   });
   assert.equal(acceptResponse.status, 200);
   const accepted = await acceptResponse.json();
   assert.equal(accepted.accepted, true);
   assert.equal(accepted.proposalHead, published.head);
+  assert.equal(accepted.deliveryVerified, true);
+  const hubRefreshStatus = accepted.hubRefresh?.status;
+  assert.ok(
+    ["complete", "pending"].includes(hubRefreshStatus),
+    `Expected an explicit Hub refresh outcome, received ${JSON.stringify(accepted.hubRefresh)}`,
+  );
+  if (hubRefreshStatus === "pending") {
+    assert.ok(
+      accepted.hubRefresh?.reason === "timeout" || typeof accepted.hubRefresh?.error === "string",
+      `Expected a pending Hub refresh reason, received ${JSON.stringify(accepted.hubRefresh)}`,
+    );
+  }
+  assert.equal(accepted.defaultBranch, "main");
+  assert.match(accepted.commit, /^[a-f0-9]{40}$/);
+  assert.match(accepted.verifiedRemoteHead, /^[a-f0-9]{40}$/);
+  assert.match(accepted.flashToken, /^[A-Za-z0-9_-]{32}$/);
+  const flashResponse = await fetch(origin + "/api/context-hub/flash", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-context-room-project": room.projectId,
+      "x-context-room-owner-nonce": room.ownerMutationNonce,
+    },
+    body: JSON.stringify({ token: accepted.flashToken }),
+  });
+  assert.equal(flashResponse.status, 200);
+  assert.deepEqual(await flashResponse.json(), {
+    outcome: "merge",
+    commit: accepted.commit,
+    hubRefresh: { status: hubRefreshStatus },
+  });
+  const replayedFlashResponse = await fetch(origin + "/api/context-hub/flash", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-context-room-project": room.projectId,
+      "x-context-room-owner-nonce": room.ownerMutationNonce,
+    },
+    body: JSON.stringify({ token: accepted.flashToken }),
+  });
+  assert.equal(replayedFlashResponse.status, 404);
+  assert.equal((await replayedFlashResponse.json()).code, "verified_acceptance_flash_invalid");
   git(fixture.seed, ["fetch", "origin"]);
   assert.match(git(fixture.seed, ["show", "origin/main:projects/demo/docs/README.md"]), /API review/);
+  assert.equal(
+    spawnSync("git", ["merge-base", "--is-ancestor", accepted.commit, accepted.verifiedRemoteHead], { cwd: fixture.seed }).status,
+    0,
+  );
+  assert.equal(
+    git(fixture.seed, ["ls-remote", "--heads", "origin", "refs/heads/main"]).split(/\s+/)[0],
+    accepted.verifiedRemoteHead,
+  );
+  assert.equal(
+    git(fixture.seed, ["ls-remote", "--heads", "origin", `refs/heads/${proposal.branch}`]).split(/\s+/)[0],
+    published.head,
+  );
 
-  const staleResponse = await fetch(opened.url + "/api/shared-context/accept", {
+  const mergedProposal = listSharedProposals(fixture.project).find((item) => item.branch === proposal.branch);
+  assert.equal(mergedProposal.reviewStatus, "merged");
+  const refreshedHub = contextHubUiState(fixture.project, {
+    refreshShared: hubRefreshStatus === "pending",
+    force: hubRefreshStatus === "pending",
+  });
+  assert.equal(refreshedHub.proposals.some((item) => item.branch === proposal.branch), false);
+  assert.equal(refreshedHub.items.some((item) => item.type === "shared" && item.branch === proposal.branch), false);
+  assert.equal(refreshedHub.summary.proposals, preAcceptHub.summary.proposals - 1);
+  assert.equal(
+    refreshedHub.projects.find((item) => item.shared?.repository === fixture.remote && item.shared?.projectId === "demo")?.sharedProposalCount,
+    0,
+  );
+
+  const replayResponse = await fetch(opened.url + "/api/shared-context/accept", {
     method: "POST",
     headers: { "content-type": "application/json", "x-context-room-project": exactResponse.headers.get("x-context-room-project"), "x-context-room-owner-nonce": reviewOwnerNonce },
-    body: JSON.stringify({ expectedProposalHead: "0".repeat(40) }),
+    body: JSON.stringify({ expectedProposalHead: published.head, challengeId: challenge.challengeId }),
   });
-  assert.equal(staleResponse.status, 409);
-  assert.equal((await staleResponse.json()).code, "shared_context_proposal_head_mismatch");
+  assert.equal(replayResponse.status, 409);
+  assert.equal((await replayResponse.json()).code, "shared_context_acceptance_challenge_replayed");
+});
+
+test("terminal acceptance endpoints journal confirmation opening and confirmation in order", { concurrency: false }, async (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  const isolatedHubHome = withIsolatedEventJournal(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Acceptance audit events",
+    branch: "proposal/demo/acceptance-audit-events",
+  });
+  configureGit(proposal.root);
+  writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nAudit terminal acceptance.\n");
+  const published = publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  initializeContextRoomProject(review.reviewRoot, {
+    title: `Review · ${proposal.branch}`,
+    allowedPaths: ["projects/demo/"],
+    watchAllow: ["projects/demo/"],
+  });
+  writeDocReviewDecision(review.reviewRoot, "projects/demo/docs/README.md", {
+    status: "verified",
+    note: "Exact proposal file reviewed",
+  });
+
+  const room = createMemoryServer({ root: review.reviewRoot, contextHubRoot: fixture.project });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const html = await (await fetch(origin + "/")).text();
+  const nonce = /<meta name="context-room-owner-nonce" content="([^"]+)"/.exec(html)?.[1] || "";
+  assert.ok(nonce);
+  const headers = {
+    "content-type": "application/json",
+    "x-context-room-project": room.projectId,
+    "x-context-room-owner-nonce": nonce,
+  };
+
+  const challengeResponse = await fetch(origin + "/api/shared-context/accept-challenge", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ expectedProposalHead: published.head }),
+  });
+  assert.equal(challengeResponse.status, 201);
+  const challenge = await challengeResponse.json();
+  assert.ok(challenge.challengeId);
+
+  const acceptResponse = await fetch(origin + "/api/shared-context/accept", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      expectedProposalHead: published.head,
+      challengeId: challenge.challengeId,
+    }),
+  });
+  assert.equal(acceptResponse.status, 200);
+  assert.equal((await acceptResponse.json()).deliveryVerified, true);
+
+  const journalPath = contextRoomEventJournalPath();
+  assert.equal(path.relative(isolatedHubHome, journalPath).startsWith(".."), false);
+  const events = readContextRoomEvents({ types: "proposal.acceptance.*" }).events;
+  assert.deepEqual(events.map((event) => event.type), [
+    "proposal.acceptance.confirmation_opened",
+    "proposal.acceptance.confirmed",
+  ]);
+  const expectedActor = `local-human:${createHash("sha256").update(nonce).digest("hex")}`;
+  assert.deepEqual(events.map((event) => event.actor), [expectedActor, expectedActor]);
+  for (const event of events) {
+    assert.equal(event.projectId, "demo");
+    assert.equal(event.sharedProjectId, "demo");
+    assert.equal(event.sharedRepository, fixture.remote);
+    assert.deepEqual(event.resource, { proposal: proposal.branch, proposalHead: published.head });
+    assert.deepEqual(event.data, { action: "accept", authorityId: review.metadata.authorityId });
+  }
+  const rawJournal = fs.readFileSync(journalPath, "utf8");
+  assert.doesNotMatch(rawJournal, /challengeid/i);
+  assert.equal(rawJournal.includes(challenge.challengeId), false);
+});
+
+test("terminal acceptance challenge is consumed when review completeness changes after confirmation opens", async (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Challenge consumption after unreview",
+    branch: "proposal/demo/challenge-consumption-after-unreview",
+  });
+  configureGit(proposal.root);
+  writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nReview this revision.\n");
+  const published = publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  initializeContextRoomProject(review.reviewRoot, {
+    title: `Review · ${proposal.branch}`,
+    allowedPaths: ["projects/demo/"],
+    watchAllow: ["projects/demo/"],
+  });
+
+  const room = createMemoryServer({ root: review.reviewRoot });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const html = await (await fetch(origin + "/")).text();
+  const nonce = /<meta name="context-room-owner-nonce" content="([^"]+)"/.exec(html)?.[1] || "";
+  assert.ok(nonce);
+  const headers = {
+    "content-type": "application/json",
+    "x-context-room-project": room.projectId,
+    "x-context-room-owner-nonce": nonce,
+  };
+  const filePath = "projects/demo/docs/README.md";
+  const expectedContentHash = createHash("sha256")
+    .update(fs.readFileSync(path.join(review.reviewRoot, filePath), "utf8"), "utf8")
+    .digest("hex");
+  const reviewFile = () => fetch(origin + "/api/docqa/review", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      path: filePath,
+      status: "verified",
+      note: "Human file decision",
+      expectedContentHash,
+    }),
+  });
+
+  assert.equal((await reviewFile()).status, 200);
+  const challengeResponse = await fetch(origin + "/api/shared-context/accept-challenge", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ expectedProposalHead: published.head }),
+  });
+  assert.equal(challengeResponse.status, 201);
+  const challenge = await challengeResponse.json();
+
+  const unreviewResponse = await fetch(origin + "/api/shared-context/unreview-file", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ expectedProposalHead: published.head, path: filePath }),
+  });
+  assert.equal(unreviewResponse.status, 200);
+
+  const incompleteAcceptResponse = await fetch(origin + "/api/shared-context/accept", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ expectedProposalHead: published.head, challengeId: challenge.challengeId }),
+  });
+  assert.equal(incompleteAcceptResponse.status, 409);
+  assert.equal((await incompleteAcceptResponse.json()).code, "shared_context_review_incomplete");
+
+  assert.equal((await reviewFile()).status, 200);
+  const replayResponse = await fetch(origin + "/api/shared-context/accept", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ expectedProposalHead: published.head, challengeId: challenge.challengeId }),
+  });
+  assert.equal(replayResponse.status, 409);
+  assert.equal((await replayResponse.json()).code, "shared_context_acceptance_challenge_replayed");
+});
+
+test("terminal acceptance returns a verified result with Hub refresh pending when snapshot reconstruction blocks", async (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Bounded Hub refresh",
+    branch: "proposal/demo/bounded-hub-refresh",
+  });
+  configureGit(proposal.root);
+  writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nDeliver before the Hub snapshot finishes.\n");
+  const published = publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  initializeContextRoomProject(review.reviewRoot, {
+    title: `Review · ${proposal.branch}`,
+    allowedPaths: ["projects/demo/"],
+    watchAllow: ["projects/demo/"],
+  });
+
+  let refreshStarted = 0;
+  let notifyRefreshStarted;
+  const refreshStartedPromise = new Promise((resolve) => { notifyRefreshStarted = resolve; });
+  const room = createMemoryServer({
+    root: review.reviewRoot,
+    contextHubRoot: fixture.project,
+    contextHubSnapshotRefresh: () => {
+      refreshStarted += 1;
+      notifyRefreshStarted();
+      return new Promise(() => {});
+    },
+    contextHubAcceptRefreshTimeoutMs: 40,
+  });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const html = await (await fetch(origin + "/")).text();
+  const nonce = /<meta name="context-room-owner-nonce" content="([^"]+)"/.exec(html)?.[1] || "";
+  assert.ok(nonce);
+  const headers = {
+    "content-type": "application/json",
+    "x-context-room-project": room.projectId,
+    "x-context-room-owner-nonce": nonce,
+  };
+  const filePath = "projects/demo/docs/README.md";
+  const expectedContentHash = createHash("sha256")
+    .update(fs.readFileSync(path.join(review.reviewRoot, filePath), "utf8"), "utf8")
+    .digest("hex");
+  const fileDecision = await fetch(origin + "/api/docqa/review", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      path: filePath,
+      status: "verified",
+      note: "Human file decision",
+      expectedContentHash,
+    }),
+  });
+  assert.equal(fileDecision.status, 200);
+  const challengeResponse = await fetch(origin + "/api/shared-context/accept-challenge", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ expectedProposalHead: published.head }),
+  });
+  assert.equal(challengeResponse.status, 201);
+  const challenge = await challengeResponse.json();
+
+  const acceptRequest = fetch(origin + "/api/shared-context/accept", {
+    method: "POST",
+    headers,
+    signal: AbortSignal.timeout(3_000),
+    body: JSON.stringify({ expectedProposalHead: published.head, challengeId: challenge.challengeId }),
+  });
+  await refreshStartedPromise;
+  let responseDeadline;
+  const acceptResponse = await Promise.race([
+    acceptRequest,
+    new Promise((resolve) => { responseDeadline = setTimeout(() => resolve(null), 1_000); }),
+  ]);
+  clearTimeout(responseDeadline);
+  assert.ok(acceptResponse, "Acceptance did not return after the Hub refresh timeout elapsed");
+  assert.equal(acceptResponse.status, 200);
+  const accepted = await acceptResponse.json();
+  assert.equal(accepted.accepted, true);
+  assert.equal(accepted.deliveryVerified, true);
+  assert.match(accepted.commit, /^[a-f0-9]{40}$/);
+  assert.equal(refreshStarted, 1);
+  assert.equal(accepted.hubRefresh?.status, "pending");
+
+  git(fixture.seed, ["fetch", "origin"]);
+  assert.equal(
+    spawnSync("git", ["merge-base", "--is-ancestor", accepted.commit, "origin/main"], { cwd: fixture.seed }).status,
+    0,
+  );
 });
 
 test("reopening the same proposal head after shared main advances creates a fresh pending review", async (t) => {

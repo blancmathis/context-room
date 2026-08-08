@@ -3,7 +3,7 @@
   "$id": "https://context-room.local/schemas/cli-event.schema.json",
   "title": "Context Room CLI event",
   "type": "object",
-  "required": ["schemaVersion", "cursor", "type", "occurredAt", "projectId", "locationId", "sharedRepository", "resource", "data"],
+  "required": ["schemaVersion", "cursor", "type", "occurredAt", "projectId", "locationId", "sharedProjectId", "sharedRepository", "resource", "data"],
   "properties": {
     "schemaVersion": { "const": "context-room.event/1" },
     "cursor": { "type": "string", "minLength": 1 },
@@ -11,7 +11,23 @@
     "occurredAt": { "type": "string", "format": "date-time" },
     "projectId": { "type": "string" },
     "locationId": { "type": "string" },
+    "sharedProjectId": { "type": "string" },
     "sharedRepository": { "type": "string" },
+    "actor": {
+      "oneOf": [
+        { "type": "string", "minLength": 1, "maxLength": 240 },
+        {
+          "type": "object",
+          "required": ["sub"],
+          "properties": {
+            "sub": { "type": "string", "maxLength": 2000 },
+            "email": { "type": "string", "maxLength": 2000 },
+            "kind": { "type": "string", "maxLength": 2000 }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
     "resource": {},
     "data": {}
   },

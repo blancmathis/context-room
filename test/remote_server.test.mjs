@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { createMemoryServer, initializeContextRoomProject } from "../src/context_room.mjs";
 import { signRemoteIdentity } from "../src/remote_identity.mjs";
+import { createVerifiedAcceptanceFlashStore } from "../src/review_authority.mjs";
 
 const secret = "remote-server-test-secret-with-more-than-32-bytes";
 
@@ -75,6 +76,91 @@ test("an expired remote review page returns a canonical Context Room recovery li
   assert.equal((await apiResponse.json()).code, "remote_review_not_found");
 });
 
+test("production split keeps the proxy host trusted while browser-facing links stay on QM", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-split-host-"));
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-split-host-project-"));
+  initializeContextRoomProject(root);
+  initializeContextRoomProject(projectRoot);
+  const expectedHost = "context.peerlab.fr";
+  const browserHost = "context.qm.peerlab.fr";
+  const agentSecret = `${secret}-agent`;
+  const room = createMemoryServer({
+    root,
+    remoteAccess: {
+      expectedHost,
+      browserHost,
+      humanSecret: secret,
+      agentSecret,
+      healthSecret: `${secret}-health`,
+      adminSubjects: ["mathis", "florent"],
+      projectRoots: { hicharlie: projectRoot },
+    },
+  });
+  t.after(() => room.server.close());
+  const origin = await listen(room);
+  const agentIdentity = (jti) => signRemoteIdentity({
+    kind: "agent",
+    sub: "mathis",
+    projectId: "hicharlie",
+    sessionId: "split-host-test",
+    operations: ["ui:workspace:navigate", "ui:workspace:pair"],
+  }, agentSecret, { jti });
+
+  const openResponse = await fetch(`${origin}/api/agent/ui/open`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${agentIdentity("split-host-open")}`,
+      "content-type": "application/json",
+      "x-forwarded-host": expectedHost,
+    },
+    body: JSON.stringify({ navigation: { project: "hicharlie", view: "hub" } }),
+  });
+  const opened = await openResponse.json();
+  assert.equal(openResponse.status, 200, JSON.stringify(opened));
+  assert.equal(opened.status, "open_required");
+  assert.equal(new URL(opened.openUrl).host, browserHost);
+
+  const browserHostRequest = await fetch(`${origin}/api/agent/ui/open`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${agentIdentity("split-host-browser-denied")}`,
+      "content-type": "application/json",
+      "x-forwarded-host": browserHost,
+    },
+    body: JSON.stringify({ navigation: { project: "hicharlie", view: "hub" } }),
+  });
+  assert.equal(browserHostRequest.status, 403);
+  assert.equal((await browserHostRequest.json()).code, "remote_host_denied");
+
+  const returnTo = new URL(`https://${browserHost}/`);
+  returnTo.searchParams.set("hub", "1");
+  returnTo.searchParams.set("workspace", "workspace-split-host");
+  returnTo.searchParams.set("project", "shared:hicharlie");
+  returnTo.searchParams.set("view", "proposal");
+  returnTo.searchParams.set("proposal", "proposal/hicharlie/stale");
+  const unavailableUrl = new URL(`${origin}/reviews/no-longer-present/`);
+  unavailableUrl.searchParams.set("returnTo", returnTo.toString());
+  const unavailable = await fetch(unavailableUrl, {
+    headers: { "x-forwarded-host": expectedHost, accept: "text/html" },
+  });
+  assert.equal(unavailable.status, 404);
+  const html = await unavailable.text();
+  const recoveryHref = /href="([^"]+)"[^>]*>Return to Context Room/.exec(html)?.[1]?.replaceAll("&amp;", "&");
+  assert.ok(recoveryHref);
+  const recoveryUrl = new URL(recoveryHref, `https://${browserHost}/`);
+  assert.equal(recoveryUrl.host, browserHost);
+  assert.equal(recoveryUrl.searchParams.get("workspace"), "workspace-split-host");
+  assert.equal(recoveryUrl.searchParams.get("project"), "shared:hicharlie");
+  assert.equal(recoveryUrl.searchParams.get("view"), "hub");
+  assert.equal(recoveryUrl.searchParams.has("proposal"), false);
+
+  const wrongHostUnavailable = await fetch(unavailableUrl, {
+    headers: { "x-forwarded-host": browserHost, accept: "text/html" },
+  });
+  assert.equal(wrongHostUnavailable.status, 403);
+  assert.equal((await wrongHostUnavailable.json()).code, "remote_host_denied");
+});
+
 test("remote mode rejects unsigned, expired, replayed, and non-admin requests", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-remote-"));
   initializeContextRoomProject(root);
@@ -105,4 +191,59 @@ test("remote mode rejects unsigned, expired, replayed, and non-admin requests", 
 
   const expired = signRemoteIdentity({ kind: "human", sub: "mathis", role: "admin", operations: ["view"] }, secret, { now: 1, ttlSeconds: 1, jti: "request-3" });
   assert.equal((await fetch(`${origin}/api/health`, { headers: { ...headers, "x-peerlab-context-identity": expired } })).status, 403);
+});
+
+test("remote Hub consumes a verified acceptance flash once through human review authority", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-remote-flash-"));
+  initializeContextRoomProject(root);
+  const verifiedAcceptanceFlashes = createVerifiedAcceptanceFlashStore();
+  const issued = verifiedAcceptanceFlashes.issue({
+    outcome: "merge",
+    commit: "0123456789abcdef0123456789abcdef01234567",
+    hubRefresh: { status: "pending" },
+  });
+  const room = createMemoryServer({
+    root,
+    verifiedAcceptanceFlashes,
+    remoteAccess: {
+      expectedHost: "context.qm.peerlab.fr",
+      humanSecret: secret,
+      agentSecret: `${secret}-agent`,
+      healthSecret: `${secret}-health`,
+      adminSubjects: ["mathis", "florent"],
+      projectRoots: {},
+    },
+  });
+  t.after(() => {
+    room.server.close();
+    verifiedAcceptanceFlashes.clear();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const origin = await listen(room);
+  const identity = (jti) => signRemoteIdentity({
+    kind: "human",
+    sub: "mathis",
+    role: "admin",
+    operations: ["review"],
+  }, secret, { jti });
+  const consume = (jti) => fetch(`${origin}/api/context-hub/flash`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-forwarded-host": "context.qm.peerlab.fr",
+      "x-peerlab-context-identity": identity(jti),
+    },
+    body: JSON.stringify({ token: issued.token }),
+  });
+
+  const response = await consume("remote-flash-consume");
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    outcome: "merge",
+    commit: "0123456789abcdef0123456789abcdef01234567",
+    hubRefresh: { status: "pending" },
+  });
+  const replay = await consume("remote-flash-replay");
+  assert.equal(replay.status, 404);
+  assert.equal((await replay.json()).code, "verified_acceptance_flash_invalid");
 });

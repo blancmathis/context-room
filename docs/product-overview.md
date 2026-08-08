@@ -4,7 +4,7 @@ context_room:
   scope: context-room
   status: current
   canonical_for: product overview
-  last_verified: 2026-08-06
+  last_verified: 2026-08-07
   sources: [README.md, bin/context-room.mjs, src/context_room.mjs, src/review_authority.mjs, src/context_engine.mjs, src/context_inventory.mjs, src/context_snapshots.mjs, src/context_settings.mjs, src/context_diagnostics.mjs, src/provider_profiles.mjs, src/codex_prompt_center.mjs, src/context_hub.mjs, src/doc_agent.mjs, src/shared_context.mjs, schemas/config.schema.json, schemas/codex-prompt-catalog-v1.schema.json, schemas/codex-prompt-overrides-v1.schema.json, schemas/codex-prompt-publication-state-v2.schema.json, schemas/codex-prompt-runtime-receipt-v2.schema.json, schemas/doc-context.schema.json, schemas/shared-repository.schema.json, schemas/shared-skill-locations.schema.json, schemas/shared-instruction-locations.schema.json, docs/agent-configuration.md]
 ---
 
@@ -40,7 +40,7 @@ decision is exposed to agents.
 - Explorer and editor: safe project text, with progressive folder loading in the global room, editing limited by `allowedPaths`, and four explicit folder watch modes.
 - Document Graph: progressive global, project, and local Canvas views of explicit document references and applicable context, with accepted truth visible by default and pending layers opt-in.
 - Documents to review: hash-backed human verification for watched documents, Git diffs when available, implicit project `AGENTS.md` files, and every skill exposed by Startup skills.
-- Review authority: owner-only decisions, monotonic agent review scope, fail-closed direct config narrowing, current-UI nonces for protected local mutations, exact shared-proposal receipts, and visible remote-ref violations.
+- Review authority: owner-only decisions, monotonic agent review scope, fail-closed direct config narrowing, current-UI nonces for protected local mutations, one-use challenges for exact terminal acceptance, exact shared-proposal receipts, and visible remote-ref violations.
 - Startup context: project instruction files by default, with ancestor and global discovery available by opt-in.
 - Startup skills: project skill folders by default, with ancestor discovery available for existing or explicitly broadened configs.
 - Startup hooks: project AI-agent and hook-manager files plus current-repository Git hooks by default.
@@ -73,7 +73,7 @@ Feature-level docs live in [Features](features/index.md).
 - Keep the edit surface narrow. Add paths only when Context Room should be allowed to read and write them.
 - Treat review as human-owned. Agents can surface the queue and widen review coverage, but they cannot accept, reject, verify, narrow, or remove the owner-authorized scope. Individual file and change decisions are direct actions in the human UI. Before attempting a multi-file batch or terminal proposal decision through that surface, an agent must ask once, restate the exact action, project, proposal or file scope, and effects after the first yes, ask again, and do nothing without a second separate, unambiguous yes.
 - Fail closed on missing or inconsistent authority evidence. A direct config reduction keeps the prior owner scope effective; a missing shared proposal ref stays visible until its exact accepted or rejected evidence is restored.
-- State the same-user boundary honestly. Local nonces and signatures provide provenance and tamper detection, not physical user presence; provider-side ref rules or a separate authenticated reviewer provide the stronger boundary.
+- State the same-user boundary honestly. Local nonces, one-use terminal challenges, and signatures provide provenance, request binding, replay resistance, and tamper detection, not physical user presence; provider-side ref rules or a separate authenticated reviewer provide the stronger boundary.
 - Let owners rank logical projects device-wide and temporarily snooze an exact review version without changing its decision, trust, or gate status. New content returns immediately to the active queue.
 - Keep executable hooks read-only unless the project owner explicitly enables hook editing.
 - Keep deterministic context primitives available internally while exposing a compact documentation-research entry point to ordinary coding agents.
@@ -82,7 +82,7 @@ Feature-level docs live in [Features](features/index.md).
   visible, but proposal content never enters effective build context before
   human review and integration into the configured shared default branch.
 - Keep config changes source-grounded. Run `context-room doctor` after changing `.context-room/config.json`.
-- Keep accepted shared context read-only. Changes belong in a proposal worktree; human file decisions make the selected result eligible, and a separate explicit human action puts that exact reviewed result on the shared default branch.
+- Keep accepted shared context read-only. Changes belong in a proposal worktree; human file decisions make the selected result eligible, and a separate explicit human action with an exact one-use terminal challenge puts that reviewed result on the shared default branch. Success is reported only after the remote branch is proved to contain the accepted commit.
 - Resolve worktrees only from the current directory or explicit registration. Context Room does not scan the computer for new worktrees.
 - Keep CLI output machine-stable: compact versioned envelopes, effect-aware
   mutations, same-path apply for protected operations, and structured
@@ -123,7 +123,7 @@ Feature-level docs live in [Features](features/index.md).
 
 - `bin/context-room.mjs`: CLI entry point and command routing.
 - `src/context_room.mjs`: server, file access, review queue, graph, brief, UI, and API.
-- `src/review_authority.mjs`: owner-authorized review scope, exact shared-proposal decision receipts, signing, and tamper inspection.
+- `src/review_authority.mjs`: owner-authorized review scope, exact shared-proposal decision receipts, terminal challenges, signing, and tamper inspection.
 - `src/shared_context.mjs`: shared repository sync, snapshots, managed skill and instruction links, proposals, review materialization, and acceptance.
 - `src/agent_cli.mjs`: target resolution, exact-folder environment, task preparation, change routing, handoff, reviews, project commands, and shared resource inspection.
 - `src/context_engine.mjs`, `src/context_inventory.mjs`, and `src/provider_profiles.mjs`: effective context, graph, trace, impact, accepted-document filtering, and provider evidence.

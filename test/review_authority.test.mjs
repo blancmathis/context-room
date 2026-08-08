@@ -12,6 +12,62 @@ import {
   inspectOwnerReviewScope,
   recordOwnerProposalDecision,
 } from "../src/review_authority.mjs";
+import * as reviewAuthorityModule from "../src/review_authority.mjs";
+
+function terminalChallengeStore(options) {
+  assert.equal(
+    typeof reviewAuthorityModule.createTerminalDecisionChallengeStore,
+    "function",
+    "review authority must expose an in-memory one-shot terminal decision challenge store",
+  );
+  return reviewAuthorityModule.createTerminalDecisionChallengeStore(options);
+}
+
+function verifiedAcceptanceFlashStore(options) {
+  assert.equal(
+    typeof reviewAuthorityModule.createVerifiedAcceptanceFlashStore,
+    "function",
+    "review authority must expose an in-memory one-shot verified acceptance flash store",
+  );
+  return reviewAuthorityModule.createVerifiedAcceptanceFlashStore(options);
+}
+
+test("verified acceptance flashes are allowlisted, opaque, expiring, and one-shot", () => {
+  let now = Date.parse("2026-08-07T10:00:00.000Z");
+  const store = verifiedAcceptanceFlashStore({ now: () => now, ttlMs: 1_000 });
+  const issued = store.issue({
+    outcome: "merge",
+    commit: "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+    hubRefresh: { status: "complete", error: "must not escape" },
+    title: "must not escape",
+  });
+
+  assert.match(issued.token, /^[A-Za-z0-9_-]{32}$/);
+  assert.deepEqual(store.consume(issued.token), {
+    outcome: "merge",
+    commit: "abcdef0123456789abcdef0123456789abcdef01",
+    hubRefresh: { status: "complete" },
+  });
+  assert.throws(
+    () => store.consume(issued.token),
+    (error) => error?.code === "verified_acceptance_flash_invalid" && error?.statusCode === 404,
+  );
+
+  const expiring = store.issue({
+    outcome: "merge",
+    commit: "0123456789abcdef0123456789abcdef01234567",
+    hubRefresh: "pending",
+  });
+  now += 1_000;
+  assert.throws(
+    () => store.consume(expiring.token),
+    (error) => error?.code === "verified_acceptance_flash_invalid" && error?.statusCode === 404,
+  );
+  assert.throws(
+    () => store.issue({ outcome: "merge", commit: "not-a-commit", hubRefresh: "complete" }),
+    (error) => error?.code === "verified_acceptance_flash_payload_invalid" && error?.statusCode === 400,
+  );
+});
 
 test("agent review authority reserves double confirmation for batch and terminal proposal decisions", () => {
   assert.equal(HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.confirmationsRequired, 2);
@@ -151,4 +207,60 @@ test("proposal terminal decisions are exact-revision receipts with tamper detect
   assert.equal(recovered.decisions[0].decision, "rejected");
   fs.writeFileSync(verified.authorityPath + ".backup", JSON.stringify(raw, null, 2) + "\n");
   assert.equal(inspectOwnerProposalDecisions(repository, { authorityHome: home }).integrity, "invalid-signature");
+});
+
+test("terminal decision challenges require the exact principal, authority, proposal, head, and action without consuming on mismatch", () => {
+  let currentTime = Date.parse("2026-08-07T08:00:00.000Z");
+  const store = terminalChallengeStore({ now: () => currentTime, ttlMs: 30_000 });
+  const binding = {
+    principal: "remote-human:mathis",
+    authorityId: "authority-hicharlie",
+    proposal: "proposal/hicharlie/review-outcome",
+    proposalHead: "a".repeat(40),
+    action: "accept",
+  };
+  const issued = store.issue(binding);
+
+  assert.match(issued.challengeId, /^[A-Za-z0-9_-]{20,}$/);
+  assert.equal(issued.expiresAt, new Date(currentTime + 30_000).toISOString());
+
+  const mismatches = {
+    principal: "remote-human:florent",
+    authorityId: "authority-other",
+    proposal: "proposal/hicharlie/other",
+    proposalHead: "b".repeat(40),
+    action: "reject",
+  };
+  for (const [field, value] of Object.entries(mismatches)) {
+    assert.throws(
+      () => store.consume(issued.challengeId, { ...binding, [field]: value }),
+      (error) => error?.code === "terminal_decision_challenge_mismatch" && error?.statusCode === 403,
+      `${field} must be part of the exact challenge binding`,
+    );
+  }
+
+  assert.doesNotThrow(() => store.consume(issued.challengeId, binding));
+  assert.throws(
+    () => store.consume(issued.challengeId, binding),
+    (error) => error?.code === "terminal_decision_challenge_replayed" && error?.statusCode === 403,
+  );
+});
+
+test("terminal decision challenges expire and cannot authorize the terminal mutation", () => {
+  let currentTime = Date.parse("2026-08-07T08:00:00.000Z");
+  const store = terminalChallengeStore({ now: () => currentTime, ttlMs: 1_000 });
+  const binding = {
+    principal: "local-human:owner",
+    authorityId: "authority-local",
+    proposal: "proposal/global/documentation",
+    proposalHead: "c".repeat(40),
+    action: "accept",
+  };
+  const issued = store.issue(binding);
+
+  currentTime += 1_001;
+  assert.throws(
+    () => store.consume(issued.challengeId, binding),
+    (error) => error?.code === "terminal_decision_challenge_expired" && error?.statusCode === 403,
+  );
 });
