@@ -119,12 +119,10 @@ async function expectInsideNativeViewport(page, selector) {
 
 async function makeProposalTerminalReady(page) {
   await page.evaluate(() => {
+    cancelBackgroundRefresh();
     state.runtimeEventSource?.close();
     state.runtimeEventSource = null;
     state.runtimeEventsConnected = true;
-    window.clearTimeout(state.backgroundRefreshTimer);
-    state.backgroundRefreshTimer = null;
-    state.backgroundRefreshPendingOptions = null;
     window.clearInterval(state.runtimeFallbackTimer);
     state.runtimeFallbackTimer = null;
   });
@@ -285,6 +283,7 @@ test("@layout themes, zoom, files, graph, proposals, and dialogs preserve geomet
     await waitForBoot(page);
     await closeExplorerDrawer(page);
     const proposal = page.locator('[data-context-room-review-entry]:has([data-source="shared"])').first();
+    const removeTerminalReadyReportsFixture = await installTerminalReadyReportsFixture(page);
     await proposal.click();
     await expect(page).toHaveURL((url) => (
       url.port !== new URL(data.origin).port
@@ -293,7 +292,6 @@ test("@layout themes, zoom, files, graph, proposals, and dialogs preserve geomet
     await waitForBoot(page);
     await expect(page.locator("#proposalReviewPage")).toBeVisible();
     await audit(page, testInfo, `proposal-${width}`);
-    const removeTerminalReadyReportsFixture = await installTerminalReadyReportsFixture(page);
 
     await page.route("**/api/shared-context/accept-challenge", async (route) => {
       const { expectedProposalHead } = route.request().postDataJSON();
@@ -310,8 +308,9 @@ test("@layout themes, zoom, files, graph, proposals, and dialogs preserve geomet
       });
     });
     await makeProposalTerminalReady(page);
-    const terminalAction = page.getByRole("button", { name: "Put on main", exact: true });
+    const terminalAction = page.locator("#proposalDockAccept");
     await expect(terminalAction).toBeVisible();
+    await expect(terminalAction).toHaveAccessibleName("Put on main");
     await expect(terminalAction).toBeInViewport({ ratio: 1 });
     await audit(page, testInfo, `proposal-terminal-${width}`);
 
@@ -321,17 +320,16 @@ test("@layout themes, zoom, files, graph, proposals, and dialogs preserve geomet
     try {
       if (browserZoom) {
         await closeExplorerDrawer(page);
-        await makeProposalTerminalReady(page);
-        await expectInsideNativeViewport(page, "#proposalDockAccept");
-      } else {
-        await expect(terminalAction).toBeInViewport({ ratio: 1 });
       }
+      if (browserZoom) await expectInsideNativeViewport(page, "#proposalDockAccept");
+      else await expect(terminalAction).toBeInViewport({ ratio: 1 });
       await audit(
         page,
         testInfo,
         browserZoom ? `proposal-terminal-native-browser-zoom-200-${width}` : `proposal-terminal-mobile-viewport-${width}`,
       );
-      const terminalControl = browserZoom ? page.locator("#proposalDockAccept") : terminalAction;
+      const terminalControl = page.locator("#proposalDockAccept");
+      await expect(terminalControl).toBeVisible();
       if (browserZoom) {
         const terminalLabel = () => terminalControl.evaluate((node) => node.getAttribute("aria-label") || node.textContent?.trim() || "");
         expect(await terminalLabel()).toBe("Put on main");
