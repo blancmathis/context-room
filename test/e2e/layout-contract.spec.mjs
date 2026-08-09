@@ -861,6 +861,52 @@ test("@layout slow project activation does not hold the Hub behind its boot scre
   await expect(clearProjectSearch).toBeVisible();
 });
 
+test("@layout same-project activation preserves an in-flight Explorer folder", async ({ page, browserName }) => {
+  test.skip(browserName !== "chromium", "One browser proves the same-selection request lifetime contract.");
+  const data = fixture();
+  let releaseProject;
+  let markProjectRequested;
+  let releaseFolder;
+  let markFolderRequested;
+  const projectRelease = new Promise((resolve) => { releaseProject = resolve; });
+  const projectRequested = new Promise((resolve) => { markProjectRequested = resolve; });
+  const folderRelease = new Promise((resolve) => { releaseFolder = resolve; });
+  const folderRequested = new Promise((resolve) => { markFolderRequested = resolve; });
+  await page.route(/\/api\/context-hub\/project$/, async (route) => {
+    markProjectRequested();
+    await projectRelease;
+    await route.continue();
+  });
+  await page.route("**/api/context-hub/project-explorer?*", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get("path") !== "docs") {
+      await route.continue();
+      return;
+    }
+    markFolderRequested();
+    await folderRelease;
+    await route.continue();
+  });
+
+  await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=hub&explorer=expanded`);
+  await projectRequested;
+  try {
+    await expect(page.locator("body")).not.toHaveClass(/app-booting|app-recovery/, { timeout: 3_000 });
+    await ensureExplorerOpen(page);
+    const docsFolder = page.locator('[data-global-project-folder="docs"]').first();
+    await expect(docsFolder).toBeVisible();
+    if (await docsFolder.getAttribute("aria-expanded") !== "true") await docsFolder.click();
+    await folderRequested;
+    releaseProject();
+    await expect.poll(() => page.evaluate(() => state.contextHubBusy)).toBe(false);
+    releaseFolder();
+    await expect(page.locator('[data-global-project-file="docs/README.md"]').first()).toBeVisible();
+  } finally {
+    releaseProject();
+    releaseFolder();
+  }
+});
+
 test("@layout themes, zoom, files, graph, proposals, and dialogs preserve geometry", async ({ page, browserName }, testInfo) => {
   const data = fixture();
   const widths = process.env.CONTEXT_ROOM_LAYOUT_WIDTHS

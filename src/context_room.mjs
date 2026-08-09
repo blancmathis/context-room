@@ -28247,26 +28247,34 @@ async function openGlobalProjectExplorer(project) {
     setStatus("save or revert the current project settings before selecting another project");
     return;
   }
-  const switchingProject = state.globalExplorerProjectKey !== project.projectKey;
+  const nextLocationId = globalProjectSelectedWorktree(project)?.id || "";
+  const switchingSelection = state.globalExplorerProjectKey !== project.projectKey
+    || state.activeProjectLocationId !== nextLocationId;
   state.globalExplorerMode = "project";
   state.projectSwitchMetrics = { projectKey: project.projectKey, startedAt: performance.now() };
   state.globalExplorerProjectKey = project.projectKey;
-  state.activeProjectLocationId = globalProjectSelectedWorktree(project)?.id || "";
-  if (switchingProject) state.globalProjectSearch = "";
-  state.globalInspectionView = "";
-  state.globalProjectSelectionGeneration += 1;
-  state.explorerRelatedRequest += 1;
-  state.explorerRelatedController?.abort();
-  state.explorerRelatedController = null;
-  state.globalProjectSettingsController?.abort();
-  state.globalProjectExplorerController?.abort();
-  state.sharedSkillLocationsController?.abort();
-  state.globalInspectionController?.abort();
-  state.globalProjectSettingsController = new AbortController();
-  state.globalProjectExplorerController = new AbortController();
-  state.sharedSkillLocationsController = new AbortController();
-  state.globalInspectionController = new AbortController();
-  state.globalProjectSettingsValidated.delete(globalProjectExplorerCacheKey(project));
+  state.activeProjectLocationId = nextLocationId;
+  if (switchingSelection) {
+    state.globalProjectSearch = "";
+    state.globalInspectionView = "";
+    state.globalProjectSelectionGeneration += 1;
+    state.explorerRelatedRequest += 1;
+    state.explorerRelatedController?.abort();
+    state.explorerRelatedController = null;
+    state.globalProjectSettingsController?.abort();
+    state.globalProjectExplorerController?.abort();
+    state.sharedSkillLocationsController?.abort();
+    state.globalInspectionController?.abort();
+    state.globalProjectSettingsController = null;
+    state.globalProjectExplorerController = null;
+    state.sharedSkillLocationsController = null;
+    state.globalInspectionController = null;
+    state.globalProjectSettingsValidated.delete(globalProjectExplorerCacheKey(project));
+  }
+  state.globalProjectSettingsController ||= new AbortController();
+  state.globalProjectExplorerController ||= new AbortController();
+  state.sharedSkillLocationsController ||= new AbortController();
+  state.globalInspectionController ||= new AbortController();
   refreshGlobalSettingsScopeFromExplorer();
   if (state.page === "settings") {
     void loadGlobalProjectSettings(project).catch((error) => setStatus(error.message));
