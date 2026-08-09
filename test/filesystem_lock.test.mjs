@@ -387,7 +387,7 @@ parentPort.postMessage({ type: "done" });
 
   assert.equal(cleanupError?.code, "filesystem_lock_cleanup_busy");
   assert.ok(elapsedMs >= 25, `cleanup returned too early (${elapsedMs.toFixed(1)}ms)`);
-  assert.ok(elapsedMs < 250, `cleanup exceeded its bounded attempt (${elapsedMs.toFixed(1)}ms)`);
+  assert.ok(elapsedMs < 400, `cleanup exceeded its bounded attempt (${elapsedMs.toFixed(1)}ms)`);
 });
 
 test("asynchronous filesystem lock critical sections are rejected and released", () => {

@@ -183,6 +183,45 @@ function removeManagedResourceLink(linkPath, { managedRoot, repository, assignme
   });
 }
 
+const BOUNDED_GIT_SUPERVISOR = String.raw`
+  const { spawn } = require("node:child_process");
+  const [rawArguments, rawTimeoutMs] = process.argv.slice(1);
+  const gitArguments = JSON.parse(rawArguments);
+  const timeoutMs = Math.max(1, Number(rawTimeoutMs) || 1);
+  const detached = process.platform !== "win32";
+  let finished = false;
+  let timedOut = false;
+  let timeout = null;
+  let killTimeout = null;
+  const git = spawn("git", gitArguments, { detached, stdio: "inherit" });
+  const terminate = (signal) => {
+    try { process.kill(detached ? -git.pid : git.pid, signal); } catch {}
+  };
+  const finish = (status) => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(timeout);
+    clearTimeout(killTimeout);
+    process.exit(status);
+  };
+  git.once("error", (error) => {
+    process.stderr.write(String(error?.message || error) + "\n");
+    finish(127);
+  });
+  git.once("exit", (status, signal) => {
+    if (timedOut) return;
+    finish(Number.isInteger(status) ? status : (signal ? 1 : 0));
+  });
+  timeout = setTimeout(() => {
+    timedOut = true;
+    terminate("SIGTERM");
+    killTimeout = setTimeout(() => {
+      terminate("SIGKILL");
+      finish(124);
+    }, 100);
+  }, timeoutMs);
+`;
+
 function runGit(cwd, args, options = {}) {
   const timeoutMs = Number(options.timeoutMs);
   const execute = ({ gitArguments = [], environment = null } = {}) => {
@@ -196,19 +235,23 @@ function runGit(cwd, args, options = {}) {
       env: environment || { ...process.env, ...options.env },
       ...(bounded ? { timeout: Math.floor(timeoutMs), killSignal: "SIGTERM" } : {}),
     };
-    if (!bounded || !Array.isArray(stdio) || !stdio.slice(1).includes("pipe")) {
+    if (!bounded) {
       return execFileSync("git", [...gitArguments, ...args], commandOptions);
     }
 
-    // A timed-out Git process may leave a remote helper alive briefly. If that
-    // helper inherits a pipe, execFileSync waits for the pipe to close and the
-    // public timeout silently expands to the helper's lifetime. Capture bounded
-    // stdout/stderr in files instead so the deadline remains process-global.
+    // A timed-out Git process may leave a remote helper alive. Capture output
+    // outside pipes and supervise Git in its own process group so the public
+    // timeout applies to Git and every transport helper it launched.
     const captureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-git-capture-"));
     const captures = new Map();
-    const boundedStdio = [...stdio];
+    const normalizedStdio = Array.isArray(stdio)
+      ? [...stdio]
+      : stdio === "pipe"
+        ? ["pipe", "pipe", "pipe"]
+        : [stdio, stdio, stdio];
+    const boundedStdio = [...normalizedStdio];
     for (const index of [1, 2]) {
-      if (stdio[index] !== "pipe") continue;
+      if (normalizedStdio[index] !== "pipe") continue;
       const capturePath = path.join(captureRoot, index === 1 ? "stdout" : "stderr");
       const descriptor = fs.openSync(capturePath, "w+");
       captures.set(index, { capturePath, descriptor });
@@ -221,11 +264,23 @@ function runGit(cwd, args, options = {}) {
       return options.encoding === null ? bytes : bytes.toString("utf8");
     };
     try {
-      execFileSync("git", [...gitArguments, ...args], { ...commandOptions, encoding: null, stdio: boundedStdio });
+      execFileSync(process.execPath, [
+        "--input-type=commonjs",
+        "--eval",
+        BOUNDED_GIT_SUPERVISOR,
+        JSON.stringify([...gitArguments, ...args]),
+        String(Math.floor(timeoutMs)),
+      ], {
+        ...commandOptions,
+        encoding: null,
+        stdio: boundedStdio,
+        timeout: Math.floor(timeoutMs) + 2_000,
+      });
       return captures.has(1) ? readCapture(1) : null;
     } catch (error) {
       if (captures.has(1)) error.stdout = readCapture(1);
       if (captures.has(2)) error.stderr = readCapture(2);
+      if (error?.status === 124) error.code = "ETIMEDOUT";
       throw error;
     } finally {
       for (const { descriptor } of captures.values()) {

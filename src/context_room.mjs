@@ -14429,7 +14429,7 @@ function watchBackgroundInputs(root, { onInvalidate = null } = {}) {
     const watchedPath = eventPath ? path.resolve(watchRoot, eventPath) : "";
     const relPath = watchedPath ? normalizeRelPath(path.relative(resolvedRoot, watchedPath)) : eventPath;
     if (BACKGROUND_WATCH_IGNORED_PATHS.has(relPath)) return;
-    if (relPath === ".git/index.lock") return;
+    if (path.posix.basename(eventPath) === "index.lock" || relPath === ".git/index.lock" || watchedPath === path.join(resolvedRoot, ".git", "index.lock")) return;
     if (relPath === path.basename(resolvedRoot)) return;
     if (watchedPath) {
       try {
