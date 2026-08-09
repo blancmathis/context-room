@@ -43,6 +43,7 @@ import { createFilesystemLockWorkerOwner } from "../src/filesystem_lock.mjs";
 import {
   contextRoomWebAssetBundle,
   createMemoryServer,
+  contextHubRepositoryId,
   contextHubUiState,
   refreshContextHubSnapshot,
   initializeContextRoomProject,
@@ -337,6 +338,77 @@ test("Context Hub opaque repository IDs open the exact repository when branch an
   assert.equal(forgedResponse.status, 403, JSON.stringify(forged));
   assert.equal(forged.code, "shared_context_repository_not_registered");
   assert.equal(fs.existsSync(forgedRepository), false);
+});
+
+test("Context Hub refreshes a transient catalogue gap before declaring an exact proposal missing", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-transient-proposal-gap-"));
+  withHubHome(t, path.join(base, "hub"));
+  withSharedHome(t, path.join(base, "shared-home"));
+  const previousAuthorityHome = process.env.CONTEXT_ROOM_REVIEW_AUTHORITY_HOME;
+  process.env.CONTEXT_ROOM_REVIEW_AUTHORITY_HOME = path.join(base, "review-authority");
+  t.after(() => {
+    if (previousAuthorityHome === undefined) delete process.env.CONTEXT_ROOM_REVIEW_AUTHORITY_HOME;
+    else process.env.CONTEXT_ROOM_REVIEW_AUTHORITY_HOME = previousAuthorityHome;
+  });
+  const shared = makeHubSharedFixture(base);
+  const root = makeProject(base, "Transient proposal gap");
+  const { proposal, published } = publishHubSharedProposal(root, shared);
+  registerContextHubSharedRepository(shared.remote);
+  registerContextHubProject(root, { shared: { repository: shared.remote, projectId: "demo" } });
+  writeContextHubSnapshot({
+    enabled: true,
+    generatedAt: new Date().toISOString(),
+    currentProjectId: "",
+    projects: [],
+    proposals: [],
+    items: [],
+    repositoryErrors: [],
+    summary: { projects: 0, proposals: 0, localReviews: 0 },
+  });
+
+  const room = createMemoryServer({ root });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const requestHeaders = {
+    "content-type": "application/json",
+    "x-context-room-project": room.projectId,
+    "x-context-room-owner-nonce": room.ownerMutationNonce,
+  };
+  const staleResponse = await fetch(origin + "/api/context-hub/review", {
+    method: "POST",
+    headers: requestHeaders,
+    body: JSON.stringify({
+      repositoryId: contextHubRepositoryId(shared.remote),
+      proposal: proposal.branch,
+      expectedHead: "0".repeat(40),
+    }),
+  });
+  const stale = await staleResponse.json();
+  assert.equal(staleResponse.status, 409, JSON.stringify(stale));
+  assert.equal(stale.code, "shared_context_proposal_head_mismatch");
+  const openReview = () => fetch(origin + "/api/context-hub/review", {
+    method: "POST",
+    headers: requestHeaders,
+    body: JSON.stringify({
+      repositoryId: contextHubRepositoryId(shared.remote),
+      proposal: proposal.branch,
+      expectedHead: published.head,
+    }),
+  });
+  const responses = await Promise.all([openReview(), openReview(), openReview()]);
+  const openedReviews = await Promise.all(responses.map((response) => response.json()));
+  for (const [index, response] of responses.entries()) {
+    const opened = openedReviews[index];
+    assert.equal(response.status, 201, JSON.stringify(opened));
+    assert.equal(opened.review.proposal, proposal.branch);
+    assert.equal(opened.review.proposalHead, published.head);
+  }
+  assert.equal(new Set(openedReviews.map((opened) => opened.url)).size, 1);
+  const reopenedResponse = await openReview();
+  const reopened = await reopenedResponse.json();
+  assert.equal(reopenedResponse.status, 201, JSON.stringify(reopened));
+  assert.equal(reopened.url, openedReviews[0].url);
 });
 
 test("direct room boot refreshes Shared through the protected POST and GET remains read-only", async (t) => {

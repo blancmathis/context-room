@@ -49,8 +49,6 @@ import {
   importSharedSkills,
   importSharedInstructions,
   linkSharedSkillLocation,
-  materializeSharedRepositoryReview,
-  materializeSharedReview,
   previewSharedSkillAssignment,
   previewSharedSkillImport,
   previewSharedSkillLocation,
@@ -14113,6 +14111,110 @@ function runContextHubProjectSyncProcessTask(root, {
   });
 }
 
+function runSharedReviewMaterializationProcessTask({
+  repository = "",
+  sourceRoot = "",
+  proposal = "",
+  expectedHead = "",
+  push = null,
+} = {}) {
+  const moduleUrl = new URL("./shared_context.mjs", import.meta.url).href;
+  const timeoutMs = DEFAULT_SHARED_DELIVERY_TIMEOUT_MS;
+  const credentialBytes = push
+    ? Buffer.from(JSON.stringify({
+      token: String(push.token || ""),
+      expiresAt: String(push.expiresAt || ""),
+      timeoutMs: Number(push.timeoutMs) || DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS,
+      url: String(push.url || repository || ""),
+    }), "utf8")
+    : Buffer.alloc(0);
+  const script = `
+    const [moduleUrl, sourceRoot, repository, proposal, expectedHead, rawTimeoutMs] = process.argv.slice(1);
+    const chunks = [];
+    try {
+      const timeoutMs = Number(rawTimeoutMs);
+      if (!sourceRoot || !proposal || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+        throw new Error("Invalid Shared review materialization task");
+      }
+      let credentialBytes = 0;
+      for await (const chunk of process.stdin) {
+        credentialBytes += chunk.length;
+        if (credentialBytes > 16 * 1024) throw new Error("Shared review credential envelope is too large");
+        chunks.push(chunk);
+      }
+      const rawPush = Buffer.concat(chunks).toString("utf8");
+      const push = rawPush ? JSON.parse(rawPush) : null;
+      const { materializeSharedRepositoryReview, materializeSharedReview } = await import(moduleUrl);
+      const options = {
+        proposal,
+        expectedHead,
+        timeoutMs,
+        ...(push ? { push } : {}),
+      };
+      const value = repository
+        ? materializeSharedRepositoryReview(repository, options)
+        : materializeSharedReview(sourceRoot, options);
+      process.stdout.write(JSON.stringify({ ok: true, value }));
+    } catch (error) {
+      process.stdout.write(JSON.stringify({
+        ok: false,
+        error: error?.message || "Shared review materialization failed",
+        code: error?.code || "",
+        statusCode: error?.statusCode || 0,
+        retryable: error?.retryable === true,
+        details: error?.details,
+      }));
+    } finally {
+      for (const chunk of chunks) chunk.fill(0);
+    }
+  `;
+  return new Promise((resolve, reject) => {
+    const child = execFile(process.execPath, [
+      "--input-type=module",
+      "--eval",
+      script,
+      moduleUrl,
+      path.resolve(sourceRoot),
+      String(repository || ""),
+      String(proposal || ""),
+      String(expectedHead || ""),
+      String(timeoutMs),
+    ], {
+      cwd: path.dirname(fileURLToPath(import.meta.url)),
+      env: backgroundTaskEnvironment(),
+      encoding: "utf8",
+      maxBuffer: CONTEXT_HUB_PROCESS_MAX_BUFFER_BYTES,
+      timeout: timeoutMs + 10_000,
+    }, (error, stdout, stderr) => {
+      let result = null;
+      try { result = JSON.parse(String(stdout || "")); } catch {}
+      if (result?.ok) {
+        resolve(result.value);
+        return;
+      }
+      const taskError = new Error(
+        result?.error
+        || String(stderr || "").trim()
+        || error?.message
+        || "Shared review materialization failed",
+      );
+      if (result?.code) taskError.code = result.code;
+      if (Number.isInteger(Number(result?.statusCode)) && Number(result.statusCode) >= 400 && Number(result.statusCode) <= 599) {
+        taskError.statusCode = Number(result.statusCode);
+      }
+      if (result?.retryable === true) taskError.retryable = true;
+      if (result?.details !== undefined) taskError.details = result.details;
+      reject(taskError);
+    });
+    const clearCredentialBytes = () => credentialBytes.fill(0);
+    child.once("close", clearCredentialBytes);
+    child.once("error", clearCredentialBytes);
+    child.stdin.on("error", () => {});
+    if (credentialBytes.length) child.stdin.end(credentialBytes, clearCredentialBytes);
+    else child.stdin.end();
+  });
+}
+
 function runHostedSharedRepositoryProcessTask(root, payload = {}, { credential = null } = {}) {
   const moduleUrl = new URL("./shared_context.mjs", import.meta.url).href;
   const githubModuleUrl = new URL("./github_app_token.mjs", import.meta.url).href;
@@ -17370,6 +17472,7 @@ export function createMemoryServer({
   }
   const sharedReviewServers = new Set();
   const sharedReviewRooms = new Map();
+  const sharedReviewOpenings = new Map();
   const remoteReviewRoutes = new Map();
   const remoteReplayStore = remoteAccess?.replayStore || (remoteAccess ? createReplayStore() : null);
   const requestScopedSharedPush = remoteAccess?.githubApp ? async (review) => {
@@ -17835,91 +17938,100 @@ export function createMemoryServer({
               reviewHead = cachedProposals.find((item) => item.branch === reviewProposal)?.head || "";
             } catch {}
           }
-          let result;
-          try {
-            const push = hostedSharedProvider && requestScopedSharedPush && usesGitHubHttpsTransport(reviewRepository)
-              ? await requestScopedSharedPush({ repository: reviewRepository }).catch((error) => {
-                throw sharedRemotePublicationError(error);
-              })
-              : null;
-            result = repository
-              ? materializeSharedRepositoryReview(repository, {
+          const openingKey = `${contextHubRepositoryIdentity(reviewRepository)}\0${reviewProposal}@${reviewHead}`;
+          const existingOpening = sharedReviewOpenings.get(openingKey);
+          if (existingOpening) return existingOpening;
+          const opening = (async () => {
+            let result;
+            try {
+              const push = hostedSharedProvider && requestScopedSharedPush && usesGitHubHttpsTransport(reviewRepository)
+                ? await requestScopedSharedPush({ repository: reviewRepository }).catch((error) => {
+                  throw sharedRemotePublicationError(error);
+                })
+                : null;
+              result = await runSharedReviewMaterializationProcessTask({
+                repository,
+                sourceRoot,
                 proposal: reviewProposal,
                 expectedHead: reviewHead,
-                ...(push ? { push, timeoutMs: push.timeoutMs } : {}),
-              })
-              : materializeSharedReview(sourceRoot, {
-                proposal: reviewProposal,
-                expectedHead: reviewHead,
-                ...(push ? { push, timeoutMs: push.timeoutMs } : {}),
+                push,
               });
-          } catch (error) {
-            if (hostedSharedProvider && error?.code === "shared-proposal-stale") {
-              throw sharedRequestError("The proposal changed before review", 409, "proposal_head_stale");
+            } catch (error) {
+              if (hostedSharedProvider && error?.code === "shared-proposal-stale") {
+                throw sharedRequestError("The proposal changed before review", 409, "proposal_head_stale");
+              }
+              if (hostedSharedProvider && error?.code === "shared-proposal-scope-violation") {
+                throw sharedRequestError("The proposal is outside its configured Hosted scope", 403, "shared_context_project_scope_denied");
+              }
+              throw error;
             }
-            if (hostedSharedProvider && error?.code === "shared-proposal-scope-violation") {
-              throw sharedRequestError("The proposal is outside its configured Hosted scope", 403, "shared_context_project_scope_denied");
+            if (hostedSharedProvider) {
+              const materializedRepositoryId = hostedSharedProvider.repositoryId(result.metadata.repository);
+              if (!materializedRepositoryId
+                || result.metadata.projectId !== hostedTarget.projectId
+                || result.metadata.scope !== hostedTarget.scope
+                || result.metadata.proposal !== hostedTarget.branch
+                || result.metadata.proposalHead !== hostedTarget.head
+                || !hostedProviderAllowsProposal(hostedSharedProvider, materializedRepositoryId, result.metadata)) {
+                throw sharedRequestError("The materialized proposal does not match the hosted Shared configuration.", 409, "shared_context_review_materialization_mismatch");
+              }
             }
-            throw error;
-          }
-          if (hostedSharedProvider) {
-            const materializedRepositoryId = hostedSharedProvider.repositoryId(result.metadata.repository);
-            if (!materializedRepositoryId
-              || result.metadata.projectId !== hostedTarget.projectId
-              || result.metadata.scope !== hostedTarget.scope
-              || result.metadata.proposal !== hostedTarget.branch
-              || result.metadata.proposalHead !== hostedTarget.head
-              || !hostedProviderAllowsProposal(hostedSharedProvider, materializedRepositoryId, result.metadata)) {
-              throw sharedRequestError("The materialized proposal does not match the hosted Shared configuration.", 409, "shared_context_review_materialization_mismatch");
+            const reviewKey = `${result.metadata.repository}\0${result.metadata.proposal}@${result.metadata.proposalHead}~${result.metadata.baseRevision}`;
+            const existing = sharedReviewRooms.get(reviewKey);
+            if (existing) return existing;
+            const allowedPaths = sharedReviewAllowedPaths(result.repositoryConfig, result.metadata.projectId);
+            initializeContextRoomProject(result.reviewRoot, {
+              title: `Review · ${reviewProposal}`,
+              allowedPaths,
+              watchAllow: allowedPaths,
+            });
+            if (remoteAccess) {
+              const routeId = String(result.metadata.authorityId || hashContent(`${result.metadata.repository}\0${result.metadata.proposal}\0${result.metadata.proposalHead}`)).slice(0, 120);
+              const opened = {
+                ...result,
+                routeId,
+                url: `/reviews/${encodeURIComponent(routeId)}/`,
+              };
+              remoteReviewRoutes.set(routeId, opened);
+              sharedReviewRooms.set(reviewKey, opened);
+              return opened;
             }
-          }
-          const reviewKey = `${result.metadata.repository}\0${result.metadata.proposal}@${result.metadata.proposalHead}~${result.metadata.baseRevision}`;
-          const existing = sharedReviewRooms.get(reviewKey);
-          if (existing) return existing;
-          const allowedPaths = sharedReviewAllowedPaths(result.repositoryConfig, result.metadata.projectId);
-          initializeContextRoomProject(result.reviewRoot, {
-            title: `Review · ${reviewProposal}`,
-            allowedPaths,
-            watchAllow: allowedPaths,
-          });
-          if (remoteAccess) {
-            const routeId = String(result.metadata.authorityId || hashContent(`${result.metadata.repository}\0${result.metadata.proposal}\0${result.metadata.proposalHead}`)).slice(0, 120);
+            const reviewPort = await selectAvailableContextRoomPort(DEFAULT_PORT, { allowFallback: true });
+            const reviewRoom = createMemoryServer({
+              root: result.reviewRoot,
+              contextHubRoot: resolvedContextHubRoot,
+              contextHubSnapshotRefresh,
+              contextHubAcceptRefreshTimeoutMs,
+              port: reviewPort,
+              globalPreferencesPath,
+              registerInHub: false,
+              persistentDocumentGraphLayout,
+              frameAncestorPorts: [
+                ...trustedFrameAncestorPorts,
+                contextRoomServerPort(server, port),
+              ],
+              verifiedAcceptanceFlashes: acceptanceFlashStore,
+            });
+            await listenContextRoomServer(reviewRoom.server, reviewPort);
+            sharedReviewServers.add(reviewRoom.server);
+            reviewRoom.server.once("close", () => sharedReviewServers.delete(reviewRoom.server));
             const opened = {
               ...result,
-              routeId,
-              url: `/reviews/${encodeURIComponent(routeId)}/`,
+              port: reviewPort,
+              url: `http://127.0.0.1:${reviewPort}`,
             };
-            remoteReviewRoutes.set(routeId, opened);
             sharedReviewRooms.set(reviewKey, opened);
+            reviewRoom.server.once("close", () => {
+              sharedReviewRooms.delete(reviewKey);
+            });
             return opened;
+          })();
+          sharedReviewOpenings.set(openingKey, opening);
+          try {
+            return await opening;
+          } finally {
+            if (sharedReviewOpenings.get(openingKey) === opening) sharedReviewOpenings.delete(openingKey);
           }
-          const reviewPort = await selectAvailableContextRoomPort(DEFAULT_PORT, { allowFallback: true });
-          const reviewRoom = createMemoryServer({
-            root: result.reviewRoot,
-            contextHubRoot: resolvedContextHubRoot,
-            contextHubSnapshotRefresh,
-            contextHubAcceptRefreshTimeoutMs,
-            port: reviewPort,
-            globalPreferencesPath,
-            registerInHub: false,
-            persistentDocumentGraphLayout,
-            frameAncestorPorts: [
-              ...trustedFrameAncestorPorts,
-              contextRoomServerPort(server, port),
-            ],
-            verifiedAcceptanceFlashes: acceptanceFlashStore,
-          });
-          await listenContextRoomServer(reviewRoom.server, reviewPort);
-          sharedReviewServers.add(reviewRoom.server);
-          reviewRoom.server.once("close", () => sharedReviewServers.delete(reviewRoom.server));
-          const opened = {
-            ...result,
-            port: reviewPort,
-            url: `http://127.0.0.1:${reviewPort}`,
-          };
-          sharedReviewRooms.set(reviewKey, opened);
-          reviewRoom.server.once("close", () => sharedReviewRooms.delete(reviewKey));
-          return opened;
         },
         startContextHubProject: async (requestedProjectId) => {
           const project = listContextHubProjects().find((item) => item.id === requestedProjectId);
@@ -18032,6 +18144,7 @@ export function createMemoryServer({
     for (const reviewServer of sharedReviewServers) reviewServer.close();
     sharedReviewServers.clear();
     sharedReviewRooms.clear();
+    sharedReviewOpenings.clear();
     remoteReviewRoutes.clear();
     workspaceRegistry.clear();
     runtimeEvents.clear();
@@ -20316,7 +20429,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     if (!startSharedReview) throw sharedRequestError("Shared proposal review is unavailable", 503, "shared_context_review_unavailable");
     const repository = configuredRepositoryForRequest(repositoryId);
     const current = readContextHubForRequest();
-    const target = hostedSharedProvider
+    let target = hostedSharedProvider
       ? hostedSharedProvider.findProposal(repositoryId, proposalSelector, { expectedHead, mutation: true, aliases: false })
       : resolveContextHubProposalSelection(current.proposals || [], proposalSelector, {
           repositorySelector: repositoryId,
@@ -20324,6 +20437,31 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
           mutation: true,
           aliases: false,
         });
+    if (!target && !hostedSharedProvider) {
+      for (const refresh of [false, true]) {
+        let proposals = [];
+        try {
+          const shared = listSharedRepositoryProposals(repository, { allowOffline: true, refresh });
+          proposals = (shared.proposals || [])
+            .filter((proposal) => proposal.reviewStatus !== "merged")
+            .map((proposal) => ({
+              ...proposal,
+              id: `proposal:${repositoryId}:${proposal.branch}`,
+              repositoryId,
+              repository,
+            }));
+        } catch {
+          continue;
+        }
+        target = resolveContextHubProposalSelection(proposals, proposalSelector, {
+          repositorySelector: repositoryId,
+          expectedHead,
+          mutation: true,
+          aliases: false,
+        });
+        if (target) break;
+      }
+    }
     if (!target) {
       throw sharedRequestError(
         hostedSharedProvider ? "This proposal is outside the hosted Shared configuration." : "This proposal is no longer available in the selected Shared repository.",
@@ -28109,11 +28247,12 @@ async function openGlobalProjectExplorer(project) {
     setStatus("save or revert the current project settings before selecting another project");
     return;
   }
+  const switchingProject = state.globalExplorerProjectKey !== project.projectKey;
   state.globalExplorerMode = "project";
   state.projectSwitchMetrics = { projectKey: project.projectKey, startedAt: performance.now() };
   state.globalExplorerProjectKey = project.projectKey;
   state.activeProjectLocationId = globalProjectSelectedWorktree(project)?.id || "";
-  state.globalProjectSearch = "";
+  if (switchingProject) state.globalProjectSearch = "";
   state.globalInspectionView = "";
   state.globalProjectSelectionGeneration += 1;
   state.explorerRelatedRequest += 1;
@@ -29798,7 +29937,7 @@ async function openSharedProposal(proposal, repository = "", { file = "" } = {})
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        proposal: item.id || item.branch,
+        proposal: item.branch || item.id,
         ...(IS_HOSTED_HUB ? { repositoryId: repositorySelector } : { repositoryId: repositorySelector || undefined }),
         expectedHead: item.head || undefined,
       }),
@@ -29901,6 +30040,9 @@ async function openContextHubProject(projectId, options = {}, requestedGeneratio
       ? api("/api/context-hub/project-explorer?" + new URLSearchParams({ projectId: targetProjectId, limit: "250" }))
           .then((details) => {
             state.globalProjectExplorerDetails.set(project.projectKey + "::" + targetProjectId + "::directory::", details);
+            if (state.globalExplorerMode === "project" && state.globalExplorerProjectKey === project.projectKey) {
+              renderGlobalProjectExplorer();
+            }
             return details;
           })
           .catch(() => null)
@@ -33530,13 +33672,42 @@ function applyInitialContextHubWhenReady(contextHubRequest) {
     if (!applyContextHubSnapshot(contextHub, ticket)) return state.contextHub;
     state.contextHubReviewQueueReady = true;
     enforceHostedHubSourceFilters();
+    const requestedProjectId = new URLSearchParams(window.location.search).get("project") || "";
+    let requestedProjectSelection = null;
+    try {
+      requestedProjectSelection = requestedProjectId
+        ? resolveContextHubProjectSelection(contextHub?.projects || [], requestedProjectId).project
+        : null;
+    } catch (error) {
+      if (error?.code !== "context_hub_project_ambiguous") throw error;
+    }
+    const recoverSupersededInitialProject = Boolean(
+      IS_GLOBAL_CONTEXT_ROOM
+      && requestedProjectSelection
+      && (
+        !state.activeProjectLocationId
+        || (
+          document.body.classList.contains("app-booting")
+          && (
+            state.globalExplorerMode !== "project"
+            || state.globalExplorerProjectKey !== requestedProjectSelection.projectKey
+          )
+        )
+      )
+    );
     window.requestAnimationFrame(() => {
       const requestedProject = applyRequestedProject && requestedGeneration === state.contextHubPendingOpenGeneration
         ? applyContextHubRequestedProject(contextHub)
-        : workspaceSelectedProject();
+        : recoverSupersededInitialProject
+          ? applyContextHubRequestedProject(contextHub)
+          : workspaceSelectedProject();
       if (requestedProject) {
         resolveVisibleProjectSyncStatus(requestedProject);
-        void loadGlobalProjectExplorerPage(requestedProject).catch((error) => setStatus(error.message));
+        if (recoverSupersededInitialProject && !applyRequestedProject) {
+          void openInitialContextHubRequestedProject(contextHub, state.contextHubPendingOpenGeneration).catch((error) => setStatus(error.message));
+        } else {
+          void loadGlobalProjectExplorerPage(requestedProject).catch((error) => setStatus(error.message));
+        }
         void refreshExplorerRelatedForCurrentFile().catch((error) => setStatus(error.message));
         if (state.page === "settings" && requestedProject.mode !== "shared") {
           state.globalProjectSettingsController ||= new AbortController();
@@ -33590,8 +33761,11 @@ async function loadInitialContextHubData({ openRequestedProject = false } = {}) 
   const [reviewsRaw, sectionsRaw] = await Promise.all([
     api("/api/context-hub/review-queue?limit=80"),
     api("/api/context-hub/sections"),
-    initialProjectOpen,
   ]);
+  // The requested project is selected from the catalogue immediately. Its
+  // exact worktree activation may include Shared sync, so keep that bounded
+  // background work from holding the entire Hub behind the boot screen.
+  void initialProjectOpen.catch((error) => setStatus("Project unavailable: " + error.message));
   const reviews = sanitizeHostedHubCatalog(reviewsRaw);
   const sections = sanitizeHostedHubCatalog(sectionsRaw);
   const sectionsByProject = new Map((sections.projects || []).map((project) => [project.projectKey, project.hubSections || []]));
@@ -33618,11 +33792,11 @@ async function loadRuntimeContextHubData() {
 }
 
 function pollFreshContextHubSnapshot(attempt = 0) {
-  if (attempt >= 12 || state.runtimeEventsConnected || state.workspaceRuntimeStopped || state.workspaceUnloadPending) return;
+  if (attempt >= 12 || state.workspaceRuntimeStopped || state.workspaceUnloadPending) return;
   window.clearTimeout(state.contextHubSnapshotPollTimer);
   state.contextHubSnapshotPollTimer = window.setTimeout(() => {
     state.contextHubSnapshotPollTimer = null;
-    if (state.runtimeEventsConnected || state.workspaceRuntimeStopped || state.workspaceUnloadPending) return;
+    if (state.workspaceRuntimeStopped || state.workspaceUnloadPending) return;
     const ticket = beginContextHubSnapshotRequest();
     api("/api/context-hub").then((contextHub) => {
       if (state.workspaceRuntimeStopped || state.workspaceUnloadPending) return;
@@ -33638,7 +33812,9 @@ function pollFreshContextHubSnapshot(attempt = 0) {
       renderContextHealth();
       if (state.page === "settings" && !state.settingsDirtyGroups.size) renderSettingsPanel();
       if (contextHub.freshness?.refreshing) pollFreshContextHubSnapshot(attempt + 1);
-    }).catch(() => {});
+    }).catch(() => {
+      if (state.contextHub?.freshness?.refreshing) pollFreshContextHubSnapshot(attempt + 1);
+    });
   }, attempt < 3 ? 400 : 900);
 }
 

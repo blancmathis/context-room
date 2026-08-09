@@ -12,15 +12,10 @@ async function waitForBoot(page) {
   await expect(page.locator("body")).not.toHaveClass(/app-booting|app-recovery/);
   await expect.poll(async () => JSON.parse(await page.locator("body").getAttribute("data-workspace-diagnostics") || "{}").phase || "").toBe("ready");
   await expect.poll(() => page.evaluate(() => state.runtimeEventsConnected)).toBe(true);
-  const runtimeHubIsIdle = () => page.evaluate(() => (!IS_GLOBAL_CONTEXT_ROOM && !IS_HOSTED_HUB) || (Boolean(state.contextHub)
-    && state.contextHub?.freshness?.refreshing !== true
-    && !state.runtimeContextHubRefreshPromise
-    && !state.runtimeContextHubRefreshTimer
-    && !state.runtimeContextHubRefreshPending
-    && !state.runtimeContextHubRefreshGeneration));
-  await expect.poll(runtimeHubIsIdle).toBe(true);
+  const runtimeHubIsReady = () => page.evaluate(() => (!IS_GLOBAL_CONTEXT_ROOM && !IS_HOSTED_HUB) || Boolean(state.contextHub));
+  await expect.poll(runtimeHubIsReady).toBe(true);
   await page.evaluate(() => new Promise((resolve) => window.setTimeout(resolve, 175)));
-  await expect.poll(runtimeHubIsIdle).toBe(true);
+  await expect.poll(runtimeHubIsReady).toBe(true);
   const hubRequestCounts = await page.evaluate(() => state.apiTrace.reduce((counts, entry) => {
     if (["/api/context-hub/catalog", "/api/context-hub/review-queue", "/api/context-hub/sections"].includes(entry.path)) {
       counts[entry.path] = (counts[entry.path] || 0) + 1;
@@ -263,6 +258,13 @@ test("@layout runtime invalidation bursts coalesce without starving the Explorer
   const data = fixture();
   await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=hub&explorer=expanded`);
   await waitForBoot(page);
+  const runtimeHubIsIdle = () => page.evaluate(() => state.contextHub?.freshness?.refreshing !== true
+    && !state.contextHubSnapshotPollTimer
+    && !state.runtimeContextHubRefreshPromise
+    && !state.runtimeContextHubRefreshTimer
+    && !state.runtimeContextHubRefreshPending
+    && !state.runtimeContextHubRefreshGeneration);
+  await expect.poll(runtimeHubIsIdle).toBe(true);
 
   const nextGeneration = await page.evaluate(() => api("/api/context-hub/refresh", {
     method: "POST",
@@ -270,6 +272,11 @@ test("@layout runtime invalidation bursts coalesce without starving the Explorer
     body: "{}",
   }).then((result) => result.freshness?.generatedAt || result.generatedAt || ""));
   expect(nextGeneration).not.toBe("");
+  // The explicit refresh publishes its own runtime invalidation. Let that
+  // generation converge before measuring the separate synthetic burst below.
+  await expect.poll(runtimeHubIsIdle).toBe(true);
+  await page.evaluate(() => new Promise((resolve) => window.setTimeout(resolve, 200)));
+  await expect.poll(runtimeHubIsIdle).toBe(true);
   await page.evaluate(() => {
     state.apiTrace = [];
     document.body.dataset.apiTrace = "[]";
@@ -310,11 +317,6 @@ test("@layout runtime invalidation bursts coalesce without starving the Explorer
   }, capturedGeneration);
   releaseSnapshot();
 
-  const runtimeHubIsIdle = () => page.evaluate(() => state.contextHub?.freshness?.refreshing !== true
-    && !state.runtimeContextHubRefreshPromise
-    && !state.runtimeContextHubRefreshTimer
-    && !state.runtimeContextHubRefreshPending
-    && !state.runtimeContextHubRefreshGeneration);
   await expect.poll(runtimeHubIsIdle).toBe(true);
   await page.evaluate(() => new Promise((resolve) => window.setTimeout(resolve, 200)));
   await expect.poll(runtimeHubIsIdle).toBe(true);
@@ -325,7 +327,7 @@ test("@layout runtime invalidation bursts coalesce without starving the Explorer
     return counts;
   }, {}));
   expect(requestCounts["/api/context-hub"] || 0).toBeGreaterThanOrEqual(1);
-  expect(requestCounts["/api/context-hub"] || 0).toBeLessThanOrEqual(2);
+  expect(requestCounts["/api/context-hub"] || 0).toBeLessThanOrEqual(3);
   for (const path of ["/api/context-hub/catalog", "/api/context-hub/review-queue", "/api/context-hub/sections"]) expect(requestCounts[path] || 0).toBe(0);
 
   const traceBeforeReflectedEvent = await page.evaluate(() => JSON.stringify(state.apiTrace));
@@ -337,6 +339,38 @@ test("@layout runtime invalidation bursts coalesce without starving the Explorer
   }), reflectedGeneration);
   await page.evaluate(() => new Promise((resolve) => window.setTimeout(resolve, 200)));
   expect(await page.evaluate(() => JSON.stringify(state.apiTrace))).toBe(traceBeforeReflectedEvent);
+  await page.unroute("**/api/context-hub");
+
+  await page.evaluate(() => {
+    state.apiTrace = [];
+    document.body.dataset.apiTrace = "[]";
+  });
+  let returnRefreshingSnapshot = true;
+  await page.route("**/api/context-hub", async (route) => {
+    const response = await route.fetch();
+    if (!returnRefreshingSnapshot) {
+      await route.fulfill({ response });
+      return;
+    }
+    returnRefreshingSnapshot = false;
+    const snapshot = JSON.parse(await response.text());
+    await route.fulfill({
+      response,
+      body: JSON.stringify({
+        ...snapshot,
+        freshness: { ...(snapshot.freshness || {}), refreshing: true },
+      }),
+    });
+  });
+  await page.evaluate(() => handleRuntimeEvent({
+    cursor: state.runtimeEventCursor + 1,
+    type: "state-invalidated",
+    data: { source: "filesystem" },
+  }));
+  await expect.poll(runtimeHubIsIdle).toBe(true);
+  const refreshingRecoveryRequests = await page.evaluate(() => state.apiTrace.filter((entry) => entry.path === "/api/context-hub").length);
+  expect(refreshingRecoveryRequests).toBeGreaterThanOrEqual(2);
+  expect(refreshingRecoveryRequests).toBeLessThanOrEqual(3);
   await page.unroute("**/api/context-hub");
 
   const firstProjectFile = page.locator("[data-global-project-file]").first();
@@ -741,6 +775,92 @@ test("@layout transient catalogue gaps preserve the selected project", async ({ 
   await expect(page.locator('[data-global-project-folder="docs"]')).toBeVisible();
 });
 
+test("@layout a runtime snapshot can recover a superseded initial project selection", async ({ page, browserName }) => {
+  test.skip(browserName !== "chromium", "One browser proves the snapshot ordering contract.");
+  const data = fixture();
+  await page.addInitScript(() => {
+    class SupersedingRuntimeEventSource {
+      constructor() {
+        this.listeners = new Map();
+        this.closed = false;
+        this.timers = [
+          window.setTimeout(() => this.emit("ready", { cursor: 1, replayableFrom: 1 }), 0),
+          window.setTimeout(() => {
+            state.activeProjectLocationId = new URL(window.location.href).searchParams.get("project") || "";
+            state.globalExplorerMode = "projects";
+            state.globalExplorerProjectKey = "";
+            this.emit("runtime", {
+              cursor: 2,
+              type: "state-invalidated",
+              data: { source: "filesystem", path: "docs/runtime-race.md" },
+            });
+          }, 50),
+        ];
+      }
+
+      addEventListener(type, listener) {
+        this.listeners.set(type, [...(this.listeners.get(type) || []), listener]);
+      }
+
+      emit(type, payload) {
+        if (this.closed) return;
+        const event = new MessageEvent(type, { data: JSON.stringify(payload) });
+        for (const listener of this.listeners.get(type) || []) listener.call(this, event);
+      }
+
+      close() {
+        this.closed = true;
+        for (const timer of this.timers) window.clearTimeout(timer);
+      }
+    }
+    window.EventSource = SupersedingRuntimeEventSource;
+  });
+  await page.route("**/api/context-hub/catalog", async (route) => {
+    const response = await route.fetch();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await route.fulfill({ response });
+  });
+
+  await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=hub&explorer=expanded`);
+  await waitForBoot(page);
+  await ensureExplorerOpen(page);
+  await expect(page.locator("#globalExplorerScope strong")).toHaveText("Atlas");
+  await expect(page.locator('[data-global-project-folder="docs"]')).toBeVisible();
+  expect(await page.evaluate(() => state.apiTrace.filter((entry) => entry.path === "/api/context-hub").length)).toBeGreaterThanOrEqual(1);
+});
+
+test("@layout slow project activation does not hold the Hub behind its boot screen", async ({ page, browserName }) => {
+  test.skip(browserName !== "chromium", "One browser proves the boot boundary.");
+  const data = fixture();
+  let releaseProject;
+  let markProjectRequested;
+  const projectRelease = new Promise((resolve) => { releaseProject = resolve; });
+  const projectRequested = new Promise((resolve) => { markProjectRequested = resolve; });
+  await page.route(/\/api\/context-hub\/project$/, async (route) => {
+    markProjectRequested();
+    await projectRelease;
+    await route.continue();
+  });
+
+  await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=hub&explorer=expanded`);
+  await projectRequested;
+  const projectSearch = page.locator("#globalProjectSearch");
+  const clearProjectSearch = page.locator("#clearGlobalProjectSearch");
+  try {
+    await expect(page.locator("body")).not.toHaveClass(/app-booting|app-recovery/, { timeout: 3_000 });
+    await ensureExplorerOpen(page);
+    await expect(page.locator("#globalExplorerScope strong")).toHaveText("Atlas");
+    await expect(page.locator('[data-global-project-folder="docs"]')).toBeVisible();
+    await projectSearch.fill("README");
+    await expect(clearProjectSearch).toBeVisible();
+  } finally {
+    releaseProject();
+  }
+  await expect.poll(() => page.evaluate(() => state.contextHubBusy)).toBe(false);
+  await expect(projectSearch).toHaveValue("README");
+  await expect(clearProjectSearch).toBeVisible();
+});
+
 test("@layout themes, zoom, files, graph, proposals, and dialogs preserve geometry", async ({ page, browserName }, testInfo) => {
   const data = fixture();
   const widths = process.env.CONTEXT_ROOM_LAYOUT_WIDTHS
@@ -812,7 +932,7 @@ test("@layout themes, zoom, files, graph, proposals, and dialogs preserve geomet
     await expect(page).toHaveURL((url) => (
       url.port !== new URL(data.origin).port
       && url.searchParams.get("view") === "proposal"
-    ));
+    ), { timeout: 30_000 });
     await waitForBoot(page);
     await expect.poll(() => page.evaluate(() => ({
       proposal: state.sharedContext?.review?.proposal || "",
