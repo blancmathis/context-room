@@ -28662,8 +28662,10 @@ function renderGlobalProjectExplorer() {
     updateGlobalExplorerMarkup(list, renderGlobalProjectFolder(selectedProject));
     return;
   }
-  state.globalExplorerMode = "projects";
-  state.globalExplorerProjectKey = "";
+  // A catalogue refresh can briefly omit a project while the server switches
+  // its active worktree. Keep the requested Explorer selection so a following
+  // complete snapshot restores the project instead of stranding the UI on the
+  // global project list. Explicit user navigation clears this state elsewhere.
   search.placeholder = "Search projects...";
   search.setAttribute("aria-label", "Search projects");
   if (clearSearch) clearSearch.title = "Clear project search";
@@ -29461,7 +29463,8 @@ function renderSharedProposalWorkspace() {
   const projectFilterLabel = projectFilter.querySelector("[data-context-hub-project-trigger-label]");
   if (projectFilterLabel) projectFilterLabel.textContent = selectedProject?.title || "All projects";
   projectFilter.title = selectedProject ? contextHubProjectPickerLabel(selectedProject) : "Filter by project";
-  if (!selectedProject) state.sharedProposalProject = "";
+  // Keep an exact project filter across transient catalogue gaps. The picker
+  // and project-removal flows own intentional selection changes.
   if (search.value !== state.sharedProposalSearch) search.value = state.sharedProposalSearch;
   const sourceFilter = el("contextHubSourceFilter");
   const homeMode = state.contextHubView === "home";
@@ -30940,6 +30943,7 @@ async function applyWorkspaceUrlState({ reason = "history", force = false } = {}
     const requestedLocationId = (requestedProject?.worktrees || []).find((worktree) => worktree.id === target.projectId)?.id
       || requestedProject?.id
       || target.projectId;
+    if (IS_GLOBAL_CONTEXT_ROOM) state.sharedProposalProject = requestedProject?.projectKey || "";
     const projectChanged = IS_GLOBAL_CONTEXT_ROOM && requestedLocationId !== state.activeProjectLocationId;
     state.explorerDocumentView = target.explorerDocumentView;
     if (projectChanged) {

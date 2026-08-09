@@ -701,6 +701,46 @@ test("@layout compact controls keep 40px targets and the graph list reflows at 3
   await expectTouchTarget(page.locator("#explorerOpen"), "Tablet Explorer open");
 });
 
+test("@layout transient catalogue gaps preserve the selected project", async ({ page }) => {
+  const data = fixture();
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=hub&explorer=expanded`);
+  await waitForBoot(page);
+  await ensureExplorerOpen(page);
+  await expect(page.locator("#globalExplorerScope strong")).toHaveText("Atlas");
+
+  const transition = await page.evaluate(() => {
+    const completeCatalog = state.contextHub;
+    const projectKey = state.globalExplorerProjectKey;
+    const proposalProject = state.sharedProposalProject;
+    state.contextHub = {
+      ...completeCatalog,
+      projects: (completeCatalog?.projects || []).filter((project) => project.projectKey !== projectKey),
+    };
+    renderGlobalProjectExplorer();
+    renderSharedProposalWorkspace();
+    const duringGap = {
+      explorerMode: state.globalExplorerMode,
+      explorerProjectKey: state.globalExplorerProjectKey,
+      proposalProject: state.sharedProposalProject,
+    };
+    state.contextHub = completeCatalog;
+    renderGlobalProjectExplorer();
+    renderSharedProposalWorkspace();
+    return { duringGap, projectKey, proposalProject };
+  });
+
+  expect(transition.projectKey).toBeTruthy();
+  expect(transition.proposalProject).toBe(transition.projectKey);
+  expect(transition.duringGap).toEqual({
+    explorerMode: "project",
+    explorerProjectKey: transition.projectKey,
+    proposalProject: transition.projectKey,
+  });
+  await expect(page.locator("#globalExplorerScope strong")).toHaveText("Atlas");
+  await expect(page.locator('[data-global-project-folder="docs"]')).toBeVisible();
+});
+
 test("@layout themes, zoom, files, graph, proposals, and dialogs preserve geometry", async ({ page, browserName }, testInfo) => {
   const data = fixture();
   const widths = process.env.CONTEXT_ROOM_LAYOUT_WIDTHS
