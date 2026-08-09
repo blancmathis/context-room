@@ -27802,7 +27802,7 @@ function renderGlobalProjectExplorerPage(project, page, depth = 0, filter = "all
   if (!page) return "";
   const entries = (page.entries || []).filter((entry) => globalProjectExplorerEntryMatchesFilter(entry, filter)).map((entry) => {
     if (entry.type === "directory") {
-      const folderId = project.projectKey + "::" + entry.path;
+      const folderId = globalProjectExpandedFolderKey(project, entry.path);
       const expanded = state.globalProjectExpandedFolders.has(folderId);
       const childKey = globalProjectExplorerPageKey(project, { directory: entry.path });
       const child = state.globalProjectExplorerDetails.get(childKey);
@@ -28022,7 +28022,7 @@ async function revealSelectedDocumentLocation(project) {
   await loadGlobalProjectExplorerPage(project);
   for (const part of parts) {
     directory = directory ? directory + "/" + part : part;
-    state.globalProjectExpandedFolders.add(project.projectKey + "::" + directory);
+    state.globalProjectExpandedFolders.add(globalProjectExpandedFolderKey(project, directory));
     await loadGlobalProjectExplorerPage(project, { directory });
   }
   renderGlobalProjectExplorer();
@@ -28041,6 +28041,10 @@ function refreshExplorerRelatedForCurrentFile({ force = false } = {}) {
 function globalProjectExplorerCacheKey(project) {
   const worktree = globalProjectSelectedWorktree(project);
   return project.projectKey + "::" + (worktree?.id || project.id);
+}
+
+function globalProjectExpandedFolderKey(project, path) {
+  return globalProjectExplorerCacheKey(project) + "::folder::" + normalizeUiPath(path);
 }
 
 function contextHubWorktreeSelectorMarkup(project, selectedId, attributeName) {
@@ -28320,7 +28324,9 @@ function renderGlobalExplorerContextMenu(x, y) {
     ? contextRoomReviewsForExplorerPath(worktree.id, target.path, "folder")
     : [];
   const absolutePath = globalExplorerAbsolutePath(target);
-  const folderId = target.scope === "project" ? target.projectKey + "::" + target.path : target.path;
+  const folderId = target.scope === "project" && project
+    ? globalProjectExpandedFolderKey(project, target.path)
+    : target.path;
   const expanded = target.kind === "folder" && (target.scope === "project"
     ? state.globalProjectExpandedFolders.has(folderId)
     : state.computerExplorerExpandedFolders.has(folderId));
@@ -28514,12 +28520,13 @@ function toggleGlobalExplorerContextFolder(target) {
     }
     return;
   }
-  const folderId = target.projectKey + "::" + target.path;
+  const project = globalExplorerContextProject(target);
+  if (!project) return;
+  const folderId = globalProjectExpandedFolderKey(project, target.path);
   if (state.globalProjectExpandedFolders.has(folderId)) state.globalProjectExpandedFolders.delete(folderId);
   else {
     state.globalProjectExpandedFolders.add(folderId);
-    const project = globalExplorerContextProject(target);
-    if (project) void loadGlobalProjectExplorerPage(project, { directory: target.path }).catch((error) => setStatus(error.message));
+    void loadGlobalProjectExplorerPage(project, { directory: target.path }).catch((error) => setStatus(error.message));
   }
   renderGlobalProjectExplorer();
 }
@@ -33767,7 +33774,6 @@ async function loadFiles(options = {}) {
   const requestedStartupOrder = initialQuery?.get("startupOrder") || "";
   const requestedStartupSkill = initialQuery?.get("startupSkill") || "";
   const hasDirectContextHubTarget = Boolean(requestedReviewFile || requestedHubCard || requestedStartupOrder || state.sharedContext?.mode === "review");
-  const needsContextHubBeforeNavigation = Boolean(requestedProject || hasDirectContextHubTarget);
   const skipsGenericNavigationRestore = Boolean(
     hasDirectContextHubTarget
     || (requestedProject && !initialQuery?.has("view")),
@@ -33776,8 +33782,9 @@ async function loadFiles(options = {}) {
     state.contextHubReadyPromise = new Promise((resolve) => window.setTimeout(resolve, 0))
       .then(() => applyInitialContextHubWhenReady(loadInitialContextHubData({ openRequestedProject: true })));
   }
-  if (options.initial && IS_GLOBAL_CONTEXT_ROOM && needsContextHubBeforeNavigation) {
+  if (options.initial && IS_GLOBAL_CONTEXT_ROOM) {
     await state.contextHubReadyPromise;
+    renderGlobalProjectExplorer();
   }
   const restoreRequest = skipsGenericNavigationRestore ? Promise.resolve(false) : restoreNavigationAfterInitialLoad();
   const restored = await restoreRequest;
@@ -44775,12 +44782,13 @@ el("globalProjectList")?.addEventListener("click", (event) => {
   }
   const folderButton = event.target.closest("[data-global-project-folder]");
   if (folderButton) {
-    const folderId = folderButton.dataset.globalProjectKey + "::" + folderButton.dataset.globalProjectFolder;
+    const project = (state.contextHub?.projects || []).find((item) => item.projectKey === folderButton.dataset.globalProjectKey);
+    if (!project) return;
+    const folderId = globalProjectExpandedFolderKey(project, folderButton.dataset.globalProjectFolder);
     if (state.globalProjectExpandedFolders.has(folderId)) state.globalProjectExpandedFolders.delete(folderId);
     else {
       state.globalProjectExpandedFolders.add(folderId);
-      const project = (state.contextHub?.projects || []).find((item) => item.projectKey === folderButton.dataset.globalProjectKey);
-      if (project) void loadGlobalProjectExplorerPage(project, { directory: folderButton.dataset.globalProjectFolder }).catch((error) => setStatus(error.message));
+      void loadGlobalProjectExplorerPage(project, { directory: folderButton.dataset.globalProjectFolder }).catch((error) => setStatus(error.message));
     }
     renderGlobalProjectExplorer();
     return;

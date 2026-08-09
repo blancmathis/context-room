@@ -238,6 +238,33 @@ test("@smoke an exact project deep link stays in boot until its project refresh 
   }))).toEqual({ opened: projects.atlas.id, opening: "", busy: false });
 });
 
+test("@smoke global boot stays pending until the Explorer catalogue is renderable", async ({ page }) => {
+  const { origin } = fixture();
+  let releaseCatalog;
+  let markCatalogRequest;
+  const catalogRequest = new Promise((resolve) => { markCatalogRequest = resolve; });
+  const catalogGate = new Promise((resolve) => { releaseCatalog = resolve; });
+  await page.route("**/api/context-hub/catalog", async (route) => {
+    markCatalogRequest();
+    await catalogGate;
+    await route.continue();
+  });
+
+  const navigation = page.goto(origin + "/?hub=1&workspace=workspace-global-boot&view=hub&explorer=expanded");
+  await catalogRequest;
+  await navigation;
+  try {
+    await expect(page.locator("body")).toHaveClass(/app-booting/);
+    await expect(page.locator("#globalProjectCount")).toHaveText("Loading…");
+  } finally {
+    releaseCatalog();
+  }
+
+  await waitForBoot(page);
+  await expect(page.locator(".global-project-row").first()).toBeVisible();
+  await expect(page.locator("#globalProjectCount")).not.toHaveText("Loading…");
+});
+
 test("@smoke an exact project settings deep link waits for refresh and restores Settings", async ({ page }) => {
   const { origin, projects } = fixture();
   let releaseProjectRefresh;
@@ -332,6 +359,36 @@ test("@smoke the latest project and worktree selection survives an in-flight pro
   await worktree.selectOption(nextWorktree);
   await expect(page).toHaveURL((url) => url.searchParams.get("project") === nextWorktree);
   await expect(page.getByLabel("Choose worktree")).toHaveValue(nextWorktree);
+});
+
+test("@smoke expanded project folders stay isolated between worktrees", async ({ page }) => {
+  const { origin, projects } = fixture();
+  await page.goto(origin + "/?hub=1&workspace=workspace-worktree-folders&project="
+    + encodeURIComponent(projects.atlas.id)
+    + "&view=hub");
+  await waitForBoot(page);
+  const explorerOpen = page.getByRole("button", { name: "Open explorer" });
+  if (await explorerOpen.isVisible()) await explorerOpen.click();
+
+  const docsFolder = page.locator('[data-global-project-folder="docs"]').first();
+  await expect(docsFolder).toBeVisible();
+  await docsFolder.click();
+  await expect(docsFolder).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator('[data-global-project-file="docs/README.md"]').first()).toBeVisible();
+
+  const worktree = page.getByLabel("Choose worktree");
+  const selectedWorktree = await worktree.inputValue();
+  const nextWorktree = [projects.atlas.id, projects.atlas.worktreeId].find((id) => id !== selectedWorktree);
+  expect(nextWorktree).toBeTruthy();
+  await worktree.selectOption(nextWorktree);
+  await expect(page).toHaveURL((url) => url.searchParams.get("project") === nextWorktree);
+  await expect(page.getByLabel("Choose worktree")).toHaveValue(nextWorktree);
+
+  const switchedDocsFolder = page.locator('[data-global-project-folder="docs"]').first();
+  await expect(switchedDocsFolder).toHaveAttribute("aria-expanded", "false");
+  await switchedDocsFolder.click();
+  await expect(switchedDocsFolder).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator('[data-global-project-file="docs/operations.md"]').first()).toBeVisible();
 });
 
 test("@smoke review filters and stale snapshots never masquerade as an all-clear queue", async ({ page }) => {
