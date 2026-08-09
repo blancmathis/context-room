@@ -30947,7 +30947,12 @@ async function applyWorkspaceUrlState({ reason = "history", force = false } = {}
       await openSharedProposal(proposal.branch, proposal.repositoryId || proposal.repository || "", { file: target.file || "" });
     } else if (target.view === "file" && target.file) {
       if (!IS_GLOBAL_CONTEXT_ROOM && !state.files.some((file) => file.path === target.file)) throw new Error("This file is no longer available in the selected project.");
-      await selectFile(target.file, { pushHistory: false, revealInExplorer: false, forceReload: projectChanged });
+      await selectFile(target.file, {
+        pushHistory: false,
+        revealInExplorer: false,
+        forceReload: projectChanged,
+        reviewMode: true,
+      });
     } else if (target.view === "graph") {
       state.graphScope = target.graphScope;
       state.graphDepth = target.graphDepth;
@@ -31644,7 +31649,7 @@ async function runRuntimeContextHubRefresh() {
   if (!state.runtimeContextHubRefreshPending && !state.runtimeContextHubRefreshGeneration) return;
   state.runtimeContextHubRefreshPending = false;
   state.runtimeContextHubRefreshGeneration = "";
-  const refresh = applyInitialContextHubWhenReady(loadInitialContextHubData());
+  const refresh = applyInitialContextHubWhenReady(loadRuntimeContextHubData());
   state.runtimeContextHubRefreshPromise = refresh;
   try {
     await refresh;
@@ -33580,6 +33585,12 @@ async function loadInitialContextHubData({ openRequestedProject = false } = {}) 
     applyRequestedProject: openRequestedProject,
     requestedGeneration,
   };
+}
+
+async function loadRuntimeContextHubData() {
+  const ticket = beginContextHubSnapshotRequest();
+  const contextHub = sanitizeHostedHubCatalog(await api("/api/context-hub"));
+  return { contextHub, ticket };
 }
 
 function pollFreshContextHubSnapshot(attempt = 0) {

@@ -2229,14 +2229,15 @@ test("an active acceptance lease fails fast with a retryable busy response", (t)
   assert.ok(elapsed < 750, `busy response should be fail-fast, took ${elapsed} ms`);
 
   fs.rmSync(lock, { recursive: true, force: true });
-  const pidOneIdentity = filesystemProcessIdentity(1);
-  assert.notEqual(pidOneIdentity, "", "the test platform must expose a stable PID 1 generation");
+  const livePid = process.pid;
+  const liveProcessIdentity = filesystemProcessIdentity(livePid);
+  assert.notEqual(liveProcessIdentity, "", "the test platform must expose the current process generation");
   fs.mkdirSync(lock, { mode: 0o700 });
   fs.writeFileSync(path.join(lock, "owner.json"), JSON.stringify({
-    pid: 1,
+    pid: livePid,
     host: os.hostname(),
-    token: "live-pid-one-generation",
-    processIdentity: pidOneIdentity,
+    token: "live-process-generation",
+    processIdentity: liveProcessIdentity,
     createdAt: new Date(Date.now() - 60 * 60_000).toISOString(),
     expiresAt: new Date(Date.now() - 45 * 60_000).toISOString(),
     proposal: review.metadata.proposal,
@@ -2323,12 +2324,15 @@ test("a stale ownerless or malformed acceptance lease is reclaimed", (t) => {
   assert.equal(response.result?.accepted, true, response.error?.message);
   assert.equal(fs.existsSync(lock), false, "an expired legacy PID 1 lease must not block forever");
 
+  const reusedPid = process.pid;
+  const reusedProcessIdentity = filesystemProcessIdentity(reusedPid);
+  assert.notEqual(reusedProcessIdentity, "", "the test platform must expose the current process generation");
   fs.mkdirSync(lock, { mode: 0o700 });
   fs.writeFileSync(path.join(lock, "owner.json"), JSON.stringify({
-    pid: 1,
+    pid: reusedPid,
     host: os.hostname(),
-    token: "reused-pid-one-generation",
-    processIdentity: `${filesystemProcessIdentity(1)}:retired`,
+    token: "reused-process-generation",
+    processIdentity: `${reusedProcessIdentity}:retired`,
     createdAt: new Date(Date.now() - 60_000).toISOString(),
     expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
     proposal: review.metadata.proposal,

@@ -11,7 +11,11 @@ const TEST_DIRECTORY = path.join(ROOT, "test");
 const SHARED_CONTEXT_TEST = "test/shared_context.test.mjs";
 const JOB_TIMEOUT_MS = 300_000;
 const SLOW_JOB_TIMEOUT_MS = 600_000;
-const MAX_CONCURRENCY = Math.min(3, Math.max(2, availableParallelism()));
+// GitHub-hosted runners expose several logical CPUs but the Git-heavy suites
+// compete for a much smaller I/O and process budget. Keep release CI serial so
+// timing and filesystem assertions measure product behavior instead of runner
+// saturation; local runs still use up to three isolated processes.
+const MAX_CONCURRENCY = Math.min(process.env.CI ? 1 : 3, Math.max(1, availableParallelism()));
 const TEST_GIT_EMAIL = ["context-room", "example.test"].join("@");
 
 function testFiles() {

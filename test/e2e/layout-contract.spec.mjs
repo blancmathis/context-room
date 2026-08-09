@@ -149,10 +149,11 @@ async function expectInsideNativeViewport(page, selector) {
 
 async function expectTouchTarget(locator, label) {
   await expect(locator, label).toBeVisible();
-  const rect = await locator.boundingBox();
   const subpixelTolerance = 0.01;
-  expect((rect?.height || 0) + subpixelTolerance, `${label} height`).toBeGreaterThanOrEqual(40);
-  expect((rect?.width || 0) + subpixelTolerance, `${label} width`).toBeGreaterThanOrEqual(40);
+  await expect.poll(async () => {
+    const rect = await locator.boundingBox();
+    return Math.min(rect?.height || 0, rect?.width || 0) + subpixelTolerance;
+  }, { message: `${label} touch target` }).toBeGreaterThanOrEqual(40);
 }
 
 async function makeProposalTerminalReady(page) {
@@ -274,22 +275,22 @@ test("@layout runtime invalidation bursts coalesce without starving the Explorer
     document.body.dataset.apiTrace = "[]";
   });
 
-  let releaseCatalog;
-  let resolveCatalog;
-  const catalogRelease = new Promise((resolve) => { releaseCatalog = resolve; });
-  const catalogCaptured = new Promise((resolve) => { resolveCatalog = resolve; });
-  let blockFirstCatalog = true;
-  await page.route("**/api/context-hub/catalog", async (route) => {
-    if (!blockFirstCatalog) {
+  let releaseSnapshot;
+  let resolveSnapshot;
+  const snapshotRelease = new Promise((resolve) => { releaseSnapshot = resolve; });
+  const snapshotCaptured = new Promise((resolve) => { resolveSnapshot = resolve; });
+  let blockFirstSnapshot = true;
+  await page.route("**/api/context-hub", async (route) => {
+    if (!blockFirstSnapshot) {
       await route.continue();
       return;
     }
-    blockFirstCatalog = false;
+    blockFirstSnapshot = false;
     const response = await route.fetch();
     const body = await response.text();
-    const catalog = JSON.parse(body);
-    resolveCatalog(catalog.freshness?.generatedAt || catalog.generatedAt || "");
-    await catalogRelease;
+    const snapshot = JSON.parse(body);
+    resolveSnapshot(snapshot.freshness?.generatedAt || snapshot.generatedAt || "");
+    await snapshotRelease;
     await route.fulfill({ response, body });
   });
 
@@ -298,7 +299,7 @@ test("@layout runtime invalidation bursts coalesce without starving the Explorer
     type: "state-invalidated",
     data: { source: "filesystem" },
   }));
-  const capturedGeneration = await catalogCaptured;
+  const capturedGeneration = await snapshotCaptured;
   expect(capturedGeneration).toBe(nextGeneration);
   await page.evaluate((generatedAt) => {
     let cursor = state.runtimeEventCursor + 1;
@@ -307,7 +308,7 @@ test("@layout runtime invalidation bursts coalesce without starving the Explorer
       handleRuntimeEvent({ cursor: cursor++, type: "state-invalidated", data: { source: "filesystem", path: `docs/${index}.md` } });
     }
   }, capturedGeneration);
-  releaseCatalog();
+  releaseSnapshot();
 
   const runtimeHubIsIdle = () => page.evaluate(() => state.contextHub?.freshness?.refreshing !== true
     && !state.runtimeContextHubRefreshPromise
@@ -318,15 +319,14 @@ test("@layout runtime invalidation bursts coalesce without starving the Explorer
   await page.evaluate(() => new Promise((resolve) => window.setTimeout(resolve, 200)));
   await expect.poll(runtimeHubIsIdle).toBe(true);
   const requestCounts = await page.evaluate(() => state.apiTrace.reduce((counts, entry) => {
-    if (["/api/context-hub/catalog", "/api/context-hub/review-queue", "/api/context-hub/sections"].includes(entry.path)) {
+    if (["/api/context-hub", "/api/context-hub/catalog", "/api/context-hub/review-queue", "/api/context-hub/sections"].includes(entry.path)) {
       counts[entry.path] = (counts[entry.path] || 0) + 1;
     }
     return counts;
   }, {}));
-  for (const path of ["/api/context-hub/catalog", "/api/context-hub/review-queue", "/api/context-hub/sections"]) {
-    expect(requestCounts[path] || 0).toBeGreaterThanOrEqual(1);
-    expect(requestCounts[path] || 0).toBeLessThanOrEqual(2);
-  }
+  expect(requestCounts["/api/context-hub"] || 0).toBeGreaterThanOrEqual(1);
+  expect(requestCounts["/api/context-hub"] || 0).toBeLessThanOrEqual(2);
+  for (const path of ["/api/context-hub/catalog", "/api/context-hub/review-queue", "/api/context-hub/sections"]) expect(requestCounts[path] || 0).toBe(0);
 
   const traceBeforeReflectedEvent = await page.evaluate(() => JSON.stringify(state.apiTrace));
   const reflectedGeneration = await page.evaluate(() => state.contextHub?.freshness?.generatedAt || state.contextHub?.generatedAt || "");
@@ -337,7 +337,7 @@ test("@layout runtime invalidation bursts coalesce without starving the Explorer
   }), reflectedGeneration);
   await page.evaluate(() => new Promise((resolve) => window.setTimeout(resolve, 200)));
   expect(await page.evaluate(() => JSON.stringify(state.apiTrace))).toBe(traceBeforeReflectedEvent);
-  await page.unroute("**/api/context-hub/catalog");
+  await page.unroute("**/api/context-hub");
 
   const firstProjectFile = page.locator("[data-global-project-file]").first();
   await expect(firstProjectFile).toBeVisible();

@@ -125,8 +125,8 @@ async function expectNoLayoutViolations(page, testInfo, label) {
 }
 
 async function expectNoHostedBootExposure(page, selectors) {
+  await expect.poll(() => page.evaluate(() => window.__contextRoomHostedBootExposure?.ready === true)).toBe(true);
   const exposure = await page.evaluate(() => window.__contextRoomHostedBootExposure || null);
-  expect(exposure?.ready).toBe(true);
   for (const selector of selectors) {
     expect(Object.hasOwn(exposure?.seen || {}, selector), `${selector} was not sampled during hosted boot`).toBe(true);
     expect(exposure.seen[selector], `${selector} became visible while the hosted profile booted: ${JSON.stringify(exposure.firstSeen?.[selector] || {})}`).toBe(false);
