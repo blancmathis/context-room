@@ -30044,18 +30044,17 @@ async function openContextHubProject(projectId, options = {}, requestedGeneratio
   const targetProjectId = worktree?.id || project.id;
   if (!options.filePath && !options.reviewTarget) {
     const previousWorktreeId = state.globalProjectWorktreeIds.get(project.projectKey);
-    const explorerPrefetch = worktree?.root
-      ? api("/api/context-hub/project-explorer?" + new URLSearchParams({ projectId: targetProjectId, limit: "250" }))
-          .then((details) => {
-            state.globalProjectExplorerDetails.set(project.projectKey + "::" + targetProjectId + "::directory::", details);
-            if (state.globalExplorerMode === "project" && state.globalExplorerProjectKey === project.projectKey) {
-              renderGlobalProjectExplorer();
-            }
-            return details;
-          })
-          .catch(() => null)
-      : Promise.resolve(null);
+    const previousExplorerState = {
+      mode: state.globalExplorerMode,
+      projectKey: state.globalExplorerProjectKey,
+      activeProjectLocationId: state.activeProjectLocationId,
+      search: state.globalProjectSearch,
+      inspectionView: state.globalInspectionView,
+      url: window.location.href,
+    };
     state.contextHubBusy = true;
+    state.globalProjectWorktreeIds.set(project.projectKey, targetProjectId);
+    const explorerOpen = openGlobalProjectExplorer(project);
     try {
       let sharedStatus = project.sharedStatus || null;
       if (project.mode !== "shared") {
@@ -30087,10 +30086,7 @@ async function openContextHubProject(projectId, options = {}, requestedGeneratio
           renderSharedProposalWorkspace();
         }
       }
-      await explorerPrefetch;
-      if (generation !== state.contextHubPendingOpenGeneration) return;
-      state.globalProjectWorktreeIds.set(project.projectKey, targetProjectId);
-      await openGlobalProjectExplorer(project);
+      await explorerOpen;
       if (generation !== state.contextHubPendingOpenGeneration) return;
       if (options.pushHistory) window.history.pushState({}, "", workspaceProjectHref(targetProjectId));
       if (project.shared && sharedStatus?.refreshing) {
@@ -30109,10 +30105,34 @@ async function openContextHubProject(projectId, options = {}, requestedGeneratio
         setStatus(project.shared ? "project selected · Shared snapshot synced" : "project selected");
       }
     } catch (error) {
+      await explorerOpen.catch(() => {});
       if (previousWorktreeId == null) state.globalProjectWorktreeIds.delete(project.projectKey);
       else state.globalProjectWorktreeIds.set(project.projectKey, previousWorktreeId);
+      const rollbackProject = (state.contextHub?.projects || [])
+        .find((candidate) => candidate.projectKey === previousExplorerState.projectKey);
+      if (previousExplorerState.mode === "project" && rollbackProject) {
+        await openGlobalProjectExplorer(rollbackProject);
+        state.globalProjectSearch = previousExplorerState.search;
+        state.globalInspectionView = previousExplorerState.inspectionView;
+      } else {
+        state.globalProjectSelectionGeneration += 1;
+        state.explorerRelatedRequest += 1;
+        state.globalProjectExplorerController?.abort();
+        state.explorerRelatedController?.abort();
+        state.globalProjectExplorerController = new AbortController();
+        state.explorerRelatedController = null;
+        state.globalExplorerMode = previousExplorerState.mode;
+        state.globalExplorerProjectKey = previousExplorerState.projectKey;
+        state.activeProjectLocationId = previousExplorerState.activeProjectLocationId;
+        state.globalProjectSearch = previousExplorerState.search;
+        state.globalInspectionView = previousExplorerState.inspectionView;
+      }
       renderGlobalProjectExplorer();
       renderSingleProjectWorktreeSwitch();
+      if (generation === state.contextHubPendingOpenGeneration && window.location.href !== previousExplorerState.url) {
+        window.history.replaceState(window.history.state, "", previousExplorerState.url);
+        state.workspaceSyncedUrl = window.location.href;
+      }
       throw error;
     } finally {
       state.contextHubBusy = false;

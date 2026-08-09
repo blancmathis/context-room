@@ -907,6 +907,40 @@ test("@layout same-project activation preserves an in-flight Explorer folder", a
   }
 });
 
+test("@layout project switching renders before background activation completes", async ({ page, browserName }) => {
+  test.skip(browserName !== "chromium", "One browser proves the optimistic project-switch contract.");
+  const data = fixture();
+  let releaseProject;
+  let markProjectRequested;
+  const projectRelease = new Promise((resolve) => { releaseProject = resolve; });
+  const projectRequested = new Promise((resolve) => { markProjectRequested = resolve; });
+  await page.route(/\/api\/context-hub\/project$/, async (route) => {
+    if (route.request().postDataJSON().projectId !== data.projects.beacon.id) {
+      await route.continue();
+      return;
+    }
+    markProjectRequested();
+    await projectRelease;
+    await route.continue();
+  });
+
+  await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=hub&explorer=expanded`);
+  await waitForBoot(page);
+  await ensureExplorerOpen(page);
+  await page.locator("[data-global-explorer-back]").click();
+  const beacon = page.locator("a.global-project-row", { hasText: "Beacon" }).first();
+  await expect(beacon).toBeVisible();
+  await beacon.click();
+  await projectRequested;
+  try {
+    await expect(page.locator("#globalExplorerScope strong")).toHaveText("Beacon", { timeout: 1_000 });
+    await expect(page.locator("body")).not.toHaveClass(/app-booting|app-recovery/);
+  } finally {
+    releaseProject();
+  }
+  await expect.poll(() => page.evaluate(() => state.contextHubBusy)).toBe(false);
+});
+
 test("@layout themes, zoom, files, graph, proposals, and dialogs preserve geometry", async ({ page, browserName }, testInfo) => {
   const data = fixture();
   const widths = process.env.CONTEXT_ROOM_LAYOUT_WIDTHS
