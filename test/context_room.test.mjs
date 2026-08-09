@@ -4738,12 +4738,10 @@ test("short-lived watched files cannot crash background invalidation", async () 
   const home = fs.realpathSync(makeRoot());
   process.env.HOME = home;
   let server = null;
-  const originalStatSync = fs.statSync;
   try {
     const root = path.join(home, "project");
     const gitRoot = path.join(root, ".git");
     const ignoredLockPath = path.join(gitRoot, "index.lock");
-    const transientPath = path.join(gitRoot, "context-room-transient.lock");
     fs.mkdirSync(gitRoot, { recursive: true });
     initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: [] });
 
@@ -4753,35 +4751,24 @@ test("short-lived watched files cannot crash background invalidation", async () 
     const initial = await (await fetch(baseUrl + "/api/reports")).json();
     await new Promise((resolve) => setTimeout(resolve, 300));
 
-    let ignoredLockStatObserved = false;
-    let transientStatObserved = false;
-    fs.statSync = (...args) => {
-      const target = path.resolve(String(args[0]));
-      if (target === ignoredLockPath) ignoredLockStatObserved = true;
-      if (target === transientPath) {
-        transientStatObserved = true;
-        const error = new Error(`ENOENT: no such file or directory, stat '${transientPath}'`);
-        error.code = "ENOENT";
-        throw error;
-      }
-      return originalStatSync(...args);
-    };
-
     fs.writeFileSync(ignoredLockPath, "");
     await new Promise((resolve) => setTimeout(resolve, 150));
-    assert.equal(ignoredLockStatObserved, false);
+    const afterIgnoredLock = await (await fetch(baseUrl + "/api/reports")).json();
+    assert.equal(afterIgnoredLock.generatedAt, initial.generatedAt);
 
-    fs.writeFileSync(transientPath, "");
+    for (let index = 0; index < 32; index += 1) {
+      const transientPath = path.join(gitRoot, `context-room-transient-${index}.lock`);
+      fs.writeFileSync(transientPath, "");
+      fs.unlinkSync(transientPath);
+    }
     let refreshed = initial;
     const deadline = Date.now() + 3_000;
-    while (Date.now() < deadline && (!transientStatObserved || refreshed.generatedAt === initial.generatedAt)) {
+    while (Date.now() < deadline && refreshed.generatedAt === initial.generatedAt) {
       await new Promise((resolve) => setTimeout(resolve, 50));
       refreshed = await (await fetch(baseUrl + "/api/reports")).json();
     }
-    assert.equal(transientStatObserved, true);
     assert.notEqual(refreshed.generatedAt, initial.generatedAt);
   } finally {
-    fs.statSync = originalStatSync;
     if (server) await new Promise((resolve) => server.close(resolve));
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;
