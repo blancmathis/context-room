@@ -4756,11 +4756,8 @@ test("short-lived watched files cannot crash background invalidation", async () 
     const afterIgnoredLock = await (await fetch(baseUrl + "/api/reports")).json();
     assert.equal(afterIgnoredLock.generatedAt, initial.generatedAt);
 
-    for (let index = 0; index < 32; index += 1) {
-      const transientPath = path.join(gitRoot, `context-room-transient-${index}.lock`);
-      fs.writeFileSync(transientPath, "");
-      fs.unlinkSync(transientPath);
-    }
+    const invalidationSignal = path.join(gitRoot, "context-room-invalidation-signal");
+    fs.writeFileSync(invalidationSignal, "");
     let refreshed = initial;
     const deadline = Date.now() + 3_000;
     while (Date.now() < deadline && refreshed.generatedAt === initial.generatedAt) {
@@ -4768,6 +4765,16 @@ test("short-lived watched files cannot crash background invalidation", async () 
       refreshed = await (await fetch(baseUrl + "/api/reports")).json();
     }
     assert.notEqual(refreshed.generatedAt, initial.generatedAt);
+
+    for (let index = 0; index < 32; index += 1) {
+      const transientPath = path.join(gitRoot, `context-room-transient-${index}.lock`);
+      fs.writeFileSync(transientPath, "");
+      fs.unlinkSync(transientPath);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const afterTransientBurst = await fetch(baseUrl + "/api/reports");
+    assert.equal(afterTransientBurst.status, 200);
+    assert.ok((await afterTransientBurst.json()).generatedAt);
   } finally {
     if (server) await new Promise((resolve) => server.close(resolve));
     if (originalHome === undefined) delete process.env.HOME;
