@@ -3495,7 +3495,7 @@ test("shared skills CLI separates assignment proposals from local destination li
   git(fixture.seed, ["push", "origin", "main"]);
   connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
 
-  const cliEnv = { ...process.env, NODE_TEST_CONTEXT: "1" };
+  const cliEnv = { ...process.env, NODE_TEST_CONTEXT: "1", CODEX_THREAD_ID: "" };
   const runSkills = (args) => JSON.parse(execFileSync(process.execPath, [cli, "shared", "skills", ...args, "--root", fixture.project], { encoding: "utf8", env: cliEnv })).data;
   const assignPlan = runSkills(["assign", "--collection", "project-demo", "--assignment", "project-demo-team", "--providers", "claude-code,opencode", "--scope", "shared", "--description", "Share demo skills with every registered project."]);
   assert.equal(assignPlan.proposalRequired, true);
@@ -3519,6 +3519,7 @@ test("shared skills CLI separates assignment proposals from local destination li
   const unassign = runSkills(["unassign", "--apply", unassignPlan.planId]);
   assert.equal(unassign.result.proposal.scope, "skills");
   assert.match(unassign.result.proposal.branch, /^proposal\//);
+  assert.equal(unassign.result.collectionRemoved, true);
   assert.equal(fs.lstatSync(path.join(fixture.project, ".agents/skills/demo-workflow")).isSymbolicLink(), true);
 });
 
@@ -3593,16 +3594,17 @@ test("assignment and unassignment changes publish skills proposals without local
   connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
   const preview = previewSharedSkillAssignment(fixture.project, { collectionId: "project-demo", scope: "project", projectIds: ["demo"], providers: ["codex", "claude-code"] });
   assert.equal(preview.proposalRequired, true);
-  const assigned = proposeSharedSkillAssignment(fixture.project, { ...preview.assignment, title: "Assign demo skills", description: "Assign the accepted demo collection to Codex and Claude Code." });
+  const assigned = proposeSharedSkillAssignment(fixture.project, { ...preview.assignment, title: "Assign demo skills", description: "Assign the accepted demo collection to Codex and Claude Code.", sessionId: "assignment-proposal" });
   assert.equal(assigned.localFilesChanged, false);
   git(fixture.seed, ["fetch", "origin", assigned.proposal.branch]);
   const assignedManifest = JSON.parse(git(fixture.seed, ["show", `origin/${assigned.proposal.branch}:skill-locations.json`]));
   assert.deepEqual(assignedManifest.assignments.find((item) => item.id === preview.assignment.id).providers, ["codex", "claude-code"]);
 
-  const unassigned = proposeSharedSkillUnassignment(fixture.project, { assignmentId: "project-demo-codex", title: "Unassign legacy demo skills", description: "Remove the legacy project assignment through a skills proposal." });
+  const unassigned = proposeSharedSkillUnassignment(fixture.project, { assignmentId: "project-demo-codex", title: "Unassign legacy demo skills", description: "Remove the legacy project assignment through a skills proposal.", sessionId: "unassignment-proposal" });
   git(fixture.seed, ["fetch", "origin", unassigned.proposal.branch]);
   const unassignedManifest = JSON.parse(git(fixture.seed, ["show", `origin/${unassigned.proposal.branch}:skill-locations.json`]));
   assert.equal(unassignedManifest.assignments.some((item) => item.id === "project-demo-codex"), false);
+  assert.equal(unassignedManifest.collections.some((item) => item.id === "project-demo"), false);
 });
 
 test("skill import stays local until its skills proposal is accepted, then archives originals and links the snapshot", (t) => {

@@ -311,9 +311,18 @@ test("Context Hub opaque repository IDs open the exact repository when branch an
     });
     const opened = await openedResponse.json();
     assert.equal(openedResponse.status, 201, JSON.stringify(opened));
-    assert.equal(opened.sharedStatus.online, false);
-    assert.match(opened.sharedStatus.revision, /^[a-f0-9]{40}$/);
-    assert.ok(opened.sharedStatus.fetchError);
+    assert.equal(contextHubRepositoryIdentity(opened.project.shared.repository), contextHubRepositoryIdentity(shared.remote));
+    let exactStatus = opened.sharedStatus;
+    if (exactStatus.refreshing) {
+      const offlineDeadline = Date.now() + 20_000;
+      while (sharedContextStatus(root).online !== false && Date.now() < offlineDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      exactStatus = sharedContextStatus(root);
+    }
+    assert.equal(exactStatus.online, false);
+    assert.match(exactStatus.revision, /^[a-f0-9]{40}$/);
+    assert.ok(exactStatus.fetchError);
   } finally {
     fs.renameSync(offlineRemote, shared.remote);
   }

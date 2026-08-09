@@ -185,16 +185,55 @@ function removeManagedResourceLink(linkPath, { managedRoot, repository, assignme
 
 function runGit(cwd, args, options = {}) {
   const timeoutMs = Number(options.timeoutMs);
-  const execute = ({ gitArguments = [], environment = null } = {}) => execFileSync("git", [...gitArguments, ...args], {
-    cwd,
-    encoding: options.encoding === null ? null : "utf8",
-    stdio: options.stdio || ["ignore", "pipe", "pipe"],
-    maxBuffer: options.maxBuffer || 64 * 1024 * 1024,
-    env: environment || { ...process.env, ...options.env },
-    ...(Number.isFinite(timeoutMs) && timeoutMs > 0
-      ? { timeout: Math.floor(timeoutMs), killSignal: "SIGTERM" }
-      : {}),
-  });
+  const execute = ({ gitArguments = [], environment = null } = {}) => {
+    const bounded = Number.isFinite(timeoutMs) && timeoutMs > 0;
+    const stdio = options.stdio || ["ignore", "pipe", "pipe"];
+    const commandOptions = {
+      cwd,
+      encoding: options.encoding === null ? null : "utf8",
+      stdio,
+      maxBuffer: options.maxBuffer || 64 * 1024 * 1024,
+      env: environment || { ...process.env, ...options.env },
+      ...(bounded ? { timeout: Math.floor(timeoutMs), killSignal: "SIGTERM" } : {}),
+    };
+    if (!bounded || !Array.isArray(stdio) || !stdio.slice(1).includes("pipe")) {
+      return execFileSync("git", [...gitArguments, ...args], commandOptions);
+    }
+
+    // A timed-out Git process may leave a remote helper alive briefly. If that
+    // helper inherits a pipe, execFileSync waits for the pipe to close and the
+    // public timeout silently expands to the helper's lifetime. Capture bounded
+    // stdout/stderr in files instead so the deadline remains process-global.
+    const captureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-git-capture-"));
+    const captures = new Map();
+    const boundedStdio = [...stdio];
+    for (const index of [1, 2]) {
+      if (stdio[index] !== "pipe") continue;
+      const capturePath = path.join(captureRoot, index === 1 ? "stdout" : "stderr");
+      const descriptor = fs.openSync(capturePath, "w+");
+      captures.set(index, { capturePath, descriptor });
+      boundedStdio[index] = descriptor;
+    }
+    const readCapture = (index) => {
+      const capture = captures.get(index);
+      if (!capture) return options.encoding === null ? Buffer.alloc(0) : "";
+      const bytes = fs.readFileSync(capture.capturePath);
+      return options.encoding === null ? bytes : bytes.toString("utf8");
+    };
+    try {
+      execFileSync("git", [...gitArguments, ...args], { ...commandOptions, encoding: null, stdio: boundedStdio });
+      return captures.has(1) ? readCapture(1) : null;
+    } catch (error) {
+      if (captures.has(1)) error.stdout = readCapture(1);
+      if (captures.has(2)) error.stderr = readCapture(2);
+      throw error;
+    } finally {
+      for (const { descriptor } of captures.values()) {
+        try { fs.closeSync(descriptor); } catch {}
+      }
+      try { fs.rmSync(captureRoot, { recursive: true, force: true }); } catch {}
+    }
+  };
   if (!options.credential) return execute();
   return withGitHubAppGitCredential(
     options.credential,
@@ -1038,6 +1077,17 @@ function assertSharedCollectionVisibility(kind, collection, locations, repositor
       }
     }
   }
+}
+
+function sharedCollectionPathIsAlwaysVisible(collection, repositoryConfig, catalog) {
+  const visibleRoots = [
+    repositoryConfig.globalSkillsPath,
+    ...(catalog.projects || []).flatMap((project) => [
+      `${repositoryConfig.projectsPath}/${project.id}/docs`,
+      `${repositoryConfig.projectsPath}/${project.id}/skills`,
+    ]),
+  ];
+  return visibleRoots.some((visibleRoot) => collection.path === visibleRoot || collection.path.startsWith(visibleRoot + "/"));
 }
 
 function assertSharedCollectionManifestsDisjoint(skillLocations, instructionLocations, repositoryConfig, catalog) {
@@ -5891,10 +5941,16 @@ export function proposeSharedSkillUnassignment(root, { assignmentId, title = "Un
   const repositoryConfig = readSharedRepositoryConfig(proposal.root);
   const catalog = normalizedProjectsCatalog(readJson(path.join(proposal.root, repositoryConfig.projectsFile)));
   const current = readSharedSkillLocationsFromRoot(proposal.root, repositoryConfig, catalog);
-  const normalized = normalizedSharedSkillLocations({ ...current, collections: current.collections.map((item) => ({ ...item })), assignments: current.assignments.filter((item) => item.id !== preview.assignment.id) }, { repositoryConfig, catalog });
+  const assignments = current.assignments.filter((item) => item.id !== preview.assignment.id);
+  const collectionRemoved = !assignments.some((item) => item.collectionId === preview.assignment.collectionId)
+    && current.collections.some((item) => item.id === preview.assignment.collectionId && sharedCollectionPathIsAlwaysVisible(item, repositoryConfig, catalog));
+  const collections = current.collections
+    .filter((item) => !collectionRemoved || item.id !== preview.assignment.collectionId)
+    .map((item) => ({ ...item }));
+  const normalized = normalizedSharedSkillLocations({ ...current, collections, assignments }, { repositoryConfig, catalog });
   writeJson(path.join(proposal.root, repositoryConfig.skillLocationsFile), sharedSkillLocationsDocument(normalized));
   const published = publishSharedProposal(root, { proposal: proposal.branch, title, description, message: title });
-  return { proposal: published, assignment: preview.assignment, action: "unassign", localFilesChanged: false };
+  return { proposal: published, assignment: preview.assignment, action: "unassign", collectionRemoved, localFilesChanged: false };
 }
 
 export function importSharedSkills(root, {

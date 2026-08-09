@@ -2085,8 +2085,8 @@ fs.unlinkSync = function(target) {
   const result = originalUnlink.apply(this, arguments);
   const isTemp = String(target).startsWith(".context-room-cron-") && String(target).endsWith(".tmp");
   const isStage = String(target).startsWith(".context-room-delete-");
-  const isRecovery = String(target).startsWith(".context-room-cron-") && String(target).endsWith(".recovery");
-  if (phase === "recovery-after-witness-unlink" && isRecovery && fs.existsSync(process.env.CR_ONCE) && fs.readFileSync(process.env.CR_ONCE, "utf8") === "finalize") {
+  const isRecoveryWitness = String(target).startsWith(".context-room-cron-") && (String(target).endsWith(".recovery") || String(target).endsWith(".cleanup"));
+  if (phase === "recovery-after-witness-unlink" && isRecoveryWitness && fs.existsSync(process.env.CR_ONCE) && fs.readFileSync(process.env.CR_ONCE, "utf8") === "finalize") {
     fs.writeFileSync(process.env.CR_ONCE, "recovery-unlinked");
     process.exit(97);
   }
@@ -2119,7 +2119,7 @@ if (phase === "prepare-before-json" || phase === "finalize-before-json") {
         const response = await saveRawStore();
         const body = await response.json();
         assert.equal(response.status, 500, JSON.stringify(body));
-        assert.equal(body.code, phase === "recovery-after-witness-unlink" ? "filesystem_recovery_required" : "cron_filesystem_transaction_failed");
+        assert.equal(body.code, "cron_filesystem_transaction_failed", JSON.stringify({ phase, sentinel: fs.existsSync(sentinel) ? fs.readFileSync(sentinel, "utf8") : "", body }));
       });
       assert.deepEqual(fs.readFileSync(storePath), baseline);
       assertNoArtifacts();

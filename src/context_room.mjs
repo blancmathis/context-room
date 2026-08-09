@@ -4120,8 +4120,20 @@ function atomicRecover(op) {
     if (!op.stagedExpected?.dev || !op.stagedExpected?.ino) return { recovered: false, unresolved: true };
     try {
       inspect(name, baselineExpected);
+      syncActiveDirectory();
       return { recovered: true, external: false };
     } catch {
+      // A child can die after publishing the requested bytes and deleting both
+      // private witnesses, before it reports the published inode. Matching the
+      // requested bytes is then ambiguous with an external identical writer:
+      // preserve the visible file and require explicit recovery instead of
+      // claiming that the transaction rolled back.
+      if (op.stagedName && missing(op.stagedName)) {
+        try {
+          inspect(name, newExpected);
+          return { recovered: false, unresolved: true };
+        } catch {}
+      }
       if (!discardStagedBaselineByIdentity()) return { recovered: false, unresolved: true };
       return { recovered: true, external: true };
     }
@@ -14413,11 +14425,12 @@ function watchBackgroundInputs(root, { onInvalidate = null } = {}) {
   const watchedTargets = new Set();
   const scheduleInvalidation = (watchRoot, fileName) => {
     if (Date.now() - startedAt < 250) return;
-    const relPath = fileName == null ? "" : normalizeRelPath(String(fileName));
+    const eventPath = fileName == null ? "" : normalizeRelPath(String(fileName));
+    const watchedPath = eventPath ? path.resolve(watchRoot, eventPath) : "";
+    const relPath = watchedPath ? normalizeRelPath(path.relative(resolvedRoot, watchedPath)) : eventPath;
     if (BACKGROUND_WATCH_IGNORED_PATHS.has(relPath)) return;
     if (relPath === ".git/index.lock") return;
     if (relPath === path.basename(resolvedRoot)) return;
-    const watchedPath = relPath ? path.resolve(watchRoot, relPath) : "";
     if (watchedPath) {
       try {
         if (fs.statSync(watchedPath).isDirectory()) return;

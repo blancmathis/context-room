@@ -7080,7 +7080,7 @@ test("browser refresh restores the last Context Room page", () => {
   assert.match(html, /function acceptContextRoomRoot\(nextRoot\)[\s\S]*if \(!state\.root\) \{[\s\S]*state\.root = nextRoot;[\s\S]*if \(state\.root === nextRoot\) return;[\s\S]*if \(IS_GLOBAL_CONTEXT_ROOM\) \{[\s\S]*state\.root = nextRoot;[\s\S]*handleContextRoomProjectChange\(\{ reason: "server-root-changed" \}\);/);
   assert.match(html, /acceptContextRoomRoot\(data\.root\);/);
   assert.match(html, /const hasDirectContextHubTarget = Boolean\(requestedReviewFile \|\| requestedHubCard \|\| requestedStartupOrder \|\| state\.sharedContext\?\.mode === "review"\);/);
-  assert.match(html, /const needsContextHubBeforeNavigation = Boolean\(requestedProject \|\| hasDirectContextHubTarget\);/);
+  assert.match(html, /if \(options\.initial && IS_GLOBAL_CONTEXT_ROOM\) \{[\s\S]*await state\.contextHubReadyPromise;[\s\S]*renderGlobalProjectExplorer\(\);/);
   assert.match(html, /const restoreRequest = skipsGenericNavigationRestore \? Promise\.resolve\(false\) : restoreNavigationAfterInitialLoad\(\);/);
   assert.match(html, /const restored = await restoreRequest;/);
   assert.match(html, /if \(restored\) \{[\s\S]*scheduleSessionStatePush\(\);[\s\S]*return;/);
