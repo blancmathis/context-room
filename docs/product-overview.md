@@ -4,19 +4,19 @@ context_room:
   scope: context-room
   status: current
   canonical_for: product overview
-  last_verified: 2026-08-07
-  sources: [README.md, bin/context-room.mjs, src/context_room.mjs, src/review_authority.mjs, src/context_engine.mjs, src/context_inventory.mjs, src/context_snapshots.mjs, src/context_settings.mjs, src/context_diagnostics.mjs, src/provider_profiles.mjs, src/codex_prompt_center.mjs, src/context_hub.mjs, src/doc_agent.mjs, src/shared_context.mjs, schemas/config.schema.json, schemas/codex-prompt-catalog-v1.schema.json, schemas/codex-prompt-overrides-v1.schema.json, schemas/codex-prompt-publication-state-v2.schema.json, schemas/codex-prompt-runtime-receipt-v2.schema.json, schemas/doc-context.schema.json, schemas/shared-repository.schema.json, schemas/shared-skill-locations.schema.json, schemas/shared-instruction-locations.schema.json, docs/agent-configuration.md]
+  last_verified: 2026-08-09
+  sources: [README.md, bin/context-room.mjs, bin/context-room-remote.mjs, src/context_room.mjs, src/review_authority.mjs, src/context_engine.mjs, src/context_inventory.mjs, src/context_snapshots.mjs, src/context_settings.mjs, src/context_diagnostics.mjs, src/provider_profiles.mjs, src/codex_prompt_center.mjs, src/context_hub.mjs, src/doc_agent.mjs, src/shared_context.mjs, schemas/config.schema.json, schemas/codex-prompt-catalog-v1.schema.json, schemas/codex-prompt-overrides-v1.schema.json, schemas/codex-prompt-publication-state-v2.schema.json, schemas/codex-prompt-runtime-receipt-v2.schema.json, schemas/doc-context.schema.json, schemas/shared-repository.schema.json, schemas/shared-skill-locations.schema.json, schemas/shared-instruction-locations.schema.json, docs/agent-configuration.md, docs/remote-qm.md]
 ---
 
 # Product Overview
 
 ## Purpose
 
-Context Room is a local browser UI for keeping project context visible, editable, and reviewable. It is built for repos where humans and agents both depend on docs, skills, runbooks, and startup instructions.
+Context Room is a local-first browser UI for keeping project context visible, editable, and reviewable. It is built for repos where humans and agents both depend on docs, skills, runbooks, and startup instructions. Its optional Hosted profiles are deliberately narrower Shared-only projections: they never expose the server's local projects, files, Settings, Startup resources, computer, or Codex prompts.
 
 ## Product Loop
 
-1. Run `context-room setup` to initialize and register an existing project, create a new project from **Manage projects… → New project**, or run `context-room hub` to open the computer-wide room without adding the current directory. Every entry point uses the same global Context Room service.
+1. In the local profile, run `context-room setup` to initialize and register an existing project, create a new project from **Manage projects… → New project**, or run `context-room hub` to open the computer-wide room without adding the current directory. Every local entry point uses the same global Context Room service.
 2. Use the truth-aware hub to find current docs, targets, records, and source areas that matter.
 3. Edit safe text files inside `allowedPaths`.
 4. Review the current content versions covered by `watchAllow` and folder `watchRules`.
@@ -34,17 +34,20 @@ decision is exposed to agents.
 
 ## Main Surfaces
 
+Unless a surface is marked Hosted, the list below describes the complete local
+profile.
+
 - Context Room Home: one compact project-filterable queue that lists local files individually and shared changes by proposal, followed directly by the current project's Context Health, `hubSections`, and startup panels.
 - History and project management: secondary routes from the queue and project picker; owners can create a documentation-ready local project or propose a new document for a selected shared project while every project and worktree keeps its own identity inside the single global room.
-- Codex Prompt Center: an advanced global tool opened from Settings, with runtime-published official, effective-after-restart, and runtime-loaded views; exact overrides remain private to `$CODEX_HOME`, while protected and server-owned targets stay visible and read-only.
-- Explorer and editor: safe project text, with progressive folder loading in the global room, editing limited by `allowedPaths`, and four explicit folder watch modes.
+- Codex Prompt Center, local profile only: an advanced global tool opened from Settings, with runtime-published official, effective-after-restart, and runtime-loaded views; exact overrides remain private to `$CODEX_HOME`, while protected and server-owned targets stay visible and read-only.
+- Explorer and editor, local profile only: safe project text, with progressive folder loading in the global room, editing limited by `allowedPaths`, and four explicit folder watch modes.
 - Document Graph: progressive global, project, and local Canvas views of explicit document references and applicable context, with accepted truth visible by default and pending layers opt-in.
 - Documents to review: hash-backed human verification for watched documents, Git diffs when available, implicit project `AGENTS.md` files, and every skill exposed by Startup skills.
 - Review authority: owner-only decisions, monotonic agent review scope, fail-closed direct config narrowing, current-UI nonces for protected local mutations, one-use challenges for exact terminal acceptance, exact shared-proposal receipts, and visible remote-ref violations.
 - Startup context: project instruction files by default, with ancestor and global discovery available by opt-in.
 - Startup skills: project skill folders by default, with ancestor discovery available for existing or explicitly broadened configs.
 - Startup hooks: project AI-agent and hook-manager files plus current-repository Git hooks by default.
-- Settings: five-category editor—Project, Review and trust, Agent environment, Preferences, and Advanced extensions—with compact revision-safe project loading, live search, explicit scopes, progressive disclosure, one manual Save bar, Shared Skills and Shared Instructions management, and the entry to Codex Prompt Center.
+- Settings, local profile only: five-category editor—Project, Review and trust, Agent environment, Preferences, and Advanced extensions—with compact revision-safe project loading, live search, explicit scopes, progressive disclosure, one manual Save bar, Shared Skills and Shared Instructions management, and the entry to Codex Prompt Center.
 - Project inspection: a compact companion to the Review Queue that keeps the selected worktree identity visible and exposes Context Health and Agent environment; configured Home sections remain the primary project navigation.
 - Agent CLI: three root commands—`ask` for accepted-document research, `edit`
   for a ready shared proposal worktree, and `capabilities` for the complete
@@ -57,6 +60,7 @@ decision is exposed to agents.
 - Documentation research agent: a fresh read-only Codex researcher per request, backed by a deterministic section-level documentation CLI and a schema-constrained evidence packet.
 - Documentation lifecycle: shared maintenance and audit skills, task-scoped proposal reuse, and explicit local/shared/mixed write routing.
 - Shared context: an optional, generic Git-backed accepted snapshot with documentation, skills, reviewed agent instruction collections, scoped proposal worktrees, and exact-commit human review.
+- Hosted Shared-only Hub and review: an immutable configured repository and project projection with proposal creation and exact whole-file review decisions; local project creation, project files, Settings, Startup resources, Computer exploration, and Codex prompt APIs remain unavailable.
 
 Feature-level docs live in [Features](features/index.md).
 
@@ -93,6 +97,8 @@ Feature-level docs live in [Features](features/index.md).
   `.codex/skills` content is diagnostic evidence, never migration input to
   overwrite.
 - Keep rooms isolated. Automatic port selection must not stop another room, and a stale tab must not write state after its port begins serving another project root.
+- Apply the request, physical-path, revision, repository, timeout, and public-response invariants in [Server boundary](assurance/server-boundary.md) to local, global, proposal-review, and hosted rooms.
+- Keep owner actions operable across keyboard, pointer, touch, narrow layouts, zoom, themes, reduced motion, and assistive technology according to [Interface accessibility](assurance/interface-accessibility.md).
 
 ## Data Model
 

@@ -5,7 +5,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-import { buildDocQaReport, buildDocumentationGraph, listMemoryFiles } from "./context_room.mjs";
+import { buildDocQaReport, buildDocumentationGraph, buildReadOnlyDocumentationReviewSnapshot, listMemoryFiles } from "./context_room.mjs";
 import { collectInlinePathReferences, collectMermaidDocumentLinks, parseContextRoomUri, parseDocMetadata } from "./doc_metadata.mjs";
 import { inspectDocumentMetadata, loadMetadataProfiles, valueAtPath } from "./document_metadata_engine.mjs";
 import { buildContextCoverage, groupDocumentSearchResults } from "./product_compression.mjs";
@@ -333,6 +333,7 @@ export function estimateTokens(value = "") {
 
 export function buildDocumentationCorpus(root = process.cwd(), options = {}) {
   const acceptedOnly = options.acceptedOnly === true || process.env.CONTEXT_ROOM_DOC_ACCEPTED_ONLY === "1";
+  const readOnly = options.readOnly === true;
   const sessionId = acceptedOnly
     ? ""
     : String(options.sessionId || process.env.CONTEXT_ROOM_DOC_SESSION || process.env.CODEX_THREAD_ID || "").trim();
@@ -351,11 +352,20 @@ export function buildDocumentationCorpus(root = process.cwd(), options = {}) {
   const localRevision = sharedTarget ? "" : gitOutput(projectRoot, ["rev-parse", "HEAD"]);
   const documents = sharedTarget ? sharedAcceptedDocuments(sharedTarget) : [];
   if (!sharedTarget) {
-    const graph = buildDocumentationGraph(projectRoot);
-    const reviewReport = buildDocQaReport(projectRoot);
-    const reviewByPath = new Map((reviewReport.queue || []).map((item) => [normalizedPath(item.path), item]));
+    const readOnlySnapshot = acceptedOnly || readOnly ? buildReadOnlyDocumentationReviewSnapshot(projectRoot) : null;
+    const files = readOnlySnapshot?.files || listMemoryFiles(projectRoot);
+    const graph = readOnlySnapshot
+      ? buildDocumentationGraph(projectRoot, {
+          settings: readOnlySnapshot.settings,
+          files,
+          sharedProfiles: [],
+          readOnly: true,
+        })
+      : buildDocumentationGraph(projectRoot);
+    const reviewByPath = readOnlySnapshot?.reviewByPath
+      || new Map((buildDocQaReport(projectRoot).queue || []).map((item) => [normalizedPath(item.path), item]));
     const graphByPath = new Map(graph.nodes.map((node) => [node.path, node]));
-    for (const file of listMemoryFiles(projectRoot)) {
+    for (const file of files) {
       if (!file.exists || !["markdown", "html", "json", "yaml", "diagram-source"].includes(file.kind) && !/\.(?:mmd|mermaid|ya?ml|jsonc?)$/i.test(file.path)) continue;
       const absolutePath = documentationAbsolutePath(projectRoot, file.path);
       let stats;
@@ -409,6 +419,10 @@ export function buildDocumentationCorpus(root = process.cwd(), options = {}) {
     .map((document) => `${document.path}\0${document.contentHash}`)
     .sort()
     .join("\n"));
+  const expectedAcceptedRevision = String(options.expectedAcceptedRevision || process.env.CONTEXT_ROOM_DOC_EXPECTED_REVISION || "").trim();
+  if (acceptedOnly && expectedAcceptedRevision && acceptedCorpusHash !== expectedAcceptedRevision) {
+    throw new Error(`Accepted documentation corpus changed during read-only research (expected ${expectedAcceptedRevision}, received ${acceptedCorpusHash})`);
+  }
   if (sessionId && frozenOverlay?.sessionId && frozenOverlay.sessionId !== sessionId) {
     throw new Error(`Frozen session proposal overlay belongs to ${frozenOverlay.sessionId}, not ${sessionId}`);
   }
@@ -1108,6 +1122,9 @@ export function runDocumentationAgent({
     sharedTarget,
     acceptedOnly: true,
   });
+  if (!corpus.documents.length) {
+    throw new Error("Accepted documentation corpus verification returned zero documents");
+  }
   const docsRevision = corpus.revision.acceptedCorpus;
   const outputSchema = JSON.parse(fs.readFileSync(path.resolve(schemaPath), "utf8"));
   validateCodexStructuredOutputSchema(outputSchema);
@@ -1144,6 +1161,7 @@ export function runDocumentationAgent({
       CONTEXT_ROOM_DOC_SESSION: "",
       CONTEXT_ROOM_DOC_PROPOSALS: "",
       CONTEXT_ROOM_DOC_ACCEPTED_REVISION: sharedTarget?.revision || "",
+      CONTEXT_ROOM_DOC_EXPECTED_REVISION: docsRevision,
       NO_COLOR: "1",
     },
     input: prompt,
@@ -1171,6 +1189,9 @@ export function runDocumentationAgent({
     ...validatedPacket.constraints,
     ...validatedPacket.decisions,
   ];
+  if (!evidence.length) {
+    throw new Error("Codex documentation agent returned zero verified coverage for a non-empty accepted corpus");
+  }
   const coverageDetails = buildContextCoverage({
     corpus,
     searchResults: evidence.map((item) => ({ path: item.path, snippet: item.claim })),

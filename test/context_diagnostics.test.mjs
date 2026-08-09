@@ -9,7 +9,16 @@ import {
   filterDoctorIssues,
   normalizeDoctorIssue,
   planDoctorRepair,
+  runtimeDocumentationReferenceKind,
 } from "../src/context_diagnostics.mjs";
+
+test("Doctor recognizes only documented generated and owner-optional runtime references", () => {
+  assert.equal(runtimeDocumentationReferenceKind(".context-room/README.md"), "generated-runtime");
+  assert.equal(runtimeDocumentationReferenceKind("./.context-room/README.md#workflow"), "generated-runtime");
+  assert.equal(runtimeDocumentationReferenceKind(".context-room/review-gate.json"), "owner-optional-runtime");
+  assert.equal(runtimeDocumentationReferenceKind(".context-room/missing.json"), "");
+  assert.equal(runtimeDocumentationReferenceKind("docs/.context-room/README.md"), "");
+});
 
 test("Doctor issue normalization and coordinate filters use structured fields only", () => {
   const issue = normalizeDoctorIssue({

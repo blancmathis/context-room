@@ -68,7 +68,10 @@ function contextRoomExecutableIndex(tokens) {
   const executable = path.basename(tokens[0]);
   if (/^context-room(?:\.cmd)?$/i.test(executable)) return 0;
   if (!/^node(?:\.exe)?$/i.test(executable)) return -1;
-  return tokens.findIndex((token, index) => index > 0 && /(?:^|\/)(?:context[-_]room)(?:\.mjs)?$/i.test(token));
+  const scriptIndex = tokens.findIndex((token, index) => index > 0 && !token.startsWith("-"));
+  return scriptIndex > 0 && /(?:^|\/)(?:context[-_]room)(?:\.mjs)?$/i.test(tokens[scriptIndex])
+    ? scriptIndex
+    : -1;
 }
 
 function contextRoomInvocationKind(tokens) {

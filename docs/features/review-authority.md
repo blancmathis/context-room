@@ -5,8 +5,8 @@ context_room:
   scope: context-room
   status: current
   canonical_for: human review authority and its security boundary
-  last_verified: 2026-08-07
-  sources: [src/review_authority.mjs, src/context_room.mjs, src/context_settings.mjs, src/shared_context.mjs, src/github_app_token.mjs, src/event_journal.mjs, src/cli_registry.mjs, bin/context-room.mjs, test/review_authority.test.mjs, test/context_settings.test.mjs, test/context_room.test.mjs, test/shared_context.test.mjs, test/remote_accept_challenge.test.mjs, test/acceptance_timeout.test.mjs, test/event_journal_context_engine.test.mjs]
+  last_verified: 2026-08-09
+  sources: [src/review_authority.mjs, src/context_room.mjs, src/context_settings.mjs, src/shared_context.mjs, src/github_app_token.mjs, src/event_journal.mjs, src/cli_registry.mjs, bin/context-room.mjs, bin/context-room-remote.mjs, test/review_authority.test.mjs, test/context_settings.test.mjs, test/context_room.test.mjs, test/shared_context.test.mjs, test/shared_terminal_cas.test.mjs, test/remote_accept_challenge.test.mjs, test/hosted_scope_boundary.test.mjs, test/acceptance_timeout.test.mjs, test/event_journal_context_engine.test.mjs]
 ---
 
 # Review Authority
@@ -36,9 +36,14 @@ The content-level review workflow, GitHub account administration, or a hardware-
 7. Rejecting a shared proposal archives its exact commit without deleting the protected `proposal/*` ref.
 8. Disappearance of a previously observed proposal without exact accepted or rejected evidence remains visible as a critical authority violation.
 9. Shared acceptance requires current signed review evidence for every proposal-changed path. That evidence binds the present or absent state, exact content, and safe Git resource mode; a rejected file additionally requires a human-confirmed absent version.
-10. Recovery after an uncertain delivery requires both the exact proposal trailers and a commit tree that equals the reviewed result applied to that commit's single parent. Symlinks, gitlinks, special entries, an unexpected executable-bit change, or any other tree mismatch fail closed.
-11. Missing, altered, recovered, or inconsistent evidence never means reviewed.
-12. A verified terminal decision removes a proposal from active queues only for the authority installation that holds its signed evidence. Another installation without that evidence keeps the proposal visible; matching Git trailers alone never confer terminal authority.
+10. In hosted whole-file review, the client supplies only the exact proposal head, a decision, and canonical manifest paths. The server derives the expected states, contents, hashes, safe modes, rename semantics, dependency versions, and signed receipt from the exact review. Client-supplied evidence is never authority.
+11. Hosted review authority is valid only when its complete path list and derived manifest remain inside the proposal's path policy and either a configured project ID or a special scope explicitly assigned to that repository. Project IDs never imply the separate `global`, `skills`, or `instructions` authority. One out-of-scope path rejects the whole room before review-state or resource-content disclosure; a response serializer can remove data but never widen authority.
+12. Recovery after an uncertain delivery requires both the exact proposal trailers and a commit tree that equals the reviewed result applied to that commit's single parent. Symlinks, gitlinks, special entries, an unexpected executable-bit change, or any other tree mismatch fail closed.
+13. Missing, altered, recovered, or inconsistent evidence never means reviewed.
+14. An exact distributed accepted state prevents reopening or republishing the proposal on every installation. An exact distributed rejected state without this installation's signed owner receipt remains visible as `unverified_rejection` until an explicit human recovery records that receipt. Matching Git trailers alone never confer acceptance-recovery authority.
+15. Publication, acceptance, and rejection of one exact repository, proposal branch, and proposal head share one terminal-decision lock inside a Shared Home and one distributed `context-room-state/<sha256(proposal-branch)>` Git compare-and-set across installations. Publication moves the proposal and active state together; acceptance moves accepted `main` and terminal state together; rejection moves the exact archive and terminal state together. A stale publisher or losing terminal decision receives a conflict without a partial remote transition or receipt mutation.
+16. A signed terminal receipt is append-only for its exact proposal revision. Repeating the same decision with the same archive or accepted commit is a no-op that preserves the first actor and time; an opposite outcome or different durable pointer fails closed.
+17. A local terminal lease belongs to one process generation, not to a PID alone. A live matching generation remains protected after nominal expiry; an expired legacy owner or reused PID whose generation no longer matches is reclaimable without removing a fresh successor lock.
 
 ## Control Layers
 
@@ -50,8 +55,8 @@ flowchart LR
   app -->|signed owner scope and rejection receipt| local["Owner-local authority state"]
   app -->|signed digest of exact review state| evidence["Project and global review evidence"]
   app -->|consumes challenge once| challenge
-  app -->|proposal and immutable rejection archive| git["Shared Git repository"]
-  provider["GitHub rulesets"] -->|block proposal deletion and rejected-ref mutation| git
+  app -->|atomic proposal, terminal-state, main, and rejection refs| git["Shared Git repository"]
+  provider["GitHub rulesets"] -->|block proposal deletion and rejected/state mutation| git
   git -->|missing ref or inconsistent archive| alert["Critical authority violation"]
   local -->|scope reduction or receipt tamper| alert
   evidence -->|state or ledger mismatch| alert
@@ -72,8 +77,10 @@ The diagram shows the intended chain, not a claim that local state authenticates
 | Process edits the project review-state JSON or the global review ledger | Context Room compares the normalized state with its mirrored signed digest. Altered claims are ignored and `review_evidence_tamper` is reported as critical. | A same-user process that can erase both authority mirrors and the key is outside the local trust boundary. |
 | Process calls shared acceptance directly | Acceptance reloads trusted review evidence and requires both a current exact `verified` decision for every proposal-changed path and unchanged direct dependency selected for review, and a fresh matching terminal challenge. Missing, stale, altered, recovered, absent-without-version, expired, reused, or mismatched evidence fails closed. In remote QM mode, both challenge creation and direct acceptance return `503 shared_context_remote_acceptance_unavailable` when the repository-scoped GitHub App is not configured. | A same-user process can drive the owner UI and obtain a challenge; external human-presence proof is stronger. |
 | Process deletes a remote `proposal/*` ref | A Context Room-published or previously observed proposal remains in the queue as `externally_deleted`; review actions are disabled and recovery is required. | A never-observed branch cannot be reconstructed from local evidence. Provider-side deletion protection closes this gap. |
-| Process creates `rejected/*` at the exact expected name and proposal head | Context Room treats the proposal as rejected. Repository write protection is the authority boundary for this terminal state; the local receipt is audit metadata only. | Any actor allowed to create that exact remote ref can reject the proposal. |
+| Process creates the exact `rejected/*` archive and a structurally valid rejected state marker | Context Room does not record or hide it as a human rejection without a signed owner receipt. It remains visible as `unverified_rejection`, and mutation fails closed until the owner explicitly confirms recovery. | GitHub rulesets protect deletion and later non-fast-forward mutation, but cannot distinguish the initial creation by a repository writer. A write-capable deploy key can therefore cause a visible availability block; preventing that requires provider-side creation authority held by a separate reviewer identity. |
 | Rejection archive is changed or removed | The proposal stays visible as `rejection_archive_missing`; rejected refs are intended to be immutable. | Remote enforcement depends on the repository rulesets being installed and verified. |
+| Two Context Room processes, including processes with separate Shared Homes, attempt an opposite terminal decision or race proposal republishing against a terminal decision | The local terminal lock serializes one Shared Home. Across installations, the exact `context-room-state/<sha256(proposal-branch)>` ref is advanced in the same atomic push as the proposal, accepted `main`, or rejection archive. The winner rechecks fetched terminal evidence; the loser receives a conflict and cannot commit a partial opposite outcome. | The remote must support atomic pushes, and repository permissions remain the boundary against an unrelated actor that can write the protected proposal, state, default-branch, or rejection refs directly. |
+| A process PID is reused while an old local terminal lease remains | Context Room compares the recorded process generation as well as the host and PID. A matching live generation stays protected; an expired legacy record or mismatched generation is reclaimed under the coordination lock. | When the operating system cannot expose a current generation for an owner that recorded one, Context Room fails closed and preserves the lease. |
 | Local cache or observation ledger is deleted | The accepted remote and still-present proposal refs can be fetched again. | Local-only observation history is lost; provider-side ref protection is the durable prevention layer. |
 | Local Git hook is skipped or another clone is used | No local hook is treated as the final authority boundary. | Provider rules or a separate authenticated reviewer are required. |
 
@@ -83,15 +90,31 @@ The last owner-authorized review scope is stored outside the project config unde
 
 The exact normalized project review state and global review ledger are also bound to owner-local signed digests. Directly editing either JSON file does not create trusted review evidence. Shared acceptance rejects authority recovered from a damaged primary record until the decisions are re-established through the owner flow.
 
-Shared proposal rejection receipts use the corresponding private authority directory under `~/.context-room/shared/`. They record the repository, proposal branch, exact head, terminal decision, archive ref, actor label, and time. They remain useful audit metadata, but invalid JSON, missing signatures, signature mismatch, or repository mismatch cannot override the remote archive state and do not prevent an exact matching archive from being terminal.
+Shared proposal rejection receipts use the corresponding private authority directory under `~/.context-room/shared/`. They record the repository, proposal branch, exact head, terminal decision, archive ref, actor label, and time. A proposal leaves the active queue as human-rejected only when that signed receipt and the exact remote archive agree. Invalid JSON, missing signatures, signature mismatch, or repository mismatch cannot be replaced by a remote archive or state marker; those remote objects remain visible as unverified authority until explicit human recovery.
 
 Successful acceptance records its exact proposal, proposal head, accepted commit, verified remote head, default branch, and reviewer metadata in the same private authority area. The receipt is written to a private temporary file and atomically renamed only after remote delivery is proved. A missing or corrupt receipt can therefore be rebuilt only from stronger Git evidence: the exact proposal trailers, a single-parent commit whose complete tree equals the reviewed result applied to that parent, safe blob modes and entry types, and renewed proof that the remote default branch contains that commit. Matching trailers alone never authorize recovery.
 
 Project configuration remains portable intent. Owner-local authority state is the anti-silent-narrowing control for this device; it is intentionally not committed to the project.
 
+Moving a hosted technical project from the legacy flat projects directory into
+its opaque repository namespace is storage migration, not a review decision. It
+must preserve the complete project tree and its exact state; it cannot merge
+partial trees, manufacture review evidence, or turn missing evidence into a
+current decision. The separate hosted review-authority and Shared authority
+homes remain under the same backed-up data root. If the project-to-repository
+mapping, binding, copied state, or validation evidence is ambiguous after a
+migration attempt, Context Room remains stopped and the operator restores the
+complete verified volume backup. See the fail-closed procedure in
+[Remote QM](../remote-qm.md).
+
 ## Terminal Acceptance Challenges
 
 Opening **Put on main** records `proposal.acceptance.confirmation_opened` and issues a short-lived challenge for the signed QM administrator identity, or the current owner-interface nonce instance in local mode, together with the review authority, `accept` action, and proposal head. Confirming the dialog records `proposal.acceptance.confirmed` and consumes that challenge before any Git acceptance work begins. A challenge cannot authorize another proposal, revision, action, remote administrator, local interface instance, or recovered authority state, and a consumed or expired challenge cannot be replayed. These audit entries contain decision metadata, not document content, and never replace the signed per-file review evidence.
+
+Hosted whole-file batching changes only how paths and file evidence cross the
+server boundary. It does not replace the two explicit confirmations required
+when an agent operates a multi-file or terminal surface, and it does not replace
+the terminal acceptance challenge.
 
 The GitHub App installation-token request has a 15-second budget. Clone, initial fetch, push, and delivery-verification fetch each use a non-zero 120-second Git delivery budget in both remote and local acceptance. A timeout returns HTTP `504` with `retryable: true` and either `github-app-token-timeout` or `shared-delivery-timeout`; the consumed challenge is not replayed, so **Retry** opens a fresh terminal confirmation.
 
@@ -101,24 +124,34 @@ Context Room records a proposal observation when it publishes the proposal and r
 
 1. verifies that the displayed head is still current;
 2. refuses to discard unpublished worktree changes;
-3. creates `rejected/<proposal-suffix>-<short-hash>` at the exact reviewed commit;
-4. records the exact owner decision receipt as additional audit metadata;
+3. atomically creates `rejected/<proposal-suffix>-<short-hash>` and advances the exact distributed terminal-state ref;
+4. records the signed exact owner decision receipt;
 5. leaves `proposal/<scope>/<name>` intact; and
-6. removes the item from the active queue while the expected archive still points to the exact proposal head.
+6. removes the item from the active queue only while the receipt, archive, and terminal state agree on the exact proposal head.
 
-If a proposal ref disappears without an exact accepted-main commit, accepted ref, or exact matching rejection archive, the last known proposal metadata remains visible. The owner must restore the ref before review continues.
+If the atomic archive and terminal-state push reached the remote but the
+response or local receipt was lost, an explicit human retry fetches and verifies
+both refs, repairs the missing signed receipt, and returns the same rejection
+without moving `proposal/*`, `rejected/*`, or the default branch. A legacy exact
+archive without terminal state also requires that explicit human recovery; the
+retry creates the missing state ref before recording the receipt. A previously
+signed opposite decision, an acceptance candidate on the default branch, or a
+mismatched archive returns a conflict without mutation.
+
+If a proposal ref disappears without an exact accepted-main commit, a compatible delivery path's exact accepted ref, or matching signed rejection evidence, the last known proposal metadata remains visible. The current direct in-app fast-forward flow proves acceptance through the default-branch commit, distributed terminal state, and signed receipt; it does not create an `accepted/*` ref. The owner must restore the proposal ref before review continues when none of those exact terminal proofs exists.
 
 ## GitHub Repository Protection
 
-`context-room shared secure-github --root .` installs or updates three no-bypass branch rulesets:
+`context-room shared secure-github --root .` installs or updates four no-bypass branch rulesets:
 
 - default-branch pull-request protection with one approving review, stale approvals dismissed after a push, last-push approval, resolved review threads, deletion protection, and force-push protection;
 - deletion protection for `refs/heads/<proposal-prefix>/**/*`; and
-- deletion, force-push, and update protection for `refs/heads/<rejection-prefix>/**/*`.
+- deletion, force-push, and update protection for `refs/heads/<rejection-prefix>/**/*`; and
+- deletion and non-fast-forward protection for `refs/heads/context-room-state/*`.
 
-`context-room shared security-check --root .` verifies all three rulesets plus the configured agent deploy key. This command changes or inspects the live GitHub repository and therefore remains a protected owner operation. The default-branch rule deliberately requires a distinct approving review and can block direct in-app finalization; repository owners must choose a delivery model whose reviewer identity and branch rules agree.
+`context-room shared security-check --root .` verifies all four rulesets plus the configured agent deploy key. This command changes or inspects the live GitHub repository and therefore remains a protected owner operation. The default-branch rule deliberately requires a distinct approving review and can block direct in-app finalization; repository owners must choose a delivery model whose reviewer identity and branch rules agree.
 
-Do not treat local hooks or filesystem permissions within one user account as equivalent to these provider-side controls. Context Room treats an exact matching archive branch as terminal under the explicit assumption that repository write protection owns rejection authority.
+Do not treat local hooks or filesystem permissions within one user account as equivalent to these provider-side controls. The rejection and state rules make existing evidence immutable but do not authenticate initial ref creation. Context Room therefore requires the signed owner receipt before treating a rejection as human-owned; a forged exact remote pair remains a visible fail-closed availability incident.
 
 ## Recovery
 
@@ -128,11 +161,11 @@ For `externally_deleted`:
 2. inspect the displayed last-known branch and exact head;
 3. restore that exact commit to the original `proposal/*` ref from a known clone, object database, or backup;
 4. run `context-room shared security-check --root .`;
-5. install or repair the proposal and rejection rulesets if the repository owner approves;
+5. install or repair the proposal, rejection, and terminal-state rulesets if the repository owner approves;
 6. refresh Context Room and confirm that the proposal returns at the same head; and
 7. continue review only after the authority warning clears.
 
-For `rejection_archive_missing`, preserve both refs and compare their exact hashes. A mismatched or missing archive still fails closed even when a local receipt says rejected. Never delete evidence to clear the warning. When the expected rejection archive already points to the exact proposal head, rejection is terminal without a local receipt and the proposal leaves the active queue on refresh.
+For `rejection_archive_missing`, preserve the proposal, archive, and terminal-state refs and compare their exact hashes. A mismatched or missing archive still fails closed even when a local receipt says rejected. Never delete evidence to clear the warning. When an exact archive or rejected state exists without a valid local receipt, the proposal remains visible as `unverified_rejection`; the owner must inspect it and explicitly confirm recovery before Context Room records the receipt and removes it from the active queue.
 
 ## Verification
 
@@ -143,6 +176,8 @@ The security regression suite covers:
 - direct review-state and global-ledger forgery being ignored and reported as critical;
 - protected local HTTP mutations requiring the current UI nonce;
 - exact-revision decision receipts detecting tampering;
+- cross-process terminal decisions sharing one exact generation-aware local lock, cross-Shared-Home opposite outcomes and stale republishing losing the distributed terminal compare-and-set without partial remote mutation, terminal state remaining authoritative after a proposal ref disappears, concurrent receipt writes retaining every proposal decision, and concurrent first writes publishing one complete HMAC key;
+- exact acceptance and rejection retries preserving the first signed actor and time, including reconstruction after a rejection archive reached the remote before its local receipt;
 - terminal acceptance endpoints recording `proposal.acceptance.confirmation_opened` then `proposal.acceptance.confirmed`, with the signed remote administrator or local owner-interface principal and no challenge identifier;
 - remote challenge and acceptance endpoints returning `503` before authority or Git mutation when no GitHub App is configured;
 - 15-second GitHub App token and 120-second Git delivery budgets surfacing retryable timeouts without reporting or recording success;
@@ -150,7 +185,7 @@ The security regression suite covers:
 - direct shared acceptance refusing incomplete exact human file decisions;
 - human rejection preserving the proposal ref;
 - external proposal deletion remaining visible; and
-- GitHub payloads protecting default, proposal, and rejection refs without bypass actors.
+- GitHub payloads protecting default, proposal, rejection, and distributed terminal-state refs without bypass actors.
 
 Run the focused checks with:
 
@@ -158,5 +193,6 @@ Run the focused checks with:
 node --test test/review_authority.test.mjs test/context_settings.test.mjs
 node --test --test-name-pattern='review authority|externally deleted proposal|rejecting a proposal|GitHub security setup' test/context_room.test.mjs test/shared_context.test.mjs
 node --test --test-name-pattern='terminal acceptance endpoints journal' test/shared_context.test.mjs
+node --test test/shared_terminal_cas.test.mjs
 node --test test/remote_accept_challenge.test.mjs test/acceptance_timeout.test.mjs
 ```

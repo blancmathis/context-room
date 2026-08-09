@@ -33,7 +33,7 @@ The official documentation skill creates ordinary documents with the minimal `id
 
 If a durable fact is unresolved, the agent asks the user focused questions instead of writing an assumption. After the answer, it resumes the same workflow.
 
-For shared content, `edit` uses `CODEX_THREAD_ID` or `--session` and returns a change handle plus the exact proposal worktree. The identity is the shared repository, project scope, and task ID. A later message in the same task therefore returns the same open proposal worktree. A terminal accepted or merged proposal is not reopened; the next update creates a new one. There is no agent-facing publish or acceptance step.
+For shared content, `edit` uses `CODEX_THREAD_ID` or `--session` and returns a change handle plus the exact proposal worktree. The identity is the shared repository, project scope, and task ID. A later message in the same task therefore returns the same open proposal worktree. The agent publishes its edited proposal branch with the returned change handle through `docs publish`; publication never makes a file-review or terminal proposal decision and never writes accepted `main`. A terminal accepted or merged proposal is not reopened; the next update creates a new one. Acceptance and rejection remain human-only.
 
 The default agent-facing route is `ask` for accepted documentation. Shared documentation changes use `edit`; the CLI never accepts, rejects, or verifies a file review.
 

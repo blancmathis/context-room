@@ -1,16 +1,19 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { isUtf8 } from "node:buffer";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { parseDocument } from "yaml";
 import { parse as parseJsonc } from "jsonc-parser";
 import { appendContextRoomEvent } from "./event_journal.mjs";
-import { gitHubAppGitEnvironment } from "./github_app_token.mjs";
+import { filesystemProcessIdentity, withFilesystemLock } from "./filesystem_lock.mjs";
+import { assertFreshGitHubAppCredential, withGitHubAppGitCredential } from "./github_app_token.mjs";
 import { parseDocMetadata } from "./doc_metadata.mjs";
 import { contextProviderProfile } from "./provider_profiles.mjs";
 import { inspectOwnerProposalDecisions, inspectOwnerTrustedState, recordOwnerProposalDecision } from "./review_authority.mjs";
+import { contextHubRepositoryIdentity } from "./context_hub.mjs";
 
 export const SHARED_REPOSITORY_CONFIG = ".context-room/shared-repository.json";
 export const SHARED_REVIEW_CONFIG = ".context-room/shared-review.json";
@@ -20,7 +23,8 @@ export const SHARED_RESOURCE_LOCAL_STATE_VERSION = 3;
 export const SHARED_SKILL_LOCAL_STATE_VERSION = SHARED_RESOURCE_LOCAL_STATE_VERSION;
 export const SHARED_INSTRUCTION_LOCATIONS_SCHEMA_VERSION = 1;
 export const DEFAULT_SHARED_DELIVERY_TIMEOUT_MS = 120_000;
-const SHARED_ACCEPTANCE_LEASE_MS = 15 * 60_000;
+export const DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS = 30_000;
+const SHARED_TERMINAL_DECISION_LEASE_MS = 15 * 60_000;
 const MAX_SHARED_TEXT_BYTES = 750_000;
 const SHARED_REPOSITORY_SCHEMA_URL = "https://unpkg.com/context-room@latest/schemas/shared-repository.schema.json";
 const SHARED_PROJECTS_SCHEMA_URL = "https://unpkg.com/context-room@latest/schemas/shared-projects.schema.json";
@@ -37,6 +41,7 @@ const SHARED_REVIEW_TEXT_FILENAMES = new Set([
   ".dockerignore", ".editorconfig", ".eslintignore", ".gitattributes", ".gitignore", ".markdownlintignore", ".node-version",
   ".npmignore", ".nvmrc", ".prettierignore", ".python-version", ".ruby-version", ".tool-versions",
 ]);
+const SHARED_PROPOSAL_STATE_PREFIX = "context-room-state/";
 
 const DEFAULT_REPOSITORY_CONFIG = {
   version: SHARED_REPOSITORY_SCHEMA_VERSION,
@@ -54,6 +59,11 @@ const DEFAULT_REPOSITORY_CONFIG = {
 const GITHUB_RULESET_PREFIX = "Context Room: protect ";
 const MAX_PROPOSAL_TITLE_LENGTH = 160;
 const MAX_PROPOSAL_DESCRIPTION_LENGTH = 6_000;
+const PROPOSAL_REGISTRY_LOCK_TIMEOUT_MS = DEFAULT_SHARED_DELIVERY_TIMEOUT_MS;
+const PROPOSAL_REGISTRY_LOCK_STALE_MS = 30_000;
+const SHARED_REGISTRY_LOCK_TIMEOUT_MS = DEFAULT_SHARED_DELIVERY_TIMEOUT_MS;
+const SHARED_REGISTRY_LOCK_STALE_MS = 30_000;
+const SHARED_REPOSITORY_CLONE_LOCK_STALE_MS = 30_000;
 
 function sharedHome() {
   return process.env.CONTEXT_ROOM_SHARED_HOME
@@ -92,6 +102,18 @@ function destinationLockPath(destination) {
 function processExists(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; }
+}
+
+function sharedTerminalLocalOwnerAlive(owner, ownerHost, expired) {
+  if (owner?.host !== ownerHost) return false;
+  const pid = Number(owner?.pid);
+  if (!processExists(pid)) return false;
+  const recordedIdentity = typeof owner?.processIdentity === "string" && owner.processIdentity.length <= 512
+    ? owner.processIdentity
+    : "";
+  if (!recordedIdentity) return !expired;
+  const observedIdentity = filesystemProcessIdentity(pid);
+  return !observedIdentity || observedIdentity === recordedIdentity;
 }
 
 function withDestinationLock(destination, callback) {
@@ -163,16 +185,68 @@ function removeManagedResourceLink(linkPath, { managedRoot, repository, assignme
 
 function runGit(cwd, args, options = {}) {
   const timeoutMs = Number(options.timeoutMs);
-  return execFileSync("git", args, {
+  const execute = ({ gitArguments = [], environment = null } = {}) => execFileSync("git", [...gitArguments, ...args], {
     cwd,
     encoding: options.encoding === null ? null : "utf8",
     stdio: options.stdio || ["ignore", "pipe", "pipe"],
     maxBuffer: options.maxBuffer || 64 * 1024 * 1024,
-    env: { ...process.env, ...options.env },
+    env: environment || { ...process.env, ...options.env },
     ...(Number.isFinite(timeoutMs) && timeoutMs > 0
       ? { timeout: Math.floor(timeoutMs), killSignal: "SIGTERM" }
       : {}),
   });
+  if (!options.credential) return execute();
+  return withGitHubAppGitCredential(
+    options.credential,
+    options.credential.repository,
+    execute,
+    {
+      baseEnvironment: { ...process.env, ...options.env },
+      timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS,
+    },
+  );
+}
+
+function sharedGitNetworkTimeoutError(operation, timeoutMs, cause = null) {
+  const error = new Error(`${operation} timed out after ${Math.floor(Number(timeoutMs))} ms`);
+  error.code = "shared-git-timeout";
+  error.retryable = true;
+  error.details = { timeoutMs: Math.floor(Number(timeoutMs)) };
+  if (cause) error.cause = cause;
+  return error;
+}
+
+function runSharedNetworkGit(cwd, args, {
+  operation = "Git network operation",
+  timeoutMs = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS,
+  timeoutBudgetMs = timeoutMs,
+  ...options
+} = {}) {
+  const boundedTimeoutMs = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
+    ? Math.floor(Number(timeoutMs))
+    : DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS;
+  const boundedBudgetTimeoutMs = Number.isFinite(Number(timeoutBudgetMs)) && Number(timeoutBudgetMs) > 0
+    ? Math.floor(Number(timeoutBudgetMs))
+    : boundedTimeoutMs;
+  try {
+    return runGit(cwd, args, { ...options, timeoutMs: boundedTimeoutMs });
+  } catch (error) {
+    if (isGitCommandTimeout(error)) throw sharedGitNetworkTimeoutError(operation, boundedBudgetTimeoutMs, error);
+    throw error;
+  }
+}
+
+function sharedGitNetworkBudget(timeoutMs = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS) {
+  const boundedTimeoutMs = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
+    ? Math.floor(Number(timeoutMs))
+    : DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS;
+  return { timeoutMs: boundedTimeoutMs, deadline: Date.now() + boundedTimeoutMs };
+}
+
+function remainingSharedGitNetworkTimeout(budget, operation) {
+  const remaining = Math.floor(Number(budget?.deadline) - Date.now());
+  if (remaining <= 0) throw sharedGitNetworkTimeoutError(operation, budget?.timeoutMs || DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS);
+  return remaining;
 }
 
 function tryGit(cwd, args) {
@@ -292,6 +366,130 @@ function safeRelativePath(value, label) {
   return clean;
 }
 
+function unsafeSharedFilesystemPath(message) {
+  const error = new Error(message);
+  error.code = "shared-path-unsafe";
+  return error;
+}
+
+function lstatIfPresent(filePath, options = undefined) {
+  try {
+    return fs.lstatSync(filePath, options);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function physicalPathIsContained(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`));
+}
+
+function inspectSharedPathNoFollow(root, relativePath, { createParents = false } = {}) {
+  const normalized = safeRelativePath(relativePath, "shared filesystem path");
+  const resolvedRoot = path.resolve(root);
+  const rootStats = lstatIfPresent(resolvedRoot);
+  if (!rootStats?.isDirectory() || rootStats.isSymbolicLink()) {
+    throw unsafeSharedFilesystemPath(`Shared filesystem root must be a real directory: ${resolvedRoot}`);
+  }
+  const physicalRoot = fs.realpathSync(resolvedRoot);
+  const segments = normalized.split("/");
+  let parent = resolvedRoot;
+  for (const segment of segments.slice(0, -1)) {
+    const candidate = path.join(parent, segment);
+    let stats = lstatIfPresent(candidate);
+    if (!stats && createParents) {
+      try {
+        fs.mkdirSync(candidate, { mode: 0o755 });
+      } catch (error) {
+        if (error?.code !== "EEXIST") throw error;
+      }
+      stats = lstatIfPresent(candidate);
+    }
+    if (!stats) {
+      return { exists: false, parentMissing: true, target: path.join(resolvedRoot, ...segments) };
+    }
+    if (stats.isSymbolicLink() || !stats.isDirectory()) {
+      throw unsafeSharedFilesystemPath(`Shared filesystem path contains a non-directory or symbolic-link parent: ${candidate}`);
+    }
+    const physicalCandidate = fs.realpathSync(candidate);
+    if (!physicalPathIsContained(physicalRoot, physicalCandidate)) {
+      throw unsafeSharedFilesystemPath(`Shared filesystem path escapes its physical root: ${candidate}`);
+    }
+    parent = candidate;
+  }
+  const parentStats = fs.lstatSync(parent, { bigint: true });
+  const target = path.join(parent, segments.at(-1));
+  const targetStats = lstatIfPresent(target);
+  if (targetStats?.isSymbolicLink()) {
+    throw unsafeSharedFilesystemPath(`Shared filesystem target must not be a symbolic link: ${target}`);
+  }
+  return { exists: Boolean(targetStats), parent, parentStats, physicalRoot, target };
+}
+
+function assertInspectedSharedParentUnchanged(inspected) {
+  const currentParent = lstatIfPresent(inspected.parent, { bigint: true });
+  if (!currentParent
+    || currentParent.isSymbolicLink()
+    || !currentParent.isDirectory()
+    || currentParent.dev !== inspected.parentStats.dev
+    || currentParent.ino !== inspected.parentStats.ino
+    || !physicalPathIsContained(inspected.physicalRoot, fs.realpathSync(inspected.parent))) {
+    throw unsafeSharedFilesystemPath(`Shared filesystem parent changed during file creation: ${inspected.parent}`);
+  }
+}
+
+function createSharedFileNoFollow(root, relativePath, content, { stagingRoot } = {}) {
+  const inspected = inspectSharedPathNoFollow(root, relativePath, { createParents: true });
+  if (inspected.exists) throw new Error(`Shared document already exists: ${safeRelativePath(relativePath, "shared document path")}`);
+  const staging = inspectSharedPathNoFollow(
+    stagingRoot,
+    `staging/${process.pid}-${randomUUID()}.tmp`,
+    { createParents: true },
+  );
+  const flags = fs.constants.O_WRONLY
+    | fs.constants.O_CREAT
+    | fs.constants.O_EXCL
+    | (fs.constants.O_NOFOLLOW || 0);
+  let descriptor;
+  let stagedStats = null;
+  let linked = false;
+  let completed = false;
+  try {
+    descriptor = fs.openSync(staging.target, flags, 0o600);
+    const opened = fs.fstatSync(descriptor);
+    if (!opened.isFile()) throw unsafeSharedFilesystemPath(`Shared staging target must be a regular file: ${staging.target}`);
+    fs.writeFileSync(descriptor, content, "utf8");
+    fs.fsyncSync(descriptor);
+    fs.fchmodSync(descriptor, 0o644);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    stagedStats = fs.lstatSync(staging.target, { bigint: true });
+    assertInspectedSharedParentUnchanged(inspected);
+    fs.linkSync(staging.target, inspected.target);
+    linked = true;
+    const targetStats = fs.lstatSync(inspected.target, { bigint: true });
+    assertInspectedSharedParentUnchanged(inspected);
+    if (!targetStats.isFile() || targetStats.dev !== stagedStats.dev || targetStats.ino !== stagedStats.ino) {
+      throw unsafeSharedFilesystemPath(`Shared filesystem target changed during file creation: ${inspected.target}`);
+    }
+    completed = true;
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+    if (linked && !completed) {
+      try {
+        const targetStats = fs.lstatSync(inspected.target, { bigint: true });
+        if (stagedStats && targetStats.dev === stagedStats.dev && targetStats.ino === stagedStats.ino) {
+          fs.unlinkSync(inspected.target);
+        }
+      } catch {}
+    }
+    try { fs.unlinkSync(staging.target); } catch {}
+  }
+  return inspected.target;
+}
+
 function safeBranchName(value, label = "branch") {
   const branch = String(value || "").trim();
   const invalid = !branch
@@ -314,9 +512,109 @@ function safeRepository(value) {
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(repository)) {
     let parsed;
     try { parsed = new URL(repository); } catch { throw new Error("repository must be a valid Git URL or local path"); }
-    if (parsed.username || parsed.password) throw new Error("repository URLs must not contain embedded credentials");
+    if (parsed.password || (parsed.username && parsed.protocol !== "ssh:")) {
+      throw new Error("repository URLs must not contain embedded credentials");
+    }
   }
   return repository;
+}
+
+function sharedRepositoryIdentity(repository) {
+  const identity = contextHubRepositoryIdentity(safeRepository(repository));
+  if (!identity.startsWith("local:")) return identity;
+  const requestedPath = path.resolve(identity.slice("local:".length));
+  let existing = requestedPath;
+  const suffix = [];
+  while (!lstatIfPresent(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) break;
+    suffix.unshift(path.basename(existing));
+    existing = parent;
+  }
+  let physical = existing;
+  try { physical = fs.realpathSync(existing); } catch {}
+  return `local:${path.join(physical, ...suffix)}`;
+}
+
+function sameSharedRepository(left, right) {
+  try {
+    return sharedRepositoryIdentity(left) === sharedRepositoryIdentity(right);
+  } catch {
+    return false;
+  }
+}
+
+function authenticatedSharedGit(repository, push = null, timeoutMs = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS) {
+  if (!push) return null;
+  const remote = safeRepository(push.url);
+  let parsed;
+  try { parsed = new URL(remote); } catch {
+    const error = new Error("GitHub App credential remote is invalid");
+    error.code = "github-app-credential-invalid";
+    throw error;
+  }
+  if (parsed.protocol !== "https:"
+    || parsed.hostname.toLowerCase() !== "github.com"
+    || parsed.username
+    || parsed.password
+    || parsed.search
+    || parsed.hash
+    || !/^\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+(?:\.git)?$/.test(parsed.pathname)
+    || !sameSharedRepository(repository, remote)) {
+    const error = new Error("GitHub App credential does not match the exact Shared repository");
+    error.code = "github-app-credential-invalid";
+    throw error;
+  }
+  const boundedTimeoutMs = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
+    ? Math.floor(Number(timeoutMs))
+    : DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS;
+  const credential = assertFreshGitHubAppCredential(push, {
+    minimumValidityMs: Math.max(1_000, Math.min(boundedTimeoutMs, 30_000)),
+  });
+  return {
+    remote,
+    credential: { ...credential, repository: remote },
+    timeoutMs: boundedTimeoutMs,
+  };
+}
+
+function replaceSharedFileNoFollow(root, relativePath, content) {
+  const inspected = inspectSharedPathNoFollow(root, relativePath);
+  if (!inspected.exists) throw new Error(`Shared file does not exist: ${safeRelativePath(relativePath, "shared file path")}`);
+  const current = fs.lstatSync(inspected.target, { bigint: true });
+  if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1n) {
+    throw unsafeSharedFilesystemPath(`Shared filesystem target must be one regular file: ${inspected.target}`);
+  }
+  const temporary = path.join(inspected.parent, `.context-room-${process.pid}-${randomUUID()}.tmp`);
+  const flags = fs.constants.O_WRONLY
+    | fs.constants.O_CREAT
+    | fs.constants.O_EXCL
+    | (fs.constants.O_NOFOLLOW || 0);
+  let descriptor;
+  let completed = false;
+  try {
+    descriptor = fs.openSync(temporary, flags, Number(current.mode & 0o777n));
+    fs.writeFileSync(descriptor, content, "utf8");
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    assertInspectedSharedParentUnchanged(inspected);
+    const beforeInstall = fs.lstatSync(inspected.target, { bigint: true });
+    if (!beforeInstall.isFile()
+      || beforeInstall.isSymbolicLink()
+      || beforeInstall.dev !== current.dev
+      || beforeInstall.ino !== current.ino
+      || beforeInstall.nlink !== 1n) {
+      throw unsafeSharedFilesystemPath(`Shared filesystem target changed during replacement: ${inspected.target}`);
+    }
+    fs.renameSync(temporary, inspected.target);
+    completed = true;
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+    if (!completed) {
+      try { fs.unlinkSync(temporary); } catch {}
+    }
+  }
 }
 
 function safeRevision(value, label = "revision") {
@@ -349,6 +647,32 @@ function proposalDescription(value, { optional = true } = {}) {
     throw new Error(`proposal description must be ${MAX_PROPOSAL_DESCRIPTION_LENGTH} characters or fewer`);
   }
   return description;
+}
+
+export function validateSharedProposalInput({
+  title,
+  description = "",
+  scope = "project",
+  branch = "",
+  sessionId = "",
+} = {}) {
+  if (!["project", "global", "skills", "instructions"].includes(scope)) {
+    throw new Error("Proposal scope must be project, global, skills, or instructions");
+  }
+  return {
+    title: proposalTitle(title),
+    description: proposalDescription(description),
+    scope,
+    branch: branch ? safeBranchName(branch, "proposal branch") : "",
+    sessionId: safeSessionId(sessionId),
+  };
+}
+
+export function validateSharedProposalPublicationInput({ title, description } = {}) {
+  return {
+    ...(title === undefined ? {} : { title: proposalTitle(title) }),
+    ...(description === undefined ? {} : { description: proposalDescription(description) }),
+  };
 }
 
 function encodeProposalDescription(value) {
@@ -450,10 +774,13 @@ function normalizedProjectsCatalog(raw = {}) {
   const seen = new Set();
   const projects = raw.projects.map((item) => {
     const id = safeId(item?.id, "project id");
+    if (["global", "skills", "instructions"].includes(id)) {
+      throw new Error(`Shared project id is reserved for a built-in proposal scope: ${id}`);
+    }
     if (seen.has(id)) throw new Error(`Duplicate shared project id: ${id}`);
     seen.add(id);
     const source = item?.source && typeof item.source === "object" ? {
-      remotes: [...new Set((item.source.remotes || []).map((remote) => normalizeRemote(safeRepository(remote))).filter(Boolean))],
+      remotes: [...new Set((item.source.remotes || []).map((remote) => sharedRepositoryIdentity(safeRepository(remote))).filter(Boolean))],
       subpath: safeSourceSubpath(item.source.subpath || "."),
     } : null;
     if (source && !source.remotes.length) throw new Error(`Shared project ${id} source.remotes must not be empty`);
@@ -490,6 +817,20 @@ function normalizedSkillSelection(values, fallback = []) {
   return [...new Set(source.map((value) => safeSkillName(value)).filter(Boolean))];
 }
 
+function assertSharedCollectionPathIsolated(kind, id, collectionPath, repositoryConfig) {
+  if (!repositoryConfig) return;
+  const reservedPaths = [
+    ".context-room",
+    repositoryConfig.projectsFile,
+    repositoryConfig.skillLocationsFile,
+    repositoryConfig.instructionLocationsFile,
+  ];
+  const reservedPath = reservedPaths.find((candidate) => pathsOverlap(collectionPath, candidate));
+  if (reservedPath) {
+    throw new Error(`Shared ${kind} collection ${id} overlaps reserved shared path: ${reservedPath}`);
+  }
+}
+
 function normalizedSharedSkillLocations(raw = {}, { repositoryConfig, catalog } = {}) {
   const version = Number(raw.version || SHARED_SKILL_LOCATIONS_SCHEMA_VERSION);
   if (version !== SHARED_SKILL_LOCATIONS_SCHEMA_VERSION) throw new Error(`Unsupported shared skill locations version: ${version}`);
@@ -503,9 +844,7 @@ function normalizedSharedSkillLocations(raw = {}, { repositoryConfig, catalog } 
     if (collectionIds.has(id)) throw new Error(`Duplicate shared skill collection id: ${id}`);
     collectionIds.add(id);
     const collectionPath = safeRelativePath(item?.path, `skill collection ${id} path`);
-    if (repositoryConfig && collectionPath === repositoryConfig.skillLocationsFile) {
-      throw new Error(`Skill collection ${id} cannot use skillLocationsFile`);
-    }
+    assertSharedCollectionPathIsolated("skill", id, collectionPath, repositoryConfig);
     if (collectionPaths.some((existing) => pathsOverlap(existing, collectionPath))) {
       throw new Error(`Shared skill collections must not overlap: ${collectionPath}`);
     }
@@ -606,10 +945,7 @@ function normalizedSharedInstructionLocations(raw = {}, { repositoryConfig, cata
     if (collectionIds.has(id)) throw new Error(`Duplicate shared instruction collection id: ${id}`);
     collectionIds.add(id);
     const collectionPath = safeRelativePath(item?.path, `instruction collection ${id} path`);
-    if (collectionPath === ".context-room" || collectionPath.startsWith(".context-room/")) throw new Error(`Instruction collection ${id} must stay outside .context-room runtime state`);
-    if (repositoryConfig && [repositoryConfig.instructionLocationsFile, repositoryConfig.skillLocationsFile, repositoryConfig.projectsFile].some((reserved) => pathsOverlap(collectionPath, reserved))) {
-      throw new Error(`Instruction collection ${id} overlaps a reserved shared manifest`);
-    }
+    assertSharedCollectionPathIsolated("instruction", id, collectionPath, repositoryConfig);
     if (collectionPaths.some((existing) => pathsOverlap(existing, collectionPath))) {
       throw new Error(`Shared instruction collections must not overlap: ${collectionPath}`);
     }
@@ -661,6 +997,80 @@ function readSharedInstructionLocationsFromRoot(root, repositoryConfig, catalog)
     : emptySharedInstructionLocations();
 }
 
+function readSharedInstructionLocationsFromRevision(checkout, revision, repositoryConfig, catalog) {
+  const manifest = `${revision}:${repositoryConfig.instructionLocationsFile}`;
+  if (!gitObjectExists(checkout, manifest)) return emptySharedInstructionLocations();
+  return normalizedSharedInstructionLocations(
+    JSON.parse(String(runGit(checkout, ["show", manifest]))),
+    { repositoryConfig, catalog },
+  );
+}
+
+function sharedCollectionAssignmentApplies(assignment, projectId) {
+  return assignment.scope === "device"
+    || assignment.scope === "shared"
+    || (assignment.scope === "project" && assignment.projectIds.includes(projectId));
+}
+
+function assertSharedCollectionVisibility(kind, collection, locations, repositoryConfig, catalog) {
+  const assignments = (locations.assignments || []).filter((assignment) => assignment.collectionId === collection.id);
+  const globalRoot = repositoryConfig.globalSkillsPath;
+  if (collection.path === globalRoot || collection.path.startsWith(globalRoot + "/")) {
+    if (!assignments.some((assignment) => assignment.scope === "device" || assignment.scope === "shared")) {
+      throw new Error(`Shared ${kind} collection ${collection.id} overlaps always-visible global skills without a shared or device assignment: ${globalRoot}`);
+    }
+  } else if (globalRoot.startsWith(collection.path + "/")) {
+    throw new Error(`Shared ${kind} collection ${collection.id} is an ancestor of always-visible global skills: ${globalRoot}`);
+  }
+
+  if (collection.path === repositoryConfig.projectsPath || repositoryConfig.projectsPath.startsWith(collection.path + "/")) {
+    throw new Error(`Shared ${kind} collection ${collection.id} is an ancestor of the shared projects root: ${repositoryConfig.projectsPath}`);
+  }
+  for (const project of catalog.projects || []) {
+    for (const suffix of ["docs", "skills"]) {
+      const visibleRoot = `${repositoryConfig.projectsPath}/${project.id}/${suffix}`;
+      if (collection.path === visibleRoot || collection.path.startsWith(visibleRoot + "/")) {
+        if (!assignments.some((assignment) => sharedCollectionAssignmentApplies(assignment, project.id))) {
+          throw new Error(`Shared ${kind} collection ${collection.id} overlaps an always-visible root without an assignment for ${project.id}: ${visibleRoot}`);
+        }
+      } else if (visibleRoot.startsWith(collection.path + "/")) {
+        throw new Error(`Shared ${kind} collection ${collection.id} is an ancestor of an always-visible project root: ${visibleRoot}`);
+      }
+    }
+  }
+}
+
+function assertSharedCollectionManifestsDisjoint(skillLocations, instructionLocations, repositoryConfig, catalog) {
+  for (const skillCollection of skillLocations.collections || []) {
+    for (const instructionCollection of instructionLocations.collections || []) {
+      if (!pathsOverlap(skillCollection.path, instructionCollection.path)) continue;
+      throw new Error(
+        `Shared skill collection ${skillCollection.id} overlaps shared instruction collection ${instructionCollection.id}: ${skillCollection.path} and ${instructionCollection.path}`,
+      );
+    }
+  }
+  for (const collection of skillLocations.collections || []) {
+    assertSharedCollectionVisibility("skill", collection, skillLocations, repositoryConfig, catalog);
+  }
+  for (const collection of instructionLocations.collections || []) {
+    assertSharedCollectionVisibility("instruction", collection, instructionLocations, repositoryConfig, catalog);
+  }
+}
+
+function readValidatedSharedLocationsFromRoot(root, repositoryConfig, catalog) {
+  const skillLocations = readSharedSkillLocationsFromRoot(root, repositoryConfig, catalog);
+  const instructionLocations = readSharedInstructionLocationsFromRoot(root, repositoryConfig, catalog);
+  assertSharedCollectionManifestsDisjoint(skillLocations, instructionLocations, repositoryConfig, catalog);
+  return { skillLocations, instructionLocations };
+}
+
+function readValidatedSharedLocationsFromRevision(checkout, revision, repositoryConfig, catalog) {
+  const skillLocations = readSharedSkillLocationsFromRevision(checkout, revision, repositoryConfig, catalog);
+  const instructionLocations = readSharedInstructionLocationsFromRevision(checkout, revision, repositoryConfig, catalog);
+  assertSharedCollectionManifestsDisjoint(skillLocations, instructionLocations, repositoryConfig, catalog);
+  return { skillLocations, instructionLocations };
+}
+
 function sharedInstructionLocationsDocument(locations) {
   return {
     $schema: SHARED_INSTRUCTION_LOCATIONS_SCHEMA_URL,
@@ -680,25 +1090,138 @@ function registryPath() {
   return path.join(sharedHome(), "registry.json");
 }
 
-function normalizeRemote(value) {
-  let remote = String(value || "").trim().replace(/\.git$/, "");
-  const scp = remote.match(/^[^@]+@([^:]+):(.+)$/);
-  if (scp) remote = `${scp[1]}/${scp[2]}`;
-  else remote = remote.replace(/^[a-z]+:\/\//i, "").replace(/^([^/]+@)?/, "");
-  return remote.replace(/^github\.com\//i, "github.com/").toLowerCase();
+function writeSharedRegistry(registry) {
+  const written = writePrivateJson(registryPath(), { ...registry, version: 1, bindings: registry.bindings || [] });
+  const fileDescriptor = fs.openSync(registryPath(), "r");
+  try { fs.fsyncSync(fileDescriptor); } finally { fs.closeSync(fileDescriptor); }
+  const directoryDescriptor = fs.openSync(path.dirname(registryPath()), "r");
+  try { fs.fsyncSync(directoryDescriptor); } finally { fs.closeSync(directoryDescriptor); }
+  return written;
+}
+
+function sharedRegistryLockPath() {
+  return `${registryPath()}.lock`;
+}
+
+function sharedRepositoryCloneLockPath(repository) {
+  return path.join(sharedHome(), "locks", `repository-${hashKey(sharedRepositoryIdentity(repository), 24)}.lock`);
+}
+
+// Cross-process lock order is Shared registry -> repository transaction -> managed destinations.
+// Code holding a later lock must never acquire an earlier one.
+function withSharedRegistryLock(operation, { allowRecoveryIssues = false } = {}) {
+  const lockPath = sharedRegistryLockPath();
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+  return withFilesystemLock(lockPath, (lease) => {
+    const recoveredSharedTransactions = recoverSharedDisconnectTransactionsUnderLock();
+    const sharedRecoveryIssues = readInvalidSharedDisconnectRecoveryIssuesUnderLock();
+    if (sharedRecoveryIssues.length && !allowRecoveryIssues) {
+      const error = sharedContextError(
+        "shared-disconnect-recovery-required",
+        "Shared Context quarantined an unreadable disconnect journal; review and acknowledge the global recovery issue before making more Shared changes",
+        {
+          scope: "global",
+          issues: sharedRecoveryIssues.map((issue) => ({
+            quarantineId: issue.quarantineId,
+            revision: issue.revision,
+            code: issue.code,
+          })),
+        },
+      );
+      error.statusCode = 409;
+      throw error;
+    }
+    return operation({ ...lease, recoveredSharedTransactions, sharedRecoveryIssues });
+  }, {
+    timeoutMs: SHARED_REGISTRY_LOCK_TIMEOUT_MS,
+    staleMs: SHARED_REGISTRY_LOCK_STALE_MS,
+    busyMessage: "Shared Context registry is busy in another process",
+    busyCode: "shared_context_registry_busy",
+  });
+}
+
+export function recoverSharedContextTransactions() {
+  return withSharedRegistryLock(({ recoveredSharedTransactions }) => ({
+    recovered: recoveredSharedTransactions,
+  }));
+}
+
+function withSharedRepositoryCloneLock(repository, operation, timeoutMs) {
+  const lockPath = sharedRepositoryCloneLockPath(repository);
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+  return withFilesystemLock(lockPath, operation, {
+    timeoutMs: Math.max(1, Math.min(
+      DEFAULT_SHARED_DELIVERY_TIMEOUT_MS,
+      Number.isFinite(Number(timeoutMs)) ? Math.floor(Number(timeoutMs)) : DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS,
+    )),
+    staleMs: SHARED_REPOSITORY_CLONE_LOCK_STALE_MS,
+    busyMessage: "Shared Context repository clone is busy in another process",
+    busyCode: "shared_repository_clone_busy",
+  });
+}
+
+function registeredRepositoryTransport(repository, registry = null) {
+  const requested = safeRepository(repository);
+  const current = registry || readJson(registryPath(), { version: 1, bindings: [] });
+  const existing = (current.bindings || []).find((binding) => {
+    try { return safeRepository(binding?.repository) === requested; } catch { return false; }
+  }) || (current.bindings || []).find((binding) => sameSharedRepository(binding?.repository, requested));
+  return existing ? safeRepository(existing.repository) : requested;
+}
+
+function historicalRepositoryTransports(repository, registry = null) {
+  const requested = safeRepository(repository);
+  const current = registry || readJson(registryPath(), { version: 1, bindings: [] });
+  const identity = sharedRepositoryIdentity(requested);
+  const transports = new Set([requested]);
+  for (const binding of current.bindings || []) {
+    try {
+      const transport = safeRepository(binding?.repository);
+      if (sharedRepositoryIdentity(transport) === identity) transports.add(transport);
+    } catch {}
+  }
+  if (identity.startsWith("local:")) {
+    const canonicalPath = identity.slice("local:".length);
+    const paths = new Set([canonicalPath]);
+    if (process.platform === "darwin" && canonicalPath.startsWith("/private/var/")) {
+      paths.add(canonicalPath.slice("/private".length));
+    }
+    for (const localPath of paths) {
+      transports.add(localPath);
+      const localUrl = pathToFileURL(localPath);
+      transports.add(localUrl.href);
+      if (process.platform === "darwin") {
+        localUrl.hostname = os.hostname();
+        transports.add(localUrl.href);
+      }
+    }
+  } else if (identity.startsWith("github:")) {
+    const repositoryPath = identity.slice("github:".length);
+    for (const suffix of [repositoryPath, `${repositoryPath}.git`]) {
+      transports.add(`https://github.com/${suffix}`);
+      transports.add(`git@github.com:${suffix}`);
+      transports.add(`ssh://git@github.com/${suffix}`);
+    }
+  }
+  return [...transports];
 }
 
 function sourceIdentity(root) {
   const resolved = stableRoot(root);
   const topLevel = tryGit(resolved, ["rev-parse", "--show-toplevel"]);
   if (!topLevel) return null;
-  const remotes = tryGit(topLevel, ["remote"]).split("\n").filter(Boolean)
+  const transports = tryGit(topLevel, ["remote"]).split("\n").filter(Boolean)
     .flatMap((name) => tryGit(topLevel, ["remote", "get-url", "--all", name]).split("\n"))
-    .map(normalizeRemote).filter(Boolean);
-  if (!remotes.length) return null;
+    .map((remote) => String(remote || "").trim()).filter(Boolean);
+  if (!transports.length) return null;
   const stableTopLevel = stableRoot(topLevel);
   const sourceSubpath = path.relative(stableTopLevel, resolved).replaceAll(path.sep, "/") || ".";
-  return { topLevel: stableTopLevel, remotes: [...new Set(remotes)], sourceSubpath };
+  return {
+    topLevel: stableTopLevel,
+    transports: [...new Set(transports)],
+    remotes: [...new Set(transports.map(sharedRepositoryIdentity))],
+    sourceSubpath,
+  };
 }
 
 function stableRoot(root) {
@@ -707,43 +1230,126 @@ function stableRoot(root) {
 }
 
 function bindingMatchesSource(binding, source) {
-  const bindingRemotes = [...new Set([...(binding.sourceRemotes || []), binding.sourceRemote].filter(Boolean).map(normalizeRemote))];
+  if (Number(binding?.sourceIdentityVersion) !== 2
+    || !Array.isArray(binding?.sourceRemotes)
+    || !Array.isArray(binding?.sourceRemoteIdentities)) return false;
+  const transports = binding.sourceRemotes.map((remote) => String(remote || "").trim()).filter(Boolean);
+  let bindingRemotes;
+  try {
+    bindingRemotes = [...new Set(transports.map(sharedRepositoryIdentity))];
+  } catch {
+    return false;
+  }
+  const recorded = [...new Set(binding.sourceRemoteIdentities.map((identity) => String(identity || "").trim()).filter(Boolean))];
+  if (bindingRemotes.length !== recorded.length || bindingRemotes.some((identity) => !recorded.includes(identity))) return false;
   if (!source || !source.remotes.some((remote) => bindingRemotes.includes(remote))) return false;
   const bindingPath = String(binding.sourceSubpath || ".").replace(/^\.\//, "").replace(/\/$/, "") || ".";
   const sourcePath = String(source.sourceSubpath || ".").replace(/^\.\//, "").replace(/\/$/, "") || ".";
   return bindingPath === "." || sourcePath === bindingPath || sourcePath.startsWith(bindingPath + "/");
 }
 
-function registerSourceBinding(root, connection) {
+function bindingProjectCapability(binding, root) {
+  const resolvedRoot = path.resolve(root);
+  const candidates = Array.isArray(binding?.projectCapabilities) ? binding.projectCapabilities : [];
+  return candidates.map((candidate) => normalizedSharedProjectCapability(candidate))
+    .find((candidate) => candidate?.root === resolvedRoot) || null;
+}
+
+function bindingAttestsProjectRoot(binding, root) {
+  const capability = bindingProjectCapability(binding, root);
+  if (!capability) return false;
+  try { return sameSharedProjectCapability(capability, currentSharedProjectCapability(capability.root)); }
+  catch { return false; }
+}
+
+function registerSourceBindingUnderLock(root, connection, { projectCapability = null } = {}) {
   const source = sourceIdentity(root);
   const registry = readJson(registryPath(), { version: 1, bindings: [] });
+  const repository = registeredRepositoryTransport(connection.repository, registry);
+  const repositoryIdentity = sharedRepositoryIdentity(repository);
+  const existingBindings = (registry.bindings || []).map((item) => (
+    sameSharedRepository(item?.repository, repository)
+      ? { ...item, repository, repositoryIdentity: String(item.repositoryIdentity || repositoryIdentity) }
+      : item
+  ));
   const registeredRoot = stableRoot(root);
-  const previous = (registry.bindings || []).find((item) => (
+  const registeredCapability = projectCapability
+    ? assertSharedProjectCapability(projectCapability, "Shared binding project")
+    : currentSharedProjectCapability(registeredRoot);
+  if (registeredCapability.root !== registeredRoot) {
+    throw sharedContextError("shared-project-capability-mismatch", "Shared binding capability does not match its exact project root");
+  }
+  const previous = existingBindings.find((item) => (
     source
-      ? String(item.sourceSubpath || ".") === source.sourceSubpath
-        && [...new Set([...(item.sourceRemotes || []), item.sourceRemote].filter(Boolean).map(normalizeRemote))].some((remote) => source.remotes.includes(remote))
+      ? String(item.sourceSubpath || ".") === source.sourceSubpath && bindingMatchesSource(item, source)
       : item.sourceRoot && stableRoot(item.sourceRoot) === registeredRoot
   ));
+  const stableRepositoryIdentity = String(previous?.repositoryIdentity || repositoryIdentity);
+  const projectCapabilities = [
+    ...(Array.isArray(previous?.projectCapabilities) ? previous.projectCapabilities : [])
+      .map((candidate) => normalizedSharedProjectCapability(candidate))
+      .filter((candidate) => candidate && candidate.root !== registeredRoot),
+    registeredCapability,
+  ];
   const binding = source ? {
-    repository: connection.repository,
+    repository,
+    repositoryIdentity: stableRepositoryIdentity,
     projectId: connection.projectId,
-    sourceRemotes: source.remotes,
+    sourceIdentityVersion: 2,
+    sourceRemotes: source.transports,
+    sourceRemoteIdentities: source.remotes,
     sourceSubpath: source.sourceSubpath,
     projectRoots: [...new Set([...(previous?.projectRoots || []), registeredRoot])],
+    capabilityVersion: 1,
+    projectCapabilities,
   } : {
-    repository: connection.repository,
+    repository,
+    repositoryIdentity: stableRepositoryIdentity,
     projectId: connection.projectId,
     sourceRoot: registeredRoot,
     projectRoots: [...new Set([...(previous?.projectRoots || []), registeredRoot])],
+    capabilityVersion: 1,
+    projectCapabilities,
   };
-  registry.bindings = [...(registry.bindings || []).filter((item) => !(
+  registry.bindings = [...existingBindings.filter((item) => !(
     source
-      ? String(item.sourceSubpath || ".") === binding.sourceSubpath
-        && [...new Set([...(item.sourceRemotes || []), item.sourceRemote].filter(Boolean).map(normalizeRemote))].some((remote) => source.remotes.includes(remote))
+      ? String(item.sourceSubpath || ".") === binding.sourceSubpath && bindingMatchesSource(item, source)
       : item.sourceRoot && stableRoot(item.sourceRoot) === binding.sourceRoot
   )), binding];
-  writeJson(registryPath(), registry);
+  writeSharedRegistry(registry);
   return binding;
+}
+
+function registerSourceBinding(root, connection) {
+  return withSharedRegistryLock(() => registerSourceBindingUnderLock(root, connection));
+}
+
+function ambiguousSharedBinding(candidates, sourceSubpath) {
+  const error = new Error("This Git worktree matches multiple equally specific Shared bindings");
+  error.code = "shared_context_binding_ambiguous";
+  error.statusCode = 409;
+  error.details = {
+    sourceSubpath: String(sourceSubpath || "."),
+    candidates: candidates.map((binding) => ({
+      repository: safeRepository(binding.repository),
+      projectId: safeId(binding.projectId, "projectId"),
+      sourceSubpath: String(binding.sourceSubpath || "."),
+    })),
+  };
+  return error;
+}
+
+function selectRegisteredBinding(matches, sourceSubpath, specificity) {
+  if (!matches.length) return null;
+  const topSpecificity = Math.max(...matches.map(specificity));
+  const top = matches.filter((binding) => specificity(binding) === topSpecificity);
+  const distinct = new Map();
+  for (const binding of top) {
+    const identity = `${sharedRepositoryIdentity(binding.repository)}\0${safeId(binding.projectId, "projectId")}\0${String(binding.sourceSubpath || binding.sourceRoot || ".")}`;
+    if (!distinct.has(identity)) distinct.set(identity, binding);
+  }
+  if (distinct.size > 1) throw ambiguousSharedBinding([...distinct.values()], sourceSubpath);
+  return top[0];
 }
 
 function resolveRegisteredConnection(root) {
@@ -755,46 +1361,55 @@ function resolveRegisteredConnection(root) {
       if (!binding.sourceRoot) return false;
       const bindingRoot = stableRoot(binding.sourceRoot);
       return resolved === bindingRoot || resolved.startsWith(bindingRoot + path.sep);
-    }).sort((left, right) => String(right.sourceRoot || "").length - String(left.sourceRoot || "").length);
-    const binding = matches[0];
-    return binding ? {
+    });
+    const binding = selectRegisteredBinding(matches, ".", (candidate) => String(candidate.sourceRoot || "").length);
+    const projectRoot = binding ? stableRoot(binding.sourceRoot) : "";
+    return binding && bindingAttestsProjectRoot(binding, projectRoot) ? {
       version: 1,
-      repository: safeRepository(binding.repository),
+      repository: registeredRepositoryTransport(binding.repository, registry),
       projectId: safeId(binding.projectId, "projectId"),
-      projectRoot: stableRoot(binding.sourceRoot),
+      projectRoot,
     } : null;
   }
   const matches = (registry.bindings || []).filter((binding) => bindingMatchesSource(binding, source));
-  matches.sort((left, right) => String(right.sourceSubpath || ".").length - String(left.sourceSubpath || ".").length);
-  const binding = matches[0];
+  const binding = selectRegisteredBinding(matches, source.sourceSubpath, (candidate) => String(candidate.sourceSubpath || ".").length);
   if (!binding) return null;
   const sourceSubpath = String(binding.sourceSubpath || ".").replace(/^\.\//, "").replace(/\/$/, "") || ".";
   const projectRoot = sourceSubpath === "." ? source.topLevel : path.join(source.topLevel, ...sourceSubpath.split("/"));
+  const stableProjectRoot = stableRoot(projectRoot);
+  if (!bindingAttestsProjectRoot(binding, stableProjectRoot)) return null;
   return {
     version: 1,
-    repository: safeRepository(binding.repository),
+    repository: registeredRepositoryTransport(binding.repository, registry),
     projectId: safeId(binding.projectId, "projectId"),
-    projectRoot: stableRoot(projectRoot),
+    projectRoot: stableProjectRoot,
   };
 }
 
 function registeredProjectRoots(connection) {
-  const repository = safeRepository(connection.repository);
+  const repository = registeredRepositoryTransport(connection.repository);
   const projectId = safeId(connection.projectId, "projectId");
   const registry = readJson(registryPath(), { bindings: [] });
   return [...new Set((registry.bindings || [])
-    .filter((binding) => safeRepository(binding.repository) === repository && String(binding.projectId || "") === projectId)
+    .filter((binding) => sameSharedRepository(binding.repository, repository) && String(binding.projectId || "") === projectId)
     .flatMap((binding) => binding.projectRoots || (binding.sourceRoot ? [binding.sourceRoot] : []))
     .map(stableRoot)
-    .filter((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()))];
+    .filter((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isDirectory())
+    .filter((candidate) => (registry.bindings || []).some((binding) => (
+      sameSharedRepository(binding.repository, repository)
+      && String(binding.projectId || "") === projectId
+      && bindingAttestsProjectRoot(binding, candidate)
+    ))))];
 }
 
 function registeredRepositoryProjectLocations(repository) {
-  const safeRemote = safeRepository(repository);
+  const safeRemote = registeredRepositoryTransport(repository);
   const registry = readJson(registryPath(), { bindings: [] });
-  const locations = (registry.bindings || []).filter((binding) => safeRepository(binding.repository) === safeRemote)
-    .flatMap((binding) => (binding.projectRoots || (binding.sourceRoot ? [binding.sourceRoot] : [])).map((root) => ({ projectId: safeId(binding.projectId, "projectId"), root: stableRoot(root) })))
-    .filter((item) => fs.existsSync(item.root) && fs.statSync(item.root).isDirectory());
+  const locations = (registry.bindings || []).filter((binding) => sameSharedRepository(binding.repository, safeRemote))
+    .flatMap((binding) => (binding.projectRoots || (binding.sourceRoot ? [binding.sourceRoot] : [])).map((root) => ({ binding, projectId: safeId(binding.projectId, "projectId"), root: stableRoot(root) })))
+    .filter((item) => fs.existsSync(item.root) && fs.statSync(item.root).isDirectory())
+    .filter((item) => bindingAttestsProjectRoot(item.binding, item.root))
+    .map(({ projectId, root }) => ({ projectId, root }));
   return [...new Map(locations.map((item) => [`${item.projectId}:${item.root}`, item])).values()]
     .sort((left, right) => `${left.projectId}:${left.root}`.localeCompare(`${right.projectId}:${right.root}`, "en"));
 }
@@ -804,38 +1419,502 @@ export function listRegisteredSharedProjectLocations(repository) {
 }
 
 function repositoryCacheRoot(repository) {
-  return path.join(sharedHome(), hashKey(repository));
+  const registry = readJson(registryPath(), { version: 1, bindings: [] });
+  const transport = registeredRepositoryTransport(repository, registry);
+  const registered = (registry.bindings || []).find((binding) => {
+    try { return safeRepository(binding?.repository) === transport; } catch { return false; }
+  }) || (registry.bindings || []).find((binding) => sameSharedRepository(binding?.repository, transport));
+  const identity = sharedRepositoryIdentity(transport);
+  if (registered?.repositoryIdentity && String(registered.repositoryIdentity) !== identity) {
+    throw sharedRepositoryIdentityMismatch("Shared repository binding identity requires an explicit migration", {
+      repository: transport,
+      recordedIdentity: String(registered.repositoryIdentity),
+      expectedIdentity: identity,
+    });
+  }
+  const legacyTransports = historicalRepositoryTransports(repository, registry)
+    .filter((candidate) => sameSharedRepository(candidate, transport));
+  const legacyRoots = legacyTransports.map((candidate) => path.join(sharedHome(), hashKey(candidate)));
+  const canonical = path.join(sharedHome(), hashKey(identity));
+  const candidates = new Set();
+  const unclaimedCandidates = new Set();
+  for (const candidate of [...legacyRoots, canonical]) {
+    if (!lstatIfPresent(candidate)) continue;
+    const claimPath = path.join(candidate, "repository-identity.json");
+    const claimStats = lstatIfPresent(claimPath);
+    if (!claimStats
+      && candidate === canonical
+      && repositoryCacheRootContainsOnlyProposalLockScaffolding(candidate)) {
+      continue;
+    }
+    if (claimStats) {
+      assertRepositoryIdentityClaim(candidate, transport, { allowMissing: false });
+    } else {
+      assertHistoricalRepositoryCacheCandidate(candidate, transport);
+      unclaimedCandidates.add(candidate);
+    }
+    candidates.add(candidate);
+  }
+  try {
+    const physicalHome = fs.realpathSync(sharedHome());
+    const legacyNames = fs.readdirSync(sharedHome()).filter((candidate) => /^[a-f0-9]{16}$/.test(candidate)).sort();
+    if (legacyNames.length > 256) {
+      throw sharedRepositoryIdentityMismatch("Too many legacy Shared repository caches exist to adopt one safely", {
+        repository: transport,
+        expectedIdentity: identity,
+        cacheCount: legacyNames.length,
+      });
+    }
+    for (const name of legacyNames) {
+      const candidate = path.join(sharedHome(), name);
+      const candidateStats = lstatIfPresent(candidate);
+      if (!candidateStats || candidateStats.isSymbolicLink() || !candidateStats.isDirectory()) continue;
+      if (fs.realpathSync(candidate) !== path.join(physicalHome, name)) continue;
+      const claimPath = path.join(candidate, "repository-identity.json");
+      const claimStats = lstatIfPresent(claimPath);
+      if (!claimStats) {
+        if (repositoryCacheRootContainsOnlyProposalLockScaffolding(candidate)) continue;
+        try {
+          assertHistoricalRepositoryCacheCandidate(candidate, transport);
+        } catch (error) {
+          if (error?.code === "shared-repository-identity-mismatch") continue;
+          throw error;
+        }
+        candidates.add(candidate);
+        unclaimedCandidates.add(candidate);
+        continue;
+      }
+      if (claimStats.isSymbolicLink() || !claimStats.isFile()) continue;
+      let claim = null;
+      try { claim = readJson(claimPath, null); } catch { continue; }
+      if (!claim || claim.version !== 1) continue;
+      let claimRepository = "";
+      let claimIdentity = "";
+      try {
+        claimRepository = safeRepository(claim.repository);
+        claimIdentity = sharedRepositoryIdentity(claimRepository);
+      } catch {
+        continue;
+      }
+      if (claimIdentity !== identity || !sameSharedRepository(claimRepository, transport)) continue;
+      if (String(claim.identity || "") !== claimIdentity) {
+        throw sharedRepositoryIdentityMismatch("Shared repository cache identity requires an explicit migration", {
+          repository: transport,
+          cacheRoot: candidate,
+          recordedIdentity: String(claim.identity || ""),
+          expectedIdentity: claimIdentity,
+        });
+      }
+      candidates.add(candidate);
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  if (candidates.size > 1) {
+    throw sharedRepositoryIdentityMismatch("Multiple Shared repository caches claim the same canonical identity", {
+      repository: transport,
+      expectedIdentity: identity,
+      cacheRoots: [...candidates].sort(),
+    });
+  }
+  const [selected] = candidates;
+  if (selected && unclaimedCandidates.has(selected)) writeRepositoryIdentityClaim(selected, transport);
+  return selected || canonical;
+}
+
+function repositoryCacheRootContainsOnlyProposalLockScaffolding(cacheRoot) {
+  const cacheStats = lstatIfPresent(cacheRoot);
+  if (!cacheStats || cacheStats.isSymbolicLink() || !cacheStats.isDirectory()) return false;
+  const entries = fs.readdirSync(cacheRoot, { withFileTypes: true });
+  if (entries.length > 64) return false;
+  return entries.every((entry) => {
+    if (entry.isSymbolicLink()) return false;
+    if (entry.name === "proposals.json.lock.reclaimers") return entry.isDirectory();
+    if (entry.name === "proposals.json.lock" || entry.name === "proposals.json.lock.reclaim") {
+      return entry.isFile();
+    }
+    return entry.isFile()
+      && entry.name.startsWith(".context-room-filesystem-lock-")
+      && entry.name.endsWith(".tmp");
+  });
+}
+
+function assertHistoricalRepositoryCacheCandidate(cacheRoot, repository) {
+  const transport = safeRepository(repository);
+  const checkout = path.join(cacheRoot, "repository");
+  assertSharedCacheDirectoryNoFollow(cacheRoot, "Historical Shared repository cache");
+  assertSharedCacheDirectoryNoFollow(checkout, "Historical Shared repository checkout");
+  assertSharedCacheDirectoryNoFollow(path.join(checkout, ".git"), "Historical Shared repository Git directory");
+  try {
+    assertRepositoryCheckoutIdentity(transport, checkout);
+  } catch (error) {
+    if (error?.code === "shared-repository-identity-mismatch") throw error;
+    throw sharedRepositoryIdentityMismatch("Historical Shared repository cache origin cannot prove the requested repository identity", {
+      repository: transport,
+      cacheRoot,
+      cause: String(error?.message || error),
+    });
+  }
+  return cacheRoot;
+}
+
+function sharedRepositoryIdentityMismatch(message, details = {}) {
+  return sharedContextError("shared-repository-identity-mismatch", message, details);
+}
+
+function assertRepositoryIdentityClaim(cacheRoot, repository, { allowMissing = true } = {}) {
+  const transport = safeRepository(repository);
+  const expectedIdentity = sharedRepositoryIdentity(transport);
+  const claimPath = path.join(cacheRoot, "repository-identity.json");
+  const claimStats = lstatIfPresent(claimPath, { bigint: true });
+  if (!claimStats) {
+    if (allowMissing) return null;
+    throw sharedRepositoryIdentityMismatch("Shared repository cache has no identity claim", {
+      repository: transport,
+      cacheRoot,
+    });
+  }
+  if (claimStats.isSymbolicLink() || !claimStats.isFile() || claimStats.nlink !== 1n) {
+    throw unsafeSharedFilesystemPath(`Shared repository identity claim must be a single-link physical file: ${claimPath}`);
+  }
+  let claim;
+  try {
+    claim = readJson(claimPath, null);
+  } catch {
+    throw sharedRepositoryIdentityMismatch("Shared repository cache identity claim is invalid", {
+      repository: transport,
+      cacheRoot,
+    });
+  }
+  let claimedRepository;
+  let claimedIdentity;
+  try {
+    claimedRepository = safeRepository(claim?.repository);
+    claimedIdentity = sharedRepositoryIdentity(claimedRepository);
+  } catch {
+    throw sharedRepositoryIdentityMismatch("Shared repository cache identity claim is invalid", {
+      repository: transport,
+      cacheRoot,
+    });
+  }
+  if (claim?.version !== 1
+    || String(claim.identity || "") !== claimedIdentity
+    || claimedIdentity !== expectedIdentity
+    || !sameSharedRepository(claimedRepository, transport)) {
+    throw sharedRepositoryIdentityMismatch("Shared repository cache identity does not match the requested repository", {
+      repository: transport,
+      cacheRoot,
+      claimedRepository,
+      claimedIdentity: String(claim?.identity || ""),
+      expectedIdentity,
+    });
+  }
+  return { repository: claimedRepository, identity: claimedIdentity };
+}
+
+function writeRepositoryIdentityClaim(cacheRoot, repository) {
+  const claimPath = path.join(cacheRoot, "repository-identity.json");
+  const claimStats = lstatIfPresent(claimPath);
+  if (claimStats && (claimStats.isSymbolicLink() || !claimStats.isFile())) {
+    throw unsafeSharedFilesystemPath(`Shared repository identity claim must be a physical file: ${claimPath}`);
+  }
+  if (claimStats) assertRepositoryIdentityClaim(cacheRoot, repository, { allowMissing: false });
+  const transport = safeRepository(repository);
+  writePrivateJson(claimPath, {
+    version: 1,
+    repository: transport,
+    identity: sharedRepositoryIdentity(transport),
+  });
+}
+
+function assertRepositoryCheckoutIdentity(repository, checkout) {
+  const transport = safeRepository(repository);
+  const expectedIdentity = sharedRepositoryIdentity(transport);
+  const configuredOrigins = tryGit(checkout, ["config", "--get-all", "remote.origin.url"])
+    .split("\n")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (!configuredOrigins.length || configuredOrigins.some((origin) => !sameSharedRepository(origin, transport))) {
+    throw sharedRepositoryIdentityMismatch("Shared repository checkout origin does not match the requested repository", {
+      repository: transport,
+      checkout,
+      expectedIdentity,
+      configuredOrigins,
+    });
+  }
+  const fetchSpecs = tryGit(checkout, ["config", "--get-all", "remote.origin.fetch"])
+    .split("\n")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (fetchSpecs.length !== 1 || fetchSpecs[0] !== "+refs/heads/*:refs/remotes/origin/*") {
+    throw sharedRepositoryIdentityMismatch("Shared repository checkout has an unexpected origin fetch mapping", {
+      repository: transport,
+      checkout,
+      fetchSpecs,
+    });
+  }
+  return { repository: transport, identity: expectedIdentity, configuredOrigins };
 }
 
 function repositoryCheckout(repository) {
   return path.join(repositoryCacheRoot(repository), "repository");
 }
 
+function assertSharedCacheDirectoryNoFollow(directory, label) {
+  const expected = path.resolve(directory);
+  const stats = lstatIfPresent(expected);
+  if (!stats || stats.isSymbolicLink() || !stats.isDirectory()) {
+    throw unsafeSharedFilesystemPath(`${label} must be a physical directory: ${expected}`);
+  }
+  const configuredHome = path.resolve(sharedHome());
+  const relative = path.relative(configuredHome, expected);
+  if (!physicalPathIsContained(configuredHome, expected) || !relative) {
+    throw unsafeSharedFilesystemPath(`${label} is outside the Shared cache root: ${expected}`);
+  }
+  const physicalHome = fs.realpathSync(configuredHome);
+  const physicalDirectory = fs.realpathSync(expected);
+  const expectedPhysicalDirectory = path.resolve(physicalHome, relative);
+  if (physicalDirectory !== expectedPhysicalDirectory) {
+    throw unsafeSharedFilesystemPath(`${label} crosses a symbolic filesystem boundary: ${expected}`);
+  }
+  return stats;
+}
+
+function assertRepositoryCheckoutNoFollow(repository, checkout = repositoryCheckout(repository)) {
+  const cacheRoot = repositoryCacheRoot(repository);
+  assertSharedCacheDirectoryNoFollow(cacheRoot, "Shared repository cache");
+  assertSharedCacheDirectoryNoFollow(checkout, "Shared repository checkout");
+  assertSharedCacheDirectoryNoFollow(path.join(checkout, ".git"), "Shared repository Git directory");
+  return checkout;
+}
+
 function sharedStatePath(repository) {
   return path.join(repositoryCacheRoot(repository), "state.json");
 }
 
-function syncSharedRepositoryState(repository, { allowOffline = true } = {}) {
-  const safeRemote = safeRepository(repository);
-  const checkout = ensureRepositoryClone(safeRemote);
+function sharedConnectionReceiptPath(repository, projectRoot) {
+  return path.join(repositoryCacheRoot(repository), "connection-receipts", `${hashKey(path.resolve(projectRoot), 24)}.json`);
+}
+
+function sharedProjectRootIdentity(projectRoot) {
+  const stats = fs.lstatSync(path.resolve(projectRoot), { bigint: true });
+  if (stats.isSymbolicLink() || !stats.isDirectory()) throw new Error("Shared connection receipt requires an exact physical project root");
+  return { dev: stats.dev.toString(), ino: stats.ino.toString() };
+}
+
+function normalizedSharedFilesystemEntryIdentity(value = null) {
+  const dev = String(value?.dev || "");
+  const ino = String(value?.ino || "");
+  const mode = String(value?.mode || "");
+  const kind = String(value?.kind || "");
+  return /^\d+$/.test(dev) && /^\d+$/.test(ino) && /^\d+$/.test(mode) && ["file", "directory"].includes(kind)
+    ? { dev, ino, mode, kind }
+    : null;
+}
+
+function sharedFilesystemEntryIdentity(filePath) {
+  const stats = fs.lstatSync(filePath, { bigint: true });
+  const kind = stats.isFile() ? "file" : stats.isDirectory() ? "directory" : "";
+  if (!kind || stats.isSymbolicLink()) throw new Error(`Unsupported Shared project filesystem entry: ${filePath}`);
+  return { dev: stats.dev.toString(), ino: stats.ino.toString(), mode: stats.mode.toString(), kind };
+}
+
+function normalizedSharedWorktreeIdentity(value = null) {
+  const kind = String(value?.kind || "");
+  if (kind === "path") return { kind: "path" };
+  if (kind !== "git") return null;
+  const commonDir = path.resolve(String(value?.commonDir || ""));
+  const commonDirIdentity = value?.commonDirIdentity && {
+    dev: String(value.commonDirIdentity.dev || ""),
+    ino: String(value.commonDirIdentity.ino || ""),
+  };
+  const relativeRoot = String(value?.relativeRoot || "");
+  const gitDir = path.resolve(String(value?.gitDir || ""));
+  const gitDirIdentity = value?.gitDirIdentity && {
+    dev: String(value.gitDirIdentity.dev || ""),
+    ino: String(value.gitDirIdentity.ino || ""),
+  };
+  const gitEntryIdentity = normalizedSharedFilesystemEntryIdentity(value?.gitEntryIdentity);
+  if (
+    !commonDirIdentity || !/^\d+$/.test(commonDirIdentity.dev) || !/^\d+$/.test(commonDirIdentity.ino)
+    || !relativeRoot || path.isAbsolute(relativeRoot) || relativeRoot.split(/[\\/]+/).includes("..")
+    || !gitDirIdentity || !/^\d+$/.test(gitDirIdentity.dev) || !/^\d+$/.test(gitDirIdentity.ino)
+    || !gitEntryIdentity
+  ) return null;
+  return { kind: "git", commonDir, commonDirIdentity, relativeRoot, gitDir, gitDirIdentity, gitEntryIdentity };
+}
+
+function normalizedSharedProjectCapability(value = null) {
+  const root = path.resolve(String(value?.root || ""));
+  const rootIdentity = value?.rootIdentity && {
+    dev: String(value.rootIdentity.dev || ""),
+    ino: String(value.rootIdentity.ino || ""),
+  };
+  const worktreeIdentity = normalizedSharedWorktreeIdentity(value?.worktreeIdentity);
+  if (root === path.parse(root).root
+    || !rootIdentity || !/^\d+$/.test(rootIdentity.dev) || !/^\d+$/.test(rootIdentity.ino)
+    || !worktreeIdentity) return null;
+  return { root, rootIdentity, worktreeIdentity };
+}
+
+function currentSharedProjectCapability(root) {
+  const projectRoot = path.resolve(root);
+  const rootStats = fs.lstatSync(projectRoot, { bigint: true });
+  if (!rootStats.isDirectory() || rootStats.isSymbolicLink() || fs.realpathSync(projectRoot) !== projectRoot) {
+    throw new Error(`Shared project root identity changed: ${projectRoot}`);
+  }
+  const rootIdentity = { dev: rootStats.dev.toString(), ino: rootStats.ino.toString() };
+  const gitRootValue = tryGit(projectRoot, ["rev-parse", "--show-toplevel"]);
+  const commonDirValue = tryGit(projectRoot, ["rev-parse", "--git-common-dir"]);
+  const gitDirValue = tryGit(projectRoot, ["rev-parse", "--git-dir"]);
+  if (!gitRootValue || !commonDirValue || !gitDirValue) {
+    return { root: projectRoot, rootIdentity, worktreeIdentity: { kind: "path" } };
+  }
+  const gitRoot = stableRoot(gitRootValue);
+  // Git reports these paths relative to the command cwd, which can be a
+  // nested project root rather than the repository top level.
+  const commonDir = stableRoot(path.resolve(projectRoot, commonDirValue));
+  const gitDir = stableRoot(path.resolve(projectRoot, gitDirValue));
+  const commonDirIdentity = sharedProjectRootIdentity(commonDir);
+  const gitDirIdentity = sharedProjectRootIdentity(gitDir);
+  const relativeRoot = path.relative(gitRoot, projectRoot).replaceAll(path.sep, "/") || ".";
+  return {
+    root: projectRoot,
+    rootIdentity,
+    worktreeIdentity: {
+      kind: "git",
+      commonDir,
+      commonDirIdentity,
+      relativeRoot,
+      gitDir,
+      gitDirIdentity,
+      gitEntryIdentity: sharedFilesystemEntryIdentity(path.join(gitRoot, ".git")),
+    },
+  };
+}
+
+export function attestSharedProjectCapability(root) {
+  return currentSharedProjectCapability(root);
+}
+
+function sameSharedProjectCapability(left, right) {
+  const expected = normalizedSharedProjectCapability(left);
+  const current = normalizedSharedProjectCapability(right);
+  if (!expected || !current
+    || expected.root !== current.root
+    || expected.rootIdentity.dev !== current.rootIdentity.dev
+    || expected.rootIdentity.ino !== current.rootIdentity.ino
+    || expected.worktreeIdentity.kind !== current.worktreeIdentity.kind) return false;
+  if (expected.worktreeIdentity.kind === "path") return true;
+  return expected.worktreeIdentity.commonDir === current.worktreeIdentity.commonDir
+    && expected.worktreeIdentity.commonDirIdentity.dev === current.worktreeIdentity.commonDirIdentity.dev
+    && expected.worktreeIdentity.commonDirIdentity.ino === current.worktreeIdentity.commonDirIdentity.ino
+    && expected.worktreeIdentity.relativeRoot === current.worktreeIdentity.relativeRoot
+    && expected.worktreeIdentity.gitDir === current.worktreeIdentity.gitDir
+    && expected.worktreeIdentity.gitDirIdentity.dev === current.worktreeIdentity.gitDirIdentity.dev
+    && expected.worktreeIdentity.gitDirIdentity.ino === current.worktreeIdentity.gitDirIdentity.ino
+    && expected.worktreeIdentity.gitEntryIdentity.dev === current.worktreeIdentity.gitEntryIdentity.dev
+    && expected.worktreeIdentity.gitEntryIdentity.ino === current.worktreeIdentity.gitEntryIdentity.ino
+    && expected.worktreeIdentity.gitEntryIdentity.mode === current.worktreeIdentity.gitEntryIdentity.mode
+    && expected.worktreeIdentity.gitEntryIdentity.kind === current.worktreeIdentity.gitEntryIdentity.kind;
+}
+
+function assertSharedProjectCapability(capability, label = "Shared project") {
+  const expected = normalizedSharedProjectCapability(capability);
+  if (!expected) throw sharedContextError("shared-project-capability-invalid", `${label} requires an exact physical root and Git membership capability`);
+  let current = null;
+  try { current = currentSharedProjectCapability(expected.root); } catch {}
+  if (!current || !sameSharedProjectCapability(expected, current)) {
+    const error = sharedContextError("shared-project-capability-changed", `${label} changed after Context Hub authorized this Shared transaction`, { projectRoot: expected.root });
+    error.statusCode = 409;
+    throw error;
+  }
+  return expected;
+}
+
+function writeSharedConnectionReceipt(projectRoot, connection, revision, receiptId, repositoryConfig) {
+  const exactReceiptId = String(receiptId || "").trim();
+  if (!exactReceiptId) return null;
+  if (!/^[0-9a-f-]{36}$/.test(exactReceiptId)) throw new Error("Shared connection receipt ID is invalid");
+  const exactRoot = path.resolve(projectRoot);
+  const receipt = {
+    version: 1,
+    receiptId: exactReceiptId,
+    repository: connection.repository,
+    repositoryIdentity: sharedRepositoryIdentity(connection.repository),
+    projectId: connection.projectId,
+    projectRoot: exactRoot,
+    rootIdentity: sharedProjectRootIdentity(exactRoot),
+    revision: safeRevision(revision, "Shared connection receipt revision"),
+    projectsPath: safeRelativePath(repositoryConfig?.projectsPath, "Shared connection receipt projectsPath"),
+    completedAt: new Date().toISOString(),
+  };
+  const receiptPath = sharedConnectionReceiptPath(connection.repository, exactRoot);
+  writePrivateJson(receiptPath, receipt);
+  const receiptDescriptor = fs.openSync(receiptPath, "r");
+  try { fs.fsyncSync(receiptDescriptor); } finally { fs.closeSync(receiptDescriptor); }
+  const directoryDescriptor = fs.openSync(path.dirname(receiptPath), "r");
+  try { fs.fsyncSync(directoryDescriptor); } finally { fs.closeSync(directoryDescriptor); }
+  return receipt;
+}
+
+function syncSharedRepositoryStateUnderLock(safeRemote, {
+  allowOffline = true,
+  timeoutMs = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS,
+  env = null,
+  fetchRemote = "origin",
+  push = null,
+} = {}) {
+  const budget = sharedGitNetworkBudget(timeoutMs);
+  const cloneAuth = authenticatedSharedGit(safeRemote, push, remainingSharedGitNetworkTimeout(budget, "Git clone"));
+  const checkout = ensureRepositoryCloneUnderLock(safeRemote, {
+    timeoutMs: remainingSharedGitNetworkTimeout(budget, "Git clone"),
+    timeoutBudgetMs: budget.timeoutMs,
+    env,
+    credential: cloneAuth?.credential || null,
+    remote: cloneAuth?.remote || safeRemote,
+  });
   let fetchError = "";
   try {
-    runGit(checkout, ["fetch", "--prune", "origin"], { stdio: ["ignore", "ignore", "pipe"] });
+    const fetchAuth = authenticatedSharedGit(safeRemote, push, remainingSharedGitNetworkTimeout(budget, "Git fetch"));
+    const remote = fetchAuth?.remote || String(fetchRemote || "origin");
+    const fetchArgs = remote === "origin"
+      ? ["fetch", "--prune", "origin"]
+      : ["fetch", "--force", "--prune", "--no-tags", remote, "+refs/heads/*:refs/remotes/origin/*"];
+    runSharedNetworkGit(checkout, fetchArgs, {
+      stdio: ["ignore", "ignore", "pipe"],
+      ...(env ? { env } : {}),
+      ...(fetchAuth ? { credential: fetchAuth.credential } : {}),
+      operation: "Git fetch",
+      timeoutMs: remainingSharedGitNetworkTimeout(budget, "Git fetch"),
+      timeoutBudgetMs: budget.timeoutMs,
+    });
   } catch (error) {
     fetchError = String(error.stderr || error.message || error).trim();
-    if (!allowOffline) throw new Error(`Unable to refresh shared context: ${fetchError}`);
+    if (String(error?.code || "").startsWith("github-app-")) throw error;
+    if (!allowOffline) {
+      if (error?.code === "shared-git-timeout") throw error;
+      throw new Error(`Unable to refresh shared context: ${fetchError}`);
+    }
   }
   const state = readJson(sharedStatePath(safeRemote), {});
   let descriptor;
   try {
     descriptor = readRemoteSharedDescriptor(checkout, state.defaultBranch || "");
   } catch (error) {
-    if (!fetchError || !state.revision || !state.repositoryConfig || !state.catalog) throw error;
-    descriptor = {
-      revision: safeRevision(state.revision, "cached shared revision"),
-      config: normalizedRepositoryConfig(state.repositoryConfig),
-      catalog: normalizedProjectsCatalog(state.catalog),
-    };
+    if (!fetchError || !state.revision) throw error;
+    const cachedRevision = safeRevision(state.revision, "cached shared revision");
+    if (!gitObjectExists(checkout, `${cachedRevision}^{commit}`)) throw error;
+    descriptor = readSharedDescriptorAtRevision(checkout, cachedRevision);
+    const cachedRemoteRef = `refs/remotes/origin/${descriptor.config.defaultBranch}`;
+    if (!gitObjectExists(checkout, `${cachedRemoteRef}^{commit}`)
+      || !gitIsAncestor(checkout, cachedRevision, cachedRemoteRef)) {
+      throw sharedContextError("shared-cache-unverified", "Cached Shared state is not reachable from its repository origin", {
+        repository: safeRemote,
+        revision: cachedRevision,
+        defaultBranch: descriptor.config.defaultBranch,
+      });
+    }
   }
   assertSafeTreeEntries(checkout, descriptor.revision, []);
   const cacheRoot = repositoryCacheRoot(safeRemote);
@@ -844,6 +1923,7 @@ function syncSharedRepositoryState(repository, { allowOffline = true } = {}) {
   materializeSnapshot(checkout, descriptor.revision, snapshot);
   const repositoryConfig = readSharedRepositoryConfig(snapshot);
   const catalog = normalizedProjectsCatalog(readJson(path.join(snapshot, repositoryConfig.projectsFile)));
+  readValidatedSharedLocationsFromRoot(snapshot, repositoryConfig, catalog);
   const nextState = {
     version: 1,
     repository: safeRemote,
@@ -855,7 +1935,7 @@ function syncSharedRepositoryState(repository, { allowOffline = true } = {}) {
     repositoryConfig,
     catalog,
   };
-  writeJson(sharedStatePath(safeRemote), nextState);
+  writePrivateJson(sharedStatePath(safeRemote), nextState);
   return {
     connection: { repository: safeRemote, projectId: "global", projectRoot: "" },
     repositoryConfig,
@@ -868,23 +1948,38 @@ function syncSharedRepositoryState(repository, { allowOffline = true } = {}) {
   };
 }
 
-function cachedSharedRepositoryState(repository, { projectId = "global", projectRoot = "" } = {}) {
-  const safeRemote = safeRepository(repository);
+function syncSharedRepositoryState(repository, options = {}) {
+  const safeRemote = registeredRepositoryTransport(repository);
+  authenticatedSharedGit(safeRemote, options.push, options.timeoutMs);
+  return withSharedRepositoryCloneLock(
+    safeRemote,
+    () => syncSharedRepositoryStateUnderLock(safeRemote, options),
+    options.timeoutMs,
+  );
+}
+
+function cachedSharedRepositoryStateUnderLock(safeRemote, { projectId = "global", projectRoot = "" } = {}) {
   const state = readJson(sharedStatePath(safeRemote), {});
-  if (!state.revision || !state.repositoryConfig || !state.catalog) {
-    return syncSharedRepositoryState(safeRemote, { allowOffline: true });
+  if (!state.revision) {
+    return syncSharedRepositoryStateUnderLock(safeRemote, { allowOffline: true });
   }
   const revision = safeRevision(state.revision, "cached shared revision");
-  const repositoryConfig = normalizedRepositoryConfig(state.repositoryConfig);
-  const catalog = normalizedProjectsCatalog(state.catalog);
-  const checkout = ensureRepositoryClone(safeRemote);
+  const checkout = ensureRepositoryCloneUnderLock(safeRemote);
   if (!gitObjectExists(checkout, `${revision}^{commit}`)) {
-    return syncSharedRepositoryState(safeRemote, { allowOffline: true });
+    return syncSharedRepositoryStateUnderLock(safeRemote, { allowOffline: true });
+  }
+  const descriptor = readSharedDescriptorAtRevision(checkout, revision);
+  const remoteRef = `refs/remotes/origin/${descriptor.config.defaultBranch}`;
+  if (!gitObjectExists(checkout, `${remoteRef}^{commit}`) || !gitIsAncestor(checkout, revision, remoteRef)) {
+    return syncSharedRepositoryStateUnderLock(safeRemote, { allowOffline: true });
   }
   const cacheRoot = repositoryCacheRoot(safeRemote);
   const snapshot = path.join(cacheRoot, "snapshots", revision);
   fs.mkdirSync(path.dirname(snapshot), { recursive: true });
   materializeSnapshot(checkout, revision, snapshot);
+  const repositoryConfig = readSharedRepositoryConfig(snapshot);
+  const catalog = normalizedProjectsCatalog(readJson(path.join(snapshot, repositoryConfig.projectsFile)));
+  readValidatedSharedLocationsFromRoot(snapshot, repositoryConfig, catalog);
   return {
     connection: { repository: safeRemote, projectId, projectRoot },
     repositoryConfig,
@@ -897,26 +1992,64 @@ function cachedSharedRepositoryState(repository, { projectId = "global", project
   };
 }
 
-function ensureRepositoryClone(repository, { timeoutMs = 0, env = null } = {}) {
-  const checkout = repositoryCheckout(repository);
-  if (fs.existsSync(path.join(checkout, ".git"))) {
-    configureExistingSharedAgentGit(repository, checkout);
+function cachedSharedRepositoryState(repository, options = {}) {
+  const safeRemote = registeredRepositoryTransport(repository);
+  return withSharedRepositoryCloneLock(
+    safeRemote,
+    () => cachedSharedRepositoryStateUnderLock(safeRemote, options),
+    options.timeoutMs,
+  );
+}
+
+function ensureRepositoryCloneUnderLock(transport, {
+  timeoutMs = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS,
+  timeoutBudgetMs = timeoutMs,
+  env = null,
+  credential = null,
+  remote = transport,
+} = {}) {
+  const cacheRoot = repositoryCacheRoot(transport);
+  const checkout = path.join(cacheRoot, "repository");
+  const existingCheckout = lstatIfPresent(checkout);
+  if (existingCheckout) {
+    assertRepositoryCheckoutNoFollow(transport, checkout);
+    assertRepositoryIdentityClaim(cacheRoot, transport);
+    assertRepositoryCheckoutIdentity(transport, checkout);
+    writeRepositoryIdentityClaim(cacheRoot, transport);
+    configureExistingSharedAgentGit(transport, checkout);
+    assertRepositoryCheckoutNoFollow(transport, checkout);
+    assertRepositoryCheckoutIdentity(transport, checkout);
     return checkout;
   }
-  if (fs.existsSync(checkout)) throw new Error(`Shared cache path already exists and is not a Git clone: ${checkout}`);
-  fs.mkdirSync(path.dirname(checkout), { recursive: true });
-  const options = { stdio: ["ignore", "ignore", "pipe"], ...(env ? { env } : {}) };
-  if (Number(timeoutMs) > 0) {
-    runSharedDeliveryGit(
-      path.dirname(checkout),
-      ["clone", "--origin", "origin", "--no-checkout", repository, checkout],
-      { ...options, operation: "Git clone", timeoutMs },
-    );
-  } else {
-    runGit(path.dirname(checkout), ["clone", "--origin", "origin", "--no-checkout", repository, checkout], options);
-  }
-  configureExistingSharedAgentGit(repository, checkout);
+  fs.mkdirSync(cacheRoot, { recursive: true });
+  assertSharedCacheDirectoryNoFollow(cacheRoot, "Shared repository cache");
+  if (lstatIfPresent(checkout)) throw unsafeSharedFilesystemPath(`Shared repository checkout appeared before clone: ${checkout}`);
+  const options = {
+    stdio: ["ignore", "ignore", "pipe"],
+    ...(env ? { env } : {}),
+    ...(credential ? { credential } : {}),
+  };
+  runSharedNetworkGit(
+    cacheRoot,
+    ["clone", "--origin", "origin", "--no-checkout", safeRepository(remote), checkout],
+    { ...options, operation: "Git clone", timeoutMs, timeoutBudgetMs },
+  );
+  assertRepositoryCheckoutNoFollow(transport, checkout);
+  assertRepositoryCheckoutIdentity(transport, checkout);
+  writeRepositoryIdentityClaim(cacheRoot, transport);
+  configureExistingSharedAgentGit(transport, checkout);
+  assertRepositoryCheckoutNoFollow(transport, checkout);
+  assertRepositoryCheckoutIdentity(transport, checkout);
   return checkout;
+}
+
+function ensureRepositoryClone(repository, options = {}) {
+  const transport = registeredRepositoryTransport(repository);
+  return withSharedRepositoryCloneLock(
+    transport,
+    () => ensureRepositoryCloneUnderLock(transport, options),
+    options.timeoutMs,
+  );
 }
 
 function remoteRevision(checkout, branch) {
@@ -935,15 +2068,23 @@ function remoteHeadBranch(checkout) {
 function readRemoteSharedDescriptor(checkout, fallbackBranch = "") {
   const bootstrapBranch = fallbackBranch || remoteHeadBranch(checkout) || "main";
   let revision = remoteRevision(checkout, bootstrapBranch);
-  let config = normalizedRepositoryConfig(JSON.parse(runGit(checkout, ["show", `${revision}:${SHARED_REPOSITORY_CONFIG}`])));
+  let descriptor = readSharedDescriptorAtRevision(checkout, revision);
+  let config = descriptor.config;
   if (config.defaultBranch !== bootstrapBranch) {
     const selectedBranch = config.defaultBranch;
     revision = remoteRevision(checkout, selectedBranch);
-    config = normalizedRepositoryConfig(JSON.parse(runGit(checkout, ["show", `${revision}:${SHARED_REPOSITORY_CONFIG}`])));
+    descriptor = readSharedDescriptorAtRevision(checkout, revision);
+    config = descriptor.config;
     if (config.defaultBranch !== selectedBranch) throw new Error("Shared defaultBranch must be stable across the selected branch");
   }
-  const catalog = normalizedProjectsCatalog(JSON.parse(runGit(checkout, ["show", `${revision}:${config.projectsFile}`])));
-  return { revision, config, catalog };
+  return descriptor;
+}
+
+function readSharedDescriptorAtRevision(checkout, revision) {
+  const acceptedRevision = safeRevision(revision, "shared descriptor revision");
+  const config = normalizedRepositoryConfig(JSON.parse(runGit(checkout, ["show", `${acceptedRevision}:${SHARED_REPOSITORY_CONFIG}`])));
+  const catalog = normalizedProjectsCatalog(JSON.parse(runGit(checkout, ["show", `${acceptedRevision}:${config.projectsFile}`])));
+  return { revision: acceptedRevision, config, catalog };
 }
 
 function sharedContextError(code, message, details = {}) {
@@ -1008,6 +2149,7 @@ function parseDependencyProof(value = "") {
         documents: parsed.documents.map((item) => ({
           path: String(item?.path || "").replaceAll("\\", "/").replace(/^\.\//, ""),
           blob: String(item?.blob || ""),
+          mode: String(item?.mode || item?.resourceMode || ""),
           contentHash: String(item?.contentHash || ""),
           dependencies: item?.dependencies && typeof item.dependencies === "object" ? { ...item.dependencies } : {},
         })).filter((item) => item.path),
@@ -1017,6 +2159,60 @@ function parseDependencyProof(value = "") {
   } catch (error) {
     return { proof: null, error: error.message };
   }
+}
+
+function verifiedDependencyProofPaths(checkout, revision, proof) {
+  const reviewedPaths = new Set();
+  const errors = [];
+  const documents = Array.isArray(proof?.documents) ? proof.documents : [];
+  const pathCounts = new Map();
+  for (const item of documents) pathCounts.set(item.path, (pathCounts.get(item.path) || 0) + 1);
+  for (const item of documents) {
+    let filePath;
+    try {
+      filePath = safeRelativePath(item.path, "dependency proof path");
+    } catch (error) {
+      errors.push(`${item.path || "<missing>"}: ${error.message}`);
+      continue;
+    }
+    if (pathCounts.get(item.path) !== 1) {
+      errors.push(`${filePath}: dependency proof path is duplicated`);
+      continue;
+    }
+    let entry;
+    try {
+      entry = gitTreeEntries(checkout, revision, [filePath]).find((candidate) => candidate.path === filePath) || null;
+    } catch (error) {
+      errors.push(`${filePath}: dependency proof tree lookup failed: ${error.message}`);
+      continue;
+    }
+    if (!entry || entry.type !== "blob") {
+      errors.push(`${filePath}: dependency proof target is missing from the current tree`);
+      continue;
+    }
+    if (item.blob !== entry.object) {
+      errors.push(`${filePath}: dependency proof blob does not match the current tree`);
+      continue;
+    }
+    if (item.mode !== entry.mode || !["100644", "100755"].includes(item.mode)) {
+      errors.push(`${filePath}: dependency proof mode does not match the current tree`);
+      continue;
+    }
+    let content;
+    try {
+      content = runGit(checkout, ["cat-file", "blob", entry.object], { encoding: null, maxBuffer: MAX_SHARED_TEXT_BYTES + 1 });
+    } catch (error) {
+      errors.push(`${filePath}: dependency proof blob could not be verified: ${String(error.stderr || error.message || error).trim()}`);
+      continue;
+    }
+    const contentHash = createHash("sha256").update(content).digest("hex");
+    if (item.contentHash !== contentHash) {
+      errors.push(`${filePath}: dependency proof content hash does not match the current tree`);
+      continue;
+    }
+    reviewedPaths.add(filePath);
+  }
+  return { reviewedPaths, errors };
 }
 
 function sharedMainCommit(checkout, revision, previousRevision = "") {
@@ -1029,7 +2225,8 @@ function sharedMainCommit(checkout, revision, previousRevision = "") {
     : splitNull(runGit(checkout, ["ls-tree", "-r", "--name-only", "-z", commit], { encoding: null }));
   const trailers = commitTrailerMap(checkout, commit);
   const dependencyProofResult = parseDependencyProof(trailers["Context-Room-Dependency-Proof"] || "");
-  const reviewedDependencyPaths = new Set(dependencyProofResult.proof?.documents.map((item) => item.path) || []);
+  const dependencyProofValidation = verifiedDependencyProofPaths(checkout, commit, dependencyProofResult.proof);
+  const reviewedDependencyPaths = dependencyProofValidation.reviewedPaths;
   const dependencyReviewRequired = parent && files.some((filePath) => /\.(?:md|mdx|html?)$/i.test(filePath))
     ? sharedDocumentDependencyReviewPaths(checkout, parent, commit, files)
       .filter((item) => !reviewedDependencyPaths.has(item.path))
@@ -1058,20 +2255,51 @@ function sharedMainCommit(checkout, revision, previousRevision = "") {
     files,
     trailers,
     dependencyProof: dependencyProofResult.proof,
-    dependencyProofError: dependencyProofResult.error,
+    dependencyProofError: [dependencyProofResult.error, ...dependencyProofValidation.errors].filter(Boolean).join("; "),
     dependencyReviewRequired,
     acceptance,
     acceptanceError,
   };
 }
 
-function resolveSharedMainRevision(repository, { refresh = true } = {}) {
-  const safeRemote = safeRepository(repository);
-  const checkout = ensureRepositoryClone(safeRemote);
+function resolveSharedMainRevisionUnderLock(safeRemote, {
+  refresh = true,
+  timeoutMs = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS,
+  push = null,
+} = {}) {
+  const budget = sharedGitNetworkBudget(timeoutMs);
+  const cloneAuth = authenticatedSharedGit(
+    safeRemote,
+    push,
+    remainingSharedGitNetworkTimeout(budget, "Git clone"),
+  );
+  const checkout = ensureRepositoryCloneUnderLock(safeRemote, {
+    timeoutMs: remainingSharedGitNetworkTimeout(budget, "Git clone"),
+    timeoutBudgetMs: budget.timeoutMs,
+    credential: cloneAuth?.credential || null,
+    remote: cloneAuth?.remote || safeRemote,
+  });
   if (refresh) {
     try {
-      runGit(checkout, ["fetch", "--prune", "origin"], { stdio: ["ignore", "ignore", "pipe"] });
+      const fetchAuth = authenticatedSharedGit(
+        safeRemote,
+        push,
+        remainingSharedGitNetworkTimeout(budget, "Git fetch"),
+      );
+      runSharedNetworkGit(checkout, fetchAuth
+        ? ["fetch", "--force", "--prune", "--no-tags", fetchAuth.remote, "+refs/heads/*:refs/remotes/origin/*"]
+        : ["fetch", "--prune", "origin"], {
+        stdio: ["ignore", "ignore", "pipe"],
+        ...(fetchAuth ? { credential: fetchAuth.credential } : {}),
+        operation: "Git fetch",
+        timeoutMs: remainingSharedGitNetworkTimeout(budget, "Git fetch"),
+        timeoutBudgetMs: budget.timeoutMs,
+      });
     } catch (error) {
+      if (
+        error?.code === "shared-git-timeout"
+        || String(error?.code || "").startsWith("github-app-")
+      ) throw error;
       throw sharedContextError("shared-freshness-unverified", `Unable to verify the accepted shared revision: ${String(error.stderr || error.message || error).trim()}`, { repository: safeRemote });
     }
   }
@@ -1081,6 +2309,7 @@ function resolveSharedMainRevision(repository, { refresh = true } = {}) {
   } catch (error) {
     throw sharedContextError("shared-main-unavailable", error.message, { repository: safeRemote });
   }
+  readValidatedSharedLocationsFromRevision(checkout, descriptor.revision, descriptor.config, descriptor.catalog);
   const remoteRef = `refs/remotes/origin/${descriptor.config.defaultBranch}`;
   if (!gitIsAncestor(checkout, descriptor.revision, remoteRef)) {
     throw sharedContextError("shared-main-unreachable", "The selected shared revision is not reachable from the configured remote branch", {
@@ -1101,13 +2330,34 @@ function resolveSharedMainRevision(repository, { refresh = true } = {}) {
   };
 }
 
+function withSharedMainRevision(repository, options, operation) {
+  const safeRemote = registeredRepositoryTransport(repository);
+  authenticatedSharedGit(safeRemote, options.push, options.timeoutMs);
+  return withSharedRepositoryCloneLock(
+    safeRemote,
+    () => operation(resolveSharedMainRevisionUnderLock(safeRemote, options)),
+    options.timeoutMs,
+  );
+}
+
+function resolveSharedMainRevision(repository, options = {}) {
+  return withSharedMainRevision(repository, options, (main) => main);
+}
+
 export function readSharedMainRevision(repository, options = {}) {
   const { checkout: _checkout, ...main } = resolveSharedMainRevision(repository, options);
   return main;
 }
 
-export function diffSharedMainRevisions(repository, { fromRevision, toRevision = "", projectId = "", refresh = false } = {}) {
-  const main = resolveSharedMainRevision(repository, { refresh });
+export function diffSharedMainRevisions(repository, {
+  fromRevision,
+  toRevision = "",
+  projectId = "",
+  refresh = false,
+  timeoutMs = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS,
+  push = null,
+} = {}) {
+  const main = resolveSharedMainRevision(repository, { refresh, timeoutMs, push });
   const checkout = main.checkout;
   const from = safeRevision(fromRevision, "fromRevision");
   const to = toRevision ? safeRevision(toRevision, "toRevision") : main.revision;
@@ -1176,7 +2426,7 @@ export function diffSharedMainRevisions(repository, { fromRevision, toRevision =
 }
 
 function gitNameStatusChanges(checkout, fromRevision, toRevision) {
-  const records = splitNull(runGit(checkout, ["diff", "--name-status", "-z", "-M", "-C", "--find-copies-harder", `${fromRevision}..${toRevision}`, "--"], { encoding: null }));
+  const records = splitNull(runGit(checkout, ["diff", "--name-status", "-z", "-M", "-C", "--find-copies-harder", `${fromRevision}...${toRevision}`, "--"], { encoding: null }));
   const changes = [];
   for (let index = 0; index < records.length;) {
     const rawStatus = records[index++];
@@ -1195,6 +2445,10 @@ function gitNameStatusChanges(checkout, fromRevision, toRevision) {
   return changes;
 }
 
+function proposalChangePaths(changes = []) {
+  return [...new Set((Array.isArray(changes) ? changes : []).flatMap((change) => [change?.path, change?.fromPath].filter(Boolean)))];
+}
+
 function remoteProposalBranchesAtRevision(checkout, repositoryConfig, revision) {
   const proposalRefPrefix = `refs/remotes/origin/${repositoryConfig.proposalPrefix}`;
   return tryGit(checkout, ["for-each-ref", "--points-at", revision, "--format=%(refname:strip=3)", proposalRefPrefix])
@@ -1203,8 +2457,7 @@ function remoteProposalBranchesAtRevision(checkout, repositoryConfig, revision) 
     .map((branch) => safeBranchName(branch, "proposal branch"));
 }
 
-export function diffSharedProposalRevisions(repository, { fromRevision, toRevision, refresh = true } = {}) {
-  const main = resolveSharedMainRevision(repository, { refresh });
+function diffSharedProposalRevisionsUnderLock(main, { fromRevision, toRevision } = {}) {
   const checkout = main.checkout;
   const from = safeRevision(fromRevision, "proposal base revision");
   const to = safeRevision(toRevision, "proposal head revision");
@@ -1240,8 +2493,21 @@ export function diffSharedProposalRevisions(repository, { fromRevision, toRevisi
   };
 }
 
-export function readSharedRevisionDocuments(repository, revision, { refresh = true } = {}) {
-  const main = resolveSharedMainRevision(repository, { refresh });
+export function diffSharedProposalRevisions(repository, options = {}) {
+  const refresh = options.refresh ?? true;
+  return withSharedMainRevision(
+    repository,
+    { refresh, timeoutMs: options.timeoutMs, push: options.push || null },
+    (main) => diffSharedProposalRevisionsUnderLock(main, options),
+  );
+}
+
+export function readSharedRevisionDocuments(repository, revision, {
+  refresh = true,
+  timeoutMs = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS,
+  push = null,
+} = {}) {
+  const main = resolveSharedMainRevision(repository, { refresh, timeoutMs, push });
   const wanted = safeRevision(revision, "shared document revision");
   if (!gitObjectExists(main.checkout, `${wanted}^{commit}`)) {
     throw sharedContextError("shared-revision-unavailable", "The requested shared document revision is unavailable", { revision: wanted });
@@ -1258,7 +2524,7 @@ export function readSharedRevisionDocuments(repository, revision, { refresh = tr
 function sharedSkillLocationsAtRevision(checkout, revision) {
   const repositoryConfig = normalizedRepositoryConfig(JSON.parse(String(runGit(checkout, ["show", `${revision}:${SHARED_REPOSITORY_CONFIG}`]))));
   const catalog = normalizedProjectsCatalog(JSON.parse(String(runGit(checkout, ["show", `${revision}:${repositoryConfig.projectsFile}`]))));
-  const locations = readSharedSkillLocationsFromRevision(checkout, revision, repositoryConfig, catalog);
+  const { skillLocations: locations } = readValidatedSharedLocationsFromRevision(checkout, revision, repositoryConfig, catalog);
   const collections = locations.collections.map((collection) => {
     const prefix = collection.path + "/";
     const skills = [...new Set(gitTreeEntries(checkout, revision, [collection.path]).flatMap((entry) => {
@@ -1301,8 +2567,7 @@ function diffLogicalRecords(beforeRecords, afterRecords) {
   });
 }
 
-export function diffSharedSkillLocationsRevisions(repository, { fromRevision, toRevision, refresh = true } = {}) {
-  const main = resolveSharedMainRevision(repository, { refresh });
+function diffSharedSkillLocationsRevisionsUnderLock(main, { fromRevision, toRevision } = {}) {
   const checkout = main.checkout;
   const from = safeRevision(fromRevision, "shared skill base revision");
   const to = safeRevision(toRevision, "shared skill target revision");
@@ -1362,51 +2627,318 @@ export function diffSharedSkillLocationsRevisions(repository, { fromRevision, to
   };
 }
 
+export function diffSharedSkillLocationsRevisions(repository, options = {}) {
+  const refresh = options.refresh ?? true;
+  return withSharedMainRevision(
+    repository,
+    { refresh, timeoutMs: options.timeoutMs, push: options.push || null },
+    (main) => diffSharedSkillLocationsRevisionsUnderLock(main, options),
+  );
+}
+
 export function detectSharedProject(root, { repository, projectId = "" } = {}) {
   const resolvedRoot = stableRoot(root);
-  const safeRemote = safeRepository(repository);
-  const checkout = ensureRepositoryClone(safeRemote);
-  runGit(checkout, ["fetch", "--prune", "origin"], { stdio: ["ignore", "ignore", "pipe"] });
-  const descriptor = readRemoteSharedDescriptor(checkout);
-  const source = sourceIdentity(resolvedRoot);
-  const explicitProjectId = projectId ? safeId(projectId, "projectId") : "";
-  if (explicitProjectId) {
-    const project = descriptor.catalog.projects.find((item) => item.id === explicitProjectId);
-    if (!project) throw new Error(`Shared project is not registered in ${descriptor.config.projectsFile}: ${explicitProjectId}`);
-    const sourceMatches = source && project.source?.remotes.some((remote) => source.remotes.includes(remote));
-    const projectRoot = sourceMatches
-      ? project.source.subpath === "."
-        ? source.topLevel
-        : path.join(source.topLevel, ...project.source.subpath.split("/"))
-      : resolvedRoot;
+  const safeRemote = registeredRepositoryTransport(repository);
+  return withSharedRepositoryCloneLock(safeRemote, () => {
+    const checkout = ensureRepositoryCloneUnderLock(safeRemote);
+    runSharedNetworkGit(checkout, ["fetch", "--prune", "origin"], {
+      stdio: ["ignore", "ignore", "pipe"],
+      operation: "Git fetch",
+    });
+    const descriptor = readRemoteSharedDescriptor(checkout);
+    const source = sourceIdentity(resolvedRoot);
+    const explicitProjectId = projectId ? safeId(projectId, "projectId") : "";
+    if (explicitProjectId) {
+      const project = descriptor.catalog.projects.find((item) => item.id === explicitProjectId);
+      if (!project) throw new Error(`Shared project is not registered in ${descriptor.config.projectsFile}: ${explicitProjectId}`);
+      const sourceMatches = source && project.source?.remotes.some((remote) => source.remotes.includes(remote));
+      const projectRoot = sourceMatches
+        ? project.source.subpath === "."
+          ? source.topLevel
+          : path.join(source.topLevel, ...project.source.subpath.split("/"))
+        : resolvedRoot;
+      return { projectId: project.id, projectRoot: stableRoot(projectRoot), repository: safeRemote, revision: descriptor.revision };
+    }
+    if (!source) throw new Error("--project is required because this directory has no Git remote identity");
+    const matches = descriptor.catalog.projects.filter((project) => {
+      if (!project.source || !project.source.remotes.some((remote) => source.remotes.includes(remote))) return false;
+      return project.source.subpath === "."
+        || source.sourceSubpath === project.source.subpath
+        || source.sourceSubpath.startsWith(project.source.subpath + "/");
+    }).sort((left, right) => right.source.subpath.length - left.source.subpath.length);
+    const topSpecificity = matches[0]?.source?.subpath?.length || 0;
+    const topMatches = matches.filter((project) => project.source.subpath.length === topSpecificity);
+    if (new Set(topMatches.map((project) => project.id)).size > 1) {
+      const error = new Error("This Git worktree matches multiple equally specific Shared projects");
+      error.code = "shared_context_project_ambiguous";
+      error.statusCode = 409;
+      error.details = {
+        sourceSubpath: source.sourceSubpath,
+        candidates: topMatches.map((project) => ({ projectId: project.id, sourceSubpath: project.source.subpath })),
+      };
+      throw error;
+    }
+    const project = topMatches[0];
+    if (!project) throw new Error("No shared project matches this Git remote and repository subpath; pass --project explicitly");
+    const projectRoot = project.source.subpath === "."
+      ? source.topLevel
+      : path.join(source.topLevel, ...project.source.subpath.split("/"));
     return { projectId: project.id, projectRoot: stableRoot(projectRoot), repository: safeRemote, revision: descriptor.revision };
+  });
+}
+
+function sharedSnapshotIntegrityError(message, details = {}) {
+  return sharedContextError("shared-snapshot-integrity", message, details);
+}
+
+function expectedSnapshotTree(checkout, revision) {
+  const acceptedRevision = safeRevision(revision, "shared snapshot revision");
+  assertSafeTreeEntries(checkout, acceptedRevision, []);
+  const entries = gitTreeEntries(checkout, acceptedRevision, []).map((entry) => {
+    const normalizedPath = safeRelativePath(entry.path, "shared snapshot Git path");
+    if (normalizedPath !== entry.path) {
+      throw sharedSnapshotIntegrityError("Shared snapshot contains a non-canonical Git path", {
+        revision: acceptedRevision,
+        path: entry.path,
+      });
+    }
+    return { ...entry, path: normalizedPath };
+  });
+  const objectFormat = String(runGit(checkout, ["rev-parse", "--show-object-format"])).trim().toLowerCase();
+  if (!["sha1", "sha256"].includes(objectFormat)) {
+    throw sharedSnapshotIntegrityError("Shared snapshot uses an unsupported Git object format", {
+      revision: acceptedRevision,
+      objectFormat,
+    });
   }
-  if (!source) throw new Error("--project is required because this directory has no Git remote identity");
-  const matches = descriptor.catalog.projects.filter((project) => {
-    if (!project.source || !project.source.remotes.some((remote) => source.remotes.includes(remote))) return false;
-    return project.source.subpath === "."
-      || source.sourceSubpath === project.source.subpath
-      || source.sourceSubpath.startsWith(project.source.subpath + "/");
-  }).sort((left, right) => right.source.subpath.length - left.source.subpath.length);
-  const project = matches[0];
-  if (!project) throw new Error("No shared project matches this Git remote and repository subpath; pass --project explicitly");
-  const projectRoot = project.source.subpath === "."
-    ? source.topLevel
-    : path.join(source.topLevel, ...project.source.subpath.split("/"));
-  return { projectId: project.id, projectRoot: stableRoot(projectRoot), repository: safeRemote, revision: descriptor.revision };
+  return { revision: acceptedRevision, entries, objectFormat };
+}
+
+function stableSnapshotFile(filePath) {
+  const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
+  let descriptor;
+  try {
+    descriptor = fs.openSync(filePath, flags);
+    const before = fs.fstatSync(descriptor, { bigint: true });
+    if (!before.isFile() || before.nlink !== 1n) {
+      throw sharedSnapshotIntegrityError("Shared snapshot contains a non-regular or hard-linked file", { filePath });
+    }
+    const content = fs.readFileSync(descriptor);
+    const after = fs.fstatSync(descriptor, { bigint: true });
+    if (!after.isFile()
+      || after.nlink !== 1n
+      || after.dev !== before.dev
+      || after.ino !== before.ino
+      || after.size !== before.size
+      || after.mtimeNs !== before.mtimeNs
+      || after.ctimeNs !== before.ctimeNs) {
+      throw sharedSnapshotIntegrityError("Shared snapshot file changed while it was being verified", { filePath });
+    }
+    return { content, mode: Number(after.mode) };
+  } catch (error) {
+    if (error?.code === "shared-snapshot-integrity") throw error;
+    throw sharedSnapshotIntegrityError("Unable to read a Shared snapshot file safely", {
+      filePath,
+      cause: String(error?.message || error),
+    });
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+}
+
+function snapshotFilesystemIndex(root) {
+  const files = new Map();
+  const directories = new Set([""]);
+  const walk = (directory, prefix = "") => {
+    let entries;
+    try {
+      entries = fs.readdirSync(directory, { withFileTypes: true });
+    } catch (error) {
+      throw sharedSnapshotIntegrityError("Unable to enumerate Shared snapshot content", {
+        directory,
+        cause: String(error?.message || error),
+      });
+    }
+    for (const entry of entries) {
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      let normalizedPath;
+      try { normalizedPath = safeRelativePath(relativePath, "shared snapshot path"); }
+      catch (error) {
+        throw sharedSnapshotIntegrityError("Shared snapshot contains an unsafe filesystem path", {
+          path: relativePath,
+          cause: error.message,
+        });
+      }
+      if (normalizedPath !== relativePath) {
+        throw sharedSnapshotIntegrityError("Shared snapshot contains a non-canonical filesystem path", { path: relativePath });
+      }
+      const target = path.join(directory, entry.name);
+      const stats = lstatIfPresent(target, { bigint: true });
+      if (!stats || stats.isSymbolicLink()) {
+        throw sharedSnapshotIntegrityError("Shared snapshot contains a missing or symbolic filesystem entry", { path: relativePath });
+      }
+      if (stats.isDirectory()) {
+        directories.add(relativePath);
+        walk(target, relativePath);
+      } else if (stats.isFile() && stats.nlink === 1n) {
+        files.set(relativePath, target);
+      } else {
+        throw sharedSnapshotIntegrityError("Shared snapshot contains a special or hard-linked filesystem entry", { path: relativePath });
+      }
+    }
+  };
+  walk(root);
+  return { files, directories };
+}
+
+function assertSnapshotMatchesRevision(checkout, revision, root, expectedTree = null) {
+  const expected = expectedTree || expectedSnapshotTree(checkout, revision);
+  const actual = snapshotFilesystemIndex(root);
+  const expectedFiles = new Map(expected.entries.map((entry) => [entry.path, entry]));
+  const expectedDirectories = new Set([""]);
+  for (const entry of expected.entries) {
+    const segments = entry.path.split("/");
+    for (let index = 1; index < segments.length; index += 1) {
+      expectedDirectories.add(segments.slice(0, index).join("/"));
+    }
+  }
+  const expectedPaths = [...expectedFiles.keys()].sort((left, right) => left.localeCompare(right, "en"));
+  const actualPaths = [...actual.files.keys()].sort((left, right) => left.localeCompare(right, "en"));
+  const expectedDirectoryPaths = [...expectedDirectories].sort((left, right) => left.localeCompare(right, "en"));
+  const actualDirectoryPaths = [...actual.directories].sort((left, right) => left.localeCompare(right, "en"));
+  if (JSON.stringify(actualPaths) !== JSON.stringify(expectedPaths)
+    || JSON.stringify(actualDirectoryPaths) !== JSON.stringify(expectedDirectoryPaths)) {
+    throw sharedSnapshotIntegrityError("Shared snapshot filesystem entries do not match the accepted Git tree", {
+      revision: expected.revision,
+      expectedFileCount: expectedPaths.length,
+      actualFileCount: actualPaths.length,
+      expectedDirectoryCount: expectedDirectoryPaths.length,
+      actualDirectoryCount: actualDirectoryPaths.length,
+    });
+  }
+  for (const [relativePath, entry] of expectedFiles) {
+    const file = stableSnapshotFile(actual.files.get(relativePath));
+    const executable = Boolean(file.mode & 0o111);
+    if (executable !== (entry.mode === "100755")) {
+      throw sharedSnapshotIntegrityError("Shared snapshot executable mode does not match the accepted Git tree", {
+        revision: expected.revision,
+        path: relativePath,
+      });
+    }
+    const header = Buffer.from(`blob ${file.content.length}\0`, "utf8");
+    const object = createHash(expected.objectFormat).update(header).update(file.content).digest("hex");
+    if (object !== entry.object) {
+      throw sharedSnapshotIntegrityError("Shared snapshot file content does not match the accepted Git tree", {
+        revision: expected.revision,
+        path: relativePath,
+      });
+    }
+  }
+  return { revision: expected.revision, fileCount: expectedPaths.length };
+}
+
+function buildSnapshotStaging(checkout, expected, temporary) {
+  fs.mkdirSync(temporary, { mode: 0o700 });
+  assertSharedCacheDirectoryNoFollow(temporary, "Shared snapshot staging directory");
+  for (const entry of expected.entries) {
+    const inspected = inspectSharedPathNoFollow(temporary, entry.path, { createParents: true });
+    if (inspected.exists) {
+      throw sharedSnapshotIntegrityError("Shared snapshot staging path already exists", { path: entry.path });
+    }
+    const content = runGit(checkout, ["cat-file", "blob", entry.object], { encoding: null });
+    const flags = fs.constants.O_WRONLY
+      | fs.constants.O_CREAT
+      | fs.constants.O_EXCL
+      | (fs.constants.O_NOFOLLOW || 0);
+    let descriptor;
+    try {
+      descriptor = fs.openSync(inspected.target, flags, entry.mode === "100755" ? 0o700 : 0o600);
+      fs.writeFileSync(descriptor, content);
+      fs.fsyncSync(descriptor);
+      fs.fchmodSync(descriptor, entry.mode === "100755" ? 0o555 : 0o444);
+    } finally {
+      if (descriptor !== undefined) fs.closeSync(descriptor);
+    }
+  }
+  assertSnapshotMatchesRevision(checkout, expected.revision, temporary, expected);
+  makeTreeReadOnly(temporary);
+  assertSnapshotMatchesRevision(checkout, expected.revision, temporary, expected);
+  // macOS refuses to rename a directory without owner-write permission even
+  // when both parents are writable. Keep only the staging root writable until
+  // the atomic publication step; every file and child directory stays sealed.
+  fs.chmodSync(temporary, 0o700);
+  return temporary;
+}
+
+function quarantineSharedSnapshot(cacheRoot, destination, revision, reason) {
+  assertSharedCacheDirectoryNoFollow(destination, "Shared snapshot root");
+  const quarantineRoot = path.join(cacheRoot, "quarantine");
+  fs.mkdirSync(quarantineRoot, { recursive: true, mode: 0o700 });
+  assertSharedCacheDirectoryNoFollow(quarantineRoot, "Shared snapshot quarantine");
+  const quarantined = path.join(quarantineRoot, `snapshot-${revision.slice(0, 12)}-${Date.now()}-${randomUUID()}`);
+  const before = fs.lstatSync(destination, { bigint: true });
+  fs.chmodSync(destination, 0o700);
+  try {
+    fs.renameSync(destination, quarantined);
+  } catch (error) {
+    try { fs.chmodSync(destination, 0o555); } catch {}
+    throw error;
+  }
+  const after = fs.lstatSync(quarantined, { bigint: true });
+  if (after.dev !== before.dev || after.ino !== before.ino || !after.isDirectory() || after.isSymbolicLink()) {
+    throw unsafeSharedFilesystemPath("Shared snapshot changed while it was being quarantined");
+  }
+  writePrivateJson(`${quarantined}.json`, {
+    version: 1,
+    revision,
+    quarantinedAt: new Date().toISOString(),
+    reason: String(reason || "Shared snapshot integrity mismatch").slice(0, 2_000),
+  });
+  return quarantined;
 }
 
 function materializeSnapshot(checkout, revision, destination) {
-  if (fs.existsSync(path.join(destination, SHARED_REPOSITORY_CONFIG))) return destination;
+  const acceptedRevision = safeRevision(revision, "shared snapshot revision");
   const cacheRoot = path.dirname(path.dirname(destination));
-  const temporary = path.join(cacheRoot, `snapshot-${revision.slice(0, 12)}-${process.pid}.tmp`);
-  fs.mkdirSync(temporary, { recursive: true });
+  const snapshotsRoot = path.dirname(destination);
+  assertSharedCacheDirectoryNoFollow(cacheRoot, "Shared repository cache");
+  fs.mkdirSync(snapshotsRoot, { recursive: true });
+  assertSharedCacheDirectoryNoFollow(snapshotsRoot, "Shared snapshot directory");
+  const expected = expectedSnapshotTree(checkout, acceptedRevision);
+  const existing = lstatIfPresent(destination);
+  if (existing) {
+    assertSharedCacheDirectoryNoFollow(destination, "Shared snapshot root");
+    try {
+      assertSnapshotMatchesRevision(checkout, acceptedRevision, destination, expected);
+      makeTreeReadOnly(destination);
+      assertSnapshotMatchesRevision(checkout, acceptedRevision, destination, expected);
+      return destination;
+    } catch (error) {
+      if (error?.code !== "shared-snapshot-integrity") throw error;
+      const temporary = path.join(cacheRoot, `snapshot-${acceptedRevision.slice(0, 12)}-${process.pid}-${randomUUID()}.tmp`);
+      try {
+        buildSnapshotStaging(checkout, expected, temporary);
+        quarantineSharedSnapshot(cacheRoot, destination, acceptedRevision, error.message);
+        fs.renameSync(temporary, destination);
+        assertSharedCacheDirectoryNoFollow(destination, "Shared snapshot root");
+        makeTreeReadOnly(destination);
+        assertSnapshotMatchesRevision(checkout, acceptedRevision, destination, expected);
+      } finally {
+        if (fs.existsSync(temporary)) {
+          makeTreeWritable(temporary);
+          fs.rmSync(temporary, { recursive: true, force: true });
+        }
+      }
+      return destination;
+    }
+  }
+  const temporary = path.join(cacheRoot, `snapshot-${acceptedRevision.slice(0, 12)}-${process.pid}-${randomUUID()}.tmp`);
   try {
-    const archive = runGit(checkout, ["archive", "--format=tar", revision], { encoding: null });
-    const extracted = spawnSync("tar", ["-xf", "-", "-C", temporary], { input: archive, encoding: "utf8" });
-    if (extracted.status !== 0) throw new Error(extracted.stderr || "Unable to extract shared context snapshot");
+    buildSnapshotStaging(checkout, expected, temporary);
     fs.renameSync(temporary, destination);
+    assertSharedCacheDirectoryNoFollow(destination, "Shared snapshot root");
     makeTreeReadOnly(destination);
+    assertSnapshotMatchesRevision(checkout, acceptedRevision, destination, expected);
   } finally {
     if (fs.existsSync(temporary)) {
       makeTreeWritable(temporary);
@@ -1572,8 +3104,572 @@ function restorePrivateFile(filePath, snapshot) {
     return;
   }
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(filePath, snapshot.content, { mode: snapshot.mode });
-  fs.chmodSync(filePath, snapshot.mode);
+  const temporary = `${filePath}.${process.pid}.${randomUUID()}.restore.tmp`;
+  try {
+    fs.writeFileSync(temporary, snapshot.content, { mode: snapshot.mode });
+    fs.chmodSync(temporary, snapshot.mode);
+    fs.renameSync(temporary, filePath);
+  } finally {
+    try { fs.unlinkSync(temporary); } catch (error) { if (error.code !== "ENOENT") throw error; }
+  }
+}
+
+function sharedMutationPathSnapshot(filePath) {
+  try {
+    const stats = fs.lstatSync(filePath);
+    if (stats.isSymbolicLink()) {
+      return { kind: "symlink", target: fs.readlinkSync(filePath) };
+    }
+    if (stats.isFile()) {
+      return { kind: "file", content: fs.readFileSync(filePath), mode: stats.mode & 0o777 };
+    }
+    if (stats.isDirectory()) return { kind: "directory" };
+    throw new Error(`Shared reconciliation cannot snapshot a special file: ${filePath}`);
+  } catch (error) {
+    if (error.code === "ENOENT") return { kind: "missing" };
+    throw error;
+  }
+}
+
+function removeSharedMutationLeaf(filePath) {
+  try {
+    const stats = fs.lstatSync(filePath);
+    if (stats.isDirectory() && !stats.isSymbolicLink()) {
+      throw new Error(`Shared reconciliation refuses to replace a directory during rollback: ${filePath}`);
+    }
+    fs.unlinkSync(filePath);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+}
+
+function restoreSharedMutationPath(filePath, snapshot) {
+  if (snapshot.kind === "directory") {
+    const stats = fs.lstatSync(filePath);
+    if (!stats.isDirectory() || stats.isSymbolicLink()) {
+      throw new Error(`Shared reconciliation cannot restore the original directory: ${filePath}`);
+    }
+    return;
+  }
+  if (snapshot.kind === "missing") {
+    try {
+      const stats = fs.lstatSync(filePath);
+      if (!stats.isSymbolicLink()) {
+        throw new Error(`Shared reconciliation refuses to remove new unmanaged content during rollback: ${filePath}`);
+      }
+      fs.unlinkSync(filePath);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    return;
+  }
+  if (snapshot.kind === "symlink") {
+    try {
+      const stats = fs.lstatSync(filePath);
+      if (!stats.isSymbolicLink()) {
+        throw new Error(`Shared reconciliation refuses to replace new unmanaged content during rollback: ${filePath}`);
+      }
+      fs.unlinkSync(filePath);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+    fs.symlinkSync(snapshot.target, filePath);
+    return;
+  }
+  removeSharedMutationLeaf(filePath);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  const temporary = `${filePath}.${process.pid}.${randomUUID()}.reconcile-restore.tmp`;
+  try {
+    fs.writeFileSync(temporary, snapshot.content, { mode: snapshot.mode });
+    fs.chmodSync(temporary, snapshot.mode);
+    fs.renameSync(temporary, filePath);
+  } finally {
+    try { fs.unlinkSync(temporary); } catch (error) { if (error.code !== "ENOENT") throw error; }
+  }
+}
+
+function createSharedMutationTransaction(label = "shared reconciliation") {
+  const snapshots = new Map();
+  const moves = [];
+  return {
+    capture(filePath) {
+      const resolved = path.resolve(filePath);
+      if (!snapshots.has(resolved)) snapshots.set(resolved, sharedMutationPathSnapshot(resolved));
+      return resolved;
+    },
+    recordMove(source, backup) {
+      moves.push({ source: path.resolve(source), backup: path.resolve(backup) });
+    },
+    absorb(child) {
+      for (const [filePath, snapshot] of child.snapshots) {
+        if (!snapshots.has(filePath)) snapshots.set(filePath, snapshot);
+      }
+      moves.push(...child.moves);
+    },
+    rollback({ projectCapabilities = [] } = {}) {
+      const errors = [];
+      const exactCapabilities = (Array.isArray(projectCapabilities) ? projectCapabilities : [])
+        .map((capability) => normalizedSharedProjectCapability(capability))
+        .filter(Boolean)
+        .sort((left, right) => right.root.length - left.root.length);
+      const rollbackPathIsAuthorized = (filePath) => {
+        const resolved = path.resolve(filePath);
+        const capability = exactCapabilities.find((candidate) => (
+          resolved === candidate.root || resolved.startsWith(candidate.root + path.sep)
+        ));
+        if (!capability) return true;
+        try { return sameSharedProjectCapability(capability, currentSharedProjectCapability(capability.root)); }
+        catch { return false; }
+      };
+      for (const move of [...moves].reverse()) {
+        if (!rollbackPathIsAuthorized(move.source)) continue;
+        try {
+          if (!fs.existsSync(move.backup)) continue;
+          let sourceStats = null;
+          try { sourceStats = fs.lstatSync(move.source); } catch (error) { if (error.code !== "ENOENT") throw error; }
+          if (sourceStats) {
+            if (sourceStats.isDirectory() && !sourceStats.isSymbolicLink()) {
+              throw new Error(`Shared reconciliation refuses to overwrite a directory while restoring ${move.source}`);
+            }
+            fs.unlinkSync(move.source);
+          }
+          fs.mkdirSync(path.dirname(move.source), { recursive: true, mode: 0o700 });
+          fs.renameSync(move.backup, move.source);
+          const backupRoot = path.dirname(move.backup);
+          try { if (fs.readdirSync(backupRoot).length === 0) fs.rmdirSync(backupRoot); } catch {}
+        } catch (error) {
+          errors.push(`${move.source}: ${error.message}`);
+        }
+      }
+      for (const [filePath, snapshot] of [...snapshots.entries()].reverse()) {
+        if (!rollbackPathIsAuthorized(filePath)) continue;
+        try { restoreSharedMutationPath(filePath, snapshot); }
+        catch (error) { errors.push(`${filePath}: ${error.message}`); }
+      }
+      if (errors.length) {
+        const error = new Error(`${label} rollback failed: ${errors.join("; ")}`);
+        error.code = "shared-reconcile-rollback-failed";
+        error.rollbackErrors = errors;
+        throw error;
+      }
+    },
+    snapshots,
+    moves,
+  };
+}
+
+function serializedSharedMutationSnapshot(snapshot) {
+  if (snapshot.kind === "file") {
+    return { kind: "file", content: snapshot.content.toString("base64"), mode: snapshot.mode };
+  }
+  if (snapshot.kind === "symlink") return { kind: "symlink", target: snapshot.target };
+  return { kind: snapshot.kind };
+}
+
+function deserializedSharedMutationSnapshot(snapshot) {
+  const kind = String(snapshot?.kind || "");
+  if (kind === "file") {
+    const mode = Number(snapshot.mode);
+    if (!Number.isInteger(mode) || mode < 0 || mode > 0o777) throw new Error("Invalid Shared transaction file mode");
+    const content = String(snapshot.content || "");
+    if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(content)) {
+      throw new Error("Invalid Shared transaction file content");
+    }
+    return { kind, content: Buffer.from(content, "base64"), mode };
+  }
+  if (kind === "symlink") {
+    const target = String(snapshot.target || "");
+    if (!target || target.includes("\0")) throw new Error("Invalid Shared transaction symlink target");
+    return { kind, target };
+  }
+  if (kind === "missing" || kind === "directory") return { kind };
+  throw new Error("Invalid Shared transaction snapshot kind");
+}
+
+function sharedDisconnectTransactionsRoot() {
+  return path.join(sharedHome(), "transactions", "disconnect");
+}
+
+function invalidSharedDisconnectTransactionsRoot() {
+  return path.join(sharedDisconnectTransactionsRoot(), "invalid");
+}
+
+function abandonedInvalidSharedDisconnectTransactionsRoot() {
+  return path.join(sharedDisconnectTransactionsRoot(), "abandoned-invalid");
+}
+
+function ensurePrivateSharedRecoveryDirectory(directory) {
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const stats = fs.lstatSync(directory);
+  if (stats.isSymbolicLink() || !stats.isDirectory()) {
+    throw unsafeSharedFilesystemPath(`Shared recovery path must be a physical directory: ${directory}`);
+  }
+  fs.chmodSync(directory, 0o700);
+  return directory;
+}
+
+function fsyncSharedDirectory(directory) {
+  const descriptor = fs.openSync(directory, "r");
+  try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+}
+
+function fsyncSharedFileAndDirectory(filePath) {
+  const descriptor = fs.openSync(filePath, "r");
+  try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+  fsyncSharedDirectory(path.dirname(filePath));
+}
+
+function sharedDisconnectJournalPath(repository, binding, root) {
+  const identity = JSON.stringify({
+    repositoryIdentity: sharedRepositoryIdentity(repository),
+    projectId: binding.projectId,
+    sourceRoot: binding.sourceRoot || "",
+    sourceSubpath: binding.sourceSubpath || "",
+    sourceRemotes: binding.sourceRemotes || [],
+    root: stableRoot(root),
+  });
+  return path.join(sharedDisconnectTransactionsRoot(), `${hashKey(identity, 32)}.json`);
+}
+
+function writeSharedDisconnectJournal(repository, binding, projectRoots, transaction, root, {
+  projectCapabilities = [],
+} = {}) {
+  const exactCapabilities = (Array.isArray(projectCapabilities) ? projectCapabilities : [])
+    .map((capability) => normalizedSharedProjectCapability(capability));
+  const exactRoots = [...new Set(projectRoots.map((projectRoot) => path.resolve(projectRoot)))];
+  if (exactCapabilities.some((capability) => !capability)
+    || exactCapabilities.length !== exactRoots.length
+    || !exactRoots.every((projectRoot) => exactCapabilities.some((capability) => capability.root === projectRoot))) {
+    throw sharedContextError("shared-disconnect-capability-required", "A durable Shared disconnect journal requires one exact project capability per root");
+  }
+  const journalPath = sharedDisconnectJournalPath(repository, binding, root);
+  writePrivateJson(journalPath, {
+    version: 2,
+    kind: "shared-disconnect",
+    repository,
+    repositoryIdentity: sharedRepositoryIdentity(repository),
+    binding,
+    projectRoots: exactRoots,
+    projectCapabilities: exactCapabilities,
+    root: stableRoot(root),
+    createdAt: new Date().toISOString(),
+    snapshots: [...transaction.snapshots].map(([filePath, snapshot]) => ({
+      path: filePath,
+      snapshot: serializedSharedMutationSnapshot(snapshot),
+    })),
+  });
+  fsyncSharedFileAndDirectory(journalPath);
+  return journalPath;
+}
+
+function removeSharedDisconnectJournal(journalPath) {
+  try { fs.unlinkSync(journalPath); } catch (error) { if (error.code !== "ENOENT") throw error; }
+  try { fsyncSharedDirectory(path.dirname(journalPath)); } catch (error) { if (error.code !== "ENOENT") throw error; }
+  try { if (fs.readdirSync(path.dirname(journalPath)).length === 0) fs.rmdirSync(path.dirname(journalPath)); } catch {}
+}
+
+function sharedDisconnectRecoveryRevision(issueDirectory) {
+  const digest = createHash("sha256");
+  digest.update(path.basename(issueDirectory));
+  for (const name of ["journal", "meta.json"]) {
+    const filePath = path.join(issueDirectory, name);
+    try {
+      const stats = fs.lstatSync(filePath, { bigint: true });
+      digest.update(`\0${name}\0${stats.dev}\0${stats.ino}\0${stats.size}\0${stats.mtimeNs}`);
+      if (stats.isFile() && !stats.isSymbolicLink() && stats.size <= 2_097_152n) digest.update(fs.readFileSync(filePath));
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      digest.update(`\0${name}\0missing`);
+    }
+  }
+  return digest.digest("hex");
+}
+
+function quarantineInvalidSharedDisconnectTransactionUnderLock(journalPath, cause) {
+  const originalName = path.basename(journalPath);
+  const quarantineId = randomUUID();
+  const invalidRoot = ensurePrivateSharedRecoveryDirectory(invalidSharedDisconnectTransactionsRoot());
+  const issueDirectory = ensurePrivateSharedRecoveryDirectory(path.join(invalidRoot, quarantineId));
+  const quarantinedPath = path.join(issueDirectory, "journal");
+  fs.renameSync(journalPath, quarantinedPath);
+  fs.chmodSync(quarantinedPath, 0o600);
+  fsyncSharedFileAndDirectory(quarantinedPath);
+  const quarantinedAt = new Date().toISOString();
+  writePrivateJson(path.join(issueDirectory, "meta.json"), {
+    version: 1,
+    kind: "invalid-shared-disconnect-journal",
+    quarantineId,
+    originalName,
+    quarantinedAt,
+    code: String(cause?.code || "shared-disconnect-recovery-invalid").slice(0, 160),
+    message: String(cause?.message || cause || "Unreadable Shared disconnect recovery journal").slice(0, 500),
+  });
+  fsyncSharedFileAndDirectory(path.join(issueDirectory, "meta.json"));
+  fsyncSharedDirectory(issueDirectory);
+  fsyncSharedDirectory(invalidRoot);
+  fsyncSharedDirectory(sharedDisconnectTransactionsRoot());
+  return { quarantineId, issueDirectory, quarantinedAt };
+}
+
+function genericInvalidSharedDisconnectRecoveryIssue(issueDirectory, quarantineId, message = "") {
+  return {
+    status: "recovery-required",
+    scope: "global",
+    kind: "invalid-journal",
+    recoverySystem: "shared-disconnect",
+    quarantineId,
+    originalName: "",
+    quarantinedAt: "",
+    code: "shared-disconnect-recovery-quarantine-invalid",
+    message: String(message || "A Shared disconnect recovery quarantine is incomplete or unreadable").slice(0, 500),
+    revision: sharedDisconnectRecoveryRevision(issueDirectory),
+    issueDirectory,
+  };
+}
+
+function readInvalidSharedDisconnectRecoveryIssue(issueDirectory) {
+  const quarantineId = path.basename(issueDirectory);
+  let meta;
+  try { meta = readJson(path.join(issueDirectory, "meta.json"), null); }
+  catch (error) { return genericInvalidSharedDisconnectRecoveryIssue(issueDirectory, quarantineId, error.message); }
+  const quarantinedPath = path.join(issueDirectory, "journal");
+  try {
+    const directoryStats = fs.lstatSync(issueDirectory);
+    const journalStats = fs.lstatSync(quarantinedPath);
+    if (directoryStats.isSymbolicLink() || !directoryStats.isDirectory()
+      || journalStats.isSymbolicLink() || !journalStats.isFile()
+      || meta?.version !== 1
+      || meta?.kind !== "invalid-shared-disconnect-journal"
+      || meta?.quarantineId !== quarantineId
+      || !/^[0-9a-f-]{36}$/.test(quarantineId)
+      || !Number.isFinite(Date.parse(String(meta?.quarantinedAt || "")))) {
+      return genericInvalidSharedDisconnectRecoveryIssue(issueDirectory, quarantineId);
+    }
+  } catch (error) {
+    return genericInvalidSharedDisconnectRecoveryIssue(issueDirectory, quarantineId, error.message);
+  }
+  return {
+    status: "recovery-required",
+    scope: "global",
+    kind: "invalid-journal",
+    recoverySystem: "shared-disconnect",
+    quarantineId,
+    originalName: String(meta.originalName || "").slice(0, 255),
+    quarantinedAt: String(meta.quarantinedAt),
+    code: String(meta.code || "shared-disconnect-recovery-invalid").slice(0, 160),
+    message: String(meta.message || "An unreadable Shared disconnect recovery journal was quarantined").slice(0, 500),
+    revision: sharedDisconnectRecoveryRevision(issueDirectory),
+    issueDirectory,
+  };
+}
+
+function readInvalidSharedDisconnectRecoveryIssuesUnderLock() {
+  const directory = invalidSharedDisconnectTransactionsRoot();
+  if (!fs.existsSync(directory)) return [];
+  const directoryStats = fs.lstatSync(directory);
+  if (directoryStats.isSymbolicLink() || !directoryStats.isDirectory()) {
+    throw unsafeSharedFilesystemPath(`Shared disconnect recovery quarantine must be a physical directory: ${directory}`);
+  }
+  return fs.readdirSync(directory, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink() && !entry.name.startsWith("."))
+    .slice(0, 1_024)
+    .map((entry) => readInvalidSharedDisconnectRecoveryIssue(path.join(directory, entry.name)))
+    .sort((left, right) => String(left.quarantinedAt).localeCompare(String(right.quarantinedAt), "en"));
+}
+
+export function listSharedDisconnectRecoveryIssues() {
+  return withSharedRegistryLock(({ sharedRecoveryIssues }) => sharedRecoveryIssues.map((issue) => ({
+    status: issue.status,
+    scope: issue.scope,
+    kind: issue.kind,
+    recoverySystem: issue.recoverySystem,
+    quarantineId: issue.quarantineId,
+    originalName: issue.originalName,
+    quarantinedAt: issue.quarantinedAt,
+    code: issue.code,
+    message: issue.message,
+    revision: issue.revision,
+  })), { allowRecoveryIssues: true });
+}
+
+export function peekSharedDisconnectRecoveryIssues() {
+  return readInvalidSharedDisconnectRecoveryIssuesUnderLock().map((issue) => ({
+    status: issue.status,
+    scope: issue.scope,
+    kind: issue.kind,
+    recoverySystem: issue.recoverySystem,
+    quarantineId: issue.quarantineId,
+    originalName: issue.originalName,
+    quarantinedAt: issue.quarantinedAt,
+    code: issue.code,
+    message: issue.message,
+    revision: issue.revision,
+  }));
+}
+
+export function abandonInvalidSharedDisconnectTransaction({ quarantineId = "", expectedRevision = "" } = {}) {
+  const exactQuarantineId = String(quarantineId || "").trim();
+  const exactRevision = String(expectedRevision || "").trim();
+  if (!exactQuarantineId || !exactRevision) {
+    const error = sharedContextError("shared-disconnect-recovery-identity-required", "Exact quarantine ID and revision are required to acknowledge unreadable Shared disconnect recovery");
+    error.statusCode = 400;
+    throw error;
+  }
+  return withSharedRegistryLock(({ sharedRecoveryIssues }) => {
+    const issue = sharedRecoveryIssues.find((candidate) => candidate.quarantineId === exactQuarantineId);
+    if (!issue) {
+      const error = sharedContextError("shared-disconnect-recovery-not-found", "The quarantined Shared disconnect recovery issue no longer exists");
+      error.statusCode = 404;
+      throw error;
+    }
+    if (issue.revision !== exactRevision) {
+      const error = sharedContextError("shared-disconnect-recovery-conflict", "The quarantined Shared disconnect recovery issue changed");
+      error.statusCode = 409;
+      throw error;
+    }
+    const archiveRoot = ensurePrivateSharedRecoveryDirectory(abandonedInvalidSharedDisconnectTransactionsRoot());
+    const archivedIssueDirectory = path.join(archiveRoot, issue.quarantineId);
+    if (fs.existsSync(archivedIssueDirectory)) {
+      const error = sharedContextError("shared-disconnect-recovery-conflict", "This quarantined Shared disconnect recovery issue was already acknowledged");
+      error.statusCode = 409;
+      throw error;
+    }
+    fs.renameSync(issue.issueDirectory, archivedIssueDirectory);
+    fsyncSharedDirectory(archiveRoot);
+    fsyncSharedDirectory(invalidSharedDisconnectTransactionsRoot());
+    fsyncSharedDirectory(sharedDisconnectTransactionsRoot());
+    return {
+      abandoned: true,
+      quarantineId: issue.quarantineId,
+      revision: issue.revision,
+      scope: "global",
+      recoverySystem: "shared-disconnect",
+      archivedIssueDirectory,
+    };
+  }, { allowRecoveryIssues: true });
+}
+
+function exactSharedRegistryBindingExists(registry, binding) {
+  const expected = JSON.stringify(binding);
+  return (registry.bindings || []).some((candidate) => JSON.stringify(candidate) === expected);
+}
+
+function validatedSharedDisconnectJournal(journalPath) {
+  const journal = readJson(journalPath);
+  if (journal?.version !== 2 || journal?.kind !== "shared-disconnect") throw new Error("Unsupported Shared disconnect recovery journal");
+  const repository = safeRepository(journal.repository);
+  if (journal.repositoryIdentity !== sharedRepositoryIdentity(repository)) throw new Error("Shared disconnect recovery repository identity changed");
+  const projectRoots = [...new Set((journal.projectRoots || []).map((item) => {
+    const candidate = path.resolve(String(item || ""));
+    if (candidate === path.parse(candidate).root) throw new Error("Unsafe Shared disconnect recovery project root");
+    return candidate;
+  }))];
+  if (!projectRoots.length || !journal.binding || typeof journal.binding !== "object") throw new Error("Invalid Shared disconnect recovery binding");
+  const projectCapabilities = Array.isArray(journal.projectCapabilities)
+    ? journal.projectCapabilities.map((capability) => normalizedSharedProjectCapability(capability))
+    : [];
+  if (projectCapabilities.some((capability) => !capability)
+    || projectCapabilities.length !== projectRoots.length
+    || !projectRoots.every((projectRoot) => projectCapabilities.some((capability) => capability.root === projectRoot))) {
+    throw new Error("Shared disconnect recovery capabilities do not match its exact project roots");
+  }
+  const allowedFiles = new Set([
+    registryPath(),
+    managedDestinationsRegistryPath(),
+    ...projectRoots.flatMap((projectRoot) => [
+      skillLinkRegistryPath(repository, projectRoot),
+      instructionLinkRegistryPath(repository, projectRoot, "project"),
+      instructionLinkRegistryPath(repository, projectRoot, "device"),
+      path.join(projectRoot, ".context-room", "config.json"),
+    ]),
+  ].map((item) => path.resolve(item)));
+  const entries = Array.isArray(journal.snapshots) ? journal.snapshots : [];
+  if (!entries.length || entries.length > 10_000) throw new Error("Invalid Shared disconnect recovery snapshot count");
+  const ownerEntry = entries.find((entry) => path.resolve(String(entry?.path || "")) === path.resolve(managedDestinationsRegistryPath()));
+  const ownerSnapshot = deserializedSharedMutationSnapshot(ownerEntry?.snapshot);
+  if (!new Set(["file", "missing"]).has(ownerSnapshot.kind)) throw new Error("Shared disconnect recovery owner registry is invalid");
+  const owners = ownerSnapshot.kind === "file"
+    ? JSON.parse(ownerSnapshot.content.toString("utf8"))?.destinations || {}
+    : {};
+  const managedRoot = repositoryCacheRoot(repository);
+  const snapshots = new Map();
+  for (const entry of entries) {
+    const filePath = path.resolve(String(entry?.path || ""));
+    if (!entry?.path || filePath === path.parse(filePath).root || snapshots.has(filePath)) {
+      throw new Error("Invalid Shared disconnect recovery snapshot path");
+    }
+    const snapshot = deserializedSharedMutationSnapshot(entry.snapshot);
+    if (!allowedFiles.has(filePath)) {
+      const owner = owners[filePath];
+      const resolvedTarget = snapshot.kind === "symlink"
+        ? path.resolve(path.dirname(filePath), snapshot.target)
+        : "";
+      if (
+        snapshot.kind !== "symlink"
+        || !owner
+        || !sameSharedRepository(owner.repository, repository)
+        || resolvedTarget !== path.resolve(String(owner.target || ""))
+        || (resolvedTarget !== managedRoot && !resolvedTarget.startsWith(managedRoot + path.sep))
+      ) {
+        throw new Error(`Unsafe Shared disconnect recovery link: ${filePath}`);
+      }
+    }
+    snapshots.set(filePath, snapshot);
+  }
+  return { journal, repository, snapshots, projectCapabilities };
+}
+
+function recoverSharedDisconnectTransactionsUnderLock() {
+  const directory = sharedDisconnectTransactionsRoot();
+  if (!fs.existsSync(directory)) return [];
+  const recovered = [];
+  for (const name of fs.readdirSync(directory).filter((item) => item.endsWith(".json")).sort()) {
+    const journalPath = path.join(directory, name);
+    let recovery;
+    try {
+      recovery = validatedSharedDisconnectJournal(journalPath);
+    } catch (cause) {
+      const issue = quarantineInvalidSharedDisconnectTransactionUnderLock(journalPath, cause);
+      recovered.push({ journalPath, action: "quarantined", quarantineId: issue.quarantineId });
+      continue;
+    }
+    const registry = readJson(registryPath(), { version: 1, bindings: [] });
+    if (exactSharedRegistryBindingExists(registry, recovery.journal.binding)) {
+      try {
+        for (const capability of recovery.projectCapabilities) {
+          assertSharedProjectCapability(capability, "Shared disconnect recovery project");
+        }
+      } catch (cause) {
+        const issue = quarantineInvalidSharedDisconnectTransactionUnderLock(journalPath, cause);
+        recovered.push({ journalPath, action: "quarantined", quarantineId: issue.quarantineId, repository: recovery.repository });
+        continue;
+      }
+      const errors = [];
+      for (const [filePath, snapshot] of [...recovery.snapshots].reverse()) {
+        try {
+          for (const capability of recovery.projectCapabilities) {
+            assertSharedProjectCapability(capability, "Shared disconnect recovery project");
+          }
+          restoreSharedMutationPath(filePath, snapshot);
+        }
+        catch (error) { errors.push(`${filePath}: ${error.message}`); }
+      }
+      if (errors.length) {
+        const cause = new Error(`Shared disconnect recovery failed: ${errors.join("; ")}`);
+        cause.code = "shared-disconnect-recovery-failed";
+        cause.rollbackErrors = errors;
+        const issue = quarantineInvalidSharedDisconnectTransactionUnderLock(journalPath, cause);
+        recovered.push({ journalPath, action: "quarantined", quarantineId: issue.quarantineId, repository: recovery.repository });
+        continue;
+      }
+      recovered.push({ journalPath, action: "rolled-back", repository: recovery.repository });
+    } else {
+      recovered.push({ journalPath, action: "committed", repository: recovery.repository });
+    }
+    removeSharedDisconnectJournal(journalPath);
+  }
+  return recovered;
 }
 
 function normalizedProviderSettingsInput(connection, { providers = {}, projectOverrides = {} } = {}) {
@@ -1937,16 +4033,54 @@ function resolvedInstructionLinkPlan(root, connection, repositoryConfig, catalog
   return { locations, preferences, collections, links, currentRoot };
 }
 
-function archiveAcceptedInstructionImports(plan, connection, root) {
-  if (!plan.preferences.pendingInstructionImports.length) return [];
+function importTerminalAuthority(plan, connection, pending) {
+  if (!pending.proposalHead) return { status: "pending", error: "terminal-authority-missing" };
   const checkout = repositoryCheckout(connection.repository);
-  const acceptedRevision = path.basename(plan.currentRoot || "");
+  const revision = safeRevision(path.basename(plan.currentRoot || ""), "accepted shared revision");
+  const proposal = safeBranchName(pending.proposal, "pending import proposal");
+  const proposalHead = safeRevision(pending.proposalHead, "pending import proposal head");
+  const evidence = proposalTerminalEvidence({
+    connection: { repository: connection.repository },
+    repositoryConfig: plan.locations?.repositoryConfig || readSharedRepositoryConfig(plan.currentRoot),
+    revision,
+  }, checkout, proposal, proposalHead);
+  const acceptedCommit = evidence.remoteState?.acceptedCommit || "";
+  const accepted = Boolean(
+    !evidence.contradictory
+    && evidence.remoteAccepted
+    && evidence.remoteAcceptedVerified
+    && evidence.signedAccepted
+    && evidence.signedAcceptanceVerified
+    && evidence.signedAcceptedCommit === acceptedCommit
+    && evidence.exactMainCandidate?.commit === acceptedCommit
+  );
+  if (accepted) return { status: "accepted", acceptedCommit };
+  const rejected = Boolean(
+    !evidence.contradictory
+    && evidence.remoteRejected
+    && evidence.remoteRejectedVerified
+    && evidence.signedRejected
+    && evidence.decision?.archiveRef === evidence.rejection.expectedArchive
+  );
+  if (rejected) return { status: "rejected" };
+  const activeHead = remoteBranchRevision(checkout, proposal);
+  const invalid = evidence.contradictory
+    || evidence.remoteState?.status === "invalid"
+    || (evidence.remoteState?.status && evidence.remoteState.status !== "missing" && evidence.remoteState.status !== "active");
+  return {
+    status: invalid ? "invalid" : "pending",
+    error: invalid ? "terminal-authority-invalid" : (activeHead ? "" : "terminal-authority-missing"),
+  };
+}
+
+function archiveAcceptedInstructionImports(plan, connection, root, transaction = null) {
+  if (!plan.preferences.pendingInstructionImports.length) return [];
   const completed = [];
   const remaining = [];
   for (const pending of plan.preferences.pendingInstructionImports) {
-    const accepted = pending.proposalHead && Boolean(tryGit(checkout, ["log", "-n", "1", "--format=%H", "--fixed-strings", `--grep=Context-Room-Proposal-Head: ${pending.proposalHead}`, acceptedRevision || "origin/main"]));
-    if (!accepted) {
-      if (remoteBranchRevision(checkout, pending.proposal)) remaining.push(pending);
+    const authority = importTerminalAuthority(plan, connection, pending);
+    if (authority.status !== "accepted") {
+      if (authority.status !== "rejected") remaining.push(authority.error ? { ...pending, error: authority.error } : pending);
       continue;
     }
     const acceptedLinks = plan.links.filter((link) => link.collectionId === pending.collectionId && link.assignmentId === pending.assignmentId);
@@ -1976,6 +4110,7 @@ function archiveAcceptedInstructionImports(plan, connection, root) {
         }
         fs.mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
         const backup = path.join(backupRoot, `${hashKey(file.localPath, 12)}-${path.basename(file.localPath)}`);
+        transaction?.recordMove(file.localPath, backup);
         fs.renameSync(file.localPath, backup);
         moved.push({ source: file.localPath, backup });
       }
@@ -1994,9 +4129,9 @@ function archiveAcceptedInstructionImports(plan, connection, root) {
   return completed;
 }
 
-function reconcileInstructionLinks(root, connection, repositoryConfig, currentRoot, catalog, { includeDevice = true, providers = null } = {}) {
+function reconcileInstructionLinks(root, connection, repositoryConfig, currentRoot, catalog, { includeDevice = true, providers = null, transaction = null } = {}) {
   const plan = resolvedInstructionLinkPlan(root, connection, repositoryConfig, catalog, currentRoot, { includeDevice, providers });
-  const completedImports = archiveAcceptedInstructionImports(plan, connection, root);
+  const completedImports = archiveAcceptedInstructionImports(plan, connection, root, transaction);
   const managedRoot = repositoryCacheRoot(connection.repository);
   const grouped = new Map();
   grouped.set(instructionLinkRegistryPath(connection.repository, root, "project"), []);
@@ -2226,18 +4361,15 @@ function reconcileSkillDestination(destinationPlan, collection, managedRoot, pre
   return { ...destinationPlan, links: desired.map((item) => ({ ...item, owner: managedDestinationOwner(item.link) })), status: ["local-override", "provider-disabled"].includes(destinationPlan.status) ? destinationPlan.status : "ready", conflicts: [] };
 }
 
-function archiveAcceptedSkillImports(plan, connection) {
+function archiveAcceptedSkillImports(plan, connection, transaction = null) {
   if (!plan.preferences.pendingImports.length) return [];
   const collectionById = new Map(plan.collections.map((collection) => [collection.id, collection]));
   const completed = [];
   const remaining = [];
-  const checkout = repositoryCheckout(connection.repository);
-  const acceptedRevision = path.basename(plan.currentRoot || "");
   for (const pending of plan.preferences.pendingImports) {
-    const accepted = pending.proposalHead && Boolean(tryGit(checkout, ["log", "-n", "1", "--format=%H", "--fixed-strings", `--grep=Context-Room-Proposal-Head: ${pending.proposalHead}`, acceptedRevision || "origin/main"]));
-    if (!accepted) {
-      if (!remoteBranchRevision(checkout, pending.proposal)) continue;
-      remaining.push(pending);
+    const authority = importTerminalAuthority(plan, connection, pending);
+    if (authority.status !== "accepted") {
+      if (authority.status !== "rejected") remaining.push(authority.error ? { ...pending, error: authority.error } : pending);
       continue;
     }
     const collection = collectionById.get(pending.collectionId);
@@ -2255,6 +4387,7 @@ function archiveAcceptedSkillImports(plan, connection) {
         if (stats.isSymbolicLink()) continue;
         fs.mkdirSync(backupRoot, { recursive: true });
         const backup = path.join(backupRoot, name);
+        transaction?.recordMove(source, backup);
         fs.renameSync(source, backup);
         moved.push({ source, backup });
       }
@@ -2288,8 +4421,18 @@ function configureProjectRoom(root, connection, repositoryConfig, currentRoot, s
   const docs = homeVirtualPath(path.join(projectRoot, "docs"), true);
   const projectSkills = homeVirtualPath(path.join(projectRoot, "skills"), true);
   const globalSkills = homeVirtualPath(path.join(currentRoot, repositoryConfig.globalSkillsPath), true);
-  const collectionPaths = (skillLocations?.collections || []).map((collection) => homeVirtualPath(path.join(currentRoot, collection.path), true));
-  const instructionCollectionPaths = (instructionLocations?.collections || []).map((collection) => homeVirtualPath(path.join(currentRoot, collection.path), true));
+  const applicableSkillCollectionIds = new Set((skillLocations?.assignments || [])
+    .filter((assignment) => assignmentAppliesToProject(assignment, connection.projectId))
+    .map((assignment) => assignment.collectionId));
+  const applicableInstructionCollectionIds = new Set((instructionLocations?.assignments || [])
+    .filter((assignment) => instructionAssignmentApplies(assignment, connection.projectId))
+    .map((assignment) => assignment.collectionId));
+  const visibleSkillCollections = (skillLocations?.collections || [])
+    .filter((collection) => applicableSkillCollectionIds.has(collection.id));
+  const visibleInstructionCollections = (instructionLocations?.collections || [])
+    .filter((collection) => applicableInstructionCollectionIds.has(collection.id));
+  const collectionPaths = visibleSkillCollections.map((collection) => homeVirtualPath(path.join(currentRoot, collection.path), true));
+  const instructionCollectionPaths = visibleInstructionCollections.map((collection) => homeVirtualPath(path.join(currentRoot, collection.path), true));
   config.allowedPaths = appendUnique(config.allowedPaths, [docs, projectSkills, globalSkills, ...collectionPaths, ...instructionCollectionPaths]);
   config.readOnlyPaths = appendUnique(config.readOnlyPaths, [docs, projectSkills, globalSkills, ...collectionPaths, ...instructionCollectionPaths]);
   const section = {
@@ -2300,8 +4443,8 @@ function configureProjectRoom(root, connection, repositoryConfig, currentRoot, s
       { id: "shared-docs", title: "Shared project docs", path: docs, description: `Accepted documentation for ${connection.projectId}.` },
       { id: "shared-project-skills", title: "Shared project skills", path: projectSkills, description: `Accepted skills for ${connection.projectId}.` },
       { id: "shared-global-skills", title: "Shared global skills", path: globalSkills, description: "Accepted skills shared across projects." },
-      ...(skillLocations && !skillLocations.legacy ? skillLocations.collections.map((collection) => ({ id: `shared-skill-collection-${collection.id}`, title: collection.title, path: homeVirtualPath(path.join(currentRoot, collection.path), true), description: `Accepted shared skill collection · ${collection.id}.` })) : []),
-      ...(instructionLocations ? instructionLocations.collections.map((collection) => ({ id: `shared-instruction-collection-${collection.id}`, title: collection.title, path: homeVirtualPath(path.join(currentRoot, collection.path), true), description: `Accepted shared instruction collection · ${collection.id}.` })) : []),
+      ...(skillLocations && !skillLocations.legacy ? visibleSkillCollections.map((collection) => ({ id: `shared-skill-collection-${collection.id}`, title: collection.title, path: homeVirtualPath(path.join(currentRoot, collection.path), true), description: `Accepted shared skill collection · ${collection.id}.` })) : []),
+      ...(instructionLocations ? visibleInstructionCollections.map((collection) => ({ id: `shared-instruction-collection-${collection.id}`, title: collection.title, path: homeVirtualPath(path.join(currentRoot, collection.path), true), description: `Accepted shared instruction collection · ${collection.id}.` })) : []),
     ],
   };
   config.hubSections = [...(config.hubSections || []).filter((item) => item?.id !== section.id), section];
@@ -2310,9 +4453,9 @@ function configureProjectRoom(root, connection, repositoryConfig, currentRoot, s
   return { updated: true, configPath, paths: { docs, projectSkills, globalSkills } };
 }
 
-function syncSkillLinks(root, connection, repositoryConfig, currentRoot, catalog, { providers = null } = {}) {
+function syncSkillLinks(root, connection, repositoryConfig, currentRoot, catalog, { providers = null, transaction = null } = {}) {
   const plan = resolvedSkillLinkPlan(root, connection, repositoryConfig, catalog, currentRoot);
-  const completedImports = archiveAcceptedSkillImports(plan, connection);
+  const completedImports = archiveAcceptedSkillImports(plan, connection, transaction);
   const managedRoot = repositoryCacheRoot(connection.repository);
   const registryFile = skillLinkRegistryPath(connection.repository, root);
   const previous = readJson(registryFile, { version: 2, links: [], destinations: [] });
@@ -2424,11 +4567,73 @@ function restoreDetachedSkillLinks(links) {
   }
 }
 
+function registryLinkPaths(registryFile, field) {
+  try {
+    const registry = readJson(registryFile, { links: [] });
+    return (registry.links || []).flatMap((item) => {
+      const value = String(item?.[field] || "").trim();
+      if (!value) return [];
+      const resolved = path.resolve(value);
+      return resolved === path.parse(resolved).root ? [] : [resolved];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function captureSharedReconcileLocation(
+  transaction,
+  root,
+  connection,
+  repositoryConfig,
+  snapshot,
+  catalog,
+  { includeDevice = true, providers = null } = {},
+) {
+  const projectRoot = path.resolve(root);
+  const skillRegistry = skillLinkRegistryPath(connection.repository, projectRoot);
+  const instructionRegistry = instructionLinkRegistryPath(connection.repository, projectRoot, "project");
+  const deviceInstructionRegistry = instructionLinkRegistryPath(connection.repository, projectRoot, "device");
+  transaction.capture(path.join(projectRoot, ".context-room", "config.json"));
+  transaction.capture(skillLocationPreferencesPath(connection.repository));
+  transaction.capture(managedDestinationsRegistryPath());
+  transaction.capture(skillRegistry);
+  transaction.capture(instructionRegistry);
+  if (includeDevice) transaction.capture(deviceInstructionRegistry);
+
+  const skillPlan = resolvedSkillLinkPlan(projectRoot, connection, repositoryConfig, catalog, snapshot);
+  const skillPaths = [
+    ...skillPlan.destinations.flatMap((destination) => (
+      destination.destination
+        ? destination.skills.map((name) => path.join(destination.destination, name))
+        : []
+    )),
+    ...registryLinkPaths(skillRegistry, "link"),
+  ];
+  const instructionPlan = resolvedInstructionLinkPlan(
+    projectRoot,
+    connection,
+    repositoryConfig,
+    catalog,
+    snapshot,
+    { includeDevice, providers },
+  );
+  const instructionPaths = [
+    ...instructionPlan.links.flatMap((item) => item.destination ? [item.destination] : []),
+    ...registryLinkPaths(instructionRegistry, "destination"),
+    ...(includeDevice ? registryLinkPaths(deviceInstructionRegistry, "destination") : []),
+  ];
+  for (const candidate of [...new Set([...skillPaths, ...instructionPaths].map((item) => path.resolve(item)))]) {
+    transaction.capture(candidate);
+  }
+  return { skillPlan, instructionPlan };
+}
+
 function sharedBindingForRoot(root, connection, registry) {
   const source = sourceIdentity(root);
   const candidates = (registry.bindings || []).filter((binding) => {
     try {
-      if (safeRepository(binding.repository) !== connection.repository || String(binding.projectId || "") !== connection.projectId) return false;
+      if (!sameSharedRepository(binding.repository, connection.repository) || String(binding.projectId || "") !== connection.projectId) return false;
       if (source) return bindingMatchesSource(binding, source);
       if (!binding.sourceRoot) return false;
       const bindingRoot = stableRoot(binding.sourceRoot);
@@ -2442,7 +4647,14 @@ function sharedBindingForRoot(root, connection, registry) {
   return candidates[0] || null;
 }
 
-function detachManagedRegistryLinks(registryFile, { repository, managedRoot, pathKey, keep = () => false } = {}) {
+function detachManagedRegistryLinks(registryFile, {
+  repository,
+  managedRoot,
+  pathKey,
+  keep = () => false,
+  dropStaleOwned = false,
+  protectedRoots = [],
+} = {}) {
   const registry = readJson(registryFile, { version: 1, links: [] });
   const detached = [];
   const retained = [];
@@ -2456,9 +4668,30 @@ function detachManagedRegistryLinks(registryFile, { repository, managedRoot, pat
       retained.push(item);
       continue;
     }
-    const state = managedSymlinkTarget(link, managedRoot);
     const owner = managedDestinationOwner(link);
-    if (!state.symbolic || !state.managed || owner?.repository !== repository) {
+    const protectedProjectPath = (Array.isArray(protectedRoots) ? protectedRoots : []).some((root) => {
+      const protectedRoot = path.resolve(root);
+      return link === protectedRoot || link.startsWith(protectedRoot + path.sep);
+    });
+    if (protectedProjectPath) {
+      if (owner) {
+        let ownedByRepository = false;
+        try { ownedByRepository = sameSharedRepository(owner.repository, repository); } catch {}
+        if (ownedByRepository) recordManagedDestination(link, null);
+      }
+      if (!dropStaleOwned) retained.push(item);
+      continue;
+    }
+    const state = managedSymlinkTarget(link, managedRoot);
+    if (!state.symbolic || !state.managed || !owner || !sameSharedRepository(owner.repository, repository)) {
+      if (dropStaleOwned && owner) {
+        let ownedByRepository = false;
+        try { ownedByRepository = sameSharedRepository(owner.repository, repository); } catch {}
+        if (ownedByRepository) {
+          recordManagedDestination(link, null);
+          continue;
+        }
+      }
       retained.push(item);
       continue;
     }
@@ -2470,8 +4703,38 @@ function detachManagedRegistryLinks(registryFile, { repository, managedRoot, pat
     if (removed) detached.push({ link, target: state.target, managedRoot, owner });
     else retained.push(item);
   }
-  writePrivateJson(registryFile, { ...registry, links: retained, destinations: (registry.destinations || []).filter((item) => keep(item)) });
+  writePrivateJson(registryFile, {
+    ...registry,
+    revision: "",
+    links: retained,
+    destinations: (registry.destinations || []).filter((item) => keep(item)),
+  });
   return detached;
+}
+
+function captureDisconnectManagedLinks(transaction, registryFile, {
+  repository,
+  managedRoot,
+  pathKey,
+  keep = () => false,
+  protectedRoots = [],
+} = {}) {
+  const registry = readJson(registryFile, { version: 1, links: [] });
+  for (const item of registry.links || []) {
+    if (keep(item)) continue;
+    const value = String(item?.[pathKey] || "").trim();
+    if (!value) continue;
+    const link = path.resolve(value);
+    if (link === path.parse(link).root) continue;
+    if ((Array.isArray(protectedRoots) ? protectedRoots : []).some((root) => {
+      const protectedRoot = path.resolve(root);
+      return link === protectedRoot || link.startsWith(protectedRoot + path.sep);
+    })) continue;
+    const state = managedSymlinkTarget(link, managedRoot);
+    const owner = managedDestinationOwner(link);
+    if (!state.symbolic || !state.managed || !owner || !sameSharedRepository(owner.repository, repository)) continue;
+    transaction.capture(link);
+  }
 }
 
 function removeSharedContextFromProjectConfig(root, connection) {
@@ -2482,7 +4745,7 @@ function removeSharedContextFromProjectConfig(root, connection) {
   let configuredRepository = "";
   try { configuredRepository = config.sharedContext?.repository ? safeRepository(config.sharedContext.repository) : ""; }
   catch { return { configPath, previous, changed: false }; }
-  if (!config.sharedContext || configuredRepository !== connection.repository || String(config.sharedContext.projectId || "") !== connection.projectId) return { configPath, previous, changed: false };
+  if (!config.sharedContext || !sameSharedRepository(configuredRepository, connection.repository) || String(config.sharedContext.projectId || "") !== connection.projectId) return { configPath, previous, changed: false };
   const managedPrefix = homeVirtualPath(path.join(repositoryCacheRoot(connection.repository), "current"), true);
   const keepUnmanaged = (value) => !String(value || "").startsWith(managedPrefix);
   config.allowedPaths = (config.allowedPaths || []).filter(keepUnmanaged);
@@ -2493,23 +4756,113 @@ function removeSharedContextFromProjectConfig(root, connection) {
   return { configPath, previous, changed: true };
 }
 
-export function disconnectSharedContext(root) {
-  const resolvedRoot = stableRoot(root);
+function disconnectSharedContextUnderLock(root, {
+  projectRoots: requestedProjectRoots = [],
+  projectCapabilities = [],
+} = {}) {
+  const exactCapabilities = Array.isArray(projectCapabilities)
+    ? projectCapabilities.map((capability) => normalizedSharedProjectCapability(capability))
+    : [];
+  if (exactCapabilities.some((capability) => !capability)) {
+    throw sharedContextError("shared-project-capability-invalid", "Shared disconnection project capabilities are invalid");
+  }
+  for (const capability of exactCapabilities) assertSharedProjectCapability(capability, "Shared disconnection project");
+  const resolvedRoot = exactCapabilities.length ? path.resolve(root) : stableRoot(root);
   const connection = readSharedProjectConnection(resolvedRoot);
   if (!connection) return { disconnected: false, reason: "not-connected" };
   const registry = readJson(registryPath(), { version: 1, bindings: [] });
-  const binding = sharedBindingForRoot(resolvedRoot, connection, registry);
-  if (!binding) throw new Error("The selected shared-context binding is no longer registered");
-  const remainingBindings = (registry.bindings || []).filter((candidate) => candidate !== binding);
-  const keepRepositoryDeviceLinks = remainingBindings.some((candidate) => {
-    try { return safeRepository(candidate.repository) === connection.repository; } catch { return false; }
+  const exactRequestedRoots = [...new Set([
+    resolvedRoot,
+    ...(exactCapabilities.length
+      ? exactCapabilities.map((capability) => capability.root)
+      : (Array.isArray(requestedProjectRoots) ? requestedProjectRoots : [])),
+  ].map((candidate) => exactCapabilities.length ? path.resolve(candidate) : stableRoot(candidate)))];
+  if (exactRequestedRoots.length > 1_024) throw new Error("Too many project roots were requested for one Shared disconnection");
+  if (exactCapabilities.length && (
+    exactCapabilities.length !== exactRequestedRoots.length
+    || !exactRequestedRoots.every((candidate) => exactCapabilities.some((capability) => capability.root === candidate))
+  )) throw sharedContextError("shared-project-capability-mismatch", "Shared disconnection roots do not match the exact Context Hub project group");
+  const capabilityByRoot = new Map(exactCapabilities.map((capability) => [capability.root, capability]));
+  const bindings = exactRequestedRoots.map((projectRoot) => {
+    const capability = capabilityByRoot.get(projectRoot);
+    if (capability) assertSharedProjectCapability(capability, "Shared disconnection project");
+    const candidateConnection = readSharedProjectConnection(projectRoot);
+    if (!candidateConnection
+      || !sameSharedRepository(candidateConnection.repository, connection.repository)
+      || candidateConnection.projectId !== connection.projectId) {
+      throw new Error(`The requested worktree no longer has the exact Shared binding: ${projectRoot}`);
+    }
+    const candidate = sharedBindingForRoot(projectRoot, connection, registry);
+    if (!candidate) throw new Error(`The requested worktree Shared binding is no longer registered: ${projectRoot}`);
+    return candidate;
   });
-  const projectRoots = [...new Set([...(binding.projectRoots || []), binding.sourceRoot, connection.projectRoot, resolvedRoot].filter(Boolean).map(stableRoot))];
+  const removedBindings = new Set(bindings);
+  const binding = bindings[0];
+  const remainingBindings = (registry.bindings || [])
+    .filter((candidate) => !removedBindings.has(candidate))
+    .map((candidate) => sameSharedRepository(candidate?.repository, connection.repository)
+      ? { ...candidate, repository: connection.repository }
+      : candidate);
+  const keepRepositoryDeviceLinks = remainingBindings.some((candidate) => {
+    return sameSharedRepository(candidate.repository, connection.repository);
+  });
+  const projectRoots = [...new Set([
+    ...exactRequestedRoots,
+    ...bindings.flatMap((candidate) => [...(candidate.projectRoots || []), candidate.sourceRoot]),
+    connection.projectRoot,
+  ].filter(Boolean).map(stableRoot))];
+  if (exactCapabilities.length && projectRoots.some((projectRoot) => !capabilityByRoot.has(path.resolve(projectRoot)))) {
+    throw sharedContextError("shared-project-capability-mismatch", "The Shared binding owns a root outside the exact Context Hub project group");
+  }
   const managedRoot = repositoryCacheRoot(connection.repository);
+  const deviceInstructionRegistry = instructionLinkRegistryPath(connection.repository, resolvedRoot, "device");
+  const transactionPaths = new Set([
+    registryPath(),
+    managedDestinationsRegistryPath(),
+    ...projectRoots.flatMap((projectRoot) => [
+      skillLinkRegistryPath(connection.repository, projectRoot),
+      instructionLinkRegistryPath(connection.repository, projectRoot, "project"),
+      path.join(projectRoot, ".context-room", "config.json"),
+    ]),
+    ...(!keepRepositoryDeviceLinks ? [deviceInstructionRegistry] : []),
+  ]);
+  const transaction = createSharedMutationTransaction("Shared Context disconnect");
+  for (const capability of exactCapabilities) assertSharedProjectCapability(capability, "Shared disconnection project");
+  for (const filePath of transactionPaths) transaction.capture(filePath);
+  for (const projectRoot of projectRoots) {
+    const capability = capabilityByRoot.get(path.resolve(projectRoot));
+    if (capability) assertSharedProjectCapability(capability, "Shared disconnection project");
+    captureDisconnectManagedLinks(transaction, skillLinkRegistryPath(connection.repository, projectRoot), {
+      repository: connection.repository,
+      managedRoot,
+      pathKey: "link",
+      keep: (item) => item.scope === "device" && keepRepositoryDeviceLinks,
+    });
+    captureDisconnectManagedLinks(transaction, instructionLinkRegistryPath(connection.repository, projectRoot, "project"), {
+      repository: connection.repository,
+      managedRoot,
+      pathKey: "destination",
+    });
+  }
+  if (!keepRepositoryDeviceLinks) {
+    captureDisconnectManagedLinks(transaction, deviceInstructionRegistry, {
+      repository: connection.repository,
+      managedRoot,
+      pathKey: "destination",
+    });
+  }
+  for (const capability of exactCapabilities) assertSharedProjectCapability(capability, "Shared disconnection project");
+  const journalCapabilities = projectRoots.map((projectRoot) => (
+    capabilityByRoot.get(path.resolve(projectRoot)) || currentSharedProjectCapability(projectRoot)
+  ));
+  const journalPath = writeSharedDisconnectJournal(connection.repository, binding, projectRoots, transaction, resolvedRoot, {
+    projectCapabilities: journalCapabilities,
+  });
   const detached = [];
-  const changedConfigs = [];
   try {
     for (const projectRoot of projectRoots) {
+      const capability = capabilityByRoot.get(path.resolve(projectRoot));
+      if (capability) assertSharedProjectCapability(capability, "Shared disconnection project");
       const skillRegistry = skillLinkRegistryPath(connection.repository, projectRoot);
       detached.push(...detachManagedRegistryLinks(skillRegistry, {
         repository: connection.repository,
@@ -2517,23 +4870,27 @@ export function disconnectSharedContext(root) {
         pathKey: "link",
         keep: (item) => item.scope === "device" && keepRepositoryDeviceLinks,
       }));
+      if (capability) assertSharedProjectCapability(capability, "Shared disconnection project");
       const instructionRegistry = instructionLinkRegistryPath(connection.repository, projectRoot, "project");
       detached.push(...detachManagedRegistryLinks(instructionRegistry, {
         repository: connection.repository,
         managedRoot,
         pathKey: "destination",
       }));
-      const config = removeSharedContextFromProjectConfig(projectRoot, connection);
-      if (config?.changed) changedConfigs.push(config);
+      if (capability) assertSharedProjectCapability(capability, "Shared disconnection project");
+      removeSharedContextFromProjectConfig(projectRoot, connection);
     }
     if (!keepRepositoryDeviceLinks) {
-      detached.push(...detachManagedRegistryLinks(instructionLinkRegistryPath(connection.repository, resolvedRoot, "device"), {
+      detached.push(...detachManagedRegistryLinks(deviceInstructionRegistry, {
         repository: connection.repository,
         managedRoot,
         pathKey: "destination",
       }));
     }
-    writeJson(registryPath(), { ...registry, bindings: remainingBindings });
+    for (const capability of exactCapabilities) assertSharedProjectCapability(capability, "Shared disconnection project");
+    writeSharedRegistry({ ...registry, bindings: remainingBindings });
+    for (const capability of exactCapabilities) assertSharedProjectCapability(capability, "Shared disconnection project");
+    removeSharedDisconnectJournal(journalPath);
     return {
       disconnected: true,
       connection,
@@ -2541,13 +4898,206 @@ export function disconnectSharedContext(root) {
       removedManagedLinks: detached.length,
     };
   } catch (error) {
-    restoreDetachedSkillLinks(detached);
-    for (const config of changedConfigs) {
-      try { fs.writeFileSync(config.configPath, config.previous, "utf8"); } catch {}
+    if (!exactCapabilities.length) restoreDetachedSkillLinks(detached);
+    try {
+      transaction.rollback({ projectCapabilities: exactCapabilities });
+      removeSharedDisconnectJournal(journalPath);
+    } catch (rollbackError) {
+      rollbackError.cause = error;
+      throw rollbackError;
     }
-    writeJson(registryPath(), registry);
     throw error;
   }
+}
+
+export function disconnectSharedContext(root, options = {}) {
+  return withSharedRegistryLock(() => disconnectSharedContextUnderLock(root, options));
+}
+
+export function removeOrphanedSharedContextBindings({
+  repository,
+  projectId,
+  projectRoots = [],
+} = {}) {
+  const exactProjectId = safeId(projectId, "projectId");
+  const expectedRoots = Array.isArray(projectRoots) ? projectRoots.map((entry) => {
+    const root = path.resolve(String(entry?.root || ""));
+    const dev = String(entry?.rootIdentity?.dev || "");
+    const ino = String(entry?.rootIdentity?.ino || "");
+    const worktreeIdentity = entry?.worktreeIdentity ? normalizedSharedWorktreeIdentity(entry.worktreeIdentity) : null;
+    if (root === path.parse(root).root || !/^\d+$/.test(dev) || !/^\d+$/.test(ino)) {
+      throw sharedContextError("shared-orphan-identity-required", "Exact lost project root identities are required to remove an orphaned Shared binding");
+    }
+    if (entry?.worktreeIdentity && !worktreeIdentity) {
+      throw sharedContextError("shared-orphan-identity-required", "Lost project worktree identities must be exact and anchored");
+    }
+    return { root, rootIdentity: { dev, ino }, ...(worktreeIdentity ? { worktreeIdentity } : {}) };
+  }) : [];
+  if (!expectedRoots.length || expectedRoots.length > 1_024) {
+    throw sharedContextError("shared-orphan-identity-required", "One bounded project root group is required to remove an orphaned Shared binding");
+  }
+  if (new Set(expectedRoots.map((entry) => entry.root)).size !== expectedRoots.length) {
+    throw sharedContextError("shared-orphan-identity-required", "Orphaned Shared binding roots must be unique");
+  }
+  return withSharedRegistryLock(() => {
+    for (const expected of expectedRoots) {
+      try {
+        const current = sharedProjectRootIdentity(expected.root);
+        if (current.dev === expected.rootIdentity.dev && current.ino === expected.rootIdentity.ino) {
+          const error = sharedContextError("shared-orphan-root-still-present", "The original project root still exists; use the normal Shared disconnect action");
+          error.statusCode = 409;
+          throw error;
+        }
+      } catch (error) {
+        if (error?.code === "shared-orphan-root-still-present") throw error;
+      }
+    }
+    const registry = readJson(registryPath(), { version: 1, bindings: [] });
+    const safeRemote = registeredRepositoryTransport(repository, registry);
+    const expectedRootSet = new Set(expectedRoots.map((entry) => entry.root));
+    const matchingBindings = (registry.bindings || []).filter((binding) => (
+      sameSharedRepository(binding?.repository, safeRemote)
+      && String(binding?.projectId || "") === exactProjectId
+    ));
+    const selectedBindings = matchingBindings.filter((binding) => (
+      [...(binding.projectRoots || []), binding.sourceRoot]
+        .filter(Boolean)
+        .some((root) => expectedRootSet.has(path.resolve(String(root))))
+    ));
+    for (const binding of selectedBindings) {
+      const bindingRoots = [...new Set([...(binding.projectRoots || []), binding.sourceRoot]
+        .filter(Boolean)
+        .map((root) => path.resolve(String(root))))];
+      if (bindingRoots.some((root) => !expectedRootSet.has(root))) {
+        const error = sharedContextError(
+          "shared-orphan-binding-scope-conflict",
+          "The orphaned Shared binding also owns another project root and cannot be removed from this recovery action",
+        );
+        error.statusCode = 409;
+        throw error;
+      }
+    }
+    if (!selectedBindings.length) return { removed: false, removedBindings: 0, projectRoots: expectedRoots.map((entry) => entry.root), removedManagedLinks: 0 };
+    const selected = new Set(selectedBindings);
+    const remainingBindings = (registry.bindings || []).filter((binding) => !selected.has(binding));
+    const keepRepositoryDeviceLinks = remainingBindings.some((binding) => {
+      try { return sameSharedRepository(binding?.repository, safeRemote); } catch { return false; }
+    });
+    const orphanRoots = expectedRoots.map((entry) => entry.root);
+    const managedRoot = repositoryCacheRoot(safeRemote);
+    const skillRegistries = orphanRoots.map((projectRoot) => skillLinkRegistryPath(safeRemote, projectRoot));
+    const instructionRegistries = orphanRoots.map((projectRoot) => instructionLinkRegistryPath(safeRemote, projectRoot, "project"));
+    const deviceInstructionRegistries = keepRepositoryDeviceLinks
+      ? []
+      : [...new Set(orphanRoots.map((projectRoot) => instructionLinkRegistryPath(safeRemote, projectRoot, "device")))];
+    const transaction = createSharedMutationTransaction("orphaned Shared Context cleanup");
+    for (const filePath of [
+      registryPath(),
+      managedDestinationsRegistryPath(),
+      ...skillRegistries,
+      ...instructionRegistries,
+      ...deviceInstructionRegistries,
+    ]) transaction.capture(filePath);
+    for (const registryFile of skillRegistries) {
+      captureDisconnectManagedLinks(transaction, registryFile, {
+        repository: safeRemote,
+        managedRoot,
+        pathKey: "link",
+        keep: (item) => item.scope === "device" && keepRepositoryDeviceLinks,
+        protectedRoots: orphanRoots,
+      });
+    }
+    for (const registryFile of instructionRegistries) {
+      captureDisconnectManagedLinks(transaction, registryFile, {
+        repository: safeRemote,
+        managedRoot,
+        pathKey: "destination",
+        protectedRoots: orphanRoots,
+      });
+    }
+    for (const registryFile of deviceInstructionRegistries) {
+      captureDisconnectManagedLinks(transaction, registryFile, {
+        repository: safeRemote,
+        managedRoot,
+        pathKey: "destination",
+        protectedRoots: orphanRoots,
+      });
+    }
+    const journalPath = writeSharedDisconnectJournal(
+      safeRemote,
+      selectedBindings[0],
+      orphanRoots,
+      transaction,
+      orphanRoots[0],
+      {
+        projectCapabilities: orphanRoots.map((projectRoot) => {
+          const expected = expectedRoots.find((entry) => entry.root === projectRoot);
+          const stored = selectedBindings
+            .map((binding) => bindingProjectCapability(binding, projectRoot))
+            .find(Boolean);
+          if (stored && (
+            stored.rootIdentity.dev !== expected.rootIdentity.dev
+            || stored.rootIdentity.ino !== expected.rootIdentity.ino
+          )) {
+            throw sharedContextError("shared-orphan-binding-scope-conflict", "The orphaned Shared binding capability does not match the exact lost root identity");
+          }
+          return stored || {
+            root: projectRoot,
+            rootIdentity: expected.rootIdentity,
+            worktreeIdentity: expected.worktreeIdentity || { kind: "path" },
+          };
+        }),
+      },
+    );
+    let removedManagedLinks = 0;
+    try {
+      for (const registryFile of skillRegistries) {
+        removedManagedLinks += detachManagedRegistryLinks(registryFile, {
+          repository: safeRemote,
+          managedRoot,
+          pathKey: "link",
+          keep: (item) => item.scope === "device" && keepRepositoryDeviceLinks,
+          dropStaleOwned: true,
+          protectedRoots: orphanRoots,
+        }).length;
+      }
+      for (const registryFile of instructionRegistries) {
+        removedManagedLinks += detachManagedRegistryLinks(registryFile, {
+          repository: safeRemote,
+          managedRoot,
+          pathKey: "destination",
+          dropStaleOwned: true,
+          protectedRoots: orphanRoots,
+        }).length;
+      }
+      for (const registryFile of deviceInstructionRegistries) {
+        removedManagedLinks += detachManagedRegistryLinks(registryFile, {
+          repository: safeRemote,
+          managedRoot,
+          pathKey: "destination",
+          dropStaleOwned: true,
+          protectedRoots: orphanRoots,
+        }).length;
+      }
+      writeSharedRegistry({ ...registry, bindings: remainingBindings });
+      removeSharedDisconnectJournal(journalPath);
+      return {
+        removed: true,
+        removedBindings: selectedBindings.length,
+        projectRoots: orphanRoots,
+        removedManagedLinks,
+      };
+    } catch (error) {
+      try {
+        transaction.rollback();
+        removeSharedDisconnectJournal(journalPath);
+      } catch (rollbackError) {
+        rollbackError.cause = error;
+        throw rollbackError;
+      }
+      throw error;
+    }
+  });
 }
 
 export function initializeSharedRepository(root, options = {}) {
@@ -2578,37 +5128,128 @@ export function readSharedProjectConnection(root) {
   return resolveRegisteredConnection(root);
 }
 
-export function connectSharedContext(root, { repository, projectId, sync = true } = {}) {
+export function connectSharedContext(root, {
+  repository,
+  projectId,
+  sync = true,
+  connectionReceiptId = "",
+  projectRoots = [],
+  projectCapabilities = [],
+} = {}) {
   const resolvedRoot = path.resolve(root);
   if (!fs.existsSync(resolvedRoot) || !fs.statSync(resolvedRoot).isDirectory()) throw new Error(`Project root does not exist: ${resolvedRoot}`);
-  const safeRemote = safeRepository(repository);
-  const detected = detectSharedProject(resolvedRoot, { repository: safeRemote, projectId });
-  const bindingRoot = detected.projectRoot;
-  const connection = { version: 1, repository: safeRemote, projectId: detected.projectId, projectRoot: bindingRoot };
-  const previousRegistry = readJson(registryPath(), { version: 1, bindings: [] });
-  registerSourceBinding(bindingRoot, connection);
-  if (!sync) return { connection, connected: true };
-  try {
-    return syncSharedContext(bindingRoot);
-  } catch (error) {
-    writeJson(registryPath(), previousRegistry);
-    throw error;
-  }
+  return withSharedRegistryLock(({ assertHeld }) => {
+    const previousRegistry = readJson(registryPath(), { version: 1, bindings: [] });
+    const safeRemote = registeredRepositoryTransport(repository, previousRegistry);
+    const detected = detectSharedProject(resolvedRoot, { repository: safeRemote, projectId });
+    const bindingRoot = detected.projectRoot;
+    const connection = { version: 1, repository: safeRemote, projectId: detected.projectId, projectRoot: bindingRoot };
+    const exactCapabilities = Array.isArray(projectCapabilities)
+      ? projectCapabilities.map((capability) => normalizedSharedProjectCapability(capability))
+      : [];
+    if (exactCapabilities.some((capability) => !capability)) {
+      throw sharedContextError("shared-project-capability-invalid", "Shared connection project capabilities are invalid");
+    }
+    if (connectionReceiptId && !exactCapabilities.length) {
+      throw sharedContextError("shared-project-capability-required", "Context Hub Shared connections require exact project capabilities");
+    }
+    const capabilityRoots = exactCapabilities.map((capability) => capability.root);
+    const requestedRoots = [...new Set([
+      bindingRoot,
+      ...(capabilityRoots.length ? capabilityRoots : (Array.isArray(projectRoots) ? projectRoots : [])),
+    ].map((candidate) => path.resolve(candidate)))];
+    if (requestedRoots.length > 1_024) throw new Error("Too many project roots were requested for one Shared connection");
+    if (exactCapabilities.length && (
+      exactCapabilities.length !== requestedRoots.length
+      || !requestedRoots.every((candidate) => exactCapabilities.some((capability) => capability.root === candidate))
+    )) {
+      throw sharedContextError("shared-project-capability-mismatch", "Shared connection roots do not match the exact Context Hub project group");
+    }
+    const capabilityByRoot = new Map(exactCapabilities.map((capability) => [capability.root, capability]));
+    try {
+      for (const candidate of requestedRoots) {
+        const capability = capabilityByRoot.get(candidate);
+        if (capability) assertSharedProjectCapability(capability, "Shared connection project");
+        else if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) throw new Error(`Project root does not exist: ${candidate}`);
+        const candidateProject = detectSharedProject(candidate, { repository: safeRemote, projectId: detected.projectId });
+        if (path.resolve(candidateProject.projectRoot) !== candidate || candidateProject.projectId !== detected.projectId) {
+          throw new Error(`Shared project ${detected.projectId} does not resolve to the requested project root: ${candidate}`);
+        }
+        if (capability) assertSharedProjectCapability(capability, "Shared connection project");
+        registerSourceBindingUnderLock(candidate, { ...connection, projectRoot: candidate }, { projectCapability: capability });
+      }
+      for (const capability of exactCapabilities) assertSharedProjectCapability(capability, "Shared connection project");
+      if (!sync) return { connection, connected: true };
+      return syncSharedContextInternal(bindingRoot, {
+        connectionReceiptId,
+        connectionReceiptRoots: requestedRoots,
+        projectCapabilities: exactCapabilities,
+      }, { registryLockHeld: true });
+    } catch (error) {
+      assertHeld();
+      writeSharedRegistry(previousRegistry);
+      throw error;
+    }
+  });
 }
 
-export function syncSharedContext(root, { allowOffline = true, forceReconcile = false, providers = null } = {}) {
+function syncSharedContextInternal(root, options = {}, { registryLockHeld = false, repositoryLockHeld = false } = {}) {
+  const {
+    allowOffline = true,
+    forceReconcile = false,
+    providers = null,
+    connectionReceiptId = "",
+    connectionReceiptRoots = [],
+    projectCapabilities = [],
+    timeoutMs = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS,
+  } = options;
   const resolvedRoot = path.resolve(root);
   const connection = readSharedProjectConnection(resolvedRoot);
   if (!connection) throw new Error("This project has no approved shared-context binding; run context-room shared setup first");
+  authenticatedSharedGit(connection.repository, options.push, timeoutMs);
   const localProjectRoot = connection.projectRoot || resolvedRoot;
-  registerSourceBinding(localProjectRoot, { ...connection, projectRoot: localProjectRoot });
-  const checkout = ensureRepositoryClone(connection.repository);
+  const exactProjectCapabilities = Array.isArray(projectCapabilities)
+    ? projectCapabilities.map((capability) => normalizedSharedProjectCapability(capability))
+    : [];
+  if (exactProjectCapabilities.some((capability) => !capability)) {
+    throw sharedContextError("shared-project-capability-invalid", "Shared synchronization project capabilities are invalid");
+  }
+  const capabilityByRoot = new Map(exactProjectCapabilities.map((capability) => [capability.root, capability]));
+  const localCapability = capabilityByRoot.get(path.resolve(localProjectRoot));
+  if (connectionReceiptId && (!localCapability || exactProjectCapabilities.length !== new Set(connectionReceiptRoots.map((candidate) => path.resolve(candidate))).size)) {
+    throw sharedContextError("shared-project-capability-mismatch", "Shared synchronization roots do not match the exact Context Hub project group");
+  }
+  if (localCapability) assertSharedProjectCapability(localCapability, "Shared synchronization project");
+  if (registryLockHeld) registerSourceBindingUnderLock(localProjectRoot, { ...connection, projectRoot: localProjectRoot }, { projectCapability: localCapability });
+  else registerSourceBinding(localProjectRoot, { ...connection, projectRoot: localProjectRoot });
+  const operation = () => {
+  const budget = sharedGitNetworkBudget(timeoutMs);
+  const cloneAuth = authenticatedSharedGit(connection.repository, options.push, remainingSharedGitNetworkTimeout(budget, "Git clone"));
+  const checkout = ensureRepositoryCloneUnderLock(connection.repository, {
+    timeoutMs: remainingSharedGitNetworkTimeout(budget, "Git clone"),
+    timeoutBudgetMs: budget.timeoutMs,
+    credential: cloneAuth?.credential || null,
+    remote: cloneAuth?.remote || connection.repository,
+  });
   let fetchError = "";
   try {
-    runGit(checkout, ["fetch", "--prune", "origin"], { stdio: ["ignore", "ignore", "pipe"] });
+    const fetchAuth = authenticatedSharedGit(connection.repository, options.push, remainingSharedGitNetworkTimeout(budget, "Git fetch"));
+    runSharedNetworkGit(checkout, fetchAuth
+      ? ["fetch", "--force", "--prune", "--no-tags", fetchAuth.remote, "+refs/heads/*:refs/remotes/origin/*"]
+      : ["fetch", "--prune", "origin"], {
+      stdio: ["ignore", "ignore", "pipe"],
+      ...(fetchAuth ? { credential: fetchAuth.credential } : {}),
+      operation: "Git fetch",
+      timeoutMs: remainingSharedGitNetworkTimeout(budget, "Git fetch"),
+      timeoutBudgetMs: budget.timeoutMs,
+    });
   } catch (error) {
     fetchError = String(error.stderr || error.message || error).trim();
-    if (!allowOffline) throw new Error(`Unable to refresh shared context: ${fetchError}`);
+    if (String(error?.code || "").startsWith("github-app-")) throw error;
+    if (!allowOffline) {
+      if (error?.code === "shared-git-timeout") throw error;
+      throw new Error(`Unable to refresh shared context: ${fetchError}`);
+    }
   }
   const state = readJson(sharedStatePath(connection.repository), {});
   const previousRevision = state.revision ? safeRevision(state.revision, "previous shared revision") : "";
@@ -2619,12 +5260,20 @@ export function syncSharedContext(root, { allowOffline = true, forceReconcile = 
     const descriptor = readRemoteSharedDescriptor(checkout, state.defaultBranch || "");
     ({ revision, config: repositoryConfig, catalog } = descriptor);
   } catch (error) {
-    if (!fetchError || !state.revision || !state.repositoryConfig) throw error;
-    revision = state.revision;
-    repositoryConfig = normalizedRepositoryConfig(state.repositoryConfig);
-    catalog = state.catalog
-      ? normalizedProjectsCatalog(state.catalog)
-      : normalizedProjectsCatalog(JSON.parse(runGit(checkout, ["show", `${revision}:${repositoryConfig.projectsFile}`])));
+    if (!fetchError || !state.revision) throw error;
+    revision = safeRevision(state.revision, "cached shared revision");
+    if (!gitObjectExists(checkout, `${revision}^{commit}`)) throw error;
+    const descriptor = readSharedDescriptorAtRevision(checkout, revision);
+    ({ config: repositoryConfig, catalog } = descriptor);
+    const cachedRemoteRef = `refs/remotes/origin/${repositoryConfig.defaultBranch}`;
+    if (!gitObjectExists(checkout, `${cachedRemoteRef}^{commit}`)
+      || !gitIsAncestor(checkout, revision, cachedRemoteRef)) {
+      throw sharedContextError("shared-cache-unverified", "Cached Shared state is not reachable from its repository origin", {
+        repository: connection.repository,
+        revision,
+        defaultBranch: repositoryConfig.defaultBranch,
+      });
+    }
   }
   assertSafeTreeEntries(checkout, revision, []);
   const cacheRoot = repositoryCacheRoot(connection.repository);
@@ -2640,10 +5289,8 @@ export function syncSharedContext(root, { allowOffline = true, forceReconcile = 
   if (!fs.existsSync(sharedProjectRoot) || !fs.statSync(sharedProjectRoot).isDirectory()) {
     throw new Error(`Shared project does not exist in origin/${repositoryConfig.defaultBranch}: ${connection.projectId}`);
   }
+  for (const capability of exactProjectCapabilities) assertSharedProjectCapability(capability, "Shared synchronization project");
   const current = path.join(cacheRoot, "current");
-  const previousCurrent = (() => {
-    try { return fs.lstatSync(current).isSymbolicLink() ? path.resolve(path.dirname(current), fs.readlinkSync(current)) : ""; } catch { return ""; }
-  })();
   const configPath = path.join(localProjectRoot, ".context-room", "config.json");
   const previousConfig = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : null;
   let installedSharedContext = null;
@@ -2651,69 +5298,138 @@ export function syncSharedContext(root, { allowOffline = true, forceReconcile = 
     try { installedSharedContext = JSON.parse(previousConfig).sharedContext || null; } catch {}
   }
   const switchingSharedContext = installedSharedContext?.repository && (
-    safeRepository(installedSharedContext.repository) !== connection.repository
+    !sameSharedRepository(installedSharedContext.repository, connection.repository)
     || installedSharedContext.projectId !== connection.projectId
   );
   let detachedSkillLinks = [];
   let links;
   let instructionLinks;
   let room;
+  const completedConnectionRoots = new Set();
   const revisionChanged = previousRevision !== revision;
-  const reconcileLocation = (locationRoot, locationConnection, skillLocations) => {
+  const { skillLocations, instructionLocations } = readValidatedSharedLocationsFromRoot(snapshot, repositoryConfig, catalog);
+  const transaction = createSharedMutationTransaction("Shared Context sync");
+  transaction.capture(current);
+  transaction.capture(sharedStatePath(connection.repository));
+  const exactConnectionReceiptRoots = connectionReceiptId
+    ? [...new Set((Array.isArray(connectionReceiptRoots) && connectionReceiptRoots.length
+      ? connectionReceiptRoots
+      : [localProjectRoot]).map((candidate) => path.resolve(candidate)))]
+    : [];
+  for (const receiptRoot of exactConnectionReceiptRoots) {
+    const capability = capabilityByRoot.get(receiptRoot);
+    if (connectionReceiptId && !capability) throw sharedContextError("shared-project-capability-mismatch", "Shared receipt root is outside the exact Context Hub project group");
+    if (capability) assertSharedProjectCapability(capability, "Shared receipt project");
+    transaction.capture(sharedConnectionReceiptPath(connection.repository, receiptRoot));
+  }
+  if (localCapability) assertSharedProjectCapability(localCapability, "Shared synchronization project");
+  captureSharedReconcileLocation(
+    transaction,
+    localProjectRoot,
+    connection,
+    repositoryConfig,
+    snapshot,
+    catalog,
+    { includeDevice: true, providers },
+  );
+  const reconcileLocation = (locationRoot, locationConnection, reconcileTransaction) => {
     const registryFile = skillLinkRegistryPath(connection.repository, locationRoot);
     const existing = readJson(registryFile, null);
     if (!forceReconcile && !revisionChanged && existing?.revision === revision) {
       const plan = resolvedSkillLinkPlan(locationRoot, locationConnection, repositoryConfig, catalog, snapshot);
       return { ...plan, links: existing.links || [], destinations: existing.destinations || [], migrations: [], completedImports: [], skipped: true };
     }
-    return syncSkillLinks(locationRoot, locationConnection, repositoryConfig, snapshot, catalog, { providers });
+    return syncSkillLinks(locationRoot, locationConnection, repositoryConfig, snapshot, catalog, { providers, transaction: reconcileTransaction });
   };
   try {
+    if (localCapability) assertSharedProjectCapability(localCapability, "Shared synchronization project");
     if (switchingSharedContext) detachedSkillLinks = detachInstalledSkillLinks(localProjectRoot, installedSharedContext);
+    if (localCapability) assertSharedProjectCapability(localCapability, "Shared synchronization project");
     replaceSymlink(current, snapshot, { managedRoot: cacheRoot });
-    const skillLocations = readSharedSkillLocationsFromRoot(snapshot, repositoryConfig, catalog);
-    const instructionLocations = readSharedInstructionLocationsFromRoot(snapshot, repositoryConfig, catalog);
+    if (localCapability) assertSharedProjectCapability(localCapability, "Shared synchronization project");
     room = configureProjectRoom(localProjectRoot, connection, repositoryConfig, current, skillLocations, instructionLocations);
-    links = reconcileLocation(localProjectRoot, connection, skillLocations);
-    instructionLinks = reconcileInstructionLinks(localProjectRoot, connection, repositoryConfig, snapshot, catalog, { includeDevice: true, providers });
+    if (localCapability) assertSharedProjectCapability(localCapability, "Shared synchronization project");
+    links = reconcileLocation(localProjectRoot, connection, transaction);
+    if (localCapability) assertSharedProjectCapability(localCapability, "Shared synchronization project");
+    instructionLinks = reconcileInstructionLinks(localProjectRoot, connection, repositoryConfig, snapshot, catalog, { includeDevice: true, providers, transaction });
+    completedConnectionRoots.add(path.resolve(localProjectRoot));
     for (const location of registeredRepositoryProjectLocations(connection.repository)) {
       if (location.projectId === connection.projectId && stableRoot(location.root) === stableRoot(localProjectRoot)) continue;
+      const locationRoot = path.resolve(location.root);
+      const locationCapability = capabilityByRoot.get(locationRoot);
+      if (connectionReceiptId && !locationCapability) continue;
+      const locationConnection = { ...connection, projectId: location.projectId, projectRoot: location.root };
+      const locationTransaction = createSharedMutationTransaction(`Shared Context worktree ${location.root}`);
       try {
-        configureProjectRoom(location.root, { ...connection, projectId: location.projectId, projectRoot: location.root }, repositoryConfig, current, skillLocations, instructionLocations);
-        reconcileLocation(location.root, { ...connection, projectId: location.projectId, projectRoot: location.root }, skillLocations);
-        const reconciledInstructions = reconcileInstructionLinks(location.root, { ...connection, projectId: location.projectId, projectRoot: location.root }, repositoryConfig, snapshot, catalog, { includeDevice: false, providers });
+        if (locationCapability) assertSharedProjectCapability(locationCapability, "Shared synchronization worktree");
+        captureSharedReconcileLocation(
+          locationTransaction,
+          location.root,
+          locationConnection,
+          repositoryConfig,
+          snapshot,
+          catalog,
+          { includeDevice: false, providers },
+        );
+        if (locationCapability) assertSharedProjectCapability(locationCapability, "Shared synchronization worktree");
+        configureProjectRoom(location.root, locationConnection, repositoryConfig, current, skillLocations, instructionLocations);
+        if (locationCapability) assertSharedProjectCapability(locationCapability, "Shared synchronization worktree");
+        reconcileLocation(location.root, locationConnection, locationTransaction);
+        if (locationCapability) assertSharedProjectCapability(locationCapability, "Shared synchronization worktree");
+        const reconciledInstructions = reconcileInstructionLinks(location.root, locationConnection, repositoryConfig, snapshot, catalog, { includeDevice: false, providers, transaction: locationTransaction });
         instructionLinks.links.push(...reconciledInstructions.links);
+        transaction.absorb(locationTransaction);
+        completedConnectionRoots.add(path.resolve(location.root));
       } catch (error) {
+        try { locationTransaction.rollback({ projectCapabilities: locationCapability ? [locationCapability] : [] }); }
+        catch (rollbackError) {
+          rollbackError.cause = error;
+          throw rollbackError;
+        }
         links.destinations.push({ id: `worktree:${hashKey(location.root).slice(0, 12)}`, assignmentId: "", collectionId: "", provider: "", scope: "project", destination: location.root, skills: [], links: [], status: "worktree-error", message: `Unable to reconcile registered worktree: ${error.message}`, conflicts: [] });
       }
     }
-  } catch (error) {
-    restoreDetachedSkillLinks(detachedSkillLinks);
-    if (previousCurrent) {
-      try { replaceSymlink(current, previousCurrent, { managedRoot: cacheRoot }); } catch {}
-    } else {
-      const currentState = managedSymlinkTarget(current, cacheRoot);
-      if (currentState.symbolic && currentState.managed) {
-        try { fs.unlinkSync(current); } catch {}
+    const incompleteReceiptRoot = exactConnectionReceiptRoots.find((receiptRoot) => !completedConnectionRoots.has(receiptRoot));
+    if (incompleteReceiptRoot) {
+      throw sharedContextError(
+        "shared-connection-incomplete",
+        `Unable to finish Shared synchronization for registered worktree: ${incompleteReceiptRoot}`,
+        { projectRoot: incompleteReceiptRoot, projectId: connection.projectId },
+      );
+    }
+    for (const capability of exactProjectCapabilities) assertSharedProjectCapability(capability, "Shared synchronization project");
+    writePrivateJson(sharedStatePath(connection.repository), {
+      version: 1,
+      repository: connection.repository,
+      defaultBranch: repositoryConfig.defaultBranch,
+      revision,
+      syncedAt: new Date().toISOString(),
+      online: !fetchError,
+      fetchError,
+      repositoryConfig,
+      catalog,
+    });
+    if (connectionReceiptId) {
+      for (const receiptRoot of exactConnectionReceiptRoots) {
+        assertSharedProjectCapability(capabilityByRoot.get(receiptRoot), "Shared receipt project");
+        writeSharedConnectionReceipt(
+          receiptRoot,
+          { ...connection, projectRoot: receiptRoot },
+          revision,
+          connectionReceiptId,
+          repositoryConfig,
+        );
       }
     }
-    if (previousConfig !== null) {
-      try { fs.writeFileSync(configPath, previousConfig, "utf8"); } catch {}
+  } catch (error) {
+    if (!exactProjectCapabilities.length) restoreDetachedSkillLinks(detachedSkillLinks);
+    try { transaction.rollback({ projectCapabilities: exactProjectCapabilities }); }
+    catch (rollbackError) {
+      rollbackError.cause = error;
+      throw rollbackError;
     }
     throw error;
   }
-  const nextState = {
-    version: 1,
-    repository: connection.repository,
-    defaultBranch: repositoryConfig.defaultBranch,
-    revision,
-    syncedAt: new Date().toISOString(),
-    online: !fetchError,
-    fetchError,
-    repositoryConfig,
-    catalog,
-  };
-  writeJson(sharedStatePath(connection.repository), nextState);
   let commitCount = 0;
   if (revisionChanged) {
     if (previousRevision && gitObjectExists(checkout, `${previousRevision}^{commit}`) && gitIsAncestor(checkout, previousRevision, revision)) {
@@ -2729,6 +5445,16 @@ export function syncSharedContext(root, { allowOffline = true, forceReconcile = 
     });
   }
   return { connection: { ...connection, projectRoot: localProjectRoot }, repositoryConfig, catalog, previousRevision, revision, revisionChanged, commitCount, online: !fetchError, fetchError, cacheRoot, current, skillLocations: links.locations, skillCollections: links.collections, skillDestinations: links.destinations, skillMigrations: links.migrations || [], links: links.links, instructionLocations: instructionLinks.locations, instructionCollections: instructionLinks.collections, instructionLinks: instructionLinks.links, room };
+  };
+  return repositoryLockHeld
+    ? operation()
+    : withSharedRepositoryCloneLock(connection.repository, operation, timeoutMs);
+}
+
+export function syncSharedContext(root, options = {}) {
+  const connection = readSharedProjectConnection(root);
+  if (connection) authenticatedSharedGit(connection.repository, options.push, options.timeoutMs);
+  return withSharedRegistryLock(() => syncSharedContextInternal(root, options, { registryLockHeld: true }));
 }
 
 export function reconcileSharedSkillLocations(root, { provider = "all", allowOffline = true } = {}) {
@@ -2770,10 +5496,40 @@ export function sharedContextStatus(root) {
   };
 }
 
+export function readSharedConnectionReceipt(root, {
+  repository,
+  projectId,
+  receiptId,
+} = {}) {
+  const exactRoot = path.resolve(root);
+  const exactReceiptId = String(receiptId || "").trim();
+  if (!repository || !projectId || !exactReceiptId) return null;
+  const receipt = readJson(sharedConnectionReceiptPath(repository, exactRoot), null);
+  if (!receipt || Number(receipt.version) !== 1) return null;
+  const currentRootIdentity = sharedProjectRootIdentity(exactRoot);
+  if (
+    receipt.receiptId !== exactReceiptId
+    || receipt.repositoryIdentity !== sharedRepositoryIdentity(repository)
+    || !sameSharedRepository(receipt.repository, repository)
+    || receipt.projectId !== String(projectId)
+    || path.resolve(receipt.projectRoot || "") !== exactRoot
+    || String(receipt.rootIdentity?.dev || "") !== currentRootIdentity.dev
+    || String(receipt.rootIdentity?.ino || "") !== currentRootIdentity.ino
+    || !receipt.revision
+    || safeRelativePath(receipt.projectsPath, "Shared connection receipt projectsPath") !== receipt.projectsPath
+    || !Number.isFinite(Date.parse(receipt.completedAt || ""))
+  ) return null;
+  return receipt;
+}
+
 export function readAcceptedSharedMetadataProfiles(root) {
-  const status = sharedContextStatus(root);
-  if (!status.connected || !status.cacheRoot || !status.revision) return [];
-  const snapshot = path.join(status.cacheRoot, "snapshots", status.revision);
+  const connection = readSharedProjectConnection(root);
+  if (!connection) return [];
+  const synced = cachedSharedRepositoryState(connection.repository, {
+    projectId: connection.projectId,
+    projectRoot: connection.projectRoot || path.resolve(root),
+  });
+  const snapshot = synced.snapshot;
   const directory = path.join(snapshot, ".context-room", "profiles");
   if (!fs.existsSync(directory) || !fs.statSync(directory).isDirectory()) return [];
   return fs.readdirSync(directory, { withFileTypes: true })
@@ -2791,10 +5547,10 @@ export function readAcceptedSharedMetadataProfiles(root) {
           definition = document.toJS({ maxAliasCount: 50 });
         }
         return definition && typeof definition === "object" && !Array.isArray(definition)
-          ? [{ ...definition, origin: "shared", filePath: `.context-room/profiles/${entry.name}`, sharedRevision: status.revision }]
+          ? [{ ...definition, origin: "shared", filePath: `.context-room/profiles/${entry.name}`, sharedRevision: synced.revision }]
           : [];
       } catch {
-        return [{ id: `invalid-shared-profile-${entry.name}`, schemaVersion: "context-room.metadata-profile/1", version: "invalid", match: ["**/*"], origin: "shared", filePath: `.context-room/profiles/${entry.name}`, sharedRevision: status.revision, invalidSource: true }];
+        return [{ id: `invalid-shared-profile-${entry.name}`, schemaVersion: "context-room.metadata-profile/1", version: "invalid", match: ["**/*"], origin: "shared", filePath: `.context-room/profiles/${entry.name}`, sharedRevision: synced.revision, invalidSource: true }];
       }
     });
 }
@@ -3415,9 +6171,14 @@ function sharedSecurityTarget(root) {
     const state = readJson(sharedStatePath(connection.repository), {});
     let repositoryConfig = state.repositoryConfig ? normalizedRepositoryConfig(state.repositoryConfig) : null;
     if (!repositoryConfig) {
-      const checkout = ensureRepositoryClone(connection.repository);
-      runGit(checkout, ["fetch", "--prune", "origin"], { stdio: ["ignore", "ignore", "pipe"] });
-      repositoryConfig = readRemoteSharedDescriptor(checkout).config;
+      repositoryConfig = withSharedRepositoryCloneLock(connection.repository, () => {
+        const checkout = ensureRepositoryCloneUnderLock(connection.repository);
+        runSharedNetworkGit(checkout, ["fetch", "--prune", "origin"], {
+          stdio: ["ignore", "ignore", "pipe"],
+          operation: "Git fetch",
+        });
+        return readRemoteSharedDescriptor(checkout).config;
+      });
     }
     return { repository: connection.repository, repositoryConfig, gitRoots: [repositoryCheckout(connection.repository)] };
   }
@@ -3443,6 +6204,10 @@ function sharedAgentCredential(repository) {
 }
 
 function ensureSharedAgentCredential(repository) {
+  const cacheRoot = repositoryCacheRoot(repository);
+  fs.mkdirSync(cacheRoot, { recursive: true, mode: 0o700 });
+  assertSharedCacheDirectoryNoFollow(cacheRoot, "Shared repository cache");
+  writeRepositoryIdentityClaim(cacheRoot, repository);
   const credential = sharedAgentCredential(repository);
   fs.mkdirSync(credential.directory, { recursive: true, mode: 0o700 });
   fs.chmodSync(credential.directory, 0o700);
@@ -3550,6 +6315,10 @@ function githubPrefixPattern(prefix) {
   return `refs/heads/${String(prefix).replace(/\/$/, "")}/**/*`;
 }
 
+function githubTerminalStatePattern() {
+  return `refs/heads/${SHARED_PROPOSAL_STATE_PREFIX.replace(/\/$/, "")}/*`;
+}
+
 function githubRulesetPayload(defaultBranch) {
   return {
     name: githubRulesetName(defaultBranch),
@@ -3577,16 +6346,19 @@ function githubRulesetPayload(defaultBranch) {
 
 function githubReviewRulesetPayload(config, kind) {
   const rejected = kind === "rejected";
+  const terminalState = kind === "state";
   const prefix = rejected ? config.rejectionPrefix : config.proposalPrefix;
   return {
     name: githubReviewRulesetName(kind),
     target: "branch",
     enforcement: "active",
     bypass_actors: [],
-    conditions: { ref_name: { include: [githubPrefixPattern(prefix)], exclude: [] } },
+    conditions: { ref_name: { include: [terminalState ? githubTerminalStatePattern() : githubPrefixPattern(prefix)], exclude: [] } },
     rules: rejected
       ? [{ type: "deletion" }, { type: "non_fast_forward" }, { type: "update" }]
-      : [{ type: "deletion" }],
+      : terminalState
+        ? [{ type: "deletion" }, { type: "non_fast_forward" }]
+        : [{ type: "deletion" }],
   };
 }
 
@@ -3612,13 +6384,20 @@ function inspectGitHubRuleset(ruleset, defaultBranch) {
 function inspectGitHubReviewRuleset(ruleset, config, kind) {
   const types = new Set((ruleset?.rules || []).map((rule) => rule.type));
   const rejected = kind === "rejected";
+  const terminalState = kind === "state";
   const checks = {
     active: ruleset?.enforcement === "active",
     branchTarget: ruleset?.target === "branch",
-    exactPattern: ruleset?.conditions?.ref_name?.include?.includes(githubPrefixPattern(rejected ? config.rejectionPrefix : config.proposalPrefix)) === true,
+    exactPattern: ruleset?.conditions?.ref_name?.include?.includes(
+      terminalState ? githubTerminalStatePattern() : githubPrefixPattern(rejected ? config.rejectionPrefix : config.proposalPrefix),
+    ) === true,
     noBypassActors: Array.isArray(ruleset?.bypass_actors) && ruleset.bypass_actors.length === 0,
     blocksDeletion: types.has("deletion"),
-    ...(rejected ? { blocksForcePush: types.has("non_fast_forward"), blocksUpdates: types.has("update") } : {}),
+    ...(rejected
+      ? { blocksForcePush: types.has("non_fast_forward"), blocksUpdates: types.has("update") }
+      : terminalState
+        ? { blocksForcePush: types.has("non_fast_forward") }
+        : {}),
   };
   return { verified: Object.values(checks).every(Boolean), checks };
 }
@@ -3648,15 +6427,18 @@ export function checkSharedGitHubSecurity(root) {
   const mainRuleset = readGitHubRuleset(github, findGitHubRulesetSummary(rulesets, githubRulesetName(repositoryConfig.defaultBranch)));
   const proposalRuleset = readGitHubRuleset(github, findGitHubRulesetSummary(rulesets, githubReviewRulesetName("proposal")));
   const rejectedRuleset = readGitHubRuleset(github, findGitHubRulesetSummary(rulesets, githubReviewRulesetName("rejected")));
+  const stateRuleset = readGitHubRuleset(github, findGitHubRulesetSummary(rulesets, githubReviewRulesetName("state")));
   const mainInspected = inspectGitHubRuleset(mainRuleset, repositoryConfig.defaultBranch);
   const proposalInspected = inspectGitHubReviewRuleset(proposalRuleset, repositoryConfig, "proposal");
   const rejectedInspected = inspectGitHubReviewRuleset(rejectedRuleset, repositoryConfig, "rejected");
+  const stateInspected = inspectGitHubReviewRuleset(stateRuleset, repositoryConfig, "state");
   const deployKeys = runGitHubApi(`repos/${github.fullName}/keys?per_page=100`);
   const agentGit = inspectSharedAgentGit(repository, github, gitRoots, deployKeys);
   const checks = {
     ...prefixedChecks("main", mainInspected.checks),
     ...prefixedChecks("proposal", proposalInspected.checks),
     ...prefixedChecks("rejected", rejectedInspected.checks),
+    ...prefixedChecks("state", stateInspected.checks),
     ...agentGit.checks,
   };
   return writeGitHubSecurityState(repository, {
@@ -3669,6 +6451,7 @@ export function checkSharedGitHubSecurity(root) {
       main: mainRuleset?.id || null,
       proposal: proposalRuleset?.id || null,
       rejected: rejectedRuleset?.id || null,
+      state: stateRuleset?.id || null,
     },
     rulesetUrl: mainRuleset?._links?.html?.href || `https://github.com/${github.fullName}/settings/rules`,
     deployKeyId: agentGit.deployKey?.id || null,
@@ -3685,6 +6468,7 @@ export function secureSharedGitHubRepository(root) {
     githubRulesetPayload(repositoryConfig.defaultBranch),
     githubReviewRulesetPayload(repositoryConfig, "proposal"),
     githubReviewRulesetPayload(repositoryConfig, "rejected"),
+    githubReviewRulesetPayload(repositoryConfig, "state"),
   ];
   let createdRulesets = 0;
   let updatedRulesets = 0;
@@ -3730,11 +6514,11 @@ function proposalScopePrefixes(config, projectId, scope, options = {}) {
     let locations = options.locations || null;
     if (!locations && options.root) {
       const catalog = options.catalog || normalizedProjectsCatalog(readJson(path.join(options.root, config.projectsFile)));
-      locations = readSharedSkillLocationsFromRoot(options.root, config, catalog);
+      ({ skillLocations: locations } = readValidatedSharedLocationsFromRoot(options.root, config, catalog));
     }
     if (!locations && options.checkout && options.revision) {
       const catalog = options.catalog || normalizedProjectsCatalog(JSON.parse(String(runGit(options.checkout, ["show", `${options.revision}:${config.projectsFile}`]))));
-      locations = readSharedSkillLocationsFromRevision(options.checkout, options.revision, config, catalog);
+      ({ skillLocations: locations } = readValidatedSharedLocationsFromRevision(options.checkout, options.revision, config, catalog));
     }
     return (locations?.collections || []).map((collection) => collection.path.replace(/\/$/, "") + "/");
   }
@@ -3742,20 +6526,91 @@ function proposalScopePrefixes(config, projectId, scope, options = {}) {
     let locations = options.instructionLocations || null;
     if (!locations && options.root) {
       const catalog = options.catalog || normalizedProjectsCatalog(readJson(path.join(options.root, config.projectsFile)));
-      locations = readSharedInstructionLocationsFromRoot(options.root, config, catalog);
+      ({ instructionLocations: locations } = readValidatedSharedLocationsFromRoot(options.root, config, catalog));
     }
     if (!locations && options.checkout && options.revision) {
       const catalog = options.catalog || normalizedProjectsCatalog(JSON.parse(String(runGit(options.checkout, ["show", `${options.revision}:${config.projectsFile}`]))));
-      const manifest = `${options.revision}:${config.instructionLocationsFile}`;
-      locations = gitObjectExists(options.checkout, manifest)
-        ? normalizedSharedInstructionLocations(JSON.parse(String(runGit(options.checkout, ["show", manifest]))), { repositoryConfig: config, catalog })
-        : emptySharedInstructionLocations();
+      ({ instructionLocations: locations } = readValidatedSharedLocationsFromRevision(options.checkout, options.revision, config, catalog));
     }
     return (locations?.collections || []).map((collection) => collection.path.replace(/\/$/, "") + "/");
   }
   if (scope !== "project") throw new Error("Proposal scope must be project, global, skills, or instructions");
   const projectRoot = `${config.projectsPath.replace(/\/$/, "")}/${safeId(projectId, "projectId")}`;
   return [`${projectRoot}/docs/`, `${projectRoot}/skills/`];
+}
+
+function sharedProjectCatalogText(config, options = {}, { accepted = false } = {}) {
+  const cwd = options.root || options.checkout || "";
+  if (!cwd) return "";
+  if (accepted) {
+    return String(tryGit(cwd, ["show", `refs/remotes/origin/${config.defaultBranch}:${config.projectsFile}`]) || "");
+  }
+  if (options.root) {
+    try { return fs.readFileSync(path.join(options.root, config.projectsFile), "utf8"); } catch { return ""; }
+  }
+  if (options.checkout && options.revision) {
+    try { return String(runGit(options.checkout, ["show", `${options.revision}:${config.projectsFile}`])); } catch { return ""; }
+  }
+  return "";
+}
+
+function projectCreationProposalPolicy(config, projectId, options = {}) {
+  const proposedText = sharedProjectCatalogText(config, options);
+  if (!proposedText) return null;
+  let proposedRaw;
+  let proposedCatalog;
+  try {
+    proposedRaw = JSON.parse(proposedText);
+    proposedCatalog = normalizedProjectsCatalog(proposedRaw);
+  } catch {
+    return null;
+  }
+  let acceptedCatalog = options.catalog || null;
+  const acceptedText = sharedProjectCatalogText(config, options, { accepted: true });
+  let acceptedRaw = null;
+  if (acceptedText) {
+    try { acceptedRaw = JSON.parse(acceptedText); } catch { return null; }
+  }
+  if (!acceptedCatalog && acceptedText) {
+    try { acceptedCatalog = normalizedProjectsCatalog(acceptedRaw); } catch {}
+  }
+  if (!acceptedCatalog) return null;
+  const acceptedProject = acceptedCatalog.projects.find((project) => project.id === projectId) || null;
+  const proposedProject = proposedCatalog.projects.find((project) => project.id === projectId) || null;
+  if (!proposedProject) return null;
+
+  // An existing project's proposal never gains catalog authority unless its
+  // projects.json is byte-for-byte the current accepted catalog. This keeps a
+  // concurrent creation visible after another identical proposal lands while
+  // still rejecting catalog edits from ordinary project proposals.
+  if (acceptedProject) {
+    if (!acceptedText || proposedText.trimEnd() !== acceptedText.trimEnd()) return null;
+    return {
+      createsProject: false,
+      projectTitle: acceptedProject.title,
+      projectPath: `${config.projectsPath}/${projectId}`,
+    };
+  }
+
+  // A creation proposal may append exactly one source-less project entry. It
+  // cannot rename, reorder, delete, or remap any accepted project.
+  if (!acceptedRaw) return null;
+  if (proposedCatalog.projects.length !== acceptedCatalog.projects.length + 1) return null;
+  if (proposedCatalog.projects.at(-1)?.id !== projectId || proposedProject.source) return null;
+  const acceptedPrefix = proposedCatalog.projects.slice(0, -1);
+  if (JSON.stringify(acceptedPrefix) !== JSON.stringify(acceptedCatalog.projects)) return null;
+  const appendedRaw = proposedRaw.projects?.at(-1);
+  if (!appendedRaw
+    || JSON.stringify(Object.keys(appendedRaw).sort()) !== JSON.stringify(["id", "title"])
+    || appendedRaw.id !== projectId
+    || appendedRaw.title !== proposedProject.title) return null;
+  const exactAppend = { ...acceptedRaw, projects: [...acceptedRaw.projects, appendedRaw] };
+  if (JSON.stringify(proposedRaw) !== JSON.stringify(exactAppend)) return null;
+  return {
+    createsProject: true,
+    projectTitle: proposedProject.title,
+    projectPath: `${config.projectsPath}/${projectId}`,
+  };
 }
 
 function proposalIdentity(config, branch, options = {}) {
@@ -3766,21 +6621,48 @@ function proposalIdentity(config, branch, options = {}) {
   if (segments.length < 2 || !segments.slice(1).join("/")) throw new Error("Proposal branch must include a scope and proposal name");
   const scopeId = safeId(segments[0], "proposal scope");
   const scope = scopeId === "global" ? "global" : scopeId === "skills" ? "skills" : scopeId === "instructions" ? "instructions" : "project";
+  const projectCreation = scope === "project" ? projectCreationProposalPolicy(config, scopeId, options) : null;
   return {
     branch: safeBranch,
     projectId: scopeId,
     scope,
-    allowedExact: scope === "skills" ? [config.skillLocationsFile] : scope === "instructions" ? [config.instructionLocationsFile] : [],
-    allowedPrefixes: proposalScopePrefixes(config, scopeId, scope, options),
+    allowedExact: scope === "skills"
+      ? [config.skillLocationsFile]
+      : scope === "instructions"
+        ? [config.instructionLocationsFile]
+        : projectCreation?.createsProject === true
+          ? [config.projectsFile]
+          : [],
+    allowedPrefixes: projectCreation?.createsProject === true
+      ? [`${projectCreation.projectPath}/docs/`]
+      : proposalScopePrefixes(config, scopeId, scope, options),
+    ...(projectCreation || {}),
   };
 }
 
 function assertPathsInProposalScope(files, policy) {
   const outside = files.filter((file) => !(policy.allowedExact || []).includes(file) && !policy.allowedPrefixes.some((prefix) => file.startsWith(prefix)));
   if (!outside.length) return;
-  if (policy.scope === "project") throw new Error(`Proposal changes files outside ${policy.allowedPrefixes.join(" or ")}: ${outside.join(", ")}`);
-  if (policy.scope === "global") throw new Error(`Proposal changes files outside ${policy.allowedPrefixes.join(" or ")}: ${outside.join(", ")}`);
-  throw new Error(`Proposal changes files outside its allowed shared manifest or collections: ${outside.join(", ")}`);
+  const message = ["project", "global"].includes(policy.scope)
+    ? `Proposal changes files outside ${policy.allowedPrefixes.join(" or ")}: ${outside.join(", ")}`
+    : `Proposal changes files outside its allowed shared manifest or collections: ${outside.join(", ")}`;
+  const error = new Error(message);
+  error.code = "shared-proposal-scope-violation";
+  error.statusCode = 403;
+  throw error;
+}
+
+function assertProjectCreationProposalBundle(files, policy) {
+  if (policy.createsProject !== true) return;
+  const changed = [...new Set((files || []).map((filePath) => safeRelativePath(filePath, "shared project proposal path")))];
+  const catalogPath = (policy.allowedExact || [])[0] || "";
+  const documentPrefix = `${policy.projectPath}/docs/`;
+  const documents = changed.filter((filePath) => filePath.startsWith(documentPrefix) && filePath.toLowerCase().endsWith(".md"));
+  if (changed.length === 2 && catalogPath && changed.includes(catalogPath) && documents.length === 1) return;
+  const error = new Error(`A Shared project creation proposal must change exactly ${catalogPath || "projects.json"} and one Markdown file below ${documentPrefix}`);
+  error.code = "shared-proposal-scope-violation";
+  error.statusCode = 403;
+  throw error;
 }
 
 function proposalBranch(config, projectId, title, scope, explicit = "") {
@@ -3793,19 +6675,91 @@ function proposalBranch(config, projectId, title, scope, explicit = "") {
   }
   const slug = String(title || "change").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "change";
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
-  return `${config.proposalPrefix}${scopeId}/${stamp}-${slug}`;
+  const uniqueSuffix = randomUUID().replaceAll("-", "");
+  return `${config.proposalPrefix}${scopeId}/${stamp}-${slug}-${uniqueSuffix}`;
 }
 
 function proposalRegistryPath(repository) {
   return path.join(repositoryCacheRoot(repository), "proposals.json");
 }
 
+function proposalRegistryLockPath(repository) {
+  return `${proposalRegistryPath(repository)}.lock`;
+}
+
+function withProposalRegistryLock(repository, operation, options = {}) {
+  return withFilesystemLock(proposalRegistryLockPath(repository), operation, {
+    timeoutMs: Number.isFinite(Number(options.timeoutMs))
+      ? Math.max(1, Math.floor(Number(options.timeoutMs)))
+      : PROPOSAL_REGISTRY_LOCK_TIMEOUT_MS,
+    staleMs: PROPOSAL_REGISTRY_LOCK_STALE_MS,
+    busyMessage: String(options.busyMessage || "Shared proposal registry is busy in another process"),
+    busyCode: String(options.busyCode || "shared_proposal_registry_busy"),
+  });
+}
+
+const TERMINAL_PROPOSAL_REGISTRY_LOCK_OPTIONS = Object.freeze({
+  timeoutMs: 50,
+  busyMessage: "Another proposal mutation or terminal decision is already in progress",
+  busyCode: "shared-terminal-decision-busy",
+});
+
+function readProposalRegistry(repository) {
+  const registry = readJson(proposalRegistryPath(repository), { version: 1, proposals: {} });
+  if (!registry || registry.version !== 1 || !registry.proposals || typeof registry.proposals !== "object" || Array.isArray(registry.proposals)) {
+    throw new Error("Shared proposal registry is invalid");
+  }
+  return registry;
+}
+
+function writeProposalRegistry(repository, registry) {
+  return writePrivateJson(proposalRegistryPath(repository), {
+    version: 1,
+    proposals: registry.proposals || {},
+  });
+}
+
+function proposalBranchInUse(checkout, repository, registry, branch) {
+  return Boolean(
+    registry.proposals?.[branch]
+    || fs.existsSync(path.join(repositoryCacheRoot(repository), "proposals", hashKey(branch)))
+    || tryGit(checkout, ["show-ref", "--verify", `refs/heads/${branch}`])
+    || tryGit(checkout, ["show-ref", "--verify", `refs/remotes/origin/${branch}`])
+  );
+}
+
+function availableProposalBranch(config, projectId, title, scope, explicit, checkout, repository, registry) {
+  const base = proposalBranch(config, projectId, title, scope, explicit);
+  if (explicit) return base;
+  let candidate = base;
+  for (let suffix = 2; proposalBranchInUse(checkout, repository, registry, candidate); suffix += 1) {
+    candidate = safeBranchName(`${base}-${suffix}`, "proposal branch");
+  }
+  return candidate;
+}
+
 function proposalObservationsPath(repository) {
   return path.join(repositoryCacheRoot(repository), "proposal-observations.json");
 }
 
-function proposalDecisionAuthorityOptions() {
-  return { authorityHome: path.join(sharedHome(), "review-authority") };
+function proposalObservationsLockPath(repository) {
+  return path.join(sharedHome(), "locks", `observations-${hashKey(sharedRepositoryIdentity(repository), 24)}.lock`);
+}
+
+function withProposalObservationsLock(repository, operation) {
+  return withFilesystemLock(proposalObservationsLockPath(repository), operation, {
+    timeoutMs: PROPOSAL_REGISTRY_LOCK_TIMEOUT_MS,
+    staleMs: PROPOSAL_REGISTRY_LOCK_STALE_MS,
+    busyMessage: "Shared proposal observations are busy in another process",
+    busyCode: "shared_proposal_observations_busy",
+  });
+}
+
+function proposalDecisionAuthorityOptions(repository) {
+  return {
+    authorityHome: path.join(sharedHome(), "review-authority"),
+    repositoryIdentity: sharedRepositoryIdentity(repository),
+  };
 }
 
 function observedProposalValue(item, state = "active") {
@@ -3816,6 +6770,8 @@ function observedProposalValue(item, state = "active") {
     repository: String(item.repository || ""),
     repositoryName: String(item.repositoryName || ""),
     projectTitle: String(item.projectTitle || ""),
+    createsProject: item.createsProject === true,
+    projectPath: String(item.projectPath || ""),
     head: String(item.head || ""),
     baseRevision: String(item.baseRevision || ""),
     updatedAt: String(item.updatedAt || ""),
@@ -3835,30 +6791,46 @@ function observedProposalValue(item, state = "active") {
 }
 
 function readProposalObservations(repository) {
-  const state = readJson(proposalObservationsPath(repository), { version: 1, repository, proposals: {} });
-  if (state?.version !== 1 || state?.repository !== repository || !state.proposals || typeof state.proposals !== "object") {
-    return { version: 1, repository, proposals: {} };
+  const repositoryIdentity = sharedRepositoryIdentity(repository);
+  const state = readJson(proposalObservationsPath(repository), { version: 1, repository, repositoryIdentity, proposals: {} });
+  let stateIdentity = String(state?.repositoryIdentity || "");
+  if (!stateIdentity && state?.repository) {
+    try { stateIdentity = sharedRepositoryIdentity(state.repository); } catch {}
   }
-  return state;
+  if (state?.version !== 1 || stateIdentity !== repositoryIdentity || !state.proposals || typeof state.proposals !== "object") {
+    return { version: 1, repository, repositoryIdentity, proposals: {} };
+  }
+  const proposals = Object.fromEntries(Object.entries(state.proposals).map(([branch, proposal]) => [
+    branch,
+    { ...proposal, repository },
+  ]));
+  return { ...state, repository, repositoryIdentity, proposals };
 }
 
 function writeProposalObservations(repository, state) {
   return writePrivateJson(proposalObservationsPath(repository), {
     version: 1,
     repository,
+    repositoryIdentity: sharedRepositoryIdentity(repository),
     proposals: state.proposals || {},
     updatedAt: new Date().toISOString(),
   });
 }
 
 function rememberProposalObservation(repository, item, state = "active") {
-  const observations = readProposalObservations(repository);
-  observations.proposals[item.branch] = observedProposalValue(item, state);
-  writeProposalObservations(repository, observations);
+  return withProposalObservationsLock(repository, () => {
+    const observations = readProposalObservations(repository);
+    observations.proposals[item.branch] = observedProposalValue(item, state);
+    return writeProposalObservations(repository, observations);
+  });
 }
 
-function sharedProjectRepositoryState(repository, projectId) {
-  const synced = syncSharedRepositoryState(repository, { allowOffline: false });
+function sharedProjectRepositoryState(repository, projectId, options = {}) {
+  const synced = syncSharedRepositoryState(repository, {
+    allowOffline: false,
+    timeoutMs: options.timeoutMs,
+    push: options.push || null,
+  });
   const normalizedProjectId = safeId(projectId, "projectId");
   const project = synced.catalog.projects.find((item) => item.id === normalizedProjectId);
   if (!project) throw new Error(`Shared project is not registered in ${synced.repositoryConfig.projectsFile}: ${normalizedProjectId}`);
@@ -3872,20 +6844,60 @@ function sharedProjectRepositoryState(repository, projectId) {
   };
 }
 
-function createSharedProposalFromState(synced, { sourceRoot = "", title, description = "", scope = "project", branch = "", sessionId = process.env.CODEX_THREAD_ID || "" } = {}) {
+function createSharedProposalFromStateLocked(synced, { sourceRoot = "", title, description = "", scope = "project", branch = "", sessionId = process.env.CODEX_THREAD_ID || "" } = {}) {
   const { connection, repositoryConfig, revision } = synced;
   const safeTitle = proposalTitle(title);
   const safeDescription = proposalDescription(description);
-  const proposal = proposalBranch(repositoryConfig, connection.projectId, safeTitle, scope, branch);
   const checkout = repositoryCheckout(connection.repository);
+  const registry = readProposalRegistry(connection.repository);
+  const proposal = availableProposalBranch(
+    repositoryConfig,
+    connection.projectId,
+    safeTitle,
+    scope,
+    branch,
+    checkout,
+    connection.repository,
+    registry,
+  );
+  const acceptedCandidate = sharedMainAcceptanceCandidates(synced, checkout).get(proposal) || null;
+  if (acceptedCandidate) {
+    throw sharedContextError(
+      "shared-proposal-terminal",
+      "An accepted proposal branch identifier cannot be reused",
+      {
+        proposal,
+        proposalHead: acceptedCandidate.proposalHead,
+        reviewStatus: "accepted",
+        acceptedCommit: acceptedCandidate.commit,
+      },
+    );
+  }
+  const existingRemoteHead = remoteBranchRevision(checkout, proposal);
+  const existingRemoteState = checkedRemoteProposalState(checkout, proposal, existingRemoteHead);
+  if (
+    existingRemoteHead
+    || existingRemoteState.status !== "missing"
+    || proposalBranchInUse(checkout, connection.repository, registry, proposal)
+  ) {
+    throw sharedContextError(
+      "shared-proposal-branch-in-use",
+      `Proposal branch identifier is already in use: ${proposal}`,
+      {
+        proposal,
+        proposalHead: existingRemoteHead || existingRemoteState.proposalHead || "",
+        reviewStatus: existingRemoteState.status,
+        stateRef: existingRemoteState.ref || "",
+      },
+    );
+  }
   const proposalRoot = path.join(repositoryCacheRoot(connection.repository), "proposals", hashKey(proposal));
   if (fs.existsSync(proposalRoot)) throw new Error(`Proposal workspace already exists: ${proposalRoot}`);
-  runGit(checkout, ["worktree", "add", "-b", proposal, proposalRoot, revision], { stdio: ["ignore", "ignore", "pipe"] });
   const resolvedSourceRoot = connection.projectRoot || (sourceRoot ? path.resolve(sourceRoot) : "");
   const source = resolvedSourceRoot ? sourceIdentity(resolvedSourceRoot) : null;
   const sourceCommit = resolvedSourceRoot ? tryGit(resolvedSourceRoot, ["rev-parse", "HEAD"]) : "";
   const sourceBranch = resolvedSourceRoot ? tryGit(resolvedSourceRoot, ["branch", "--show-current"]) : "";
-  const registry = readJson(proposalRegistryPath(connection.repository), { version: 1, proposals: {} });
+  runGit(checkout, ["worktree", "add", "-b", proposal, proposalRoot, revision], { stdio: ["ignore", "ignore", "pipe"] });
   registry.proposals[proposal] = {
     branch: proposal,
     root: proposalRoot,
@@ -3894,18 +6906,63 @@ function createSharedProposalFromState(synced, { sourceRoot = "", title, descrip
     scope,
     title: safeTitle,
     description: safeDescription,
+    sourceRoot: resolvedSourceRoot ? stableRoot(resolvedSourceRoot) : "",
     sourceRemote: source?.remotes?.[0] || "",
     sourceBranch,
     sourceCommit: /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(sourceCommit) ? sourceCommit : "",
     sessionId: safeSessionId(sessionId),
     createdAt: new Date().toISOString(),
   };
-  writeJson(proposalRegistryPath(connection.repository), registry);
+  writeProposalRegistry(connection.repository, registry);
   return registry.proposals[proposal];
 }
 
+function discardUnpublishedSharedProposalLocked(synced, proposal) {
+  const checkout = repositoryCheckout(synced.connection.repository);
+  let removalError = null;
+  try {
+    runGit(checkout, ["worktree", "remove", "--force", proposal.root], { stdio: ["ignore", "ignore", "ignore"] });
+  } catch (error) {
+    removalError = error;
+  }
+  const registeredWorktrees = runGit(checkout, ["worktree", "list", "--porcelain"])
+    .split("\n")
+    .filter((line) => line.startsWith("worktree "))
+    .map((line) => path.resolve(line.slice("worktree ".length)));
+  if (removalError || lstatIfPresent(proposal.root) || registeredWorktrees.includes(path.resolve(proposal.root))) {
+    throw sharedContextError(
+      "filesystem_recovery_required",
+      "The unsafe unpublished proposal could not be removed; its registry entry was preserved for recovery",
+      { proposal: proposal.branch, root: proposal.root },
+    );
+  }
+  try {
+    runGit(checkout, ["branch", "-D", proposal.branch], { stdio: ["ignore", "ignore", "pipe"] });
+  } catch (error) {
+    if (tryGit(checkout, ["show-ref", "--verify", `refs/heads/${proposal.branch}`])) {
+      throw sharedContextError(
+        "filesystem_recovery_required",
+        "The unsafe unpublished proposal branch could not be removed; its registry entry was preserved for recovery",
+        { proposal: proposal.branch, root: proposal.root },
+      );
+    }
+  }
+  const registry = readProposalRegistry(synced.connection.repository);
+  if (registry.proposals?.[proposal.branch]?.root === proposal.root) {
+    delete registry.proposals[proposal.branch];
+    writeProposalRegistry(synced.connection.repository, registry);
+  }
+}
+
 export function createSharedProposal(root, options = {}) {
-  return createSharedProposalFromState(syncSharedContext(root, { allowOffline: false }), { ...options, sourceRoot: root });
+  const synced = syncSharedContext(root, {
+    allowOffline: false,
+    timeoutMs: options.timeoutMs,
+    push: options.push || null,
+  });
+  return withProposalRegistryLock(synced.connection.repository, () => (
+    createSharedProposalFromStateLocked(synced, { ...options, sourceRoot: root })
+  ));
 }
 
 function proposalScopeId(connection, scope) {
@@ -3925,6 +6982,163 @@ function remoteBranchRevision(checkout, branch) {
   const safeBranch = safeBranchName(branch, "proposal branch");
   const revision = tryGit(checkout, ["rev-parse", `refs/remotes/origin/${safeBranch}^{commit}`]);
   return revision ? safeRevision(revision, "proposal head") : "";
+}
+
+function proposalStateBranch(proposal) {
+  const branch = safeBranchName(proposal, "proposal branch");
+  return safeBranchName(`${SHARED_PROPOSAL_STATE_PREFIX}${hashKey(branch, 64)}`, "proposal state branch");
+}
+
+function proposalStateRef(proposal) {
+  return `refs/heads/${proposalStateBranch(proposal)}`;
+}
+
+function proposalTerminalMarkerCommit(checkout, {
+  proposal,
+  proposalHead,
+  decision,
+  acceptedCommit = "",
+  archiveRef = "",
+} = {}) {
+  const branch = safeBranchName(proposal, "proposal branch");
+  const head = safeRevision(proposalHead, "proposal head");
+  const outcome = String(decision || "").trim();
+  if (!new Set(["accepted", "rejected"]).has(outcome)) throw new Error("Terminal proposal marker decision must be accepted or rejected");
+  const accepted = outcome === "accepted" ? safeRevision(acceptedCommit, "accepted commit") : "";
+  const archive = outcome === "rejected" ? safeBranchName(archiveRef, "rejection branch") : "";
+  const tree = safeRevision(tryGit(checkout, ["rev-parse", `${head}^{tree}`]), "proposal tree");
+  const trailers = [
+    `Context-Room-Terminal-Decision: ${outcome}`,
+    `Context-Room-Proposal: ${branch}`,
+    `Context-Room-Proposal-Head: ${head}`,
+    accepted ? `Context-Room-Accepted-Commit: ${accepted}` : "",
+    archive ? `Context-Room-Rejection-Archive: ${archive}` : "",
+  ].filter(Boolean).join("\n");
+  const message = `Context Room terminal proposal decision: ${outcome}\n\n${trailers}`;
+  return safeRevision(runGit(checkout, ["commit-tree", tree, "-p", head, "-m", message], {
+    env: {
+      GIT_AUTHOR_NAME: "Context Room",
+      GIT_AUTHOR_EMAIL: ["context-room", "localhost"].join("@"),
+      GIT_COMMITTER_NAME: "Context Room",
+      GIT_COMMITTER_EMAIL: ["context-room", "localhost"].join("@"),
+    },
+  }), "terminal proposal marker");
+}
+
+function remoteProposalState(checkout, proposal, currentProposalHead = "") {
+  const branch = safeBranchName(proposal, "proposal branch");
+  const currentHead = currentProposalHead ? safeRevision(currentProposalHead, "current proposal head") : "";
+  const stateBranch = proposalStateBranch(branch);
+  const stateRef = `refs/heads/${stateBranch}`;
+  const stateHead = remoteBranchRevision(checkout, stateBranch);
+  if (!stateHead) return { status: "missing", branch: stateBranch, ref: stateRef, head: "" };
+  if (currentHead && stateHead === currentHead) {
+    return { status: "active", branch: stateBranch, ref: stateRef, head: stateHead, proposalHead: stateHead };
+  }
+  try {
+    const trailers = commitTrailerMap(checkout, stateHead);
+    const markerProposal = safeBranchName(trailers["Context-Room-Proposal"], "terminal marker proposal");
+    const markerProposalHead = safeRevision(trailers["Context-Room-Proposal-Head"], "terminal marker proposal head");
+    const decision = String(trailers["Context-Room-Terminal-Decision"] || "").trim();
+    const ancestry = tryGit(checkout, ["rev-list", "--parents", "-n", "1", stateHead]).split(/\s+/).filter(Boolean);
+    const markerTree = safeRevision(tryGit(checkout, ["rev-parse", `${stateHead}^{tree}`]), "terminal marker tree");
+    const proposalTree = safeRevision(tryGit(checkout, ["rev-parse", `${markerProposalHead}^{tree}`]), "terminal marker proposal tree");
+    if (
+      markerProposal !== branch
+      || (currentHead && markerProposalHead !== currentHead)
+      || !new Set(["accepted", "rejected"]).has(decision)
+      || ancestry.length !== 2
+      || ancestry[0] !== stateHead
+      || ancestry[1] !== markerProposalHead
+      || markerTree !== proposalTree
+    ) {
+      throw new Error("Terminal proposal marker binding is invalid");
+    }
+    const acceptedCommit = decision === "accepted"
+      ? safeRevision(trailers["Context-Room-Accepted-Commit"], "terminal marker accepted commit")
+      : "";
+    const archiveRef = decision === "rejected"
+      ? safeBranchName(trailers["Context-Room-Rejection-Archive"], "terminal marker rejection archive")
+      : "";
+    return {
+      status: decision,
+      branch: stateBranch,
+      ref: stateRef,
+      head: stateHead,
+      proposalHead: markerProposalHead,
+      acceptedCommit,
+      archiveRef,
+    };
+  } catch (error) {
+    if (!currentHead || stateHead !== currentHead) {
+      return {
+        status: "invalid",
+        branch: stateBranch,
+        ref: stateRef,
+        head: stateHead,
+        proposalHead: "",
+        error: String(error.message || error),
+      };
+    }
+    return { status: "active", branch: stateBranch, ref: stateRef, head: stateHead, proposalHead: stateHead };
+  }
+}
+
+function checkedRemoteProposalState(checkout, proposal, proposalHead) {
+  const branch = safeBranchName(proposal, "proposal branch");
+  const head = proposalHead ? safeRevision(proposalHead, "proposal head") : "";
+  const state = remoteProposalState(checkout, branch, head);
+  if (state.status !== "invalid") return state;
+  throw terminalProposalError(
+    "shared-proposal-terminal-conflict",
+    "The remote proposal state ref is not bound to the current exact proposal revision",
+    branch,
+    head,
+    { stateRef: state.ref, stateHead: state.head },
+  );
+}
+
+function remoteProposalStateIsTerminal(state) {
+  return new Set(["accepted", "rejected"]).has(state?.status);
+}
+
+function remoteRefLease(ref, expected = "") {
+  const safeRef = String(ref || "").trim();
+  if (!safeRef.startsWith("refs/heads/")) throw new Error(`Unsafe remote lease ref: ${safeRef}`);
+  const expectedHead = expected ? safeRevision(expected, "expected remote ref head") : "";
+  return `--force-with-lease=${safeRef}:${expectedHead}`;
+}
+
+function atomicPushArguments(remote, updates) {
+  const normalized = updates.map((update) => {
+    const ref = String(update.ref || "").trim();
+    if (!ref.startsWith("refs/heads/")) throw new Error(`Unsafe atomic push ref: ${ref}`);
+    const source = safeRevision(update.source, "atomic push source");
+    return {
+      ref,
+      expected: update.expected ? safeRevision(update.expected, "expected atomic push head") : "",
+      refspec: `${update.force ? "+" : ""}${source}:${ref}`,
+    };
+  });
+  return [
+    "push",
+    "--atomic",
+    ...normalized.map((update) => remoteRefLease(update.ref, update.expected)),
+    String(remote || "origin"),
+    ...normalized.map((update) => update.refspec),
+  ];
+}
+
+function atomicPushUnsupported(error) {
+  return /(?:does not support|doesn't support).*atomic|atomic push.*not supported/i.test(String(error?.stderr || error?.message || error));
+}
+
+function throwAtomicPushError(error, operation) {
+  if (!atomicPushUnsupported(error)) throw error;
+  throw sharedContextError(
+    "shared-atomic-push-unsupported",
+    `${operation} requires a remote that supports atomic Git ref updates`,
+  );
 }
 
 function ensureProposalWorktree(checkout, repository, proposal) {
@@ -3966,46 +7180,80 @@ function proposalRegistryEntryFromRemote(proposal, proposalRoot) {
   };
 }
 
-export function ensureSharedProposal(root, { title, description = "", scope = "project", branch = "", sessionId = process.env.CODEX_THREAD_ID || "" } = {}) {
+export function ensureSharedProposal(root, {
+  title,
+  description = "",
+  scope = "project",
+  branch = "",
+  sessionId = process.env.CODEX_THREAD_ID || "",
+  push = null,
+  timeoutMs = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS,
+} = {}) {
   const normalizedSession = safeSessionId(sessionId);
+  const normalizedTitle = proposalTitle(title);
+  const normalizedDescription = proposalDescription(description);
   if (!normalizedSession || branch) {
-    return { ...createSharedProposal(root, { title, description, scope, branch, sessionId: normalizedSession }), reused: false };
+    return { ...createSharedProposal(root, {
+      title: normalizedTitle,
+      description: normalizedDescription,
+      scope,
+      branch,
+      sessionId: normalizedSession,
+      push,
+      timeoutMs,
+    }), reused: false };
   }
-  const synced = syncSharedContext(root, { allowOffline: false });
-  const { connection } = synced;
-  const registryFile = proposalRegistryPath(connection.repository);
-  const registry = readJson(registryFile, { version: 1, proposals: {} });
-  const checkout = repositoryCheckout(connection.repository);
-  const remoteProposals = listRemoteSharedProposals(synced);
-  const terminalBranches = new Set(remoteProposals
-    .filter((proposal) => ["accepted", "merged"].includes(proposal.reviewStatus))
-    .map((proposal) => proposal.branch));
-  const localMatches = Object.values(registry.proposals || {}).filter((entry) => (
-    proposalSessionMatches(entry, connection, scope, normalizedSession)
-    && fs.existsSync(entry.root)
-    && !terminalBranches.has(entry.branch)
-    && (!entry.lastPublishedHead || remoteBranchRevision(checkout, entry.branch))
-  ));
-  const remoteMatches = remoteProposals.filter((proposal) => (
-    proposalSessionMatches(proposal, connection, scope, normalizedSession)
-    && !["accepted", "merged"].includes(proposal.reviewStatus)
-  ));
-  const matches = new Map();
-  for (const entry of localMatches) matches.set(entry.branch, { kind: "local", entry });
-  for (const proposal of remoteMatches) matches.set(proposal.branch, { kind: "remote", proposal });
-  if (matches.size > 1) {
-    throw new Error(`Several open proposals match session ${normalizedSession} and scope ${proposalScopeId(connection, scope)}: ${[...matches.keys()].join(", ")}`);
-  }
-  const match = [...matches.values()][0];
-  if (!match) {
-    return { ...createSharedProposal(root, { title, description, scope, sessionId: normalizedSession }), reused: false };
-  }
-  if (match.kind === "local") return { ...match.entry, reused: true };
-  const proposalRoot = ensureProposalWorktree(checkout, connection.repository, match.proposal);
-  const entry = proposalRegistryEntryFromRemote(match.proposal, proposalRoot);
-  registry.proposals[entry.branch] = entry;
-  writeJson(registryFile, registry);
-  return { ...entry, reused: true };
+  const synced = syncSharedContext(root, { allowOffline: false, push, timeoutMs });
+  return withProposalRegistryLock(synced.connection.repository, () => {
+    const { connection } = synced;
+    const registry = readProposalRegistry(connection.repository);
+    const checkout = repositoryCheckout(connection.repository);
+    const remoteProposals = listRemoteSharedProposals(synced);
+    const terminalBranches = new Set(remoteProposals
+      .filter((proposal) => ["accepted", "merged", "rejected", "unverified_rejection"].includes(proposal.reviewStatus))
+      .map((proposal) => proposal.branch));
+    const localMatches = Object.values(registry.proposals || {}).filter((entry) => (
+      proposalSessionMatches(entry, connection, scope, normalizedSession)
+      && fs.existsSync(entry.root)
+      && !terminalBranches.has(entry.branch)
+      && (() => {
+        if (!entry.lastPublishedHead) return true;
+        const remoteHead = remoteBranchRevision(checkout, entry.branch);
+        if (!remoteHead) return false;
+        return !remoteProposalStateIsTerminal(checkedRemoteProposalState(checkout, entry.branch, remoteHead));
+      })()
+    ));
+    const remoteMatches = remoteProposals.filter((proposal) => (
+      proposalSessionMatches(proposal, connection, scope, normalizedSession)
+      && !proposal.authorityViolation
+      && !["accepted", "merged", "rejected", "unverified_rejection"].includes(proposal.reviewStatus)
+    ));
+    const matches = new Map();
+    for (const entry of localMatches) matches.set(entry.branch, { kind: "local", entry });
+    for (const proposal of remoteMatches) matches.set(proposal.branch, { kind: "remote", proposal });
+    if (matches.size > 1) {
+      throw new Error(`Several open proposals match session ${normalizedSession} and scope ${proposalScopeId(connection, scope)}: ${[...matches.keys()].join(", ")}`);
+    }
+    const match = [...matches.values()][0];
+    if (!match) {
+      return {
+        ...createSharedProposalFromStateLocked(synced, {
+          sourceRoot: root,
+          title: normalizedTitle,
+          description: normalizedDescription,
+          scope,
+          sessionId: normalizedSession,
+        }),
+        reused: false,
+      };
+    }
+    if (match.kind === "local") return { ...match.entry, reused: true };
+    const proposalRoot = ensureProposalWorktree(checkout, connection.repository, match.proposal);
+    const entry = proposalRegistryEntryFromRemote(match.proposal, proposalRoot);
+    registry.proposals[entry.branch] = entry;
+    writeProposalRegistry(connection.repository, registry);
+    return { ...entry, reused: true };
+  });
 }
 
 function proposalCommitMessage(entry, message) {
@@ -4024,7 +7272,7 @@ function proposalCommitMessage(entry, message) {
 }
 
 function proposalEntryForConnection(connection, branch) {
-  const registry = readJson(proposalRegistryPath(connection.repository), { proposals: {} });
+  const registry = readProposalRegistry(connection.repository);
   const entry = registry.proposals?.[branch];
   if (!entry || !fs.existsSync(entry.root)) throw new Error(`Unknown local proposal workspace: ${branch}`);
   return { connection, entry, registry };
@@ -4039,10 +7287,12 @@ function proposalEntry(root, branch) {
 export function listSharedProposalWorkspaces(root, { sessionId = "", scope = "" } = {}) {
   const connection = readSharedProjectConnection(root);
   if (!connection) return [];
+  const selectedRoot = stableRoot(root);
   const registry = readJson(proposalRegistryPath(connection.repository), { version: 1, proposals: {} });
   const normalizedSession = safeSessionId(sessionId);
   return Object.values(registry.proposals || {}).flatMap((entry) => {
     if (!entry?.branch || !entry?.root || !fs.existsSync(entry.root)) return [];
+    if (entry.sourceRoot && stableRoot(entry.sourceRoot) !== selectedRoot) return [];
     if (normalizedSession && safeSessionId(entry.sessionId) !== normalizedSession) return [];
     if (scope && String(entry.scope || "project") !== scope) return [];
     const status = tryGit(entry.root, ["status", "--porcelain=v1"]);
@@ -4056,17 +7306,83 @@ export function listSharedProposalWorkspaces(root, { sessionId = "", scope = "" 
   }).sort((left, right) => String(right.updatedAt || right.createdAt || "").localeCompare(String(left.updatedAt || left.createdAt || "")));
 }
 
-export function openSharedProposalWorkspace(root, { proposal } = {}) {
-  const synced = syncSharedContext(root, { allowOffline: false });
+function staleSharedProposalError(branch, expectedHead, actualHead) {
+  const error = sharedContextError(
+    "shared-proposal-stale",
+    "Proposal changed after it was opened; refresh and reopen its current exact revision before continuing",
+    { proposal: branch, expectedHead, actualHead },
+  );
+  error.statusCode = 409;
+  error.retryable = true;
+  return error;
+}
+
+function openSharedProposalWorkspaceFromStateLocked(synced, options = {}) {
+  const { proposal, expectedHead } = options;
+  const expectedHeadProvided = Object.prototype.hasOwnProperty.call(options, "expectedHead");
   const { connection, repositoryConfig } = synced;
   const branch = safeBranchName(String(proposal || "").trim(), "proposal branch");
-  proposalIdentity(repositoryConfig, branch);
-  const registryFile = proposalRegistryPath(connection.repository);
-  const registry = readJson(registryFile, { version: 1, proposals: {} });
+  proposalIdentity(repositoryConfig, branch, {
+    checkout: repositoryCheckout(connection.repository),
+    revision: synced.revision,
+    catalog: synced.catalog,
+  });
   const checkout = repositoryCheckout(connection.repository);
-  const remote = listRemoteSharedProposals(synced).find((entry) => entry.branch === branch) || null;
-  if (remote && ["accepted", "merged"].includes(remote.reviewStatus)) {
-    throw new Error(`Proposal is already ${remote.reviewStatus}: ${branch}`);
+  const currentRemoteHead = remoteBranchRevision(checkout, branch);
+  const observedRemoteHead = expectedHeadProvided
+    ? expectedHead
+      ? safeRevision(expectedHead, "expected proposal head")
+      : ""
+    : currentRemoteHead;
+  const terminalState = checkedRemoteProposalState(checkout, branch, currentRemoteHead);
+  if (remoteProposalStateIsTerminal(terminalState)) {
+    throw sharedContextError(
+      "shared-proposal-terminal",
+      `A ${terminalState.status} proposal cannot be reopened`,
+      { proposal: branch, proposalHead: terminalState.proposalHead, reviewStatus: terminalState.status, stateRef: terminalState.ref },
+    );
+  }
+  const acceptedMainCandidate = sharedMainAcceptanceCandidates(synced, checkout).get(branch) || null;
+  if (acceptedMainCandidate) {
+    throw sharedContextError(
+      "shared-proposal-terminal",
+      "A proposal branch identifier already recorded on shared main cannot be reopened",
+      {
+        proposal: branch,
+        proposalHead: acceptedMainCandidate.proposalHead,
+        reviewStatus: "accepted",
+        acceptedCommit: acceptedMainCandidate.commit,
+      },
+    );
+  }
+  if (expectedHeadProvided && observedRemoteHead !== currentRemoteHead) {
+    throw staleSharedProposalError(branch, observedRemoteHead, currentRemoteHead);
+  }
+  const registry = readProposalRegistry(connection.repository);
+  const remote = listRemoteSharedProposals(synced, { requiredProposal: branch }).find((entry) => entry.branch === branch) || null;
+  if (remote && ["accepted", "merged", "rejected", "unverified_rejection"].includes(remote.reviewStatus)) {
+    throw sharedContextError(
+      "shared-proposal-terminal",
+      `A ${remote.reviewStatus} proposal cannot be reopened`,
+      { proposal: branch, proposalHead: remote.head, reviewStatus: remote.reviewStatus },
+    );
+  }
+  const remoteHead = remote?.head || remoteBranchRevision(checkout, branch);
+  if (!remote && remoteHead) {
+    const rejection = proposalRejectionEvidence(
+      synced,
+      checkout,
+      branch,
+      remoteHead,
+      ownerProposalDecisionIndex(connection.repository),
+    );
+    if (rejection.verified) {
+      throw sharedContextError(
+        "shared-proposal-terminal",
+        "A rejected proposal cannot be reopened",
+        { proposal: branch, proposalHead: remoteHead, reviewStatus: "rejected" },
+      );
+    }
   }
   let entry = registry.proposals?.[branch] || null;
   if (!entry && !remote) throw new Error(`Open proposal not found: ${branch}`);
@@ -4091,12 +7407,20 @@ export function openSharedProposalWorkspace(root, { proposal } = {}) {
       throw new Error(`Local proposal branch diverges from origin/${branch}; resolve it before editing`);
     }
   }
+  if (expectedHeadProvided && head !== observedRemoteHead) {
+    throw staleSharedProposalError(branch, observedRemoteHead, head);
+  }
   registry.proposals ||= {};
-  registry.proposals[branch] = { ...entry, updatedAt: new Date().toISOString() };
-  writeJson(registryFile, registry);
+  registry.proposals[branch] = {
+    ...entry,
+    ...(remote?.head ? { lastPublishedHead: remote.head } : {}),
+    updatedAt: new Date().toISOString(),
+  };
+  writeProposalRegistry(connection.repository, registry);
   return {
     ...registry.proposals[branch],
     head,
+    remoteHead: remote?.head || "",
     dirty: Boolean(tryGit(entry.root, ["status", "--porcelain=v1"])),
     conflict: Boolean(tryGit(entry.root, ["diff", "--name-only", "--diff-filter=U"])),
     reviewStatus: remote?.reviewStatus || "editing",
@@ -4104,26 +7428,232 @@ export function openSharedProposalWorkspace(root, { proposal } = {}) {
   };
 }
 
-function changedFiles(cwd, base) {
-  const committed = gitChangedPaths(cwd, `${base}...HEAD`);
-  const working = splitNull(runGit(cwd, ["diff", "--name-only", "-z", "HEAD", "--"], { encoding: null }));
-  const untracked = splitNull(runGit(cwd, ["ls-files", "--others", "--exclude-standard", "-z", "--"], { encoding: null }));
-  return [...new Set([...committed, ...working, ...untracked])];
+export function openSharedProposalWorkspace(root, options = {}) {
+  const synced = syncSharedContext(root, {
+    allowOffline: false,
+    timeoutMs: options.timeoutMs,
+    push: options.push || null,
+  });
+  return withProposalRegistryLock(synced.connection.repository, () => (
+    openSharedProposalWorkspaceFromStateLocked(synced, options)
+  ));
 }
 
-function publishSharedProposalFromState(synced, { proposal, message = "", title, description, author = null } = {}) {
+export function openSharedRepositoryProposalWorkspace(repository, options = {}) {
+  const safeRemote = registeredRepositoryTransport(repository);
+  return withProposalRegistryLock(safeRemote, () => {
+    const synced = options.refresh === false
+      ? cachedSharedRepositoryState(safeRemote)
+      : syncSharedRepositoryState(safeRemote, {
+        allowOffline: false,
+        timeoutMs: options.timeoutMs,
+        push: options.push || null,
+      });
+    return openSharedProposalWorkspaceFromStateLocked(synced, options);
+  });
+}
+
+function changedFiles(cwd, base) {
+  const committed = gitChangedPaths(cwd, `${base}...HEAD`);
+  const staged = splitNull(runGit(cwd, ["diff", "--cached", "--name-only", "-z", "HEAD", "--"], { encoding: null }));
+  const working = splitNull(runGit(cwd, ["diff", "--name-only", "-z", "HEAD", "--"], { encoding: null }));
+  const untracked = splitNull(runGit(cwd, ["ls-files", "--others", "--exclude-standard", "-z", "--"], { encoding: null }));
+  return [...new Set([...committed, ...staged, ...working, ...untracked])];
+}
+
+function assertSharedTreeNoFollow(root, relativePath) {
+  const inspected = inspectSharedPathNoFollow(root, relativePath);
+  if (!inspected.exists) return;
+  const pending = [inspected.target];
+  while (pending.length) {
+    const current = pending.pop();
+    const stats = fs.lstatSync(current, { bigint: true });
+    if (stats.isSymbolicLink()) {
+      throw unsafeSharedFilesystemPath(`Shared proposal workspace contains a symbolic link: ${current}`);
+    }
+    if (stats.isDirectory()) {
+      if (!physicalPathIsContained(inspected.physicalRoot, fs.realpathSync(current))) {
+        throw unsafeSharedFilesystemPath(`Shared proposal workspace path escapes its physical root: ${current}`);
+      }
+      for (const entry of fs.readdirSync(current, { withFileTypes: true })) pending.push(path.join(current, entry.name));
+      continue;
+    }
+    if (!stats.isFile()) {
+      throw unsafeSharedFilesystemPath(`Shared proposal workspace contains a special file: ${current}`);
+    }
+    if (stats.nlink !== 1n) {
+      throw unsafeSharedFilesystemPath(`Shared proposal workspace contains a hard-linked file: ${current}`);
+    }
+  }
+}
+
+function assertSharedProposalWorkspaceRootNoFollow(synced, entry) {
+  const cacheRoot = repositoryCacheRoot(synced.connection.repository);
+  const expectedRoot = path.join(cacheRoot, "proposals", hashKey(entry.branch));
+  if (path.resolve(entry.root) !== expectedRoot) {
+    throw unsafeSharedFilesystemPath(`Shared proposal workspace does not match its registered cache path: ${entry.root}`);
+  }
+  const rootSentinelPath = path.relative(cacheRoot, path.join(expectedRoot, SHARED_REPOSITORY_CONFIG)).split(path.sep).join("/");
+  const rootSentinel = inspectSharedPathNoFollow(cacheRoot, rootSentinelPath);
+  if (!rootSentinel.exists) {
+    throw unsafeSharedFilesystemPath(`Shared proposal workspace is missing its repository configuration: ${entry.root}`);
+  }
+  const marker = { target: path.join(expectedRoot, ".git") };
+  const markerStats = lstatIfPresent(marker.target);
+  if (!markerStats?.isFile() || markerStats.isSymbolicLink()) {
+    throw unsafeSharedFilesystemPath(`Shared proposal Git marker must be a real file: ${marker.target}`);
+  }
+  const match = fs.readFileSync(marker.target, "utf8").trim().match(/^gitdir:\s*(.+)$/);
+  if (!match) throw unsafeSharedFilesystemPath(`Shared proposal Git marker is invalid: ${marker.target}`);
+  const repositoryGitRoot = path.join(repositoryCheckout(synced.connection.repository), ".git");
+  const gitRootStats = lstatIfPresent(repositoryGitRoot);
+  if (!gitRootStats?.isDirectory() || gitRootStats.isSymbolicLink()) {
+    throw unsafeSharedFilesystemPath(`Shared repository Git directory must be a real directory: ${repositoryGitRoot}`);
+  }
+  const worktreeGitRoot = path.resolve(entry.root, match[1]);
+  const physicalRepositoryGitRoot = fs.realpathSync(repositoryGitRoot);
+  const physicalWorktreeGitRoot = fs.realpathSync(worktreeGitRoot);
+  const relativeGitRoot = path.relative(physicalRepositoryGitRoot, physicalWorktreeGitRoot);
+  if (!physicalPathIsContained(physicalRepositoryGitRoot, physicalWorktreeGitRoot)
+    || !relativeGitRoot
+    || relativeGitRoot === ".."
+    || relativeGitRoot.startsWith(`..${path.sep}`)) {
+    throw unsafeSharedFilesystemPath(`Shared proposal Git marker escapes the repository cache: ${marker.target}`);
+  }
+  const gitHeadPath = `${relativeGitRoot.split(path.sep).join("/")}/HEAD`;
+  const gitHead = inspectSharedPathNoFollow(physicalRepositoryGitRoot, gitHeadPath);
+  if (!gitHead.exists || !fs.lstatSync(gitHead.target).isFile()) {
+    throw unsafeSharedFilesystemPath(`Shared proposal Git worktree metadata is invalid: ${worktreeGitRoot}`);
+  }
+}
+
+function assertSharedProposalPolicyNoFollow(synced, entry, identity, extraPaths = []) {
+  assertSharedProposalWorkspaceRootNoFollow(synced, entry);
+  const candidates = [
+    ".context-room",
+    ...(identity.allowedExact || []),
+    ...(identity.allowedPrefixes || []).map((prefix) => prefix.replace(/\/$/, "")),
+    ...extraPaths,
+  ].map((candidate) => safeRelativePath(candidate, "shared proposal policy path"));
+  const roots = [...new Set(candidates)]
+    .sort((left, right) => left.length - right.length || left.localeCompare(right, "en"))
+    .filter((candidate, index, values) => !values.slice(0, index).some((parent) => candidate.startsWith(parent + "/")));
+  for (const candidate of roots) assertSharedTreeNoFollow(entry.root, candidate);
+}
+
+function publishSharedProposalFromStateLocked(synced, options = {}) {
+  const {
+    proposal,
+    message = "",
+    title,
+    description,
+    author = null,
+    expectedHead,
+    timeoutMs = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS,
+  } = options;
+  const expectedHeadProvided = Object.prototype.hasOwnProperty.call(options, "expectedHead");
   const { connection, entry, registry } = proposalEntryForConnection(synced.connection, proposal);
+  authenticatedSharedGit(connection.repository, options.push, timeoutMs);
   const commitEnv = author?.name && author?.email ? {
     GIT_AUTHOR_NAME: String(author.name),
     GIT_AUTHOR_EMAIL: String(author.email),
     GIT_COMMITTER_NAME: String(author.name),
     GIT_COMMITTER_EMAIL: String(author.email),
   } : {};
+  assertSharedProposalWorkspaceRootNoFollow(synced, entry);
+  assertSharedTreeNoFollow(entry.root, ".context-room");
   const config = readSharedRepositoryConfig(entry.root);
-  const identity = proposalIdentity(config, entry.branch, { root: entry.root });
+  for (const manifestPath of [config.projectsFile, config.skillLocationsFile, config.instructionLocationsFile]) {
+    assertSharedTreeNoFollow(entry.root, manifestPath);
+  }
+  const identity = proposalIdentity(config, entry.branch, { root: entry.root, catalog: synced.catalog });
   const expectedScopeId = ["global", "skills", "instructions"].includes(entry.scope) ? entry.scope : entry.projectId;
   if (identity.projectId !== expectedScopeId) throw new Error(`Proposal branch scope must be ${config.proposalPrefix}${expectedScopeId}/`);
   const previousRemoteHead = tryGit(entry.root, ["rev-parse", "--verify", `refs/remotes/origin/${entry.branch}`]);
+  const observedRemoteHead = expectedHeadProvided
+    ? expectedHead
+      ? safeRevision(expectedHead, "expected proposal head")
+      : ""
+    : entry.lastPublishedHead
+      ? safeRevision(entry.lastPublishedHead, "last published proposal head")
+      : "";
+  if (observedRemoteHead !== previousRemoteHead && (observedRemoteHead || previousRemoteHead)) {
+    throw staleSharedProposalError(entry.branch, observedRemoteHead, previousRemoteHead);
+  }
+  const initialProposalState = remoteProposalState(entry.root, entry.branch, previousRemoteHead);
+  if (initialProposalState.status === "invalid") {
+    throw terminalProposalError(
+      "shared-proposal-terminal-conflict",
+      "The remote proposal state ref is not bound to the current proposal head or a valid terminal decision",
+      entry.branch,
+      previousRemoteHead || observedRemoteHead,
+      { stateRef: initialProposalState.ref, stateHead: initialProposalState.head },
+    );
+  }
+  if (new Set(["accepted", "rejected"]).has(initialProposalState.status)) {
+    throw sharedContextError(
+      "shared-proposal-terminal",
+      `A ${initialProposalState.status} proposal cannot be published again`,
+      {
+        proposal: entry.branch,
+        proposalHead: initialProposalState.proposalHead,
+        reviewStatus: initialProposalState.status,
+        stateRef: initialProposalState.ref,
+      },
+    );
+  }
+  if (initialProposalState.status === "active" && initialProposalState.head !== previousRemoteHead) {
+    throw terminalProposalError(
+      "shared-proposal-terminal-conflict",
+      "The remote proposal state ref does not match the published proposal head",
+      entry.branch,
+      previousRemoteHead || observedRemoteHead,
+      { stateRef: initialProposalState.ref, stateHead: initialProposalState.head, remoteHead: previousRemoteHead },
+    );
+  }
+  const checkout = repositoryCheckout(connection.repository);
+  const exactMainCandidate = previousRemoteHead
+    ? exactSharedMainAcceptanceCandidate(synced, checkout, entry.branch, previousRemoteHead)
+    : null;
+  const branchMainCandidate = sharedMainAcceptanceCandidates(synced, checkout).get(entry.branch) || null;
+  const durableMainCandidate = exactMainCandidate || branchMainCandidate;
+  if (durableMainCandidate) {
+    throw sharedContextError(
+      "shared-proposal-terminal",
+      "A proposal branch identifier already recorded on shared main cannot be published again",
+      {
+        proposal: entry.branch,
+        proposalHead: durableMainCandidate.proposalHead,
+        reviewStatus: "acceptance_recovery_required",
+        acceptedCommit: durableMainCandidate.commit,
+      },
+    );
+  }
+  if (previousRemoteHead) {
+    const remoteProposal = listRemoteSharedProposals(synced, { requiredProposal: entry.branch }).find((item) => item.branch === entry.branch);
+    let terminalStatus = gitIsAncestor(checkout, previousRemoteHead, synced.revision)
+      ? "accepted"
+      : ["accepted", "merged", "rejected", "unverified_rejection"].includes(remoteProposal?.reviewStatus)
+        ? remoteProposal.reviewStatus
+        : "";
+    if (!terminalStatus && !remoteProposal) {
+      const rejection = proposalRejectionEvidence(
+        synced,
+        checkout,
+        entry.branch,
+        previousRemoteHead,
+        ownerProposalDecisionIndex(connection.repository),
+      );
+      if (rejection.verified) terminalStatus = "rejected";
+    }
+    if (terminalStatus) {
+      throw sharedContextError(
+        "shared-proposal-terminal",
+        `A ${terminalStatus} proposal cannot be published again`,
+        { proposal: entry.branch, proposalHead: previousRemoteHead, reviewStatus: terminalStatus },
+      );
+    }
+  }
   if (previousRemoteHead && description === undefined) {
     throw new Error("--description is required whenever a published proposal is updated");
   }
@@ -4131,7 +7661,9 @@ function publishSharedProposalFromState(synced, { proposal, message = "", title,
   const nextDescription = proposalDescription(description === undefined ? entry.description : description, { optional: !previousRemoteHead });
   const pendingFiles = changedFiles(entry.root, entry.baseRevision);
   assertPathsInProposalScope(pendingFiles, identity);
+  assertProjectCreationProposalBundle(pendingFiles, identity);
   if (!pendingFiles.length) throw new Error("Proposal has no changes");
+  assertSharedProposalPolicyNoFollow(synced, entry, identity, pendingFiles);
   runGit(entry.root, ["add", "-A"]);
   let hasStagedChanges = false;
   try {
@@ -4143,6 +7675,7 @@ function publishSharedProposalFromState(synced, { proposal, message = "", title,
   entry.title = nextTitle;
   entry.description = nextDescription;
   if (hasStagedChanges || metadataChanged) {
+    assertSharedProposalPolicyNoFollow(synced, entry, identity, pendingFiles);
     const commitArgs = ["commit"];
     if (!hasStagedChanges) commitArgs.push("--allow-empty");
     commitArgs.push("-m", proposalCommitMessage(entry, message));
@@ -4151,18 +7684,19 @@ function publishSharedProposalFromState(synced, { proposal, message = "", title,
   const unmerged = tryGit(entry.root, ["diff", "--name-only", "--diff-filter=U"]);
   if (unmerged) {
     entry.conflict = { status: "conflict", mainRevision: synced.revision, files: unmerged.split("\n").filter(Boolean), updatedAt: new Date().toISOString() };
-    writeJson(proposalRegistryPath(connection.repository), registry);
+    writeProposalRegistry(connection.repository, registry);
     throw new Error(`Proposal rebase conflict remains unresolved: ${entry.conflict.files.join(", ")}`);
   }
   const previousBaseRevision = entry.baseRevision;
   const rebased = synced.revision !== previousBaseRevision;
   if (rebased) {
+    assertSharedProposalPolicyNoFollow(synced, entry, identity, pendingFiles);
     try {
       runGit(entry.root, ["rebase", "--onto", synced.revision, previousBaseRevision, entry.branch], { stdio: ["ignore", "ignore", "pipe"], env: commitEnv });
     } catch (error) {
       const files = tryGit(entry.root, ["diff", "--name-only", "--diff-filter=U"]).split("\n").filter(Boolean);
       entry.conflict = { status: "conflict", mainRevision: synced.revision, files, updatedAt: new Date().toISOString() };
-      writeJson(proposalRegistryPath(connection.repository), registry);
+      writeProposalRegistry(connection.repository, registry);
       appendContextRoomEvent("proposal.conflict", {
         projectId: connection.projectId,
         sharedRepository: connection.repository,
@@ -4177,21 +7711,95 @@ function publishSharedProposalFromState(synced, { proposal, message = "", title,
     runGit(entry.root, ["commit", "--allow-empty", "-m", proposalCommitMessage(entry, "Rebase proposal onto current shared main")], { stdio: ["ignore", "ignore", "pipe"], env: commitEnv });
   }
   const head = safeRevision(tryGit(entry.root, ["rev-parse", "HEAD"]), "proposal head");
-  const files = gitChangedPaths(entry.root, `${entry.baseRevision}...${head}`);
-  assertPathsInProposalScope(files, identity);
-  assertReviewableChangedPaths(entry.root, entry.baseRevision, head, files);
-  const pushArgs = ["push", "--set-upstream"];
-  if (previousRemoteHead && rebased) pushArgs.push(`--force-with-lease=refs/heads/${entry.branch}:${previousRemoteHead}`);
-  pushArgs.push("origin", `${entry.branch}:${entry.branch}`);
-  runGit(entry.root, pushArgs, { stdio: ["ignore", "ignore", "pipe"] });
+  const proposalChanges = gitNameStatusChanges(entry.root, entry.baseRevision, head);
+  const scopePaths = proposalChangePaths(proposalChanges);
+  const files = [...new Set(proposalChanges.map((change) => change.path))];
+  assertPathsInProposalScope(scopePaths, identity);
+  assertReviewableChangedPaths(entry.root, entry.baseRevision, head, scopePaths);
+  assertSharedProposalPolicyNoFollow(synced, entry, identity, scopePaths);
+  if (previousRemoteHead && !rebased && !gitIsAncestor(entry.root, previousRemoteHead, head)) {
+    throw sharedContextError(
+      "shared-proposal-history-diverged",
+      "Proposal history no longer descends from its exact published head",
+      { proposal: entry.branch, previousRemoteHead, head },
+    );
+  }
+  const stateRef = proposalStateRef(entry.branch);
+  const expectedStateHead = initialProposalState.status === "active" ? initialProposalState.head : "";
+  const pushAuth = authenticatedSharedGit(connection.repository, options.push, timeoutMs);
+  const pushArgs = atomicPushArguments(pushAuth?.remote || "origin", [
+    {
+      source: head,
+      ref: `refs/heads/${entry.branch}`,
+      expected: previousRemoteHead,
+      force: rebased,
+    },
+    {
+      source: head,
+      ref: stateRef,
+      expected: expectedStateHead,
+      force: true,
+    },
+  ]);
+  try {
+    runSharedNetworkGit(entry.root, pushArgs, {
+      stdio: ["ignore", "ignore", "pipe"],
+      ...(pushAuth ? { credential: pushAuth.credential } : {}),
+      operation: "Git push",
+      timeoutMs,
+    });
+  } catch (error) {
+    try {
+      const refreshAuth = authenticatedSharedGit(connection.repository, options.push, timeoutMs);
+      runSharedNetworkGit(entry.root, refreshAuth
+        ? ["fetch", "--force", "--prune", "--no-tags", refreshAuth.remote, "+refs/heads/*:refs/remotes/origin/*"]
+        : ["fetch", "--force", "--prune", "--no-tags", "origin"], {
+        stdio: ["ignore", "ignore", "pipe"],
+        ...(refreshAuth ? { credential: refreshAuth.credential } : {}),
+        operation: "Git fetch after rejected atomic proposal update",
+        timeoutMs,
+      });
+      const actualRemoteHead = remoteBranchRevision(entry.root, entry.branch);
+      const actualState = remoteProposalState(entry.root, entry.branch, actualRemoteHead);
+      if (new Set(["accepted", "rejected"]).has(actualState.status)) {
+        throw terminalProposalError(
+          "shared-proposal-terminal",
+          `A ${actualState.status} proposal cannot be published again`,
+          entry.branch,
+          actualState.proposalHead,
+          { reviewStatus: actualState.status, stateRef: actualState.ref },
+        );
+      }
+      if (actualRemoteHead !== previousRemoteHead) {
+        throw staleSharedProposalError(entry.branch, previousRemoteHead, actualRemoteHead);
+      }
+      if (actualState.status === "invalid" || (actualState.status === "active" && actualState.head !== previousRemoteHead)) {
+        throw terminalProposalError(
+          "shared-proposal-terminal-conflict",
+          "The remote proposal state changed while publishing",
+          entry.branch,
+          previousRemoteHead,
+          { stateRef: actualState.ref, stateHead: actualState.head },
+        );
+      }
+    } catch (refreshError) {
+      if (refreshError?.code?.startsWith?.("shared-proposal-")) throw refreshError;
+    }
+    throwAtomicPushError(error, "Shared proposal publication");
+  }
+  try {
+    runGit(entry.root, ["branch", "--set-upstream-to", `origin/${entry.branch}`, entry.branch], {
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+  } catch {}
   entry.updatedAt = new Date().toISOString();
   entry.lastPublishedHead = head;
-  writeJson(proposalRegistryPath(connection.repository), registry);
+  writeProposalRegistry(connection.repository, registry);
   rememberProposalObservation(connection.repository, {
     ...identity,
     repository: connection.repository,
     repositoryName: synced.repositoryConfig.name,
-    projectTitle: synced.catalog.projects.find((project) => project.id === identity.projectId)?.title || identity.projectId,
+    projectTitle: identity.projectTitle || synced.catalog.projects.find((project) => project.id === identity.projectId)?.title || identity.projectId,
     head,
     baseRevision: entry.baseRevision,
     updatedAt: entry.updatedAt,
@@ -4206,7 +7814,7 @@ function publishSharedProposalFromState(synced, { proposal, message = "", title,
     fileCount: files.length,
   });
   appendContextRoomEvent("proposal.published", {
-    projectId: connection.projectId,
+    projectId: entry.projectId,
     sharedRepository: connection.repository,
     resource: { proposal: entry.branch, files },
     data: { head, baseRevision: entry.baseRevision, semanticReviewRequired: Boolean(entry.semanticReviewRequired) },
@@ -4215,7 +7823,26 @@ function publishSharedProposalFromState(synced, { proposal, message = "", title,
 }
 
 export function publishSharedProposal(root, options = {}) {
-  return publishSharedProposalFromState(syncSharedContext(root, { allowOffline: false }), options);
+  const synced = syncSharedContext(root, {
+    allowOffline: false,
+    timeoutMs: options.timeoutMs,
+    push: options.push || null,
+  });
+  return withProposalRegistryLock(synced.connection.repository, () => (
+    publishSharedProposalFromStateLocked(synced, options)
+  ));
+}
+
+export function publishSharedRepositoryProposal(repository, options = {}) {
+  const safeRemote = registeredRepositoryTransport(repository);
+  return withProposalRegistryLock(safeRemote, () => {
+    const synced = syncSharedRepositoryState(safeRemote, {
+      allowOffline: false,
+      timeoutMs: options.timeoutMs,
+      push: options.push || null,
+    });
+    return publishSharedProposalFromStateLocked(synced, options);
+  });
 }
 
 function sharedDocumentSlug(value, fallback = "document") {
@@ -4251,9 +7878,148 @@ function sharedMarkdownTemplate(projectId, relPath, title) {
   ].join("\n");
 }
 
-export function proposeSharedDocumentationFile(repository, { projectId, path: requestedPath, title, description, sessionId = "" } = {}) {
+function sharedProjectTitle(value) {
+  const title = String(value || "").trim();
+  if (!title) throw new Error("shared project title is required");
+  if (/\r|\n/.test(title)) throw new Error("shared project title must stay on one line");
+  if (title.length > 160) throw new Error("shared project title must be 160 characters or fewer");
+  return title;
+}
+
+function sharedProjectInitialDocumentPath(value = "README.md") {
+  let documentPath = safeRelativePath(value || "README.md", "shared project document path");
+  const extension = path.posix.extname(documentPath);
+  if (!extension) documentPath += ".md";
+  else if (extension.toLowerCase() !== ".md") throw new Error("shared project documents must use the .md extension");
+  if (documentPath.split("/").some((segment) => segment.startsWith("."))) {
+    throw new Error("shared project document path must not use hidden files or folders");
+  }
+  return documentPath;
+}
+
+export function validateSharedProjectProposalInput({
+  projectId,
+  title,
+  path: requestedPath = "README.md",
+  description,
+  sessionId = "",
+} = {}) {
+  const requestedProjectId = String(projectId || "").trim();
+  const normalizedProjectId = safeId(projectId, "shared project id");
+  if (requestedProjectId !== normalizedProjectId) {
+    throw new Error("shared project id must already use lowercase letters, numbers, and single hyphens");
+  }
+  return {
+    projectId: normalizedProjectId,
+    title: sharedProjectTitle(title),
+    path: sharedProjectInitialDocumentPath(requestedPath),
+    description: proposalDescription(description, { optional: false }),
+    sessionId: safeSessionId(sessionId),
+  };
+}
+
+export function proposeSharedProject(repository, options = {}) {
+  const validated = validateSharedProjectProposalInput(options);
+  const {
+    projectId: normalizedProjectId,
+    title: safeTitle,
+    path: documentPath,
+    description: safeDescription,
+    sessionId,
+  } = validated;
+  const safeRemote = registeredRepositoryTransport(repository);
+  authenticatedSharedGit(safeRemote, options.push, options.timeoutMs);
+  return withProposalRegistryLock(safeRemote, () => {
+    const syncedRepository = syncSharedRepositoryState(safeRemote, {
+      allowOffline: false,
+      timeoutMs: options.timeoutMs,
+      push: options.push || null,
+    });
+    if (syncedRepository.catalog.projects.some((project) => project.id === normalizedProjectId)) {
+      throw new Error(`Shared project already exists: ${normalizedProjectId}`);
+    }
+    const projectPath = safeRelativePath(
+      `${syncedRepository.repositoryConfig.projectsPath}/${normalizedProjectId}`,
+      "shared project repository path",
+    );
+    if (inspectSharedPathNoFollow(syncedRepository.snapshot, projectPath).exists) {
+      throw new Error(`Unregistered shared project path already exists: ${projectPath}`);
+    }
+    const synced = {
+      ...syncedRepository,
+      connection: {
+        repository: syncedRepository.connection.repository,
+        projectId: normalizedProjectId,
+        projectRoot: "",
+      },
+    };
+    const proposal = createSharedProposalFromStateLocked(synced, {
+      title: `Add ${safeTitle}`,
+      description: safeDescription,
+      scope: "project",
+      sessionId,
+    });
+    let repositoryPath = "";
+    try {
+      const projectsPath = path.join(proposal.root, synced.repositoryConfig.projectsFile);
+      const rawCatalog = readJson(projectsPath);
+      normalizedProjectsCatalog(rawCatalog);
+      const nextCatalog = {
+        ...rawCatalog,
+        version: 1,
+        projects: [...rawCatalog.projects, { id: normalizedProjectId, title: safeTitle }],
+      };
+      normalizedProjectsCatalog(nextCatalog);
+      replaceSharedFileNoFollow(proposal.root, synced.repositoryConfig.projectsFile, JSON.stringify(nextCatalog, null, 2) + "\n");
+      repositoryPath = safeRelativePath(
+        `${projectPath}/docs/${documentPath}`,
+        "shared project document repository path",
+      );
+      createSharedFileNoFollow(
+        proposal.root,
+        repositoryPath,
+        sharedMarkdownTemplate(normalizedProjectId, documentPath, safeTitle),
+        { stagingRoot: synced.cacheRoot },
+      );
+    } catch (error) {
+      try {
+        discardUnpublishedSharedProposalLocked(synced, proposal);
+      } catch (cleanupError) {
+        cleanupError.cause = error;
+        throw cleanupError;
+      }
+      throw error;
+    }
+    const published = publishSharedProposalFromStateLocked(synced, {
+      proposal: proposal.branch,
+      title: proposal.title,
+      description: safeDescription,
+      message: `Add shared project ${normalizedProjectId}`,
+      author: { name: "Context Room", email: ["context-room", "local.invalid"].join("@") },
+      push: options.push || null,
+      timeoutMs: options.timeoutMs,
+    });
+    return {
+      repository: synced.connection.repository,
+      projectId: normalizedProjectId,
+      projectTitle: safeTitle,
+      projectPath,
+      repositoryPath,
+      documentPath,
+      proposal: published,
+    };
+  });
+}
+
+export function validateSharedDocumentationProposalInput({
+  projectId,
+  path: requestedPath,
+  title,
+  description,
+  sessionId = "",
+} = {}) {
+  const normalizedProjectId = safeId(projectId, "projectId");
   const safeTitle = proposalTitle(title, "New shared document");
-  const safeDescription = proposalDescription(description, { optional: false });
   const suggestedPath = sharedDocumentSlug(safeTitle) + ".md";
   let documentPath = safeRelativePath(requestedPath || suggestedPath, "shared document path");
   const extension = path.posix.extname(documentPath);
@@ -4262,37 +8028,66 @@ export function proposeSharedDocumentationFile(repository, { projectId, path: re
   if (documentPath.split("/").some((segment) => segment.startsWith("."))) {
     throw new Error("shared document path must not use hidden files or folders");
   }
-  const synced = sharedProjectRepositoryState(repository, projectId);
-  const repositoryPath = safeRelativePath(
-    `${synced.repositoryConfig.projectsPath}/${synced.connection.projectId}/docs/${documentPath}`,
-    "shared document repository path",
-  );
-  const acceptedTarget = path.join(synced.snapshot, ...repositoryPath.split("/"));
-  if (fs.existsSync(acceptedTarget)) throw new Error(`Shared document already exists: ${repositoryPath}`);
-  const proposal = createSharedProposalFromState(synced, {
-    title: `Create ${safeTitle}`,
-    description: safeDescription,
-    scope: "project",
-    sessionId,
-  });
-  const target = path.join(proposal.root, ...repositoryPath.split("/"));
-  if (fs.existsSync(target)) throw new Error(`Shared document already exists: ${repositoryPath}`);
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.writeFileSync(target, sharedMarkdownTemplate(synced.connection.projectId, documentPath, safeTitle), "utf8");
-  const published = publishSharedProposalFromState(synced, {
-    proposal: proposal.branch,
-    title: proposal.title,
-    description: safeDescription,
-    message: `Create shared document ${documentPath}`,
-    author: { name: "Context Room", email: ["context-room", "local.invalid"].join("@") },
-  });
   return {
-    repository: synced.connection.repository,
-    projectId: synced.connection.projectId,
-    repositoryPath,
-    documentPath,
-    proposal: published,
+    projectId: normalizedProjectId,
+    path: documentPath,
+    title: safeTitle,
+    description: proposalDescription(description, { optional: false }),
+    sessionId: safeSessionId(sessionId),
   };
+}
+
+export function proposeSharedDocumentationFile(repository, options = {}) {
+  const validated = validateSharedDocumentationProposalInput(options);
+  const safeRemote = registeredRepositoryTransport(repository);
+  authenticatedSharedGit(safeRemote, options.push, options.timeoutMs);
+  return withProposalRegistryLock(safeRemote, () => {
+    const synced = sharedProjectRepositoryState(safeRemote, validated.projectId, options);
+    const repositoryPath = safeRelativePath(
+      `${synced.repositoryConfig.projectsPath}/${synced.connection.projectId}/docs/${validated.path}`,
+      "shared document repository path",
+    );
+    const acceptedTarget = inspectSharedPathNoFollow(synced.snapshot, repositoryPath);
+    if (acceptedTarget.exists) throw new Error(`Shared document already exists: ${repositoryPath}`);
+    const proposal = createSharedProposalFromStateLocked(synced, {
+      title: `Create ${validated.title}`,
+      description: validated.description,
+      scope: "project",
+      sessionId: validated.sessionId,
+    });
+    try {
+      createSharedFileNoFollow(
+        proposal.root,
+        repositoryPath,
+        sharedMarkdownTemplate(synced.connection.projectId, validated.path, validated.title),
+        { stagingRoot: synced.cacheRoot },
+      );
+    } catch (error) {
+      try {
+        discardUnpublishedSharedProposalLocked(synced, proposal);
+      } catch (cleanupError) {
+        cleanupError.cause = error;
+        throw cleanupError;
+      }
+      throw error;
+    }
+    const published = publishSharedProposalFromStateLocked(synced, {
+      proposal: proposal.branch,
+      title: proposal.title,
+      description: validated.description,
+      message: `Create shared document ${validated.path}`,
+      author: { name: "Context Room", email: ["context-room", "local.invalid"].join("@") },
+      push: options.push || null,
+      timeoutMs: options.timeoutMs,
+    });
+    return {
+      repository: synced.connection.repository,
+      projectId: synced.connection.projectId,
+      repositoryPath,
+      documentPath: validated.path,
+      proposal: published,
+    };
+  });
 }
 
 export function listSharedProposals(root, { allProjects = true, refresh = true } = {}) {
@@ -4353,29 +8148,31 @@ export function resolveSharedDocumentationTarget(repository, {
   const frozenRevision = acceptedRevision ? safeRevision(acceptedRevision, "accepted shared revision") : "";
   let synced;
   if (frozenRevision) {
-    const safeRemote = safeRepository(repository);
-    const checkout = ensureRepositoryClone(safeRemote);
-    if (!gitObjectExists(checkout, `${frozenRevision}^{commit}`)) {
-      throw new Error(`Accepted shared revision is unavailable locally: ${frozenRevision}`);
-    }
-    assertSafeTreeEntries(checkout, frozenRevision, []);
-    const cacheRoot = repositoryCacheRoot(safeRemote);
-    const snapshot = path.join(cacheRoot, "snapshots", frozenRevision);
-    fs.mkdirSync(path.dirname(snapshot), { recursive: true });
-    materializeSnapshot(checkout, frozenRevision, snapshot);
-    const repositoryConfig = readSharedRepositoryConfig(snapshot);
-    const catalog = normalizedProjectsCatalog(readJson(path.join(snapshot, repositoryConfig.projectsFile)));
-    const state = readJson(sharedStatePath(safeRemote), {});
-    synced = {
-      connection: { repository: safeRemote, projectId: "global", projectRoot: "" },
-      repositoryConfig,
-      catalog,
-      revision: frozenRevision,
-      online: Boolean(state.online),
-      fetchError: String(state.fetchError || ""),
-      cacheRoot,
-      snapshot,
-    };
+    const safeRemote = registeredRepositoryTransport(repository);
+    synced = withSharedRepositoryCloneLock(safeRemote, () => {
+      const checkout = ensureRepositoryCloneUnderLock(safeRemote);
+      if (!gitObjectExists(checkout, `${frozenRevision}^{commit}`)) {
+        throw new Error(`Accepted shared revision is unavailable locally: ${frozenRevision}`);
+      }
+      assertSafeTreeEntries(checkout, frozenRevision, []);
+      const cacheRoot = repositoryCacheRoot(safeRemote);
+      const snapshot = path.join(cacheRoot, "snapshots", frozenRevision);
+      fs.mkdirSync(path.dirname(snapshot), { recursive: true });
+      materializeSnapshot(checkout, frozenRevision, snapshot);
+      const repositoryConfig = readSharedRepositoryConfig(snapshot);
+      const catalog = normalizedProjectsCatalog(readJson(path.join(snapshot, repositoryConfig.projectsFile)));
+      const state = readJson(sharedStatePath(safeRemote), {});
+      return {
+        connection: { repository: safeRemote, projectId: "global", projectRoot: "" },
+        repositoryConfig,
+        catalog,
+        revision: frozenRevision,
+        online: Boolean(state.online),
+        fetchError: String(state.fetchError || ""),
+        cacheRoot,
+        snapshot,
+      };
+    });
   } else synced = syncSharedRepositoryState(repository, { allowOffline });
   const normalizedProject = safeId(projectId, "projectId");
   const project = normalizedProject === "global"
@@ -4398,10 +8195,23 @@ export function resolveSharedDocumentationTarget(repository, {
     addRoot(`${synced.repositoryConfig.projectsPath}/${normalizedProject}/skills`);
   }
   addRoot(synced.repositoryConfig.globalSkillsPath);
-  const skillLocations = readSharedSkillLocationsFromRoot(synced.snapshot, synced.repositoryConfig, synced.catalog);
-  for (const collection of skillLocations.collections) addRoot(collection.path);
-  const instructionLocations = readSharedInstructionLocationsFromRoot(synced.snapshot, synced.repositoryConfig, synced.catalog);
-  for (const collection of instructionLocations.collections) addRoot(collection.path);
+  const { skillLocations, instructionLocations } = readValidatedSharedLocationsFromRoot(
+    synced.snapshot,
+    synced.repositoryConfig,
+    synced.catalog,
+  );
+  const applicableSkillCollections = new Set(skillLocations.assignments
+    .filter((assignment) => assignmentAppliesToProject(assignment, normalizedProject))
+    .map((assignment) => assignment.collectionId));
+  for (const collection of skillLocations.collections) {
+    if (applicableSkillCollections.has(collection.id)) addRoot(collection.path);
+  }
+  const applicableInstructionCollections = new Set(instructionLocations.assignments
+    .filter((assignment) => instructionAssignmentApplies(assignment, normalizedProject))
+    .map((assignment) => assignment.collectionId));
+  for (const collection of instructionLocations.collections) {
+    if (applicableInstructionCollections.has(collection.id)) addRoot(collection.path);
+  }
   return {
     mode: "shared-only",
     repository: synced.connection.repository,
@@ -4429,9 +8239,30 @@ export function readSharedDocumentationProposalDocuments(target = {}, overlay = 
   if (safeRevision(overlay.acceptedRevision, "session proposal accepted revision") !== acceptedRevision) {
     throw new Error("Session proposal overlay accepted revision does not match this documentation target");
   }
-  const checkout = repositoryCheckout(repository);
-  const config = readSharedRepositoryConfig(path.join(repositoryCacheRoot(repository), "snapshots", acceptedRevision));
-  const catalog = normalizedProjectsCatalog(JSON.parse(String(runGit(checkout, ["show", `${acceptedRevision}:${config.projectsFile}`]))));
+  const safeRemote = registeredRepositoryTransport(repository);
+  const accepted = withSharedRepositoryCloneLock(safeRemote, () => {
+    const checkout = ensureRepositoryCloneUnderLock(safeRemote);
+    if (!gitObjectExists(checkout, `${acceptedRevision}^{commit}`)) {
+      throw new Error(`Accepted shared revision is unavailable locally: ${acceptedRevision}`);
+    }
+    const descriptor = readSharedDescriptorAtRevision(checkout, acceptedRevision);
+    const remoteRef = `refs/remotes/origin/${descriptor.config.defaultBranch}`;
+    if (!gitObjectExists(checkout, `${remoteRef}^{commit}`) || !gitIsAncestor(checkout, acceptedRevision, remoteRef)) {
+      throw sharedContextError("shared-revision-not-accepted", "Session proposal base is not reachable from the configured shared main branch", {
+        repository: safeRemote,
+        revision: acceptedRevision,
+        defaultBranch: descriptor.config.defaultBranch,
+      });
+    }
+    const cacheRoot = repositoryCacheRoot(safeRemote);
+    const snapshot = path.join(cacheRoot, "snapshots", acceptedRevision);
+    fs.mkdirSync(path.dirname(snapshot), { recursive: true });
+    materializeSnapshot(checkout, acceptedRevision, snapshot);
+    const config = readSharedRepositoryConfig(snapshot);
+    const catalog = normalizedProjectsCatalog(readJson(path.join(snapshot, config.projectsFile)));
+    return { checkout, config, catalog };
+  });
+  const { checkout, config, catalog } = accepted;
   const documents = [];
   for (const rawProposal of overlay.proposals) {
     const head = safeRevision(rawProposal.head, "session proposal head");
@@ -4487,20 +8318,26 @@ export function readSharedSessionProposalDocuments(root, overlay = {}) {
 
 export function listRegisteredSharedRepositories() {
   const registry = readJson(registryPath(), { bindings: [] });
-  return [...new Set((registry.bindings || []).flatMap((binding) => {
-    try { return [safeRepository(binding.repository)]; } catch { return []; }
-  }))];
+  const repositories = new Map();
+  for (const binding of registry.bindings || []) {
+    try {
+      const repository = safeRepository(binding.repository);
+      const identity = sharedRepositoryIdentity(repository);
+      if (!repositories.has(identity)) repositories.set(identity, repository);
+    } catch {}
+  }
+  return [...repositories.values()];
 }
 
 export function listRegisteredSharedBindings(repository = "") {
-  const selectedRepository = repository ? safeRepository(repository) : "";
   const registry = readJson(registryPath(), { bindings: [] });
-  return (registry.bindings || []).flatMap((binding) => {
+  const selectedRepository = repository ? registeredRepositoryTransport(repository, registry) : "";
+  const bindings = (registry.bindings || []).flatMap((binding) => {
     try {
       const bindingRepository = safeRepository(binding.repository);
-      if (selectedRepository && bindingRepository !== selectedRepository) return [];
+      if (selectedRepository && !sameSharedRepository(bindingRepository, selectedRepository)) return [];
       return [{
-        repository: bindingRepository,
+        repository: registeredRepositoryTransport(bindingRepository, registry),
         projectId: safeId(binding.projectId, "projectId"),
         sourceRoot: binding.sourceRoot ? stableRoot(binding.sourceRoot) : "",
         sourceSubpath: String(binding.sourceSubpath || "."),
@@ -4510,49 +8347,97 @@ export function listRegisteredSharedBindings(repository = "") {
       return [];
     }
   });
+  return [...new Map(bindings.map((binding) => [JSON.stringify(binding), binding])).values()];
 }
 
-export function listSharedRepositoryProposals(repository, { allowOffline = true, refresh = true } = {}) {
-  const synced = refresh
-    ? syncSharedRepositoryState(repository, { allowOffline })
-    : cachedSharedRepositoryState(repository);
-  return {
-    repository: synced.connection.repository,
-    repositoryName: synced.repositoryConfig.name,
-    status: {
-      online: synced.online,
-      fetchError: synced.fetchError,
-      revision: synced.revision,
-      defaultBranch: synced.repositoryConfig.defaultBranch,
-      syncedAt: readJson(sharedStatePath(synced.connection.repository), {}).syncedAt || null,
-    },
-    projects: synced.catalog.projects,
-    proposals: listRemoteSharedProposals(synced),
-  };
+export function listSharedRepositoryProposals(repository, {
+  allowOffline = true,
+  refresh = true,
+  timeoutMs = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS,
+  push = null,
+} = {}) {
+  const safeRemote = registeredRepositoryTransport(repository);
+  if (refresh) authenticatedSharedGit(safeRemote, push, timeoutMs);
+  return withSharedRepositoryCloneLock(safeRemote, () => {
+    const synced = refresh
+      ? syncSharedRepositoryStateUnderLock(safeRemote, { allowOffline, timeoutMs, push })
+      : cachedSharedRepositoryStateUnderLock(safeRemote);
+    return {
+      repository: synced.connection.repository,
+      repositoryName: synced.repositoryConfig.name,
+      status: {
+        online: synced.online,
+        fetchError: synced.fetchError,
+        revision: synced.revision,
+        defaultBranch: synced.repositoryConfig.defaultBranch,
+        syncedAt: readJson(sharedStatePath(synced.connection.repository), {}).syncedAt || null,
+      },
+      projects: synced.catalog.projects,
+      proposals: listRemoteSharedProposals(synced),
+    };
+  }, timeoutMs);
 }
 
-export function rejectSharedRepositoryProposal(repository, { proposal, expectedHead, actor = "human-ui" } = {}) {
-  const synced = syncSharedRepositoryState(repository, { allowOffline: false });
+function rejectSharedRepositoryProposalFromStateLocked(synced, {
+  proposal,
+  expectedHead,
+  actor = "human-ui",
+  push = null,
+  timeoutMs = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS,
+} = {}) {
   const identity = proposalIdentity(synced.repositoryConfig, proposal);
   const reviewedHead = safeRevision(expectedHead, "expected proposal head");
-  const current = listRemoteSharedProposals(synced).find((item) => item.branch === identity.branch);
-  if (!current) throw new Error(`Remote proposal not found: ${identity.branch}`);
-  if (current.head !== reviewedHead) {
-    throw new Error("Proposal changed before rejection; refresh and review the current exact revision");
+  const checkout = repositoryCheckout(synced.connection.repository);
+  const currentRemoteHead = remoteBranchRevision(checkout, identity.branch);
+  const initialRemoteState = remoteProposalState(checkout, identity.branch, currentRemoteHead);
+  if (initialRemoteState.status === "invalid") {
+    throw terminalProposalError(
+      "shared-proposal-terminal-conflict",
+      "The remote proposal state ref is invalid; no terminal mutation is allowed",
+      identity.branch,
+      reviewedHead,
+      { stateRef: initialRemoteState.ref, stateHead: initialRemoteState.head },
+    );
   }
-  if (["accepted", "merged"].includes(current.reviewStatus)) {
-    throw new Error("An accepted proposal cannot be rejected from the active review queue");
+  if (
+    initialRemoteState.status === "active"
+    && initialRemoteState.head !== reviewedHead
+  ) {
+    throw staleSharedProposalError(identity.branch, reviewedHead, currentRemoteHead || initialRemoteState.head);
+  }
+  if (
+    new Set(["accepted", "rejected"]).has(initialRemoteState.status)
+    && initialRemoteState.proposalHead !== reviewedHead
+  ) {
+    throw staleSharedProposalError(identity.branch, reviewedHead, currentRemoteHead || initialRemoteState.proposalHead);
+  }
+  const initialTerminal = proposalTerminalEvidence(synced, checkout, identity.branch, reviewedHead);
+  assertTerminalRejectionAllowed(initialTerminal, identity.branch, reviewedHead);
+  let alreadyRejected = initialTerminal.remoteRejectedVerified || initialTerminal.rejection.archiveMatches;
+  if (!alreadyRejected && currentRemoteHead !== reviewedHead) {
+    throw staleSharedProposalError(identity.branch, reviewedHead, currentRemoteHead);
+  }
+  const current = alreadyRejected
+    ? null
+    : listRemoteSharedProposals(synced, { requiredProposal: identity.branch }).find((item) => item.branch === identity.branch);
+  if (!alreadyRejected && !current) throw new Error(`Remote proposal not found: ${identity.branch}`);
+  if (current && ["accepted", "merged"].includes(current.reviewStatus)) {
+    throw terminalProposalError(
+      "shared-proposal-terminal",
+      "An accepted proposal revision cannot be rejected",
+      identity.branch,
+      reviewedHead,
+      { reviewStatus: current.reviewStatus },
+    );
   }
 
-  const checkout = repositoryCheckout(synced.connection.repository);
-  const registryFile = proposalRegistryPath(synced.connection.repository);
-  const registry = readJson(registryFile, { version: 1, proposals: {} });
+  const registry = readProposalRegistry(synced.connection.repository);
   const localEntry = registry.proposals?.[identity.branch];
-  if (localEntry?.root && fs.existsSync(localEntry.root)) {
-    const pending = tryGit(localEntry.root, ["status", "--porcelain=v1", "--untracked-files=all"]);
-    if (pending) {
-      throw new Error("Proposal has unpublished local changes; publish or resolve them before rejecting it");
-    }
+  const unpublishedLocalChanges = localEntry?.root && fs.existsSync(localEntry.root)
+    ? tryGit(localEntry.root, ["status", "--porcelain=v1", "--untracked-files=all"])
+    : "";
+  if (!alreadyRejected && unpublishedLocalChanges) {
+    throw new Error("Proposal has unpublished local changes; publish or resolve them before rejecting it");
   }
 
   const proposalSuffix = identity.branch.slice(synced.repositoryConfig.proposalPrefix.length);
@@ -4562,47 +8447,164 @@ export function rejectSharedRepositoryProposal(repository, { proposal, expectedH
   );
   const existingArchiveHead = remoteBranchRevision(checkout, rejectionBranch);
   if (existingArchiveHead && existingArchiveHead !== reviewedHead) {
-    throw new Error(`Rejected proposal archive does not match the exact proposal revision: ${rejectionBranch}`);
+    throw terminalProposalError(
+      "shared-proposal-terminal-conflict",
+      `Rejected proposal archive does not match the exact proposal revision: ${rejectionBranch}`,
+      identity.branch,
+      reviewedHead,
+      { rejectionBranch, archiveHead: existingArchiveHead },
+    );
   }
-  if (!existingArchiveHead) {
-    runGit(checkout, [
-      "push",
-      "origin",
-      `${reviewedHead}:refs/heads/${rejectionBranch}`,
-    ], { stdio: ["ignore", "ignore", "pipe"] });
+  const deliveryTimeoutMs = sharedDeliveryTimeoutBudget(push, timeoutMs);
+  authenticatedSharedGit(synced.connection.repository, push, deliveryTimeoutMs);
+  let pushError = null;
+  if (!initialTerminal.remoteRejectedVerified) {
+    const marker = proposalTerminalMarkerCommit(checkout, {
+      proposal: identity.branch,
+      proposalHead: reviewedHead,
+      decision: "rejected",
+      archiveRef: rejectionBranch,
+    });
+    const updates = [];
+    if (!existingArchiveHead) {
+      updates.push({
+        source: reviewedHead,
+        ref: `refs/heads/${rejectionBranch}`,
+        expected: "",
+        force: false,
+      });
+    }
+    updates.push({
+      source: marker,
+      ref: proposalStateRef(identity.branch),
+      expected: initialRemoteState.status === "active" ? initialRemoteState.head : "",
+      force: true,
+    });
+    try {
+      const pushAuth = authenticatedSharedGit(synced.connection.repository, push, deliveryTimeoutMs);
+      runSharedNetworkGit(checkout, atomicPushArguments(pushAuth?.remote || "origin", updates), {
+        stdio: ["ignore", "ignore", "pipe"],
+        ...(pushAuth ? { credential: pushAuth.credential } : {}),
+        operation: "Git push",
+        timeoutMs: deliveryTimeoutMs,
+        timeoutBudgetMs: deliveryTimeoutMs,
+      });
+    } catch (error) {
+      pushError = error;
+    }
   }
+  let fetchError = null;
+  try {
+    const fetchAuth = authenticatedSharedGit(synced.connection.repository, push, deliveryTimeoutMs);
+    const fetchArgs = fetchAuth
+      ? ["fetch", "--force", "--prune", "--no-tags", fetchAuth.remote, "+refs/heads/*:refs/remotes/origin/*"]
+      : ["fetch", "--force", "--prune", "--no-tags", "origin"];
+    runSharedNetworkGit(checkout, fetchArgs, {
+      stdio: ["ignore", "ignore", "pipe"],
+      ...(fetchAuth ? { credential: fetchAuth.credential } : {}),
+      operation: "Git fetch",
+      timeoutMs: deliveryTimeoutMs,
+      timeoutBudgetMs: deliveryTimeoutMs,
+    });
+  } catch (error) {
+    fetchError = error;
+  }
+  if (fetchError) {
+    if (pushError) throwAtomicPushError(pushError, "Shared proposal rejection");
+    throw fetchError;
+  }
+
+  const refreshedSynced = {
+    ...synced,
+    revision: remoteRevision(checkout, synced.repositoryConfig.defaultBranch),
+  };
+  const terminalAfterArchive = proposalTerminalEvidence(refreshedSynced, checkout, identity.branch, reviewedHead);
+  assertTerminalRejectionAllowed(terminalAfterArchive, identity.branch, reviewedHead);
+  if (!terminalAfterArchive.remoteRejectedVerified) {
+    const actualRemoteHead = remoteBranchRevision(checkout, identity.branch);
+    const actualState = remoteProposalState(checkout, identity.branch, actualRemoteHead);
+    if (actualState.status === "active" && actualState.head !== reviewedHead) {
+      throw staleSharedProposalError(identity.branch, reviewedHead, actualRemoteHead || actualState.head);
+    }
+    if (pushError) throwAtomicPushError(pushError, "Shared proposal rejection");
+    throw sharedContextError(
+      "shared-rejection-delivery-unverified",
+      "The rejected proposal archive and terminal state could not be verified at the exact proposal revision",
+      {
+        proposal: identity.branch,
+        proposalHead: reviewedHead,
+        rejectionBranch,
+        stateRef: actualState.ref,
+        stateHead: actualState.head,
+      },
+    );
+  }
+  if (pushError) alreadyRejected = true;
 
   recordOwnerProposalDecision(synced.connection.repository, {
     proposal: identity.branch,
     proposalHead: reviewedHead,
     decision: "rejected",
     archiveRef: rejectionBranch,
-  }, { ...proposalDecisionAuthorityOptions(), actor });
+  }, { ...proposalDecisionAuthorityOptions(synced.connection.repository), actor });
 
-  if (localEntry?.root && fs.existsSync(localEntry.root)) {
+  let localCleanupPending = Boolean(unpublishedLocalChanges);
+  if (!localCleanupPending && localEntry?.root && fs.existsSync(localEntry.root)) {
     try {
       runGit(checkout, ["worktree", "remove", localEntry.root], { stdio: ["ignore", "ignore", "ignore"] });
-    } catch {}
+    } catch {
+      localCleanupPending = fs.existsSync(localEntry.root);
+    }
   }
-  if (registry.proposals?.[identity.branch]) {
+  if (!localCleanupPending && registry.proposals?.[identity.branch]) {
     delete registry.proposals[identity.branch];
-    writeJson(registryFile, registry);
+    writeProposalRegistry(synced.connection.repository, registry);
   }
-  runGit(checkout, ["fetch", "--prune", "origin"], { stdio: ["ignore", "ignore", "pipe"] });
-  rememberProposalObservation(synced.connection.repository, current, "rejected");
+  if (current) rememberProposalObservation(synced.connection.repository, current, "rejected");
   const result = {
     rejected: true,
+    alreadyRejected,
     repository: synced.connection.repository,
     proposal: identity.branch,
     proposalHead: reviewedHead,
     rejectionBranch,
+    localCleanupPending,
   };
-  appendContextRoomEvent("proposal.rejected", {
-    projectId: identity.projectId,
-    sharedRepository: synced.connection.repository,
-    resource: { proposal: identity.branch, proposalHead: reviewedHead, rejectionBranch },
-  });
+  if (!alreadyRejected) {
+    appendContextRoomEvent("proposal.rejected", {
+      projectId: identity.projectId,
+      sharedRepository: synced.connection.repository,
+      resource: { proposal: identity.branch, proposalHead: reviewedHead, rejectionBranch },
+    });
+  }
   return result;
+}
+
+export function rejectSharedRepositoryProposal(repository, options = {}) {
+  const safeRemote = registeredRepositoryTransport(repository);
+  const proposal = safeBranchName(options.proposal, "proposal branch");
+  const proposalHead = safeRevision(options.expectedHead, "expected proposal head");
+  const push = options.push || null;
+  const timeoutMs = sharedDeliveryTimeoutBudget(push, options.timeoutMs);
+  authenticatedSharedGit(safeRemote, push, timeoutMs);
+  return withProposalRegistryLock(safeRemote, () => withSharedTerminalDecisionLock({
+    repository: safeRemote,
+    proposal,
+    proposalHead,
+  }, () => withSharedRepositoryCloneLock(safeRemote, () => {
+    const synced = syncSharedRepositoryStateUnderLock(safeRemote, {
+      allowOffline: false,
+      timeoutMs,
+      push,
+    });
+    return rejectSharedRepositoryProposalFromStateLocked(synced, {
+      ...options,
+      proposal,
+      expectedHead: proposalHead,
+      push,
+      timeoutMs,
+    });
+  }, timeoutMs)), TERMINAL_PROPOSAL_REGISTRY_LOCK_OPTIONS);
 }
 
 function gitIsAncestor(cwd, ancestor, descendant) {
@@ -4755,6 +8757,31 @@ function sharedMainAcceptanceCandidates(synced, checkout) {
   return candidates;
 }
 
+function exactSharedMainAcceptanceCandidate(synced, checkout, proposal, proposalHead) {
+  const commits = tryGit(checkout, ["rev-list", "--first-parent", synced.revision]).split("\n").filter(Boolean);
+  for (const revision of commits) {
+    try {
+      const item = sharedMainCommit(checkout, revision);
+      if (
+        item.acceptance?.proposal === proposal
+        && item.acceptance.proposalHead === proposalHead
+      ) {
+        return {
+          accepted: true,
+          acceptedAt: item.committedAt,
+          commit: item.revision,
+          acceptanceBranch: "",
+          pullRequestUrl: "",
+          merged: false,
+          proposalHead: item.acceptance.proposalHead,
+          sessionId: item.acceptance.sessionId,
+        };
+      }
+    } catch {}
+  }
+  return null;
+}
+
 function sharedMainAcceptanceIndex(synced, checkout, reviewActivity = null, decisionIndex = null) {
   const index = new Map();
   const decisions = decisionIndex || ownerProposalDecisionIndex(synced.connection.repository);
@@ -4800,9 +8827,9 @@ export function listSharedMainAcceptances(repository, { refresh = true } = {}) {
 }
 
 function ownerProposalDecisionIndex(repository) {
-  const inspected = inspectOwnerProposalDecisions(repository, proposalDecisionAuthorityOptions());
+  const inspected = inspectOwnerProposalDecisions(repository, proposalDecisionAuthorityOptions(repository));
   const decisions = new Map();
-  if (inspected.integrity === "verified") {
+  if (["verified", "recovered"].includes(inspected.integrity)) {
     for (const decision of inspected.decisions) {
       decisions.set(`${decision.proposal}\0${decision.proposalHead}`, decision);
     }
@@ -4819,12 +8846,207 @@ function proposalRejectionEvidence(synced, checkout, proposal, proposalHead, dec
   const expectedArchive = expectedRejectionBranch(synced.repositoryConfig, proposal, proposalHead);
   const archiveHead = remoteBranchRevision(checkout, expectedArchive);
   const decision = decisionIndex.decisions.get(`${proposal}\0${proposalHead}`) || null;
+  const archiveMatches = archiveHead === proposalHead;
+  const receiptMatches = decision?.decision === "rejected" && decision.archiveRef === expectedArchive;
   return {
     expectedArchive,
     archiveHead,
     decision,
-    verified: archiveHead === proposalHead,
+    archiveMatches,
+    receiptMatches,
+    verified: archiveMatches && receiptMatches,
   };
+}
+
+function proposalTerminalEvidence(synced, checkout, proposal, proposalHead) {
+  const decisionIndex = ownerProposalDecisionIndex(synced.connection.repository);
+  const rejection = proposalRejectionEvidence(synced, checkout, proposal, proposalHead, decisionIndex);
+  const decision = rejection.decision;
+  const signedRejected = decision?.decision === "rejected";
+  const signedAccepted = decision?.decision === "accepted";
+  let signedAcceptedCommit = "";
+  let signedAcceptanceVerified = false;
+  if (signedAccepted) {
+    try {
+      signedAcceptedCommit = safeRevision(decision.acceptedCommit, "signed accepted commit");
+      signedAcceptanceVerified = gitIsAncestor(checkout, signedAcceptedCommit, synced.revision)
+        && commitHasExactProposalAcceptance(checkout, signedAcceptedCommit, proposal, proposalHead);
+    } catch {}
+  }
+  const exactMainCandidate = exactSharedMainAcceptanceCandidate(synced, checkout, proposal, proposalHead);
+  const currentProposalHead = remoteBranchRevision(checkout, proposal);
+  const remoteState = remoteProposalState(checkout, proposal, currentProposalHead);
+  const remoteStateMatchesExactProposal = remoteState.proposalHead === proposalHead;
+  const remoteAccepted = remoteState.status === "accepted" && remoteStateMatchesExactProposal;
+  const remoteRejected = remoteState.status === "rejected" && remoteStateMatchesExactProposal;
+  const remoteAcceptedVerified = remoteAccepted
+    && gitIsAncestor(checkout, remoteState.acceptedCommit, synced.revision)
+    && commitHasExactProposalAcceptance(checkout, remoteState.acceptedCommit, proposal, proposalHead);
+  const remoteRejectedVerified = remoteRejected
+    && remoteState.archiveRef === rejection.expectedArchive
+    && rejection.archiveHead === proposalHead;
+  const rejectionReceiptMatches = !signedRejected || decision.archiveRef === rejection.expectedArchive;
+  const contradictory = Boolean(
+    remoteState.status === "invalid"
+    || (remoteAccepted && !remoteAcceptedVerified)
+    || (remoteRejected && !remoteRejectedVerified)
+    || (rejection.archiveHead && rejection.archiveHead !== proposalHead)
+    || !rejectionReceiptMatches
+    || (signedAccepted && !signedAcceptanceVerified)
+    || ((rejection.verified || signedRejected) && (signedAccepted || exactMainCandidate))
+    || (remoteAccepted && (remoteState.acceptedCommit !== (exactMainCandidate?.commit || remoteState.acceptedCommit)))
+    || (remoteAccepted && (rejection.verified || signedRejected))
+    || (remoteRejected && (signedAccepted || exactMainCandidate))
+    || (remoteAccepted && signedAccepted && remoteState.acceptedCommit !== signedAcceptedCommit)
+  );
+  return {
+    decisionIndex,
+    decision,
+    rejection,
+    remoteState,
+    remoteAccepted,
+    remoteAcceptedVerified,
+    remoteRejected,
+    remoteRejectedVerified,
+    signedRejected,
+    signedAccepted,
+    signedAcceptedCommit,
+    signedAcceptanceVerified,
+    exactMainCandidate,
+    contradictory,
+  };
+}
+
+function terminalProposalError(code, message, proposal, proposalHead, details = {}) {
+  const error = sharedContextError(code, message, { proposal, proposalHead, ...details });
+  error.statusCode = 409;
+  return error;
+}
+
+function assertProposalDecisionAuthorityWritable(evidence, proposal, proposalHead) {
+  if (evidence.decisionIndex.writable !== false) return;
+  throw terminalProposalError(
+    "shared-proposal-decision-authority-unavailable",
+    "Proposal decision authority is damaged or recovered; repair it before making a terminal decision",
+    proposal,
+    proposalHead,
+    {
+      integrity: evidence.decisionIndex.integrity,
+      recoveredFrom: evidence.decisionIndex.recoveredFrom || "",
+      authorityPath: evidence.decisionIndex.authorityPath || "",
+    },
+  );
+}
+
+function assertTerminalAcceptanceAllowed(evidence, proposal, proposalHead, acceptedCommit = "") {
+  assertProposalDecisionAuthorityWritable(evidence, proposal, proposalHead);
+  if (evidence.contradictory) {
+    throw terminalProposalError(
+      "shared-proposal-terminal-conflict",
+      "The exact proposal has conflicting or unverifiable terminal evidence; no further terminal mutation is allowed",
+      proposal,
+      proposalHead,
+      {
+        archiveRef: evidence.rejection.expectedArchive,
+        archiveHead: evidence.rejection.archiveHead,
+        signedDecision: evidence.decision?.decision || "",
+        signedAcceptedCommit: evidence.signedAcceptedCommit,
+        mainCandidateCommit: evidence.exactMainCandidate?.commit || "",
+        remoteStateRef: evidence.remoteState?.ref || "",
+        remoteStateHead: evidence.remoteState?.head || "",
+        remoteStateStatus: evidence.remoteState?.status || "",
+      },
+    );
+  }
+  if (evidence.remoteRejected || evidence.rejection.verified || evidence.signedRejected) {
+    throw terminalProposalError(
+      "shared-proposal-terminal",
+      "A rejected proposal revision cannot be accepted",
+      proposal,
+      proposalHead,
+      {
+        reviewStatus: "rejected",
+        rejectionBranch: evidence.rejection.expectedArchive,
+        archiveVerified: evidence.remoteRejectedVerified || evidence.rejection.verified,
+      },
+    );
+  }
+  if (evidence.remoteAccepted && acceptedCommit && evidence.remoteState.acceptedCommit !== acceptedCommit) {
+    throw terminalProposalError(
+      "shared-proposal-terminal-conflict",
+      "The remote proposal state is already bound to a different accepted commit",
+      proposal,
+      proposalHead,
+      {
+        reviewStatus: "accepted",
+        acceptedCommit: evidence.remoteState.acceptedCommit,
+        requestedCommit: acceptedCommit,
+        remoteStateRef: evidence.remoteState.ref,
+      },
+    );
+  }
+  if (evidence.signedAccepted && acceptedCommit && evidence.signedAcceptedCommit !== acceptedCommit) {
+    throw terminalProposalError(
+      "shared-proposal-terminal-conflict",
+      "The exact proposal is already bound to a different accepted commit",
+      proposal,
+      proposalHead,
+      {
+        reviewStatus: "accepted",
+        acceptedCommit: evidence.signedAcceptedCommit,
+        requestedCommit: acceptedCommit,
+      },
+    );
+  }
+  if (evidence.exactMainCandidate && acceptedCommit && evidence.exactMainCandidate.commit !== acceptedCommit) {
+    throw terminalProposalError(
+      "shared-proposal-terminal-conflict",
+      "The exact proposal already has a different acceptance candidate on shared main",
+      proposal,
+      proposalHead,
+      {
+        reviewStatus: "accepted",
+        acceptedCommit: evidence.exactMainCandidate.commit,
+        requestedCommit: acceptedCommit,
+      },
+    );
+  }
+}
+
+function assertTerminalRejectionAllowed(evidence, proposal, proposalHead) {
+  assertProposalDecisionAuthorityWritable(evidence, proposal, proposalHead);
+  if (evidence.contradictory) {
+    throw terminalProposalError(
+      "shared-proposal-terminal-conflict",
+      "The exact proposal has conflicting or unverifiable terminal evidence; no further terminal mutation is allowed",
+      proposal,
+      proposalHead,
+      {
+        archiveRef: evidence.rejection.expectedArchive,
+        archiveHead: evidence.rejection.archiveHead,
+        signedDecision: evidence.decision?.decision || "",
+        signedAcceptedCommit: evidence.signedAcceptedCommit,
+        mainCandidateCommit: evidence.exactMainCandidate?.commit || "",
+        remoteStateRef: evidence.remoteState?.ref || "",
+        remoteStateHead: evidence.remoteState?.head || "",
+        remoteStateStatus: evidence.remoteState?.status || "",
+      },
+    );
+  }
+  if (evidence.remoteAccepted || evidence.signedAccepted || evidence.exactMainCandidate) {
+    throw terminalProposalError(
+      "shared-proposal-terminal",
+      evidence.remoteAccepted || evidence.signedAccepted
+        ? "An accepted proposal revision cannot be rejected"
+        : "The exact proposal has an acceptance candidate on shared main and must be recovered before any rejection",
+      proposal,
+      proposalHead,
+      {
+        reviewStatus: evidence.remoteAccepted || evidence.signedAccepted ? "accepted" : "acceptance_recovery_required",
+        acceptedCommit: evidence.remoteState?.acceptedCommit || evidence.signedAcceptedCommit || evidence.exactMainCandidate?.commit || "",
+      },
+    );
+  }
 }
 
 function proposalAuthorityViolation(item, reviewStatus, authorityMessage) {
@@ -4840,6 +9062,7 @@ function proposalAuthorityViolation(item, reviewStatus, authorityMessage) {
 function reconcileProposalObservations(synced, checkout, current, mainAcceptance, remoteAcceptance, decisionIndex) {
   if (!synced.online) return current;
   const repository = synced.connection.repository;
+  return withProposalObservationsLock(repository, () => {
   const observations = readProposalObservations(repository);
   const visible = [];
   const currentBranches = new Set();
@@ -4849,6 +9072,14 @@ function reconcileProposalObservations(synced, checkout, current, mainAcceptance
     const rejection = proposalRejectionEvidence(synced, checkout, item.branch, item.head, decisionIndex);
     observations.proposals[item.branch] = observedProposalValue(item, rejection.verified ? "rejected" : "active");
     if (rejection.verified) continue;
+    if (item.reviewStatus === "rejected") {
+      visible.push(proposalAuthorityViolation(
+        item,
+        "unverified_rejection",
+        "The remote terminal state says rejected, but this owner has not verified and recorded the human rejection decision. Confirm rejection to recover its authority receipt.",
+      ));
+      continue;
+    }
     if (rejection.decision?.decision === "rejected") {
       visible.push(proposalAuthorityViolation(
         item,
@@ -4888,9 +9119,10 @@ function reconcileProposalObservations(synced, checkout, current, mainAcceptance
 
   writeProposalObservations(repository, observations);
   return visible;
+  });
 }
 
-function listRemoteSharedProposals(synced, { allProjects = true } = {}) {
+function listRemoteSharedProposals(synced, { allProjects = true, requiredProposal = "" } = {}) {
   const checkout = repositoryCheckout(synced.connection.repository);
   const decisionIndex = ownerProposalDecisionIndex(synced.connection.repository);
   const reviewActivity = sharedReviewActivityIndex(synced.connection.repository, checkout, synced.revision, decisionIndex);
@@ -4903,6 +9135,7 @@ function listRemoteSharedProposals(synced, { allProjects = true } = {}) {
     try {
       const proposalHead = safeRevision(head, "proposal head");
       const identity = proposalIdentity(synced.repositoryConfig, branch, { checkout, revision: proposalHead, catalog: synced.catalog });
+      const remoteState = remoteProposalState(checkout, branch, proposalHead);
       let sessionId = "";
       let title = subject;
       let description = "";
@@ -4927,7 +9160,11 @@ function listRemoteSharedProposals(synced, { allProjects = true } = {}) {
         sourceCommit = metadata[6] ? safeRevision(metadata[6], "source commit") : "";
         semanticReviewRequired = metadata[7] === "required";
       } catch {}
-      const files = gitChangedPaths(checkout, `${synced.revision}...${proposalHead}`);
+      const proposalChanges = gitNameStatusChanges(checkout, synced.revision, proposalHead);
+      const scopePaths = proposalChangePaths(proposalChanges);
+      assertPathsInProposalScope(scopePaths, identity);
+      assertProjectCreationProposalBundle(proposalChanges.map((change) => change.path), identity);
+      const files = [...new Set(proposalChanges.map((change) => change.path))];
       const activities = reviewActivity.get(branch) || [];
       const currentActivity = activities.find((activity) => activity.proposalHead === proposalHead) || null;
       const latestActivity = activities[0] || null;
@@ -4935,22 +9172,24 @@ function listRemoteSharedProposals(synced, { allProjects = true } = {}) {
       const accepted = currentActivity?.accepted || (durableAccepted?.proposalHead === proposalHead ? durableAccepted : null);
       const reviewStatus = accepted?.merged
         ? "merged"
-        : accepted
-          ? "accepted"
-          : currentActivity
-            ? "in_review"
-            : latestActivity
-              ? "updated"
-              : "ready";
+        : remoteProposalStateIsTerminal(remoteState)
+          ? remoteState.status
+          : accepted
+            ? "accepted"
+            : currentActivity
+              ? "in_review"
+              : latestActivity
+                ? "updated"
+                : "ready";
       let mainAdvancedBy = 0;
       if (baseRevision && baseRevision !== synced.revision && gitIsAncestor(checkout, baseRevision, synced.revision)) {
         mainAdvancedBy = Number(tryGit(checkout, ["rev-list", "--count", `${baseRevision}..${synced.revision}`])) || 0;
       }
-      return [{
+      const item = {
         ...identity,
         repository: synced.connection.repository,
         repositoryName: synced.repositoryConfig.name,
-        projectTitle: synced.catalog.projects.find((project) => project.id === identity.projectId)?.title || (identity.projectId === "global" ? "Global skills" : identity.projectId === "skills" ? "Shared skill locations" : identity.projectId),
+        projectTitle: identity.projectTitle || synced.catalog.projects.find((project) => project.id === identity.projectId)?.title || (identity.projectId === "global" ? "Global skills" : identity.projectId === "skills" ? "Shared skill locations" : identity.projectId),
         head: proposalHead,
         baseRevision,
         updatedAt,
@@ -4969,8 +9208,17 @@ function listRemoteSharedProposals(synced, { allProjects = true } = {}) {
         updatedSinceReview: reviewStatus === "updated",
         mainAdvancedBy,
         hasConflict: mainAdvancedBy > 0 ? proposalHasConflict(checkout, synced.revision, proposalHead) : false,
-      }];
-    } catch {
+      };
+      if (remoteState.status === "invalid") {
+        return [proposalAuthorityViolation(
+          item,
+          "externally_deleted",
+          "The protected terminal proposal state is invalid or does not match this exact proposal revision. Repair the remote state before continuing review.",
+        )];
+      }
+      return [item];
+    } catch (error) {
+      if (requiredProposal && branch === requiredProposal) throw error;
       return [];
     }
   });
@@ -4979,14 +9227,32 @@ function listRemoteSharedProposals(synced, { allProjects = true } = {}) {
     .sort((left, right) => String(right.updatedAt || "").localeCompare(String(left.updatedAt || "")));
 }
 
-export function materializeSharedReview(root, { proposal, expectedHead = "" } = {}) {
-  const synced = syncSharedContext(root, { allowOffline: false });
-  return materializeSharedReviewFromState(synced, { proposal, expectedHead });
+export function materializeSharedReview(root, options = {}) {
+  const { proposal, expectedHead = "", push = null, timeoutMs = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS } = options;
+  const initialConnection = readSharedProjectConnection(root);
+  if (initialConnection) authenticatedSharedGit(initialConnection.repository, push, timeoutMs);
+  return withSharedRegistryLock(() => {
+    const connection = readSharedProjectConnection(root);
+    if (!connection) throw new Error("This project has no approved shared-context binding; run context-room shared setup first");
+    return withSharedRepositoryCloneLock(connection.repository, () => {
+      const synced = syncSharedContextInternal(
+        root,
+        { allowOffline: false, push, timeoutMs },
+        { registryLockHeld: true, repositoryLockHeld: true },
+      );
+      return materializeSharedReviewFromState(synced, { proposal, expectedHead });
+    });
+  });
 }
 
-export function materializeSharedRepositoryReview(repository, { proposal, expectedHead = "" } = {}) {
-  const synced = syncSharedRepositoryState(repository, { allowOffline: false });
-  return materializeSharedReviewFromState(synced, { proposal, expectedHead });
+export function materializeSharedRepositoryReview(repository, options = {}) {
+  const { proposal, expectedHead = "", push = null, timeoutMs = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS } = options;
+  const safeRemote = registeredRepositoryTransport(repository);
+  authenticatedSharedGit(safeRemote, push, timeoutMs);
+  return withSharedRepositoryCloneLock(safeRemote, () => {
+    const synced = syncSharedRepositoryStateUnderLock(safeRemote, { allowOffline: false, push, timeoutMs });
+    return materializeSharedReviewFromState(synced, { proposal, expectedHead });
+  });
 }
 
 function reusableSharedReview(synced, match) {
@@ -5010,7 +9276,7 @@ function reusableSharedReview(synced, match) {
     try {
       const reviewRoot = path.resolve(candidate.reviewRoot);
       if (!fs.existsSync(reviewRoot)) continue;
-      const review = readSharedReview(reviewRoot);
+      const review = readSharedReview(reviewRoot, { repositoryLockHeld: true });
       if (tryGit(reviewRoot, ["rev-parse", "HEAD"]) !== review.baseRevision) continue;
       const workspace = reviewWorkspaceChanges(reviewRoot, review.baseRevision);
       assertPathsInProposalScope(workspace.files, match);
@@ -5022,15 +9288,22 @@ function reusableSharedReview(synced, match) {
 }
 
 function materializeSharedReviewFromState(synced, { proposal, expectedHead = "" } = {}) {
-  const match = listRemoteSharedProposals(synced).find((item) => item.branch === proposal);
+  const match = listRemoteSharedProposals(synced, { requiredProposal: proposal }).find((item) => item.branch === proposal);
   if (!match) throw new Error(`Remote proposal not found: ${proposal}`);
-  if (expectedHead && match.head !== safeRevision(expectedHead, "expected proposal head")) {
-    throw new Error("Proposal changed before review; refresh and open its current exact revision");
+  if (match.authorityViolation || ["accepted", "merged", "rejected", "unverified_rejection"].includes(match.reviewStatus)) {
+    throw sharedContextError(
+      "shared-proposal-terminal",
+      `A ${match.reviewStatus} proposal cannot be reviewed again`,
+      { proposal: match.branch, proposalHead: match.head, reviewStatus: match.reviewStatus },
+    );
+  }
+  if (expectedHead) {
+    const observedHead = safeRevision(expectedHead, "expected proposal head");
+    if (match.head !== observedHead) throw staleSharedProposalError(match.branch, observedHead, match.head);
   }
   const reusable = reusableSharedReview(synced, match);
   if (reusable) return reusable;
   const checkout = repositoryCheckout(synced.connection.repository);
-  const changedFiles = gitChangedPaths(checkout, `${synced.revision}...${match.head}`);
   const proposalChanges = gitNameStatusChanges(checkout, synced.revision, match.head).map((change) => ({
     path: change.path,
     status: change.status,
@@ -5038,12 +9311,15 @@ function materializeSharedReviewFromState(synced, { proposal, expectedHead = "" 
     score: change.score || null,
     reviewKind: "proposal-change",
   }));
+  const scopePaths = proposalChangePaths(proposalChanges);
+  const changedFiles = [...new Set(proposalChanges.map((change) => change.path))];
   if (!changedFiles.length) throw new Error("Proposal has no changes relative to shared main");
-  assertPathsInProposalScope(changedFiles, match);
-  const scopePaths = [...(match.allowedExact || []), ...match.allowedPrefixes];
-  assertSafeTreeEntries(checkout, synced.revision, scopePaths);
-  assertSafeTreeEntries(checkout, match.head, scopePaths);
-  assertReviewableChangedPaths(checkout, synced.revision, match.head, changedFiles);
+  assertPathsInProposalScope(scopePaths, match);
+  assertProjectCreationProposalBundle(changedFiles, match);
+  const policyPaths = [...(match.allowedExact || []), ...match.allowedPrefixes];
+  assertSafeTreeEntries(checkout, synced.revision, policyPaths);
+  assertSafeTreeEntries(checkout, match.head, policyPaths);
+  assertReviewableChangedPaths(checkout, synced.revision, match.head, scopePaths);
   const dependencyReviewPrefixes = match.scope === "project"
     ? [`${synced.repositoryConfig.projectsPath}/${match.projectId}`]
     : [...(match.allowedPrefixes || [])];
@@ -5065,6 +9341,9 @@ function materializeSharedReviewFromState(synced, { proposal, expectedHead = "" 
       repository: synced.connection.repository,
       projectId: match.projectId,
       scope: match.scope,
+      createsProject: match.createsProject === true,
+      projectTitle: match.projectTitle || "",
+      projectPath: match.projectPath || "",
       allowedExact: match.allowedExact || [],
       allowedPrefixes: match.allowedPrefixes,
       proposalFiles: proposalReviewFiles,
@@ -5101,7 +9380,7 @@ function materializeSharedReviewFromState(synced, { proposal, expectedHead = "" 
   }
 }
 
-export function readSharedReview(root) {
+export function readSharedReview(root, { repositoryLockHeld = false } = {}) {
   const pointer = readJson(path.join(path.resolve(root), SHARED_REVIEW_CONFIG));
   if (!pointer) throw new Error(`Missing ${SHARED_REVIEW_CONFIG}`);
   const authorityId = String(pointer.authorityId || "");
@@ -5118,7 +9397,9 @@ export function readSharedReview(root) {
     const dependencyPaths = new Set((metadata.dependencyReviews || []).map((item) => item.path));
     let changes = [];
     try {
-      const checkout = ensureRepositoryClone(metadata.repository);
+      const checkout = repositoryLockHeld
+        ? ensureRepositoryCloneUnderLock(metadata.repository)
+        : ensureRepositoryClone(metadata.repository);
       changes = gitNameStatusChanges(checkout, metadata.baseRevision, metadata.proposalHead).map((change) => ({
         path: change.path,
         status: change.status,
@@ -5181,12 +9462,12 @@ function assertReviewWorkspaceFiles(reviewRoot, files) {
   }
 }
 
-function assertSharedInstructionMappingsPresent(root, repositoryConfig, catalog) {
-  const manifest = path.join(root, repositoryConfig.instructionLocationsFile);
-  if (!fs.existsSync(manifest)) return;
-  const locations = normalizedSharedInstructionLocations(readJson(manifest), { repositoryConfig, catalog });
-  const collections = new Map(locations.collections.map((collection) => [collection.id, collection]));
-  for (const assignment of locations.assignments) {
+function assertSharedAcceptedTreeValid(root) {
+  const repositoryConfig = readSharedRepositoryConfig(root);
+  const catalog = normalizedProjectsCatalog(readJson(path.join(root, repositoryConfig.projectsFile)));
+  const { instructionLocations } = readValidatedSharedLocationsFromRoot(root, repositoryConfig, catalog);
+  const collections = new Map(instructionLocations.collections.map((collection) => [collection.id, collection]));
+  for (const assignment of instructionLocations.assignments) {
     const collection = collections.get(assignment.collectionId);
     for (const mapping of assignment.files) {
       const source = path.join(root, collection.path, ...mapping.source.split("/"));
@@ -5197,10 +9478,36 @@ function assertSharedInstructionMappingsPresent(root, repositoryConfig, catalog)
   }
 }
 
+function assertSharedAcceptedRevisionValid(checkout, revision) {
+  const repositoryConfig = normalizedRepositoryConfig(JSON.parse(String(runGit(checkout, ["show", `${revision}:${SHARED_REPOSITORY_CONFIG}`]))));
+  const catalog = normalizedProjectsCatalog(JSON.parse(String(runGit(checkout, ["show", `${revision}:${repositoryConfig.projectsFile}`]))));
+  const { instructionLocations } = readValidatedSharedLocationsFromRevision(checkout, revision, repositoryConfig, catalog);
+  const collections = new Map(instructionLocations.collections.map((collection) => [collection.id, collection]));
+  for (const assignment of instructionLocations.assignments) {
+    const collection = collections.get(assignment.collectionId);
+    for (const mapping of assignment.files) {
+      const source = `${collection.path}/${mapping.source}`;
+      if (!gitObjectExists(checkout, `${revision}:${source}`)) {
+        throw new Error(`Instruction assignment ${assignment.id} references a missing accepted file: ${source}`);
+      }
+    }
+  }
+}
+
 function addIntentToAdd(root, files) {
   for (let index = 0; index < files.length; index += 200) {
     runGit(root, ["add", "-N", "--", ...files.slice(index, index + 200)]);
   }
+}
+
+function stageExistingPolicyPaths(root, policyPaths) {
+  const stageable = policyPaths.filter((filePath) => {
+    const absolute = path.join(root, ...String(filePath).split("/"));
+    if (fs.existsSync(absolute)) return true;
+    return splitNull(runGit(root, ["ls-files", "-z", "--", filePath], { encoding: null })).length > 0;
+  });
+  if (stageable.length) runGit(root, ["add", "-A", "--", ...stageable]);
+  return stageable;
 }
 
 function auditTrailerValue(value, label) {
@@ -5291,9 +9598,16 @@ export function acceptedProposalCommitMessage(review, message, actor = null, pro
     const reviewState = providedReviewState || trustedSharedReviewState(review.reviewRoot);
     const documents = (review.proposalFiles || []).flatMap((filePath) => {
       const item = reviewState?.reviews?.[filePath];
-      if (item?.status !== "verified" || !item.contentHash) return [];
+      if (item?.status !== "verified" || item.resourceState !== "present" || !item.contentHash || !item.resourceMode) return [];
       const blob = tryGit(review.reviewRoot, ["hash-object", "--", filePath]);
-      return [{ path: filePath, blob, contentHash: item.contentHash, dependencies: item.dependencyVersions || {} }];
+      if (!blob) return [];
+      return [{
+        path: filePath,
+        blob,
+        mode: String(item.resourceMode || ""),
+        contentHash: item.contentHash,
+        dependencies: item.dependencyVersions || {},
+      }];
     });
     if (documents.length) dependencyProof = Buffer.from(JSON.stringify({ version: 1, documents }), "utf8").toString("base64url");
   } catch {}
@@ -5313,15 +9627,16 @@ function verifySharedMainDelivery(
   checkout,
   acceptedCommit,
   defaultBranch,
+  repository,
   push = null,
   timeoutMs = DEFAULT_SHARED_DELIVERY_TIMEOUT_MS,
 ) {
   const branch = safeBranchName(defaultBranch, "shared default branch");
-  const authenticatedRemote = Boolean(push?.token && push?.url);
-  const remote = authenticatedRemote ? String(push.url) : "origin";
+  const auth = authenticatedSharedGit(repository, push, timeoutMs);
+  const remote = auth?.remote || "origin";
   const options = {
     stdio: ["ignore", "ignore", "pipe"],
-    ...(authenticatedRemote ? { env: gitHubAppGitEnvironment(push.token) } : {}),
+    ...(auth ? { credential: auth.credential } : {}),
   };
   try {
     runSharedDeliveryGit(checkout, [
@@ -5337,7 +9652,10 @@ function verifySharedMainDelivery(
       timeoutMs: sharedDeliveryTimeoutBudget(push, timeoutMs),
     });
   } catch (error) {
-    if (error?.code === "shared-delivery-timeout") throw error;
+    if (
+      error?.code === "shared-delivery-timeout"
+      || String(error?.code || "").startsWith("github-app-")
+    ) throw error;
     throw sharedContextError(
       "shared-delivery-unverified",
       `Unable to verify the accepted commit on origin/${branch}: ${String(error.stderr || error.message || error).trim()}`,
@@ -5353,6 +9671,36 @@ function verifySharedMainDelivery(
     );
   }
   return verifiedRemoteHead;
+}
+
+function refreshSharedDeliveryRefs(
+  checkout,
+  repository,
+  push = null,
+  timeoutMs = DEFAULT_SHARED_DELIVERY_TIMEOUT_MS,
+) {
+  const auth = authenticatedSharedGit(repository, push, timeoutMs);
+  const remote = auth?.remote || "origin";
+  try {
+    runSharedDeliveryGit(checkout, auth
+      ? ["fetch", "--force", "--prune", "--no-tags", remote, "+refs/heads/*:refs/remotes/origin/*"]
+      : ["fetch", "--force", "--prune", "--no-tags", "origin"], {
+      stdio: ["ignore", "ignore", "pipe"],
+      ...(auth ? { credential: auth.credential } : {}),
+      operation: "Git fetch terminal proposal state",
+      timeoutMs: sharedDeliveryTimeoutBudget(push, timeoutMs),
+    });
+  } catch (error) {
+    if (
+      error?.code === "shared-delivery-timeout"
+      || String(error?.code || "").startsWith("github-app-")
+    ) throw error;
+    throw sharedContextError(
+      "shared-delivery-unverified",
+      `Unable to refresh the remote terminal proposal state: ${String(error.stderr || error.message || error).trim()}`,
+      { repository },
+    );
+  }
 }
 
 function reviewedAcceptanceState(reviewRoot, review, policy, requiredReviewFiles = review.proposalFiles || []) {
@@ -5373,32 +9721,66 @@ function reviewedAcceptanceState(reviewRoot, review, policy, requiredReviewFiles
   return { workspace, reviewState, policyPaths, acceptedPatch };
 }
 
-function withSharedAcceptanceLock(review, callback) {
-  const identity = `${review.repository}\0${review.proposal}\0${review.proposalHead}`;
-  const lock = path.join(sharedHome(), "locks", `accept-${hashKey(identity, 24)}.lock`);
+function assertSharedReviewBaseCurrent(checkout, review, currentMain, proposalChanges = []) {
+  const reviewedBase = safeRevision(review.baseRevision, "review base");
+  const acceptedMain = safeRevision(currentMain, "current shared main");
+  if (reviewedBase === acceptedMain) return;
+  if (!gitIsAncestor(checkout, reviewedBase, acceptedMain)) {
+    throw sharedContextError(
+      "shared-history-diverged",
+      "Accepted shared main no longer descends from the base used for this review",
+      { reviewedBase, currentMain: acceptedMain },
+    );
+  }
+  const protectedPaths = new Set([
+    ...(review.proposalFiles || []),
+    ...(review.dependencyReviews || []).map((item) => item.path),
+    ...proposalChangePaths(proposalChanges),
+  ]);
+  const mainChanges = gitNameStatusChanges(checkout, reviewedBase, acceptedMain);
+  const changedProtectedPaths = proposalChangePaths(mainChanges)
+    .filter((filePath) => protectedPaths.has(filePath))
+    .sort((left, right) => left.localeCompare(right, "en"));
+  if (!changedProtectedPaths.length) return;
+  const error = sharedContextError(
+    "shared-review-base-stale",
+    "Accepted shared main changed files covered by this exact whole-file review; materialize and review the proposal again",
+    {
+      proposal: review.proposal,
+      proposalHead: review.proposalHead,
+      reviewedBase,
+      currentMain: acceptedMain,
+      paths: changedProtectedPaths,
+    },
+  );
+  error.statusCode = 409;
+  error.retryable = true;
+  throw error;
+}
+
+function withSharedTerminalDecisionFileLock(lock, binding, callback) {
+  const repository = safeRepository(binding.repository);
+  const proposal = safeBranchName(binding.proposal, "proposal branch");
+  const proposalHead = safeRevision(binding.proposalHead, "proposal head");
   const ownerToken = randomUUID();
   const ownerHost = os.hostname();
+  const coordinationLock = `${lock}.coordination`;
+  const coordinationOptions = {
+    timeoutMs: 5_000,
+    staleMs: 30_000,
+    busyMessage: "Terminal decision lock coordination is busy in another process",
+    busyCode: "shared-terminal-decision-busy",
+  };
   fs.mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 });
-  while (true) {
-    let lockCreated = false;
+  let ownedDirectory = null;
+  withFilesystemLock(coordinationLock, () => {
+    let owner = {};
+    let lockStats = null;
     try {
-      fs.mkdirSync(lock, { mode: 0o700 });
-      lockCreated = true;
-      writePrivateJson(path.join(lock, "owner.json"), {
-        pid: process.pid,
-        host: ownerHost,
-        token: ownerToken,
-        createdAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + SHARED_ACCEPTANCE_LEASE_MS).toISOString(),
-        proposal: review.proposal,
-        proposalHead: review.proposalHead,
-      });
-      break;
-    } catch (error) {
-      if (lockCreated) {
-        try { fs.rmSync(lock, { recursive: true, force: true }); } catch {}
+      lockStats = fs.lstatSync(lock, { bigint: true });
+      if (lockStats.isSymbolicLink() || !lockStats.isDirectory()) {
+        throw unsafeSharedFilesystemPath(`Terminal decision lock must be a physical directory: ${lock}`);
       }
-      if (error.code !== "EEXIST") throw error;
       let owner = {};
       try { owner = readJson(path.join(lock, "owner.json"), {}) || {}; } catch {}
       const now = Date.now();
@@ -5411,39 +9793,91 @@ function withSharedAcceptanceLock(review, callback) {
         : (Number.isFinite(lockMtime) ? lockMtime : now);
       const expiresAt = Number.isFinite(explicitExpiry)
         ? explicitExpiry
-        : fallbackCreatedAt + SHARED_ACCEPTANCE_LEASE_MS;
+        : fallbackCreatedAt + SHARED_TERMINAL_DECISION_LEASE_MS;
       const age = now - fallbackCreatedAt;
       const expired = now >= expiresAt;
-      const abandonedLocalOwner = age > 5_000 && owner.host === ownerHost && !processExists(Number(owner.pid));
-      if (expired || abandonedLocalOwner) {
-        const staleLock = `${lock}.stale-${process.pid}-${randomUUID()}`;
-        try {
-          fs.renameSync(lock, staleLock);
-          fs.rmSync(staleLock, { recursive: true, force: true });
-        } catch {}
-        continue;
+      const localOwner = owner.host === ownerHost;
+      const localOwnerAlive = sharedTerminalLocalOwnerAlive(owner, ownerHost, expired);
+      const abandonedLocalOwner = age > 5_000 && localOwner && !localOwnerAlive;
+      if ((expired && !localOwnerAlive) || abandonedLocalOwner) {
+        const currentStats = fs.lstatSync(lock, { bigint: true });
+        let currentOwner = {};
+        try { currentOwner = readJson(path.join(lock, "owner.json"), {}) || {}; } catch {}
+        if (
+          currentStats.dev === lockStats.dev
+          && currentStats.ino === lockStats.ino
+          && String(currentOwner.token || "") === String(owner.token || "")
+        ) {
+          fs.rmSync(lock, { recursive: true, force: true });
+          lockStats = null;
+        }
       }
-      const busy = sharedContextError(
-        "shared-acceptance-busy",
-        "Another exact acceptance attempt is still in progress; retry after it finishes",
-        {
-          proposal: review.proposal,
-          proposalHead: review.proposalHead,
-          retryAfterMs: Number.isFinite(expiresAt) ? Math.max(0, expiresAt - now) : SHARED_ACCEPTANCE_LEASE_MS,
-        },
-      );
-      busy.retryable = true;
-      throw busy;
+      if (lockStats) {
+        const busy = sharedContextError(
+          "shared-terminal-decision-busy",
+          "Another exact terminal decision is still in progress; retry after it finishes",
+          {
+            proposal,
+            proposalHead,
+            retryAfterMs: Number.isFinite(expiresAt) ? Math.max(0, expiresAt - now) : SHARED_TERMINAL_DECISION_LEASE_MS,
+          },
+        );
+        busy.statusCode = 409;
+        busy.retryable = true;
+        throw busy;
+      }
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
     }
-  }
+    fs.mkdirSync(lock, { mode: 0o700 });
+    const created = fs.lstatSync(lock, { bigint: true });
+    writePrivateJson(path.join(lock, "owner.json"), {
+      pid: process.pid,
+      host: ownerHost,
+      token: ownerToken,
+      processIdentity: filesystemProcessIdentity(process.pid),
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + SHARED_TERMINAL_DECISION_LEASE_MS).toISOString(),
+      repositoryIdentity: sharedRepositoryIdentity(repository),
+      proposal,
+      proposalHead,
+    });
+    ownedDirectory = { dev: created.dev, ino: created.ino };
+  }, coordinationOptions);
   try {
     return callback();
   } finally {
-    const owner = readJson(path.join(lock, "owner.json"), {});
-    if (owner.token === ownerToken) {
-      try { fs.rmSync(lock, { recursive: true, force: true }); } catch {}
-    }
+    try {
+      withFilesystemLock(coordinationLock, () => {
+        const owner = readJson(path.join(lock, "owner.json"), {});
+        const current = fs.lstatSync(lock, { bigint: true });
+        if (
+          owner.token === ownerToken
+          && ownedDirectory
+          && current.dev === ownedDirectory.dev
+          && current.ino === ownedDirectory.ino
+        ) {
+          fs.rmSync(lock, { recursive: true, force: true });
+        }
+      }, coordinationOptions);
+    } catch {}
   }
+}
+
+function withSharedTerminalDecisionLock(binding, callback) {
+  const repository = safeRepository(binding.repository);
+  const proposal = safeBranchName(binding.proposal, "proposal branch");
+  const proposalHead = safeRevision(binding.proposalHead, "proposal head");
+  const canonicalIdentity = `${sharedRepositoryIdentity(repository)}\0${proposal}\0${proposalHead}`;
+  const legacyIdentity = `${repository}\0${proposal}\0${proposalHead}`;
+  const canonicalLock = path.join(sharedHome(), "locks", `accept-${hashKey(canonicalIdentity, 24)}.lock`);
+  const legacyLock = path.join(sharedHome(), "locks", `accept-${hashKey(legacyIdentity, 24)}.lock`);
+  const normalizedBinding = { repository, proposal, proposalHead };
+  return withSharedTerminalDecisionFileLock(canonicalLock, normalizedBinding, () => (
+    legacyLock === canonicalLock
+      ? callback()
+      : withSharedTerminalDecisionFileLock(legacyLock, normalizedBinding, callback)
+  ));
 }
 
 function commitMatchesExactReviewedResult(checkout, revision, acceptedPatch, policyPaths) {
@@ -5472,7 +9906,7 @@ function commitMatchesExactReviewedResult(checkout, revision, acceptedPatch, pol
       encoding: "utf8",
     });
     if (applied.status !== 0 || tryGit(comparisonRoot, ["diff", "--name-only", "--diff-filter=U"])) return false;
-    runGit(comparisonRoot, ["add", "-A", "--", ...policyPaths]);
+    stageExistingPolicyPaths(comparisonRoot, policyPaths);
     const staged = spawnSync("git", ["diff", "--cached", "--quiet"], {
       cwd: comparisonRoot,
       stdio: ["ignore", "ignore", "ignore"],
@@ -5505,7 +9939,14 @@ function exactProposalAcceptanceOnMain(checkout, mainRevision, proposal, proposa
   return null;
 }
 
-function recordAcceptedSharedReview(review, { commit, previousMain, verifiedRemoteHead, actor = null } = {}) {
+function recordAcceptedSharedReview(review, {
+  commit,
+  previousMain,
+  verifiedRemoteHead,
+  actor = null,
+  checkout,
+  repositoryConfig,
+} = {}) {
   const acceptedCommit = safeRevision(commit, "accepted commit");
   const verifiedHead = safeRevision(verifiedRemoteHead, "verified remote head");
   const normalizedActor = actor ? {
@@ -5524,13 +9965,19 @@ function recordAcceptedSharedReview(review, { commit, previousMain, verifiedRemo
     defaultBranch: review.defaultBranch,
     actor: normalizedActor,
   };
+  const terminalEvidence = proposalTerminalEvidence({
+    connection: { repository: review.repository },
+    repositoryConfig,
+    revision: verifiedHead,
+  }, checkout, review.proposal, review.proposalHead);
+  assertTerminalAcceptanceAllowed(terminalEvidence, review.proposal, review.proposalHead, acceptedCommit);
   recordOwnerProposalDecision(review.repository, {
     proposal: review.proposal,
     proposalHead: review.proposalHead,
     decision: "accepted",
     acceptedCommit,
   }, {
-    ...proposalDecisionAuthorityOptions(),
+    ...proposalDecisionAuthorityOptions(review.repository),
     actor: normalizedActor?.sub || normalizedActor?.email || "human-ui",
   });
   writePrivateJson(path.join(sharedHome(), "review-authority", `${review.authorityId}.json`), { ...review, accepted: result, acceptedAt: new Date().toISOString() });
@@ -5548,6 +9995,89 @@ function recordAcceptedSharedReview(review, { commit, previousMain, verifiedRemo
     },
   });
   return result;
+}
+
+function reviewedSharedRepositoryConfig(checkout, review) {
+  const configText = runGit(checkout, ["show", `${review.baseRevision}:${SHARED_REPOSITORY_CONFIG}`]);
+  return normalizedRepositoryConfig(JSON.parse(configText));
+}
+
+function assertSharedReviewTerminalConfigCurrent(review, reviewedConfig, currentConfig) {
+  const fields = ["defaultBranch", "proposalPrefix", "rejectionPrefix"];
+  const changedFields = fields.filter((field) => reviewedConfig[field] !== currentConfig[field]);
+  if (!changedFields.length) return;
+  const error = terminalProposalError(
+    "shared-review-terminal-config-stale",
+    "Shared repository terminal configuration changed after review; materialize and review the proposal again",
+    review.proposal,
+    review.proposalHead,
+    {
+      changedFields,
+      reviewedConfig: Object.fromEntries(fields.map((field) => [field, reviewedConfig[field]])),
+      currentConfig: Object.fromEntries(fields.map((field) => [field, currentConfig[field]])),
+    },
+  );
+  error.retryable = true;
+  throw error;
+}
+
+function validatedSharedReviewProposalState(checkout, review, repositoryConfig = reviewedSharedRepositoryConfig(checkout, review)) {
+  const catalog = normalizedProjectsCatalog(JSON.parse(String(runGit(checkout, ["show", `${review.baseRevision}:${repositoryConfig.projectsFile}`]))));
+  const policy = proposalIdentity(repositoryConfig, review.proposal, { checkout, revision: review.proposalHead, catalog });
+  if (policy.projectId !== review.projectId || policy.scope !== review.scope) throw new Error("Shared review scope metadata is invalid");
+  const proposalChanges = gitNameStatusChanges(checkout, review.baseRevision, review.proposalHead);
+  const proposalPaths = proposalChangePaths(proposalChanges);
+  const proposalFiles = [...new Set(proposalChanges.map((change) => change.path))];
+  assertPathsInProposalScope(proposalPaths, policy);
+  assertProjectCreationProposalBundle(proposalFiles, policy);
+  assertReviewableChangedPaths(checkout, review.baseRevision, review.proposalHead, proposalPaths);
+  if (proposalFiles.some((filePath) => !(review.proposalFiles || []).includes(filePath))) {
+    throw new Error("Shared review authority does not include every proposal-changed file");
+  }
+  return {
+    catalog,
+    policy,
+    proposalChanges,
+    proposalFiles,
+    requiredReviewFiles: [...new Set([...(review.proposalFiles || []), ...proposalFiles])],
+  };
+}
+
+function assertAtomicProjectCreationReview(review, proposalState, workspace, reviewRoot, repositoryConfig) {
+  if (!review.createsProject) return;
+  const changed = new Set(proposalState.proposalFiles || []);
+  const retained = [...changed].filter((filePath) => workspace.files.includes(filePath));
+  if (retained.length > 0 && retained.length !== changed.size) {
+    throw terminalProposalError(
+      "shared-project-creation-review-partial",
+      "A new Shared project must accept all of its catalog and initial project files together, or reject them all",
+      review.proposal,
+      review.proposalHead,
+      {
+        projectId: review.projectId,
+        retainedFiles: retained.sort((left, right) => left.localeCompare(right, "en")),
+        rejectedFiles: [...changed].filter((filePath) => !retained.includes(filePath)).sort((left, right) => left.localeCompare(right, "en")),
+      },
+    );
+  }
+  if (!retained.length) return;
+  const acceptedPolicy = proposalIdentity(repositoryConfig, review.proposal, {
+    root: reviewRoot,
+    catalog: proposalState.catalog,
+  });
+  if (
+    acceptedPolicy.createsProject !== true
+    || acceptedPolicy.projectId !== review.projectId
+    || acceptedPolicy.projectPath !== review.projectPath
+  ) {
+    throw terminalProposalError(
+      "shared-project-creation-review-invalid",
+      "The reviewed result no longer contains the exact single-project catalog append and initial project tree",
+      review.proposal,
+      review.proposalHead,
+      { projectId: review.projectId },
+    );
+  }
 }
 
 function revalidateAcceptedSharedReview(
@@ -5579,19 +10109,36 @@ function revalidateAcceptedSharedReview(
   } catch {
     throw invalidReceipt("The stored shared review acceptance receipt has an invalid commit");
   }
-  const verifiedRemoteHead = verifySharedMainDelivery(checkout, acceptedCommit, review.defaultBranch, push, timeoutMs);
+  const verifiedRemoteHead = verifySharedMainDelivery(
+    checkout,
+    acceptedCommit,
+    review.defaultBranch,
+    review.repository,
+    push,
+    timeoutMs,
+  );
   if (!commitHasExactProposalAcceptance(checkout, acceptedCommit, review.proposal, review.proposalHead)) {
     throw invalidReceipt("The stored shared review acceptance commit does not contain the exact proposal trailers");
   }
   let reviewed;
+  let proposalState;
   try {
-    reviewed = reviewedAcceptanceState(reviewRoot, review, review, review.proposalFiles || []);
+    proposalState = validatedSharedReviewProposalState(checkout, review);
+    const previousMain = safeRevision(tryGit(checkout, ["rev-parse", `${acceptedCommit}^1`]), "previous main");
+    assertSharedReviewBaseCurrent(checkout, review, previousMain, proposalState.proposalChanges);
+    reviewed = reviewedAcceptanceState(
+      reviewRoot,
+      review,
+      proposalState.policy,
+      proposalState.requiredReviewFiles,
+    );
   } catch (error) {
     throw invalidReceipt(`The stored shared review acceptance cannot be matched to its reviewed result: ${error.message}`);
   }
   if (!reviewed.acceptedPatch.length || !commitMatchesExactReviewedResult(checkout, acceptedCommit, reviewed.acceptedPatch, reviewed.policyPaths)) {
     throw invalidReceipt("The stored shared review acceptance commit does not match the exact reviewed result");
   }
+  assertSharedAcceptedRevisionValid(checkout, acceptedCommit);
   const previousMain = tryGit(checkout, ["rev-parse", `${acceptedCommit}^1`]);
   const normalizedActor = receipt.actor && typeof receipt.actor === "object" ? {
     sub: auditTrailerValue(receipt.actor.sub, "reviewer identity"),
@@ -5616,43 +10163,99 @@ function acceptSharedReviewUnderLock(resolvedReviewRoot, {
   actor = null,
   push = null,
   deliveryTimeoutMs = DEFAULT_SHARED_DELIVERY_TIMEOUT_MS,
-} = {}) {
-  const review = readSharedReview(resolvedReviewRoot);
-  const boundedDeliveryTimeoutMs = sharedDeliveryTimeoutBudget(push, deliveryTimeoutMs);
-  const authenticatedEnvironment = push?.token && push?.url ? gitHubAppGitEnvironment(push.token) : null;
-  const checkout = ensureRepositoryClone(review.repository, {
-    timeoutMs: boundedDeliveryTimeoutMs,
-    env: authenticatedEnvironment,
-  });
-  if (review.accepted) {
-    return revalidateAcceptedSharedReview(review, checkout, resolvedReviewRoot, push, boundedDeliveryTimeoutMs);
+} = {}, lockedBinding = null) {
+  const review = readSharedReview(resolvedReviewRoot, { repositoryLockHeld: true });
+  if (
+    lockedBinding
+    && (
+      safeRepository(review.repository) !== lockedBinding.repository
+      || safeBranchName(review.proposal, "proposal branch") !== lockedBinding.proposal
+      || safeRevision(review.proposalHead, "proposal head") !== lockedBinding.proposalHead
+    )
+  ) {
+    throw terminalProposalError(
+      "shared-terminal-decision-binding-changed",
+      "The shared review authority changed after its exact terminal decision lock was selected",
+      lockedBinding.proposal,
+      lockedBinding.proposalHead,
+    );
   }
-  runSharedDeliveryGit(checkout, ["fetch", "--prune", "origin"], {
+  const boundedDeliveryTimeoutMs = sharedDeliveryTimeoutBudget(push, deliveryTimeoutMs);
+  const cloneAuth = authenticatedSharedGit(review.repository, push, boundedDeliveryTimeoutMs);
+  const checkout = ensureRepositoryCloneUnderLock(review.repository, {
+    timeoutMs: boundedDeliveryTimeoutMs,
+    credential: cloneAuth?.credential || null,
+    remote: cloneAuth?.remote || review.repository,
+  });
+  const fetchAuth = authenticatedSharedGit(review.repository, push, boundedDeliveryTimeoutMs);
+  runSharedDeliveryGit(checkout, fetchAuth
+    ? ["fetch", "--force", "--prune", "--no-tags", fetchAuth.remote, "+refs/heads/*:refs/remotes/origin/*"]
+    : ["fetch", "--prune", "origin"], {
     stdio: ["ignore", "ignore", "pipe"],
-    ...(authenticatedEnvironment ? { env: authenticatedEnvironment } : {}),
+    ...(fetchAuth ? { credential: fetchAuth.credential } : {}),
     operation: "Git fetch",
     timeoutMs: boundedDeliveryTimeoutMs,
   });
+  const currentMain = remoteRevision(checkout, review.defaultBranch);
+  const terminalRepositoryConfig = normalizedRepositoryConfig(JSON.parse(String(runGit(
+    checkout,
+    ["show", `${currentMain}:${SHARED_REPOSITORY_CONFIG}`],
+  ))));
+  const reviewedRepositoryConfig = reviewedSharedRepositoryConfig(checkout, review);
+  assertSharedReviewTerminalConfigCurrent(review, reviewedRepositoryConfig, terminalRepositoryConfig);
+  const currentProposalHead = remoteBranchRevision(checkout, review.proposal);
+  const initialRemoteState = remoteProposalState(checkout, review.proposal, currentProposalHead);
+  if (initialRemoteState.status === "invalid") {
+    throw terminalProposalError(
+      "shared-proposal-terminal-conflict",
+      "The remote proposal state ref is invalid; no terminal mutation is allowed",
+      review.proposal,
+      review.proposalHead,
+      { stateRef: initialRemoteState.ref, stateHead: initialRemoteState.head },
+    );
+  }
+  if (
+    initialRemoteState.status === "active"
+    && initialRemoteState.head !== review.proposalHead
+  ) {
+    throw new Error("Proposal changed after review; materialize and review the new exact commit");
+  }
+  if (
+    new Set(["accepted", "rejected"]).has(initialRemoteState.status)
+    && initialRemoteState.proposalHead !== review.proposalHead
+  ) {
+    throw new Error("Proposal changed after review; materialize and review the new exact commit");
+  }
+  const terminalEvidence = proposalTerminalEvidence({
+    connection: { repository: review.repository },
+    repositoryConfig: terminalRepositoryConfig,
+    revision: currentMain,
+  }, checkout, review.proposal, review.proposalHead);
+  assertTerminalAcceptanceAllowed(terminalEvidence, review.proposal, review.proposalHead);
+  if (review.accepted) {
+    const accepted = revalidateAcceptedSharedReview(review, checkout, resolvedReviewRoot, push, boundedDeliveryTimeoutMs);
+    const refreshedTerminalEvidence = proposalTerminalEvidence({
+      connection: { repository: review.repository },
+      repositoryConfig: terminalRepositoryConfig,
+      revision: accepted.verifiedRemoteHead,
+    }, checkout, review.proposal, review.proposalHead);
+    assertTerminalAcceptanceAllowed(refreshedTerminalEvidence, review.proposal, review.proposalHead, accepted.commit);
+    return accepted;
+  }
   const reviewHead = safeRevision(tryGit(resolvedReviewRoot, ["rev-parse", "HEAD"]), "review worktree head");
   if (reviewHead !== review.baseRevision) throw new Error("Review worktree history changed; materialize the proposal again");
-  const configText = runGit(checkout, ["show", `${review.baseRevision}:${SHARED_REPOSITORY_CONFIG}`]);
-  const repositoryConfig = normalizedRepositoryConfig(JSON.parse(configText));
-  const catalog = normalizedProjectsCatalog(JSON.parse(String(runGit(checkout, ["show", `${review.baseRevision}:${repositoryConfig.projectsFile}`]))));
-  const policy = proposalIdentity(repositoryConfig, review.proposal, { checkout, revision: review.proposalHead, catalog });
-  if (policy.projectId !== review.projectId || policy.scope !== review.scope) throw new Error("Shared review scope metadata is invalid");
-  const currentProposalHead = remoteRevision(checkout, review.proposal);
-  if (currentProposalHead !== review.proposalHead) throw new Error("Proposal changed after review; materialize and review the new exact commit");
-  const proposalFiles = gitChangedPaths(checkout, `${review.baseRevision}...${review.proposalHead}`);
-  assertPathsInProposalScope(proposalFiles, policy);
-  assertReviewableChangedPaths(checkout, review.baseRevision, review.proposalHead, proposalFiles);
-  const requiredReviewFiles = [...new Set([...(review.proposalFiles || []), ...proposalFiles])];
-  if (proposalFiles.some((filePath) => !(review.proposalFiles || []).includes(filePath))) {
-    throw new Error("Shared review authority does not include every proposal-changed file");
-  }
+  const proposalState = validatedSharedReviewProposalState(checkout, review, reviewedRepositoryConfig);
+  const { policy, proposalChanges, requiredReviewFiles } = proposalState;
   const reviewed = reviewedAcceptanceState(resolvedReviewRoot, review, policy, requiredReviewFiles);
   const { workspace, reviewState, policyPaths, acceptedPatch } = reviewed;
+  assertAtomicProjectCreationReview(
+    review,
+    proposalState,
+    workspace,
+    resolvedReviewRoot,
+    reviewedRepositoryConfig,
+  );
   if (!acceptedPatch.length) return { accepted: false, reason: "No accepted changes remain", proposal: review.proposal };
-  const currentMain = remoteRevision(checkout, review.defaultBranch);
   const delivered = exactProposalAcceptanceOnMain(
     checkout,
     currentMain,
@@ -5662,10 +10265,13 @@ function acceptSharedReviewUnderLock(resolvedReviewRoot, {
     policyPaths,
   );
   if (delivered) {
+    assertSharedReviewBaseCurrent(checkout, review, delivered.previousMain, proposalChanges);
+    assertSharedAcceptedRevisionValid(checkout, delivered.commit);
     const verifiedRemoteHead = verifySharedMainDelivery(
       checkout,
       delivered.commit,
       review.defaultBranch,
+      review.repository,
       push,
       boundedDeliveryTimeoutMs,
     );
@@ -5674,8 +10280,12 @@ function acceptSharedReviewUnderLock(resolvedReviewRoot, {
       previousMain: delivered.previousMain,
       verifiedRemoteHead,
       actor,
+      checkout,
+      repositoryConfig: terminalRepositoryConfig,
     });
   }
+  if (currentProposalHead !== review.proposalHead) throw new Error("Proposal changed after review; materialize and review the new exact commit");
+  assertSharedReviewBaseCurrent(checkout, review, currentMain, proposalChanges);
   const acceptanceRoot = path.join(repositoryCacheRoot(review.repository), "accept", `${hashKey(review.proposal)}-${Date.now()}`);
   runGit(checkout, ["worktree", "add", "--detach", acceptanceRoot, currentMain], { stdio: ["ignore", "ignore", "pipe"] });
   try {
@@ -5683,8 +10293,31 @@ function acceptSharedReviewUnderLock(resolvedReviewRoot, {
     if (applied.status !== 0 || tryGit(acceptanceRoot, ["diff", "--name-only", "--diff-filter=U"])) {
       throw new Error("Accepted result conflicts with the current main branch; review the resolved result again");
     }
-    assertSharedInstructionMappingsPresent(acceptanceRoot, repositoryConfig, catalog);
-    runGit(acceptanceRoot, ["add", "-A", "--", ...policyPaths]);
+    if (review.createsProject) {
+      const currentCatalog = normalizedProjectsCatalog(JSON.parse(String(runGit(
+        checkout,
+        ["show", `${currentMain}:${terminalRepositoryConfig.projectsFile}`],
+      ))));
+      const deliveryPolicy = proposalIdentity(terminalRepositoryConfig, review.proposal, {
+        root: acceptanceRoot,
+        catalog: currentCatalog,
+      });
+      if (
+        deliveryPolicy.createsProject !== true
+        || deliveryPolicy.projectId !== review.projectId
+        || deliveryPolicy.projectPath !== review.projectPath
+      ) {
+        throw terminalProposalError(
+          "shared-project-creation-delivery-invalid",
+          "The acceptance worktree no longer contains the exact reviewed new-project bundle",
+          review.proposal,
+          review.proposalHead,
+          { projectId: review.projectId },
+        );
+      }
+    }
+    assertSharedAcceptedTreeValid(acceptanceRoot);
+    stageExistingPolicyPaths(acceptanceRoot, policyPaths);
     try {
       runGit(acceptanceRoot, ["diff", "--cached", "--quiet"]);
       return { accepted: false, reason: "Accepted result is already present on main", proposal: review.proposal };
@@ -5711,34 +10344,53 @@ function acceptSharedReviewUnderLock(resolvedReviewRoot, {
         { proposal: review.proposal, proposalHead: review.proposalHead, acceptedCommit },
       );
     }
+    const marker = proposalTerminalMarkerCommit(acceptanceRoot, {
+      proposal: review.proposal,
+      proposalHead: review.proposalHead,
+      decision: "accepted",
+      acceptedCommit,
+    });
+    const pushAuth = authenticatedSharedGit(review.repository, push, boundedDeliveryTimeoutMs);
     let pushError = null;
     try {
-      if (push?.token && push?.url) {
-        runSharedDeliveryGit(acceptanceRoot, ["push", String(push.url), `${acceptedCommit}:refs/heads/${review.defaultBranch}`], {
-          stdio: ["ignore", "ignore", "pipe"],
-          env: gitHubAppGitEnvironment(push.token),
-          operation: "Git push",
-          timeoutMs: boundedDeliveryTimeoutMs,
-        });
-      } else {
-        runSharedDeliveryGit(acceptanceRoot, ["push", "origin", `${acceptedCommit}:refs/heads/${review.defaultBranch}`], {
-          stdio: ["ignore", "ignore", "pipe"],
-          operation: "Git push",
-          timeoutMs: boundedDeliveryTimeoutMs,
-        });
-      }
+      runSharedDeliveryGit(acceptanceRoot, atomicPushArguments(pushAuth?.remote || "origin", [
+        {
+          source: acceptedCommit,
+          ref: `refs/heads/${review.defaultBranch}`,
+          expected: currentMain,
+          force: false,
+        },
+        {
+          source: marker,
+          ref: proposalStateRef(review.proposal),
+          expected: initialRemoteState.status === "active" ? initialRemoteState.head : "",
+          force: true,
+        },
+      ]), {
+        stdio: ["ignore", "ignore", "pipe"],
+        ...(pushAuth ? { credential: pushAuth.credential } : {}),
+        operation: "Git push",
+        timeoutMs: boundedDeliveryTimeoutMs,
+      });
     } catch (error) {
       pushError = error;
     }
     if (pushError) {
+      let recoveryError = null;
       try {
-        const refreshedRemoteHead = verifySharedMainDelivery(
-          checkout,
-          currentMain,
-          review.defaultBranch,
-          push,
-          boundedDeliveryTimeoutMs,
-        );
+        refreshSharedDeliveryRefs(checkout, review.repository, push, boundedDeliveryTimeoutMs);
+        const refreshedRemoteHead = remoteRevision(checkout, review.defaultBranch);
+        const refreshedProposalHead = remoteBranchRevision(checkout, review.proposal);
+        const refreshedState = remoteProposalState(checkout, review.proposal, refreshedProposalHead);
+        const refreshedEvidence = proposalTerminalEvidence({
+          connection: { repository: review.repository },
+          repositoryConfig: terminalRepositoryConfig,
+          revision: refreshedRemoteHead,
+        }, checkout, review.proposal, review.proposalHead);
+        assertTerminalAcceptanceAllowed(refreshedEvidence, review.proposal, review.proposalHead);
+        if (refreshedState.status === "active" && refreshedState.head !== review.proposalHead) {
+          throw new Error("Proposal changed after review; materialize and review the new exact commit");
+        }
         const competingDelivery = exactProposalAcceptanceOnMain(
           checkout,
           refreshedRemoteHead,
@@ -5747,29 +10399,61 @@ function acceptSharedReviewUnderLock(resolvedReviewRoot, {
           acceptedPatch,
           policyPaths,
         );
-        if (competingDelivery) {
+        if (
+          competingDelivery
+          && refreshedEvidence.remoteAcceptedVerified
+          && refreshedEvidence.remoteState.acceptedCommit === competingDelivery.commit
+        ) {
+          assertSharedReviewBaseCurrent(checkout, review, competingDelivery.previousMain, proposalChanges);
           return recordAcceptedSharedReview(review, {
             commit: competingDelivery.commit,
             previousMain: competingDelivery.previousMain,
             verifiedRemoteHead: refreshedRemoteHead,
             actor,
+            checkout,
+            repositoryConfig: terminalRepositoryConfig,
           });
         }
-      } catch {}
-      throw pushError;
+      } catch (error) {
+        recoveryError = error;
+      }
+      if (
+        recoveryError?.code?.startsWith?.("shared-proposal-")
+        || /Proposal changed after review/.test(String(recoveryError?.message || ""))
+      ) {
+        throw recoveryError;
+      }
+      throwAtomicPushError(pushError, "Shared proposal acceptance");
     }
-    const verifiedRemoteHead = verifySharedMainDelivery(
-      checkout,
-      acceptedCommit,
-      review.defaultBranch,
-      push,
-      boundedDeliveryTimeoutMs,
-    );
+    refreshSharedDeliveryRefs(checkout, review.repository, push, boundedDeliveryTimeoutMs);
+    const verifiedRemoteHead = remoteRevision(checkout, review.defaultBranch);
+    if (!gitIsAncestor(checkout, acceptedCommit, verifiedRemoteHead)) {
+      throw sharedContextError(
+        "shared-delivery-unverified",
+        `The accepted commit is not reachable from origin/${review.defaultBranch} after atomic push`,
+        { acceptedCommit, verifiedRemoteHead, defaultBranch: review.defaultBranch },
+      );
+    }
+    const verifiedTerminalEvidence = proposalTerminalEvidence({
+      connection: { repository: review.repository },
+      repositoryConfig: terminalRepositoryConfig,
+      revision: verifiedRemoteHead,
+    }, checkout, review.proposal, review.proposalHead);
+    assertTerminalAcceptanceAllowed(verifiedTerminalEvidence, review.proposal, review.proposalHead, acceptedCommit);
+    if (!verifiedTerminalEvidence.remoteAcceptedVerified) {
+      throw sharedContextError(
+        "shared-delivery-unverified",
+        "The remote terminal proposal state does not verify the exact accepted commit",
+        { proposal: review.proposal, proposalHead: review.proposalHead, acceptedCommit },
+      );
+    }
     return recordAcceptedSharedReview(review, {
       commit: acceptedCommit,
       previousMain: currentMain,
       verifiedRemoteHead,
       actor,
+      checkout,
+      repositoryConfig: terminalRepositoryConfig,
     });
   } finally {
     try { runGit(checkout, ["worktree", "remove", "--force", acceptanceRoot], { stdio: ["ignore", "ignore", "ignore"] }); } catch {}
@@ -5779,5 +10463,19 @@ function acceptSharedReviewUnderLock(resolvedReviewRoot, {
 export function acceptSharedReview(reviewRoot, options = {}) {
   const resolvedReviewRoot = path.resolve(reviewRoot);
   const review = readSharedReview(resolvedReviewRoot);
-  return withSharedAcceptanceLock(review, () => acceptSharedReviewUnderLock(resolvedReviewRoot, options));
+  const lockedBinding = {
+    repository: safeRepository(review.repository),
+    proposal: safeBranchName(review.proposal, "proposal branch"),
+    proposalHead: safeRevision(review.proposalHead, "proposal head"),
+  };
+  const deliveryTimeoutMs = sharedDeliveryTimeoutBudget(options.push, options.deliveryTimeoutMs);
+  authenticatedSharedGit(lockedBinding.repository, options.push || null, deliveryTimeoutMs);
+  return withProposalRegistryLock(lockedBinding.repository, () => withSharedTerminalDecisionLock(
+    lockedBinding,
+    () => withSharedRepositoryCloneLock(
+      lockedBinding.repository,
+      () => acceptSharedReviewUnderLock(resolvedReviewRoot, options, lockedBinding),
+      deliveryTimeoutMs,
+    ),
+  ), TERMINAL_PROPOSAL_REGISTRY_LOCK_OPTIONS);
 }

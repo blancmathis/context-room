@@ -4,7 +4,7 @@ context_room:
   scope: context-room
   status: current
   canonical_for: effective context resolution, graph, trace, impact, snapshots, and diffs
-  last_verified: 2026-07-29
+  last_verified: 2026-08-08
   sources: [src/context_engine.mjs, src/context_inventory.mjs, src/provider_profiles.mjs, src/context_snapshots.mjs, src/context_diagnostics.mjs, src/shared_context.mjs, src/agent_cli.mjs, bin/context-room.mjs]
 ---
 
@@ -181,6 +181,16 @@ commit with the proposal's exact head. It reports changed paths, documents,
 instructions, Shared Skill files, registered consumers, Git conflicts,
 technical skill collisions, and exact-revision review invalidations.
 
+The browser proposal-impact endpoint accepts only a Shared repository already
+registered or connected in the current Context Room. Supplying another Git URL
+in the query does not authorize a clone and returns
+`403 shared_context_repository_not_registered`. The explicit CLI
+`--repository` remains an operator-supplied command coordinate; it does not
+make that repository available to the browser room or register it. Required
+Shared clone and fetch work has a 30-second network budget and reports a
+retryable `shared-git-timeout` instead of waiting indefinitely. See
+[Server boundary](../assurance/server-boundary.md).
+
 The current adapter classifies proposal paths conservatively. It does not yet
 evaluate semantic contradictions. Its output therefore states
 `semanticConflicts: "not-evaluated"`. Review invalidation uses
@@ -207,3 +217,4 @@ Snapshots and diffs are CLI-first and are not separate UI pages.
 - [Startup context](startup-context.md): instruction discovery and review.
 - [Startup skills](startup-skills.md): local discovery and managed shared projections.
 - [Health, Guard, and Brief](health-guard-and-brief.md): existing Doctor diagnostics.
+- [Server boundary](../assurance/server-boundary.md): registered repository, request, and network-budget invariants.

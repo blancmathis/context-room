@@ -21,12 +21,57 @@ import {
   writeMemoryWebappSettings,
 } from "./context_room.mjs";
 import {
+  contextHubRepositoryIdentity,
   listContextHubProjects,
+  readContextHubRegistry,
   readContextHubRuntime,
   recordContextHubProjectOpened,
   registerContextHubProject,
 } from "./context_hub.mjs";
+
+function sameSharedRepository(left, right) {
+  try {
+    return contextHubRepositoryIdentity(left) === contextHubRepositoryIdentity(right);
+  } catch {
+    return false;
+  }
+}
+
+function sharedRepositoryDiagnostic(repository) {
+  const value = String(repository || "").trim();
+  try {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+      const parsed = new URL(value);
+      parsed.username = "";
+      parsed.password = "";
+      parsed.search = "";
+      parsed.hash = "";
+      return contextHubRepositoryIdentity(parsed.href);
+    }
+    return contextHubRepositoryIdentity(value);
+  } catch {
+    return "invalid-shared-repository";
+  }
+}
+
+function sharedRepositoryErrorMessage(error, repository) {
+  const message = String(error?.message || error || "Shared repository discovery failed.");
+  const rawRepository = String(repository || "");
+  return rawRepository ? message.split(rawRepository).join(sharedRepositoryDiagnostic(rawRepository)) : message;
+}
+
+function assertSafeSharedRepositorySelector(repository) {
+  const value = String(repository || "").trim();
+  if (!value || value.startsWith("-") || /[\x00-\x1f\x7f]/.test(value)) throw new Error("repository selector is invalid");
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+    const parsed = new URL(value);
+    if (parsed.password || (parsed.username && parsed.protocol !== "ssh:")) throw new Error("repository selector must not contain embedded credentials");
+    if (parsed.search || parsed.hash) throw new Error("repository selector must not contain query or fragment data");
+  }
+  return value;
+}
 import {
+  DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS,
   diffSharedMainRevisions,
   diffSharedProposalRevisions,
   diffSharedSkillLocationsRevisions,
@@ -41,7 +86,9 @@ import {
   listRegisteredSharedRepositories,
   listSharedRepositoryProposals,
   openSharedProposalWorkspace,
+  openSharedRepositoryProposalWorkspace,
   publishSharedProposal,
+  publishSharedRepositoryProposal,
   proposeSharedSkillAssignment,
   proposeSharedSkillUnassignment,
   proposeSharedInstructionAssignment,
@@ -141,6 +188,13 @@ function gitText(root, args) {
   }
 }
 
+export function cliGitAuthor(root = "") {
+  const configuredName = root ? gitText(root, ["config", "--get", "user.name"]) : "";
+  const configuredEmail = root ? gitText(root, ["config", "--get", "user.email"]) : "";
+  if (configuredName && configuredEmail) return { name: configuredName, email: configuredEmail };
+  return { name: "Context Room", email: ["context-room", "local.invalid"].join("@") };
+}
+
 function projectConfigRoot(start) {
   let current = stablePath(start);
   try { if (!fs.statSync(current).isDirectory()) current = path.dirname(current); } catch {}
@@ -152,15 +206,200 @@ function projectConfigRoot(start) {
   }
 }
 
-function projectCandidates(projects, selector) {
-  const needle = String(selector || "").trim().toLowerCase();
-  if (!needle) return projects;
-  return projects.filter((project) => [
-    project.id,
-    project.logicalProjectId,
-    project.title,
-    project.shared?.projectId,
-  ].filter(Boolean).some((value) => String(value).toLowerCase() === needle));
+function cliSelectorConflict(code, message, details, nextActions = []) {
+  const error = new ContextRoomCliError(code, message, {
+    details,
+    retryable: true,
+    exitCode: 5,
+    nextActions,
+  });
+  error.statusCode = 409;
+  return error;
+}
+
+function cliProjectIdentity(project, index = 0) {
+  return String(project?.projectKey || project?.logicalProjectId || project?.id || `candidate-${index}`);
+}
+
+function cliProjectCandidate(project) {
+  return {
+    id: String(project?.id || ""),
+    projectKey: String(project?.projectKey || ""),
+    logicalProjectId: String(project?.logicalProjectId || ""),
+    title: String(project?.title || ""),
+    sharedProjectId: String(project?.shared?.projectId || ""),
+    worktrees: (project?.worktrees || []).map((worktree) => ({
+      id: String(worktree?.id || ""),
+      branch: String(worktree?.branch || worktree?.worktree?.branch || ""),
+    })),
+  };
+}
+
+function distinctCliProjects(projects = []) {
+  const distinct = new Map();
+  projects.forEach((project, index) => {
+    const identity = cliProjectIdentity(project, index);
+    if (!distinct.has(identity)) distinct.set(identity, project);
+  });
+  return [...distinct.values()];
+}
+
+/**
+ * Resolve a project selector without allowing a friendly alias to shadow an
+ * exact machine identity. Multiple registered worktrees with one logical
+ * project identity remain a valid result for resolveCliTarget to disambiguate.
+ */
+export function resolveCliProjectReference(projects = [], selector = "") {
+  const source = Array.isArray(projects) ? projects : [];
+  const requested = String(selector || "").trim();
+  if (!requested) return { matches: source, matchedBy: "all", exact: false };
+
+  const exactTiers = [
+    ["id", (project) => String(project?.id || "") === requested],
+    ["project-key", (project) => String(project?.projectKey || "") === requested],
+    ["worktree-id", (project) => (
+      String(project?.worktree?.id || "") === requested
+      || (project?.worktrees || []).some((worktree) => String(worktree?.id || "") === requested)
+    )],
+    ["logical-project-id", (project) => String(project?.logicalProjectId || "") === requested],
+  ];
+  for (const [matchedBy, predicate] of exactTiers) {
+    const matches = source.filter(predicate);
+    if (!matches.length) continue;
+    const projectsMatched = distinctCliProjects(matches);
+    if (projectsMatched.length > 1) {
+      throw cliSelectorConflict(
+        "ambiguous-target",
+        "Several Context Room projects expose the same exact selector; choose an exact location.",
+        { selector: requested, matchedBy, candidates: projectsMatched.map(cliProjectCandidate) },
+      );
+    }
+    return { matches, matchedBy, exact: true };
+  }
+
+  const needle = requested.toLowerCase();
+  const legacyMatches = source.filter((project) => {
+    const sharedProjectId = String(project?.shared?.projectId || "").trim();
+    return Boolean(sharedProjectId) && ("shared:" + sharedProjectId).toLowerCase() === needle;
+  });
+  if (legacyMatches.length) {
+    const projectsMatched = distinctCliProjects(legacyMatches);
+    if (projectsMatched.length > 1) {
+      throw cliSelectorConflict(
+        "ambiguous-target",
+        "Several Context Room projects match this legacy Shared selector; pass an exact project key.",
+        { selector: requested, matchedBy: "legacy-shared-project-key", candidates: projectsMatched.map(cliProjectCandidate) },
+      );
+    }
+    const selectedIdentity = cliProjectIdentity(projectsMatched[0]);
+    return {
+      matches: source.filter((project, index) => cliProjectIdentity(project, index) === selectedIdentity),
+      matchedBy: "legacy-shared-project-key",
+      exact: false,
+    };
+  }
+  const aliasMatches = source.filter((project) => (
+    String(project?.shared?.projectId || "").trim().toLowerCase() === needle
+    || String(project?.title || "").trim().toLowerCase() === needle
+  ));
+  if (!aliasMatches.length) return { matches: [], matchedBy: "", exact: false };
+  const projectsMatched = distinctCliProjects(aliasMatches);
+  if (projectsMatched.length > 1) {
+    const candidates = projectsMatched.map(cliProjectCandidate);
+    throw cliSelectorConflict(
+      "ambiguous-target",
+      "Several Context Room projects match this alias; pass an exact project or worktree identifier.",
+      { selector: requested, matchedBy: "alias", candidates },
+      candidates.map((candidate) => ({
+        id: `select-${candidate.projectKey || candidate.logicalProjectId || candidate.id}`,
+        command: `context-room project current --project ${JSON.stringify(candidate.projectKey || candidate.logicalProjectId || candidate.id)} --format json`,
+        mutates: false,
+        requiresHuman: false,
+      })),
+    );
+  }
+  const selectedIdentity = cliProjectIdentity(projectsMatched[0]);
+  return {
+    matches: source.filter((project, index) => cliProjectIdentity(project, index) === selectedIdentity),
+    matchedBy: "alias",
+    exact: false,
+  };
+}
+
+function proposalMatchesRepository(proposal, repository) {
+  if (!repository) return true;
+  if (!proposal?.repository) return false;
+  return sameSharedRepository(proposal.repository, repository);
+}
+
+function proposalMatchesProject(proposal, projectId) {
+  const requested = String(projectId || "").trim();
+  if (!requested) return true;
+  const candidate = String(proposal?.projectId || "").trim();
+  return candidate === requested;
+}
+
+function cliProposalCandidate(proposal) {
+  return {
+    id: String(proposal?.id || ""),
+    branch: String(proposal?.branch || ""),
+    head: String(proposal?.head || ""),
+    title: String(proposal?.title || ""),
+    projectId: String(proposal?.projectId || ""),
+    scope: String(proposal?.scope || ""),
+    repository: proposal?.repository ? sharedRepositoryDiagnostic(proposal.repository) : "",
+  };
+}
+
+function distinctCliProposals(proposals = []) {
+  const distinct = new Map();
+  proposals.forEach((proposal, index) => {
+    const repository = proposal?.repository ? sharedRepositoryDiagnostic(proposal.repository) : "scoped-repository";
+    const identity = String(proposal?.id || proposal?.branch || proposal?.head || `candidate-${index}`);
+    const key = `${repository}\0${identity}`;
+    if (!distinct.has(key)) distinct.set(key, proposal);
+  });
+  return [...distinct.values()];
+}
+
+/** Resolve one proposal after repository/project scoping, exact IDs first. */
+export function resolveCliProposalReference(proposals = [], selector = "", { repository = "", projectId = "" } = {}) {
+  const requested = String(selector || "").trim();
+  if (!requested) return null;
+  const scoped = (Array.isArray(proposals) ? proposals : [])
+    .filter((proposal) => proposalMatchesRepository(proposal, repository))
+    .filter((proposal) => proposalMatchesProject(proposal, projectId));
+  const exactTiers = [
+    ["id", (proposal) => String(proposal?.id || "") === requested],
+    ["branch", (proposal) => String(proposal?.branch || "") === requested],
+  ];
+  const aliasNeedle = requested.toLowerCase();
+  const tiers = [
+    ...exactTiers,
+    ["alias", (proposal) => (
+      String(proposal?.head || "").trim().toLowerCase() === aliasNeedle
+      || String(proposal?.title || "").trim().toLowerCase() === aliasNeedle
+    )],
+  ];
+  for (const [matchedBy, predicate] of tiers) {
+    const matches = distinctCliProposals(scoped.filter(predicate));
+    if (!matches.length) continue;
+    if (matches.length > 1) {
+      throw cliSelectorConflict(
+        "proposal-ambiguous",
+        "Several proposals match this selector; pass the exact proposal id or branch.",
+        {
+          selector: requested,
+          matchedBy,
+          repository: repository ? sharedRepositoryDiagnostic(repository) : "",
+          projectId: String(projectId || ""),
+          candidates: matches.map(cliProposalCandidate),
+        },
+      );
+    }
+    return matches[0];
+  }
+  return null;
 }
 
 function publicTarget(target) {
@@ -251,7 +490,7 @@ export function resolveCliTarget({ cwd = process.cwd(), project = "", location =
     });
   }
   if (project) {
-    const matches = projectCandidates(projects, project);
+    const matches = resolveCliProjectReference(projects, project).matches;
     if (!matches.length) throw new ContextRoomCliError("unknown-project", `Unknown registered Context Room project: ${project}`, {
       details: { project },
       retryable: true,
@@ -266,16 +505,17 @@ export function resolveCliTarget({ cwd = process.cwd(), project = "", location =
   if (!selected && candidates.length === 1) selected = candidates[0];
   if (!selected && (project || location) && candidates.length > 1) {
     const candidateDetails = candidates.map((item) => ({ id: item.id, title: item.title, root: item.root, branch: item.worktree?.branch || "" }));
-    throw new ContextRoomCliError("ambiguous-target", "Several registered worktree locations match this target; pass --location <id|path>.", {
-      details: { candidates: candidateDetails },
-      retryable: true,
-      nextActions: candidateDetails.map((item) => ({
+    throw cliSelectorConflict(
+      "ambiguous-target",
+      "Several registered worktree locations match this target; pass --location <id|path>.",
+      { selector: String(project || location), matchedBy: "logical-project", candidates: candidateDetails },
+      candidateDetails.map((item) => ({
         id: `select-${item.id}`,
         command: `context-room project current --location ${JSON.stringify(item.id)} --format json`,
         mutates: false,
         requiresHuman: false,
       })),
-    });
+    );
   }
 
   let root = selected?.root || projectConfigRoot(requested);
@@ -356,11 +596,7 @@ export function listCliProjects({ query = "", recent = false } = {}) {
 
 export function registerCliProject({ root = process.cwd(), title = "" } = {}) {
   const projectRoot = projectConfigRoot(root) || stablePath(root);
-  const connection = readSharedProjectConnection(projectRoot);
-  const registered = registerContextHubProject(projectRoot, {
-    title,
-    shared: connection ? { repository: connection.repository, projectId: connection.projectId } : null,
-  });
+  const registered = registerContextHubProject(projectRoot, { title });
   appendContextRoomEvent("project.location-registered", {
     projectId: registered.logicalProjectId,
     locationId: registered.id,
@@ -850,26 +1086,56 @@ function exactSharedReviewInvalidations({ repository, proposal, headRevision }) 
   return invalidated.sort((left, right) => `${left.path}:${left.reviewId}`.localeCompare(`${right.path}:${right.reviewId}`, "en"));
 }
 
-export async function proposalContextImpact({ selector, repository = "", target = null, adapters = {} } = {}) {
+export async function proposalContextImpact({
+  selector,
+  repository = "",
+  target = null,
+  adapters = {},
+  push = null,
+  timeoutMs = undefined,
+} = {}) {
   try {
     const repositoryId = repository || target?.shared?.repository || "";
+    const projectId = target?.shared?.projectId || "";
+    const sharedReadOptions = { push, ...(timeoutMs ? { timeoutMs } : {}) };
     let selectedProposal = null;
     let exactProposalDiff = null;
-    const state = repositoryId ? listSharedRepositoryProposals(repositoryId, { allowOffline: false, refresh: true }) : null;
-    if (state) selectedProposal = state.proposals.find((item) => item.branch === selector || item.head === selector || item.title === selector) || null;
+    const state = repositoryId ? listSharedRepositoryProposals(repositoryId, {
+      allowOffline: false,
+      refresh: true,
+      ...sharedReadOptions,
+    }) : null;
+    if (state) selectedProposal = resolveCliProposalReference(state.proposals, selector, { repository: repositoryId, projectId });
     const realAdapters = {
       readProposal: async ({ selector: wanted, repository: wantedRepository }) => {
-        if (selectedProposal && wantedRepository === repositoryId) return selectedProposal;
-        const current = listSharedRepositoryProposals(wantedRepository, { allowOffline: false, refresh: true });
-        return current.proposals.find((item) => item.branch === wanted || item.head === wanted || item.title === wanted) || null;
+        if (selectedProposal && sameSharedRepository(wantedRepository, repositoryId)) return selectedProposal;
+        const current = listSharedRepositoryProposals(wantedRepository, {
+          allowOffline: false,
+          refresh: true,
+          ...sharedReadOptions,
+        });
+        return resolveCliProposalReference(current.proposals, wanted, { repository: wantedRepository, projectId });
       },
-      readAcceptedRevision: async ({ repository: wantedRepository }) => readSharedMainRevision(wantedRepository, { refresh: true }),
+      readAcceptedRevision: async ({ repository: wantedRepository }) => readSharedMainRevision(wantedRepository, {
+        refresh: true,
+        ...sharedReadOptions,
+      }),
       findMergeBase: async ({ repository: wantedRepository, fromRevision, toRevision }) => {
-        exactProposalDiff ||= diffSharedProposalRevisions(wantedRepository, { fromRevision, toRevision, refresh: true });
+        exactProposalDiff ||= diffSharedProposalRevisions(wantedRepository, {
+          fromRevision,
+          toRevision,
+          refresh: true,
+          ...sharedReadOptions,
+        });
         return exactProposalDiff.mergeBase;
       },
       diffRevisions: async ({ repository: wantedRepository, fromRevision, toRevision }) => {
-        exactProposalDiff ||= diffSharedProposalRevisions(wantedRepository, { fromRevision, toRevision, refresh: true });
+        exactProposalDiff ||= diffSharedProposalRevisions(wantedRepository, {
+          fromRevision,
+          toRevision,
+          refresh: true,
+          ...sharedReadOptions,
+        });
         const statuses = { A: "added", M: "modified", D: "deleted", R: "renamed", C: "copied", T: "type-changed", U: "unmerged" };
         return exactProposalDiff.changes.map((change) => ({
           path: change.path,
@@ -880,11 +1146,16 @@ export async function proposalContextImpact({ selector, repository = "", target 
         }));
       },
       listRegisteredConsumers: async () => listContextHubProjects({ refreshGit: false })
-        .filter((item) => item.available !== false && item.shared?.repository === repositoryId)
+        .filter((item) => item.available !== false && sameSharedRepository(item.shared?.repository, repositoryId))
         .filter((item) => !selectedProposal?.projectId || ["global", "skills", selectedProposal.projectId].includes(selectedProposal.projectId) || item.shared?.projectId === selectedProposal.projectId)
         .map((item) => ({ projectId: item.logicalProjectId || item.id, locationId: item.id, sharedProjectId: item.shared?.projectId || "", folder: ".", provider: "all" })),
       detectGitConflicts: async ({ repository: wantedRepository, baseRevision, headRevision }) => {
-        exactProposalDiff ||= diffSharedProposalRevisions(wantedRepository, { fromRevision: baseRevision, toRevision: headRevision, refresh: true });
+        exactProposalDiff ||= diffSharedProposalRevisions(wantedRepository, {
+          fromRevision: baseRevision,
+          toRevision: headRevision,
+          refresh: true,
+          ...sharedReadOptions,
+        });
         return exactProposalDiff.hasConflict ? [{ kind: "merge", paths: exactProposalDiff.files }] : [];
       },
       analyzeSharedSkills: async ({ repository: wantedRepository, baseRevision, headRevision, changedFiles }) => {
@@ -893,6 +1164,7 @@ export async function proposalContextImpact({ selector, repository = "", target 
           fromRevision: baseRevision,
           toRevision: headRevision,
           refresh: true,
+          ...sharedReadOptions,
         });
         return {
           collections: delta.collectionChanges,
@@ -918,8 +1190,14 @@ export async function proposalContextImpact({ selector, repository = "", target 
           }
           return byId;
         };
-        const baseDocuments = readSharedRevisionDocuments(repositoryId, baseRevision, { refresh: false });
-        const headDocuments = readSharedRevisionDocuments(repositoryId, headRevision, { refresh: false });
+        const baseDocuments = readSharedRevisionDocuments(repositoryId, baseRevision, {
+          refresh: false,
+          ...sharedReadOptions,
+        });
+        const headDocuments = readSharedRevisionDocuments(repositoryId, headRevision, {
+          refresh: false,
+          ...sharedReadOptions,
+        });
         const genericState = (documents) => new Map(documents.map((document) => {
           const inspection = inspectDocumentMetadata({ content: document.content || "", relPath: document.path || "" });
           return [document.path, {
@@ -1288,6 +1566,7 @@ export function applyAgentHandoff(target, { planId, task = "", description = "",
       title: task || undefined,
       description: description || task || "Update shared documentation for the current task.",
       message: task || "Publish Context Room handoff",
+      author: cliGitAuthor(proposal.root || target.root),
     }));
   }
   const receipt = {
@@ -1417,6 +1696,30 @@ function documentationChangeId({ target, task, scope, sessionId }) {
   })).digest("hex").slice(0, 24);
 }
 
+function sharedProposalHandleState(target, proposal, { reused = Boolean(proposal?.reused) } = {}) {
+  const branch = String(proposal?.branch || "").trim();
+  const root = String(proposal?.root || "").trim();
+  const head = String(proposal?.head || (root ? gitText(root, ["rev-parse", "HEAD"]) : "")).trim();
+  const trackedRemoteHead = branch && root
+    ? gitText(root, ["rev-parse", "--verify", `refs/remotes/origin/${branch}^{commit}`])
+    : "";
+  const observedRemoteHead = String(proposal?.remoteHead || trackedRemoteHead || proposal?.lastPublishedHead || "").trim();
+  return {
+    branch,
+    root,
+    repository: String(target?.shared?.repository || proposal?.repository || "").trim(),
+    baseRevision: String(proposal?.baseRevision || "").trim(),
+    head,
+    lastPublishedHead: observedRemoteHead,
+    remoteHead: observedRemoteHead,
+    projectId: String(proposal?.projectId || target?.shared?.projectId || "").trim(),
+    reviewStatus: String(proposal?.reviewStatus || "editing"),
+    dirty: typeof proposal?.dirty === "boolean" ? proposal.dirty : Boolean(root && gitText(root, ["status", "--porcelain=v1"])),
+    conflict: typeof proposal?.conflict === "boolean" ? proposal.conflict : Boolean(root && gitText(root, ["diff", "--name-only", "--diff-filter=U"])),
+    reused: Boolean(reused),
+  };
+}
+
 export function createDocumentationChange(target, { task = "", document = "", scope = "local", description = "", sessionId = "", reuseShared = true } = {}) {
   const normalizedTask = String(task || "").trim();
   const normalizedScope = String(scope || "local").trim().toLowerCase();
@@ -1458,7 +1761,7 @@ export function createDocumentationChange(target, { task = "", document = "", sc
     acceptedRevision,
     allowedPaths: normalizedScope === "local" ? [...(settings.allowedPaths || [])] : [],
     watchRules: normalizedScope === "local" ? [...(settings.watchRules || [])] : [],
-    ...(proposal ? { proposal: { branch: proposal.branch, root: proposal.root, baseRevision: proposal.baseRevision, projectId: proposal.projectId, reused: Boolean(proposal.reused) } } : {}),
+    ...(proposal ? { proposal: sharedProposalHandleState(target, proposal) } : {}),
     workflow: proposal
       ? {
           state: "proposal-ready",
@@ -1526,26 +1829,26 @@ export function openSharedDocumentationProposal(target, { proposal = "" } = {}) 
     throw new ContextRoomCliError("shared-context-required", "edit open requires a project connected to a shared context.", { exitCode: 2 });
   }
   const workspace = openSharedProposalWorkspace(target.root, { proposal });
-  return {
+  return sharedDocumentationProposalHandle(target, workspace);
+}
+
+function sharedDocumentationProposalHandle(target, workspace) {
+  const task = String(workspace.title || workspace.description || workspace.branch || "Shared documentation proposal");
+  const changeId = documentationChangeId({ target, task: workspace.branch || task, scope: "shared", sessionId: "" });
+  const handle = {
     schemaVersion: "context-room.documentation-change/1",
+    changeId,
+    createdAt: new Date().toISOString(),
     status: "editing",
+    task,
+    description: String(workspace.description || task),
+    sessionId: String(workspace.sessionId || ""),
     scope: "shared",
     target: publicTarget(target),
     sourceRoot: target.root,
     editRoot: workspace.root,
     acceptedRevision: workspace.baseRevision,
-    description: workspace.description,
-    proposal: {
-      branch: workspace.branch,
-      root: workspace.root,
-      baseRevision: workspace.baseRevision,
-      head: workspace.head,
-      projectId: workspace.projectId,
-      reviewStatus: workspace.reviewStatus,
-      dirty: workspace.dirty,
-      conflict: workspace.conflict,
-      reused: true,
-    },
+    proposal: sharedProposalHandleState(target, workspace, { reused: true }),
     workflow: {
       state: "proposal-ready",
       writableRoot: workspace.root,
@@ -1554,51 +1857,302 @@ export function openSharedDocumentationProposal(target, { proposal = "" } = {}) 
     humanOwned: humanReviewOwnershipText("Only a human can accept or reject the resulting file reviews."),
     humanDecisionPolicy: HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY,
   };
+  writePrivateState(privateStatePath("documentation-changes", changeId), handle);
+  return handle;
 }
 
-export function openSharedDocumentationProposalByBranch({ proposal = "" } = {}) {
+export function openSharedDocumentationProposalByBranch({
+  proposal = "",
+  repository = "",
+  projectId = "",
+  sharedProject = "",
+  timeoutMs = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS,
+} = {}) {
   const branch = String(proposal || "").trim();
   if (!branch) throw new ContextRoomCliError("missing-proposal", "edit open requires an exact proposal branch.", { exitCode: 2 });
+  const requestedRepository = String(repository || "").trim();
+  const requestedProjectId = String(projectId || sharedProject || "").trim();
+  const discoveryBudgetMs = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
+    ? Math.floor(Number(timeoutMs))
+    : DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS;
+  const discoveryDeadline = Date.now() + discoveryBudgetMs;
 
   const candidates = [];
   const checkedRepositories = [];
-  for (const repository of listRegisteredSharedRepositories()) {
-    const locations = listRegisteredSharedProjectLocations(repository);
-    if (!locations.length) continue;
+  const repositoryErrors = [];
+  const invalidRegisteredRepositories = [];
+  const repositoriesByIdentity = new Map();
+  for (const repository of [
+    ...listRegisteredSharedRepositories(),
+    ...readContextHubRegistry().sharedRepositories.map((entry) => entry.repository),
+  ]) {
+    try {
+      assertSafeSharedRepositorySelector(repository);
+      const identity = contextHubRepositoryIdentity(repository);
+      if (!repositoriesByIdentity.has(identity)) {
+        repositoriesByIdentity.set(identity, { repository, aliases: new Set() });
+      }
+      repositoriesByIdentity.get(identity).aliases.add(repository);
+    } catch (error) {
+      invalidRegisteredRepositories.push({
+        repository: sharedRepositoryDiagnostic(repository),
+        code: "invalid-registered-repository",
+        message: "A registered Shared Context repository selector is invalid.",
+        timeoutMs: 0,
+      });
+    }
+  }
+  let repositoryBuckets = [...repositoriesByIdentity.values()];
+  if (requestedRepository) {
+    let requestedIdentity;
+    try {
+      assertSafeSharedRepositorySelector(requestedRepository);
+      requestedIdentity = contextHubRepositoryIdentity(requestedRepository);
+    } catch (error) {
+      throw new ContextRoomCliError("invalid-repository-selector", "edit open received an invalid Shared Context repository selector.", {
+        details: { repository: sharedRepositoryDiagnostic(requestedRepository), message: "The repository selector is not valid." },
+        exitCode: 2,
+      });
+    }
+    repositoryBuckets = [repositoriesByIdentity.get(requestedIdentity) || {
+      repository: requestedRepository,
+      aliases: new Set([requestedRepository]),
+    }];
+  } else {
+    repositoryErrors.push(...invalidRegisteredRepositories);
+  }
+  for (const repositoryBucket of repositoryBuckets) {
+    const repository = repositoryBucket.repository;
+    const locations = [];
+    const seenLocations = new Set();
+    for (const alias of repositoryBucket.aliases) {
+      for (const location of listRegisteredSharedProjectLocations(alias)) {
+        const connection = readSharedProjectConnection(location.root);
+        if (!connection || !sameSharedRepository(connection.repository, alias)) continue;
+        const key = `${connection.repository}\0${location.projectId}\0${location.root}`;
+        if (seenLocations.has(key)) continue;
+        seenLocations.add(key);
+        locations.push({ ...location, repository: connection.repository });
+      }
+    }
     checkedRepositories.push(repository);
 
-    const local = listSharedProposalWorkspaces(locations[0].root).find((entry) => entry.branch === branch) || null;
+    const localMatches = locations.flatMap((location) => {
+      const match = listSharedProposalWorkspaces(location.root).find((entry) => (
+          entry.branch === branch
+          && (!requestedProjectId || entry.projectId === requestedProjectId)
+        )) || null;
+      return match ? [{ match, location }] : [];
+    });
+    const distinctLocalMatches = [...new Map(localMatches.map((entry) => [
+      `${entry.match.root}\0${entry.match.head}`,
+      entry,
+    ])).values()];
+    if (distinctLocalMatches.length > 1) {
+      repositoryErrors.push({
+        repository: sharedRepositoryDiagnostic(repository),
+        code: "proposal-alias-conflict",
+        message: "Equivalent repository selectors contain different local workspaces for the same proposal branch.",
+        timeoutMs: 0,
+      });
+      continue;
+    }
+    const localRecord = distinctLocalMatches[0] || null;
+    const local = localRecord?.match || null;
     let remote = null;
     if (!local) {
+      const remainingTimeoutMs = discoveryDeadline - Date.now();
+      if (remainingTimeoutMs <= 0) {
+        repositoryErrors.push({
+          repository: sharedRepositoryDiagnostic(repository),
+          code: "proposal-discovery-budget-exhausted",
+          message: `The ${discoveryBudgetMs} ms proposal discovery budget was exhausted before this repository could be checked.`,
+          timeoutMs: 0,
+        });
+        continue;
+      }
       try {
-        remote = listSharedRepositoryProposals(repository, { allowOffline: true, refresh: true })
-          .proposals.find((entry) => entry.branch === branch) || null;
-      } catch {}
+        remote = listSharedRepositoryProposals(repository, {
+          allowOffline: false,
+          refresh: true,
+          timeoutMs: remainingTimeoutMs,
+        }).proposals.find((entry) => (
+          entry.branch === branch
+          && (!requestedProjectId || entry.projectId === requestedProjectId)
+        )) || null;
+      } catch (error) {
+        repositoryErrors.push({
+          repository: sharedRepositoryDiagnostic(repository),
+          code: String(error?.code || "proposal-discovery-failed"),
+          message: sharedRepositoryErrorMessage(error, repository),
+          timeoutMs: Math.max(0, remainingTimeoutMs),
+        });
+      }
     }
     const match = local || remote;
     if (!match) continue;
-    const location = locations.find((entry) => entry.projectId === match.projectId) || locations[0];
-    candidates.push({ repository, projectId: match.projectId || location.projectId, root: location.root });
+    const selectedRepository = localRecord?.location?.repository || repository;
+    const location = localRecord?.location || locations.find((entry) => (
+      entry.projectId === match.projectId
+      && sameSharedRepository(entry.repository, selectedRepository)
+    )) || null;
+    candidates.push({
+      repository: selectedRepository,
+      projectId: match.projectId || location?.projectId || "",
+      root: location?.root || "",
+      freshlyVerified: Boolean(remote),
+    });
   }
 
+  if (repositoryErrors.length) {
+    throw new ContextRoomCliError("proposal-discovery-incomplete", `Unable to verify whether ${branch} exists in every selected Shared Context.`, {
+      details: {
+        proposal: branch,
+        repository: requestedRepository ? sharedRepositoryDiagnostic(requestedRepository) : "",
+        projectId: requestedProjectId,
+        discoveryBudgetMs,
+        checkedRepositories: checkedRepositories.map(sharedRepositoryDiagnostic),
+        repositoryErrors,
+      },
+      retryable: true,
+      exitCode: 3,
+    });
+  }
   if (!candidates.length) {
     throw new ContextRoomCliError("proposal-not-found", `No open shared documentation proposal uses the exact branch ${branch}.`, {
-      details: { proposal: branch, checkedRepositories },
+      details: {
+        proposal: branch,
+        repository: requestedRepository ? sharedRepositoryDiagnostic(requestedRepository) : "",
+        projectId: requestedProjectId,
+        checkedRepositories: checkedRepositories.map(sharedRepositoryDiagnostic),
+      },
       retryable: true,
       exitCode: 4,
     });
   }
   if (candidates.length > 1) {
     throw new ContextRoomCliError("proposal-ambiguous", `The exact branch ${branch} exists in more than one shared context.`, {
-      details: { proposal: branch, candidates },
+      details: {
+        proposal: branch,
+        candidates: candidates.map((candidate) => {
+          const { freshlyVerified: _freshlyVerified, ...publicCandidate } = candidate;
+          return {
+            ...publicCandidate,
+            repositoryIdentity: sharedRepositoryDiagnostic(candidate.repository),
+          };
+        }),
+      },
       retryable: true,
       exitCode: 2,
     });
   }
 
   const selected = candidates[0];
-  const target = resolveCliTarget({ cwd: selected.root, requireLocal: true });
-  return openSharedDocumentationProposal(target, { proposal: branch });
+  const remainingOpenTimeoutMs = discoveryDeadline - Date.now();
+  if (!selected.freshlyVerified && remainingOpenTimeoutMs <= 0) {
+    throw new ContextRoomCliError("proposal-discovery-incomplete", `The proposal was found locally, but the ${discoveryBudgetMs} ms network budget expired before its Shared Context could be refreshed.`, {
+      details: {
+        proposal: branch,
+        repository: sharedRepositoryDiagnostic(selected.repository),
+        projectId: selected.projectId,
+        discoveryBudgetMs,
+      },
+      retryable: true,
+      exitCode: 3,
+    });
+  }
+  const workspace = openSharedRepositoryProposalWorkspace(selected.repository, {
+    proposal: branch,
+    refresh: !selected.freshlyVerified,
+    timeoutMs: Math.max(1, remainingOpenTimeoutMs),
+  });
+  let target = null;
+  if (selected.root) {
+    try {
+      const localTarget = resolveCliTarget({ cwd: selected.root, requireLocal: true });
+      if (sameSharedRepository(localTarget.shared?.repository, selected.repository)
+        && localTarget.shared?.projectId === selected.projectId) {
+        target = localTarget;
+      }
+    } catch {}
+  }
+  target ||= {
+    root: "",
+    folderAbsolute: "",
+    project: {
+      id: selected.projectId,
+      title: selected.projectId || "Shared project",
+      sharedProjectId: selected.projectId,
+    },
+    location: null,
+    folder: null,
+    shared: { repository: selected.repository, projectId: selected.projectId },
+    registered: true,
+    localEnvironment: "unavailable",
+  };
+  return sharedDocumentationProposalHandle(target, workspace);
+}
+
+function sharedProposalPublishState(proposal = {}, { requireOpenedHeadBinding = false } = {}) {
+  const hasProposalHead = Object.prototype.hasOwnProperty.call(proposal, "head");
+  const hasRemoteHead = Object.prototype.hasOwnProperty.call(proposal, "remoteHead");
+  const hasLastPublishedHead = Object.prototype.hasOwnProperty.call(proposal, "lastPublishedHead");
+  const remoteHead = String(proposal.remoteHead || "").trim();
+  const lastPublishedHead = String(proposal.lastPublishedHead || "").trim();
+  const workspaceHead = String(proposal.head || "").trim();
+  if (hasRemoteHead && hasLastPublishedHead && remoteHead !== lastPublishedHead) {
+    throw new ContextRoomCliError("change-state-invalid", "The documentation change contains conflicting observed proposal heads; reopen the exact proposal before publishing.", {
+      details: {
+        proposal: String(proposal.branch || ""),
+        remoteHead,
+        lastPublishedHead,
+      },
+      retryable: true,
+      exitCode: 3,
+    });
+  }
+  if (requireOpenedHeadBinding && hasProposalHead && hasLastPublishedHead && workspaceHead !== lastPublishedHead) {
+    throw new ContextRoomCliError("change-state-invalid", "The reopened documentation change is not bound to one exact published proposal head; reopen the exact proposal before publishing.", {
+      details: {
+        proposal: String(proposal.branch || ""),
+        proposalHead: workspaceHead,
+        lastPublishedHead,
+      },
+      retryable: true,
+      exitCode: 3,
+    });
+  }
+  if (requireOpenedHeadBinding && (!hasProposalHead || !hasRemoteHead || !hasLastPublishedHead || !workspaceHead || !lastPublishedHead)) {
+    throw new ContextRoomCliError("change-state-upgrade-required", "This Hub-only documentation change does not prove the exact published proposal head it reopened; reopen the exact proposal before publishing.", {
+      details: {
+        proposal: String(proposal.branch || ""),
+        proposalHead: workspaceHead,
+        lastPublishedHead,
+      },
+      retryable: true,
+      exitCode: 3,
+    });
+  }
+  const legacyHandle = !hasRemoteHead && !hasLastPublishedHead;
+  if (legacyHandle) {
+    const branch = String(proposal.branch || "").trim();
+    const root = String(proposal.root || "").trim();
+    const trackedRemoteHead = branch && root
+      ? gitText(root, ["rev-parse", "--verify", `refs/remotes/origin/${branch}^{commit}`])
+      : "";
+    if (!workspaceHead || !trackedRemoteHead) {
+      throw new ContextRoomCliError("change-state-upgrade-required", "This older documentation change does not prove whether its proposal branch existed remotely; reopen the exact proposal before publishing.", {
+        details: {
+          proposal: branch,
+          proposalHead: workspaceHead,
+        },
+        retryable: true,
+        exitCode: 3,
+      });
+    }
+    return { expectedHead: workspaceHead };
+  }
+  return { expectedHead: remoteHead || lastPublishedHead };
 }
 
 export function publishDocumentationChange(changeId, { summary = "", description = "" } = {}) {
@@ -1607,16 +2161,48 @@ export function publishDocumentationChange(changeId, { summary = "", description
   const statePath = privateStatePath("documentation-changes", normalizedId);
   const handle = readPrivateState(statePath);
   if (!handle || handle.schemaVersion !== "context-room.documentation-change/1") throw new ContextRoomCliError("change-not-found", `Unknown documentation change: ${normalizedId}`, { exitCode: 4 });
-  if (!handle.sourceRoot || !fs.existsSync(handle.sourceRoot)) throw new ContextRoomCliError("change-root-unavailable", "The registered project location for this change is unavailable.", { details: { sourceRoot: handle.sourceRoot }, retryable: true });
+  const sourceRootAvailable = Boolean(handle.sourceRoot && fs.existsSync(handle.sourceRoot));
+  const sharedRepository = String(handle.proposal?.repository || handle.target?.shared?.repository || "").trim();
+  const sourceConnection = sourceRootAvailable && handle.scope === "shared" ? readSharedProjectConnection(handle.sourceRoot) : null;
+  const sharedSourceRootMatches = Boolean(sourceConnection
+    && sameSharedRepository(sourceConnection.repository, sharedRepository)
+    && sourceConnection.projectId === handle.proposal?.projectId);
+  if (handle.scope !== "shared" && !sourceRootAvailable) throw new ContextRoomCliError("change-root-unavailable", "The registered project location for this change is unavailable.", { details: { sourceRoot: handle.sourceRoot }, retryable: true });
+  if (handle.scope === "shared" && !sharedSourceRootMatches && !sharedRepository) throw new ContextRoomCliError("change-root-unavailable", "The Shared Context repository for this change is unavailable.", { details: { sourceRoot: handle.sourceRoot }, retryable: true });
   let result;
   if (handle.scope === "shared") {
     if (!handle.proposal?.branch || !handle.proposal?.root || !fs.existsSync(handle.proposal.root)) throw new ContextRoomCliError("proposal-worktree-unavailable", "The proposal worktree for this change is unavailable.", { retryable: true });
-    result = publishSharedProposal(handle.sourceRoot, {
-      proposal: handle.proposal.branch,
-      title: String(summary || handle.task),
-      description: String(description || handle.description || handle.task),
-      message: String(summary || handle.task || "Publish documentation change"),
+    const proposalState = sharedProposalPublishState(handle.proposal, {
+      requireOpenedHeadBinding: !String(handle.sourceRoot || "").trim(),
     });
+    const freshDescription = String(description || "").trim();
+    const publishOptions = {
+      proposal: handle.proposal.branch,
+      expectedHead: proposalState.expectedHead,
+      title: String(summary || handle.task),
+      description: freshDescription ? String(description) : undefined,
+      message: String(summary || handle.task || "Publish documentation change"),
+      author: cliGitAuthor(handle.proposal.root),
+    };
+    try {
+      result = sharedSourceRootMatches
+        ? publishSharedProposal(handle.sourceRoot, publishOptions)
+        : publishSharedRepositoryProposal(sharedRepository, publishOptions);
+    } catch (error) {
+      if (String(error?.message || "") === "--description is required whenever a published proposal is updated") {
+        throw new ContextRoomCliError("missing-description", error.message, {
+          details: {
+            proposal: handle.proposal.branch,
+            expectedHead: proposalState.expectedHead,
+          },
+          exitCode: 2,
+        });
+      }
+      if (!error?.code) throw error;
+      const failure = cliErrorFrom(error, "documentation-publish-failed");
+      if (failure.retryable) failure.exitCode = 3;
+      throw failure;
+    }
   } else {
     const target = {
       project: handle.target?.project || {},
@@ -1634,7 +2220,20 @@ export function publishDocumentationChange(changeId, { summary = "", description
       humanDecisionPolicy: HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY,
     };
   }
-  const published = { ...handle, status: "published", publishedAt: new Date().toISOString(), result };
+  const published = {
+    ...handle,
+    ...(handle.scope === "shared" && result?.baseRevision ? {
+      acceptedRevision: result.baseRevision,
+      proposal: {
+        ...handle.proposal,
+        baseRevision: result.baseRevision,
+        ...(result.head ? { head: result.head, lastPublishedHead: result.head, remoteHead: result.head } : {}),
+      },
+    } : {}),
+    status: "published",
+    publishedAt: new Date().toISOString(),
+    result,
+  };
   writePrivateState(statePath, published);
   return published;
 }

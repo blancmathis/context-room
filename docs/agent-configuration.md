@@ -4,7 +4,7 @@ context_room:
   scope: context-room
   status: current
   canonical_for: agent configuration
-  last_verified: 2026-08-03
+  last_verified: 2026-08-08
   sources: [bin/context-room.mjs, src/context_room.mjs, src/context_settings.mjs, src/review_authority.mjs, src/codex_prompt_center.mjs, src/shared_context.mjs, src/provider_profiles.mjs, schemas/config.schema.json, schemas/shared-repository.schema.json, schemas/shared-skill-locations.schema.json, schemas/shared-skill-local-state.schema.json, schemas/shared-resource-local-state.schema.json, schemas/shared-instruction-locations.schema.json, schemas/codex-prompt-catalog-v1.schema.json, schemas/codex-prompt-overrides-v1.schema.json, schemas/codex-prompt-publication-state-v2.schema.json, schemas/codex-prompt-runtime-receipt-v2.schema.json]
 ---
 
@@ -263,7 +263,7 @@ Startup context files outside the Context Room root are not Git-reviewable from 
 
 Context Room writes its installed setup and HTML visual guidance to `.context-room/`. The stable entry point is `.context-room/README.md`; it routes an agent through project setup and links to the full visual usage contract, pattern reference, and catalogs in `.context-room/agent-context/`. `context-room init`, `setup`, and `start` refresh these generated files, so agents can use one project-local path without depending on the npm installation location. The generated files are local runtime material and excluded from Git.
 
-The explorer shows safe hidden files, including this generated folder, by default. `Show hidden files` is a computer-wide Appearance preference; disabling it hides dotfiles and dotfolders without changing project configuration or deleting anything.
+The explorer shows safe hidden files, including this generated folder, by default. `Show hidden files` is a computer-wide **Preferences → Explorer and file behavior** setting; disabling it hides dotfiles and dotfolders without changing project configuration or deleting anything.
 
 ### `startupSkills`
 
@@ -403,7 +403,10 @@ context-room ask "We are changing billing onboarding. Find the accepted document
 
 An administrative or diagnostic agent can request the expert profile and use
 `context-room context bundle --task "change billing onboarding"` when it needs
-the complete deterministic environment rather than a documentation answer.
+the complete deterministic environment rather than a documentation answer. For
+a Shared-only project with no local location, pass both `--repository <git-url>`
+and `--shared-project <project-id>`. This is also the compatible replacement for
+`agent prepare` with the same Shared-only selectors.
 
 11. If available, start the UI and smoke-test the hub and review queue:
 

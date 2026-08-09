@@ -65,6 +65,15 @@ test("canonical commands expose unambiguous arguments", () => {
   assert.ok(cliCommandArgumentNames("context ask").includes("--shared-project"));
 });
 
+test("shared-only selectors survive primary editing and agent prepare migration", () => {
+  const sharedOnlySelectors = ["--repository", "--shared-project"];
+  for (const path of ["edit", "agent prepare", "context bundle"]) {
+    const names = cliCommandArgumentNames(path);
+    for (const selector of sharedOnlySelectors) assert.ok(names.includes(selector), `${path} is missing ${selector}`);
+  }
+  assert.equal(getCliCommand("agent prepare").replacement, "context bundle");
+});
+
 test("capabilities expose the advanced catalog without choosing an operation", () => {
   const catalog = cliCapabilitiesFromRegistry({ version: "test" });
   assert.equal(catalog.schemaVersion, "context-room.cli/2");

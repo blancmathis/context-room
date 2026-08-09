@@ -4,7 +4,7 @@ context_room:
   scope: context-room
   status: current
   canonical_for: global Context Room registry and views
-  last_verified: 2026-08-07
+  last_verified: 2026-08-09
   sources: [src/context_hub.mjs, src/context_room.mjs, src/context_engine.mjs, src/context_inventory.mjs, src/codex_prompt_center.mjs, src/shared_context.mjs, bin/context-room.mjs, bin/context-room-remote.mjs, docs/features/shared-context.md, docs/features/codex-prompt-center.md, docs/remote-qm.md]
 ---
 
@@ -12,7 +12,7 @@ context_room:
 
 ## Purpose
 
-Context Room has one review-first Home and one global runtime. It aggregates every registered local project and shared-context repository while keeping the selected project's navigation, Context Health, startup context, skills, and hooks directly below the queue.
+The local Context Room has one review-first Home and one global runtime. It aggregates every registered local project and Shared Context repository while keeping the selected project's navigation, Context Health, startup context, skills, and hooks directly below the queue. Hosted Hub reuses that Home only as a Shared-only projection of its immutable repository and project allowlist. It never reads the local Hub registry or snapshot and never exposes local files, Settings, Startup resources, Computer exploration, local project creation, or Codex Prompt Center. Its optional **New shared project** action only publishes a Shared proposal under an explicit repository-level operator scope. [Remote QM](../remote-qm.md) owns its exact route matrix.
 
 Each browser tab or window is an independent **Workspace** within that global
 runtime. A Workspace is only a view: it owns its selected project, worktree,
@@ -23,6 +23,10 @@ is not a project, a documentation source, or another Context Room server.
 with a project and enter its file review queue. Shared documents live in a Git
 repository and change through proposals. Neither source creates a separate
 room mode.
+
+Unless a paragraph explicitly says Hosted, the registry, worktree, Explorer,
+Settings, startup, and local/shared mixed-queue contracts below describe only
+the local profile.
 
 `context-room hub` is the launcher and `src/context_hub.mjs` owns the computer-local registry, but the UI does not expose a second product surface named Context Hub or a primary tab bar. Context Room itself is Home. Project management and Codex prompt editing use explicit secondary entry points.
 
@@ -67,6 +71,13 @@ context-room ui open --project <project-id>
 If the repository contains several possible shared project IDs and Context
 Room cannot infer the match, add `--shared-project <shared-project-id>`.
 
+The catalogue exposes each Shared repository through an opaque
+`repositoryId`. Local Hub requests may send that identifier instead of a Git
+address. The server resolves it only against repositories already present in
+the local Context Room and returns an ambiguity or not-registered error when it
+cannot resolve exactly one canonical repository. An opaque ID is never treated
+as a clone URL and never authorizes a new remote.
+
 `setup` and `start` register their initialized project and focus it inside the
 global room. `init` remains write-only. Shared setup records the repository and
 links the local project to its shared project ID. The legacy `--no-local` flag
@@ -81,6 +92,31 @@ link parents are rejected, and Context Room never reuses or overwrites an
 existing target folder. This flow initializes Context Room only; it does not
 invent a Git repository or application scaffold.
 
+The global Home also exposes **New shared project**. This is a separate
+proposal-first flow: the owner selects one exact registered Shared repository,
+then supplies a project ID made from lowercase letters, numbers, and hyphens,
+a one-line title, current proposal description, and safe initial Markdown path
+below the new project's `docs/` directory. The repository selector carries its
+opaque `repositoryId`;
+Context Room never infers the target from a title, project alias, or list order,
+so several registered Shared repositories remain unambiguous.
+
+Submitting the form publishes one dedicated proposal that updates
+`projects.json` and creates the initial
+`projects/<project-id>/docs/<path>` skeleton. It does not create a local folder,
+register a local project, or mutate accepted Shared main. The new project enters
+the accepted catalogue only after every changed file is reviewed and the owner
+completes the existing double-confirmed terminal acceptance. The catalogue and
+initial document are one review bundle: both stay visible, while a partial file
+decision is refused without saving review state. Rejection leaves accepted main
+and the catalogue unchanged and uses the same existing double confirmation.
+
+Hosted Hub shows the same action only for a selected exact repository whose
+operator allowlist includes `projects`. Acceptance alone does not widen the
+immutable Hosted project allowlist: the deployment owner must then add the new
+ID to that repository's `projectIds` and restart or redeploy before Hosted Hub
+can expose it as current context.
+
 Every registered Git worktree keeps its own root, branch, configuration, and
 local review state. Context Room groups those locations under one logical
 project and targets one worktree at a time inside the global room. The stable
@@ -88,6 +124,19 @@ group identity uses Git's common directory plus the Context Room root relative
 to the Git top level. Non-Git projects keep their path identity. Context Room
 never scans the disk for worktrees: only explicitly registered locations
 appear.
+
+Project references resolve in a fixed hierarchy: exact registered location
+ID, exact project key, exact worktree ID, exact logical-project ID, then a
+friendly shared-project or title alias. Proposal references are first scoped by
+repository and project, then resolve by exact proposal ID and exact branch;
+title or head aliases are only lower-priority navigation conveniences. If one
+tier still contains several candidates, Context Room returns the candidates
+and changes nothing. An alias never shadows an exact identity.
+
+Hosted Hub disables the friendly project-alias tier and accepts only its exact
+project keys. Hosted proposal mutations additionally require the opaque
+repository ID, canonical proposal ID or exact branch, and current complete
+head; a title or head-as-branch alias cannot select a write.
 
 `hub proposals` exposes the aggregated proposal index to agents and can filter by project or Codex task ID. `hub open` prints a deep link into the running Context Room with the same focus.
 
@@ -175,6 +224,13 @@ The project button opens one reusable picker popup. The popup shows the complete
 
 A logical project appears once in Home, the project picker, and the global Explorer even when dozens of its worktrees are registered. Its badge reports the worktree count. Shared proposals remain project-level and therefore appear once. Local reviews remain attached to the concrete worktree that produced them and show its branch label when the group contains several worktrees.
 
+When several logical projects consume the same project in the same Shared
+repository, a proposal is still one canonical review item, not one copy per
+consumer. Its relation contains every consuming project key, so the same exact
+branch and head appears in each relevant project filter and contributes to each
+project's proposal count while the aggregate queue and terminal action remain
+deduplicated.
+
 Home stays bounded when the registry contains many projects. It renders at most 80 matching review rows at once, while the searchable popup and **Manage projects…** retain the complete registry.
 
 When at least one file has been opened, the file-history arrows remain visible on Home. **Back** returns to the exact last file without adding Home to the file stack; **Forward** remains available whenever that stack already contains a later file.
@@ -205,13 +261,13 @@ Opening another document updates both views but does not switch the view or
 open a closed Explorer. **Reveal in Location** expands the current document's
 parents and returns to the tree.
 
-Every review item has exactly one source: **Local** for a file or **Shared** for a proposal. A project may be available through both independent sources, in which case the project catalog shows two separate badges rather than inventing a combined source. When the owner selects such a mixed project, Home keeps both review types visible but warns that two documentation review flows are active. **Keep Shared** and **Keep Local** prepare a source-grounded migration prompt in the active Codex composer; they never send the prompt or mutate the project directly.
+In the local profile, every review item has exactly one source: **Local** for a file or **Shared** for a proposal. A project may be available through both independent sources, in which case the project catalog shows two separate badges rather than inventing a combined source. When the owner selects such a mixed project, Home keeps both review types visible but warns that two documentation review flows are active. **Keep Shared** and **Keep Local** prepare a source-grounded migration prompt in the active Codex composer; they never send the prompt or mutate the project directly.
 
-**Manage projects…** shows every registered project, including clean local projects and shared projects with no local folder. **New project** creates and registers a documentation-ready local folder. Selecting a connected or shared-only project also exposes **New shared document**, which creates a proposal without changing accepted shared truth. Filters can narrow by project or by local versus shared source. Search covers project names, proposal metadata, paths, sessions, hashes, roots, and repositories.
+In the local profile, **Manage projects…** shows every registered project, including clean local projects and shared projects with no local folder. **New project** creates and registers a documentation-ready local folder. **New shared project** creates only the catalogue-and-skeleton proposal described above. Selecting a connected or shared-only project also exposes **New shared document**, which creates a proposal without changing accepted shared truth. Hosted Hub omits local project management; it exposes **New shared document** only for a selected configured Shared project and **New shared project** only for an exact repository explicitly allowlisted for that operator action. Filters can narrow by project or by local versus shared source. Search covers project names, proposal metadata, paths, sessions, hashes, roots, and repositories.
 
 Repository-wide proposal scopes appear as a dedicated **Global skills** project. They stay searchable and filterable without being duplicated under every project that consumes them.
 
-**Settings → Advanced extensions → Codex prompts** opens a compatible installed Codex runtime's global prompt catalog on demand. It groups every runtime-published target without hardcoding mode or model names, compares official, effective-after-restart, and runtime-loaded versions, and saves exact private overlays. Runtime receipts prove local resolution by target, not mode selection or task delivery. Prompt state is not project configuration and never enters the local or shared review workflow. See [Codex Prompt Center](codex-prompt-center.md).
+In the local profile, **Settings → Advanced extensions → Codex prompts** opens a compatible installed Codex runtime's global prompt catalog on demand. It groups every runtime-published target without hardcoding mode or model names, compares official, effective-after-restart, and runtime-loaded versions, and saves exact private overlays. Runtime receipts prove local resolution by target, not mode selection or task delivery. Prompt state is not project configuration and never enters the local or shared review workflow. Hosted profiles omit both Settings and Codex Prompt Center. See [Codex Prompt Center](codex-prompt-center.md).
 
 Keyboard shortcuts inside the secondary views:
 
@@ -221,9 +277,74 @@ Keyboard shortcuts inside the secondary views:
 
 ## Freshness And Isolation
 
-Opening a connected local project refreshes its accepted shared snapshot before
-the global room uses it. If the remote is unavailable, the normal
-shared-context offline rules apply.
+Opening a connected local project starts one coalesced Shared synchronization
+outside the HTTP process. The global room waits only for a short bounded
+foreground window. If synchronization is still running, the project opens with
+the last exact accepted snapshot when one exists, reports **Shared sync
+continuing**, and returns `sharedStatus.refreshing: true` with
+`hubRefresh.status: pending`. Completion rebuilds the Hub snapshot and notifies
+the Workspace; a failure remains visible and preserves the normal
+shared-context offline or cache-unavailable state. Project opening never labels
+an unrefreshed snapshot as current.
+
+Repository and snapshot status remain separate. **Online** means the latest
+repository refresh succeeded. **Cached offline** means an exact previously
+accepted revision remains usable after a refresh failure. **Unavailable or invalid**
+means no safe Shared projection can be used. A stale Hub snapshot
+is shown as **Refreshing**, never **Up to date**, and a repository error remains
+visible without relabeling cached Shared content or unrelated local projects as
+current.
+
+The local Settings/API connection path is one crash-recoverable transaction.
+Before a connection, the server proves that the detected Shared project
+resolves to the exact registered physical project root. It then persists an
+intent journal while leaving the canonical Hub registry unchanged, applies the
+Shared binding or disconnection, and commits the matching Hub state only after
+the exact Shared registry identity is observable. A Settings connection also
+requires one durable synchronization receipt for every registered worktree;
+the receipt names its own accepted revision, so a later repository refresh
+cannot invalidate a completed connection. The intent captures the exact path,
+root identity, physical Git common directory, canonical Git directory, and the
+filesystem identity of each worktree's `.git` entry. Shared receives those same
+capabilities and revalidates them before every binding, project-file, receipt,
+or rollback mutation. Commit refuses to propagate the binding if any member was
+added, removed, replaced, retargeted to another worktree, or only partially
+synchronized. Connect and disconnect both apply to that exact worktree group.
+
+The journal is replayed under the Hub and Shared registry locks on the next Hub
+access after an interruption. Replay is idempotent, preserves unrelated
+concurrent registry changes, and refuses a competing mutation of the same
+logical project. An irreconcilable but readable journal leaves local recovery
+pending only for the affected logical project: ordinary Hub reads and unrelated
+project mutations remain available. An unreadable Hub journal, or an invalid
+Shared disconnect journal that cannot be rolled back against the exact original
+root capabilities, has unknown scope. Context Room durably quarantines it,
+keeps reads available, and freezes every Hub project or Shared-registration
+mutation and every other replay until the owner acknowledges that exact
+quarantine revision. The local recovery panel exposes this action;
+Hosted never exposes local journals or recovery controls. If every original
+root disappeared, abandoning a readable recovery also removes only its exact
+orphaned Shared binding, managed global or device links, link registries, and
+ownership records, then clears the canonical Hub connection so the repository
+remains manageable. A replacement checkout at the old path is never edited.
+Git history and project files are unchanged.
+
+A later access completes readable recovery once the exact Shared state is
+compatible again. A partially connected project is therefore never published
+as a completed Hub connection. Re-registering a different physical or logical
+project at the same path never inherits the previous project's Shared binding;
+it requires an explicit new connection transaction. The standalone `shared
+connect`, `shared setup`, and `shared bind` CLI flows use the same
+cross-registry transaction and recovery contract as Settings.
+
+A direct local project room first reads Shared connection state with `GET`. It
+issues the owner-protected `POST` refresh only when that state is an active
+project connection, so an unconnected room performs no mutating refresh. On an
+initial local Hub deep link, the catalogue resolves the requested project
+before any open call. One exact registered location is opened at most once; its
+Shared snapshot is synchronized only when it is connected. An ambiguous alias
+returns to unselected Home with structured candidates and sends no project-open
+request or Shared synchronization.
 
 The global server keeps a fixed host identity and requires every project-scoped
 file request to carry the exact registered location ID. It resolves that ID

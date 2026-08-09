@@ -62,7 +62,7 @@ async function activeProposalCount(page) {
 }
 
 test("@smoke verified real-server acceptance removes the proposal from active Hub state and preserves its proof branch", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name === "chromium-mobile", "The real Git delivery path only needs one browser execution.");
+  test.skip(testInfo.project.name !== "chromium-desktop", "The real Git delivery path only needs one browser execution.");
 
   const data = fixture();
   const projectId = "acceptance-e2e";
@@ -70,11 +70,13 @@ test("@smoke verified real-server acceptance removes the proposal from active Hu
   const proposalBranch = `proposal/${projectId}/verified-hub-removal`;
   const project = path.join(data.base, "Acceptance-E2E");
   const remote = path.join(data.base, "acceptance-e2e.git");
+  let canonicalRemote = remote;
   const seed = path.join(data.base, "acceptance-e2e-seed");
   let registered = false;
 
   try {
     git(data.base, ["init", "--bare", "--initial-branch=main", remote]);
+    canonicalRemote = fs.realpathSync(remote);
     git(data.base, ["clone", remote, seed]);
     configureGit(seed);
     initializeSharedRepository(seed, { name: "Acceptance E2E Shared Context" });
@@ -102,7 +104,7 @@ test("@smoke verified real-server acceptance removes the proposal from active Hu
     });
     git(project, ["add", "."]);
     git(project, ["commit", "-m", "Initialize acceptance E2E project"]);
-    connectSharedContext(project, { repository: remote, projectId });
+    connectSharedContext(project, { repository: canonicalRemote, projectId });
 
     const proposal = createSharedProposal(project, {
       title: proposalTitle,
@@ -133,7 +135,7 @@ test("@smoke verified real-server acceptance removes the proposal from active Hu
 
     registerContextHubProject(project, {
       title: "Acceptance E2E",
-      shared: { repository: remote, projectId },
+      shared: { repository: canonicalRemote, projectId },
     });
     registered = true;
 
@@ -155,7 +157,7 @@ test("@smoke verified real-server acceptance removes the proposal from active Hu
         summaryProposals: Number(state.contextHub.summary?.proposals || 0),
         projectProposalCount: Number(projectState?.sharedProposalCount || 0),
       };
-    }, { repository: remote, sharedProjectId: projectId, branch: proposal.branch });
+    }, { repository: canonicalRemote, sharedProjectId: projectId, branch: proposal.branch });
     expect(activeStateBefore).toEqual({
       proposalPresent: true,
       summaryProposals: proposalsBefore,
@@ -204,7 +206,7 @@ test("@smoke verified real-server acceptance removes the proposal from active Hu
         summaryProposals: Number(state.contextHub.summary?.proposals || 0),
         projectProposalCount: Number(projectState?.sharedProposalCount || 0),
       };
-    }, { repository: remote, sharedProjectId: projectId, branch: proposal.branch });
+    }, { repository: canonicalRemote, sharedProjectId: projectId, branch: proposal.branch });
     expect(activeStateAfter).toEqual({
       proposalPresent: false,
       itemPresent: false,
@@ -217,7 +219,7 @@ test("@smoke verified real-server acceptance removes the proposal from active Hu
     expect(git(seed, ["ls-remote", "--heads", "origin", `refs/heads/${proposal.branch}`]).split(/\s+/)[0]).toBe(published.head);
   } finally {
     if (registered) unregisterContextHubProject(project);
-    try { unregisterContextHubSharedRepository(remote); } catch {}
+    try { unregisterContextHubSharedRepository(canonicalRemote); } catch {}
     if (page.url().startsWith(data.origin)) {
       await page.evaluate(async () => {
         await refreshContextHubUi();

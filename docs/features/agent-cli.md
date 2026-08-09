@@ -4,8 +4,8 @@ context_room:
   scope: context-room
   status: current
   canonical_for: agent CLI
-  last_verified: 2026-08-03
-  sources: [bin/context-room.mjs, src/cli_registry.mjs, src/cli_contract.mjs, src/agent_cli.mjs, src/context_engine.mjs, src/context_settings.mjs, src/review_authority.mjs, src/shared_context.mjs, test/cli_args.test.mjs, test/cli_registry.test.mjs]
+  last_verified: 2026-08-09
+  sources: [bin/context-room.mjs, bin/context-room-remote.mjs, src/cli_registry.mjs, src/cli_contract.mjs, src/agent_cli.mjs, src/context_engine.mjs, src/context_settings.mjs, src/review_authority.mjs, src/shared_context.mjs, src/context_room.mjs, test/cli_args.test.mjs, test/cli_registry.test.mjs, test/cli_contract_regressions.test.mjs, test/bin_context_room_shared_cli.test.mjs, test/remote_ui_control.test.mjs]
 ---
 
 # Agent-First CLI
@@ -50,17 +50,35 @@ a goal, selects a command, or routes an action.
 context-room edit create "Clarify the production deployment sequence, ownership boundaries, rollback conditions, and verification steps in the accepted documentation." --project atlas --format json
 context-room edit list --format json
 context-room edit open proposal/atlas/20260730-clarify-deployment --format json
+context-room edit open proposal/atlas/20260730-clarify-deployment --repository <candidate-repository> --shared-project atlas --format json
 ```
 
 `create` requires the complete proposal description and derives a concise title
 unless `--title` is supplied. Without a project selector, `list` returns every
 open local or remote proposal for the project containing the current directory.
-`open` requires an exact branch, finds its registered shared context without a
-project selector, and creates or restores its local worktree. If the same exact
-branch exists in several shared contexts, Context Room returns the candidates
-instead of guessing. The agent edits only the returned worktree. Context Room keeps every file
-decision in the human review interface. There is no agent-facing `publish`,
-`accept`, `reject`, or `verify` command.
+`open` requires an exact branch and creates or restores its local worktree,
+including for a Hub-only Shared Context with no local project binding. Without
+`--repository`, discovery deduplicates supported repository aliases and fails
+closed unless every registered Shared Context can be freshly checked within one
+network budget. An unavailable repository returns
+`proposal-discovery-incomplete`; several exact matches return
+`proposal-ambiguous`. Each ambiguity candidate includes an exact `repository`
+value that can be passed back to `--repository`; `--shared-project` optionally
+narrows the branch to one project. An explicit repository bounds discovery to
+that Shared Context.
+
+The agent edits only the returned worktree, then publishes it with the returned
+change handle:
+
+```bash
+context-room docs publish --change <change-id> --summary "Clarify deployment" --description "Fresh cumulative recap of the complete proposal." --format json
+```
+
+Updating an already-published proposal requires a fresh cumulative description.
+Publication refreshes Shared state, rejects a moved or terminal proposal before
+mutating the worktree, and uses a bounded Git push. Context Room keeps every
+file decision in the human review interface; there is no agent-facing `accept`,
+`reject`, or `verify` command.
 
 ## Advanced Capabilities
 
@@ -133,9 +151,29 @@ Every command uses registered identities:
 - `--folder` selects the exact folder coordinate;
 - `--root` remains a location-path alias.
 
-For shared-only documentation with no registered local location, pair
-`--repository` with `--shared-project`. The ordinary `--project` option always
-means a registered Context Room project in the canonical interface.
+Project selection is hierarchical rather than a union of names: exact
+registered ID, exact project key, exact worktree ID, exact logical-project ID,
+then a case-insensitive shared-project or title alias. The first matching tier
+wins, so a friendly alias cannot shadow an exact machine identity. More than
+one logical project in the same tier returns `ambiguous-target` with structured
+candidates instead of using the current directory to guess.
+
+Proposal selection first applies an explicit repository and project scope,
+then prefers exact proposal ID and exact branch before considering a head or
+title alias for compatible read and navigation commands. An explicit
+repository matches only a proposal carrying that canonical repository, and a
+normal project selector does not silently include the separate `global`,
+`skills`, or `instructions` scopes. Several matches return
+`proposal-ambiguous`; commands whose contract requires an exact branch or head
+do not downgrade to a friendly alias.
+
+For shared-only documentation or startup context with no registered local
+location, pair `--repository` with `--shared-project`. `context bundle` accepts
+that pair and is the compatible replacement for `agent prepare` with the same
+Shared-only target. `edit open` is the deliberate exception: `--repository`
+alone can select a unique exact branch, while `--shared-project` may further
+disambiguate it. The ordinary `--project` option always means a registered
+Context Room project in the canonical interface.
 
 Context Room never scans the computer for worktrees. Ambiguous targets return
 structured candidates instead of guessing.
@@ -161,6 +199,13 @@ short-lived bearer token in `CONTEXT_ROOM_REMOTE_TOKEN`. Remote navigation uses
 opened, the result is `open_required` with a secure URL; the caller decides
 which browser or chat opens it. The scoped UI bearer can be reused for list and
 open requests until its expiration; the URL pairing ticket remains one-use.
+
+The Hosted Shared-only profile deliberately narrows this navigation contract.
+It accepts only Home, Hub, or one exact configured proposal. File, diff, Graph,
+Settings, folder, search, filter, target, highlight, and Codex prompt navigation
+are rejected with `agent_navigation_scope_denied` instead of being translated
+to a local server surface. Local worktree locations are absent from Hosted
+Workspace discovery and cannot select or expose a server-side checkout.
 
 ## Effect Classes
 

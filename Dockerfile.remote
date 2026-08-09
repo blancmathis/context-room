@@ -15,10 +15,22 @@ COPY src ./src
 
 RUN useradd --create-home --uid 10001 context-room \
   && mkdir -p /data \
-  && chown -R context-room:context-room /data /app
+  && chown -R context-room:context-room /data
+
+ARG CONTEXT_ROOM_BUILD_REVISION
+ARG CONTEXT_ROOM_BUILD_VERSION
+
+RUN node -e 'const [revision, version] = process.argv.slice(1); const semver = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/; if (!/^[a-f0-9]{40}$/.test(revision || "") || !semver.test(version || "") || version !== require("./package.json").version) process.exit(1)' "${CONTEXT_ROOM_BUILD_REVISION}" "${CONTEXT_ROOM_BUILD_VERSION}" \
+  && printf '%s\n' "${CONTEXT_ROOM_BUILD_REVISION}" > /app/.context-room-build-revision \
+  && chmod 0444 /app/.context-room-build-revision
+
+LABEL org.opencontainers.image.source="https://github.com/blancmathis/context-room" \
+  org.opencontainers.image.revision="${CONTEXT_ROOM_BUILD_REVISION}" \
+  org.opencontainers.image.version="${CONTEXT_ROOM_BUILD_VERSION}"
 
 ENV NODE_ENV=production
 ENV CONTEXT_ROOM_REMOTE=1
+ENV CONTEXT_ROOM_BUILD_REVISION=${CONTEXT_ROOM_BUILD_REVISION}
 ENV CONTEXT_ROOM_DATA_ROOT=/data
 ENV CONTEXT_ROOM_HOST=0.0.0.0
 ENV CONTEXT_ROOM_PORT=4317

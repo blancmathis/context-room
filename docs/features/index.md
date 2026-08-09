@@ -4,7 +4,7 @@ context_room:
   scope: context-room
   status: current
   canonical_for: features
-  last_verified: 2026-08-03
+  last_verified: 2026-08-08
   sources: [README.md, docs/product-overview.md, bin/context-room.mjs, src/context_room.mjs, src/review_authority.mjs, src/context_engine.mjs, src/context_hub.mjs, src/codex_prompt_center.mjs, src/doc_agent.mjs, src/shared_context.mjs, schemas/config.schema.json]
 ---
 
@@ -33,6 +33,11 @@ This folder explains Context Room by user-facing feature. Read this when changin
 - [Agent CLI](agent-cli.md)
 - [Context Engine](context-engine.md)
 - [Shared context](shared-context.md)
+
+## Assurance
+
+- [Server boundary](../assurance/server-boundary.md)
+- [Interface accessibility](../assurance/interface-accessibility.md)
 
 ## Target Design
 

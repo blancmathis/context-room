@@ -1,6 +1,6 @@
 {
   "name": "context-room",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Local-first documentation control room for AI-assisted projects.",
   "type": "module",
   "homepage": "https://www.npmjs.com/package/context-room",
@@ -33,6 +33,7 @@
     "doctor": "node bin/context-room.mjs doctor",
     "test": "node --check src/context_room.mjs && node --check bin/context-room.mjs && node --check bin/context-room-remote.mjs && node --check scripts/update-context-rooms.mjs && node --check scripts/run-tests.mjs && node --check scripts/audit-layout-css.mjs && node scripts/audit-layout-css.mjs && node scripts/run-tests.mjs",
     "test:ux-smoke": "playwright test --grep @smoke",
+    "test:a11y": "playwright test --grep @a11y",
     "test:ux-soak": "playwright test --project=chromium-desktop --grep @soak",
     "test:perf": "playwright test --project=chromium-desktop --grep @perf",
     "test:layout": "node scripts/audit-layout-css.mjs && playwright test --grep @layout",
@@ -58,7 +59,7 @@
     "ajv": "^8.20.0",
     "d3-force": "^3.0.0",
     "jsonc-parser": "^3.3.1",
-    "mermaid": "^11.16.0",
+    "mermaid": "^11.16.1",
     "ws": "^8.21.1",
     "yaml": "^2.9.0"
   },
@@ -66,6 +67,7 @@
     "node": ">=20"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
     "@playwright/test": "^1.62.1"
   }
 }

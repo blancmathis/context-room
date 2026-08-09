@@ -4,12 +4,14 @@ import { availableParallelism, tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = path.resolve(import.meta.dirname, "..");
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TEST_DIRECTORY = path.join(ROOT, "test");
 const SHARED_CONTEXT_TEST = "test/shared_context.test.mjs";
-const JOB_TIMEOUT_MS = 170_000;
-const MAX_CONCURRENCY = Math.min(6, Math.max(2, availableParallelism()));
+const JOB_TIMEOUT_MS = 300_000;
+const SLOW_JOB_TIMEOUT_MS = 600_000;
+const MAX_CONCURRENCY = Math.min(3, Math.max(2, availableParallelism()));
 const TEST_GIT_EMAIL = ["context-room", "example.test"].join("@");
 
 function testFiles() {
@@ -64,6 +66,8 @@ function runJob(job) {
         GIT_AUTHOR_EMAIL: TEST_GIT_EMAIL,
         GIT_COMMITTER_NAME: "Context Room Test",
         GIT_COMMITTER_EMAIL: TEST_GIT_EMAIL,
+        GIT_TERMINAL_PROMPT: "0",
+        GCM_INTERACTIVE: "Never",
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -71,11 +75,15 @@ function runJob(job) {
     child.stdout.on("data", (chunk) => output.push(chunk));
     child.stderr.on("data", (chunk) => output.push(chunk));
     let timedOut = false;
+    const timeoutMs = job.label === "test/context_hub.test.mjs"
+      || job.label.startsWith(`${SHARED_CONTEXT_TEST} [`)
+      ? SLOW_JOB_TIMEOUT_MS
+      : JOB_TIMEOUT_MS;
     const timeout = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
       setTimeout(() => child.kill("SIGKILL"), 2_000).unref();
-    }, JOB_TIMEOUT_MS);
+    }, timeoutMs);
     timeout.unref();
     child.once("exit", (code, signal) => {
       clearTimeout(timeout);

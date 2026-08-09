@@ -1,0 +1,14 @@
+**
+!Dockerfile.remote
+!package.json
+!package-lock.json
+!bin/
+!bin/**
+!docs/
+!docs/**
+!profiles/
+!profiles/**
+!schemas/
+!schemas/**
+!src/
+!src/**

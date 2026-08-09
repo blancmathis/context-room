@@ -33,9 +33,9 @@ The opt-in multi-user server entrypoint does not change the local default:
 context-room-remote
 ```
 
-The entrypoint refuses to start unless `CONTEXT_ROOM_REMOTE=1` and all signed-identity, shared-repository, project, and persistent-data settings are present. Browser requests require a short-lived signed administrator identity. Agent requests require a separate user-, project-, and session-scoped token and expose only accepted `main`, proposal work, and ephemeral Workspace navigation; agents cannot review, reject, or accept. The service is intended to stay on a private network behind an authenticated Portal, with `/data` on a persistent encrypted volume. QM is one supported adapter, not a dependency of the protocol. See [Remote QM deployment](docs/remote-qm.md).
+The entrypoint refuses to start unless `CONTEXT_ROOM_REMOTE=1` and all signed-identity, shared-repository, project, and persistent-data settings are present. Browser requests require a short-lived signed administrator identity. Agent requests require a separate user-, project-, and session-scoped token and expose only accepted `main`, proposal work, and ephemeral Workspace navigation; agents cannot review, reject, or accept. The hosted browser profiles are Shared-only: they expose configured Shared projects, proposal creation, and exact proposal review, never local project creation, local files or folders, Settings, Startup resources, Computer exploration, or Codex Prompt Center. The service is intended to stay on a private network behind an authenticated Portal, with `/data` on a persistent encrypted volume. QM is one supported adapter, not a dependency of the protocol. See [Remote QM deployment](docs/remote-qm.md).
 
-Version 0.5.0 lets the same public CLI control one exact local or remote Context Room tab through the server:
+Version 0.6.2 lets the same public CLI control one exact local or remote Context Room tab through the server:
 
 ```bash
 context-room ui list --all --format json
@@ -96,6 +96,9 @@ Context Room never replaces an unmanaged local file or link. Executable hooks re
 
 ## Everything Context Room manages
 
+The complete local profile manages the surfaces below. Hosted mode exposes only
+the Shared project, proposal, review, and scoped agent subset described above.
+
 | Area | What you can manage |
 | --- | --- |
 | Reviews | A unified queue, exact-hash verification, project priority, snooze, annotations, and owner-controlled Git gates. |
@@ -131,7 +134,7 @@ context-room capabilities
 ```
 
 - `ask` sends a complete task-specific research brief to a read-only documentation researcher. Include the work context, what must be learned or verified, constraints, and the expected answer; it is not a keyword search.
-- `edit create` creates a proposal from a complete human-readable description. `edit list` uses the project containing the current directory, and `edit open <exact-branch>` finds and restores the proposal without another project selector. None of them accepts documentation.
+- `edit create` creates a proposal from a complete human-readable description. `edit list` uses the project containing the current directory, and `edit open <exact-branch>` finds and restores the proposal without another project selector. If that branch is ambiguous, rerun with the returned candidate's exact `--repository` value and, when useful, `--shared-project`. After editing the returned worktree, `docs publish --change <change-id> --description "<fresh cumulative recap>"` publishes the proposal; acceptance and rejection remain human-only.
 - `capabilities` returns six compact sections. An agent opens only the relevant section, then asks for one exact command contract if needed.
 
 ```bash
@@ -142,7 +145,10 @@ context-room capabilities "shared skills assign"
 
 The exhaustive inventory remains available through `capabilities --expand`, but is never loaded by default.
 
-Advanced and compatibility commands stay out of root help. There is no agent-facing `publish` step and no CLI command that accepts or rejects a file review.
+Advanced and compatibility commands stay out of root help. An agent publishes
+the edited proposal branch with `docs publish`; publication cannot accept or
+reject a file, make a terminal proposal decision, or write accepted `main`.
+No CLI command accepts, rejects, or verifies a file review.
 
 The complete machine contract, output formats, targeting rules, and safety boundaries live in the [Agent CLI guide](docs/features/agent-cli.md).
 

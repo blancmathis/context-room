@@ -4,15 +4,15 @@ context_room:
   scope: context-room
   status: current
   canonical_for: hub and navigation
-  last_verified: 2026-07-27
-  sources: [src/context_room.mjs, schemas/config.schema.json, docs/agent-configuration.md]
+  last_verified: 2026-08-09
+  sources: [src/context_room.mjs, bin/context-room-remote.mjs, schemas/config.schema.json, docs/agent-configuration.md, docs/remote-qm.md, test/e2e/hosted-profiles.spec.mjs]
 ---
 
 # Hub And Navigation
 
 ## Purpose
 
-Home is the first screen for review-first work. It combines a computer-wide local/shared review queue with the current isolated project's Context Health, navigation, and startup environment. The global registry and secondary views are documented in [Global Context Room](context-hub.md).
+Home is the first screen for review-first work. In the local profile, it combines a computer-wide local/shared review queue with the current isolated project's Context Health, navigation, and startup environment. Hosted Home is instead the Shared-only Hub or one exact proposal review; it has no local Explorer, local project creation, Settings, Startup resources, computer view, or Codex prompt surface. Its only project-creation exception is the proposal-only **New shared project** action for an exact repository whose operator scope includes `projects`; it never registers a local project or widens the immutable Hosted allowlist. The global registry and secondary views are documented in [Global Context Room](context-hub.md).
 
 ## Example Flow
 
@@ -25,6 +25,8 @@ Home is the first screen for review-first work. It combines a computer-wide loca
 ## Rules
 
 - The review queue is the primary hub surface. Do not bury it behind navigation.
+- Unless a rule explicitly says Hosted, the local project, Explorer, Settings,
+  and startup rules below apply only to the local profile.
 - Present Home as a continuous workbench: a compact title bar, native review
   toolbar, hairline-separated review rows, then user sections. Do not restore
   the former cosmic background or floating-card shell.
@@ -54,11 +56,22 @@ Home is the first screen for review-first work. It combines a computer-wide loca
   Workspaces. The context menu also exposes **Open in new workspace**.
 - Tabs exchange metadata-only invalidations. Clean files can reload after a
   save elsewhere; dirty files keep their draft and show a conflict. File saves
-  and review decisions include the displayed content hash, so stale tabs are
-  rejected with `409` instead of overwriting or validating unseen content.
+  and review decisions include the displayed content hash. Revert includes the
+  displayed diff revision, while delete uses a preview manifest containing the
+  exact revision of every selected file or folder member. A stale operation is
+  rejected with `409` before any newer content is overwritten, validated,
+  reverted, or removed.
 - Settings navigation state also restores its active category and explicit disclosure states. Settings search may open the one matching group, but unrelated navigation never changes disclosure state.
 - A current tab binds API requests to the project root established at boot. If the same origin later serves a different root, stale requests are rejected and the tab reloads before its navigation or session state can affect the new room. Browser mutations from an older tab without a project identity are also rejected with `409` and cannot write state until the tab is reloaded.
-- The first frame appears only after files, settings, and review data are ready, so the hub never assembles in visible stages.
+- Workspace and project requests follow [Server boundary](../assurance/server-boundary.md): untrusted origins cannot mutate the registry, malformed input remains request-local, and project coordinates never widen the selected root.
+- Home, project navigation, the responsive Explorer, menus, dialogs, and terminal controls follow [Interface accessibility](../assurance/interface-accessibility.md).
+- The protected boot shell becomes visible after its initial styles, profile,
+  and safe default state are installed. The workbench is revealed only after
+  Workspace identity, core project data, and requested navigation are restored;
+  background reports may then render asynchronously. Hosted profile CSS hides
+  every forbidden local control before first paint, and later data renders must
+  update in place without granting a capability before its server response
+  arrives.
 - Background audits reuse cached results until a relevant file or setting changes; navigation and session-state updates do not rebuild the hub.
 - Use child cards for curated structure and `autoChildren` for immediate folder children.
 - Keep card titles short.
