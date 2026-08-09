@@ -287,6 +287,10 @@ the Workspace; a failure remains visible and preserves the normal
 shared-context offline or cache-unavailable state. Project opening never labels
 an unrefreshed snapshot as current.
 
+The follow-up Hub catalogue rebuild always continues in the background, including
+for local-only projects, so selecting a project never waits on a second catalogue
+scan before its Explorer can open.
+
 Repository and snapshot status remain separate. **Online** means the latest
 repository refresh succeeded. **Cached offline** means an exact previously
 accepted revision remains usable after a refresh failure. **Unavailable or invalid**

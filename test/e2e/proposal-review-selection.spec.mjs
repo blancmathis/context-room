@@ -300,6 +300,40 @@ test("@smoke selecting a hybrid project refreshes its Shared snapshot before ope
   await expect(page.locator("#status")).toContainText("Shared snapshot synced");
 });
 
+test("@smoke the latest project and worktree selection survives an in-flight project refresh", async ({ page }) => {
+  const { origin, projects } = fixture();
+  let releaseFirstOpening;
+  const firstOpeningGate = new Promise((resolve) => { releaseFirstOpening = resolve; });
+  const openings = [];
+  await page.route("**/api/context-hub/project", async (route) => {
+    openings.push(route.request().postDataJSON());
+    if (openings.length === 1) await firstOpeningGate;
+    await route.continue();
+  });
+  await page.goto(origin + "/?hub=1&workspace=workspace-project-queue&view=hub");
+  await waitForBoot(page);
+  const explorerOpen = page.getByRole("button", { name: "Open explorer" });
+  if (await explorerOpen.isVisible()) await explorerOpen.click();
+
+  await page.locator(".global-project-row", { hasText: "Atlas" }).click();
+  await expect.poll(() => openings.length).toBe(1);
+  await page.locator(".global-project-row", { hasText: "Beacon" }).click();
+  await page.locator(".global-project-row", { hasText: "Atlas" }).click();
+  releaseFirstOpening();
+
+  await expect.poll(() => openings.length).toBe(2);
+  await expect(page.locator("#globalExplorerScope strong")).toHaveText("Atlas");
+  const worktree = page.getByLabel("Choose worktree");
+  await expect(worktree).toBeVisible();
+  const selectedWorktree = await worktree.inputValue();
+  await expect(page).toHaveURL((url) => url.searchParams.get("project") === selectedWorktree);
+  const nextWorktree = [projects.atlas.id, projects.atlas.worktreeId].find((id) => id !== selectedWorktree);
+  expect(nextWorktree).toBeTruthy();
+  await worktree.selectOption(nextWorktree);
+  await expect(page).toHaveURL((url) => url.searchParams.get("project") === nextWorktree);
+  await expect(page.getByLabel("Choose worktree")).toHaveValue(nextWorktree);
+});
+
 test("@smoke review filters and stale snapshots never masquerade as an all-clear queue", async ({ page }) => {
   const { origin } = fixture();
   await page.goto(origin + "/?hub=1&workspace=workspace-filtered-review-queue&view=hub");

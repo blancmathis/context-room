@@ -523,7 +523,7 @@ test("Context Hub rejects ambiguous project aliases but keeps exact project IDs 
   assert.match(requestedProjectSource, /Choose the exact project from Context Room/);
   assert.match(requestedProjectSource, /state\.contextHubInitialProjectOpenedId === exactLocationId/);
   assert.match(requestedProjectSource, /state\.contextHubInitialProjectOpen\?\.id === exactLocationId/);
-  assert.match(requestedProjectSource, /openContextHubProject\(exactLocationId, \{ pushHistory: false \}\)/);
+  assert.match(requestedProjectSource, /openContextHubProject\(exactLocationId, \{ pushHistory: false \}, requestedGeneration\)/);
 });
 
 test("Context Hub detects Shared root drift before mutation and restores failed staged registration exactly", async (t) => {
@@ -2519,7 +2519,7 @@ test("Context Room Home combines global review queues without nesting another Ho
   assert.match(rootSource, /function renderContextHubProjectPicker/);
   assert.match(rootSource, /contextHubProjectPickerQuery = event\.target\.value/);
   assert.match(rootSource, /state\.activeProjectLocationId = ""/);
-  assert.match(rootSource, /async function openInitialContextHubRequestedProject\(contextHub\)[\s\S]*openContextHubProject\(exactLocationId, \{ pushHistory: false \}\)/);
+  assert.match(rootSource, /async function openInitialContextHubRequestedProject\(contextHub, requestedGeneration = 0\)[\s\S]*openContextHubProject\(exactLocationId, \{ pushHistory: false \}, requestedGeneration\)/);
   assert.match(rootSource, /x-context-room-target-project/);
   assert.match(rootSource, /target\.searchParams\.set\("hub", "1"\)/);
   assert.doesNotMatch(rootSource, /state\.contextHubView = "review"/);

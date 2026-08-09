@@ -563,7 +563,7 @@ test("app reveals one complete initial frame and keeps recurring refreshes in th
   assert.match(loadFilesSource, /const restored = await restoreRequest;/);
   assert.doesNotMatch(loadFilesSource, /await reportsRequest/);
   assert.match(loadFilesSource, /else if \(reportsRequest\) applyInitialReportsWhenReady\(reportsRequest\);/);
-  assert.match(loadFilesSource, /state\.contextHubReadyPromise = new Promise[\s\S]*applyInitialContextHubWhenReady\(loadInitialContextHubData\(\)\)/);
+  assert.match(loadFilesSource, /state\.contextHubReadyPromise = new Promise[\s\S]*applyInitialContextHubWhenReady\(loadInitialContextHubData\(\{ openRequestedProject: true \}\)\)/);
   assert.match(script, /function applyInitialReportsWhenReady\(reportsRequest\) \{[\s\S]*reportsRequest\.then\(\(reports\) => \{[\s\S]*requestAnimationFrame\(\(\) => window\.requestAnimationFrame\(\(\) => \{[\s\S]*applyBackgroundReportPayload\(reports\);[\s\S]*renderAfterBackgroundReportPayload\(\);/);
   assert.match(script, /function renderAfterBackgroundReportPayload\(\) \{[\s\S]*if \(state\.page === "file" && state\.selected && !state\.openingFilePath\) \{[\s\S]*renderViewer\(\);[\s\S]*restoreEditorViewState\(viewState\);/);
   assert.match(script, /function restoreNavigationAfterInitialLoad\(\)[\s\S]*void openRequest\.then\(\(\) => setStatus\("restored"\)\)/);
@@ -1146,6 +1146,45 @@ test("Context Hub project opening returns a truthful pending state while Shared 
     else process.env.HOME = previousHome;
     if (previousSharedHome === undefined) delete process.env.CONTEXT_ROOM_SHARED_HOME;
     else process.env.CONTEXT_ROOM_SHARED_HOME = previousSharedHome;
+  }
+});
+
+test("Context Hub local project opening does not wait for the follow-up catalogue rebuild", async () => {
+  const base = makeRoot();
+  const project = path.join(base, "project");
+  const hostRoot = path.join(base, "host");
+  const previousHome = process.env.HOME;
+  process.env.HOME = path.join(base, "home");
+  fs.mkdirSync(process.env.HOME, { recursive: true });
+  fs.mkdirSync(project, { recursive: true });
+  fs.mkdirSync(hostRoot, { recursive: true });
+
+  let server = null;
+  try {
+    initializeContextRoomProject(project, { title: "Local project", allowedPaths: [], watchAllow: [] });
+    initializeContextRoomProject(hostRoot, { title: "Host", allowedPaths: [], watchAllow: [] });
+    const registered = registerContextHubProject(project, { title: "Local project" });
+    ({ server } = createMemoryServer({
+      root: hostRoot,
+      contextHubSnapshotRefresh: () => new Promise(() => {}),
+    }));
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+    const startedAt = Date.now();
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/context-hub/project`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId: registered.id }),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 201, JSON.stringify(payload));
+    assert.ok(Date.now() - startedAt < 750, `local project opening took ${Date.now() - startedAt} ms`);
+    assert.deepEqual(payload.hubRefresh, { status: "pending" });
+  } finally {
+    if (server?.listening) await new Promise((resolve) => server.close(resolve));
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
   }
 });
 

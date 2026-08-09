@@ -417,6 +417,7 @@ const CONTEXT_HUB_PROJECT_SUMMARY_CACHE_TTL_MS = 60_000;
 const CONTEXT_HUB_STATE_CACHE_TTL_MS = 30_000;
 const CONTEXT_HUB_SNAPSHOT_TTL_MS = 30_000;
 const CONTEXT_HUB_ACCEPT_REFRESH_TIMEOUT_MS = 1_500;
+const CONTEXT_HUB_PROJECT_OPEN_REFRESH_TIMEOUT_MS = 750;
 const CONTEXT_HUB_PROJECT_SYNC_PROCESS_TIMEOUT_MS = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS + 15_000;
 
 function positiveTimeoutMs(value, fallback) {
@@ -13861,18 +13862,11 @@ function backgroundTaskEnvironment() {
   return { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
 }
 
-function backgroundWorkerExecArgv(execArgv = process.execArgv) {
-  const safe = [];
-  for (let index = 0; index < execArgv.length; index += 1) {
-    const argument = String(execArgv[index] || "");
-    if (["--input-type", "--eval", "-e", "--print", "-p"].includes(argument)) {
-      index += 1;
-      continue;
-    }
-    if (/^--(?:input-type|eval|print)=/.test(argument)) continue;
-    safe.push(argument);
-  }
-  return safe;
+function backgroundWorkerExecArgv() {
+  // Background tasks are self-contained modules. Inheriting parent test,
+  // debugger, TLS, or V8 flags can make Worker construction fail on a newer
+  // Node release even though the main process accepts those flags.
+  return [];
 }
 
 function ensureBackgroundWorker(root, group) {
@@ -17923,7 +17917,10 @@ export function createMemoryServer({
           let sharedStatus = null;
           if (connection) {
             const sync = scheduleContextHubProjectSync(project.root);
-            const outcome = await waitForContextHubAcceptRefresh(sync.promise, contextHubAcceptRefreshTimeoutMs);
+            const outcome = await waitForContextHubAcceptRefresh(
+              sync.promise,
+              Math.min(contextHubAcceptRefreshTimeoutMs, CONTEXT_HUB_PROJECT_OPEN_REFRESH_TIMEOUT_MS),
+            );
             if (outcome.status === "complete") {
               sharedStatus = {
                 online: outcome.refreshed.online !== false,
@@ -20287,10 +20284,9 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       const refresh = scheduleContextHubSnapshotRefresh
         ? scheduleContextHubSnapshotRefresh(contextHubRoot, { refreshShared: false, force: false })
         : refreshContextHubSnapshot(contextHubRoot, { refreshShared: false, force: false });
-      const refreshOutcome = await waitForContextHubAcceptRefresh(refresh, contextHubAcceptRefreshTimeoutMs);
-      hubRefresh = { status: refreshOutcome.status };
+      hubRefresh = { status: "pending" };
+      void Promise.resolve(refresh).catch(() => {});
     }
-    if (result.sharedStatus?.refreshing) hubRefresh = { status: "pending" };
     sendJson(res, 201, { ...result, hubRefresh });
     return;
   }
@@ -20951,7 +20947,20 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
   if (req.method === "GET" && url.pathname === "/api/reports") {
     const refresh = url.searchParams.get("fresh") === "1";
-    sendJson(res, 200, withSharedSkillDiagnostics(root, await readBackgroundReports(root, { force: refresh, expectedRootIdentity }), { refresh: false }));
+    try {
+      sendJson(res, 200, withSharedSkillDiagnostics(root, await readBackgroundReports(root, { force: refresh, expectedRootIdentity }), { refresh: false }));
+    } catch (error) {
+      if (refresh && error?.code === "filesystem_lock_worker_unsupervised") {
+        sendJson(res, 202, {
+          refreshDeferred: {
+            code: error.code,
+            retryAfterMs: 1_000,
+          },
+        });
+      } else {
+        throw error;
+      }
+    }
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/docqa") {
@@ -25988,7 +25997,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
 		${shouldReplaceDuplicatedWorkspaceIdentity.toString()}
 		${contextRoomProjectResponseAction.toString()}
 		const INITIAL_CONTEXT_ROOM_URL = window.location.href;
-		const state = { root: null, projectId: null, projectReloading: false, files: [], directories: [], startupContextFiles: [], startupSkillFolders: [], startupHookFiles: [], startupHooksHelpOpen: false, startupHookFilter: "all", hubDisclosuresOpen: new Set(), activeStartupSkillExplorer: null, activeStartupContextExplorer: null, startupSkillCreateFolder: null, startupContextContextTarget: null, selectedStartupContext: null, docqa: null, doctor: null, backgroundReportRenderKey: "", contextHealthStatusFilter: "open", contextHealthSeverityFilter: "triggered", contextHealthCategoryFilter: "all", contextHealthRefreshing: false, contextHealthCodexSending: false, settings: null, settingsOpen: false, settingsSection: "review-trust", settingsDisclosureState: {}, settingsBaselineByGroup: new Map(), settingsDirtyGroups: new Set(), settingsSearchQuery: "", settingsSearchIndex: -1, page: "hub", pendingMarkdown: null, availableHubCards: [], hubFolders: [], hubSections: [], rootHubSections: [], activeHubCardId: null, selectedReview: null, deletionBatchExpanded: false, deletionBatchLoading: false, deletionBatchItems: [], deletionBatchKey: "", deletionBatchReportedCount: 0, deletionBatchError: "", selectedDeletionReviews: new Set(), reviewModePath: null, reviewModeStatus: null, reviewSessions: {}, reviewFinalizationPromise: null, selected: null, selectedReadOnly: false, selectedDiff: null, fileLoadError: null, fileConflict: null, externalChange: null, conflictCompare: false, conflictMergeText: null, conflictMergeKey: "", conflictMergeMode: "auto", diffCollapsed: false, saved: "", savedHash: null, dirty: false, mode: "view", homeView: "root", planetStack: ["root"], filePanel: false, history: [], historyIndex: -1, pathFilters: [], explorerWatchFilter: "all", explorerRenderKey: "", explorerSearchFrame: 0, explorerWidth: 272, explorerStoredCollapsed: null, explorerNavigationOverride: null, inspectorWidth: 320, inspectorOpen: false, documentInspection: null, documentInspectionPath: "", documentInspectionLoading: false, focusMode: false, selectedForDelete: new Set(), selectionRequest: 0, openingFilePath: null, fileContentReadyPath: null, sessionStateTimer: null, agentCommandTimer: null, lastAgentCommandId: "", pendingAgentCommand: null, agentAnnotations: {}, userActiveAt: 0, userScrollIntentAt: 0, refreshInFlight: false, reportsRefreshInFlight: false, backgroundRefreshTimer: null, backgroundRefreshTimerKind: "", backgroundRefreshPendingOptions: null, filePrefetches: new Map(), prefetchTimer: null, prefetchPath: "", lastDiffRefreshAt: 0, lastReportRefreshAt: 0, lastFullRefreshAt: 0, navigationRestoreAttempted: false, bootStartedAt: Date.now(), bootMilestones: {}, markdownHighlightFrame: 0, markdownHighlightText: "", markdownHighlightLastText: "", docLinkModifierActive: false, workspaceId: "", workspaceClientInstanceId: "", workspaceChannel: null, workspaceHeartbeatTimer: null, runtimeEventSource: null, runtimeEventCursor: 0, runtimeEventsConnected: false, runtimeFallbackTimer: null, workspaceIdentityReady: false, workspaceSyncedUrl: "", expanded: new Set(["data", "automations", "integrations", "skills", "tools", "~", "~/.hermes", "~/.hermes/memories", "~/.hermes/skills"]) };
+		const state = { root: null, projectId: null, projectReloading: false, files: [], directories: [], startupContextFiles: [], startupSkillFolders: [], startupHookFiles: [], startupHooksHelpOpen: false, startupHookFilter: "all", hubDisclosuresOpen: new Set(), activeStartupSkillExplorer: null, activeStartupContextExplorer: null, startupSkillCreateFolder: null, startupContextContextTarget: null, selectedStartupContext: null, docqa: null, doctor: null, backgroundReportRenderKey: "", contextHealthStatusFilter: "open", contextHealthSeverityFilter: "triggered", contextHealthCategoryFilter: "all", contextHealthRefreshing: false, contextHealthCodexSending: false, settings: null, settingsOpen: false, settingsSection: "review-trust", settingsDisclosureState: {}, settingsBaselineByGroup: new Map(), settingsDirtyGroups: new Set(), settingsSearchQuery: "", settingsSearchIndex: -1, settingsSearchDismissWired: false, page: "hub", pendingMarkdown: null, availableHubCards: [], hubFolders: [], hubSections: [], rootHubSections: [], activeHubCardId: null, selectedReview: null, deletionBatchExpanded: false, deletionBatchLoading: false, deletionBatchItems: [], deletionBatchKey: "", deletionBatchReportedCount: 0, deletionBatchError: "", selectedDeletionReviews: new Set(), reviewModePath: null, reviewModeStatus: null, reviewSessions: {}, reviewFinalizationPromise: null, selected: null, selectedReadOnly: false, selectedDiff: null, fileLoadError: null, fileConflict: null, externalChange: null, conflictCompare: false, conflictMergeText: null, conflictMergeKey: "", conflictMergeMode: "auto", diffCollapsed: false, saved: "", savedHash: null, dirty: false, mode: "view", homeView: "root", planetStack: ["root"], filePanel: false, history: [], historyIndex: -1, pathFilters: [], explorerWatchFilter: "all", explorerRenderKey: "", explorerSearchFrame: 0, explorerWidth: 272, explorerStoredCollapsed: null, explorerNavigationOverride: null, inspectorWidth: 320, inspectorOpen: false, documentInspection: null, documentInspectionPath: "", documentInspectionLoading: false, focusMode: false, selectedForDelete: new Set(), selectionRequest: 0, openingFilePath: null, fileContentReadyPath: null, sessionStateTimer: null, agentCommandTimer: null, lastAgentCommandId: "", pendingAgentCommand: null, agentAnnotations: {}, userActiveAt: 0, userScrollIntentAt: 0, refreshInFlight: false, reportsRefreshInFlight: false, backgroundRefreshTimer: null, backgroundRefreshTimerKind: "", backgroundRefreshPendingOptions: null, filePrefetches: new Map(), prefetchTimer: null, prefetchPath: "", lastDiffRefreshAt: 0, lastReportRefreshAt: 0, lastFullRefreshAt: 0, navigationRestoreAttempted: false, bootStartedAt: Date.now(), bootMilestones: {}, markdownHighlightFrame: 0, markdownHighlightText: "", markdownHighlightLastText: "", docLinkModifierActive: false, workspaceId: "", workspaceClientInstanceId: "", workspaceChannel: null, workspaceHeartbeatTimer: null, runtimeEventSource: null, runtimeEventCursor: 0, runtimeEventsConnected: false, runtimeFallbackTimer: null, workspaceIdentityReady: false, workspaceSyncedUrl: "", expanded: new Set(["data", "automations", "integrations", "skills", "tools", "~", "~/.hermes", "~/.hermes/memories", "~/.hermes/skills"]) };
 		Object.assign(state, {
 		  graph: null,
 		  graphLoading: false,
@@ -26060,6 +26069,8 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
 	state.contextHubSnapshotPollTimer = null;
 	state.conflictCheckTimer = null;
 	state.contextHubBusy = false;
+	state.contextHubBusyWaiters = [];
+	state.contextHubPendingOpenGeneration = 0;
 	state.contextHubInitialProjectOpen = null;
 	state.contextHubInitialProjectOpenedId = "";
 		state.contextHubView = "home";
@@ -26089,7 +26100,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
 		state.globalExplorerProjectKey = "";
 		state.globalProjectWorktreeIds = new Map();
 		state.globalProjectExplorerDetails = new Map();
-		state.globalProjectExplorerLoading = new Set();
+		state.globalProjectExplorerLoading = new Map();
 		state.globalProjectExplorerErrors = new Map();
 		state.globalProjectExplorerController = null;
 		state.globalProjectSearchTimer = null;
@@ -28129,9 +28140,9 @@ async function loadGlobalProjectExplorerPage(project, { directory = "", query = 
   const normalizedQuery = String(query || "").trim().toLowerCase();
   const cacheKey = globalProjectExplorerPageKey(project, { directory, query: normalizedQuery });
   if (!force && state.globalProjectExplorerDetails.has(cacheKey)) return state.globalProjectExplorerDetails.get(cacheKey);
-  if (state.globalProjectExplorerLoading.has(cacheKey)) return null;
   const generation = state.globalProjectSelectionGeneration;
-  state.globalProjectExplorerLoading.add(cacheKey);
+  if (state.globalProjectExplorerLoading.get(cacheKey) === generation) return null;
+  state.globalProjectExplorerLoading.set(cacheKey, generation);
   state.globalProjectExplorerErrors.delete(cacheKey);
   renderGlobalProjectExplorer();
   try {
@@ -28158,7 +28169,7 @@ async function loadGlobalProjectExplorerPage(project, { directory = "", query = 
     state.globalProjectExplorerErrors.set(cacheKey, error.message || "Could not load this project folder.");
     return null;
   } finally {
-    state.globalProjectExplorerLoading.delete(cacheKey);
+    if (state.globalProjectExplorerLoading.get(cacheKey) === generation) state.globalProjectExplorerLoading.delete(cacheKey);
     if (generation === state.globalProjectSelectionGeneration) renderGlobalProjectExplorer();
   }
 }
@@ -28564,6 +28575,18 @@ async function deleteGlobalExplorerContextTarget() {
   await runGlobalProjectExplorerAction("delete", preview.result || preview);
 }
 
+function updateGlobalExplorerMarkup(node, markup) {
+  if (node.__contextRoomMarkup === markup) {
+    node.querySelectorAll("select").forEach((select) => {
+      const selected = select.querySelector("option[selected]");
+      if (selected && select.value !== selected.value) select.value = selected.value;
+    });
+    return;
+  }
+  node.innerHTML = markup;
+  node.__contextRoomMarkup = markup;
+}
+
 function renderGlobalProjectExplorer() {
   const explorer = el("globalProjectExplorer");
   const scope = el("globalExplorerScope");
@@ -28588,10 +28611,10 @@ function renderGlobalProjectExplorer() {
     if (clearSearch) clearSearch.title = "Clear Explorer search";
     const snapshot = state.computerExplorer;
     scope.hidden = false;
-    scope.innerHTML = '<span class="global-explorer-scope-copy"><strong>Computer</strong><code title="' + escapeHtml(snapshot?.root || state.settings?.explorer?.computerRoot || "") + '">' + escapeHtml(snapshot?.root || state.settings?.explorer?.computerRoot || "") + '</code></span>';
+    updateGlobalExplorerMarkup(scope, '<span class="global-explorer-scope-copy"><strong>Computer</strong><code title="' + escapeHtml(snapshot?.root || state.settings?.explorer?.computerRoot || "") + '">' + escapeHtml(snapshot?.root || state.settings?.explorer?.computerRoot || "") + '</code></span>');
     listLabel.textContent = "Items";
     count.textContent = snapshot ? (snapshot.entries || []).length + " at root" : "Loading…";
-    list.innerHTML = renderComputerExplorer();
+    updateGlobalExplorerMarkup(list, renderComputerExplorer());
     return;
   }
   const selectedProject = (state.contextHub?.projects || []).find((project) => project.projectKey === state.globalExplorerProjectKey);
@@ -28602,8 +28625,8 @@ function renderGlobalProjectExplorer() {
     search.setAttribute("aria-label", related ? "Search related files" : "Search project files");
     if (clearSearch) clearSearch.title = related ? "Clear related-file search" : "Clear project file search";
     scope.hidden = false;
-    scope.innerHTML = '<button class="global-explorer-back" type="button" data-global-explorer-back aria-label="Back to projects">←</button><span class="global-explorer-scope-copy"><strong>' + escapeHtml(selectedProject.title || selectedProject.id) + '</strong><code title="' + escapeHtml(selectedWorktree?.root || contextHubProjectPickerLocation(selectedProject)) + '">' + escapeHtml(selectedWorktree?.root || contextHubProjectPickerLocation(selectedProject)) + '</code></span>'
-      + contextHubWorktreeSelectorMarkup(selectedProject, selectedWorktree?.id || "", 'data-global-project-worktree="' + escapeHtml(selectedProject.projectKey) + '"');
+    updateGlobalExplorerMarkup(scope, '<button class="global-explorer-back" type="button" data-global-explorer-back aria-label="Back to projects">←</button><span class="global-explorer-scope-copy"><strong>' + escapeHtml(selectedProject.title || selectedProject.id) + '</strong><code title="' + escapeHtml(selectedWorktree?.root || contextHubProjectPickerLocation(selectedProject)) + '">' + escapeHtml(selectedWorktree?.root || contextHubProjectPickerLocation(selectedProject)) + '</code></span>'
+      + contextHubWorktreeSelectorMarkup(selectedProject, selectedWorktree?.id || "", 'data-global-project-worktree="' + escapeHtml(selectedProject.projectKey) + '"'));
     listLabel.textContent = related ? "Related" : selectedProject.mode === "shared" ? "Shared files" : "Files";
     const relatedGraph = state.explorerRelatedGraphs.get(explorerRelatedGraphKey(selectedProject));
     const relatedProjection = relatedGraph ? explorerRelatedProjection(relatedGraph, explorerDocumentPathForProject(selectedProject)) : null;
@@ -28616,7 +28639,7 @@ function renderGlobalProjectExplorer() {
         + relatedProjection.unresolved.length
       : 0;
     count.textContent = related ? (relatedGraph ? directRelationCount + " relations" : "Loading…") : selectedProject.mode === "shared" ? "Proposals only" : "Project files";
-    list.innerHTML = renderGlobalProjectFolder(selectedProject);
+    updateGlobalExplorerMarkup(list, renderGlobalProjectFolder(selectedProject));
     return;
   }
   state.globalExplorerMode = "projects";
@@ -28625,7 +28648,7 @@ function renderGlobalProjectExplorer() {
   search.setAttribute("aria-label", "Search projects");
   if (clearSearch) clearSearch.title = "Clear project search";
   scope.hidden = true;
-  scope.innerHTML = "";
+  updateGlobalExplorerMarkup(scope, "");
   listLabel.textContent = "Projects";
   const allProjects = contextHubPrioritizedProjects(state.contextHub?.projects || []);
   const needle = state.globalProjectSearch.trim().toLowerCase();
@@ -28633,7 +28656,7 @@ function renderGlobalProjectExplorer() {
   count.textContent = state.contextHub
     ? projects.length + (needle ? " of " + allProjects.length : "")
     : "Loading…";
-  list.innerHTML = projects.length
+  updateGlobalExplorerMarkup(list, projects.length
       ? projects.map((project) => {
         const local = project.mode !== "shared" && project.available;
         const attention = contextHubProjectAttentionLabel(project);
@@ -28647,7 +28670,7 @@ function renderGlobalProjectExplorer() {
       }).join("")
     : state.contextHub
       ? '<div class="global-project-explorer-empty">No project matches this search.</div>'
-      : '<div class="global-project-explorer-empty">Loading projects…</div>';
+      : '<div class="global-project-explorer-empty">Loading projects…</div>');
 }
 
 function contextHubProjectPickerChoices() {
@@ -29832,13 +29855,15 @@ async function openContextHubLocalReview(reviewTarget) {
   await selectFile(reviewTarget.path, { reviewMode: true, forceReload: true });
 }
 
-async function openContextHubProject(projectId, options = {}) {
+async function openContextHubProject(projectId, options = {}, requestedGeneration = 0) {
   if (IS_HOSTED_REVIEW) throw new Error("Project navigation is unavailable inside an exact hosted review.");
   if (!projectId) return;
+  const generation = requestedGeneration || ++state.contextHubPendingOpenGeneration;
   if (state.contextHubBusy) {
-    renderGlobalProjectExplorer();
-    renderSingleProjectWorktreeSwitch();
-    return;
+    setStatus("finishing the current project update…");
+    await new Promise((resolve) => state.contextHubBusyWaiters.push(resolve));
+    if (generation !== state.contextHubPendingOpenGeneration) return;
+    return openContextHubProject(projectId, options, generation);
   }
   let project = resolveContextHubProjectSelection(state.contextHub?.projects || [], projectId, { aliases: false }).project;
   if (!project) throw new Error("Project is no longer registered.");
@@ -29849,6 +29874,14 @@ async function openContextHubProject(projectId, options = {}) {
   const targetProjectId = worktree?.id || project.id;
   if (!options.filePath && !options.reviewTarget) {
     const previousWorktreeId = state.globalProjectWorktreeIds.get(project.projectKey);
+    const explorerPrefetch = worktree?.root
+      ? api("/api/context-hub/project-explorer?" + new URLSearchParams({ projectId: targetProjectId, limit: "250" }))
+          .then((details) => {
+            state.globalProjectExplorerDetails.set(project.projectKey + "::" + targetProjectId + "::directory::", details);
+            return details;
+          })
+          .catch(() => null)
+      : Promise.resolve(null);
     state.contextHubBusy = true;
     try {
       let sharedStatus = project.sharedStatus || null;
@@ -29859,6 +29892,7 @@ async function openContextHubProject(projectId, options = {}) {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ projectId: targetProjectId }),
         });
+        if (generation !== state.contextHubPendingOpenGeneration) return;
         state.contextHubInitialProjectOpenedId = targetProjectId;
         sharedStatus = opened.sharedStatus || sharedStatus;
         if (opened.sharedStatus) project.sharedStatus = opened.sharedStatus;
@@ -29870,6 +29904,7 @@ async function openContextHubProject(projectId, options = {}) {
           headers: { "content-type": "application/json" },
           body: "{}",
         });
+        if (generation !== state.contextHubPendingOpenGeneration) return;
         const refreshed = applyContextHubSnapshot(refreshedCatalog, ticket);
         if (refreshed) state.contextHubReviewQueueReady = true;
         project = resolveContextHubProjectSelection(state.contextHub?.projects || [], projectId, { aliases: false }).project || project;
@@ -29879,8 +29914,11 @@ async function openContextHubProject(projectId, options = {}) {
           renderSharedProposalWorkspace();
         }
       }
+      await explorerPrefetch;
+      if (generation !== state.contextHubPendingOpenGeneration) return;
       state.globalProjectWorktreeIds.set(project.projectKey, targetProjectId);
       await openGlobalProjectExplorer(project);
+      if (generation !== state.contextHubPendingOpenGeneration) return;
       if (options.pushHistory) window.history.pushState({}, "", workspaceProjectHref(targetProjectId));
       if (project.shared && sharedStatus?.refreshing) {
         setStatus(sharedStatus.revision
@@ -29905,6 +29943,7 @@ async function openContextHubProject(projectId, options = {}) {
       throw error;
     } finally {
       state.contextHubBusy = false;
+      for (const resolve of state.contextHubBusyWaiters.splice(0)) resolve();
     }
     return;
   }
@@ -29922,6 +29961,12 @@ async function openContextHubProject(projectId, options = {}) {
   if (review?.startupContext?.order) target.searchParams.set("startupOrder", review.startupContext.order);
   if (review?.startupContext?.skillName) target.searchParams.set("startupSkill", review.startupContext.skillName);
   target.searchParams.set("explorer", (isExplorerDrawerViewport() || isExplorerCollapsed()) ? "collapsed" : "expanded");
+  if (options.filePath && IS_GLOBAL_CONTEXT_ROOM && state.workspaceIdentityReady) {
+    window.history.pushState(window.history.state, "", target);
+    state.workspaceSyncedUrl = "";
+    await applyWorkspaceUrlState({ reason: "project-file", force: true });
+    return;
+  }
   window.location.assign(target.toString());
 }
 
@@ -29957,6 +30002,7 @@ async function refreshContextHubUi() {
     }
   } finally {
     state.contextHubBusy = false;
+    for (const resolve of state.contextHubBusyWaiters.splice(0)) resolve();
     renderContextRoomGlobalReviewQueue();
     renderSharedProposalWorkspace();
   }
@@ -33397,7 +33443,22 @@ function applyContextHubRequestedProject(contextHub) {
   return requestedProject;
 }
 
-async function openInitialContextHubRequestedProject(contextHub) {
+function resolveVisibleProjectSyncStatus(project) {
+  const status = el("status");
+  if (!project?.shared || !status?.textContent?.includes("Shared sync continuing")) return;
+  const sharedStatus = project.sharedStatus || null;
+  if (!sharedStatus || sharedStatus.refreshing) return;
+  if (sharedStatus.refreshError || sharedStatus.online === false) {
+    setStatus(sharedStatus.revision
+      ? "project selected · Shared refresh failed · cached @" + shortSharedHash(sharedStatus.revision)
+      : "project selected · Shared unavailable");
+    return;
+  }
+  setStatus("project selected · Shared snapshot synced");
+}
+
+async function openInitialContextHubRequestedProject(contextHub, requestedGeneration = 0) {
+  if (requestedGeneration && requestedGeneration !== state.contextHubPendingOpenGeneration) return null;
   const requestedProject = applyContextHubRequestedProject(contextHub);
   if (!requestedProject || IS_HOSTED_CONTEXT_ROOM || requestedProject.mode === "shared") return requestedProject;
   const roomQuery = new URLSearchParams(window.location.search);
@@ -33412,7 +33473,7 @@ async function openInitialContextHubRequestedProject(contextHub) {
     await state.contextHubInitialProjectOpen.promise;
     return requestedProject;
   }
-  const promise = openContextHubProject(exactLocationId, { pushHistory: false }).then(() => {
+  const promise = openContextHubProject(exactLocationId, { pushHistory: false }, requestedGeneration).then(() => {
     state.contextHubInitialProjectOpenedId = exactLocationId;
   }).catch((error) => {
     const previous = requestedProject.sharedStatus || null;
@@ -33435,14 +33496,17 @@ async function openInitialContextHubRequestedProject(contextHub) {
 }
 
 function applyInitialContextHubWhenReady(contextHubRequest) {
-  return contextHubRequest.then(({ contextHub: payload, ticket }) => {
+  return contextHubRequest.then(({ contextHub: payload, ticket, applyRequestedProject = false, requestedGeneration = 0 }) => {
     const contextHub = sanitizeHostedHubCatalog(payload);
     if (!applyContextHubSnapshot(contextHub, ticket)) return state.contextHub;
     state.contextHubReviewQueueReady = true;
     enforceHostedHubSourceFilters();
     window.requestAnimationFrame(() => {
-      const requestedProject = applyContextHubRequestedProject(contextHub);
+      const requestedProject = applyRequestedProject && requestedGeneration === state.contextHubPendingOpenGeneration
+        ? applyContextHubRequestedProject(contextHub)
+        : workspaceSelectedProject();
       if (requestedProject) {
+        resolveVisibleProjectSyncStatus(requestedProject);
         void loadGlobalProjectExplorerPage(requestedProject).catch((error) => setStatus(error.message));
         void refreshExplorerRelatedForCurrentFile().catch((error) => setStatus(error.message));
         if (state.page === "settings" && requestedProject.mode !== "shared") {
@@ -33472,7 +33536,8 @@ function applyInitialContextHubWhenReady(contextHubRequest) {
   });
 }
 
-async function loadInitialContextHubData() {
+async function loadInitialContextHubData({ openRequestedProject = false } = {}) {
+  const requestedGeneration = openRequestedProject ? ++state.contextHubPendingOpenGeneration : 0;
   const ticket = beginContextHubSnapshotRequest();
   state.contextHubReviewQueueReady = false;
   const catalog = sanitizeHostedHubCatalog(await api("/api/context-hub/catalog"));
@@ -33482,8 +33547,8 @@ async function loadInitialContextHubData() {
     items: state.contextHub?.items || [],
   };
   const initialApplied = applyContextHubSnapshot(initialCatalog, ticket);
-  const initialProjectOpen = initialApplied
-    ? openInitialContextHubRequestedProject(initialCatalog)
+  const initialProjectOpen = initialApplied && openRequestedProject
+    ? openInitialContextHubRequestedProject(initialCatalog, requestedGeneration)
     : Promise.resolve(null);
   if (initialApplied) {
     window.requestAnimationFrame(() => {
@@ -33512,6 +33577,8 @@ async function loadInitialContextHubData() {
       reviewPage: { total: reviews.total || 0, nextCursor: reviews.nextCursor },
     }),
     ticket,
+    applyRequestedProject: openRequestedProject,
+    requestedGeneration,
   };
 }
 
@@ -33581,7 +33648,7 @@ async function loadHostedContextRoom(options = {}) {
   applyFileTheme();
   state.root ||= CONTEXT_ROOM_RUNTIME_PROFILE;
   if (IS_HOSTED_HUB) {
-    state.contextHubReadyPromise = applyInitialContextHubWhenReady(loadInitialContextHubData());
+    state.contextHubReadyPromise = applyInitialContextHubWhenReady(loadInitialContextHubData({ openRequestedProject: true }));
     const contextHub = await state.contextHubReadyPromise;
     if (!contextHub) throw new Error("The hosted Shared catalogue is unavailable.");
     renderFiles();
@@ -33696,7 +33763,7 @@ async function loadFiles(options = {}) {
   );
   if (options.initial && state.sharedContext?.mode !== "review") {
     state.contextHubReadyPromise = new Promise((resolve) => window.setTimeout(resolve, 0))
-      .then(() => applyInitialContextHubWhenReady(loadInitialContextHubData()));
+      .then(() => applyInitialContextHubWhenReady(loadInitialContextHubData({ openRequestedProject: true })));
   }
   if (options.initial && IS_GLOBAL_CONTEXT_ROOM && needsContextHubBeforeNavigation) {
     await state.contextHubReadyPromise;
@@ -35786,6 +35853,10 @@ async function refreshContextHealthAnalysis() {
   setStatus("reanalyzing all context health checks...");
   try {
     const reports = await api("/api/reports?fresh=1");
+    if (reports.refreshDeferred) {
+      setStatus("context health analysis will resume after the current project update");
+      return;
+    }
     applyBackgroundReportPayload(reports);
     state.lastReportRefreshAt = Date.now();
     setStatus((state.doctor?.issues?.length || 0) + " health issue" + ((state.doctor?.issues?.length || 0) === 1 ? "" : "s") + " analyzed");
@@ -36684,13 +36755,17 @@ function wireSettingsSearch() {
   input.addEventListener("focus", renderSettingsSearchResults);
   results.addEventListener("mousedown", (event) => event.preventDefault());
   results.addEventListener("click", (event) => openSettingsSearchItem(event.target.closest("[data-settings-search-result]")?.dataset.settingsSearchResult));
-  document.addEventListener("click", (event) => {
-    if (!event.target.closest("[data-settings-search]")) {
-      results.hidden = true;
-      input.setAttribute("aria-expanded", "false");
-      input.removeAttribute("aria-activedescendant");
-    }
-  });
+  if (!state.settingsSearchDismissWired) {
+    state.settingsSearchDismissWired = true;
+    document.addEventListener("click", (event) => {
+      if (event.target.closest("[data-settings-search]")) return;
+      const activeResults = el("settingsSearchResults");
+      const activeInput = el("settingsSearch");
+      if (activeResults) activeResults.hidden = true;
+      activeInput?.setAttribute("aria-expanded", "false");
+      activeInput?.removeAttribute("aria-activedescendant");
+    });
+  }
   renderSettingsSearchResults();
 }
 
@@ -40122,6 +40197,10 @@ async function goHistory(delta) {
 
 function goHub() {
   if (state.dirty && !confirm("You have unsaved changes. Return to hub?")) return;
+  state.contextHubPendingOpenGeneration += 1;
+  state.workspaceNavigationGeneration += 1;
+  state.workspaceApplyingHistory = false;
+  abortObsoleteWorkspaceRequests();
   if (state.sharedContext?.mode !== "review" && state.contextRoomPreparingProposal) {
     state.contextRoomProposalRequest += 1;
     state.contextRoomOpeningProposalId = "";
@@ -40147,6 +40226,9 @@ function goHub() {
   state.activeHubCardId = null;
   state.hubSections = state.rootHubSections;
   showHome();
+  syncWorkspaceUrl({ push: true });
+  persistNavigationState({ syncUrl: false });
+  recordWorkspaceDiagnostic("ready", "home");
 }
 
 function updateHeader() {
@@ -44195,8 +44277,9 @@ async function refreshBackgroundReports(options = {}) {
       shouldRefreshFull ? api("/api/settings", { signal: controller.signal }) : Promise.resolve(null),
     ]);
     if (state.workspaceRuntimeStopped || state.workspaceUnloadPending) return;
-    const reportsChanged = reports ? applyBackgroundReportPayload(reports) : false;
-    if (reports) {
+    const reportsDeferred = Boolean(reports?.refreshDeferred);
+    const reportsChanged = reports && !reportsDeferred ? applyBackgroundReportPayload(reports) : false;
+    if (reports && !reportsDeferred) {
       state.lastReportRefreshAt = Date.now();
     }
     let settingsChanged = false;
@@ -44560,7 +44643,7 @@ document.addEventListener("keydown", (event) => {
 el("singleProjectWorktreeSwitch")?.addEventListener("change", (event) => {
   const select = event.target.closest("[data-single-project-worktree]");
   if (!select || !select.value || select.value === state.projectId) return;
-  openContextHubProject(select.value).catch((error) => setStatus(error.message));
+  openContextHubProject(select.value, { pushHistory: true }).catch((error) => setStatus(error.message));
 });
 el("globalProjectSearch")?.addEventListener("input", (event) => {
   state.globalProjectSearch = event.target.value;
@@ -44585,6 +44668,7 @@ document.querySelectorAll("[data-global-explorer-mode]").forEach((button) => but
   const mode = button.dataset.globalExplorerMode;
   state.globalProjectSearch = "";
   if (mode === "computer") {
+    state.contextHubPendingOpenGeneration += 1;
     state.globalExplorerMode = "computer";
     renderGlobalProjectExplorer();
     renderContextHealth();
@@ -44602,6 +44686,7 @@ document.querySelectorAll("[data-global-explorer-mode]").forEach((button) => but
 }));
 el("globalExplorerScope")?.addEventListener("click", (event) => {
   if (event.target.closest("[data-global-explorer-back]")) {
+    state.contextHubPendingOpenGeneration += 1;
     state.globalExplorerMode = "projects";
     state.globalExplorerProjectKey = "";
     state.globalProjectSearch = "";
@@ -44621,7 +44706,7 @@ el("globalExplorerScope")?.addEventListener("change", (event) => {
     setStatus("save or revert the current worktree settings before selecting another worktree");
     return;
   }
-  openContextHubProject(select.value).catch((error) => setStatus(error.message));
+  openContextHubProject(select.value, { pushHistory: true }).catch((error) => setStatus(error.message));
 });
 el("globalProjectList")?.addEventListener("click", (event) => {
   const nativeWorkspaceLink = event.target.closest("a[href]");

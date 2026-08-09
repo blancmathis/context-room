@@ -180,6 +180,13 @@ function attachFailureGuards(page) {
   return { failures, requestCount: () => requests };
 }
 
+function consumeExpectedConflictConsole(failures) {
+  const expected = "console: Failed to load resource: the server responded with a status of 409 (Conflict)";
+  const matches = failures.reduce((indexes, failure, index) => failure === expected ? [...indexes, index] : indexes, []);
+  expect(matches.length, "the intentional stale write emits at most one browser conflict error").toBeLessThanOrEqual(1);
+  if (matches.length) failures.splice(matches[0], 1);
+}
+
 async function exerciseResponsiveExplorer(page) {
   for (const width of [390, 640, 768, 980, 981, 1024, 1280, 1440]) {
     await page.setViewportSize({ width, height: width <= 640 ? 844 : 900 });
@@ -958,6 +965,14 @@ test("@soak repeated multi-day navigation does not accumulate workspace or brows
   }
   await openProject(page, "Atlas");
   await openProjectFile(page, "docs/README.md");
+  await page.locator("#graphLocal").click();
+  await expect(page.locator("#graphPage")).toBeVisible();
+  await openHome(page);
+  await openSettings(page, "preferences");
+  await toggleSettingsDisclosure(page);
+  await openHome(page);
+  await openProject(page, "Atlas");
+  await openProjectFile(page, "docs/README.md");
   const baseline = await collectMetrics(page, guard.requestCount);
   const checkpoints = [baseline];
   const timings = { project: [], file: [] };
@@ -1109,6 +1124,7 @@ test("@soak time-dependent reviews, drafts, and shared reconnect safely", async 
   expect(staleWrite.status()).toBe(409);
   expect((await staleWrite.json()).code).toBe("file_revision_conflict");
   await writer.close();
+  consumeExpectedConflictConsole(guard.failures);
   expect(guard.failures, guard.failures.join("\n")).toEqual([]);
 
   await testInfo.attach("temporal-workflow", {
