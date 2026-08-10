@@ -1186,8 +1186,8 @@ test("@smoke verified terminal acceptance with a pending Hub refresh keeps succe
   });
 
   await showTerminalProposal(page, { projectId });
-  const explorerClose = page.getByRole("button", { name: "Close explorer" });
-  if (await explorerClose.isVisible()) await explorerClose.click();
+  await page.evaluate(() => setExplorerEdgePeek(true));
+  await expect(page.locator(".app")).not.toHaveClass(/explorer-edge-peek/);
   await page.getByRole("button", { name: "Put on main", exact: true }).click();
   await confirmTerminalAcceptance(page);
 

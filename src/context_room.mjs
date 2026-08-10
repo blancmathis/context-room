@@ -30286,6 +30286,7 @@ function renderProposalDockControls() {
   const noAcceptedChanges = actionable && shared?.acceptedChangesRemain === false;
   acceptButton.hidden = !actionable || queueCount > 0 || Boolean(state.proposalAuthorityStatus);
   acceptButton.disabled = Boolean(state.proposalActionBusy || queueCount > 0 || noAcceptedChanges);
+  if (!acceptButton.hidden) setExplorerEdgePeek(false);
   acceptButton.title = delivered
     ? "This exact proposal revision is already in " + (delivered.defaultBranch || review.defaultBranch || "main")
     : queueCount
@@ -33068,7 +33069,8 @@ function setExplorerCollapsedFromUser(collapsed) {
 function setExplorerEdgePeek(open) {
   const app = document.querySelector(".app");
   if (!app) return;
-  app.classList.toggle("explorer-edge-peek", Boolean(open) && isExplorerCollapsed());
+  const terminalActionVisible = !el("proposalDockAccept")?.hidden;
+  app.classList.toggle("explorer-edge-peek", Boolean(open) && isExplorerCollapsed() && !terminalActionVisible);
   syncSidebarToggleIcon();
 }
 
