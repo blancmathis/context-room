@@ -224,6 +224,8 @@ test("@smoke a launcher-style project deep link renders immediately while its pr
     await waitForBoot(page);
     await expect(page.locator("#globalExplorerScope strong")).toHaveText("Atlas");
     await expect(page).toHaveURL((url) => url.searchParams.get("project") === projects.atlas.id && url.searchParams.get("view") === "hub");
+    const explorerOpen = page.getByRole("button", { name: "Open explorer" });
+    if (await explorerOpen.isVisible()) await explorerOpen.click();
     await page.getByRole("button", { name: "Back to projects" }).click();
     await expect(page).toHaveURL((url) => !url.searchParams.has("project") && url.searchParams.get("view") === "hub");
     await expect(page.locator(".global-project-row", { hasText: "Atlas" })).toBeVisible();
