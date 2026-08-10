@@ -613,6 +613,12 @@ function contextHubCliNavigationProject({ requested, resolution }) {
   return [...projectKeys][0];
 }
 
+function currentContextHubProjectForPath(candidate) {
+  const projectRoot = resolveDocumentationProjectRoot(candidate);
+  if (!fs.existsSync(path.join(projectRoot, ".context-room", "config.json"))) return null;
+  return registerContextHubProject(projectRoot);
+}
+
 if (command === "workspace") {
   const action = args._[1] || "list";
   try {
@@ -1147,6 +1153,8 @@ if (command === "hub") {
         } : {}),
       });
       focusedProject = registerContextHubProject(root, { title: args.title });
+    } else if (!args["no-local"]) {
+      focusedProject = currentContextHubProjectForPath(root);
     }
     const runtime = readContextHubRuntime();
     if (runtime) {

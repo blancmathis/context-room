@@ -9,6 +9,7 @@ import test from "node:test";
 import {
   contextHubRepositoryIdentity,
   contextHubHostRoot,
+  readContextHubRegistry,
   registerContextHubProject,
   registerContextHubSharedRepository,
   unregisterContextHubProject,
@@ -1037,6 +1038,23 @@ test("Hub and UI opening preserve an exact registered worktree location", async 
   const hub = runCli(["hub", "open", `--project=${feature.id}`], env, base);
   assert.equal(hub.status, 0, hub.stderr);
   assert.equal(new URL(hub.stdout.trim().replace(/^Context Room Hub: /, "")).searchParams.get("project"), feature.id);
+
+  const nestedWorktreeDirectory = path.join(worktreeRoot, "docs");
+  fs.mkdirSync(nestedWorktreeDirectory, { recursive: true });
+  unregisterContextHubProject(worktreeRoot);
+  const bareHubFromWorktree = await runCliAsync(["hub"], env, nestedWorktreeDirectory);
+  assert.equal(bareHubFromWorktree.status, 0, bareHubFromWorktree.stderr);
+  const focusedUrl = bareHubFromWorktree.stdout.split("\n")[0].replace(/^Context Room Hub: /, "");
+  assert.equal(new URL(focusedUrl).searchParams.get("project"), feature.id);
+
+  const unrelated = path.join(base, "unrelated");
+  fs.mkdirSync(unrelated);
+  const bareGlobalHub = await runCliAsync(["hub"], env, unrelated);
+  assert.equal(bareGlobalHub.status, 0, bareGlobalHub.stderr);
+  const globalUrl = bareGlobalHub.stdout.split("\n")[0].replace(/^Context Room Hub: /, "");
+  assert.equal(new URL(globalUrl).searchParams.has("project"), false);
+  assert.equal(fs.existsSync(path.join(unrelated, ".context-room")), false);
+  assert.equal(readContextHubRegistry().projects.some((project) => project.root === fs.realpathSync(unrelated)), false);
 
   const ui = await runCliAsync(["ui", "open", `--location=${feature.id}`, "--view=hub", "--format=json"], env, base);
   assert.equal(ui.status, 0, ui.stderr);

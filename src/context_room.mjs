@@ -28859,6 +28859,56 @@ function renderGlobalProjectExplorer() {
       : '<div class="global-project-explorer-empty">Loading projects…</div>');
 }
 
+async function returnToGlobalContextHubHome() {
+  const generation = ++state.contextHubPendingOpenGeneration;
+  window.clearTimeout(state.contextHubSnapshotPollTimer);
+  state.contextHubSnapshotPollTimer = null;
+  state.activeProjectLocationId = "";
+  state.sharedProposalProject = "";
+  state.contextHubSelection = "";
+  state.contextHubView = "home";
+  state.globalExplorerMode = "projects";
+  state.globalExplorerProjectKey = "";
+  state.globalProjectSearch = "";
+  renderGlobalProjectExplorer();
+  renderContextRoomGlobalReviewQueue();
+  renderSharedProposalWorkspace();
+  renderContextHealth();
+  refreshGlobalSettingsScopeFromExplorer();
+  syncWorkspaceUrl({ push: true });
+  persistNavigationState();
+  setStatus("opening global Context Room…");
+
+  const ticket = beginContextHubSnapshotRequest();
+  const catalog = await api("/api/context-hub");
+  if (generation !== state.contextHubPendingOpenGeneration || !applyContextHubSnapshot(catalog, ticket)) return;
+  state.contextHubReviewQueueReady = true;
+  renderGlobalProjectExplorer();
+  renderContextRoomGlobalReviewQueue();
+  renderSharedProposalWorkspace();
+  renderContextHealth();
+  renderSingleProjectWorktreeSwitch();
+  workspaceUpdate("catalog-refreshed");
+  setStatus("Global Context Room · refreshing Shared catalogue…");
+
+  const refreshTicket = beginContextHubSnapshotRequest();
+  const refreshedCatalog = await api("/api/context-hub/refresh", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  });
+  if (generation !== state.contextHubPendingOpenGeneration || !applyContextHubSnapshot(refreshedCatalog, refreshTicket)) return;
+  renderGlobalProjectExplorer();
+  renderContextRoomGlobalReviewQueue();
+  renderSharedProposalWorkspace();
+  renderContextHealth();
+  renderSingleProjectWorktreeSwitch();
+  workspaceUpdate("catalog-refreshed");
+  setStatus(state.contextHub.repositoryErrors?.length
+    ? "Global Context Room opened with Shared repository warnings"
+    : "Global Context Room");
+}
+
 function contextHubProjectPickerChoices() {
   const needle = state.contextHubProjectPickerQuery.trim().toLowerCase();
   const projects = contextHubPrioritizedProjects(state.contextHub?.projects || [])
@@ -31289,7 +31339,7 @@ async function establishWorkspaceIdentity() {
     recordWorkspaceDiagnostic("identity-ready", "duplicated-tab");
     if (state.workspaceIdentityReady) {
       const currentUrl = new URL(window.location.href);
-      if (!IS_HOSTED_CONTEXT_ROOM && currentUrl.searchParams.has("view")) {
+      if (!IS_HOSTED_CONTEXT_ROOM && ["view", "project"].some((key) => currentUrl.searchParams.has(key))) {
         currentUrl.searchParams.set("hub", "1");
         currentUrl.searchParams.set("workspace", replacement);
         window.history.replaceState(window.history.state, "", currentUrl);
@@ -31318,7 +31368,7 @@ async function establishWorkspaceIdentity() {
   state.workspaceIdentityReady = true;
   if (IS_HOSTED_CONTEXT_ROOM) {
     syncWorkspaceUrl();
-  } else if (new URL(window.location.href).searchParams.has("view")) {
+  } else if (["view", "project"].some((key) => new URL(window.location.href).searchParams.has(key))) {
     const requestedUrl = new URL(window.location.href);
     requestedUrl.searchParams.set("hub", "1");
     requestedUrl.searchParams.set("workspace", state.workspaceId);
@@ -44977,13 +45027,7 @@ document.querySelectorAll("[data-global-explorer-mode]").forEach((button) => but
 }));
 el("globalExplorerScope")?.addEventListener("click", (event) => {
   if (event.target.closest("[data-global-explorer-back]")) {
-    state.contextHubPendingOpenGeneration += 1;
-    state.globalExplorerMode = "projects";
-    state.globalExplorerProjectKey = "";
-    state.globalProjectSearch = "";
-    renderGlobalProjectExplorer();
-    renderContextHealth();
-    refreshGlobalSettingsScopeFromExplorer();
+    void returnToGlobalContextHubHome().catch((error) => setStatus(error.message));
     return;
   }
 });

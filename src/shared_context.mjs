@@ -1547,9 +1547,7 @@ function repositoryCacheRoot(repository) {
     if (!lstatIfPresent(candidate)) continue;
     const claimPath = path.join(candidate, "repository-identity.json");
     const claimStats = lstatIfPresent(claimPath);
-    if (!claimStats
-      && candidate === canonical
-      && repositoryCacheRootContainsOnlyProposalLockScaffolding(candidate)) {
+    if (!claimStats && repositoryCacheRootContainsOnlyUnclaimedMetadata(candidate)) {
       continue;
     }
     if (claimStats) {
@@ -1578,7 +1576,7 @@ function repositoryCacheRoot(repository) {
       const claimPath = path.join(candidate, "repository-identity.json");
       const claimStats = lstatIfPresent(claimPath);
       if (!claimStats) {
-        if (repositoryCacheRootContainsOnlyProposalLockScaffolding(candidate)) continue;
+        if (repositoryCacheRootContainsOnlyUnclaimedMetadata(candidate)) continue;
         try {
           assertHistoricalRepositoryCacheCandidate(candidate, transport);
         } catch (error) {
@@ -1627,7 +1625,7 @@ function repositoryCacheRoot(repository) {
   return selected || canonical;
 }
 
-function repositoryCacheRootContainsOnlyProposalLockScaffolding(cacheRoot) {
+function repositoryCacheRootContainsOnlyUnclaimedMetadata(cacheRoot) {
   const cacheStats = lstatIfPresent(cacheRoot);
   if (!cacheStats || cacheStats.isSymbolicLink() || !cacheStats.isDirectory()) return false;
   const entries = fs.readdirSync(cacheRoot, { withFileTypes: true });
@@ -1638,6 +1636,7 @@ function repositoryCacheRootContainsOnlyProposalLockScaffolding(cacheRoot) {
     if (entry.name === "proposals.json.lock" || entry.name === "proposals.json.lock.reclaim") {
       return entry.isFile();
     }
+    if (entry.name === "github-security.json") return entry.isFile();
     return entry.isFile()
       && entry.name.startsWith(".context-room-filesystem-lock-")
       && entry.name.endsWith(".tmp");

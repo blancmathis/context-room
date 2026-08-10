@@ -16,7 +16,7 @@ Context Room is a local-first browser UI for keeping project context visible, ed
 
 ## Product Loop
 
-1. In the local profile, run `context-room setup` to initialize and register an existing project, create a new project from **Manage projects… → New project**, or run `context-room hub` to open the computer-wide room without adding the current directory. Every local entry point uses the same global Context Room service.
+1. In the local profile, run `context-room setup` to initialize and register an existing project, create a new project from **Manage projects… → New project**, or run `context-room hub` to open the computer-wide room without initializing an ordinary current directory. When launched inside an existing Context Room project or worktree, `hub` registers that exact location when needed and opens it inside the same global room; elsewhere it opens the unfiltered global Home. Every local entry point uses the same global Context Room service.
 2. Use the truth-aware hub to find current docs, targets, records, and source areas that matter.
 3. Edit safe text files inside `allowedPaths`.
 4. Review the current content versions covered by `watchAllow` and folder `watchRules`.

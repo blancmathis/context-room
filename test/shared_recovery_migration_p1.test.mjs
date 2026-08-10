@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import {
   abandonInvalidContextHubSharedTransaction,
@@ -106,6 +107,29 @@ test("a unique unclaimed v0.6.1 cache is adopted by checkout identity without mo
   assert.equal(fs.readFileSync(path.join(legacyRoot, "proposals/preserved/marker.txt"), "utf8"), "preserve me\n");
   const claim = JSON.parse(fs.readFileSync(path.join(legacyRoot, "repository-identity.json"), "utf8"));
   assert.equal(claim.identity, contextHubRepositoryIdentity(fixture.remote));
+});
+
+test("security-only legacy metadata does not hide a valid Shared repository cache", (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "shared-security-only-cache-p1-"));
+  isolateHomes(t, base);
+  const fixture = makeSharedFixture(base);
+  const project = makeProject(base);
+
+  const connected = connectSharedContext(project, { repository: fixture.remote, projectId: "demo" });
+  const validCacheRoot = connected.cacheRoot;
+  const legacyTransport = pathToFileURL(fixture.remote).href;
+  const metadataRoot = path.join(
+    process.env.CONTEXT_ROOM_SHARED_HOME,
+    createHash("sha256").update(legacyTransport).digest("hex").slice(0, 16),
+  );
+  const securityBytes = Buffer.from('{"verified":true,"checkedAt":"2026-08-10T00:00:00.000Z"}\n');
+  fs.mkdirSync(metadataRoot, { recursive: true });
+  fs.writeFileSync(path.join(metadataRoot, "github-security.json"), securityBytes);
+
+  const status = sharedContextStatus(project);
+  assert.equal(status.cacheRoot, validCacheRoot);
+  assert.deepEqual(fs.readFileSync(path.join(metadataRoot, "github-security.json")), securityBytes);
+  assert.equal(fs.existsSync(path.join(metadataRoot, "repository-identity.json")), false);
 });
 
 test("two unclaimed legacy caches for one repository fail closed without claiming either", (t) => {

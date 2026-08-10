@@ -204,7 +204,7 @@ test("@smoke a shared-only deep link boots without a local target and labels an 
   expect(noCacheCopy).not.toContain("@");
 });
 
-test("@smoke an exact project deep link renders immediately while its project refresh completes", async ({ page }) => {
+test("@smoke a launcher-style project deep link renders immediately while its project refresh completes", async ({ page }) => {
   const { origin, projects } = fixture();
   let releaseProjectRefresh;
   let markProjectRequest;
@@ -216,13 +216,18 @@ test("@smoke an exact project deep link renders immediately while its project re
     await route.continue();
   });
 
-  const navigation = page.goto(origin + "/?hub=1&workspace=workspace-project-boot&project=" + encodeURIComponent(projects.atlas.id) + "&view=hub");
+  const navigation = page.goto(origin + "/?hub=1&project=" + encodeURIComponent(projects.atlas.id));
   const posted = await projectRequest;
   await navigation;
   try {
     expect(posted).toEqual({ projectId: projects.atlas.id });
     await waitForBoot(page);
     await expect(page.locator("#globalExplorerScope strong")).toHaveText("Atlas");
+    await expect(page).toHaveURL((url) => url.searchParams.get("project") === projects.atlas.id && url.searchParams.get("view") === "hub");
+    await page.getByRole("button", { name: "Back to projects" }).click();
+    await expect(page).toHaveURL((url) => !url.searchParams.has("project") && url.searchParams.get("view") === "hub");
+    await expect(page.locator(".global-project-row", { hasText: "Atlas" })).toBeVisible();
+    await expect(page.locator(".global-project-row", { hasText: "Beacon" })).toBeVisible();
     await expect.poll(() => page.evaluate(() => ({
       opened: state.contextHubInitialProjectOpenedId,
       opening: state.contextHubInitialProjectOpen?.id || "",

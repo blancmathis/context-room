@@ -57,15 +57,36 @@ function jobs() {
   ];
 }
 
+function removeTemporaryTestTree(root) {
+  const resolved = path.resolve(root);
+  if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith("context-room-test-")) {
+    throw new Error(`Refusing to remove an unexpected test directory: ${resolved}`);
+  }
+  const makeWritable = (target) => {
+    let stats;
+    try { stats = fs.lstatSync(target); } catch { return; }
+    if (stats.isDirectory() && !stats.isSymbolicLink()) {
+      fs.chmodSync(target, 0o700);
+      for (const entry of fs.readdirSync(target)) makeWritable(path.join(target, entry));
+    } else if (!stats.isSymbolicLink()) {
+      fs.chmodSync(target, 0o600);
+    }
+  };
+  makeWritable(resolved);
+  fs.rmSync(resolved, { recursive: true, force: true });
+}
+
 function runJob(job) {
   return new Promise((resolve) => {
     const startedAt = Date.now();
     const hubHome = fs.mkdtempSync(path.join(tmpdir(), "context-room-test-hub-"));
+    const sharedHome = fs.mkdtempSync(path.join(tmpdir(), "context-room-test-shared-"));
     const child = spawn(process.execPath, job.args, {
       cwd: ROOT,
       env: {
         ...process.env,
         CONTEXT_ROOM_HUB_HOME: hubHome,
+        CONTEXT_ROOM_SHARED_HOME: sharedHome,
         GIT_AUTHOR_NAME: "Context Room Test",
         GIT_AUTHOR_EMAIL: TEST_GIT_EMAIL,
         GIT_COMMITTER_NAME: "Context Room Test",
@@ -91,7 +112,8 @@ function runJob(job) {
     timeout.unref();
     child.once("exit", (code, signal) => {
       clearTimeout(timeout);
-      fs.rmSync(hubHome, { recursive: true, force: true });
+      removeTemporaryTestTree(hubHome);
+      removeTemporaryTestTree(sharedHome);
       resolve({
         ...job,
         code: timedOut ? 124 : (code ?? 1),

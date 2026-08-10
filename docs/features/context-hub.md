@@ -52,11 +52,19 @@ context-room hub --root .
 
 The command initializes and registers the current local project, then starts one global Context Room service. If that service is already healthy, another invocation reuses it and prints a URL focused on the current project instead of starting another service.
 
-Start the global room without registering the current directory:
+Start the global room from any directory:
 
 ```bash
 context-room hub
 ```
+
+If the current directory is inside an existing Context Room project or
+worktree, the command registers that exact location when needed and the printed
+URL focuses it inside the global room. **Back to projects** clears that focus
+and reloads the complete global catalog, so Home remains one navigation step
+away.
+From any other directory, the command opens the unfiltered global Home and does
+not create project configuration or registry state.
 
 Inspect the user-local catalog, connect a selected project to a shared
 repository, list proposals, or open the project in a Workspace:
@@ -81,7 +89,8 @@ as a clone URL and never authorizes a new remote.
 `setup` and `start` register their initialized project and focus it inside the
 global room. `init` remains write-only. Shared setup records the repository and
 links the local project to its shared project ID. The legacy `--no-local` flag
-is still accepted by `hub` for compatibility but is no longer needed.
+is still accepted by `hub` for compatibility and explicitly suppresses the
+registered-current-project focus.
 
 The owner can also open **Manage projects…** and choose **New project**. Context
 Room creates one new folder below the configured Computer Explorer root,
