@@ -21104,7 +21104,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     try {
       sendJson(res, 200, withSharedSkillDiagnostics(root, await readBackgroundReports(root, { force: refresh, expectedRootIdentity }), { refresh: false }));
     } catch (error) {
-      if (refresh && error?.code === "filesystem_lock_worker_unsupervised") {
+      if (error?.code === "filesystem_lock_worker_unsupervised") {
         sendJson(res, 202, {
           refreshDeferred: {
             code: error.code,
@@ -30653,6 +30653,8 @@ function abortObsoleteWorkspaceRequests() {
   state.singleStartupEffectiveRequest += 1;
   state.globalProjectSelectionGeneration += 1;
   state.explorerRelatedRequest += 1;
+  cancelBackgroundRefresh();
+  state.backgroundRefreshController?.abort();
   for (const key of [
     "globalProjectSettingsController",
     "globalProjectExplorerController",
@@ -44586,6 +44588,8 @@ function cancelBackgroundRefresh() {
 async function refreshBackgroundReports(options = {}) {
   if (state.workspaceRuntimeStopped || state.workspaceUnloadPending || IS_HOSTED_CONTEXT_ROOM) return;
   if (document.hidden || state.reportsRefreshInFlight) return;
+  const refreshLocationId = state.activeProjectLocationId;
+  const refreshNavigationGeneration = state.workspaceNavigationGeneration;
   const now = Date.now();
   const reportInterval = state.selected ? 30_000 : 15_000;
   const fullInterval = state.selected ? 60_000 : 30_000;
@@ -44602,7 +44606,12 @@ async function refreshBackgroundReports(options = {}) {
       shouldRefreshFull ? api(filesApiPath(), { signal: controller.signal }) : Promise.resolve(null),
       shouldRefreshFull ? api("/api/settings", { signal: controller.signal }) : Promise.resolve(null),
     ]);
-    if (state.workspaceRuntimeStopped || state.workspaceUnloadPending) return;
+    if (
+      state.workspaceRuntimeStopped
+      || state.workspaceUnloadPending
+      || state.activeProjectLocationId !== refreshLocationId
+      || state.workspaceNavigationGeneration !== refreshNavigationGeneration
+    ) return;
     const reportsDeferred = Boolean(reports?.refreshDeferred);
     const reportsChanged = reports && !reportsDeferred ? applyBackgroundReportPayload(reports) : false;
     if (reports && !reportsDeferred) {
