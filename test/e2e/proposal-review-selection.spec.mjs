@@ -1195,7 +1195,7 @@ test("@smoke verified terminal acceptance with a pending Hub refresh keeps succe
   await waitForBoot(page);
   const toast = page.locator('[data-context-room-toast][role="status"]');
   await expect(toast).toBeVisible();
-  await expect(toast).toContainText("Merged into main · Hub refresh pending");
+  await expect(toast).toContainText("Proposal merged into main · Hub refresh pending");
   await expect(toast).toContainText(acceptedCommit);
   await expect(page.locator('[data-context-room-toast][role="alert"]')).toBeHidden();
   const target = new URL(page.url());

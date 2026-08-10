@@ -30413,7 +30413,7 @@ async function completeSharedProposalAcceptance(challengeId) {
     state.sharedContext = { ...state.sharedContext, accepted: result };
     playContextRoomSound("proposal-accepted");
     const hubRefreshPending = result.hubRefresh?.status !== "complete";
-    const title = hubRefreshPending ? "Merged into main · Hub refresh pending" : "Proposal merged into main";
+    const title = hubRefreshPending ? "Proposal merged into main · Hub refresh pending" : "Proposal merged into main";
     const message = "Commit " + result.commit;
     const target = new URL(contextRoomReturnUrl() || contextRoomHubReturnUrl(window.location.href));
     const flashToken = typeof result.flashToken === "string" ? result.flashToken : "";
@@ -32145,7 +32145,7 @@ async function consumeContextRoomTerminalFlash(token) {
       const commit = String(payload?.commit || "").trim().toLowerCase();
       if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit)) return;
       showContextRoomToast({
-        title: hubRefreshStatus === "pending" ? "Merged into main · Hub refresh pending" : "Proposal merged into main",
+        title: hubRefreshStatus === "pending" ? "Proposal merged into main · Hub refresh pending" : "Proposal merged into main",
         message: "Commit " + commit,
         kind: "status",
       });

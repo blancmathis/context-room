@@ -612,7 +612,7 @@ test.describe.serial("real proposal workflows", () => {
       await expect.poll(() => flashConsumePosts.length).toBe(1);
       expect(hubReturnStatuses).toEqual([200]);
       expect(new URL(page.url()).searchParams.has("crFlash")).toBe(false);
-      await expect(page.locator('[data-context-room-toast][role="status"]')).toContainText("Merged into main");
+      await expect(page.locator('[data-context-room-toast][role="status"]')).toContainText("Proposal merged into main");
       page.off("response", recordTerminalReturn);
       page.off("request", recordFlashConsume);
       await expect(proposalRow(page, first.proposalTitle)).toHaveCount(0);
