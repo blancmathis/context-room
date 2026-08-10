@@ -86,6 +86,21 @@ async function waitForBoot(page) {
   }).toBe("ready");
 }
 
+async function ensureHostedReviewFilePending(page, filePath) {
+  const unreview = page.locator(`[data-proposal-unreview-path="${filePath}"]`);
+  if (!await unreview.isVisible().catch(() => false)) return;
+  const reset = page.waitForResponse((response) => (
+    response.request().method() === "POST"
+    && new URL(response.url()).pathname.endsWith("/api/shared-context/unreview-file")
+  ));
+  await unreview.click();
+  const dialog = page.getByRole("dialog", { name: /Unreview this document/ });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "Unreview", exact: true }).click();
+  expect((await reset).status()).toBe(200);
+  await expect(unreview).toBeHidden();
+}
+
 function violationReport(violations) {
   return violations.map((violation) => ({
     id: violation.id,
@@ -567,6 +582,7 @@ test.describe("hosted runtime profiles", () => {
     await expect(page.locator("#proposalReviewPage")).toBeVisible();
 
     const firstPath = reviewFiles[0].path;
+    await ensureHostedReviewFilePending(page, firstPath);
     let exactFileAttempts = 0;
     await page.route((url) => (
       scopedApiPath(url.pathname) === "/api/shared-context"
@@ -1064,6 +1080,7 @@ test.describe("hosted runtime profiles", () => {
     await expect(changeKind).toBeVisible();
     expect((await changeKind.textContent())?.trim()).not.toBe("");
     const proposalFileButton = page.locator("[data-proposal-review-path]").filter({ hasText: firstPath }).first();
+    await ensureHostedReviewFilePending(page, firstPath);
     await expect(proposalFileButton).toHaveAttribute("data-proposal-review-path", firstPath);
     const requestsBeforeFileOpen = requests.length;
     await proposalFileButton.click();

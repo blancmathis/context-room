@@ -32,6 +32,15 @@ async function waitForReady(page) {
   await expect(page.locator("#reviewQueueHeading")).toBeVisible();
 }
 
+async function waitForWorkspaceBackgroundIdle(page) {
+  await expect.poll(() => page.evaluate(() => ({
+    projectOpening: Boolean(state.contextHubInitialProjectOpen),
+    projectBusy: Boolean(state.contextHubBusy),
+    presenceBusy: Boolean(state.workspacePresenceDrainPromise || state.workspacePresenceQueued),
+    runtimeRefreshBusy: Boolean(state.runtimeContextHubRefreshPromise),
+  }))).toEqual({ projectOpening: false, projectBusy: false, presenceBusy: false, runtimeRefreshBusy: false });
+}
+
 function explorerOpenControl(page) {
   return page.locator("#explorerOpen:visible, #sidebarToggle:visible").first();
 }
@@ -523,10 +532,14 @@ test("@smoke Context Room keeps its critical workspace state stable", async ({ p
   await openSettings(page);
   const settingsUrl = page.url();
   await page.goto(fileUrl);
-  await expect(page.locator("body")).not.toHaveClass(/app-booting/);
+  await waitForBoot(page);
+  await waitForWorkspaceBackgroundIdle(page);
   await page.goto(settingsUrl);
+  await waitForBoot(page);
   await expect(page.locator("#settingsPage")).toBeVisible();
+  await waitForWorkspaceBackgroundIdle(page);
   await page.goBack();
+  await waitForBoot(page);
   await expect(page.locator("#workspaceTitle")).toContainText("README.md");
 
   const duplicate = await context.newPage();

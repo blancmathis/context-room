@@ -204,7 +204,7 @@ test("@smoke a shared-only deep link boots without a local target and labels an 
   expect(noCacheCopy).not.toContain("@");
 });
 
-test("@smoke an exact project deep link stays in boot until its project refresh completes", async ({ page }) => {
+test("@smoke an exact project deep link renders immediately while its project refresh completes", async ({ page }) => {
   const { origin, projects } = fixture();
   let releaseProjectRefresh;
   let markProjectRequest;
@@ -221,11 +221,13 @@ test("@smoke an exact project deep link stays in boot until its project refresh 
   await navigation;
   try {
     expect(posted).toEqual({ projectId: projects.atlas.id });
-    await expect(page.locator("body")).toHaveClass(/app-booting/);
-    await expect.poll(async () => {
-      const diagnostics = JSON.parse(await page.locator("body").getAttribute("data-workspace-diagnostics") || "{}");
-      return diagnostics.phase || "";
-    }).not.toBe("ready");
+    await waitForBoot(page);
+    await expect(page.locator("#globalExplorerScope strong")).toHaveText("Atlas");
+    await expect.poll(() => page.evaluate(() => ({
+      opened: state.contextHubInitialProjectOpenedId,
+      opening: state.contextHubInitialProjectOpen?.id || "",
+      busy: state.contextHubBusy,
+    }))).toEqual({ opened: "", opening: projects.atlas.id, busy: true });
   } finally {
     releaseProjectRefresh();
   }
@@ -265,7 +267,7 @@ test("@smoke global boot stays pending until the Explorer catalogue is renderabl
   await expect(page.locator("#globalProjectCount")).not.toHaveText("Loading…");
 });
 
-test("@smoke an exact project settings deep link waits for refresh and restores Settings", async ({ page }) => {
+test("@smoke an exact project settings deep link remains on Settings while project refresh finishes", async ({ page }) => {
   const { origin, projects } = fixture();
   let releaseProjectRefresh;
   let markProjectRequest;
@@ -284,8 +286,10 @@ test("@smoke an exact project settings deep link waits for refresh and restores 
   await navigation;
   try {
     expect(posted).toEqual({ projectId: projects.atlas.id });
-    await expect(page.locator("body")).toHaveClass(/app-booting/);
-    await expect(page.locator("#settingsPage")).toBeHidden();
+    await waitForBoot(page);
+    await expect(page.locator("#settingsPage")).toBeVisible();
+    await expect(page).toHaveURL((url) => url.searchParams.get("view") === "settings"
+      && url.searchParams.get("settings") === "review-trust");
   } finally {
     releaseProjectRefresh();
   }
@@ -344,6 +348,7 @@ test("@smoke the latest project and worktree selection survives an in-flight pro
 
   await page.locator(".global-project-row", { hasText: "Atlas" }).click();
   await expect.poll(() => openings.length).toBe(1);
+  await page.getByRole("button", { name: "Back to projects" }).click();
   await page.locator(".global-project-row", { hasText: "Beacon" }).click();
   await page.locator(".global-project-row", { hasText: "Atlas" }).click();
   releaseFirstOpening();
@@ -642,6 +647,7 @@ test("@smoke verified terminal rejection refreshes and returns to the Hub", asyn
         proposal: "proposal/demo/terminal-action",
         proposalHead: "0123456789abcdef0123456789abcdef01234567",
         rejectionBranch,
+        rejectionPrefix: "rejected/",
         hubRefresh: { status: "complete" },
         flashToken,
       }),
@@ -652,7 +658,7 @@ test("@smoke verified terminal rejection refreshes and returns to the Hub", asyn
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ outcome: "reject", rejectionBranch, hubRefresh: { status: "complete" } }),
+      body: JSON.stringify({ outcome: "reject", rejectionBranch, rejectionPrefix: "rejected/", hubRefresh: { status: "complete" } }),
     });
   });
 
@@ -1394,6 +1400,7 @@ test("@smoke verified rejection carries its one-shot success toast across Hub po
           proposal,
           proposalHead: "0123456789abcdef0123456789abcdef01234567",
           rejectionBranch,
+          rejectionPrefix: "rejected/",
           hubRefresh: { status: "pending" },
           flashToken,
         }),
@@ -1408,6 +1415,7 @@ test("@smoke verified rejection carries its one-shot success toast across Hub po
         body: JSON.stringify({
           outcome: "reject",
           rejectionBranch,
+          rejectionPrefix: "rejected/",
           hubRefresh: { status: "pending" },
         }),
       });

@@ -12,6 +12,13 @@ test("CI covers supported Node runtimes behind one explicit gate", () => {
   assert.equal(workflow.jobs.unit["timeout-minutes"], 25);
   assert.equal(workflow.jobs.browser.steps.find((step) => step.uses?.includes("setup-node")).with["node-version"], 24);
   assert.equal(workflow.jobs.soak.steps.find((step) => step.uses?.includes("setup-node")).with["node-version"], 24);
+  assert.equal(workflow.jobs.browser.strategy["fail-fast"], false);
+  assert.deepEqual(workflow.jobs.browser.strategy.matrix.include, [
+    { project: "chromium-desktop", browser: "chromium" },
+    { project: "chromium-mobile", browser: "chromium" },
+    { project: "firefox-desktop", browser: "firefox" },
+    { project: "webkit-desktop", browser: "webkit" },
+  ]);
   assert.deepEqual(workflow.jobs.gate.needs, ["unit", "browser", "soak"]);
   assert.equal(workflow.jobs.gate.if, "always()");
 });
@@ -43,4 +50,16 @@ test("browser failures retain diagnostic artifacts without weakening the gate", 
     assert.equal(upload.with["if-no-files-found"], "warn");
     assert.equal(upload.with["retention-days"], 14);
   }
+  assert.match(workflow.jobs.browser.steps.find((step) => step.uses?.startsWith("actions/upload-artifact@")).with.name, /matrix\.project/);
+});
+
+test("each browser shard preserves layout, smoke, and accessibility coverage", () => {
+  const commands = workflow.jobs.browser.steps.map((step) => step.run).filter(Boolean);
+  assert.ok(commands.includes("npx playwright install --with-deps ${{ matrix.browser }}"));
+  assert.ok(commands.includes("npm run test:layout -- --project=${{ matrix.project }}"));
+  assert.ok(commands.includes("npm run test:ux-smoke -- --project=${{ matrix.project }}"));
+  assert.ok(commands.includes("npm run test:a11y -- --project=${{ matrix.project }}"));
+  const performance = workflow.jobs.browser.steps.find((step) => step.name === "Test performance budgets");
+  assert.equal(performance.if, "matrix.project == 'chromium-desktop'");
+  assert.equal(performance.run, "npm run test:perf");
 });

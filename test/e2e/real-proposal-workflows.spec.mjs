@@ -199,6 +199,15 @@ function expectProjectSharedEffects(root, item, expected) {
   expect((config.hubSections || []).some((section) => section.id === "shared-context")).toBe(true);
 }
 
+async function expectProjectSharedEffectsEventually(root, item, expected) {
+  if (expected?.revision) {
+    await expect.poll(() => sharedContextStatus(root).revision, {
+      message: `Shared snapshot ${expected.revision} becomes current for ${item.projectTitle}`,
+    }).toBe(expected.revision);
+  }
+  expectProjectSharedEffects(root, item, expected);
+}
+
 async function waitForBoot(page) {
   await expect(page.locator("body")).not.toHaveClass(/app-booting|app-recovery/);
   await expect.poll(async () => {
@@ -523,7 +532,7 @@ test.describe.serial("real proposal workflows", () => {
       await expect.poll(() => exactProjectStatuses.length).toBe(1);
       expect(exactProjectPosts).toEqual([{ projectId: secondProject.id }]);
       expect(exactProjectStatuses).toEqual([201]);
-      expectProjectSharedEffects(second.project, second, secondM1);
+      await expectProjectSharedEffectsEventually(second.project, second, secondM1);
       await expect(exactPage.locator("#contextRoomReviewProjectFilter .context-hub-project-trigger-label")).toHaveText(second.projectTitle);
       await expect(proposalRow(exactPage, second.proposalTitle)).toHaveCount(1);
       await expect(proposalRow(exactPage, first.proposalTitle)).toHaveCount(0);
@@ -535,7 +544,7 @@ test.describe.serial("real proposal workflows", () => {
       await expect.poll(() => exactProjectStatuses.length).toBe(2);
       expect(exactProjectPosts).toEqual([{ projectId: secondProject.id }, { projectId: secondProject.id }]);
       expect(exactProjectStatuses).toEqual([201, 201]);
-      expectProjectSharedEffects(second.project, second, secondM2);
+      await expectProjectSharedEffectsEventually(second.project, second, secondM2);
       await expect(exactPage.locator("#contextRoomReviewProjectFilter .context-hub-project-trigger-label")).toHaveText(second.projectTitle);
       await refreshContextHubThroughUi(exactPage);
       await expect(proposalRow(exactPage, second.proposalTitle)).toHaveCount(1);
@@ -979,7 +988,7 @@ test.describe.serial("real proposal workflows", () => {
       expect(rejectionPayload.code).toBe("shared_context_remote_rejection_unavailable");
       await expect(rejectionDialog).toBeVisible();
       await expect(rejectionDialog.getByRole("alert")).toContainText("temporarily unavailable");
-      await expect(page.getByRole("heading", { name: hosted.proposalTitle })).toBeVisible();
+      await expect(page.locator("#proposalReviewTitle")).toHaveText(hosted.proposalTitle);
       await expect(page).toHaveURL((url) => (
         url.origin === HOSTED_ORIGIN
         && /^\/reviews\/[a-f0-9-]{36}\/$/i.test(url.pathname)

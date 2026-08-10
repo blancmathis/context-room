@@ -30845,7 +30845,11 @@ function scheduleSessionStatePush() {
   state.sessionStateTimer = window.setTimeout(() => {
     state.sessionStateTimer = null;
     if (state.workspaceRuntimeStopped || state.workspaceUnloadPending) return;
-    persistNavigationState();
+    // The initial URL is authoritative until its requested view has been
+    // restored. Project selection can render optimistically during boot and
+    // schedule a presence update; persisting that temporary Hub shell would
+    // otherwise replace an exact Settings/file/proposal deep link with Hub.
+    if (!document.body.classList.contains("app-booting")) persistNavigationState();
     publishSessionState().catch(() => {});
   }, 280);
 }
