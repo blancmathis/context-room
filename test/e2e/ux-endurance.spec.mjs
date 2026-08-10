@@ -209,7 +209,7 @@ function attachFailureGuards(page) {
     if (message.type() === "error") failures.push(`console: ${message.text()}`);
   });
   page.on("response", (response) => {
-    if (response.status() >= 500) failures.push(`http ${response.status()}: ${response.url()}`);
+    if (response.status() === 409 || response.status() >= 500) failures.push(`http ${response.status()}: ${response.url()}`);
   });
   return { failures, requestCount: () => requests };
 }
@@ -219,6 +219,9 @@ function consumeExpectedConflictConsole(failures) {
   const matches = failures.reduce((indexes, failure, index) => failure === expected ? [...indexes, index] : indexes, []);
   expect(matches.length, "the intentional stale write emits at most one browser conflict error").toBeLessThanOrEqual(1);
   if (matches.length) failures.splice(matches[0], 1);
+  const httpMatches = failures.reduce((indexes, failure, index) => /^http 409: .*\/api\/file(?:\?|$)/.test(failure) ? [...indexes, index] : indexes, []);
+  expect(httpMatches.length, "the intentional stale write emits at most one file conflict response").toBeLessThanOrEqual(1);
+  if (httpMatches.length) failures.splice(httpMatches[0], 1);
 }
 
 async function exerciseResponsiveExplorer(page) {
@@ -1048,6 +1051,8 @@ test("@soak repeated multi-day navigation does not accumulate workspace or brows
       await openProject(companion, cycle % 2 ? "Atlas" : "Beacon");
     }
     if (cycle % 4 === 3) checkpoints.push(await collectMetrics(page, guard.requestCount));
+    expect(guard.failures, guard.failures.join("\n")).toEqual([]);
+    expect(companionGuard.failures, companionGuard.failures.join("\n")).toEqual([]);
     expect(await page.locator("body").getAttribute("data-workspace-diagnostics")).not.toContain('"phase":"recovery"');
     expect(await companion.locator("body").getAttribute("data-workspace-diagnostics")).not.toContain('"phase":"recovery"');
     cycle += 1;
