@@ -1,80 +1,79 @@
-# Product
+---
+context_room:
+  id: strategy.context-room
+  depends_on: []
+---
 
-<!-- impeccable:product-schema 1 -->
+# Context Room Strategy
 
-## Platform
+## Summary
 
-web
+Context Room is a local-first control room for documentation used by humans and AI agents. It makes accepted context inspectable, keeps pending changes separate from current truth, and preserves human authority over review and acceptance.
 
-## Canonical Product Truth
+## Defines
 
-This file is the compact design-facing product record. The canonical product
-overview remains [`docs/product-overview.md`](docs/product-overview.md), with
-feature behavior owned by [`docs/features/index.md`](docs/features/index.md).
+This document defines why Context Room exists, who it serves, and the product principles that constrain every implementation and documentation decision.
 
-## Users
+## Does not define
 
-Context Room is for people who use coding agents across one or many projects
-and need documentation changes to remain visible, reviewable, and human-owned.
-It is designed for local work, multiple registered worktrees, and shared Git
-documentation repositories.
+This document does not define UI behavior, CLI syntax, storage layouts, Shared proposal mechanics, hosted deployment, or future roadmap items.
 
-## Product Purpose
+## Purpose
 
-Context Room keeps project knowledge easy to inspect and update while ensuring
-that the current version of every watched document is explicitly reviewed by a
-person. Local files remain individual review items. Shared documentation
-changes remain grouped in proposals until their file reviews are decided.
+AI agents can read and change a codebase faster than a person can continuously reconstruct its intent. Context Room gives the owner one place to inspect the documentation, instructions, skills, proposals, and review obligations that influence that work.
 
-## Positioning
+The product is not a generic file browser, a wiki, a vector database, or an autonomous authority. It is a control surface over explicit files and deterministic evidence.
 
-Context Room combines a file explorer, documentation reader/editor, review
-queue, shared proposal workflow, startup-environment inspection, and context
-health in one local-first workbench. Its Context Engine resolves the exact
-accepted instructions, skills, hooks, provider configuration, and documents for
-one registered project, worktree, folder, and provider. Agents can prepare and
-publish work, but human review decisions remain outside the agent CLI.
+## Primary readers
 
-## Operating Context
+- Project owners who decide what documentation is trusted.
+- Contributors who need current behavior before changing it.
+- Coding agents that need a bounded, machine-readable context surface.
+- Operators who verify local and hosted isolation.
+- Documentation maintainers who require one owner for each durable truth.
 
-- Context Room has one global room across registered projects. Selecting a
-  project or worktree changes the active target inside that room; it never
-  starts a project-scoped room.
-- `Local` and `Shared` describe where documentation is stored and how it is
-  reviewed. They are sources, not room modes.
-- The Explorer is the primary way to choose a project, worktree, folder, or
-  document.
-- Home is review-first and also contains user-arranged project sections.
-- Shared contexts are Git repositories whose configured default branch is the accepted truth;
-  proposal content remains pending metadata until its reviewed result reaches
-  that branch.
-- Context Room never discovers local projects or worktrees implicitly.
+## Product principles
 
-## Capabilities and Constraints
+### Local first
 
-- Preserve review, proposal, shared-context, startup, CLI, and watch semantics.
-- Keep the seven Settings tabs, live Settings search, manual Save, interface
-  sounds, and existing theme choices.
-- Keep Context Room local-first and deterministic. Do not add implicit LLM work
-  to product-critical checks.
-- All user-facing interface copy is English.
+Local projects and worktrees remain on the user's computer. Local Context Room binds to loopback and operates over explicitly authorized paths.
 
-## Brand Commitments
+### The Context Hub is global
 
-Context Room should feel like a calm native workbench: compact, precise,
-readable, and comfortable during long documentation and review sessions. Its
-default accent is cyan; alternate themes change color, not product geometry.
+The Context Hub is always the top-level surface. Launching from a project or worktree opens the global Hub and selects that location. The user can always return to the global view.
 
-## Product Principles
+### Deterministic evidence before model inference
 
-1. Human review is the product's primary action.
-2. The document, proposal, or queue being acted on is always the visual focus.
-3. Navigation and scope stay visible and predictable.
-4. Advanced detail is available without crowding routine work.
-5. Cached or stale state is never presented as fresh truth.
+Inventory, graph construction, health checks, review state, proposal state, path boundaries, and effective-context resolution are deterministic. A model may research accepted documentation through `context-room ask`, but it does not define truth.
 
-## Accessibility & Inclusion
+### Accepted truth and pending change are different objects
 
-The interface must remain keyboard-operable, retain visible focus, support
-reduced motion and 200% zoom, avoid color-only status communication, and meet
-WCAG AA contrast for text and essential controls.
+Accepted local content, accepted Shared main, proposals, targets, and historical records remain distinguishable in storage, APIs, UI, and documentation. A proposal is never current truth before human acceptance.
+
+### Human authority is terminal
+
+Humans accept or reject files and Shared proposals. Agent-facing commands do not expose terminal review decisions. Agent assistance for a multi-file or terminal proposal action requires two separate explicit confirmations for the exact action and scope.
+
+### Shared truth is reviewable Git truth
+
+A Shared repository keeps accepted truth on its configured default branch. Pending changes live in isolated proposal branches and worktrees. Acceptance delivers only the exact result reviewed by a human.
+
+### Hosted means Shared only
+
+A hosted Context Room receives only explicitly configured Shared repositories and scoped capabilities. It cannot read local files, local project settings, local prompt state, local provider homes, or local-only APIs.
+
+### Documentation describes reality
+
+Current documentation describes accepted, implemented behavior. Accepted targets, historical records, and unaccepted proposals remain labeled and separate. Unknowns stay visible.
+
+## Success criteria
+
+Context Room succeeds when:
+
+1. a human can tell what is current, pending, targeted, or historical;
+2. every important behavior has one canonical documentary owner;
+3. an agent can retrieve accepted context without gaining review authority;
+4. worktrees appear as variants of one logical project;
+5. Shared proposal delivery is exact, reviewable, and recoverable;
+6. hosted operation cannot cross into local state;
+7. deterministic verification detects drift between code, contracts, tests, and documentation.

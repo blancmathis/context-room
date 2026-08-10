@@ -8,17 +8,20 @@
     "schemas/",
     "test/",
     "README.md",
+    "PRODUCT.md",
     "AGENTS.md",
     "package.json"
   ],
   "watchAllow": [
     "docs/",
     "README.md",
+    "PRODUCT.md",
     "AGENTS.md"
   ],
   "reviewPaths": [
     "docs/",
     "README.md",
+    "PRODUCT.md",
     "AGENTS.md"
   ],
   "reviewAgentInstructions": true,
@@ -189,16 +192,6 @@
       "path": "docs/product-overview.md"
     },
     {
-      "id": "agent-configuration",
-      "title": "Agent configuration",
-      "description": "Config fields and agent setup.",
-      "paths": [
-        "docs/agent-configuration.md"
-      ],
-      "enabled": true,
-      "path": "docs/agent-configuration.md"
-    },
-    {
       "id": "features",
       "title": "Features",
       "description": "One page per product feature.",
@@ -265,17 +258,6 @@
               "cards": [],
               "enabled": true,
               "path": "docs/product-overview.md"
-            },
-            {
-              "id": "agent-configuration",
-              "title": "Agent configuration",
-              "description": "Config fields and agent setup.",
-              "paths": [
-                "docs/agent-configuration.md"
-              ],
-              "cards": [],
-              "enabled": true,
-              "path": "docs/agent-configuration.md"
             },
             {
               "id": "features",

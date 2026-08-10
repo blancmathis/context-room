@@ -246,14 +246,14 @@ export const AGENT_CONTEXT_DIR = `${CONFIG_DIR}/agent-context`;
 export const AGENT_CONTEXT_FILE = `${CONFIG_DIR}/README.md`;
 const LEGACY_AGENT_CONTEXT_FILE = `${AGENT_CONTEXT_DIR}/README.md`;
 const AGENT_CONTEXT_ASSET_FILENAMES = [
-  "agent-configuration.md",
-  "features/codex-prompt-center.md",
-  "html-visual-documents.md",
-  "html-visual-patterns.md",
-  "context-room-visual-components.html",
-  "context-room-data-visual-components.html",
+  "product-overview.md",
+  "system/architecture.md",
+  "system/runtime-profiles.md",
+  "features/context-hub.md",
   "features/shared-context.md",
   "features/review-authority.md",
+  "domains/truth-layers.md",
+  "domains/shared-proposal-lifecycle.md",
 ];
 export const GLOBAL_PREFERENCES_FILE = "~/.context-room/preferences.json";
 const CONFIG_SCHEMA_URL = "https://unpkg.com/context-room@latest/schemas/config.schema.json";
@@ -12480,14 +12480,14 @@ export function syncContextRoomAgentContext(root = process.cwd()) {
   const sourceRoot = path.resolve(path.dirname(__filename), "..", "docs");
   const targetRoot = path.join(projectRoot, AGENT_CONTEXT_DIR);
   const assets = [
-    [path.join(sourceRoot, "agent-configuration.md"), AGENT_CONTEXT_ASSET_FILENAMES[0]],
-    [path.join(sourceRoot, "features", "codex-prompt-center.md"), AGENT_CONTEXT_ASSET_FILENAMES[1]],
-    [path.join(sourceRoot, "features", "html-visual-documents.md"), AGENT_CONTEXT_ASSET_FILENAMES[2]],
-    [path.join(sourceRoot, "features", "html-visual-patterns.md"), AGENT_CONTEXT_ASSET_FILENAMES[3]],
-    [path.join(sourceRoot, "context-room-visual-components.html"), AGENT_CONTEXT_ASSET_FILENAMES[4]],
-    [path.join(sourceRoot, "context-room-data-visual-components.html"), AGENT_CONTEXT_ASSET_FILENAMES[5]],
-    [path.join(sourceRoot, "features", "shared-context.md"), AGENT_CONTEXT_ASSET_FILENAMES[6]],
-    [path.join(sourceRoot, "features", "review-authority.md"), AGENT_CONTEXT_ASSET_FILENAMES[7]],
+    [path.join(sourceRoot, "product-overview.md"), AGENT_CONTEXT_ASSET_FILENAMES[0]],
+    [path.join(sourceRoot, "system", "architecture.md"), AGENT_CONTEXT_ASSET_FILENAMES[1]],
+    [path.join(sourceRoot, "system", "runtime-profiles.md"), AGENT_CONTEXT_ASSET_FILENAMES[2]],
+    [path.join(sourceRoot, "features", "context-hub.md"), AGENT_CONTEXT_ASSET_FILENAMES[3]],
+    [path.join(sourceRoot, "features", "shared-context.md"), AGENT_CONTEXT_ASSET_FILENAMES[4]],
+    [path.join(sourceRoot, "features", "review-authority.md"), AGENT_CONTEXT_ASSET_FILENAMES[5]],
+    [path.join(sourceRoot, "domains", "truth-layers.md"), AGENT_CONTEXT_ASSET_FILENAMES[6]],
+    [path.join(sourceRoot, "domains", "shared-proposal-lifecycle.md"), AGENT_CONTEXT_ASSET_FILENAMES[7]],
   ];
   const missing = assets.filter(([source]) => !fs.existsSync(source)).map(([source]) => source);
   if (missing.length) throw new Error(`Context Room agent context is incomplete: ${missing.join(", ")}`);
@@ -12521,7 +12521,7 @@ Before declaring setup complete:
 5. Keep current implementation truth separate from target plans and from research, history, decisions, and incidents. Never promote a target claim without implementation evidence.
 6. Run \`context-room doctor --root <project>\`, start without taking over another room, and verify \`/api/health\` reports the intended root.
 
-Read [Agent configuration](agent-context/agent-configuration.md) for the complete field ownership, setup, and verification contract.
+Read the bundled [product model](agent-context/product-overview.md), [system architecture](agent-context/system/architecture.md), and [truth layers](agent-context/domains/truth-layers.md) before changing Context Room integration or documentation behavior.
 
 ## HTML Visual Documents
 
@@ -12577,15 +12577,6 @@ The rendered HTML automatically follows the active Context Room app theme. Chang
 - Do not hard-code a page palette, force light or dark mode, or add a theme selector inside the HTML.
 - Keep custom CSS structural. Context Room owns visual theme tokens so the same document stays readable in every available app theme.
 
-## Where To Find HTML Examples
-
-Open these project-local files before building a visual:
-
-- \`.context-room/agent-context/context-room-visual-components.html\`: five complete examples for systems, causality, decisions, sequences, and reasoning.
-- \`.context-room/agent-context/context-room-data-visual-components.html\`: forty examples for metrics, comparisons, charts, timelines, planning, and status.
-
-Read the rendered examples for composition and interaction, then inspect their semantic HTML source to reuse the relevant \`cr-*\` classes. Adapt the content and scale; do not copy an entire example when a smaller structure is enough.
-
 ## Quality Gate
 
 - One explicit question is answered.
@@ -12599,11 +12590,14 @@ Read the rendered examples for composition and interaction, then inspect their s
 
 ## References
 
-- [Agent configuration](agent-context/agent-configuration.md): complete project setup and verification contract.
-- [HTML visual documents](agent-context/html-visual-documents.md): full usage and review contract.
-- [HTML visual patterns](agent-context/html-visual-patterns.md): classes, diagram grammar, and scale rules.
-- [Five diagram examples](agent-context/context-room-visual-components.html): complex ideas and relationships.
-- [Data visual catalog](agent-context/context-room-data-visual-components.html): quantitative and operational patterns.
+- [Product model](agent-context/product-overview.md): observable product behavior and surfaces.
+- [System architecture](agent-context/system/architecture.md): components, stores, and boundaries.
+- [Runtime profiles](agent-context/system/runtime-profiles.md): local and hosted capability matrix.
+- [Global Context Hub](agent-context/features/context-hub.md): project, worktree, and Shared navigation.
+- [Shared Context](agent-context/features/shared-context.md): accepted Shared truth and connections.
+- [Human review authority](agent-context/features/review-authority.md): owner decisions and agent boundary.
+- [Truth layers](agent-context/domains/truth-layers.md): current, target, historical, and proposal semantics.
+- [Shared proposal lifecycle](agent-context/domains/shared-proposal-lifecycle.md): exact proposal states and terminal outcomes.
 `;
   const legacyEntry = `# Context Room Agent Context
 
@@ -12617,44 +12611,7 @@ This compatibility file is generated by Context Room.
   ];
   for (const [source, fileName] of assets) {
     const sourceContent = fs.readFileSync(source, "utf8");
-    let relocatedContent = /[.]md$/i.test(fileName)
-      ? sourceContent
-          .replaceAll("../context-room-", "context-room-")
-          .replaceAll(
-            "](../remote-qm.md)",
-            "](https://unpkg.com/context-room@latest/docs/remote-qm.md)",
-          )
-      : sourceContent;
-    if (fileName === "features/codex-prompt-center.md") {
-      relocatedContent = relocatedContent
-        .replaceAll(
-          "../../schemas/",
-          "https://unpkg.com/context-room@latest/schemas/",
-        )
-        .replaceAll(
-          "](context-hub.md)",
-          "](https://unpkg.com/context-room@latest/docs/features/context-hub.md)",
-        )
-        .replaceAll(
-          "](settings.md)",
-          "](https://unpkg.com/context-room@latest/docs/features/settings.md)",
-        );
-    }
-    if (fileName === "features/shared-context.md") {
-      for (const linkedFeature of ["context-hub.md", "documentation-lifecycle.md", "review-queue.md"]) {
-        relocatedContent = relocatedContent.replaceAll(
-          `](${linkedFeature})`,
-          `](https://unpkg.com/context-room@latest/docs/features/${linkedFeature})`,
-        );
-      }
-    }
-    if (fileName === "features/review-authority.md") {
-      relocatedContent = relocatedContent.replaceAll(
-        "](review-queue.md)",
-        "](https://unpkg.com/context-room@latest/docs/features/review-queue.md)",
-      );
-    }
-    files.push([path.join(targetRoot, fileName), relocatedContent]);
+    files.push([path.join(targetRoot, fileName), sourceContent]);
   }
 
   let updated = 0;

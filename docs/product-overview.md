@@ -1,169 +1,97 @@
 ---
 context_room:
-  kind: canonical
-  scope: context-room
-  status: current
-  canonical_for: product overview
-  last_verified: 2026-08-09
-  sources: [README.md, bin/context-room.mjs, bin/context-room-remote.mjs, src/context_room.mjs, src/review_authority.mjs, src/context_engine.mjs, src/context_inventory.mjs, src/context_snapshots.mjs, src/context_settings.mjs, src/context_diagnostics.mjs, src/provider_profiles.mjs, src/codex_prompt_center.mjs, src/context_hub.mjs, src/doc_agent.mjs, src/shared_context.mjs, schemas/config.schema.json, schemas/codex-prompt-catalog-v1.schema.json, schemas/codex-prompt-overrides-v1.schema.json, schemas/codex-prompt-publication-state-v2.schema.json, schemas/codex-prompt-runtime-receipt-v2.schema.json, schemas/doc-context.schema.json, schemas/shared-repository.schema.json, schemas/shared-skill-locations.schema.json, schemas/shared-instruction-locations.schema.json, docs/agent-configuration.md, docs/remote-qm.md]
+  id: product.model
+  depends_on:
+    - strategy.context-room
+    - domains.truth.layers
+    - assurance.review.human-authority
 ---
 
-# Product Overview
+# Product Model
 
-## Purpose
+## Summary
 
-Context Room is a local-first browser UI for keeping project context visible, editable, and reviewable. It is built for repos where humans and agents both depend on docs, skills, runbooks, and startup instructions. Its optional Hosted profiles are deliberately narrower Shared-only projections: they never expose the server's local projects, files, Settings, Startup resources, computer, or Codex prompts.
+Context Room is one global Hub with selectable local, worktree, Shared, proposal-review, and hosted surfaces. It presents accepted context and pending review without collapsing their authority or temporal state.
 
-## Product Loop
+## Defines
 
-1. In the local profile, run `context-room setup` to initialize and register an existing project, create a new project from **Manage projects… → New project**, or run `context-room hub` to open the computer-wide room without initializing an ordinary current directory. When launched inside an existing Context Room project or worktree, `hub` registers that exact location when needed and opens it inside the same global room; elsewhere it opens the unfiltered global Home. Every local entry point uses the same global Context Room service.
-2. Use the truth-aware hub to find current docs, targets, records, and source areas that matter.
-3. Edit safe text files inside `allowedPaths`.
-4. Review the current content versions covered by `watchAllow` and folder `watchRules`.
-5. Run `doctor` or `guard` for deterministic proof, or `ask` when a working agent needs a task-specific documentation packet from the detected project or an explicit shared-only project target.
-6. Route durable documentation updates through the local review queue or a task-scoped shared proposal; selected large projects may run a scheduled read-only-first audit.
-7. Give coding agents the compact `ask`, `edit`, and `capabilities` root surface, while keeping every file decision human-owned.
+This document defines the observable product model, primary user surfaces, and distinctions between local, global, Shared, proposal, and hosted operation.
 
-Projects that need cross-project documentation or skills can add the optional
-[Shared context](features/shared-context.md) loop. The accepted configured
-default branch is mounted as read-only context. Agents propose changes on
-scoped `proposal/*` branches; human decisions apply to the proposal's files,
-then the human explicitly puts the fully reviewed result on the configured
-default branch or rejects the exact proposal revision. No terminal proposal
-decision is exposed to agents.
+## Does not define
 
-## Main Surfaces
+This document does not define Git algorithms, HTTP routes, JSON schemas, deployment steps, review cryptography, or feature-specific interaction details.
 
-Unless a surface is marked Hosted, the list below describes the complete local
-profile.
+## Mental model
 
-- Context Room Home: one compact project-filterable queue that lists local files individually and shared changes by proposal, followed directly by the current project's Context Health, `hubSections`, and startup panels.
-- History and project management: secondary routes from the queue and project picker; owners can create a documentation-ready local project or propose a new document for a selected shared project while every project and worktree keeps its own identity inside the single global room.
-- Codex Prompt Center, local profile only: an advanced global tool opened from Settings, with runtime-published official, effective-after-restart, and runtime-loaded views; exact overrides remain private to `$CODEX_HOME`, while protected and server-owned targets stay visible and read-only.
-- Explorer and editor, local profile only: safe project text, with progressive folder loading in the global room, editing limited by `allowedPaths`, and four explicit folder watch modes.
-- Document Graph: progressive global, project, and local Canvas views of explicit document references and applicable context, with accepted truth visible by default and pending layers opt-in.
-- Documents to review: hash-backed human verification for watched documents, Git diffs when available, implicit project `AGENTS.md` files, and every skill exposed by Startup skills.
-- Review authority: owner-only decisions, monotonic agent review scope, fail-closed direct config narrowing, current-UI nonces for protected local mutations, one-use challenges for exact terminal acceptance, exact shared-proposal receipts, and visible remote-ref violations.
-- Startup context: project instruction files by default, with ancestor and global discovery available by opt-in.
-- Startup skills: project skill folders by default, with ancestor discovery available for existing or explicitly broadened configs.
-- Startup hooks: project AI-agent and hook-manager files plus current-repository Git hooks by default.
-- Settings, local profile only: five-category editor—Project, Review and trust, Agent environment, Preferences, and Advanced extensions—with compact revision-safe project loading, live search, explicit scopes, progressive disclosure, one manual Save bar, Shared Skills and Shared Instructions management, and the entry to Codex Prompt Center.
-- Project inspection: a compact companion to the Review Queue that keeps the selected worktree identity visible and exposes Context Health and Agent environment; configured Home sections remain the primary project navigation.
-- Agent CLI: three root commands—`ask` for accepted-document research, `edit`
-  for a ready shared proposal worktree, and `capabilities` for the complete
-  advanced contract, plus deterministic local or authenticated remote
-  Workspace navigation through `ui list` and `ui open`. Human file decisions
-  never enter the CLI.
-- Context Engine: exact provider-specific context for one registered project,
-  worktree, and folder, with graph, trace, impact, metadata-only snapshots,
-  diffs, and proposal impact shared by the CLI and UI.
-- Documentation research agent: a fresh read-only Codex researcher per request, backed by a deterministic section-level documentation CLI and a schema-constrained evidence packet.
-- Documentation lifecycle: shared maintenance and audit skills, task-scoped proposal reuse, and explicit local/shared/mixed write routing.
-- Shared context: an optional, generic Git-backed accepted snapshot with documentation, skills, reviewed agent instruction collections, scoped proposal worktrees, and exact-commit human review.
-- Hosted Shared-only Hub and review: an immutable configured repository and project projection with proposal creation and exact whole-file review decisions; local project creation, project files, Settings, Startup resources, Computer exploration, and Codex prompt APIs remain unavailable.
+The user works in one Context Hub.
 
-Feature-level docs live in [Features](features/index.md).
+The Hub aggregates:
 
-## Product Rules
+- registered local logical projects;
+- registered worktree locations for each logical project;
+- registered Shared repositories;
+- Shared projects from accepted repository main;
+- active Shared proposals;
+- local file reviews and exact Shared proposal reviews;
+- deterministic health, context, and review summaries.
 
-- Keep one global Context Room. `Local` and `Shared` identify documentation
-  storage and review workflows, never separate room modes.
-- Treat each browser tab or window as an independent Workspace within that
-  global room. Workspace state is navigation metadata, not project truth or a
-  documentation source.
-- Bind remote Workspaces to the authenticated user, scoped project, and
-  optional task session. Never guess between multiple compatible pages;
-  require an exact selector or explicit `--recent`.
-- Keep the edit surface narrow. Add paths only when Context Room should be allowed to read and write them.
-- Treat review as human-owned. Agents can surface the queue and widen review coverage, but they cannot accept, reject, verify, narrow, or remove the owner-authorized scope. Individual file and change decisions are direct actions in the human UI. Before attempting a multi-file batch or terminal proposal decision through that surface, an agent must ask once, restate the exact action, project, proposal or file scope, and effects after the first yes, ask again, and do nothing without a second separate, unambiguous yes.
-- Fail closed on missing or inconsistent authority evidence. A direct config reduction keeps the prior owner scope effective; a missing shared proposal ref stays visible until its exact accepted or rejected evidence is restored.
-- State the same-user boundary honestly. Local nonces, one-use terminal challenges, and signatures provide provenance, request binding, replay resistance, and tamper detection, not physical user presence; provider-side ref rules or a separate authenticated reviewer provide the stronger boundary.
-- Let owners rank logical projects device-wide and temporarily snooze an exact review version without changing its decision, trust, or gate status. New content returns immediately to the active queue.
-- Keep executable hooks read-only unless the project owner explicitly enables hook editing.
-- Keep deterministic context primitives available internally while exposing a compact documentation-research entry point to ordinary coding agents.
-- Keep documentation research isolated. `context-room ask` may launch Codex, while deterministic inspection commands remain read-only.
-- Keep accepted and pending evidence separate. Proposal metadata may stay
-  visible, but proposal content never enters effective build context before
-  human review and integration into the configured shared default branch.
-- Keep config changes source-grounded. Run `context-room doctor` after changing `.context-room/config.json`.
-- Keep accepted shared context read-only. Changes belong in a proposal worktree; human file decisions make the selected result eligible, and a separate explicit human action with an exact one-use terminal challenge puts that reviewed result on the shared default branch. Success is reported only after the remote branch is proved to contain the accepted commit.
-- Resolve worktrees only from the current directory or explicit registration. Context Room does not scan the computer for new worktrees.
-- Keep CLI output machine-stable: compact versioned envelopes, effect-aware
-  mutations, same-path apply for protected operations, and structured
-  ambiguity instead of guesses. The metadata-only event journal remains an
-  internal UI synchronization mechanism rather than a public agent command.
-- Keep provider truth unified. Codex skill discovery and managed links use
-  `.agents/skills` from the common provider profile; unmanaged legacy
-  `.codex/skills` content is diagnostic evidence, never migration input to
-  overwrite.
-- Keep rooms isolated. Automatic port selection must not stop another room, and a stale tab must not write state after its port begins serving another project root.
-- Apply the request, physical-path, revision, repository, timeout, and public-response invariants in [Server boundary](assurance/server-boundary.md) to local, global, proposal-review, and hosted rooms.
-- Keep owner actions operable across keyboard, pointer, touch, narrow layouts, zoom, themes, reduced motion, and assistive technology according to [Interface accessibility](assurance/interface-accessibility.md).
+A selected location narrows Explorer, Settings, Startup environment, effective context, and project-specific actions. Selection does not replace the global level.
 
-## Data Model
+## Product surfaces
 
-- `allowedPaths`: files and folders Context Room may expose for editing.
-- `readOnlyPaths`: allowed files and folders Context Room may display but must not create, edit, or delete.
-- `watchAllow`: simple exact file watches and compatible recursive live folder watches; each current content hash requires human verification.
-- `watchRules`: explicit folder watches that combine recursive or direct-child scope with live or current-file membership. The full contract lives in [Agent configuration](agent-configuration.md#watchrules).
-- `reviewPaths` and `reviewAgentInstructions`: deprecated read-only compatibility fields migrated into the unified watched-document scope on the next human Settings save.
-- `.context-room/review-gate.json`: local owner policy selecting which Git operations pending review can block. It stays outside project config and the agent CLI cannot change it.
-- `~/.context-room/hub/review-authority/`: private last owner-authorized local review scopes and signing key. Shared exact rejection receipts use the corresponding private authority state under `~/.context-room/shared/review-authority/`.
-- `hubSections`: visible navigation structure.
-- `startupContext`: instruction files that may shape agent behavior before work starts.
-- `startupSkills`: skill folders that may shape future agent behavior.
-- `startupHooks`: hook files that can run around agent work, Git actions, or validation.
-- `context_room` metadata: optional Markdown frontmatter used by `doctor`, graph health, and briefs.
-- Context coordinates: a durable project ID, explicitly registered worktree
-  location, project-relative folder, and provider.
-- Context resources and applications: evidence-based identities, versions,
-  statuses, scopes, reasons, destinations, and proven relations used by
-  effective context, trace, impact, snapshots, and UI inspection.
-- `~/.context-room/shared/registry.json`: user-approved source-repository and subpath bindings for generic shared context.
-- `$HOME/.context-room/hub/registry.json`: local project and shared-repository catalog used by Context Room's global views.
-- `$CODEX_HOME/prompt-overrides/`: private Codex-owned prompt catalog, exact overrides, hash-only runtime receipts, and immutable per-process catalog snapshots; it is never project configuration.
-- `<shared-repository>/.context-room/shared-repository.json`: versioned contract for a shared repository's branch and path layout.
-- `schemas/doc-context.schema.json`: structured evidence contract returned by the documentation research agent.
+### Context Hub
 
-## Source Map
+The Hub is the global entry point and attention surface. It groups worktrees as locations of one logical project and keeps Shared repositories independently identifiable.
 
-- `bin/context-room.mjs`: CLI entry point and command routing.
-- `src/context_room.mjs`: server, file access, review queue, graph, brief, UI, and API.
-- `src/review_authority.mjs`: owner-authorized review scope, exact shared-proposal decision receipts, terminal challenges, signing, and tamper inspection.
-- `src/shared_context.mjs`: shared repository sync, snapshots, managed skill and instruction links, proposals, review materialization, and acceptance.
-- `src/agent_cli.mjs`: target resolution, exact-folder environment, task preparation, change routing, handoff, reviews, project commands, and shared resource inspection.
-- `src/context_engine.mjs`, `src/context_inventory.mjs`, and `src/provider_profiles.mjs`: effective context, graph, trace, impact, accepted-document filtering, and provider evidence.
-- `src/document_graph.mjs` and `src/document_graph_layout_worker.mjs`: the human-facing Document Graph, proven reference model, bounded deterministic layout, and progressive graph scopes.
-- `src/context_snapshots.mjs`: private metadata-only context snapshots and diffs.
-- `src/context_settings.mjs` and `src/context_diagnostics.mjs`: typed context Settings and structured Doctor or proposal-impact analysis.
-- `src/cli_registry.mjs`, `src/cli_contract.mjs`, and `src/event_journal.mjs`: command parity, versioned machine output, completions, and resumable local events.
-- `src/context_hub.mjs`: global project/shared-repository registration and single-Hub runtime discovery.
-- `src/codex_prompt_center.mjs`: generic Codex prompt catalog, exact overlays, private storage, optimistic concurrency, and per-process receipt/snapshot proof.
-- `src/doc_agent.mjs`: documentation-only corpus, section retrieval, Codex researcher invocation, and evidence packet rendering.
-- `src/codex_composer_bridge.mjs`: loopback-only insertion into the active Codex composer.
-- `src/doc_metadata.mjs`: Markdown metadata parsing.
-- `src/yaml_utils.mjs`: YAML helpers.
-- `schemas/config.schema.json`: config contract.
-- `schemas/codex-prompt-catalog-v1.schema.json`: strict runtime catalog and immutable snapshot contract.
-- `schemas/codex-prompt-overrides-v1.schema.json`: strict private override-manifest contract.
-- `schemas/codex-prompt-runtime-receipt-v2.schema.json`: strict hash-only runtime receipt contract.
-- `schemas/shared-repository.schema.json`: shared repository manifest contract.
-- `schemas/doc-context.schema.json`: documentation research output contract.
-- `test/context_room.test.mjs`: CLI, config, review, startup scanner, and UI behavior tests.
-- `test/codex_prompt_center.test.mjs`: synthetic prompt catalog, overlay, storage, receipt, privacy, and API tests.
-- `test/shared_context.test.mjs`: shared snapshots, skills, offline fallback, proposal scope, hash expiry, and partial-acceptance tests.
-- `test/context_engine.test.mjs`, `test/context_snapshots.test.mjs`, and
-  `test/context_diagnostics.test.mjs`: effective context, trace, impact,
-  snapshots, diffs, Doctor helpers, and proposal impact.
-- `test/doc_agent.test.mjs`: documentation corpus, retrieval, provenance, prompt boundaries, and Codex invocation tests.
-- `docs/agent-configuration.md`: detailed config guide.
+### Explorer and editor
 
-## Development Loop
+The workspace exposes only authorized project files and supported visual assets. It is not a general filesystem browser. Editability and review coverage are separate boundaries.
 
-```bash
-npm test
-node bin/context-room.mjs doctor --root .
-node bin/context-room.mjs start --root .
-```
+### Review queue
 
-Without an explicit port, Context Room selects the first free port within the 200-port range starting at `4317`. An explicitly requested occupied port fails; Context Room does not stop the process using it. Confirm the served root through `/api/health` after startup.
+The queue shows watched local files and exact Shared proposal files that still require human decisions. File decisions do not implicitly accept a proposal.
+
+### Shared Context
+
+Shared Context connects one local logical project to one project in one registered Shared repository. Several Shared repositories may be registered. Accepted Shared main can project documents, skills, instructions, and metadata profiles.
+
+### Proposal review
+
+A proposal is an isolated Git change against accepted Shared main. It can be created, resumed, edited, published, rebased, reviewed file by file, accepted, or rejected. Visibility never makes it effective.
+
+### Settings
+
+Local Settings controls project configuration, device preferences, Shared connections, review scope, startup discovery, and advanced local extensions. Hosted profiles do not expose Settings.
+
+### Agent surfaces
+
+`context-room docs`, Context Engine commands, doctor, guard, brief, settings plans, and the CLI registry are deterministic. `context-room ask` launches one isolated researcher over a frozen accepted-only corpus. Agent commands do not accept or reject reviews.
+
+## Runtime profiles
+
+| Profile | Data scope | Main purpose |
+| --- | --- | --- |
+| `local` | Explicit local paths plus registered accepted Shared snapshots | Full owner workspace |
+| `hosted-hub` | Explicitly configured Shared repositories and projected Shared data | Shared-only global overview |
+| `hosted-review` | One exact Shared proposal review authority | Human review of one exact proposal revision |
+
+Hosted profiles do not expose local project files, local prompts, local Settings, local provider discovery, or local-only mutation APIs.
+
+## Truth layers
+
+| Layer | Meaning | May drive effective context? |
+| --- | --- | --- |
+| Current | Accepted local content or accepted Shared main | Yes, subject to scope and provider rules |
+| Proposal | Pending isolated change awaiting human decision | No |
+| Target | Accepted statement of a future intended change | No |
+| Historical | Past decision, release, incident, or superseded behavior | No |
+
+## Core invariants
+
+1. The Hub is always the top level.
+2. Worktrees are locations of one logical project.
+3. Accepted main and proposal content remain separate.
+4. A file review decision never silently performs a proposal terminal decision.
+5. Agents do not own acceptance or rejection.
+6. Hosted operation is Shared-only.
+7. Effective context is deterministic and accepted-only.

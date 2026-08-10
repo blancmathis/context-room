@@ -4,8 +4,8 @@ context_room:
   scope: context-room
   status: current
   canonical_for: repository agent instructions
-  last_verified: 2026-08-04
-  sources: [README.md, docs/product-overview.md, docs/features/index.md, docs/agent-configuration.md, package.json]
+  last_verified: 2026-08-10
+  sources: [README.md, PRODUCT.md, docs/index.md, docs/product-overview.md, docs/system/architecture.md, package.json]
 ---
 
 # AGENTS.md
@@ -16,14 +16,13 @@ These instructions apply to this repository. Use them for Context Room product, 
 
 ## Read First
 
-- Product/source map: `docs/product-overview.md`.
-- Feature behavior: `docs/features/index.md`, then the relevant feature page.
-- Documentation creation, audit, and consumption: `docs/features/documentation-lifecycle.md`.
+- Documentation map: `docs/index.md`.
+- Product strategy and model: `PRODUCT.md` and `docs/product-overview.md`.
 - Global local/shared cockpit: `docs/features/context-hub.md`.
-- Visual HTML documents: `docs/features/html-visual-documents.md`.
-- Visual pattern contracts: `docs/features/html-visual-patterns.md`.
-- Visual catalogs: `docs/context-room-visual-components.html` and `docs/context-room-data-visual-components.html`.
-- Config contract: `docs/agent-configuration.md` and `schemas/config.schema.json`.
+- Shared behavior and lifecycle: `docs/features/shared-context.md` and `docs/domains/shared-proposal-lifecycle.md`.
+- Human review boundary: `docs/features/review-authority.md`.
+- Architecture and runtime profiles: `docs/system/architecture.md` and `docs/system/runtime-profiles.md`.
+- Config contract: `schemas/config.schema.json`.
 - CLI entry point: `bin/context-room.mjs`.
 - Main implementation: `src/context_room.mjs`.
 - Tests: `test/context_room.test.mjs`.
@@ -44,7 +43,7 @@ These instructions apply to this repository. Use them for Context Room product, 
 
 - `src/context_room.mjs` contains the server, API, file access, review queue, graph, brief logic, and browser UI.
 - Prefer small changes inside existing helpers before adding new abstractions.
-- When config behavior changes, update `schemas/config.schema.json`, `docs/agent-configuration.md`, and relevant feature docs.
+- When config behavior changes, update `schemas/config.schema.json` and the smallest relevant canonical document.
 - When user-facing behavior changes, update or add a focused test in `test/context_room.test.mjs`.
 
 ## Verification

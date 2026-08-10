@@ -12,7 +12,7 @@ function workflowDocument() {
 
 test("the signed main image dispatches the exact Peerlab QM deployment", () => {
   const workflow = workflowSource();
-  const deploymentDoc = readFileSync("docs/remote-qm.md", "utf8");
+  const deploymentDoc = readFileSync("docs/operations/hosted-deployment.md", "utf8");
 
   assert.match(workflow, /actions\/create-github-app-token@[a-f0-9]{40}/);
   assert.match(workflow, /client-id: \$\{\{ vars\.PEERLAB_QM_DEPLOY_APP_CLIENT_ID \}\}/);

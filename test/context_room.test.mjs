@@ -1692,11 +1692,11 @@ test("init writes a reusable project config without LifeOS-specific paths", () =
   assert.equal(result.agentContextPath, path.join(root, AGENT_CONTEXT_FILE));
   assert.equal(fs.existsSync(path.join(root, AGENT_CONTEXT_FILE)), true);
   assert.equal(fs.existsSync(path.join(root, AGENT_CONTEXT_DIR, "README.md")), true);
-  assert.equal(fs.existsSync(path.join(root, AGENT_CONTEXT_DIR, "features", "codex-prompt-center.md")), true);
-  assert.equal(fs.existsSync(path.join(root, AGENT_CONTEXT_DIR, "html-visual-documents.md")), true);
-  assert.equal(fs.existsSync(path.join(root, AGENT_CONTEXT_DIR, "html-visual-patterns.md")), true);
-  assert.equal(fs.existsSync(path.join(root, AGENT_CONTEXT_DIR, "context-room-visual-components.html")), true);
-  assert.equal(fs.existsSync(path.join(root, AGENT_CONTEXT_DIR, "context-room-data-visual-components.html")), true);
+  assert.equal(fs.existsSync(path.join(root, AGENT_CONTEXT_DIR, "product-overview.md")), true);
+  assert.equal(fs.existsSync(path.join(root, AGENT_CONTEXT_DIR, "system", "architecture.md")), true);
+  assert.equal(fs.existsSync(path.join(root, AGENT_CONTEXT_DIR, "system", "runtime-profiles.md")), true);
+  assert.equal(fs.existsSync(path.join(root, AGENT_CONTEXT_DIR, "features", "context-hub.md")), true);
+  assert.equal(fs.existsSync(path.join(root, AGENT_CONTEXT_DIR, "domains", "truth-layers.md")), true);
 });
 
 test("fresh init infers an EchoDesk-style documentation room without exposing source as editable", () => {
@@ -2042,7 +2042,7 @@ test("setup and direct managed writers reject Context Room state symlink escapes
     { relPath: REVIEW_GATE_FILE, content: '{"operations":[]}\n' },
     { relPath: AGENT_CONTEXT_FILE, content: "external guide\n" },
     { relPath: AGENT_CONTEXT_DIR, directory: true },
-    { relPath: `${AGENT_CONTEXT_DIR}/agent-configuration.md`, content: "external configuration\n" },
+    { relPath: `${AGENT_CONTEXT_DIR}/product-overview.md`, content: "external product model\n" },
   ];
 
   for (const fixture of cases) {
@@ -2666,23 +2666,23 @@ test("project-only startup skill resolution ignores an external symlink collisio
   assert.equal(fs.readFileSync(path.join(external, "foo", "SKILL.md"), "utf8"), "# External collision\n");
 });
 
-test("generated agent guide includes repository setup instructions and the canonical configuration guide", () => {
+test("generated agent guide includes repository setup instructions and the canonical product model", () => {
   const root = makeRoot();
   fs.mkdirSync(path.join(root, "docs"), { recursive: true });
   fs.writeFileSync(path.join(root, "docs", "index.md"), "# Docs\n");
 
   const initialized = initializeContextRoomProject(root);
   const guide = fs.readFileSync(initialized.agentContextPath, "utf8");
-  const copiedConfiguration = path.join(root, AGENT_CONTEXT_DIR, "agent-configuration.md");
-  const canonicalConfiguration = fs.readFileSync(new URL("../docs/agent-configuration.md", import.meta.url));
+  const copiedProductModel = path.join(root, AGENT_CONTEXT_DIR, "product-overview.md");
+  const canonicalProductModel = fs.readFileSync(new URL("../docs/product-overview.md", import.meta.url));
 
   assert.match(guide, /## Set Up This Repository/);
   assert.match(guide, /`context-room setup`, `context-room init`, and `context-room start`/);
   assert.match(guide, /Read the root README, every applicable `AGENTS\.md`/);
   assert.match(guide, /Do not copy paths or state from another Context Room/);
   assert.match(guide, /second separate, unambiguous yes/i);
-  assert.equal(fs.existsSync(copiedConfiguration), true);
-  assert.deepEqual(fs.readFileSync(copiedConfiguration), canonicalConfiguration);
+  assert.equal(fs.existsSync(copiedProductModel), true);
+  assert.deepEqual(fs.readFileSync(copiedProductModel), canonicalProductModel);
 
   for (const generatedPath of initialized.agentContextPath
     ? [initialized.agentContextPath, ...fs.readdirSync(path.join(root, AGENT_CONTEXT_DIR))
@@ -2716,14 +2716,13 @@ test("available port selection skips an occupied room while strict selection rej
   );
 });
 
-test("agent HTML context uses a stable project path and refreshes generated copies", () => {
+test("agent context uses stable project paths and refreshes canonical copies", () => {
   const root = makeRoot();
   initializeContextRoomProject(root, { allowedPaths: ["docs/"] });
   const entryPath = path.join(root, AGENT_CONTEXT_FILE);
   const legacyEntryPath = path.join(root, AGENT_CONTEXT_DIR, "README.md");
-  const patternsPath = path.join(root, AGENT_CONTEXT_DIR, "html-visual-patterns.md");
-  const canonicalPatterns = fs.readFileSync(new URL("../docs/features/html-visual-patterns.md", import.meta.url), "utf8");
-  const relocatedPatterns = canonicalPatterns.replaceAll("../context-room-", "context-room-");
+  const productModelPath = path.join(root, AGENT_CONTEXT_DIR, "product-overview.md");
+  const canonicalProductModel = fs.readFileSync(new URL("../docs/product-overview.md", import.meta.url), "utf8");
 
   const entry = fs.readFileSync(entryPath, "utf8");
   assert.match(entry, /generated by Context Room/i);
@@ -2735,20 +2734,19 @@ test("agent HTML context uses a stable project path and refreshes generated copi
   assert.match(entry, /automatically follows the active Context Room app theme/);
   assert.match(entry, /--cr-bg/);
   assert.match(entry, /Do not hard-code a page palette/);
-  assert.match(entry, /## Where To Find HTML Examples/);
-  assert.match(entry, /\.context-room\/agent-context\/context-room-visual-components\.html/);
-  assert.match(entry, /\.context-room\/agent-context\/context-room-data-visual-components\.html/);
   assert.match(entry, /## Quality Gate/);
-  assert.match(entry, /\[HTML visual patterns\]\(agent-context\/html-visual-patterns\.md\)/);
+  assert.match(entry, /\[Product model\]\(agent-context\/product-overview\.md\)/);
+  assert.match(entry, /\[System architecture\]\(agent-context\/system\/architecture\.md\)/);
+  assert.match(entry, /\[Truth layers\]\(agent-context\/domains\/truth-layers\.md\)/);
   assert.match(fs.readFileSync(legacyEntryPath, "utf8"), /\.context-room\/README\.md/);
-  assert.equal(fs.readFileSync(patternsPath, "utf8"), relocatedPatterns);
+  assert.equal(fs.readFileSync(productModelPath, "utf8"), canonicalProductModel);
 
-  fs.writeFileSync(patternsPath, "stale generated copy\n", "utf8");
+  fs.writeFileSync(productModelPath, "stale generated copy\n", "utf8");
   const refreshed = syncContextRoomAgentContext(root);
 
   assert.equal(refreshed.entryPath, entryPath);
   assert.equal(refreshed.updated, 1);
-  assert.equal(fs.readFileSync(patternsPath, "utf8"), relocatedPatterns);
+  assert.equal(fs.readFileSync(productModelPath, "utf8"), canonicalProductModel);
   for (const generatedPath of refreshed.files.filter((filePath) => filePath.endsWith(".md"))) {
     const content = fs.readFileSync(generatedPath, "utf8");
     for (const match of content.matchAll(/\]\(([^)]+)\)/g)) {
@@ -2762,12 +2760,12 @@ test("agent HTML context uses a stable project path and refreshes generated copi
       );
     }
   }
-  const promptGuide = fs.readFileSync(
-    path.join(root, AGENT_CONTEXT_DIR, "features", "codex-prompt-center.md"),
+  const sharedGuide = fs.readFileSync(
+    path.join(root, AGENT_CONTEXT_DIR, "features", "shared-context.md"),
     "utf8",
   );
-  assert.match(promptGuide, /https:\/\/unpkg\.com\/context-room@latest\/schemas\/codex-prompt-catalog-v1\.schema\.json/);
-  assert.match(promptGuide, /https:\/\/unpkg\.com\/context-room@latest\/docs\/features\/context-hub\.md/);
+  assert.match(sharedGuide, /id: product\.shared-context/);
+  assert.match(sharedGuide, /# Shared Context/);
 });
 
 test("allowed paths are driven by project config", () => {
@@ -7520,18 +7518,12 @@ test("recurring theme refresh keeps an unchanged HTML preview iframe alive", () 
   assert.equal(harness.renderCount(), 1);
 });
 
-test("visual HTML library keeps forty data patterns and exposes five distinct diagram templates", () => {
+test("visual HTML registry keeps forty data patterns and five diagram templates", () => {
   const html = renderAppHtml();
-  const conceptCatalog = fs.readFileSync(new URL("../docs/context-room-visual-components.html", import.meta.url), "utf8");
-  const dataCatalog = fs.readFileSync(new URL("../docs/context-room-data-visual-components.html", import.meta.url), "utf8");
-  const reference = fs.readFileSync(new URL("../docs/features/html-visual-patterns.md", import.meta.url), "utf8");
   const groups = VISUAL_DOCUMENT_PATTERNS.reduce((result, pattern) => {
     (result[pattern.group] ||= []).push(pattern);
     return result;
   }, {});
-  const conceptCatalogIds = [...conceptCatalog.matchAll(/data-pattern="([^"]+)"/g)].map((match) => match[1]);
-  const dataCatalogIds = [...dataCatalog.matchAll(/data-pattern="([^"]+)"/g)].map((match) => match[1]);
-  const conceptPanels = conceptCatalog.split('<article class="pattern-panel"').slice(1);
 
   assert.equal(DIAGRAM_VISUAL_DOCUMENT_PATTERNS.length, 5);
   assert.strictEqual(CONCEPT_VISUAL_DOCUMENT_PATTERNS, DIAGRAM_VISUAL_DOCUMENT_PATTERNS);
@@ -7546,31 +7538,10 @@ test("visual HTML library keeps forty data patterns and exposes five distinct di
     "data-structure": 10,
     diagram: 5,
   });
-  assert.deepEqual(conceptCatalogIds, DIAGRAM_VISUAL_DOCUMENT_PATTERNS.map((pattern) => pattern.id));
-  assert.deepEqual(dataCatalogIds, DATA_VISUAL_DOCUMENT_PATTERNS.map((pattern) => pattern.id));
-  assert.equal((conceptCatalog.match(/type="radio"/g) || []).length, 5);
-  assert.ok((conceptCatalog.match(/<details\b/g) || []).length >= 5);
-  assert.equal((conceptCatalog.match(/pattern-demo cr-diagram-scroll" tabindex="0"/g) || []).length, 5);
-  assert.match(conceptCatalog, /--cr-cols: 16/);
-  assert.match(conceptCatalog, /min-width: 1480px/);
-  assert.match(conceptCatalog, /max-height: 720px/);
-  assert.equal(conceptPanels.length, 5);
-  for (const panel of conceptPanels) {
-    assert.ok((panel.match(/class="cr-diagram-node"/g) || []).length >= 10);
-    assert.equal((panel.match(/class="example-brief"/g) || []).length, 1);
-    assert.equal((panel.match(/class="example-reading"/g) || []).length, 1);
-  }
-  assert.match(conceptCatalog, /#view-system:checked ~ \.pattern-panels \[data-panel="system"\]/);
-  assert.match(conceptCatalog, /#view-reasoning:focus-visible ~ \.pattern-tabs label\[for="view-reasoning"\]/);
   assert.ok(html.includes("details.cr-diagram-node > summary"));
   assert.ok(html.includes(".cr-diagram-node:has(> summary:focus-visible)"));
   for (const pattern of VISUAL_DOCUMENT_PATTERNS) {
     assert.ok(html.includes("." + pattern.className), `missing injected styles for ${pattern.className}`);
-    assert.ok(reference.includes("`." + pattern.className), `missing reference for ${pattern.className}`);
-  }
-  for (const catalog of [conceptCatalog, dataCatalog]) {
-    assert.doesNotMatch(catalog, /<script\b/i);
-    assert.doesNotMatch(catalog, /\b(?:src|href)=["']https?:/i);
   }
 });
 
