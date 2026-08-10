@@ -4,7 +4,7 @@ context_room:
   scope: context-room
   status: current
   canonical_for: documentation research agent
-  last_verified: 2026-07-29
+  last_verified: 2026-08-09
   sources: [bin/context-room.mjs, src/doc_agent.mjs, schemas/doc-context.schema.json, src/context_room.mjs, src/shared_context.mjs]
 ---
 
@@ -90,6 +90,8 @@ The CLI indexes Markdown, MDX, text documentation, and semantic HTML exposed thr
 ## Research Lifecycle
 
 Every `ask` call starts a new non-interactive Codex process. Context Room does not resume an earlier research process. Before launch, the parent freezes the accepted local and shared documentation revision. The child receives an enforced `accepted-only` mode, so its later `docs` commands cannot access proposal content through arguments, task environment, or inherited task identity.
+
+The local accepted-only reader never acquires a Context Hub, DocQA, review-authority, or Hermes lock and never bootstraps, migrates, repairs, or refreshes stored state. It reads the already authorized scope and exact review evidence as an immutable snapshot. Every child `docs` command must reproduce the parent's accepted-corpus hash before returning content. `ask` exits non-zero when that verification fails, when no accepted document is available, or when a non-empty accepted corpus produces no exact verified evidence; an empty coverage report is never reported as successful research.
 
 The invocation is equivalent to:
 

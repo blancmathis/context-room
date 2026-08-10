@@ -18,6 +18,24 @@ function configureGit(root) {
   git(root, ["config", "user.name", "Context Room UX Soak"]);
 }
 
+function makeFixtureTreeRemovable(root) {
+  let stats;
+  try { stats = fs.lstatSync(root); } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  if (stats.isSymbolicLink()) return;
+  if (!stats.isDirectory()) {
+    try { fs.chmodSync(root, 0o600); } catch {}
+    return;
+  }
+  try { fs.chmodSync(root, 0o700); } catch {}
+  let entries = [];
+  try { entries = fs.readdirSync(root); } catch {}
+  for (const entry of entries) makeFixtureTreeRemovable(path.join(root, entry));
+  try { fs.chmodSync(root, 0o700); } catch {}
+}
+
 export default async function globalSetup() {
   const originalHome = process.env.HOME || os.homedir();
   process.env.PLAYWRIGHT_BROWSERS_PATH ||= process.platform === "darwin"
@@ -116,7 +134,7 @@ export default async function globalSetup() {
   const hostRoot = contextHubHostRoot();
   fs.mkdirSync(hostRoot, { recursive: true });
   initializeContextRoomProject(hostRoot, { title: "Context Room", allowedPaths: [], watchAllow: [] });
-  const { server } = createMemoryServer({ root: hostRoot, registerInHub: false, persistentDocumentGraphLayout: true });
+  const { server, waitForShutdown } = createMemoryServer({ root: hostRoot, registerInHub: false, persistentDocumentGraphLayout: true });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
@@ -140,7 +158,9 @@ export default async function globalSetup() {
       server.close(resolve);
       server.closeAllConnections?.();
     });
+    await waitForShutdown();
     try { execFileSync("chmod", ["-R", "u+w", base], { stdio: "ignore" }); } catch {}
-    fs.rmSync(base, { recursive: true, force: true });
+    makeFixtureTreeRemovable(base);
+    fs.rmSync(base, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
   };
 }

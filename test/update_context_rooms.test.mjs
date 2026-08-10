@@ -65,6 +65,11 @@ test("running Context Room processes expose their resolved root and port", () =>
   })?.root, path.resolve("/tmp/Project With Spaces"));
   assert.equal(contextRoomInstanceFromProcess({ pid: 43, cwd: "/tmp", command: "/bin/bash node context-room.mjs start" }), null);
   assert.equal(contextRoomInstanceFromProcess({ pid: 47, cwd: "/tmp", command: "context-room doctor --root project" }), null);
+  assert.equal(contextRoomInstanceFromProcess({
+    pid: 48,
+    cwd: "/tmp/context-room",
+    command: "node --experimental-vm-modules /tmp/kernel.js --working-dir /tmp/context-room",
+  }), null);
 });
 
 test("discovery verifies default and legacy server invocations while ignoring transient probes", async (t) => {
@@ -84,6 +89,7 @@ test("discovery verifies default and legacy server invocations while ignoring tr
       `  75 node /opt/context-room --root "${defaultRoot}" --port 4322 start`,
       `  76 node /opt/context-room --root ${defaultRoot} --port 4324`,
       "  77 node /opt/context-room --root /tmp doctor",
+      "  78 node --experimental-vm-modules /tmp/kernel.js --working-dir /tmp/context-room",
     ].join("\n"),
     cwdForPid: (pid) => {
       cwdRequests.push(pid);

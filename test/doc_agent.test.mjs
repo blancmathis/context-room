@@ -192,6 +192,84 @@ test("accepted-only corpus excludes unverified documents and ignores proposal ov
   assert.equal(corpus.documents.some((document) => document.truthState === "proposal" || document.source === "session-proposal"), false);
 });
 
+test("accepted-only documentation CLI stays functional with project and Context Room home made read-only", { timeout: 30_000 }, (t) => {
+  const isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-doc-readonly-home-"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-doc-readonly-root-"));
+  t.after(() => {
+    for (const target of [isolatedHome, root]) {
+      try {
+        for (const entry of fs.readdirSync(target, { recursive: true }).reverse()) {
+          try { fs.chmodSync(path.join(target, entry), 0o700); } catch {}
+        }
+        fs.chmodSync(target, 0o700);
+      } catch {}
+      fs.rmSync(target, { recursive: true, force: true });
+    }
+  });
+  const contextRoomModule = new URL("../src/context_room.mjs", import.meta.url).href;
+  const docAgentModule = new URL("../src/doc_agent.mjs", import.meta.url).href;
+  const script = `
+import fs from "node:fs";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { initializeContextRoomProject, writeDocReviewDecision } from ${JSON.stringify(contextRoomModule)};
+import { buildDocumentationCorpus } from ${JSON.stringify(docAgentModule)};
+
+const [root, cli] = process.argv.slice(1);
+fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+fs.writeFileSync(path.join(root, "docs", "accepted.md"), "---\\ncontext_room:\\n  id: product.accepted-rule\\n---\\n\\n# Accepted rule\\n\\nThe immutable accepted rule is readable.\\n");
+initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: [] });
+writeDocReviewDecision(root, "docs/accepted.md", { status: "verified" });
+const corpus = buildDocumentationCorpus(root, { acceptedOnly: true });
+if (corpus.documents.length !== 1) throw new Error("fixture corpus is not accepted");
+
+const lockTree = (target) => {
+  for (const entry of fs.readdirSync(target, { withFileTypes: true })) {
+    const child = path.join(target, entry.name);
+    if (entry.isDirectory()) lockTree(child);
+    else fs.chmodSync(child, 0o400);
+  }
+  fs.chmodSync(target, 0o500);
+};
+const unlockTree = (target) => {
+  fs.chmodSync(target, 0o700);
+  for (const entry of fs.readdirSync(target, { withFileTypes: true })) {
+    const child = path.join(target, entry.name);
+    if (entry.isDirectory()) unlockTree(child);
+    else fs.chmodSync(child, 0o600);
+  }
+};
+
+lockTree(process.env.HOME);
+lockTree(root);
+try {
+  const result = spawnSync(process.execPath, [cli, "docs", "search", "immutable accepted rule", "--root=" + root, "--status=current", "--limit=2", "--budget=300"], {
+    cwd: root,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CONTEXT_ROOM_DOC_ACCEPTED_ONLY: "1",
+      CONTEXT_ROOM_DOC_EXPECTED_REVISION: corpus.revision.acceptedCorpus,
+    },
+  });
+  if (result.status !== 0) throw new Error(result.stderr || "read-only docs command failed");
+  const output = JSON.parse(result.stdout);
+  if (output.results.length !== 1 || output.results[0].path !== "docs/accepted.md") {
+    throw new Error("read-only docs command did not return the accepted document");
+  }
+} finally {
+  unlockTree(root);
+  unlockTree(process.env.HOME);
+}
+`;
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script, root, cli], {
+    cwd: root,
+    encoding: "utf8",
+    env: { ...process.env, HOME: isolatedHome, CONTEXT_ROOM_HOME: "" },
+  });
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("documentation agent prompt limits research to docs and forbids self-improvement", (t) => {
   const root = documentationRoot(t);
   const cliPath = path.join(root, "bin", "context-room.mjs");
@@ -248,6 +326,7 @@ test("documentation agent launches a fresh read-only Codex exec for every call",
   assert.equal(invocation.options.env.CONTEXT_ROOM_DOC_ACCEPTED_ONLY, "1");
   assert.equal(invocation.options.env.CONTEXT_ROOM_DOC_SESSION, "");
   assert.equal(invocation.options.env.CONTEXT_ROOM_DOC_PROPOSALS, "");
+  assert.equal(invocation.options.env.CONTEXT_ROOM_DOC_EXPECTED_REVISION, result.packet.coverage.docsRevision);
   assert.match(invocation.options.input, /We are changing session expiration for mobile users/);
   assert.match(invocation.options.input, /identify missing decisions/);
   assert.doesNotMatch(invocation.options.input, /proposal head|pendingSessionChanges/);
@@ -394,6 +473,45 @@ process.stdin.on("end", () => {
   const output = JSON.parse(result.stdout);
   assert.equal(output.summary, currentPacket.summary);
   assert.match(output.coverage.docsRevision, /^[a-f0-9]{64}$/);
+
+  const machineResult = spawnSync(process.execPath, [cli, "ask", researchBrief, `--root=${root}`, "--contract=v2", "--format=json"], {
+    cwd: root,
+    encoding: "utf8",
+    env: { ...process.env, CONTEXT_ROOM_CODEX_BIN: fakeCodex, NODE_TEST_CONTEXT: "1" },
+  });
+  assert.equal(machineResult.status, 0, machineResult.stderr);
+  assert.notEqual(machineResult.stdout, "");
+  const envelope = JSON.parse(machineResult.stdout);
+  assert.equal(envelope.schema, "context-room.cli/2");
+  assert.equal(envelope.ok, true);
+  assert.equal(envelope.data.summary, currentPacket.summary);
+});
+
+test("CLI ask fails closed when Codex returns zero verified coverage for a non-empty corpus", (t) => {
+  const root = documentationRoot(t);
+  const fakeCodex = path.join(root, "fake-codex-empty-coverage.mjs");
+  fs.writeFileSync(fakeCodex, `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({
+  summary: "No verified documentation evidence was returned.",
+  currentFacts: [],
+  constraints: [],
+  decisions: [],
+  targetDifferences: [],
+  unknowns: ["Documentation research could not be verified."],
+  conflicts: [],
+  optionalReads: []
+}));
+`);
+  fs.chmodSync(fakeCodex, 0o755);
+  const result = spawnSync(process.execPath, [cli, "ask", "Find the accepted session expiration rule", `--root=${root}`, "--json"], {
+    cwd: root,
+    encoding: "utf8",
+    env: { ...process.env, CONTEXT_ROOM_CODEX_BIN: fakeCodex, NODE_TEST_CONTEXT: "1" },
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /zero verified coverage/i);
+  assert.equal(result.stdout, "");
 });
 
 test("CLI ask satisfies the real Codex structured-output contract", {

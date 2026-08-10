@@ -4,7 +4,7 @@ context_room:
   scope: context-room
   status: current
   canonical_for: stable document identity and dependency metadata
-  last_verified: 2026-07-29
+  last_verified: 2026-08-08
   sources: [src/doc_metadata.mjs, src/yaml_utils.mjs, src/document_graph.mjs, src/context_room.mjs]
 ---
 
@@ -68,3 +68,10 @@ The local API exposes:
 - `GET /api/context-hub/document-validate` for profile, schema, relation, trust, and renderer diagnostics.
 
 Each request targets an explicit registered project location. Search supports the same structured filters as the agent-first CLI, including `id:`, `profile:`, `truth:`, `depends-on:`, `referenced-by:`, `diagram:`, and `meta.<path>:`.
+
+Document inspection is physically confined to that selected project. Context
+Room resolves the inspected file's real path and returns
+`403 document_outside_project` when a path that looks project-local crosses a
+symbolic link to an external target; it does not read or expose that target's
+metadata. The general request and filesystem rules live in
+[Server boundary](../assurance/server-boundary.md).

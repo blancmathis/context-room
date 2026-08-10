@@ -22,6 +22,8 @@ export const LAYOUT_CONTRACT = Object.freeze({
     { name: "Proposal header", selector: ".proposal-review-head", gutter: "workbench" },
     { name: "Proposal metadata", selector: ".proposal-review-meta", gutter: "workbench" },
     { name: "Proposal files", selector: ".proposal-review-file", gutter: "workbench", first: true },
+    { name: "Hosted review file header", selector: ".hosted-review-file-head", gutter: "workbench" },
+    { name: "Hosted review file body", selector: ".hosted-review-file-body", gutter: "workbench" },
     { name: "Graph toolbar", selector: ".graph-toolbar", gutter: "workbench" },
     { name: "Graph filters", selector: ".graph-filterbar", gutter: "workbench" },
     { name: "Graph rows", selector: ".graph-list-row", gutter: "workbench", first: true },
@@ -201,7 +203,7 @@ export async function collectLayoutViolations(page, { label = "layout" } = {}) {
     }
 
     if (mobile) {
-      const touchSelectors = ["#explorerOpen", "#sidebarToggle", "#brandHome", ".settings-tab", ".settings-footer button", ".file-action", ".global-explorer-mode", ".watch-filter", ".graph-open"];
+      const touchSelectors = ["#explorerOpen", "#sidebarToggle", "#brandHome", "#contextHubCreateSharedDocument", ".proposal-review-technical summary", ".settings-tab", ".settings-footer button", ".file-action", ".hosted-review-file-actions button", ".global-explorer-mode", ".watch-filter", ".graph-open", ".context-room-review-search", ".clear-search", ".tree button", ".global-project-row", ".global-project-tree-entry"];
       for (const selector of touchSelectors) {
         for (const element of [...document.querySelectorAll(selector)].filter(activeSurface)) {
           const rect = element.getBoundingClientRect();

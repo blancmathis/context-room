@@ -6,16 +6,15 @@ on:
     types: [completed]
     branches: [main]
 
-permissions:
-  contents: read
-  packages: write
-  id-token: write
+permissions: {}
 
 jobs:
   eligibility:
     if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
     outputs:
       current: ${{ steps.source-current.outputs.current }}
     env:
@@ -47,13 +46,18 @@ jobs:
       cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
     env:
       SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
       CORRELATION_ID: context-room-${{ github.event.workflow_run.head_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
       - name: Verify the CI source is still current main before build
         id: source-current-before-build
         shell: bash
@@ -70,6 +74,14 @@ jobs:
             exit 0
           fi
           echo "current=true" >> "${GITHUB_OUTPUT}"
+      - name: Resolve the package version
+        id: package
+        if: steps.source-current-before-build.outputs.current == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node --input-type=module --eval 'import packageJson from "./package.json" with { type: "json" }; const version = String(packageJson.version || ""); const semver = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/; if (!semver.test(version)) { console.error(`The Context Room package version is invalid: ${version}`); process.exit(1); } process.stdout.write(version)')"
+          printf 'version=%s\n' "${version}" >> "${GITHUB_OUTPUT}"
       - if: steps.source-current-before-build.outputs.current == 'true'
         uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad
       - if: steps.source-current-before-build.outputs.current == 'true'
@@ -87,19 +99,82 @@ jobs:
           context: .
           file: Dockerfile.remote
           platforms: linux/amd64
-          provenance: false
+          provenance: mode=max
+          sbom: true
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/context-room/remote:${{ env.SOURCE_SHA }}
+          build-args: |
+            CONTEXT_ROOM_BUILD_REVISION=${{ env.SOURCE_SHA }}
+            CONTEXT_ROOM_BUILD_VERSION=${{ steps.package.outputs.version }}
           cache-from: type=gha,scope=context-room-remote
           cache-to: type=gha,mode=max,scope=context-room-remote
       - name: Verify boot-critical runtime assets
         if: steps.source-current-before-build.outputs.current == 'true'
         run: |
+          set -euo pipefail
           image='ghcr.io/${{ github.repository_owner }}/context-room/remote@${{ steps.build.outputs.digest }}'
-          docker run --rm "$image" node --input-type=module --eval "import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'; import { initializeContextRoomProject } from './src/context_room.mjs'; initializeContextRoomProject(fs.mkdtempSync(path.join(os.tmpdir(), 'context-room-image-')));"
+          docker pull "$image"
+          revision="$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          version="$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')"
+          test "$revision" = "${SOURCE_SHA}"
+          test "$version" = '${{ steps.package.outputs.version }}'
+          docker run --rm \
+            --env EXPECTED_REVISION="${SOURCE_SHA}" \
+            --env EXPECTED_VERSION='${{ steps.package.outputs.version }}' \
+            "$image" node --input-type=module --eval "import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'; import packageJson from './package.json' with { type: 'json' }; import { initializeContextRoomProject } from './src/context_room.mjs'; const bakedRevision = fs.readFileSync('/app/.context-room-build-revision', 'utf8').trim(); if (bakedRevision !== process.env.EXPECTED_REVISION || process.env.CONTEXT_ROOM_BUILD_REVISION !== bakedRevision || packageJson.version !== process.env.EXPECTED_VERSION) throw new Error('Remote image build identity mismatch'); initializeContextRoomProject(fs.mkdtempSync(path.join(os.tmpdir(), 'context-room-image-')));"
+      - name: Verify the default remote entrypoint contract
+        if: steps.source-current-before-build.outputs.current == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          image='ghcr.io/${{ github.repository_owner }}/context-room/remote@${{ steps.build.outputs.digest }}'
+          smoke_root="$(mktemp -d)"
+          container="context-room-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          volume="context-room-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            docker rm --force "$container" >/dev/null 2>&1 || true
+            docker volume rm --force "$volume" >/dev/null 2>&1 || true
+            rm -rf "$smoke_root"
+          }
+          trap cleanup EXIT
+
+          openssl rand -hex 32 > "$smoke_root/human"
+          openssl rand -hex 32 > "$smoke_root/agent"
+          openssl rand -hex 32 > "$smoke_root/health"
+          chmod 0444 "$smoke_root/human" "$smoke_root/agent" "$smoke_root/health"
+          chmod 0755 "$smoke_root"
+          docker volume create "$volume" >/dev/null
+
+          image_command="$(docker image inspect "$image" --format '{{json .Config.Cmd}}')"
+          test "$image_command" = '["node","bin/context-room-remote.mjs"]'
+
+          set +e
+          docker run \
+            --name "$container" \
+            --mount "type=volume,source=${volume},target=/data" \
+            --mount "type=bind,source=${smoke_root},target=/run/context-room-smoke,readonly" \
+            --env CONTEXT_ROOM_SHARED_REPOSITORY=https://github.com/blancmathis/context-room.git \
+            --env CONTEXT_ROOM_PROJECT_IDS=smoke \
+            --env CONTEXT_ROOM_PUBLIC_HOST=context-room.invalid \
+            --env CONTEXT_ROOM_BROWSER_HOST=context-room.invalid \
+            --env CONTEXT_ROOM_ADMIN_SUBJECTS=smoke-admin \
+            --env CONTEXT_ROOM_HUMAN_SECRET_FILE=/run/context-room-smoke/human \
+            --env CONTEXT_ROOM_AGENT_SECRET_FILE=/run/context-room-smoke/agent \
+            --env CONTEXT_ROOM_HEALTH_SECRET_FILE=/run/context-room-smoke/health \
+            "$image" > "$smoke_root/entrypoint.log" 2>&1
+          entrypoint_exit="$?"
+          set -e
+
+          if [[ "$entrypoint_exit" -eq 0 ]] \
+            || ! grep -Fq '.context-room/shared-repository.json' "$smoke_root/entrypoint.log"; then
+            cat "$smoke_root/entrypoint.log" >&2
+            echo "The default remote entrypoint did not reach the expected fail-closed Shared descriptor boundary." >&2
+            exit 1
+          fi
       - name: Sign and record exact image
         if: steps.source-current-before-build.outputs.current == 'true'
         run: |
+          set -euo pipefail
           image='ghcr.io/${{ github.repository_owner }}/context-room/remote@${{ steps.build.outputs.digest }}'
           cosign sign --yes "$image"
           cosign verify "$image" \

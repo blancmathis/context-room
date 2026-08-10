@@ -65,6 +65,26 @@ test("the main image is built only after CI succeeds for the exact main commit",
   assert.equal(document.jobs.image["timeout-minutes"], 90);
 });
 
+test("the image workflow uses immutable actions and least-privilege job tokens", () => {
+  const document = workflowDocument();
+  assert.deepEqual(document.permissions, {});
+  assert.deepEqual(document.jobs.eligibility.permissions, { contents: "read" });
+  assert.deepEqual(document.jobs.image.permissions, {
+    contents: "read",
+    packages: "write",
+    "id-token": "write",
+  });
+
+  for (const job of Object.values(document.jobs)) {
+    for (const step of job.steps) {
+      if (step.uses) assert.match(step.uses, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[a-f0-9]{40}$/);
+      if (step.uses?.startsWith("actions/checkout@")) {
+        assert.equal(step.with?.["persist-credentials"], false);
+      }
+    }
+  }
+});
+
 test("stale CI reruns cannot build or dispatch an obsolete main image", () => {
   const document = workflowDocument();
   const eligibility = document.jobs.eligibility;
@@ -83,9 +103,22 @@ test("stale CI reruns cannot build or dispatch an obsolete main image", () => {
   assert.match(currentMainChecks[1].run, /Not dispatching obsolete CI source/);
 
   const buildStep = steps.find((step) => step.id === "build");
+  const packageStep = steps.find((step) => step.id === "package");
+  const verificationStep = steps.find((step) => step.name === "Verify boot-critical runtime assets");
   const appTokenStep = steps.find((step) => step.id === "qm-deploy-token");
   const dispatchStep = steps.find((step) => step.name === "Dispatch the exact signed image to Peerlab QM");
   assert.equal(buildStep.if, "steps.source-current-before-build.outputs.current == 'true'");
+  assert.equal(packageStep.if, "steps.source-current-before-build.outputs.current == 'true'");
+  assert.match(buildStep.with["build-args"], /CONTEXT_ROOM_BUILD_REVISION=\$\{\{ env\.SOURCE_SHA \}\}/);
+  assert.match(buildStep.with["build-args"], /CONTEXT_ROOM_BUILD_VERSION=\$\{\{ steps\.package\.outputs\.version \}\}/);
+  assert.equal(buildStep.with.context, ".");
+  assert.equal(buildStep.with.provenance, "mode=max");
+  assert.equal(buildStep.with.sbom, true);
+  const imagePull = verificationStep.run.indexOf('docker pull "$image"');
+  const imageInspect = verificationStep.run.indexOf('docker image inspect "$image"');
+  assert.ok(imagePull >= 0);
+  assert.ok(imageInspect > imagePull);
+  assert.match(verificationStep.run, /\/app\/\.context-room-build-revision/);
   assert.equal(appTokenStep.if, "steps.source-current-before-build.outputs.current == 'true'");
   assert.equal(dispatchStep.if, "steps.source-current-before-build.outputs.current == 'true'");
 
@@ -94,6 +127,23 @@ test("stale CI reruns cannot build or dispatch an obsolete main image", () => {
   assert.ok(finalFreshnessCheck > 0);
   assert.ok(downstreamDispatch > finalFreshnessCheck);
   assert.doesNotMatch(dispatchStep.run.slice(finalFreshnessCheck, downstreamDispatch), /sleep|gh run list|gh run watch/);
+});
+
+test("the exact image is checked both through an override and its default entrypoint", () => {
+  const steps = workflowDocument().jobs.image.steps;
+  const assetSmoke = steps.find((step) => step.name === "Verify boot-critical runtime assets");
+  const entrypointSmoke = steps.find((step) => step.name === "Verify the default remote entrypoint contract");
+  const sign = steps.find((step) => step.name === "Sign and record exact image");
+
+  assert.match(assetSmoke.run, /"\$image" node --input-type=module --eval/);
+  assert.match(entrypointSmoke.run, /docker run \\/);
+  assert.match(entrypointSmoke.run, /CONTEXT_ROOM_SHARED_REPOSITORY=https:\/\/github\.com\/blancmathis\/context-room\.git/);
+  assert.match(entrypointSmoke.run, /test "\$image_command" = '\["node","bin\/context-room-remote\.mjs"\]'/);
+  assert.match(entrypointSmoke.run, /"\$image" > "\$smoke_root\/entrypoint\.log"/);
+  assert.match(entrypointSmoke.run, /\.context-room\/shared-repository\.json/);
+  assert.doesNotMatch(entrypointSmoke.run, /grep -Fq "\$SOURCE_SHA"/);
+  assert.ok(steps.indexOf(assetSmoke) < steps.indexOf(entrypointSmoke));
+  assert.ok(steps.indexOf(entrypointSmoke) < steps.indexOf(sign));
 });
 
 test("image reruns use distinct correlations and wait for the exact Peerlab QM run", () => {

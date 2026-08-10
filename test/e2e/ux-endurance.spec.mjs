@@ -32,6 +32,40 @@ async function waitForReady(page) {
   await expect(page.locator("#reviewQueueHeading")).toBeVisible();
 }
 
+async function waitForWorkspaceBackgroundIdle(page) {
+  await expect.poll(() => page.evaluate(() => ({
+    projectOpening: Boolean(state.contextHubInitialProjectOpen),
+    projectBusy: Boolean(state.contextHubBusy),
+    projectExplorerBusy: Boolean(state.globalProjectExplorerLoading?.size || state.explorerRelatedLoading?.size),
+    projectSettingsBusy: Boolean(state.globalProjectSettingsLoading?.size || state.globalProjectSettingsPrefetching?.size),
+    projectAttentionBusy: Boolean(state.contextAttentionLoading),
+    registrationBusy: Boolean(state.workspaceRegistrationPromise),
+    presenceBusy: Boolean(state.workspacePresenceDrainPromise || state.workspacePresenceQueued),
+    runtimeRefreshBusy: Boolean(state.runtimeContextHubRefreshPromise || state.runtimeContextHubRefreshTimer),
+    hostedRefreshBusy: Boolean(state.hostedReviewRefreshPromise || state.hostedReviewRefreshTimer || state.hostedReviewRefreshPending),
+    snapshotRefreshBusy: Boolean(state.contextHubSnapshotPollTimer || state.contextHub?.freshness?.refreshing),
+    reportsBusy: Boolean(
+      state.refreshInFlight
+      || state.reportsRefreshInFlight
+      || state.backgroundRefreshTimer
+      || state.backgroundRefreshPendingOptions
+      || state.localForegroundRefreshTimer
+    ),
+  }))).toEqual({
+    projectOpening: false,
+    projectBusy: false,
+    projectExplorerBusy: false,
+    projectSettingsBusy: false,
+    projectAttentionBusy: false,
+    registrationBusy: false,
+    presenceBusy: false,
+    runtimeRefreshBusy: false,
+    hostedRefreshBusy: false,
+    snapshotRefreshBusy: false,
+    reportsBusy: false,
+  });
+}
+
 function explorerOpenControl(page) {
   return page.locator("#explorerOpen:visible, #sidebarToggle:visible").first();
 }
@@ -180,6 +214,13 @@ function attachFailureGuards(page) {
   return { failures, requestCount: () => requests };
 }
 
+function consumeExpectedConflictConsole(failures) {
+  const expected = "console: Failed to load resource: the server responded with a status of 409 (Conflict)";
+  const matches = failures.reduce((indexes, failure, index) => failure === expected ? [...indexes, index] : indexes, []);
+  expect(matches.length, "the intentional stale write emits at most one browser conflict error").toBeLessThanOrEqual(1);
+  if (matches.length) failures.splice(matches[0], 1);
+}
+
 async function exerciseResponsiveExplorer(page) {
   for (const width of [390, 640, 768, 980, 981, 1024, 1280, 1440]) {
     await page.setViewportSize({ width, height: width <= 640 ? 844 : 900 });
@@ -229,6 +270,7 @@ async function exerciseResponsiveExplorer(page) {
 
 async function assertMobileWorkbenchLayout(page, { fileUrl, settingsUrl }) {
   await page.setViewportSize({ width: 390, height: 844 });
+  await waitForWorkspaceBackgroundIdle(page);
   await page.goto(settingsUrl);
   await waitForBoot(page);
   await expect(page.locator("#settingsPage")).toBeVisible();
@@ -238,6 +280,7 @@ async function assertMobileWorkbenchLayout(page, { fileUrl, settingsUrl }) {
   expect(footerBox?.y || 0).toBeGreaterThanOrEqual(0);
   expect((footerBox?.y || 0) + (footerBox?.height || 0)).toBeLessThanOrEqual(844);
 
+  await waitForWorkspaceBackgroundIdle(page);
   await page.goto(fileUrl);
   await waitForBoot(page);
   await expect(page.locator("#viewer")).toBeVisible();
@@ -491,6 +534,7 @@ test("@smoke Context Room keeps its critical workspace state stable", async ({ p
     && Boolean(url.searchParams.get("returnTo")));
   await expect(page.locator("#proposalReviewPage")).toBeVisible();
   await expect(page.locator("#proposalDockReject")).toBeVisible();
+  await waitForWorkspaceBackgroundIdle(page);
   await openHome(page);
 
   await openProject(page, "Atlas");
@@ -515,22 +559,29 @@ test("@smoke Context Room keeps its critical workspace state stable", async ({ p
   await openHome(page);
   await openSettings(page);
   const settingsUrl = page.url();
+  await waitForWorkspaceBackgroundIdle(page);
   await page.goto(fileUrl);
-  await expect(page.locator("body")).not.toHaveClass(/app-booting/);
+  await waitForBoot(page);
+  await waitForWorkspaceBackgroundIdle(page);
   await page.goto(settingsUrl);
+  await waitForBoot(page);
   await expect(page.locator("#settingsPage")).toBeVisible();
+  await waitForWorkspaceBackgroundIdle(page);
   await page.goBack();
+  await waitForBoot(page);
   await expect(page.locator("#workspaceTitle")).toContainText("README.md");
 
   const duplicate = await context.newPage();
   const duplicateGuard = attachFailureGuards(duplicate);
   await duplicate.goto(page.url());
-  await expect(duplicate.locator("body")).not.toHaveClass(/app-booting/);
+  await waitForBoot(duplicate);
   await expect.poll(() => workspaceId(duplicate.url())).not.toBe(atlasWorkspace);
+  await waitForWorkspaceBackgroundIdle(duplicate);
   await duplicate.close();
 
   await exerciseResponsiveExplorer(page);
   await assertMobileWorkbenchLayout(page, { fileUrl, settingsUrl });
+  await waitForWorkspaceBackgroundIdle(page);
   await page.reload();
   await waitForBoot(page);
   await expect(page.locator("#workspaceTitle")).toContainText("README.md");
@@ -542,6 +593,336 @@ test("@smoke Context Room keeps its critical workspace state stable", async ({ p
     body: await page.locator("body").getAttribute("data-workspace-diagnostics") || "{}",
     contentType: "application/json",
   });
+});
+
+test("@smoke cancelling an unsaved page leave resumes the workspace runtime", async ({ page }, testInfo) => {
+  const data = fixture();
+  const guard = attachFailureGuards(page);
+  const cancelWorkspaceId = `workspace-cancel-${testInfo.project.name}`;
+  const commandId = `e2e-after-cancel-${testInfo.project.name}`;
+  await page.addInitScript(() => {
+    const nativeFetch = window.fetch.bind(window);
+    let holdFirstRegistration = true;
+    window.__e2eInitialRegisterStarted = false;
+    window.fetch = (input, options = {}) => {
+      const href = typeof input === "string" ? input : input?.url || "";
+      if (holdFirstRegistration && new URL(href, location.href).pathname === "/api/workspaces/register") {
+        holdFirstRegistration = false;
+        window.__e2eInitialRegisterStarted = true;
+        return new Promise((resolve, reject) => {
+          const abort = () => reject(new DOMException("The operation was aborted.", "AbortError"));
+          if (options.signal?.aborted) {
+            abort();
+            return;
+          }
+          options.signal?.addEventListener("abort", abort, { once: true });
+        });
+      }
+      return nativeFetch(input, options);
+    };
+  });
+  await page.goto(`${data.origin}/?hub=1&workspace=${cancelWorkspaceId}&view=hub`);
+  await waitForReady(page);
+  await expect.poll(() => page.evaluate(() => window.__e2eInitialRegisterStarted)).toBe(true);
+  await expect.poll(() => page.evaluate(() => ({
+    pending: state.workspaceInitialRegistrationPending,
+    runtimeEvents: Boolean(state.runtimeEventSource),
+  }))).toEqual({ pending: true, runtimeEvents: false });
+  const originalUrl = page.url();
+  await page.evaluate((workspaceId) => {
+    state.dirty = true;
+    const link = document.createElement("a");
+    link.id = "e2e-unsaved-leave";
+    link.href = `/?hub=1&workspace=${workspaceId}&view=settings`;
+    link.textContent = "Leave with unsaved changes";
+    document.body.appendChild(link);
+  }, cancelWorkspaceId);
+
+  const dialogPromise = page.waitForEvent("dialog");
+  const clickPromise = page.locator("#e2e-unsaved-leave").click({ noWaitAfter: true }).catch(() => {});
+  const dialog = await dialogPromise;
+  expect(dialog.type()).toBe("beforeunload");
+  await dialog.dismiss();
+  await clickPromise;
+  await page.bringToFront();
+
+  await expect(page).toHaveURL(originalUrl);
+  await expect.poll(() => page.evaluate(() => ({
+    stopped: state.workspaceRuntimeStopped,
+    unloadPending: state.workspaceUnloadPending,
+    runtimeEvents: Boolean(state.runtimeEventSource) && state.runtimeEventsConnected,
+    workspaceChannel: Boolean(state.workspaceChannel),
+  }))).toEqual({ stopped: false, unloadPending: false, runtimeEvents: true, workspaceChannel: true });
+  await page.evaluate(() => { state.dirty = false; });
+  const command = await page.request.post(`${data.origin}/api/workspaces/${cancelWorkspaceId}/command`, {
+    data: { id: commandId, action: "navigate", view: "settings", settingsSection: "preferences" },
+  });
+  expect(command.ok()).toBe(true);
+  await expect(page.locator("#settingsPage")).toBeVisible();
+  await expect(page).toHaveURL(/(?:\?|&)view=settings(?:&|$)/);
+  expect(guard.failures, guard.failures.join("\n")).toEqual([]);
+});
+
+test("@smoke an initial pairing command runs once after initial data is ready", async ({ page }, testInfo) => {
+  const data = fixture();
+  const guard = attachFailureGuards(page);
+  const pairingWorkspace = `workspace-pairing-${testInfo.project.name}`;
+  const command = {
+    id: `e2e-pairing-command-${testInfo.project.name}`,
+    workspaceId: pairingWorkspace,
+    action: "navigate",
+    view: "settings",
+    settingsSection: "preferences",
+    createdAt: new Date().toISOString(),
+  };
+  let markPairingStarted;
+  let releasePairing;
+  const pairingStarted = new Promise((resolve) => { markPairingStarted = resolve; });
+  const pairingGate = new Promise((resolve) => { releasePairing = resolve; });
+  await page.addInitScript(() => {
+    const nativePushState = history.pushState.bind(history);
+    window.__e2eSettingsPushes = 0;
+    history.pushState = (...args) => {
+      const target = new URL(String(args[2] || location.href), location.href);
+      if (target.searchParams.get("view") === "settings") window.__e2eSettingsPushes += 1;
+      return nativePushState(...args);
+    };
+  });
+  await page.route("**/api/workspaces/pair", async (route) => {
+    markPairingStarted();
+    await pairingGate;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ workspace: { workspaceId: pairingWorkspace }, command }),
+    });
+  });
+  await page.route(`**/api/workspaces/${pairingWorkspace}/command`, async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ command }) });
+  });
+
+  const navigation = page.goto(`${data.origin}/?hub=1&workspace=${pairingWorkspace}&view=hub#pair=e2e-pair-token`);
+  await pairingStarted;
+  await navigation;
+  try {
+    await expect.poll(() => page.evaluate(() => Boolean(state.root))).toBe(true);
+  } finally {
+    releasePairing();
+  }
+
+  await waitForBoot(page);
+  await expect(page.locator("#settingsPage")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__e2eSettingsPushes)).toBe(1);
+  expect(guard.failures, guard.failures.join("\n")).toEqual([]);
+});
+
+test("@smoke a synthetic persisted-page signal recreates the complete workspace runtime", async ({ page }) => {
+  const data = fixture();
+  const guard = attachFailureGuards(page);
+  await page.goto(`${data.origin}/?hub=1&workspace=workspace-persisted-restore&view=hub`);
+  await waitForReady(page);
+
+  const stopped = await page.evaluate(() => {
+    window.__e2eWorkspaceChannelBeforeRestore = state.workspaceChannel;
+    let event;
+    try { event = new PageTransitionEvent("pagehide", { persisted: true }); }
+    catch {
+      event = new Event("pagehide");
+      Object.defineProperty(event, "persisted", { value: true });
+    }
+    window.dispatchEvent(event);
+    return {
+      stopped: state.workspaceRuntimeStopped,
+      runtimeEvents: state.runtimeEventSource,
+      workspaceChannel: state.workspaceChannel,
+    };
+  });
+  expect(stopped).toEqual({ stopped: true, runtimeEvents: null, workspaceChannel: null });
+
+  await page.evaluate(() => {
+    let event;
+    try { event = new PageTransitionEvent("pageshow", { persisted: true }); }
+    catch {
+      event = new Event("pageshow");
+      Object.defineProperty(event, "persisted", { value: true });
+    }
+    window.dispatchEvent(event);
+  });
+  await expect.poll(() => page.evaluate(() => ({
+    stopped: state.workspaceRuntimeStopped,
+    runtimeEvents: Boolean(state.runtimeEventSource),
+    workspaceChannel: Boolean(state.workspaceChannel),
+    replacedChannel: state.workspaceChannel !== window.__e2eWorkspaceChannelBeforeRestore,
+  }))).toEqual({ stopped: false, runtimeEvents: true, workspaceChannel: true, replacedChannel: true });
+  await expect.poll(async () => page.evaluate(async () => {
+    const payload = await (await fetch("/api/workspaces", { cache: "no-store" })).json();
+    return payload.workspaces.some((workspace) => workspace.workspaceId === state.workspaceId);
+  })).toBe(true);
+  expect(guard.failures, guard.failures.join("\n")).toEqual([]);
+});
+
+test("@smoke hidden workspace presence is delayed and reports the real visibility", async ({ page }) => {
+  const data = fixture();
+  const guard = attachFailureGuards(page);
+  await page.goto(`${data.origin}/?hub=1&workspace=workspace-hidden-presence&view=hub`);
+  await waitForReady(page);
+  let releaseHiddenRegistration;
+  let markHiddenRegistration;
+  let delayNextHiddenRegistration = true;
+  const hiddenRegistrationStarted = new Promise((resolve) => { markHiddenRegistration = resolve; });
+  const hiddenRegistrationGate = new Promise((resolve) => { releaseHiddenRegistration = resolve; });
+  await page.route("**/api/workspaces/register", async (route) => {
+    const payload = route.request().postDataJSON();
+    if (delayNextHiddenRegistration && payload.visible === false) {
+      delayNextHiddenRegistration = false;
+      markHiddenRegistration();
+      await hiddenRegistrationGate;
+    }
+    await route.continue();
+  });
+  await page.evaluate(() => {
+    const nativeFetch = window.fetch.bind(window);
+    window.__e2ePresencePayloads = [];
+    window.__e2eVisibility = "hidden";
+    window.__e2eFocused = false;
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => window.__e2eVisibility });
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => window.__e2eVisibility !== "visible" });
+    Object.defineProperty(document, "hasFocus", { configurable: true, value: () => window.__e2eFocused });
+    window.fetch = async (input, options = {}) => {
+      const href = typeof input === "string" ? input : input?.url || "";
+      if (new URL(href, location.href).pathname === "/api/workspaces/register") {
+        window.__e2ePresencePayloads.push({
+          at: performance.now(),
+          payload: JSON.parse(String(options.body || "{}")),
+        });
+      }
+      return nativeFetch(input, options);
+    };
+    window.__e2eHiddenStartedAt = performance.now();
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+
+  try {
+    await hiddenRegistrationStarted;
+    await expect.poll(() => page.evaluate(() => window.__e2ePresencePayloads.at(-1)?.payload || null)).toMatchObject({ visible: false, focused: false });
+    const hiddenDelay = await page.evaluate(() => window.__e2ePresencePayloads.at(-1).at - window.__e2eHiddenStartedAt);
+    expect(hiddenDelay).toBeGreaterThanOrEqual(100);
+
+    await page.evaluate(() => {
+      window.__e2eVisibility = "visible";
+      window.__e2eFocused = true;
+      document.dispatchEvent(new Event("visibilitychange"));
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(await page.evaluate(() => window.__e2ePresencePayloads.filter((entry) => entry.payload.visible === true).length)).toBe(0);
+  } finally {
+    releaseHiddenRegistration();
+  }
+
+  await expect.poll(() => page.evaluate(() => window.__e2ePresencePayloads.at(-1)?.payload || null)).toMatchObject({ visible: true, focused: true });
+  await expect.poll(async () => page.evaluate(async () => {
+    const payload = await (await fetch("/api/workspaces?workspace=workspace-hidden-presence", { cache: "no-store" })).json();
+    const workspace = payload.workspaces.find((entry) => entry.workspaceId === "workspace-hidden-presence");
+    return workspace ? { visible: workspace.visible, focused: workspace.focused } : null;
+  })).toEqual({ visible: true, focused: true });
+
+  await page.evaluate(() => {
+    window.__e2eFocused = false;
+    window.dispatchEvent(new Event("blur"));
+  });
+  await expect.poll(() => page.evaluate(() => window.__e2ePresencePayloads.at(-1)?.payload || null)).toMatchObject({ visible: true, focused: false });
+  await expect.poll(async () => page.evaluate(async () => {
+    const payload = await (await fetch("/api/workspaces?workspace=workspace-hidden-presence", { cache: "no-store" })).json();
+    const workspace = payload.workspaces.find((entry) => entry.workspaceId === "workspace-hidden-presence");
+    return workspace ? { visible: workspace.visible, focused: workspace.focused } : null;
+  })).toEqual({ visible: true, focused: false });
+
+  const registrationsBeforePageHide = await page.evaluate(() => window.__e2ePresencePayloads.length);
+  await page.evaluate(() => {
+    window.__e2eVisibility = "hidden";
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event("pagehide"));
+  });
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => window.__e2ePresencePayloads.length)).toBe(registrationsBeforePageHide);
+  expect(guard.failures, guard.failures.join("\n")).toEqual([]);
+});
+
+test("@smoke accepted unsaved navigation does not restart requests from the departing document", async ({ page }, testInfo) => {
+  const data = fixture();
+  const guard = attachFailureGuards(page);
+  const failedLifecycleRequests = [];
+  page.on("requestfailed", (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (["/api/workspaces/register", "/api/reports", "/api/files", "/api/settings"].includes(pathname)) {
+      failedLifecycleRequests.push(`${pathname}: ${request.failure()?.errorText || "failed"}`);
+    }
+  });
+  await page.addInitScript(() => {
+    const storageKey = "context-room:e2e-departing-fetches";
+    let pagehideSeen = false;
+    const read = () => {
+      try { return JSON.parse(sessionStorage.getItem(storageKey) || '{"pagehides":0,"late":[]}'); }
+      catch { return { pagehides: 0, late: [] }; }
+    };
+    const write = (value) => {
+      try { sessionStorage.setItem(storageKey, JSON.stringify(value)); } catch {}
+    };
+    window.addEventListener("pagehide", () => {
+      pagehideSeen = true;
+      const value = read();
+      value.pagehides += 1;
+      write(value);
+    });
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = (input, options) => {
+      if (pagehideSeen) {
+        const href = typeof input === "string" ? input : input?.url || "";
+        const value = read();
+        value.late.push(new URL(href, location.href).pathname);
+        write(value);
+      }
+      return nativeFetch(input, options);
+    };
+  });
+
+  const navigationWorkspace = `workspace-real-navigation-${testInfo.project.name}`;
+  await page.goto(`${data.origin}/?hub=1&workspace=${navigationWorkspace}&view=hub`);
+  await waitForReady(page);
+  await expect.poll(() => page.evaluate(() => (
+    !state.workspacePresenceDrainPromise
+    && !state.workspacePresenceQueued
+    && !state.backgroundRefreshController
+  ))).toBe(true);
+  const targetUrl = `${data.origin}/?hub=1&workspace=${navigationWorkspace}&view=settings&settings=preferences`;
+  await page.evaluate((href) => {
+    sessionStorage.setItem("context-room:e2e-departing-fetches", JSON.stringify({ pagehides: 0, late: [] }));
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    state.dirty = true;
+    const link = document.createElement("a");
+    link.id = "e2e-accepted-unsaved-leave";
+    link.href = href;
+    link.textContent = "Leave and discard changes";
+    document.body.appendChild(link);
+  }, targetUrl);
+
+  const dialogPromise = page.waitForEvent("dialog");
+  const clickPromise = page.locator("#e2e-accepted-unsaved-leave").click({ noWaitAfter: true });
+  const dialog = await dialogPromise;
+  expect(dialog.type()).toBe("beforeunload");
+  await dialog.accept();
+  await clickPromise;
+  await page.waitForURL(targetUrl);
+  await waitForBoot(page);
+  await expect(page.locator("#settingsPage")).toBeVisible();
+  await page.waitForTimeout(350);
+  const lifecycleLog = await page.evaluate(() => JSON.parse(sessionStorage.getItem("context-room:e2e-departing-fetches") || "{}"));
+  expect(lifecycleLog.pagehides).toBeGreaterThanOrEqual(1);
+  expect(lifecycleLog.late || []).toEqual([]);
+  expect(failedLifecycleRequests).toEqual([]);
+  expect(guard.failures, guard.failures.join("\n")).toEqual([]);
 });
 
 test("@smoke an exact agent command changes only the targeted Workspace", async ({ page, context }) => {
@@ -626,6 +1007,14 @@ test("@soak repeated multi-day navigation does not accumulate workspace or brows
     await openHome(page);
     await openProject(page, warmup % 2 ? "Atlas" : "Beacon");
   }
+  await openProject(page, "Atlas");
+  await openProjectFile(page, "docs/README.md");
+  await page.locator("#graphLocal").click();
+  await expect(page.locator("#graphPage")).toBeVisible();
+  await openHome(page);
+  await openSettings(page, "preferences");
+  await toggleSettingsDisclosure(page);
+  await openHome(page);
   await openProject(page, "Atlas");
   await openProjectFile(page, "docs/README.md");
   const baseline = await collectMetrics(page, guard.requestCount);
@@ -716,10 +1105,13 @@ test("@soak time-dependent reviews, drafts, and shared reconnect safely", async 
   await openProjectFile(page, "docs/README.md");
   const healthResponse = await page.request.get(data.origin + "/api/health");
   const hostProjectId = healthResponse.headers()["x-context-room-project"];
+  const ownerMutationNonce = await page.locator('meta[name="context-room-owner-nonce"]').getAttribute("content");
+  expect(ownerMutationNonce).toBeTruthy();
   const sharedHeaders = {
     "content-type": "application/json",
     "x-context-room-project": hostProjectId,
     "x-context-room-target-project": data.projects.atlas.id,
+    "x-context-room-owner-nonce": ownerMutationNonce,
   };
   const initiallyOnline = await page.request.post(data.origin + "/api/shared-context/refresh", { headers: sharedHeaders, data: {} });
   const initialSharedStatus = (await initiallyOnline.json()).status;
@@ -776,6 +1168,7 @@ test("@soak time-dependent reviews, drafts, and shared reconnect safely", async 
   expect(staleWrite.status()).toBe(409);
   expect((await staleWrite.json()).code).toBe("file_revision_conflict");
   await writer.close();
+  consumeExpectedConflictConsole(guard.failures);
   expect(guard.failures, guard.failures.join("\n")).toEqual([]);
 
   await testInfo.attach("temporal-workflow", {

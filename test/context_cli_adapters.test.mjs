@@ -18,6 +18,7 @@ import {
   planCliContextSettings,
   proposalContextImpact,
   registerCliProject,
+  resolveCliProposalReference,
   resolveCliTarget,
   traceCliContext,
 } from "../src/agent_cli.mjs";
@@ -29,6 +30,34 @@ import {
   materializeSharedReview,
   publishSharedProposal,
 } from "../src/shared_context.mjs";
+
+test("proposal selectors scope first, prefer exact identities, and reject ambiguous aliases", () => {
+  const repository = "file:///tmp/context-room-proposal-resolver-one.git";
+  const proposals = [
+    { id: "proposal-one", branch: "proposal/demo/one", head: "aaa111", title: "First", projectId: "demo", scope: "project", repository },
+    { id: "proposal-two", branch: "proposal/demo/two", head: "bbb222", title: "proposal/demo/one", projectId: "demo", scope: "project", repository },
+    { id: "proposal-other", branch: "proposal/other/one", head: "ccc333", title: "Scoped title", projectId: "other", scope: "project", repository },
+    { id: "proposal-demo", branch: "proposal/demo/scoped", head: "ddd444", title: "Scoped title", projectId: "demo", scope: "project", repository },
+    { id: "proposal-global", branch: "proposal/global/scoped", head: "eee555", title: "Scoped title", projectId: "global", scope: "global", repository },
+    { id: "proposal-without-repository", branch: "proposal/demo/unscoped", head: "fff666", title: "Scoped title", projectId: "demo", scope: "project" },
+  ];
+  assert.equal(resolveCliProposalReference(proposals, "proposal-one", { repository, projectId: "demo" }).id, "proposal-one");
+  assert.equal(resolveCliProposalReference(proposals, "proposal/demo/one", { repository, projectId: "demo" }).id, "proposal-one");
+  assert.equal(resolveCliProposalReference(proposals, "Scoped title", { repository, projectId: "demo" }).id, "proposal-demo");
+  assert.equal(resolveCliProposalReference(proposals, "proposal-global", { repository, projectId: "demo" }), null);
+  assert.equal(resolveCliProposalReference(proposals, "proposal-without-repository", { repository, projectId: "demo" }), null);
+
+  const aliases = [
+    { id: "head-match", branch: "proposal/demo/head", head: "same-alias", title: "Head", projectId: "demo", scope: "project", repository },
+    { id: "title-match", branch: "proposal/demo/title", head: "eee555", title: "Same-alias", projectId: "demo", scope: "project", repository },
+  ];
+  assert.throws(
+    () => resolveCliProposalReference(aliases, "same-alias", { repository, projectId: "demo" }),
+    (error) => error.code === "proposal-ambiguous"
+      && error.statusCode === 409
+      && error.details?.candidates?.length === 2,
+  );
+});
 
 function git(root, args) {
   return execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -192,6 +221,9 @@ test("proposal context impact reads accepted main and exact proposal metadata wi
   fs.writeFileSync(path.join(proposal.root, "projects", "demo", "docs", "README.md"), "# Demo\n\nClarified again.\n");
   fs.writeFileSync(path.join(proposal.root, "projects", "demo", "docs", "SECOND-ADD.md"), "# Added later\n");
   const published = publishSharedProposal(project, { proposal: proposal.branch, description: "Second exact revision" });
+  const branchAlias = createSharedProposal(project, { title: proposal.branch, branch: "proposal/demo/branch-alias" });
+  fs.writeFileSync(path.join(branchAlias.root, "projects", "demo", "docs", "BRANCH-ALIAS.md"), "# Alias must not shadow an exact branch\n");
+  publishSharedProposal(project, { proposal: branchAlias.branch });
   const before = git(seed, ["rev-parse", "HEAD"]);
   const remoteRefsBefore = git(base, ["ls-remote", remote, "refs/heads/main", `refs/heads/${proposal.branch}`]);
   const impact = await proposalContextImpact({ selector: proposal.branch, repository: remote });
@@ -216,6 +248,19 @@ test("proposal context impact reads accepted main and exact proposal metadata wi
   assert.equal(git(seed, ["rev-parse", "HEAD"]), before);
   assert.equal(git(base, ["ls-remote", remote, "refs/heads/main", `refs/heads/${proposal.branch}`]), remoteRefsBefore);
 
+  const ambiguousOne = createSharedProposal(project, { title: "Ambiguous impact", branch: "proposal/demo/ambiguous-one" });
+  fs.writeFileSync(path.join(ambiguousOne.root, "projects", "demo", "docs", "AMBIGUOUS-ONE.md"), "# One\n");
+  publishSharedProposal(project, { proposal: ambiguousOne.branch });
+  const ambiguousTwo = createSharedProposal(project, { title: "Ambiguous impact", branch: "proposal/demo/ambiguous-two" });
+  fs.writeFileSync(path.join(ambiguousTwo.root, "projects", "demo", "docs", "AMBIGUOUS-TWO.md"), "# Two\n");
+  publishSharedProposal(project, { proposal: ambiguousTwo.branch });
+  await assert.rejects(
+    () => proposalContextImpact({ selector: "Ambiguous impact", repository: remote }),
+    (error) => error.code === "proposal-ambiguous"
+      && error.statusCode === 409
+      && error.details?.candidates?.length === 2,
+  );
+
   const skillsProposal = createSharedProposal(project, { title: "Reassign shared skills", branch: "proposal/skills/reassign", scope: "skills" });
   fs.writeFileSync(path.join(skillsProposal.root, "skill-locations.json"), JSON.stringify({
     version: 1,
@@ -224,6 +269,7 @@ test("proposal context impact reads accepted main and exact proposal metadata wi
       { id: "project-demo", title: "Demo skills", path: "projects/demo/skills" },
     ],
     assignments: [
+      { id: "global-shared", collectionId: "global", scope: "shared", providers: ["codex"], include: ["*"], exclude: [] },
       { id: "demo-project", collectionId: "project-demo", scope: "project", projectIds: ["demo"], providers: ["claude-code"], include: ["*"], exclude: [] },
       { id: "demo-shared", collectionId: "project-demo", scope: "shared", providers: ["opencode"], include: ["*"], exclude: [] },
     ],
@@ -237,6 +283,7 @@ test("proposal context impact reads accepted main and exact proposal metadata wi
     ["demo-project", "modified"],
     ["demo-shared", "added"],
     ["global-device", "removed"],
+    ["global-shared", "added"],
   ]);
   assert.deepEqual(skillImpact.affected.sharedSkills.providers, ["claude-code", "codex", "opencode"]);
   assert.equal(skillImpact.affected.sharedSkills.destinations.some((item) => item.assignmentId === "global-device" && item.destination === "provider-global"), true);

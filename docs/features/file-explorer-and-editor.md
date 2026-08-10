@@ -4,7 +4,7 @@ context_room:
   scope: context-room
   status: current
   canonical_for: file explorer and editor
-  last_verified: 2026-07-27
+  last_verified: 2026-08-08
   sources: [src/context_room.mjs, src/codex_composer_bridge.mjs, schemas/config.schema.json]
 ---
 
@@ -25,7 +25,7 @@ The explorer and editor expose safe project documents and visual assets in one c
 
 - Browse, search, expand folders, or filter by all, watched, and not watched files.
 - While a document is open, switch between **Location** and **Related**. Related uses the same deterministic graph to separate dependencies, dependents, references, backlinks, diagram appearances, and unresolved targets.
-- Browse safe hidden files and `.context-room` by default; use the global Appearance setting to hide dotfiles and dotfolders.
+- Browse safe hidden files and `.context-room` by default; use **Preferences → Explorer and file behavior** to hide dotfiles and dotfolders.
 - Use the workspace toolbar to return to the hub, navigate history, and act on the current file.
 - Resize the desktop Explorer between 220 and 360 pixels by dragging its
   separator or using Arrow keys while the separator is focused. Context Room
@@ -51,14 +51,20 @@ The explorer and editor expose safe project documents and visual assets in one c
 - Select files or folders for bulk actions.
 - Watch one file exactly, or choose a folder watch mode for one or more selected folders.
 - Remove exact selected file watches or folder rules without changing the files themselves; an ancestor rule may still apply.
-- Delete selected files or folders after confirmation.
-- Inspect Git diffs, hide them, or revert the current file diff.
+- Preview the exact current revisions of selected files or folder members, then delete them after confirmation. A changed member makes the whole deletion stale before any path is removed.
+- Inspect Git diffs, hide them, or revert the current file diff. Revert is bound to the exact diff revision currently displayed.
 - Keep navigating when Git diffs, pending reviews, or disk changes exist; resolve a disk conflict only before overwriting it.
 
 ## Rules
 
 - `allowedPaths` is the edit boundary.
 - `watchAllow` and `watchRules` form the review boundary.
+- File reads and mutations follow the applicable physical-containment,
+  exact-revision, and atomic-preflight rules in
+  [Server boundary](../assurance/server-boundary.md).
+  A stale delete or revert returns `409` and preserves the newer state.
+- Explorer trees, menus, drawers, dialogs, controls, and status follow
+  [Interface accessibility](../assurance/interface-accessibility.md).
 - Secret-looking paths, dependency folders, and build outputs stay out. Supported visual assets are the only binary files exposed by the explorer.
 - Binary images are read-only and never enter the text editor or text review queue. Edit and review their source diagram when one exists.
 - `.git`, dependencies, caches, and build outputs stay excluded even when hidden files are shown. Sensitive environment files remain read-only and expose names only, never values.

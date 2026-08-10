@@ -145,7 +145,17 @@ test("local acceptance has a non-zero default Git delivery budget", () => {
 
 test("shared main delivery bounds a stalled git push and reports a retryable timeout", { timeout: 15_000 }, (t) => {
   const fixture = makeSharedFixture(t);
-  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const repository = "https://github.com/context-room-tests/acceptance-timeout.git";
+  const gitConfig = path.join(fixture.base, "gitconfig");
+  const previousGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+  fs.writeFileSync(gitConfig, `[url "${fixture.remote}"]\n\tinsteadOf = ${repository}\n`, "utf8");
+  process.env.GIT_CONFIG_GLOBAL = gitConfig;
+  t.after(() => {
+    if (previousGitConfigGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+    else process.env.GIT_CONFIG_GLOBAL = previousGitConfigGlobal;
+  });
+
+  connectSharedContext(fixture.project, { repository, projectId: "demo" });
   const proposal = createSharedProposal(fixture.project, {
     title: "Bound stalled delivery",
     branch: "proposal/demo/bound-stalled-delivery",
@@ -165,13 +175,22 @@ test("shared main delivery bounds a stalled git push and reports a retryable tim
   const pushStartedAtFile = path.join(fixture.base, "push-started-at");
   fs.mkdirSync(fakeBin, { recursive: true });
   fs.writeFileSync(fakeGit, `#!/bin/sh
-if [ "$1" = "push" ]; then
+operation=""
+for argument in "$@"; do
+  case "$argument" in
+    push|fetch)
+      operation="$argument"
+      break
+      ;;
+  esac
+done
+if [ "$operation" = "push" ]; then
   : > ${JSON.stringify(pushStartedAtFile)}
   sleep 5
   printf '%s\\n' 'simulated stalled git push' >&2
   exit 124
 fi
-if [ "$1" = "fetch" ]; then
+if [ "$operation" = "fetch" ]; then
   exit 0
 fi
 exec ${JSON.stringify(realGit)} "$@"
@@ -189,7 +208,8 @@ exec ${JSON.stringify(realGit)} "$@"
       message: "Accept with a bounded delivery",
       push: {
         token: "test-installation-token",
-        url: fixture.remote,
+        expiresAt: "2099-08-07T23:59:59Z",
+        url: repository,
         timeoutMs,
       },
     });

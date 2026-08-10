@@ -11,8 +11,10 @@ import test from "node:test";
 import {
   connectSharedContext,
   initializeSharedRepository,
+  readSharedConnectionReceipt,
+  readSharedProjectConnection,
 } from "../src/shared_context.mjs";
-import { registerContextHubProject } from "../src/context_hub.mjs";
+import { registerContextHubProject, registerContextHubSharedRepository } from "../src/context_hub.mjs";
 import { readContextRoomEvents } from "../src/event_journal.mjs";
 import { collectInlinePathReferences } from "../src/doc_metadata.mjs";
 import { authorizeOwnerReviewScope, inspectOwnerReviewScope } from "../src/review_authority.mjs";
@@ -470,11 +472,12 @@ test("the global Context Room keeps project targeting inside one workspace", () 
   assert.doesNotMatch(html, /id="sharedProposalBrowser"/);
   assert.match(html, /body\.focused-review-context-room \.context-room-review-toolbar \{ grid-template-columns:/);
   assert.match(html, /\.context-hub-review-filter\[hidden\] \{ display: none !important; \}/);
-  assert.match(script, /state\.activeProjectLocationId = IS_GLOBAL_CONTEXT_ROOM \? String\(CONTEXT_ROOM_QUERY\.get\("project"\) \|\| ""\) : "";/);
+  assert.match(script, /state\.activeProjectLocationId = "";/);
+  assert.match(script, /function applyContextHubRequestedProject\(contextHub\)[\s\S]*resolveContextHubProjectSelection\([\s\S]*state\.activeProjectLocationId = requestedLocationId;/);
   assert.match(script, /headers\.set\("x-context-room-target-project", state\.activeProjectLocationId\)/);
-  assert.match(script, /async function openContextHubProject\([\s\S]*target\.searchParams\.set\("hub", "1"\)[\s\S]*window\.location\.assign\(target\.toString\(\)\)/);
+  assert.match(script, /async function openContextHubProject\([\s\S]*target\.searchParams\.set\("hub", "1"\)[\s\S]*assignWorkspaceLocation\(target\.toString\(\)\)/);
   assert.match(script, /function currentContextRoomProject\(\)[\s\S]*project\.current[\s\S]*hub\.currentProjectId/);
-  assert.match(script, /function contextHubHomeReviewItems\(needle = "", visibility = "active"\)[\s\S]*IS_GLOBAL_CONTEXT_ROOM[\s\S]*!state\.sharedProposalProject \|\| item\.projectKey === state\.sharedProposalProject[\s\S]*currentProject && item\.projectKey === currentProject\.projectKey/);
+  assert.match(script, /function contextHubHomeReviewItems\(needle = "", visibility = "active", \{ ignoreUserFilters = false \} = \{\}\)[\s\S]*IS_GLOBAL_CONTEXT_ROOM[\s\S]*ignoreUserFilters \|\| !state\.sharedProposalProject \|\| contextHubItemMatchesProject\(item, \{ projectKey: state\.sharedProposalProject \}\)[\s\S]*currentProject && contextHubItemMatchesProject\(item, currentProject\)/);
   assert.match(script, /function renderGlobalProjectExplorer\(\)[\s\S]*contextHubPrioritizedProjects[\s\S]*data-global-project-key/);
   assert.match(script, /async function openGlobalProjectExplorer\(project\)[\s\S]*state\.globalExplorerMode = "project"[\s\S]*loadGlobalProjectExplorerPage\(project\)/);
   assert.match(script, /function renderGlobalProjectInspection\([\s\S]*const project = workspaceSelectedProject\(\)/);
@@ -520,6 +523,9 @@ test("the global Context Room keeps project targeting inside one workspace", () 
   assert.match(script, /function renderGlobalProjectInspection\([\s\S]*Select a project in Explorer[\s\S]*Context health[\s\S]*Agent environment/);
   assert.match(script, /heading\.textContent = "Project inspection"/);
   assert.match(script, /Context health and the agent environment for its selected worktree will appear here\./);
+  assert.match(script, /project\.mode === "shared" \|\| !worktree\?\.root[\s\S]*no accepted main snapshot is cached/);
+  assert.match(script, /project\.mode === "shared" \|\| !worktree\?\.root[\s\S]*This Shared-only project has no local worktree to inspect\./);
+  assert.match(script, /project\.mode !== "shared"[\s\S]*No connected local worktree is available to inspect for this project\./);
   assert.doesNotMatch(script, /function renderProjectOverviewBody/);
   assert.doesNotMatch(script, /\/api\/context-hub\/project-overview/);
   assert.doesNotMatch(html, /id="visualDocumentsButton"/);
@@ -547,22 +553,27 @@ test("app reveals one complete initial frame and keeps recurring refreshes in th
   const diskRefreshSource = script.slice(script.indexOf("async function refreshFromDisk"), script.indexOf("function scheduleBackgroundRefresh"));
 
   assert.match(loadFilesSource, /const reportsRequest = options\.initial && !IS_GLOBAL_CONTEXT_ROOM \? api\("\/api\/reports"\) : null;/);
-  assert.match(loadFilesSource, /const sharedRequest = options\.initial && !IS_GLOBAL_CONTEXT_ROOM \? api\("\/api\/shared-context"\) : null;/);
+  assert.match(script, /async function loadInitialDirectSharedContext\(\) \{[\s\S]*const initial = await api\("\/api\/shared-context"\);[\s\S]*if \(!initial\?\.enabled \|\| initial\.mode !== "project"\) return initial;[\s\S]*api\("\/api\/shared-context\/refresh", \{[\s\S]*method: "POST"/);
+  assert.match(loadFilesSource, /const sharedRequest = options\.initial && !IS_GLOBAL_CONTEXT_ROOM \? loadInitialDirectSharedContext\(\) : null;/);
+  assert.match(loadFilesSource, /const sharedData = await \(sharedRequest \|\| Promise\.resolve\(null\)\);[\s\S]*const reportsRequest/);
   assert.match(loadFilesSource, /IS_GLOBAL_CONTEXT_ROOM[\s\S]*api\("\/api\/health"\)[\s\S]*api\(filesApiPath\(\)\)/);
   assert.match(loadFilesSource, /Promise\.all\(\[filesRequest, api\("\/api\/settings"\)\]\)/);
   assert.doesNotMatch(loadFilesSource, /Promise\.all\(\[api\(filesApiPath\(\)\), api\("\/api\/settings"\)\]\)/);
-  assert.match(loadFilesSource, /const restoreRequest = hasRequestedContextHubTarget \? Promise\.resolve\(false\) : restoreNavigationAfterInitialLoad\(\);\s*const restored = await restoreRequest;/);
+  assert.match(loadFilesSource, /const restoreRequest = skipsGenericNavigationRestore \? Promise\.resolve\(false\) : restoreNavigationAfterInitialLoad\(\);\s*const restored = await restoreRequest;/);
   assert.match(loadFilesSource, /const restored = await restoreRequest;/);
   assert.doesNotMatch(loadFilesSource, /await reportsRequest/);
   assert.match(loadFilesSource, /else if \(reportsRequest\) applyInitialReportsWhenReady\(reportsRequest\);/);
-  assert.match(loadFilesSource, /state\.contextHubReadyPromise = new Promise[\s\S]*applyInitialContextHubWhenReady\(loadInitialContextHubData\(\)\)/);
+  assert.match(loadFilesSource, /state\.contextHubReadyPromise = new Promise[\s\S]*applyInitialContextHubWhenReady\(loadInitialContextHubData\(\{ openRequestedProject: true \}\)\)/);
   assert.match(script, /function applyInitialReportsWhenReady\(reportsRequest\) \{[\s\S]*reportsRequest\.then\(\(reports\) => \{[\s\S]*requestAnimationFrame\(\(\) => window\.requestAnimationFrame\(\(\) => \{[\s\S]*applyBackgroundReportPayload\(reports\);[\s\S]*renderAfterBackgroundReportPayload\(\);/);
   assert.match(script, /function renderAfterBackgroundReportPayload\(\) \{[\s\S]*if \(state\.page === "file" && state\.selected && !state\.openingFilePath\) \{[\s\S]*renderViewer\(\);[\s\S]*restoreEditorViewState\(viewState\);/);
   assert.match(script, /function restoreNavigationAfterInitialLoad\(\)[\s\S]*void openRequest\.then\(\(\) => setStatus\("restored"\)\)/);
   assert.doesNotMatch(script, /await selectFile\(persisted\.selectedPath, options\)/);
   assert.match(html, /<body class="app-booting">/);
-  assert.match(script, /setMode\("view"\);\s*initializeWorkspaceDiagnostics\(\);\s*finishInitialBoot\(\);\s*establishWorkspaceIdentity\(\)\.then\(\(\) => \{/);
-  assert.match(script, /const pairingRequest = completeWorkspacePairing\(\);[\s\S]*const initialLoad = Promise\.all\(\[loadFiles\(\{ initial: true \}\), graphRequest\]\);[\s\S]*await state\.contextHubReadyPromise;[\s\S]*handleAgentCommand\(pairedCommand\)[\s\S]*return initialLoad;\s*\}\)\.catch\([\s\S]*\.finally\(finishInitialBoot\);/);
+  assert.match(html, /id="status" class="dock-status"[^>]*title="Starting">Starting…<\/div>/);
+  assert.match(script, /setMode\("view"\);\s*initializeWorkspaceDiagnostics\(\);\s*establishWorkspaceIdentity\(\)\.then\(\(\) => \{/);
+  assert.doesNotMatch(script, /initializeWorkspaceDiagnostics\(\);\s*finishInitialBoot\(\);/);
+  assert.match(script, /const pairingRequest = registerInitialWorkspaceRuntime\(\);[\s\S]*const initialLoad = Promise\.all\(\[loadFiles\(\{ initial: true \}\), graphRequest\]\);[\s\S]*await state\.contextHubReadyPromise;[\s\S]*handleAgentCommand\(pairedCommand\)[\s\S]*IS_HOSTED_CONTEXT_ROOM \? Promise\.all\(\[initialLoad, pairingRequest\]\) : initialLoad;[\s\S]*\.then\(finishInitialBoot\)\.catch/);
+  assert.match(script, /IS_HOSTED_CONTEXT_ROOM && document\.body\.classList\.contains\("app-booting"\) && \/\^\(\?:proposal \)\?ready\$\/i\.test/);
   const globalQueueSource = script.slice(script.indexOf("function renderContextRoomGlobalReviewQueue"), script.indexOf("function renderSingleProjectWorktreeSwitch"));
   assert.doesNotMatch(globalQueueSource, /renderGlobalProjectExplorer\(\)/);
   assert.match(html, /body\.app-booting \.app \{ visibility: hidden; opacity: 0; pointer-events: none; \}/);
@@ -591,7 +602,7 @@ test("Context Engine UI uses read-only API adapters and keeps proposal semantics
   assert.match(source, /url\.pathname === "\/api\/context\/impact"/);
   assert.match(source, /url\.pathname === "\/api\/proposal\/context-impact"/);
   assert.match(source, /import\("\.\/agent_cli\.mjs"\)/);
-  assert.match(source, /proposalContextImpact\(\{ selector, repository \}\)/);
+  assert.match(source, /proposalContextImpact\(\{\s*selector: target\?\.head \|\| selector,\s*repository,/);
   assert.doesNotMatch(source, /selectedProposal\?\.files \|\| \[\]\)\.map/);
   assert.doesNotMatch(source, /listExactReviewInvalidations:[\s\S]{0,200}changedFiles\.map/);
   assert.match(script, /Shared Skills delta/);
@@ -662,6 +673,271 @@ test("review decisions emitted by the UI API use registered Hub identities", asy
   assert.equal(event.sharedProjectId, "shared-demo");
   assert.equal(event.sharedRepository, "https://example.test/shared.git");
   assert.notEqual(event.locationId, path.resolve(root));
+});
+
+test("local Shared recovery abandonment is owner-protected and accepts only exact identities", async (t) => {
+  const root = makeRoot();
+  initializeContextRoomProject(root);
+  const calls = [];
+  const invalidCalls = [];
+  let refreshFails = false;
+  const catalog = {
+    enabled: true,
+    generatedAt: "2026-08-09T10:00:00.000Z",
+    projects: [],
+    sharedRepositories: [],
+    proposals: [],
+    items: [],
+    repositoryErrors: [],
+    summary: {},
+  };
+  const room = createMemoryServer({
+    root,
+    contextHubAbandonSharedRecovery(request) {
+      calls.push(request);
+      return {
+        ...request,
+        projectId: request.expectedProjectId,
+        logicalProjectId: request.expectedLogicalProjectId,
+        archivedPath: "/private/recovery/archive.json",
+        ...(request.transactionId === "transaction-refresh-failure" ? {
+          durabilityWarning: { code: "EIO", message: "internal fsync failure", path: "/private/recovery/archive.json" },
+          orphanBindingRemoved: true,
+          canonicalSharedCleared: true,
+        } : {}),
+      };
+    },
+    contextHubAbandonInvalidSharedRecovery(request) {
+      invalidCalls.push(request);
+      return {
+        ...request,
+        revision: request.expectedRevision,
+        archivedJournalPath: "/private/recovery/invalid.journal",
+        durabilityWarning: { code: "EIO", message: "internal invalid-journal fsync failure" },
+      };
+    },
+    contextHubSnapshotRefresh: () => {
+      if (refreshFails) throw new Error("injected refresh failure");
+      return catalog;
+    },
+  });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve, reject) => room.server.close((error) => error ? reject(error) : resolve())));
+  const endpoint = `http://127.0.0.1:${room.server.address().port}/api/context-hub/shared-recovery/abandon`;
+  const exactRequest = {
+    transactionId: "transaction-123",
+    expectedProjectId: "location-456",
+    expectedLogicalProjectId: "project-789",
+  };
+
+  const denied = await fetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(exactRequest),
+  });
+  assert.equal(denied.status, 403);
+  assert.equal((await denied.json()).code, "review_authority_nonce_required");
+  assert.equal(calls.length, 0);
+
+  const malformed = await fetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-owner-nonce": room.ownerMutationNonce },
+    body: JSON.stringify({ ...exactRequest, operation: "connect" }),
+  });
+  assert.equal(malformed.status, 400);
+  assert.equal((await malformed.json()).code, "context_hub_shared_recovery_identity_required");
+  assert.equal(calls.length, 0);
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-owner-nonce": room.ownerMutationNonce },
+    body: JSON.stringify(exactRequest),
+  });
+  const payload = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.deepEqual(calls, [exactRequest]);
+  assert.deepEqual(payload.recovery, {
+    status: "abandoned",
+    kind: "transaction",
+    transactionId: exactRequest.transactionId,
+    projectId: exactRequest.expectedProjectId,
+    logicalProjectId: exactRequest.expectedLogicalProjectId,
+  });
+  assert.deepEqual(payload.catalog, catalog);
+  assert.equal(payload.refreshPending, false);
+  assert.equal(JSON.stringify(payload).includes("archivedPath"), false);
+  assert.equal(JSON.stringify(payload).includes("/private/recovery"), false);
+
+  const invalidRequest = {
+    quarantineId: "quarantine-123",
+    expectedRevision: "revision-456",
+  };
+  const invalidResponse = await fetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-owner-nonce": room.ownerMutationNonce },
+    body: JSON.stringify(invalidRequest),
+  });
+  const invalidPayload = await invalidResponse.json();
+  assert.equal(invalidResponse.status, 200, JSON.stringify(invalidPayload));
+  assert.deepEqual(invalidCalls, [invalidRequest]);
+  assert.deepEqual(invalidPayload.recovery, {
+    status: "abandoned",
+    kind: "invalid-journal",
+    scope: "global",
+    quarantineId: invalidRequest.quarantineId,
+    revision: invalidRequest.expectedRevision,
+    durabilityPending: true,
+  });
+  assert.deepEqual(invalidPayload.catalog, catalog);
+  assert.equal(JSON.stringify(invalidPayload).includes("archivedJournalPath"), false);
+  assert.equal(JSON.stringify(invalidPayload).includes("internal invalid-journal fsync failure"), false);
+  assert.equal(JSON.stringify(invalidPayload).includes("/private/recovery"), false);
+
+  refreshFails = true;
+  const committedRequest = { ...exactRequest, transactionId: "transaction-refresh-failure" };
+  const committedResponse = await fetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-owner-nonce": room.ownerMutationNonce },
+    body: JSON.stringify(committedRequest),
+  });
+  const committedPayload = await committedResponse.json();
+  assert.equal(committedResponse.status, 200, JSON.stringify(committedPayload));
+  assert.equal(committedPayload.refreshPending, true);
+  assert.equal(committedPayload.recovery.durabilityPending, true);
+  assert.equal(committedPayload.recovery.orphanBindingRemoved, true);
+  assert.equal(committedPayload.recovery.canonicalSharedCleared, true);
+  assert.equal(Object.hasOwn(committedPayload, "catalog"), false);
+  assert.equal(JSON.stringify(committedPayload).includes("internal fsync failure"), false);
+  assert.equal(JSON.stringify(committedPayload).includes("/private/recovery"), false);
+  assert.deepEqual(calls.at(-1), committedRequest);
+});
+
+test("Context Hub live Shared connection and disconnection cover every logical-project root", () => {
+  const source = fs.readFileSync(new URL("../src/context_room.mjs", import.meta.url), "utf8");
+  const routeStart = source.indexOf('if (req.method === "POST" && url.pathname === "/api/context-hub/project-shared-context")');
+  const routeEnd = source.indexOf('if (req.method === "DELETE" && url.pathname === "/api/context-hub/project-shared-context")', routeStart);
+  assert.ok(routeStart >= 0 && routeEnd > routeStart);
+  const connectRoute = source.slice(routeStart, routeEnd);
+  const disconnectRouteEnd = source.indexOf('if (req.method === "POST" && url.pathname === "/api/context-hub/reviews/snooze")', routeEnd);
+  assert.ok(disconnectRouteEnd > routeEnd);
+  const disconnectRoute = source.slice(routeEnd, disconnectRouteEnd);
+
+  assert.match(connectRoute, /requireSyncedShared:\s*true/);
+  assert.match(connectRoute, /connectionReceiptId:\s*pending\.sharedTransactionId/);
+  assert.match(connectRoute, /projectRoots:\s*pending\.sharedProjectRoots/);
+  assert.match(connectRoute, /projectCapabilities:\s*pending\.sharedProjectCapabilities/);
+  assert.match(disconnectRoute, /disconnectSharedContext\(project\.root,\s*\{\s*projectRoots:\s*pending\.sharedProjectRoots,\s*projectCapabilities:\s*pending\.sharedProjectCapabilities,\s*\}\)/);
+});
+
+test("Context Hub HTTP connect and disconnect synchronize every registered worktree", async (t) => {
+  const base = makeRoot();
+  const testHome = path.join(base, "home");
+  const sharedHome = path.join(testHome, ".context-room", "shared");
+  const sharedRemote = path.join(base, "shared.git");
+  const sharedSeed = path.join(base, "shared-seed");
+  const projectRoot = path.join(base, "project");
+  const worktreeRoot = path.join(base, "project-agent");
+  const previousHome = process.env.HOME;
+  const previousSharedHome = process.env.CONTEXT_ROOM_SHARED_HOME;
+  process.env.HOME = testHome;
+  process.env.CONTEXT_ROOM_SHARED_HOME = sharedHome;
+  fs.mkdirSync(testHome, { recursive: true });
+  let server = null;
+  let ownerMutationNonce = "";
+  t.after(async () => {
+    if (server?.listening) await new Promise((resolve) => server.close(resolve));
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousSharedHome === undefined) delete process.env.CONTEXT_ROOM_SHARED_HOME;
+    else process.env.CONTEXT_ROOM_SHARED_HOME = previousSharedHome;
+    const makeWritable = (target) => {
+      if (!fs.existsSync(target)) return;
+      const stats = fs.lstatSync(target);
+      if (stats.isSymbolicLink()) return;
+      try { fs.chmodSync(target, stats.isDirectory() ? 0o700 : 0o600); } catch {}
+      if (stats.isDirectory()) {
+        for (const entry of fs.readdirSync(target)) makeWritable(path.join(target, entry));
+      }
+    };
+    makeWritable(base);
+    fs.rmSync(base, { recursive: true, force: true });
+  });
+
+  execFileSync("git", ["init", "--bare", "--initial-branch=main", sharedRemote], { cwd: base, stdio: "ignore" });
+  execFileSync("git", ["clone", sharedRemote, sharedSeed], { cwd: base, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "context-room@example.test"], { cwd: sharedSeed, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Context Room Test"], { cwd: sharedSeed, stdio: "ignore" });
+  initializeSharedRepository(sharedSeed, { name: "Worktree receipt fixture" });
+  fs.writeFileSync(path.join(sharedSeed, "projects.json"), JSON.stringify({
+    version: 1,
+    projects: [{ id: "demo", title: "Demo" }],
+  }, null, 2) + "\n");
+  fs.mkdirSync(path.join(sharedSeed, "projects", "demo", "docs"), { recursive: true });
+  fs.writeFileSync(path.join(sharedSeed, "projects", "demo", "docs", "README.md"), "# Shared demo\n");
+  execFileSync("git", ["add", "."], { cwd: sharedSeed, stdio: "ignore" });
+  execFileSync("git", ["commit", "-m", "Initialize shared fixture"], { cwd: sharedSeed, stdio: "ignore" });
+  execFileSync("git", ["push", "origin", "main"], { cwd: sharedSeed, stdio: "ignore" });
+
+  fs.mkdirSync(path.join(projectRoot, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(projectRoot, "docs", "README.md"), "# Local demo\n");
+  execFileSync("git", ["init", "--initial-branch=main"], { cwd: projectRoot, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "context-room@example.test"], { cwd: projectRoot, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Context Room Test"], { cwd: projectRoot, stdio: "ignore" });
+  initializeContextRoomProject(projectRoot, { title: "Local demo", allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+  execFileSync("git", ["add", "."], { cwd: projectRoot, stdio: "ignore" });
+  execFileSync("git", ["commit", "-m", "Initialize local fixture"], { cwd: projectRoot, stdio: "ignore" });
+  execFileSync("git", ["worktree", "add", "-b", "test/context-room-worktree-receipts", worktreeRoot], { cwd: projectRoot, stdio: "ignore" });
+
+  const selected = registerContextHubProject(projectRoot);
+  const worktree = registerContextHubProject(worktreeRoot);
+  assert.equal(worktree.logicalProjectId, selected.logicalProjectId);
+  registerContextHubSharedRepository(sharedRemote);
+
+  ({ server, ownerMutationNonce } = createMemoryServer({ root: projectRoot }));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const endpoint = `http://127.0.0.1:${server.address().port}/api/context-hub/project-shared-context`;
+  const headers = {
+    "content-type": "application/json",
+    "x-context-room-owner-nonce": ownerMutationNonce,
+  };
+  const connectedResponse = await fetch(endpoint, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ projectId: selected.id, repository: sharedRemote, sharedProjectId: "demo" }),
+  });
+  const connectedPayload = await connectedResponse.json();
+  assert.equal(connectedResponse.status, 200, JSON.stringify(connectedPayload));
+  assert.equal(readSharedProjectConnection(projectRoot)?.projectId, "demo");
+  assert.equal(readSharedProjectConnection(worktreeRoot)?.projectId, "demo");
+
+  const receiptFiles = [];
+  const collectReceiptFiles = (directory) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) collectReceiptFiles(entryPath);
+      else if (entry.isFile() && entryPath.includes(`${path.sep}connection-receipts${path.sep}`) && entry.name.endsWith(".json")) receiptFiles.push(entryPath);
+    }
+  };
+  collectReceiptFiles(sharedHome);
+  assert.equal(receiptFiles.length, 2);
+  const receipts = receiptFiles.map((filePath) => JSON.parse(fs.readFileSync(filePath, "utf8")));
+  const canonicalProjectRoot = fs.realpathSync(projectRoot);
+  const canonicalWorktreeRoot = fs.realpathSync(worktreeRoot);
+  assert.deepEqual(new Set(receipts.map((receipt) => receipt.projectRoot)), new Set([canonicalProjectRoot, canonicalWorktreeRoot]));
+  assert.equal(new Set(receipts.map((receipt) => receipt.receiptId)).size, 1);
+  const [receiptId] = receipts.map((receipt) => receipt.receiptId);
+  assert.ok(readSharedConnectionReceipt(canonicalProjectRoot, { repository: sharedRemote, projectId: "demo", receiptId }));
+  assert.ok(readSharedConnectionReceipt(canonicalWorktreeRoot, { repository: sharedRemote, projectId: "demo", receiptId }));
+
+  const disconnectedResponse = await fetch(endpoint, {
+    method: "DELETE",
+    headers,
+    body: JSON.stringify({ projectId: selected.id }),
+  });
+  const disconnectedPayload = await disconnectedResponse.json();
+  assert.equal(disconnectedResponse.status, 200, JSON.stringify(disconnectedPayload));
+  assert.equal(readSharedProjectConnection(projectRoot), null);
+  assert.equal(readSharedProjectConnection(worktreeRoot), null);
 });
 
 test("Context Engine read-only APIs resolve through the web server without an import cycle", async (t) => {
@@ -796,6 +1072,122 @@ test("Shared Skills settings expose local controls and selective imports without
   assert.doesNotMatch(source, /setSharedSkillProvider(?:Override|Preferences)\(projectRoot/);
 });
 
+test("Context Hub project opening returns a truthful pending state while Shared sync continues out of process", async () => {
+  const base = makeRoot();
+  const remote = path.join(base, "remote.git");
+  const seed = path.join(base, "seed");
+  const project = path.join(base, "project");
+  const hostRoot = path.join(base, "host");
+  const previousHome = process.env.HOME;
+  const previousSharedHome = process.env.CONTEXT_ROOM_SHARED_HOME;
+  process.env.HOME = path.join(base, "home");
+  process.env.CONTEXT_ROOM_SHARED_HOME = path.join(process.env.HOME, ".context-room", "shared");
+  fs.mkdirSync(process.env.HOME, { recursive: true });
+  fs.mkdirSync(project, { recursive: true });
+  fs.mkdirSync(hostRoot, { recursive: true });
+
+  let server = null;
+  let finishSync = null;
+  try {
+    execFileSync("git", ["init", "--bare", "--initial-branch=main", remote], { cwd: base, stdio: "ignore" });
+    execFileSync("git", ["clone", remote, seed], { cwd: base, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "context-room@example.test"], { cwd: seed, stdio: "ignore" });
+    execFileSync("git", ["config", "user.name", "Context Room Test"], { cwd: seed, stdio: "ignore" });
+    initializeSharedRepository(seed, { name: "Pending project sync" });
+    fs.writeFileSync(path.join(seed, "projects.json"), JSON.stringify({ version: 1, projects: [{ id: "demo", title: "Demo" }] }, null, 2) + "\n");
+    fs.mkdirSync(path.join(seed, "projects", "demo", "docs"), { recursive: true });
+    fs.writeFileSync(path.join(seed, "projects", "demo", "docs", "README.md"), "# Demo\n");
+    execFileSync("git", ["add", "."], { cwd: seed, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "Initialize shared"], { cwd: seed, stdio: "ignore" });
+    execFileSync("git", ["push", "origin", "main"], { cwd: seed, stdio: "ignore" });
+
+    initializeContextRoomProject(project, { title: "Demo", allowedPaths: [], watchAllow: [] });
+    initializeContextRoomProject(hostRoot, { title: "Host", allowedPaths: [], watchAllow: [] });
+    connectSharedContext(project, { repository: remote, projectId: "demo", sync: false });
+    const registered = registerContextHubProject(project, {
+      title: "Demo",
+      shared: { repository: remote, projectId: "demo" },
+    });
+    const projectSync = new Promise((resolve) => { finishSync = resolve; });
+    let snapshotRefreshes = 0;
+    ({ server } = createMemoryServer({
+      root: hostRoot,
+      contextHubProjectSync: () => projectSync,
+      contextHubAcceptRefreshTimeoutMs: 25,
+      contextHubSnapshotRefresh: async () => {
+        snapshotRefreshes += 1;
+        return { freshness: { generatedAt: new Date().toISOString() } };
+      },
+    }));
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+    const startedAt = Date.now();
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/context-hub/project`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId: registered.id }),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 201, JSON.stringify(payload));
+    assert.ok(Date.now() - startedAt < 750, `project opening took ${Date.now() - startedAt} ms`);
+    assert.equal(payload.sharedStatus.refreshing, true);
+    assert.deepEqual(payload.hubRefresh, { status: "pending" });
+    assert.ok(snapshotRefreshes >= 1);
+
+    finishSync({ online: true, revision: "a".repeat(40), fetchError: "" });
+    finishSync = null;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.ok(snapshotRefreshes >= 2, "the completed Shared sync should refresh the persisted Hub snapshot");
+  } finally {
+    if (finishSync) finishSync({ online: false, revision: "", fetchError: "test cleanup" });
+    if (server?.listening) await new Promise((resolve) => server.close(resolve));
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousSharedHome === undefined) delete process.env.CONTEXT_ROOM_SHARED_HOME;
+    else process.env.CONTEXT_ROOM_SHARED_HOME = previousSharedHome;
+  }
+});
+
+test("Context Hub local project opening does not wait for the follow-up catalogue rebuild", async () => {
+  const base = makeRoot();
+  const project = path.join(base, "project");
+  const hostRoot = path.join(base, "host");
+  const previousHome = process.env.HOME;
+  process.env.HOME = path.join(base, "home");
+  fs.mkdirSync(process.env.HOME, { recursive: true });
+  fs.mkdirSync(project, { recursive: true });
+  fs.mkdirSync(hostRoot, { recursive: true });
+
+  let server = null;
+  try {
+    initializeContextRoomProject(project, { title: "Local project", allowedPaths: [], watchAllow: [] });
+    initializeContextRoomProject(hostRoot, { title: "Host", allowedPaths: [], watchAllow: [] });
+    const registered = registerContextHubProject(project, { title: "Local project" });
+    ({ server } = createMemoryServer({
+      root: hostRoot,
+      contextHubSnapshotRefresh: () => new Promise(() => {}),
+    }));
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+    const startedAt = Date.now();
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/context-hub/project`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId: registered.id }),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 201, JSON.stringify(payload));
+    assert.ok(Date.now() - startedAt < 750, `local project opening took ${Date.now() - startedAt} ms`);
+    assert.deepEqual(payload.hubRefresh, { status: "pending" });
+  } finally {
+    if (server?.listening) await new Promise((resolve) => server.close(resolve));
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+  }
+});
+
 test("Shared Skills provider API applies device defaults and project overrides atomically", async (t) => {
   const base = makeRoot();
   const remote = path.join(base, "remote.git");
@@ -918,10 +1310,209 @@ test("background report and diff endpoints preserve complete results", async (t)
   assert.match(refreshedDiff.patch, /Updated through the API\./);
 });
 
+test("background file endpoints preserve safe request errors", async (t) => {
+  const root = makeRoot();
+  fs.mkdirSync(path.join(root, "docs"));
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: [] });
+  const { server, waitForShutdown } = createMemoryServer({ root });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    await waitForShutdown();
+  });
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const forbiddenPath = "~/.hermes/cron/jobs/private.json";
+
+  for (const endpoint of ["/api/file", "/api/file/diff", "/api/file/review-base"]) {
+    const response = await fetch(`${baseUrl}${endpoint}?path=${encodeURIComponent(forbiddenPath)}`);
+    const body = await response.json();
+    assert.equal(response.status, 403, endpoint);
+    assert.deepEqual(body, {
+      error: `Path not allowed in context room: ${forbiddenPath}`,
+      code: "file_path_not_allowed",
+      details: { path: forbiddenPath },
+    }, endpoint);
+  }
+});
+
+test("closing one server keeps a same-root server's background workers available", async (t) => {
+  const root = makeRoot();
+  fs.mkdirSync(path.join(root, "docs"));
+  fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\n");
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: [] });
+  const first = createMemoryServer({ root });
+  const second = createMemoryServer({ root });
+  await new Promise((resolve) => first.server.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve) => second.server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    for (const instance of [first, second]) {
+      if (instance.server.listening) {
+        await new Promise((resolve, reject) => instance.server.close((error) => error ? reject(error) : resolve()));
+      }
+      await instance.waitForShutdown();
+    }
+  });
+
+  const secondBaseUrl = `http://127.0.0.1:${second.server.address().port}`;
+  assert.equal((await fetch(`${secondBaseUrl}/api/file/diff?path=${encodeURIComponent("docs/guide.md")}`)).status, 200);
+  await new Promise((resolve, reject) => first.server.close((error) => error ? reject(error) : resolve()));
+  await first.waitForShutdown();
+
+  const [diffResponse, reportsResponse] = await Promise.all([
+    fetch(`${secondBaseUrl}/api/file/diff?path=${encodeURIComponent("docs/guide.md")}`),
+    fetch(`${secondBaseUrl}/api/reports?fresh=1`),
+  ]);
+  assert.equal(diffResponse.status, 200);
+  assert.equal(reportsResponse.status, 200);
+});
+
+test("background file task timeout is retryable and recycles the worker", { timeout: 15_000 }, () => {
+  const root = makeRoot();
+  const wrapperBin = path.join(root, "bin");
+  const markerPath = path.join(root, "blocked-once");
+  fs.mkdirSync(path.join(root, "docs"));
+  fs.mkdirSync(wrapperBin);
+  fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\n");
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: [] });
+  execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "context-room@example.test"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Context Room Test"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["add", "."], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["commit", "-m", "initial"], { cwd: root, stdio: "ignore" });
+  const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+  const wrapperPath = path.join(wrapperBin, "git");
+  fs.writeFileSync(wrapperPath, `#!/usr/bin/env node
+const fs = require("node:fs");
+const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2);
+if (!fs.existsSync(process.env.CONTEXT_ROOM_TEST_GIT_BLOCK_MARKER)
+	  && args.includes("--no-optional-locks")
+	  && args.includes("status")
+	  && args.some((arg) => arg === "docs/guide.md" || arg === ":(literal)docs/guide.md")) {
+  fs.writeFileSync(process.env.CONTEXT_ROOM_TEST_GIT_BLOCK_MARKER, "blocked\\n");
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2500);
+}
+const result = spawnSync(process.env.CONTEXT_ROOM_TEST_REAL_GIT, args, { stdio: "inherit", env: process.env });
+if (result.error) throw result.error;
+process.exit(result.status == null ? 1 : result.status);
+`);
+  fs.chmodSync(wrapperPath, 0o755);
+
+  const moduleUrl = new URL("../src/context_room.mjs", import.meta.url).href;
+  const probe = `
+    const [moduleUrl, root] = process.argv.slice(1);
+    const { createMemoryServer } = await import(moduleUrl + "?timeout-probe=" + Date.now());
+    const instance = createMemoryServer({ root });
+    await new Promise((resolve) => instance.server.listen(0, "127.0.0.1", resolve));
+    const baseUrl = "http://127.0.0.1:" + instance.server.address().port;
+    const endpoints = ["/api/file/diff", "/api/file/review-base"];
+    const call = () => Promise.all(endpoints.map(async (endpoint) => {
+      const response = await fetch(baseUrl + endpoint + "?path=" + encodeURIComponent("docs/guide.md"));
+      return { endpoint, status: response.status, body: await response.json() };
+    }));
+    const startedAt = Date.now();
+    const first = await call();
+    const elapsedMs = Date.now() - startedAt;
+    const second = await call();
+    await new Promise((resolve, reject) => instance.server.close((error) => error ? reject(error) : resolve()));
+    await instance.waitForShutdown();
+    process.stdout.write(JSON.stringify({ first, second, elapsedMs }));
+  `;
+  const output = execFileSync(process.execPath, ["--input-type=module", "--eval", probe, moduleUrl, root], {
+    encoding: "utf8",
+    timeout: 10_000,
+    env: {
+      ...process.env,
+      NODE_TEST_CONTEXT: "1",
+      CONTEXT_ROOM_TEST_BACKGROUND_FILE_TASK_TIMEOUT_MS: "1000",
+      CONTEXT_ROOM_TEST_GIT_BLOCK_MARKER: markerPath,
+      CONTEXT_ROOM_TEST_REAL_GIT: realGit,
+      PATH: `${wrapperBin}${path.delimiter}${process.env.PATH || ""}`,
+    },
+  });
+  const result = JSON.parse(output);
+  assert.ok(result.elapsedMs >= 50 && result.elapsedMs < 2_000, result.elapsedMs);
+  const timedOut = result.first.filter((response) => response.status === 503);
+  assert.ok(timedOut.length >= 1, JSON.stringify(result.first));
+  for (const response of timedOut) {
+    assert.equal(response.body.code, "background_file_task_timeout", response.endpoint);
+    assert.equal(response.body.retryable, true, response.endpoint);
+  }
+  for (const response of result.first.filter((entry) => entry.status !== 503)) {
+    assert.equal(response.status, 200, JSON.stringify(response));
+  }
+  for (const response of result.second) assert.equal(response.status, 200, JSON.stringify(response));
+});
+
+test("background file diff waits through sustained valid cache invalidations", { timeout: 15_000 }, () => {
+  const root = makeRoot();
+  const wrapperBin = path.join(root, "bin");
+  fs.mkdirSync(path.join(root, "docs"));
+  fs.mkdirSync(wrapperBin);
+  fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\n");
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: [] });
+  execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "context-room@example.test"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Context Room Test"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["add", "."], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["commit", "-m", "initial"], { cwd: root, stdio: "ignore" });
+  const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+  const wrapperPath = path.join(wrapperBin, "git");
+  fs.writeFileSync(wrapperPath, `#!/usr/bin/env node
+const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2);
+if (args.includes("--no-optional-locks")
+    && args.includes("status")
+    && args.some((arg) => arg === "docs/guide.md" || arg === ":(literal)docs/guide.md")) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 220);
+}
+const result = spawnSync(process.env.CONTEXT_ROOM_TEST_REAL_GIT, args, { stdio: "inherit", env: process.env });
+if (result.error) throw result.error;
+process.exit(result.status == null ? 1 : result.status);
+`);
+  fs.chmodSync(wrapperPath, 0o755);
+
+  const moduleUrl = new URL("../src/context_room.mjs", import.meta.url).href;
+  const probe = `
+    import fs from "node:fs";
+    import path from "node:path";
+    const [moduleUrl, root] = process.argv.slice(1);
+    const { createMemoryServer } = await import(moduleUrl + "?stability-probe=" + Date.now());
+    const instance = createMemoryServer({ root });
+    await new Promise((resolve) => instance.server.listen(0, "127.0.0.1", resolve));
+    const baseUrl = "http://127.0.0.1:" + instance.server.address().port;
+    const diffPromise = fetch(baseUrl + "/api/file/diff?path=" + encodeURIComponent("docs/guide.md"));
+    for (let index = 1; index <= 12; index += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\\n\\nUpdate " + index + ".\\n");
+    }
+    const response = await diffPromise;
+    const body = await response.json();
+    await new Promise((resolve, reject) => instance.server.close((error) => error ? reject(error) : resolve()));
+    await instance.waitForShutdown();
+    process.stdout.write(JSON.stringify({ status: response.status, body }));
+  `;
+  const output = execFileSync(process.execPath, ["--input-type=module", "--eval", probe, moduleUrl, root], {
+    encoding: "utf8",
+    timeout: 12_000,
+    env: {
+      ...process.env,
+      NODE_TEST_CONTEXT: "1",
+      CONTEXT_ROOM_TEST_BACKGROUND_FILE_STABILITY_TIMEOUT_MS: "5000",
+      CONTEXT_ROOM_TEST_REAL_GIT: realGit,
+      PATH: `${wrapperBin}${path.delimiter}${process.env.PATH || ""}`,
+    },
+  });
+  const result = JSON.parse(output);
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  assert.equal(result.body.changed, true);
+  assert.match(result.body.patch, /Update 12\./);
+});
+
 test("workspace registry keeps independent metadata and routes commands to an exact workspace", async (t) => {
   const root = makeRoot();
   initializeContextRoomProject(root, { allowedPaths: [], watchAllow: [] });
-  const { server } = createMemoryServer({ root });
+  const { server, projectId } = createMemoryServer({ root });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -931,7 +1522,7 @@ test("workspace registry keeps independent metadata and routes commands to an ex
   ]) {
     const response = await fetch(baseUrl + "/api/workspaces/register", {
       method: "POST",
-      headers: { "content-type": "application/json", origin: baseUrl },
+      headers: { "content-type": "application/json", origin: baseUrl, "x-context-room-project": projectId },
       body: JSON.stringify(workspace),
     });
     assert.equal(response.status, 200);
@@ -967,20 +1558,31 @@ test("workspace runtime events deliver commands without periodic polling", async
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ workspaceId: "workspace-stream", clientInstanceId: "client-stream", view: "hub" }),
   });
+  const replayCommandResponse = await fetch(baseUrl + "/api/workspaces/workspace-stream/command", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id: "replayed-command", action: "navigate", view: "file", path: "docs/replayed.md" }),
+  });
+  assert.equal(replayCommandResponse.status, 200);
   const streamResponse = await fetch(baseUrl + "/api/runtime-events?workspace=workspace-stream", { signal: controller.signal });
   assert.equal(streamResponse.status, 200);
   assert.match(streamResponse.headers.get("content-type") || "", /text\/event-stream/);
   const reader = streamResponse.body.getReader();
-  await reader.read();
+  const decoder = new TextDecoder();
+  let received = "";
+  for (let attempt = 0; attempt < 5 && (!received.includes("replayed-command") || !received.includes("event: ready")); attempt += 1) {
+    const next = await reader.read();
+    if (next.done) break;
+    received += decoder.decode(next.value, { stream: true });
+  }
+  assert.ok(received.indexOf("replayed-command") < received.indexOf("event: ready"), received);
   const commandResponse = await fetch(baseUrl + "/api/workspaces/workspace-stream/command", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ action: "navigate", view: "file", path: "docs/a.md" }),
+    body: JSON.stringify({ id: "live-command", action: "navigate", view: "file", path: "docs/a.md" }),
   });
   assert.equal(commandResponse.status, 200);
-  const decoder = new TextDecoder();
-  let received = "";
-  for (let attempt = 0; attempt < 5 && !received.includes("workspace-command"); attempt += 1) {
+  for (let attempt = 0; attempt < 5 && !received.includes("live-command"); attempt += 1) {
     const next = await reader.read();
     if (next.done) break;
     received += decoder.decode(next.value, { stream: true });
@@ -1641,7 +2243,7 @@ test("destructive startup deletions preserve their source when managed backup pr
     const backupPath = path.join(root, ".context-room/memory-webapp-backups");
     fs.symlinkSync(externalBackups, backupPath, "dir");
 
-    assert.throws(() => fixture.invoke(root), /symbolic link/);
+    assert.throws(() => fixture.invoke(root), /symbolic link|approved root|unsafe/i);
     assert.equal(fs.readFileSync(source, "utf8"), fixture.content);
     assert.deepEqual(fs.readdirSync(externalBackups), ["sentinel.txt"]);
   }
@@ -1681,7 +2283,10 @@ test("invalid project config and review gate fail closed for runtime operations 
     body: JSON.stringify({ path: "src/api-blocked.md", content: "blocked\n" }),
   });
   assert.equal(response.status, 500);
-  assert.match((await response.json()).error, /allowedPaths must be an array/);
+  assert.deepEqual(await response.json(), {
+    error: "Context Room could not complete this request.",
+    code: "context_room_internal_error",
+  });
   assert.equal(fs.existsSync(path.join(runtimeRoot, "src", "api-blocked.md")), false);
 
   const gateRoot = makeRoot();
@@ -1940,7 +2545,7 @@ test("fresh project-only startup context includes discovered nested and Hermes i
   assert.ok(startupFiles.every((file) => file.startupContext.source === "project"));
 });
 
-test("project-only startup scanners reject symlink escapes while compatibility mode remains explicit", () => {
+test("startup scanners reject symlink escapes in project-only and compatibility modes", () => {
   const root = makeRoot();
   const external = makeRoot();
   fs.mkdirSync(path.join(external, "linked-skills", "external-skill"), { recursive: true });
@@ -1993,8 +2598,8 @@ test("project-only startup scanners reject symlink escapes while compatibility m
   const compatibility = structuredClone(projectOnly);
   compatibility.startupContext.projectOnly = false;
   compatibility.startupSkills.projectOnly = false;
-  assert.ok(listStartupContextFiles(root, compatibility).some((file) => file.startupContext.absolutePath === path.join(root, "AGENTS.md")));
-  assert.ok(listStartupSkillFolders(root, compatibility).some((folder) => folder.displayPath.includes("linked-skills")));
+  assert.equal(listStartupContextFiles(root, compatibility).some((file) => file.startupContext.absolutePath === path.join(root, "AGENTS.md")), false);
+  assert.equal(listStartupSkillFolders(root, compatibility).some((folder) => folder.displayPath.includes("linked-skills")), false);
 });
 
 test("explicitly empty startup scanner lists stay empty after save and reload", () => {
@@ -2332,6 +2937,27 @@ test("review gates are owner-local, sanitized, and separate from project config"
   assert.equal(mode, 0o600);
 });
 
+test("managed config and review-gate writes publish atomic single-link replacements", () => {
+  const root = makeRoot();
+  initializeContextRoomProject(root, { title: "Atomic before", allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+  const configPath = path.join(root, CONFIG_FILE);
+  const gatePath = path.join(root, REVIEW_GATE_FILE);
+  const beforeConfig = fs.lstatSync(configPath, { bigint: true });
+  const beforeGate = fs.lstatSync(gatePath, { bigint: true });
+
+  writeMemoryWebappSettings(root, { ...readMemoryWebappSettings(root), title: "Atomic after" });
+  writeReviewGateSettings(root, { operations: ["push"] });
+
+  const afterConfig = fs.lstatSync(configPath, { bigint: true });
+  const afterGate = fs.lstatSync(gatePath, { bigint: true });
+  assert.notEqual(afterConfig.ino, beforeConfig.ino);
+  assert.notEqual(afterGate.ino, beforeGate.ino);
+  assert.equal(afterConfig.nlink, 1n);
+  assert.equal(afterGate.nlink, 1n);
+  assert.equal(Number(afterGate.mode & 0o777n), 0o600);
+  assert.equal(fs.readdirSync(path.join(root, CONFIG_DIR)).some((name) => name.startsWith(".context-room-control-")), false);
+});
+
 test("settings API cannot change the owner review gate through project settings", async (t) => {
   const root = makeRoot();
   initializeContextRoomProject(root, { allowedPaths: ["docs/"] });
@@ -2359,6 +2985,59 @@ test("settings API cannot change the owner review gate through project settings"
   assert.equal(ownerResponse.status, 200);
   assert.deepEqual(ownerPayload.reviewGate.operations, ["merge", "pull-request"]);
   assert.deepEqual(readReviewGateSettings(root).operations, ["merge", "pull-request"]);
+});
+
+test("a running local server rejects project-root replacement between settings resolution and publication", async () => {
+  for (const fixture of [
+    {
+      fileName: "config.json",
+      endpoint: "/api/settings",
+      body: (settings) => ({ settings: { ...settings, title: "Must not reach replacement root" } }),
+    },
+    {
+      fileName: "review-gate.json",
+      endpoint: "/api/review-gate",
+      body: () => ({ reviewGate: { operations: ["merge"] } }),
+    },
+  ]) {
+    const targetRoot = makeRoot();
+    const replacementRoot = makeRoot();
+    initializeContextRoomProject(targetRoot, { title: "Pinned target", allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+    initializeContextRoomProject(replacementRoot, { title: "Replacement", allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+    const settings = readMemoryWebappSettings(targetRoot);
+    const canonicalTarget = fs.realpathSync(targetRoot);
+    const canonicalReplacement = fs.realpathSync(replacementRoot);
+    const retiredRoot = `${canonicalTarget}-retired`;
+    const replacementControl = path.join(canonicalReplacement, ".context-room", fixture.fileName);
+    const replacementBytes = fs.readFileSync(replacementControl);
+    let swapped = false;
+    const room = createMemoryServer({
+      root: targetRoot,
+      beforeManagedControlMutation: ({ path: controlPath }) => {
+        if (swapped || controlPath !== `.context-room/${fixture.fileName}`) return;
+        swapped = true;
+        fs.renameSync(canonicalTarget, retiredRoot);
+        fs.renameSync(canonicalReplacement, canonicalTarget);
+      },
+    });
+    await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+    try {
+      const response = await fetch(`http://127.0.0.1:${room.server.address().port}${fixture.endpoint}`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-context-room-project": room.projectId,
+          "x-context-room-owner-nonce": room.ownerMutationNonce,
+        },
+        body: JSON.stringify(fixture.body(settings)),
+      });
+      assert.equal(swapped, true);
+      assert.equal(response.status, 409, await response.text());
+      assert.deepEqual(fs.readFileSync(path.join(canonicalTarget, ".context-room", fixture.fileName)), replacementBytes);
+    } finally {
+      await new Promise((resolve) => room.server.close(resolve));
+    }
+  }
 });
 
 test("file listing follows project config and does not inject Hermes/LifeOS files by default", () => {
@@ -3343,6 +4022,24 @@ test("review gate hook sync installs selected local operations and preserves cus
   assert.equal(fs.readFileSync(path.join(hooksDir, "pre-commit"), "utf8"), customCommitHook);
 });
 
+test("review gate hook sync refuses linked hook targets without writing through them", () => {
+  const root = makeRoot();
+  const outside = makeRoot();
+  execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"] });
+  const hooksDir = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-path", "hooks"], { cwd: root, encoding: "utf8" }).trim();
+  const outsideTarget = path.join(outside, "must-not-be-created");
+  const linkedHook = path.join(hooksDir, "pre-push");
+  fs.symlinkSync(outsideTarget, linkedHook);
+
+  assert.throws(
+    () => syncContextRoomGitHooks(root, { policy: { operations: ["push"] } }),
+    (error) => error?.code === "managed_context_room_state_unsafe",
+  );
+  assert.equal(fs.existsSync(outsideTarget), false);
+  assert.equal(fs.lstatSync(linkedHook).isSymbolicLink(), true);
+});
+
 test("review gate hook sync makes an old Context Room pre-commit hook inert when commit is deselected", () => {
   const root = makeRoot();
   execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
@@ -4103,37 +4800,47 @@ test("external watched file changes invalidate cached reports", async () => {
 
 test("short-lived watched files cannot crash background invalidation", async () => {
   const originalHome = process.env.HOME;
-  const home = makeRoot();
+  const home = fs.realpathSync(makeRoot());
   process.env.HOME = home;
   let server = null;
-  const originalStatSync = fs.statSync;
   try {
     const root = path.join(home, "project");
     const gitRoot = path.join(root, ".git");
-    const lockPath = path.join(gitRoot, "index.lock");
+    const ignoredLockPath = path.join(gitRoot, "index.lock");
     fs.mkdirSync(gitRoot, { recursive: true });
     initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: [] });
 
     ({ server } = createMemoryServer({ root }));
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const baseUrl = `http://127.0.0.1:${server.address().port}`;
+    const initial = await (await fetch(baseUrl + "/api/reports")).json();
     await new Promise((resolve) => setTimeout(resolve, 300));
 
-    let transientStatObserved = false;
-    fs.statSync = (...args) => {
-      if (path.resolve(String(args[0])) === lockPath) {
-        transientStatObserved = true;
-        const error = new Error(`ENOENT: no such file or directory, stat '${lockPath}'`);
-        error.code = "ENOENT";
-        throw error;
-      }
-      return originalStatSync(...args);
-    };
+    fs.writeFileSync(ignoredLockPath, "");
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const afterIgnoredLock = await (await fetch(baseUrl + "/api/reports")).json();
+    assert.equal(afterIgnoredLock.generatedAt, initial.generatedAt);
 
-    fs.writeFileSync(lockPath, "");
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    assert.equal(transientStatObserved, true);
+    const invalidationSignal = path.join(gitRoot, "context-room-invalidation-signal");
+    fs.writeFileSync(invalidationSignal, "");
+    let refreshed = initial;
+    const deadline = Date.now() + 3_000;
+    while (Date.now() < deadline && refreshed.generatedAt === initial.generatedAt) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      refreshed = await (await fetch(baseUrl + "/api/reports")).json();
+    }
+    assert.notEqual(refreshed.generatedAt, initial.generatedAt);
+
+    for (let index = 0; index < 32; index += 1) {
+      const transientPath = path.join(gitRoot, `context-room-transient-${index}.lock`);
+      fs.writeFileSync(transientPath, "");
+      fs.unlinkSync(transientPath);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const afterTransientBurst = await fetch(baseUrl + "/api/reports");
+    assert.equal(afterTransientBurst.status, 200);
+    assert.ok((await afterTransientBurst.json()).generatedAt);
   } finally {
-    fs.statSync = originalStatSync;
     if (server) await new Promise((resolve) => server.close(resolve));
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;
@@ -4398,6 +5105,9 @@ test("doc QA infers review-baseline renames for untracked verified docs", () => 
   const root = makeRoot();
   fs.mkdirSync(path.join(root, "docs"));
   execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "context-room@example.test"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Context Room Test"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["commit", "--allow-empty", "-m", "initial"], { cwd: root, stdio: "ignore" });
   fs.writeFileSync(path.join(root, "docs", "app-overview.md"), "---\ncontext_room:\n  kind: canonical\n  scope: context-room\n  status: current\n  canonical_for: app overview\n---\n\n# App Overview\n\nContext Room maps docs and source files.\n");
   initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: ["docs/"], reviewPaths: ["docs/"] });
   writeDocReviewBaseline(root, "docs/app-overview.md", { note: "verified from Context Room review queue" });
@@ -4471,8 +5181,33 @@ test("batch deletion review records absent resources and revalidates every selec
   assert.equal(after.summary.deletedDocs, 0);
   assert.equal(after.queue.some((item) => item.path === "docs/reworked.md"), true);
 
+  buildDocQaReport(root, {
+    files: [{
+      path: "docs/alpha.md",
+      exists: true,
+      content: "# Stale worker snapshot\n",
+      contentHash: createHash("sha256").update("# Stale worker snapshot\n").digest("hex"),
+      bytes: 24,
+      updatedAt: new Date().toISOString(),
+    }],
+  });
+  const afterStaleSnapshot = JSON.parse(fs.readFileSync(path.join(root, ".context-room/review-state.json"), "utf8"));
+  assert.equal(afterStaleSnapshot.reviews["docs/alpha.md"].resourceState, "absent", "a stale present-file snapshot must not clear a physically absent receipt");
+  assert.equal(
+    Object.values(readGlobalReviewLedger(root).reviews).some((review) => review.relPath === "docs/alpha.md" && review.resourceState === "absent"),
+    true,
+    "the global absent receipt must also survive a stale present-file snapshot",
+  );
+
   fs.writeFileSync(path.join(root, "docs/alpha.md"), "# Alpha\n\nLegacy alpha instructions.\n");
   buildDocQaReport(root);
+  const afterPhysicalRestore = JSON.parse(fs.readFileSync(path.join(root, ".context-room/review-state.json"), "utf8"));
+  assert.equal(afterPhysicalRestore.reviews["docs/alpha.md"], undefined, "a physically recreated file must clear its absent receipt");
+  assert.equal(
+    Object.values(readGlobalReviewLedger(root).reviews).some((review) => review.relPath === "docs/alpha.md" && review.resourceState === "absent"),
+    false,
+    "the global absent receipt must be cleared after physical recreation",
+  );
   fs.unlinkSync(path.join(root, "docs/alpha.md"));
   const deletedAfterRestore = buildDocQaReport(root);
   assert.equal(deletedAfterRestore.queue.some((item) => item.path === "docs/alpha.md"), true, "restoring a path clears its earlier absent-resource review");
@@ -5068,6 +5803,26 @@ test("createFolder writes folders where clicked by registering the exact new fol
   assert.throws(() => createFolder(root, { path: ".context-room/new-section" }), /not allowed/);
 });
 
+test("folder creation keeps the same owner authority through a symlink project alias", async (t) => {
+  const root = makeRoot();
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+  const alias = `${root}-alias`;
+  fs.symlinkSync(root, alias, "dir");
+  t.after(() => { try { fs.unlinkSync(alias); } catch {} });
+  const room = createMemoryServer({ root: alias });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+
+  const response = await fetch(`http://127.0.0.1:${room.server.address().port}/api/folder/create`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-owner-nonce": room.ownerMutationNonce },
+    body: JSON.stringify({ path: "docs/from-alias" }),
+  });
+  assert.equal(response.status, 200, await response.text());
+  assert.equal(fs.statSync(path.join(root, "docs", "from-alias")).isDirectory(), true);
+});
+
 test("deleteMemoryPaths follows project-configured allowed paths", () => {
   const root = makeRoot();
   initializeContextRoomProject(root, { allowedPaths: ["project-docs/"] });
@@ -5363,6 +6118,33 @@ See \`docs/PRODUCT.md\`.
   const graph = buildDocumentationGraph(root);
 
   assert.equal(graph.healthIssues.some((issue) => issue.type === "broken_reference" && issue.path === "projects/demo-project/website/docs/DEPLOYMENT.md"), false);
+});
+
+test("documentation graph accepts generated and owner-optional runtime references without hiding real broken paths", () => {
+  const root = makeRoot();
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs", "runtime-contract.md"), `---
+context_room:
+  kind: canonical
+  scope: demo
+  status: current
+  canonical_for: runtime-contract
+  last_verified: 2026-08-08
+  sources: []
+---
+
+Read \`.context-room/README.md\` and preserve \`.context-room/review-gate.json\`.
+The unrelated \`.context-room/missing.json\` and \`docs/missing.md\` do not exist.
+`);
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+  fs.rmSync(path.join(root, AGENT_CONTEXT_FILE));
+
+  const issues = buildDocumentationGraph(root).healthIssues.filter((issue) => issue.path === "docs/runtime-contract.md");
+
+  assert.equal(issues.some((issue) => issue.type === "broken_reference" && issue.message.includes(".context-room/README.md")), false);
+  assert.equal(issues.some((issue) => issue.type === "broken_reference" && issue.message.includes(".context-room/review-gate.json")), false);
+  assert.equal(issues.some((issue) => issue.type === "broken_reference" && issue.message.includes(".context-room/missing.json")), true);
+  assert.equal(issues.some((issue) => issue.type === "broken_reference" && issue.message.includes("docs/missing.md")), true);
 });
 
 test("documentation graph ignores non-context-room YAML frontmatter", () => {
@@ -5728,7 +6510,7 @@ test("explorer new file creates markdown directly before opening it", () => {
   assert.doesNotMatch(html, /function isAllowedUiMemoryPath\(/);
   assert.match(html, /button\.textContent = "Creating\.\.\."/);
   assert.match(html, /function setContextMarkdownError\(message\)/);
-  assert.match(html, /\.explorer-context-error\s*\{[^}]*rgba\(255,140,157,0\.10\)/);
+  assert.match(html, /\.explorer-context-error\s*\{[^}]*background:\s*color-mix\(in srgb, var\(--danger\) 10%, transparent\);[^}]*color:\s*var\(--danger-fg\)/);
   assert.doesNotMatch(html, /function createStructuredMarkdownFromHub/);
   assert.doesNotMatch(html, /<select id="markdownCreateFolder"/);
   assert.doesNotMatch(html, /id="markdownCreateFolderButton"/);
@@ -5861,12 +6643,15 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /Select a local project in the Explorer\./);
   assert.doesNotMatch(html, /data-open-selected-project-settings/);
   assert.match(html, /function activeSettingsForPanel\(\)/);
+  assert.match(html, /function selectedGlobalSettingsProject\(\) \{[\s\S]*if \(IS_GLOBAL_CONTEXT_ROOM\) return workspaceSelectedProject\(\);[\s\S]*if \(IS_LOCAL\) return currentContextRoomProject\(\);[\s\S]*return null;/);
+  assert.match(html, /function selectedProjectSharedContext\(\)[\s\S]*selectedGlobalProjectSettingsContext\(\)/);
   assert.match(html, /loadGlobalProjectSettings\(project/);
   assert.match(html, /api\("\/api\/context-hub\/project-settings\?projectId="/);
   assert.match(html, /api\("\/api\/context-hub\/preferences"/);
   assert.match(source, /url\.pathname === "\/api\/context-hub\/project-settings"/);
-  assert.match(source, /writeMemoryWebappSettings\(project\.root, projectInput, \{ migrateLegacyReview: true \}\)/);
-  assert.match(html, /state\.contextHub = contextHub;[\s\S]*if \(state\.page === "settings"\) renderSettingsPanel\(\);/);
+  assert.match(source, /writeMemoryWebappSettings\(project\.root, projectInput, \{\s*migrateLegacyReview: true,\s*expectedRootIdentity: project\.rootIdentity,\s*beforeMutation: beforeManagedControlMutation,\s*\}\)/);
+  assert.match(html, /function applyContextHubSnapshot\(catalog, ticket\) \{[\s\S]*state\.contextHub = sanitizeHostedHubCatalog\(catalog\);[\s\S]*return true;/);
+  assert.match(html, /applyContextHubSnapshot\(contextHub, ticket\)[\s\S]*if \(state\.page === "settings" && !state\.settingsDirtyGroups\.size\) renderSettingsPanel\(\);/);
   assert.match(html, /Block Git operations while review is pending/);
   assert.match(html, /data-review-gate-operation value="commit"/);
   assert.match(html, /data-review-gate-operation value="push"/);
@@ -6060,12 +6845,12 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /\.external-review-block\.change \{[^}]*margin:\s*0;[^}]*padding:\s*0;[^}]*box-shadow:\s*inset 2px 0 0/);
   assert.match(html, /function isMarkdownPathToken\(value\)/);
   assert.match(html, /function resolveDocLinkPath\(rawTarget\)/);
-  assert.match(html, /function markdownDocLinkAttributes\(rawTarget\)/);
+  assert.match(html, /function markdownDocLinkAttributes\(rawTarget, options = \{\}\)/);
   assert.match(html, /data-doc-link-path/);
   assert.match(html, /data-doc-link-resolved/);
   assert.match(html, /Ctrl\/Cmd-click to open/);
   assert.match(html, /function wireMarkdownDocLinks\(root = document\)/);
-  assert.match(html, /if \(element\.tagName === "A"\) event\.preventDefault\(\);/);
+  assert.match(html, /const keyboardAccessibleLink = element\.tagName === "A";[\s\S]*if \(!keyboardAccessibleLink && !isDocLinkModifierEventActive\(event\)\) return;/);
   assert.match(html, /function wireMarkdownEditorDocLinks\(editor\)/);
   assert.match(html, /function markdownDocLinkAtPoint\(clientX, clientY\)/);
   assert.match(html, /function markdownDocLinkElementAtPoint\(clientX, clientY\)/);
@@ -6095,7 +6880,8 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /if \(!isDocLinkModifierEventActive\(event\)\) return;/);
   assert.match(html, /openMarkdownDocLink\(target\)/);
   assert.match(html, /selectFile\(resolved, \{ revealInExplorer: true \}\)/);
-  assert.match(html, /markdown-inline-code' \+ \(isMarkdownPathToken\(token\) \? ' markdown-path' : ''\) \+ '"' \+ docLinkAttrs/);
+  assert.match(html, /const className = 'markdown-inline-code' \+ \(isMarkdownPathToken\(token\) \? ' markdown-path' : ''\);/);
+  assert.match(html, /if \(options\.interactiveLinks && docLinkAttrs\) return '<a href="#" class="' \+ className/);
   assert.match(html, /function updateMarkdownEditorHighlight\(text, options = \{\}\)/);
   assert.match(html, /state\.markdownHighlightFrame = window\.requestAnimationFrame/);
   assert.match(html, /function renderMarkdownEditorHighlightNow\(text\)/);
@@ -6251,15 +7037,16 @@ test("Codex reference API resolves an allowed file and delegates a compact refer
 
   assert.equal(response.status, 200);
   assert.equal(payload.nativeMention, true);
+  const canonicalRoot = fs.realpathSync(root);
   assert.deepEqual(inserted, [{
-    absolutePath: path.join(root, "docs/guide.md"),
+    absolutePath: path.join(canonicalRoot, "docs/guide.md"),
     displayPath: "docs/guide.md",
     startLine: 2,
     endLine: 3,
     selectedText: "beta\ngamma",
     dirty: true,
   }, {
-    absolutePath: path.join(root, "README.md"),
+    absolutePath: path.join(canonicalRoot, "README.md"),
     displayPath: "README.md",
     startLine: 1,
     endLine: 1,
@@ -6317,9 +7104,30 @@ test("browser refresh restores the last Context Room page", () => {
   assert.match(html, /state\.workspaceSyncedUrl = url\.href;[\s\S]*window\.history\[push \? "pushState" : "replaceState"\]/);
   assert.match(html, /window\.addEventListener\("popstate", \(\) => \{[\s\S]*if \(!state\.workspaceIdentityReady\) return;[\s\S]*window\.location\.href === state\.workspaceSyncedUrl\) return;[\s\S]*applyWorkspaceUrlState\(\{ reason: "history" \}\)/);
   assert.doesNotMatch(html, /window\.addEventListener\("popstate",[\s\S]{0,300}window\.location\.reload\(\)/);
-  assert.match(html, /window\.addEventListener\("beforeunload", \(event\) => \{[\s\S]*stopWorkspaceRuntime\(\);/);
-  assert.doesNotMatch(html, /window\.addEventListener\("beforeunload", \(event\) => \{[\s\S]{0,500}\/api\/workspaces\/register/);
-  assert.match(html, /async function completeWorkspacePairing\(\)[\s\S]*const fragment = workspaceFragmentValues\(\);[\s\S]*clearWorkspacePairingFragment\(\);[\s\S]*await publishSessionState\(\);/);
+  assert.match(html, /function handleWorkspaceBeforeUnload\(event\)[\s\S]*persistNavigationState\(\{ syncUrl: false \}\);[\s\S]*beginWorkspaceUnload\(\);[\s\S]*event\.preventDefault\(\);/);
+  assert.match(html, /function syncWorkspaceBeforeUnloadGuard\(\)[\s\S]*shouldListen = Boolean\(state\.dirty\);[\s\S]*"addEventListener" : "removeEventListener"[\s\S]*"beforeunload", handleWorkspaceBeforeUnload/);
+  assert.doesNotMatch(html, /window\.addEventListener\("beforeunload"/);
+  assert.match(html, /window\.addEventListener\("pagehide", handleWorkspacePageHide\);/);
+  assert.match(html, /function handleWorkspacePageHide\(event\)[\s\S]*persistNavigationState\(\{ syncUrl: false \}\);[\s\S]*stopWorkspaceRuntime\(\{ suspended: event\?\.persisted === true \}\);/);
+  assert.match(html, /function beginWorkspaceUnload\(\)[\s\S]*state\.workspaceUnloadPending = true;[\s\S]*quiesceWorkspaceBackgroundActivity\(\);[\s\S]*state\.workspaceUnloadPending = false;[\s\S]*settleWorkspaceUnload\("cancelled"\);[\s\S]*refreshWorkspaceRuntimeAfterLifecycle\("unload-cancelled"\)[\s\S]*}, 250\);/);
+  assert.match(html, /function prepareWorkspaceLocationChange\(\)[\s\S]*persistNavigationState\(\{ syncUrl: false \}\);[\s\S]*beginWorkspaceUnload\(\);/);
+  assert.match(html, /function assignWorkspaceLocation\(target\)[\s\S]*prepareWorkspaceLocationChange\(\);[\s\S]*window\.location\.assign\(target\);/);
+  assert.match(html, /function reloadWorkspaceLocation\(\)[\s\S]*prepareWorkspaceLocationChange\(\);[\s\S]*window\.location\.reload\(\);/);
+  assert.match(html, /function armRuntimeContextHubRefresh\(delay = 50\)[\s\S]*runRuntimeContextHubRefresh\(\)\.catch\(\(error\) => \{[\s\S]*workspaceRuntimeStopped \|\| state\.workspaceUnloadPending\) return;[\s\S]*Context Room refresh failed/);
+  assert.match(html, /function stopWorkspaceRuntime\(\{ suspended = false \} = \{\}\)[\s\S]*state\.workspaceRuntimeSuspended = Boolean\(suspended\);[\s\S]*settleWorkspaceUnload\(state\.workspaceRuntimeSuspended \? "suspended" : "stopped"\);[\s\S]*state\.workspaceChannel\?\.close\(\);/);
+  assert.match(html, /function resumeWorkspaceRuntime\(\)[\s\S]*settleWorkspaceRestore\("restored"\);[\s\S]*state\.startWorkspaceChannel\?\.\(\);[\s\S]*if \(state\.workspaceInitialRegistrationPending\) return true;[\s\S]*refreshWorkspaceRuntimeAfterLifecycle\("page-restore"/);
+  assert.match(html, /document\.addEventListener\("visibilitychange", \(\) => \{[\s\S]*workspaceVisibilityTimer[\s\S]*document\.visibilityState === "visible"[\s\S]*publishSessionState\(\{ allowHidden: true \}\)/);
+  assert.match(html, /window\.addEventListener\("pageshow", \(event\) => \{[\s\S]*event\.persisted[\s\S]*resumeWorkspaceRuntime\(\);/);
+  assert.doesNotMatch(html, /function handleWorkspaceBeforeUnload\(event\)[\s\S]{0,500}\/api\/workspaces\/register/);
+  assert.match(html, /async function completeWorkspacePairing\(\)[\s\S]*const fragment = workspaceFragmentValues\(\);[\s\S]*await publishSessionState\(\{ allowHidden: true, required: true \}\);[\s\S]*clearWorkspacePairingFragment\(\);/);
+  assert.match(html, /function ensureWorkspaceRuntimeRegistration\(\)[\s\S]*completeWorkspacePairing\(\)\.then[\s\S]*startWorkspaceRuntimeAfterRegistration\(pairedCommand\)/);
+  assert.match(html, /function startWorkspaceRuntimeAfterRegistration\(pairedCommand = null\)[\s\S]*state\.workspaceRuntimeRegistrationRequired = false;[\s\S]*state\.workspaceDeferredCommandId = pairedCommand\?\.id[\s\S]*startAgentCommandPolling\(\);[\s\S]*startRuntimeEvents\(\);/);
+  assert.match(html, /if \(outcome === "suspended"\)[\s\S]*waitForWorkspaceRestoreResolution\(\)[\s\S]*restoreOutcome !== "restored"/);
+  assert.match(html, /command\.id === state\.workspaceDeferredCommandId/);
+  assert.match(html, /const visible = document\.visibilityState === "visible";\s*const focused = visible && document\.hasFocus\(\);/);
+  assert.match(html, /async function publishSessionState\(\{ allowHidden = false, required = false \} = \{\}\)[\s\S]*document\.visibilityState !== "visible" && !allowHidden/);
+  assert.match(html, /function startWorkspacePresenceDrain\(\)[\s\S]*workspacePresenceQueued[\s\S]*workspacePresenceActive[\s\S]*await api\("\/api\/workspaces\/register"/);
+  assert.match(html, /window\.addEventListener\("blur", \(\) => \{[\s\S]*publishSessionState\(\{ allowHidden: true \}\)/);
   assert.match(html, /if \(state\.projectId\) headers\.set\("x-context-room-project", state\.projectId\);/);
   assert.match(html, /if \(responseAction === "initialize"\) state\.projectId = responseProjectId;/);
   assert.match(html, /function handleContextRoomProjectChange\([\s\S]*if \(IS_GLOBAL_CONTEXT_ROOM\)[\s\S]*loadFiles\(\{ identityRefresh: true \}\)/);
@@ -6334,8 +7142,9 @@ test("browser refresh restores the last Context Room page", () => {
   assert.match(html, /el\("search"\)\.value = persisted\.searchText \|\| folderFilterSearchQuery\(state\.pathFilters\);/);
   assert.match(html, /function acceptContextRoomRoot\(nextRoot\)[\s\S]*if \(!state\.root\) \{[\s\S]*state\.root = nextRoot;[\s\S]*if \(state\.root === nextRoot\) return;[\s\S]*if \(IS_GLOBAL_CONTEXT_ROOM\) \{[\s\S]*state\.root = nextRoot;[\s\S]*handleContextRoomProjectChange\(\{ reason: "server-root-changed" \}\);/);
   assert.match(html, /acceptContextRoomRoot\(data\.root\);/);
-  assert.match(html, /const hasRequestedContextHubTarget = Boolean\(requestedReviewFile \|\| requestedHubCard \|\| requestedStartupOrder \|\| state\.sharedContext\?\.mode === "review"\);/);
-  assert.match(html, /const restoreRequest = hasRequestedContextHubTarget \? Promise\.resolve\(false\) : restoreNavigationAfterInitialLoad\(\);/);
+  assert.match(html, /const hasDirectContextHubTarget = Boolean\(requestedReviewFile \|\| requestedHubCard \|\| requestedStartupOrder \|\| state\.sharedContext\?\.mode === "review"\);/);
+  assert.match(html, /if \(options\.initial && IS_GLOBAL_CONTEXT_ROOM\) \{[\s\S]*await state\.contextHubReadyPromise;[\s\S]*renderGlobalProjectExplorer\(\);/);
+  assert.match(html, /const restoreRequest = skipsGenericNavigationRestore \? Promise\.resolve\(false\) : restoreNavigationAfterInitialLoad\(\);/);
   assert.match(html, /const restored = await restoreRequest;/);
   assert.match(html, /if \(restored\) \{[\s\S]*scheduleSessionStatePush\(\);[\s\S]*return;/);
   assert.match(html, /openRequest = selectFile\(persisted\.selectedPath, options\);/);
@@ -6344,8 +7153,7 @@ test("browser refresh restores the last Context Room page", () => {
   assert.match(html, /showSettingsPage\(\);[\s\S]*return true;/);
   assert.match(html, /restorePersistedViewState\(options\.restoreViewState\);/);
   assert.match(html, /if \(typeof options\.diffCollapsed === "boolean"\) state\.diffCollapsed = options\.diffCollapsed;/);
-  assert.match(html, /window\.addEventListener\("beforeunload", \(event\) => \{[\s\S]*persistNavigationState\(\);/);
-  assert.match(html, /window\.addEventListener\("beforeunload", \(event\) => \{[\s\S]*if \(!state\.dirty\) return;[\s\S]*event\.preventDefault\(\);/);
+  assert.match(html, /Object\.defineProperty\(state, "dirty",[\s\S]*syncWorkspaceBeforeUnloadGuard\(\);/);
 });
 
 test("workspace URL restoration parses every supported destination without browser state", () => {
@@ -6440,7 +7248,7 @@ test("file opening renders loading and retry states instead of a blank document"
   assert.match(html, /state\.fileLoadError = null;/);
   assert.match(html, /const openingFile = state\.openingFilePath === state\.selected && state\.fileContentReadyPath !== state\.selected;/);
   assert.match(html, /const loadingFile = openingFile;/);
-  assert.match(html, /const loadError = !isStartupFile && state\.fileLoadError\?\.path === state\.selected/);
+  assert.match(html, /const loadError = state\.fileLoadError\?\.path === state\.selected/);
   assert.match(html, /function renderFileLoadingState\(file = \{\}\)/);
   assert.match(html, /function renderFileActionsLoading\(\)/);
   assert.match(html, /file-actions file-actions-loading/);
@@ -6448,7 +7256,13 @@ test("file opening renders loading and retry states instead of a blank document"
   assert.match(html, /Opening file\.\.\./);
   assert.match(html, /function renderFileLoadError\(error = \{\}\)/);
   assert.match(html, /Could not open this file/);
+  assert.match(html, /file-load-state error" role="alert"/);
   assert.match(html, /data-file-retry/);
+  assert.match(html, /function retrySelectedFileLoad\(\)[\s\S]*retry\.kind === "hosted-review"[\s\S]*retry\.kind === "startup-context"[\s\S]*retry\.kind === "startup-skill"[\s\S]*retry\.kind === "startup-hook"/);
+  assert.match(html, /kind: "startup-context",[\s\S]*renderViewer\(\);/);
+  assert.match(html, /kind: "startup-skill",[\s\S]*renderViewer\(\);/);
+  assert.match(html, /kind: "startup-hook",[\s\S]*renderViewer\(\);/);
+  assert.match(html, /kind: "hosted-review",[\s\S]*renderViewer\(\);/);
   assert.match(html, /state\.fileLoadError = \{ path, message: error\.message \|\| "Failed to open file\." \};/);
   assert.match(html, /updateExplorerSelectedFile\(previousSelected, path\)/);
   assert.match(html, /function reconcileMissingSelectedFile\(\)/);
@@ -6458,7 +7272,7 @@ test("file opening renders loading and retry states instead of a blank document"
   assert.match(html, /item\.path === path && !item\.oldPath/);
   assert.match(html, /clearReviewSession\(stalePath\)/);
   assert.match(html, /state\.page = "hub";/);
-  assert.match(html, /function showHome\(\) \{[\s\S]*setStatus\("ready"\);\s*scheduleSessionStatePush\(\);/);
+  assert.match(html, /function showHome\(\) \{[\s\S]*setStatus\(state\.contextHubRequestedProjectNotice \|\| "ready"\);\s*scheduleSessionStatePush\(\);/);
   assert.match(html, /function validSessionSelectedPath\(\)/);
   assert.match(html, /function selectedFileExists\(path = state\.selected\)/);
   assert.match(html, /if \(state\.selected && path !== state\.selected && !selectedFileExists\(\)\) reconcileMissingSelectedFile\(\);/);
@@ -6467,6 +7281,18 @@ test("file opening renders loading and retry states instead of a blank document"
   assert.match(html, /openFile: state\.selectedStartupContext \? state\.selectedStartupContext\.displayPath : validSelected/);
   assert.match(html, /selectedPath: validSelected/);
   assert.doesNotMatch(html, /renderFiles\(\);\s*if \(options\.revealInExplorer\)/);
+});
+
+test("Shared UI copy distinguishes incomplete coverage, offline cache state, and acceptance state", () => {
+  const html = renderAppHtml();
+
+  assert.match(html, /Some Shared repositories could not be checked\. The proposals shown below may be incomplete\./);
+  assert.match(html, /unconfirmedReviewMarkup \+ \(queueMarkup/);
+  assert.match(html, /Main offline · cached @/);
+  assert.match(html, /Main offline · no cached snapshot/);
+  assert.match(html, /shared context offline · no cached snapshot available/);
+  assert.match(html, /accepted: "Acceptance recorded · main unconfirmed"/);
+  assert.doesNotMatch(html, /Pull request ready/);
 });
 
 test("interface sound engine synthesizes every cue and honors mute, preview, and volume", () => {
@@ -6889,6 +7715,9 @@ test("the explorer persists its state and only its own controls can change it", 
     script.indexOf("function syncResponsiveSidebar"),
     script.indexOf("function syncSidebarToggleIcon"),
   );
+  const localResponsiveSource = responsiveSource.slice(
+    responsiveSource.indexOf("const collapsed = isExplorerCollapsed();"),
+  );
   const collapseSource = script.slice(
     script.indexOf("function applyExplorerCollapsed"),
     script.indexOf("function setExplorerCollapsedFromUser"),
@@ -6904,7 +7733,7 @@ test("the explorer persists its state and only its own controls can change it", 
   assert.match(html, /function restoreExplorerStateAfterInitialLoad\(\)[\s\S]*navigationMode === "collapsed"[\s\S]*navigationMode === "expanded"[\s\S]*applyExplorerCollapsed\(state\.explorerNavigationOverride \?\? storedCollapsed\);/);
   assert.match(collapseSource, /syncResponsiveSidebar\(\);/);
   assert.match(html, /el\("sidebarToggle"\)\.addEventListener\("click", \(\) => \{[\s\S]*setExplorerCollapsedFromUser\(!isExplorerCollapsed\(\)\);[\s\S]*restoreFocusAfterExplorerClose\(\)/);
-  assert.match(html, /el\("explorerOpen"\)\?\.addEventListener\("click", \(\) => \{[\s\S]*state\.explorerReturnFocus = document\.activeElement;[\s\S]*setExplorerCollapsedFromUser\(false\);[\s\S]*focusExplorerAfterOpen\(\)/);
+  assert.match(html, /el\("explorerOpen"\)\?\.addEventListener\("click", \(event\) => \{[\s\S]*state\.explorerReturnFocus = event\.currentTarget;[\s\S]*setExplorerCollapsedFromUser\(false\);[\s\S]*focusExplorerAfterOpen\(\)/);
   assert.match(html, /function contextRoomProposalReviewUrl\([\s\S]*searchParams\.set\("explorer", \(isExplorerDrawerViewport\(\) \|\| isExplorerCollapsed\(\)\) \? "collapsed" : "expanded"\)/);
   assert.match(html, /function openContextHubProject\([\s\S]*searchParams\.set\("explorer", \(isExplorerDrawerViewport\(\) \|\| isExplorerCollapsed\(\)\) \? "collapsed" : "expanded"\)/);
   assert.match(html, /id="explorerEdgeTrigger" class="explorer-edge-trigger"/);
@@ -6917,7 +7746,8 @@ test("the explorer persists its state and only its own controls can change it", 
   assert.match(html, /event\.clientX > state\.explorerWidth \+ 12\) setExplorerEdgePeek\(false\)/);
   assert.doesNotMatch(html, /explorerEdgePeekCloseTimer|scheduleExplorerEdgePeekClose/);
   assert.match(html, /function setExplorerCollapsedFromUser\(collapsed\)[\s\S]*state\.explorerNavigationOverride = null;[\s\S]*state\.explorerStoredCollapsed = Boolean\(collapsed\);/);
-  assert.doesNotMatch(responsiveSource, /sidebar-collapsed/);
+  assert.match(responsiveSource, /if \(IS_HOSTED_CONTEXT_ROOM\) \{[\s\S]*classList\.add\("sidebar-collapsed"\)[\s\S]*return;/);
+  assert.doesNotMatch(localResponsiveSource, /sidebar-collapsed/);
   assert.doesNotMatch(focusSource, /classList\.(?:add|remove|toggle)\("sidebar-collapsed"/);
   assert.doesNotMatch(html, /openSidebarIfCollapsed|collapseSidebarOnNarrow|mobileSidebarTouched/);
   assert.match(html, /if \(options\.revealInExplorer && !isExplorerCollapsed\(\)\) scrollExplorerToPath\(path\);/);
@@ -6959,7 +7789,8 @@ test("responsive Explorer uses one shared mobile, drawer, and desktop contract",
   assert.doesNotMatch(drawerCss, /\.context-room-brand strong[^}]*display:\s*none/);
   assert.match(html, /\.context-room-brand \{[^}]*flex:\s*0 0 auto/);
   assert.match(html, /\.diff-panel > \.diff-header, \.file-panel > header \{ flex:\s*0 0 auto; \}/);
-  assert.match(html, /\.dock-status \{ position:\s*absolute; width:\s*1px; height:\s*1px;/);
+  assert.match(html, /\.dock-status \{[\s\S]*?flex:\s*0 1 220px;[\s\S]*?text-overflow:\s*ellipsis;/);
+  assert.doesNotMatch(html, /\.dock-status \{[^}]*clip:\s*rect/);
   assert.match(html, /--workbench-gutter:\s*var\(--space-5\)/);
   assert.match(html, /--workbench-gutter-compact:\s*var\(--space-3\)/);
   assert.match(html, /\.settings-page \.settings-card > \.settings-page-header \{[^}]*padding:\s*16px var\(--workbench-gutter\)/);
@@ -6997,7 +7828,35 @@ test("quiet workbench spacing uses semantic gutters instead of competing surface
   assert.match(html, /@media \(max-width: 639px\) \{[\s\S]*?--dialog-gutter:\s*var\(--space-3\)/);
   assert.match(html, /@media \(max-width: 639px\) \{[\s\S]*?--inspector-gutter:\s*var\(--space-3\)/);
   assert.match(html, /@media \(max-width: 639px\) \{[\s\S]*?\.hub-disclosure summary, \.docqa-disclosure summary,[\s\S]*?\.hub-disclosure-body \{ padding-inline:\s*var\(--workbench-gutter-compact\)/);
-  assert.match(html, /@media \(max-width: 639px\) \{[\s\S]*?\.graph-list-row \{ padding-inline:\s*var\(--workbench-gutter-compact\)/);
+  assert.match(html, /@media \(max-width: 639px\) \{[\s\S]*?\.graph-list-row \{[^}]*padding-inline:\s*var\(--workbench-gutter-compact\)/);
+});
+
+test("workbench accessibility polish keeps status, labels, menus, tabs, and modal focus explicit", () => {
+  const html = renderAppHtml();
+
+  assert.match(html, /<link rel="icon" href="data:image\/svg\+xml,/);
+  assert.match(html, /--surface:\s*var\(--panel\)/);
+  assert.match(html, /--surface-hover:/);
+  assert.match(html, /--label:\s*var\(--text-soft\)/);
+  assert.match(html, /--warning:\s*var\(--warn\)/);
+  assert.match(html, /id="status" class="dock-status" role="status" aria-live="polite" aria-atomic="true"/);
+  assert.match(html, /function setStatus\(text\) \{[\s\S]*status\.title = text;/);
+  assert.match(html, /aria-expanded="' \+ String\(open\) \+ '" aria-label="' \+ escapeHtml\(selectionMode \?[\s\S]*: \(open \? "Collapse " : "Expand "\) \+ node\.name \+ " folder"\)/);
+  assert.doesNotMatch(html, /title="ouvrir\/fermer"/);
+  for (const id of ["startupContextFileNames", "startupContextGlobalPaths", "startupSkillFolderNames", "startupHookFileNames", "startupHookManagerPaths", "startupAgentHookSources"]) {
+    assert.match(html, new RegExp('<label class="settings-input-label" for="' + id + '">'));
+  }
+  assert.match(html, /id="explorerContextMenu" class="explorer-context-menu" role="menu"/);
+  assert.match(html, /function prepareExplorerContextMenu\([\s\S]*item\.setAttribute\("role", "menuitem"\)/);
+  assert.match(html, /event\.key === "ContextMenu" \|\| \(event\.shiftKey && event\.key === "F10"\)/);
+  assert.match(html, /function closeSharedSkillsWizard\(\{ restoreFocus = true \} = \{\}\)[\s\S]*removeAttribute\("inert"\)[\s\S]*returnFocus\.focus\(\)/);
+  assert.match(html, /sharedSkillsWizard"\)\?\.addEventListener\("keydown"[\s\S]*event\.key !== "Tab"[\s\S]*last\.focus\(\)/);
+  assert.match(html, /role="tabpanel" aria-labelledby="settings-tab-/);
+  assert.match(html, /metadata-tab-interpreted[\s\S]*role="tabpanel" aria-labelledby="metadata-tab-interpreted"/);
+  assert.match(html, /class="review-all-clear" role="status"/);
+  assert.match(html, /class="context-health-clear" role="status"/);
+  assert.match(html, /\.tree button, \.global-project-row, \.global-project-tree-entry \{ min-height:\s*44px; \}/);
+  assert.match(html, /prefers-reduced-motion:[\s\S]*\.boot-indicator, \.context-room-proposal-opening-indicator \{ animation:\s*none !important;/);
 });
 
 test("context health supports full refresh, acknowledged results, and simple filters", () => {
@@ -7218,7 +8077,7 @@ test("rendered app exposes agent collaboration hooks without human review bypass
   assert.match(html, /function isStaleAgentCommand\(command\)/);
   assert.match(html, /function executeAgentCommand\(command\)/);
   assert.match(html, /const navigated = await applyWorkspaceUrlState[\s\S]*if \(!navigated\)[\s\S]*throw new Error\(state\.workspaceLastNavigationError \|\| "Agent navigation failed"\)[\s\S]*if \(command\?\.id\) rememberAgentCommandId\(command\.id\);/);
-  assert.match(html, /openSharedProposal\(proposal\.branch, proposal\.repository \|\| "", \{ file: target\.file \|\| "" \}\)/);
+  assert.match(html, /openSharedProposal\(proposal\.branch, proposal\.repositoryId \|\| proposal\.repository \|\| "", \{ file: target\.file \|\| "" \}\)/);
   assert.match(html, /function applyAgentScrollTarget\(command\)/);
   assert.match(html, /function renderAgentAnnotations\(path\)/);
   assert.match(html, /api\("\/api\/agent\/annotations\?path="/);
@@ -7279,13 +8138,13 @@ test("disk changes stay pending for review instead of silently reloading the ope
   assert.match(html, /function renderExternalReviewBlocks\(blocks\)/);
   assert.match(html, /function externalReviewFinalLineStart\(blocks, blockId\)/);
   assert.match(html, /function finalLineDecorations\(rows, finalLineStart = null\)/);
-  assert.match(html, /external-review-block context markdown-view[\s\S]*renderMarkdownLines\(block\.rows\.map\(\(row\) => row\.line\)\.join\("\\n"\), \{ lineDecorations: finalLineDecorations\(block\.rows, options\.finalLineStart\) \}\)/);
+  assert.match(html, /external-review-block context markdown-view[\s\S]*renderMarkdownLines\(block\.rows\.map\(\(row\) => row\.line\)\.join\("\\n"\), \{ lineDecorations: finalLineDecorations\(block\.rows, options\.finalLineStart\), interactiveLinks: true \}\)/);
   assert.match(html, /external-review-final-lines markdown-view/);
   assert.match(html, /external-review-block context resolved/);
   assert.match(html, /external-review-block context resolved [^"]*empty/);
   assert.match(html, /external-review-lines markdown-view/);
   assert.doesNotMatch(html, /external-review-line-content markdown-view/);
-  assert.match(html, /renderMarkdownLines\(text, \{ lineDecorations \}\)/);
+  assert.match(html, /renderMarkdownLines\(text, \{ lineDecorations, interactiveLinks: true \}\)/);
   assert.match(html, /function externalReviewIntralineRows\(rows\)/);
   assert.match(html, /function buildIntralineTokenDiff\(beforeText, afterText\)/);
   assert.match(html, /function renderIntralineSegments\(segments, changeType\)/);
@@ -7423,7 +8282,7 @@ test("disk changes stay pending for review instead of silently reloading the ope
   assert.match(html, /target\.scrollIntoView\(\{ behavior: "smooth", block: "center", inline: "nearest" \}\)/);
   assert.match(html, /\.external-review-block\.attention/);
   assert.match(html, /@keyframes externalReviewAttention/);
-  assert.match(html, /if \(!state\.dirty\) return;/);
+  assert.match(html, /if \(syncEditorDirtyState\(\)\) \{\s*const conflictDetected = await checkSelectedFileConflict\(\);\s*if \(conflictDetected \|\| syncEditorDirtyState\(\)\) return;\s*\}/);
   assert.match(html, /if \(onlyIgnoredReviewMetadataChanged\(state\.saved \|\| "", data\.content\)\) \{/);
   assert.match(html, /setStatus\("last_verified synced"\);/);
   assert.doesNotMatch(html, /activeBlockingExternalChange/);
@@ -7475,6 +8334,7 @@ test("saved startup skill with stale dirty state treats a later disk edit as ext
     "state",
     "document",
     "window",
+    "IS_HOSTED_REVIEW",
     "api",
     "activeEditor",
     "el",
@@ -7500,6 +8360,7 @@ test("saved startup skill with stale dirty state treats a later disk edit as ext
     state,
     { hidden: false },
     { clearTimeout() {}, setTimeout() {} },
+    false,
     async (requestPath) => {
       requests.push(requestPath);
       if (state.selectedStartupContext) {

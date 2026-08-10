@@ -17,6 +17,7 @@ import {
   planAgentHandoff,
   planCliReviewAnnotation,
   registerCliProject,
+  resolveCliProjectReference,
   resolveCliTarget,
 } from "../src/agent_cli.mjs";
 import { cliCapabilities, cliEnvelope, cliErrorEnvelope, ContextRoomCliError, projectCliData } from "../src/cli_contract.mjs";
@@ -138,6 +139,66 @@ test("machine envelopes and capabilities expose no agent review decision command
   const failure = cliErrorEnvelope("agent.prepare", new ContextRoomCliError("ambiguous-target", "Choose a location", { retryable: true }));
   assert.equal(failure.error.code, "ambiguous-target");
   assert.equal(failure.error.retryable, true);
+});
+
+test("project selectors prefer exact identities and reject cross-project aliases", () => {
+  const projects = [
+    { id: "exact-id", logicalProjectId: "logical-one", title: "Primary" },
+    {
+      id: "location-two",
+      projectKey: "exact-id",
+      logicalProjectId: "logical-two",
+      title: "Exact ID",
+      shared: { projectId: "exact-id" },
+      worktrees: [{ id: "worktree-two", branch: "feature/two" }],
+    },
+  ];
+  assert.equal(resolveCliProjectReference(projects, "exact-id").matches[0].logicalProjectId, "logical-one");
+  assert.equal(resolveCliProjectReference(projects, "worktree-two").matches[0].logicalProjectId, "logical-two");
+  assert.equal(resolveCliProjectReference(projects, "logical-two").matches[0].logicalProjectId, "logical-two");
+  assert.equal(resolveCliProjectReference(projects, "shared:exact-id").matches[0].logicalProjectId, "logical-two");
+  assert.equal(resolveCliProjectReference(projects, "shared:exact-id").matchedBy, "legacy-shared-project-key");
+
+  const ambiguous = [
+    { id: "one", logicalProjectId: "logical-one", title: "Atlas" },
+    { id: "two", logicalProjectId: "logical-two", shared: { projectId: "atlas" }, title: "Other" },
+  ];
+  assert.throws(
+    () => resolveCliProjectReference(ambiguous, "ATLAS"),
+    (error) => error.code === "ambiguous-target"
+      && error.statusCode === 409
+      && error.details?.matchedBy === "alias"
+      && error.details?.candidates?.length === 2,
+  );
+  assert.throws(
+    () => resolveCliProjectReference([
+      { id: "shared-one", logicalProjectId: "shared-one", shared: { projectId: "atlas" } },
+      { id: "shared-two", logicalProjectId: "shared-two", shared: { projectId: "atlas" } },
+    ], "shared:atlas"),
+    (error) => error.code === "ambiguous-target"
+      && error.details?.matchedBy === "legacy-shared-project-key"
+      && error.details?.candidates?.length === 2,
+  );
+
+  const worktrees = [
+    { id: "main", logicalProjectId: "logical-shared", title: "Shared title" },
+    { id: "feature", logicalProjectId: "logical-shared", title: "Shared title" },
+  ];
+  assert.equal(resolveCliProjectReference(worktrees, "shared title").matches.length, 2);
+});
+
+test("resolveCliTarget never lets a title alias shadow an exact location id", (t) => {
+  const { parent, root } = fixture(t);
+  const exact = registerCliProject({ root, title: "Exact target" });
+  const aliasRoot = path.join(parent, "alias-project");
+  fs.mkdirSync(aliasRoot, { recursive: true });
+  git(aliasRoot, ["init"]);
+  initializeContextRoomProject(aliasRoot, { title: exact.id, allowedPaths: [], watchAllow: [] });
+  registerCliProject({ root: aliasRoot, title: exact.id });
+
+  const selected = resolveCliTarget({ cwd: aliasRoot, project: exact.id });
+  assert.equal(selected.root, fs.realpathSync(root));
+  assert.equal(selected.location.id, exact.id);
 });
 
 test("machine output projection selects fields and summarizes unexpanded collections", () => {
