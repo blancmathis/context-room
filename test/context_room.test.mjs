@@ -1444,6 +1444,71 @@ process.exit(result.status == null ? 1 : result.status);
   for (const response of result.second) assert.equal(response.status, 200, JSON.stringify(response));
 });
 
+test("background file diff waits through sustained valid cache invalidations", { timeout: 15_000 }, () => {
+  const root = makeRoot();
+  const wrapperBin = path.join(root, "bin");
+  fs.mkdirSync(path.join(root, "docs"));
+  fs.mkdirSync(wrapperBin);
+  fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\n");
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: [] });
+  execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "context-room@example.test"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Context Room Test"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["add", "."], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["commit", "-m", "initial"], { cwd: root, stdio: "ignore" });
+  const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+  const wrapperPath = path.join(wrapperBin, "git");
+  fs.writeFileSync(wrapperPath, `#!/usr/bin/env node
+const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2);
+if (args.includes("--no-optional-locks")
+    && args.includes("status")
+    && args.some((arg) => arg === "docs/guide.md" || arg === ":(literal)docs/guide.md")) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 220);
+}
+const result = spawnSync(process.env.CONTEXT_ROOM_TEST_REAL_GIT, args, { stdio: "inherit", env: process.env });
+if (result.error) throw result.error;
+process.exit(result.status == null ? 1 : result.status);
+`);
+  fs.chmodSync(wrapperPath, 0o755);
+
+  const moduleUrl = new URL("../src/context_room.mjs", import.meta.url).href;
+  const probe = `
+    import fs from "node:fs";
+    import path from "node:path";
+    const [moduleUrl, root] = process.argv.slice(1);
+    const { createMemoryServer } = await import(moduleUrl + "?stability-probe=" + Date.now());
+    const instance = createMemoryServer({ root });
+    await new Promise((resolve) => instance.server.listen(0, "127.0.0.1", resolve));
+    const baseUrl = "http://127.0.0.1:" + instance.server.address().port;
+    const diffPromise = fetch(baseUrl + "/api/file/diff?path=" + encodeURIComponent("docs/guide.md"));
+    for (let index = 1; index <= 12; index += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\\n\\nUpdate " + index + ".\\n");
+    }
+    const response = await diffPromise;
+    const body = await response.json();
+    await new Promise((resolve, reject) => instance.server.close((error) => error ? reject(error) : resolve()));
+    await instance.waitForShutdown();
+    process.stdout.write(JSON.stringify({ status: response.status, body }));
+  `;
+  const output = execFileSync(process.execPath, ["--input-type=module", "--eval", probe, moduleUrl, root], {
+    encoding: "utf8",
+    timeout: 12_000,
+    env: {
+      ...process.env,
+      NODE_TEST_CONTEXT: "1",
+      CONTEXT_ROOM_TEST_BACKGROUND_FILE_STABILITY_TIMEOUT_MS: "5000",
+      CONTEXT_ROOM_TEST_REAL_GIT: realGit,
+      PATH: `${wrapperBin}${path.delimiter}${process.env.PATH || ""}`,
+    },
+  });
+  const result = JSON.parse(output);
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  assert.equal(result.body.changed, true);
+  assert.match(result.body.patch, /Update 12\./);
+});
+
 test("workspace registry keeps independent metadata and routes commands to an exact workspace", async (t) => {
   const root = makeRoot();
   initializeContextRoomProject(root, { allowedPaths: [], watchAllow: [] });

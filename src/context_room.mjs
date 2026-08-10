@@ -13995,6 +13995,9 @@ const CONTEXT_HUB_PROCESS_TIMEOUT_MS = 120_000;
 const BACKGROUND_FILE_TASK_TIMEOUT_MS = process.env.NODE_TEST_CONTEXT && Number.isFinite(Number(process.env.CONTEXT_ROOM_TEST_BACKGROUND_FILE_TASK_TIMEOUT_MS))
   ? Math.max(50, Math.min(30_000, Number(process.env.CONTEXT_ROOM_TEST_BACKGROUND_FILE_TASK_TIMEOUT_MS)))
   : 30_000;
+const BACKGROUND_FILE_STABILITY_TIMEOUT_MS = process.env.NODE_TEST_CONTEXT && Number.isFinite(Number(process.env.CONTEXT_ROOM_TEST_BACKGROUND_FILE_STABILITY_TIMEOUT_MS))
+  ? Math.max(250, Math.min(30_000, Number(process.env.CONTEXT_ROOM_TEST_BACKGROUND_FILE_STABILITY_TIMEOUT_MS)))
+  : 15_000;
 
 function runContextHubProcessTask(root, payload = {}) {
   const moduleUrl = new URL("./context_room.mjs", import.meta.url).href;
@@ -14371,13 +14374,13 @@ function backgroundFileTaskKey(task, root, payload = {}) {
   return `${path.resolve(root)}\0${task}\0${normalizeRelPath(payload.path || "")}`;
 }
 
-const BACKGROUND_FILE_TASK_MAX_STALE_RETRIES = 4;
-
 async function runStableBackgroundFileTask(task, root, payload = {}) {
-  for (let attempt = 0; attempt <= BACKGROUND_FILE_TASK_MAX_STALE_RETRIES; attempt += 1) {
+  const deadline = Date.now() + BACKGROUND_FILE_STABILITY_TIMEOUT_MS;
+  while (true) {
     const generation = backgroundFileTaskGenerations.get(root) || 0;
     const value = await runBackgroundTask(task, root, payload);
     if ((backgroundFileTaskGenerations.get(root) || 0) === generation) return value;
+    if (Date.now() >= deadline) break;
   }
   const error = sharedRequestError(
     "Background file state kept changing during read. Retry after filesystem activity settles.",
