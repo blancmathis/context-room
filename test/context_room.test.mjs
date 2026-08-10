@@ -7268,7 +7268,7 @@ test("file opening renders loading and retry states instead of a blank document"
   assert.match(html, /item\.path === path && !item\.oldPath/);
   assert.match(html, /clearReviewSession\(stalePath\)/);
   assert.match(html, /state\.page = "hub";/);
-  assert.match(html, /function showHome\(\) \{[\s\S]*setStatus\("ready"\);\s*scheduleSessionStatePush\(\);/);
+  assert.match(html, /function showHome\(\) \{[\s\S]*setStatus\(state\.contextHubRequestedProjectNotice \|\| "ready"\);\s*scheduleSessionStatePush\(\);/);
   assert.match(html, /function validSessionSelectedPath\(\)/);
   assert.match(html, /function selectedFileExists\(path = state\.selected\)/);
   assert.match(html, /if \(state\.selected && path !== state\.selected && !selectedFileExists\(\)\) reconcileMissingSelectedFile\(\);/);
