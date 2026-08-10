@@ -24,8 +24,18 @@ async function freezeRuntimeUpdates(page) {
     state.runtimeEventsConnected = true;
     window.clearInterval(state.runtimeFallbackTimer);
     state.runtimeFallbackTimer = null;
+    window.clearTimeout(state.contextHubSnapshotPollTimer);
+    state.contextHubSnapshotPollTimer = null;
+    window.clearTimeout(state.runtimeContextHubRefreshTimer);
+    state.runtimeContextHubRefreshTimer = null;
+    state.runtimeContextHubRefreshPending = false;
+    state.runtimeContextHubRefreshGeneration = "";
   });
-  await expect.poll(() => page.evaluate(() => Boolean(state.refreshInFlight || state.reportsRefreshInFlight))).toBe(false);
+  await expect.poll(() => page.evaluate(() => Boolean(
+    state.refreshInFlight
+    || state.reportsRefreshInFlight
+    || state.runtimeContextHubRefreshPromise
+  ))).toBe(false);
 }
 
 function violationReport(violations) {
