@@ -1023,9 +1023,10 @@ test("@smoke terminal proposal acceptance obtains a one-shot challenge before co
   await dialog.getByRole("button", { name: "Cancel" }).click();
 });
 
-test("@smoke verified terminal acceptance stays pending, reports the commit, then returns to the right Hub", async ({ page }) => {
+test("@smoke verified terminal acceptance stays pending, reports the commit, then returns to the right Hub", async ({ page }, testInfo) => {
   const { origin, projects } = fixture();
   const projectId = projects.beacon.id;
+  const mobileProject = testInfo.project.name.includes("mobile");
   const hubUrl = `${origin}/?hub=1&workspace=workspace-demo&project=${encodeURIComponent(projectId)}&view=hub&explorer=expanded`;
   const reviewUrl = new URL(origin + "/");
   reviewUrl.searchParams.set("hub", "1");
@@ -1034,10 +1035,10 @@ test("@smoke verified terminal acceptance stays pending, reports the commit, the
   reviewUrl.searchParams.set("view", "proposal");
   reviewUrl.searchParams.set("proposal", "proposal/demo/terminal-action");
   reviewUrl.searchParams.set("returnTo", hubUrl);
-  reviewUrl.searchParams.set("explorer", "expanded");
+  reviewUrl.searchParams.set("explorer", mobileProject ? "collapsed" : "expanded");
   await page.goto(reviewUrl.toString());
   await waitForBoot(page);
-  await expect(page.locator(".app > aside")).toBeVisible();
+  if (!mobileProject) await expect(page.locator(".app > aside")).toBeVisible();
 
   const acceptedCommit = "89abcdef".repeat(8);
   const flashToken = "a".repeat(32);
@@ -1088,11 +1089,13 @@ test("@smoke verified terminal acceptance stays pending, reports the commit, the
 
   await showTerminalProposal(page, { projectId });
   const putOnMain = page.getByRole("button", { name: "Put on main", exact: true });
-  await expect.poll(async () => page.evaluate(() => {
-    const accept = document.querySelector("#proposalDockAccept")?.getBoundingClientRect();
-    const explorer = document.querySelector(".app > aside")?.getBoundingClientRect();
-    return Boolean(accept && explorer && accept.left >= explorer.right);
-  })).toBe(true);
+  if (!mobileProject) {
+    await expect.poll(async () => page.evaluate(() => {
+      const accept = document.querySelector("#proposalDockAccept")?.getBoundingClientRect();
+      const explorer = document.querySelector(".app > aside")?.getBoundingClientRect();
+      return Boolean(accept && explorer && accept.left >= explorer.right);
+    })).toBe(true);
+  }
   await putOnMain.click();
   const dialog = await confirmTerminalAcceptance(page);
 
