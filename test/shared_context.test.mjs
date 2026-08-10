@@ -191,7 +191,7 @@ test("shared proposal review keeps navigation and explicit completion in the pro
   assert.match(html, /workspaceHead\.dataset\.view = state\.contextHubView/);
   assert.match(html, /x-context-room-target-project/);
   assert.match(html, /target\.searchParams\.set\("hub", "1"\)/);
-  assert.match(html, /window\.location\.assign\(target\.toString\(\)\)/);
+  assert.match(html, /assignWorkspaceLocation\(target\.toString\(\)\)/);
   assert.match(html, /hubCard/);
   assert.match(html, />All sources</);
   assert.doesNotMatch(html, />Local \+ shared</);
@@ -224,8 +224,8 @@ test("shared proposal review keeps navigation and explicit completion in the pro
   assert.doesNotMatch(html, /target\.searchParams\.set\("file", firstReviewFile\)/);
   assert.match(html, /function contextRoomProposalFileUrl\(url, filePath\)/);
   assert.match(html, /state\.contextRoomPreparedReview = result/);
-  assert.match(html, /if \(queuedFile\) \{[\s\S]*?window\.location\.assign\(contextRoomProposalFileUrl\(result\.url, queuedFile\)\);[\s\S]*?return;[\s\S]*?\}[\s\S]*?window\.location\.assign\(contextRoomProposalReviewUrl\(result\.url\)\);/);
-  assert.match(html, /window\.location\.assign\(contextRoomProposalFileUrl\(prepared\.url, filePath\)\)/);
+  assert.match(html, /if \(queuedFile\) \{[\s\S]*?assignWorkspaceLocation\(contextRoomProposalFileUrl\(result\.url, queuedFile\)\);[\s\S]*?return;[\s\S]*?\}[\s\S]*?assignWorkspaceLocation\(contextRoomProposalReviewUrl\(result\.url\)\);/);
+  assert.match(html, /assignWorkspaceLocation\(contextRoomProposalFileUrl\(prepared\.url, filePath\)\)/);
   assert.match(html, /const requestedReviewFile = initialQuery\?\.get\("file"\) \|\| ""/);
   assert.match(html, /state\.sharedContext\?\.mode === "review"\) \{\s*showProposalReview\(\)/);
   assert.match(html, /expectedHead: item\.head \|\| undefined/);

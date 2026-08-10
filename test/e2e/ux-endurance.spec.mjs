@@ -41,10 +41,16 @@ async function waitForWorkspaceBackgroundIdle(page) {
     projectAttentionBusy: Boolean(state.contextAttentionLoading),
     registrationBusy: Boolean(state.workspaceRegistrationPromise),
     presenceBusy: Boolean(state.workspacePresenceDrainPromise || state.workspacePresenceQueued),
-    runtimeRefreshBusy: Boolean(state.runtimeContextHubRefreshPromise),
+    runtimeRefreshBusy: Boolean(state.runtimeContextHubRefreshPromise || state.runtimeContextHubRefreshTimer),
     hostedRefreshBusy: Boolean(state.hostedReviewRefreshPromise || state.hostedReviewRefreshTimer || state.hostedReviewRefreshPending),
     snapshotRefreshBusy: Boolean(state.contextHubSnapshotPollTimer || state.contextHub?.freshness?.refreshing),
-    reportsBusy: Boolean(state.refreshInFlight || state.reportsRefreshInFlight || state.backgroundRefreshTimer),
+    reportsBusy: Boolean(
+      state.refreshInFlight
+      || state.reportsRefreshInFlight
+      || state.backgroundRefreshTimer
+      || state.backgroundRefreshPendingOptions
+      || state.localForegroundRefreshTimer
+    ),
   }))).toEqual({
     projectOpening: false,
     projectBusy: false,

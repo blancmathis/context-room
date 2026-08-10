@@ -475,7 +475,7 @@ test("the global Context Room keeps project targeting inside one workspace", () 
   assert.match(script, /state\.activeProjectLocationId = "";/);
   assert.match(script, /function applyContextHubRequestedProject\(contextHub\)[\s\S]*resolveContextHubProjectSelection\([\s\S]*state\.activeProjectLocationId = requestedLocationId;/);
   assert.match(script, /headers\.set\("x-context-room-target-project", state\.activeProjectLocationId\)/);
-  assert.match(script, /async function openContextHubProject\([\s\S]*target\.searchParams\.set\("hub", "1"\)[\s\S]*window\.location\.assign\(target\.toString\(\)\)/);
+  assert.match(script, /async function openContextHubProject\([\s\S]*target\.searchParams\.set\("hub", "1"\)[\s\S]*assignWorkspaceLocation\(target\.toString\(\)\)/);
   assert.match(script, /function currentContextRoomProject\(\)[\s\S]*project\.current[\s\S]*hub\.currentProjectId/);
   assert.match(script, /function contextHubHomeReviewItems\(needle = "", visibility = "active", \{ ignoreUserFilters = false \} = \{\}\)[\s\S]*IS_GLOBAL_CONTEXT_ROOM[\s\S]*ignoreUserFilters \|\| !state\.sharedProposalProject \|\| contextHubItemMatchesProject\(item, \{ projectKey: state\.sharedProposalProject \}\)[\s\S]*currentProject && contextHubItemMatchesProject\(item, currentProject\)/);
   assert.match(script, /function renderGlobalProjectExplorer\(\)[\s\S]*contextHubPrioritizedProjects[\s\S]*data-global-project-key/);
@@ -7110,6 +7110,10 @@ test("browser refresh restores the last Context Room page", () => {
   assert.match(html, /window\.addEventListener\("pagehide", handleWorkspacePageHide\);/);
   assert.match(html, /function handleWorkspacePageHide\(event\)[\s\S]*persistNavigationState\(\{ syncUrl: false \}\);[\s\S]*stopWorkspaceRuntime\(\{ suspended: event\?\.persisted === true \}\);/);
   assert.match(html, /function beginWorkspaceUnload\(\)[\s\S]*state\.workspaceUnloadPending = true;[\s\S]*quiesceWorkspaceBackgroundActivity\(\);[\s\S]*state\.workspaceUnloadPending = false;[\s\S]*settleWorkspaceUnload\("cancelled"\);[\s\S]*refreshWorkspaceRuntimeAfterLifecycle\("unload-cancelled"\)[\s\S]*}, 250\);/);
+  assert.match(html, /function prepareWorkspaceLocationChange\(\)[\s\S]*persistNavigationState\(\{ syncUrl: false \}\);[\s\S]*beginWorkspaceUnload\(\);/);
+  assert.match(html, /function assignWorkspaceLocation\(target\)[\s\S]*prepareWorkspaceLocationChange\(\);[\s\S]*window\.location\.assign\(target\);/);
+  assert.match(html, /function reloadWorkspaceLocation\(\)[\s\S]*prepareWorkspaceLocationChange\(\);[\s\S]*window\.location\.reload\(\);/);
+  assert.match(html, /function armRuntimeContextHubRefresh\(delay = 50\)[\s\S]*runRuntimeContextHubRefresh\(\)\.catch\(\(error\) => \{[\s\S]*workspaceRuntimeStopped \|\| state\.workspaceUnloadPending\) return;[\s\S]*Context Room refresh failed/);
   assert.match(html, /function stopWorkspaceRuntime\(\{ suspended = false \} = \{\}\)[\s\S]*state\.workspaceRuntimeSuspended = Boolean\(suspended\);[\s\S]*settleWorkspaceUnload\(state\.workspaceRuntimeSuspended \? "suspended" : "stopped"\);[\s\S]*state\.workspaceChannel\?\.close\(\);/);
   assert.match(html, /function resumeWorkspaceRuntime\(\)[\s\S]*settleWorkspaceRestore\("restored"\);[\s\S]*state\.startWorkspaceChannel\?\.\(\);[\s\S]*if \(state\.workspaceInitialRegistrationPending\) return true;[\s\S]*refreshWorkspaceRuntimeAfterLifecycle\("page-restore"/);
   assert.match(html, /document\.addEventListener\("visibilitychange", \(\) => \{[\s\S]*workspaceVisibilityTimer[\s\S]*document\.visibilityState === "visible"[\s\S]*publishSessionState\(\{ allowHidden: true \}\)/);

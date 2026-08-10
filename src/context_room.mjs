@@ -29976,10 +29976,10 @@ async function openSharedProposal(proposal, repository = "", { file = "" } = {})
     renderSharedProposalWorkspace();
     const queuedFile = state.contextRoomQueuedProposalFile;
     if (queuedFile) {
-      window.location.assign(contextRoomProposalFileUrl(result.url, queuedFile));
+      assignWorkspaceLocation(contextRoomProposalFileUrl(result.url, queuedFile));
       return;
     }
-    window.location.assign(contextRoomProposalReviewUrl(result.url));
+    assignWorkspaceLocation(contextRoomProposalReviewUrl(result.url));
   } catch (error) {
     if (requestId !== state.contextRoomProposalRequest) return;
     state.contextRoomOpeningProposalId = "";
@@ -30177,7 +30177,7 @@ async function openContextHubProject(projectId, options = {}, requestedGeneratio
     await applyWorkspaceUrlState({ reason: "project-file", force: true });
     return;
   }
-  window.location.assign(target.toString());
+  assignWorkspaceLocation(target.toString());
 }
 
 async function refreshContextHubUi() {
@@ -30424,7 +30424,7 @@ async function completeSharedProposalAcceptance(challengeId) {
     }
     showContextRoomToast({ title, message, kind: "status" });
     setStatus(title + " · " + result.commit);
-    window.location.assign(target.toString());
+    assignWorkspaceLocation(target.toString());
   } catch (error) {
     state.proposalActionError = error.message || "The proposal could not be put on main.";
     keepFailedTerminalAcceptanceOnProposal(review);
@@ -30514,7 +30514,7 @@ async function completeSharedProposalRejection() {
     target.searchParams.set("crFlash", result.flashToken);
     showContextRoomToast({ title, message, kind: "status" });
     setStatus(title + " · " + result.rejectionBranch);
-    window.location.assign(target.toString());
+    assignWorkspaceLocation(target.toString());
   } catch (error) {
     state.proposalActionError = error.message || "The proposal could not be rejected.";
     setStatus("proposal rejection blocked · " + state.proposalActionError);
@@ -30640,7 +30640,7 @@ function showWorkspaceRecovery(message = "Context Room stopped an automatic relo
     content.innerHTML = '<h2>Context Room needs a clean retry</h2><p>' + escapeHtml(message) + '</p><button id="workspaceRecoveryRetry" type="button">Retry once</button>';
     el("workspaceRecoveryRetry")?.addEventListener("click", () => {
       window.sessionStorage?.removeItem(WORKSPACE_RELOAD_GUARD_KEY);
-      window.location.reload();
+      reloadWorkspaceLocation();
     }, { once: true });
   }
   el("bootScreen")?.setAttribute("aria-hidden", "false");
@@ -30655,7 +30655,7 @@ function requestExceptionalWorkspaceReload(reason = "server identity changed") {
     return false;
   }
   recordWorkspaceDiagnostic("exceptional-reload", reason);
-  window.location.reload();
+  reloadWorkspaceLocation();
   return true;
 }
 
@@ -31852,7 +31852,10 @@ function armRuntimeContextHubRefresh(delay = 50) {
   state.runtimeContextHubRefreshTimer = window.setTimeout(() => {
     state.runtimeContextHubRefreshTimer = null;
     if (state.workspaceRuntimeStopped || state.workspaceUnloadPending) return;
-    void runRuntimeContextHubRefresh();
+    void runRuntimeContextHubRefresh().catch((error) => {
+      if (state.workspaceRuntimeStopped || state.workspaceUnloadPending) return;
+      setStatus("Context Room refresh failed · " + error.message);
+    });
   }, delay);
 }
 
@@ -34190,6 +34193,21 @@ function beginWorkspaceUnload() {
       if (!state.workspaceRuntimeStopped && !state.workspaceUnloadPending) setStatus("Workspace resume failed · " + error.message);
     });
   }, 250);
+}
+
+function prepareWorkspaceLocationChange() {
+  persistNavigationState({ syncUrl: false });
+  beginWorkspaceUnload();
+}
+
+function assignWorkspaceLocation(target) {
+  prepareWorkspaceLocationChange();
+  window.location.assign(target);
+}
+
+function reloadWorkspaceLocation() {
+  prepareWorkspaceLocationChange();
+  window.location.reload();
 }
 
 function stopWorkspaceRuntime({ suspended = false } = {}) {
@@ -39230,7 +39248,7 @@ async function handleBrandHomeAction() {
   if (homeUrl) {
     await waitForReviewFinalizationBeforeNavigation();
     if (state.dirty && !confirm("You have unsaved changes. Return to the main Context Room?")) return;
-    window.location.assign(homeUrl);
+    assignWorkspaceLocation(homeUrl);
     return;
   }
   if (state.page === "hub") return;
@@ -45487,7 +45505,7 @@ el("proposalReviewFiles")?.addEventListener("click", (event) => {
   if (state.contextRoomPreparingProposal) {
     const prepared = state.contextRoomPreparedReview;
     if (prepared?.url) {
-      window.location.assign(contextRoomProposalFileUrl(prepared.url, filePath));
+      assignWorkspaceLocation(contextRoomProposalFileUrl(prepared.url, filePath));
       return;
     }
     state.contextRoomQueuedProposalFile = filePath;
@@ -45529,7 +45547,7 @@ function selectOrQueueProposalReviewFile(filePath) {
     }
     if (prepared?.url) {
       if (!entry.selectable) return false;
-      window.location.assign(contextRoomProposalSelectionUrl(prepared.url, filePath));
+      assignWorkspaceLocation(contextRoomProposalSelectionUrl(prepared.url, filePath));
       return true;
     }
   }
