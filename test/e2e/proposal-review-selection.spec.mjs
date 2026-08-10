@@ -206,6 +206,13 @@ test("@smoke a shared-only deep link boots without a local target and labels an 
 
 test("@smoke a launcher-style project deep link renders immediately while its project refresh completes", async ({ page }) => {
   const { origin, projects } = fixture();
+  const hubRequests = [];
+  page.on("request", (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (pathname === "/api/context-hub" || pathname === "/api/context-hub/refresh") {
+      hubRequests.push(`${request.method()} ${pathname}`);
+    }
+  });
   let releaseProjectRefresh;
   let markProjectRequest;
   const projectRequest = new Promise((resolve) => { markProjectRequest = resolve; });
@@ -226,10 +233,13 @@ test("@smoke a launcher-style project deep link renders immediately while its pr
     await expect(page).toHaveURL((url) => url.searchParams.get("project") === projects.atlas.id && url.searchParams.get("view") === "hub");
     const explorerOpen = page.getByRole("button", { name: "Open explorer" });
     if (await explorerOpen.isVisible()) await explorerOpen.click();
+    const hubReadsBeforeReturn = hubRequests.filter((request) => request === "GET /api/context-hub").length;
     await page.getByRole("button", { name: "Back to projects" }).click();
     await expect(page).toHaveURL((url) => !url.searchParams.has("project") && url.searchParams.get("view") === "hub");
     await expect(page.locator(".global-project-row", { hasText: "Atlas" })).toBeVisible();
     await expect(page.locator(".global-project-row", { hasText: "Beacon" })).toBeVisible();
+    await expect.poll(() => hubRequests.filter((request) => request === "GET /api/context-hub").length).toBeGreaterThan(hubReadsBeforeReturn);
+    expect(hubRequests).not.toContain("POST /api/context-hub/refresh");
     await expect.poll(() => page.evaluate(() => ({
       opened: state.contextHubInitialProjectOpenedId,
       opening: state.contextHubInitialProjectOpen?.id || "",

@@ -28889,21 +28889,6 @@ async function returnToGlobalContextHubHome() {
   renderContextHealth();
   renderSingleProjectWorktreeSwitch();
   workspaceUpdate("catalog-refreshed");
-  setStatus("Global Context Room · refreshing Shared catalogue…");
-
-  const refreshTicket = beginContextHubSnapshotRequest();
-  const refreshedCatalog = await api("/api/context-hub/refresh", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: "{}",
-  });
-  if (generation !== state.contextHubPendingOpenGeneration || !applyContextHubSnapshot(refreshedCatalog, refreshTicket)) return;
-  renderGlobalProjectExplorer();
-  renderContextRoomGlobalReviewQueue();
-  renderSharedProposalWorkspace();
-  renderContextHealth();
-  renderSingleProjectWorktreeSwitch();
-  workspaceUpdate("catalog-refreshed");
   setStatus(state.contextHub.repositoryErrors?.length
     ? "Global Context Room opened with Shared repository warnings"
     : "Global Context Room");
