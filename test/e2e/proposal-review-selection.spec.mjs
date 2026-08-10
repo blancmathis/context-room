@@ -916,7 +916,7 @@ test("@smoke the last individual file decision never auto-accepts the proposal",
       return init;
     });
     await page.waitForTimeout(650);
-    await fileRow.evaluate((row, init) => {
+    await page.locator('[data-proposal-review-path="README.md"]').evaluate((row, init) => {
       row.dispatchEvent(new PointerEvent("pointerup", { ...init, buttons: 0 }));
     }, pointer);
   } else {
@@ -1034,11 +1034,10 @@ test("@smoke verified terminal acceptance stays pending, reports the commit, the
   reviewUrl.searchParams.set("view", "proposal");
   reviewUrl.searchParams.set("proposal", "proposal/demo/terminal-action");
   reviewUrl.searchParams.set("returnTo", hubUrl);
-  reviewUrl.searchParams.set("explorer", "collapsed");
+  reviewUrl.searchParams.set("explorer", "expanded");
   await page.goto(reviewUrl.toString());
   await waitForBoot(page);
-  const explorerClose = page.getByRole("button", { name: "Close explorer" });
-  if (await explorerClose.isVisible()) await explorerClose.click();
+  await expect(page.locator(".app > aside")).toBeVisible();
 
   const acceptedCommit = "89abcdef".repeat(8);
   const flashToken = "a".repeat(32);
@@ -1088,7 +1087,13 @@ test("@smoke verified terminal acceptance stays pending, reports the commit, the
   });
 
   await showTerminalProposal(page, { projectId });
-  await page.getByRole("button", { name: "Put on main", exact: true }).click();
+  const putOnMain = page.getByRole("button", { name: "Put on main", exact: true });
+  await expect.poll(async () => page.evaluate(() => {
+    const accept = document.querySelector("#proposalDockAccept")?.getBoundingClientRect();
+    const explorer = document.querySelector(".app > aside")?.getBoundingClientRect();
+    return Boolean(accept && explorer && accept.left >= explorer.right);
+  })).toBe(true);
+  await putOnMain.click();
   const dialog = await confirmTerminalAcceptance(page);
 
   await expect.poll(() => requests.map((request) => request.kind)).toEqual(["challenge", "accept"]);

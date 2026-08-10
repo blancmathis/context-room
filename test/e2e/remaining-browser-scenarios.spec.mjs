@@ -530,6 +530,9 @@ test.describe("remaining real browser user matrix", () => {
       const projectSelect = disclosure.locator("#sharedContextProjectSelect");
       await expect(projectSelect.locator(`option[value="${target.projectId}"]`)).toHaveText(target.projectTitle);
       await projectSelect.selectOption(target.projectId);
+      await page.evaluate(() => refreshContextHubUi());
+      await expect(repositorySelect).toHaveValue(targetRepositoryValue);
+      await expect(projectSelect).toHaveValue(target.projectId);
       const connecting = page.waitForResponse((response) => (
         response.request().method() === "POST"
         && new URL(response.url()).pathname === "/api/context-hub/project-shared-context"

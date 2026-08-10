@@ -36,9 +36,28 @@ async function waitForWorkspaceBackgroundIdle(page) {
   await expect.poll(() => page.evaluate(() => ({
     projectOpening: Boolean(state.contextHubInitialProjectOpen),
     projectBusy: Boolean(state.contextHubBusy),
+    projectExplorerBusy: Boolean(state.globalProjectExplorerLoading?.size || state.explorerRelatedLoading?.size),
+    projectSettingsBusy: Boolean(state.globalProjectSettingsLoading?.size || state.globalProjectSettingsPrefetching?.size),
+    projectAttentionBusy: Boolean(state.contextAttentionLoading),
+    registrationBusy: Boolean(state.workspaceRegistrationPromise),
     presenceBusy: Boolean(state.workspacePresenceDrainPromise || state.workspacePresenceQueued),
     runtimeRefreshBusy: Boolean(state.runtimeContextHubRefreshPromise),
-  }))).toEqual({ projectOpening: false, projectBusy: false, presenceBusy: false, runtimeRefreshBusy: false });
+    hostedRefreshBusy: Boolean(state.hostedReviewRefreshPromise || state.hostedReviewRefreshTimer || state.hostedReviewRefreshPending),
+    snapshotRefreshBusy: Boolean(state.contextHubSnapshotPollTimer || state.contextHub?.freshness?.refreshing),
+    reportsBusy: Boolean(state.refreshInFlight || state.reportsRefreshInFlight || state.backgroundRefreshTimer),
+  }))).toEqual({
+    projectOpening: false,
+    projectBusy: false,
+    projectExplorerBusy: false,
+    projectSettingsBusy: false,
+    projectAttentionBusy: false,
+    registrationBusy: false,
+    presenceBusy: false,
+    runtimeRefreshBusy: false,
+    hostedRefreshBusy: false,
+    snapshotRefreshBusy: false,
+    reportsBusy: false,
+  });
 }
 
 function explorerOpenControl(page) {
@@ -245,6 +264,7 @@ async function exerciseResponsiveExplorer(page) {
 
 async function assertMobileWorkbenchLayout(page, { fileUrl, settingsUrl }) {
   await page.setViewportSize({ width: 390, height: 844 });
+  await waitForWorkspaceBackgroundIdle(page);
   await page.goto(settingsUrl);
   await waitForBoot(page);
   await expect(page.locator("#settingsPage")).toBeVisible();
@@ -254,6 +274,7 @@ async function assertMobileWorkbenchLayout(page, { fileUrl, settingsUrl }) {
   expect(footerBox?.y || 0).toBeGreaterThanOrEqual(0);
   expect((footerBox?.y || 0) + (footerBox?.height || 0)).toBeLessThanOrEqual(844);
 
+  await waitForWorkspaceBackgroundIdle(page);
   await page.goto(fileUrl);
   await waitForBoot(page);
   await expect(page.locator("#viewer")).toBeVisible();
@@ -507,6 +528,7 @@ test("@smoke Context Room keeps its critical workspace state stable", async ({ p
     && Boolean(url.searchParams.get("returnTo")));
   await expect(page.locator("#proposalReviewPage")).toBeVisible();
   await expect(page.locator("#proposalDockReject")).toBeVisible();
+  await waitForWorkspaceBackgroundIdle(page);
   await openHome(page);
 
   await openProject(page, "Atlas");
@@ -531,6 +553,7 @@ test("@smoke Context Room keeps its critical workspace state stable", async ({ p
   await openHome(page);
   await openSettings(page);
   const settingsUrl = page.url();
+  await waitForWorkspaceBackgroundIdle(page);
   await page.goto(fileUrl);
   await waitForBoot(page);
   await waitForWorkspaceBackgroundIdle(page);
@@ -545,12 +568,14 @@ test("@smoke Context Room keeps its critical workspace state stable", async ({ p
   const duplicate = await context.newPage();
   const duplicateGuard = attachFailureGuards(duplicate);
   await duplicate.goto(page.url());
-  await expect(duplicate.locator("body")).not.toHaveClass(/app-booting/);
+  await waitForBoot(duplicate);
   await expect.poll(() => workspaceId(duplicate.url())).not.toBe(atlasWorkspace);
+  await waitForWorkspaceBackgroundIdle(duplicate);
   await duplicate.close();
 
   await exerciseResponsiveExplorer(page);
   await assertMobileWorkbenchLayout(page, { fileUrl, settingsUrl });
+  await waitForWorkspaceBackgroundIdle(page);
   await page.reload();
   await waitForBoot(page);
   await expect(page.locator("#workspaceTitle")).toContainText("README.md");

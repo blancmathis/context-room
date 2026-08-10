@@ -182,6 +182,7 @@ test("@a11y Explorer and critical review colors retain WCAG contrast in every th
       + '<div class="conflict-panel"><p>Resolve this conflict before saving.</p><div class="conflict-card"><div class="conflict-card-head"><small>Current file</small></div><div class="conflict-diff"><span class="conflict-diff-line add"><span class="marker">+</span><span>Added line</span></span><span class="conflict-diff-line del"><span class="marker">−</span><span>Deleted line</span></span><span class="conflict-diff-line ctx"><span class="marker"> </span><span>Context line</span></span></div></div></div>'
       + '<div class="agent-toast" style="position:static;max-width:none"><strong>Agent wants to navigate</strong><div>Open the requested file?</div><div class="agent-toast-actions"><button class="file-action" type="button">Later</button><button class="file-action primary" type="button">Go</button></div></div>'
       + '<div style="display:flex;gap:8px;padding:8px;background:var(--panel)"><span class="proposal-review-file-state">Review</span><span class="shared-proposal-card-state" data-state="updated">Updated</span><span class="codex-prompt-badge" data-status="restart_required">Restart required</span></div>'
+      + '<div class="issue review-status-unconfirmed"><span>Review coverage is not current.</span><button class="quiet-button" type="button">Refresh</button></div>'
       + '<input id="themePlaceholderContrastProbe" type="text" aria-label="Placeholder contrast probe" placeholder="Search files…" style="width:100%;background:var(--panel)" />';
     document.body.append(probe);
   });
@@ -250,7 +251,7 @@ test("@a11y Explorer and critical review colors retain WCAG contrast in every th
         }
         return composite(background, parseColor(getComputedStyle(document.documentElement).backgroundColor));
       };
-      const results = [...probe.querySelectorAll(".diff-line, .external-change-stats span, .context-hub-source, .shared-proposal-project, .context-hub-worktree-label, .tree-row, .tree-name, .external-review-block.resolved, .agent-annotation, .agent-annotation strong, .agent-annotation code, .conflict-panel p, .conflict-card-head small, .conflict-diff-line, .conflict-diff-line > span, .agent-toast, .agent-toast strong, .agent-toast > div:not(.agent-toast-actions), .agent-toast code, .proposal-review-file-state, .shared-proposal-card-state, .codex-prompt-badge")]
+      const results = [...probe.querySelectorAll(".diff-line, .external-change-stats span, .context-hub-source, .shared-proposal-project, .context-hub-worktree-label, .tree-row, .tree-name, .external-review-block.resolved, .agent-annotation, .agent-annotation strong, .agent-annotation code, .conflict-panel p, .conflict-card-head small, .conflict-diff-line, .conflict-diff-line > span, .agent-toast, .agent-toast strong, .agent-toast > div:not(.agent-toast-actions), .agent-toast code, .proposal-review-file-state, .shared-proposal-card-state, .codex-prompt-badge, .review-status-unconfirmed .quiet-button")]
         .map((element) => {
           const background = effectiveBackground(element);
           const foreground = composite(parseColor(getComputedStyle(element).color), background);

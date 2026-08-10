@@ -24896,9 +24896,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
     }
     .workspace-dock > .dock-button { flex: 0 0 auto; }
     #proposalDockAccept:not([hidden]) {
-      position: sticky;
-      left: 0;
-      z-index: 2;
+      position: static;
     }
     .quiet-button { min-height: 32px; padding: 0 10px; border: 0; border-radius: var(--native-radius-control); background: transparent; color: var(--text-soft); font-size: 12px; font-weight: 600; }
     .quiet-button:hover { background: var(--native-hover); color: var(--text); }
@@ -25691,7 +25689,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
       padding-inline: 13px;
       border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--line));
       background: color-mix(in srgb, var(--accent) 8%, var(--surface-card));
-      color: var(--accent-fg);
+      color: var(--label-strong);
     }
     .review-status-unconfirmed .quiet-button:hover {
       border-color: color-mix(in srgb, var(--accent) 58%, var(--line));
@@ -26225,6 +26223,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
 	state.contextHubBusy = false;
 	state.contextHubBusyWaiters = [];
 	state.contextHubPendingOpenGeneration = 0;
+	state.contextHubRequestedProjectNotice = "";
 	state.contextHubInitialProjectOpen = null;
 	state.contextHubInitialProjectOpenedId = "";
 		state.contextHubView = "home";
@@ -28689,7 +28688,22 @@ function toggleGlobalExplorerContextFolder(target) {
   if (state.globalProjectExpandedFolders.has(folderId)) state.globalProjectExpandedFolders.delete(folderId);
   else {
     state.globalProjectExpandedFolders.add(folderId);
-    void loadGlobalProjectExplorerPage(project, { directory: target.path }).catch((error) => setStatus(error.message));
+    void loadGlobalProjectExplorerPage(project, { directory: target.path })
+      .then(() => {
+        window.requestAnimationFrame(() => {
+          const active = document.activeElement;
+          if (active instanceof HTMLElement && active !== document.body && active.isConnected) return;
+          const restored = resolveExplorerContextReturnFocus({
+            element: null,
+            attributes: [
+              ["data-global-project-key", target.projectKey],
+              ["data-global-project-folder", target.path],
+            ],
+          });
+          if (restored instanceof HTMLElement && restored.getClientRects().length) restored.focus({ preventScroll: true });
+        });
+      })
+      .catch((error) => setStatus(error.message));
   }
   renderGlobalProjectExplorer();
 }
@@ -33619,6 +33633,7 @@ function configureHostedSharedDocumentAction() {
 function applyContextHubRequestedProject(contextHub) {
   const roomQuery = new URLSearchParams(window.location.search);
   const requestedProjectId = roomQuery.get("project") || "";
+  state.contextHubRequestedProjectNotice = "";
   let requestedProject = null;
   try {
     requestedProject = resolveContextHubProjectSelection(
@@ -33635,7 +33650,8 @@ function applyContextHubRequestedProject(contextHub) {
     state.contextHubSelection = "";
     state.contextHubView = "home";
     state.page = "hub";
-    setStatus("Several projects match ‘" + requestedProjectId + "’. Choose the exact project from Context Room.");
+    state.contextHubRequestedProjectNotice = "Several projects match ‘" + requestedProjectId + "’. Choose the exact project from Context Room.";
+    setStatus(state.contextHubRequestedProjectNotice);
     return null;
   }
   if (!requestedProject) return null;
@@ -34063,7 +34079,7 @@ async function loadFiles(options = {}) {
     return;
   }
   if (!options.navigation && state.page === "hub" && (clearedMissingSelection || !state.selected)) showHome();
-  setStatus("ready");
+  setStatus(state.contextHubRequestedProjectNotice || "ready");
   scheduleSessionStatePush();
 }
 
@@ -35105,7 +35121,7 @@ function showHome() {
   updateCodexReferenceAction();
   updateHistoryButtons();
   updateActionBanner();
-  setStatus("ready");
+  setStatus(state.contextHubRequestedProjectNotice || "ready");
   scheduleSessionStatePush();
 }
 
@@ -37535,7 +37551,6 @@ function renderSelectedProjectSharedContextManager() {
   const repository = repositories.find((item) => item.repository === requestedRepository) || repositories[0];
   state.sharedContextManagerRepository = repository.repository;
   const sharedProjects = Array.isArray(repository.projects) ? repository.projects : [];
-  if (state.sharedContextManagerProject && !sharedProjects.some((item) => item.id === state.sharedContextManagerProject)) state.sharedContextManagerProject = "";
   const repositoryOptions = repositories.map((item) => '<option value="' + escapeHtml(item.repository) + '"' + (item.repository === repository.repository ? ' selected' : '') + '>' + escapeHtml(sharedContextRepositoryLabel(item)) + '</option>').join("");
   const projectOptions = '<option value="">Auto-detect from this project</option>' + sharedProjects.map((item) => '<option value="' + escapeHtml(item.id) + '"' + (item.id === state.sharedContextManagerProject ? ' selected' : '') + '>' + escapeHtml(item.title || item.id) + '</option>').join("");
   return '<div class="shared-context-connection-form">'
@@ -37603,8 +37618,10 @@ async function connectSelectedProjectSharedContext() {
   if (state.sharedContextManagerBusy) return;
   const selected = selectedProjectSharedContext();
   if (!selected.local || !selected.worktree?.id) throw new Error("Select a local project first");
-  const repository = String(el("sharedContextRepositorySelect")?.value || state.sharedContextManagerRepository || "");
-  const sharedProjectId = String(el("sharedContextProjectSelect")?.value || state.sharedContextManagerProject || "");
+  const repositorySelect = el("sharedContextRepositorySelect");
+  const projectSelect = el("sharedContextProjectSelect");
+  const repository = String(repositorySelect ? repositorySelect.value : state.sharedContextManagerRepository || "");
+  const sharedProjectId = String(projectSelect ? projectSelect.value : state.sharedContextManagerProject || "");
   state.sharedContextManagerBusy = true;
   renderSettingsPanel();
   try {
@@ -37842,6 +37859,14 @@ function updateSettingsPanelMarkup(holder, markup) {
 function renderSettingsPanel() {
   const holder = el("settingsPanel");
   if (!holder || !state.settings) return;
+  const renderedSharedRepositorySelect = holder.querySelector("#sharedContextRepositorySelect");
+  const renderedSharedProjectSelect = holder.querySelector("#sharedContextProjectSelect");
+  if (renderedSharedRepositorySelect?.value && (document.activeElement === renderedSharedRepositorySelect || !state.sharedContextManagerRepository)) {
+    state.sharedContextManagerRepository = renderedSharedRepositorySelect.value;
+  }
+  if (renderedSharedProjectSelect?.value && (document.activeElement === renderedSharedProjectSelect || !state.sharedContextManagerProject)) {
+    state.sharedContextManagerProject = renderedSharedProjectSelect.value;
+  }
   const selectedSettings = selectedGlobalProjectSettingsContext();
   const settings = activeSettingsForPanel();
   const showGlobalProjectPicker = IS_GLOBAL_CONTEXT_ROOM && !selectedSettings.payload?.settings;
