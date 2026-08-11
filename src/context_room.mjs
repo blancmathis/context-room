@@ -459,6 +459,7 @@ const BACKGROUND_REPORT_INVALIDATING_PATHS = new Set([
   "/api/shared-context/review-files",
   "/api/shared-context/unreview-file",
   "/api/shared-context/refresh",
+  "/api/context-hub/accept",
   "/api/context-hub/reject",
 ]);
 const BACKGROUND_WATCH_IGNORED_PATHS = new Set([
@@ -14832,6 +14833,22 @@ function contextHubAtomicReviewItems(state = {}) {
   });
 }
 
+function contextHubLocalReviewCandidates(state = {}) {
+  const candidates = new Map();
+  for (const project of state.projects || []) {
+    if (!project.available || project.mode === "shared") continue;
+    for (const review of project.localReviews || []) {
+      const worktree = (project.worktrees || []).find((entry) => entry.id === review.worktreeId)
+        || (project.id === review.worktreeId ? project : null);
+      if (!worktree) continue;
+      const candidate = { kind: "local", project: { ...project, ...worktree }, review };
+      candidates.set(`${project.projectKey}:worktree:${worktree.id}:file:${review.path}`, candidate);
+      candidates.set(`local:${worktree.id}:file:${review.path}`, candidate);
+    }
+  }
+  return candidates;
+}
+
 function contextHubStateWithAttention(state = {}) {
   const attention = readContextHubAttention();
   const ranks = new Map(attention.projectOrder.map((id, index) => [id, index]));
@@ -15897,6 +15914,7 @@ function isOwnerReviewAuthorityMutation(pathname = "", method = "GET") {
     "POST /api/docqa/review-deletions",
     "POST /api/file/revert",
     "POST /api/files/delete",
+    "POST /api/context-hub/accept",
     "POST /api/context-hub/reject",
     "POST /api/context-hub/flash",
     "POST /api/shared-context/accept-challenge",
@@ -20458,6 +20476,71 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
         });
     return;
   }
+  if (req.method === "POST" && url.pathname === "/api/context-hub/accept") {
+    if (hostedSharedProvider) {
+      throw sharedRequestError("Bulk acceptance from the Hub is available only for local file reviews", 400, "context_hub_accept_local_only");
+    }
+    const body = await readJsonBody(req, { maxBytes: 256_000 });
+    const requested = Array.isArray(body.items) ? body.items : [];
+    if (!requested.length) throw sharedRequestError("At least one local review item is required", 400, "context_hub_accept_required");
+    if (requested.length > 200) throw sharedRequestError("At most 200 local review items can be accepted at once", 400, "context_hub_accept_limit");
+
+    contextHubStateCache.clear();
+    const hub = contextHubUiState(root);
+    const candidates = contextHubLocalReviewCandidates(hub);
+    const normalized = [...new Map(requested.map((item) => {
+      const id = String(item?.id || "").trim();
+      return [id, {
+        id,
+        revisionToken: String(item?.revisionToken || "").trim(),
+      }];
+    })).values()];
+    for (const item of normalized) {
+      const candidate = candidates.get(item.id);
+      if (!item.id || !candidate) {
+        throw sharedRequestError(`Local review item is no longer available: ${item.id || "unknown"}`, 409, "context_hub_accept_stale");
+      }
+      if (item.revisionToken !== contextHubReviewRevisionToken({ type: "local", localReview: candidate.review })) {
+        throw sharedRequestError("A selected local review changed; refresh before accepting it", 409, "context_hub_accept_stale");
+      }
+    }
+
+    const accepted = [];
+    const errors = [];
+    for (const item of normalized) {
+      const candidate = candidates.get(item.id);
+      try {
+        const result = writeDocReviewDecision(candidate.project.root, candidate.review.path, {
+          status: "verified",
+          note: "Accepted from the Context Room review queue.",
+          expectedResourceState: candidate.review.resourceState,
+          expectedResourceVersion: candidate.review.resourceVersion,
+          expectedContentHash: candidate.review.currentHash,
+          expectedDependencyVersions: candidate.review.dependencyVersions || null,
+          expectedRootIdentity: candidate.project.rootIdentity || managedProjectRootIdentity(candidate.project.root),
+        });
+        accepted.push({ id: item.id, kind: "local", projectId: candidate.project.id, ...result });
+      } catch (error) {
+        if (error?.code === "review_revision_conflict") {
+          errors.push({ id: item.id, kind: "local", code: "context_hub_accept_stale", message: "This local review changed before it could be accepted. Refresh and try again." });
+          continue;
+        }
+        errors.push({ id: item.id, kind: "local", message: error.message });
+      }
+    }
+    contextHubProjectSummaryCache.clear();
+    contextHubStateCache.clear();
+    markContextHubSnapshotStale();
+    sendJson(res, 200, {
+      accepted,
+      errors,
+      summary: {
+        localReviews: accepted.length,
+        failed: errors.length,
+      },
+    });
+    return;
+  }
   if (req.method === "POST" && url.pathname === "/api/context-hub/reject") {
     const body = await readJsonBody(req, { maxBytes: 256_000 });
     const requested = Array.isArray(body.items) ? body.items : [];
@@ -20470,16 +20553,8 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     for (const proposal of hub.proposals || []) {
       candidates.set(proposal.id, { kind: "shared", proposal });
     }
-    for (const project of hostedSharedProvider ? [] : (hub.projects || [])) {
-      if (!project.available || project.mode === "shared") continue;
-      for (const review of project.localReviews || []) {
-        const worktree = (project.worktrees || []).find((entry) => entry.id === review.worktreeId)
-          || (project.id === review.worktreeId ? project : null);
-        if (!worktree) continue;
-        const candidate = { kind: "local", project: { ...project, ...worktree }, review };
-        candidates.set(`${project.projectKey}:worktree:${worktree.id}:file:${review.path}`, candidate);
-        candidates.set(`local:${worktree.id}:file:${review.path}`, candidate);
-      }
+    if (!hostedSharedProvider) {
+      for (const [id, candidate] of contextHubLocalReviewCandidates(hub)) candidates.set(id, candidate);
     }
 
     const normalized = [...new Map(requested.map((item) => {
@@ -29002,6 +29077,10 @@ function contextRoomReviewCanReject(item) {
   return item.localReview?.reviewStatus !== "needs_changes";
 }
 
+function contextRoomReviewCanAccept(item) {
+  return Boolean(item && item.type === "local");
+}
+
 function renderContextRoomReviewRow(item) {
   const project = contextHubProjectForItem(item);
   const projectLabel = project?.title || item.projectTitle || item.projectId || item.title || "Project";
@@ -29296,6 +29375,7 @@ function renderContextRoomReviewSelection(visibleReviews) {
   const allVisibleSelected = visibleSelectable.length > 0
     && visibleSelectable.every((item) => state.contextRoomSelectedReviews.has(item.id));
   const disabled = state.contextRoomBulkBusy || state.sharedContextBusy ? " disabled" : "";
+  const acceptable = selected.filter(contextRoomReviewCanAccept);
   const rejectable = selected.filter(contextRoomReviewCanReject);
   toolbar.hidden = false;
   toolbar.innerHTML = '<div class="context-room-review-selection-copy" role="status" aria-live="polite" aria-atomic="true"><strong>' + selected.length + ' selected</strong><span>'
@@ -29307,8 +29387,55 @@ function renderContextRoomReviewSelection(visibleReviews) {
     + '<button type="button" data-context-room-select-visible="' + (allVisibleSelected ? "clear" : "select") + '"' + disabled + '>' + (allVisibleSelected ? "Unselect visible" : "Select visible") + '</button>'
     + '<button type="button" data-context-room-clear-selection' + disabled + '>Clear</button>'
     + '<button type="button" data-context-room-snooze-selected' + disabled + '>' + (state.contextRoomBulkBusy ? "Snoozing…" : "Snooze…") + '</button>'
+    + (acceptable.length ? '<button class="primary" type="button" data-context-room-accept-selected' + disabled + '>' + (state.contextRoomBulkBusy ? "Accepting…" : "Accept " + acceptable.length) + '</button>' : "")
     + (rejectable.length ? '<button class="danger-action" type="button" data-context-room-reject-selected' + disabled + '>' + (state.contextRoomBulkBusy ? "Rejecting…" : "Reject " + rejectable.length) + '</button>' : "")
     + '</div>';
+}
+
+function requestContextRoomReviewAcceptance(ids) {
+  const requestedIds = new Set(ids);
+  const items = contextRoomSelectedReviewItems(requestedIds).filter(contextRoomReviewCanAccept);
+  if (!items.length || state.contextRoomBulkBusy) return;
+  if (items.length === 1) {
+    acceptContextRoomReviews(items).catch((error) => setStatus(error.message));
+    return;
+  }
+  showHumanReviewDecisionDialog({
+    title: "Accept " + items.length + " selected files?",
+    body: items.length + " exact local file versions will be marked verified. Shared proposals, if selected, stay unchanged and must be reviewed in their own proposal workspace.",
+    confirmLabel: "Accept selected",
+    confirmVariant: "primary",
+    onConfirm: () => acceptContextRoomReviews(items).catch((error) => setStatus(error.message)),
+  });
+}
+
+async function acceptContextRoomReviews(items) {
+  if (!items.length || state.contextRoomBulkBusy) return;
+  state.contextRoomBulkBusy = true;
+  renderContextRoomGlobalReviewQueue();
+  setStatus("accepting " + items.length + " local review" + (items.length === 1 ? "" : "s") + "…");
+  try {
+    const result = await api("/api/context-hub/accept", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        items: items.map((item) => ({ id: item.id, revisionToken: item.revisionToken })),
+      }),
+    });
+    for (const accepted of result.accepted || []) {
+      state.contextRoomSelectedReviews.delete(accepted.id);
+      if (state.contextHubSelection === accepted.id) state.contextHubSelection = "";
+    }
+    await refreshContextHubUi();
+    const summary = result.summary || {};
+    const completed = summary.localReviews
+      ? summary.localReviews + " local review" + (summary.localReviews === 1 ? "" : "s") + " accepted"
+      : "no local reviews accepted";
+    setStatus(completed + (summary.failed ? " · " + summary.failed + " failed" : ""));
+  } finally {
+    state.contextRoomBulkBusy = false;
+    renderContextRoomGlobalReviewQueue();
+  }
 }
 
 function requestContextRoomReviewRejection(ids) {
@@ -45319,6 +45446,10 @@ el("contextRoomReviewSelection")?.addEventListener("click", (event) => {
   if (event.target.closest("[data-context-room-clear-selection]")) {
     state.contextRoomSelectedReviews.clear();
     renderContextRoomGlobalReviewQueue();
+    return;
+  }
+  if (event.target.closest("[data-context-room-accept-selected]")) {
+    requestContextRoomReviewAcceptance(state.contextRoomSelectedReviews);
     return;
   }
   if (event.target.closest("[data-context-room-reject-selected]")) {

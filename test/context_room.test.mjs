@@ -7615,6 +7615,8 @@ test("verification actions are limited to files opened from the review queue", (
   assert.match(html, /label: "Request changes"/);
   assert.match(html, /if \(!reviewActionForSelectedFile\(\)\) return;/);
   assert.match(html, /applyReviewDecision\(path, normalizedStatus\)/);
+  assert.match(html, /function requestContextRoomReviewAcceptance\(ids\) \{[\s\S]*showHumanReviewDecisionDialog\(/);
+  assert.match(html, /data-context-room-accept-selected/);
   assert.match(html, /function requestContextRoomReviewRejection\(ids\) \{[\s\S]*showHumanReviewDecisionDialog\(/);
   assert.match(html, /function requestDeletionReviewBatchConfirmation\(\) \{[\s\S]*showHumanReviewDecisionDialog\(/);
   const externalApplySource = html.slice(html.indexOf("function requestApplyExternalChange"), html.indexOf("async function rejectExternalChange"));

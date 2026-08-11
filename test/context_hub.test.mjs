@@ -2500,6 +2500,60 @@ test("registered Git worktrees stay distinct locally but appear as one logical p
   assert.match(source, /context-hub-worktree-count/);
 });
 
+test("Context Hub accepts selected local file versions as one verified batch", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-accept-batch-"));
+  withHubHome(t, path.join(base, "hub"));
+  const root = makeProject(base, "Batch acceptance");
+  fs.appendFileSync(path.join(root, "docs", "README.md"), "\nReviewed update.\n", "utf8");
+  fs.writeFileSync(path.join(root, "docs", "SECOND.md"), "# Second reviewed file\n", "utf8");
+  execFileSync("git", ["add", "docs/README.md", "docs/SECOND.md"], { cwd: root, stdio: "ignore" });
+  const registered = registerContextHubProject(root);
+
+  const room = createMemoryServer({ root });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const hubResponse = await fetch(origin + "/api/context-hub/refresh", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-project": room.projectId },
+    body: "{}",
+  });
+  assert.equal(hubResponse.status, 200);
+  const hub = await hubResponse.json();
+  const project = hub.projects.find((item) => item.id === registered.id);
+  assert.deepEqual(project.localReviews.map((review) => review.path).sort(), ["docs/README.md", "docs/SECOND.md"]);
+  const items = project.localReviews.map((review) => ({
+    id: `local:${review.worktreeId || registered.id}:file:${review.path}`,
+    revisionToken: `local:${review.resourceState}:${review.resourceVersion || "-"}:${review.currentHash}`,
+  }));
+
+  const staleResponse = await fetch(origin + "/api/context-hub/accept", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-project": room.projectId, "x-context-room-owner-nonce": room.ownerMutationNonce },
+    body: JSON.stringify({ items: items.map((item, index) => index ? item : { ...item, revisionToken: item.revisionToken + ":stale" }) }),
+  });
+  assert.equal(staleResponse.status, 409);
+  assert.equal((await staleResponse.json()).code, "context_hub_accept_stale");
+
+  const acceptedResponse = await fetch(origin + "/api/context-hub/accept", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-project": room.projectId, "x-context-room-owner-nonce": room.ownerMutationNonce },
+    body: JSON.stringify({ items }),
+  });
+  assert.equal(acceptedResponse.status, 200);
+  const accepted = await acceptedResponse.json();
+  assert.equal(accepted.summary.localReviews, 2);
+  assert.equal(accepted.summary.failed, 0);
+  assert.deepEqual(accepted.accepted.map((item) => item.path).sort(), ["docs/README.md", "docs/SECOND.md"]);
+
+  const refreshed = await (await fetch(origin + "/api/context-hub/refresh", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-project": room.projectId },
+    body: "{}",
+  })).json();
+  assert.equal(refreshed.projects.find((item) => item.id === registered.id).localReviews.length, 0);
+});
+
 test("Context Room Home combines global review queues without nesting another Home", async (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-api-"));
   withHubHome(t, path.join(base, "hub"));
@@ -2565,6 +2619,7 @@ test("Context Room Home combines global review queues without nesting another Ho
   assert.match(rootSource, /state\.contextRoomSelectedReviews\.size > 0 && selectionEntry/);
   assert.match(rootSource, /function toggleContextRoomReviewSelection\(item\)/);
   assert.doesNotMatch(rootSource, /data-context-room-select=/);
+  assert.match(rootSource, /data-context-room-accept-selected/);
   assert.match(rootSource, /data-context-room-reject-selected/);
   assert.doesNotMatch(rootSource, /data-context-room-review-visibility="snoozed"/);
   assert.match(rootSource, /data-context-room-snooze-open=/);
@@ -2583,6 +2638,7 @@ test("Context Room Home combines global review queues without nesting another Ho
   assert.match(rootSource, /data-global-context-priority="top"/);
   assert.match(rootSource, /title: "Project priority"/);
   assert.doesNotMatch(rootSource, /data-context-room-reject-proposal/);
+  assert.match(rootSource, /\/api\/context-hub\/accept/);
   assert.match(rootSource, /\/api\/context-hub\/reject/);
   assert.match(rootSource, /exact Git revision stays archived on a rejected branch/);
   assert.match(rootSource, /Each file stays atomic\. Shared changes stay grouped by proposal\./);
