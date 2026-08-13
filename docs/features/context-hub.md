@@ -4,6 +4,7 @@ context_room:
   depends_on:
     - product.model
     - domains.truth.layers
+    - domains.shared.proposal-lifecycle
     - system.runtime-profiles
 ---
 
@@ -58,6 +59,14 @@ Selecting a Shared-only project exposes accepted Shared content but no local pro
 Selecting a proposal opens exact proposal review without making the proposal effective.
 
 Clearing selection returns to the global Hub.
+
+## Proposal opening
+
+The Hub follows the proposal projection defined by [Shared Proposal Lifecycle](../domains/shared-proposal-lifecycle.md#hub-projection). `ready`, `in_review`, and `updated` proposals are active and openable. `accepted`, `acceptance_recovery_required`, and other recovery states remain visible as non-openable attention. Reconciled `merged` and `rejected` proposals are absent from the active list.
+
+Opening an active proposal keeps the proposal surface visible while Context Room verifies and materializes the exact review. The surface shows the known repository, branch, and head immediately, reports preparation honestly, and does not claim readiness before exact review is available.
+
+If that snapshot becomes stale, terminal, unavailable, or recovery-required during opening, the proposal surface transitions inline and offers an explicit refresh, recovery, retry, or return action. An opening result or failure never silently clears selection or sends the user back to the Hub.
 
 ## Recovery and unavailable state
 

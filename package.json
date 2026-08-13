@@ -1,6 +1,6 @@
 {
   "name": "context-room",
-  "version": "0.6.5",
+  "version": "0.6.6",
   "description": "Local-first documentation control room for AI-assisted projects.",
   "type": "module",
   "homepage": "https://www.npmjs.com/package/context-room",

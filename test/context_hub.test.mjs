@@ -55,6 +55,7 @@ import {
   createSharedProposal,
   disconnectSharedContext,
   initializeSharedRepository,
+  materializeSharedRepositoryReview,
   publishSharedProposal,
   readSharedProjectConnection,
   sharedContextStatus,
@@ -270,7 +271,10 @@ test("Context Hub opaque repository IDs open the exact repository when branch an
 
   const room = createMemoryServer({ root });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   const headers = {
     "content-type": "application/json",
@@ -366,7 +370,46 @@ test("Context Hub refreshes a transient catalogue gap before declaring an exact 
     summary: { projects: 0, proposals: 0, localReviews: 0 },
   });
 
-  const room = createMemoryServer({ root });
+  let materializedReview = null;
+  let materializationCalls = 0;
+  let reviewServerListenCalls = 0;
+  let resolveFirstMaterialization;
+  let releaseMaterializations;
+  let materializationGateTimeout = null;
+  const firstMaterialization = new Promise((resolve) => { resolveFirstMaterialization = resolve; });
+  const materializationGate = new Promise((resolve) => { releaseMaterializations = resolve; });
+  t.after(() => {
+    if (materializationGateTimeout) clearTimeout(materializationGateTimeout);
+  });
+  const room = createMemoryServer({
+    root,
+    sharedReviewMaterializationTask: async () => {
+      materializationCalls += 1;
+      if (materializationCalls === 1) {
+        resolveFirstMaterialization();
+        materializationGateTimeout = setTimeout(releaseMaterializations, 2_000);
+      }
+      if (materializationCalls === 2) {
+        clearTimeout(materializationGateTimeout);
+        materializationGateTimeout = null;
+        releaseMaterializations();
+      }
+      await materializationGate;
+      assert.ok(materializedReview);
+      return materializedReview;
+    },
+    sharedReviewServerListen: async (server, reviewPort) => {
+      reviewServerListenCalls += 1;
+      await new Promise((resolve, reject) => {
+        const onError = (error) => reject(error);
+        server.once("error", onError);
+        server.listen(reviewPort, "127.0.0.1", () => {
+          server.off("error", onError);
+          resolve();
+        });
+      });
+    },
+  });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
   t.after(() => room.server.close());
   const origin = `http://127.0.0.1:${room.server.address().port}`;
@@ -387,6 +430,21 @@ test("Context Hub refreshes a transient catalogue gap before declaring an exact 
   const stale = await staleResponse.json();
   assert.equal(staleResponse.status, 409, JSON.stringify(stale));
   assert.equal(stale.code, "shared_context_proposal_head_mismatch");
+  materializedReview = materializeSharedRepositoryReview(shared.remote, {
+    proposal: proposal.branch,
+    expectedHead: published.head,
+  });
+  const materializedBase = materializedReview.metadata.baseRevision;
+  const alternateObservedBase = materializedBase === "f".repeat(40) ? "e".repeat(40) : "f".repeat(40);
+  const snapshotState = contextHubUiState(root, { refreshShared: true, force: true });
+  const snapshotAtBase = (revision) => ({
+    ...snapshotState,
+    generatedAt: new Date().toISOString(),
+    sharedRepositories: snapshotState.sharedRepositories.map((entry) => ({
+      ...entry,
+      status: { ...entry.status, revision },
+    })),
+  });
   const openReview = () => fetch(origin + "/api/context-hub/review", {
     method: "POST",
     headers: requestHeaders,
@@ -396,19 +454,316 @@ test("Context Hub refreshes a transient catalogue gap before declaring an exact 
       expectedHead: published.head,
     }),
   });
-  const responses = await Promise.all([openReview(), openReview(), openReview()]);
+  writeContextHubSnapshot(snapshotAtBase(materializedBase));
+  const firstResponse = openReview();
+  await firstMaterialization;
+  writeContextHubSnapshot(snapshotAtBase(alternateObservedBase));
+  const responses = await Promise.all([firstResponse, openReview()]);
   const openedReviews = await Promise.all(responses.map((response) => response.json()));
   for (const [index, response] of responses.entries()) {
     const opened = openedReviews[index];
     assert.equal(response.status, 201, JSON.stringify(opened));
     assert.equal(opened.review.proposal, proposal.branch);
     assert.equal(opened.review.proposalHead, published.head);
+    assert.equal("docqa" in opened, false, "Hub opening should not build DocQA before navigating to the exact review room");
   }
+  assert.equal(materializationCalls, 1, "current local main refs must collapse stale snapshot bases before materialization");
+  assert.equal(reviewServerListenCalls, 1, "one exact materialized review must initialize only one review server");
   assert.equal(new Set(openedReviews.map((opened) => opened.url)).size, 1);
-  const reopenedResponse = await openReview();
-  const reopened = await reopenedResponse.json();
-  assert.equal(reopenedResponse.status, 201, JSON.stringify(reopened));
-  assert.equal(reopened.url, openedReviews[0].url);
+  assert.deepEqual(new Set(openedReviews.map((opened) => opened.review.baseRevision)), new Set([materializedBase]));
+  const reviewPageResponse = await fetch(openedReviews[0].url + "/");
+  assert.equal(reviewPageResponse.status, 200);
+  const targetDocQaResponse = await fetch(openedReviews[0].url + "/api/docqa");
+  const targetDocQa = await targetDocQaResponse.json();
+  assert.equal(targetDocQaResponse.status, 200, JSON.stringify(targetDocQa));
+  assert.deepEqual(targetDocQa.pendingPaths, ["projects/demo/docs/README.md"]);
+  const refreshedResponse = await fetch(origin + "/api/context-hub/refresh", {
+    method: "POST",
+    headers: requestHeaders,
+    body: "{}",
+  });
+  const refreshed = await refreshedResponse.json();
+  assert.equal(refreshedResponse.status, 200, JSON.stringify(refreshed));
+  assert.equal(refreshed.freshness?.fresh, true, JSON.stringify(refreshed.freshness));
+  writeContextHubSnapshot(refreshed, { generatedAt: "2000-01-01T00:00:00.000Z" });
+  const cachedRepository = path.join(sharedContextStatus(root).cacheRoot, "repository");
+  const cachedProposalRef = `refs/remotes/origin/${proposal.branch}`;
+  hubGit(cachedRepository, ["update-ref", "-d", cachedProposalRef]);
+
+  const offlineRemote = shared.remote + ".offline";
+  fs.renameSync(shared.remote, offlineRemote);
+  try {
+    const reopenedResponse = await openReview();
+    const reopened = await reopenedResponse.json();
+    assert.equal(reopenedResponse.status, 409, JSON.stringify(reopened));
+    assert.equal(reopened.code, "shared-proposal-terminal");
+    assert.equal(reopened.details?.reviewStatus, "externally_deleted");
+    assert.equal(reopened.details?.authorityViolation, true);
+  } finally {
+    fs.renameSync(offlineRemote, shared.remote);
+    hubGit(cachedRepository, ["update-ref", cachedProposalRef, published.head]);
+  }
+});
+
+test("Context Hub revalidates current cached refs before reusing a warm proposal room", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-warm-terminal-revalidation-"));
+  withHubHome(t, path.join(base, "hub"));
+  withSharedHome(t, path.join(base, "shared-home"));
+  const shared = makeHubSharedFixture(base);
+  const root = makeProject(base, "Warm terminal revalidation");
+  const { proposal, published } = publishHubSharedProposal(root, shared);
+  registerContextHubSharedRepository(shared.remote);
+  registerContextHubProject(root, { shared: { repository: shared.remote, projectId: "demo" } });
+  const snapshot = contextHubUiState(root, { refreshShared: true, force: true });
+  writeContextHubSnapshot(snapshot);
+  const target = snapshot.proposals.find((item) => item.branch === proposal.branch);
+  assert.ok(target);
+
+  let materializationCalls = 0;
+  const room = createMemoryServer({
+    root,
+    sharedReviewMaterializationTask: async ({ repository, proposal: branch, expectedHead }) => {
+      materializationCalls += 1;
+      return materializeSharedRepositoryReview(repository, { proposal: branch, expectedHead });
+    },
+  });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const headers = {
+    "content-type": "application/json",
+    "x-context-room-project": room.projectId,
+    "x-context-room-owner-nonce": room.ownerMutationNonce,
+  };
+  const openReview = () => fetch(origin + "/api/context-hub/review", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      repositoryId: target.repositoryId,
+      proposal: target.id,
+      expectedHead: published.head,
+    }),
+  });
+
+  const openedResponse = await openReview();
+  const opened = await openedResponse.json();
+  assert.equal(openedResponse.status, 201, JSON.stringify(opened));
+  assert.equal(materializationCalls, 1);
+
+  const integratedContent = fs.readFileSync(path.join(proposal.root, "projects/demo/docs/README.md"), "utf8");
+  writeHubFile(shared.seed, "projects/demo/docs/README.md", integratedContent);
+  hubGit(shared.seed, ["add", "projects/demo/docs/README.md"]);
+  hubGit(shared.seed, ["commit", "-m", "Integrate proposal outside Context Room"]);
+  const integratedAtRevision = hubGit(shared.seed, ["rev-parse", "HEAD"]);
+  hubGit(shared.seed, ["push", "origin", "main"]);
+  const cachedRepository = path.join(sharedContextStatus(root).cacheRoot, "repository");
+  hubGit(cachedRepository, ["fetch", "origin"]);
+  const offlineRemote = shared.remote + ".offline";
+  fs.renameSync(shared.remote, offlineRemote);
+  try {
+    const reopenedResponse = await openReview();
+    const reopened = await reopenedResponse.json();
+    assert.equal(reopenedResponse.status, 409, JSON.stringify(reopened));
+    assert.equal(reopened.code, "shared-proposal-terminal");
+    assert.equal(reopened.details?.reviewStatus, "external_merge_recovery_required");
+    assert.equal(reopened.details?.integratedAtRevision, integratedAtRevision);
+    assert.equal(materializationCalls, 1, "terminal revalidation must reject instead of reusing or rematerializing");
+  } finally {
+    fs.renameSync(offlineRemote, shared.remote);
+  }
+});
+
+test("Context Hub rejects terminal and conflicting proposal cards before materialization", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-proposal-precheck-"));
+  withHubHome(t, path.join(base, "hub"));
+  withSharedHome(t, path.join(base, "shared-home"));
+  const shared = makeHubSharedFixture(base);
+  const root = makeProject(base, "Proposal precheck");
+  const { proposal, published } = publishHubSharedProposal(root, shared);
+  registerContextHubSharedRepository(shared.remote);
+  registerContextHubProject(root, { shared: { repository: shared.remote, projectId: "demo" } });
+  const current = contextHubUiState(root, { refreshShared: true, force: true });
+  const active = current.proposals.find((item) => item.branch === proposal.branch);
+  assert.ok(active);
+
+  const room = createMemoryServer({ root });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const headers = {
+    "content-type": "application/json",
+    "x-context-room-project": room.projectId,
+    "x-context-room-owner-nonce": room.ownerMutationNonce,
+  };
+  const openReview = () => fetch(origin + "/api/context-hub/review", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ repositoryId: active.repositoryId, proposal: active.id, expectedHead: published.head }),
+  });
+  const publishSnapshot = (item) => writeContextHubSnapshot({
+    ...current,
+    generatedAt: new Date().toISOString(),
+    proposals: [item],
+    items: [item],
+    summary: { ...current.summary, proposals: 1 },
+  });
+
+  const acceptedCommit = "a".repeat(40);
+  publishSnapshot({ ...active, reviewStatus: "accepted", acceptedCommit });
+  const terminalResponse = await openReview();
+  const terminal = await terminalResponse.json();
+  assert.equal(terminalResponse.status, 409, JSON.stringify(terminal));
+  assert.equal(terminal.code, "shared-proposal-terminal");
+  assert.deepEqual(terminal.details, {
+    reviewStatus: "accepted",
+    authorityViolation: false,
+    authorityMessage: "",
+    acceptedCommit,
+    proposal: proposal.branch,
+    head: published.head,
+    proposalHead: published.head,
+  });
+  publishSnapshot({ ...active, reviewStatus: "updated", hasConflict: true, mainAdvancedBy: 2 });
+  const conflictResponse = await openReview();
+  const conflict = await conflictResponse.json();
+  assert.equal(conflictResponse.status, 409, JSON.stringify(conflict));
+  assert.equal(conflict.code, "shared-proposal-conflict");
+  assert.deepEqual(conflict.details, {
+    proposal: proposal.branch,
+    head: published.head,
+    proposalHead: published.head,
+    mainAdvancedBy: 2,
+  });
+});
+
+test("Context Hub cleans an unpublished child review when its server cannot listen", { timeout: 30_000 }, async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-review-listen-cleanup-"));
+  withHubHome(t, path.join(base, "hub"));
+  const sharedHome = path.join(base, "shared-home");
+  withSharedHome(t, sharedHome);
+  const shared = makeHubSharedFixture(base);
+  const root = makeProject(base, "Review listen cleanup");
+  const { proposal, published } = publishHubSharedProposal(root, shared, {
+    branch: "proposal/demo/listen-cleanup",
+    title: "Clean failed review server",
+  });
+  registerContextHubSharedRepository(shared.remote);
+  registerContextHubProject(root, { shared: { repository: shared.remote, projectId: "demo" } });
+  const snapshot = contextHubUiState(root, { refreshShared: true, force: true });
+  writeContextHubSnapshot(snapshot);
+  const target = snapshot.proposals.find((item) => item.branch === proposal.branch);
+  assert.ok(target);
+
+  let materialized = null;
+  const room = createMemoryServer({
+    root,
+    sharedReviewMaterializationTask: async () => {
+      materialized = materializeSharedRepositoryReview(shared.remote, {
+        proposal: proposal.branch,
+        expectedHead: published.head,
+      });
+      return materialized;
+    },
+    sharedReviewServerListen: async () => {
+      throw new Error("Injected review listen failure");
+    },
+  });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const response = await fetch(`http://127.0.0.1:${room.server.address().port}/api/context-hub/review`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-context-room-project": room.projectId,
+      "x-context-room-owner-nonce": room.ownerMutationNonce,
+    },
+    body: JSON.stringify({
+      repositoryId: target.repositoryId,
+      proposal: target.branch,
+      expectedHead: target.head,
+    }),
+  });
+  const failure = await response.json();
+  assert.equal(response.status, 500, JSON.stringify(failure));
+  assert.equal(failure.error, "Context Room could not complete this request.");
+  assert.ok(materialized);
+  assert.equal(fs.existsSync(materialized.reviewRoot), false);
+  assert.equal(
+    fs.existsSync(path.join(sharedHome, "review-authority", `${materialized.metadata.authorityId}.json`)),
+    false,
+  );
+});
+
+test("Context Hub returns verified partial receipts when a later proposal rejection fails", { timeout: 45_000 }, async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-partial-rejection-"));
+  withHubHome(t, path.join(base, "hub"));
+  withSharedHome(t, path.join(base, "shared-home"));
+  const shared = makeHubSharedFixture(base);
+  const root = makeProject(base, "Partial proposal rejection");
+  const first = publishHubSharedProposal(root, shared, {
+    branch: "proposal/demo/partial-first",
+    title: "Reject first",
+  });
+  const secondProposal = createSharedProposal(root, {
+    branch: "proposal/demo/partial-second",
+    title: "Fail second after first",
+  });
+  configureHubGit(secondProposal.root);
+  writeHubFile(secondProposal.root, "projects/demo/docs/README.md", "# Demo\n\nSecond proposal.\n");
+  const secondPublished = publishSharedProposal(root, { proposal: secondProposal.branch });
+  writeHubFile(secondProposal.root, "projects/demo/docs/UNPUBLISHED.md", "# Must remain local\n");
+
+  registerContextHubSharedRepository(shared.remote);
+  registerContextHubProject(root, { shared: { repository: shared.remote, projectId: "demo" } });
+  const snapshot = contextHubUiState(root, { refreshShared: true, force: true });
+  writeContextHubSnapshot(snapshot);
+  const firstItem = snapshot.proposals.find((item) => item.branch === first.proposal.branch);
+  const secondItem = snapshot.proposals.find((item) => item.branch === secondProposal.branch);
+  assert.ok(firstItem && secondItem);
+
+  const room = createMemoryServer({ root });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const headers = {
+    "content-type": "application/json",
+    "x-context-room-project": room.projectId,
+    "x-context-room-owner-nonce": room.ownerMutationNonce,
+  };
+  const items = [
+    { id: firstItem.id, expectedHead: first.published.head },
+    { id: secondItem.id, expectedHead: secondPublished.head },
+  ];
+  const challengeResponse = await fetch(origin + "/api/context-hub/reject-challenge", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ items }),
+  });
+  const challenge = await challengeResponse.json();
+  assert.equal(challengeResponse.status, 201, JSON.stringify(challenge));
+  const response = await fetch(origin + "/api/context-hub/reject", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ challengeId: challenge.challengeId, items }),
+  });
+  const result = await response.json();
+  assert.equal(response.status, 207, JSON.stringify(result));
+  assert.equal(result.outcome, "partial");
+  assert.equal(result.partial, true);
+  assert.equal(result.rejected.length, 1);
+  assert.equal(result.rejected[0].id, firstItem.id);
+  assert.equal(result.rejected[0].rejected, true);
+  assert.equal(result.errors.length, 1);
+  assert.equal(result.errors[0].id, secondItem.id);
+  assert.deepEqual(result.results.map((item) => [item.id, item.status]), [
+    [firstItem.id, "rejected"],
+    [secondItem.id, "failed"],
+  ]);
+  assert.equal(
+    hubGit(shared.remote, ["rev-parse", `refs/heads/${result.rejected[0].rejectionBranch}`]),
+    first.published.head,
+  );
+  assert.equal(fs.existsSync(path.join(secondProposal.root, "projects/demo/docs/UNPUBLISHED.md")), true);
 });
 
 test("direct room boot refreshes Shared through the protected POST and GET remains read-only", async (t) => {
@@ -2748,8 +3103,37 @@ test("Context Room Home combines global review queues without nesting another Ho
     body: "{}",
   })).json();
   assert.equal(refreshedHub.items.find((item) => item.type === "local" && item.projectId === secondEntry.id).fileCount, 3);
-  const secondReview = refreshedHub.projects.find((project) => project.id === secondEntry.id)
-    .localReviews.find((review) => review.path === "docs/SECOND.md");
+  const refreshedSecondProject = refreshedHub.projects.find((project) => project.id === secondEntry.id);
+  const batchItems = ["docs/README.md", "docs/THIRD.md"].map((reviewPath) => {
+    const review = refreshedSecondProject.localReviews.find((item) => item.path === reviewPath);
+    return {
+      id: `local:${secondEntry.id}:file:${review.path}`,
+      revisionToken: `local:${review.resourceState}:${review.resourceVersion || "-"}:${review.currentHash}`,
+    };
+  });
+  const unconfirmedBatch = await fetch(origin + "/api/context-hub/reject", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-project": room.projectId, "x-context-room-owner-nonce": room.ownerMutationNonce },
+    body: JSON.stringify({ items: batchItems }),
+  });
+  assert.equal(unconfirmedBatch.status, 403);
+  assert.equal((await unconfirmedBatch.json()).code, "context_hub_rejection_challenge_required");
+  const batchChallengeResponse = await fetch(origin + "/api/context-hub/reject-challenge", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-project": room.projectId, "x-context-room-owner-nonce": room.ownerMutationNonce },
+    body: JSON.stringify({ items: batchItems }),
+  });
+  assert.equal(batchChallengeResponse.status, 201);
+  const batchChallenge = await batchChallengeResponse.json();
+  assert.match(batchChallenge.selectionDigest, /^[a-f0-9]{64}$/);
+  const rejectedBatch = await fetch(origin + "/api/context-hub/reject", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-project": room.projectId, "x-context-room-owner-nonce": room.ownerMutationNonce },
+    body: JSON.stringify({ items: batchItems, challengeId: batchChallenge.challengeId }),
+  });
+  assert.equal(rejectedBatch.status, 200, await rejectedBatch.text());
+
+  const secondReview = refreshedSecondProject.localReviews.find((review) => review.path === "docs/SECOND.md");
   const secondRevisionToken = `local:${secondReview.resourceState}:${secondReview.resourceVersion || "-"}:${secondReview.currentHash}`;
 
   const rejectedLocal = await fetch(origin + "/api/context-hub/reject", {

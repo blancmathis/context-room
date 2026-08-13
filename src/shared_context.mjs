@@ -42,6 +42,7 @@ const SHARED_REVIEW_TEXT_FILENAMES = new Set([
   ".npmignore", ".nvmrc", ".prettierignore", ".python-version", ".ruby-version", ".tool-versions",
 ]);
 const SHARED_PROPOSAL_STATE_PREFIX = "context-room-state/";
+const ACTIVE_SHARED_PROPOSAL_REVIEW_STATUSES = new Set(["ready", "in_review", "updated"]);
 
 const DEFAULT_REPOSITORY_CONFIG = {
   version: SHARED_REPOSITORY_SCHEMA_VERSION,
@@ -2067,16 +2068,20 @@ function cachedSharedRepositoryStateUnderLock(safeRemote, { projectId = "global"
   if (!state.revision) {
     return syncSharedRepositoryStateUnderLock(safeRemote, { allowOffline: true });
   }
-  const revision = safeRevision(state.revision, "cached shared revision");
+  const cachedRevision = safeRevision(state.revision, "cached shared revision");
   const checkout = ensureRepositoryCloneUnderLock(safeRemote);
-  if (!gitObjectExists(checkout, `${revision}^{commit}`)) {
+  if (!gitObjectExists(checkout, `${cachedRevision}^{commit}`)) {
     return syncSharedRepositoryStateUnderLock(safeRemote, { allowOffline: true });
   }
-  const descriptor = readSharedDescriptorAtRevision(checkout, revision);
+  const descriptor = readRemoteSharedDescriptor(checkout, state.defaultBranch || "");
   const remoteRef = `refs/remotes/origin/${descriptor.config.defaultBranch}`;
-  if (!gitObjectExists(checkout, `${remoteRef}^{commit}`) || !gitIsAncestor(checkout, revision, remoteRef)) {
+  if (!gitObjectExists(checkout, `${remoteRef}^{commit}`) || !gitIsAncestor(checkout, cachedRevision, descriptor.revision)) {
     return syncSharedRepositoryStateUnderLock(safeRemote, { allowOffline: true });
   }
+  // The persisted snapshot may lag a fetch that another project or Hub worker
+  // already completed. Local origin refs are current evidence and must win
+  // before a warm proposal room can be reused; this path performs no network IO.
+  const revision = descriptor.revision;
   const cacheRoot = repositoryCacheRoot(safeRemote);
   const snapshot = path.join(cacheRoot, "snapshots", revision);
   fs.mkdirSync(path.dirname(snapshot), { recursive: true });
@@ -2232,14 +2237,36 @@ export function sharedDeliveryTimeoutBudget(push = null, overrideTimeoutMs = 0) 
   return DEFAULT_SHARED_DELIVERY_TIMEOUT_MS;
 }
 
-function commitTrailerMap(checkout, revision) {
-  const body = String(runGit(checkout, ["show", "-s", "--format=%B", safeRevision(revision)]));
+function contextRoomTrailerMap(body) {
   const trailers = {};
-  for (const line of body.split(/\r?\n/)) {
+  for (const line of String(body || "").split(/\r?\n/)) {
     const match = line.match(/^([A-Za-z0-9-]+):\s*(.*)$/);
     if (match && match[1].startsWith("Context-Room-")) trailers[match[1]] = match[2].trim();
   }
   return trailers;
+}
+
+function commitTrailerMap(checkout, revision) {
+  return contextRoomTrailerMap(runGit(checkout, ["show", "-s", "--format=%B", safeRevision(revision)]));
+}
+
+function sharedAcceptanceFromTrailers(trailers) {
+  let acceptance = null;
+  let acceptanceError = "";
+  if (trailers["Context-Room-Proposal"] || trailers["Context-Room-Proposal-Head"]) {
+    try {
+      if (!trailers["Context-Room-Proposal"] || !trailers["Context-Room-Proposal-Head"]) throw new Error("Acceptance trailers are incomplete");
+      acceptance = {
+        proposal: safeBranchName(trailers["Context-Room-Proposal"], "proposal branch"),
+        proposalHead: safeRevision(trailers["Context-Room-Proposal-Head"], "proposal head"),
+        projectId: trailers["Context-Room-Project"] ? safeId(trailers["Context-Room-Project"], "projectId") : "",
+        sessionId: trailers["Context-Room-Session"] ? safeSessionId(trailers["Context-Room-Session"]) : "",
+      };
+    } catch (error) {
+      acceptanceError = error.message;
+    }
+  }
+  return { acceptance, acceptanceError };
 }
 
 function parseDependencyProof(value = "") {
@@ -2335,21 +2362,7 @@ function sharedMainCommit(checkout, revision, previousRevision = "") {
     ? sharedDocumentDependencyReviewPaths(checkout, parent, commit, files)
       .filter((item) => !reviewedDependencyPaths.has(item.path))
     : [];
-  let acceptance = null;
-  let acceptanceError = "";
-  if (trailers["Context-Room-Proposal"] || trailers["Context-Room-Proposal-Head"]) {
-    try {
-      if (!trailers["Context-Room-Proposal"] || !trailers["Context-Room-Proposal-Head"]) throw new Error("Acceptance trailers are incomplete");
-      acceptance = {
-        proposal: safeBranchName(trailers["Context-Room-Proposal"], "proposal branch"),
-        proposalHead: safeRevision(trailers["Context-Room-Proposal-Head"], "proposal head"),
-        projectId: trailers["Context-Room-Project"] ? safeId(trailers["Context-Room-Project"], "projectId") : "",
-        sessionId: trailers["Context-Room-Session"] ? safeSessionId(trailers["Context-Room-Session"]) : "",
-      };
-    } catch (error) {
-      acceptanceError = error.message;
-    }
-  }
+  const { acceptance, acceptanceError } = sharedAcceptanceFromTrailers(trailers);
   return {
     revision: commit,
     previousRevision: parent ? safeRevision(parent, "shared main parent") : "",
@@ -2580,6 +2593,7 @@ function diffSharedProposalRevisionsUnderLock(main, { fromRevision, toRevision }
   }
   const mergeBase = safeRevision(tryGit(checkout, ["merge-base", from, to]), "proposal merge base");
   const changes = gitNameStatusChanges(checkout, from, to);
+  const conflict = proposalHasConflict(checkout, main.revision, to);
   return {
     repository: main.repository,
     defaultBranch: main.defaultBranch,
@@ -2591,7 +2605,8 @@ function diffSharedProposalRevisionsUnderLock(main, { fromRevision, toRevision }
     accepted: false,
     mergeBase,
     rebaseRequired: mergeBase !== main.revision || from !== main.revision,
-    hasConflict: proposalHasConflict(checkout, main.revision, to),
+    hasConflict: conflict,
+    conflictCheckStatus: conflict === null ? "unknown" : conflict ? "conflict" : "clear",
     changes,
     files: changes.map((change) => change.path),
   };
@@ -7319,24 +7334,23 @@ export function ensureSharedProposal(root, {
     const registry = readProposalRegistry(connection.repository);
     const checkout = repositoryCheckout(connection.repository);
     const remoteProposals = listRemoteSharedProposals(synced);
-    const terminalBranches = new Set(remoteProposals
-      .filter((proposal) => ["accepted", "merged", "rejected", "unverified_rejection"].includes(proposal.reviewStatus))
-      .map((proposal) => proposal.branch));
+    const remoteProposalByBranch = new Map(remoteProposals.map((proposal) => [proposal.branch, proposal]));
+    const acceptedProposalBranches = new Set(sharedMainAcceptanceCandidates(synced, checkout).keys());
     const localMatches = Object.values(registry.proposals || {}).filter((entry) => (
       proposalSessionMatches(entry, connection, scope, normalizedSession)
       && fs.existsSync(entry.root)
-      && !terminalBranches.has(entry.branch)
       && (() => {
-        if (!entry.lastPublishedHead) return true;
+        if (acceptedProposalBranches.has(entry.branch)) return false;
         const remoteHead = remoteBranchRevision(checkout, entry.branch);
-        if (!remoteHead) return false;
-        return !remoteProposalStateIsTerminal(checkedRemoteProposalState(checkout, entry.branch, remoteHead));
+        const remoteState = checkedRemoteProposalState(checkout, entry.branch, remoteHead);
+        if (remoteProposalStateIsTerminal(remoteState)) return false;
+        if (remoteHead) return sharedProposalReviewStateIsActive(remoteProposalByBranch.get(entry.branch));
+        return !entry.lastPublishedHead && remoteState.status === "missing";
       })()
     ));
     const remoteMatches = remoteProposals.filter((proposal) => (
       proposalSessionMatches(proposal, connection, scope, normalizedSession)
-      && !proposal.authorityViolation
-      && !["accepted", "merged", "rejected", "unverified_rejection"].includes(proposal.reviewStatus)
+      && sharedProposalReviewStateIsActive(proposal)
     ));
     const matches = new Map();
     for (const entry of localMatches) matches.set(entry.branch, { kind: "local", entry });
@@ -7446,20 +7460,22 @@ function openSharedProposalWorkspaceFromStateLocked(synced, options = {}) {
     : currentRemoteHead;
   const terminalState = checkedRemoteProposalState(checkout, branch, currentRemoteHead);
   if (remoteProposalStateIsTerminal(terminalState)) {
-    throw sharedContextError(
+    throw terminalProposalError(
       "shared-proposal-terminal",
       `A ${terminalState.status} proposal cannot be reopened`,
-      { proposal: branch, proposalHead: terminalState.proposalHead, reviewStatus: terminalState.status, stateRef: terminalState.ref },
+      branch,
+      terminalState.proposalHead,
+      { reviewStatus: terminalState.status, stateRef: terminalState.ref },
     );
   }
   const acceptedMainCandidate = sharedMainAcceptanceCandidates(synced, checkout).get(branch) || null;
   if (acceptedMainCandidate) {
-    throw sharedContextError(
+    throw terminalProposalError(
       "shared-proposal-terminal",
       "A proposal branch identifier already recorded on shared main cannot be reopened",
+      branch,
+      acceptedMainCandidate.proposalHead,
       {
-        proposal: branch,
-        proposalHead: acceptedMainCandidate.proposalHead,
         reviewStatus: "accepted",
         acceptedCommit: acceptedMainCandidate.commit,
       },
@@ -7470,13 +7486,7 @@ function openSharedProposalWorkspaceFromStateLocked(synced, options = {}) {
   }
   const registry = readProposalRegistry(connection.repository);
   const remote = listRemoteSharedProposals(synced, { requiredProposal: branch }).find((entry) => entry.branch === branch) || null;
-  if (remote && ["accepted", "merged", "rejected", "unverified_rejection"].includes(remote.reviewStatus)) {
-    throw sharedContextError(
-      "shared-proposal-terminal",
-      `A ${remote.reviewStatus} proposal cannot be reopened`,
-      { proposal: branch, proposalHead: remote.head, reviewStatus: remote.reviewStatus },
-    );
-  }
+  if (remote) assertActiveSharedProposalReviewState(remote, "reopened");
   const remoteHead = remote?.head || remoteBranchRevision(checkout, branch);
   if (!remote && remoteHead) {
     const rejection = proposalRejectionEvidence(
@@ -7487,15 +7497,27 @@ function openSharedProposalWorkspaceFromStateLocked(synced, options = {}) {
       ownerProposalDecisionIndex(connection.repository),
     );
     if (rejection.verified) {
-      throw sharedContextError(
+      throw terminalProposalError(
         "shared-proposal-terminal",
         "A rejected proposal cannot be reopened",
-        { proposal: branch, proposalHead: remoteHead, reviewStatus: "rejected" },
+        branch,
+        remoteHead,
+        { reviewStatus: "rejected" },
       );
     }
   }
   let entry = registry.proposals?.[branch] || null;
   if (!entry && !remote) throw new Error(`Open proposal not found: ${branch}`);
+  if (!remote && entry?.lastPublishedHead) {
+    throw sharedProposalStateError({
+      branch,
+      head: entry.lastPublishedHead,
+      reviewStatus: "externally_deleted",
+      authorityViolation: true,
+      available: false,
+      authorityMessage: "The published proposal ref is unavailable without a recorded terminal decision; restore and recover it before editing",
+    }, "reopened");
+  }
   if (!entry) entry = proposalRegistryEntryFromRemote(remote, ensureProposalWorktree(checkout, connection.repository, remote));
   if (!fs.existsSync(entry.root)) {
     const head = remote?.head || tryGit(checkout, ["rev-parse", `refs/heads/${branch}^{commit}`]);
@@ -7701,12 +7723,12 @@ function publishSharedProposalFromStateLocked(synced, options = {}) {
     );
   }
   if (new Set(["accepted", "rejected"]).has(initialProposalState.status)) {
-    throw sharedContextError(
+    throw terminalProposalError(
       "shared-proposal-terminal",
       `A ${initialProposalState.status} proposal cannot be published again`,
+      entry.branch,
+      initialProposalState.proposalHead,
       {
-        proposal: entry.branch,
-        proposalHead: initialProposalState.proposalHead,
         reviewStatus: initialProposalState.status,
         stateRef: initialProposalState.ref,
       },
@@ -7728,25 +7750,23 @@ function publishSharedProposalFromStateLocked(synced, options = {}) {
   const branchMainCandidate = sharedMainAcceptanceCandidates(synced, checkout).get(entry.branch) || null;
   const durableMainCandidate = exactMainCandidate || branchMainCandidate;
   if (durableMainCandidate) {
-    throw sharedContextError(
+    throw terminalProposalError(
       "shared-proposal-terminal",
       "A proposal branch identifier already recorded on shared main cannot be published again",
+      entry.branch,
+      durableMainCandidate.proposalHead,
       {
-        proposal: entry.branch,
-        proposalHead: durableMainCandidate.proposalHead,
         reviewStatus: "acceptance_recovery_required",
         acceptedCommit: durableMainCandidate.commit,
       },
     );
   }
   if (previousRemoteHead) {
-    const remoteProposal = listRemoteSharedProposals(synced, { requiredProposal: entry.branch }).find((item) => item.branch === entry.branch);
-    let terminalStatus = gitIsAncestor(checkout, previousRemoteHead, synced.revision)
-      ? "accepted"
-      : ["accepted", "merged", "rejected", "unverified_rejection"].includes(remoteProposal?.reviewStatus)
-        ? remoteProposal.reviewStatus
-        : "";
-    if (!terminalStatus && !remoteProposal) {
+    const remoteProposal = listRemoteSharedProposals(synced, { requiredProposal: entry.branch })
+      .find((item) => item.branch === entry.branch) || null;
+    if (remoteProposal) {
+      assertActiveSharedProposalReviewState(remoteProposal, "published again");
+    } else {
       const rejection = proposalRejectionEvidence(
         synced,
         checkout,
@@ -7754,14 +7774,23 @@ function publishSharedProposalFromStateLocked(synced, options = {}) {
         previousRemoteHead,
         ownerProposalDecisionIndex(connection.repository),
       );
-      if (rejection.verified) terminalStatus = "rejected";
-    }
-    if (terminalStatus) {
-      throw sharedContextError(
-        "shared-proposal-terminal",
-        `A ${terminalStatus} proposal cannot be published again`,
-        { proposal: entry.branch, proposalHead: previousRemoteHead, reviewStatus: terminalStatus },
-      );
+      if (rejection.verified) {
+        throw terminalProposalError(
+          "shared-proposal-terminal",
+          "A rejected proposal cannot be published again",
+          entry.branch,
+          previousRemoteHead,
+          { reviewStatus: "rejected" },
+        );
+      }
+      throw sharedProposalStateError({
+        branch: entry.branch,
+        head: previousRemoteHead,
+        reviewStatus: "externally_deleted",
+        authorityViolation: true,
+        available: false,
+        authorityMessage: "The published proposal is not present in the active proposal projection; recover its repository authority before publishing again",
+      }, "published again");
     }
   }
   if (previousRemoteHead && description === undefined) {
@@ -8218,7 +8247,10 @@ function sharedSessionProposalOverlay(synced, projectId, sessionId) {
   const proposals = normalizedSession ? listRemoteSharedProposals(synced).filter((proposal) => (
     proposal.sessionId === normalizedSession
     && (["global", "skills", "instructions"].includes(proposal.scope) || (normalizedProject !== "global" && proposal.projectId === normalizedProject))
-    && proposal.reviewStatus !== "merged"
+    && proposal.available !== false
+    && !proposal.authorityViolation
+    && !proposal.hasConflict
+    && ACTIVE_SHARED_PROPOSAL_REVIEW_STATUSES.has(proposal.reviewStatus)
   )).map((proposal) => ({
     branch: proposal.branch,
     head: proposal.head,
@@ -8531,15 +8563,7 @@ function rejectSharedRepositoryProposalFromStateLocked(synced, {
     ? null
     : listRemoteSharedProposals(synced, { requiredProposal: identity.branch }).find((item) => item.branch === identity.branch);
   if (!alreadyRejected && !current) throw new Error(`Remote proposal not found: ${identity.branch}`);
-  if (current && ["accepted", "merged"].includes(current.reviewStatus)) {
-    throw terminalProposalError(
-      "shared-proposal-terminal",
-      "An accepted proposal revision cannot be rejected",
-      identity.branch,
-      reviewedHead,
-      { reviewStatus: current.reviewStatus },
-    );
-  }
+  if (current) assertActiveSharedProposalReviewState(current, "rejected");
 
   const registry = readProposalRegistry(synced.connection.repository);
   const localEntry = registry.proposals?.[identity.branch];
@@ -8844,55 +8868,66 @@ function sharedRemoteAcceptanceIndex(synced, checkout) {
   return index;
 }
 
-function sharedMainAcceptanceCandidates(synced, checkout) {
-  const candidates = new Map();
-  const commits = tryGit(checkout, ["rev-list", "--first-parent", synced.revision]).split("\n").filter(Boolean);
-  for (const revision of commits) {
+function sharedMainAcceptanceCandidateIndexes(synced, checkout) {
+  const latestByProposal = new Map();
+  const exactByProposalHead = new Map();
+  const acceptedMainRevision = safeRevision(synced.revision, "shared main revision");
+  // NUL-framed fields keep multiline trailer blocks deterministic while Git reads the first-parent history once.
+  const fields = String(runGit(checkout, [
+    "log",
+    "--first-parent",
+    "--format=%H%x00%cI%x00%(trailers:only)%x00",
+    acceptedMainRevision,
+  ])).split("\0");
+  for (let index = 0; index + 2 < fields.length; index += 3) {
     try {
-      const item = sharedMainCommit(checkout, revision);
-      if (!item.acceptance) continue;
+      const revision = safeRevision(fields[index], "shared main acceptance commit");
+      const committedAt = String(fields[index + 1] || "").trim();
+      const { acceptance } = sharedAcceptanceFromTrailers(contextRoomTrailerMap(fields[index + 2]));
+      if (!acceptance) continue;
       const accepted = {
         accepted: true,
-        acceptedAt: item.committedAt,
-        commit: item.revision,
+        acceptedAt: committedAt,
+        commit: revision,
         acceptanceBranch: "",
         pullRequestUrl: "",
         merged: false,
-        proposalHead: item.acceptance.proposalHead,
-        sessionId: item.acceptance.sessionId,
+        proposalHead: acceptance.proposalHead,
+        sessionId: acceptance.sessionId,
       };
-      if (!candidates.has(item.acceptance.proposal)) candidates.set(item.acceptance.proposal, accepted);
+      const exactKey = `${acceptance.proposal}\0${acceptance.proposalHead}`;
+      if (!latestByProposal.has(acceptance.proposal)) latestByProposal.set(acceptance.proposal, accepted);
+      if (!exactByProposalHead.has(exactKey)) exactByProposalHead.set(exactKey, accepted);
     } catch {}
   }
-  return candidates;
+  return { latestByProposal, exactByProposalHead };
+}
+
+function sharedMainAcceptanceCandidates(synced, checkout) {
+  return sharedMainAcceptanceCandidateIndexes(synced, checkout).latestByProposal;
 }
 
 function exactSharedMainAcceptanceCandidate(synced, checkout, proposal, proposalHead) {
-  const commits = tryGit(checkout, ["rev-list", "--first-parent", synced.revision]).split("\n").filter(Boolean);
-  for (const revision of commits) {
-    try {
-      const item = sharedMainCommit(checkout, revision);
-      if (
-        item.acceptance?.proposal === proposal
-        && item.acceptance.proposalHead === proposalHead
-      ) {
-        return {
-          accepted: true,
-          acceptedAt: item.committedAt,
-          commit: item.revision,
-          acceptanceBranch: "",
-          pullRequestUrl: "",
-          merged: false,
-          proposalHead: item.acceptance.proposalHead,
-          sessionId: item.acceptance.sessionId,
-        };
-      }
-    } catch {}
-  }
-  return null;
+  return sharedMainAcceptanceCandidateIndexes(synced, checkout)
+    .exactByProposalHead.get(`${proposal}\0${proposalHead}`) || null;
 }
 
-function sharedMainAcceptanceIndex(synced, checkout, reviewActivity = null, decisionIndex = null) {
+function sharedMainAcceptanceCandidateIsVerified(candidate, proposal, decisions, activities) {
+  const signedDecision = decisions.decisions.get(`${proposal}\0${candidate.proposalHead}`) || null;
+  const signedDecisionMatches = Boolean(
+    signedDecision
+    && signedDecision.decision === "accepted"
+    && signedDecision.acceptedCommit === candidate.commit,
+  );
+  const exactReviewMatches = (activities.get(proposal) || []).some((activity) => (
+    activity.proposalHead === candidate.proposalHead
+    && activity.accepted?.merged === true
+    && activity.accepted.commit === candidate.commit
+  ));
+  return signedDecisionMatches || exactReviewMatches;
+}
+
+function sharedMainAcceptanceIndex(synced, checkout, reviewActivity = null, decisionIndex = null, candidates = null) {
   const index = new Map();
   const decisions = decisionIndex || ownerProposalDecisionIndex(synced.connection.repository);
   const activities = reviewActivity || sharedReviewActivityIndex(
@@ -8901,20 +8936,21 @@ function sharedMainAcceptanceIndex(synced, checkout, reviewActivity = null, deci
     synced.revision,
     decisions,
   );
-  for (const [proposal, candidate] of sharedMainAcceptanceCandidates(synced, checkout)) {
-    const signedDecision = decisions.decisions.get(`${proposal}\0${candidate.proposalHead}`) || null;
-    const signedDecisionMatches = Boolean(
-      signedDecision
-      && signedDecision.decision === "accepted"
-      && signedDecision.acceptedCommit === candidate.commit,
-    );
-    const exactReviewMatches = (activities.get(proposal) || []).some((activity) => (
-      activity.proposalHead === candidate.proposalHead
-      && activity.accepted?.merged === true
-      && activity.accepted.commit === candidate.commit
-    ));
-    if (signedDecisionMatches || exactReviewMatches) {
+  const acceptanceCandidates = candidates || sharedMainAcceptanceCandidates(synced, checkout);
+  for (const [proposal, candidate] of acceptanceCandidates) {
+    if (sharedMainAcceptanceCandidateIsVerified(candidate, proposal, decisions, activities)) {
       index.set(proposal, { ...candidate, merged: true });
+    }
+  }
+  return index;
+}
+
+function sharedMainAcceptanceExactIndex(candidateIndexes, reviewActivity, decisionIndex) {
+  const index = new Map();
+  for (const [exactKey, candidate] of candidateIndexes.exactByProposalHead) {
+    const proposal = exactKey.slice(0, exactKey.indexOf("\0"));
+    if (sharedMainAcceptanceCandidateIsVerified(candidate, proposal, decisionIndex, reviewActivity)) {
+      index.set(exactKey, { ...candidate, merged: true });
     }
   }
   return index;
@@ -8929,8 +8965,9 @@ export function listSharedMainAcceptances(repository, { refresh = true } = {}) {
   };
   const decisionIndex = ownerProposalDecisionIndex(main.repository);
   const reviewActivity = sharedReviewActivityIndex(main.repository, main.checkout, main.revision, decisionIndex);
-  const verified = sharedMainAcceptanceIndex(synced, main.checkout, reviewActivity, decisionIndex);
-  return [...sharedMainAcceptanceCandidates(synced, main.checkout).entries()].map(([proposal, accepted]) => ({
+  const candidates = sharedMainAcceptanceCandidates(synced, main.checkout);
+  const verified = sharedMainAcceptanceIndex(synced, main.checkout, reviewActivity, decisionIndex, candidates);
+  return [...candidates.entries()].map(([proposal, accepted]) => ({
     proposal,
     ...(verified.get(proposal) || accepted),
   }));
@@ -9031,6 +9068,47 @@ function terminalProposalError(code, message, proposal, proposalHead, details = 
   const error = sharedContextError(code, message, { proposal, proposalHead, ...details });
   error.statusCode = 409;
   return error;
+}
+
+function sharedProposalReviewStateIsActive(proposal) {
+  return Boolean(
+    proposal
+    && proposal.available !== false
+    && !proposal.authorityViolation
+    && proposal.conflictCheckStatus !== "unknown"
+    && ACTIVE_SHARED_PROPOSAL_REVIEW_STATUSES.has(String(proposal.reviewStatus || "")),
+  );
+}
+
+function sharedProposalStateError(proposal, action) {
+  const reviewStatus = String(proposal?.reviewStatus || "unavailable");
+  const branch = String(proposal?.branch || proposal?.proposal || "");
+  const proposalHead = String(proposal?.head || proposal?.proposalHead || "");
+  const conflictCheckUnavailable = reviewStatus === "conflict_check_recovery_required"
+    || proposal?.conflictCheckStatus === "unknown";
+  return terminalProposalError(
+    conflictCheckUnavailable ? "shared-proposal-conflict-check-unavailable" : "shared-proposal-terminal",
+    String(proposal?.authorityMessage || (conflictCheckUnavailable
+      ? "The proposal conflict check could not be completed; refresh its repository state before continuing"
+      : `A ${reviewStatus} proposal cannot be ${action}`)),
+    branch,
+    proposalHead,
+    {
+      reviewStatus,
+      authorityViolation: proposal?.authorityViolation === true,
+      authorityMessage: String(proposal?.authorityMessage || ""),
+      conflictCheckStatus: String(proposal?.conflictCheckStatus || ""),
+      acceptedCommit: String(proposal?.acceptedCommit || ""),
+      integratedAtRevision: String(proposal?.integratedAtRevision || ""),
+      rejectionBranch: String(proposal?.rejectionBranch || ""),
+      rejectionArchiveHead: String(proposal?.rejectionArchiveHead || ""),
+    },
+  );
+}
+
+function assertActiveSharedProposalReviewState(proposal, action) {
+  if (sharedProposalReviewStateIsActive(proposal)) return proposal;
+  throw sharedProposalStateError(proposal, action);
 }
 
 function assertProposalDecisionAuthorityWritable(evidence, proposal, proposalHead) {
@@ -9169,7 +9247,79 @@ function proposalAuthorityViolation(item, reviewStatus, authorityMessage) {
   };
 }
 
-function reconcileProposalObservations(synced, checkout, current, mainAcceptance, remoteAcceptance, decisionIndex) {
+function proposalAcceptanceRecovery(item, accepted) {
+  return proposalAuthorityViolation(
+    {
+      ...item,
+      acceptedCommit: accepted.commit,
+    },
+    "acceptance_recovery_required",
+    "The exact proposal revision already has an acceptance commit on shared main, but this owner has not verified and recorded the human acceptance decision. Recover the acceptance authority receipt before continuing.",
+  );
+}
+
+function proposalTerminalConflictRecovery(item, rejection, accepted) {
+  return proposalAuthorityViolation(
+    {
+      ...item,
+      acceptedCommit: accepted.commit,
+      rejectionBranch: rejection.expectedArchive,
+      rejectionArchiveHead: rejection.archiveHead,
+    },
+    "terminal_conflict_recovery_required",
+    "The exact proposal revision has both a verified human rejection and an acceptance commit on shared main. Resolve the contradictory terminal evidence before continuing.",
+  );
+}
+
+function proposalExternalMergeRecovery(item, acceptedMainRevision, proposalFiles = []) {
+  const files = [...new Set(proposalFiles.filter(Boolean))];
+  return proposalAuthorityViolation(
+    {
+      ...item,
+      ...(files.length ? { files, fileCount: files.length } : {}),
+      integratedAtRevision: acceptedMainRevision,
+    },
+    "external_merge_recovery_required",
+    "The proposal changes are already present on shared main, but no exact Context Room acceptance commit and owner decision receipt prove how they were delivered. Recover terminal authority before continuing.",
+  );
+}
+
+function proposalConflictCheckRecovery(item) {
+  return proposalAuthorityViolation(
+    {
+      ...item,
+      hasConflict: null,
+      conflictCheckStatus: "unknown",
+    },
+    "conflict_check_recovery_required",
+    "Context Room could not determine whether this proposal conflicts with the current shared main revision. Refresh or repair the local Git repository before editing, publishing, or reviewing it.",
+  );
+}
+
+function proposalChangesAreIntegrated(checkout, acceptedMainRevision, proposalHead, proposalChanges = []) {
+  const changedPaths = proposalChangePaths(proposalChanges);
+  if (!changedPaths.length) return false;
+  const mainEntries = new Map(gitTreeEntries(checkout, acceptedMainRevision, changedPaths).map((entry) => [entry.path, entry]));
+  const proposalEntries = new Map(gitTreeEntries(checkout, proposalHead, changedPaths).map((entry) => [entry.path, entry]));
+  return changedPaths.every((filePath) => {
+    const mainEntry = mainEntries.get(filePath) || null;
+    const proposalEntry = proposalEntries.get(filePath) || null;
+    if (!mainEntry || !proposalEntry) return mainEntry === proposalEntry;
+    return mainEntry.mode === proposalEntry.mode
+      && mainEntry.type === proposalEntry.type
+      && mainEntry.object === proposalEntry.object;
+  });
+}
+
+function reconcileProposalObservations(
+  synced,
+  checkout,
+  current,
+  remoteAcceptance,
+  decisionIndex,
+  mainAcceptanceCandidatesByHead = new Map(),
+  mainAcceptanceByHead = new Map(),
+) {
   if (!synced.online) return current;
   const repository = synced.connection.repository;
   return withProposalObservationsLock(repository, () => {
@@ -9180,7 +9330,32 @@ function reconcileProposalObservations(synced, checkout, current, mainAcceptance
   for (const item of current) {
     currentBranches.add(item.branch);
     const rejection = proposalRejectionEvidence(synced, checkout, item.branch, item.head, decisionIndex);
-    observations.proposals[item.branch] = observedProposalValue(item, rejection.verified ? "rejected" : "active");
+    const exactKey = `${item.branch}\0${item.head}`;
+    const acceptanceCandidate = mainAcceptanceCandidatesByHead.get(exactKey) || null;
+    const verifiedAcceptance = mainAcceptanceByHead.get(exactKey) || null;
+    const terminalConflict = Boolean(rejection.verified && acceptanceCandidate);
+    const acceptanceRecoveryRequired = Boolean(
+      acceptanceCandidate
+      && !verifiedAcceptance
+      && remoteAcceptance.get(item.branch)?.proposalHead !== item.head
+      && !["accepted", "merged"].includes(item.reviewStatus)
+    );
+    observations.proposals[item.branch] = observedProposalValue(
+      item,
+      terminalConflict
+        ? "terminal_conflict_recovery_required"
+        : rejection.verified
+          ? "rejected"
+          : acceptanceRecoveryRequired
+            ? "acceptance_recovery_required"
+            : item.reviewStatus === "external_merge_recovery_required"
+              ? "external_merge_recovery_required"
+              : "active",
+    );
+    if (terminalConflict) {
+      visible.push(proposalTerminalConflictRecovery(item, rejection, acceptanceCandidate));
+      continue;
+    }
     if (rejection.verified) continue;
     if (item.reviewStatus === "rejected") {
       visible.push(proposalAuthorityViolation(
@@ -9198,17 +9373,62 @@ function reconcileProposalObservations(synced, checkout, current, mainAcceptance
       ));
       continue;
     }
+    if (acceptanceRecoveryRequired) {
+      visible.push(proposalAcceptanceRecovery(item, acceptanceCandidate));
+      continue;
+    }
     visible.push(item);
   }
 
   for (const previous of Object.values(observations.proposals || {})) {
-    if (!previous?.branch || currentBranches.has(previous.branch) || previous.state === "rejected") continue;
-    const accepted = mainAcceptance.get(previous.branch) || remoteAcceptance.get(previous.branch);
+    if (!previous?.branch || currentBranches.has(previous.branch)) continue;
+    const exactKey = `${previous.branch}\0${previous.head}`;
+    const acceptanceCandidate = mainAcceptanceCandidatesByHead.get(exactKey) || null;
+    const accepted = mainAcceptanceByHead.get(exactKey)
+      || (remoteAcceptance.get(previous.branch)?.proposalHead === previous.head ? remoteAcceptance.get(previous.branch) : null);
+    const rejection = proposalRejectionEvidence(synced, checkout, previous.branch, previous.head, decisionIndex);
+    if (rejection.verified && acceptanceCandidate) {
+      observations.proposals[previous.branch] = {
+        ...previous,
+        state: "terminal_conflict_recovery_required",
+        lastCheckedAt: new Date().toISOString(),
+      };
+      visible.push(proposalTerminalConflictRecovery(
+        {
+          ...previous,
+          reviewActivity: null,
+          updatedSinceReview: false,
+          mainAdvancedBy: 0,
+          hasConflict: false,
+        },
+        rejection,
+        acceptanceCandidate,
+      ));
+      continue;
+    }
+    if (previous.state === "rejected") continue;
     if (accepted?.proposalHead === previous.head) {
       observations.proposals[previous.branch] = { ...previous, state: "accepted", lastCheckedAt: new Date().toISOString() };
       continue;
     }
-    const rejection = proposalRejectionEvidence(synced, checkout, previous.branch, previous.head, decisionIndex);
+    if (acceptanceCandidate) {
+      observations.proposals[previous.branch] = {
+        ...previous,
+        state: "acceptance_recovery_required",
+        lastCheckedAt: new Date().toISOString(),
+      };
+      visible.push(proposalAcceptanceRecovery(
+        {
+          ...previous,
+          reviewActivity: null,
+          updatedSinceReview: false,
+          mainAdvancedBy: 0,
+          hasConflict: false,
+        },
+        acceptanceCandidate,
+      ));
+      continue;
+    }
     if (rejection.verified) {
       observations.proposals[previous.branch] = { ...previous, state: "rejected", lastCheckedAt: new Date().toISOString() };
       continue;
@@ -9237,7 +9457,8 @@ function listRemoteSharedProposals(synced, { allProjects = true, requiredProposa
   const decisionIndex = ownerProposalDecisionIndex(synced.connection.repository);
   const reviewActivity = sharedReviewActivityIndex(synced.connection.repository, checkout, synced.revision, decisionIndex);
   const remoteAcceptance = sharedRemoteAcceptanceIndex(synced, checkout);
-  const mainAcceptance = sharedMainAcceptanceIndex(synced, checkout, reviewActivity, decisionIndex);
+  const mainAcceptanceCandidates = sharedMainAcceptanceCandidateIndexes(synced, checkout);
+  const mainAcceptanceByHead = sharedMainAcceptanceExactIndex(mainAcceptanceCandidates, reviewActivity, decisionIndex);
   const prefix = `refs/remotes/origin/${synced.repositoryConfig.proposalPrefix}`;
   const output = tryGit(checkout, ["for-each-ref", "--format=%(refname:strip=3)%09%(objectname)%09%(committerdate:iso8601)%09%(authorname)%09%(authoremail)%09%(subject)", prefix]);
   const current = output.split("\n").filter(Boolean).flatMap((line) => {
@@ -9250,6 +9471,7 @@ function listRemoteSharedProposals(synced, { allProjects = true, requiredProposa
       let title = subject;
       let description = "";
       let baseRevision = "";
+      let baseAnchorsProposal = false;
       let sourceRemote = "";
       let sourceBranch = "";
       let sourceCommit = "";
@@ -9264,22 +9486,40 @@ function listRemoteSharedProposals(synced, { allProjects = true, requiredProposa
         title = proposalTitle(metadata[0] || subject);
         description = decodeProposalDescription(metadata[1]);
         sessionId = safeSessionId(metadata[2]);
-        baseRevision = metadata[3] ? safeRevision(metadata[3], "proposal base") : "";
+        if (metadata[3]) {
+          try {
+            const candidateBase = safeRevision(metadata[3], "proposal base");
+            if (gitObjectExists(checkout, `${candidateBase}^{commit}`)
+              && gitIsAncestor(checkout, candidateBase, proposalHead)) {
+              baseRevision = candidateBase;
+              baseAnchorsProposal = true;
+            }
+          } catch {}
+        }
         sourceRemote = String(metadata[4] || "");
         sourceBranch = String(metadata[5] || "");
         sourceCommit = metadata[6] ? safeRevision(metadata[6], "source commit") : "";
         semanticReviewRequired = metadata[7] === "required";
       } catch {}
       const proposalChanges = gitNameStatusChanges(checkout, synced.revision, proposalHead);
+      const originalProposalChanges = baseAnchorsProposal
+        ? gitNameStatusChanges(checkout, baseRevision, proposalHead)
+        : proposalChanges;
       const scopePaths = proposalChangePaths(proposalChanges);
-      assertPathsInProposalScope(scopePaths, identity);
-      assertProjectCreationProposalBundle(proposalChanges.map((change) => change.path), identity);
+      const originalScopePaths = proposalChangePaths(originalProposalChanges);
+      assertPathsInProposalScope([...new Set([...scopePaths, ...originalScopePaths])], identity);
+      assertProjectCreationProposalBundle(originalProposalChanges.map((change) => change.path), identity);
       const files = [...new Set(proposalChanges.map((change) => change.path))];
       const activities = reviewActivity.get(branch) || [];
       const currentActivity = activities.find((activity) => activity.proposalHead === proposalHead) || null;
       const latestActivity = activities[0] || null;
-      const durableAccepted = mainAcceptance.get(branch) || remoteAcceptance.get(branch);
-      const accepted = currentActivity?.accepted || (durableAccepted?.proposalHead === proposalHead ? durableAccepted : null);
+      const exactKey = `${branch}\0${proposalHead}`;
+      const exactMainAcceptance = mainAcceptanceByHead.get(exactKey) || null;
+      const durableAccepted = exactMainAcceptance
+        || (remoteAcceptance.get(branch)?.proposalHead === proposalHead ? remoteAcceptance.get(branch) : null);
+      const accepted = exactMainAcceptance
+        || currentActivity?.accepted
+        || (durableAccepted?.proposalHead === proposalHead ? durableAccepted : null);
       const reviewStatus = accepted?.merged
         ? "merged"
         : remoteProposalStateIsTerminal(remoteState)
@@ -9292,9 +9532,15 @@ function listRemoteSharedProposals(synced, { allProjects = true, requiredProposa
                 ? "updated"
                 : "ready";
       let mainAdvancedBy = 0;
-      if (baseRevision && baseRevision !== synced.revision && gitIsAncestor(checkout, baseRevision, synced.revision)) {
+      const baseAnchorsMain = baseAnchorsProposal && gitIsAncestor(checkout, baseRevision, synced.revision);
+      if (baseAnchorsMain && baseRevision !== synced.revision) {
         mainAdvancedBy = Number(tryGit(checkout, ["rev-list", "--count", `${baseRevision}..${synced.revision}`])) || 0;
       }
+      // Missing, malformed, forged, or unrelated base trailers must not turn
+      // conflict detection off. When the declared ancestry cannot prove the
+      // relation to both heads, merge-tree is the fail-closed source of truth.
+      const conflictCheckRequired = !baseAnchorsMain || mainAdvancedBy > 0;
+      const conflict = conflictCheckRequired ? proposalHasConflict(checkout, synced.revision, proposalHead) : false;
       const item = {
         ...identity,
         repository: synced.connection.repository,
@@ -9317,7 +9563,10 @@ function listRemoteSharedProposals(synced, { allProjects = true, requiredProposa
         reviewActivity: currentActivity || latestActivity,
         updatedSinceReview: reviewStatus === "updated",
         mainAdvancedBy,
-        hasConflict: mainAdvancedBy > 0 ? proposalHasConflict(checkout, synced.revision, proposalHead) : false,
+        hasConflict: conflict,
+        conflictCheckStatus: conflictCheckRequired
+          ? conflict === null ? "unknown" : conflict ? "conflict" : "clear"
+          : "not_required",
       };
       if (remoteState.status === "invalid") {
         return [proposalAuthorityViolation(
@@ -9326,13 +9575,38 @@ function listRemoteSharedProposals(synced, { allProjects = true, requiredProposa
           "The protected terminal proposal state is invalid or does not match this exact proposal revision. Repair the remote state before continuing review.",
         )];
       }
+      const mainAcceptanceCandidate = mainAcceptanceCandidates.exactByProposalHead.get(exactKey) || null;
+      if (
+        mainAcceptanceCandidate
+        && !exactMainAcceptance
+        && remoteAcceptance.get(branch)?.proposalHead !== proposalHead
+        && !["accepted", "merged"].includes(item.reviewStatus)
+      ) {
+        return [proposalAcceptanceRecovery(item, mainAcceptanceCandidate)];
+      }
+      if (
+        !accepted
+        && !remoteProposalStateIsTerminal(remoteState)
+        && proposalChangesAreIntegrated(checkout, synced.revision, proposalHead, originalProposalChanges)
+      ) {
+        return [proposalExternalMergeRecovery(item, synced.revision, proposalChangePaths(originalProposalChanges))];
+      }
+      if (conflict === null) return [proposalConflictCheckRecovery(item)];
       return [item];
     } catch (error) {
       if (requiredProposal && branch === requiredProposal) throw error;
       return [];
     }
   });
-  return reconcileProposalObservations(synced, checkout, current, mainAcceptance, remoteAcceptance, decisionIndex)
+  return reconcileProposalObservations(
+    synced,
+    checkout,
+    current,
+    remoteAcceptance,
+    decisionIndex,
+    mainAcceptanceCandidates.exactByProposalHead,
+    mainAcceptanceByHead,
+  )
     .filter((item) => allProjects || item.projectId === synced.connection.projectId || item.projectId === "global" || item.projectId === "skills")
     .sort((left, right) => String(right.updatedAt || "").localeCompare(String(left.updatedAt || "")));
 }
@@ -9399,12 +9673,23 @@ function reusableSharedReview(synced, match) {
 
 function materializeSharedReviewFromState(synced, { proposal, expectedHead = "" } = {}) {
   const match = listRemoteSharedProposals(synced, { requiredProposal: proposal }).find((item) => item.branch === proposal);
-  if (!match) throw new Error(`Remote proposal not found: ${proposal}`);
-  if (match.authorityViolation || ["accepted", "merged", "rejected", "unverified_rejection"].includes(match.reviewStatus)) {
-    throw sharedContextError(
-      "shared-proposal-terminal",
-      `A ${match.reviewStatus} proposal cannot be reviewed again`,
-      { proposal: match.branch, proposalHead: match.head, reviewStatus: match.reviewStatus },
+  if (!match) {
+    const error = sharedContextError(
+      "shared_context_proposal_not_found",
+      `Remote proposal not found: ${proposal}`,
+      { proposal },
+    );
+    error.statusCode = 404;
+    throw error;
+  }
+  assertActiveSharedProposalReviewState(match, "reviewed again");
+  if (match.hasConflict) {
+    throw terminalProposalError(
+      "shared-proposal-conflict",
+      "The proposal conflicts with the current shared main revision",
+      match.branch,
+      match.head,
+      { reviewStatus: match.reviewStatus, mainAdvancedBy: Math.max(0, Number(match.mainAdvancedBy) || 0) },
     );
   }
   if (expectedHead) {

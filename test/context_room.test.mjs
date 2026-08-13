@@ -8246,7 +8246,7 @@ test("disk changes stay pending for review instead of silently reloading the ope
   assert.match(html, /const hasHomeHistory = state\.page === "hub" && state\.historyIndex >= 0;/);
   assert.match(html, /const nextIndex = state\.page === "hub" && delta < 0 \? state\.historyIndex : state\.historyIndex \+ delta;/);
   assert.match(html, /el\("back"\)\.disabled = onHome \? state\.historyIndex < 0 : state\.historyIndex <= 0;/);
-  assert.match(html, /function goHub\(\) \{[\s\S]*resetExternalChangeState\(\);[\s\S]*showHome\(\);/);
+  assert.match(html, /function goHub\([^)]*\) \{[\s\S]*resetExternalChangeState\(\);[\s\S]*showHome\(\);/);
   assert.match(html, /function firstExternalReviewChangeBlockId\(\)/);
   assert.match(html, /return externalReviewChangeElements\(\)\[0\]\?\.dataset\.externalReviewBlock \|\| "";/);
   assert.match(html, /function focusFirstExternalReviewChange\(\)/);

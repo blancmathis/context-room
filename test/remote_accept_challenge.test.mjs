@@ -325,10 +325,32 @@ test("remote rejection uses an ephemeral GitHub App credential and supports a cu
   });
   assert.equal(fixture.opened.review.rejectionPrefix, "declined/");
   assert.equal(fixture.hostedProposal.rejectionPrefix, "declined/");
-  const rejectionResponse = await fetch(`${fixture.reviewOrigin}/api/shared-context/reject`, {
+  const tokenRequestsBeforeChallenge = tokenRequests.length;
+  const challengeResponse = await fetch(`${fixture.reviewOrigin}/api/shared-context/reject-challenge`, {
     method: "POST",
     headers: fixture.remoteHeaders("human-a", "reject"),
     body: JSON.stringify({ expectedProposalHead: fixture.published.head }),
+  });
+  const challenge = await challengeResponse.json();
+  assert.equal(challengeResponse.status, 201, JSON.stringify(challenge));
+  assert.equal(challenge.action, "reject");
+  assert.equal(challenge.authorityId, fixture.opened.review.authorityId);
+  assert.equal(challenge.proposalHead, fixture.published.head);
+  assert.equal(tokenRequests.length, tokenRequestsBeforeChallenge, "issuing a rejection challenge must not request a Git credential");
+
+  const mismatchedHumanResponse = await fetch(`${fixture.reviewOrigin}/api/shared-context/reject`, {
+    method: "POST",
+    headers: fixture.remoteHeaders("human-b", "reject"),
+    body: JSON.stringify({ expectedProposalHead: fixture.published.head, challengeId: challenge.challengeId }),
+  });
+  assert.equal(mismatchedHumanResponse.status, 403);
+  assert.equal((await mismatchedHumanResponse.json()).code, "shared_context_rejection_challenge_mismatch");
+  assert.equal(tokenRequests.length, tokenRequestsBeforeChallenge, "a mismatched principal must fail before credential issuance");
+
+  const rejectionResponse = await fetch(`${fixture.reviewOrigin}/api/shared-context/reject`, {
+    method: "POST",
+    headers: fixture.remoteHeaders("human-a", "reject"),
+    body: JSON.stringify({ expectedProposalHead: fixture.published.head, challengeId: challenge.challengeId }),
   });
   const rejected = await rejectionResponse.json();
   assert.equal(rejectionResponse.status, 200, JSON.stringify(rejected));
@@ -358,6 +380,43 @@ test("remote rejection uses an ephemeral GitHub App credential and supports a cu
     git(fixture.seed, ["ls-remote", "--heads", "origin", `refs/heads/${rejected.rejectionBranch}`]).split(/\s+/)[0],
     fixture.published.head,
   );
+
+  const authority = JSON.parse(fs.readFileSync(
+    path.join(fixture.sharedHome, "review-authority", `${fixture.opened.review.authorityId}.json`),
+    "utf8",
+  ));
+  assert.equal(authority.rejected?.rejected, true);
+  assert.equal(authority.rejected?.proposalHead, fixture.published.head);
+  assert.equal(authority.rejected?.rejectionBranch, rejected.rejectionBranch);
+  assert.match(authority.rejectedAt, /^\d{4}-\d{2}-\d{2}T/);
+
+  const warmReopenResponse = await fetch(`${fixture.origin}/api/context-hub/review`, {
+    method: "POST",
+    headers: fixture.remoteHeaders("human-a", "review"),
+    body: JSON.stringify({
+      repositoryId: fixture.hostedProposal.repositoryId,
+      proposal: fixture.proposal.branch,
+      expectedHead: fixture.published.head,
+    }),
+  });
+  const warmReopen = await warmReopenResponse.json();
+  assert.equal([404, 409].includes(warmReopenResponse.status), true, JSON.stringify(warmReopen));
+  assert.notEqual(warmReopenResponse.status, 201);
+
+  const tokenRequestsBeforeTerminalChallenge = tokenRequests.length;
+  const terminalRoomResponse = await fetch(`${fixture.reviewOrigin}/api/shared-context/reject-challenge`, {
+    method: "POST",
+    headers: fixture.remoteHeaders("human-a", "reject"),
+    body: JSON.stringify({ expectedProposalHead: fixture.published.head }),
+  });
+  const terminalRoom = await terminalRoomResponse.json();
+  assert.equal(terminalRoomResponse.status, 404, JSON.stringify(terminalRoom));
+  assert.equal(terminalRoom.code, "remote_review_not_found");
+  assert.equal(tokenRequests.length, tokenRequestsBeforeTerminalChallenge);
+  const closedRoomResponse = await fetch(`${fixture.reviewOrigin}/`, {
+    headers: { "x-forwarded-host": remoteHost },
+  });
+  assert.equal(closedRoomResponse.status, 404);
 
   const consume = () => fetch(`${fixture.origin}/api/context-hub/flash`, {
     method: "POST",
@@ -413,10 +472,39 @@ test("Hosted bulk rejection validates the selection before using one request-sco
   assert.equal(tokenRequests.length, 1);
   assert.equal(git(fixture.remote, ["for-each-ref", "--format=%(refname)", "refs/heads/archives/rejected/"]), "");
 
+  const challengeResponse = await fetch(`${fixture.origin}/api/context-hub/reject-challenge`, {
+    method: "POST",
+    headers: fixture.remoteHeaders("human-a", "reject"),
+    body: JSON.stringify({
+      items: [{ id: fixture.hostedProposal.id, expectedHead: fixture.published.head }],
+    }),
+  });
+  const challenge = await challengeResponse.json();
+  assert.equal(challengeResponse.status, 201, JSON.stringify(challenge));
+  assert.match(challenge.selectionDigest, /^[a-f0-9]{64}$/);
+  assert.equal(challenge.action, "reject");
+  assert.equal(tokenRequests.length, 1, "issuing a Hub rejection challenge must not request a Git credential");
+
+  const changedSelectionResponse = await fetch(`${fixture.origin}/api/context-hub/reject`, {
+    method: "POST",
+    headers: fixture.remoteHeaders("human-a", "reject"),
+    body: JSON.stringify({
+      challengeId: challenge.challengeId,
+      items: [
+        { id: fixture.hostedProposal.id, expectedHead: fixture.published.head },
+        { id: "proposal:unknown:proposal/demo/missing", expectedHead: fixture.published.head },
+      ],
+    }),
+  });
+  assert.equal(changedSelectionResponse.status, 409);
+  assert.equal((await changedSelectionResponse.json()).code, "context_hub_reject_stale");
+  assert.equal(tokenRequests.length, 1);
+
   const response = await fetch(`${fixture.origin}/api/context-hub/reject`, {
     method: "POST",
     headers: fixture.remoteHeaders("human-a", "reject"),
     body: JSON.stringify({
+      challengeId: challenge.challengeId,
       items: [{ id: fixture.hostedProposal.id, expectedHead: fixture.published.head }],
     }),
   });
@@ -463,12 +551,26 @@ test("remote terminal decision endpoints fail closed before authority or Git mut
     }),
   });
   const directAccept = await directAcceptResponse.json();
+  const exactRejectChallengeResponse = await fetch(`${fixture.reviewOrigin}/api/shared-context/reject-challenge`, {
+    method: "POST",
+    headers: fixture.remoteHeaders("human-a", "reject"),
+    body: JSON.stringify({ expectedProposalHead: fixture.published.head }),
+  });
+  const exactRejectChallenge = await exactRejectChallengeResponse.json();
   const exactRejectResponse = await fetch(`${fixture.reviewOrigin}/api/shared-context/reject`, {
     method: "POST",
     headers: fixture.remoteHeaders("human-a", "reject"),
     body: JSON.stringify({ expectedProposalHead: fixture.published.head }),
   });
   const exactReject = await exactRejectResponse.json();
+  const bulkRejectChallengeResponse = await fetch(`${fixture.origin}/api/context-hub/reject-challenge`, {
+    method: "POST",
+    headers: fixture.remoteHeaders("human-a", "reject"),
+    body: JSON.stringify({
+      items: [{ id: fixture.hostedProposal.id, expectedHead: fixture.published.head }],
+    }),
+  });
+  const bulkRejectChallenge = await bulkRejectChallengeResponse.json();
   const bulkRejectResponse = await fetch(`${fixture.origin}/api/context-hub/reject`, {
     method: "POST",
     headers: fixture.remoteHeaders("human-a", "reject"),
@@ -490,7 +592,9 @@ test("remote terminal decision endpoints fail closed before authority or Git mut
   assert.deepEqual({
     challenge: { status: challengeResponse.status, code: challenge.code, error: challenge.error },
     directAccept: { status: directAcceptResponse.status, code: directAccept.code, error: directAccept.error },
+    exactRejectChallenge: { status: exactRejectChallengeResponse.status, code: exactRejectChallenge.code, error: exactRejectChallenge.error },
     exactReject: { status: exactRejectResponse.status, code: exactReject.code, error: exactReject.error },
+    bulkRejectChallenge: { status: bulkRejectChallengeResponse.status, code: bulkRejectChallenge.code, error: bulkRejectChallenge.error },
     bulkReject: { status: bulkRejectResponse.status, code: bulkReject.code, error: bulkReject.error },
     mainHead: git(fixture.remote, ["rev-parse", "refs/heads/main"]),
     proposalHead: git(fixture.remote, ["rev-parse", `refs/heads/${fixture.proposal.branch}`]),
@@ -507,7 +611,17 @@ test("remote terminal decision endpoints fail closed before authority or Git mut
       code: "shared_context_remote_acceptance_unavailable",
       error: "This hosted Context Room capability is temporarily unavailable.",
     },
+    exactRejectChallenge: {
+      status: 503,
+      code: "shared_context_remote_rejection_unavailable",
+      error: "This hosted Context Room capability is temporarily unavailable.",
+    },
     exactReject: {
+      status: 503,
+      code: "shared_context_remote_rejection_unavailable",
+      error: "This hosted Context Room capability is temporarily unavailable.",
+    },
+    bulkRejectChallenge: {
       status: 503,
       code: "shared_context_remote_rejection_unavailable",
       error: "This hosted Context Room capability is temporarily unavailable.",
@@ -584,10 +698,18 @@ test("remote terminal decisions expose retryable GitHub App token timeouts witho
   });
   assert.equal(failure.error, "The hosted Context Room operation timed out safely.");
 
-  const exactRejectResponse = await fetch(`${fixture.reviewOrigin}/api/shared-context/reject`, {
+  const exactRejectChallengeResponse = await fetch(`${fixture.reviewOrigin}/api/shared-context/reject-challenge`, {
     method: "POST",
     headers: fixture.remoteHeaders("human-a", "reject"),
     body: JSON.stringify({ expectedProposalHead: fixture.published.head }),
+  });
+  const exactRejectChallenge = await exactRejectChallengeResponse.json();
+  assert.equal(exactRejectChallengeResponse.status, 201, JSON.stringify(exactRejectChallenge));
+  assert.equal(requestSignals.length, 2);
+  const exactRejectResponse = await fetch(`${fixture.reviewOrigin}/api/shared-context/reject`, {
+    method: "POST",
+    headers: fixture.remoteHeaders("human-a", "reject"),
+    body: JSON.stringify({ expectedProposalHead: fixture.published.head, challengeId: exactRejectChallenge.challengeId }),
   });
   const exactReject = await exactRejectResponse.json();
   assert.deepEqual({
@@ -604,10 +726,30 @@ test("remote terminal decisions expose retryable GitHub App token timeouts witho
     proposal: fixture.published.head,
   });
 
+  const replayedExactRejectResponse = await fetch(`${fixture.reviewOrigin}/api/shared-context/reject`, {
+    method: "POST",
+    headers: fixture.remoteHeaders("human-a", "reject"),
+    body: JSON.stringify({ expectedProposalHead: fixture.published.head, challengeId: exactRejectChallenge.challengeId }),
+  });
+  assert.equal(replayedExactRejectResponse.status, 409);
+  assert.equal((await replayedExactRejectResponse.json()).code, "shared_context_rejection_challenge_replayed");
+  assert.equal(requestSignals.length, 3, "a replayed challenge must fail before another credential request");
+
+  const bulkRejectChallengeResponse = await fetch(`${fixture.origin}/api/context-hub/reject-challenge`, {
+    method: "POST",
+    headers: fixture.remoteHeaders("human-a", "reject"),
+    body: JSON.stringify({
+      items: [{ id: fixture.hostedProposal.id, expectedHead: fixture.published.head }],
+    }),
+  });
+  const bulkRejectChallenge = await bulkRejectChallengeResponse.json();
+  assert.equal(bulkRejectChallengeResponse.status, 201, JSON.stringify(bulkRejectChallenge));
+  assert.equal(requestSignals.length, 3);
   const bulkRejectResponse = await fetch(`${fixture.origin}/api/context-hub/reject`, {
     method: "POST",
     headers: fixture.remoteHeaders("human-a", "reject"),
     body: JSON.stringify({
+      challengeId: bulkRejectChallenge.challengeId,
       items: [{ id: fixture.hostedProposal.id, expectedHead: fixture.published.head }],
     }),
   });

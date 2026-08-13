@@ -973,21 +973,18 @@ test.describe.serial("real proposal workflows", () => {
         && url.searchParams.get("view") === "proposal"
       ));
 
-      await page.getByRole("button", { name: "Reject proposal", exact: true }).click();
-      const rejectionDialog = page.getByRole("dialog", { name: "Reject this proposal?" });
-      await expect(rejectionDialog).toBeVisible();
-      await rejectionDialog.getByRole("checkbox").check();
-      const rejectionPromise = page.waitForResponse((response) => (
+      const rejectionChallengePromise = page.waitForResponse((response) => (
         response.request().method() === "POST"
-        && new URL(response.url()).pathname.endsWith("/api/shared-context/reject")
+        && new URL(response.url()).pathname.endsWith("/api/shared-context/reject-challenge")
       ));
-      await rejectionDialog.getByRole("button", { name: "Reject proposal", exact: true }).click();
-      const rejectionResponse = await rejectionPromise;
+      await page.getByRole("button", { name: "Reject proposal", exact: true }).click();
+      const rejectionResponse = await rejectionChallengePromise;
       const rejectionPayload = await rejectionResponse.json();
       expect(rejectionResponse.status(), JSON.stringify(rejectionPayload)).toBe(503);
       expect(rejectionPayload.code).toBe("shared_context_remote_rejection_unavailable");
-      await expect(rejectionDialog).toBeVisible();
-      await expect(rejectionDialog.getByRole("alert")).toContainText("temporarily unavailable");
+      await expect(page.getByRole("dialog", { name: "Reject this proposal?" })).toBeHidden();
+      await expect(page.locator('[data-context-room-toast][role="alert"]')).toContainText("temporarily unavailable");
+      await expect(page.locator('[data-context-room-toast][role="alert"]')).toContainText("Retry");
       await expect(page.locator("#proposalReviewTitle")).toHaveText(hosted.proposalTitle);
       await expect(page).toHaveURL((url) => (
         url.origin === HOSTED_ORIGIN

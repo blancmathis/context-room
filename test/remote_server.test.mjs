@@ -96,6 +96,7 @@ function hostedSharedProvider(privateRoot) {
     branch: proposalBranch,
     head: proposalHead,
     baseRevision: "fedcba9876543210fedcba9876543210fedcba98",
+    reviewStatus: "ready",
     files: Object.freeze([`projects/${sharedProjectId}/docs/README.md`]),
     repository: sharedRepository,
     root: privateRoot,

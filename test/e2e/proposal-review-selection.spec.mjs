@@ -86,6 +86,7 @@ async function showTerminalProposal(page, overrides = {}) {
       acceptedChangesRemain: true,
       review: {
         projectId: next.projectId || "demo-project",
+        authorityId: next.authorityId || "authority-terminal-action",
         proposal,
         proposalHead,
         defaultBranch: "main",
@@ -116,6 +117,63 @@ async function confirmTerminalAcceptance(page) {
   await dialog.getByRole("checkbox").check();
   await dialog.getByRole("button", { name: "Put on main", exact: true }).click();
   return dialog;
+}
+
+async function replaceHubProposals(page, proposals) {
+  await expect.poll(async () => page.evaluate(() => contextHubReviewItems().some((item) => item.type === "shared"))).toBe(true);
+  await page.evaluate(() => {
+    cancelBackgroundRefresh();
+    state.runtimeEventSource?.close();
+    state.runtimeEventSource = null;
+    state.runtimeEventsConnected = true;
+    window.clearInterval(state.runtimeFallbackTimer);
+    state.runtimeFallbackTimer = null;
+  });
+  await expect.poll(async () => page.evaluate(() => Boolean(state.refreshInFlight || state.reportsRefreshInFlight))).toBe(false);
+  return page.evaluate((nextProposals) => {
+    const source = contextHubReviewItems().find((item) => item.type === "shared");
+    if (!source) throw new Error("Missing shared proposal fixture");
+    const items = nextProposals.map((proposal, index) => ({
+      ...source,
+      id: proposal.id,
+      branch: proposal.branch,
+      head: proposal.head || String(index + 1).repeat(40),
+      repositoryId: proposal.repositoryId || source.repositoryId,
+      repository: proposal.repository || source.repository,
+      projectId: proposal.projectId || source.projectId,
+      projectKey: proposal.projectKey || source.projectKey,
+      title: proposal.title,
+      description: proposal.description || "Exact proposal opening fixture.",
+      reviewStatus: proposal.reviewStatus,
+      available: proposal.available !== false,
+      authorityViolation: proposal.authorityViolation || null,
+      authorityMessage: proposal.authorityMessage || "",
+      hasConflict: proposal.hasConflict === true,
+      files: proposal.files || ["README.md"],
+      fileCount: (proposal.files || ["README.md"]).length,
+    }));
+    state.contextHub = {
+      ...state.contextHub,
+      items,
+      proposals: items,
+      repositoryErrors: [],
+      freshness: {
+        generatedAt: new Date().toISOString(),
+        ageMs: 0,
+        fresh: true,
+        refreshing: false,
+      },
+    };
+    state.contextHubReviewQueueReady = true;
+    state.contextHubSelection = "";
+    state.contextRoomOpeningProposalId = "";
+    state.sharedContextBusy = false;
+    state.sharedProposalProject = "";
+    state.sharedProposalSearch = "";
+    state.contextHubSource = "all";
+    renderContextRoomGlobalReviewQueue();
+    return items.map((item) => ({ id: item.id, branch: item.branch }));
+  }, proposals);
 }
 
 test("@smoke a shared-only deep link boots without a local target and labels an offline cache honestly", async ({ page }) => {
@@ -643,6 +701,421 @@ test("@smoke a proposal already opening keeps its visual selection while busy", 
   }))).toEqual({ selection: ids.first, opening: ids.first });
 });
 
+test("@smoke accepted and acceptance-recovery proposal cards never open a review", async ({ page }) => {
+  const { origin } = fixture();
+  let reviewPosts = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === "/api/context-hub/review") reviewPosts += 1;
+  });
+  await page.goto(origin + "/?hub=1&workspace=workspace-terminal-proposal-cards&view=hub");
+  await waitForBoot(page);
+  const proposals = await replaceHubProposals(page, [
+    {
+      id: "proposal:fixture:accepted",
+      branch: "proposal/demo/already-accepted",
+      title: "Already accepted proposal",
+      reviewStatus: "accepted",
+    },
+    {
+      id: "proposal:fixture:acceptance-recovery",
+      branch: "proposal/demo/acceptance-recovery",
+      title: "Acceptance recovery proposal",
+      reviewStatus: "acceptance_recovery_required",
+      authorityViolation: {
+        kind: "acceptance_recovery_required",
+        message: "The acceptance commit exists on main but its owner decision receipt must be recovered.",
+      },
+      authorityMessage: "The acceptance commit exists on main but its owner decision receipt must be recovered.",
+    },
+    {
+      id: "proposal:fixture:terminal-conflict-recovery",
+      branch: "proposal/demo/terminal-conflict-recovery",
+      title: "Terminal conflict recovery proposal",
+      reviewStatus: "terminal_conflict_recovery_required",
+      hasConflict: true,
+      authorityMessage: "Terminal evidence conflicts and requires owner recovery.",
+    },
+  ]);
+
+  for (const proposal of proposals) {
+    const entry = page.locator('[data-context-room-review-entry="' + proposal.id + '"]');
+    const open = entry.locator("[data-context-room-review]");
+    await expect(entry).toBeVisible();
+    if (proposal.id !== "proposal:fixture:accepted") await expect(entry).toContainText("Recovery required");
+    await expect(open).toBeDisabled();
+    await open.evaluate((button) => button.click());
+  }
+  await page.waitForTimeout(100);
+  expect(reviewPosts).toBe(0);
+  await expect.poll(() => page.evaluate(() => state.page)).not.toBe("proposal");
+});
+
+for (const failure of [
+  {
+    status: 409,
+    code: "shared-proposal-terminal",
+    message: "This proposal already has an acceptance commit on main. Recover its owner decision receipt before continuing.",
+    details: { reviewStatus: "acceptance_recovery_required", acceptedCommit: "a".repeat(40) },
+    retryable: false,
+  },
+  {
+    status: 404,
+    code: "shared_proposal_not_found",
+    message: "This exact proposal revision is no longer available.",
+    details: { reviewStatus: "not_found" },
+    retryable: false,
+  },
+  {
+    status: 503,
+    code: "shared_review_temporarily_unavailable",
+    message: "The exact review service is temporarily unavailable.",
+    details: { reviewStatus: "ready" },
+    retryable: true,
+  },
+]) {
+  test(`@smoke a proposal opening ${failure.status} stays inline with explicit recovery actions`, async ({ page }) => {
+    const { origin } = fixture();
+    let reviewPosts = 0;
+    await page.goto(origin + "/?hub=1&workspace=workspace-proposal-open-failure&view=hub");
+    await waitForBoot(page);
+    const [proposal] = await replaceHubProposals(page, [{
+      id: "proposal:fixture:opening-failure-" + failure.status,
+      branch: "proposal/demo/opening-failure-" + failure.status,
+      title: "Proposal opening failure " + failure.status,
+      reviewStatus: "ready",
+    }]);
+    await page.route("**/api/context-hub/review", async (route) => {
+      reviewPosts += 1;
+      await route.fulfill({
+        status: failure.status,
+        contentType: "application/json",
+        body: JSON.stringify({ error: failure.message, code: failure.code, details: failure.details }),
+      });
+    });
+
+    await page.locator('[data-context-room-review-entry="' + proposal.id + '"] [data-context-room-review]').click();
+    const proposalPage = page.locator("#proposalReviewPage");
+    const inlineError = page.locator("#proposalReviewNotice");
+    await expect(proposalPage).toBeVisible();
+    await expect(inlineError).toBeVisible();
+    await expect(inlineError).toContainText(failure.message);
+    await expect(inlineError.getByRole("button", { name: /Retry/i })).toHaveCount(failure.retryable ? 1 : 0);
+    await expect(inlineError.getByRole("button", { name: /Refresh/i })).toBeVisible();
+    await expect(inlineError.getByRole("button", { name: /Back/i })).toBeVisible();
+    await expect(inlineError).toBeFocused();
+    await expect(page).toHaveURL((url) => (
+      url.searchParams.get("view") === "proposal"
+      && url.searchParams.get("proposal") === proposal.branch
+    ));
+    await expect.poll(() => page.evaluate(() => state.page)).toBe("proposal");
+    expect(reviewPosts).toBe(1);
+
+    if (failure.retryable) {
+      await inlineError.getByRole("button", { name: /Retry/i }).click();
+      await expect.poll(() => reviewPosts).toBe(2);
+      await expect(proposalPage).toBeVisible();
+      await expect(inlineError).toContainText(failure.message);
+      await expect.poll(() => page.evaluate(() => state.page)).toBe("proposal");
+    }
+  });
+}
+
+test("@smoke proposal preparation never claims the exact review is ready", async ({ page }) => {
+  const { origin } = fixture();
+  let releaseReview;
+  let markReviewStarted;
+  const reviewStarted = new Promise((resolve) => { markReviewStarted = resolve; });
+  const holdReview = new Promise((resolve) => { releaseReview = resolve; });
+  await page.goto(origin + "/?hub=1&workspace=workspace-proposal-preparing-copy&view=hub");
+  await waitForBoot(page);
+  const [proposal] = await replaceHubProposals(page, [{
+    id: "proposal:fixture:preparing-copy",
+    branch: "proposal/demo/preparing-copy",
+    title: "Slow exact proposal",
+    reviewStatus: "ready",
+    files: ["README.md", "docs/operations.md"],
+  }]);
+  await page.route("**/api/context-hub/review", async (route) => {
+    markReviewStarted();
+    await holdReview;
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Simulated delayed review preparation.", code: "shared_review_delayed" }),
+    });
+  });
+
+  await page.locator('[data-context-room-review-entry="' + proposal.id + '"] [data-context-room-review]').click();
+  await reviewStarted;
+  const progress = page.locator("#proposalReviewProgress");
+  await expect(page.locator("#proposalReviewPage")).toBeVisible();
+  await expect(progress.locator("strong")).not.toHaveText("Ready");
+  await expect(progress).toContainText(/checking|preparing|verifying/i);
+  await expect(page.locator("#proposalReviewFiles .proposal-review-file-state").first()).toHaveText(/checking|preparing|verifying/i);
+  await expect.poll(() => page.evaluate(() => state.page)).toBe("proposal");
+
+  releaseReview();
+  await expect(page.locator("#proposalReviewNotice")).toContainText("Simulated delayed review preparation.");
+});
+
+test("@smoke Back cancels a delayed proposal opening and Forward starts one clean exact retry", async ({ page }) => {
+  const { origin } = fixture();
+  let releaseFirstReview;
+  let markFirstReviewStarted;
+  const firstReviewStarted = new Promise((resolve) => { markFirstReviewStarted = resolve; });
+  const holdFirstReview = new Promise((resolve) => { releaseFirstReview = resolve; });
+  let reviewPosts = 0;
+  await page.goto(origin + "/?hub=1&workspace=workspace-proposal-history&view=hub");
+  await waitForBoot(page);
+  const [proposal] = await replaceHubProposals(page, [{
+    id: "proposal:fixture:history",
+    branch: "proposal/demo/history",
+    repositoryId: "repository-history",
+    head: "a".repeat(40),
+    title: "Proposal history cancellation",
+    reviewStatus: "ready",
+  }]);
+  await page.route("**/api/context-hub/review", async (route) => {
+    reviewPosts += 1;
+    if (reviewPosts === 1) {
+      markFirstReviewStarted();
+      await holdFirstReview;
+    }
+    try {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Simulated delayed proposal opening.", code: "shared_review_delayed" }),
+      });
+    } catch {}
+  });
+
+  await page.locator('[data-context-room-review-entry="' + proposal.id + '"] [data-context-room-review]').click();
+  await firstReviewStarted;
+  await expect(page).toHaveURL((url) => (
+    url.searchParams.get("view") === "proposal"
+    && url.searchParams.get("proposal") === proposal.branch
+    && url.searchParams.get("repositoryId") === "repository-history"
+    && url.searchParams.get("proposalHead") === "a".repeat(40)
+  ));
+
+  await page.goBack();
+  await expect.poll(() => page.evaluate(() => ({
+    page: state.page,
+    busy: state.sharedContextBusy,
+    opening: state.contextRoomOpeningProposalId,
+    preparing: Boolean(state.contextRoomPreparingProposal),
+  }))).toEqual({ page: "hub", busy: false, opening: "", preparing: false });
+  await expect(page.locator('[data-context-room-review-entry="' + proposal.id + '"] [data-context-room-review]')).toBeFocused();
+  await expect(page.locator("#contextRoomReviewSearch")).toBeEnabled();
+  releaseFirstReview();
+  await page.waitForTimeout(100);
+  await expect.poll(() => page.evaluate(() => state.page)).toBe("hub");
+
+  await page.goForward();
+  await expect.poll(() => reviewPosts).toBe(2);
+  await expect(page.locator("#proposalReviewPage")).toBeVisible();
+  await expect(page.locator("#proposalReviewNotice")).toContainText("Simulated delayed proposal opening.");
+  await expect.poll(() => page.evaluate(() => ({
+    busy: state.sharedContextBusy,
+    opening: state.contextRoomOpeningProposalId,
+    branch: state.contextRoomPreparingProposal?.branch || "",
+  }))).toEqual({ busy: false, opening: "", branch: proposal.branch });
+});
+
+test("@smoke inline Back replaces proposal history, restores row focus, and never reopens on browser Back", async ({ page }) => {
+  const { origin } = fixture();
+  let reviewPosts = 0;
+  await page.goto(origin + "/?hub=1&workspace=workspace-proposal-inline-back&view=hub");
+  await waitForBoot(page);
+  const [proposal] = await replaceHubProposals(page, [{
+    id: "proposal:fixture:inline-back",
+    branch: "proposal/demo/inline-back",
+    repositoryId: "repository-inline-back",
+    head: "9".repeat(40),
+    title: "Inline proposal return",
+    reviewStatus: "ready",
+  }]);
+  await page.route("**/api/context-hub/review", async (route) => {
+    reviewPosts += 1;
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Simulated inline return failure.", code: "shared_review_temporarily_unavailable" }),
+    });
+  });
+
+  const row = page.locator('[data-context-room-review-entry="' + proposal.id + '"] [data-context-room-review]');
+  await row.click();
+  await expect.poll(() => reviewPosts).toBe(1);
+  await expect(page.locator("#proposalReviewNotice")).toContainText("Simulated inline return failure.");
+  await page.locator("#proposalReviewNotice").getByRole("button", { name: "Back to Hub" }).click();
+
+  await expect.poll(() => page.evaluate(() => state.page)).toBe("hub");
+  await expect(page).toHaveURL((url) => url.searchParams.get("view") === "hub" && !url.searchParams.has("proposal"));
+  await expect(row).toBeFocused();
+
+  await page.goBack();
+  await expect.poll(() => page.evaluate(() => state.page)).toBe("hub");
+  await page.waitForTimeout(100);
+  expect(reviewPosts).toBe(1);
+  await expect(page.locator("#proposalReviewPage")).toBeHidden();
+});
+
+test("@smoke dirty Cancel blocks proposal POST, URL change, and focus loss", async ({ page }) => {
+  const { origin } = fixture();
+  let reviewPosts = 0;
+  await page.goto(origin + "/?hub=1&workspace=workspace-proposal-dirty-cancel&view=hub");
+  await waitForBoot(page);
+  const [proposal] = await replaceHubProposals(page, [{
+    id: "proposal:fixture:dirty-cancel",
+    branch: "proposal/demo/dirty-cancel",
+    repositoryId: "repository-dirty",
+    head: "b".repeat(40),
+    title: "Dirty cancel proposal",
+    reviewStatus: "ready",
+  }]);
+  page.on("request", (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === "/api/context-hub/review") reviewPosts += 1;
+  });
+  const row = page.locator('[data-context-room-review-entry="' + proposal.id + '"] [data-context-room-review]');
+  const beforeUrl = page.url();
+  await page.evaluate(() => {
+    state.dirty = true;
+    window.confirm = () => false;
+  });
+  await row.click();
+  await page.waitForTimeout(100);
+
+  expect(reviewPosts).toBe(0);
+  await expect(page).toHaveURL(beforeUrl);
+  await expect(row).toBeFocused();
+  await expect.poll(() => page.evaluate(() => ({
+    page: state.page,
+    busy: state.sharedContextBusy,
+    opening: state.contextRoomOpeningProposalId,
+    preparing: Boolean(state.contextRoomPreparingProposal),
+    dirty: state.dirty,
+  }))).toEqual({ page: "hub", busy: false, opening: "", preparing: false, dirty: true });
+});
+
+test("@smoke exact proposal URLs disambiguate repositories and legacy URLs canonicalize", async ({ page }) => {
+  const { origin } = fixture();
+  const branch = "proposal/demo/same-branch";
+  const exactRequests = [];
+  await page.goto(origin + "/?hub=1&workspace=workspace-proposal-identity&view=hub");
+  await waitForBoot(page);
+  const proposals = await replaceHubProposals(page, [
+    { id: "proposal:fixture:repo-one", branch, repositoryId: "repository-one", head: "c".repeat(40), title: "Repository one", reviewStatus: "ready" },
+    { id: "proposal:fixture:repo-two", branch, repositoryId: "repository-two", head: "d".repeat(40), title: "Repository two", reviewStatus: "ready" },
+  ]);
+  await page.route("**/api/context-hub/review", async (route) => {
+    exactRequests.push(route.request().postDataJSON());
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Identity fixture stops before redirect.", code: "shared_review_delayed" }),
+    });
+  });
+
+  await page.locator('[data-context-room-review-entry="' + proposals[1].id + '"] [data-context-room-review]').click();
+  await expect.poll(() => exactRequests.length).toBe(1);
+  expect(exactRequests[0]).toMatchObject({ proposal: branch, repositoryId: "repository-two", expectedHead: "d".repeat(40) });
+  await expect(page).toHaveURL((url) => (
+    url.searchParams.get("repositoryId") === "repository-two"
+    && url.searchParams.get("proposalHead") === "d".repeat(40)
+  ));
+
+  await page.evaluate(() => {
+    goHub();
+    const only = contextHubReviewItems().find((item) => item.id === "proposal:fixture:repo-two");
+    state.contextHub = { ...state.contextHub, items: [only], proposals: [only] };
+    const legacy = new URL(window.location.href);
+    legacy.searchParams.set("view", "proposal");
+    legacy.searchParams.set("proposal", only.branch);
+    legacy.searchParams.delete("repositoryId");
+    legacy.searchParams.delete("proposalHead");
+    window.history.pushState(null, "", legacy);
+  });
+  await page.evaluate(() => applyWorkspaceUrlState({ reason: "legacy-proposal-test", force: true }));
+  await expect.poll(() => exactRequests.length).toBe(2);
+  await expect(page).toHaveURL((url) => (
+    url.searchParams.get("proposal") === branch
+    && url.searchParams.get("repositoryId") === "repository-two"
+    && url.searchParams.get("proposalHead") === "d".repeat(40)
+  ));
+});
+
+test("@smoke a stale exact proposal bookmark renders requested and current heads without opening a review", async ({ page }) => {
+  const { origin } = fixture();
+  let reviewPosts = 0;
+  const requestedHead = "6".repeat(40);
+  const currentHead = "7".repeat(40);
+  await page.goto(origin + "/?hub=1&workspace=workspace-stale-proposal-bookmark&view=hub");
+  await waitForBoot(page);
+  const [proposal] = await replaceHubProposals(page, [{
+    id: "proposal:fixture:stale-bookmark",
+    branch: "proposal/demo/stale-bookmark",
+    repositoryId: "repository-stale-bookmark",
+    head: currentHead,
+    title: "Stale proposal bookmark",
+    reviewStatus: "updated",
+  }]);
+  page.on("request", (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === "/api/context-hub/review") reviewPosts += 1;
+  });
+
+  await page.evaluate(async ({ branch, repositoryId, requested }) => {
+    const target = new URL(window.location.href);
+    target.searchParams.set("view", "proposal");
+    target.searchParams.set("proposal", branch);
+    target.searchParams.set("repositoryId", repositoryId);
+    target.searchParams.set("proposalHead", requested);
+    window.history.pushState(window.history.state, "", target);
+    await applyWorkspaceUrlState({ reason: "stale-proposal-bookmark-test", force: true });
+  }, { branch: proposal.branch, repositoryId: "repository-stale-bookmark", requested: requestedHead });
+
+  await expect(page.locator("#proposalReviewPage")).toBeVisible();
+  await expect(page.locator("#home")).toBeHidden();
+  await expect(page.locator("#proposalReviewNotice")).toContainText("Requested @" + requestedHead.slice(0, 12));
+  await expect(page.locator("#proposalReviewNotice")).toContainText("Current @" + currentHead.slice(0, 12));
+  await expect(page.locator("#proposalReviewNotice").getByRole("button", { name: "Refresh status" })).toBeVisible();
+  await expect(page.locator("#proposalReviewNotice").getByRole("button", { name: "Back to Hub" })).toBeVisible();
+  await expect(page.locator("#proposalReviewNotice").getByRole("button", { name: "Retry" })).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => ({
+    page: state.page,
+    phase: state.proposalOpenState.phase,
+    requested: state.proposalOpenState.details?.requestedProposalHead || "",
+    current: state.proposalOpenState.details?.currentProposalHead || "",
+  }))).toEqual({ page: "proposal", phase: "stale", requested: requestedHead, current: currentHead });
+  await expect(page).toHaveURL((url) => url.searchParams.get("proposalHead") === requestedHead);
+  expect(reviewPosts).toBe(0);
+});
+
+test("@smoke Select visible excludes non-openable proposals", async ({ page }) => {
+  const { origin } = fixture();
+  await page.goto(origin + "/?hub=1&workspace=workspace-select-visible-openable&view=hub");
+  await waitForBoot(page);
+  const ids = await page.evaluate(() => {
+    cancelBackgroundRefresh();
+    const source = contextHubReviewItems().find((item) => item.type === "shared");
+    if (!source) throw new Error("Missing shared proposal fixture");
+    const ready = { ...source, id: "proposal:fixture:select-ready", branch: "proposal/demo/select-ready", head: "e".repeat(40), reviewStatus: "ready", authorityViolation: null };
+    const secondReady = { ...source, id: "proposal:fixture:select-ready-two", branch: "proposal/demo/select-ready-two", head: "1".repeat(40), reviewStatus: "ready", authorityViolation: null };
+    const recovery = { ...source, id: "proposal:fixture:select-recovery", branch: "proposal/demo/select-recovery", head: "f".repeat(40), reviewStatus: "acceptance_recovery_required", authorityViolation: { kind: "acceptance_recovery_required" } };
+    state.contextHub = { ...state.contextHub, items: [ready, secondReady, recovery], proposals: [ready, secondReady, recovery] };
+    state.contextRoomSelectedReviews = new Set([ready.id]);
+    state.sharedProposalSearch = "";
+    state.contextHubSource = "all";
+    renderContextRoomGlobalReviewQueue();
+    return { ready: ready.id, secondReady: secondReady.id, recovery: recovery.id };
+  });
+
+  await page.getByRole("button", { name: "Select visible", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => [...state.contextRoomSelectedReviews].sort())).toEqual([ids.ready, ids.secondReady].sort());
+  await expect(page.locator('[data-context-room-review-entry="' + ids.recovery + '"] [data-context-room-review]')).toBeDisabled();
+});
+
 test("@smoke verified terminal rejection refreshes and returns to the Hub", async ({ page }) => {
   const { origin, projects } = fixture();
   const hubUrl = `${origin}/?hub=1&workspace=workspace-rejection&project=${projects.atlas.id}&view=hub`;
@@ -655,7 +1128,30 @@ test("@smoke verified terminal rejection refreshes and returns to the Hub", asyn
   reviewUrl.searchParams.set("returnTo", hubUrl);
   const rejectionBranch = "rejected/demo/terminal-action-0123456789ab";
   const flashToken = "r".repeat(32);
+  const challengeId = "reject-terminal-action-challenge";
+  const requestOrder = [];
+  await page.route("**/api/shared-context/reject-challenge", async (route) => {
+    requestOrder.push("challenge");
+    expect(route.request().postDataJSON()).toEqual({ expectedProposalHead: "0123456789abcdef0123456789abcdef01234567" });
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        challengeId,
+        authorityId: "authority-terminal-action",
+        proposal: "proposal/demo/terminal-action",
+        proposalHead: "0123456789abcdef0123456789abcdef01234567",
+        action: "reject",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      }),
+    });
+  });
   await page.route("**/api/shared-context/reject", async (route) => {
+    requestOrder.push("reject");
+    expect(route.request().postDataJSON()).toEqual({
+      expectedProposalHead: "0123456789abcdef0123456789abcdef01234567",
+      challengeId,
+    });
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -685,6 +1181,7 @@ test("@smoke verified terminal rejection refreshes and returns to the Hub", asyn
   await page.getByRole("button", { name: "Reject proposal", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Reject this proposal?" });
   await expect(dialog).toBeVisible();
+  expect(requestOrder).toEqual(["challenge"]);
   await dialog.getByRole("checkbox").check();
   await dialog.getByRole("button", { name: "Reject proposal", exact: true }).click();
 
@@ -693,6 +1190,59 @@ test("@smoke verified terminal rejection refreshes and returns to the Hub", asyn
   const toast = page.locator('[data-context-room-toast][role="status"]');
   await expect(toast).toContainText("Proposal rejected");
   await expect(toast).toContainText(rejectionBranch);
+  expect(requestOrder).toEqual(["challenge", "reject"]);
+});
+
+test("@smoke failed terminal rejection closes confirmation and retry obtains a fresh challenge", async ({ page }) => {
+  const { origin } = fixture();
+  const reviewUrl = origin + "/?hub=1&view=proposal&proposal=proposal%2Fdemo%2Fterminal-action";
+  let challengeCalls = 0;
+  let rejectCalls = 0;
+  const usedChallenges = [];
+  await page.route("**/api/shared-context/reject-challenge", async (route) => {
+    challengeCalls += 1;
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        challengeId: `rejection-retry-challenge-${challengeCalls}`,
+        authorityId: "authority-terminal-action",
+        proposal: "proposal/demo/terminal-action",
+        proposalHead: "0123456789abcdef0123456789abcdef01234567",
+        action: "reject",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      }),
+    });
+  });
+  await page.route("**/api/shared-context/reject", async (route) => {
+    rejectCalls += 1;
+    usedChallenges.push(route.request().postDataJSON().challengeId);
+    await route.fulfill({
+      status: 504,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Temporary rejection delivery failure.", code: "remote_request_rejected", retryable: true }),
+    });
+  });
+
+  await page.goto(reviewUrl);
+  await waitForBoot(page);
+  await showTerminalProposal(page);
+  await page.getByRole("button", { name: "Reject proposal", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Reject this proposal?" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("checkbox").check();
+  await dialog.getByRole("button", { name: "Reject proposal", exact: true }).click();
+
+  await expect(dialog).toBeHidden();
+  await expect(page).toHaveURL((url) => url.searchParams.get("view") === "proposal");
+  const errorToast = page.locator('[data-context-room-toast][role="alert"]');
+  await expect(errorToast).toContainText("Temporary rejection delivery failure.");
+  expect(usedChallenges).toEqual(["rejection-retry-challenge-1"]);
+
+  await errorToast.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect.poll(() => challengeCalls).toBe(2);
+  await expect(page.getByRole("dialog", { name: "Reject this proposal?" })).toBeVisible();
+  expect(rejectCalls).toBe(1);
 });
 
 test("@smoke a reviewed proposal row explains selection and can return to review", async ({ page }, testInfo) => {
@@ -1415,8 +1965,27 @@ test("@smoke verified rejection carries its one-shot success toast across Hub po
 
     const rejectionBranch = "rejected/demo/cross-port-rejection-0123456789ab";
     const flashToken = "j".repeat(32);
+    const challengeId = "cross-port-rejection-challenge";
     let flashConsumeCalls = 0;
+    await page.route("**/api/shared-context/reject-challenge", async (route) => {
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({
+          challengeId,
+          authorityId: "authority-terminal-action",
+          proposal,
+          proposalHead: "0123456789abcdef0123456789abcdef01234567",
+          action: "reject",
+          expiresAt: "2099-01-01T00:00:00.000Z",
+        }),
+      });
+    });
     await page.route("**/api/shared-context/reject", async (route) => {
+      expect(route.request().postDataJSON()).toEqual({
+        expectedProposalHead: "0123456789abcdef0123456789abcdef01234567",
+        challengeId,
+      });
       await route.fulfill({
         status: 200,
         contentType: "application/json",

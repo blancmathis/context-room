@@ -33,16 +33,27 @@ stateDiagram-v2
     Published --> LocalDraft: resume and edit
     Published --> ReviewReady: materialize exact head
     ReviewReady --> ReviewReady: decide file deltas
-    ReviewReady --> Accepted: human accept + verified delivery
+    ReviewReady --> Merged: human accept + verified delivery
     Published --> Rejected: human reject + verified archive
     ReviewReady --> Rejected: human reject + verified archive
     Published --> Conflict: rebase or main conflict
     ReviewReady --> Stale: head, config, resource or dependency changed
     Conflict --> LocalDraft: resolve and republish
     Stale --> ReviewReady: rematerialize
-    Accepted --> [*]
+    Merged --> [*]
     Rejected --> [*]
 ```
+
+## Hub projection
+
+| Projection state | Class | Required behavior |
+| --- | --- | --- |
+| `ready`, `in_review`, `updated` | Active | Visible and openable. `updated` requires exact rematerialization; prior review evidence is not reused for a changed head. |
+| `accepted` | Attention | An acceptance is recorded but exact accepted-main reconciliation is not established in the current snapshot. Visible, non-openable, and not yet accepted truth. |
+| `acceptance_recovery_required` and other recovery states | Attention | Authority or delivery evidence is incomplete, inconsistent, or requires explicit recovery. Visible and non-openable as an active review. |
+| `merged`, `rejected` | Reconciled terminal | Absent from the active proposal list. Branch, archive, and decision evidence remain available through history or recovery surfaces. |
+
+Attention states never fall back to active review materialization. They remain explicit until current remote facts and human-owned authority are reconciled.
 
 ## Create and resume
 
@@ -63,6 +74,12 @@ A stale head, unsupported atomic push, conflict, scope violation, timeout, or un
 ## Review materialization
 
 Materialization binds repository, branch, exact head, reviewed base, changed files, safe modes, resource versions, and direct dependency versions. Each human file decision records exact current evidence. Changed content, mode, resource, dependency, or head invalidates stale evidence.
+
+An existing materialization may be reused only when repository, branch, exact head, and accepted-main revision all match the requested snapshot. A missing, stale, or mismatched field blocks reuse and requires current exact materialization. Cache reuse never converts an attention or terminal projection back into an active review.
+
+## Terminal revalidation
+
+Cached listing or materialization state never authorizes a terminal action. Every accept or reject attempt revalidates current repository state, branch, exact head, accepted-main revision, terminal configuration, and human authority before mutation.
 
 ## Accept
 

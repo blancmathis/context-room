@@ -193,6 +193,59 @@ test("Context Hub keyboard navigation focuses the rerendered current card", () =
   assert.equal(buttons[1].focusCount, 1);
 });
 
+test("proposal return focus prefers an actionable review row and falls back to the visible Hub heading", () => {
+  const script = inlineAppScript(renderAppHtml());
+  const focusSource = sourceBetween(script, "function focusContextRoomHubReturnTarget", "function focusProposalReviewSurface");
+  class MockElement {
+    constructor({ disabled = false } = {}) {
+      this.disabled = disabled;
+      this.hidden = false;
+      this.focusCount = 0;
+      this.attributes = new Map();
+    }
+    getClientRects() { return [{}]; }
+    closest() { return null; }
+    getAttribute(name) { return this.attributes.get(name) || null; }
+    hasAttribute(name) { return this.attributes.has(name); }
+    focus() { this.focusCount += 1; }
+    set tabIndex(value) { this.attributes.set("tabindex", String(value)); }
+  }
+  const row = new MockElement();
+  const heading = new MockElement();
+  const document = {
+    querySelector(selector) {
+      assert.match(selector, /data-context-room-review-entry="proposal-id"/);
+      return row;
+    },
+    querySelectorAll() { return []; },
+  };
+  const focusContextRoomHubReturnTarget = Function(
+    "window",
+    "document",
+    "HTMLElement",
+    "CSS",
+    "el",
+    focusSource + "; return focusContextRoomHubReturnTarget;",
+  )(
+    { requestAnimationFrame: (callback) => callback() },
+    document,
+    MockElement,
+    { escape: (value) => value },
+    (id) => id === "reviewQueueHeading" ? heading : null,
+  );
+
+  focusContextRoomHubReturnTarget("proposal-id");
+  assert.equal(row.focusCount, 1);
+  assert.equal(heading.focusCount, 0);
+
+  row.disabled = true;
+  focusContextRoomHubReturnTarget("proposal-id");
+  assert.equal(row.focusCount, 1);
+  assert.equal(heading.focusCount, 1);
+  assert.equal(heading.attributes.get("tabindex"), "-1");
+  assert.match(script, /function returnFromProposalToHub\(\) \{\s*goHub\(\{ replaceProposalHistory: true, restoreProposalFocus: true \}\);\s*\}/);
+});
+
 test("local Shared recovery is explicit, accessible, and honest about abandonment effects", () => {
   const html = renderAppHtml();
   const script = inlineAppScript(html);
@@ -422,6 +475,8 @@ test("Settings drafts and modal boundaries survive asynchronous UI work", () => 
   const creationHandlersSource = sourceBetween(script, "function showContextHubCreateProjectDialog", "function showHumanReviewDecisionDialog");
   assert.match(confirmSource, /state\.activeModalClose\?\.\(\{ restoreFocus: false \}\)/);
   assert.match(confirmSource, /releaseBackgroundIsolation = isolateContextRoomModalBackground\(backdrop\)/);
+  assert.match(confirmSource, /if \(checkbox\) checkbox\.checked = false;\s*setBusy\(false\)/);
+  assert.match(confirmSource, /\(checkbox \|\| confirmButton\)\.focus\(\)/);
   assert.doesNotMatch(confirmSource, /querySelector\("\.confirm-backdrop"\)\?\.remove/);
   assert.match(creationSource, /requestController = new AbortController\(\)/);
   assert.match(creationSource, /onSubmit\(values, \{ signal: requestController\.signal, isCurrent \}\)/);

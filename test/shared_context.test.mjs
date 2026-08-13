@@ -224,14 +224,15 @@ test("shared proposal review keeps navigation and explicit completion in the pro
   assert.doesNotMatch(html, /target\.searchParams\.set\("file", firstReviewFile\)/);
   assert.match(html, /function contextRoomProposalFileUrl\(url, filePath\)/);
   assert.match(html, /state\.contextRoomPreparedReview = result/);
-  assert.match(html, /if \(queuedFile\) \{[\s\S]*?assignWorkspaceLocation\(contextRoomProposalFileUrl\(result\.url, queuedFile\)\);[\s\S]*?return;[\s\S]*?\}[\s\S]*?assignWorkspaceLocation\(contextRoomProposalReviewUrl\(result\.url\)\);/);
+  assert.match(html, /if \(queuedFile\) \{[\s\S]*?assignWorkspaceLocation\(contextRoomProposalFileUrl\(result\.url, queuedFile\)\);[\s\S]*?return true;[\s\S]*?\}[\s\S]*?assignWorkspaceLocation\(contextRoomProposalReviewUrl\(result\.url\)\);/);
   assert.match(html, /assignWorkspaceLocation\(contextRoomProposalFileUrl\(prepared\.url, filePath\)\)/);
   assert.match(html, /const requestedReviewFile = initialQuery\?\.get\("file"\) \|\| ""/);
   assert.match(html, /state\.sharedContext\?\.mode === "review"\) \{\s*showProposalReview\(\)/);
   assert.match(html, /expectedHead: item\.head \|\| undefined/);
   assert.match(html, /state\.contextRoomOpeningProposalId = item\.id \|\| sharedProposalKey\(item\)/);
   assert.match(html, /Opening review…/);
-  assert.match(html, /Choose a file to begin reviewing · exact review preparing in background/);
+  assert.match(html, /Checking exact head, accepted main, and review authority…/);
+  assert.match(html, /<strong>Verifying<\/strong>/);
   assert.doesNotMatch(html, /Preparing exact review…/);
   assert.match(html, /const pendingPaths = new Set\(state\.docqa\?\.pendingPaths/);
   assert.match(html, /const reviewedPaths = new Set\(state\.docqa\?\.reviewedPaths/);
@@ -260,6 +261,7 @@ test("shared proposal review keeps navigation and explicit completion in the pro
   assert.match(html, /function requestSharedProposalAcceptance/);
   assert.match(html, /function requestSharedProposalRejection/);
   assert.match(html, /\/api\/shared-context\/accept/);
+  assert.match(html, /\/api\/shared-context\/reject-challenge/);
   assert.match(html, /\/api\/shared-context\/reject/);
   assert.doesNotMatch(html, /class="proposal-review-file-select"/);
   assert.doesNotMatch(html, /type="checkbox" data-proposal-review-select/);
@@ -269,7 +271,7 @@ test("shared proposal review keeps navigation and explicit completion in the pro
   assert.match(html, /PROPOSAL_REVIEW_LONG_PRESS_MS/);
   assert.match(html, /function contextRoomProposalSelectionUrl\(url, filePath\)/);
   assert.match(html, /Review status is still loading\. Try again when the row shows Review\./);
-  assert.match(html, /reviewStateLoading \? "Checking…"/);
+  assert.match(html, /reviewStateLoading \? "Verifying…"/);
   assert.doesNotMatch(html, /"Selecting…"/);
   assert.doesNotMatch(html, /state\.contextRoomQueuedProposalSelection = filePath/);
   assert.doesNotMatch(html, /entry\.selectable \|\| preparing \? " Right-click or press and hold to select\."/);
@@ -300,9 +302,10 @@ test("shared proposal review keeps navigation and explicit completion in the pro
 test("recoverable proposal authority warnings stay inspectable without enabling acceptance", () => {
   const html = renderAppHtml();
 
-  assert.match(html, /const unavailable = item\.available === false/);
-  assert.match(html, /const recoverableAuthority = \["unverified_rejection", "rejection_archive_missing"\]\.includes\(item\.reviewStatus\)/);
-  assert.match(html, /if \(item\.authorityViolation && !recoverableAuthority\)/);
+  assert.match(html, /function contextRoomProposalIsOpenable\(item\)/);
+  assert.match(html, /filter\(\(item\) => contextRoomProposalIsOpenable\(\{ \.\.\.item, type: "shared" \}\)\)/);
+  assert.match(html, /function contextRoomProposalBlockedState\(item\)/);
+  assert.match(html, /contextRoomProposalBlockedState\(item\)\?\.phase === "recovery_required"\) return \{ key: "critical", label: "Recovery required" \}/);
   assert.match(html, /state\.proposalAuthorityStatus/);
   assert.match(html, /acceptButton\.hidden = !actionable \|\| queueCount > 0 \|\| Boolean\(state\.proposalAuthorityStatus\)/);
   assert.match(html, /state\.proposalAuthorityMessage/);
@@ -723,6 +726,63 @@ function stallGitCommand(t, fixture, command) {
     process.env.PATH = previousPath;
   };
   process.env.PATH = `${fakeBin}:${previousPath}`;
+  t.after(restore);
+  return restore;
+}
+
+function traceGitCommands(t, fixture) {
+  const realGit = String(execFileSync("which", ["git"], { encoding: "utf8" })).trim();
+  const fakeBin = path.join(fixture.base, `fake-git-trace-${Date.now()}`);
+  const fakeGit = path.join(fakeBin, "git");
+  const tracePath = path.join(fakeBin, "commands.jsonl");
+  fs.mkdirSync(fakeBin, { recursive: true });
+  fs.writeFileSync(fakeGit, `#!/usr/bin/env node
+const fs = require("node:fs");
+const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.CONTEXT_ROOM_TEST_GIT_TRACE, JSON.stringify(args) + "\\n");
+const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: ["inherit", "inherit", "inherit"] });
+if (result.error) {
+  process.stderr.write(String(result.error.message || result.error) + "\\n");
+  process.exit(127);
+}
+process.exit(Number.isInteger(result.status) ? result.status : 1);
+`, "utf8");
+  fs.chmodSync(fakeGit, 0o755);
+  const previousPath = process.env.PATH;
+  const previousTrace = process.env.CONTEXT_ROOM_TEST_GIT_TRACE;
+  process.env.PATH = `${fakeBin}${path.delimiter}${previousPath}`;
+  process.env.CONTEXT_ROOM_TEST_GIT_TRACE = tracePath;
+  const restore = () => {
+    process.env.PATH = previousPath;
+    if (previousTrace === undefined) delete process.env.CONTEXT_ROOM_TEST_GIT_TRACE;
+    else process.env.CONTEXT_ROOM_TEST_GIT_TRACE = previousTrace;
+  };
+  t.after(restore);
+  return {
+    read() {
+      return fs.readFileSync(tracePath, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    },
+    restore,
+  };
+}
+
+function failGitMergeTree(t, fixture) {
+  const realGit = String(execFileSync("which", ["git"], { encoding: "utf8" })).trim();
+  const fakeBin = path.join(fixture.base, `fake-git-merge-tree-${Date.now()}`);
+  const fakeGit = path.join(fakeBin, "git");
+  fs.mkdirSync(fakeBin, { recursive: true });
+  fs.writeFileSync(fakeGit, `#!/bin/sh
+if [ "$1" = "merge-tree" ]; then
+  printf '%s\n' 'controlled merge-tree failure' >&2
+  exit 2
+fi
+exec ${JSON.stringify(realGit)} "$@"
+`, "utf8");
+  fs.chmodSync(fakeGit, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${fakeBin}${path.delimiter}${previousPath}`;
+  const restore = () => { process.env.PATH = previousPath; };
   t.after(restore);
   return restore;
 }
@@ -1619,6 +1679,69 @@ test("shared main trailers remain historical evidence without authorizing comple
   const historical = accepted.find((item) => item.proposal === "proposal/demo/elsewhere" && item.proposalHead === proposalHead);
   assert.ok(historical, "trailer evidence remains inspectable for historical reconciliation");
   assert.equal(historical.merged, false, "trailers alone must not authorize a merged classification");
+});
+
+test("shared main acceptance indexing scans first-parent trailers once without per-commit diff work", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  const proposal = "proposal/demo/trailer-index";
+  const olderHead = "a".repeat(40);
+  const latestHead = "b".repeat(40);
+  git(fixture.seed, [
+    "commit",
+    "--allow-empty",
+    "-m",
+    `Older candidate\n\nContext-Room-Proposal: ${proposal}\nContext-Room-Proposal-Head: ${olderHead}\nContext-Room-Project: demo\nContext-Room-Session: older-session`,
+  ]);
+  git(fixture.seed, [
+    "commit",
+    "--allow-empty",
+    "-m",
+    "Ignore incomplete acceptance\n\nContext-Room-Proposal: proposal/demo/incomplete",
+  ]);
+  git(fixture.seed, [
+    "commit",
+    "--allow-empty",
+    "-m",
+    `Ignore invalid acceptance metadata\n\nContext-Room-Proposal: proposal/demo/invalid-project\nContext-Room-Proposal-Head: ${"c".repeat(40)}\nContext-Room-Project: invalid_project`,
+  ]);
+  git(fixture.seed, [
+    "commit",
+    "--allow-empty",
+    "-m",
+    `Latest candidate\n\nContext-Room-Proposal: ${proposal}\nContext-Room-Proposal-Head: ${latestHead}\nContext-Room-Project: demo\nContext-Room-Session: latest-session`,
+  ]);
+  git(fixture.seed, ["push", "origin", "main"]);
+  readSharedMainRevision(fixture.remote, { refresh: true });
+
+  const traced = traceGitCommands(t, fixture);
+  const acceptances = listSharedMainAcceptances(fixture.remote, { refresh: false });
+  traced.restore();
+
+  const indexed = acceptances.find((item) => item.proposal === proposal);
+  assert.ok(indexed);
+  assert.equal(indexed.proposalHead, latestHead, "newest first-parent candidate remains the branch-level result");
+  assert.equal(indexed.sessionId, "latest-session");
+  assert.equal(acceptances.some((item) => item.proposal === "proposal/demo/incomplete"), false);
+  assert.equal(acceptances.some((item) => item.proposal === "proposal/demo/invalid-project"), false);
+
+  const commands = traced.read();
+  const trailerHistoryScans = commands.filter((args) => (
+    args[0] === "log"
+    && args.includes("--first-parent")
+    && args.some((arg) => arg.includes("%(trailers:only)"))
+  ));
+  const legacyHistoryScans = commands.filter((args) => args[0] === "rev-list" && args.includes("--first-parent"));
+  const perCommitDiffs = commands.filter((args) => args[0] === "diff" && args[1] === "--name-only" && args[2] === "-z");
+  const perCommitMetadata = commands.filter((args) => (
+    args[0] === "show"
+    && args[1] === "-s"
+    && args.some((arg) => arg.startsWith("--format=%cI%x00%an%x00%ae%x00%s"))
+  ));
+  assert.equal(trailerHistoryScans.length, 1, "candidate history is read by one trailer-only first-parent scan");
+  assert.equal(legacyHistoryScans.length, 0, "candidate indexing no longer enumerates commits for individual inspection");
+  assert.equal(perCommitDiffs.length, 1, "only the current main snapshot is diffed; history candidates are not");
+  assert.equal(perCommitMetadata.length, 1, "only the current main snapshot is materialized; history candidates are not");
 });
 
 test("matching main trailers never hide a proposal when the commit contains an unreviewed extra change", (t) => {
@@ -5355,6 +5478,31 @@ test("an unsigned exact acceptance candidate on main blocks rejection until acce
   git(fixture.seed, ["add", "projects/demo/docs/README.md"]);
   git(fixture.seed, ["commit", "-m", acceptedProposalCommitMessage(review.metadata, "Exact acceptance awaiting recovery")]);
   const acceptedCommit = git(fixture.seed, ["rev-parse", "HEAD"]);
+  git(fixture.seed, ["push", "origin", "main"]);
+
+  const recoveryRequired = listSharedRepositoryProposals(fixture.remote, { allowOffline: false }).proposals
+    .find((item) => item.branch === proposal.branch);
+  assert.ok(recoveryRequired, "an unsigned exact acceptance must remain visible for explicit recovery");
+  assert.equal(recoveryRequired.reviewStatus, "acceptance_recovery_required");
+  assert.equal(recoveryRequired.authorityViolation, true);
+  assert.equal(recoveryRequired.acceptedCommit, acceptedCommit);
+  assert.match(recoveryRequired.authorityMessage, /acceptance commit on shared main/i);
+  assert.notEqual(recoveryRequired.reviewStatus, "merged");
+  assert.throws(
+    () => materializeSharedRepositoryReview(fixture.remote, {
+      proposal: proposal.branch,
+      expectedHead: published.head,
+    }),
+    (error) => error?.code === "shared-proposal-terminal"
+      && error?.statusCode === 409
+      && error?.details?.proposal === proposal.branch
+      && error?.details?.proposalHead === published.head
+      && error?.details?.reviewStatus === "acceptance_recovery_required"
+      && error?.details?.authorityViolation === true
+      && error?.details?.acceptedCommit === acceptedCommit
+      && /acceptance authority receipt/i.test(error?.details?.authorityMessage || ""),
+  );
+
   const newerProposalHead = git(fixture.seed, ["rev-parse", `${acceptedCommit}^`]);
   git(fixture.seed, [
     "commit",
@@ -5363,6 +5511,15 @@ test("an unsigned exact acceptance candidate on main blocks rejection until acce
     `Later acceptance for the reused proposal name\n\nContext-Room-Proposal: ${proposal.branch}\nContext-Room-Proposal-Head: ${newerProposalHead}\nContext-Room-Project: demo`,
   ]);
   git(fixture.seed, ["push", "origin", "main"]);
+
+  const recoveryAfterNewerCandidate = listSharedRepositoryProposals(fixture.remote, { allowOffline: false }).proposals
+    .find((item) => item.branch === proposal.branch);
+  assert.ok(recoveryAfterNewerCandidate, "an exact older acceptance candidate must not be hidden by a newer candidate for another head");
+  assert.equal(recoveryAfterNewerCandidate.reviewStatus, "acceptance_recovery_required");
+  assert.equal(recoveryAfterNewerCandidate.acceptedCommit, acceptedCommit);
+  const latestHistoricalAcceptance = listSharedMainAcceptances(fixture.remote, { refresh: true })
+    .find((item) => item.proposal === proposal.branch);
+  assert.equal(latestHistoricalAcceptance.proposalHead, newerProposalHead, "historical listing keeps its latest-per-branch contract");
 
   const stateBranch = `context-room-state/${createHash("sha256").update(proposal.branch).digest("hex")}`;
   git(fixture.seed, ["push", "origin", "--delete", stateBranch]);
@@ -5439,6 +5596,291 @@ test("an unsigned exact acceptance candidate on main blocks rejection until acce
     (error) => error?.code === "shared-proposal-terminal"
       && error?.details?.reviewStatus === "accepted",
   );
+});
+
+test("verified rejection plus an exact shared-main acceptance remains visible as terminal authority conflict", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Expose contradictory terminal evidence",
+    branch: "proposal/demo/expose-terminal-conflict",
+  });
+  configureGit(proposal.root);
+  const acceptedContent = "# Demo\n\nThe same exact revision was rejected and later copied to main.\n";
+  writeFile(proposal.root, "projects/demo/docs/README.md", acceptedContent);
+  const published = publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  const rejected = rejectSharedRepositoryProposal(fixture.remote, {
+    proposal: proposal.branch,
+    expectedHead: published.head,
+    actor: "rejecting-owner",
+  });
+
+  writeFile(fixture.seed, "projects/demo/docs/README.md", acceptedContent);
+  git(fixture.seed, ["add", "projects/demo/docs/README.md"]);
+  git(fixture.seed, ["commit", "-m", acceptedProposalCommitMessage(review.metadata, "Contradictory acceptance candidate")]);
+  const acceptedCommit = git(fixture.seed, ["rev-parse", "HEAD"]);
+  git(fixture.seed, ["push", "origin", "main"]);
+
+  const conflicted = listSharedRepositoryProposals(fixture.remote, { allowOffline: false }).proposals
+    .find((item) => item.branch === proposal.branch);
+  assert.ok(conflicted, "contradictory terminal evidence must never disappear from the recovery surface");
+  assert.equal(conflicted.reviewStatus, "terminal_conflict_recovery_required");
+  assert.equal(conflicted.authorityViolation, true);
+  assert.equal(conflicted.acceptedCommit, acceptedCommit);
+  assert.equal(conflicted.rejectionBranch, rejected.rejectionBranch);
+  assert.equal(conflicted.rejectionArchiveHead, published.head);
+  assert.match(conflicted.authorityMessage, /verified human rejection.*acceptance commit/i);
+  assert.throws(
+    () => materializeSharedRepositoryReview(fixture.remote, {
+      proposal: proposal.branch,
+      expectedHead: published.head,
+    }),
+    (error) => error?.code === "shared-proposal-terminal"
+      && error?.statusCode === 409
+      && error?.details?.reviewStatus === "terminal_conflict_recovery_required"
+      && error?.details?.acceptedCommit === acceptedCommit
+      && error?.details?.rejectionBranch === rejected.rejectionBranch,
+  );
+});
+
+test("proposal changes already integrated on main without acceptance evidence require external merge recovery", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Recover external integration",
+    branch: "proposal/demo/recover-external-integration",
+    sessionId: "session-external-merge-recovery",
+  });
+  configureGit(proposal.root);
+  const integratedContent = "# Demo\n\nIntegrated outside the Context Room acceptance path.\n";
+  writeFile(proposal.root, "projects/demo/docs/README.md", integratedContent);
+  const published = publishSharedProposal(fixture.project, { proposal: proposal.branch });
+
+  writeFile(fixture.seed, "projects/demo/docs/README.md", integratedContent);
+  git(fixture.seed, ["add", "projects/demo/docs/README.md"]);
+  git(fixture.seed, ["commit", "-m", "Integrate proposal content outside Context Room"]);
+  const integratedAtRevision = git(fixture.seed, ["rev-parse", "HEAD"]);
+  assert.notEqual(integratedAtRevision, published.head, "the recovery gate must not rely on proposal-head ancestry");
+  git(fixture.seed, ["push", "origin", "main"]);
+
+  const recovery = listSharedRepositoryProposals(fixture.remote, { allowOffline: false }).proposals
+    .find((item) => item.branch === proposal.branch);
+  assert.ok(recovery, "external integration must remain visible for authority recovery");
+  assert.equal(recovery.reviewStatus, "external_merge_recovery_required");
+  assert.equal(recovery.authorityViolation, true);
+  assert.equal(recovery.integratedAtRevision, integratedAtRevision);
+  assert.deepEqual(recovery.files, ["projects/demo/docs/README.md"]);
+  assert.match(recovery.authorityMessage, /already present on shared main/i);
+  const authorityHome = path.join(process.env.CONTEXT_ROOM_SHARED_HOME, "review-authority");
+  const authorityBeforeReject = inspectOwnerProposalDecisions(fixture.remote, { authorityHome });
+  const stateBranch = `context-room-state/${createHash("sha256").update(proposal.branch).digest("hex")}`;
+  const rejectionBranch = `rejected/demo/recover-external-integration-${published.head.slice(0, 12)}`;
+  const refsBeforeReject = new Map([
+    ["main", git(fixture.seed, ["ls-remote", "--heads", "origin", "main"])],
+    [proposal.branch, git(fixture.seed, ["ls-remote", "--heads", "origin", proposal.branch])],
+    [stateBranch, git(fixture.seed, ["ls-remote", "--heads", "origin", stateBranch])],
+    [rejectionBranch, git(fixture.seed, ["ls-remote", "--heads", "origin", rejectionBranch])],
+  ]);
+  assert.throws(
+    () => rejectSharedRepositoryProposal(fixture.remote, {
+      proposal: proposal.branch,
+      expectedHead: published.head,
+    }),
+    (error) => error?.code === "shared-proposal-terminal"
+      && error?.statusCode === 409
+      && error?.details?.reviewStatus === "external_merge_recovery_required"
+      && error?.details?.integratedAtRevision === integratedAtRevision,
+  );
+  for (const [ref, before] of refsBeforeReject) {
+    assert.equal(git(fixture.seed, ["ls-remote", "--heads", "origin", ref]), before, `${ref} must remain unchanged`);
+  }
+  assert.deepEqual(
+    inspectOwnerProposalDecisions(fixture.remote, { authorityHome }),
+    authorityBeforeReject,
+    "a blocked recovery rejection must not create or rewrite owner authority",
+  );
+  const freshSessionDraft = ensureSharedProposal(fixture.project, {
+    title: "Continue after external merge recovery",
+    description: "Use a new proposal identity instead of resuming the authority-recovery proposal.",
+    sessionId: "session-external-merge-recovery",
+  });
+  assert.equal(freshSessionDraft.reused, false);
+  assert.notEqual(freshSessionDraft.branch, proposal.branch);
+  writeFile(proposal.root, "projects/demo/docs/README.md", `${integratedContent}\nAttempted recovery bypass.\n`);
+  const localHeadBeforeBypass = git(proposal.root, ["rev-parse", "HEAD"]);
+  assert.throws(
+    () => openSharedRepositoryProposalWorkspace(fixture.remote, {
+      proposal: proposal.branch,
+      expectedHead: published.head,
+    }),
+    (error) => error?.code === "shared-proposal-terminal"
+      && error?.statusCode === 409
+      && error?.details?.reviewStatus === "external_merge_recovery_required",
+  );
+  assert.throws(
+    () => publishSharedProposal(fixture.project, {
+      proposal: proposal.branch,
+      expectedHead: published.head,
+      description: "Do not republish a proposal while external merge authority is unresolved.",
+    }),
+    (error) => error?.code === "shared-proposal-terminal"
+      && error?.statusCode === 409
+      && error?.details?.reviewStatus === "external_merge_recovery_required"
+      && error?.details?.integratedAtRevision === integratedAtRevision,
+  );
+  assert.equal(git(proposal.root, ["rev-parse", "HEAD"]), localHeadBeforeBypass);
+  assert.match(git(proposal.root, ["status", "--porcelain=v1"]), /projects\/demo\/docs\/README\.md/);
+  assert.equal(git(fixture.seed, ["ls-remote", "--heads", "origin", proposal.branch]).split(/\s+/)[0], published.head);
+  assert.deepEqual(
+    resolveSharedSessionProposals(fixture.project, { sessionId: "session-external-merge-recovery" }).proposals,
+    [],
+    "terminal and recovery projections must never leak into the agent session overlay",
+  );
+  assert.throws(
+    () => materializeSharedRepositoryReview(fixture.remote, {
+      proposal: proposal.branch,
+      expectedHead: published.head,
+    }),
+    (error) => error?.code === "shared-proposal-terminal"
+      && error?.statusCode === 409
+      && error?.details?.reviewStatus === "external_merge_recovery_required"
+      && error?.details?.integratedAtRevision === integratedAtRevision,
+  );
+});
+
+for (const baseVariant of ["missing", "forged"]) {
+  test(`a ${baseVariant} proposal base still runs the conflict check and blocks materialization`, (t) => {
+    const fixture = makeFixture();
+    withSharedHome(t, fixture);
+    connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+    const proposal = createSharedProposal(fixture.project, {
+      title: `Conflict with ${baseVariant} base`,
+      branch: `proposal/demo/conflict-${baseVariant}-base`,
+    });
+    configureGit(proposal.root);
+    writeFile(proposal.root, "projects/demo/docs/README.md", `# Demo\n\nProposal with ${baseVariant} base.\n`);
+    publishSharedProposal(fixture.project, { proposal: proposal.branch });
+
+    const malformedBaseTrailer = baseVariant === "forged"
+      ? `\nContext-Room-Base: ${"f".repeat(40)}`
+      : "";
+    git(proposal.root, [
+      "commit",
+      "--amend",
+      "-m",
+      `Conflict with ${baseVariant} base\n\nContext-Room-Title: Conflict with ${baseVariant} base\nContext-Room-Project: demo${malformedBaseTrailer}`,
+    ]);
+    const exactHead = git(proposal.root, ["rev-parse", "HEAD"]);
+    const stateBranch = `context-room-state/${createHash("sha256").update(proposal.branch).digest("hex")}`;
+    git(proposal.root, [
+      "push",
+      "--force",
+      "origin",
+      `HEAD:refs/heads/${proposal.branch}`,
+      `HEAD:refs/heads/${stateBranch}`,
+    ]);
+
+    writeFile(fixture.seed, "projects/demo/docs/README.md", `# Demo\n\nConflicting main for ${baseVariant} base.\n`);
+    git(fixture.seed, ["add", "projects/demo/docs/README.md"]);
+    git(fixture.seed, ["commit", "-m", `Advance main against ${baseVariant} base proposal`]);
+    git(fixture.seed, ["push", "origin", "main"]);
+
+    const conflicted = listSharedRepositoryProposals(fixture.remote, { allowOffline: false }).proposals
+      .find((item) => item.branch === proposal.branch);
+    assert.ok(conflicted);
+    assert.equal(conflicted.head, exactHead);
+    assert.equal(conflicted.hasConflict, true);
+    assert.equal(conflicted.conflictCheckStatus, "conflict");
+    const reviewsRoot = path.join(process.env.CONTEXT_ROOM_SHARED_HOME, "repositories");
+    const reviewsBefore = fs.existsSync(reviewsRoot)
+      ? fs.readdirSync(reviewsRoot, { recursive: true }).filter((entry) => String(entry).includes("reviews/"))
+      : [];
+    assert.throws(
+      () => materializeSharedRepositoryReview(fixture.remote, {
+        proposal: proposal.branch,
+        expectedHead: exactHead,
+      }),
+      (error) => error?.code === "shared-proposal-conflict"
+        && error?.statusCode === 409
+        && error?.details?.proposalHead === exactHead,
+    );
+    const reviewsAfter = fs.existsSync(reviewsRoot)
+      ? fs.readdirSync(reviewsRoot, { recursive: true }).filter((entry) => String(entry).includes("reviews/"))
+      : [];
+    assert.deepEqual(reviewsAfter, reviewsBefore, "conflict detection must stop before creating a review worktree");
+  });
+}
+
+test("an indeterminate merge-tree check is a non-openable recovery state", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Fail closed when conflict status is unknown",
+    branch: "proposal/demo/conflict-check-unknown",
+    sessionId: "session-conflict-check-unknown",
+  });
+  configureGit(proposal.root);
+  writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nProposal awaiting a reliable conflict check.\n");
+  const published = publishSharedProposal(fixture.project, { proposal: proposal.branch });
+
+  writeFile(fixture.seed, "projects/demo/docs/MAIN-ADVANCE.md", "# Main advance\n");
+  git(fixture.seed, ["add", "projects/demo/docs/MAIN-ADVANCE.md"]);
+  git(fixture.seed, ["commit", "-m", "Advance shared main independently"]);
+  git(fixture.seed, ["push", "origin", "main"]);
+
+  const restoreGit = failGitMergeTree(t, fixture);
+  const unknown = listSharedRepositoryProposals(fixture.remote, { allowOffline: false }).proposals
+    .find((item) => item.branch === proposal.branch);
+  assert.ok(unknown);
+  assert.equal(unknown.reviewStatus, "conflict_check_recovery_required");
+  assert.equal(unknown.authorityViolation, true);
+  assert.equal(unknown.conflictCheckStatus, "unknown");
+  assert.equal(unknown.hasConflict, null);
+  assert.match(unknown.authorityMessage, /could not determine whether this proposal conflicts/i);
+  assert.deepEqual(
+    resolveSharedSessionProposals(fixture.project, { sessionId: "session-conflict-check-unknown" }).proposals,
+    [],
+    "an unknown conflict result must never be treated as a conflict-free session proposal",
+  );
+
+  writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nAttempted publication during an unknown conflict check.\n");
+  const localHeadBefore = git(proposal.root, ["rev-parse", "HEAD"]);
+  const assertConflictCheckGate = (operation) => assert.throws(
+    operation,
+    (error) => error?.code === "shared-proposal-conflict-check-unavailable"
+      && error?.statusCode === 409
+      && error?.details?.reviewStatus === "conflict_check_recovery_required"
+      && error?.details?.conflictCheckStatus === "unknown",
+  );
+  assertConflictCheckGate(() => openSharedRepositoryProposalWorkspace(fixture.remote, {
+    proposal: proposal.branch,
+    expectedHead: published.head,
+  }));
+  assertConflictCheckGate(() => publishSharedProposal(fixture.project, {
+    proposal: proposal.branch,
+    expectedHead: published.head,
+    description: "Do not publish until Git can establish the exact conflict state.",
+  }));
+  assertConflictCheckGate(() => materializeSharedRepositoryReview(fixture.remote, {
+    proposal: proposal.branch,
+    expectedHead: published.head,
+  }));
+  assert.equal(git(proposal.root, ["rev-parse", "HEAD"]), localHeadBefore);
+  assert.match(git(proposal.root, ["status", "--porcelain=v1"]), /projects\/demo\/docs\/README\.md/);
+  assert.equal(git(fixture.seed, ["ls-remote", "--heads", "origin", proposal.branch]).split(/\s+/)[0], published.head);
+
+  restoreGit();
+  const reopened = openSharedRepositoryProposalWorkspace(fixture.remote, {
+    proposal: proposal.branch,
+    expectedHead: published.head,
+  });
+  assert.equal(reopened.branch, proposal.branch);
+  assert.equal(reopened.head, published.head);
+  assert.equal(reopened.dirty, true);
 });
 
 test("a cross-process acceptance holding the exact terminal lock excludes concurrent rejection", async (t) => {
@@ -5772,6 +6214,20 @@ test("remote proposal branches are revalidated before review", (t) => {
   );
 });
 
+test("missing repository proposal materialization returns a typed not-found error", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const missingProposal = "proposal/demo/missing-review";
+
+  assert.throws(
+    () => materializeSharedRepositoryReview(fixture.remote, { proposal: missingProposal }),
+    (error) => error?.code === "shared_context_proposal_not_found"
+      && error?.statusCode === 404
+      && error?.details?.proposal === missingProposal,
+  );
+});
+
 test("an exact invalid proposal preserves its underlying validation error", (t) => {
   const fixture = makeFixture();
   withSharedHome(t, fixture);
@@ -6022,6 +6478,56 @@ test("project catalog resolves nested cwd and explicitly binds the same project 
   syncSharedContext(firstProject, { allowOffline: false });
   assert.equal(fs.existsSync(path.join(firstProject, ".agents/skills/demo-workflow")), false);
   assert.equal(fs.existsSync(path.join(secondProject, ".agents/skills/demo-workflow")), false);
+});
+
+test("direct proposal review reopening reuses the exact room and cached DocQA", async (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Direct warm review",
+    branch: "proposal/demo/direct-warm-review",
+  });
+  configureGit(proposal.root);
+  writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nOpen this exact review once.\n");
+  const published = publishSharedProposal(fixture.project, { proposal: proposal.branch });
+
+  let materializationCalls = 0;
+  let docQaCalls = 0;
+  const room = createMemoryServer({
+    root: fixture.project,
+    sharedReviewMaterializationTask: async ({ sourceRoot, proposal: branch, expectedHead }) => {
+      materializationCalls += 1;
+      return materializeSharedReview(sourceRoot, { proposal: branch, expectedHead });
+    },
+    sharedReviewDocQaTask: (reviewRoot) => {
+      docQaCalls += 1;
+      return buildDocQaReport(reviewRoot, { readOnly: true });
+    },
+  });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const openReview = () => fetch(origin + "/api/shared-context/review", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-project": room.projectId },
+    body: JSON.stringify({ proposal: proposal.branch, expectedHead: published.head }),
+  });
+
+  const firstResponse = await openReview();
+  const first = await firstResponse.json();
+  assert.equal(firstResponse.status, 201, JSON.stringify(first));
+  assert.equal(first.docqa.pendingPaths.includes("projects/demo/docs/README.md"), true);
+  assert.equal(materializationCalls, 1);
+  assert.equal(docQaCalls, 1);
+
+  const secondResponse = await openReview();
+  const second = await secondResponse.json();
+  assert.equal(secondResponse.status, 201, JSON.stringify(second));
+  assert.equal(second.url, first.url);
+  assert.equal(second.reviewRoot, first.reviewRoot);
+  assert.equal(materializationCalls, 1, "an exact warm room must not rematerialize");
+  assert.equal(docQaCalls, 1, "unchanged review evidence must reuse the cached DocQA report");
 });
 
 test("shared Context Room API lists proposals and opens an exact review room", async (t) => {
@@ -7232,12 +7738,61 @@ test("shared review endpoint rejects only the exact opened proposal revision", a
   const html = await (await fetch(origin + "/")).text();
   const nonce = /<meta name="context-room-owner-nonce" content="([^"]+)"/.exec(html)?.[1] || "";
   const headers = { "content-type": "application/json", "x-context-room-project": room.projectId, "x-context-room-owner-nonce": nonce };
-  const stale = await fetch(origin + "/api/shared-context/reject", { method: "POST", headers, body: JSON.stringify({ expectedProposalHead: "0".repeat(40) }) });
+  const withoutChallenge = await fetch(origin + "/api/shared-context/reject", { method: "POST", headers, body: JSON.stringify({ expectedProposalHead: published.head }) });
+  assert.equal(withoutChallenge.status, 403);
+  assert.equal((await withoutChallenge.json()).code, "shared_context_rejection_challenge_required");
+  assert.equal(listSharedProposals(fixture.project).some((item) => item.branch === proposal.branch), true);
+
+  const stale = await fetch(origin + "/api/shared-context/reject-challenge", { method: "POST", headers, body: JSON.stringify({ expectedProposalHead: "0".repeat(40) }) });
   assert.equal(stale.status, 409);
-  const response = await fetch(origin + "/api/shared-context/reject", { method: "POST", headers, body: JSON.stringify({ expectedProposalHead: published.head }) });
+  assert.equal((await stale.json()).code, "shared_context_proposal_head_mismatch");
+  const challengeResponse = await fetch(origin + "/api/shared-context/reject-challenge", { method: "POST", headers, body: JSON.stringify({ expectedProposalHead: published.head }) });
+  assert.equal(challengeResponse.status, 201);
+  const challenge = await challengeResponse.json();
+  assert.equal(challenge.action, "reject");
+  assert.equal(challenge.authorityId, review.metadata.authorityId);
+  assert.equal(challenge.proposal, proposal.branch);
+  assert.equal(challenge.proposalHead, published.head);
+
+  const mismatched = await fetch(origin + "/api/shared-context/reject", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ expectedProposalHead: "0".repeat(40), challengeId: challenge.challengeId }),
+  });
+  assert.equal(mismatched.status, 409);
+  assert.equal((await mismatched.json()).code, "shared_context_proposal_head_mismatch");
+
+  const response = await fetch(origin + "/api/shared-context/reject", { method: "POST", headers, body: JSON.stringify({ expectedProposalHead: published.head, challengeId: challenge.challengeId }) });
   assert.equal(response.status, 200);
   const rejected = await response.json();
   assert.equal(rejected.rejected, true);
   assert.equal(rejected.proposalHead, published.head);
   assert.match(rejected.rejectionBranch, /^rejected\/demo\/reject-exact-/);
+
+  const authorityPath = path.join(
+    process.env.CONTEXT_ROOM_SHARED_HOME,
+    "review-authority",
+    `${review.metadata.authorityId}.json`,
+  );
+  const terminalEvidence = {
+    authority: fs.readFileSync(authorityPath, "utf8"),
+    journal: fs.readFileSync(contextRoomEventJournalPath(), "utf8"),
+    refs: git(fixture.remote, ["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/"]),
+  };
+
+  const replay = await fetch(origin + "/api/shared-context/reject", { method: "POST", headers, body: JSON.stringify({ expectedProposalHead: published.head, challengeId: challenge.challengeId }) });
+  assert.equal(replay.status, 409);
+  assert.equal((await replay.json()).code, "shared-proposal-terminal");
+  const terminalChallenge = await fetch(origin + "/api/shared-context/reject-challenge", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ expectedProposalHead: published.head }),
+  });
+  assert.equal(terminalChallenge.status, 409);
+  assert.equal((await terminalChallenge.json()).code, "shared-proposal-terminal");
+  assert.deepEqual({
+    authority: fs.readFileSync(authorityPath, "utf8"),
+    journal: fs.readFileSync(contextRoomEventJournalPath(), "utf8"),
+    refs: git(fixture.remote, ["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/"]),
+  }, terminalEvidence, "a terminal replay must not rewrite authority, append an event, or mutate Git refs");
 });
