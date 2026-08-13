@@ -628,7 +628,7 @@ test.describe.serial("real proposal workflows", () => {
       expect(git(first.seed, ["show", `origin/main:${rejectPath}`])).toContain("Accepted baseline reject.");
       expect(git(first.seed, ["show", `origin/main:${rejectPath}`])).not.toContain("Proposal reject must stay out of main.");
       expect(git(first.seed, ["show", `origin/main:${unreviewPath}`])).toContain("after a second decision");
-      expect(git(first.seed, ["ls-remote", "--heads", "origin", `refs/heads/${first.proposalBranch}`]).split(/\s+/)[0]).toBe(first.proposalHead);
+      expect(git(first.seed, ["ls-remote", "--heads", "origin", `refs/heads/${first.proposalBranch}`])).toBe("");
 
       await page.goto(projectHubUrl);
       await waitForBoot(page);

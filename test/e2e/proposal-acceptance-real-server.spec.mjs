@@ -61,7 +61,7 @@ async function activeProposalCount(page) {
   return Number.parseInt((await metric.locator("strong").textContent()) || "0", 10);
 }
 
-test("@smoke verified real-server acceptance removes the proposal from active Hub state and preserves its proof branch", async ({ page }, testInfo) => {
+test("@smoke verified real-server acceptance removes the proposal from active Hub state and deletes its live branch", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-desktop", "The real Git delivery path only needs one browser execution.");
 
   const data = fixture();
@@ -216,7 +216,7 @@ test("@smoke verified real-server acceptance removes the proposal from active Hu
 
     expect(git(seed, ["show", `origin/main:projects/${projectId}/docs/README.md`])).toContain("verified proposal");
     expect(spawnSync("git", ["merge-base", "--is-ancestor", acceptedCommit, "origin/main"], { cwd: seed }).status).toBe(0);
-    expect(git(seed, ["ls-remote", "--heads", "origin", `refs/heads/${proposal.branch}`]).split(/\s+/)[0]).toBe(published.head);
+    expect(git(seed, ["ls-remote", "--heads", "origin", `refs/heads/${proposal.branch}`])).toBe("");
   } finally {
     if (registered) unregisterContextHubProject(project);
     try { unregisterContextHubSharedRepository(canonicalRemote); } catch {}
