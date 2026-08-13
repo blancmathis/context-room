@@ -545,7 +545,7 @@ test("an expired terminal lease is not stolen while its local owner process is a
   );
 });
 
-test("HTTPS and SSH aliases preserve proposal observations after an external ref deletion", { timeout: 30_000 }, (t) => {
+test("HTTPS and SSH aliases agree that an externally deleted proposal is absent from the queue", { timeout: 30_000 }, (t) => {
   const fixture = makeFixture(t);
   withSharedHome(t, fixture);
   const { httpsRepository, sshRepository } = withGitHubAliases(t, fixture);
@@ -562,13 +562,11 @@ test("HTTPS and SSH aliases preserve proposal observations after an external ref
   );
 
   git(fixture.seed, ["push", "origin", "--delete", created.proposal.branch]);
-  const observed = listSharedRepositoryProposals(sshRepository, { allowOffline: false }).proposals
-    .find((proposal) => proposal.branch === created.proposal.branch);
-
-  assert.equal(observed?.head, created.proposal.head);
-  assert.equal(observed?.reviewStatus, "externally_deleted");
-  assert.equal(observed?.authorityViolation, true);
-  assert.equal(observed?.available, false);
+  assert.equal(
+    listSharedRepositoryProposals(sshRepository, { allowOffline: false }).proposals
+      .some((proposal) => proposal.branch === created.proposal.branch),
+    false,
+  );
 });
 
 test("a recovered proposal authority blocks rejection before any remote archive mutation", { timeout: 30_000 }, (t) => {

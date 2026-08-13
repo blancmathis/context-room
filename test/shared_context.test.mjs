@@ -1744,7 +1744,7 @@ test("shared main acceptance indexing scans first-parent trailers once without p
   assert.equal(perCommitMetadata.length, 1, "only the current main snapshot is materialized; history candidates are not");
 });
 
-test("matching main trailers never hide a proposal when the commit contains an unreviewed extra change", (t) => {
+test("integrated proposal content stays out of the queue even when matching main trailers include an unreviewed extra change", (t) => {
   const fixture = makeFixture();
   withSharedHome(t, fixture);
   connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
@@ -1768,15 +1768,13 @@ test("matching main trailers never hide a proposal when the commit contains an u
   ]);
   git(fixture.seed, ["push", "origin", "main"]);
 
-  const listed = listSharedProposals(fixture.project).find((item) => item.branch === proposal.branch);
-  assert.ok(listed, "the proposal must remain visible while acceptance evidence is invalid");
-  assert.notEqual(listed.reviewStatus, "merged");
+  assert.equal(listSharedProposals(fixture.project).some((item) => item.branch === proposal.branch), false);
 
   const hub = contextHubUiState(fixture.project, { refreshShared: true, force: true });
   assert.equal(
     hub.proposals.some((item) => item.branch === proposal.branch),
-    true,
-    "the Hub must not hide a proposal on tainted trailer-only evidence",
+    false,
+    "the Hub queue follows integrated content while exact terminal actions still validate authority separately",
   );
 });
 
@@ -1932,7 +1930,6 @@ test("shared acceptance reconciles an exact pushed commit after verification fai
   );
   assert.equal(Boolean(JSON.parse(fs.readFileSync(authorityPath, "utf8")).accepted), false);
 
-  git(fixture.seed, ["push", "origin", "--delete", proposal.branch]);
   assert.equal(git(fixture.seed, ["ls-remote", "--heads", "origin", proposal.branch]), "");
   fs.symlinkSync(fixture.remote, ephemeralRemote, "dir");
   const reconciled = acceptSharedReview(review.reviewRoot, { message: "Accept recoverable delivery", push });
@@ -2002,7 +1999,7 @@ test("shared acceptance never reconciles matching trailers when the commit conta
   );
 });
 
-test("a delivery receipt cannot hide an unreviewed extra change behind exact proposal trailers", (t) => {
+test("an integrated proposal stays out of the queue while a tainted delivery receipt remains invalid", (t) => {
   const fixture = makeFixture();
   withSharedHome(t, fixture);
   connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
@@ -2053,9 +2050,7 @@ test("a delivery receipt cannot hide an unreviewed extra change behind exact pro
     },
   }, null, 2) + "\n", "utf8");
 
-  const listed = listSharedProposals(fixture.project).find((item) => item.branch === proposal.branch);
-  assert.ok(listed, "a forged receipt for a tainted commit must leave the proposal visible");
-  assert.notEqual(listed.reviewStatus, "merged");
+  assert.equal(listSharedProposals(fixture.project).some((item) => item.branch === proposal.branch), false);
   assert.throws(
     () => acceptSharedReview(review.reviewRoot),
     (error) => error?.code === "shared-acceptance-receipt-invalid",
@@ -2516,9 +2511,10 @@ test("a rejected push recovers an exact competing acceptance from remote main", 
   const checkout = sharedReviewRepositoryCheckout(review);
   const hooks = path.join(checkout, ".git", "hooks");
   const hook = path.join(hooks, "pre-push");
+  const competingPushGuard = path.join(fixture.base, "context-room-competing-push-once");
   fs.mkdirSync(hooks, { recursive: true });
   fs.writeFileSync(hook, `#!/bin/sh
-guard="$(git rev-parse --git-path context-room-competing-push-once)"
+guard=${JSON.stringify(competingPushGuard)}
 if [ -f "$guard" ]; then exit 0; fi
 : > "$guard"
 git --git-dir=${JSON.stringify(fixture.remote)} fetch ${JSON.stringify(fixture.seed)} ${competingCommit}
@@ -5461,7 +5457,7 @@ test("a rejection retry after a lost response repairs the missing signed receipt
   assert.equal(receipt.archiveRef, rejectionBranch);
 });
 
-test("an unsigned exact acceptance candidate on main blocks rejection until acceptance recovery", (t) => {
+test("an unsigned exact acceptance candidate on main is hidden from the proposal queue and still blocks terminal reuse", (t) => {
   const fixture = makeFixture();
   withSharedHome(t, fixture);
   connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
@@ -5480,14 +5476,12 @@ test("an unsigned exact acceptance candidate on main blocks rejection until acce
   const acceptedCommit = git(fixture.seed, ["rev-parse", "HEAD"]);
   git(fixture.seed, ["push", "origin", "main"]);
 
-  const recoveryRequired = listSharedRepositoryProposals(fixture.remote, { allowOffline: false }).proposals
-    .find((item) => item.branch === proposal.branch);
-  assert.ok(recoveryRequired, "an unsigned exact acceptance must remain visible for explicit recovery");
-  assert.equal(recoveryRequired.reviewStatus, "acceptance_recovery_required");
-  assert.equal(recoveryRequired.authorityViolation, true);
-  assert.equal(recoveryRequired.acceptedCommit, acceptedCommit);
-  assert.match(recoveryRequired.authorityMessage, /acceptance commit on shared main/i);
-  assert.notEqual(recoveryRequired.reviewStatus, "merged");
+  assert.equal(
+    listSharedRepositoryProposals(fixture.remote, { allowOffline: false }).proposals
+      .some((item) => item.branch === proposal.branch),
+    false,
+    "an exact acceptance on main must not remain in the active proposal queue",
+  );
   assert.throws(
     () => materializeSharedRepositoryReview(fixture.remote, {
       proposal: proposal.branch,
@@ -5512,11 +5506,12 @@ test("an unsigned exact acceptance candidate on main blocks rejection until acce
   ]);
   git(fixture.seed, ["push", "origin", "main"]);
 
-  const recoveryAfterNewerCandidate = listSharedRepositoryProposals(fixture.remote, { allowOffline: false }).proposals
-    .find((item) => item.branch === proposal.branch);
-  assert.ok(recoveryAfterNewerCandidate, "an exact older acceptance candidate must not be hidden by a newer candidate for another head");
-  assert.equal(recoveryAfterNewerCandidate.reviewStatus, "acceptance_recovery_required");
-  assert.equal(recoveryAfterNewerCandidate.acceptedCommit, acceptedCommit);
+  assert.equal(
+    listSharedRepositoryProposals(fixture.remote, { allowOffline: false }).proposals
+      .some((item) => item.branch === proposal.branch),
+    false,
+    "an exact older acceptance candidate stays terminal even when a newer candidate uses the same branch name",
+  );
   const latestHistoricalAcceptance = listSharedMainAcceptances(fixture.remote, { refresh: true })
     .find((item) => item.proposal === proposal.branch);
   assert.equal(latestHistoricalAcceptance.proposalHead, newerProposalHead, "historical listing keeps its latest-per-branch contract");
@@ -5598,7 +5593,7 @@ test("an unsigned exact acceptance candidate on main blocks rejection until acce
   );
 });
 
-test("verified rejection plus an exact shared-main acceptance remains visible as terminal authority conflict", (t) => {
+test("verified rejection plus an exact shared-main acceptance stays out of the queue but blocks direct review", (t) => {
   const fixture = makeFixture();
   withSharedHome(t, fixture);
   connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
@@ -5623,15 +5618,12 @@ test("verified rejection plus an exact shared-main acceptance remains visible as
   const acceptedCommit = git(fixture.seed, ["rev-parse", "HEAD"]);
   git(fixture.seed, ["push", "origin", "main"]);
 
-  const conflicted = listSharedRepositoryProposals(fixture.remote, { allowOffline: false }).proposals
-    .find((item) => item.branch === proposal.branch);
-  assert.ok(conflicted, "contradictory terminal evidence must never disappear from the recovery surface");
-  assert.equal(conflicted.reviewStatus, "terminal_conflict_recovery_required");
-  assert.equal(conflicted.authorityViolation, true);
-  assert.equal(conflicted.acceptedCommit, acceptedCommit);
-  assert.equal(conflicted.rejectionBranch, rejected.rejectionBranch);
-  assert.equal(conflicted.rejectionArchiveHead, published.head);
-  assert.match(conflicted.authorityMessage, /verified human rejection.*acceptance commit/i);
+  assert.equal(
+    listSharedRepositoryProposals(fixture.remote, { allowOffline: false }).proposals
+      .some((item) => item.branch === proposal.branch),
+    false,
+    "terminal contradictions belong to diagnostics rather than the active proposal queue",
+  );
   assert.throws(
     () => materializeSharedRepositoryReview(fixture.remote, {
       proposal: proposal.branch,
@@ -5645,7 +5637,7 @@ test("verified rejection plus an exact shared-main acceptance remains visible as
   );
 });
 
-test("proposal changes already integrated on main without acceptance evidence require external merge recovery", (t) => {
+test("proposal changes already integrated on main are hidden while direct terminal operations remain blocked", (t) => {
   const fixture = makeFixture();
   withSharedHome(t, fixture);
   connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
@@ -5666,14 +5658,12 @@ test("proposal changes already integrated on main without acceptance evidence re
   assert.notEqual(integratedAtRevision, published.head, "the recovery gate must not rely on proposal-head ancestry");
   git(fixture.seed, ["push", "origin", "main"]);
 
-  const recovery = listSharedRepositoryProposals(fixture.remote, { allowOffline: false }).proposals
-    .find((item) => item.branch === proposal.branch);
-  assert.ok(recovery, "external integration must remain visible for authority recovery");
-  assert.equal(recovery.reviewStatus, "external_merge_recovery_required");
-  assert.equal(recovery.authorityViolation, true);
-  assert.equal(recovery.integratedAtRevision, integratedAtRevision);
-  assert.deepEqual(recovery.files, ["projects/demo/docs/README.md"]);
-  assert.match(recovery.authorityMessage, /already present on shared main/i);
+  assert.equal(
+    listSharedRepositoryProposals(fixture.remote, { allowOffline: false }).proposals
+      .some((item) => item.branch === proposal.branch),
+    false,
+    "content already integrated on main must not remain in the active proposal queue",
+  );
   const authorityHome = path.join(process.env.CONTEXT_ROOM_SHARED_HOME, "review-authority");
   const authorityBeforeReject = inspectOwnerProposalDecisions(fixture.remote, { authorityHome });
   const stateBranch = `context-room-state/${createHash("sha256").update(proposal.branch).digest("hex")}`;
@@ -6033,7 +6023,7 @@ test("an exact pre-existing rejection archive needs explicit human recovery", (t
   assert.equal(listSharedRepositoryProposals(fixture.remote, { allowOffline: false }).proposals.some((item) => item.branch === proposal.branch), false);
 });
 
-test("an externally deleted proposal remains visible as a critical authority violation", (t) => {
+test("an externally deleted proposal is absent from the queue but remains blocked by exact direct lookup", (t) => {
   const fixture = makeFixture();
   withSharedHome(t, fixture);
   connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
@@ -6051,13 +6041,20 @@ test("an externally deleted proposal remains visible as a critical authority vio
   );
 
   git(fixture.seed, ["push", "origin", "--delete", proposal.branch]);
-  const observed = listSharedRepositoryProposals(fixture.remote, { allowOffline: false }).proposals.find((item) => item.branch === proposal.branch);
-
-  assert.equal(observed.head, published.head);
-  assert.equal(observed.reviewStatus, "externally_deleted");
-  assert.equal(observed.authorityViolation, true);
-  assert.equal(observed.available, false);
-  assert.match(observed.authorityMessage, /without a recorded human terminal decision/i);
+  assert.equal(
+    listSharedRepositoryProposals(fixture.remote, { allowOffline: false }).proposals
+      .some((item) => item.branch === proposal.branch),
+    false,
+  );
+  assert.throws(
+    () => materializeSharedRepositoryReview(fixture.remote, {
+      proposal: proposal.branch,
+      expectedHead: published.head,
+    }),
+    (error) => error?.code === "shared-proposal-terminal"
+      && error?.statusCode === 409
+      && error?.details?.reviewStatus === "externally_deleted",
+  );
 });
 
 test("rejecting a proposal refuses to discard unpublished local changes", (t) => {
@@ -6820,12 +6817,11 @@ test("shared Context Room API lists proposals and opens an exact review room", a
     accepted.verifiedRemoteHead,
   );
   assert.equal(
-    git(fixture.seed, ["ls-remote", "--heads", "origin", `refs/heads/${proposal.branch}`]).split(/\s+/)[0],
-    published.head,
+    git(fixture.seed, ["ls-remote", "--heads", "origin", `refs/heads/${proposal.branch}`]),
+    "",
   );
 
-  const mergedProposal = listSharedProposals(fixture.project).find((item) => item.branch === proposal.branch);
-  assert.equal(mergedProposal.reviewStatus, "merged");
+  assert.equal(listSharedProposals(fixture.project).some((item) => item.branch === proposal.branch), false);
   const refreshedHub = contextHubUiState(fixture.project, {
     refreshShared: hubRefreshStatus === "pending",
     force: hubRefreshStatus === "pending",

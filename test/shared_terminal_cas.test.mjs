@@ -211,7 +211,9 @@ function installBlockingHook(t, fx, predicate, started, release) {
 block=0
 while read old new ref; do
   case "$ref" in
-    ${predicate}) block=1 ;;
+    ${predicate})
+      if [ "$new" != "0000000000000000000000000000000000000000" ]; then block=1; fi
+      ;;
   esac
 done
 if [ "$block" = 1 ]; then
@@ -313,14 +315,13 @@ test("republishing H2 and accepting H1 are one atomic remote state transition", 
 
   assert.equal(published.ok, false, JSON.stringify(published));
   assert.equal(published.error.statusCode, 409);
-  assert.equal(git(fx.remote, ["rev-parse", `refs/heads/${created.proposal.branch}`]), created.proposal.head);
+  assert.equal(git(fx.seed, ["ls-remote", "--heads", "origin", created.proposal.branch]), "");
   assert.equal(git(fx.remote, ["rev-parse", "refs/heads/main"]), accepted.result.commit);
   const marker = git(fx.remote, ["show", "-s", "--format=%(trailers:key=Context-Room-Terminal-Decision,valueonly)", stateRef(created.proposal.branch)]);
   assert.equal(marker, "accepted");
   const listedOnPublishingHome = await runChild("list", { repository: fx.remote }, ownerB);
   assert.equal(listedOnPublishingHome.ok, true, JSON.stringify(listedOnPublishingHome));
-  const acceptedOnOtherHome = listedOnPublishingHome.result.proposals.find((item) => item.branch === created.proposal.branch);
-  assert.equal(acceptedOnOtherHome?.reviewStatus, "accepted");
+  assert.equal(listedOnPublishingHome.result.proposals.some((item) => item.branch === created.proposal.branch), false);
   const reopenedAccepted = await runChild("open", {
     repository: fx.remote,
     proposal: created.proposal.branch,
@@ -329,7 +330,6 @@ test("republishing H2 and accepting H1 are one atomic remote state transition", 
   assert.equal(reopenedAccepted.ok, false, JSON.stringify(reopenedAccepted));
   assert.equal(reopenedAccepted.error.code, "shared-proposal-terminal");
   assert.equal(reopenedAccepted.error.details?.reviewStatus, "accepted");
-  git(fx.seed, ["push", "origin", "--delete", created.proposal.branch]);
   const reopenedAcceptedWithoutProposalRef = await runChild("open", {
     repository: fx.remote,
     proposal: created.proposal.branch,

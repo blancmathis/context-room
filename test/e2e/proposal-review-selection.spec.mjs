@@ -701,7 +701,7 @@ test("@smoke a proposal already opening keeps its visual selection while busy", 
   }))).toEqual({ selection: ids.first, opening: ids.first });
 });
 
-test("@smoke accepted and acceptance-recovery proposal cards never open a review", async ({ page }) => {
+test("@smoke accepted and integrated proposal states are absent from the review queue", async ({ page }) => {
   const { origin } = fixture();
   let reviewPosts = 0;
   page.on("request", (request) => {
@@ -715,6 +715,7 @@ test("@smoke accepted and acceptance-recovery proposal cards never open a review
       branch: "proposal/demo/already-accepted",
       title: "Already accepted proposal",
       reviewStatus: "accepted",
+      integratedOnMain: true,
     },
     {
       id: "proposal:fixture:acceptance-recovery",
@@ -738,12 +739,7 @@ test("@smoke accepted and acceptance-recovery proposal cards never open a review
   ]);
 
   for (const proposal of proposals) {
-    const entry = page.locator('[data-context-room-review-entry="' + proposal.id + '"]');
-    const open = entry.locator("[data-context-room-review]");
-    await expect(entry).toBeVisible();
-    if (proposal.id !== "proposal:fixture:accepted") await expect(entry).toContainText("Recovery required");
-    await expect(open).toBeDisabled();
-    await open.evaluate((button) => button.click());
+    await expect(page.locator('[data-context-room-review-entry="' + proposal.id + '"]')).toHaveCount(0);
   }
   await page.waitForTimeout(100);
   expect(reviewPosts).toBe(0);
@@ -1113,7 +1109,7 @@ test("@smoke Select visible excludes non-openable proposals", async ({ page }) =
 
   await page.getByRole("button", { name: "Select visible", exact: true }).click();
   await expect.poll(() => page.evaluate(() => [...state.contextRoomSelectedReviews].sort())).toEqual([ids.ready, ids.secondReady].sort());
-  await expect(page.locator('[data-context-room-review-entry="' + ids.recovery + '"] [data-context-room-review]')).toBeDisabled();
+  await expect(page.locator('[data-context-room-review-entry="' + ids.recovery + '"]')).toHaveCount(0);
 });
 
 test("@smoke verified terminal rejection refreshes and returns to the Hub", async ({ page }) => {

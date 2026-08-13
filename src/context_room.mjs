@@ -15069,6 +15069,18 @@ function contextHubReviewRevisionToken(item = {}) {
   return `local:${review.resourceState}:${review.resourceVersion || "-"}:${review.currentHash}`;
 }
 
+function contextHubSharedProposalBelongsInQueue(item = {}) {
+  if (String(item.reviewStatus || "") === "accepted") return item.integratedOnMain !== true;
+  return !new Set([
+    "merged",
+    "rejected",
+    "acceptance_recovery_required",
+    "external_merge_recovery_required",
+    "terminal_conflict_recovery_required",
+    "externally_deleted",
+  ]).has(String(item.reviewStatus || ""));
+}
+
 function contextHubAtomicReviewItems(state = {}) {
   return (state.items || []).flatMap((item) => {
     if (item.type === "shared") return [{ ...item, revisionToken: contextHubReviewRevisionToken(item) }];
@@ -15437,7 +15449,7 @@ function contextHubUiStateAttempt(root, {
         projects: shared.projects,
       });
       for (const proposal of shared.proposals) {
-        if (proposal.reviewStatus === "merged") continue;
+        if (!contextHubSharedProposalBelongsInQueue(proposal)) continue;
         proposals.push({
           ...proposal,
           id: `proposal:${repositoryId}:${proposal.branch}`,
@@ -16520,7 +16532,7 @@ function createHostedSharedProvider(remoteAccess = {}, { root = process.cwd() } 
             ? allowedProjectIds.has(String(proposal.projectId || ""))
               || (proposal.createsProject === true && allowedScopes.has("projects"))
             : allowedScopes.has(String(proposal.scope || ""));
-          if (!allowed || proposal.reviewStatus === "merged") continue;
+          if (!allowed || !contextHubSharedProposalBelongsInQueue(proposal)) continue;
           proposals.push(hostedProposal(proposal, repositoryRecord));
         }
         for (const sharedProject of repositoryRecord.projects) {
@@ -20881,12 +20893,13 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
           mutation: true,
           aliases: false,
         });
+    const exactSnapshotTarget = target;
     // Never let a later cache observation downgrade a terminal, recovery, or
     // conflicting state already projected on the selected exact card.
     if (target) assertSharedProposalReviewOpenable(target);
     if (target && !hostedSharedProvider) {
       try {
-        const cached = listSharedRepositoryProposals(repository, { allowOffline: true, refresh: false });
+        const cached = listSharedRepositoryProposals(repository, { allowOffline: true, refresh: false, includeTerminal: true });
         const cachedProposals = (cached.proposals || []).map((proposal) => ({
           ...proposal,
           id: `proposal:${repositoryId}:${proposal.branch}`,
@@ -20943,7 +20956,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
         let proposals = [];
         let sharedStatus = null;
         try {
-          const shared = listSharedRepositoryProposals(repository, { allowOffline: true, refresh });
+          const shared = listSharedRepositoryProposals(repository, { allowOffline: true, refresh, includeTerminal: true });
           sharedStatus = shared.status || null;
           proposals = (shared.proposals || [])
             .filter((proposal) => proposal.reviewStatus !== "merged")
@@ -20968,6 +20981,14 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
           break;
         }
       }
+    }
+    if (!target && exactSnapshotTarget && !hostedSharedProvider) {
+      // The active snapshot can race with terminal integration or branch
+      // deletion. Preserve its exact identity only long enough to ask the
+      // Shared layer for the authoritative terminal/not-found result; never
+      // recreate it in the Hub queue.
+      target = exactSnapshotTarget;
+      observedBaseRevision = "";
     }
     if (!target) {
       throw sharedRequestError(
@@ -27615,6 +27636,18 @@ function sharedProposalSearchText(item) {
     .toLowerCase();
 }
 
+function contextHubSharedProposalBelongsInQueue(item = {}) {
+  if (String(item.reviewStatus || "") === "accepted") return item.integratedOnMain !== true;
+  return ![
+    "merged",
+    "rejected",
+    "acceptance_recovery_required",
+    "external_merge_recovery_required",
+    "terminal_conflict_recovery_required",
+    "externally_deleted",
+  ].includes(String(item.reviewStatus || ""));
+}
+
 function contextRoomProposalIsOpenable(item) {
   return Boolean(
     item
@@ -27844,7 +27877,11 @@ function currentContextRoomProject() {
 function contextHubReviewItems() {
   const hub = state.contextHub || { items: [] };
   return (hub.items || []).flatMap((item) => {
-    if (item.type === "shared") return [{ ...item, revisionToken: item.head ? "shared:" + item.head : "" }];
+    if (item.type === "shared") {
+      return contextHubSharedProposalBelongsInQueue(item)
+        ? [{ ...item, revisionToken: item.head ? "shared:" + item.head : "" }]
+        : [];
+    }
     if (item.reviewStatus !== "local_changes") return [];
     const reviews = item.reviews?.length
       ? item.reviews

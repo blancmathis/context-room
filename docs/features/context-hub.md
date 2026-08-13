@@ -62,7 +62,7 @@ Clearing selection returns to the global Hub.
 
 ## Proposal opening
 
-The Hub follows the proposal projection defined by [Shared Proposal Lifecycle](../domains/shared-proposal-lifecycle.md#hub-projection). `ready`, `in_review`, and `updated` proposals are active and openable. `accepted`, `acceptance_recovery_required`, and other recovery states remain visible as non-openable attention. Reconciled `merged` and `rejected` proposals are absent from the active list.
+The Hub follows the proposal projection defined by [Shared Proposal Lifecycle](../domains/shared-proposal-lifecycle.md#hub-projection). `ready`, `in_review`, and `updated` proposals are active and openable. A proposal already integrated into accepted main, a terminal proposal, or a proposal whose branch no longer exists is absent from the active list. Pending recovery remains visible only while a live, non-integrated proposal branch still requires action.
 
 Opening an active proposal keeps the proposal surface visible while Context Room verifies and materializes the exact review. The surface shows the known repository, branch, and head immediately, reports preparation honestly, and does not claim readiness before exact review is available.
 

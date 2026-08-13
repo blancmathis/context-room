@@ -50,7 +50,7 @@ Adding a local project to a Shared repository does not make the local working tr
 
 ## Proposals
 
-A proposal is an isolated Git worktree and branch based on accepted main. It has one repository, scope, branch, base revision, head, file set, and review state.
+A proposal is an isolated Git worktree and live branch based on accepted main. It has one repository, scope, branch, base revision, head, file set, and review state. Acceptance atomically integrates the exact reviewed result into main, records terminal evidence, and deletes that proposal branch; it is no longer projected as a proposal afterward.
 
 Several proposals may exist simultaneously, including for the same project. They remain independent until a human accepts or rejects each exact head.
 

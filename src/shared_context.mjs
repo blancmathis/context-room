@@ -43,6 +43,14 @@ const SHARED_REVIEW_TEXT_FILENAMES = new Set([
 ]);
 const SHARED_PROPOSAL_STATE_PREFIX = "context-room-state/";
 const ACTIVE_SHARED_PROPOSAL_REVIEW_STATUSES = new Set(["ready", "in_review", "updated"]);
+const TERMINAL_SHARED_PROPOSAL_QUEUE_STATUSES = new Set([
+  "merged",
+  "rejected",
+  "acceptance_recovery_required",
+  "external_merge_recovery_required",
+  "terminal_conflict_recovery_required",
+  "externally_deleted",
+]);
 
 const DEFAULT_REPOSITORY_CONFIG = {
   version: SHARED_REPOSITORY_SCHEMA_VERSION,
@@ -7238,11 +7246,14 @@ function atomicPushArguments(remote, updates) {
   const normalized = updates.map((update) => {
     const ref = String(update.ref || "").trim();
     if (!ref.startsWith("refs/heads/")) throw new Error(`Unsafe atomic push ref: ${ref}`);
-    const source = safeRevision(update.source, "atomic push source");
+    const deleting = update.delete === true;
+    if (deleting && update.source) throw new Error(`Atomic ref deletion cannot include a source: ${ref}`);
+    if (deleting && !update.expected) throw new Error(`Atomic ref deletion requires an exact remote lease: ${ref}`);
+    const source = deleting ? "" : safeRevision(update.source, "atomic push source");
     return {
       ref,
       expected: update.expected ? safeRevision(update.expected, "expected atomic push head") : "",
-      refspec: `${update.force ? "+" : ""}${source}:${ref}`,
+      refspec: deleting ? `:${ref}` : `${update.force ? "+" : ""}${source}:${ref}`,
     };
   });
   return [
@@ -8495,6 +8506,7 @@ export function listRegisteredSharedBindings(repository = "") {
 export function listSharedRepositoryProposals(repository, {
   allowOffline = true,
   refresh = true,
+  includeTerminal = false,
   timeoutMs = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS,
   push = null,
 } = {}) {
@@ -8515,7 +8527,7 @@ export function listSharedRepositoryProposals(repository, {
         syncedAt: readJson(sharedStatePath(synced.connection.repository), {}).syncedAt || null,
       },
       projects: synced.catalog.projects,
-      proposals: listRemoteSharedProposals(synced),
+      proposals: listRemoteSharedProposals(synced, { includeTerminal }),
     };
   }, timeoutMs);
 }
@@ -9311,6 +9323,11 @@ function proposalChangesAreIntegrated(checkout, acceptedMainRevision, proposalHe
   });
 }
 
+function sharedProposalBelongsInActiveQueue(item) {
+  if (String(item?.reviewStatus || "") === "accepted") return item?.integratedOnMain !== true;
+  return !TERMINAL_SHARED_PROPOSAL_QUEUE_STATUSES.has(String(item?.reviewStatus || ""));
+}
+
 function reconcileProposalObservations(
   synced,
   checkout,
@@ -9452,7 +9469,7 @@ function reconcileProposalObservations(
   });
 }
 
-function listRemoteSharedProposals(synced, { allProjects = true, requiredProposal = "" } = {}) {
+function listRemoteSharedProposals(synced, { allProjects = true, requiredProposal = "", includeTerminal = false } = {}) {
   const checkout = repositoryCheckout(synced.connection.repository);
   const decisionIndex = ownerProposalDecisionIndex(synced.connection.repository);
   const reviewActivity = sharedReviewActivityIndex(synced.connection.repository, checkout, synced.revision, decisionIndex);
@@ -9541,6 +9558,12 @@ function listRemoteSharedProposals(synced, { allProjects = true, requiredProposa
       // relation to both heads, merge-tree is the fail-closed source of truth.
       const conflictCheckRequired = !baseAnchorsMain || mainAdvancedBy > 0;
       const conflict = conflictCheckRequired ? proposalHasConflict(checkout, synced.revision, proposalHead) : false;
+      const integratedOnMain = proposalChangesAreIntegrated(
+        checkout,
+        synced.revision,
+        proposalHead,
+        originalProposalChanges,
+      );
       const item = {
         ...identity,
         repository: synced.connection.repository,
@@ -9557,6 +9580,7 @@ function listRemoteSharedProposals(synced, { allProjects = true, requiredProposa
         sourceBranch,
         sourceCommit,
         semanticReviewRequired,
+        integratedOnMain,
         files,
         fileCount: files.length,
         reviewStatus,
@@ -9587,7 +9611,7 @@ function listRemoteSharedProposals(synced, { allProjects = true, requiredProposa
       if (
         !accepted
         && !remoteProposalStateIsTerminal(remoteState)
-        && proposalChangesAreIntegrated(checkout, synced.revision, proposalHead, originalProposalChanges)
+        && integratedOnMain
       ) {
         return [proposalExternalMergeRecovery(item, synced.revision, proposalChangePaths(originalProposalChanges))];
       }
@@ -9598,7 +9622,7 @@ function listRemoteSharedProposals(synced, { allProjects = true, requiredProposa
       return [];
     }
   });
-  return reconcileProposalObservations(
+  const reconciled = reconcileProposalObservations(
     synced,
     checkout,
     current,
@@ -9606,7 +9630,9 @@ function listRemoteSharedProposals(synced, { allProjects = true, requiredProposa
     decisionIndex,
     mainAcceptanceCandidates.exactByProposalHead,
     mainAcceptanceByHead,
-  )
+  );
+  return reconciled
+    .filter((item) => requiredProposal || includeTerminal || sharedProposalBelongsInActiveQueue(item))
     .filter((item) => allProjects || item.projectId === synced.connection.projectId || item.projectId === "global" || item.projectId === "skills")
     .sort((left, right) => String(right.updatedAt || "").localeCompare(String(left.updatedAt || "")));
 }
@@ -10334,6 +10360,125 @@ function exactProposalAcceptanceOnMain(checkout, mainRevision, proposal, proposa
   return null;
 }
 
+function finalizeAcceptedProposalRemote(review, {
+  acceptedCommit,
+  checkout,
+  repositoryConfig,
+  push = null,
+  timeoutMs = DEFAULT_SHARED_DELIVERY_TIMEOUT_MS,
+} = {}) {
+  const commit = safeRevision(acceptedCommit, "accepted commit");
+  const proposalHead = safeRevision(review.proposalHead, "proposal head");
+  const currentProposalHead = remoteBranchRevision(checkout, review.proposal);
+  if (currentProposalHead && currentProposalHead !== proposalHead) {
+    throw staleSharedProposalError(review.proposal, proposalHead, currentProposalHead);
+  }
+  const currentMain = remoteRevision(checkout, review.defaultBranch);
+  const currentEvidence = proposalTerminalEvidence({
+    connection: { repository: review.repository },
+    repositoryConfig,
+    revision: currentMain,
+  }, checkout, review.proposal, proposalHead);
+  assertTerminalAcceptanceAllowed(currentEvidence, review.proposal, proposalHead, commit);
+  const updates = [];
+  if (!(currentEvidence.remoteAccepted && currentEvidence.remoteState.acceptedCommit === commit)) {
+    updates.push({
+      source: proposalTerminalMarkerCommit(checkout, {
+        proposal: review.proposal,
+        proposalHead,
+        decision: "accepted",
+        acceptedCommit: commit,
+      }),
+      ref: proposalStateRef(review.proposal),
+      expected: currentEvidence.remoteState.status === "active" ? currentEvidence.remoteState.head : "",
+      force: true,
+    });
+  }
+  if (currentProposalHead) {
+    updates.push({
+      delete: true,
+      ref: `refs/heads/${review.proposal}`,
+      expected: currentProposalHead,
+    });
+  }
+  if (updates.length) {
+    const pushAuth = authenticatedSharedGit(review.repository, push, timeoutMs);
+    try {
+      runSharedDeliveryGit(checkout, atomicPushArguments(pushAuth?.remote || "origin", updates), {
+        stdio: ["ignore", "ignore", "pipe"],
+        ...(pushAuth ? { credential: pushAuth.credential } : {}),
+        operation: "Git push",
+        timeoutMs,
+      });
+    } catch (error) {
+      throwAtomicPushError(error, "Shared proposal acceptance finalization");
+    }
+  }
+  refreshSharedDeliveryRefs(checkout, review.repository, push, timeoutMs);
+  const verifiedRemoteHead = remoteRevision(checkout, review.defaultBranch);
+  const remainingProposalHead = remoteBranchRevision(checkout, review.proposal);
+  if (remainingProposalHead) {
+    throw sharedContextError(
+      "shared-delivery-unverified",
+      "The accepted proposal branch still exists after terminal delivery",
+      { proposal: review.proposal, proposalHead, remainingProposalHead },
+    );
+  }
+  const verifiedEvidence = proposalTerminalEvidence({
+    connection: { repository: review.repository },
+    repositoryConfig,
+    revision: verifiedRemoteHead,
+  }, checkout, review.proposal, proposalHead);
+  assertTerminalAcceptanceAllowed(verifiedEvidence, review.proposal, proposalHead, commit);
+  if (!verifiedEvidence.remoteAcceptedVerified || verifiedEvidence.remoteState.acceptedCommit !== commit) {
+    throw sharedContextError(
+      "shared-delivery-unverified",
+      "The remote terminal proposal state does not verify the exact accepted commit",
+      { proposal: review.proposal, proposalHead, acceptedCommit: commit },
+    );
+  }
+  return verifiedRemoteHead;
+}
+
+function cleanupAcceptedLocalProposal(repository, checkout, proposal, proposalHead) {
+  try {
+    const branch = safeBranchName(proposal, "proposal branch");
+    const expectedHead = safeRevision(proposalHead, "proposal head");
+    const registry = readProposalRegistry(repository);
+    const localEntry = registry.proposals?.[branch] || null;
+    let cleanupPending = false;
+    if (localEntry?.root && fs.existsSync(localEntry.root)) {
+      cleanupPending = Boolean(tryGit(localEntry.root, ["status", "--porcelain=v1", "--untracked-files=all"]));
+      if (!cleanupPending) {
+        try {
+          runGit(checkout, ["worktree", "remove", localEntry.root], { stdio: ["ignore", "ignore", "ignore"] });
+        } catch {
+          cleanupPending = fs.existsSync(localEntry.root);
+        }
+      }
+    }
+    const localHead = tryGit(checkout, ["rev-parse", `refs/heads/${branch}^{commit}`]);
+    if (!cleanupPending && localHead) {
+      if (safeRevision(localHead, "local proposal head") !== expectedHead) {
+        cleanupPending = true;
+      } else {
+        try {
+          runGit(checkout, ["branch", "-D", branch], { stdio: ["ignore", "ignore", "pipe"] });
+        } catch {
+          cleanupPending = Boolean(tryGit(checkout, ["show-ref", "--verify", `refs/heads/${branch}`]));
+        }
+      }
+    }
+    if (!cleanupPending && registry.proposals?.[branch]) {
+      delete registry.proposals[branch];
+      writeProposalRegistry(repository, registry);
+    }
+    return cleanupPending;
+  } catch {
+    return true;
+  }
+}
+
 function recordAcceptedSharedReview(review, {
   commit,
   previousMain,
@@ -10375,6 +10520,12 @@ function recordAcceptedSharedReview(review, {
     ...proposalDecisionAuthorityOptions(review.repository),
     actor: normalizedActor?.sub || normalizedActor?.email || "human-ui",
   });
+  result.localCleanupPending = cleanupAcceptedLocalProposal(
+    review.repository,
+    checkout,
+    review.proposal,
+    review.proposalHead,
+  );
   writePrivateJson(path.join(sharedHome(), "review-authority", `${review.authorityId}.json`), { ...review, accepted: result, acceptedAt: new Date().toISOString() });
   appendContextRoomEvent("proposal.completed", {
     projectId: review.projectId,
@@ -10387,6 +10538,7 @@ function recordAcceptedSharedReview(review, {
       verifiedRemoteHead: verifiedHead,
       defaultBranch: review.defaultBranch,
       deliveryVerified: true,
+      localCleanupPending: result.localCleanupPending,
     },
   });
   return result;
@@ -10629,12 +10781,25 @@ function acceptSharedReviewUnderLock(resolvedReviewRoot, {
   assertTerminalAcceptanceAllowed(terminalEvidence, review.proposal, review.proposalHead);
   if (review.accepted) {
     const accepted = revalidateAcceptedSharedReview(review, checkout, resolvedReviewRoot, push, boundedDeliveryTimeoutMs);
+    accepted.verifiedRemoteHead = finalizeAcceptedProposalRemote(review, {
+      acceptedCommit: accepted.commit,
+      checkout,
+      repositoryConfig: terminalRepositoryConfig,
+      push,
+      timeoutMs: boundedDeliveryTimeoutMs,
+    });
     const refreshedTerminalEvidence = proposalTerminalEvidence({
       connection: { repository: review.repository },
       repositoryConfig: terminalRepositoryConfig,
       revision: accepted.verifiedRemoteHead,
     }, checkout, review.proposal, review.proposalHead);
     assertTerminalAcceptanceAllowed(refreshedTerminalEvidence, review.proposal, review.proposalHead, accepted.commit);
+    accepted.localCleanupPending = cleanupAcceptedLocalProposal(
+      review.repository,
+      checkout,
+      review.proposal,
+      review.proposalHead,
+    );
     return accepted;
   }
   const reviewHead = safeRevision(tryGit(resolvedReviewRoot, ["rev-parse", "HEAD"]), "review worktree head");
@@ -10662,7 +10827,7 @@ function acceptSharedReviewUnderLock(resolvedReviewRoot, {
   if (delivered) {
     assertSharedReviewBaseCurrent(checkout, review, delivered.previousMain, proposalChanges);
     assertSharedAcceptedRevisionValid(checkout, delivered.commit);
-    const verifiedRemoteHead = verifySharedMainDelivery(
+    verifySharedMainDelivery(
       checkout,
       delivered.commit,
       review.defaultBranch,
@@ -10670,6 +10835,13 @@ function acceptSharedReviewUnderLock(resolvedReviewRoot, {
       push,
       boundedDeliveryTimeoutMs,
     );
+    const verifiedRemoteHead = finalizeAcceptedProposalRemote(review, {
+      acceptedCommit: delivered.commit,
+      checkout,
+      repositoryConfig: terminalRepositoryConfig,
+      push,
+      timeoutMs: boundedDeliveryTimeoutMs,
+    });
     return recordAcceptedSharedReview(review, {
       commit: delivered.commit,
       previousMain: delivered.previousMain,
@@ -10761,6 +10933,11 @@ function acceptSharedReviewUnderLock(resolvedReviewRoot, {
           expected: initialRemoteState.status === "active" ? initialRemoteState.head : "",
           force: true,
         },
+        {
+          delete: true,
+          ref: `refs/heads/${review.proposal}`,
+          expected: review.proposalHead,
+        },
       ]), {
         stdio: ["ignore", "ignore", "pipe"],
         ...(pushAuth ? { credential: pushAuth.credential } : {}),
@@ -10800,10 +10977,17 @@ function acceptSharedReviewUnderLock(resolvedReviewRoot, {
           && refreshedEvidence.remoteState.acceptedCommit === competingDelivery.commit
         ) {
           assertSharedReviewBaseCurrent(checkout, review, competingDelivery.previousMain, proposalChanges);
+          const finalizedRemoteHead = finalizeAcceptedProposalRemote(review, {
+            acceptedCommit: competingDelivery.commit,
+            checkout,
+            repositoryConfig: terminalRepositoryConfig,
+            push,
+            timeoutMs: boundedDeliveryTimeoutMs,
+          });
           return recordAcceptedSharedReview(review, {
             commit: competingDelivery.commit,
             previousMain: competingDelivery.previousMain,
-            verifiedRemoteHead: refreshedRemoteHead,
+            verifiedRemoteHead: finalizedRemoteHead,
             actor,
             checkout,
             repositoryConfig: terminalRepositoryConfig,
@@ -10827,6 +11011,14 @@ function acceptSharedReviewUnderLock(resolvedReviewRoot, {
         "shared-delivery-unverified",
         `The accepted commit is not reachable from origin/${review.defaultBranch} after atomic push`,
         { acceptedCommit, verifiedRemoteHead, defaultBranch: review.defaultBranch },
+      );
+    }
+    const remainingProposalHead = remoteBranchRevision(checkout, review.proposal);
+    if (remainingProposalHead) {
+      throw sharedContextError(
+        "shared-delivery-unverified",
+        "The accepted proposal branch still exists after atomic delivery",
+        { proposal: review.proposal, proposalHead: review.proposalHead, remainingProposalHead },
       );
     }
     const verifiedTerminalEvidence = proposalTerminalEvidence({

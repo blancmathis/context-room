@@ -49,11 +49,11 @@ stateDiagram-v2
 | Projection state | Class | Required behavior |
 | --- | --- | --- |
 | `ready`, `in_review`, `updated` | Active | Visible and openable. `updated` requires exact rematerialization; prior review evidence is not reused for a changed head. |
-| `accepted` | Attention | An acceptance is recorded but exact accepted-main reconciliation is not established in the current snapshot. Visible, non-openable, and not yet accepted truth. |
-| `acceptance_recovery_required` and other recovery states | Attention | Authority or delivery evidence is incomplete, inconsistent, or requires explicit recovery. Visible and non-openable as an active review. |
-| `merged`, `rejected` | Reconciled terminal | Absent from the active proposal list. Branch, archive, and decision evidence remain available through history or recovery surfaces. |
+| `accepted` without accepted-main proof and other pending recovery states | Attention | A live, non-integrated proposal branch still needs delivery, conflict, rejection, or authority recovery. Visible and non-openable as an active review. |
+| `merged`, `rejected`, `acceptance_recovery_required`, `external_merge_recovery_required`, `terminal_conflict_recovery_required`, or `accepted` with accepted-main proof | Terminal or integrated | Absent from the active proposal list. Exact accepted-main, terminal-state, archive, and decision evidence remain available for exact action revalidation. |
+| `externally_deleted` | No active proposal | Absent from the active proposal list because no proposal branch exists. Missing terminal evidence belongs to diagnostics, not the review queue. |
 
-Attention states never fall back to active review materialization. They remain explicit until current remote facts and human-owned authority are reconciled.
+Only a live proposal branch whose exact changes are not already integrated into accepted main can appear in the active proposal list. A direct link to a terminal, integrated, or missing proposal still fails closed with its exact state; hiding it from the queue does not authorize another review or terminal action.
 
 ## Create and resume
 
@@ -85,7 +85,7 @@ Cached listing or materialization state never authorizes a terminal action. Ever
 
 Acceptance requires complete current trusted review, unchanged terminal configuration and head, compatible accepted-main ancestry, no protected-path conflict, and an exact reviewed patch.
 
-Delivery atomically updates accepted main and terminal state. Context Room fetches the default branch and proves the accepted commit is reachable and bound to the exact proposal head before reporting success and recording the owner decision. The proposal branch remains as evidence.
+Delivery atomically updates accepted main, records terminal state, and deletes the exact proposal branch under a remote lease. Context Room fetches the default branch, proves the accepted commit is reachable and bound to the exact proposal head, and proves the proposal branch is absent before reporting success and recording the owner decision. The acceptance commit and protected terminal-state ref preserve exact evidence without keeping a live proposal branch.
 
 ## Reject
 
