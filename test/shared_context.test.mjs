@@ -233,7 +233,7 @@ test("shared proposal review keeps navigation and explicit completion in the pro
   assert.match(html, /expectedHead: item\.head \|\| undefined/);
   assert.match(html, /state\.contextRoomOpeningProposalId = item\.id \|\| sharedProposalKey\(item\)/);
   assert.match(html, /Opening review…/);
-  assert.match(html, /Checking exact head, accepted main, and review authority…/);
+  assert.match(html, /Checking revision and review authority…/);
   assert.match(html, /<strong>Verifying<\/strong>/);
   assert.doesNotMatch(html, /Preparing exact review…/);
   assert.match(html, /const pendingPaths = new Set\(state\.docqa\?\.pendingPaths/);

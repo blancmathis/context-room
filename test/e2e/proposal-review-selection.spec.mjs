@@ -855,6 +855,102 @@ test("@smoke proposal preparation never claims the exact review is ready", async
   await expect(page.locator("#proposalReviewNotice")).toContainText("Simulated delayed review preparation.");
 });
 
+test("@layout proposal verification keeps the final action and header geometry stable", async ({ page }) => {
+  const { origin } = fixture();
+  await page.goto(origin + "/?hub=1&workspace=workspace-proposal-stable-opening&view=hub");
+  await waitForBoot(page);
+  await replaceHubProposals(page, [{
+    id: "proposal:fixture:stable-opening",
+    branch: "proposal/demo/stable-opening",
+    title: "Stable proposal opening",
+    reviewStatus: "ready",
+    files: ["README.md", "docs/operations.md"],
+  }]);
+
+  await page.evaluate(() => {
+    const item = contextHubReviewItems().find((candidate) => candidate.id === "proposal:fixture:stable-opening");
+    if (!item) throw new Error("Missing stable proposal opening fixture");
+    showProposalReview({ preparingItem: item });
+    state.contextRoomOpeningProposalId = item.id;
+    state.proposalOpenState = { phase: "opening", code: "", message: "", details: null };
+    state.sharedContextBusy = true;
+    renderSharedContextControls();
+    renderProposalReviewPage();
+    setStatus("verifying exact proposal revision...");
+  });
+
+  const reject = page.getByRole("button", { name: "Reject proposal" });
+  await expect(reject).toBeVisible();
+  await expect(reject).toBeDisabled();
+  await expect(page.locator("#proposalReviewProgress")).toContainText("Verifying");
+
+  const openingGeometry = await page.evaluate(() => {
+    const rect = (id) => {
+      const box = document.getElementById(id)?.getBoundingClientRect();
+      return box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null;
+    };
+    return {
+      brand: rect("brandHome"),
+      reject: rect("proposalDockReject"),
+      title: rect("proposalReviewTitle"),
+      progress: rect("proposalReviewProgress"),
+    };
+  });
+
+  await page.evaluate(() => {
+    const preview = state.contextRoomPreparingProposal;
+    const files = preview.files;
+    state.sharedContext = {
+      mode: "review",
+      acceptedChangesRemain: true,
+      review: {
+        projectId: preview.projectId,
+        proposal: preview.branch,
+        proposalHead: preview.head,
+        title: preview.title,
+        description: preview.description,
+        defaultBranch: "main",
+        proposalFiles: files,
+        proposalChanges: files.map((path) => ({ path, status: "M", reviewKind: "proposal-change" })),
+      },
+    };
+    state.docqa = {
+      queue: files.map((path) => ({ path, label: path.split("/").pop(), reviewReason: "git-change" })),
+      pendingPaths: files,
+      reviewedPaths: [],
+      summary: { needsReview: files.length },
+    };
+    state.contextRoomPreparingProposal = null;
+    state.contextRoomPreparedReview = null;
+    state.contextRoomOpeningProposalId = "";
+    state.proposalOpenState = { phase: "ready", code: "", message: "", details: null };
+    state.sharedContextBusy = false;
+    renderSharedContextControls();
+    renderProposalReviewPage();
+    setStatus("proposal ready");
+  });
+
+  await expect(reject).toBeVisible();
+  await expect(reject).toBeEnabled();
+  const readyGeometry = await page.evaluate(() => {
+    const rect = (id) => {
+      const box = document.getElementById(id)?.getBoundingClientRect();
+      return box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null;
+    };
+    return {
+      brand: rect("brandHome"),
+      reject: rect("proposalDockReject"),
+      title: rect("proposalReviewTitle"),
+      progress: rect("proposalReviewProgress"),
+    };
+  });
+
+  expect(readyGeometry.brand).toEqual(openingGeometry.brand);
+  expect(readyGeometry.reject).toEqual(openingGeometry.reject);
+  expect(readyGeometry.title).toEqual(openingGeometry.title);
+  expect(readyGeometry.progress).toEqual(openingGeometry.progress);
+});
+
 test("@smoke Back cancels a delayed proposal opening and Forward starts one clean exact retry", async ({ page }) => {
   const { origin } = fixture();
   let releaseFirstReview;

@@ -24925,8 +24925,9 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
     .proposal-review-copy { min-width: 0; }
     .proposal-review-copy h2 { margin: 0; color: var(--text); font-size: clamp(24px, 3vw, 36px); line-height: 1.08; letter-spacing: -0.03em !important; }
     .proposal-review-copy p { max-width: 72ch; margin: 9px 0 0; color: var(--text-soft); font-size: 13px; line-height: 1.55; }
-    .proposal-review-progress { flex: 0 0 auto; display: grid; justify-items: end; gap: 3px; padding-top: 3px; color: var(--muted); font-size: 11px; }
+    .proposal-review-progress { position: relative; width: min(248px, 34vw); min-height: 44px; flex: 0 0 min(248px, 34vw); display: grid; align-content: start; justify-items: end; gap: 3px; box-sizing: border-box; padding: 3px 20px 0 0; color: var(--muted); font-size: 11px; }
     .proposal-review-progress strong { color: var(--text); font-size: 22px; line-height: 1; letter-spacing: -0.025em; }
+    .proposal-review-progress > .context-room-proposal-opening-indicator { position: absolute; top: 8px; right: 0; }
     .proposal-review-meta { color: var(--muted); font-size: 11px; line-height: 1.35; }
     .proposal-review-meta code { color: var(--text-soft); font-size: 11px; }
     .proposal-review-notice { margin: 12px var(--workbench-gutter); padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--danger) 44%, var(--line)); border-radius: 9px; background: color-mix(in srgb, var(--danger) 8%, var(--panel)); color: var(--text); font-size: 11px; line-height: 1.45; }
@@ -24983,7 +24984,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
     .proposal-review-file[data-reviewed="true"] .proposal-review-file-state { color: var(--good-fg); }
     .proposal-review-empty { padding: 28px 18px; color: var(--muted); font-size: 12px; line-height: 1.5; text-align: center; }
     @media (max-width: 639px) {
-      .proposal-review-progress { justify-items: start; }
+      .proposal-review-progress { width: 100%; max-width: none; min-height: 44px; flex-basis: auto; justify-items: start; }
     }
     .context-room-mode-warning { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px 18px; padding: 11px 14px; border-bottom: 1px solid color-mix(in srgb, var(--accent-2) 28%, var(--line)); background: color-mix(in srgb, var(--accent-2) 7%, var(--panel)); }
     .context-room-mode-warning-copy { min-width: 0; }
@@ -31531,6 +31532,7 @@ function renderProposalDockControls() {
   const rejected = Boolean(shared?.rejected?.rejected);
   const terminal = Boolean(delivered || rejected);
   const actionable = shared?.mode === "review" && !preview && !terminal;
+  const preparing = Boolean(preview && ["opening", "loading", "ready"].includes(String(state.proposalOpenState?.phase || "opening")));
   const noAcceptedChanges = actionable && shared?.acceptedChangesRemain === false;
   acceptButton.hidden = !actionable || queueCount > 0 || Boolean(state.proposalAuthorityStatus);
   acceptButton.disabled = Boolean(state.proposalActionBusy || queueCount > 0 || noAcceptedChanges);
@@ -31542,9 +31544,11 @@ function renderProposalDockControls() {
       : noAcceptedChanges
         ? "No accepted changes remain. Reject the proposal to close it."
         : "Put the exact reviewed result on " + (review.defaultBranch || "main");
-  rejectButton.hidden = !actionable;
-  rejectButton.disabled = Boolean(state.proposalActionBusy);
-  rejectButton.title = state.proposalAuthorityStatus
+  rejectButton.hidden = !actionable && !preparing;
+  rejectButton.disabled = Boolean(state.proposalActionBusy || !actionable);
+  rejectButton.title = preparing
+    ? "Available after Context Room verifies the exact proposal revision"
+    : state.proposalAuthorityStatus
     ? "Verify this exact rejection and restore its owner-authorized receipt"
     : "Reject and archive this exact proposal revision";
 }
@@ -36726,7 +36730,7 @@ function renderProposalReviewPage() {
     error: "Could not open",
   })[openPhase] || "Needs attention";
   progress.innerHTML = preparing
-    ? '<strong>Verifying</strong><span>' + escapeHtml(openPhase === "loading" ? "Refreshing proposal status and terminal evidence…" : "Checking exact head, accepted main, and review authority…") + '</span><span class="context-room-proposal-opening-indicator" aria-hidden="true"></span>'
+    ? '<strong>Verifying</strong><span>' + escapeHtml(openPhase === "loading" ? "Refreshing exact proposal status…" : "Checking revision and review authority…") + '</span><span class="context-room-proposal-opening-indicator" aria-hidden="true"></span>'
     : openBlocked
       ? '<strong>' + escapeHtml(blockedLabel) + '</strong><span>No review decision is available in this state.</span>'
       : '<strong>' + pending + '</strong><span>' + (activeDocqa ? "file" + (pending === 1 ? "" : "s") + " remaining · " + reviewed + " reviewed" : prepared ? "Choose a file to begin reviewing" : "loading review state…") + '</span>';
