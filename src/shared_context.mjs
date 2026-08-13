@@ -38,7 +38,7 @@ const SHARED_REVIEW_TEXT_EXTENSIONS = new Set([
 ]);
 const SHARED_REVIEW_TEXT_FILENAMES = new Set([
   "Dockerfile", "Containerfile", "Makefile", "Rakefile", "Gemfile", "Procfile", "README", "LICENSE", "CHANGELOG",
-  ".dockerignore", ".editorconfig", ".eslintignore", ".gitattributes", ".gitignore", ".markdownlintignore", ".node-version",
+  ".dockerignore", ".editorconfig", ".eslintignore", ".gitattributes", ".gitignore", ".gitkeep", ".markdownlintignore", ".node-version",
   ".npmignore", ".nvmrc", ".prettierignore", ".python-version", ".ruby-version", ".tool-versions",
 ]);
 const SHARED_PROPOSAL_STATE_PREFIX = "context-room-state/";

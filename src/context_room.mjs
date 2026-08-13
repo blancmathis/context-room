@@ -850,6 +850,7 @@ const PROJECT_TEXT_FILENAMES = new Set([
   ".eslintignore",
   ".gitattributes",
   ".gitignore",
+  ".gitkeep",
   ".markdownlintignore",
   ".node-version",
   ".npmignore",

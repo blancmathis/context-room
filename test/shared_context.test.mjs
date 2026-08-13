@@ -82,6 +82,8 @@ import {
   createMemoryServer,
   deleteMemoryPaths,
   listExplorerFiles,
+  readFileDiff,
+  readMemoryFile,
   readMemoryWebappSettings,
   renderAppHtml,
   revertMemoryFile,
@@ -4921,6 +4923,57 @@ test("a registered shared repository can be browsed and reviewed without a local
   const review = materializeSharedRepositoryReview(fixture.remote, { proposal: proposal.branch });
   assert.equal(review.metadata.proposalHead, published.head);
   assert.equal(review.metadata.repository, fixture.remote);
+});
+
+test("a shared repository review materializes a tracked gitkeep deletion", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  writeFile(fixture.seed, "projects/demo/docs/.gitkeep", "");
+  git(fixture.seed, ["add", "projects/demo/docs/.gitkeep"]);
+  git(fixture.seed, ["commit", "-m", "Track the documentation placeholder"]);
+  git(fixture.seed, ["push", "origin", "main"]);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+
+  const proposal = createSharedProposal(fixture.project, {
+    title: "Replace the documentation placeholder",
+    description: "Remove the placeholder once reviewed documentation exists.",
+    branch: "proposal/demo/remove-gitkeep",
+  });
+  configureGit(proposal.root);
+  fs.unlinkSync(path.join(proposal.root, "projects/demo/docs/.gitkeep"));
+  writeFile(proposal.root, "projects/demo/docs/README.md", "# Demo\n\nReviewed documentation replaces the placeholder.\n");
+  const published = publishSharedProposal(fixture.project, { proposal: proposal.branch });
+
+  const review = materializeSharedRepositoryReview(fixture.remote, {
+    proposal: proposal.branch,
+    expectedHead: published.head,
+  });
+  assert.deepEqual(
+    review.metadata.proposalChanges.find((change) => change.path === "projects/demo/docs/.gitkeep"),
+    {
+      path: "projects/demo/docs/.gitkeep",
+      status: "D",
+      fromPath: null,
+      score: null,
+      reviewKind: "proposal-change",
+    },
+  );
+  assert.equal(review.metadata.proposalFiles.includes("projects/demo/docs/.gitkeep"), true);
+  assert.equal(fs.existsSync(path.join(review.reviewRoot, "projects/demo/docs/.gitkeep")), false);
+
+  initializeContextRoomProject(review.reviewRoot, {
+    title: "Review · proposal/demo/remove-gitkeep",
+    allowedPaths: ["projects/demo/docs/"],
+    watchAllow: ["projects/demo/docs/"],
+  });
+  const deletedFile = readMemoryFile(review.reviewRoot, "projects/demo/docs/.gitkeep", { readOnly: true });
+  assert.equal(deletedFile.exists, false);
+  assert.equal(deletedFile.content, "");
+
+  const deletedDiff = readFileDiff(review.reviewRoot, "projects/demo/docs/.gitkeep", { readOnly: true });
+  assert.equal(deletedDiff.changed, true);
+  assert.equal(deletedDiff.currentExists, false);
+  assert.match(deletedDiff.patch, /deleted file mode 100644/);
 });
 
 test("a shared-only project can create a Markdown document as a published proposal", async (t) => {
