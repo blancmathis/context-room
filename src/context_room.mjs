@@ -26605,7 +26605,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
                   <h2 id="reviewQueueHeading" tabindex="-1">Review queue</h2>
                   <div class="muted">Each file stays atomic. Shared changes stay grouped by proposal.</div>
                 </div>
-                <div id="reviewSummary" class="review-summary" aria-label="review metrics"></div>
+                <div id="reviewSummary" class="review-summary" role="group" aria-label="review metrics"></div>
               </header>
               <div class="context-hub-review-toolbar context-room-review-toolbar">
                 <div class="context-hub-review-filter">

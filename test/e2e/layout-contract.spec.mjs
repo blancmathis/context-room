@@ -701,18 +701,17 @@ test("@layout compact controls keep 40px targets and the graph list reflows at 3
   await page.evaluate(() => showGraphPage({ scope: "global", pushHistory: false }));
   await expect(page.locator("#graphPage")).toBeVisible();
   await page.locator("#graphListToggle").click();
-  await page.evaluate(() => {
+  const graphGeometry = await page.evaluate(() => {
     const list = document.querySelector("#graphAccessibleList");
+    if (!list) throw new Error("The graph accessible list is unavailable");
     if (!list.querySelector(".graph-list-row")) {
       list.innerHTML = '<button class="graph-list-row" type="button"><span><strong>Architecture decision record with a long title</strong><small>docs/architecture/decisions/context-room.md</small></span><small>document</small><span class="graph-node-state">accepted</span></button>';
     }
-  });
-  const graphGeometry = await page.locator("#graphAccessibleList .graph-list-row").first().evaluate((row) => {
+    const row = list.querySelector(".graph-list-row");
     const rect = (element) => {
       const box = element.getBoundingClientRect();
       return { top: box.top, right: box.right, bottom: box.bottom, left: box.left, width: box.width };
     };
-    const list = row.closest("#graphAccessibleList");
     const cells = row.children;
     return {
       viewportWidth: window.innerWidth,
