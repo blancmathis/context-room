@@ -145,6 +145,7 @@ async function replaceHubProposals(page, proposals) {
       title: proposal.title,
       description: proposal.description || "Exact proposal opening fixture.",
       reviewStatus: proposal.reviewStatus,
+      integratedOnMain: proposal.integratedOnMain === true,
       available: proposal.available !== false,
       authorityViolation: proposal.authorityViolation || null,
       authorityMessage: proposal.authorityMessage || "",
