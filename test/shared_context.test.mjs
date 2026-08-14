@@ -6545,7 +6545,7 @@ test("direct proposal review reopening reuses the exact room and cached DocQA", 
 
   let materializationCalls = 0;
   let docQaCalls = 0;
-  const room = createMemoryServer({
+  let room = createMemoryServer({
     root: fixture.project,
     sharedReviewMaterializationTask: async ({ sourceRoot, proposal: branch, expectedHead }) => {
       materializationCalls += 1;
@@ -6557,8 +6557,8 @@ test("direct proposal review reopening reuses the exact room and cached DocQA", 
     },
   });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(() => room.server.close());
-  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  t.after(() => { if (room.server.listening) room.server.close(); });
+  let origin = `http://127.0.0.1:${room.server.address().port}`;
   const openReview = () => fetch(origin + "/api/shared-context/review", {
     method: "POST",
     headers: { "content-type": "application/json", "x-context-room-project": room.projectId },
@@ -6572,13 +6572,42 @@ test("direct proposal review reopening reuses the exact room and cached DocQA", 
   assert.equal(materializationCalls, 1);
   assert.equal(docQaCalls, 1);
 
+  const warmStartedAt = performance.now();
   const secondResponse = await openReview();
   const second = await secondResponse.json();
+  const warmElapsedMs = performance.now() - warmStartedAt;
   assert.equal(secondResponse.status, 201, JSON.stringify(second));
   assert.equal(second.url, first.url);
   assert.equal(second.reviewRoot, first.reviewRoot);
+  assert.match(secondResponse.headers.get("server-timing") || "", /exact-ref;dur=/);
+  assert.match(secondResponse.headers.get("server-timing") || "", /room;dur=/);
+  assert.match(secondResponse.headers.get("server-timing") || "", /docqa;dur=/);
+  assert.match(secondResponse.headers.get("server-timing") || "", /payload;dur=/);
   assert.equal(materializationCalls, 1, "an exact warm room must not rematerialize");
   assert.equal(docQaCalls, 1, "unchanged review evidence must reuse the cached DocQA report");
+  t.diagnostic(`exact warm review reopened in ${Math.round(warmElapsedMs)}ms`);
+  assert.ok(warmElapsedMs < 300, `exact warm review reopening took ${Math.round(warmElapsedMs)}ms`);
+
+  await new Promise((resolve, reject) => room.server.close((error) => error ? reject(error) : resolve()));
+  room = createMemoryServer({
+    root: fixture.project,
+    sharedReviewMaterializationTask: async () => {
+      materializationCalls += 1;
+      throw new Error("an exact persisted review must not rematerialize after restart");
+    },
+  });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  origin = `http://127.0.0.1:${room.server.address().port}`;
+  const restartedAt = performance.now();
+  const restartedResponse = await openReview();
+  const restarted = await restartedResponse.json();
+  const restartedElapsedMs = performance.now() - restartedAt;
+  assert.equal(restartedResponse.status, 201, JSON.stringify(restarted));
+  assert.equal(fs.realpathSync(restarted.reviewRoot), fs.realpathSync(first.reviewRoot));
+  assert.equal(restarted.review.authorityId, first.review.authorityId);
+  assert.equal(materializationCalls, 1, "restart must reuse the persisted exact authority");
+  t.diagnostic(`persisted exact review reopened after restart in ${Math.round(restartedElapsedMs)}ms`);
+  assert.ok(restartedElapsedMs < 300, `persisted exact review reopening took ${Math.round(restartedElapsedMs)}ms`);
 });
 
 test("shared Context Room API lists proposals and opens an exact review room", async (t) => {
@@ -7737,6 +7766,54 @@ test("large proposal acceptance batches persist review evidence within an intera
   assert.deepEqual(buildDocQaReport(review.reviewRoot).reviewedPaths, files);
   t.diagnostic(`80-file review batch persisted in ${Math.round(elapsedMs)}ms`);
   assert.ok(elapsedMs < 7_500, `80-file review batch took ${Math.round(elapsedMs)}ms`);
+});
+
+test("large proposal acceptance returns a durable exact HTTP projection within one second", async (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, { title: "Large HTTP review batch", branch: "proposal/demo/large-http-review-batch" });
+  configureGit(proposal.root);
+  const files = Array.from({ length: 80 }, (_, index) => {
+    const filePath = `projects/demo/docs/http-batch/file-${String(index + 1).padStart(3, "0")}.md`;
+    const body = index === 0 ? "A".repeat(688_000) : "B".repeat(9_000);
+    writeFile(proposal.root, filePath, `# HTTP batch file ${index + 1}\n\n${body}\n`);
+    return filePath;
+  });
+  const published = publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  initializeContextRoomProject(review.reviewRoot, { allowedPaths: ["projects/demo/"], watchAllow: ["projects/demo/"] });
+  const room = createMemoryServer({ root: review.reviewRoot });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+
+  const startedAt = performance.now();
+  const response = await fetch(origin + "/api/shared-context/review-files", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-context-room-project": room.projectId,
+      "x-context-room-owner-nonce": room.ownerMutationNonce,
+    },
+    body: JSON.stringify({ expectedProposalHead: published.head, decision: "accept", files }),
+  });
+  const payload = await response.json();
+  const elapsedMs = performance.now() - startedAt;
+
+  assert.equal(response.status, 200, JSON.stringify(payload));
+  assert.equal(payload.refreshRequired, undefined, JSON.stringify(payload));
+  assert.deepEqual(payload.reviewedPaths, files);
+  assert.deepEqual(payload.docqa.reviewedPaths, files);
+  assert.equal(payload.docqa.pendingPaths.length, 0);
+  const decisionEvents = readContextRoomEvents({ types: "review.decision", limit: 200 }).events;
+  assert.equal(decisionEvents.length, 80);
+  assert.deepEqual(new Set(decisionEvents.map((event) => event.resource?.path)), new Set(files));
+  assert.match(response.headers.get("server-timing") || "", /transaction;dur=/);
+  assert.match(response.headers.get("server-timing") || "", /projection;dur=/);
+  assert.match(response.headers.get("server-timing") || "", /events;dur=/);
+  t.diagnostic(`80-file durable HTTP review batch completed in ${Math.round(elapsedMs)}ms · ${response.headers.get("server-timing") || "no timing"}`);
+  assert.ok(elapsedMs < 900, `80-file durable HTTP review batch took ${Math.round(elapsedMs)}ms`);
 });
 
 test("concurrent opposite whole-file decisions serialize with exactly one winner", async (t) => {

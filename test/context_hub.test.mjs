@@ -294,6 +294,15 @@ test("Context Hub opaque repository IDs open the exact repository when branch an
   assert.equal(second.head, published.head);
   assert.notEqual(first.repositoryId, second.repositoryId);
   assert.notEqual(first.id, second.id);
+  assert.ok(["preparing", "ready"].includes(first.openReadiness?.status), JSON.stringify(first.openReadiness));
+  let preparedFirst = first;
+  const readinessDeadline = Date.now() + 5_000;
+  while (preparedFirst.openReadiness?.status !== "ready" && Date.now() < readinessDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const currentHub = await (await fetch(origin + "/api/context-hub", { headers })).json();
+    preparedFirst = currentHub.proposals.find((item) => item.id === first.id) || preparedFirst;
+  }
+  assert.deepEqual(preparedFirst.openReadiness, { status: "ready" });
 
   const reviewResponse = await fetch(origin + "/api/context-hub/review", {
     method: "POST",

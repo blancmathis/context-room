@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TEST_DIRECTORY = path.join(ROOT, "test");
 const SHARED_CONTEXT_TEST = "test/shared_context.test.mjs";
+const SHARED_CONTEXT_PERFORMANCE_TEST = "large proposal acceptance returns a durable exact HTTP projection within one second";
 const JOB_TIMEOUT_MS = 300_000;
 const SLOW_JOB_TIMEOUT_MS = 600_000;
 // GitHub-hosted runners expose several logical CPUs but the Git-heavy suites
@@ -37,15 +38,24 @@ function sharedContextShards(count = 4) {
     throw new Error(`No tests found in ${SHARED_CONTEXT_TEST}`);
   }
   const shards = Array.from({ length: count }, () => []);
-  names.forEach((name, index) => shards[index % count].push(name));
-  return shards.map((shard, index) => ({
+  names.filter((name) => name !== SHARED_CONTEXT_PERFORMANCE_TEST)
+    .forEach((name, index) => shards[index % count].push(name));
+  return [...shards.map((shard, index) => ({
     label: `${SHARED_CONTEXT_TEST} [${index + 1}/${count}]`,
     args: [
       "--test",
       `--test-name-pattern=^(?:${shard.map(escapePattern).join("|")})$`,
       SHARED_CONTEXT_TEST,
     ],
-  }));
+  })), {
+    label: `${SHARED_CONTEXT_TEST} [performance]`,
+    args: [
+      "--test",
+      `--test-name-pattern=^${escapePattern(SHARED_CONTEXT_PERFORMANCE_TEST)}$`,
+      SHARED_CONTEXT_TEST,
+    ],
+    exclusive: true,
+  }];
 }
 
 function jobs() {
@@ -127,7 +137,9 @@ function runJob(job) {
 }
 
 async function main() {
-  const queue = jobs();
+  const pending = jobs();
+  const queue = pending.filter((job) => !job.exclusive);
+  const exclusive = pending.filter((job) => job.exclusive);
   const results = [];
   let cursor = 0;
   async function worker() {
@@ -140,6 +152,12 @@ async function main() {
     }
   }
   await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENCY, queue.length) }, worker));
+  for (const job of exclusive) {
+    const result = await runJob(job);
+    results.push(result);
+    const seconds = (result.durationMs / 1_000).toFixed(1);
+    process.stdout.write(`${result.code === 0 ? "ok" : "not ok"} - ${result.label} (${seconds}s)\n`);
+  }
   const failures = results.filter((result) => result.code !== 0);
   for (const failure of failures) {
     process.stderr.write(`\n--- ${failure.label}${failure.timedOut ? " timed out" : " failed"} ---\n`);

@@ -150,6 +150,7 @@ async function replaceHubProposals(page, proposals) {
       authorityViolation: proposal.authorityViolation || null,
       authorityMessage: proposal.authorityMessage || "",
       hasConflict: proposal.hasConflict === true,
+      openReadiness: proposal.openReadiness || { status: "ready" },
       files: proposal.files || ["README.md"],
       fileCount: (proposal.files || ["README.md"]).length,
     }));
@@ -853,6 +854,119 @@ test("@smoke proposal preparation never claims the exact review is ready", async
 
   releaseReview();
   await expect(page.locator("#proposalReviewNotice")).toContainText("Simulated delayed review preparation.");
+});
+
+test("@smoke a proposal stays disabled until exact local preparation is ready", async ({ page }) => {
+  const { origin } = fixture();
+  let reviewPosts = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === "/api/context-hub/review") reviewPosts += 1;
+  });
+  await page.goto(origin + "/?hub=1&workspace=workspace-proposal-readiness&view=hub");
+  await waitForBoot(page);
+  const [proposal] = await replaceHubProposals(page, [{
+    id: "proposal:fixture:readiness",
+    branch: "proposal/demo/readiness",
+    title: "Prepared before opening",
+    reviewStatus: "ready",
+    openReadiness: { status: "preparing" },
+  }]);
+  const button = page.locator('[data-context-room-review-entry="' + proposal.id + '"] [data-context-room-review]');
+  await expect(button).toBeDisabled();
+  await expect(page.locator('[data-context-room-review-entry="' + proposal.id + '"] .context-room-proposal-state')).toContainText("Preparing");
+  await button.evaluate((element) => element.click());
+  expect(reviewPosts).toBe(0);
+  const hubRequestsBeforeReadiness = await page.evaluate(() => state.apiTrace.filter((entry) => entry.path === "/api/context-hub").length);
+  await page.evaluate((proposalId) => {
+    const proposal = state.contextHub.proposals.find((item) => item.id === proposalId);
+    handleRuntimeEvent({
+      cursor: (state.runtimeEventCursor || 0) + 1,
+      type: "proposal-readiness",
+      data: {
+        proposalId,
+        proposalHead: proposal.head,
+        baseRevision: proposal.baseRevision,
+        openReadiness: { status: "ready" },
+      },
+    });
+  }, proposal.id);
+  await expect(button).toBeEnabled();
+  await page.waitForTimeout(150);
+  const readinessResult = await page.evaluate((proposalId) => ({
+    readiness: state.contextHub.proposals.find((item) => item.id === proposalId)?.openReadiness,
+    hubRequests: state.apiTrace.filter((entry) => entry.path === "/api/context-hub").length,
+  }), proposal.id);
+  expect(readinessResult).toEqual({
+    readiness: { status: "ready" },
+    hubRequests: hubRequestsBeforeReadiness,
+  });
+});
+
+test("@smoke durable file acceptance never marks Reviewed before the 200 response", async ({ page }) => {
+  const { origin } = fixture();
+  let releaseDecision;
+  let markDecisionStarted;
+  const decisionStarted = new Promise((resolve) => { markDecisionStarted = resolve; });
+  const holdDecision = new Promise((resolve) => { releaseDecision = resolve; });
+  await page.route("**/api/shared-context/review-files", async (route) => {
+    markDecisionStarted();
+    await holdDecision;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        docqa: { queue: [], pendingPaths: [], reviewedPaths: ["README.md"], summary: { needsReview: 0 } },
+        sharedContext: {
+          mode: "review",
+          acceptedChangesRemain: true,
+          review: {
+            projectId: "demo",
+            proposal: "proposal/demo/durable-file-decision",
+            proposalHead: "2".repeat(40),
+            proposalFiles: ["README.md"],
+            proposalChanges: [{ path: "README.md", status: "M", reviewKind: "proposal-change" }],
+          },
+        },
+      }),
+    });
+  });
+  await page.goto(origin + "/?hub=1&workspace=workspace-durable-file-decision&view=hub");
+  await waitForBoot(page);
+  await page.evaluate(() => {
+    state.files = [{ path: "README.md", label: "README.md" }];
+    state.sharedContext = {
+      mode: "review",
+      acceptedChangesRemain: true,
+      review: {
+        projectId: "demo",
+        proposal: "proposal/demo/durable-file-decision",
+        proposalHead: "2".repeat(40),
+        proposalFiles: ["README.md"],
+        proposalChanges: [{ path: "README.md", status: "M", reviewKind: "proposal-change" }],
+      },
+    };
+    state.docqa = {
+      queue: [{ path: "README.md", label: "README.md", reviewReason: "unverified-current" }],
+      pendingPaths: ["README.md"],
+      reviewedPaths: [],
+      summary: { needsReview: 1 },
+    };
+    showProposalReview();
+    state.proposalSelectedFiles.add("README.md");
+    renderProposalReviewPage();
+  });
+  const acceptSelected = page.locator('[data-proposal-review-batch="accept"]');
+  await acceptSelected.evaluate((button) => button.click());
+  await decisionStarted;
+  try {
+    await expect(acceptSelected).toBeDisabled();
+    await expect(acceptSelected).toHaveText("Saving…");
+    await expect(page.locator('[data-proposal-review-path="README.md"] .proposal-review-file-state')).toHaveText("Review");
+    await expect(page.locator('[data-proposal-review-path="README.md"]')).toHaveAttribute("aria-pressed", "true");
+  } finally {
+    releaseDecision();
+  }
+  await expect(page.locator('[data-proposal-review-path="README.md"] .proposal-review-file-state')).toHaveText("Reviewed");
 });
 
 test("@layout proposal verification keeps the final action and header geometry stable", async ({ page }) => {

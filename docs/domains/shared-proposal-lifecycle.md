@@ -77,6 +77,8 @@ Materialization binds repository, branch, exact head, reviewed base, changed fil
 
 An existing materialization may be reused only when repository, branch, exact head, and accepted-main revision all match the requested snapshot. A missing, stale, or mismatched field blocks reuse and requires current exact materialization. Cache reuse never converts an attention or terminal projection back into an active review.
 
+A multi-file decision remains one synchronous durable transaction. It preserves one logical receipt and journal event per file while batching Git index reads and journal persistence. The success response is built from the same validated manifest, review state, and Git snapshot committed by the transaction; files become `Reviewed` only after that response. `POST /api/shared-context/review-files` exposes `transaction`, `projection`, and `events` through `Server-Timing`.
+
 ## Terminal revalidation
 
 Cached listing or materialization state never authorizes a terminal action. Every accept or reject attempt revalidates current repository state, branch, exact head, accepted-main revision, terminal configuration, and human authority before mutation.

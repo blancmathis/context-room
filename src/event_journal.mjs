@@ -96,6 +96,33 @@ export function appendContextRoomEvent(type, {
   return event;
 }
 
+export function appendContextRoomEvents(entries = []) {
+  const requested = Array.isArray(entries) ? entries : [];
+  if (!requested.length) return [];
+  ensureJournalDirectory();
+  rotateJournalIfNeeded();
+  const events = requested.map(({ type, ...input }) => {
+    const normalizedActor = normalizedEventActor(input.actor || "");
+    return {
+      schemaVersion: CLI_EVENT_SCHEMA_VERSION,
+      cursor: `${Date.now().toString(36)}-${process.pid.toString(36)}-${randomUUID().slice(0, 8)}`,
+      type: String(type || "context-room.updated").slice(0, 160),
+      occurredAt: String(input.occurredAt || new Date().toISOString()),
+      projectId: normalizedIdentity(input.projectId),
+      locationId: normalizedIdentity(input.locationId, 1_000),
+      sharedProjectId: normalizedIdentity(input.sharedProjectId),
+      sharedRepository: normalizedIdentity(input.sharedRepository, 1_000),
+      resource: sanitizedEventValue(input.resource),
+      data: sanitizedEventValue(input.data),
+      ...(normalizedActor ? { actor: normalizedActor } : {}),
+    };
+  });
+  const file = contextRoomEventJournalPath();
+  fs.appendFileSync(file, events.map((event) => JSON.stringify(event)).join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
+  try { fs.chmodSync(file, 0o600); } catch {}
+  return events;
+}
+
 function parseJournalEvents() {
   return readJournalLines().flatMap((line) => {
     try {
