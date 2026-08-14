@@ -224,6 +224,48 @@ function consumeExpectedConflictConsole(failures) {
   if (httpMatches.length) failures.splice(httpMatches[0], 1);
 }
 
+function consumeExpectedDuplicateRegistrationFailures(failures, startIndex) {
+  const expectedPaths = new Set(["/api/file", "/api/file/diff", "/api/file/review-base"]);
+  const consumedIndexes = new Set();
+  const consumedPaths = new Set();
+  for (let index = startIndex; index < failures.length; index += 1) {
+    const match = failures[index].match(/^http (409|500): (\S+)$/);
+    if (!match) continue;
+    const pathname = new URL(match[2]).pathname;
+    if (!expectedPaths.has(pathname)) continue;
+    expect(consumedPaths.has(pathname), `${pathname} fails at most once while the duplicate workspace registers`).toBe(false);
+    consumedPaths.add(pathname);
+    consumedIndexes.add(index);
+    const statusText = match[1] === "409" ? "Conflict" : "Internal Server Error";
+    const expectedConsole = `console: Failed to load resource: the server responded with a status of ${match[1]} (${statusText})`;
+    if (failures[index + 1] === expectedConsole) consumedIndexes.add(index + 1);
+  }
+  [...consumedIndexes].sort((left, right) => right - left).forEach((index) => failures.splice(index, 1));
+}
+
+test("@smoke duplicate registration consumes only its transient stale file reads", () => {
+  const failures = [
+    "http 409: http://127.0.0.1/api/file?path=before.md",
+    "http 500: http://127.0.0.1/api/file?path=docs%2FREADME.md",
+    "console: Failed to load resource: the server responded with a status of 500 (Internal Server Error)",
+    "http 409: http://127.0.0.1/api/file/diff?path=docs%2FREADME.md",
+    "http 500: http://127.0.0.1/api/reports",
+    "console: Failed to load resource: the server responded with a status of 500 (Internal Server Error)",
+    "pageerror: unexpected duplicate failure",
+    "http 409: http://127.0.0.1/api/file/review-base?path=docs%2FREADME.md",
+    "console: Failed to load resource: the server responded with a status of 409 (Conflict)",
+  ];
+
+  consumeExpectedDuplicateRegistrationFailures(failures, 1);
+
+  expect(failures).toEqual([
+    "http 409: http://127.0.0.1/api/file?path=before.md",
+    "http 500: http://127.0.0.1/api/reports",
+    "console: Failed to load resource: the server responded with a status of 500 (Internal Server Error)",
+    "pageerror: unexpected duplicate failure",
+  ]);
+});
+
 async function exerciseResponsiveExplorer(page) {
   for (const width of [390, 640, 768, 980, 981, 1024, 1280, 1440]) {
     await page.setViewportSize({ width, height: width <= 640 ? 844 : 900 });
@@ -581,12 +623,17 @@ test("@smoke Context Room keeps its critical workspace state stable", async ({ p
   await waitForBoot(page);
   await expect(page.locator("#workspaceTitle")).toContainText("README.md");
 
+  const primaryDuplicateRegistrationStart = guard.failures.length;
   const duplicate = await context.newPage();
   const duplicateGuard = attachFailureGuards(duplicate);
+  const duplicateRegistrationStart = duplicateGuard.failures.length;
   await duplicate.goto(page.url());
   await waitForBoot(duplicate);
   await expect.poll(() => workspaceId(duplicate.url())).not.toBe(atlasWorkspace);
   await waitForWorkspaceBackgroundIdle(duplicate);
+  await waitForWorkspaceBackgroundIdle(page);
+  consumeExpectedDuplicateRegistrationFailures(guard.failures, primaryDuplicateRegistrationStart);
+  consumeExpectedDuplicateRegistrationFailures(duplicateGuard.failures, duplicateRegistrationStart);
   await duplicate.close();
 
   await exerciseResponsiveExplorer(page);
