@@ -506,8 +506,12 @@ async function assertWorkbenchGutters(page, data, width) {
     await page.keyboard.press("Escape");
 
     const proposal = page.locator('[data-context-room-review-entry]:has([data-source="shared"])').first();
-    await proposal.click();
-    await expect(page).toHaveURL((url) => url.port !== new URL(data.origin).port && url.searchParams.get("view") === "proposal");
+    const proposalOpen = proposal.locator("[data-context-room-review]");
+    await expect(proposalOpen).toBeEnabled();
+    await proposalOpen.click();
+    await expect(page).toHaveURL((url) => url.origin === new URL(data.origin).origin
+      && /^\/reviews\/[^/]+\/?$/.test(url.pathname)
+      && url.searchParams.get("view") === "proposal");
     await waitForBoot(page);
     await expect(page.locator("#proposalReviewPage")).toBeVisible();
     await expectHorizontalPadding(page, ".proposal-review-head", gutter);
@@ -531,8 +535,11 @@ test("@smoke Context Room keeps its critical workspace state stable", async ({ p
 
   const proposal = page.locator('[data-context-room-review-entry]:has([data-source="shared"])').first();
   await expect(proposal).toBeVisible();
-  await proposal.click();
-  await expect(page).toHaveURL((url) => url.port !== new URL(data.origin).port
+  const proposalOpen = proposal.locator("[data-context-room-review]");
+  await expect(proposalOpen).toBeEnabled();
+  await proposalOpen.click();
+  await expect(page).toHaveURL((url) => url.origin === new URL(data.origin).origin
+    && /^\/reviews\/[^/]+\/?$/.test(url.pathname)
     && url.searchParams.get("view") === "proposal"
     && Boolean(url.searchParams.get("returnTo")));
   await expect(page.locator("#proposalReviewPage")).toBeVisible();
@@ -966,7 +973,6 @@ test("@smoke an agent command opens the requested proposal file", async ({ page 
   await page.goto(`${data.origin}/?hub=1&view=hub&label=proposal-target`);
   await waitForReady(page);
   const targetWorkspace = workspaceId(page.url());
-  const roomPort = new URL(data.origin).port;
 
   const response = await page.request.post(`${data.origin}/api/workspaces/${targetWorkspace}/command`, {
     data: {
@@ -980,8 +986,10 @@ test("@smoke an agent command opens the requested proposal file", async ({ page 
   });
   expect(response.ok()).toBe(true);
 
-  await expect(page).toHaveURL((url) => url.port !== roomPort && url.searchParams.get("file") === "projects/atlas/docs/README.md");
-  await waitForBoot(page);
+  await expect(page).toHaveURL((url) => url.origin === new URL(data.origin).origin
+    && /^\/reviews\/[^/]+\/?$/.test(url.pathname)
+    && url.searchParams.get("file") === "projects/atlas/docs/README.md");
+  await expect.poll(() => page.evaluate(() => state.page)).toBe("file");
   await expect(page.locator("#viewer")).toBeVisible();
 });
 
