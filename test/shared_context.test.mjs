@@ -88,6 +88,7 @@ import {
   renderAppHtml,
   revertMemoryFile,
   writeDocReviewDecision,
+  writeSharedProposalFileBatchDecision,
   writeMemoryFile,
 } from "../src/context_room.mjs";
 import {
@@ -6665,7 +6666,7 @@ test("shared Context Room API lists proposals and opens an exact review room", a
   const reviewPage = await fetch(opened.url + "/");
   assert.equal(
     reviewPage.headers.get("content-security-policy"),
-    `frame-ancestors 'self' http://127.0.0.1:${room.server.address().port} http://localhost:${room.server.address().port}`,
+    "frame-ancestors 'self'",
   );
   const reviewHtml = await reviewPage.text();
   const reviewOwnerNonce = /<meta name="context-room-owner-nonce" content="([^"]+)"/.exec(reviewHtml)?.[1] || "";
@@ -6690,12 +6691,9 @@ test("shared Context Room API lists proposals and opens an exact review room", a
   const crossSiteReviewReturnNavigation = await rawHttpRequest(`${origin}/?hub=1&view=hub`, {
     headers: { ...reviewReturnNavigationHeaders, "sec-fetch-site": "cross-site" },
   });
-  assert.equal(crossSiteReviewReturnNavigation.statusCode, 200);
+  assert.equal(crossSiteReviewReturnNavigation.statusCode, 403);
+  assert.equal((await rawHttpRequest(`${origin}/api/health`, { headers: reviewReturnNavigationHeaders })).statusCode, 200);
   for (const blocked of [
-    await rawHttpRequest(`${origin}/api/health`, { headers: reviewReturnNavigationHeaders }),
-    await rawHttpRequest(`${origin}/`, { method: "POST", headers: reviewReturnNavigationHeaders }),
-    await rawHttpRequest(`${origin}/`, { headers: { ...reviewReturnNavigationHeaders, "sec-fetch-dest": "iframe" } }),
-    await rawHttpRequest(`${origin}/`, { headers: { ...reviewReturnNavigationHeaders, "sec-fetch-mode": "no-cors" } }),
     await rawHttpRequest(`${origin}/`, { headers: { ...reviewReturnNavigationHeaders, referer: "http://127.0.0.1:65534/" } }),
     await rawHttpRequest(`${origin}/`, { headers: { ...reviewReturnNavigationHeaders, origin: "https://attacker.example" } }),
     await rawHttpRequest(`${origin}/`, { headers: { ...reviewReturnNavigationHeaders, referer: "https://attacker.example/", "sec-fetch-site": "cross-site" } }),
@@ -6703,6 +6701,9 @@ test("shared Context Room API lists proposals and opens an exact review room", a
     assert.equal(blocked.statusCode, 403);
     assert.equal(JSON.parse(blocked.body).code, "context_room_cross_site_request_denied");
   }
+  const malformedReviewPath = await fetch(opened.url + "//api/docqa");
+  assert.equal(malformedReviewPath.status, 400);
+  assert.equal((await malformedReviewPath.json()).code, "request_url_invalid");
   const exactResponse = await fetch(opened.url + "/api/shared-context");
   const exact = await exactResponse.json();
   assert.equal(exact.mode, "review");
@@ -7707,6 +7708,35 @@ test("whole-file dependency proofs are independent of batch order", async (t) =>
   const second = await decide([dependentPath, dependencyPath]);
   assert.deepEqual(second.files.find((item) => item.path === dependentPath).dependencyVersions, firstDependencies);
   assert.match(firstDependencies["strategy.trust"], /^[a-f0-9]{64}$/);
+});
+
+test("large proposal acceptance batches persist review evidence within an interactive latency budget", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const proposal = createSharedProposal(fixture.project, { title: "Large review batch", branch: "proposal/demo/large-review-batch" });
+  configureGit(proposal.root);
+  const files = Array.from({ length: 80 }, (_, index) => {
+    const filePath = `projects/demo/docs/batch/file-${String(index + 1).padStart(3, "0")}.md`;
+    writeFile(proposal.root, filePath, `# Batch file ${index + 1}\n\nExact reviewed content ${index + 1}.\n`);
+    return filePath;
+  });
+  const published = publishSharedProposal(fixture.project, { proposal: proposal.branch });
+  const review = materializeSharedReview(fixture.project, { proposal: proposal.branch });
+  initializeContextRoomProject(review.reviewRoot, { allowedPaths: ["projects/demo/"], watchAllow: ["projects/demo/"] });
+
+  const startedAt = performance.now();
+  const result = writeSharedProposalFileBatchDecision(review.reviewRoot, {
+    expectedProposalHead: published.head,
+    decision: "accept",
+    files,
+  });
+  const elapsedMs = performance.now() - startedAt;
+
+  assert.equal(result.reviewedPaths.length, files.length);
+  assert.deepEqual(buildDocQaReport(review.reviewRoot).reviewedPaths, files);
+  t.diagnostic(`80-file review batch persisted in ${Math.round(elapsedMs)}ms`);
+  assert.ok(elapsedMs < 7_500, `80-file review batch took ${Math.round(elapsedMs)}ms`);
 });
 
 test("concurrent opposite whole-file decisions serialize with exactly one winner", async (t) => {

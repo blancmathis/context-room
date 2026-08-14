@@ -951,6 +951,76 @@ test("@layout proposal verification keeps the final action and header geometry s
   expect(readyGeometry.progress).toEqual(openingGeometry.progress);
 });
 
+test("@smoke successful proposal preparation stays in one document without a hard refresh", async ({ page }) => {
+  const { origin } = fixture();
+  const proposalFiles = ["README.md", "docs/operations.md"];
+  const proposalHead = "1".repeat(40);
+  const proposalTitle = "Seamless proposal opening";
+  await page.goto(origin + "/?hub=1&workspace=workspace-proposal-seamless-opening&view=hub");
+  await waitForBoot(page);
+  const [proposal] = await replaceHubProposals(page, [{
+    id: "proposal:fixture:seamless-opening",
+    branch: "proposal/demo/seamless-opening",
+    head: proposalHead,
+    title: proposalTitle,
+    reviewStatus: "ready",
+    files: proposalFiles,
+  }]);
+  const review = {
+    projectId: "demo",
+    authorityId: "authority-seamless-opening",
+    repository: "fixture://shared",
+    repositoryId: "fixture-repository",
+    proposal: proposal.branch,
+    proposalHead,
+    defaultBranch: "main",
+    title: proposalTitle,
+    description: "Exact proposal opening fixture.",
+    proposalFiles,
+    proposalChanges: proposalFiles.map((filePath) => ({ path: filePath, status: "M", reviewKind: "proposal-change" })),
+  };
+  const docqa = {
+    generatedAt: new Date().toISOString(),
+    queue: proposalFiles.map((filePath) => ({ path: filePath, label: filePath.split("/").pop(), reviewReason: "git-change" })),
+    pendingPaths: proposalFiles,
+    reviewedPaths: [],
+    summary: { needsReview: proposalFiles.length },
+  };
+  await page.route("**/api/context-hub/review", async (route) => {
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        url: origin + "/reviews/authority-seamless-opening/",
+        reviewRoot: "/tmp/context-room-seamless-review",
+        projectId: "context-room-seamless-review",
+        review,
+        docqa,
+        sharedContext: { enabled: true, mode: "review", review, acceptedChangesRemain: true },
+        files: proposalFiles.map((filePath) => ({ path: filePath, label: filePath.split("/").pop() })),
+        directories: ["docs/"],
+      }),
+    });
+  });
+  const documentIdentity = await page.evaluate(() => {
+    window.__contextRoomDocumentIdentity = crypto.randomUUID();
+    return window.__contextRoomDocumentIdentity;
+  });
+  let documentRequests = 0;
+  page.on("request", (request) => {
+    if (request.resourceType() === "document") documentRequests += 1;
+  });
+
+  await page.locator('[data-context-room-review-entry="' + proposal.id + '"] [data-context-room-review]').click();
+
+  await expect(page.getByRole("heading", { name: proposalTitle })).toBeVisible();
+  await expect(page.locator("#proposalReviewProgress")).toContainText("2 files remaining · 0 reviewed");
+  await expect.poll(() => page.evaluate(() => window.__contextRoomDocumentIdentity || "")).toBe(documentIdentity);
+  await expect.poll(() => page.evaluate(() => state.contextRoomPreparingProposal)).toBe(null);
+  expect(documentRequests).toBe(0);
+  await expect(page).toHaveURL((url) => url.pathname === "/reviews/authority-seamless-opening/" && url.searchParams.get("view") === "proposal");
+});
+
 test("@smoke Back cancels a delayed proposal opening and Forward starts one clean exact retry", async ({ page }) => {
   const { origin } = fixture();
   let releaseFirstReview;

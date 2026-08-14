@@ -465,10 +465,11 @@ test("Context Hub refreshes a transient catalogue gap before declaring an exact 
     assert.equal(response.status, 201, JSON.stringify(opened));
     assert.equal(opened.review.proposal, proposal.branch);
     assert.equal(opened.review.proposalHead, published.head);
-    assert.equal("docqa" in opened, false, "Hub opening should not build DocQA before navigating to the exact review room");
+    assert.deepEqual(opened.docqa.pendingPaths, ["projects/demo/docs/README.md"]);
+    assert.match(opened.url, new RegExp(`^${origin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/reviews/`));
   }
   assert.equal(materializationCalls, 1, "current local main refs must collapse stale snapshot bases before materialization");
-  assert.equal(reviewServerListenCalls, 1, "one exact materialized review must initialize only one review server");
+  assert.equal(reviewServerListenCalls, 0, "an exact local review must stay on the Hub server");
   assert.equal(new Set(openedReviews.map((opened) => opened.url)).size, 1);
   assert.deepEqual(new Set(openedReviews.map((opened) => opened.review.baseRevision)), new Set([materializedBase]));
   const reviewPageResponse = await fetch(openedReviews[0].url + "/");
@@ -636,7 +637,7 @@ test("Context Hub rejects terminal and conflicting proposal cards before materia
   });
 });
 
-test("Context Hub cleans an unpublished child review when its server cannot listen", { timeout: 30_000 }, async (t) => {
+test("Context Hub keeps exact local reviews on the Hub server", { timeout: 30_000 }, async (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-review-listen-cleanup-"));
   withHubHome(t, path.join(base, "hub"));
   const sharedHome = path.join(base, "shared-home");
@@ -655,6 +656,7 @@ test("Context Hub cleans an unpublished child review when its server cannot list
   assert.ok(target);
 
   let materialized = null;
+  let reviewServerListenCalls = 0;
   const room = createMemoryServer({
     root,
     sharedReviewMaterializationTask: async () => {
@@ -665,7 +667,8 @@ test("Context Hub cleans an unpublished child review when its server cannot list
       return materialized;
     },
     sharedReviewServerListen: async () => {
-      throw new Error("Injected review listen failure");
+      reviewServerListenCalls += 1;
+      throw new Error("A local exact review must not launch a child server");
     },
   });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
@@ -683,14 +686,16 @@ test("Context Hub cleans an unpublished child review when its server cannot list
       expectedHead: target.head,
     }),
   });
-  const failure = await response.json();
-  assert.equal(response.status, 500, JSON.stringify(failure));
-  assert.equal(failure.error, "Context Room could not complete this request.");
+  const opened = await response.json();
+  assert.equal(response.status, 201, JSON.stringify(opened));
+  assert.equal(reviewServerListenCalls, 0);
   assert.ok(materialized);
-  assert.equal(fs.existsSync(materialized.reviewRoot), false);
+  assert.equal(fs.existsSync(materialized.reviewRoot), true);
+  assert.match(opened.url, /^http:\/\/127\.0\.0\.1:\d+\/reviews\//);
+  assert.equal((await fetch(opened.url)).status, 200);
   assert.equal(
     fs.existsSync(path.join(sharedHome, "review-authority", `${materialized.metadata.authorityId}.json`)),
-    false,
+    true,
   );
 });
 
