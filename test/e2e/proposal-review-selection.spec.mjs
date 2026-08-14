@@ -908,7 +908,7 @@ test("@smoke durable file acceptance never marks Reviewed before the 200 respons
   let markDecisionStarted;
   const decisionStarted = new Promise((resolve) => { markDecisionStarted = resolve; });
   const holdDecision = new Promise((resolve) => { releaseDecision = resolve; });
-  await page.route("**/api/shared-context/review-files", async (route) => {
+  await page.route(/\/api\/shared-context\/review-files(?:\?|$)/, async (route) => {
     markDecisionStarted();
     await holdDecision;
     await route.fulfill({

@@ -28295,6 +28295,7 @@ async function api(path, options) {
   const requestOptions = options ? { cache: "no-store", ...options } : { cache: "no-store" };
   const headers = new Headers(requestOptions.headers || {});
   if (state.projectId) headers.set("x-context-room-project", state.projectId);
+  const requestProjectId = headers.get("x-context-room-project") || "";
   const requestPathname = new URL(path, window.location.href).pathname;
   const projectScoped = requestPathname.startsWith("/api/")
     && !requestPathname.startsWith("/api/context-hub")
@@ -28322,14 +28323,14 @@ async function api(path, options) {
     try {
       const res = await fetch(contextRoomScopedRequestPath(path), requestOptions);
       const responseProjectId = res.headers.get("x-context-room-project") || "";
-      const responseAction = contextRoomProjectResponseAction({ expectedProjectId: state.projectId || "", responseProjectId, globalRoom: IS_GLOBAL_CONTEXT_ROOM });
+      const responseAction = contextRoomProjectResponseAction({ expectedProjectId: requestProjectId, responseProjectId, globalRoom: IS_GLOBAL_CONTEXT_ROOM });
       if (["refresh-in-place", "exceptional-reload"].includes(responseAction)) {
         handleContextRoomProjectChange({ responseProjectId, reason: "response-project-mismatch" });
         const error = new Error("Context Room project changed; this stale response was ignored.");
         error.code = "context_room_stale_response";
         throw error;
       }
-      if (responseAction === "initialize") state.projectId = responseProjectId;
+      if (responseAction === "initialize" && !state.projectId) state.projectId = responseProjectId;
       if (res.status === 304) return { __notModified: true, __etag: res.headers.get("etag") || "", __serverTiming: res.headers.get("server-timing") || "" };
       const json = await res.json();
       if (res.status === 409 && ["context_room_project_changed", "context_room_project_identity_required"].includes(json.code)) {
