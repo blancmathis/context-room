@@ -166,12 +166,14 @@ test("@smoke verified real-server acceptance removes the proposal from active Hu
 
     const hubOrigin = new URL(data.origin).origin;
     await proposalRow.getByRole("button", { name: `Open proposal ${proposalTitle}` }).click();
-    await expect(page).toHaveURL((url) => url.origin !== hubOrigin && url.searchParams.get("view") === "proposal");
+    await expect(page).toHaveURL((url) => url.origin === hubOrigin
+      && /^\/reviews\/[^/]+\/?$/.test(url.pathname)
+      && url.searchParams.get("view") === "proposal");
     await waitForBoot(page);
 
     const acceptResponsePromise = page.waitForResponse((response) => (
       response.request().method() === "POST"
-      && new URL(response.url()).pathname === "/api/shared-context/accept"
+      && new URL(response.url()).pathname.endsWith("/api/shared-context/accept")
     ));
     await page.getByRole("button", { name: "Put on main", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: /Put this proposal on main\?/ });

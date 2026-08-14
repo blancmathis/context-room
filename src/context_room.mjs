@@ -9,7 +9,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:zlib";
-import { appendContextRoomEvent } from "./event_journal.mjs";
+import { appendContextRoomEvent, appendContextRoomEvents } from "./event_journal.mjs";
 import {
   cleanupFilesystemLockWorkerOwner,
   createFilesystemLockWorkerOwner,
@@ -66,6 +66,7 @@ import {
   ensureSharedProposal,
   openSharedProposalWorkspace,
   publishSharedProposal,
+  readPreparedSharedProposalRevision,
   readSharedMainRevision,
   readSharedProjectConnection,
   readAcceptedSharedMetadataProfiles,
@@ -144,6 +145,15 @@ import {
 } from "./review_authority.mjs";
 
 export { DOC_METADATA_KINDS, DOC_METADATA_STATUSES, parseDocMetadata } from "./doc_metadata.mjs";
+
+const SHARED_REVIEW_BATCH_TIMING = Symbol("shared-review-batch-timing");
+
+function serverTimingHeader(entries = {}) {
+  return Object.entries(entries)
+    .filter(([, duration]) => Number.isFinite(duration) && duration >= 0)
+    .map(([name, duration]) => `${name};dur=${duration.toFixed(1)}`)
+    .join(", ");
+}
 
 export function parseWorkspaceNavigationUrl(input, base = "http://127.0.0.1/") {
   const url = new URL(String(input || ""), base);
@@ -264,6 +274,7 @@ export const GLOBAL_PREFERENCES_FILE = "~/.context-room/preferences.json";
 const CONFIG_SCHEMA_URL = "https://unpkg.com/context-room@latest/schemas/config.schema.json";
 const DOCQA_REVIEW_STATE = `${CONFIG_DIR}/review-state.json`;
 const DOCQA_REVIEW_BASELINES = `${CONFIG_DIR}/review-baselines`;
+const DOCQA_REVIEW_BASELINE_BUNDLES = `${DOCQA_REVIEW_BASELINES}/.bundles`;
 const DOCQA_GLOBAL_REVIEW_LEDGER = `${CONFIG_DIR}/review-ledger.json`;
 const FILE_MUTATION_TRANSACTIONS_DIR = `${CONFIG_DIR}/file-transactions`;
 const FILE_MUTATION_TRANSACTION_VERSION = 2;
@@ -6245,6 +6256,111 @@ function gitIndexStateForReviewPath(root, relPath) {
   }
 }
 
+function gitIndexStatesForReviewPaths(root, relPaths) {
+  const repositoryRoot = gitTopLevelRoot(root);
+  const normalizedPaths = [...new Set(relPaths.map((relPath) => normalizeRelPath(relPath)).filter(Boolean))];
+  if (!repositoryRoot) return new Map(normalizedPaths.map((relPath) => [relPath, null]));
+  const treePaths = new Map(normalizedPaths.map((relPath) => [gitTreePathForRootRelative(root, relPath), relPath]));
+  const pathspecs = [...treePaths.keys()].map(gitLiteralPathspec);
+  try {
+    const indexOutput = execFileSync("git", ["ls-files", "--stage", "-z", "--", ...pathspecs], {
+      cwd: repositoryRoot,
+      encoding: null,
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: Math.max(1_000_000, pathspecs.length * 512),
+    });
+    const indexByPath = new Map(normalizedPaths.map((relPath) => [relPath, []]));
+    for (const record of decodeGitUtf8(indexOutput, "git ls-files").split("\0").filter(Boolean)) {
+      const separator = record.indexOf("\t");
+      const match = /^(100644|100755) ([0-9a-f]{40,64}) ([0-3])$/.exec(separator >= 0 ? record.slice(0, separator) : "");
+      const relPath = treePaths.get(separator >= 0 ? record.slice(separator + 1) : "");
+      if (!match || !relPath) throw new Error("Git index returned an unexpected batch path entry");
+      indexByPath.get(relPath).push({ mode: match[1], oid: match[2], stage: Number(match[3]) });
+    }
+    let headOutput = Buffer.alloc(0);
+    try {
+      headOutput = execFileSync("git", ["ls-tree", "-z", "HEAD", "--", ...pathspecs], {
+        cwd: repositoryRoot,
+        encoding: null,
+        stdio: ["ignore", "pipe", "pipe"],
+        maxBuffer: Math.max(1_000_000, pathspecs.length * 512),
+      });
+    } catch (error) {
+      if (error?.status !== 128) throw error;
+      let headRef = "";
+      try {
+        headRef = execFileSync("git", ["symbolic-ref", "-q", "HEAD"], {
+          cwd: repositoryRoot,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          maxBuffer: 1_000_000,
+        }).trim();
+      } catch {
+        throw error;
+      }
+      try {
+        execFileSync("git", ["show-ref", "--verify", "--quiet", headRef], {
+          cwd: repositoryRoot,
+          stdio: ["ignore", "ignore", "pipe"],
+          maxBuffer: 1_000_000,
+        });
+        throw error;
+      } catch (refError) {
+        if (refError === error || refError?.status !== 1) throw error;
+      }
+    }
+    const headByPath = new Map();
+    for (const record of decodeGitUtf8(headOutput, "git ls-tree").split("\0").filter(Boolean)) {
+      const separator = record.indexOf("\t");
+      const match = /^(100644|100755) blob ([0-9a-f]{40,64})$/.exec(separator >= 0 ? record.slice(0, separator) : "");
+      const relPath = treePaths.get(separator >= 0 ? record.slice(separator + 1) : "");
+      if (!match || !relPath) throw new Error("Git tree returned an unexpected batch path entry");
+      headByPath.set(relPath, { mode: match[1], oid: match[2] });
+    }
+    let objectFormat = "sha1";
+    try {
+      objectFormat = execFileSync("git", ["rev-parse", "--show-object-format"], {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        maxBuffer: 1_000_000,
+      }).trim() || "sha1";
+    } catch {}
+    if (!new Set(["sha1", "sha256"]).has(objectFormat)) throw new Error("Git repository uses an unsupported object format");
+    return new Map(normalizedPaths.map((relPath) => {
+      const entries = indexByPath.get(relPath) || [];
+      const head = headByPath.get(relPath) || null;
+      const stageZero = entries.length === 1 && entries[0].stage === 0 ? entries[0] : null;
+      const unmerged = entries.some((entry) => entry.stage !== 0);
+      const stagedAgainstHead = unmerged
+        || Boolean(stageZero) !== Boolean(head)
+        || Boolean(stageZero && head && (stageZero.mode !== head.mode || stageZero.oid !== head.oid));
+      const current = stageZero ? readSharedWorkspaceResource(root, relPath) : null;
+      const currentBlobOid = current?.state === "present"
+        ? createHash(objectFormat).update(`blob ${current.bytes.length}\0`).update(current.bytes).digest("hex")
+        : "";
+      return [relPath, {
+        version: `git-index:${hashContent(JSON.stringify(entries))}`,
+        entries,
+        head,
+        stageZero,
+        stagedContentHash: stageZero && stageZero.oid === currentBlobOid ? current.contentHash : null,
+        stagedAgainstHead,
+        unmerged,
+      }];
+    }));
+  } catch (error) {
+    if (error?.code === "git_status_unavailable") {
+      const unavailable = sharedRequestError("Git index paths are not valid UTF-8", 503, "git_index_unavailable");
+      unavailable.cause = error;
+      throw unavailable;
+    }
+    const unavailable = sharedRequestError("Git index is temporarily unavailable; review state cannot be trusted", 503, "git_index_unavailable");
+    unavailable.cause = error;
+    throw unavailable;
+  }
+}
+
 function gitIndexStateMatchesReviewedResource(indexState, { contentHash, resourceState, resourceMode }) {
   if (!indexState) return true;
   if (indexState.unmerged) return false;
@@ -7259,13 +7375,50 @@ function writeDocReviewBaselineFile(root, relPath, content) {
   });
 }
 
+function prepareDocReviewBaselineBundle(root, files) {
+  assertDocReviewEvidenceLockHeld(root);
+  const entries = files.map((file) => {
+    const normalized = normalizeRelPath(file.path);
+    preflightDocReviewMutationPaths(root, normalized, { baseline: true });
+    return [normalized, String(file.content || "")];
+  }).sort(([left], [right]) => left.localeCompare(right, "en"));
+  const content = JSON.stringify({ version: 1, entries: Object.fromEntries(entries) }) + "\n";
+  const relPath = path.posix.join(DOCQA_REVIEW_BASELINE_BUNDLES, `${hashContent(content)}.json`);
+  const absolutePath = path.join(path.resolve(root), relPath);
+  assertManagedProjectPath(root, absolutePath, relPath);
+  return { entries, content, relPath, absolutePath };
+}
+
+function writePreparedDocReviewBaselineBundleUnderLock(root, prepared) {
+  assertDocReviewEvidenceLockHeld(root);
+  atomicWriteReviewControlFile(root, prepared.relPath, prepared.content);
+  const baselineAt = new Date().toISOString();
+  return new Map(prepared.entries.map(([filePath, content]) => [filePath, {
+    baselinePath: prepared.relPath,
+    baselineBundleKey: filePath,
+    baselineHash: hashContent(content),
+    baselineReviewHash: reviewContentHash(content),
+    baselineAt,
+  }]));
+}
+
 function readDocReviewBaseline(root, relPath, review = null) {
   const baselinePath = normalizeRelPath(review?.baselinePath || "");
   if (!baselinePath || !baselinePath.startsWith(DOCQA_REVIEW_BASELINES + "/")) return null;
   const abs = path.join(root, baselinePath);
   assertManagedProjectPath(root, abs, baselinePath);
   if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return null;
-  const content = fs.readFileSync(abs, "utf8");
+  let content = fs.readFileSync(abs, "utf8");
+  const baselineBundleKey = normalizeRelPath(review?.baselineBundleKey || "");
+  if (baselineBundleKey) {
+    try {
+      const bundle = JSON.parse(content);
+      if (bundle?.version !== 1 || !bundle.entries || typeof bundle.entries !== "object" || !Object.hasOwn(bundle.entries, baselineBundleKey)) return null;
+      content = String(bundle.entries[baselineBundleKey]);
+    } catch {
+      return null;
+    }
+  }
   const baselineHash = hashContent(content);
   if (review?.baselineHash && review.baselineHash !== baselineHash) return null;
   return { path: baselinePath, content, contentHash: baselineHash, reviewHash: reviewContentHash(content) };
@@ -7290,6 +7443,7 @@ function writeDocReviewBaselineUnderLock(root, relPath, { note = "" } = {}) {
     const next = {
       ...existing,
       baselinePath: baseline.baselinePath,
+      baselineBundleKey: baseline.baselineBundleKey || undefined,
       baselineHash: baseline.baselineHash,
       baselineReviewHash: baseline.baselineReviewHash,
       baselineAt: baseline.baselineAt,
@@ -7362,7 +7516,7 @@ function writeDocReviewDecisionUnderLock(root, relPath, {
   providedDependencyVersions = null,
   structuralReceipt = null,
   suppressEvent = false,
-} = {}, trustedReviewFile = null) {
+} = {}, trustedReviewFile = null, batchControl = null) {
   assertDocReviewEvidenceLockHeld(root);
   const file = trustedReviewFile || readReviewTrackedFile(root, relPath);
   const normalized = file.path;
@@ -7374,7 +7528,7 @@ function writeDocReviewDecisionUnderLock(root, relPath, {
   preflightDocReviewMutationPaths(root, normalized, { baseline: status !== "unverified", globalLedger: true });
   const resourceState = resourceStateForReviewFile(file);
   const resourceMode = resourceModeForReviewFile(root, normalized, file);
-  const state = readDocReviewState(root);
+  const state = batchControl?.state || readDocReviewState(root);
   const existing = state.reviews[normalized] && typeof state.reviews[normalized] === "object" ? state.reviews[normalized] : null;
   const resourceVersion = resourceVersionForReviewFile(root, normalized, file, existing);
   if (expectedResourceState && resourceState !== expectedResourceState) {
@@ -7399,7 +7553,9 @@ function writeDocReviewDecisionUnderLock(root, relPath, {
     error.details = { path: normalized, expectedContentHash: String(expectedContentHash), currentContentHash, resourceState, resourceVersion };
     throw error;
   }
-  const gitIndexState = gitIndexStateForReviewPath(root, normalized);
+  const gitIndexState = batchControl?.gitIndexStates?.has(normalized)
+    ? batchControl.gitIndexStates.get(normalized)
+    : gitIndexStateForReviewPath(root, normalized);
   const gitIndexVersion = gitIndexState?.version || null;
   if (status === "verified" && !gitIndexStateMatchesReviewedResource(gitIndexState, {
     contentHash: currentContentHash,
@@ -7432,14 +7588,19 @@ function writeDocReviewDecisionUnderLock(root, relPath, {
     globalReviewLedgerPath(root),
   ];
   if (status !== "unverified") controlFiles.push(path.join(path.resolve(root), reviewBaselinePathFor(normalized)));
-  const result = withDocReviewControlRollback(root, controlFiles, "context-room-review-decision-rollback", () => {
+  const applyDecision = () => {
     if (status === "unverified") {
       delete state.reviews[normalized];
-      writeDocReviewState(root, state);
-      writeGlobalReviewDecisionUnderLock(root, normalized, file, { status: "unverified" });
+      if (batchControl) {
+        const ledgerResult = applyGlobalReviewDecision(batchControl.ledger, root, normalized, file, { status: "unverified" });
+        batchControl.ledgerChanged ||= ledgerResult.changed;
+      } else {
+        writeDocReviewState(root, state);
+        writeGlobalReviewDecisionUnderLock(root, normalized, file, { status: "unverified" });
+      }
       return { path: normalized, status: "unverified", note: "", reviewedAt: new Date().toISOString(), contentHash: hashContent(file.content), reviewHash: reviewContentHash(file.content), resourceState, resourceMode, resourceVersion, gitIndexVersion };
     }
-    const baseline = writeDocReviewBaselineFile(root, normalized, file.content);
+    const baseline = batchControl?.baselines?.get(normalized) || writeDocReviewBaselineFile(root, normalized, file.content);
     const decision = {
       status,
       note: String(note || "").slice(0, 500),
@@ -7451,6 +7612,7 @@ function writeDocReviewDecisionUnderLock(root, relPath, {
       resourceVersion,
       gitIndexVersion,
       baselinePath: baseline.baselinePath,
+      ...(baseline.baselineBundleKey ? { baselineBundleKey: baseline.baselineBundleKey } : {}),
       baselineHash: baseline.baselineHash,
       baselineReviewHash: baseline.baselineReviewHash,
       baselineAt: baseline.baselineAt,
@@ -7458,10 +7620,18 @@ function writeDocReviewDecisionUnderLock(root, relPath, {
       ...(structuralReceipt ? { structuralReceipt } : {}),
     };
     state.reviews[normalized] = decision;
-    writeDocReviewState(root, state);
-    writeGlobalReviewDecisionUnderLock(root, normalized, file, decision);
+    if (batchControl) {
+      const ledgerResult = applyGlobalReviewDecision(batchControl.ledger, root, normalized, file, decision);
+      batchControl.ledgerChanged ||= ledgerResult.changed;
+    } else {
+      writeDocReviewState(root, state);
+      writeGlobalReviewDecisionUnderLock(root, normalized, file, decision);
+    }
     return { path: normalized, ...decision };
-  });
+  };
+  const result = batchControl
+    ? applyDecision()
+    : withDocReviewControlRollback(root, controlFiles, "context-room-review-decision-rollback", applyDecision);
   if (!suppressEvent) appendContextRoomEvent("review.decision", { ...contextRoomEventIdentity(root), resource: { path: normalized }, data: { status, resourceState, resourceVersion } });
   return result;
 }
@@ -7779,6 +7949,43 @@ function gitReviewResourceAtRevision(root, revision, relPath) {
   return { path: filePath, state: "present", mode, blob, bytes, contentHash: createHash("sha256").update(bytes).digest("hex") };
 }
 
+function emptyGitReviewResource(relPath) {
+  const filePath = exactSharedReviewPath(relPath);
+  return { path: filePath, state: "absent", mode: "absent", blob: null, bytes: Buffer.alloc(0), contentHash: createHash("sha256").update(Buffer.alloc(0)).digest("hex") };
+}
+
+function gitReviewBlobContents(root, blobIds) {
+  const unique = [...new Set(blobIds)].filter((blob) => /^[0-9a-f]{40,64}$/i.test(blob));
+  const result = new Map();
+  for (let offset = 0; offset < unique.length; offset += 32) {
+    const batch = unique.slice(offset, offset + 32);
+    const output = Buffer.from(execFileSync("git", ["cat-file", "--batch"], {
+      cwd: root,
+      input: batch.join("\n") + "\n",
+      encoding: null,
+      stdio: ["pipe", "pipe", "pipe"],
+      maxBuffer: Math.max(16 * 1024 * 1024, batch.length * (MAX_FILE_BYTES + 256)),
+    }));
+    let cursor = 0;
+    for (const requested of batch) {
+      const lineEnd = output.indexOf(10, cursor);
+      if (lineEnd < 0) throw new Error("Git returned an incomplete review blob header");
+      const header = output.subarray(cursor, lineEnd).toString("utf8");
+      const match = /^([0-9a-f]{40,64}) blob ([0-9]+)$/.exec(header);
+      if (!match || match[1] !== requested) throw new Error("Git returned an unexpected review blob");
+      const size = Number(match[2]);
+      if (!Number.isSafeInteger(size) || size < 0 || size > MAX_FILE_BYTES) throw new Error("Git revision contains an oversized review blob");
+      const contentStart = lineEnd + 1;
+      const contentEnd = contentStart + size;
+      if (contentEnd >= output.length || output[contentEnd] !== 10) throw new Error("Git returned an incomplete review blob");
+      result.set(requested, Buffer.from(output.subarray(contentStart, contentEnd)));
+      cursor = contentEnd + 1;
+    }
+    if (cursor !== output.length) throw new Error("Git returned unexpected trailing review blob data");
+  }
+  return result;
+}
+
 function gitReviewNameStatus(root, baseRevision, proposalHead) {
   const records = Buffer.from(execFileSync("git", ["diff", "--name-status", "-z", "-M", "-C", "--find-copies-harder", `${baseRevision}...${proposalHead}`, "--"], {
     cwd: root,
@@ -7807,20 +8014,39 @@ function gitReviewTreeDocumentIndex(root, revision, prefixes) {
   const records = Buffer.from(execFileSync("git", args, { cwd: root, encoding: null, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 16 * 1024 * 1024 })).toString("utf8").split("\0").filter(Boolean);
   const byId = new Map();
   const paths = new Set();
-  for (const record of records) {
+  const descriptors = records.map((record) => {
     const separator = record.indexOf("\t");
     const [mode, type, blob] = record.slice(0, separator).split(" ");
     const filePath = exactSharedReviewPath(record.slice(separator + 1));
-    if (!/\.(?:md|mdx|html?)$/i.test(filePath)) continue;
-    if (separator < 0 || type !== "blob" || !["100644", "100755"].includes(mode)) throw new Error(`Shared review dependency is not a regular file: ${filePath}`);
-    const resource = gitReviewResourceAtRevision(root, revision, filePath);
+    if (!/\.(?:md|mdx|html?)$/i.test(filePath)) return null;
+    if (separator < 0 || type !== "blob" || !["100644", "100755"].includes(mode) || !/^[0-9a-f]{40,64}$/i.test(blob || "")) throw new Error(`Shared review dependency is not a regular file: ${filePath}`);
+    return { path: filePath, mode, blob };
+  }).filter(Boolean);
+  const blobs = gitReviewBlobContents(root, descriptors.map((item) => item.blob));
+  const resources = new Map();
+  for (const descriptor of descriptors) {
+    const bytes = blobs.get(descriptor.blob);
+    if (!bytes || Buffer.from(bytes.toString("utf8"), "utf8").compare(bytes) !== 0 || bytes.includes(0)) {
+      throw new Error(`Git revision contains a non-reviewable file: ${descriptor.path}`);
+    }
+    const resource = { path: descriptor.path, state: "present", mode: descriptor.mode, blob: descriptor.blob, bytes, contentHash: createHash("sha256").update(bytes).digest("hex") };
+    resources.set(descriptor.path, resource);
+    const filePath = descriptor.path;
     const metadata = parseDocMetadata(resource.bytes.toString("utf8"), filePath);
     paths.add(filePath);
     if (!metadata.id || !metadata.idValid) continue;
     if (!byId.has(metadata.id)) byId.set(metadata.id, []);
-    byId.get(metadata.id).push({ path: filePath, version: blob, metadata });
+    byId.get(metadata.id).push({ path: filePath, version: descriptor.blob, metadata });
   }
-  return { byId, paths };
+  return { byId, paths, resources };
+}
+
+function indexedGitReviewResource(root, revision, index, relPath) {
+  const filePath = exactSharedReviewPath(relPath);
+  if (/\.(?:md|mdx|html?)$/i.test(filePath)) {
+    return index.resources.get(filePath) || emptyGitReviewResource(filePath);
+  }
+  return gitReviewResourceAtRevision(root, revision, filePath);
 }
 
 function deriveSharedReviewManifest(root, review) {
@@ -7850,10 +8076,10 @@ function deriveSharedReviewManifest(root, review) {
   }
   const units = new Map(changes.map((change) => [change.path, {
     ...change,
-    base: gitReviewResourceAtRevision(root, review.baseRevision, change.path),
-    head: gitReviewResourceAtRevision(root, review.proposalHead, change.path),
-    fromBase: change.fromPath ? gitReviewResourceAtRevision(root, review.baseRevision, change.fromPath) : null,
-    fromHead: change.fromPath ? gitReviewResourceAtRevision(root, review.proposalHead, change.fromPath) : null,
+    base: indexedGitReviewResource(root, review.baseRevision, baseIndex, change.path),
+    head: indexedGitReviewResource(root, review.proposalHead, headIndex, change.path),
+    fromBase: change.fromPath ? indexedGitReviewResource(root, review.baseRevision, baseIndex, change.fromPath) : null,
+    fromHead: change.fromPath ? indexedGitReviewResource(root, review.proposalHead, headIndex, change.fromPath) : null,
   }]));
   return { changes, files, units, baseIndex, headIndex };
 }
@@ -7966,17 +8192,68 @@ function workspaceDependencyVersions(root, filePath, workspaceIndex) {
   return directDependencyVersions(parseDocMetadata(resource.bytes.toString("utf8"), filePath), workspaceIndex.byId);
 }
 
-function currentSharedReviewEntryMatches(root, filePath, entry) {
-  if (entry?.status !== "verified") return false;
-  const resource = readSharedWorkspaceResource(root, filePath);
-  return entry.contentHash === resource.contentHash
+function sharedReviewEntryMatchesSnapshot(entry, resource, gitIndexState) {
+  return entry?.status === "verified"
+    && entry.contentHash === resource.contentHash
     && entry.resourceState === resource.state
     && entry.resourceMode === resource.resourceMode
-    && gitIndexStateMatchesReviewedResource(gitIndexStateForReviewPath(root, filePath), {
+    && gitIndexStateMatchesReviewedResource(gitIndexState, {
       contentHash: resource.contentHash,
       resourceState: resource.state,
       resourceMode: resource.resourceMode,
     });
+}
+
+function currentSharedReviewEntryMatches(root, filePath, entry) {
+  const resource = readSharedWorkspaceResource(root, filePath);
+  return sharedReviewEntryMatchesSnapshot(entry, resource, gitIndexStateForReviewPath(root, filePath));
+}
+
+function sharedReviewDocQaProjection(manifest, state, resources, gitIndexStates) {
+  const reviewedPaths = [];
+  const pendingPaths = [];
+  const queue = [];
+  for (const filePath of manifest.files) {
+    const unit = manifest.units.get(filePath);
+    const resource = resources.get(filePath);
+    const reviewed = Boolean(resource && sharedReviewEntryMatchesSnapshot(
+      state.reviews?.[filePath],
+      resource,
+      gitIndexStates.get(filePath),
+    ));
+    if (reviewed) {
+      reviewedPaths.push(filePath);
+      continue;
+    }
+    pendingPaths.push(filePath);
+    queue.push({
+      path: filePath,
+      label: path.posix.basename(filePath),
+      gitStatus: unit?.status || "",
+      reviewReason: unit?.reviewKind === "dependency-review" ? "dependency-changed" : "unverified-current",
+      resourceState: resource?.state || "absent",
+    });
+  }
+  const directChanges = manifest.changes.filter((item) => item.reviewKind === "proposal-change");
+  return {
+    generatedAt: new Date().toISOString(),
+    summary: {
+      totalDocs: manifest.files.length,
+      changedDocs: directChanges.length,
+      needsReview: pendingPaths.length,
+      requiredReview: pendingPaths.length,
+      deletedDocs: directChanges.filter((item) => item.status === "D").length,
+      protectedDeletedDocs: 0,
+      deletedReviewKey: "",
+      critical: 0,
+      high: 0,
+      prompts: 0,
+      canonical: 0,
+    },
+    pendingPaths,
+    reviewedPaths,
+    queue,
+  };
 }
 
 function applySharedWorkspaceResource(root, desired, { expectedRootIdentity = null } = {}) {
@@ -8068,9 +8345,9 @@ function withSharedReviewDecisionLock(root, operation, { expectedRootIdentity = 
   });
 }
 
-function sharedReviewResultDigest(root, review = readSharedReview(root)) {
-  const manifest = deriveSharedReviewManifest(root, review);
-  const state = readDocReviewState(root);
+function sharedReviewResultDigest(root, review = readSharedReview(root), prepared = {}) {
+  const manifest = prepared.manifest || deriveSharedReviewManifest(root, review);
+  const state = prepared.state || readDocReviewState(root);
   const documents = manifest.files.map((filePath) => {
     const item = state.reviews?.[filePath] || {};
     return {
@@ -8141,6 +8418,8 @@ function sharedReviewBatchConflict(message, details = {}) {
 }
 
 export function writeSharedProposalFileBatchDecision(root, input = {}, { expectedRootIdentity = null } = {}) {
+  const batchStartedAt = performance.now();
+  const timing = { projection: 0, events: 0 };
   assertExactObjectKeys(input, ["expectedProposalHead", "decision", "files"], "Shared review batch");
   const { expectedProposalHead = "", decision = "", files = [] } = input;
   if (!expectedProposalHead) throw sharedRequestError("expectedProposalHead is required", 400, "shared_context_proposal_head_required");
@@ -8218,15 +8497,16 @@ export function writeSharedProposalFileBatchDecision(root, input = {}, { expecte
     }
     const stateFile = path.join(resolvedRoot, DOCQA_REVIEW_STATE);
     const ledgerFile = globalReviewLedgerPath(resolvedRoot);
-    const controlFiles = new Set([stateFile, ledgerFile]);
-    for (const item of prepared) controlFiles.add(path.join(resolvedRoot, reviewBaselinePathFor(item.path)));
-    const controlSnapshots = new Map([...controlFiles].map((filePath) => [filePath, snapshotRegularFile(filePath, {
-      managedRoot: reviewRollbackManagedRoot(resolvedRoot, filePath),
-    })]));
+    let controlSnapshots = new Map();
     const workspaceSnapshots = new Map([...desiredMutations].map(([filePath]) => {
       const absolute = path.join(resolvedRoot, ...filePath.split("/"));
       return [absolute, snapshotRegularFile(absolute, { managedRoot: resolvedRoot })];
     }));
+    const batchControl = {
+      state: reviewState,
+      ledger: readGlobalReviewLedger(resolvedRoot),
+      ledgerChanged: false,
+    };
     const results = [];
     try {
       assertHeld();
@@ -8239,19 +8519,38 @@ export function writeSharedProposalFileBatchDecision(root, input = {}, { expecte
         assertHeld();
         applySharedWorkspaceResource(resolvedRoot, desired, { expectedRootIdentity });
       }
+      batchControl.gitIndexStates = gitIndexStatesForReviewPaths(resolvedRoot, manifest.files);
       const workspaceIndex = sharedWorkspaceDocumentIndex(resolvedRoot, manifest);
-      for (const { path: filePath, unit } of prepared) {
-        const currentResource = readSharedWorkspaceResource(resolvedRoot, filePath);
+      const currentResources = new Map(manifest.files.map((filePath) => [filePath, readSharedWorkspaceResource(resolvedRoot, filePath)]));
+      batchControl.currentResources = currentResources;
+      const currentReviewFiles = new Map(prepared.map(({ path: filePath }) => {
+        const currentResource = currentResources.get(filePath);
         const currentContent = currentResource.bytes.toString("utf8");
-        const current = {
-          path: filePath,
-          content: currentContent,
-          exists: currentResource.state === "present",
-          updatedAt: null,
-          chars: currentContent.length,
-          contentHash: currentResource.contentHash,
-          readOnly: false,
-        };
+        return [filePath, {
+          resource: currentResource,
+          file: {
+            path: filePath,
+            content: currentContent,
+            exists: currentResource.state === "present",
+            updatedAt: null,
+            chars: currentContent.length,
+            contentHash: currentResource.contentHash,
+            readOnly: false,
+          },
+        }];
+      }));
+      const baselineBundle = prepareDocReviewBaselineBundle(
+        resolvedRoot,
+        [...currentReviewFiles.values()].map((item) => item.file),
+      );
+      controlSnapshots = new Map([stateFile, ledgerFile, baselineBundle.absolutePath].map((filePath) => [filePath, snapshotRegularFile(filePath, {
+        managedRoot: reviewRollbackManagedRoot(resolvedRoot, filePath),
+      })]));
+      batchControl.baselines = writePreparedDocReviewBaselineBundleUnderLock(resolvedRoot, baselineBundle);
+      for (const { path: filePath, unit } of prepared) {
+        const currentReview = currentReviewFiles.get(filePath);
+        const currentResource = currentReview.resource;
+        const current = currentReview.file;
         const fromResult = unit.fromPath ? readSharedWorkspaceResource(resolvedRoot, unit.fromPath) : null;
         const dependencyVersions = workspaceDependencyVersions(resolvedRoot, filePath, workspaceIndex);
         const receipt = {
@@ -8278,7 +8577,7 @@ export function writeSharedProposalFileBatchDecision(root, input = {}, { expecte
           providedDependencyVersions: dependencyVersions,
           structuralReceipt: receipt,
           suppressEvent: true,
-        }, current));
+        }, current, batchControl));
       }
       for (const [filePath, initial] of initialResources) {
         if (desiredMutations.has(filePath)) continue;
@@ -8286,6 +8585,16 @@ export function writeSharedProposalFileBatchDecision(root, input = {}, { expecte
           throw sharedReviewBatchConflict(`Review verification source changed during the decision: ${filePath}`, { path: filePath });
         }
       }
+      writeDocReviewState(resolvedRoot, batchControl.state);
+      if (batchControl.ledgerChanged) writeGlobalReviewLedger(resolvedRoot, batchControl.ledger);
+      const projectionStartedAt = performance.now();
+      batchControl.docqa = sharedReviewDocQaProjection(
+        manifest,
+        batchControl.state,
+        currentResources,
+        batchControl.gitIndexStates,
+      );
+      timing.projection = performance.now() - projectionStartedAt;
     } catch (error) {
       let rollbackErrors = [];
       try {
@@ -8311,10 +8620,46 @@ export function writeSharedProposalFileBatchDecision(root, input = {}, { expecte
       }
       throw error;
     }
-    for (const item of results) {
-      try { appendContextRoomEvent("review.decision", { ...contextRoomEventIdentity(resolvedRoot), resource: { path: item.path }, data: { status: "verified", decision, resourceState: item.resourceState, resourceVersion: item.resourceVersion } }); } catch {}
-    }
-    return { decision, files: results, reviewedPaths: results.map((item) => item.path), reviewResultDigest: sharedReviewResultDigest(resolvedRoot, review) };
+    const eventsStartedAt = performance.now();
+    try {
+      const eventIdentity = contextRoomEventIdentity(resolvedRoot);
+      appendContextRoomEvents(results.map((item) => ({
+        type: "review.decision",
+        ...eventIdentity,
+        resource: { path: item.path },
+        data: { status: "verified", decision, resourceState: item.resourceState, resourceVersion: item.resourceVersion },
+      })));
+    } catch {}
+    timing.events = performance.now() - eventsStartedAt;
+    const result = {
+      decision,
+      files: results,
+      reviewedPaths: results.map((item) => item.path),
+      reviewResultDigest: sharedReviewResultDigest(resolvedRoot, review, { manifest, state: batchControl.state }),
+      docqa: batchControl.docqa,
+      sharedContext: {
+        enabled: true,
+        mode: "review",
+        review,
+        accepted: review.accepted || null,
+        rejected: review.rejected || null,
+        reviewStatus: review.rejected ? "rejected" : review.accepted ? "accepted" : "in_review",
+        acceptedChangesRemain: manifest.changes
+          .filter((item) => item.reviewKind === "proposal-change")
+          .some((item) => !workspaceResourceMatchesGit(
+            batchControl.currentResources.get(item.path),
+            manifest.units.get(item.path).base,
+          )),
+      },
+    };
+    Object.defineProperty(result, SHARED_REVIEW_BATCH_TIMING, {
+      value: {
+        transaction: performance.now() - batchStartedAt,
+        projection: timing.projection,
+        events: timing.events,
+      },
+    });
+    return result;
   }, { expectedRootIdentity });
 }
 
@@ -10947,18 +11292,15 @@ export function buildDocQaReport(root = process.cwd(), options = {}) {
 }
 
 function buildSharedReviewDocQaReport(reviewRoot, review = {}) {
-  const report = buildDocQaReport(reviewRoot, { readOnly: true });
-  const proposalPaths = new Set(review.proposalFiles || []);
-  const queue = (report.queue || []).filter((item) => proposalPaths.has(item.path));
-  const pendingPaths = (report.pendingPaths || []).filter((filePath) => proposalPaths.has(filePath));
-  const reviewedPaths = (report.reviewedPaths || []).filter((filePath) => proposalPaths.has(filePath));
-  return {
-    ...report,
-    summary: { ...report.summary, needsReview: pendingPaths.length },
-    pendingPaths,
-    reviewedPaths,
-    queue,
-  };
+  const resolvedRoot = path.resolve(reviewRoot);
+  const manifest = deriveSharedReviewManifest(resolvedRoot, review);
+  const state = readDocReviewState(resolvedRoot, { readOnly: true });
+  const resources = new Map(manifest.files.map((filePath) => [
+    filePath,
+    readSharedWorkspaceResource(resolvedRoot, filePath),
+  ]));
+  const gitIndexStates = gitIndexStatesForReviewPaths(resolvedRoot, manifest.files);
+  return sharedReviewDocQaProjection(manifest, state, resources, gitIndexStates);
 }
 
 function sharedReviewDocQaCacheFingerprint(reviewRoot, review = {}) {
@@ -14931,6 +15273,53 @@ function sharedReviewAuthorityFile(authorityId) {
   return path.join(sharedRoot, "review-authority", `${normalized}.json`);
 }
 
+function rehydratePersistedSharedReviewRooms(rooms, routes) {
+  const sharedRoot = process.env.CONTEXT_ROOM_SHARED_HOME
+    ? path.resolve(process.env.CONTEXT_ROOM_SHARED_HOME)
+    : path.join(process.env.HOME || os.homedir(), ".context-room", "shared");
+  const authorityDirectory = path.join(sharedRoot, "review-authority");
+  let names = [];
+  try {
+    names = fs.readdirSync(authorityDirectory).filter((name) => /^[a-f0-9-]{36}\.json$/i.test(name));
+  } catch {
+    return [];
+  }
+  const restored = [];
+  for (const name of names) {
+    try {
+      const metadata = readJsonFile(path.join(authorityDirectory, name), null);
+      if (!metadata || metadata.accepted || metadata.rejected) continue;
+      const reviewRoot = path.resolve(String(metadata.reviewRoot || ""));
+      const current = readSharedReview(reviewRoot);
+      if (current.accepted
+        || current.rejected
+        || current.authorityId !== metadata.authorityId
+        || current.proposal !== metadata.proposal
+        || current.proposalHead !== metadata.proposalHead
+        || current.baseRevision !== metadata.baseRevision) continue;
+      const reviewKey = exactSharedReviewRoomKey({
+        repository: metadata.repository,
+        proposal: metadata.proposal,
+        proposalHead: metadata.proposalHead,
+        baseRevision: metadata.baseRevision,
+      });
+      if (!reviewKey || rooms.has(reviewKey)) continue;
+      const routeId = String(metadata.authorityId);
+      const opened = {
+        reviewRoot,
+        metadata,
+        routeId,
+        url: `/reviews/${encodeURIComponent(routeId)}/`,
+        reused: true,
+      };
+      rooms.set(reviewKey, opened);
+      routes.set(routeId, opened);
+      restored.push(opened);
+    } catch {}
+  }
+  return restored;
+}
+
 function persistRejectedSharedReviewAuthority(root, review, result = {}) {
   const current = readSharedReview(root);
   if (current.authorityId !== review.authorityId
@@ -16416,6 +16805,10 @@ function hostedProposal(proposal = {}, repositoryRecord) {
     hasConflict: proposal.hasConflict === true,
     ...(hostedAuthorityViolation(proposal) || {}),
   };
+  projected.openReadiness = projected.authorityViolation || projected.hasConflict
+    || !OPENABLE_SHARED_PROPOSAL_REVIEW_STATUSES.has(projected.reviewStatus)
+    ? { status: "blocked", code: projected.authorityViolation ? "shared_context_authority_violation" : projected.hasConflict ? "shared-proposal-conflict" : "shared-proposal-terminal" }
+    : { status: "ready" };
   Object.defineProperty(projected, HOSTED_SHARED_PATH_POLICY, { value: pathPolicy });
   return projected;
 }
@@ -16969,6 +17362,61 @@ function hostedReviewOpened(opened, hostedSharedProvider, repositoryId) {
     review: state.review,
     docqa: state.docqa,
     files: state.files,
+  };
+}
+
+function localReviewOpened(opened, origin, { docqa: preparedDocQa = null } = {}) {
+  const reviewRoot = path.resolve(opened.reviewRoot);
+  const review = readSharedReview(reviewRoot);
+  const docqa = preparedDocQa || buildSharedReviewDocQaReport(reviewRoot, review);
+  const sharedContext = {
+    enabled: true,
+    mode: "review",
+    review,
+    accepted: review.accepted || null,
+    rejected: review.rejected || null,
+    reviewStatus: review.rejected ? "rejected" : review.accepted ? "accepted" : "in_review",
+    acceptedChangesRemain: acceptedGitChangesRemain(reviewRoot),
+  };
+  const files = (review.proposalFiles || []).map((filePath) => {
+    const absolute = path.join(reviewRoot, ...exactSharedReviewPath(filePath).split("/"));
+    let stats = null;
+    try { stats = fs.lstatSync(absolute); } catch {}
+    const exists = Boolean(stats?.isFile() && !stats.isSymbolicLink());
+    return {
+      path: filePath,
+      label: path.posix.basename(filePath),
+      category: categoryForPath(filePath),
+      exists,
+      bytes: exists ? stats.size : 0,
+      chars: 0,
+      updatedAt: exists ? stats.mtime.toISOString() : null,
+      kind: fileKindForPath(filePath),
+      summary: "",
+      readOnly: false,
+      explorerScope: "allowed",
+    };
+  });
+  const directoryPaths = new Set();
+  for (const filePath of review.proposalFiles || []) {
+    let directory = path.posix.dirname(filePath);
+    while (directory && directory !== ".") {
+      directoryPaths.add(`${directory}/`);
+      directory = path.posix.dirname(directory);
+    }
+  }
+  const reviewUrl = new URL(String(opened.url || ""), origin);
+  reviewUrl.pathname = reviewUrl.pathname.replace(/\/+$/, "");
+  return {
+    url: reviewUrl.toString(),
+    reused: opened.reused === true,
+    reviewRoot,
+    projectId: contextRoomProjectId(reviewRoot),
+    review,
+    docqa,
+    sharedContext,
+    files,
+    directories: [...directoryPaths].sort((left, right) => left.localeCompare(right, "fr")).map((directoryPath) => ({ path: directoryPath })),
   };
 }
 
@@ -17757,6 +18205,7 @@ export function createMemoryServer({
   const sharedReviewOpenings = new Map();
   const sharedReviewRoomOpenings = new Map();
   const sharedReviewDocQaReports = new Map();
+  const sharedReviewPreparationStates = new Map();
   const remoteReviewRoutes = new Map();
   const cachedSharedReviewDocQaReport = (result) => {
     const reviewRoot = path.resolve(result.reviewRoot);
@@ -17766,6 +18215,132 @@ export function createMemoryServer({
     const report = sharedReviewDocQaTask(reviewRoot, result.metadata);
     sharedReviewDocQaReports.set(reviewRoot, { fingerprint, report });
     return report;
+  };
+  if (!remoteAccess) {
+    for (const opened of rehydratePersistedSharedReviewRooms(sharedReviewRooms, remoteReviewRoutes)) {
+      try { cachedSharedReviewDocQaReport(opened); } catch {}
+    }
+  }
+  const sharedProposalSnapshotBinding = (snapshot, proposal) => {
+    const repository = String(proposal.repository || "");
+    const repositoryState = (snapshot?.sharedRepositories || []).find((candidate) => (
+      candidate.id === proposal.repositoryId || sameContextHubRepository(candidate.repository, repository)
+    ));
+    const baseRevision = String(repositoryState?.status?.revision || proposal.baseRevision || "");
+    return {
+      repository,
+      proposal: String(proposal.branch || ""),
+      proposalHead: String(proposal.head || ""),
+      baseRevision,
+      defaultBranch: String(repositoryState?.status?.defaultBranch || ""),
+    };
+  };
+  const decorateSharedReviewReadiness = (snapshot) => {
+    if (!snapshot || remoteAccess) return snapshot;
+    prepareContextHubSnapshot(snapshot);
+    const readinessById = new Map();
+    const proposals = (snapshot.proposals || []).map((proposal) => {
+      const binding = sharedProposalSnapshotBinding(snapshot, proposal);
+      const key = exactSharedReviewRoomKey(binding);
+      let openReadiness;
+      if (proposal.authorityViolation || proposal.hasConflict || !OPENABLE_SHARED_PROPOSAL_REVIEW_STATUSES.has(String(proposal.reviewStatus || ""))) {
+        openReadiness = { status: "blocked", code: proposal.authorityViolation ? "shared_context_authority_violation" : proposal.hasConflict ? "shared-proposal-conflict" : "shared-proposal-terminal" };
+      } else if (key && exactSharedReviewRoom(sharedReviewRooms, binding)) {
+        openReadiness = { status: "ready" };
+      } else {
+        const preparation = key ? sharedReviewPreparationStates.get(key) : null;
+        openReadiness = preparation?.status === "blocked"
+          ? { status: "blocked", code: preparation.code || "shared_context_review_preparation_failed" }
+          : { status: "preparing" };
+      }
+      const projected = { ...proposal, openReadiness };
+      readinessById.set(projected.id, projected);
+      return projected;
+    });
+    return {
+      ...snapshot,
+      proposals,
+      items: (snapshot.items || []).map((item) => item.type === "shared" && readinessById.has(item.id)
+        ? readinessById.get(item.id)
+        : item),
+    };
+  };
+  const prepareSharedReview = async (snapshot, proposal) => {
+    if (remoteAccess || proposal.authorityViolation || proposal.hasConflict
+      || !OPENABLE_SHARED_PROPOSAL_REVIEW_STATUSES.has(String(proposal.reviewStatus || ""))) return null;
+    const binding = sharedProposalSnapshotBinding(snapshot, proposal);
+    const reviewKey = exactSharedReviewRoomKey(binding);
+    if (!reviewKey) return null;
+    const warm = exactSharedReviewRoom(sharedReviewRooms, binding);
+    if (warm) return warm;
+    const openingKey = `${contextHubRepositoryIdentity(binding.repository)}\0${binding.proposal}@${binding.proposalHead}~${binding.baseRevision}`;
+    const existing = sharedReviewOpenings.get(openingKey);
+    if (existing) return existing;
+    sharedReviewPreparationStates.set(reviewKey, { status: "preparing" });
+    const preparation = (async () => {
+      try {
+        const exact = readPreparedSharedProposalRevision(binding.repository, {
+          proposal: binding.proposal,
+          defaultBranch: binding.defaultBranch,
+        });
+        if (exact.baseRevision !== binding.baseRevision
+          || exact.proposalHead !== binding.proposalHead
+          || exact.proposalState?.status !== "active") {
+          throw sharedRequestError("Prepared proposal refs no longer match the fresh Hub snapshot.", 409, "shared_context_review_preparation_stale");
+        }
+        const result = await sharedReviewMaterializationTask({
+          repository: binding.repository,
+          sourceRoot: root,
+          proposal: binding.proposal,
+          expectedHead: binding.proposalHead,
+        });
+        if (!sameContextHubRepository(result.metadata?.repository, binding.repository)
+          || result.metadata?.proposal !== binding.proposal
+          || result.metadata?.proposalHead !== binding.proposalHead
+          || result.metadata?.baseRevision !== binding.baseRevision) {
+          throw sharedRequestError("Prepared review authority does not match the fresh Hub snapshot.", 409, "shared_context_review_materialization_mismatch");
+        }
+        const allowedPaths = sharedReviewAllowedPaths(result.repositoryConfig, result.metadata.projectId);
+        initializeContextRoomProject(result.reviewRoot, {
+          title: `Review · ${binding.proposal}`,
+          allowedPaths,
+          watchAllow: allowedPaths,
+        });
+        const routeId = String(result.metadata.authorityId);
+        const opened = { ...result, routeId, url: `/reviews/${encodeURIComponent(routeId)}/`, reused: true };
+        sharedReviewRooms.set(reviewKey, opened);
+        remoteReviewRoutes.set(routeId, opened);
+        cachedSharedReviewDocQaReport(opened);
+        sharedReviewPreparationStates.set(reviewKey, { status: "ready" });
+        runtimeEvents?.publish("proposal-readiness", {
+          proposalId: String(proposal.id || ""),
+          proposalHead: binding.proposalHead,
+          baseRevision: binding.baseRevision,
+          openReadiness: { status: "ready" },
+        });
+        return opened;
+      } catch (error) {
+        const code = error?.code || "shared_context_review_preparation_failed";
+        sharedReviewPreparationStates.set(reviewKey, { status: "blocked", code });
+        runtimeEvents?.publish("proposal-readiness", {
+          proposalId: String(proposal.id || ""),
+          proposalHead: binding.proposalHead,
+          baseRevision: binding.baseRevision,
+          openReadiness: { status: "blocked", code },
+        });
+        return null;
+      }
+    })();
+    sharedReviewOpenings.set(openingKey, preparation);
+    try {
+      return await preparation;
+    } finally {
+      if (sharedReviewOpenings.get(openingKey) === preparation) sharedReviewOpenings.delete(openingKey);
+    }
+  };
+  const prepareContextHubSnapshot = (snapshot) => {
+    if (remoteAccess || snapshot?.freshness?.fresh !== true) return;
+    for (const proposal of snapshot.proposals || []) void prepareSharedReview(snapshot, proposal);
   };
   const remoteReplayStore = remoteAccess?.replayStore || (remoteAccess ? createReplayStore() : null);
   const requestScopedSharedPush = remoteAccess?.githubApp ? async (review) => {
@@ -17814,7 +18389,12 @@ export function createMemoryServer({
       return refresh;
     }
     const shouldNotify = Boolean(options.force || (!remoteAccess && readFastContextHubState(resolvedRoot).freshness?.refreshing));
-    const refresh = Promise.resolve().then(() => contextHubSnapshotRefresh(resolvedRoot, options));
+    const refresh = Promise.resolve()
+      .then(() => contextHubSnapshotRefresh(resolvedRoot, options))
+      .then((snapshot) => {
+        prepareContextHubSnapshot(snapshot);
+        return snapshot;
+      });
     if (!shouldNotify || contextHubRefreshNotifications.has(resolvedRoot)) return refresh;
     contextHubRefreshNotifications.set(resolvedRoot, refresh);
     void refresh.then((snapshot) => {
@@ -17938,9 +18518,10 @@ export function createMemoryServer({
         sendJson(res, response.status, response.payload);
         return;
       }
-      const match = /^\/reviews\/([^/]+)(\/.*)?$/.exec(requestUrl.pathname);
-      if (match) {
-        if (!match[2]) {
+    }
+    const reviewRouteMatch = /^\/reviews\/([^/]+)(\/.*)?$/.exec(requestUrl.pathname);
+    if (reviewRouteMatch) {
+        if (remoteAccess && !reviewRouteMatch[2]) {
           sendJson(res, 404, {
             error: "This operation is unavailable on hosted Context Room.",
             code: "remote_operation_unavailable",
@@ -17949,14 +18530,14 @@ export function createMemoryServer({
         }
         let routeId = "";
         try {
-          routeId = decodeURIComponent(match[1]);
+          routeId = decodeURIComponent(reviewRouteMatch[1]);
         } catch {
           sendJson(res, 400, { error: "The request URL is invalid.", code: "request_url_invalid" });
           return;
         }
         remoteReview = remoteReviewRoutes.get(routeId) || null;
         if (!remoteReview) {
-          const reviewPath = match[2] || "/";
+          const reviewPath = reviewRouteMatch[2] || "/";
           const isReviewPage = ["GET", "HEAD"].includes(String(req.method || "GET").toUpperCase()) && reviewPath === "/";
           if (isReviewPage) {
             sendHtml(res, remoteReviewUnavailableHtml(requestUrl), {
@@ -17972,17 +18553,20 @@ export function createMemoryServer({
         try {
           const currentReview = readSharedReview(remoteReview.reviewRoot);
           if (currentReview.accepted || currentReview.rejected) {
-            remoteReviewRoutes.delete(routeId);
             const reviewStatus = currentReview.rejected ? "rejected" : "accepted";
-            const reviewPath = match[2] || "/";
+            const reviewPath = reviewRouteMatch[2] || "/";
             const isReviewPage = ["GET", "HEAD"].includes(String(req.method || "GET").toUpperCase()) && reviewPath === "/";
             if (isReviewPage) {
+              if (remoteAccess) remoteReviewRoutes.delete(routeId);
               sendHtml(res, remoteReviewUnavailableHtml(requestUrl), {
                 frameAncestorPorts: trustedFrameAncestorPorts,
                 status: 410,
                 method: req.method,
               });
-            } else {
+              return;
+            }
+            if (remoteAccess) {
+              remoteReviewRoutes.delete(routeId);
               sendJson(res, 409, {
                 error: `This exact proposal review is already ${reviewStatus}.`,
                 code: "shared-proposal-terminal",
@@ -17994,17 +18578,21 @@ export function createMemoryServer({
                   acceptedCommit: currentReview.accepted?.commit || "",
                 },
               });
+              return;
             }
-            return;
           }
         } catch {
           remoteReviewRoutes.delete(routeId);
           sendJson(res, 404, { error: "This exact proposal review is no longer available.", code: "remote_review_not_found" });
           return;
         }
-        req.url = `${match[2] || "/"}${requestUrl.search}`;
+        const reviewPath = reviewRouteMatch[2] || "/";
+        if (reviewPath.startsWith("//")) {
+          sendJson(res, 400, { error: "The request URL is invalid.", code: "request_url_invalid" });
+          return;
+        }
+        req.url = `${reviewPath}${requestUrl.search}`;
         requestUrl = new URL(req.url, "http://context-room.invalid");
-      }
     }
     const runtimeRequestProfile = remoteAccess ? (remoteReview ? "hosted-review" : "hosted-hub") : "local";
     const remotePolicy = remoteAccess
@@ -18237,7 +18825,7 @@ export function createMemoryServer({
               || metadata.proposalHead !== result.proposalHead) continue;
             try { persistRejectedSharedReviewAuthority(opened.reviewRoot, metadata, result); } catch {}
             sharedReviewRooms.delete(reviewKey);
-            if (opened.routeId) remoteReviewRoutes.delete(opened.routeId);
+            if (opened.routeId && remoteAccess) remoteReviewRoutes.delete(opened.routeId);
           }
         },
         publicationPush: requestScopedSharedPush,
@@ -18345,52 +18933,14 @@ export function createMemoryServer({
                 allowedPaths,
                 watchAllow: allowedPaths,
               });
-              if (remoteAccess) {
-                const routeId = String(result.metadata.authorityId || hashContent(`${result.metadata.repository}\0${result.metadata.proposal}\0${result.metadata.proposalHead}`)).slice(0, 120);
-                const opened = {
-                  ...result,
-                  routeId,
-                  url: `/reviews/${encodeURIComponent(routeId)}/`,
-                };
-                remoteReviewRoutes.set(routeId, opened);
-                sharedReviewRooms.set(reviewKey, opened);
-                return opened;
-              }
-              const reviewPort = await selectAvailableContextRoomPort(DEFAULT_PORT, { allowFallback: true });
-              let reviewRoom = null;
-              try {
-                reviewRoom = createMemoryServer({
-                  root: result.reviewRoot,
-                  contextHubRoot: resolvedContextHubRoot,
-                  contextHubSnapshotRefresh,
-                  contextHubAcceptRefreshTimeoutMs,
-                  port: reviewPort,
-                  globalPreferencesPath,
-                  registerInHub: false,
-                  persistentDocumentGraphLayout,
-                  frameAncestorPorts: [
-                    ...trustedFrameAncestorPorts,
-                    contextRoomServerPort(server, port),
-                  ],
-                  verifiedAcceptanceFlashes: acceptanceFlashStore,
-                });
-                await sharedReviewServerListen(reviewRoom.server, reviewPort);
-              } catch (error) {
-                await disposeInitializedSharedReviewServer(reviewRoom);
-                cleanupUnpublishedSharedReview(result);
-                throw error;
-              }
-              sharedReviewServers.add(reviewRoom.server);
-              reviewRoom.server.once("close", () => sharedReviewServers.delete(reviewRoom.server));
+              const routeId = String(result.metadata.authorityId || hashContent(`${result.metadata.repository}\0${result.metadata.proposal}\0${result.metadata.proposalHead}`)).slice(0, 120);
               const opened = {
                 ...result,
-                port: reviewPort,
-                url: `http://127.0.0.1:${reviewPort}`,
+                routeId,
+                url: `/reviews/${encodeURIComponent(routeId)}/`,
               };
+              remoteReviewRoutes.set(routeId, opened);
               sharedReviewRooms.set(reviewKey, opened);
-              reviewRoom.server.once("close", () => {
-                sharedReviewRooms.delete(reviewKey);
-              });
               return opened;
             })();
             sharedReviewRoomOpenings.set(reviewKey, roomOpening);
@@ -18462,6 +19012,7 @@ export function createMemoryServer({
           replayStore: remoteReplayStore,
         } : null,
         scheduleContextHubSnapshotRefresh,
+        decorateContextHubReadiness: decorateSharedReviewReadiness,
       });
     } catch (error) {
       const response = remoteAccess ? safeHostedRequestErrorResponse(error) : safeRequestErrorResponse(error);
@@ -19213,6 +19764,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   hostedSharedProvider = null,
   remoteWorkspaceAccess = null,
   scheduleContextHubSnapshotRefresh = null,
+  decorateContextHubReadiness = null,
   requestIdentity = null,
   runtimeProfile = "local",
   hostedReviewProjectId = "",
@@ -19232,18 +19784,23 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   const requestRuntimeProfile = assertRuntimeProfile(runtimeProfile);
   const url = new URL(req.url, "http://context-room.invalid");
   const readContextHubForRequest = () => {
-    if (!hostedSharedProvider) return readFastContextHubState(root);
+    if (!hostedSharedProvider) {
+      const state = readFastContextHubState(root);
+      return decorateContextHubReadiness ? decorateContextHubReadiness(state) : state;
+    }
     if (hostedSharedProvider.shouldRefresh?.()) {
       const pending = scheduleContextHubSnapshotRefresh
         ? scheduleContextHubSnapshotRefresh(contextHubRoot, { refreshShared: true, force: false })
         : hostedSharedProvider.refresh({ force: false });
       void Promise.resolve(pending).catch(() => {});
     }
-    return hostedHubState(hostedSharedProvider.read());
+    const state = hostedHubState(hostedSharedProvider.read());
+    return decorateContextHubReadiness ? decorateContextHubReadiness(state) : state;
   };
   const refreshContextHubForRequest = () => hostedSharedProvider
     ? Promise.resolve(hostedSharedProvider.refresh({ force: true })).then(hostedHubState)
-    : refreshContextHubSnapshot(root, { refreshShared: true, force: true });
+    : refreshContextHubSnapshot(root, { refreshShared: true, force: true })
+      .then((state) => decorateContextHubReadiness ? decorateContextHubReadiness(state) : state);
   const configuredRepositoryForRequest = (repositoryId) => hostedSharedProvider
     ? hostedSharedProvider.resolveRepository(repositoryId)
     : assertConfiguredSharedRepository(root, repositoryId);
@@ -20865,6 +21422,8 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/context-hub/review") {
+    const openingStartedAt = performance.now();
+    const openingTiming = { "exact-ref": 0, room: 0, docqa: 0, payload: 0 };
     const body = await readJsonBody(req);
     const proposalSelector = String(body.proposal || "").trim();
     const repositoryId = String(hostedSharedProvider ? body.repositoryId || "" : body.repositoryId || body.repository || "").trim();
@@ -20898,6 +21457,41 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     // Never let a later cache observation downgrade a terminal, recovery, or
     // conflicting state already projected on the selected exact card.
     if (target) assertSharedProposalReviewOpenable(target);
+    if (target && !hostedSharedProvider && observedBaseRevision) {
+      try {
+        const exactRefStartedAt = performance.now();
+        const exact = readPreparedSharedProposalRevision(repository, {
+          proposal: target.branch,
+          defaultBranch: currentRepository?.status?.defaultBranch || "",
+        });
+        openingTiming["exact-ref"] += performance.now() - exactRefStartedAt;
+        if (exact.baseRevision === observedBaseRevision
+          && exact.proposalHead === target.head
+          && exact.proposalState?.status === "active") {
+          const roomStartedAt = performance.now();
+          const warmRoom = await startSharedReview({
+            proposal: target.branch,
+            repository,
+            expectedHead: target.head,
+            observedBaseRevision,
+            reuseOnly: true,
+            projectRoot: root,
+          });
+          openingTiming.room += performance.now() - roomStartedAt;
+          if (warmRoom) {
+            const docQaStartedAt = performance.now();
+            const docqa = sharedReviewDocQaReport ? sharedReviewDocQaReport(warmRoom) : null;
+            openingTiming.docqa += performance.now() - docQaStartedAt;
+            const payloadStartedAt = performance.now();
+            const payload = localReviewOpened(warmRoom, `http://${requestHeader(req, "host")}`, { docqa });
+            openingTiming.payload += performance.now() - payloadStartedAt;
+            res.setHeader("server-timing", serverTimingHeader(openingTiming));
+            sendJson(res, 201, payload);
+            return;
+          }
+        }
+      } catch {}
+    }
     if (target && !hostedSharedProvider) {
       try {
         const cached = listSharedRepositoryProposals(repository, { allowOffline: true, refresh: false, includeTerminal: true });
@@ -20943,12 +21537,9 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
           || !warmRepositoryMatches) {
           throw sharedRequestError("The materialized proposal does not match the selected Shared proposal.", 409, "shared_context_review_materialization_mismatch");
         }
-        sendJson(res, 201, {
-          url: warmRoom.url,
-          port: warmRoom.port,
-          reviewRoot: warmRoom.reviewRoot,
-          review: warmRoom.metadata,
-        });
+        sendJson(res, 201, localReviewOpened(warmRoom, `http://${requestHeader(req, "host")}`, {
+          docqa: sharedReviewDocQaReport ? sharedReviewDocQaReport(warmRoom) : null,
+        }));
         return;
       }
     }
@@ -21002,6 +21593,12 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       throw sharedRequestError("The proposal changed before this operation", 409, "shared_context_proposal_head_mismatch");
     }
     assertSharedProposalReviewOpenable(target);
+    openingTiming["exact-ref"] += performance.now() - openingStartedAt
+      - openingTiming["exact-ref"]
+      - openingTiming.room
+      - openingTiming.docqa
+      - openingTiming.payload;
+    const roomStartedAt = performance.now();
     const result = await startSharedReview({
       proposal: target.branch,
       repository,
@@ -21009,6 +21606,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       observedBaseRevision,
       projectRoot: root,
     });
+    openingTiming.room += performance.now() - roomStartedAt;
     const materializedRepositoryMatches = hostedSharedProvider
       ? hostedSharedProvider.repositoryId(result.metadata?.repository) === repositoryId
       : sameContextHubRepository(result.metadata?.repository, repository);
@@ -21018,14 +21616,22 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       || !materializedRepositoryMatches) {
       throw sharedRequestError("The materialized proposal does not match the selected Shared proposal.", 409, "shared_context_review_materialization_mismatch");
     }
-    sendJson(res, 201, hostedSharedProvider
-      ? hostedReviewOpened(result, hostedSharedProvider, repositoryId)
-      : {
-          url: result.url,
-          port: result.port,
-          reviewRoot: result.reviewRoot,
-          review: result.metadata,
-        });
+    if (hostedSharedProvider) {
+      const payloadStartedAt = performance.now();
+      const payload = hostedReviewOpened(result, hostedSharedProvider, repositoryId);
+      openingTiming.payload += performance.now() - payloadStartedAt;
+      res.setHeader("server-timing", serverTimingHeader(openingTiming));
+      sendJson(res, 201, payload);
+    } else {
+      const docQaStartedAt = performance.now();
+      const docqa = sharedReviewDocQaReport ? sharedReviewDocQaReport(result) : null;
+      openingTiming.docqa += performance.now() - docQaStartedAt;
+      const payloadStartedAt = performance.now();
+      const payload = localReviewOpened(result, `http://${requestHeader(req, "host")}`, { docqa });
+      openingTiming.payload += performance.now() - payloadStartedAt;
+      res.setHeader("server-timing", serverTimingHeader(openingTiming));
+      sendJson(res, 201, payload);
+    }
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/context-hub/accept") {
@@ -21294,6 +21900,8 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/shared-context/review") {
+    const openingStartedAt = performance.now();
+    const openingTiming = { "exact-ref": 0, room: 0, docqa: 0, payload: 0 };
     const body = await readJsonBody(req);
     const proposal = String(body.proposal || "").trim();
     const expectedHead = String(body.expectedHead || "").trim();
@@ -21304,19 +21912,55 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     if (!startSharedReview) throw sharedRequestError("Shared proposal review is unavailable", 503, "shared_context_review_unavailable");
     const connection = readSharedProjectConnection(root);
     if (!connection) throw sharedRequestError("This project is not connected to shared context", 404, "shared_context_not_connected");
-    // Local bare repositories can be checked synchronously without paying a
-    // network round trip. Refresh their tracking refs so a direct warm reopen
-    // observes an immediately advanced main revision just like the Hub path
-    // observes refs fetched by another worker.
+    // Reopening an exact room validates only its proposal, main, and terminal
+    // refs. It never scans the global proposal catalog.
     try {
-      if (contextHubRepositoryIdentity(connection.repository).startsWith("local:")) {
-        readSharedMainRevision(connection.repository, { refresh: true });
+      const exactRefStartedAt = performance.now();
+      const exact = readPreparedSharedProposalRevision(connection.repository, {
+        proposal,
+      });
+      openingTiming["exact-ref"] += performance.now() - exactRefStartedAt;
+      if (exact.proposalHead === expectedHead && exact.proposalState?.status === "active") {
+        const roomStartedAt = performance.now();
+        const warmRoom = await startSharedReview({
+          proposal,
+          repository: connection.repository,
+          expectedHead,
+          observedBaseRevision: exact.baseRevision,
+          reuseOnly: true,
+          projectRoot: root,
+        });
+        openingTiming.room += performance.now() - roomStartedAt;
+        if (warmRoom) {
+          const reviewUrl = new URL(String(warmRoom.url || ""), `http://${requestHeader(req, "host")}`);
+          reviewUrl.pathname = reviewUrl.pathname.replace(/\/+$/, "");
+          const docQaStartedAt = performance.now();
+          const docqa = sharedReviewDocQaReport
+            ? sharedReviewDocQaReport(warmRoom)
+            : buildSharedReviewDocQaReport(warmRoom.reviewRoot, warmRoom.metadata);
+          openingTiming.docqa += performance.now() - docQaStartedAt;
+          const payloadStartedAt = performance.now();
+          const payload = {
+            url: reviewUrl.toString(),
+            port: warmRoom.port,
+            reviewRoot: warmRoom.reviewRoot,
+            review: warmRoom.metadata,
+            docqa,
+          };
+          openingTiming.payload += performance.now() - payloadStartedAt;
+          res.setHeader("server-timing", serverTimingHeader(openingTiming));
+          sendJson(res, 201, payload);
+          return;
+        }
       }
     } catch {}
     let cachedTarget = null;
     let observedBaseRevision = "";
     try {
-      const cached = listSharedRepositoryProposals(connection.repository, { allowOffline: true, refresh: false });
+      const cached = listSharedRepositoryProposals(connection.repository, {
+        allowOffline: true,
+        refresh: contextHubRepositoryIdentity(connection.repository).startsWith("local:"),
+      });
       cachedTarget = (cached.proposals || []).find((candidate) => candidate.branch === proposal) || null;
       observedBaseRevision = String(cached.status?.revision || "");
     } catch (error) {
@@ -21332,6 +21976,12 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     if (!/^[a-f0-9]{40}$/.test(observedBaseRevision)) {
       throw sharedRequestError("The current shared main revision could not be verified.", 409, "shared_context_main_revision_unverified");
     }
+    openingTiming["exact-ref"] += performance.now() - openingStartedAt
+      - openingTiming["exact-ref"]
+      - openingTiming.room
+      - openingTiming.docqa
+      - openingTiming.payload;
+    const roomStartedAt = performance.now();
     const result = await startSharedReview({
       proposal,
       repository: connection.repository,
@@ -21339,15 +21989,25 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       observedBaseRevision,
       projectRoot: root,
     });
-    sendJson(res, 201, {
-      url: result.url,
+    openingTiming.room += performance.now() - roomStartedAt;
+    const reviewUrl = new URL(String(result.url || ""), `http://${requestHeader(req, "host")}`);
+    reviewUrl.pathname = reviewUrl.pathname.replace(/\/+$/, "");
+    const docQaStartedAt = performance.now();
+    const docqa = sharedReviewDocQaReport
+      ? sharedReviewDocQaReport(result)
+      : buildSharedReviewDocQaReport(result.reviewRoot, result.metadata);
+    openingTiming.docqa += performance.now() - docQaStartedAt;
+    const payloadStartedAt = performance.now();
+    const payload = {
+      url: reviewUrl.toString(),
       port: result.port,
       reviewRoot: result.reviewRoot,
       review: result.metadata,
-      docqa: sharedReviewDocQaReport
-        ? sharedReviewDocQaReport(result)
-        : buildSharedReviewDocQaReport(result.reviewRoot, result.metadata),
-    });
+      docqa,
+    };
+    openingTiming.payload += performance.now() - payloadStartedAt;
+    res.setHeader("server-timing", serverTimingHeader(openingTiming));
+    sendJson(res, 201, payload);
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/shared-context/review-files") {
@@ -21364,9 +22024,10 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       sendJson(res, 200, hostedReviewDecision(result, state));
       return;
     }
+    res.setHeader("server-timing", serverTimingHeader(result[SHARED_REVIEW_BATCH_TIMING] || {}));
     let responseState = {};
     try {
-      responseState = { docqa: buildSharedReviewDocQaReport(root, readSharedReview(root)), sharedContext: sharedContextUiState(root) };
+      responseState = { docqa: result.docqa, sharedContext: result.sharedContext };
     } catch (error) {
       responseState = { refreshRequired: true, refreshError: String(error?.message || error).slice(0, 500) };
     }
@@ -24925,8 +25586,9 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
     .proposal-review-copy { min-width: 0; }
     .proposal-review-copy h2 { margin: 0; color: var(--text); font-size: clamp(24px, 3vw, 36px); line-height: 1.08; letter-spacing: -0.03em !important; }
     .proposal-review-copy p { max-width: 72ch; margin: 9px 0 0; color: var(--text-soft); font-size: 13px; line-height: 1.55; }
-    .proposal-review-progress { flex: 0 0 auto; display: grid; justify-items: end; gap: 3px; padding-top: 3px; color: var(--muted); font-size: 11px; }
+    .proposal-review-progress { position: relative; width: min(248px, 34vw); min-height: 44px; flex: 0 0 min(248px, 34vw); display: grid; align-content: start; justify-items: end; gap: 3px; box-sizing: border-box; padding: 3px 20px 0 0; color: var(--muted); font-size: 11px; }
     .proposal-review-progress strong { color: var(--text); font-size: 22px; line-height: 1; letter-spacing: -0.025em; }
+    .proposal-review-progress > .context-room-proposal-opening-indicator { position: absolute; top: 8px; right: 0; }
     .proposal-review-meta { color: var(--muted); font-size: 11px; line-height: 1.35; }
     .proposal-review-meta code { color: var(--text-soft); font-size: 11px; }
     .proposal-review-notice { margin: 12px var(--workbench-gutter); padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--danger) 44%, var(--line)); border-radius: 9px; background: color-mix(in srgb, var(--danger) 8%, var(--panel)); color: var(--text); font-size: 11px; line-height: 1.45; }
@@ -24983,7 +25645,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
     .proposal-review-file[data-reviewed="true"] .proposal-review-file-state { color: var(--good-fg); }
     .proposal-review-empty { padding: 28px 18px; color: var(--muted); font-size: 12px; line-height: 1.5; text-align: center; }
     @media (max-width: 639px) {
-      .proposal-review-progress { justify-items: start; }
+      .proposal-review-progress { width: 100%; max-width: none; min-height: 44px; flex-basis: auto; justify-items: start; }
     }
     .context-room-mode-warning { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px 18px; padding: 11px 14px; border-bottom: 1px solid color-mix(in srgb, var(--accent-2) 28%, var(--line)); background: color-mix(in srgb, var(--accent-2) 7%, var(--panel)); }
     .context-room-mode-warning-copy { min-width: 0; }
@@ -27083,6 +27745,8 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
 		state.contextRoomOpeningProposalId = "";
 		state.contextRoomPreparingProposal = null;
 		state.contextRoomPreparedReview = null;
+		state.contextRoomHubDocumentScope = null;
+		state.contextRoomReviewDocumentScope = null;
 		state.contextRoomQueuedProposalFile = "";
 		state.proposalOpenState = { phase: "idle", code: "", message: "", details: null };
 		state.contextRoomProposalReturnFocusId = "";
@@ -27492,7 +28156,8 @@ const el = (id) => document.getElementById(id);
 
 function contextRoomScopedRequestPath(requestPath) {
   const value = String(requestPath || "");
-  const reviewBase = /^\/reviews\/[^/]+/.exec(window.location.pathname)?.[0] || "";
+  const scopesCurrentReview = !IS_GLOBAL_CONTEXT_ROOM || Boolean(state.contextRoomReviewDocumentScope);
+  const reviewBase = scopesCurrentReview ? /^\/reviews\/[^/]+/.exec(window.location.pathname)?.[0] || "" : "";
   return reviewBase && value.startsWith("/api/") ? reviewBase + value : value;
 }
 
@@ -27554,6 +28219,7 @@ async function api(path, options) {
   const requestOptions = options ? { cache: "no-store", ...options } : { cache: "no-store" };
   const headers = new Headers(requestOptions.headers || {});
   if (state.projectId) headers.set("x-context-room-project", state.projectId);
+  const requestProjectId = headers.get("x-context-room-project") || "";
   const requestPathname = new URL(path, window.location.href).pathname;
   const projectScoped = requestPathname.startsWith("/api/")
     && !requestPathname.startsWith("/api/context-hub")
@@ -27581,14 +28247,14 @@ async function api(path, options) {
     try {
       const res = await fetch(contextRoomScopedRequestPath(path), requestOptions);
       const responseProjectId = res.headers.get("x-context-room-project") || "";
-      const responseAction = contextRoomProjectResponseAction({ expectedProjectId: state.projectId || "", responseProjectId, globalRoom: IS_GLOBAL_CONTEXT_ROOM });
+      const responseAction = contextRoomProjectResponseAction({ expectedProjectId: requestProjectId, responseProjectId, globalRoom: IS_GLOBAL_CONTEXT_ROOM });
       if (["refresh-in-place", "exceptional-reload"].includes(responseAction)) {
         handleContextRoomProjectChange({ responseProjectId, reason: "response-project-mismatch" });
         const error = new Error("Context Room project changed; this stale response was ignored.");
         error.code = "context_room_stale_response";
         throw error;
       }
-      if (responseAction === "initialize") state.projectId = responseProjectId;
+      if (responseAction === "initialize" && !state.projectId) state.projectId = responseProjectId;
       if (res.status === 304) return { __notModified: true, __etag: res.headers.get("etag") || "", __serverTiming: res.headers.get("server-timing") || "" };
       const json = await res.json();
       if (res.status === 409 && ["context_room_project_changed", "context_room_project_identity_required"].includes(json.code)) {
@@ -30033,7 +30699,10 @@ function contextRoomReviewCanAccept(item) {
 }
 
 function contextRoomReviewIsSelectable(item) {
-  return Boolean(item && (item.type !== "shared" || contextRoomProposalIsOpenable(item)));
+  return Boolean(item && (item.type !== "shared" || (
+    contextRoomProposalIsOpenable(item)
+    && String(item.openReadiness?.status || "ready") === "ready"
+  )));
 }
 
 function renderContextRoomReviewRow(item) {
@@ -30060,15 +30729,18 @@ function renderContextRoomReviewRow(item) {
       ? '<span class="context-room-proposal-more">+' + (fileCount - 4) + ' more</span>'
       : "";
     const openable = contextRoomProposalIsOpenable(item);
-    const blocked = !openable;
+    const readinessStatus = String(item.openReadiness?.status || "ready");
+    const preparing = openable && readinessStatus === "preparing";
+    const blocked = !openable || readinessStatus === "blocked";
+    const disabled = blocked || preparing;
     const description = item.authorityMessage || item.description || "Review the files together, then accept or reject the proposal as one shared change.";
     const descriptionId = "contextRoomProposalDescription-" + item.id.replace(/[^A-Za-z0-9_-]/g, "-");
     const proposalLabel = item.title || item.branch || projectLabel;
     const proposalActionLabel = selectionMode
       ? (selected ? "Remove proposal " + proposalLabel + " from selection" : "Add proposal " + proposalLabel + " to selection")
-      : (blocked ? contextHubStatusLabel(item.reviewStatus, fileCount) + " · review unavailable" : "Open proposal " + proposalLabel);
+      : (preparing ? "Preparing proposal " + proposalLabel : blocked ? contextHubStatusLabel(item.reviewStatus, fileCount) + " · review unavailable" : "Open proposal " + proposalLabel);
     return entryStart + '<article class="context-room-review-proposal' + active + '" aria-busy="' + String(opening) + '" data-proposal-openable="' + String(openable) + '">'
-      + '<button class="context-room-proposal-hitbox" type="button" data-context-room-review="' + escapeHtml(item.id) + '" aria-label="' + escapeHtml(proposalActionLabel) + '"' + (selectionMode && openable ? ' aria-pressed="' + String(selected) + '"' : '') + (state.sharedContextBusy || blocked ? " disabled" : "") + '></button>'
+      + '<button class="context-room-proposal-hitbox" type="button" data-context-room-review="' + escapeHtml(item.id) + '" aria-label="' + escapeHtml(proposalActionLabel) + '"' + (selectionMode && openable ? ' aria-pressed="' + String(selected) + '"' : '') + (state.sharedContextBusy || disabled ? " disabled" : "") + '></button>'
       + '<div class="context-room-proposal-content">'
       + '<span class="context-room-proposal-stack" aria-hidden="true">P</span>'
       + '<span class="context-room-proposal-copy"><span class="context-room-proposal-topline"><span class="context-hub-source" data-source="shared">Proposal</span><span class="context-room-proposal-title">' + escapeHtml(proposalLabel) + '</span></span>'
@@ -30076,7 +30748,7 @@ function renderContextRoomReviewRow(item) {
       + '<span class="context-room-proposal-description-row"><span id="' + escapeHtml(descriptionId) + '" class="context-room-proposal-description" data-context-room-proposal-description="' + escapeHtml(item.id) + '" data-expanded="' + String(expanded) + '">' + escapeHtml(description) + '</span>'
       + '<button class="context-room-proposal-description-toggle" type="button" data-context-room-proposal-description-toggle="' + escapeHtml(item.id) + '" aria-expanded="' + String(expanded) + '" aria-controls="' + escapeHtml(descriptionId) + '" aria-label="' + (expanded ? "Collapse proposal description" : "Show full proposal description") + '" title="' + (expanded ? "Collapse description" : "Show full description") + '"' + (expanded ? "" : " hidden") + '>' + (expanded ? "−" : "+") + '</button></span>'
       + '<span class="context-room-proposal-preview-files">' + (previewFiles || '<span class="context-room-proposal-more">No changed files reported.</span>') + moreFiles + '</span></span>'
-      + '<span class="context-room-proposal-state" data-state="' + escapeHtml(reviewState.key) + '">' + snoozeBadge + '<span>' + escapeHtml(opening ? "Opening review…" : reviewState.label) + '</span>' + (opening ? '<span class="context-room-proposal-opening-indicator" aria-hidden="true"></span>' : blocked ? '<span class="context-room-proposal-arrow" aria-hidden="true">!</span>' : '<span class="context-room-proposal-arrow" aria-hidden="true">→</span>') + '</span>'
+      + '<span class="context-room-proposal-state" data-state="' + escapeHtml(preparing ? "preparing" : reviewState.key) + '">' + snoozeBadge + '<span>' + escapeHtml(opening ? "Opening review…" : preparing ? "Preparing…" : reviewState.label) + '</span>' + (opening || preparing ? '<span class="context-room-proposal-opening-indicator" aria-hidden="true"></span>' : blocked ? '<span class="context-room-proposal-arrow" aria-hidden="true">!</span>' : '<span class="context-room-proposal-arrow" aria-hidden="true">→</span>') + '</span>'
       + '</div>'
       + '</article></div>';
   }
@@ -31088,6 +31760,77 @@ function contextRoomProposalSelectionUrl(url, filePath) {
   return target.toString();
 }
 
+function adoptPreparedLocalReview(result, item) {
+  if (!IS_LOCAL || !IS_GLOBAL_CONTEXT_ROOM) return false;
+  const review = result?.review || result?.sharedContext?.review || null;
+  const authorityId = String(review?.authorityId || "");
+  const preparedUrl = new URL(result?.url || "", window.location.href);
+  const route = /^\/reviews\/([^/]+)\/?$/.exec(preparedUrl.pathname);
+  let routeAuthority = "";
+  try { routeAuthority = route ? decodeURIComponent(route[1]) : ""; } catch {}
+  if (!authorityId || routeAuthority !== authorityId || preparedUrl.origin !== window.location.origin) {
+    const error = new Error("The prepared review does not preserve its exact local review authority.");
+    error.code = "shared_context_review_materialization_mismatch";
+    throw error;
+  }
+  preparedUrl.pathname = "/reviews/" + encodeURIComponent(authorityId) + "/";
+  const target = new URL(contextRoomProposalReviewUrl(preparedUrl), window.location.href);
+  if (!result.projectId || !result.docqa || !result.sharedContext || !Array.isArray(result.files)) {
+    const error = new Error("The prepared review is missing the state required for an in-place transition.");
+    error.code = "shared_context_review_materialization_incomplete";
+    throw error;
+  }
+  state.contextRoomHubDocumentScope ||= {
+    root: state.root,
+    projectId: state.projectId,
+    activeProjectLocationId: state.activeProjectLocationId,
+    files: state.files,
+    directories: state.directories,
+    docqa: state.docqa,
+    sharedContext: state.sharedContext,
+  };
+  state.contextRoomReviewDocumentScope = {
+    authorityId,
+    root: result.reviewRoot || "",
+    projectId: result.projectId,
+  };
+  cancelBackgroundRefresh();
+  state.backgroundRefreshController?.abort();
+  if (result.reviewRoot) state.root = result.reviewRoot;
+  state.projectId = result.projectId;
+  state.activeProjectLocationId = "";
+  state.files = result.files;
+  state.directories = Array.isArray(result.directories) ? result.directories : [];
+  state.docqa = result.docqa;
+  state.sharedContext = { ...result.sharedContext, review };
+  state.contextRoomPreparingProposal = null;
+  state.contextRoomPreparedReview = null;
+  state.contextRoomOpeningProposalId = "";
+  state.proposalOpenState = { phase: "ready", code: "", message: "", details: null };
+  window.history.replaceState(window.history.state, "", target);
+  state.workspaceSyncedUrl = target.href;
+  renderFiles();
+  renderSharedContextControls();
+  renderProposalReviewPage();
+  renderSharedProposalWorkspace();
+  setStatus("proposal ready");
+  return true;
+}
+
+function restoreContextHubDocumentScope() {
+  const scope = state.contextRoomHubDocumentScope;
+  if (!scope) return false;
+  state.root = scope.root;
+  state.projectId = scope.projectId;
+  state.activeProjectLocationId = scope.activeProjectLocationId;
+  state.files = scope.files;
+  state.directories = scope.directories;
+  state.docqa = scope.docqa;
+  state.sharedContext = scope.sharedContext;
+  state.contextRoomReviewDocumentScope = null;
+  return true;
+}
+
 async function openSharedProposal(proposal, repository = "", { file = "" } = {}) {
   if (!proposal || state.sharedContextBusy) return false;
   const currentRepository = repository || state.sharedContext?.status?.connection?.repository || state.sharedContext?.status?.repository || "";
@@ -31159,10 +31902,18 @@ async function openSharedProposal(proposal, repository = "", { file = "" } = {})
     state.contextRoomOpeningProposalId = "";
     state.proposalOpenState = { phase: "ready", code: "", message: "", details: null };
     state.sharedContextBusy = false;
+    const queuedFile = state.contextRoomQueuedProposalFile;
+    if (adoptPreparedLocalReview(result, item)) {
+      if (queuedFile) {
+        window.history.replaceState(window.history.state, "", contextRoomProposalFileUrl(result.url, queuedFile));
+        state.workspaceSyncedUrl = window.location.href;
+        await selectFile(queuedFile, { reviewMode: true, forceReload: true, pushHistory: false });
+      }
+      return true;
+    }
     renderSharedContextControls();
     renderProposalReviewPage();
     renderSharedProposalWorkspace();
-    const queuedFile = state.contextRoomQueuedProposalFile;
     if (queuedFile) {
       assignWorkspaceLocation(contextRoomProposalFileUrl(result.url, queuedFile));
       return true;
@@ -31531,6 +32282,7 @@ function renderProposalDockControls() {
   const rejected = Boolean(shared?.rejected?.rejected);
   const terminal = Boolean(delivered || rejected);
   const actionable = shared?.mode === "review" && !preview && !terminal;
+  const preparing = Boolean(preview && ["opening", "loading", "ready"].includes(String(state.proposalOpenState?.phase || "opening")));
   const noAcceptedChanges = actionable && shared?.acceptedChangesRemain === false;
   acceptButton.hidden = !actionable || queueCount > 0 || Boolean(state.proposalAuthorityStatus);
   acceptButton.disabled = Boolean(state.proposalActionBusy || queueCount > 0 || noAcceptedChanges);
@@ -31542,9 +32294,11 @@ function renderProposalDockControls() {
       : noAcceptedChanges
         ? "No accepted changes remain. Reject the proposal to close it."
         : "Put the exact reviewed result on " + (review.defaultBranch || "main");
-  rejectButton.hidden = !actionable;
-  rejectButton.disabled = Boolean(state.proposalActionBusy);
-  rejectButton.title = state.proposalAuthorityStatus
+  rejectButton.hidden = !actionable && !preparing;
+  rejectButton.disabled = Boolean(state.proposalActionBusy || !actionable);
+  rejectButton.title = preparing
+    ? "Available after Context Room verifies the exact proposal revision"
+    : state.proposalAuthorityStatus
     ? "Verify this exact rejection and restore its owner-authorized receipt"
     : "Reject and archive this exact proposal revision";
 }
@@ -32387,6 +33141,9 @@ function syncWorkspaceUrl({ push = false } = {}) {
 
 async function applyWorkspaceUrlState({ reason = "history", force = false } = {}) {
   if (!state.workspaceIdentityReady) return false;
+  if (state.contextRoomReviewDocumentScope && !/^\/reviews\/[^/]+(?:\/|$)/.test(window.location.pathname)) {
+    restoreContextHubDocumentScope();
+  }
   const target = parseWorkspaceNavigationUrl(window.location.href);
   const proposalReturnFocusId = state.page === "proposal"
     ? state.contextRoomProposalReturnFocusId || state.contextHubSelection || ""
@@ -33290,6 +34047,32 @@ function rememberRuntimeEventCursor(cursor) {
   try { window.sessionStorage?.setItem(key, String(next)); } catch {}
 }
 
+function applyProposalReadinessEvent(data = {}) {
+  const proposalId = String(data.proposalId || "");
+  const proposalHead = String(data.proposalHead || "");
+  const baseRevision = String(data.baseRevision || "");
+  const status = String(data.openReadiness?.status || "");
+  if (!proposalId || !["preparing", "ready", "blocked"].includes(status) || !state.contextHub) return false;
+  const openReadiness = status === "blocked"
+    ? { status, code: String(data.openReadiness?.code || "shared_context_review_preparation_failed") }
+    : { status };
+  let changed = false;
+  const update = (item) => {
+    if (item?.id !== proposalId) return item;
+    if (proposalHead && String(item.head || "") !== proposalHead) return item;
+    if (baseRevision && String(item.baseRevision || "") !== baseRevision) return item;
+    changed = true;
+    return { ...item, openReadiness };
+  };
+  const proposals = (state.contextHub.proposals || []).map(update);
+  const items = (state.contextHub.items || []).map(update);
+  if (!changed) return false;
+  state.contextHub = { ...state.contextHub, proposals, items };
+  renderContextRoomGlobalReviewQueue();
+  renderSharedProposalWorkspace();
+  return true;
+}
+
 function handleRuntimeEvent(event = {}) {
   const cursor = normalizedRuntimeEventCursor(event.cursor);
   if (cursor && cursor <= (state.runtimeEventCursor || 0)) return;
@@ -33304,9 +34087,15 @@ function handleRuntimeEvent(event = {}) {
     handleAgentCommand(command).catch((error) => setStatus(error.message));
     return;
   }
+  if (event.type === "proposal-readiness") {
+    applyProposalReadinessEvent(event.data);
+    return;
+  }
   if (!['state-invalidated', 'resync-required'].includes(event.type)) return;
   if (IS_HOSTED_REVIEW) {
     scheduleHostedReviewRefresh();
+  } else if (state.contextRoomReviewDocumentScope) {
+    scheduleBackgroundRefresh({ forceReports: true, forceFull: true });
   } else if (IS_HOSTED_HUB || IS_GLOBAL_CONTEXT_ROOM) {
     scheduleRuntimeContextHubRefresh(event);
   }
@@ -33322,7 +34111,8 @@ function ensureRuntimeFallback() {
     if (!IS_HOSTED_REVIEW) pollAgentCommand().catch(() => {});
     if (!IS_HOSTED_CONTEXT_ROOM && state.selected) refreshFromDisk().catch(() => {});
     if (IS_HOSTED_REVIEW) scheduleHostedReviewRefresh();
-    if (IS_HOSTED_HUB) scheduleRuntimeContextHubRefresh({ data: { source: "runtime-fallback" } });
+    else if (state.contextRoomReviewDocumentScope) scheduleBackgroundRefresh({ forceReports: true, forceFull: true });
+    else if (IS_HOSTED_HUB || IS_GLOBAL_CONTEXT_ROOM) scheduleRuntimeContextHubRefresh({ data: { source: "runtime-fallback" } });
   }, 60_000);
 }
 
@@ -35320,6 +36110,7 @@ async function loadInitialDirectSharedContext() {
 }
 
 async function loadFiles(options = {}) {
+  const reviewScopeAtStart = state.contextRoomReviewDocumentScope;
   setStatus("chargement...");
   if (options.initial) state.bootMilestones.requestsStarted = Date.now() - state.bootStartedAt;
   if (IS_HOSTED_CONTEXT_ROOM) {
@@ -35339,6 +36130,7 @@ async function loadFiles(options = {}) {
     ? api("/api/health").then((health) => ({ root: health.root, files: [], directories: [] }))
     : api(filesApiPath());
   const [data, settingsData] = await Promise.all([filesRequest, api("/api/settings")]);
+  if (state.contextRoomReviewDocumentScope && state.contextRoomReviewDocumentScope !== reviewScopeAtStart) return;
   if (options.initial) state.bootMilestones.coreDataReady = Date.now() - state.bootStartedAt;
   acceptContextRoomRoot(data.root);
   state.files = data.files || [];
@@ -36726,10 +37518,10 @@ function renderProposalReviewPage() {
     error: "Could not open",
   })[openPhase] || "Needs attention";
   progress.innerHTML = preparing
-    ? '<strong>Verifying</strong><span>' + escapeHtml(openPhase === "loading" ? "Refreshing proposal status and terminal evidence…" : "Checking exact head, accepted main, and review authority…") + '</span><span class="context-room-proposal-opening-indicator" aria-hidden="true"></span>'
+    ? '<strong>Verifying</strong><span>' + escapeHtml(openPhase === "loading" ? "Refreshing exact proposal status…" : "Checking revision and review authority…") + '</span><span class="context-room-proposal-opening-indicator" aria-hidden="true"></span>'
     : openBlocked
       ? '<strong>' + escapeHtml(blockedLabel) + '</strong><span>No review decision is available in this state.</span>'
-      : '<strong>' + pending + '</strong><span>' + (activeDocqa ? "file" + (pending === 1 ? "" : "s") + " remaining · " + reviewed + " reviewed" : prepared ? "Choose a file to begin reviewing" : "loading review state…") + '</span>';
+      : '<strong>' + pending + '</strong> <span>' + (activeDocqa ? "file" + (pending === 1 ? "" : "s") + " remaining · " + reviewed + " reviewed" : prepared ? "Choose a file to begin reviewing" : "loading review state…") + '</span>';
   meta.innerHTML = '<span>Shared proposal' + (review.projectTitle || review.projectId ? ' · ' + escapeHtml(review.projectTitle || review.projectId) : '') + '</span>'
     + '<span>' + entries.length + ' file' + (entries.length === 1 ? '' : 's') + ' to review</span>'
     + '<details class="proposal-review-technical"><summary>Git revision details</summary><div><code title="' + escapeHtml(review.proposal || review.branch || "") + '">' + escapeHtml(review.proposal || review.branch || "Proposal") + '</code><code title="' + escapeHtml(review.proposalHead || review.head || "") + '">@' + escapeHtml(shortSharedHash(review.proposalHead || review.head)) + '</code></div></details>'
@@ -41917,6 +42709,10 @@ async function goHistory(delta) {
 
 function goHub({ replaceProposalHistory = false, restoreProposalFocus = false } = {}) {
   if (state.dirty && !confirm("You have unsaved changes. Return to hub?")) return;
+  const adoptedReviewReturnUrl = state.contextRoomReviewDocumentScope
+    ? contextRoomReturnUrl() || contextRoomHubReturnUrl(window.location.href)
+    : "";
+  if (adoptedReviewReturnUrl) restoreContextHubDocumentScope();
   const proposalReturnFocusId = state.contextRoomProposalReturnFocusId || state.contextHubSelection || "";
   state.contextHubPendingOpenGeneration += 1;
   state.workspaceNavigationGeneration += 1;
@@ -41940,7 +42736,12 @@ function goHub({ replaceProposalHistory = false, restoreProposalFocus = false } 
   state.activeHubCardId = null;
   state.hubSections = state.rootHubSections;
   showHome();
-  syncWorkspaceUrl({ push: !replaceProposalHistory });
+  if (adoptedReviewReturnUrl) {
+    window.history[replaceProposalHistory ? "replaceState" : "pushState"](window.history.state, "", adoptedReviewReturnUrl);
+    state.workspaceSyncedUrl = window.location.href;
+  } else {
+    syncWorkspaceUrl({ push: !replaceProposalHistory });
+  }
   persistNavigationState({ syncUrl: false });
   recordWorkspaceDiagnostic("ready", "home");
   if (restoreProposalFocus) focusContextRoomHubReturnTarget(proposalReturnFocusId);
@@ -45978,7 +46779,7 @@ function cancelBackgroundRefresh() {
 }
 
 async function refreshBackgroundReports(options = {}) {
-  if (state.workspaceRuntimeStopped || state.workspaceUnloadPending || IS_HOSTED_CONTEXT_ROOM) return;
+  if (state.workspaceRuntimeStopped || state.workspaceUnloadPending || IS_HOSTED_CONTEXT_ROOM || state.contextRoomReviewDocumentScope) return;
   if (document.hidden || state.reportsRefreshInFlight) return;
   const refreshLocationId = state.activeProjectLocationId;
   const refreshNavigationGeneration = state.workspaceNavigationGeneration;

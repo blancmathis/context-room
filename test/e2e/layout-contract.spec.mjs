@@ -1009,7 +1009,8 @@ test("@layout themes, zoom, files, graph, proposals, and dialogs preserve geomet
     const removeTerminalReadyReportsFixture = await installTerminalReadyReportsFixture(page);
     await proposal.click();
     await expect(page).toHaveURL((url) => (
-      url.port !== new URL(data.origin).port
+      url.origin === new URL(data.origin).origin
+      && /^\/reviews\/[^/]+\/$/.test(url.pathname)
       && url.searchParams.get("view") === "proposal"
     ), { timeout: 30_000 });
     await waitForBoot(page);

@@ -7127,7 +7127,7 @@ test("browser refresh restores the last Context Room page", () => {
   assert.match(html, /function startWorkspacePresenceDrain\(\)[\s\S]*workspacePresenceQueued[\s\S]*workspacePresenceActive[\s\S]*await api\("\/api\/workspaces\/register"/);
   assert.match(html, /window\.addEventListener\("blur", \(\) => \{[\s\S]*publishSessionState\(\{ allowHidden: true \}\)/);
   assert.match(html, /if \(state\.projectId\) headers\.set\("x-context-room-project", state\.projectId\);/);
-  assert.match(html, /if \(responseAction === "initialize"\) state\.projectId = responseProjectId;/);
+  assert.match(html, /if \(responseAction === "initialize" && !state\.projectId\) state\.projectId = responseProjectId;/);
   assert.match(html, /function handleContextRoomProjectChange\([\s\S]*if \(IS_GLOBAL_CONTEXT_ROOM\)[\s\S]*loadFiles\(\{ identityRefresh: true \}\)/);
   assert.match(html, /function requestExceptionalWorkspaceReload\([\s\S]*workspaceReloadCircuitDecision/);
   assert.match(html, /function showWorkspaceRecovery\([\s\S]*Retry once/);

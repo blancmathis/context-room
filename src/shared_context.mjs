@@ -2474,6 +2474,86 @@ export function readSharedMainRevision(repository, options = {}) {
   return main;
 }
 
+export function readPreparedSharedProposalRevision(repository, {
+  proposal,
+  defaultBranch = "",
+  timeoutMs = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS,
+} = {}) {
+  const transport = registeredRepositoryTransport(repository);
+  const branch = safeBranchName(proposal, "proposal branch");
+  const mainRef = defaultBranch
+    ? `refs/remotes/origin/${safeBranchName(defaultBranch, "default branch")}`
+    : "refs/remotes/origin/HEAD";
+  return withSharedRepositoryCloneLock(transport, () => {
+    const repositoryIdentity = sharedRepositoryIdentity(transport);
+    if (repositoryIdentity.startsWith("local:")) {
+      const remoteRoot = repositoryIdentity.slice("local:".length);
+      const stateBranch = proposalStateBranch(branch);
+      const proposalRef = `refs/heads/${branch}`;
+      const stateRef = `refs/heads/${stateBranch}`;
+      const localMainRef = defaultBranch ? `refs/heads/${safeBranchName(defaultBranch, "default branch")}` : "HEAD";
+      const baseRevision = tryGit(remoteRoot, ["rev-parse", `${localMainRef}^{commit}`]);
+      const output = tryGit(remoteRoot, [
+        "for-each-ref",
+        "--format=%(refname)%09%(objectname)",
+        proposalRef,
+        stateRef,
+      ]);
+      const revisions = new Map(output.split("\n").filter(Boolean).map((line) => {
+        const [ref, revision] = line.split("\t");
+        return [ref, revision];
+      }));
+      const proposalHead = revisions.get(proposalRef) || "";
+      const stateHead = revisions.get(stateRef) || "";
+      return {
+        repository: transport,
+        baseRevision,
+        defaultRef: localMainRef,
+        proposal: branch,
+        proposalHead,
+        proposalState: stateHead === proposalHead && proposalHead
+          ? { status: "active", head: stateHead }
+          : stateHead
+            ? { status: "terminal", head: stateHead }
+            : { status: "missing", head: "" },
+      };
+    }
+    const checkout = repositoryCheckout(transport);
+    assertRepositoryCheckoutNoFollow(transport, checkout);
+    assertRepositoryIdentityClaim(repositoryCacheRoot(transport), transport);
+    const stateBranch = proposalStateBranch(branch);
+    const refs = [
+      mainRef,
+      `refs/remotes/origin/${branch}`,
+      `refs/remotes/origin/${stateBranch}`,
+    ];
+    const output = tryGit(checkout, [
+      "for-each-ref",
+      "--format=%(refname)%09%(objectname)%09%(symref)",
+      ...refs,
+    ]);
+    const revisions = new Map(output.split("\n").filter(Boolean).map((line) => {
+      const [ref, revision, symref = ""] = line.split("\t");
+      return [ref, { revision, symref }];
+    }));
+    const defaultRef = revisions.get(mainRef);
+    const proposalHead = revisions.get(`refs/remotes/origin/${branch}`)?.revision || "";
+    const stateHead = revisions.get(`refs/remotes/origin/${stateBranch}`)?.revision || "";
+    return {
+      repository: transport,
+      baseRevision: defaultRef?.revision || "",
+      defaultRef: defaultRef?.symref || "",
+      proposal: branch,
+      proposalHead,
+      proposalState: stateHead === proposalHead && proposalHead
+        ? { status: "active", head: stateHead }
+        : stateHead
+          ? remoteProposalState(checkout, branch, proposalHead)
+          : { status: "missing", head: "" },
+    };
+  }, timeoutMs);
+}
+
 export function diffSharedMainRevisions(repository, {
   fromRevision,
   toRevision = "",

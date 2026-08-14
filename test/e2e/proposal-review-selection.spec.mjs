@@ -150,6 +150,7 @@ async function replaceHubProposals(page, proposals) {
       authorityViolation: proposal.authorityViolation || null,
       authorityMessage: proposal.authorityMessage || "",
       hasConflict: proposal.hasConflict === true,
+      openReadiness: proposal.openReadiness || { status: "ready" },
       files: proposal.files || ["README.md"],
       fileCount: (proposal.files || ["README.md"]).length,
     }));
@@ -855,6 +856,294 @@ test("@smoke proposal preparation never claims the exact review is ready", async
   await expect(page.locator("#proposalReviewNotice")).toContainText("Simulated delayed review preparation.");
 });
 
+test("@smoke a proposal stays disabled until exact local preparation is ready", async ({ page }) => {
+  const { origin } = fixture();
+  let reviewPosts = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === "/api/context-hub/review") reviewPosts += 1;
+  });
+  await page.goto(origin + "/?hub=1&workspace=workspace-proposal-readiness&view=hub");
+  await waitForBoot(page);
+  const [proposal] = await replaceHubProposals(page, [{
+    id: "proposal:fixture:readiness",
+    branch: "proposal/demo/readiness",
+    title: "Prepared before opening",
+    reviewStatus: "ready",
+    openReadiness: { status: "preparing" },
+  }]);
+  const button = page.locator('[data-context-room-review-entry="' + proposal.id + '"] [data-context-room-review]');
+  await expect(button).toBeDisabled();
+  await expect(page.locator('[data-context-room-review-entry="' + proposal.id + '"] .context-room-proposal-state')).toContainText("Preparing");
+  await button.evaluate((element) => element.click());
+  expect(reviewPosts).toBe(0);
+  const hubRequestsBeforeReadiness = await page.evaluate(() => state.apiTrace.filter((entry) => entry.path === "/api/context-hub").length);
+  await page.evaluate((proposalId) => {
+    const proposal = state.contextHub.proposals.find((item) => item.id === proposalId);
+    handleRuntimeEvent({
+      cursor: (state.runtimeEventCursor || 0) + 1,
+      type: "proposal-readiness",
+      data: {
+        proposalId,
+        proposalHead: proposal.head,
+        baseRevision: proposal.baseRevision,
+        openReadiness: { status: "ready" },
+      },
+    });
+  }, proposal.id);
+  await expect(button).toBeEnabled();
+  await page.waitForTimeout(150);
+  const readinessResult = await page.evaluate((proposalId) => ({
+    readiness: state.contextHub.proposals.find((item) => item.id === proposalId)?.openReadiness,
+    hubRequests: state.apiTrace.filter((entry) => entry.path === "/api/context-hub").length,
+  }), proposal.id);
+  expect(readinessResult).toEqual({
+    readiness: { status: "ready" },
+    hubRequests: hubRequestsBeforeReadiness,
+  });
+});
+
+test("@smoke durable file acceptance never marks Reviewed before the 200 response", async ({ page }) => {
+  const { origin } = fixture();
+  let releaseDecision;
+  let markDecisionStarted;
+  const decisionStarted = new Promise((resolve) => { markDecisionStarted = resolve; });
+  const holdDecision = new Promise((resolve) => { releaseDecision = resolve; });
+  await page.route(/\/api\/shared-context\/review-files(?:\?|$)/, async (route) => {
+    markDecisionStarted();
+    await holdDecision;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        docqa: { queue: [], pendingPaths: [], reviewedPaths: ["README.md"], summary: { needsReview: 0 } },
+        sharedContext: {
+          mode: "review",
+          acceptedChangesRemain: true,
+          review: {
+            projectId: "demo",
+            proposal: "proposal/demo/durable-file-decision",
+            proposalHead: "2".repeat(40),
+            proposalFiles: ["README.md"],
+            proposalChanges: [{ path: "README.md", status: "M", reviewKind: "proposal-change" }],
+          },
+        },
+      }),
+    });
+  });
+  await page.goto(origin + "/?hub=1&workspace=workspace-durable-file-decision&view=hub");
+  await waitForBoot(page);
+  await page.evaluate(() => {
+    cancelBackgroundRefresh();
+    state.runtimeEventSource?.close();
+    state.runtimeEventSource = null;
+    state.runtimeEventsConnected = true;
+    window.clearInterval(state.runtimeFallbackTimer);
+    state.runtimeFallbackTimer = null;
+  });
+  await expect.poll(async () => page.evaluate(() => Boolean(state.refreshInFlight || state.reportsRefreshInFlight))).toBe(false);
+  await page.evaluate(() => {
+    state.files = [{ path: "README.md", label: "README.md" }];
+    state.sharedContext = {
+      mode: "review",
+      acceptedChangesRemain: true,
+      review: {
+        projectId: "demo",
+        proposal: "proposal/demo/durable-file-decision",
+        proposalHead: "2".repeat(40),
+        proposalFiles: ["README.md"],
+        proposalChanges: [{ path: "README.md", status: "M", reviewKind: "proposal-change" }],
+      },
+    };
+    state.docqa = {
+      queue: [{ path: "README.md", label: "README.md", reviewReason: "unverified-current" }],
+      pendingPaths: ["README.md"],
+      reviewedPaths: [],
+      summary: { needsReview: 1 },
+    };
+    showProposalReview();
+    state.proposalSelectedFiles.add("README.md");
+    renderProposalReviewPage();
+  });
+  const acceptSelected = page.locator('[data-proposal-review-batch="accept"]');
+  await page.evaluate(() => requestSharedProposalFileBatch("accept"));
+  await decisionStarted;
+  try {
+    await expect(acceptSelected).toBeDisabled();
+    await expect(acceptSelected).toHaveText("Saving…");
+    await expect(page.locator('[data-proposal-review-path="README.md"] .proposal-review-file-state')).toHaveText("Review");
+    await expect(page.locator('[data-proposal-review-path="README.md"]')).toHaveAttribute("aria-pressed", "true");
+  } finally {
+    releaseDecision();
+  }
+  await expect(page.locator('[data-proposal-review-path="README.md"] .proposal-review-file-state')).toHaveText("Reviewed");
+});
+
+test("@layout proposal verification keeps the final action and header geometry stable", async ({ page }) => {
+  const { origin } = fixture();
+  await page.goto(origin + "/?hub=1&workspace=workspace-proposal-stable-opening&view=hub");
+  await waitForBoot(page);
+  await replaceHubProposals(page, [{
+    id: "proposal:fixture:stable-opening",
+    branch: "proposal/demo/stable-opening",
+    title: "Stable proposal opening",
+    reviewStatus: "ready",
+    files: ["README.md", "docs/operations.md"],
+  }]);
+
+  await page.evaluate(() => {
+    const item = contextHubReviewItems().find((candidate) => candidate.id === "proposal:fixture:stable-opening");
+    if (!item) throw new Error("Missing stable proposal opening fixture");
+    showProposalReview({ preparingItem: item });
+    state.contextRoomOpeningProposalId = item.id;
+    state.proposalOpenState = { phase: "opening", code: "", message: "", details: null };
+    state.sharedContextBusy = true;
+    renderSharedContextControls();
+    renderProposalReviewPage();
+    setStatus("verifying exact proposal revision...");
+  });
+
+  const reject = page.getByRole("button", { name: "Reject proposal" });
+  await expect(reject).toBeVisible();
+  await expect(reject).toBeDisabled();
+  await expect(page.locator("#proposalReviewProgress")).toContainText("Verifying");
+
+  const openingGeometry = await page.evaluate(() => {
+    const rect = (id) => {
+      const box = document.getElementById(id)?.getBoundingClientRect();
+      return box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null;
+    };
+    return {
+      brand: rect("brandHome"),
+      reject: rect("proposalDockReject"),
+      title: rect("proposalReviewTitle"),
+      progress: rect("proposalReviewProgress"),
+    };
+  });
+
+  await page.evaluate(() => {
+    const preview = state.contextRoomPreparingProposal;
+    const files = preview.files;
+    state.sharedContext = {
+      mode: "review",
+      acceptedChangesRemain: true,
+      review: {
+        projectId: preview.projectId,
+        proposal: preview.branch,
+        proposalHead: preview.head,
+        title: preview.title,
+        description: preview.description,
+        defaultBranch: "main",
+        proposalFiles: files,
+        proposalChanges: files.map((path) => ({ path, status: "M", reviewKind: "proposal-change" })),
+      },
+    };
+    state.docqa = {
+      queue: files.map((path) => ({ path, label: path.split("/").pop(), reviewReason: "git-change" })),
+      pendingPaths: files,
+      reviewedPaths: [],
+      summary: { needsReview: files.length },
+    };
+    state.contextRoomPreparingProposal = null;
+    state.contextRoomPreparedReview = null;
+    state.contextRoomOpeningProposalId = "";
+    state.proposalOpenState = { phase: "ready", code: "", message: "", details: null };
+    state.sharedContextBusy = false;
+    renderSharedContextControls();
+    renderProposalReviewPage();
+    setStatus("proposal ready");
+  });
+
+  await expect(reject).toBeVisible();
+  await expect(reject).toBeEnabled();
+  const readyGeometry = await page.evaluate(() => {
+    const rect = (id) => {
+      const box = document.getElementById(id)?.getBoundingClientRect();
+      return box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null;
+    };
+    return {
+      brand: rect("brandHome"),
+      reject: rect("proposalDockReject"),
+      title: rect("proposalReviewTitle"),
+      progress: rect("proposalReviewProgress"),
+    };
+  });
+
+  expect(readyGeometry.brand).toEqual(openingGeometry.brand);
+  expect(readyGeometry.reject).toEqual(openingGeometry.reject);
+  expect(readyGeometry.title).toEqual(openingGeometry.title);
+  expect(readyGeometry.progress).toEqual(openingGeometry.progress);
+});
+
+test("@smoke successful proposal preparation stays in one document without a hard refresh", async ({ page }) => {
+  const { origin } = fixture();
+  const proposalFiles = ["README.md", "docs/operations.md"];
+  const proposalHead = "1".repeat(40);
+  const proposalTitle = "Seamless proposal opening";
+  await page.goto(origin + "/?hub=1&workspace=workspace-proposal-seamless-opening&view=hub");
+  await waitForBoot(page);
+  const [proposal] = await replaceHubProposals(page, [{
+    id: "proposal:fixture:seamless-opening",
+    branch: "proposal/demo/seamless-opening",
+    head: proposalHead,
+    title: proposalTitle,
+    reviewStatus: "ready",
+    files: proposalFiles,
+  }]);
+  const review = {
+    projectId: "demo",
+    authorityId: "authority-seamless-opening",
+    repository: "fixture://shared",
+    repositoryId: "fixture-repository",
+    proposal: proposal.branch,
+    proposalHead,
+    defaultBranch: "main",
+    title: proposalTitle,
+    description: "Exact proposal opening fixture.",
+    proposalFiles,
+    proposalChanges: proposalFiles.map((filePath) => ({ path: filePath, status: "M", reviewKind: "proposal-change" })),
+  };
+  const docqa = {
+    generatedAt: new Date().toISOString(),
+    queue: proposalFiles.map((filePath) => ({ path: filePath, label: filePath.split("/").pop(), reviewReason: "git-change" })),
+    pendingPaths: proposalFiles,
+    reviewedPaths: [],
+    summary: { needsReview: proposalFiles.length },
+  };
+  await page.route("**/api/context-hub/review", async (route) => {
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        url: origin + "/reviews/authority-seamless-opening/",
+        reviewRoot: "/tmp/context-room-seamless-review",
+        projectId: "context-room-seamless-review",
+        review,
+        docqa,
+        sharedContext: { enabled: true, mode: "review", review, acceptedChangesRemain: true },
+        files: proposalFiles.map((filePath) => ({ path: filePath, label: filePath.split("/").pop() })),
+        directories: ["docs/"],
+      }),
+    });
+  });
+  const documentIdentity = await page.evaluate(() => {
+    window.__contextRoomDocumentIdentity = crypto.randomUUID();
+    return window.__contextRoomDocumentIdentity;
+  });
+  let documentRequests = 0;
+  page.on("request", (request) => {
+    if (request.resourceType() === "document") documentRequests += 1;
+  });
+
+  await page.locator('[data-context-room-review-entry="' + proposal.id + '"] [data-context-room-review]').click();
+
+  await expect(page.getByRole("heading", { name: proposalTitle })).toBeVisible();
+  await expect(page.locator("#proposalReviewProgress")).toContainText("2 files remaining · 0 reviewed");
+  await expect.poll(() => page.evaluate(() => window.__contextRoomDocumentIdentity || "")).toBe(documentIdentity);
+  await expect.poll(() => page.evaluate(() => state.contextRoomPreparingProposal)).toBe(null);
+  expect(documentRequests).toBe(0);
+  await expect(page).toHaveURL((url) => url.pathname === "/reviews/authority-seamless-opening/" && url.searchParams.get("view") === "proposal");
+});
+
 test("@smoke Back cancels a delayed proposal opening and Forward starts one clean exact retry", async ({ page }) => {
   const { origin } = fixture();
   let releaseFirstReview;
@@ -1093,20 +1382,20 @@ test("@smoke Select visible excludes non-openable proposals", async ({ page }) =
   const { origin } = fixture();
   await page.goto(origin + "/?hub=1&workspace=workspace-select-visible-openable&view=hub");
   await waitForBoot(page);
-  const ids = await page.evaluate(() => {
-    cancelBackgroundRefresh();
-    const source = contextHubReviewItems().find((item) => item.type === "shared");
-    if (!source) throw new Error("Missing shared proposal fixture");
-    const ready = { ...source, id: "proposal:fixture:select-ready", branch: "proposal/demo/select-ready", head: "e".repeat(40), reviewStatus: "ready", authorityViolation: null };
-    const secondReady = { ...source, id: "proposal:fixture:select-ready-two", branch: "proposal/demo/select-ready-two", head: "1".repeat(40), reviewStatus: "ready", authorityViolation: null };
-    const recovery = { ...source, id: "proposal:fixture:select-recovery", branch: "proposal/demo/select-recovery", head: "f".repeat(40), reviewStatus: "acceptance_recovery_required", authorityViolation: { kind: "acceptance_recovery_required" } };
-    state.contextHub = { ...state.contextHub, items: [ready, secondReady, recovery], proposals: [ready, secondReady, recovery] };
-    state.contextRoomSelectedReviews = new Set([ready.id]);
-    state.sharedProposalSearch = "";
-    state.contextHubSource = "all";
+  const ids = {
+    ready: "proposal:fixture:select-ready",
+    secondReady: "proposal:fixture:select-ready-two",
+    recovery: "proposal:fixture:select-recovery",
+  };
+  await replaceHubProposals(page, [
+    { id: ids.ready, branch: "proposal/demo/select-ready", head: "e".repeat(40), title: "Ready proposal", reviewStatus: "ready" },
+    { id: ids.secondReady, branch: "proposal/demo/select-ready-two", head: "1".repeat(40), title: "Second ready proposal", reviewStatus: "ready" },
+    { id: ids.recovery, branch: "proposal/demo/select-recovery", head: "f".repeat(40), title: "Recovery proposal", reviewStatus: "acceptance_recovery_required", authorityViolation: { kind: "acceptance_recovery_required" } },
+  ]);
+  await page.evaluate((readyId) => {
+    state.contextRoomSelectedReviews = new Set([readyId]);
     renderContextRoomGlobalReviewQueue();
-    return { ready: ready.id, secondReady: secondReady.id, recovery: recovery.id };
-  });
+  }, ids.ready);
 
   await page.getByRole("button", { name: "Select visible", exact: true }).click();
   await expect.poll(() => page.evaluate(() => [...state.contextRoomSelectedReviews].sort())).toEqual([ids.ready, ids.secondReady].sort());
