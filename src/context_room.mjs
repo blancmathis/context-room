@@ -31869,6 +31869,8 @@ function adoptPreparedLocalReview(result, item) {
     root: result.reviewRoot || "",
     projectId: result.projectId,
   };
+  cancelBackgroundRefresh();
+  state.backgroundRefreshController?.abort();
   if (result.reviewRoot) state.root = result.reviewRoot;
   state.projectId = result.projectId;
   state.activeProjectLocationId = "";
@@ -36183,6 +36185,7 @@ async function loadInitialDirectSharedContext() {
 }
 
 async function loadFiles(options = {}) {
+  const reviewScopeAtStart = state.contextRoomReviewDocumentScope;
   setStatus("chargement...");
   if (options.initial) state.bootMilestones.requestsStarted = Date.now() - state.bootStartedAt;
   if (IS_HOSTED_CONTEXT_ROOM) {
@@ -36202,6 +36205,7 @@ async function loadFiles(options = {}) {
     ? api("/api/health").then((health) => ({ root: health.root, files: [], directories: [] }))
     : api(filesApiPath());
   const [data, settingsData] = await Promise.all([filesRequest, api("/api/settings")]);
+  if (state.contextRoomReviewDocumentScope && state.contextRoomReviewDocumentScope !== reviewScopeAtStart) return;
   if (options.initial) state.bootMilestones.coreDataReady = Date.now() - state.bootStartedAt;
   acceptContextRoomRoot(data.root);
   state.files = data.files || [];
@@ -46850,7 +46854,7 @@ function cancelBackgroundRefresh() {
 }
 
 async function refreshBackgroundReports(options = {}) {
-  if (state.workspaceRuntimeStopped || state.workspaceUnloadPending || IS_HOSTED_CONTEXT_ROOM) return;
+  if (state.workspaceRuntimeStopped || state.workspaceUnloadPending || IS_HOSTED_CONTEXT_ROOM || state.contextRoomReviewDocumentScope) return;
   if (document.hidden || state.reportsRefreshInFlight) return;
   const refreshLocationId = state.activeProjectLocationId;
   const refreshNavigationGeneration = state.workspaceNavigationGeneration;

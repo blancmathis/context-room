@@ -556,8 +556,9 @@ test.describe.serial("real proposal workflows", () => {
       await expect(proposalRow(page, second.proposalTitle)).toHaveCount(1);
 
       await openProposalFromHub(page, first.proposalTitle);
-      await expect(page).toHaveURL((url) => url.origin !== new URL(data.origin).origin && url.searchParams.get("view") === "proposal");
-      await waitForBoot(page);
+      await expect(page).toHaveURL((url) => url.origin === new URL(data.origin).origin
+        && /^\/reviews\/[^/]+\/?$/.test(url.pathname)
+        && url.searchParams.get("view") === "proposal");
       await expect(page.getByRole("heading", { name: first.proposalTitle })).toBeVisible();
       await expect(page.locator("[data-proposal-review-path]")).toHaveCount(3);
 
@@ -652,8 +653,9 @@ test.describe.serial("real proposal workflows", () => {
         },
       }, null, 2)).toHaveCount(1);
       await openProposalFromHub(page, second.proposalTitle);
-      await expect(page).toHaveURL((url) => url.origin !== new URL(data.origin).origin && url.searchParams.get("view") === "proposal");
-      await waitForBoot(page);
+      await expect(page).toHaveURL((url) => url.origin === new URL(data.origin).origin
+        && /^\/reviews\/[^/]+\/?$/.test(url.pathname)
+        && url.searchParams.get("view") === "proposal");
       await expect(page.getByRole("heading", { name: second.proposalTitle })).toBeVisible();
       expect(await page.evaluate(() => ({
         proposal: state.sharedContext?.review?.proposal,
