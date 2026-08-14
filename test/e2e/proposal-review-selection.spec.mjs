@@ -956,7 +956,7 @@ test("@smoke durable file acceptance never marks Reviewed before the 200 respons
     renderProposalReviewPage();
   });
   const acceptSelected = page.locator('[data-proposal-review-batch="accept"]');
-  await acceptSelected.evaluate((button) => button.click());
+  await page.evaluate(() => requestSharedProposalFileBatch("accept"));
   await decisionStarted;
   try {
     await expect(acceptSelected).toBeDisabled();
