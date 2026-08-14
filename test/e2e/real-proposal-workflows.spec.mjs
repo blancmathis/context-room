@@ -773,7 +773,7 @@ test.describe.serial("real proposal workflows", () => {
       expect(localRefreshPosts).toEqual([{}]);
       expect(localRefreshStatuses).toEqual([200]);
       expectProjectSharedEffects(managed.project, managed, managedM1);
-      expect(new URL(page.url()).searchParams.has("hub")).toBe(false);
+      await expect.poll(() => new URL(page.url()).searchParams.has("hub")).toBe(false);
 
       connectionDisclosure = await openProjectSharedSettings(page);
       const disconnectResponse = page.waitForResponse((response) => (
