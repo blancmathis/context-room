@@ -933,6 +933,15 @@ test("@smoke durable file acceptance never marks Reviewed before the 200 respons
   await page.goto(origin + "/?hub=1&workspace=workspace-durable-file-decision&view=hub");
   await waitForBoot(page);
   await page.evaluate(() => {
+    cancelBackgroundRefresh();
+    state.runtimeEventSource?.close();
+    state.runtimeEventSource = null;
+    state.runtimeEventsConnected = true;
+    window.clearInterval(state.runtimeFallbackTimer);
+    state.runtimeFallbackTimer = null;
+  });
+  await expect.poll(async () => page.evaluate(() => Boolean(state.refreshInFlight || state.reportsRefreshInFlight))).toBe(false);
+  await page.evaluate(() => {
     state.files = [{ path: "README.md", label: "README.md" }];
     state.sharedContext = {
       mode: "review",
