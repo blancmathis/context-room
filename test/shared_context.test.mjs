@@ -7787,6 +7787,9 @@ test("large proposal acceptance returns a durable exact HTTP projection within o
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
   t.after(() => room.server.close());
   const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const warmResponse = await fetch(origin + "/api/health");
+  assert.equal(warmResponse.status, 200);
+  await warmResponse.arrayBuffer();
 
   const startedAt = performance.now();
   const response = await fetch(origin + "/api/shared-context/review-files", {
