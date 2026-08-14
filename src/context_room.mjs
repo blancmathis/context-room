@@ -274,6 +274,7 @@ export const GLOBAL_PREFERENCES_FILE = "~/.context-room/preferences.json";
 const CONFIG_SCHEMA_URL = "https://unpkg.com/context-room@latest/schemas/config.schema.json";
 const DOCQA_REVIEW_STATE = `${CONFIG_DIR}/review-state.json`;
 const DOCQA_REVIEW_BASELINES = `${CONFIG_DIR}/review-baselines`;
+const DOCQA_REVIEW_BASELINE_BUNDLES = `${DOCQA_REVIEW_BASELINES}/.bundles`;
 const DOCQA_GLOBAL_REVIEW_LEDGER = `${CONFIG_DIR}/review-ledger.json`;
 const FILE_MUTATION_TRANSACTIONS_DIR = `${CONFIG_DIR}/file-transactions`;
 const FILE_MUTATION_TRANSACTION_VERSION = 2;
@@ -7006,100 +7007,6 @@ function atomicWriteReviewControlFile(root, relPath, content) {
   }
 }
 
-function atomicWriteReviewControlFiles(root, entries) {
-  assertDocReviewEvidenceLockHeld(root);
-  const prepared = [];
-  const directories = new Map();
-  let operationError = null;
-  try {
-    for (const entry of entries) {
-      const normalized = normalizeRelPath(entry.relPath);
-      const absolute = path.join(path.resolve(root), normalized);
-      assertManagedProjectPath(root, absolute, normalized);
-      const directory = path.dirname(absolute);
-      fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-      assertManagedProjectPath(root, absolute, normalized);
-      let directorySnapshot = directories.get(directory);
-      if (!directorySnapshot) {
-        const stats = fs.lstatSync(directory, { bigint: true });
-        if (!stats.isDirectory() || stats.isSymbolicLink()) {
-          throw new Error(`Managed Context Room path cannot use symbolic links: ${normalized}`);
-        }
-        directorySnapshot = {
-          realPath: fs.realpathSync(directory),
-          dev: stats.dev.toString(),
-          ino: stats.ino.toString(),
-        };
-        directories.set(directory, directorySnapshot);
-      }
-      let mode = 0o600;
-      try {
-        const current = fs.lstatSync(absolute);
-        if (current.isSymbolicLink() || !current.isFile()) throw new Error(`Managed Context Room path must be a regular file: ${normalized}`);
-        mode = current.mode & 0o7777;
-      } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
-      }
-      const temporary = path.join(directory, `.context-room-review-${process.pid}-${randomBytes(12).toString("hex")}.tmp`);
-      const descriptor = fs.openSync(
-        temporary,
-        fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | Number(fs.constants.O_NOFOLLOW || 0),
-        mode,
-      );
-      let temporaryStats;
-      try {
-        temporaryStats = fs.fstatSync(descriptor, { bigint: true });
-        prepared.push({ normalized, absolute, directory, directorySnapshot, temporary, temporaryStats });
-        fs.writeFileSync(descriptor, String(entry.content), "utf8");
-        fs.fchmodSync(descriptor, mode);
-      } finally {
-        fs.closeSync(descriptor);
-      }
-    }
-    for (const item of prepared) {
-      const descriptor = fs.openSync(item.temporary, fs.constants.O_RDONLY);
-      try { fs.fsyncSync(descriptor); }
-      finally { fs.closeSync(descriptor); }
-    }
-    for (const item of prepared) {
-      assertDocReviewEvidenceLockHeld(root);
-      const currentDirectoryStats = fs.lstatSync(item.directory, { bigint: true });
-      if (!currentDirectoryStats.isDirectory() || currentDirectoryStats.isSymbolicLink()
-        || fs.realpathSync(item.directory) !== item.directorySnapshot.realPath
-        || currentDirectoryStats.dev.toString() !== item.directorySnapshot.dev
-        || currentDirectoryStats.ino.toString() !== item.directorySnapshot.ino) {
-        throw new Error(`Managed Context Room path changed before publication: ${item.normalized}`);
-      }
-      try {
-        const current = fs.lstatSync(item.absolute);
-        if (current.isSymbolicLink() || !current.isFile()) throw new Error(`Managed Context Room path must be a regular file: ${item.normalized}`);
-      } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
-      }
-      fs.renameSync(item.temporary, item.absolute);
-    }
-    for (const directory of directories.keys()) {
-      let descriptor = null;
-      try {
-        descriptor = fs.openSync(directory, fs.constants.O_RDONLY);
-        fs.fsyncSync(descriptor);
-      } catch (error) {
-        if (!["EINVAL", "ENOTSUP", "EBADF"].includes(error?.code)) throw error;
-      } finally {
-        if (descriptor != null) fs.closeSync(descriptor);
-      }
-    }
-  } catch (error) {
-    operationError = error;
-    throw error;
-  } finally {
-    for (const item of prepared) {
-      try { unlinkExactEntryIfIdentityMatches(item.temporary, item.temporaryStats); }
-      catch (error) { if (error?.code !== "ENOENT" && !operationError) throw error; }
-    }
-  }
-}
-
 export function readDocReviewState(root = process.cwd(), { readOnly = false } = {}) {
   const statePath = path.join(root, DOCQA_REVIEW_STATE);
   assertManagedProjectPath(root, statePath, DOCQA_REVIEW_STATE);
@@ -7468,24 +7375,29 @@ function writeDocReviewBaselineFile(root, relPath, content) {
   });
 }
 
-function writeDocReviewBaselineFilesUnderLock(root, files) {
+function prepareDocReviewBaselineBundle(root, files) {
   assertDocReviewEvidenceLockHeld(root);
-  const prepared = files.map((file) => {
+  const entries = files.map((file) => {
     const normalized = normalizeRelPath(file.path);
     preflightDocReviewMutationPaths(root, normalized, { baseline: true });
-    const content = String(file.content || "");
-    return {
-      path: normalized,
-      content,
-      relPath: reviewBaselinePathFor(normalized),
-    };
-  });
-  atomicWriteReviewControlFiles(root, prepared);
+    return [normalized, String(file.content || "")];
+  }).sort(([left], [right]) => left.localeCompare(right, "en"));
+  const content = JSON.stringify({ version: 1, entries: Object.fromEntries(entries) }) + "\n";
+  const relPath = path.posix.join(DOCQA_REVIEW_BASELINE_BUNDLES, `${hashContent(content)}.json`);
+  const absolutePath = path.join(path.resolve(root), relPath);
+  assertManagedProjectPath(root, absolutePath, relPath);
+  return { entries, content, relPath, absolutePath };
+}
+
+function writePreparedDocReviewBaselineBundleUnderLock(root, prepared) {
+  assertDocReviewEvidenceLockHeld(root);
+  atomicWriteReviewControlFile(root, prepared.relPath, prepared.content);
   const baselineAt = new Date().toISOString();
-  return new Map(prepared.map((item) => [item.path, {
-    baselinePath: item.relPath,
-    baselineHash: hashContent(item.content),
-    baselineReviewHash: reviewContentHash(item.content),
+  return new Map(prepared.entries.map(([filePath, content]) => [filePath, {
+    baselinePath: prepared.relPath,
+    baselineBundleKey: filePath,
+    baselineHash: hashContent(content),
+    baselineReviewHash: reviewContentHash(content),
     baselineAt,
   }]));
 }
@@ -7496,7 +7408,17 @@ function readDocReviewBaseline(root, relPath, review = null) {
   const abs = path.join(root, baselinePath);
   assertManagedProjectPath(root, abs, baselinePath);
   if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return null;
-  const content = fs.readFileSync(abs, "utf8");
+  let content = fs.readFileSync(abs, "utf8");
+  const baselineBundleKey = normalizeRelPath(review?.baselineBundleKey || "");
+  if (baselineBundleKey) {
+    try {
+      const bundle = JSON.parse(content);
+      if (bundle?.version !== 1 || !bundle.entries || typeof bundle.entries !== "object" || !Object.hasOwn(bundle.entries, baselineBundleKey)) return null;
+      content = String(bundle.entries[baselineBundleKey]);
+    } catch {
+      return null;
+    }
+  }
   const baselineHash = hashContent(content);
   if (review?.baselineHash && review.baselineHash !== baselineHash) return null;
   return { path: baselinePath, content, contentHash: baselineHash, reviewHash: reviewContentHash(content) };
@@ -7521,6 +7443,7 @@ function writeDocReviewBaselineUnderLock(root, relPath, { note = "" } = {}) {
     const next = {
       ...existing,
       baselinePath: baseline.baselinePath,
+      baselineBundleKey: baseline.baselineBundleKey || undefined,
       baselineHash: baseline.baselineHash,
       baselineReviewHash: baseline.baselineReviewHash,
       baselineAt: baseline.baselineAt,
@@ -7689,6 +7612,7 @@ function writeDocReviewDecisionUnderLock(root, relPath, {
       resourceVersion,
       gitIndexVersion,
       baselinePath: baseline.baselinePath,
+      ...(baseline.baselineBundleKey ? { baselineBundleKey: baseline.baselineBundleKey } : {}),
       baselineHash: baseline.baselineHash,
       baselineReviewHash: baseline.baselineReviewHash,
       baselineAt: baseline.baselineAt,
@@ -8573,11 +8497,7 @@ export function writeSharedProposalFileBatchDecision(root, input = {}, { expecte
     }
     const stateFile = path.join(resolvedRoot, DOCQA_REVIEW_STATE);
     const ledgerFile = globalReviewLedgerPath(resolvedRoot);
-    const controlFiles = new Set([stateFile, ledgerFile]);
-    for (const item of prepared) controlFiles.add(path.join(resolvedRoot, reviewBaselinePathFor(item.path)));
-    const controlSnapshots = new Map([...controlFiles].map((filePath) => [filePath, snapshotRegularFile(filePath, {
-      managedRoot: reviewRollbackManagedRoot(resolvedRoot, filePath),
-    })]));
+    let controlSnapshots = new Map();
     const workspaceSnapshots = new Map([...desiredMutations].map(([filePath]) => {
       const absolute = path.join(resolvedRoot, ...filePath.split("/"));
       return [absolute, snapshotRegularFile(absolute, { managedRoot: resolvedRoot })];
@@ -8619,10 +8539,14 @@ export function writeSharedProposalFileBatchDecision(root, input = {}, { expecte
           },
         }];
       }));
-      batchControl.baselines = writeDocReviewBaselineFilesUnderLock(
+      const baselineBundle = prepareDocReviewBaselineBundle(
         resolvedRoot,
         [...currentReviewFiles.values()].map((item) => item.file),
       );
+      controlSnapshots = new Map([stateFile, ledgerFile, baselineBundle.absolutePath].map((filePath) => [filePath, snapshotRegularFile(filePath, {
+        managedRoot: reviewRollbackManagedRoot(resolvedRoot, filePath),
+      })]));
+      batchControl.baselines = writePreparedDocReviewBaselineBundleUnderLock(resolvedRoot, baselineBundle);
       for (const { path: filePath, unit } of prepared) {
         const currentReview = currentReviewFiles.get(filePath);
         const currentResource = currentReview.resource;

@@ -85,6 +85,7 @@ import {
   readFileDiff,
   readMemoryFile,
   readMemoryWebappSettings,
+  readReviewBaseFile,
   renderAppHtml,
   revertMemoryFile,
   writeDocReviewDecision,
@@ -7809,6 +7810,11 @@ test("large proposal acceptance returns a durable exact HTTP projection within o
   assert.deepEqual(payload.reviewedPaths, files);
   assert.deepEqual(payload.docqa.reviewedPaths, files);
   assert.equal(payload.docqa.pendingPaths.length, 0);
+  assert.equal(new Set(payload.files.map((item) => item.baselinePath)).size, 1);
+  assert.equal(new Set(payload.files.map((item) => item.baselineBundleKey)).size, files.length);
+  const firstReviewBase = readReviewBaseFile(review.reviewRoot, files[0]);
+  assert.equal(firstReviewBase.baseline, "review");
+  assert.equal(firstReviewBase.baseContent, `# HTTP batch file 1\n\n${"A".repeat(688_000)}\n`);
   const decisionEvents = readContextRoomEvents({ types: "review.decision", limit: 200 }).events;
   assert.equal(decisionEvents.length, 80);
   assert.deepEqual(new Set(decisionEvents.map((event) => event.resource?.path)), new Set(files));
