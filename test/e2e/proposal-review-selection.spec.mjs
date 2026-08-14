@@ -1382,20 +1382,20 @@ test("@smoke Select visible excludes non-openable proposals", async ({ page }) =
   const { origin } = fixture();
   await page.goto(origin + "/?hub=1&workspace=workspace-select-visible-openable&view=hub");
   await waitForBoot(page);
-  const ids = await page.evaluate(() => {
-    cancelBackgroundRefresh();
-    const source = contextHubReviewItems().find((item) => item.type === "shared");
-    if (!source) throw new Error("Missing shared proposal fixture");
-    const ready = { ...source, id: "proposal:fixture:select-ready", branch: "proposal/demo/select-ready", head: "e".repeat(40), reviewStatus: "ready", authorityViolation: null };
-    const secondReady = { ...source, id: "proposal:fixture:select-ready-two", branch: "proposal/demo/select-ready-two", head: "1".repeat(40), reviewStatus: "ready", authorityViolation: null };
-    const recovery = { ...source, id: "proposal:fixture:select-recovery", branch: "proposal/demo/select-recovery", head: "f".repeat(40), reviewStatus: "acceptance_recovery_required", authorityViolation: { kind: "acceptance_recovery_required" } };
-    state.contextHub = { ...state.contextHub, items: [ready, secondReady, recovery], proposals: [ready, secondReady, recovery] };
-    state.contextRoomSelectedReviews = new Set([ready.id]);
-    state.sharedProposalSearch = "";
-    state.contextHubSource = "all";
+  const ids = {
+    ready: "proposal:fixture:select-ready",
+    secondReady: "proposal:fixture:select-ready-two",
+    recovery: "proposal:fixture:select-recovery",
+  };
+  await replaceHubProposals(page, [
+    { id: ids.ready, branch: "proposal/demo/select-ready", head: "e".repeat(40), title: "Ready proposal", reviewStatus: "ready" },
+    { id: ids.secondReady, branch: "proposal/demo/select-ready-two", head: "1".repeat(40), title: "Second ready proposal", reviewStatus: "ready" },
+    { id: ids.recovery, branch: "proposal/demo/select-recovery", head: "f".repeat(40), title: "Recovery proposal", reviewStatus: "acceptance_recovery_required", authorityViolation: { kind: "acceptance_recovery_required" } },
+  ]);
+  await page.evaluate((readyId) => {
+    state.contextRoomSelectedReviews = new Set([readyId]);
     renderContextRoomGlobalReviewQueue();
-    return { ready: ready.id, secondReady: secondReady.id, recovery: recovery.id };
-  });
+  }, ids.ready);
 
   await page.getByRole("button", { name: "Select visible", exact: true }).click();
   await expect.poll(() => page.evaluate(() => [...state.contextRoomSelectedReviews].sort())).toEqual([ids.ready, ids.secondReady].sort());
