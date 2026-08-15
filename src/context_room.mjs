@@ -27273,7 +27273,7 @@ export function renderAppHtml({ codexPromptMutationNonce = "", ownerMutationNonc
     <main>
       <div class="workspace-chrome">
         <div class="workspace-dock" role="toolbar" aria-label="Workspace navigation">
-          <button id="proposalDockAccept" class="dock-button primary" type="button" hidden>Put on main</button>
+          <button id="proposalDockAccept" class="dock-button primary" type="button" hidden>Accept proposal</button>
           <button id="brandHome" class="context-room-brand" type="button" title="Home" aria-label="Home"><span class="context-room-brand-mark" aria-hidden="true"></span><strong>Context Room</strong></button>
           <button id="settingsButton" class="dock-button workspace-switch" type="button" title="Open settings">Settings</button>
           <button id="proposalDockBack" class="dock-button proposal-dock-back" type="button" hidden>← Proposal</button>
@@ -32318,13 +32318,15 @@ function renderProposalDockControls() {
   const actionable = shared?.mode === "review" && !preview && !terminal;
   const preparing = Boolean(preview && ["opening", "loading", "ready"].includes(String(state.proposalOpenState?.phase || "opening")));
   const noAcceptedChanges = actionable && shared?.acceptedChangesRemain === false;
-  acceptButton.hidden = !actionable || queueCount > 0 || Boolean(state.proposalAuthorityStatus);
-  acceptButton.disabled = Boolean(state.proposalActionBusy || queueCount > 0 || noAcceptedChanges);
+  acceptButton.hidden = (!actionable && !preparing) || Boolean(state.proposalAuthorityStatus);
+  acceptButton.disabled = Boolean(state.proposalActionBusy || !actionable || queueCount > 0 || noAcceptedChanges);
   if (!acceptButton.hidden) setExplorerEdgePeek(false);
-  acceptButton.title = delivered
+  acceptButton.title = preparing
+    ? "Available after Context Room verifies the exact proposal revision"
+    : delivered
     ? "This exact proposal revision is already in " + (delivered.defaultBranch || review.defaultBranch || "main")
     : queueCount
-      ? queueCount + " file(s) still need a human decision"
+      ? queueCount + " file" + (queueCount === 1 ? " still needs" : "s still need") + " a human decision before this proposal can be accepted"
       : noAcceptedChanges
         ? "No accepted changes remain. Reject the proposal to close it."
         : "Put the exact reviewed result on " + (review.defaultBranch || "main");

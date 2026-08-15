@@ -252,11 +252,12 @@ test("shared proposal review keeps navigation and explicit completion in the pro
   assert.match(html, /id="proposalDockBack"/);
   assert.match(html, /id="proposalDockAccept"/);
   assert.match(html, /id="proposalDockReject"/);
-  assert.match(html, /Put on main/);
+  assert.match(html, /Accept proposal/);
   assert.match(html, /Reject proposal/);
   assert.match(html, /Open review/);
   assert.match(html, /const wasOpen = state\.sharedProposalWorkspaceOpen/);
-  assert.doesNotMatch(html, /Accept proposal/);
+  assert.match(html, /acceptButton\.hidden = \(!actionable && !preparing\) \|\| Boolean\(state\.proposalAuthorityStatus\)/);
+  assert.match(html, /acceptButton\.disabled = Boolean\(state\.proposalActionBusy \|\| !actionable \|\| queueCount > 0 \|\| noAcceptedChanges\)/);
   assert.doesNotMatch(html, /Prepare pull request|Open pull request|Accepted branch ready/);
   assert.match(html, /if \(shared\?\.mode === "review" \|\| proposalPreview\) \{\s*controls\.hidden = true;/);
   assert.match(html, /backButton\.hidden = !inProposalContext \|\| onProposalPage/);
@@ -311,7 +312,7 @@ test("recoverable proposal authority warnings stay inspectable without enabling 
   assert.match(html, /function contextRoomProposalBlockedState\(item\)/);
   assert.match(html, /contextRoomProposalBlockedState\(item\)\?\.phase === "recovery_required"\) return \{ key: "critical", label: "Recovery required" \}/);
   assert.match(html, /state\.proposalAuthorityStatus/);
-  assert.match(html, /acceptButton\.hidden = !actionable \|\| queueCount > 0 \|\| Boolean\(state\.proposalAuthorityStatus\)/);
+  assert.match(html, /acceptButton\.hidden = \(!actionable && !preparing\) \|\| Boolean\(state\.proposalAuthorityStatus\)/);
   assert.match(html, /state\.proposalAuthorityMessage/);
 });
 

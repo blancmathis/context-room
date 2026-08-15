@@ -1038,7 +1038,7 @@ test("@layout themes, zoom, files, graph, proposals, and dialogs preserve geomet
     await makeProposalTerminalReady(page);
     const terminalAction = page.locator("#proposalDockAccept");
     await expect(terminalAction).toBeVisible();
-    await expect(terminalAction).toHaveAccessibleName("Put on main");
+    await expect(terminalAction).toHaveAccessibleName("Accept proposal");
     await expect(terminalAction).toBeInViewport({ ratio: 1 });
     await audit(page, testInfo, `proposal-terminal-${width}`);
 
@@ -1060,12 +1060,12 @@ test("@layout themes, zoom, files, graph, proposals, and dialogs preserve geomet
       await expect(terminalControl).toBeVisible();
       if (browserZoom) {
         const terminalLabel = () => terminalControl.evaluate((node) => node.getAttribute("aria-label") || node.textContent?.trim() || "");
-        expect(await terminalLabel()).toBe("Put on main");
+        expect(await terminalLabel()).toBe("Accept proposal");
         await terminalControl.evaluate((node) => node.focus());
         expect(await page.evaluate(() => document.activeElement?.id)).toBe("proposalDockAccept");
-        expect(await terminalLabel()).toBe("Put on main");
+        expect(await terminalLabel()).toBe("Accept proposal");
       } else {
-        await expect(terminalControl).toHaveAccessibleName("Put on main");
+        await expect(terminalControl).toHaveAccessibleName("Accept proposal");
         await terminalControl.focus();
         await expect(terminalControl).toBeFocused();
       }

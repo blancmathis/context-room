@@ -1002,7 +1002,11 @@ test("@layout proposal verification keeps the final action and header geometry s
     setStatus("verifying exact proposal revision...");
   });
 
+  const accept = page.getByRole("button", { name: "Accept proposal" });
   const reject = page.getByRole("button", { name: "Reject proposal" });
+  await expect(accept).toBeVisible();
+  await expect(accept).toBeDisabled();
+  await expect(accept).toHaveAttribute("title", "Available after Context Room verifies the exact proposal revision");
   await expect(reject).toBeVisible();
   await expect(reject).toBeDisabled();
   await expect(page.locator("#proposalReviewProgress")).toContainText("Verifying");
@@ -1013,6 +1017,7 @@ test("@layout proposal verification keeps the final action and header geometry s
       return box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null;
     };
     return {
+      accept: rect("proposalDockAccept"),
       brand: rect("brandHome"),
       reject: rect("proposalDockReject"),
       title: rect("proposalReviewTitle"),
@@ -1053,6 +1058,9 @@ test("@layout proposal verification keeps the final action and header geometry s
     setStatus("proposal ready");
   });
 
+  await expect(accept).toBeVisible();
+  await expect(accept).toBeDisabled();
+  await expect(accept).toHaveAttribute("title", "2 files still need a human decision before this proposal can be accepted");
   await expect(reject).toBeVisible();
   await expect(reject).toBeEnabled();
   const readyGeometry = await page.evaluate(() => {
@@ -1061,6 +1069,7 @@ test("@layout proposal verification keeps the final action and header geometry s
       return box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null;
     };
     return {
+      accept: rect("proposalDockAccept"),
       brand: rect("brandHome"),
       reject: rect("proposalDockReject"),
       title: rect("proposalReviewTitle"),
@@ -1750,6 +1759,18 @@ test("@smoke the last individual file decision never auto-accepts the proposal",
     showProposalReview();
   });
 
+  const acceptProposal = page.getByRole("button", { name: "Accept proposal", exact: true });
+  await expect(acceptProposal).toBeVisible();
+  await expect(acceptProposal).toBeDisabled();
+  await expect(acceptProposal).toHaveAttribute(
+    "title",
+    "1 file still needs a human decision before this proposal can be accepted",
+  );
+  const acceptProposalRect = await acceptProposal.evaluate((button) => {
+    const rect = button.getBoundingClientRect();
+    return { left: Math.round(rect.left), width: Math.round(rect.width) };
+  });
+
   const fileRow = page.getByRole("button", { name: /Open README\.md/ });
   if (testInfo.project.name === "chromium-mobile") {
     const pointer = await fileRow.evaluate((row) => {
@@ -1788,9 +1809,12 @@ test("@smoke the last individual file decision never auto-accepts the proposal",
     decision: "accept",
     files: ["README.md"],
   });
-  const putOnMain = page.getByRole("button", { name: "Put on main", exact: true });
-  await expect(putOnMain).toBeVisible();
-  await expect(putOnMain).toBeEnabled();
+  await expect(acceptProposal).toBeVisible();
+  await expect(acceptProposal).toBeEnabled();
+  expect(await acceptProposal.evaluate((button) => {
+    const rect = button.getBoundingClientRect();
+    return { left: Math.round(rect.left), width: Math.round(rect.width) };
+  })).toEqual(acceptProposalRect);
 
   await page.evaluate(() => {
     state.lastReportRefreshAt = 0;
@@ -1809,8 +1833,8 @@ test("@smoke the last individual file decision never auto-accepts the proposal",
   await expect(page.locator("#proposalReviewPage")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Last individual review" })).toBeVisible();
   await expect(page.getByRole("button", { name: /Open README\.md/ })).toContainText("Reviewed");
-  await expect(putOnMain).toBeVisible();
-  await expect(putOnMain).toBeEnabled();
+  await expect(acceptProposal).toBeVisible();
+  await expect(acceptProposal).toBeEnabled();
   expect(await page.evaluate(() => ({
     page: state.page,
     mode: state.sharedContext?.mode,
@@ -1860,7 +1884,7 @@ test("@smoke terminal proposal acceptance obtains a one-shot challenge before co
   });
 
   await showTerminalProposal(page);
-  const acceptButton = page.getByRole("button", { name: "Put on main", exact: true });
+  const acceptButton = page.getByRole("button", { name: "Accept proposal", exact: true });
   await expect(acceptButton).toBeVisible();
   await acceptButton.click();
 
@@ -1941,7 +1965,7 @@ test("@smoke verified terminal acceptance stays pending, reports the commit, the
   });
 
   await showTerminalProposal(page, { projectId });
-  const putOnMain = page.getByRole("button", { name: "Put on main", exact: true });
+  const putOnMain = page.getByRole("button", { name: "Accept proposal", exact: true });
   if (!mobileProject) {
     await expect.poll(async () => page.evaluate(() => {
       const accept = document.querySelector("#proposalDockAccept")?.getBoundingClientRect();
@@ -2041,7 +2065,7 @@ test("@smoke verified terminal acceptance with a pending Hub refresh keeps succe
   await showTerminalProposal(page, { projectId });
   await page.evaluate(() => setExplorerEdgePeek(true));
   await expect(page.locator(".app")).not.toHaveClass(/explorer-edge-peek/);
-  await page.getByRole("button", { name: "Put on main", exact: true }).click();
+  await page.getByRole("button", { name: "Accept proposal", exact: true }).click();
   await confirmTerminalAcceptance(page);
 
   await expect(page).toHaveURL(hubUrl);
@@ -2116,7 +2140,7 @@ test("@smoke terminal acceptance without a valid returnTo falls back to the root
   await showTerminalProposal(page, { projectId });
   const explorerClose = page.getByRole("button", { name: "Close explorer" });
   if (await explorerClose.isVisible()) await explorerClose.click();
-  await page.getByRole("button", { name: "Put on main", exact: true }).click();
+  await page.getByRole("button", { name: "Accept proposal", exact: true }).click();
   await confirmTerminalAcceptance(page);
   await page.waitForURL((url) => url.searchParams.get("view") === "hub");
 
@@ -2203,7 +2227,7 @@ test("@smoke verified acceptance carries its one-shot success toast across Hub p
     });
 
     await showTerminalProposal(page, { projectId, proposal: "proposal/demo/cross-port-toast" });
-    await page.getByRole("button", { name: "Put on main", exact: true }).click();
+    await page.getByRole("button", { name: "Accept proposal", exact: true }).click();
     await confirmTerminalAcceptance(page);
     await page.waitForURL((url) => url.origin === hubProxy.origin && url.searchParams.get("view") === "hub");
     await waitForBoot(page);
@@ -2401,7 +2425,7 @@ test("@smoke two different valid delivery SHAs stay on the proposal and offer re
   });
 
   await showTerminalProposal(page);
-  await page.getByRole("button", { name: "Put on main", exact: true }).click();
+  await page.getByRole("button", { name: "Accept proposal", exact: true }).click();
   const dialog = await confirmTerminalAcceptance(page);
 
   await expect.poll(() => acceptCalls).toBe(1);
@@ -2475,7 +2499,7 @@ test("@smoke a cross-origin accepted HTTP 200 without a flash token stays on the
     });
 
     await showTerminalProposal(page, { projectId });
-    await page.getByRole("button", { name: "Put on main", exact: true }).click();
+    await page.getByRole("button", { name: "Accept proposal", exact: true }).click();
     const dialog = await confirmTerminalAcceptance(page);
 
     await expect.poll(() => acceptCalls).toBe(1);
@@ -2560,7 +2584,7 @@ for (const mismatch of [
     });
 
     await showTerminalProposal(page);
-    await page.getByRole("button", { name: "Put on main", exact: true }).click();
+    await page.getByRole("button", { name: "Accept proposal", exact: true }).click();
     const dialog = await confirmTerminalAcceptance(page);
 
     await expect.poll(() => acceptCalls).toBe(1);
@@ -2618,7 +2642,7 @@ test("@smoke failed terminal acceptance stays put, stays silent, and retries wit
   });
 
   await showTerminalProposal(page);
-  await page.getByRole("button", { name: "Put on main", exact: true }).click();
+  await page.getByRole("button", { name: "Accept proposal", exact: true }).click();
   await expect(page.getByRole("dialog", { name: /Put this proposal on main\?/ })).toBeVisible();
   const dialog = await confirmTerminalAcceptance(page);
   await expect(dialog.getByRole("button", { name: "Putting on main…", exact: true })).toBeDisabled();
@@ -2685,7 +2709,7 @@ test("@smoke a terminal acceptance network failure stays on the proposal with a 
   });
 
   await showTerminalProposal(page);
-  await page.getByRole("button", { name: "Put on main", exact: true }).click();
+  await page.getByRole("button", { name: "Accept proposal", exact: true }).click();
   const dialog = await confirmTerminalAcceptance(page);
 
   await expect.poll(() => acceptCalls).toBe(1);
@@ -2740,7 +2764,7 @@ test("@smoke terminal action is in the viewport and keyboard-operable on mobile 
 
   await showTerminalProposal(page);
   await page.evaluate(() => { document.documentElement.style.zoom = "2"; });
-  const acceptButton = page.getByRole("button", { name: "Put on main", exact: true });
+  const acceptButton = page.getByRole("button", { name: "Accept proposal", exact: true });
   await expect(acceptButton).toBeVisible();
   await expect(acceptButton).toBeInViewport();
   expect(await page.evaluate(() => {
