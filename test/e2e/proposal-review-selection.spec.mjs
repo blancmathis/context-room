@@ -1002,7 +1002,11 @@ test("@layout proposal verification keeps the final action and header geometry s
     setStatus("verifying exact proposal revision...");
   });
 
+  const accept = page.getByRole("button", { name: "Accept proposal" });
   const reject = page.getByRole("button", { name: "Reject proposal" });
+  await expect(accept).toBeVisible();
+  await expect(accept).toBeDisabled();
+  await expect(accept).toHaveAttribute("title", "Available after Context Room verifies the exact proposal revision");
   await expect(reject).toBeVisible();
   await expect(reject).toBeDisabled();
   await expect(page.locator("#proposalReviewProgress")).toContainText("Verifying");
@@ -1013,6 +1017,7 @@ test("@layout proposal verification keeps the final action and header geometry s
       return box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null;
     };
     return {
+      accept: rect("proposalDockAccept"),
       brand: rect("brandHome"),
       reject: rect("proposalDockReject"),
       title: rect("proposalReviewTitle"),
@@ -1053,6 +1058,9 @@ test("@layout proposal verification keeps the final action and header geometry s
     setStatus("proposal ready");
   });
 
+  await expect(accept).toBeVisible();
+  await expect(accept).toBeDisabled();
+  await expect(accept).toHaveAttribute("title", "2 files still need a human decision before this proposal can be accepted");
   await expect(reject).toBeVisible();
   await expect(reject).toBeEnabled();
   const readyGeometry = await page.evaluate(() => {
@@ -1061,6 +1069,7 @@ test("@layout proposal verification keeps the final action and header geometry s
       return box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null;
     };
     return {
+      accept: rect("proposalDockAccept"),
       brand: rect("brandHome"),
       reject: rect("proposalDockReject"),
       title: rect("proposalReviewTitle"),

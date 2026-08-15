@@ -32318,10 +32318,12 @@ function renderProposalDockControls() {
   const actionable = shared?.mode === "review" && !preview && !terminal;
   const preparing = Boolean(preview && ["opening", "loading", "ready"].includes(String(state.proposalOpenState?.phase || "opening")));
   const noAcceptedChanges = actionable && shared?.acceptedChangesRemain === false;
-  acceptButton.hidden = !actionable || Boolean(state.proposalAuthorityStatus);
-  acceptButton.disabled = Boolean(state.proposalActionBusy || queueCount > 0 || noAcceptedChanges);
+  acceptButton.hidden = (!actionable && !preparing) || Boolean(state.proposalAuthorityStatus);
+  acceptButton.disabled = Boolean(state.proposalActionBusy || !actionable || queueCount > 0 || noAcceptedChanges);
   if (!acceptButton.hidden) setExplorerEdgePeek(false);
-  acceptButton.title = delivered
+  acceptButton.title = preparing
+    ? "Available after Context Room verifies the exact proposal revision"
+    : delivered
     ? "This exact proposal revision is already in " + (delivered.defaultBranch || review.defaultBranch || "main")
     : queueCount
       ? queueCount + " file" + (queueCount === 1 ? " still needs" : "s still need") + " a human decision before this proposal can be accepted"
