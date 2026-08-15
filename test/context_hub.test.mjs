@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
@@ -351,6 +352,137 @@ test("Context Hub opaque repository IDs open the exact repository when branch an
   assert.equal(forgedResponse.status, 403, JSON.stringify(forged));
   assert.equal(forged.code, "shared_context_repository_not_registered");
   assert.equal(fs.existsSync(forgedRepository), false);
+});
+
+test("Context Hub keeps a persisted exact room preparing while its Hub snapshot is stale", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-stale-persisted-room-"));
+  withHubHome(t, path.join(base, "hub"));
+  withSharedHome(t, path.join(base, "shared-home"));
+  const shared = makeHubSharedFixture(base);
+  const root = makeProject(base, "Stale persisted proposal room");
+  const { proposal, published } = publishHubSharedProposal(root, shared, {
+    branch: "proposal/demo/stale-persisted-room",
+    title: "Stale persisted proposal room",
+  });
+  registerContextHubSharedRepository(shared.remote);
+  registerContextHubProject(root, { shared: { repository: shared.remote, projectId: "demo" } });
+  const snapshot = contextHubUiState(root, { refreshShared: true, force: true });
+  const target = snapshot.proposals.find((item) => item.branch === proposal.branch);
+  assert.ok(target);
+  const review = materializeSharedRepositoryReview(shared.remote, {
+    proposal: proposal.branch,
+    expectedHead: published.head,
+  });
+  assert.equal(review.metadata.proposalHead, published.head);
+  writeContextHubSnapshot(snapshot, { generatedAt: "2000-01-01T00:00:00.000Z" });
+
+  let refreshCalls = 0;
+  const room = createMemoryServer({
+    root,
+    contextHubSnapshotRefresh: async () => {
+      refreshCalls += 1;
+      return snapshot;
+    },
+    sharedReviewMaterializationTask: async () => {
+      throw new Error("a persisted exact room must not rematerialize while the snapshot is stale");
+    },
+  });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
+  const response = await fetch(`http://127.0.0.1:${room.server.address().port}/api/context-hub`, {
+    headers: { "x-context-room-project": room.projectId },
+  });
+  const hub = await response.json();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(response.status, 200, JSON.stringify(hub));
+  assert.equal(hub.freshness?.fresh, false, JSON.stringify(hub.freshness));
+  assert.equal(refreshCalls, 1, "reading a stale Hub snapshot must schedule its refresh");
+  const staleTarget = hub.proposals.find((item) => item.id === target.id);
+  assert.ok(staleTarget);
+  assert.deepEqual(staleTarget.openReadiness, { status: "preparing" });
+});
+
+test("Context Hub reopens a fresh exact legacy proposal room through the prepared fast path", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-legacy-fast-path-"));
+  withHubHome(t, path.join(base, "hub"));
+  withSharedHome(t, path.join(base, "shared-home"));
+  const shared = makeHubSharedFixture(base);
+  const root = makeProject(base, "Legacy exact proposal room");
+  const { proposal, published } = publishHubSharedProposal(root, shared, {
+    branch: "proposal/demo/legacy-fast-path",
+    title: "Legacy exact proposal room",
+  });
+  registerContextHubSharedRepository(shared.remote);
+  registerContextHubProject(root, { shared: { repository: shared.remote, projectId: "demo" } });
+  const review = materializeSharedRepositoryReview(shared.remote, {
+    proposal: proposal.branch,
+    expectedHead: published.head,
+  });
+  const stateBranch = `context-room-state/${createHash("sha256").update(proposal.branch).digest("hex")}`;
+  hubGit(shared.seed, ["push", "origin", "--delete", stateBranch]);
+  const snapshot = contextHubUiState(root, { refreshShared: true, force: true });
+  const target = snapshot.proposals.find((item) => item.branch === proposal.branch);
+  assert.ok(target, JSON.stringify(snapshot.proposals));
+  assert.equal(target.reviewStatus, "in_review");
+  writeContextHubSnapshot(snapshot);
+
+  let materializationCalls = 0;
+  let refreshCalls = 0;
+  const room = createMemoryServer({
+    root,
+    contextHubSnapshotRefresh: async () => {
+      refreshCalls += 1;
+      return snapshot;
+    },
+    sharedReviewMaterializationTask: async () => {
+      materializationCalls += 1;
+      throw new Error("a persisted exact legacy room must not rematerialize");
+    },
+  });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const headers = {
+    "content-type": "application/json",
+    "x-context-room-project": room.projectId,
+    "x-context-room-owner-nonce": room.ownerMutationNonce,
+  };
+  const hubResponse = await fetch(origin + "/api/context-hub", { headers });
+  const hub = await hubResponse.json();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(refreshCalls, 1, "a fresh Hub read keeps the background refresh contract");
+  const readyTarget = hub.proposals.find((item) => item.id === target.id);
+  assert.ok(readyTarget);
+  assert.deepEqual(readyTarget.openReadiness, { status: "ready" });
+
+  const startedAt = performance.now();
+  const response = await fetch(origin + "/api/context-hub/review", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      repositoryId: target.repositoryId,
+      proposal: target.id,
+      expectedHead: published.head,
+    }),
+  });
+  const opened = await response.json();
+  const elapsedMs = performance.now() - startedAt;
+  assert.equal(response.status, 201, JSON.stringify(opened));
+  assert.equal(fs.realpathSync(opened.reviewRoot), fs.realpathSync(review.reviewRoot));
+  assert.equal(opened.review.authorityId, review.metadata.authorityId);
+  assert.match(response.headers.get("server-timing") || "", /exact-ref;dur=/);
+  assert.match(response.headers.get("server-timing") || "", /room;dur=/);
+  assert.match(response.headers.get("server-timing") || "", /docqa;dur=/);
+  assert.match(response.headers.get("server-timing") || "", /payload;dur=/);
+  assert.equal(materializationCalls, 0);
+  t.diagnostic(`fresh exact legacy proposal reopened in ${Math.round(elapsedMs)}ms`);
+  assert.ok(elapsedMs < 300, `fresh exact legacy proposal reopening took ${Math.round(elapsedMs)}ms`);
 });
 
 test("Context Hub refreshes a transient catalogue gap before declaring an exact proposal missing", async (t) => {

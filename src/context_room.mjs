@@ -15219,6 +15219,22 @@ function assertSharedProposalReviewOpenable(proposal = {}) {
   );
 }
 
+function preparedSharedProposalMatchesSnapshotAuthority(exact = {}, binding = {}, snapshot = {}, proposal = {}) {
+  if (exact.baseRevision !== binding.baseRevision || exact.proposalHead !== binding.proposalHead) return false;
+  if (exact.proposalState?.status === "active") return true;
+  // Legacy proposals can lack the protected state ref. Trust that absence only
+  // while the full Hub projection is fresh and still proves an openable state.
+  if (exact.proposalState?.status !== "missing" || snapshot?.freshness?.fresh !== true) return false;
+  if (String(proposal.branch || "") !== binding.proposal
+    || String(proposal.head || "") !== binding.proposalHead
+    || proposal.available === false
+    || proposal.authorityViolation
+    || proposal.hasConflict
+    || proposal.conflictCheckStatus === "unknown"
+    || !OPENABLE_SHARED_PROPOSAL_REVIEW_STATUSES.has(String(proposal.reviewStatus || ""))) return false;
+  return true;
+}
+
 function exactSharedReviewRoomKey({ repository = "", proposal = "", proposalHead = "", baseRevision = "" } = {}) {
   const branch = String(proposal || "").trim();
   const head = String(proposalHead || "").trim();
@@ -18245,6 +18261,8 @@ export function createMemoryServer({
       let openReadiness;
       if (proposal.authorityViolation || proposal.hasConflict || !OPENABLE_SHARED_PROPOSAL_REVIEW_STATUSES.has(String(proposal.reviewStatus || ""))) {
         openReadiness = { status: "blocked", code: proposal.authorityViolation ? "shared_context_authority_violation" : proposal.hasConflict ? "shared-proposal-conflict" : "shared-proposal-terminal" };
+      } else if (snapshot.freshness?.fresh !== true) {
+        openReadiness = { status: "preparing" };
       } else if (key && exactSharedReviewRoom(sharedReviewRooms, binding)) {
         openReadiness = { status: "ready" };
       } else {
@@ -18283,9 +18301,7 @@ export function createMemoryServer({
           proposal: binding.proposal,
           defaultBranch: binding.defaultBranch,
         });
-        if (exact.baseRevision !== binding.baseRevision
-          || exact.proposalHead !== binding.proposalHead
-          || exact.proposalState?.status !== "active") {
+        if (!preparedSharedProposalMatchesSnapshotAuthority(exact, binding, snapshot, proposal)) {
           throw sharedRequestError("Prepared proposal refs no longer match the fresh Hub snapshot.", 409, "shared_context_review_preparation_stale");
         }
         const result = await sharedReviewMaterializationTask({
@@ -19797,6 +19813,11 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     const state = hostedHubState(hostedSharedProvider.read());
     return decorateContextHubReadiness ? decorateContextHubReadiness(state) : state;
   };
+  const scheduleContextHubRefresh = () => {
+    if (hostedSharedProvider) return;
+    void (scheduleContextHubSnapshotRefresh?.(root, { refreshShared: false })
+      || refreshContextHubSnapshot(root, { refreshShared: false })).catch(() => {});
+  };
   const refreshContextHubForRequest = () => hostedSharedProvider
     ? Promise.resolve(hostedSharedProvider.refresh({ force: true })).then(hostedHubState)
     : refreshContextHubSnapshot(root, { refreshShared: true, force: true })
@@ -21073,14 +21094,14 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   if (req.method === "GET" && url.pathname === "/api/context-hub") {
     const startedAt = performance.now();
     const state = readContextHubForRequest();
-    if (!hostedSharedProvider) void (scheduleContextHubSnapshotRefresh?.(root, { refreshShared: false }) || refreshContextHubSnapshot(root, { refreshShared: false })).catch(() => {});
+    scheduleContextHubRefresh();
     sendJson(res, 200, state, { headers: { "server-timing": `hub-snapshot;dur=${(performance.now() - startedAt).toFixed(1)}` } });
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/context-hub/catalog") {
     const startedAt = performance.now();
     const state = readContextHubForRequest();
-    if (!hostedSharedProvider) void (scheduleContextHubSnapshotRefresh?.(root, { refreshShared: false }) || refreshContextHubSnapshot(root, { refreshShared: false })).catch(() => {});
+    scheduleContextHubRefresh();
     sendJson(res, 200, {
       enabled: state.enabled,
       generatedAt: state.generatedAt,
@@ -21116,7 +21137,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
   if (req.method === "GET" && url.pathname === "/api/context-hub/review-queue") {
     const state = readContextHubForRequest();
-    if (!hostedSharedProvider) void (scheduleContextHubSnapshotRefresh?.(root, { refreshShared: false }) || refreshContextHubSnapshot(root, { refreshShared: false })).catch(() => {});
+    scheduleContextHubRefresh();
     sendJson(res, 200, paginatedContextHubReviews(state, {
       cursor: url.searchParams.get("cursor") || 0,
       limit: url.searchParams.get("limit") || 80,
@@ -21125,7 +21146,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
   if (req.method === "GET" && url.pathname === "/api/context-hub/sections") {
     const state = readContextHubForRequest();
-    if (!hostedSharedProvider) void (scheduleContextHubSnapshotRefresh?.(root, { refreshShared: false }) || refreshContextHubSnapshot(root, { refreshShared: false })).catch(() => {});
+    scheduleContextHubRefresh();
     sendJson(res, 200, {
       generatedAt: state.generatedAt,
       freshness: state.freshness,
@@ -21465,9 +21486,12 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
           defaultBranch: currentRepository?.status?.defaultBranch || "",
         });
         openingTiming["exact-ref"] += performance.now() - exactRefStartedAt;
-        if (exact.baseRevision === observedBaseRevision
-          && exact.proposalHead === target.head
-          && exact.proposalState?.status === "active") {
+        const binding = {
+          proposal: target.branch,
+          proposalHead: target.head,
+          baseRevision: observedBaseRevision,
+        };
+        if (preparedSharedProposalMatchesSnapshotAuthority(exact, binding, current, target)) {
           const roomStartedAt = performance.now();
           const warmRoom = await startSharedReview({
             proposal: target.branch,
@@ -21493,6 +21517,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       } catch {}
     }
     if (target && !hostedSharedProvider) {
+      const cachedRefStartedAt = performance.now();
       try {
         const cached = listSharedRepositoryProposals(repository, { allowOffline: true, refresh: false, includeTerminal: true });
         const cachedProposals = (cached.proposals || []).map((proposal) => ({
@@ -21513,6 +21538,8 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
         if (error?.statusCode) throw error;
         target = null;
         observedBaseRevision = "";
+      } finally {
+        openingTiming["exact-ref"] += performance.now() - cachedRefStartedAt;
       }
     }
     if (target && !hostedSharedProvider && observedBaseRevision) {
@@ -21521,6 +21548,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       // revision above come from the current local origin refs, so a fetch
       // already completed elsewhere can expose terminal evidence without a
       // second network round trip.
+      const roomStartedAt = performance.now();
       const warmRoom = await startSharedReview({
         proposal: target.branch,
         repository,
@@ -21529,6 +21557,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
         reuseOnly: true,
         projectRoot: root,
       });
+      openingTiming.room += performance.now() - roomStartedAt;
       if (warmRoom) {
         const warmRepositoryMatches = sameContextHubRepository(warmRoom.metadata?.repository, repository);
         if (warmRoom.metadata?.projectId !== target.projectId
@@ -21537,9 +21566,14 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
           || !warmRepositoryMatches) {
           throw sharedRequestError("The materialized proposal does not match the selected Shared proposal.", 409, "shared_context_review_materialization_mismatch");
         }
-        sendJson(res, 201, localReviewOpened(warmRoom, `http://${requestHeader(req, "host")}`, {
-          docqa: sharedReviewDocQaReport ? sharedReviewDocQaReport(warmRoom) : null,
-        }));
+        const docQaStartedAt = performance.now();
+        const docqa = sharedReviewDocQaReport ? sharedReviewDocQaReport(warmRoom) : null;
+        openingTiming.docqa += performance.now() - docQaStartedAt;
+        const payloadStartedAt = performance.now();
+        const payload = localReviewOpened(warmRoom, `http://${requestHeader(req, "host")}`, { docqa });
+        openingTiming.payload += performance.now() - payloadStartedAt;
+        res.setHeader("server-timing", serverTimingHeader(openingTiming));
+        sendJson(res, 201, payload);
         return;
       }
     }

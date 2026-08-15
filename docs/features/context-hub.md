@@ -66,7 +66,9 @@ The Hub follows the proposal projection defined by [Shared Proposal Lifecycle](.
 
 Opening an active proposal keeps the proposal surface visible while Context Room verifies and materializes the exact review. The surface shows the known repository, branch, and head immediately, reports preparation honestly, and does not claim readiness before exact review is available.
 
-After a fresh local Hub snapshot, Context Room prepares the exact review authority, proposal-only DocQA projection, and response payload without creating a human decision. Proposal records expose `openReadiness` as `preparing`, `ready`, or `blocked`; the open action remains disabled until `ready`. Active review authorities are re-indexed from private persisted evidence after restart, so an unchanged exact room can be reused without a global proposal scan or rematerialization.
+After a fresh local Hub snapshot, Context Room prepares the exact review authority, proposal-only DocQA projection, and response payload without creating a human decision. Proposal records expose `openReadiness` as `preparing`, `ready`, or `blocked`; the open action remains disabled until `ready`. A stale snapshot always reports an otherwise active proposal as `preparing`, including when an exact room was restored after restart.
+
+Active review authorities are re-indexed from private persisted evidence after restart, so an unchanged exact room can be reused without a global proposal scan or rematerialization. Legacy active proposals that predate protected proposal-state refs use that fast path only after a fresh Hub snapshot has verified the exact main and proposal heads, conflict result, and absence of terminal or recovery evidence.
 
 Opening stays in the current browser document. A stable proposal shell appears immediately, and the prepared review is adopted in place; Explorer and unrelated reports are not loaded as part of proposal verification. `POST /api/context-hub/review` reports `exact-ref`, `room`, `docqa`, and `payload` durations through `Server-Timing`.
 
