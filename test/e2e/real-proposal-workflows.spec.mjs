@@ -589,12 +589,12 @@ test.describe.serial("real proposal workflows", () => {
       };
       page.on("response", recordTerminalReturn);
       page.on("request", recordFlashConsume);
-      await expect(page.getByRole("button", { name: "Put on main", exact: true })).toBeEnabled();
+      await expect(page.getByRole("button", { name: "Accept proposal", exact: true })).toBeEnabled();
       const challengePromise = page.waitForResponse((response) => (
         response.request().method() === "POST"
         && new URL(response.url()).pathname.endsWith("/api/shared-context/accept-challenge")
       ));
-      await page.getByRole("button", { name: "Put on main", exact: true }).click();
+      await page.getByRole("button", { name: "Accept proposal", exact: true }).click();
       const challengeResponse = await challengePromise;
       expect(challengeResponse.status(), await challengeResponse.text()).toBe(201);
       const dialog = page.getByRole("dialog", { name: /Put this proposal on main/ });
@@ -957,13 +957,13 @@ test.describe.serial("real proposal workflows", () => {
       await page.getByRole("button", { name: "Accept file", exact: true }).click();
       const secondDecision = await secondDecisionResponse;
       expect(secondDecision.status(), await secondDecision.text()).toBe(200);
-      await expect(page.getByRole("button", { name: "Put on main", exact: true })).toBeEnabled();
+      await expect(page.getByRole("button", { name: "Accept proposal", exact: true })).toBeEnabled();
 
       const unavailableAcceptance = page.waitForResponse((response) => (
         response.request().method() === "POST"
         && new URL(response.url()).pathname.endsWith("/api/shared-context/accept-challenge")
       ));
-      await page.getByRole("button", { name: "Put on main", exact: true }).click();
+      await page.getByRole("button", { name: "Accept proposal", exact: true }).click();
       const unavailableResponse = await unavailableAcceptance;
       const unavailablePayload = await unavailableResponse.json();
       expect(unavailableResponse.status(), JSON.stringify(unavailablePayload)).toBe(503);

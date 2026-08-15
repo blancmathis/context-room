@@ -1232,9 +1232,9 @@ test.describe("hosted runtime profiles", () => {
       ));
     };
     await assertCanonicalReviewUrl();
-    await expect(page.getByRole("button", { name: "Put on main", exact: true })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Accept proposal", exact: true })).toBeEnabled();
 
-    await page.getByRole("button", { name: "Put on main", exact: true }).click();
+    await page.getByRole("button", { name: "Accept proposal", exact: true }).click();
     let confirmation = page.getByRole("dialog", { name: /Put this proposal on main/ });
     await expect(confirmation).toBeVisible();
     await confirmation.getByRole("checkbox").check();

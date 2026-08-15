@@ -175,7 +175,7 @@ test("@smoke verified real-server acceptance removes the proposal from active Hu
       response.request().method() === "POST"
       && new URL(response.url()).pathname.endsWith("/api/shared-context/accept")
     ));
-    await page.getByRole("button", { name: "Put on main", exact: true }).click();
+    await page.getByRole("button", { name: "Accept proposal", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: /Put this proposal on main\?/ });
     await expect(dialog).toBeVisible();
     await dialog.getByRole("checkbox").check();
