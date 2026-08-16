@@ -22425,7 +22425,8 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/startup-context") {
-    sendJson(res, 200, { files: listStartupContextFiles(root).map(publicStartupContextFile), root });
+    const settings = readResolvedContextRoomSettings(root, { expectedRootIdentity });
+    sendJson(res, 200, { files: listStartupContextFiles(root, settings).map(publicStartupContextFile), root });
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/startup-skills") {
@@ -22465,14 +22466,16 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
   if (req.method === "GET" && url.pathname === "/api/startup-context/file") {
     const order = url.searchParams.get("order") || "";
-    sendJson(res, 200, readStartupContextFile(root, order));
+    const settings = readResolvedContextRoomSettings(root, { expectedRootIdentity });
+    sendJson(res, 200, readStartupContextFile(root, order, settings));
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/startup-context/file") {
     const body = await readJsonBody(req);
-    const current = readStartupContextFile(root, body.order);
+    const settings = readResolvedContextRoomSettings(root, { expectedRootIdentity });
+    const current = readStartupContextFile(root, body.order, settings);
     assertExpectedContentHash(current, body.expectedContentHash, current.path);
-    sendJson(res, 200, writeStartupContextFile(root, body.order, body.content, null, {
+    sendJson(res, 200, writeStartupContextFile(root, body.order, body.content, settings, {
       expectedRootIdentity,
       expectedContentHash: current.contentHash,
       expectedDisplayPath: current.path,
@@ -22481,7 +22484,8 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
   if (req.method === "POST" && url.pathname === "/api/startup-context/delete") {
     const body = await readJsonBody(req);
-    sendJson(res, 200, deleteStartupContextFile(root, body.order, null, { expectedRootIdentity }));
+    const settings = readResolvedContextRoomSettings(root, { expectedRootIdentity });
+    sendJson(res, 200, deleteStartupContextFile(root, body.order, settings, { expectedRootIdentity }));
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/startup-hooks/file") {

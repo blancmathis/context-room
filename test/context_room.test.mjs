@@ -1994,6 +1994,66 @@ test("raw config narrowing fails closed until the human owner explicitly saves t
   assert.equal(buildContextRoomDoctorReport(root).issues.some((issue) => issue.type === "review_authority_tamper"), false);
 });
 
+test("startup context API opens files from the last owner-authorized scope after raw narrowing", async (t) => {
+  const originalHome = process.env.HOME;
+  const home = makeRoot();
+  const root = path.join(home, "work", "project");
+  const hubHome = makeRoot();
+  const previousHubHome = process.env.CONTEXT_ROOM_HUB_HOME;
+  process.env.HOME = home;
+  process.env.CONTEXT_ROOM_HUB_HOME = hubHome;
+  t.after(() => {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (previousHubHome === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
+    else process.env.CONTEXT_ROOM_HUB_HOME = previousHubHome;
+  });
+
+  fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+  fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(path.join(home, ".codex", "AGENTS.md"), "# Global agent instructions\n");
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: [] });
+
+  const room = createMemoryServer({ root });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => room.server.close(resolve)));
+  const baseUrl = `http://127.0.0.1:${room.server.address().port}`;
+  const authorized = readMemoryWebappSettings(root);
+  authorized.startupContext = {
+    enabled: true,
+    projectOnly: false,
+    fileNames: ["AGENTS.md"],
+    globalPaths: ["~/.codex/AGENTS.md"],
+  };
+  const authorizeResponse = await fetch(`${baseUrl}/api/settings`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-owner-nonce": room.ownerMutationNonce },
+    body: JSON.stringify({ settings: authorized }),
+  });
+  assert.equal(authorizeResponse.status, 200);
+
+  const configPath = path.join(root, CONFIG_FILE);
+  const narrowed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  narrowed.startupContext.projectOnly = true;
+  narrowed.startupContext.globalPaths = [];
+  fs.writeFileSync(configPath, JSON.stringify(narrowed, null, 2) + "\n");
+
+  const queue = buildDocQaReport(root).queue;
+  assert.equal(queue.some((item) => item.path === "~/.codex/AGENTS.md"), true);
+  assert.ok(buildContextRoomDoctorReport(root).issues.some((issue) => issue.type === "review_authority_tamper"));
+
+  const listResponse = await fetch(`${baseUrl}/api/startup-context`);
+  assert.equal(listResponse.status, 200);
+  const listed = await listResponse.json();
+  assert.deepEqual(listed.files.map((file) => file.startupContext.displayPath), ["~/.codex/AGENTS.md"]);
+
+  const openResponse = await fetch(`${baseUrl}/api/startup-context/file?order=1`);
+  assert.equal(openResponse.status, 200);
+  const opened = await openResponse.json();
+  assert.equal(opened.path, "~/.codex/AGENTS.md");
+  assert.equal(opened.content, "# Global agent instructions\n");
+});
+
 test("direct review-state and ledger forgery is ignored and reported as critical", () => {
   const root = makeRoot();
   fs.mkdirSync(path.join(root, "docs"), { recursive: true });
