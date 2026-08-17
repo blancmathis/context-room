@@ -29942,6 +29942,9 @@ async function openGlobalProjectExplorer(project) {
   state.projectSwitchMetrics = { projectKey: project.projectKey, startedAt: performance.now() };
   state.globalExplorerProjectKey = project.projectKey;
   state.activeProjectLocationId = nextLocationId;
+  state.sharedProposalProject = project.projectKey;
+  state.contextHubSource = "all";
+  state.contextHubSelection = "";
   if (switchingSelection) {
     state.globalProjectSearch = "";
     state.globalInspectionView = "";
@@ -29971,6 +29974,8 @@ async function openGlobalProjectExplorer(project) {
     }
   }
   renderGlobalProjectExplorer();
+  renderContextRoomGlobalReviewQueue();
+  renderSharedProposalWorkspace();
   state.projectSwitchMetrics.selectionVisibleMs = performance.now() - state.projectSwitchMetrics.startedAt;
   document.body.dataset.projectSwitchMetrics = JSON.stringify(state.projectSwitchMetrics);
   renderContextHealth();
@@ -32104,11 +32109,18 @@ async function openContextHubProject(projectId, options = {}, requestedGeneratio
       activeProjectLocationId: state.activeProjectLocationId,
       search: state.globalProjectSearch,
       inspectionView: state.globalInspectionView,
+      reviewProjectKey: state.sharedProposalProject,
+      reviewSource: state.contextHubSource,
+      reviewSelection: state.contextHubSelection,
       url: window.location.href,
     };
     state.contextHubBusy = true;
     state.globalProjectWorktreeIds.set(project.projectKey, targetProjectId);
     const explorerOpen = openGlobalProjectExplorer(project);
+    if (options.pushHistory) {
+      window.history.pushState({}, "", workspaceProjectHref(targetProjectId));
+      state.workspaceSyncedUrl = window.location.href;
+    }
     try {
       let sharedStatus = project.sharedStatus || null;
       if (project.mode !== "shared") {
@@ -32142,7 +32154,6 @@ async function openContextHubProject(projectId, options = {}, requestedGeneratio
       }
       await explorerOpen;
       if (generation !== state.contextHubPendingOpenGeneration) return;
-      if (options.pushHistory) window.history.pushState({}, "", workspaceProjectHref(targetProjectId));
       if (project.shared && sharedStatus?.refreshing) {
         setStatus(sharedStatus.revision
           ? "project selected · Shared sync continuing · cached @" + shortSharedHash(sharedStatus.revision)
@@ -32181,7 +32192,12 @@ async function openContextHubProject(projectId, options = {}, requestedGeneratio
         state.globalProjectSearch = previousExplorerState.search;
         state.globalInspectionView = previousExplorerState.inspectionView;
       }
+      state.sharedProposalProject = previousExplorerState.reviewProjectKey;
+      state.contextHubSource = previousExplorerState.reviewSource;
+      state.contextHubSelection = previousExplorerState.reviewSelection;
       renderGlobalProjectExplorer();
+      renderContextRoomGlobalReviewQueue();
+      renderSharedProposalWorkspace();
       renderSingleProjectWorktreeSwitch();
       if (generation === state.contextHubPendingOpenGeneration && window.location.href !== previousExplorerState.url) {
         window.history.replaceState(window.history.state, "", previousExplorerState.url);
