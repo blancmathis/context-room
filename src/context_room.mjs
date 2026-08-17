@@ -32209,6 +32209,18 @@ async function openContextHubProject(projectId, options = {}, requestedGeneratio
   if (review?.startupContext?.skillName) target.searchParams.set("startupSkill", review.startupContext.skillName);
   target.searchParams.set("explorer", (isExplorerDrawerViewport() || isExplorerCollapsed()) ? "collapsed" : "expanded");
   if (options.filePath && IS_GLOBAL_CONTEXT_ROOM && state.workspaceIdentityReady) {
+    if (targetProjectId === state.activeProjectLocationId) {
+      if (state.page === "file" && state.selected === options.filePath) return;
+      await selectFile(options.filePath, {
+        reviewMode: true,
+        preserveViewer: state.page === "file" && Boolean(state.selected),
+      });
+      if (state.page === "file" && state.selected === options.filePath) {
+        syncWorkspaceUrl({ push: true });
+        recordWorkspaceDiagnostic("ready", "project-file-in-place");
+      }
+      return;
+    }
     window.history.pushState(window.history.state, "", target);
     state.workspaceSyncedUrl = "";
     await applyWorkspaceUrlState({ reason: "project-file", force: true });
@@ -36683,6 +36695,7 @@ async function selectFile(path, options = {}) {
   const profilingBoot = document.body.classList.contains("app-booting");
   if (profilingBoot) state.bootMilestones.fileOpenStarted = Date.now() - state.bootStartedAt;
   const previousSelected = state.selected;
+  const preserveViewer = Boolean(options.preserveViewer && state.page === "file" && previousSelected && previousSelected !== path && el("viewer")?.children.length);
   state.selected = path;
   state.selectedReadOnly = Boolean(state.files.find((item) => item.path === path)?.readOnly);
   state.openingFilePath = path;
@@ -36721,10 +36734,15 @@ async function selectFile(path, options = {}) {
   el("viewer").hidden = false;
   el("editor").hidden = true;
   el("editor").value = "";
-  updateHeader();
-  updateHistoryButtons();
-  updateActionBanner();
-  updatePreview();
+  if (preserveViewer) {
+    el("viewer").inert = true;
+    el("viewer").setAttribute("aria-busy", "true");
+  } else {
+    updateHeader();
+    updateHistoryButtons();
+    updateActionBanner();
+    updatePreview();
+  }
   if (IS_GLOBAL_CONTEXT_ROOM) {
     renderGlobalProjectExplorer();
     void refreshExplorerRelatedForCurrentFile().catch((error) => setStatus(error.message));
@@ -36732,7 +36750,7 @@ async function selectFile(path, options = {}) {
   if (options.revealInExplorer || !document.querySelector('[data-file-path="' + cssEscape(path) + '"]')) renderFiles();
   else updateExplorerSelectedFile(previousSelected, path);
   if (options.revealInExplorer && !isExplorerCollapsed()) scrollExplorerToPath(path);
-  renderViewer();
+  if (!preserveViewer) renderViewer();
   setStatus("opening...");
 
   const fileRequest = readFileForOpen(path, { force: options.forceReload });
@@ -36754,6 +36772,11 @@ async function selectFile(path, options = {}) {
     state.fileLoadError = null;
     el("editor").value = data.content || "";
     state.fileContentReadyPath = path;
+    if (preserveViewer) {
+      updateHeader();
+      updateHistoryButtons();
+      updatePreview();
+    }
     renderViewer();
     restorePersistedViewState(options.restoreViewState);
     setStatus("open · loading Git diff...");
@@ -42935,6 +42958,8 @@ function applySelectedTemplateToEditor(templateId) {
 }
 
 function renderViewer() {
+  el("viewer").inert = false;
+  el("viewer").removeAttribute("aria-busy");
   const text = el("editor").value;
   const diff = state.selectedDiff || { changed: false, additions: 0, deletions: 0, patch: "", available: false };
   const isStartupFile = Boolean(state.selectedStartupContext);

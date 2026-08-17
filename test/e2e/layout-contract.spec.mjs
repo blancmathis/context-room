@@ -449,6 +449,47 @@ test("@layout rapid document switches settle Git review reads", async ({ page, b
   }
 });
 
+test("@layout Explorer file navigation keeps the workbench shell mounted", async ({ page }) => {
+  const data = fixture();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=hub&explorer=expanded`);
+  await waitForBoot(page);
+  await ensureExplorerOpen(page);
+
+  const docsFolder = page.locator('[data-global-project-folder="docs"]').first();
+  if (await docsFolder.getAttribute("aria-expanded") !== "true") await docsFolder.click();
+  await page.locator('[data-global-project-file="docs/README.md"]').first().click();
+  await waitForOpenedFile(page, "docs/README.md");
+
+  const before = await page.evaluate(() => {
+    window.__persistentExplorerTree = document.querySelector(".global-project-folder-tree");
+    window.__persistentWorkspaceDock = document.querySelector(".workspace-dock");
+    return {
+      navigationGeneration: state.workspaceNavigationGeneration,
+      bootCount: JSON.parse(document.body.dataset.workspaceDiagnostics || "{}").bootCount || 0,
+    };
+  });
+
+  await page.locator('[data-global-project-file="docs/operations.md"]').first().click();
+  await waitForOpenedFile(page, "docs/operations.md");
+
+  await expect.poll(() => page.evaluate((expected) => ({
+    explorerPreserved: window.__persistentExplorerTree === document.querySelector(".global-project-folder-tree"),
+    dockPreserved: window.__persistentWorkspaceDock === document.querySelector(".workspace-dock"),
+    navigationGeneration: state.workspaceNavigationGeneration,
+    bootCount: JSON.parse(document.body.dataset.workspaceDiagnostics || "{}").bootCount || 0,
+    navigationReason: JSON.parse(document.body.dataset.workspaceDiagnostics || "{}").lastNavigationReason || "",
+    viewerBusy: document.querySelector("#viewer")?.getAttribute("aria-busy") || "",
+  }), before)).toEqual({
+    explorerPreserved: true,
+    dockPreserved: true,
+    navigationGeneration: before.navigationGeneration,
+    bootCount: before.bootCount,
+    navigationReason: "project-file-in-place",
+    viewerBusy: "",
+  });
+});
+
 test("@layout a fresh runtime subscription ignores replay already reflected by boot", async ({ page, browserName }) => {
   test.skip(browserName !== "webkit", "WebKit's event dispatch timing deterministically exercises the fresh-subscription replay boundary.");
   const data = fixture();
