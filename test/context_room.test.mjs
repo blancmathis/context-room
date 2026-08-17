@@ -7199,6 +7199,7 @@ test("browser refresh restores the last Context Room page", () => {
   assert.match(html, /const pathFilters = rawPathFilters\.filter\(\(filter\) => state\.files\.some\(\(file\) => pathMatchesFilter\(file\.path, filter\)\)\);/);
   assert.match(html, /el\("search"\)\.value = persisted\.searchText \|\| folderFilterSearchQuery\(state\.pathFilters\);/);
   assert.match(html, /function acceptContextRoomRoot\(nextRoot\)[\s\S]*if \(!state\.root\) \{[\s\S]*state\.root = nextRoot;[\s\S]*if \(state\.root === nextRoot\) return;[\s\S]*if \(IS_GLOBAL_CONTEXT_ROOM\) \{[\s\S]*state\.root = nextRoot;[\s\S]*handleContextRoomProjectChange\(\{ reason: "server-root-changed" \}\);/);
+  assert.match(html, /function acceptContextRoomRoot\(nextRoot\)[\s\S]*document\.body\.classList\.contains\("app-booting"\) \? "refreshing" : "ready",[\s\S]*"selected-project-root-changed"/);
   assert.match(html, /acceptContextRoomRoot\(data\.root\);/);
   assert.match(html, /const hasDirectContextHubTarget = Boolean\(requestedReviewFile \|\| requestedHubCard \|\| requestedStartupOrder \|\| state\.sharedContext\?\.mode === "review"\);/);
   assert.match(html, /if \(options\.initial && IS_GLOBAL_CONTEXT_ROOM\) \{[\s\S]*await state\.contextHubReadyPromise;[\s\S]*renderGlobalProjectExplorer\(\);/);

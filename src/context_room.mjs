@@ -36078,7 +36078,10 @@ function acceptContextRoomRoot(nextRoot) {
   if (IS_GLOBAL_CONTEXT_ROOM) {
     state.root = nextRoot;
     state.lastAgentCommandId = readLastAgentCommandId();
-    recordWorkspaceDiagnostic("refreshing", "selected-project-root-changed");
+    recordWorkspaceDiagnostic(
+      document.body.classList.contains("app-booting") ? "refreshing" : "ready",
+      "selected-project-root-changed",
+    );
     return;
   }
   handleContextRoomProjectChange({ reason: "server-root-changed" });
