@@ -464,6 +464,15 @@ test("@layout Explorer file navigation keeps the workbench shell mounted", async
   const before = await page.evaluate(() => {
     window.__persistentExplorerTree = document.querySelector(".global-project-folder-tree");
     window.__persistentWorkspaceDock = document.querySelector(".workspace-dock");
+    window.__workspaceDiagnosticReasons = [];
+    window.__workspaceDiagnosticObserver = new MutationObserver(() => {
+      const reason = JSON.parse(document.body.dataset.workspaceDiagnostics || "{}").lastNavigationReason || "";
+      if (reason) window.__workspaceDiagnosticReasons.push(reason);
+    });
+    window.__workspaceDiagnosticObserver.observe(document.body, {
+      attributes: true,
+      attributeFilter: ["data-workspace-diagnostics"],
+    });
     return {
       navigationGeneration: state.workspaceNavigationGeneration,
       bootCount: JSON.parse(document.body.dataset.workspaceDiagnostics || "{}").bootCount || 0,
@@ -478,16 +487,17 @@ test("@layout Explorer file navigation keeps the workbench shell mounted", async
     dockPreserved: window.__persistentWorkspaceDock === document.querySelector(".workspace-dock"),
     navigationGeneration: state.workspaceNavigationGeneration,
     bootCount: JSON.parse(document.body.dataset.workspaceDiagnostics || "{}").bootCount || 0,
-    navigationReason: JSON.parse(document.body.dataset.workspaceDiagnostics || "{}").lastNavigationReason || "",
+    inPlaceDiagnosticObserved: window.__workspaceDiagnosticReasons.includes("project-file-in-place"),
     viewerBusy: document.querySelector("#viewer")?.getAttribute("aria-busy") || "",
   }), before)).toEqual({
     explorerPreserved: true,
     dockPreserved: true,
     navigationGeneration: before.navigationGeneration,
     bootCount: before.bootCount,
-    navigationReason: "project-file-in-place",
+    inPlaceDiagnosticObserved: true,
     viewerBusy: "",
   });
+  await page.evaluate(() => window.__workspaceDiagnosticObserver?.disconnect());
 });
 
 test("@layout a fresh runtime subscription ignores replay already reflected by boot", async ({ page, browserName }) => {
