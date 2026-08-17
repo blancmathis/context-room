@@ -460,6 +460,8 @@ test("project links keep the Explorer hierarchy quiet instead of looking like we
 test("the global Context Room keeps project targeting inside one workspace", () => {
   const html = renderAppHtml();
   const script = extractInlineAppScript(html);
+  const globalProjectOpenSource = script.slice(script.indexOf("async function openGlobalProjectExplorer"), script.indexOf("async function loadGlobalProjectExplorerPage"));
+  const contextHubProjectOpenSource = script.slice(script.indexOf("async function openContextHubProject"), script.indexOf("async function refreshContextHubUi"));
 
   assert.match(html, /body\.global-context-room #singleProjectExplorer,[\s\S]*body\.focused-review-context-room #globalProjectExplorer \{ display: none !important; \}/);
   assert.doesNotMatch(html, /body\.global-context-room #contextHealthPanel \{ display: none !important; \}/);
@@ -480,6 +482,8 @@ test("the global Context Room keeps project targeting inside one workspace", () 
   assert.match(script, /function contextHubHomeReviewItems\(needle = "", visibility = "active", \{ ignoreUserFilters = false \} = \{\}\)[\s\S]*IS_GLOBAL_CONTEXT_ROOM[\s\S]*ignoreUserFilters \|\| !state\.sharedProposalProject \|\| contextHubItemMatchesProject\(item, \{ projectKey: state\.sharedProposalProject \}\)[\s\S]*currentProject && contextHubItemMatchesProject\(item, currentProject\)/);
   assert.match(script, /function renderGlobalProjectExplorer\(\)[\s\S]*contextHubPrioritizedProjects[\s\S]*data-global-project-key/);
   assert.match(script, /async function openGlobalProjectExplorer\(project\)[\s\S]*state\.globalExplorerMode = "project"[\s\S]*loadGlobalProjectExplorerPage\(project\)/);
+  assert.match(globalProjectOpenSource, /state\.sharedProposalProject = project\.projectKey;[\s\S]*renderContextRoomGlobalReviewQueue\(\)/);
+  assert.ok(contextHubProjectOpenSource.indexOf("window.history.pushState") < contextHubProjectOpenSource.indexOf('api("/api/context-hub/project"'));
   assert.match(script, /function renderGlobalProjectInspection\([\s\S]*const project = workspaceSelectedProject\(\)/);
   assert.match(script, /function selectedGlobalSettingsProject\(\)[\s\S]*return workspaceSelectedProject\(\)/);
   const computerModeHandler = script.match(/if \(mode === "computer"\) \{([\s\S]*?)\n\s*return;\n\s*\}/)?.[1] || "";

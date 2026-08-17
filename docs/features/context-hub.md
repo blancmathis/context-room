@@ -52,7 +52,7 @@ Several Shared repositories can coexist. Repository identity remains part of pro
 
 ## Selection
 
-Selecting a local location changes project-specific Explorer, Settings, Startup environment, effective-context queries, and actions.
+Selecting a local location immediately changes project-specific Explorer, the Review Queue project filter, Settings, Startup environment, effective-context queries, and actions. Background refresh cannot delay the visible selection; if the exact project cannot be opened, Context Room restores the previous selection and URL.
 
 Selecting a Shared-only project exposes accepted Shared content but no local project Settings.
 

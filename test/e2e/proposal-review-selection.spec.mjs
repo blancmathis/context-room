@@ -390,6 +390,77 @@ test("@smoke an exact project settings deep link remains on Settings while proje
   expect(url.searchParams.get("settings")).toBe("review-trust");
 });
 
+test("@smoke one Explorer click selects the project and its Review Queue filter before refresh finishes", async ({ page }) => {
+  const { origin, projects } = fixture();
+  let releaseProjectRefresh;
+  let markProjectRequest;
+  const projectRequest = new Promise((resolve) => { markProjectRequest = resolve; });
+  const projectRefresh = new Promise((resolve) => { releaseProjectRefresh = resolve; });
+  await page.route("**/api/context-hub/project", async (route) => {
+    markProjectRequest(route.request().postDataJSON());
+    await projectRefresh;
+    await route.continue();
+  });
+
+  await page.goto(origin + "/?hub=1&workspace=workspace-explorer-project-selection&view=hub");
+  await waitForBoot(page);
+  const explorerOpen = page.getByRole("button", { name: "Open explorer" });
+  if (await explorerOpen.isVisible()) await explorerOpen.click();
+
+  await page.locator(".global-project-row", { hasText: "Atlas" }).click();
+  const posted = await projectRequest;
+  try {
+    expect([projects.atlas.id, projects.atlas.worktreeId]).toContain(posted.projectId);
+    await expect(page.locator("#globalExplorerScope strong")).toHaveText("Atlas");
+    await expect(page.locator("#contextRoomReviewProjectFilter .context-hub-project-trigger-label")).toHaveText("Atlas");
+    await expect(page).toHaveURL((url) => (
+      [projects.atlas.id, projects.atlas.worktreeId].includes(url.searchParams.get("project"))
+      && url.searchParams.get("view") === "hub"
+    ));
+    const reviewQueue = page.locator("#reviewQueue");
+    await expect(reviewQueue).toContainText("Atlas");
+    await expect(reviewQueue).not.toContainText("Beacon");
+  } finally {
+    releaseProjectRefresh();
+  }
+
+  await expect(page.locator("#status")).toContainText("Shared snapshot synced");
+});
+
+test("@smoke a failed Explorer project refresh restores the project and Review Queue selection", async ({ page }) => {
+  const { origin, projects } = fixture();
+  let releaseProjectRefresh;
+  let markProjectRequest;
+  const projectRequest = new Promise((resolve) => { markProjectRequest = resolve; });
+  const projectRefresh = new Promise((resolve) => { releaseProjectRefresh = resolve; });
+  await page.route("**/api/context-hub/project", async (route) => {
+    markProjectRequest(route.request().postDataJSON());
+    await projectRefresh;
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Project refresh failed" }),
+    });
+  });
+
+  await page.goto(origin + "/?hub=1&workspace=workspace-explorer-project-rollback&view=hub");
+  await waitForBoot(page);
+  const explorerOpen = page.getByRole("button", { name: "Open explorer" });
+  if (await explorerOpen.isVisible()) await explorerOpen.click();
+
+  await page.locator(".global-project-row", { hasText: "Atlas" }).click();
+  await projectRequest;
+  await expect(page.locator("#globalExplorerScope strong")).toHaveText("Atlas");
+  await expect(page.locator("#contextRoomReviewProjectFilter .context-hub-project-trigger-label")).toHaveText("Atlas");
+  await expect(page).toHaveURL((url) => [projects.atlas.id, projects.atlas.worktreeId].includes(url.searchParams.get("project")));
+
+  releaseProjectRefresh();
+  await expect(page.locator(".global-project-row", { hasText: "Atlas" })).toBeVisible();
+  await expect(page.locator("#contextRoomReviewProjectFilter .context-hub-project-trigger-label")).toHaveText("All projects");
+  await expect(page).toHaveURL((url) => !url.searchParams.has("project") && url.searchParams.get("view") === "hub");
+  await expect(page.locator("#status")).toContainText("Project refresh failed");
+});
+
 test("@smoke selecting a hybrid project refreshes its Shared snapshot before opening", async ({ page }) => {
   const { origin, projects } = fixture();
   const openings = [];

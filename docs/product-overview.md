@@ -35,7 +35,7 @@ The Hub aggregates:
 - local file reviews and exact Shared proposal reviews;
 - deterministic health, context, and review summaries.
 
-A selected location narrows Explorer, Settings, Startup environment, effective context, and project-specific actions. Selection does not replace the global level.
+A selected location narrows Explorer, the Review Queue project filter, Settings, Startup environment, effective context, and project-specific actions. Selection does not replace the global level.
 
 ## Product surfaces
 
