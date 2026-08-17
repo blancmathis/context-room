@@ -7199,6 +7199,7 @@ test("browser refresh restores the last Context Room page", () => {
   assert.match(html, /const pathFilters = rawPathFilters\.filter\(\(filter\) => state\.files\.some\(\(file\) => pathMatchesFilter\(file\.path, filter\)\)\);/);
   assert.match(html, /el\("search"\)\.value = persisted\.searchText \|\| folderFilterSearchQuery\(state\.pathFilters\);/);
   assert.match(html, /function acceptContextRoomRoot\(nextRoot\)[\s\S]*if \(!state\.root\) \{[\s\S]*state\.root = nextRoot;[\s\S]*if \(state\.root === nextRoot\) return;[\s\S]*if \(IS_GLOBAL_CONTEXT_ROOM\) \{[\s\S]*state\.root = nextRoot;[\s\S]*handleContextRoomProjectChange\(\{ reason: "server-root-changed" \}\);/);
+  assert.match(html, /function acceptContextRoomRoot\(nextRoot\)[\s\S]*document\.body\.classList\.contains\("app-booting"\) \? "refreshing" : "ready",[\s\S]*"selected-project-root-changed"/);
   assert.match(html, /acceptContextRoomRoot\(data\.root\);/);
   assert.match(html, /const hasDirectContextHubTarget = Boolean\(requestedReviewFile \|\| requestedHubCard \|\| requestedStartupOrder \|\| state\.sharedContext\?\.mode === "review"\);/);
   assert.match(html, /if \(options\.initial && IS_GLOBAL_CONTEXT_ROOM\) \{[\s\S]*await state\.contextHubReadyPromise;[\s\S]*renderGlobalProjectExplorer\(\);/);
@@ -7323,6 +7324,9 @@ test("file opening renders loading and retry states instead of a blank document"
   assert.match(html, /kind: "hosted-review",[\s\S]*renderViewer\(\);/);
   assert.match(html, /state\.fileLoadError = \{ path, message: error\.message \|\| "Failed to open file\." \};/);
   assert.match(html, /updateExplorerSelectedFile\(previousSelected, path\)/);
+  assert.match(html, /targetProjectId === state\.activeProjectLocationId[\s\S]*preserveViewer: state\.page === "file"[\s\S]*syncWorkspaceUrl\(\{ push: true \}\)[\s\S]*project-file-in-place/);
+  assert.match(html, /const preserveViewer = Boolean\(options\.preserveViewer[\s\S]*el\("viewer"\)\.inert = true;[\s\S]*if \(!preserveViewer\) renderViewer\(\);/);
+  assert.match(html, /function renderViewer\(\) \{\s*el\("viewer"\)\.inert = false;\s*el\("viewer"\)\.removeAttribute\("aria-busy"\);/);
   assert.match(html, /function reconcileMissingSelectedFile\(\)/);
   assert.match(html, /function clearMissingSelectedFile\(stalePath = state\.selected\)/);
   assert.match(html, /function canReviewMissingFile\(path\)/);
@@ -7613,9 +7617,9 @@ test("file opening shows content before secondary dependencies and keeps actions
   assert.match(selectFileFn, /const annotationsRequest = settleUiRequest\(loadAnnotationsForPath\(path\)\);/);
   assert.match(selectFileFn, /const diffRequest = settleUiRequest\(readDiffForOpen\(path, \{ force: options\.forceReload \}\)\);/);
   assert.match(selectFileFn, /const reviewBaseRequest = options\.reviewMode[\s\S]*settleUiRequest\(readSelectedReviewBase\(path\)\)/);
-  assert.match(selectFileFn, /const data = await fileRequest;[\s\S]*state\.fileContentReadyPath = path;\s*renderViewer\(\);[\s\S]*void annotationsRequest\.then/);
+  assert.match(selectFileFn, /const data = await fileRequest;[\s\S]*state\.fileContentReadyPath = path;[\s\S]*renderViewer\(\);[\s\S]*void annotationsRequest\.then/);
   assert.doesNotMatch(selectFileFn, /await annotationsRequest/);
-  assert.match(selectFileFn, /state\.fileContentReadyPath = path;\s*renderViewer\(\);\s*restorePersistedViewState\(options\.restoreViewState\);/);
+  assert.match(selectFileFn, /state\.fileContentReadyPath = path;[\s\S]*renderViewer\(\);\s*restorePersistedViewState\(options\.restoreViewState\);/);
   assert.match(selectFileFn, /setStatus\("open · loading Git diff\.\.\."\);/);
   assert.match(selectFileFn, /const \[diffResult, reviewBaseResult\] = await Promise\.all\(\[diffRequest, reviewBaseRequest\]\);/);
   assert.match(selectFileFn, /const \[diffResult, reviewBaseResult\] = await Promise\.all\(\[diffRequest, reviewBaseRequest\]\);[\s\S]*?finishOpen\(diffResult, reviewBaseResult\);/);
