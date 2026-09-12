@@ -37,7 +37,7 @@ Historical material explains past behavior, decisions, releases, incidents, or s
 
 ## Proposal
 
-A proposal is an unaccepted change under review. It is isolated from accepted truth, may be inspected, may not drive effective context, and becomes current only through an explicit human terminal decision and verified delivery.
+A proposal is an unaccepted change under review. It is isolated from accepted truth, may be inspected, may not drive effective context, and becomes current only through exact human file acceptance and verified application. Shared additionally requires its separate terminal decision and verified Git delivery.
 
 ## Invariants
 

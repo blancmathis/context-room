@@ -20,17 +20,17 @@ This document defines the user-visible Shared model, repository and project rela
 
 ## Does not define
 
-This document does not define Git ref algorithms, terminal locks, schema fields, hosted secrets, provider destination internals, or deployment procedures.
+This document does not define Git ref algorithms, terminal locks, schema fields, provider destination internals, or deployment procedures.
 
 ## Repository model
 
-A Shared repository contains one repository configuration, a project catalog, zero or more Shared projects, optional global and project skills, optional skill and instruction assignment manifests, and optional accepted metadata profiles.
+A Shared repository contains one repository configuration, a project catalog, zero or more Shared projects, optional global and project skills, optional skill assignment manifests and preserved legacy instruction mappings, and optional accepted metadata profiles.
 
-A device or hosted instance may register several repositories. Repository identity is part of every Shared project and proposal identity.
+A device may register several repositories. Repository identity is part of every Shared project and proposal identity.
 
 ## Accepted truth
 
-The configured default branch, normally `main`, owns current Shared truth. Context Room consumes an immutable cached revision.
+The configured default branch, normally `main`, owns current Shared truth. Each normal CLI document command refreshes main once and consumes that one immutable snapshot. Offline results identify their cached revision and lack of remote freshness.
 
 A resource may become effective only when it exists in that accepted revision, has valid repository/project identity, passes native schemas and path checks, is projected without unmanaged conflict, and is proven discoverable when activation is claimed.
 
@@ -54,11 +54,11 @@ A proposal is an isolated Git worktree and live branch based on accepted main. I
 
 Several proposals may exist simultaneously, including for the same project. They remain independent until a human accepts or rejects each exact head.
 
-A proposal can cover one Shared project, global Shared content, skills, or instructions. Scope checks reject unrelated paths.
+A proposal can cover one Shared project, global Shared content, or skills. Legacy instruction proposals remain recoverable through compatibility commands. Scope checks reject unrelated paths.
 
 ## Resources
 
-Accepted resources can include documents, skills, instructions, and metadata profiles. Skills and instructions use managed destinations. Context Room never overwrites unmanaged destination content. Local provider preferences and destination overrides are local state, not Shared truth. Hooks are not Shared resources.
+Accepted resources include documents, skills and optional metadata profiles. AGENTS.md and similar instruction files are ordinary documents. Existing legacy instruction mappings are preserved, without a separate category in Settings. Skills are associated with selected projects; native provider destinations are optional. Context Room never overwrites unmanaged destination content. Local provider preferences and destination overrides are local state, not Shared truth. Hooks are not Shared resources.
 
 ## Offline behavior
 

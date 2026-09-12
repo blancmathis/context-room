@@ -262,6 +262,8 @@ test("@smoke a shared-only deep link boots without a local target and labels an 
   });
   expect(noCacheCopy).toBe("Main offline · no cached snapshot");
   expect(noCacheCopy).not.toContain("@");
+  // Let intercepted background reads finish before Playwright disposes their responses.
+  await page.unrouteAll({ behavior: "wait" });
 });
 
 test("@smoke a launcher-style project deep link renders immediately while its project refresh completes", async ({ page }) => {
@@ -549,13 +551,10 @@ test("@smoke review filters and stale snapshots never masquerade as an all-clear
   await page.goto(origin + "/?hub=1&workspace=workspace-filtered-review-queue&view=hub");
   await waitForBoot(page);
   await expect.poll(() => page.evaluate(() => Boolean(state.contextHubReviewQueueReady && state.contextHub?.projects?.length))).toBe(true);
-  await page.evaluate(() => {
-    cancelBackgroundRefresh();
-    state.runtimeEventSource?.close();
-    state.runtimeEventSource = null;
-    state.runtimeEventsConnected = true;
-    window.clearInterval(state.runtimeFallbackTimer);
-    state.runtimeFallbackTimer = null;
+  // This test installs synthetic queue snapshots; drain real background reads first.
+  await page.evaluate(async () => {
+    stopWorkspaceRuntime();
+    await Promise.allSettled([state.contextHubReadyPromise, state.runtimeContextHubRefreshPromise].filter(Boolean));
   });
   await expect.poll(() => page.evaluate(() => Boolean(state.refreshInFlight || state.reportsRefreshInFlight))).toBe(false);
   const filteredState = await page.evaluate(() => {

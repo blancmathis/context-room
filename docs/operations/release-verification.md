@@ -3,7 +3,7 @@ context_room:
   id: operations.release.verification
   depends_on:
     - system.architecture
-    - assurance.hosted.isolation
+    - system.runtime-profiles
     - domains.documentation.truth-model
 ---
 
@@ -11,11 +11,11 @@ context_room:
 
 ## Summary
 
-A Context Room release is ready only when its package, deterministic contracts, browser profiles, hosted boundary, documentation graph, and image provenance are verified against one exact commit.
+A Context Room release is ready only when its package, deterministic contracts, browser workflows, local authority boundary and documentation graph are verified against one exact commit.
 
 ## Defines
 
-This document defines the release evidence required for package publication and hosted-image deployment.
+This document defines the release evidence required for package publication.
 
 ## Does not define
 
@@ -32,7 +32,6 @@ Record:
 - root tree;
 - supported Node versions;
 - package archive digest;
-- container image digest, when applicable;
 - workflow run IDs and conclusions;
 - external deployment receipt, when applicable.
 
@@ -70,20 +69,11 @@ Run the configured browser profiles and record each conclusion:
 
 A suite present in CI is not a passing receipt. The exact workflow run must have a recorded conclusion.
 
-## Hosted verification
+## Local and optional integration verification
 
-Verify:
+Verify rejected hosted profiles fail before reading or writing user state. Exercise real temporary Git repositories, local proposals without Git, direct-change recovery, exact binary correction, reader isolation and the disabled-by-default cleanup rule. Migration must retain original control bytes and recover interrupted completion.
 
-- exact hosted asset set;
-- denial of local-only routes;
-- no local-home or local-provider touches;
-- response and error redaction;
-- administrator allowlist and operation scopes;
-- exact proposal scope and terminal challenge;
-- timeout, retry, and delivery recovery;
-- non-root container execution;
-- image SBOM, provenance, signature, and immutable digest;
-- external deployment of that exact digest.
+For Lisière, distinguish an isolated companion contract test, a real local companion round trip and physical tablet drawing. A companion result is not proof of pen, screen or connectivity behavior on the BOOX device. Context Room's principal workflow must run when Lisière is absent.
 
 ## Documentation verification
 

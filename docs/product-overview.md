@@ -11,11 +11,11 @@ context_room:
 
 ## Summary
 
-Context Room is one global Hub with selectable local, worktree, Shared, proposal-review, and hosted surfaces. It presents accepted context and pending review without collapsing their authority or temporal state.
+Context Room is one global Hub with selectable local, worktree, Shared, proposal-review, surfaces. It presents accepted context and pending review without collapsing their authority or temporal state.
 
 ## Defines
 
-This document defines the observable product model, primary user surfaces, and distinctions between local, global, Shared, proposal, and hosted operation.
+This document defines the observable product model, primary user surfaces, and distinctions between local, global, Shared, proposal operation.
 
 ## Does not define
 
@@ -65,15 +65,13 @@ Local Settings controls project configuration, device preferences, Shared connec
 
 ### Agent surfaces
 
-`context-room docs`, Context Engine commands, doctor, guard, brief, settings plans, and the CLI registry are deterministic. `context-room ask` launches one isolated researcher over a frozen accepted-only corpus. Agent commands do not accept or reject reviews.
+`context-room docs`, Context Engine commands, doctor, guard, brief, settings plans, and the CLI registry are deterministic. `docs search`, `docs read`, and `docs inspect` read accepted documentation directly. The integrated researcher has been removed. Agent commands do not accept or reject reviews.
 
 ## Runtime profiles
 
 | Profile | Data scope | Main purpose |
 | --- | --- | --- |
 | `local` | Explicit local paths plus registered accepted Shared snapshots | Full owner workspace |
-| `hosted-hub` | Explicitly configured Shared repositories and projected Shared data | Shared-only global overview |
-| `hosted-review` | One exact Shared proposal review authority | Human review of one exact proposal revision |
 
 Hosted profiles do not expose local project files, local prompts, local Settings, local provider discovery, or local-only mutation APIs.
 

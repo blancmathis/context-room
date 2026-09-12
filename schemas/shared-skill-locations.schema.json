@@ -4,20 +4,39 @@
   "title": "Context Room shared skill locations",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "collections", "assignments"],
+  "required": [
+    "version",
+    "collections",
+    "assignments"
+  ],
   "properties": {
-    "$schema": { "type": "string" },
-    "version": { "const": 1 },
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "const": 1
+    },
     "collections": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "title", "path"],
+        "required": [
+          "id",
+          "title",
+          "path"
+        ],
         "properties": {
-          "id": { "$ref": "#/$defs/id" },
-          "title": { "type": "string", "minLength": 1 },
-          "path": { "$ref": "#/$defs/relativePath" }
+          "id": {
+            "$ref": "#/$defs/id"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "path": {
+            "$ref": "#/$defs/relativePath"
+          }
         }
       }
     },
@@ -26,33 +45,112 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "collectionId", "scope", "providers"],
+        "required": [
+          "id",
+          "collectionId",
+          "scope"
+        ],
         "properties": {
-          "id": { "$ref": "#/$defs/id" },
-          "collectionId": { "$ref": "#/$defs/id" },
-          "scope": { "enum": ["project", "shared", "device"], "description": "project targets projectIds, shared targets registered locations for this shared repository, and device targets one global provider destination." },
-          "projectIds": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/id" }, "description": "Required only for project scope." },
-          "providers": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["codex", "claude-code", "opencode"] }, "description": "Logical provider intent stored in Git; physical destinations and activation remain local." },
-          "include": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/skillName" }, "default": ["*"] },
-          "exclude": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/skillName" }, "default": [] }
+          "id": {
+            "$ref": "#/$defs/id"
+          },
+          "collectionId": {
+            "$ref": "#/$defs/id"
+          },
+          "scope": {
+            "enum": [
+              "project",
+              "shared",
+              "device"
+            ],
+            "description": "project targets projectIds, shared targets registered locations for this shared repository, and device targets one global provider destination."
+          },
+          "projectIds": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/$defs/id"
+            },
+            "description": "Required only for project scope."
+          },
+          "providers": {
+            "type": "array",
+            "minItems": 0,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "codex",
+                "claude-code",
+                "opencode"
+              ]
+            },
+            "description": "Optional native harness destinations. Empty or omitted uses the generic CLI without installing any provider files."
+          },
+          "include": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/$defs/skillName"
+            },
+            "default": [
+              "*"
+            ]
+          },
+          "exclude": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/$defs/skillName"
+            },
+            "default": []
+          }
         },
         "allOf": [
           {
-            "if": { "properties": { "scope": { "const": "project" } } },
-            "then": { "required": ["projectIds"], "properties": { "projectIds": { "minItems": 1 } } },
-            "else": { "not": { "required": ["projectIds"] } }
+            "if": {
+              "properties": {
+                "scope": {
+                  "const": "project"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "projectIds"
+              ],
+              "properties": {
+                "projectIds": {
+                  "minItems": 1
+                }
+              }
+            },
+            "else": {
+              "not": {
+                "required": [
+                  "projectIds"
+                ]
+              }
+            }
           }
         ]
       }
     }
   },
   "$defs": {
-    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$" },
-    "skillName": { "type": "string", "pattern": "^(?:\\*|[A-Za-z0-9][A-Za-z0-9._-]{0,127})$" },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+    },
+    "skillName": {
+      "type": "string",
+      "pattern": "^(?:\\*|[A-Za-z0-9][A-Za-z0-9._-]{0,127})$"
+    },
     "relativePath": {
       "type": "string",
       "minLength": 1,
-      "not": { "pattern": "(^/|(^|/)\\.\\.?(/|$)|(^|/)\\.git(/|$)|^\\.context-room(/|$)|\\u0000)" }
+      "not": {
+        "pattern": "(^/|(^|/)\\.\\.?(/|$)|(^|/)\\.git(/|$)|^\\.context-room(/|$)|\\u0000)"
+      }
     }
   }
 }

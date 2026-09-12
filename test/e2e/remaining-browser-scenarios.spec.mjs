@@ -14,7 +14,6 @@ import {
   unregisterContextHubProject,
   unregisterContextHubSharedRepository,
 } from "../../src/context_hub.mjs";
-import { signRemoteIdentity } from "../../src/remote_identity.mjs";
 import {
   connectSharedContext,
   createSharedProposal,
@@ -24,11 +23,6 @@ import {
   readSharedProjectConnection,
 } from "../../src/shared_context.mjs";
 
-const HOSTED_HOST = "context.qm.peerlab.fr";
-const HOSTED_ORIGIN = `https://${HOSTED_HOST}`;
-const HOSTED_HUMAN_SECRET = "remaining-browser-human-secret-with-more-than-32-bytes";
-const HOSTED_AGENT_SECRET = "remaining-browser-agent-secret-with-more-than-32-bytes";
-const HOSTED_HEALTH_SECRET = "remaining-browser-health-secret-with-more-than-32-bytes";
 
 function fixture() {
   const fixturePath = process.env.CONTEXT_ROOM_E2E_FIXTURE;
@@ -655,160 +649,4 @@ test.describe("remaining real browser user matrix", () => {
       }
     }
   });
-});
-
-async function installHostedTransport(page, localOrigin, identityHeaders) {
-  await page.route(`${HOSTED_ORIGIN}/**`, async (route) => {
-    const publicUrl = new URL(route.request().url());
-    if (publicUrl.pathname.endsWith("/api/runtime-events")) {
-      await route.fulfill({
-        status: 200,
-        contentType: "text/event-stream",
-        body: "retry: 60000\nevent: ready\ndata: {}\n\n",
-      });
-      return;
-    }
-    const request = route.request();
-    const headers = new Headers(request.headers());
-    headers.delete("host");
-    headers.delete("content-length");
-    headers.set("accept-encoding", "identity");
-    headers.set("x-forwarded-host", HOSTED_HOST);
-    headers.set("x-forwarded-proto", "https");
-    for (const [name, value] of Object.entries(identityHeaders())) headers.set(name, value);
-    const method = request.method();
-    const response = await fetch(`${localOrigin}${publicUrl.pathname}${publicUrl.search}`, {
-      method,
-      headers,
-      redirect: "manual",
-      ...(["GET", "HEAD"].includes(method) ? {} : { body: request.postDataBuffer() || undefined }),
-    });
-    const responseHeaders = Object.fromEntries(response.headers.entries());
-    delete responseHeaders["content-length"];
-    delete responseHeaders["transfer-encoding"];
-    if (responseHeaders.location?.startsWith(localOrigin)) {
-      responseHeaders.location = HOSTED_ORIGIN + responseHeaders.location.slice(localOrigin.length);
-    }
-    await route.fulfill({
-      status: response.status,
-      headers: responseHeaders,
-      body: Buffer.from(await response.arrayBuffer()),
-    });
-  });
-}
-
-test("@smoke Hosted follows the system light theme and computes reduced-motion styles", async ({ page }, testInfo) => {
-  test.setTimeout(120_000);
-  const data = fixture();
-  const room = createMemoryServer({
-    root: data.projects.atlas.root,
-    registerInHub: false,
-    remoteAccess: {
-      expectedHost: HOSTED_HOST,
-      humanSecret: HOSTED_HUMAN_SECRET,
-      agentSecret: HOSTED_AGENT_SECRET,
-      healthSecret: HOSTED_HEALTH_SECRET,
-      adminSubjects: ["remaining-browser-owner"],
-      projectRoots: { atlas: data.projects.atlas.root },
-      sharedRepositories: [{ repository: data.shared.remote, projectIds: ["atlas"] }],
-    },
-  });
-  let localOrigin = "";
-  let sequence = 0;
-  const identityHeaders = () => ({
-    "x-peerlab-context-identity": signRemoteIdentity({
-      kind: "human",
-      sub: "remaining-browser-owner",
-      role: "admin",
-      operations: ["view", "review", "accept", "reject"],
-    }, HOSTED_HUMAN_SECRET, { jti: `remaining-browser-${testInfo.project.name}-${process.pid}-${++sequence}` }),
-  });
-
-  try {
-    await new Promise((resolve, reject) => {
-      room.server.once("error", reject);
-      room.server.listen(0, "127.0.0.1", resolve);
-    });
-    localOrigin = `http://127.0.0.1:${room.server.address().port}`;
-    const warmResponse = await fetch(`${localOrigin}/api/context-hub/refresh`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-forwarded-host": HOSTED_HOST,
-        "x-forwarded-proto": "https",
-        ...identityHeaders(),
-      },
-      body: "{}",
-    });
-    const warmResponseText = await warmResponse.text();
-    expect(warmResponse.status, warmResponseText).toBe(200);
-    await installHostedTransport(page, localOrigin, identityHeaders);
-    await page.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" });
-    await page.goto(`${HOSTED_ORIGIN}/?hub=1&workspace=hosted-theme-${testInfo.project.name}&view=hub`);
-    await waitForBoot(page);
-
-    const lightContract = await page.evaluate(() => {
-      const cssTimeToMilliseconds = (value) => {
-        const text = String(value || "").trim();
-        const numeric = Number.parseFloat(text) || 0;
-        return text.endsWith("ms") ? numeric : numeric * 1_000;
-      };
-      const root = getComputedStyle(document.documentElement);
-      const indicator = getComputedStyle(document.querySelector(".boot-indicator"));
-      const visibleTransitionMilliseconds = [...document.querySelectorAll("button")]
-        .filter((button) => button.getClientRects().length)
-        .flatMap((button) => getComputedStyle(button).transitionDuration.split(",").map(cssTimeToMilliseconds));
-      return {
-        profile: document.documentElement.dataset.contextRoomRuntimeProfile,
-        fileTheme: document.documentElement.dataset.fileTheme,
-        preference: document.documentElement.dataset.colorPreference,
-        mode: document.documentElement.dataset.colorMode,
-        lightMedia: matchMedia("(prefers-color-scheme: light)").matches,
-        reducedMotionMedia: matchMedia("(prefers-reduced-motion: reduce)").matches,
-        colorScheme: root.colorScheme,
-        background: root.getPropertyValue("--bg").trim(),
-        panel: root.getPropertyValue("--panel").trim(),
-        indicatorAnimation: indicator.animationName,
-        indicatorDurationMilliseconds: cssTimeToMilliseconds(indicator.animationDuration),
-        visibleTransitionMilliseconds,
-      };
-    });
-    expect(lightContract).toMatchObject({
-      profile: "hosted-hub",
-      fileTheme: "context-room",
-      preference: "system",
-      mode: "light",
-      lightMedia: true,
-      reducedMotionMedia: true,
-      colorScheme: "light",
-      background: "#f7f8f6",
-      panel: "#ffffff",
-      indicatorAnimation: "none",
-    });
-    expect(lightContract.indicatorDurationMilliseconds).toBeLessThanOrEqual(0.02);
-    expect(
-      lightContract.visibleTransitionMilliseconds.every((duration) => duration <= 0.02),
-      JSON.stringify(lightContract.visibleTransitionMilliseconds),
-    ).toBe(true);
-    if (testInfo.project.name === "chromium-desktop") {
-      await page.screenshot({
-        path: browserEvidencePath("hosted-shared-only-system-light.png"),
-        fullPage: true,
-      });
-    }
-
-    await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
-    await expect.poll(() => page.locator("html").getAttribute("data-color-mode")).toBe("dark");
-    await expect(page.locator("html")).toHaveAttribute("data-color-preference", "system");
-    await page.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" });
-    await expect.poll(() => page.locator("html").getAttribute("data-color-mode")).toBe("light");
-  } finally {
-    if (room.server.listening) {
-      await new Promise((resolve) => {
-        room.server.close(resolve);
-        room.server.closeAllConnections?.();
-      });
-    }
-    await room.waitForShutdown?.();
-  }
 });

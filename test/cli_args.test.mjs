@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 
-import { CONFIG_FILE, REVIEW_GATE_FILE } from "../src/context_room.mjs";
+import { CONFIG_FILE, REVIEW_GATE_FILE, writeDocReviewDecision } from "../src/context_room.mjs";
 import { authorizeOwnerReviewScope } from "../src/review_authority.mjs";
 
 const cli = path.resolve("bin/context-room.mjs");
@@ -77,7 +77,7 @@ test("removed agent help is replaced by the compact static capabilities contract
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.schema, "context-room.cli/2");
-  assert.deepEqual(payload.data.commands.map((entry) => entry.path), ["ask"]);
+  assert.deepEqual(payload.data.commands.map((entry) => entry.path), ["docs search", "docs read", "docs inspect"]);
   assert.deepEqual(payload.data.humanOwned, ["accept-file-review", "reject-file-review"]);
   assert.equal(payload.data.humanDecisionPolicy.confirmationsRequired, 2);
   assert.match(payload.data.humanDecisionPolicy.instruction, /second separate, unambiguous yes/i);
@@ -138,8 +138,8 @@ test("agent-first CLI emits versioned envelopes, caches prepare, and previews mu
   assert.equal(capabilities.schemaVersion, "context-room.cli/1");
   assert.equal(capabilities.data.contractAudience, "ai-agent");
   assert.equal(capabilities.data.view, "sections");
-  assert.deepEqual(capabilities.data.primaryCommands.map((item) => item.path), ["ask", "edit"]);
-  assert.deepEqual(capabilities.data.sections.map((item) => item.id), ["documentation", "context", "review", "shared", "workspace", "configuration"]);
+  assert.deepEqual(capabilities.data.primaryCommands.map((item) => item.path), ["docs search", "docs read", "changes begin"]);
+  assert.deepEqual(capabilities.data.sections.map((item) => item.id), ["changes", "documentation", "context", "review", "shared", "workspace", "configuration"]);
   assert.equal(Object.hasOwn(capabilities.data, "commands"), false);
   assert.ok(Buffer.byteLength(result.stdout) < 2_000, `default capabilities used ${Buffer.byteLength(result.stdout)} bytes`);
   assert.equal(result.stdout.trim().includes("\n"), false);
@@ -148,7 +148,7 @@ test("agent-first CLI emits versioned envelopes, caches prepare, and previews mu
   assert.equal(result.status, 0, result.stderr);
   const docsCapabilities = JSON.parse(result.stdout).data;
   assert.equal(docsCapabilities.namespace, "docs");
-  assert.deepEqual(docsCapabilities.commands.map((item) => item.path), ["docs search", "docs inspect"]);
+  assert.deepEqual(docsCapabilities.commands.map((item) => item.path), ["docs search", "docs read", "docs inspect"]);
   assert.ok(Buffer.byteLength(result.stdout) < 4_000);
 
   result = spawnSync(process.execPath, [cli, "capabilities", "--include=review", "--format=json"], { encoding: "utf8", env });
@@ -170,7 +170,7 @@ test("agent-first CLI emits versioned envelopes, caches prepare, and previews mu
   assert.equal(result.status, 0, result.stderr);
   const editingCapabilities = JSON.parse(result.stdout);
   assert.equal(editingCapabilities.schema, "context-room.cli/2");
-  assert.deepEqual(editingCapabilities.data.commands.map((item) => item.path), ["ask", "edit"]);
+  assert.deepEqual(editingCapabilities.data.commands.map((item) => item.path), ["changes begin", "changes status", "changes submit", "changes list"]);
 
   result = spawnSync(process.execPath, [cli, "capabilities", "--expand", "--format=json"], { encoding: "utf8", env });
   assert.equal(result.status, 0, result.stderr);
@@ -291,6 +291,12 @@ test("docs edit and docs publish expose one bounded local documentation change h
   let result = spawnSync(process.execPath, [cli, "init", `--root=${root}`, "--allow=docs/", "--watch=docs/"], { encoding: "utf8", env });
   assert.equal(result.status, 0, result.stderr);
 
+  const previousHub = process.env.CONTEXT_ROOM_HUB_HOME;
+  try {
+    process.env.CONTEXT_ROOM_HUB_HOME = hubHome;
+    writeDocReviewDecision(root, "docs/guide.md", { status: "verified" });
+  } finally { process.env.CONTEXT_ROOM_HUB_HOME = previousHub; }
+
   result = spawnSync(process.execPath, [cli, "docs", "edit", `--root=${root}`, "--task=Update the guide", "--scope=local", "--contract=v2", "--format=json"], { encoding: "utf8", env });
   assert.equal(result.status, 0, result.stderr);
   const edit = JSON.parse(result.stdout);
@@ -299,7 +305,9 @@ test("docs edit and docs publish expose one bounded local documentation change h
   assert.equal(edit.data.scope, "local");
   assert.deepEqual(edit.data.allowedPaths, ["docs/"]);
 
-  fs.appendFileSync(path.join(root, "docs", "guide.md"), "Updated by the agent.\n");
+  assert.notEqual(edit.data.editRoot, root);
+  fs.appendFileSync(path.join(edit.data.editRoot, "docs", "guide.md"), "Updated by the agent.\n");
+  assert.equal(fs.readFileSync(path.join(root, "docs", "guide.md"), "utf8"), "# Guide\n\nAccepted text.\n");
   result = spawnSync(process.execPath, [cli, "docs", "publish", `--change=${edit.data.changeId}`, "--summary=Update the guide", "--contract=v2", "--format=json"], { encoding: "utf8", env });
   assert.equal(result.status, 0, result.stderr);
   const published = JSON.parse(result.stdout);
@@ -324,7 +332,7 @@ test("primary edit routes directly to a shared proposal and never exposes publis
 
   const help = spawnSync(process.execPath, [cli, "--help"], { encoding: "utf8" });
   assert.equal(help.status, 0, help.stderr);
-  assert.match(help.stdout, /context-room edit <action> \[value\]/);
+  assert.match(help.stdout, /context-room changes begin/);
   assert.doesNotMatch(help.stdout, /publish/);
 });
 
@@ -355,7 +363,7 @@ test("Settings CLI uses the same command path for an exact typed plan and apply"
 
   result = spawnSync(process.execPath, [cli, "settings", "set", `--root=${root}`, "--set=appearance.theme=dark", "--contract=v2", "--format=json"], { encoding: "utf8", env });
   assert.notEqual(result.status, 0);
-  assert.equal(JSON.parse(result.stderr).error.code, "setting-not-manageable");
+  assert.equal(JSON.parse(result.stderr).error.code, "unknown-setting");
 });
 
 test("CLI treats an equals-style occupied port as explicit and leaves its listener running", async (t) => {

@@ -15,7 +15,6 @@ import {
   unregisterContextHubProject,
   unregisterContextHubSharedRepository,
 } from "../../src/context_hub.mjs";
-import { signRemoteIdentity } from "../../src/remote_identity.mjs";
 import {
   connectSharedContext,
   createSharedProposal,
@@ -26,26 +25,6 @@ import {
   readSharedProjectConnection,
   sharedContextStatus,
 } from "../../src/shared_context.mjs";
-
-const HOSTED_HOST = "context.qm.peerlab.fr";
-const HOSTED_ORIGIN = `https://${HOSTED_HOST}`;
-const HOSTED_HUMAN_SECRET = "real-workflow-human-secret-with-more-than-32-bytes";
-const HOSTED_AGENT_SECRET = "real-workflow-agent-secret-with-more-than-32-bytes";
-const HOSTED_HEALTH_SECRET = "real-workflow-health-secret-with-more-than-32-bytes";
-const HOSTED_FORBIDDEN_API_PREFIXES = [
-  "/api/settings",
-  "/api/files",
-  "/api/file",
-  "/api/reports",
-  "/api/docqa",
-  "/api/codex-prompts",
-  "/api/context-hub/project",
-  "/api/context-hub/shared-repositories",
-  "/api/context/",
-  "/api/startup-",
-  "/api/shared-skills",
-  "/api/shared-instructions",
-];
 
 function fixture() {
   const fixturePath = process.env.CONTEXT_ROOM_E2E_FIXTURE;
@@ -102,6 +81,11 @@ function createSharedWorkflowFixture(base, {
     `projects/${projectId}/skills/baseline/SKILL.md`,
     `---\nname: ${projectId}-baseline\ndescription: Keep the real Playwright workflow fixture complete.\n---\n\n# ${projectTitle} baseline\n`,
   );
+  write(seed, "skill-locations.json", JSON.stringify({
+    version: 1,
+    collections: [{ id: "project-baseline", title: "Project skills", path: `projects/${projectId}/skills` }],
+    assignments: [{ id: "project-baseline-codex", collectionId: "project-baseline", scope: "project", projectIds: [projectId], providers: ["codex"], include: ["baseline"] }],
+  }, null, 2) + "\n");
   git(seed, ["add", "."]);
   git(seed, ["commit", "-m", `Initialize ${projectTitle} shared context`]);
   git(seed, ["push", "origin", "main"]);
@@ -340,66 +324,6 @@ async function unreviewProposalFileFromList(page, filePath) {
   const response = await responsePromise;
   expect(response.status(), await response.text()).toBe(200);
   await expect(proposalFileButton(page, filePath)).toContainText("Review");
-}
-
-function scopedHostedApiPath(pathname) {
-  return String(pathname || "").replace(/^\/reviews\/[^/]+(?=\/api(?:\/|$))/, "");
-}
-
-function hostedPathIsForbidden(pathname) {
-  const apiPath = scopedHostedApiPath(pathname);
-  return HOSTED_FORBIDDEN_API_PREFIXES.some((prefix) => apiPath === prefix || apiPath.startsWith(prefix));
-}
-
-function hostedIdentityHeaders(sequence) {
-  return {
-    "x-peerlab-context-identity": signRemoteIdentity({
-      kind: "human",
-      sub: "real-workflow-owner",
-      role: "admin",
-      operations: ["view", "review", "accept", "reject"],
-    }, HOSTED_HUMAN_SECRET, { jti: `real-workflow-${process.pid}-${sequence}` }),
-  };
-}
-
-async function installHostedTransport(page, localOrigin, nextIdentityHeaders) {
-  await page.route(`${HOSTED_ORIGIN}/**`, async (route) => {
-    const publicUrl = new URL(route.request().url());
-    if (publicUrl.pathname.endsWith("/api/runtime-events")) {
-      await route.fulfill({
-        status: 200,
-        contentType: "text/event-stream",
-        body: "retry: 60000\nevent: ready\ndata: {}\n\n",
-      });
-      return;
-    }
-    const request = route.request();
-    const headers = new Headers(request.headers());
-    headers.delete("host");
-    headers.delete("content-length");
-    headers.set("accept-encoding", "identity");
-    headers.set("x-forwarded-host", HOSTED_HOST);
-    headers.set("x-forwarded-proto", "https");
-    for (const [name, value] of Object.entries(nextIdentityHeaders())) headers.set(name, value);
-    const method = request.method();
-    const response = await fetch(`${localOrigin}${publicUrl.pathname}${publicUrl.search}`, {
-      method,
-      headers,
-      redirect: "manual",
-      ...(["GET", "HEAD"].includes(method) ? {} : { body: request.postDataBuffer() || undefined }),
-    });
-    const responseHeaders = Object.fromEntries(response.headers.entries());
-    delete responseHeaders["content-length"];
-    delete responseHeaders["transfer-encoding"];
-    if (responseHeaders.location?.startsWith(localOrigin)) {
-      responseHeaders.location = HOSTED_ORIGIN + responseHeaders.location.slice(localOrigin.length);
-    }
-    await route.fulfill({
-      status: response.status,
-      headers: responseHeaders,
-      body: Buffer.from(await response.arrayBuffer()),
-    });
-  });
 }
 
 test.describe.serial("real proposal workflows", () => {
@@ -827,187 +751,4 @@ test.describe.serial("real proposal workflows", () => {
     }
   });
 
-  test("@smoke hosted Shared-only UI performs real whole-file decisions and fails terminal actions closed without GitHub credentials", async ({ page }, testInfo) => {
-    test.skip(testInfo.project.name !== "chromium-desktop", "The real Hosted Git workflow runs once on Chromium desktop.");
-    test.setTimeout(180_000);
-    testInfo.annotations.push({
-      type: "harness-limit",
-      description: "Only the infinite runtime-events stream uses the existing finite Playwright heartbeat bridge; catalog, review, unreview, both terminal gates, and Git effects come from the real local Hosted server.",
-    });
-    testInfo.annotations.push({
-      type: "credential-limit",
-      description: "No GitHub App credentials are available, so the test proves both remote terminal actions fail closed without mutating Git. Credentialed rejection and acceptance are covered by the dedicated server integration tests.",
-    });
-
-    const data = fixture();
-    const runBase = fs.mkdtempSync(path.join(data.base, "real-proposal-hosted-"));
-    const hosted = createSharedWorkflowFixture(runBase, {
-      slug: "hosted-gamma",
-      projectId: "hosted-gamma",
-      projectTitle: "Hosted Gamma",
-      proposalTitle: "Hosted Gamma whole-file review",
-      proposalDescription: "Exercise exact Hosted decisions without exposing or mutating local project files.",
-      baselineFiles: {
-        "docs/keep.md": "# Hosted keep\n\nHosted accepted baseline keep.\n",
-        "docs/reject.md": "# Hosted reject\n\nHosted accepted baseline reject.\n",
-        "docs/unreview.md": "# Hosted unreview\n\nHosted accepted baseline unreview.\n",
-      },
-      proposalFiles: {
-        "docs/keep.md": "# Hosted keep\n\nHosted proposal keep.\n",
-        "docs/reject.md": "# Hosted reject\n\nHosted proposal reject.\n",
-        "docs/unreview.md": "# Hosted unreview\n\nHosted proposal unreview.\n",
-      },
-    });
-    const room = createMemoryServer({
-      root: hosted.project,
-      remoteAccess: {
-        expectedHost: HOSTED_HOST,
-        humanSecret: HOSTED_HUMAN_SECRET,
-        agentSecret: HOSTED_AGENT_SECRET,
-        healthSecret: HOSTED_HEALTH_SECRET,
-        adminSubjects: ["real-workflow-owner"],
-        projectRoots: { [hosted.projectId]: hosted.project },
-        sharedRepositories: [{ repository: hosted.remote, projectIds: [hosted.projectId] }],
-      },
-    });
-    let localOrigin = "";
-    let identitySequence = 0;
-    const nextIdentityHeaders = () => hostedIdentityHeaders(++identitySequence);
-    const remoteJson = async (pathname, options = {}) => {
-      const response = await fetch(`${localOrigin}${pathname}`, {
-        ...options,
-        headers: {
-          ...(options.body ? { "content-type": "application/json" } : {}),
-          "x-forwarded-host": HOSTED_HOST,
-          "x-forwarded-proto": "https",
-          ...nextIdentityHeaders(),
-          ...(options.headers || {}),
-        },
-      });
-      const payload = await response.json();
-      expect(response.status, JSON.stringify(payload)).toBeGreaterThanOrEqual(200);
-      expect(response.status, JSON.stringify(payload)).toBeLessThan(300);
-      return payload;
-    };
-
-    try {
-      await new Promise((resolve, reject) => {
-        room.server.once("error", reject);
-        room.server.listen(0, "127.0.0.1", resolve);
-      });
-      localOrigin = `http://127.0.0.1:${room.server.address().port}`;
-      const warmed = await remoteJson("/api/context-hub/refresh", { method: "POST", body: "{}" });
-      expect((warmed.proposals || warmed.items || []).some((item) => item.branch === hosted.proposalBranch)).toBe(true);
-
-      await installHostedTransport(page, localOrigin, nextIdentityHeaders);
-      const requests = [];
-      page.on("request", (request) => {
-        if (!/^https?:/i.test(request.url())) return;
-        const url = new URL(request.url());
-        requests.push({ method: request.method(), pathname: url.pathname });
-      });
-
-      await page.goto(`${HOSTED_ORIGIN}/?hub=1&workspace=real-hosted-workflow&view=hub`);
-      await waitForBoot(page);
-      await expect(page.locator("html")).toHaveAttribute("data-context-room-runtime-profile", "hosted-hub");
-      await expect(page.locator("#settingsButton")).toBeHidden();
-      await expect(page.locator(".app > aside")).toBeHidden();
-      await expect(page.locator('[data-settings-disclosure="project-shared-connection"]')).toHaveCount(0);
-      await expect(page.locator("[data-connect-shared-context], [data-disconnect-shared-context], #sharedContextRepositoryInput")).toHaveCount(0);
-      await expect(proposalRow(page, hosted.proposalTitle)).toHaveCount(1);
-
-      await openProposalFromHub(page, hosted.proposalTitle);
-      await expect(page).toHaveURL((url) => /^\/reviews\/[a-f0-9-]{36}\/$/i.test(url.pathname) && url.searchParams.get("view") === "proposal");
-      await waitForBoot(page);
-      await expect(page.locator("html")).toHaveAttribute("data-context-room-runtime-profile", "hosted-review");
-      await expect(page.getByRole("heading", { name: hosted.proposalTitle })).toBeVisible();
-      await expect(page.locator("[data-proposal-review-path]")).toHaveCount(3);
-      await expect(page.locator("textarea:visible")).toHaveCount(0);
-      await expect(page.locator('[data-settings-disclosure="project-shared-connection"]')).toHaveCount(0);
-      await expect(page.locator("[data-connect-shared-context], [data-disconnect-shared-context], #sharedContextRepositoryInput")).toHaveCount(0);
-
-      const keepPath = `projects/${hosted.projectId}/docs/keep.md`;
-      const rejectPath = `projects/${hosted.projectId}/docs/reject.md`;
-      const unreviewPath = `projects/${hosted.projectId}/docs/unreview.md`;
-      for (const [filePath, decision] of [[keepPath, "accept"], [rejectPath, "reject"], [unreviewPath, "accept"]]) {
-        await proposalFileButton(page, filePath).click();
-        await expect(page.locator("[data-hosted-review-file]")).toBeVisible();
-        await expect(page.locator("textarea:visible")).toHaveCount(0);
-        const decisionResponse = page.waitForResponse((response) => (
-          response.request().method() === "POST"
-          && new URL(response.url()).pathname.endsWith("/api/shared-context/review-files")
-        ));
-        await page.getByRole("button", {
-          name: decision === "accept" ? "Accept file" : "Reject file",
-          exact: true,
-        }).click();
-        const response = await decisionResponse;
-        expect(response.status(), await response.text()).toBe(200);
-        await expect(page.locator("#proposalReviewPage")).toBeVisible();
-        await expect(proposalFileButton(page, filePath)).toContainText("Reviewed");
-      }
-
-      await unreviewProposalFileFromList(page, unreviewPath);
-      await proposalFileButton(page, unreviewPath).click();
-      await expect(page.locator("[data-hosted-review-file]")).toBeVisible();
-      const secondDecisionResponse = page.waitForResponse((response) => (
-        response.request().method() === "POST"
-        && new URL(response.url()).pathname.endsWith("/api/shared-context/review-files")
-      ));
-      await page.getByRole("button", { name: "Accept file", exact: true }).click();
-      const secondDecision = await secondDecisionResponse;
-      expect(secondDecision.status(), await secondDecision.text()).toBe(200);
-      await expect(page.getByRole("button", { name: "Accept proposal", exact: true })).toBeEnabled();
-
-      const unavailableAcceptance = page.waitForResponse((response) => (
-        response.request().method() === "POST"
-        && new URL(response.url()).pathname.endsWith("/api/shared-context/accept-challenge")
-      ));
-      await page.getByRole("button", { name: "Accept proposal", exact: true }).click();
-      const unavailableResponse = await unavailableAcceptance;
-      const unavailablePayload = await unavailableResponse.json();
-      expect(unavailableResponse.status(), JSON.stringify(unavailablePayload)).toBe(503);
-      expect(unavailablePayload.code).toBe("shared_context_remote_acceptance_unavailable");
-      await expect(page.locator('[data-context-room-toast][role="alert"]')).toContainText("temporarily unavailable");
-      await expect(page).toHaveURL((url) => (
-        url.origin === HOSTED_ORIGIN
-        && /^\/reviews\/[a-f0-9-]{36}\/$/i.test(url.pathname)
-        && url.searchParams.get("view") === "proposal"
-      ));
-
-      const rejectionChallengePromise = page.waitForResponse((response) => (
-        response.request().method() === "POST"
-        && new URL(response.url()).pathname.endsWith("/api/shared-context/reject-challenge")
-      ));
-      await page.getByRole("button", { name: "Reject proposal", exact: true }).click();
-      const rejectionResponse = await rejectionChallengePromise;
-      const rejectionPayload = await rejectionResponse.json();
-      expect(rejectionResponse.status(), JSON.stringify(rejectionPayload)).toBe(503);
-      expect(rejectionPayload.code).toBe("shared_context_remote_rejection_unavailable");
-      await expect(page.getByRole("dialog", { name: "Reject this proposal?" })).toBeHidden();
-      await expect(page.locator('[data-context-room-toast][role="alert"]')).toContainText("temporarily unavailable");
-      await expect(page.locator('[data-context-room-toast][role="alert"]')).toContainText("Retry");
-      await expect(page.locator("#proposalReviewTitle")).toHaveText(hosted.proposalTitle);
-      await expect(page).toHaveURL((url) => (
-        url.origin === HOSTED_ORIGIN
-        && /^\/reviews\/[a-f0-9-]{36}\/$/i.test(url.pathname)
-        && url.searchParams.get("view") === "proposal"
-      ));
-
-      git(hosted.seed, ["fetch", "origin"]);
-      const rejectionRef = git(hosted.seed, ["ls-remote", "--heads", "origin", "refs/heads/rejected/*"]);
-      expect(rejectionRef).toBe("");
-      expect(git(hosted.seed, ["rev-parse", "origin/main"])).toBe(hosted.mainHead);
-      expect(git(hosted.seed, ["ls-remote", "--heads", "origin", `refs/heads/${hosted.proposalBranch}`]).split(/\s+/)[0]).toBe(hosted.proposalHead);
-      expect(git(hosted.seed, ["show", `origin/main:projects/${hosted.projectId}/docs/keep.md`])).toContain("Hosted accepted baseline keep.");
-      expect(requests.filter((request) => hostedPathIsForbidden(request.pathname))).toEqual([]);
-    } finally {
-      if (room.server.listening) {
-        await new Promise((resolve) => {
-          room.server.close(resolve);
-          room.server.closeAllConnections?.();
-        });
-      }
-    }
-  });
 });

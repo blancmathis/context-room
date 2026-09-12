@@ -2,20 +2,25 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { parseDocMetadata } from "./doc_metadata.mjs";
 import { inspectDocumentMetadata } from "./document_metadata_engine.mjs";
+import { inspectLocalProposal, listLocalProposals } from "./local_proposals.mjs";
 
 import {
   appendAgentAnnotation,
   buildContextRoomDoctorReport,
   buildDocQaReport,
   CONFIG_FILE,
+  createLocalDocumentationProposal,
   isAllowedMemoryPath,
   listStartupHookFiles,
   listStartupSkillFolders,
   readMemoryFile,
   readMemoryWebappSettings,
+  readGlobalContextRoomPreferences,
+  writeGlobalContextRoomPreferences,
+  submitLocalDocumentationProposal,
   watchStateForPath,
   writeAgentCommand,
   writeMemoryWebappSettings,
@@ -117,7 +122,7 @@ import {
   previewSharedInstructionImport,
   previewSharedInstructionUnassignment,
 } from "./shared_context.mjs";
-import { searchDocumentation } from "./doc_agent.mjs";
+import { searchDocumentation } from "./documentation.mjs";
 import {
   ContextRoomCliError,
   stableCliOperationId,
@@ -1432,7 +1437,7 @@ export function agentInstructions(target, { provider = "auto" } = {}) {
   const selectedProvider = normalizedProvider(provider);
   return {
     provider: selectedProvider,
-    prompt: `Use context-room ask "<complete research brief>" --root ${JSON.stringify(target.root)} for accepted project documentation. The brief must state the work context, questions to resolve, constraints to check, and expected output; never reduce it to keywords. When shared documentation must change, use context-room edit list, context-room edit open <branch>, or context-room edit create "<complete proposal description>"; edit only the returned proposal worktree. context-room capabilities lists the static advanced contract and never chooses a command. ${humanReviewOwnershipText("Only the human can accept or reject files awaiting review.")} Never write directly to shared main and never discover unregistered worktrees.`,
+    prompt: `Use context-room docs search and docs read --root ${JSON.stringify(target.root)} for accepted documentation. Resume readerToken with --reader. Use changes begin --scope local|shared, edit the returned editRoot, then changes status and changes submit. Consult targeted capabilities for other operations. ${humanReviewOwnershipText("Only the human can accept or reject files awaiting review.")} Never write directly to Shared main.`,
   };
 }
 
@@ -1684,7 +1689,7 @@ function readPrivateState(filePath) {
 
 function documentationChangeId({ target, task, scope, sessionId }) {
   const stableSession = String(sessionId || "").trim();
-  const nonce = stableSession || `${Date.now()}-${process.pid}`;
+  const nonce = randomUUID();
   return "change-" + createHash("sha256").update(JSON.stringify({
     projectId: target.project?.id || "",
     locationId: target.location?.id || "",
@@ -1728,6 +1733,7 @@ export function createDocumentationChange(target, { task = "", document = "", sc
   if (!target?.root) throw new ContextRoomCliError("local-environment-unavailable", "edit requires an explicitly registered project location.");
   const settings = readMemoryWebappSettings(target.root);
   let proposal = null;
+  let localProposal = null;
   let editRoot = target.root;
   let acceptedRevision = gitText(target.root, ["rev-parse", "HEAD"]);
   if (normalizedScope === "shared") {
@@ -1743,6 +1749,10 @@ export function createDocumentationChange(target, { task = "", document = "", sc
       : { ...createSharedProposal(target.root, proposalOptions), reused: false };
     editRoot = proposal.root;
     acceptedRevision = proposal.baseRevision;
+  } else {
+    localProposal = createLocalDocumentationProposal(target.root, { title: normalizedTask, description: String(description || normalizedTask) });
+    editRoot = localProposal.editRoot;
+    acceptedRevision = localProposal.baseRevision;
   }
   const changeId = documentationChangeId({ target, task: normalizedTask, scope: normalizedScope, sessionId });
   const handle = {
@@ -1762,6 +1772,7 @@ export function createDocumentationChange(target, { task = "", document = "", sc
     allowedPaths: normalizedScope === "local" ? [...(settings.allowedPaths || [])] : [],
     watchRules: normalizedScope === "local" ? [...(settings.watchRules || [])] : [],
     ...(proposal ? { proposal: sharedProposalHandleState(target, proposal) } : {}),
+    ...(localProposal ? { localProposal: { id: localProposal.id, status: localProposal.status } } : {}),
     workflow: proposal
       ? {
           state: "proposal-ready",
@@ -1769,9 +1780,9 @@ export function createDocumentationChange(target, { task = "", document = "", sc
           instruction: humanReviewOwnershipText("Edit the documentation in this worktree. Context Room keeps acceptance or rejection in the human review UI."),
         }
       : {
-          state: "local-review-ready",
-          writableRoot: target.root,
-          instruction: humanReviewOwnershipText("Edit watched documentation in this project. Context Room will present each changed file for human review."),
+          state: "proposal-ready",
+          writableRoot: editRoot,
+          instruction: humanReviewOwnershipText("Edit documentation in this isolated folder, then submit the change. Originals remain unchanged until human acceptance."),
         },
     humanOwned: humanReviewOwnershipText("Only a human can accept or reject the resulting file reviews."),
     humanDecisionPolicy: HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY,
@@ -2203,6 +2214,15 @@ export function publishDocumentationChange(changeId, { summary = "", description
       if (failure.retryable) failure.exitCode = 3;
       throw failure;
     }
+  } else if (handle.localProposal?.id) {
+    const submitted = submitLocalDocumentationProposal(handle.sourceRoot, handle.localProposal.id);
+    result = {
+      proposalId: submitted.id,
+      revision: submitted.submittedRevision,
+      localReviews: submitted.changes.map((item) => ({ path: item.path, status: item.kind })),
+      humanOwned: humanReviewOwnershipText("Each resulting file review remains pending until a human accepts or rejects it."),
+      humanDecisionPolicy: HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY,
+    };
   } else {
     const target = {
       project: handle.target?.project || {},
@@ -2238,6 +2258,30 @@ export function publishDocumentationChange(changeId, { summary = "", description
   return published;
 }
 
+export function inspectDocumentationChange(changeId) {
+  const handle = readPrivateState(privateStatePath("documentation-changes", String(changeId || "")));
+  if (!handle) throw new ContextRoomCliError("change-not-found", "Unknown documentation change.", { exitCode: 4 });
+  if (handle.localProposal?.id) {
+    const proposal = inspectLocalProposal(handle.sourceRoot, handle.localProposal.id);
+    return { ...handle, status: proposal.status, proposal: { id: proposal.id, revision: proposal.submittedRevision || null,
+      files: proposal.changes.map(({ path, kind, decision }) => ({ path, kind, decision })) } };
+  }
+  if (handle.scope === "shared" && handle.proposal?.repository) {
+    const snapshot = listSharedRepositoryProposals(handle.proposal.repository, { includeTerminal: true, allowOffline: true });
+    const current = snapshot.proposals.find((item) => item.branch === handle.proposal.branch);
+    return { ...handle, status: current?.reviewStatus || "unavailable", freshness: snapshot.status,
+      proposal: { ...handle.proposal, ...(current || {}), available: Boolean(current) } };
+  }
+  return handle;
+}
+
+export function listLocalDocumentationChanges(target) {
+  return { proposals: listLocalProposals(target.root).map(({ id, title, status, editRoot, createdAt, submittedRevision, changes }) => ({
+    id, title, status, editRoot, createdAt, revision: submittedRevision || null,
+    files: changes.map(({ path, kind, decision }) => ({ path, kind, decision })),
+  })) };
+}
+
 function settingsRevision(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
@@ -2256,6 +2300,7 @@ function sharedSkillsProjectSettings(root) {
 function filesystemContextSettingsAdapter(target) {
   const adapterTarget = { projectId: target.project?.id || "", locationId: target.location?.id || "", root: target.root };
   const readStore = (store) => {
+    if (store === "device-preferences") { const settings = readGlobalContextRoomPreferences(); return { settings, revision: settingsRevision(settings) }; }
     if (store === "project") {
       const settings = readMemoryWebappSettings(target.root);
       return { settings, revision: settingsRevision(settings) };
@@ -2275,6 +2320,10 @@ function filesystemContextSettingsAdapter(target) {
     write(storeTarget, { settings, expectedRevision }) {
       const current = readStore(storeTarget.store);
       if (current.revision !== expectedRevision) throw new ContextRoomCliError("stale-plan", "Settings changed before they could be written.", { retryable: true });
+      if (storeTarget.store === "device-preferences") {
+        const written = writeGlobalContextRoomPreferences(settings, null, { expectedRevision });
+        return { settings: written, revision: settingsRevision(written) };
+      }
       if (storeTarget.store === "project") {
         const written = writeMemoryWebappSettings(target.root, settings, { migrateLegacyReview: true });
         return { settings: written, revision: settingsRevision(written) };

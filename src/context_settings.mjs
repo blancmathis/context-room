@@ -26,6 +26,14 @@ function setting(definition) {
 }
 
 const EXACT_SETTINGS = Object.freeze([
+  setting({ key: "title", store: "project", scope: "project", type: "string", summary: "Project title shown in Context Room." }),
+  setting({ key: "markdownTemplates", store: "project", scope: "project", type: "templates", summary: "Reusable document templates shown in the explorer." }),
+  setting({ key: "appearance.fileTheme", store: "device-preferences", scope: "device", type: "enum", values: ["context-room", "vscode-dark", "github-dark", "dracula", "solarized-dark", "light-plus"], summary: "Document reading theme." }),
+  setting({ key: "appearance.colorMode", store: "device-preferences", scope: "device", type: "enum", values: ["system", "light", "dark"], summary: "Application color mode." }),
+  ...["appearance.autoOpenGitDiff", "appearance.showHiddenFiles", "sounds.enabled"].map(key => setting({ key, store: "device-preferences", scope: "device", type: "boolean", summary: "Device interface preference." })),
+  setting({ key: "sounds.volume", store: "device-preferences", scope: "device", type: "unit-number", summary: "Sound volume from 0 to 1." }),
+  setting({ key: "shortcuts.codexReference", store: "device-preferences", scope: "device", type: "string", summary: "Keyboard shortcut used to copy a document reference." }),
+  setting({ key: "explorer.computerRoot", store: "device-preferences", scope: "device", type: "absolute-path", summary: "Computer explorer starting folder; this does not register or watch projects." }),
   setting({ key: "allowedPaths", store: "project", scope: "project", type: "path-list", summary: "Folders and files Context Room may read and manage.", caution: "This command never widens allowed paths implicitly." }),
   setting({ key: "watchAllow", store: "project", scope: "project", type: "path-list", summary: "Explicit files and legacy live folders included in human review." }),
   setting({ key: "watchRules", store: "project", scope: "project", type: "watch-rules", summary: "Structured folder review rules and their discovery mode." }),
@@ -59,12 +67,7 @@ const PATTERN_SETTINGS = Object.freeze([
 
 const FORBIDDEN_PREFIXES = Object.freeze([
   ["reviewGate", "The owner-controlled Git review gate is not available through the Settings CLI."],
-  ["appearance", "Appearance is a device UI preference, not context configuration."],
-  ["sounds", "Interface sounds are not context configuration."],
-  ["shortcuts", "Keyboard shortcuts are not context configuration."],
-  ["explorer", "Computer browsing preferences are not context configuration."],
   ["codexPrompts", "Codex prompt overrides are intentionally excluded from context Settings."],
-  ["markdownTemplates", "Visual and document templates are intentionally excluded from context Settings."],
   ["reviewDecisions", `Human review decisions cannot be changed by an agent command. ${HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction}`],
   ["documents", "Document content must be edited and reviewed as a document, not as a setting."],
   ["hooks", "Hook content cannot be changed through the Settings CLI."],
@@ -134,6 +137,27 @@ function validateHubCard(card, label) {
 
 function validateValue(definition, value) {
   switch (definition.type) {
+    case "string": return assertSimpleString(value, definition.requestedKey);
+    case "absolute-path": {
+      const result = assertSimpleString(value, definition.requestedKey);
+      if (!result.startsWith("/") && result !== "~" && !result.startsWith("~/")) throw new ContextSettingsError("invalid-setting-value", "Computer root must be an absolute or home path.");
+      return result;
+    }
+    case "enum":
+      if (!definition.values.includes(value)) throw new ContextSettingsError("invalid-setting-value", `${definition.requestedKey} must be one of ${definition.values.join(", ")}.`);
+      return value;
+    case "unit-number":
+      if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) throw new ContextSettingsError("invalid-setting-value", "Volume must be a number from 0 to 1.");
+      return value;
+    case "templates":
+      if (!Array.isArray(value)) throw new ContextSettingsError("invalid-setting-value", "Templates must be an array.");
+      return value.map(template => {
+        if (!template || typeof template !== "object" || Array.isArray(template) || Object.keys(template).some(key => !["id", "title", "description", "enabled", "content"].includes(key))) throw new ContextSettingsError("invalid-setting-value", "Each template requires id, title and content; description and enabled are optional.");
+        const result = { id: assertSimpleString(template.id, "template.id"), title: assertSimpleString(template.title, "template.title"), content: typeof template.content === "string" ? template.content : "" };
+        if (template.description != null) result.description = String(template.description);
+        if (template.enabled != null) { if (typeof template.enabled !== "boolean") throw new ContextSettingsError("invalid-setting-value", "template.enabled must be boolean."); result.enabled = template.enabled; }
+        return result;
+      });
     case "boolean":
       if (typeof value !== "boolean") throw new ContextSettingsError("invalid-setting-value", `${definition.requestedKey} must be true or false.`);
       return value;

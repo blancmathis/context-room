@@ -20,7 +20,7 @@ This document defines Hub aggregation, project and worktree identity, selection,
 
 ## Does not define
 
-This document does not define registry JSON, filesystem transaction internals, Shared proposal algorithms, or hosted deployment.
+This document does not define registry JSON, filesystem transaction internals, Shared proposal algorithms.
 
 ## Launch behavior
 
@@ -80,9 +80,9 @@ Registry and Shared-binding mutations use private journals and exact capability 
 
 An unavailable worktree remains identifiable as a registered location. Context Room does not reinterpret another path as that location.
 
-## Hosted Hub
+## Local review
 
-`hosted-hub` uses the same product model over a narrower provider. It includes only configured Shared repositories and projected Shared data. Local projects, worktrees, settings, prompts, and provider state are absent.
+The global queue also includes submitted local proposals and changed image assets. Local drafts stay out of the queue until submitted. Each proposal opens an exact before/after file review. [Document workflow](document-workflow.md) owns acceptance, correction, cleanup and recovery behavior.
 
 ## Action-changing errors
 

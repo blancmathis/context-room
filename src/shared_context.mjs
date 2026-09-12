@@ -1,3 +1,4 @@
+import { isDocumentAssetPath } from "./document_assets.mjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -31,7 +32,7 @@ const SHARED_PROJECTS_SCHEMA_URL = "https://unpkg.com/context-room@latest/schema
 const SHARED_SKILL_LOCATIONS_SCHEMA_URL = "https://unpkg.com/context-room@latest/schemas/shared-skill-locations.schema.json";
 const SHARED_INSTRUCTION_LOCATIONS_SCHEMA_URL = "https://unpkg.com/context-room@latest/schemas/shared-instruction-locations.schema.json";
 const SHARED_REVIEW_TEXT_EXTENSIONS = new Set([
-  ".md", ".mdx", ".csv", ".tsv", ".txt", ".json", ".jsonc", ".jsonl", ".yaml", ".yml", ".toml", ".ini",
+  ".md", ".mdx", ".mmd", ".mermaid", ".csv", ".tsv", ".txt", ".json", ".jsonc", ".jsonl", ".yaml", ".yml", ".toml", ".ini",
   ".mjs", ".cjs", ".js", ".jsx", ".ts", ".tsx", ".py", ".sh", ".bash", ".zsh", ".css", ".scss", ".sass",
   ".html", ".htm", ".xml", ".sql", ".graphql", ".gql", ".rs", ".go", ".java", ".kt", ".swift", ".rb", ".php",
   ".c", ".cc", ".cpp", ".h", ".hpp",
@@ -427,7 +428,7 @@ function assertSafeTreeEntries(cwd, revision, prefixes) {
 function assertReviewableChangedPaths(cwd, baseRevision, headRevision, changedPaths) {
   for (const filePath of changedPaths) {
     const base = path.posix.basename(filePath);
-    if (!SHARED_REVIEW_TEXT_EXTENSIONS.has(path.posix.extname(base)) && !SHARED_REVIEW_TEXT_FILENAMES.has(base)) {
+    if (!isDocumentAssetPath(filePath) && !SHARED_REVIEW_TEXT_EXTENSIONS.has(path.posix.extname(base)) && !SHARED_REVIEW_TEXT_FILENAMES.has(base)) {
       throw new Error(`Shared proposal file type is not reviewable in Context Room: ${filePath}`);
     }
   }
@@ -439,9 +440,9 @@ function assertReviewableChangedPaths(cwd, baseRevision, headRevision, changedPa
       if (!["100644", "100755"].includes(entry.mode) || entry.type !== "blob") {
         throw new Error(`Shared proposals reject symlinks, gitlinks, and special files: ${filePath}`);
       }
-      const content = runGit(cwd, ["cat-file", "blob", entry.object], { encoding: null, maxBuffer: MAX_SHARED_TEXT_BYTES + 1 });
-      if (content.length > MAX_SHARED_TEXT_BYTES) throw new Error(`Shared proposal file is too large to review: ${filePath}`);
-      if (!isUtf8(content) || content.includes(0)) throw new Error(`Shared proposals only support reviewable UTF-8 text files: ${filePath}`);
+      const content = runGit(cwd, ["cat-file", "blob", entry.object], { encoding: null, maxBuffer: (isDocumentAssetPath(filePath) ? 20 * 1024 * 1024 : MAX_SHARED_TEXT_BYTES) + 1 });
+      if (content.length > (isDocumentAssetPath(filePath) ? 20 * 1024 * 1024 : MAX_SHARED_TEXT_BYTES)) throw new Error(`Shared proposal file is too large to review: ${filePath}`);
+      if (!isDocumentAssetPath(filePath) && (!isUtf8(content) || content.includes(0))) throw new Error(`Shared proposals only support reviewable UTF-8 text files: ${filePath}`);
     }
   }
 }
@@ -965,7 +966,6 @@ function normalizedSharedSkillLocations(raw = {}, { repositoryConfig, catalog } 
     const scope = String(item?.scope || "").trim();
     if (!new Set(["project", "shared", "device"]).has(scope)) throw new Error(`Invalid skill assignment scope: ${scope || "(empty)"}`);
     const providers = [...new Set((item?.providers || []).map((provider) => safeId(provider, `skill assignment ${id} provider`)))];
-    if (!providers.length) throw new Error(`Skill assignment ${id} must declare at least one provider`);
     const unknownProvider = providers.find((provider) => !SHARED_SKILL_PROVIDER_PROFILES[provider]);
     if (unknownProvider) throw new Error(`Skill assignment ${id} references unsupported provider: ${unknownProvider}`);
     const projectIdsForAssignment = [...new Set((item?.projectIds || []).map((projectId) => safeId(projectId, `skill assignment ${id} projectId`)))];
@@ -1117,20 +1117,12 @@ function sharedCollectionAssignmentApplies(assignment, projectId) {
 
 function assertSharedCollectionVisibility(kind, collection, locations, repositoryConfig, catalog) {
   const assignments = (locations.assignments || []).filter((assignment) => assignment.collectionId === collection.id);
-  const globalRoot = repositoryConfig.globalSkillsPath;
-  if (collection.path === globalRoot || collection.path.startsWith(globalRoot + "/")) {
-    if (!assignments.some((assignment) => assignment.scope === "device" || assignment.scope === "shared")) {
-      throw new Error(`Shared ${kind} collection ${collection.id} overlaps always-visible global skills without a shared or device assignment: ${globalRoot}`);
-    }
-  } else if (globalRoot.startsWith(collection.path + "/")) {
-    throw new Error(`Shared ${kind} collection ${collection.id} is an ancestor of always-visible global skills: ${globalRoot}`);
-  }
 
   if (collection.path === repositoryConfig.projectsPath || repositoryConfig.projectsPath.startsWith(collection.path + "/")) {
     throw new Error(`Shared ${kind} collection ${collection.id} is an ancestor of the shared projects root: ${repositoryConfig.projectsPath}`);
   }
   for (const project of catalog.projects || []) {
-    for (const suffix of ["docs", "skills"]) {
+    for (const suffix of ["docs"]) {
       const visibleRoot = `${repositoryConfig.projectsPath}/${project.id}/${suffix}`;
       if (collection.path === visibleRoot || collection.path.startsWith(visibleRoot + "/")) {
         if (!assignments.some((assignment) => sharedCollectionAssignmentApplies(assignment, project.id))) {
@@ -1145,10 +1137,8 @@ function assertSharedCollectionVisibility(kind, collection, locations, repositor
 
 function sharedCollectionPathIsAlwaysVisible(collection, repositoryConfig, catalog) {
   const visibleRoots = [
-    repositoryConfig.globalSkillsPath,
     ...(catalog.projects || []).flatMap((project) => [
       `${repositoryConfig.projectsPath}/${project.id}/docs`,
-      `${repositoryConfig.projectsPath}/${project.id}/skills`,
     ]),
   ];
   return visibleRoots.some((visibleRoot) => collection.path === visibleRoot || collection.path.startsWith(visibleRoot + "/"));
@@ -2365,11 +2355,7 @@ function sharedMainCommit(checkout, revision, previousRevision = "") {
   const trailers = commitTrailerMap(checkout, commit);
   const dependencyProofResult = parseDependencyProof(trailers["Context-Room-Dependency-Proof"] || "");
   const dependencyProofValidation = verifiedDependencyProofPaths(checkout, commit, dependencyProofResult.proof);
-  const reviewedDependencyPaths = dependencyProofValidation.reviewedPaths;
-  const dependencyReviewRequired = parent && files.some((filePath) => /\.(?:md|mdx|html?)$/i.test(filePath))
-    ? sharedDocumentDependencyReviewPaths(checkout, parent, commit, files)
-      .filter((item) => !reviewedDependencyPaths.has(item.path))
-    : [];
+  const dependencyReviewRequired = [];
   const { acceptance, acceptanceError } = sharedAcceptanceFromTrailers(trailers);
   return {
     revision: commit,
@@ -4461,6 +4447,21 @@ function assignmentAppliesToProject(assignment, projectId) {
   return assignment.scope === "device" || assignment.scope === "shared" || (assignment.scope === "project" && assignment.projectIds.includes(projectId));
 }
 
+function selectedSharedSkillRoots(currentRoot, locations, projectId) {
+  const selected = new Map();
+  for (const assignment of locations.assignments || []) {
+    if (!assignmentAppliesToProject(assignment, projectId)) continue;
+    const collection = locations.collections.find((collection) => collection.id === assignment.collectionId);
+    if (!collection) continue;
+    const names = selectedSkillsForLocation(skillDirectories(path.join(currentRoot, collection.path)), assignment.include, assignment.exclude);
+    for (const name of names) {
+      const relativePath = `${collection.path}/${name}`;
+      selected.set(relativePath, { path: relativePath, title: `${collection.title} / ${name}`, collectionId: collection.id, name });
+    }
+  }
+  return [...selected.values()];
+}
+
 function selectedSkillsForLocation(skillNames, include, exclude) {
   const selected = include.includes("*") ? skillNames : skillNames.filter((name) => include.includes(name));
   return selected.filter((name) => !exclude.includes(name));
@@ -4638,19 +4639,22 @@ function configureProjectRoom(root, connection, repositoryConfig, currentRoot, s
     .filter((collection) => applicableSkillCollectionIds.has(collection.id));
   const visibleInstructionCollections = (instructionLocations?.collections || [])
     .filter((collection) => applicableInstructionCollectionIds.has(collection.id));
-  const collectionPaths = visibleSkillCollections.map((collection) => homeVirtualPath(path.join(currentRoot, collection.path), true));
+  const selectedSkillRoots = skillLocations?.legacy ? [] : selectedSharedSkillRoots(currentRoot, skillLocations || { collections: [], assignments: [] }, connection.projectId);
+  const collectionPaths = selectedSkillRoots.map((skill) => homeVirtualPath(path.join(currentRoot, skill.path), true));
   const instructionCollectionPaths = visibleInstructionCollections.map((collection) => homeVirtualPath(path.join(currentRoot, collection.path), true));
-  config.allowedPaths = appendUnique(config.allowedPaths, [docs, projectSkills, globalSkills, ...collectionPaths, ...instructionCollectionPaths]);
-  config.readOnlyPaths = appendUnique(config.readOnlyPaths, [docs, projectSkills, globalSkills, ...collectionPaths, ...instructionCollectionPaths]);
+  const visiblePaths = [docs, ...(skillLocations?.legacy ? [projectSkills, globalSkills] : collectionPaths), ...instructionCollectionPaths];
+  config.allowedPaths = appendUnique(config.allowedPaths, visiblePaths);
+  config.readOnlyPaths = appendUnique(config.readOnlyPaths, visiblePaths);
   const section = {
     id: "shared-context",
     title: "Shared context",
     description: `${repositoryConfig.name} accepted main snapshot. Changes must go through proposal branches.`,
     cards: [
       { id: "shared-docs", title: "Shared project docs", path: docs, description: `Accepted documentation for ${connection.projectId}.` },
-      { id: "shared-project-skills", title: "Shared project skills", path: projectSkills, description: `Accepted skills for ${connection.projectId}.` },
-      { id: "shared-global-skills", title: "Shared global skills", path: globalSkills, description: "Accepted skills shared across projects." },
-      ...(skillLocations && !skillLocations.legacy ? visibleSkillCollections.map((collection) => ({ id: `shared-skill-collection-${collection.id}`, title: collection.title, path: homeVirtualPath(path.join(currentRoot, collection.path), true), description: `Accepted shared skill collection · ${collection.id}.` })) : []),
+      ...(skillLocations?.legacy ? [
+        { id: "shared-project-skills", title: "Shared project skills", path: projectSkills, description: `Accepted skills for ${connection.projectId}.` },
+        { id: "shared-global-skills", title: "Shared global skills", path: globalSkills, description: "Legacy shared skill association." },
+      ] : selectedSkillRoots.map((skill) => ({ id: `shared-skill-${skill.collectionId}-${skill.name}`, title: skill.title, path: homeVirtualPath(path.join(currentRoot, skill.path), true), description: "Accepted skill selected for this project." }))),
       ...(instructionLocations ? visibleInstructionCollections.map((collection) => ({ id: `shared-instruction-collection-${collection.id}`, title: collection.title, path: homeVirtualPath(path.join(currentRoot, collection.path), true), description: `Accepted shared instruction collection · ${collection.id}.` })) : []),
     ],
   };
@@ -5321,6 +5325,9 @@ export function initializeSharedRepository(root, options = {}) {
   if (!fs.existsSync(path.join(resolvedRoot, config.projectsFile))) {
     writeJson(path.join(resolvedRoot, config.projectsFile), { $schema: SHARED_PROJECTS_SCHEMA_URL, version: 1, projects: [] });
   }
+  if (!fs.existsSync(path.join(resolvedRoot, config.skillLocationsFile))) writeJson(path.join(resolvedRoot, config.skillLocationsFile), {
+    version: SHARED_SKILL_LOCATIONS_SCHEMA_VERSION, collections: [{ id: "global", title: "Shared skills", path: config.globalSkillsPath }], assignments: [],
+  });
   return { configPath, config, created: true };
 }
 
@@ -8425,20 +8432,14 @@ export function resolveSharedDocumentationTarget(repository, {
   };
   if (normalizedProject !== "global") {
     addRoot(`${synced.repositoryConfig.projectsPath}/${normalizedProject}/docs`);
-    addRoot(`${synced.repositoryConfig.projectsPath}/${normalizedProject}/skills`);
   }
-  addRoot(synced.repositoryConfig.globalSkillsPath);
   const { skillLocations, instructionLocations } = readValidatedSharedLocationsFromRoot(
     synced.snapshot,
     synced.repositoryConfig,
     synced.catalog,
   );
-  const applicableSkillCollections = new Set(skillLocations.assignments
-    .filter((assignment) => assignmentAppliesToProject(assignment, normalizedProject))
-    .map((assignment) => assignment.collectionId));
-  for (const collection of skillLocations.collections) {
-    if (applicableSkillCollections.has(collection.id)) addRoot(collection.path);
-  }
+  if (normalizedProject === "global") addRoot(synced.repositoryConfig.globalSkillsPath);
+  else for (const skill of selectedSharedSkillRoots(synced.snapshot, skillLocations, normalizedProject)) addRoot(skill.path);
   const applicableInstructionCollections = new Set(instructionLocations.assignments
     .filter((assignment) => instructionAssignmentApplies(assignment, normalizedProject))
     .map((assignment) => assignment.collectionId));
@@ -9755,6 +9756,7 @@ function reusableSharedReview(synced, match) {
     })
     .filter((review) => (
       review
+      && !(review.dependencyReviews || []).length
       && !review.accepted
       && review.repository === synced.connection.repository
       && review.proposal === match.branch
@@ -9821,11 +9823,8 @@ function materializeSharedReviewFromState(synced, { proposal, expectedHead = "" 
   assertSafeTreeEntries(checkout, synced.revision, policyPaths);
   assertSafeTreeEntries(checkout, match.head, policyPaths);
   assertReviewableChangedPaths(checkout, synced.revision, match.head, scopePaths);
-  const dependencyReviewPrefixes = match.scope === "project"
-    ? [`${synced.repositoryConfig.projectsPath}/${match.projectId}`]
-    : [...(match.allowedPrefixes || [])];
-  const dependencyReviews = sharedDocumentDependencyReviewPaths(checkout, synced.revision, match.head, changedFiles, dependencyReviewPrefixes);
-  const proposalReviewFiles = [...new Set([...changedFiles, ...dependencyReviews.map((item) => item.path)])];
+  const dependencyReviews = [];
+  const proposalReviewFiles = changedFiles;
   const reviewRoot = path.join(repositoryCacheRoot(synced.connection.repository), "reviews", `${hashKey(proposal)}-${Date.now()}`);
   let worktreeCreated = false;
   try {
@@ -9849,12 +9848,7 @@ function materializeSharedReviewFromState(synced, { proposal, expectedHead = "" 
       allowedPrefixes: match.allowedPrefixes,
       proposalFiles: proposalReviewFiles,
       dependencyReviews,
-      proposalChanges: [
-        ...proposalChanges,
-        ...dependencyReviews
-          .filter((item) => !proposalChanges.some((change) => change.path === item.path))
-          .map((item) => ({ path: item.path, status: null, fromPath: null, score: null, reviewKind: "dependency-review" })),
-      ],
+      proposalChanges,
       proposal: match.branch,
       proposalHead: match.head,
       title: match.title,
@@ -9943,7 +9937,7 @@ function assertReviewWorkspaceFiles(reviewRoot, files) {
   const stableReviewRoot = stableRoot(reviewRoot);
   for (const filePath of files) {
     const base = path.posix.basename(filePath);
-    if (!SHARED_REVIEW_TEXT_EXTENSIONS.has(path.posix.extname(base)) && !SHARED_REVIEW_TEXT_FILENAMES.has(base)) {
+    if (!isDocumentAssetPath(filePath) && !SHARED_REVIEW_TEXT_EXTENSIONS.has(path.posix.extname(base)) && !SHARED_REVIEW_TEXT_FILENAMES.has(base)) {
       throw new Error(`Shared review file type is not reviewable in Context Room: ${filePath}`);
     }
     const absolute = path.join(reviewRoot, ...filePath.split("/"));
@@ -9958,8 +9952,8 @@ function assertReviewWorkspaceFiles(reviewRoot, files) {
     const real = fs.realpathSync(absolute);
     if (real !== stableReviewRoot && !real.startsWith(stableReviewRoot + path.sep)) throw new Error(`Shared review path escapes its worktree: ${filePath}`);
     const content = fs.readFileSync(absolute);
-    if (content.length > MAX_SHARED_TEXT_BYTES) throw new Error(`Shared review file is too large: ${filePath}`);
-    if (!isUtf8(content) || content.includes(0)) throw new Error(`Shared reviews only support UTF-8 text files: ${filePath}`);
+    if (content.length > (isDocumentAssetPath(filePath) ? 20 * 1024 * 1024 : MAX_SHARED_TEXT_BYTES)) throw new Error(`Shared review file is too large: ${filePath}`);
+    if (!isDocumentAssetPath(filePath) && (!isUtf8(content) || content.includes(0))) throw new Error(`Shared reviews only support UTF-8 text files: ${filePath}`);
   }
 }
 

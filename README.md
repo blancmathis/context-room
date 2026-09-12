@@ -20,7 +20,20 @@ Context Room is a local-first control room for documentation used by humans and 
 - [Shared Context](docs/features/shared-context.md)
 - [Human review authority](docs/features/review-authority.md)
 
-The current canonical documentation was rebuilt for the `v0.6.4` baseline. Its source archive and exact digest are recorded in [the v0.6.4 replacement record](docs/lifecycle/records/v0.6.4/documentation-replacement.md).
+The active refactor and its measured results are recorded in the [implementation dossier](docs/lifecycle/changes/active/refactor/index.md). Historical release records do not describe this working branch.
+
+## Agent workflow
+
+Any agent harness can use the CLI. Normal search and reading return accepted content. To change documentation, create an isolated proposal, edit its returned directory, then submit it to the human Review Queue:
+
+```bash
+context-room docs search "authentication" --root /path/to/project --format json
+context-room changes begin --task "Clarify authentication" --root /path/to/project --format json
+context-room changes status --change CHANGE_ID --format json
+context-room changes submit --change CHANGE_ID --format json
+```
+
+Use `--scope shared` when creating a Shared change. Keep the reader token returned by document commands and supply `--reader` on subsequent reads. The [document workflow](docs/features/document-workflow.md) describes accepted versions, formats, migration and the optional tablet bridge.
 
 ## Development
 

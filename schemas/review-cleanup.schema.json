@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://unpkg.com/context-room@latest/schemas/review-cleanup.schema.json",
+  "title": "Human-authorized review cleanup policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["enabled", "days", "projectIds"],
+  "properties": {
+    "enabled": { "type": "boolean", "default": false },
+    "days": { "type": "integer", "minimum": 1, "maximum": 36500, "default": 30 },
+    "projectIds": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 300 }, "description": "Exact project location IDs. An empty array means all projects registered on this device." }
+  }
+}

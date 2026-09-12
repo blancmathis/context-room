@@ -27,14 +27,15 @@ export const CLI_GLOBAL_OPTIONS = Object.freeze([
   "--summary",
 ]);
 export const CLI_PRIMARY_COMMANDS = Object.freeze([
-  "ask",
-  "edit",
+  "docs search",
+  "docs read",
+  "changes begin",
   "capabilities",
 ]);
 
 export const CLI_PROFILE_COMMANDS = freeze({
-  worker: ["ask"],
-  editing: ["ask", "edit"],
+  worker: ["docs search", "docs read", "docs inspect"],
+  editing: ["changes begin", "changes status", "changes submit", "changes list"],
   admin: [
     "project list", "project show", "project register",
     "ui list", "ui open",
@@ -44,11 +45,10 @@ export const CLI_PROFILE_COMMANDS = freeze({
     "proposal list", "proposal impact",
     "shared connect", "shared status", "shared assign", "shared unassign", "shared local skill", "shared reconcile",
     "settings get", "settings set",
-    "doctor",
+    "doctor", "migrate",
   ],
   expert: [
     "context bundle", "context effective", "context explain", "context impact", "context snapshot", "context diff",
-    "docs search", "docs inspect",
     "shared sync", "shared security",
     "hooks sync",
     "hub status",
@@ -56,29 +56,33 @@ export const CLI_PROFILE_COMMANDS = freeze({
 });
 
 export const CLI_CAPABILITY_SECTIONS = freeze({
+  changes: {
+    summary: "Prepare and submit local or Shared proposals.",
+    commands: ["changes begin", "changes status", "changes submit", "changes list"],
+  },
   documentation: {
-    summary: "Search and inspect accepted documentation.",
-    commands: ["docs search", "docs inspect"],
+    summary: "Read accepted documentation.",
+    commands: ["docs search", "docs read", "docs inspect"],
   },
   context: {
-    summary: "Resolve, explain, compare, and measure effective context.",
+    summary: "Inspect effective context.",
     commands: ["context bundle", "context effective", "context explain", "context impact", "context snapshot", "context diff"],
   },
   review: {
-    summary: "Inspect reviews and proposals, manage watch rules, and leave annotations.",
+    summary: "Inspect pending reviews.",
     commands: ["watch set", "note add", "note list", "review list", "review show", "proposal list", "proposal impact"],
   },
   shared: {
-    summary: "Connect, inspect, and manage accepted shared resources.",
+    summary: "Manage accepted Shared resources.",
     commands: ["shared connect", "shared status", "shared assign", "shared unassign", "shared local skill", "shared reconcile", "shared sync", "shared security"],
   },
   workspace: {
-    summary: "Manage registered projects, worktrees, Hub state, and UI navigation.",
+    summary: "Manage projects and navigation.",
     commands: ["project list", "project show", "project register", "ui list", "ui open", "hub status"],
   },
   configuration: {
-    summary: "Read or change context settings, diagnostics, and local hooks.",
-    commands: ["settings get", "settings set", "doctor", "hooks sync"],
+    summary: "Manage settings and diagnostics.",
+    commands: ["settings get", "settings set", "doctor", "migrate", "hooks sync"],
   },
 });
 
@@ -177,7 +181,8 @@ function define(path, {
  */
 export const CLI_COMMAND_REGISTRY = freeze([
   define("ask", {
-    summary: "Send a complete research brief to a fresh read-only agent working from accepted documentation.",
+    summary: "The integrated researcher was removed; use deterministic documentation commands.",
+    lifecycle: "removed", exposure: "internal", replacement: "docs search",
     arguments: [positional("research-brief"), ...TARGET, option("--repository"), option("--shared-project"), option("--goal"), option("--files"), option("--depth"), option("--budget", { value: "integer" })],
     scopes: ["shared", ...PROJECT_SCOPES],
     formats: ["human", "json"],
@@ -186,6 +191,7 @@ export const CLI_COMMAND_REGISTRY = freeze([
   }),
   define("edit", {
     summary: "Create, open, or list shared documentation proposal worktrees.",
+    exposure: "compatibility", replacement: "changes begin",
     arguments: [positional("action", { description: "create, open, or list" }), positional("value", { required: false, description: "Complete description for create, exact proposal branch for open." }), option("--description"), option("--title"), option("--proposal"), option("--session"), ...TARGET, option("--repository"), option("--shared-project")],
     useWhen: ["Create a proposal for the selected project, list proposals for the project containing the current directory, or open one globally by exact branch."],
     scopes: ["shared", ...PROJECT_SCOPES],
@@ -205,6 +211,11 @@ export const CLI_COMMAND_REGISTRY = freeze([
     handlerKey: "capabilities",
     ui: "diagnostic",
   }),
+  define("changes begin", { summary: "Create an isolated documentation proposal; accepted originals stay unchanged.", arguments: [positional("task", { required: false }), option("--task"), option("--description"), option("--scope", { value: "local|shared" }), option("--session"), ...TARGET], scopes: PROJECT_SCOPES, mutation: "mutating", protocol: "direct", effect: "proposal-only", humanDecision: "file-review-remains-human", handlerKey: "changes.begin", ui: "both" }),
+  define("migrate", { summary: "Preview versioned state migration; apply the exact revision with recoverable backups.", arguments: [...TARGET, option("--apply", { value: "boolean" }), option("--revision")], scopes: PROJECT_SCOPES, mutation: "mutating", protocol: "preview-apply", effect: "reversible-local", handlerKey: "migrate", ui: "diagnostic", exposure: "canonical" }),
+  define("changes status", { summary: "Inspect one exact change and its submitted file decisions.", arguments: [positional("change", { required: false }), option("--change")], handlerKey: "changes.status", ui: "both" }),
+  define("changes submit", { summary: "Freeze a change for human review without accepting its files.", arguments: [positional("change", { required: false }), option("--change"), option("--summary"), option("--description")], mutation: "mutating", protocol: "direct", effect: "proposal-only", humanDecision: "file-review-remains-human", handlerKey: "changes.submit", ui: "both" }),
+  define("changes list", { summary: "List local drafts and proposals, or Shared proposals for this project.", arguments: [...TARGET, option("--scope", { value: "local|shared" })], scopes: PROJECT_SCOPES, handlerKey: "changes.list", ui: "both" }),
   define("completion", { summary: "Generate zsh, bash, or fish completion from the command registry.", arguments: [positional("shell", { required: false })], formats: ["human"], outputSchema: "text/plain", handlerKey: "completion", ui: "diagnostic", exposure: "internal" }),
 
   define("project current", { summary: "Resolve the current registered project and location.", arguments: TARGET, scopes: PROJECT_SCOPES, handlerKey: "project.current", ui: "both", exposure: "compatibility", replacement: "project show" }),
@@ -227,7 +238,7 @@ export const CLI_COMMAND_REGISTRY = freeze([
   define("note list", { summary: "List human-facing annotations.", arguments: [option("--path"), ...TARGET, ...PAGE], scopes: PROJECT_SCOPES, handlerKey: "note.list", ui: "both" }),
 
   define("agent prepare", { summary: "Build deterministic task startup context.", arguments: [option("--task", { required: true }), ...TARGET, option("--repository"), option("--shared-project"), PROVIDER, option("--session"), option("--fresh", { value: "boolean" }), option("--budget", { value: "integer" })], scopes: PROVIDER_SCOPES, useWhen: ["An agent is beginning a task and needs the resolved target, accepted context, reviews, proposals, health, and next actions in one response."], doNotUseWhen: ["Only one exact context resource or relation needs inspection."], tags: ["prepare", "task", "startup", "context"], requiredContext: ["task"], freshness: "accepted-shared-head-when-connected", cost: "medium", handlerKey: "agent.prepare", ui: "both", exposure: "compatibility", replacement: "context bundle" }),
-  define("agent instructions", { summary: "Generate provider-specific instructions for a coding agent.", arguments: [...TARGET, PROVIDER], scopes: PROVIDER_SCOPES, handlerKey: "agent.instructions", ui: "diagnostic", lifecycle: "removed", exposure: "internal", replacement: "context ask" }),
+  define("agent instructions", { summary: "Generate provider-specific instructions for a coding agent.", arguments: [...TARGET, PROVIDER], scopes: PROVIDER_SCOPES, handlerKey: "agent.instructions", ui: "diagnostic", lifecycle: "removed", exposure: "internal", replacement: "docs search" }),
   define("agent changes", { summary: "Classify local and shared documentation changes.", arguments: [...TARGET, option("--session")], scopes: PROJECT_SCOPES, handlerKey: "agent.changes", ui: "diagnostic", exposure: "internal" }),
   define("agent handoff", { summary: "Plan or apply a deterministic documentation handoff.", arguments: [option("--task", { required: true }), option("--description"), option("--session"), option("--idempotency-key"), ...TARGET, ...APPLY], scopes: ["shared", ...PROJECT_SCOPES], mutation: "mutating", protocol: "preview-apply", humanDecision: "file-review-remains-human", authority: "shared-proposal", useWhen: ["The agent has finished documentation work and must route local files to review or shared files to proposals."], tags: ["handoff", "publish", "proposal", "review"], requiredContext: ["task", "project-or-location"], freshness: "fresh-before-apply", cost: "high", handlerKey: "agent.handoff", ui: "both", exposure: "internal" }),
   define("agent help", { summary: "Show the paste-ready agent workflow.", arguments: [option("--root")], formats: ["human"], outputSchema: "text/plain", handlerKey: "agent.help", ui: "both", lifecycle: "removed", exposure: "internal", replacement: "capabilities" }),
@@ -240,7 +251,7 @@ export const CLI_COMMAND_REGISTRY = freeze([
   define("agent annotate", { summary: "Attach a human-facing annotation without deciding a review.", arguments: [option("--root"), option("--path", { required: true }), option("--note", { required: true }), option("--target"), ...APPLY], scopes: PROJECT_SCOPES, mutation: "mutating", protocol: "legacy-direct-with-preview", humanDecision: "none", handlerKey: "agent.annotate", ui: "both", exposure: "compatibility", replacement: "note add" }),
   define("agent annotations", { summary: "List human-facing annotations.", arguments: [option("--root"), option("--path")], scopes: PROJECT_SCOPES, handlerKey: "agent.annotations", ui: "both", exposure: "compatibility", replacement: "note list" }),
 
-  define("context ask", { summary: "Research accepted documentation from a complete task-specific brief.", arguments: [positional("research-brief"), ...TARGET, option("--repository"), option("--shared-project"), option("--goal"), option("--files"), option("--depth"), option("--budget", { value: "integer" })], scopes: ["shared", ...PROJECT_SCOPES], formats: ["human", "json"], handlerKey: "context.ask", ui: "both", exposure: "compatibility", replacement: "ask" }),
+  define("context ask", { summary: "Research accepted documentation from a complete task-specific brief.", arguments: [positional("research-brief"), ...TARGET, option("--repository"), option("--shared-project"), option("--goal"), option("--files"), option("--depth"), option("--budget", { value: "integer" })], scopes: ["shared", ...PROJECT_SCOPES], formats: ["human", "json"], handlerKey: "context.ask", ui: "both", lifecycle: "removed", exposure: "internal", replacement: "docs search" }),
   define("context bundle", { summary: "Build a compact deterministic context bundle for one task.", arguments: [option("--task"), ...TARGET, option("--repository"), option("--shared-project"), PROVIDER, option("--fresh", { value: "boolean" }), option("--budget", { value: "integer" })], scopes: PROVIDER_SCOPES, handlerKey: "context.bundle", ui: "both", cost: "medium", freshness: "accepted-shared-head-when-connected" }),
   define("context effective", { summary: "Resolve the complete accepted context for an exact coordinate.", arguments: [...TARGET, PROVIDER, option("--allow-stale", { value: "boolean" })], scopes: PROVIDER_SCOPES, useWhen: ["The agent needs the final accepted context for one project, worktree, folder, and provider."], doNotUseWhen: ["The agent needs the full application chain of one resource; use context trace.", "The agent needs every proven consumer of one resource; use context impact."], tags: ["context", "effective", "instructions", "skills", "hooks", "documents", "provider"], requiredContext: ["project-or-location", "folder", "provider"], freshness: "accepted-shared-head-required", cost: "medium", handlerKey: "context.effective", ui: "both" }),
   define("context graph", { summary: "Expose proven context resources, applications, and relations.", arguments: [...TARGET, PROVIDER, ...PAGE, option("--allow-stale", { value: "boolean" })], scopes: PROVIDER_SCOPES, handlerKey: "context.graph", ui: "diagnostic", exposure: "internal", replacement: "context effective --include graph" }),
@@ -250,18 +261,18 @@ export const CLI_COMMAND_REGISTRY = freeze([
   define("context snapshot", { summary: "Create a content-addressed metadata-only context snapshot.", arguments: [...TARGET, PROVIDER], scopes: PROVIDER_SCOPES, handlerKey: "context.snapshot", ui: "diagnostic" }),
   define("context diff", { summary: "Compare two compatible context snapshots.", arguments: [option("--from", { required: true }), option("--to")], scopes: PROVIDER_SCOPES, handlerKey: "context.diff", ui: "diagnostic" }),
 
-  define("docs search", { summary: "Search accepted documentation deterministically.", arguments: [positional("query"), ...TARGET, option("--repository"), option("--shared-project"), option("--status"), option("--kind"), option("--limit", { value: "integer" }), option("--budget", { value: "integer" }), option("--session")], scopes: ["shared", ...PROJECT_SCOPES], outputSchema: "legacy-json", handlerKey: "docs.search", ui: "both" }),
-  define("docs read", { summary: "Read one accepted document or section.", arguments: [positional("selector"), option("--root"), option("--repository"), option("--project"), option("--section"), option("--budget", { value: "integer" }), option("--session")], scopes: ["shared", ...PROJECT_SCOPES], outputSchema: "legacy-json", handlerKey: "docs.read", ui: "both", exposure: "internal", replacement: "docs inspect" }),
-  define("docs related", { summary: "List deterministic documentation relations.", arguments: [positional("selector"), option("--root"), option("--repository"), option("--project"), option("--session")], scopes: ["shared", ...PROJECT_SCOPES], outputSchema: "legacy-json", handlerKey: "docs.related", ui: "both", exposure: "internal", replacement: "docs inspect" }),
-  define("docs trace", { summary: "Trace documentation provenance.", arguments: [positional("selector"), option("--root"), option("--repository"), option("--project"), option("--section"), option("--session")], scopes: ["shared", ...PROJECT_SCOPES], outputSchema: "legacy-json", handlerKey: "docs.trace", ui: "both", exposure: "internal", replacement: "docs inspect" }),
-  define("docs inspect", { summary: "Inspect one document, its metadata, relations, diagrams, health, and review state.", arguments: [positional("selector"), ...TARGET, option("--repository"), option("--shared-project"), option("--session")], scopes: ["shared", ...PROJECT_SCOPES], outputSchema: "legacy-json", handlerKey: "docs.inspect", ui: "both" }),
-  define("docs metadata", { summary: "Read raw and interpreted metadata for one document.", arguments: [positional("selector"), option("--root"), option("--repository"), option("--project"), option("--session")], scopes: ["shared", ...PROJECT_SCOPES], outputSchema: "legacy-json", handlerKey: "docs.metadata", ui: "both", exposure: "internal", replacement: "docs inspect" }),
-  define("docs links", { summary: "List outgoing document links with provenance.", arguments: [positional("selector"), option("--root"), option("--repository"), option("--project"), option("--session")], scopes: ["shared", ...PROJECT_SCOPES], outputSchema: "legacy-json", handlerKey: "docs.links", ui: "both", exposure: "internal", replacement: "docs inspect" }),
-  define("docs backlinks", { summary: "List incoming document links with provenance.", arguments: [positional("selector"), option("--root"), option("--repository"), option("--project"), option("--session")], scopes: ["shared", ...PROJECT_SCOPES], outputSchema: "legacy-json", handlerKey: "docs.backlinks", ui: "both", exposure: "internal", replacement: "docs inspect" }),
-  define("docs dependencies", { summary: "List declared dependency relations for one document.", arguments: [positional("selector"), option("--root"), option("--repository"), option("--project"), option("--session")], scopes: ["shared", ...PROJECT_SCOPES], outputSchema: "legacy-json", handlerKey: "docs.dependencies", ui: "both", exposure: "internal", replacement: "docs inspect" }),
-  define("docs diagrams", { summary: "List diagram relations and safe render information for one document.", arguments: [positional("selector"), option("--root"), option("--repository"), option("--project"), option("--session")], scopes: ["shared", ...PROJECT_SCOPES], outputSchema: "legacy-json", handlerKey: "docs.diagrams", ui: "both", exposure: "internal", replacement: "docs inspect" }),
-  define("docs validate", { summary: "Validate one document against active metadata profiles and health rules.", arguments: [positional("selector"), option("--root"), option("--repository"), option("--project"), option("--session")], scopes: ["shared", ...PROJECT_SCOPES], outputSchema: "legacy-json", handlerKey: "docs.validate", ui: "both", exposure: "internal", replacement: "docs inspect" }),
-  define("docs edit", { summary: "Open a bounded local or shared documentation change and return its change handle.", arguments: [option("--task", { required: true }), option("--document"), option("--scope", { value: "local|shared" }), option("--description"), option("--session"), ...TARGET], scopes: ["shared", ...PROJECT_SCOPES], mutation: "mutating", protocol: "direct", humanDecision: "file-review-remains-human", authority: "documentation-change", effect: "reversible-local", handlerKey: "docs.edit", ui: "both", exposure: "compatibility", replacement: "edit" }),
+  define("docs search", { summary: "Search accepted documentation deterministically.", arguments: [positional("query"), ...TARGET, option("--repository"), option("--shared-project"), option("--status"), option("--kind"), option("--limit", { value: "integer" }), option("--budget", { value: "integer" }), option("--session"), option("--reader", { description: "Resume the readerToken returned by the previous call." })], scopes: ["shared", ...PROJECT_SCOPES], outputSchema: "legacy-json", handlerKey: "docs.search", ui: "both" }),
+  define("docs read", { summary: "Read one accepted document or section.", arguments: [positional("selector"), ...TARGET, option("--repository"), option("--shared-project"), option("--section"), option("--budget", { value: "integer" }), option("--session"), option("--reader", { description: "Resume the readerToken returned by the previous call." })], scopes: ["shared", ...PROJECT_SCOPES], outputSchema: "legacy-json", handlerKey: "docs.read", ui: "both" }),
+  define("docs related", { summary: "List deterministic documentation relations.", arguments: [positional("selector"), option("--root"), option("--repository"), option("--project"), option("--session"), option("--reader", { description: "Resume the readerToken returned by the previous call." })], scopes: ["shared", ...PROJECT_SCOPES], outputSchema: "legacy-json", handlerKey: "docs.related", ui: "both", exposure: "internal", replacement: "docs inspect" }),
+  define("docs trace", { summary: "Trace documentation provenance.", arguments: [positional("selector"), option("--root"), option("--repository"), option("--project"), option("--section"), option("--session"), option("--reader", { description: "Resume the readerToken returned by the previous call." })], scopes: ["shared", ...PROJECT_SCOPES], outputSchema: "legacy-json", handlerKey: "docs.trace", ui: "both", exposure: "internal", replacement: "docs inspect" }),
+  define("docs inspect", { summary: "Inspect one document, its metadata, relations, diagrams, health, and review state.", arguments: [positional("selector"), ...TARGET, option("--repository"), option("--shared-project"), option("--session"), option("--reader", { description: "Resume the readerToken returned by the previous call." })], scopes: ["shared", ...PROJECT_SCOPES], outputSchema: "legacy-json", handlerKey: "docs.inspect", ui: "both" }),
+  define("docs metadata", { summary: "Read raw and interpreted metadata for one document.", arguments: [positional("selector"), option("--root"), option("--repository"), option("--project"), option("--session"), option("--reader", { description: "Resume the readerToken returned by the previous call." })], scopes: ["shared", ...PROJECT_SCOPES], outputSchema: "legacy-json", handlerKey: "docs.metadata", ui: "both", exposure: "internal", replacement: "docs inspect" }),
+  define("docs links", { summary: "List outgoing document links with provenance.", arguments: [positional("selector"), option("--root"), option("--repository"), option("--project"), option("--session"), option("--reader", { description: "Resume the readerToken returned by the previous call." })], scopes: ["shared", ...PROJECT_SCOPES], outputSchema: "legacy-json", handlerKey: "docs.links", ui: "both", exposure: "internal", replacement: "docs inspect" }),
+  define("docs backlinks", { summary: "List incoming document links with provenance.", arguments: [positional("selector"), option("--root"), option("--repository"), option("--project"), option("--session"), option("--reader", { description: "Resume the readerToken returned by the previous call." })], scopes: ["shared", ...PROJECT_SCOPES], outputSchema: "legacy-json", handlerKey: "docs.backlinks", ui: "both", exposure: "internal", replacement: "docs inspect" }),
+  define("docs dependencies", { summary: "List declared dependency relations for one document.", arguments: [positional("selector"), option("--root"), option("--repository"), option("--project"), option("--session"), option("--reader", { description: "Resume the readerToken returned by the previous call." })], scopes: ["shared", ...PROJECT_SCOPES], outputSchema: "legacy-json", handlerKey: "docs.dependencies", ui: "both", exposure: "internal", replacement: "docs inspect" }),
+  define("docs diagrams", { summary: "List diagram relations and safe render information for one document.", arguments: [positional("selector"), option("--root"), option("--repository"), option("--project"), option("--session"), option("--reader", { description: "Resume the readerToken returned by the previous call." })], scopes: ["shared", ...PROJECT_SCOPES], outputSchema: "legacy-json", handlerKey: "docs.diagrams", ui: "both", exposure: "internal", replacement: "docs inspect" }),
+  define("docs validate", { summary: "Validate one document against active metadata profiles and health rules.", arguments: [positional("selector"), option("--root"), option("--repository"), option("--project"), option("--session"), option("--reader", { description: "Resume the readerToken returned by the previous call." })], scopes: ["shared", ...PROJECT_SCOPES], outputSchema: "legacy-json", handlerKey: "docs.validate", ui: "both", exposure: "internal", replacement: "docs inspect" }),
+  define("docs edit", { summary: "Open a bounded local or shared documentation change and return its change handle.", arguments: [option("--task", { required: true }), option("--document"), option("--scope", { value: "local|shared" }), option("--description"), option("--session"), ...TARGET], scopes: ["shared", ...PROJECT_SCOPES], mutation: "mutating", protocol: "direct", humanDecision: "file-review-remains-human", authority: "documentation-change", effect: "proposal-only", handlerKey: "docs.edit", ui: "both", exposure: "compatibility", replacement: "changes begin" }),
   define("docs publish", { summary: "Legacy transport for pushing an existing documentation proposal branch.", arguments: [option("--change", { required: true }), option("--summary"), option("--description")], scopes: ["shared", ...PROJECT_SCOPES], mutation: "mutating", protocol: "direct", humanDecision: "file-review-remains-human", authority: "documentation-change", effect: "proposal-only", freshness: "fresh-before-publish", handlerKey: "docs.publish", ui: "diagnostic", exposure: "internal" }),
 
   define("review list", { summary: "List file reviews without changing decisions.", arguments: [...TARGET, option("--reason"), option("--severity"), ...PAGE], scopes: ["shared", ...PROJECT_SCOPES], humanDecision: "file-review-remains-human", handlerKey: "review.list", ui: "both" }),
@@ -284,11 +295,11 @@ export const CLI_COMMAND_REGISTRY = freeze([
   define("shared skills unlink", { summary: "Plan or apply removal of a managed local destination.", arguments: [option("--id", { required: true }), ...TARGET, ...APPLY], scopes: SHARED_SCOPES, mutation: "mutating", protocol: "preview-apply", handlerKey: "shared.skills.unlink", ui: "both" }),
   define("shared skills reconcile", { summary: "Plan or apply managed-link reconciliation.", arguments: [...TARGET, PROVIDER, ...APPLY], scopes: SHARED_SCOPES, mutation: "mutating", protocol: "preview-apply", handlerKey: "shared.skills.reconcile", ui: "both" }),
   define("shared skills override", { summary: "Plan or apply local assignment and skill exclusions.", arguments: [option("--assignment", { required: true }), option("--enabled"), option("--include"), option("--exclude"), ...TARGET, ...APPLY], scopes: SHARED_SCOPES, mutation: "mutating", protocol: "preview-apply", handlerKey: "shared.skills.override", ui: "both" }),
-  define("shared instructions status", { summary: "Show accepted shared instruction collections, assignments, managed links, and conflicts.", arguments: [option("--root"), option("--fresh", { value: "boolean" }), ...PAGE], scopes: SHARED_SCOPES, handlerKey: "shared.instructions.status", ui: "both" }),
-  define("shared instructions assign", { summary: "Plan or apply an instruction assignment proposal using explicit file mappings.", arguments: [option("--collection", { required: true }), option("--assignment"), option("--scope"), option("--projects"), option("--projects-file"), option("--files", { required: true, description: "JSON file containing source, target, and providers mappings." }), option("--title"), option("--description"), option("--session"), ...TARGET, ...APPLY], scopes: SHARED_SCOPES, mutation: "mutating", protocol: "preview-apply", humanDecision: "file-review-remains-human", authority: "shared-proposal", handlerKey: "shared.instructions.assign", ui: "both" }),
-  define("shared instructions unassign", { summary: "Plan or apply removal of an instruction assignment through a proposal.", arguments: [option("--assignment", { required: true }), option("--title"), option("--description"), option("--session"), ...TARGET, ...APPLY], scopes: SHARED_SCOPES, mutation: "mutating", protocol: "preview-apply", humanDecision: "file-review-remains-human", authority: "shared-proposal", handlerKey: "shared.instructions.unassign", ui: "both" }),
-  define("shared instructions import", { summary: "Plan or apply an atomic import of selected Markdown instructions and mappings.", arguments: [option("--collection", { required: true }), option("--collection-title"), option("--collection-path"), option("--scope"), option("--projects"), option("--projects-file"), option("--files", { required: true, description: "JSON file containing localPath, source, target, and providers mappings." }), option("--title"), option("--description"), option("--session"), ...TARGET, ...APPLY], scopes: SHARED_SCOPES, mutation: "mutating", protocol: "preview-apply", humanDecision: "file-review-remains-human", authority: "shared-proposal", handlerKey: "shared.instructions.import", ui: "both" }),
-  define("shared instructions reconcile", { summary: "Plan or apply managed instruction-link reconciliation from accepted main.", arguments: [...TARGET, PROVIDER, ...APPLY], scopes: SHARED_SCOPES, mutation: "mutating", protocol: "preview-apply", handlerKey: "shared.instructions.reconcile", ui: "both" }),
+  define("shared instructions status", { summary: "Legacy compatibility: Show accepted shared instruction collections, assignments, managed links, and conflicts.", arguments: [option("--root"), option("--fresh", { value: "boolean" }), ...PAGE], scopes: SHARED_SCOPES, handlerKey: "shared.instructions.status", ui: "diagnostic", exposure: "compatibility", replacement: "changes begin" }),
+  define("shared instructions assign", { summary: "Legacy compatibility: Plan or apply an instruction assignment proposal using explicit file mappings.", arguments: [option("--collection", { required: true }), option("--assignment"), option("--scope"), option("--projects"), option("--projects-file"), option("--files", { required: true, description: "JSON file containing source, target, and providers mappings." }), option("--title"), option("--description"), option("--session"), ...TARGET, ...APPLY], scopes: SHARED_SCOPES, mutation: "mutating", protocol: "preview-apply", humanDecision: "file-review-remains-human", authority: "shared-proposal", handlerKey: "shared.instructions.assign", ui: "diagnostic", exposure: "compatibility", replacement: "changes begin" }),
+  define("shared instructions unassign", { summary: "Legacy compatibility: Plan or apply removal of an instruction assignment through a proposal.", arguments: [option("--assignment", { required: true }), option("--title"), option("--description"), option("--session"), ...TARGET, ...APPLY], scopes: SHARED_SCOPES, mutation: "mutating", protocol: "preview-apply", humanDecision: "file-review-remains-human", authority: "shared-proposal", handlerKey: "shared.instructions.unassign", ui: "diagnostic", exposure: "compatibility", replacement: "changes begin" }),
+  define("shared instructions import", { summary: "Legacy compatibility: Plan or apply an atomic import of selected Markdown instructions and mappings.", arguments: [option("--collection", { required: true }), option("--collection-title"), option("--collection-path"), option("--scope"), option("--projects"), option("--projects-file"), option("--files", { required: true, description: "JSON file containing localPath, source, target, and providers mappings." }), option("--title"), option("--description"), option("--session"), ...TARGET, ...APPLY], scopes: SHARED_SCOPES, mutation: "mutating", protocol: "preview-apply", humanDecision: "file-review-remains-human", authority: "shared-proposal", handlerKey: "shared.instructions.import", ui: "diagnostic", exposure: "compatibility", replacement: "changes begin" }),
+  define("shared instructions reconcile", { summary: "Legacy compatibility: Plan or apply managed instruction-link reconciliation from accepted main.", arguments: [...TARGET, PROVIDER, ...APPLY], scopes: SHARED_SCOPES, mutation: "mutating", protocol: "preview-apply", handlerKey: "shared.instructions.reconcile", ui: "diagnostic", exposure: "compatibility", replacement: "changes begin" }),
 
   define("shared connect", { summary: "Connect one registered project to an explicit shared context and synchronize accepted main.", arguments: [option("--repository", { required: true }), option("--shared-project"), ...TARGET, option("--dry-run", { value: "boolean" })], scopes: ["shared", "project"], mutation: "mutating", protocol: "direct", effect: "reversible-local", handlerKey: "shared.connect", ui: "both" }),
   define("shared assign", { summary: "Assign an accepted shared skill or instruction collection through a proposal.", arguments: [option("--resource", { value: "skills|instructions", required: true }), option("--collection", { required: true }), option("--assignment"), option("--scope"), option("--projects"), option("--projects-file"), option("--providers"), option("--files"), option("--include"), option("--exclude"), option("--title"), option("--description"), option("--session"), option("--idempotency-key"), ...TARGET], scopes: SHARED_SCOPES, mutation: "mutating", protocol: "direct", effect: "proposal-only", authority: "shared-proposal", humanDecision: "file-review-remains-human", handlerKey: "shared.assign", ui: "both" }),
@@ -633,7 +644,7 @@ export const UI_CLI_PARITY_MATRIX = freeze([
   { capability: "Structural Context Graph", ui: "Document graph", cli: null, classification: "internal-engine" },
   { capability: "Context snapshots and diffs", ui: null, cli: "context snapshot; context diff", classification: "cli-machine-diagnostic" },
   { capability: "Proposal context impact", ui: "Proposal Context Impact panel", cli: "proposal impact", classification: "both" },
-  { capability: "Shared resources management", ui: "Shared skills and instructions Settings", cli: "shared assign|unassign|local skill|reconcile", classification: "both" },
+  { capability: "Shared resources management", ui: "Shared skills Settings", cli: "shared assign|unassign|local skill|reconcile", classification: "both" },
   { capability: "Context settings", ui: "Context Settings", cli: "settings get|set", classification: "both" },
   { capability: "Context diagnostics", ui: "Context Health", cli: "doctor", classification: "both" },
   { capability: "Documentation changes", ui: "Document editor and proposal review", cli: "edit", classification: "both" },

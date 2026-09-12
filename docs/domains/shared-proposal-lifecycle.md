@@ -37,7 +37,7 @@ stateDiagram-v2
     Published --> Rejected: human reject + verified archive
     ReviewReady --> Rejected: human reject + verified archive
     Published --> Conflict: rebase or main conflict
-    ReviewReady --> Stale: head, config, resource or dependency changed
+    ReviewReady --> Stale: head, config or resource changed
     Conflict --> LocalDraft: resolve and republish
     Stale --> ReviewReady: rematerialize
     Merged --> [*]
@@ -61,7 +61,7 @@ Creation starts from current accepted main and creates an isolated worktree and 
 
 ## Edit
 
-Agent editing is restricted to the proposal worktree and authorized scope. Project proposals cannot change global or unrelated paths. Skill and instruction proposals can change only their accepted collections and manifests.
+Agent editing is restricted to the proposal worktree and authorized scope. Project proposals cannot change global or unrelated paths. Skill proposals can change only their accepted collections and manifests. Legacy instruction proposals retain their original scope for compatibility.
 
 A new project proposal may append exactly one source-less catalog entry and one initial Markdown document. The bundle is terminally atomic.
 
@@ -73,7 +73,7 @@ A stale head, unsupported atomic push, conflict, scope violation, timeout, or un
 
 ## Review materialization
 
-Materialization binds repository, branch, exact head, reviewed base, changed files, safe modes, resource versions, and direct dependency versions. Each human file decision records exact current evidence. Changed content, mode, resource, dependency, or head invalidates stale evidence.
+Materialization binds repository, branch, exact head, reviewed base, changed files, safe modes, resource versions, and direct dependency versions. Each human file decision records exact current evidence. PNG/JPEG/WebP corrections preserve the exact binary result; rejection restores the accepted base of that file. Changed content, mode, resource or head invalidates stale evidence. The manifest contains actual changed files, including supported binary assets; unchanged dependencies are not review units.
 
 An existing materialization may be reused only when repository, branch, exact head, and accepted-main revision all match the requested snapshot. A missing, stale, or mismatched field blocks reuse and requires current exact materialization. Cache reuse never converts an attention or terminal projection back into an active review.
 
