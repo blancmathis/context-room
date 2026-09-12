@@ -135,6 +135,8 @@ test("@smoke Shared image review saves exact drawn bytes while main remains unch
     initializeContextRoomProject(project, { allowedPaths: ["docs/"], watchAllow: ["docs/"] });
     connectSharedContext(project, { repository: remote, projectId: "demo" });
     const proposal = createSharedProposal(project, { title: "Drawing to review", branch: "proposal/demo/drawing-to-review" });
+    git(proposal.root, ["config", "user.name", "Context Room browser fixture"]);
+    git(proposal.root, ["config", "user.email", "browser@example.test"]);
     const proposed = await page.evaluate(() => { const canvas = document.createElement("canvas"); canvas.width = 200; canvas.height = 120; const ctx = canvas.getContext("2d"); ctx.fillStyle = "#b5d8e2"; ctx.fillRect(0, 0, 200, 120); return canvas.toDataURL().split(",")[1]; });
     fs.writeFileSync(path.join(proposal.root, imagePath), Buffer.from(proposed, "base64"));
     const published = publishSharedProposal(project, { proposal: proposal.branch });

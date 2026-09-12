@@ -262,6 +262,8 @@ test("@smoke a shared-only deep link boots without a local target and labels an 
   });
   expect(noCacheCopy).toBe("Main offline · no cached snapshot");
   expect(noCacheCopy).not.toContain("@");
+  // Let intercepted background reads finish before Playwright disposes their responses.
+  await page.unrouteAll({ behavior: "wait" });
 });
 
 test("@smoke a launcher-style project deep link renders immediately while its project refresh completes", async ({ page }) => {
