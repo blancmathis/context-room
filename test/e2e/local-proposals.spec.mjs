@@ -9,6 +9,46 @@ async function checkDialogAccessibility(page) {
   expect(result.violations.map(({ id, nodes }) => ({ id, targets: nodes.map(node => node.target) }))).toEqual([]);
 }
 
+test("@smoke a newer Hub snapshot renders the Explorer when the initial catalogue was superseded", async ({ page }) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-hub-render-ui-"));
+  const previous = {};
+  for (const key of ["CONTEXT_ROOM_HUB_HOME", "CONTEXT_ROOM_SHARED_HOME", "CONTEXT_ROOM_REVIEW_AUTHORITY_HOME"]) {
+    previous[key] = process.env[key]; process.env[key] = path.join(base, key);
+  }
+  const { initializeContextRoomProject, createMemoryServer } = await import("../../src/context_room.mjs");
+  const { registerContextHubProject } = await import("../../src/context_hub.mjs");
+  const root = path.join(base, "project"); fs.mkdirSync(root);
+  initializeContextRoomProject(root, { title: "Catalogue race" });
+  registerContextHubProject(root, { title: "Catalogue race" });
+  const runtime = createMemoryServer({ root });
+  await new Promise(resolve => runtime.server.listen(0, "127.0.0.1", resolve));
+  try {
+    await page.goto(`http://127.0.0.1:${runtime.server.address().port}/?hub=1&view=hub&explorer=expanded`);
+    const row = page.locator(".global-project-row", { hasText: "Catalogue race" });
+    await expect(row).toBeVisible();
+    await page.evaluate(async () => {
+      stopWorkspaceRuntime();
+      await Promise.allSettled([state.contextHubReadyPromise, state.runtimeContextHubRefreshPromise].filter(Boolean));
+      const catalog = structuredClone(state.contextHub);
+      state.contextHub = null;
+      renderGlobalProjectExplorer();
+      const initialTicket = beginContextHubSnapshotRequest();
+      const newerTicket = beginContextHubSnapshotRequest();
+      await applyInitialContextHubWhenReady(Promise.resolve({ contextHub: catalog, ticket: newerTicket }));
+      await applyInitialContextHubWhenReady(Promise.resolve({ contextHub: { ...catalog, projects: [] }, ticket: initialTicket }));
+      await new Promise(resolve => requestAnimationFrame(resolve));
+    });
+    await expect(row).toBeVisible();
+    await expect(page.locator("#globalProjectCount")).not.toHaveText("Loading…");
+  } finally {
+    if (!page.isClosed()) await page.goto("about:blank");
+    await new Promise(resolve => { runtime.server.close(resolve); runtime.server.closeAllConnections?.(); });
+    await runtime.waitForShutdown();
+    for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test("@smoke local proposal review accepts a correction and rejects rendered HTML without changing it", async ({ page }, testInfo) => {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-local-proposal-ui-"));
   const previousHub = process.env.CONTEXT_ROOM_HUB_HOME;

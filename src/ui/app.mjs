@@ -12142,6 +12142,9 @@ function applyInitialContextHubWhenReady(contextHubRequest) {
           void loadGlobalProjectSettings(requestedProject).catch((error) => setStatus(error.message));
         }
       }
+      // A runtime snapshot can supersede the initial catalogue before its frame
+      // renders. Every accepted snapshot must also update the global project list.
+      renderGlobalProjectExplorer();
       renderSharedContextControls();
       if (state.page === "settings" && !state.settingsDirtyGroups.size) renderSettingsPanel();
       renderContextRoomGlobalReviewQueue();
