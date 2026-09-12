@@ -2767,6 +2767,10 @@ function managedProjectControlFileError(label, reason) {
   return error;
 }
 
+function managedProjectControlFileChangedError(label, reason) {
+  return Object.assign(managedProjectControlFileError(label, reason), { retryableRead: true });
+}
+
 function normalizedManagedProjectRootIdentity(value = null) {
   const dev = String(value?.dev || "").trim();
   const ino = String(value?.ino || "").trim();
@@ -2847,14 +2851,17 @@ function readManagedProjectControlFileSnapshot(root, relPath, {
   try {
     descriptor = fs.openSync(target, flags);
     const before = fs.fstatSync(descriptor, { bigint: true });
-    if (before.isSymbolicLink() || !before.isFile() || before.nlink !== 1n) {
+    if (before.isSymbolicLink() || !before.isFile() || before.nlink > 1n) {
       throw managedProjectControlFileError(normalized, "entry changed before it could be read");
+    }
+    if (before.nlink === 0n) {
+      throw managedProjectControlFileChangedError(normalized, "entry was replaced after opening");
     }
     if (before.size > BigInt(MAX_JSON_REQUEST_BYTES)) {
       throw managedProjectControlFileError(normalized, `file exceeds ${MAX_JSON_REQUEST_BYTES} bytes`);
     }
     if (!sameManagedProjectControlFileStats(managedProjectControlFileStats(visibleBefore), managedProjectControlFileStats(before))) {
-      throw managedProjectControlFileError(normalized, "entry identity changed before it could be read");
+      throw managedProjectControlFileChangedError(normalized, "entry identity changed before it could be read");
     }
     const bytes = Buffer.allocUnsafe(Number(before.size));
     let offset = 0;
@@ -2871,7 +2878,7 @@ function readManagedProjectControlFileSnapshot(root, relPath, {
     if (grew || offset !== Number(before.size)
       || !sameManagedProjectControlFileStats(managedProjectControlFileStats(before), managedProjectControlFileStats(after))
       || !sameManagedProjectControlFileStats(managedProjectControlFileStats(before), managedProjectControlFileStats(visibleAfter))) {
-      throw managedProjectControlFileError(normalized, "entry changed while it was being read");
+      throw managedProjectControlFileChangedError(normalized, "entry changed while it was being read");
     }
     return {
       exists: true,
@@ -13312,7 +13319,7 @@ function gitRootRelativePrefix(root) {
 export function readMemoryWebappSettings(root = process.cwd(), { expectedRootIdentity = null } = {}) {
   const defaults = defaultMemoryWebappSettings();
   const projectRoot = assertExistingProjectRoot(root);
-  const state = readProjectConfigState(projectRoot, { allowMissing: true, expectedRootIdentity });
+  const state = readProjectConfigState(projectRoot, { allowMissing: true, expectedRootIdentity, retryChanges: true });
   if (!state.snapshot.exists) return defaults;
   return normalizeMemoryWebappSettings(state.raw, { ...defaults, projectOnly: false });
 }
@@ -13351,8 +13358,29 @@ function preserveUnrecognizedConfig(previous, next, stripLegacy = false) {
   return merged;
 }
 
-function readProjectConfigState(root, { allowMissing = false, expectedRootIdentity = null } = {}) {
-  const snapshot = readManagedProjectControlFileSnapshot(root, MEMORY_WEBAPP_SETTINGS, { allowMissing, expectedRootIdentity });
+function readProjectConfigState(root, { allowMissing = false, expectedRootIdentity = null, retryChanges = false } = {}) {
+  // Background sync publishes config with rename. Read-only callers can retry
+  // a raced snapshot, always rechecking the same root and every file guard.
+  // Mutation snapshots stay strict so a retry cannot hide a lost update.
+  const rootIdentity = retryChanges ? managedProjectRootIdentity(root) : null;
+  let snapshot;
+  for (let attempt = 0; ; attempt += 1) {
+    if (rootIdentity) {
+      const current = managedProjectRootIdentity(root);
+      if (current.dev !== rootIdentity.dev || current.ino !== rootIdentity.ino) {
+        throw managedProjectControlFileError(root, "project root filesystem identity changed");
+      }
+    }
+    try {
+      snapshot = readManagedProjectControlFileSnapshot(root, MEMORY_WEBAPP_SETTINGS, {
+        allowMissing: allowMissing && attempt === 0,
+        expectedRootIdentity,
+      });
+      break;
+    } catch (error) {
+      if (!retryChanges || !error?.retryableRead || attempt >= 2) throw error;
+    }
+  }
   if (!snapshot.exists) return { snapshot, raw: null };
   let parsed;
   try {
@@ -19358,9 +19386,9 @@ export function createMemoryServer({
           if (!project) throw sharedRequestError(`Unknown local project: ${requestedProjectId}`, 404, "context_hub_project_not_found");
           if (!project.available) throw sharedRequestError(`Local project is unavailable: ${project.root}`, 409, "context_hub_project_unavailable");
           recordContextHubProjectOpened(project.id);
-          const connection = readSharedProjectConnection(project.root);
+          const cached = sharedContextStatus(project.root);
           let sharedStatus = null;
-          if (connection) {
+          if (cached.connected) {
             const sync = scheduleContextHubProjectSync(project.root);
             const outcome = await waitForContextHubAcceptRefresh(
               sync.promise,
@@ -19376,7 +19404,6 @@ export function createMemoryServer({
               };
             } else {
               sync.notifyOnComplete = true;
-              const cached = sharedContextStatus(project.root);
               sharedStatus = {
                 online: cached.online !== false,
                 revision: cached.revision || "",

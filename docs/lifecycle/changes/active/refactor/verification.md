@@ -108,6 +108,12 @@ Les reprises serveur exécutées pendant la charge concurrente avaient aussi ren
 
 Ces reprises ne transforment pas la troisième passe en succès. La publication impose une nouvelle exécution complète de `npm test`, puis les contrôles GitHub sur le commit proposé : versions Node, navigateurs, accessibilité et navigation prolongée. Les résultats de cette passe finale et des contrôles de publication sont consignés dans la PR associée, avec leurs limites.
 
+### Vérification après publication sur main
+
+La [CI de la PR 39](https://github.com/blancmathis/context-room/actions/runs/34705229245) a réussi les neuf jobs, dont les trois versions Node, les quatre profils navigateur et le soak. La [passe après fusion](https://github.com/blancmathis/context-room/actions/runs/34706098181), sur le même arbre de fichiers, a toutefois révélé deux échecs : ouverture de projet à 798 ms pour un seuil de 750 ms sur Node 22, et réponse 409 lors de la lecture d’une configuration remplacée atomiquement pendant la navigation mobile.
+
+La correction ajoute une reprise bornée des lectures, conserve les refus sur liens et changement de racine, et évite de relire les titres de tous les projets pendant la simple tenue du registre. Le statut Shared de départ est résolu une seule fois par ouverture. Les trois courses de lecture reproduites échouaient avant correction et passent ensuite ; les tests de liens, racine, écritures concurrentes et limite de tentatives passent également. Les deux scénarios d’ouverture passent sans augmentation des délais autorisés. La PR de stabilisation consigne la nouvelle passe complète avant fusion.
+
 ### Corpus et stockage
 
 Une mesure du moteur local sur 512 documents (14 855 570 octets) a donné 2 629 ms pour le premier espace, 257 ms pour le second et 180 ms pour la soumission d’un fichier changé. Les deux propositions utilisent 512 objets de base ; une modification ajoute un seul objet, soit 513 au total. Le fichier source et l’autre proposition restent identiques à leur base, avec des fichiers modifiables indépendants.

@@ -3023,6 +3023,88 @@ test("managed config and review-gate writes publish atomic single-link replaceme
   assert.equal(fs.readdirSync(path.join(root, CONFIG_DIR)).some((name) => name.startsWith(".context-room-control-")), false);
 });
 
+test("settings reads tolerate atomic config replacement while retaining exact write and path guards", async (t) => {
+  for (const phase of ["before-open", "after-open", "after-read"]) {
+    await t.test(phase, (t) => {
+      const root = fs.realpathSync(makeRoot());
+      initializeContextRoomProject(root, { title: "Before", allowedPaths: ["docs/"] });
+      const target = path.join(root, CONFIG_FILE);
+      const replacement = `${target}.replacement`;
+      fs.writeFileSync(replacement, JSON.stringify({ ...JSON.parse(fs.readFileSync(target)), title: "After" }));
+      const originalOpen = fs.openSync;
+      const originalRead = fs.readSync;
+      let descriptor;
+      let swapped = false;
+      const replace = () => { if (!swapped) { swapped = true; fs.renameSync(replacement, target); } };
+      t.mock.method(fs, "openSync", (candidate, ...args) => {
+        if (candidate !== target) return originalOpen(candidate, ...args);
+        if (phase === "before-open") replace();
+        descriptor = originalOpen(candidate, ...args);
+        if (phase === "after-open") replace();
+        return descriptor;
+      });
+      t.mock.method(fs, "readSync", (fd, ...args) => {
+        const count = originalRead(fd, ...args);
+        if (fd === descriptor && phase === "after-read") replace();
+        return count;
+      });
+      assert.equal(readMemoryWebappSettings(root).title, "After");
+      assert.equal(swapped, true);
+    });
+  }
+  for (const replacementKind of ["symlink", "hardlink", "root", "continuous"]) {
+    await t.test(`rejects ${replacementKind} replacement`, (t) => {
+      const root = fs.realpathSync(makeRoot());
+      initializeContextRoomProject(root, { title: "Before", allowedPaths: ["docs/"] });
+      const target = path.join(root, CONFIG_FILE);
+      const replacementRoot = fs.realpathSync(makeRoot());
+      initializeContextRoomProject(replacementRoot, { title: "Other", allowedPaths: ["docs/"] });
+      const replacementTarget = path.join(replacementRoot, CONFIG_FILE);
+      const originalOpen = fs.openSync;
+      let opens = 0;
+      t.mock.method(fs, "openSync", (candidate, ...args) => {
+        if (candidate === target) {
+          opens += 1;
+          if (replacementKind === "continuous") {
+            const temporary = `${target}.replacement`;
+            fs.writeFileSync(temporary, JSON.stringify({ allowedPaths: ["docs/"], title: `Revision ${opens}` }));
+            fs.renameSync(temporary, target);
+          } else if (opens === 1) {
+            if (replacementKind === "root") {
+              fs.renameSync(root, `${root}-retired`);
+              fs.renameSync(replacementRoot, root);
+            } else {
+              fs.unlinkSync(target);
+              if (replacementKind === "symlink") fs.symlinkSync(replacementTarget, target);
+              else fs.linkSync(replacementTarget, target);
+            }
+          }
+        }
+        return originalOpen(candidate, ...args);
+      });
+      assert.throws(() => readMemoryWebappSettings(root), (error) => replacementKind === "symlink"
+        ? error.code === "ELOOP"
+        : error.code === "managed_context_room_state_unsafe");
+      assert.ok(opens > 0);
+      assert.ok(opens <= 3, `read must stop after bounded attempts, got ${opens}`);
+      if (replacementKind === "continuous") assert.equal(opens, 3);
+    });
+  }
+  await t.test("a settings write cannot overwrite a newer config", () => {
+    const root = makeRoot();
+    initializeContextRoomProject(root, { title: "Before", allowedPaths: ["docs/"] });
+    const target = path.join(root, CONFIG_FILE);
+    assert.throws(() => writeMemoryWebappSettings(root, { title: "Stale edit" }, {
+      beforeMutation: () => {
+        const temporary = `${target}.replacement`;
+        fs.writeFileSync(temporary, JSON.stringify({ allowedPaths: ["docs/"], title: "Concurrent edit" }));
+        fs.renameSync(temporary, target);
+      },
+    }), { code: "managed_context_room_state_unsafe" });
+    assert.equal(readMemoryWebappSettings(root).title, "Concurrent edit");
+  });
+});
+
 test("settings API cannot change the owner review gate through project settings", async (t) => {
   const root = makeRoot();
   initializeContextRoomProject(root, { allowedPaths: ["docs/"] });

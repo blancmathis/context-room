@@ -27,6 +27,7 @@ import {
   readContextHubAttention,
   readContextHubRuntime,
   readContextHubSnapshot,
+  recordContextHubProjectOpened,
   recoverContextHubSharedTransactions,
   registerContextHubProject,
   registerContextHubSharedRepository,
@@ -156,6 +157,27 @@ function withSharedHome(t, sharedHome) {
     else process.env.HOME = previousHome;
   });
 }
+
+test("Context Hub registry bookkeeping uses saved titles while the project list refreshes live titles", (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-registry-titles-"));
+  withHubHome(t, path.join(base, "hub"));
+  const root = fs.realpathSync(makeProject(base, "Saved title"));
+  const project = registerContextHubProject(root);
+  const configPath = path.join(root, ".context-room", "config.json");
+  const config = JSON.parse(fs.readFileSync(configPath));
+  fs.writeFileSync(configPath, JSON.stringify({ ...config, title: "Live title" }));
+  const originalOpen = fs.openSync;
+  let configReads = 0;
+  t.mock.method(fs, "openSync", (candidate, ...args) => {
+    if (candidate === configPath) configReads += 1;
+    return originalOpen(candidate, ...args);
+  });
+  assert.equal(readContextHubRegistry().projects[0].title, "Saved title");
+  recordContextHubProjectOpened(project.id);
+  assert.equal(configReads, 0, "opening bookkeeping must not reopen every registered project's config");
+  assert.equal(listContextHubProjects().find((entry) => entry.id === project.id).title, "Live title");
+  assert.ok(configReads > 0);
+});
 
 test("Context Hub keeps one shared proposal while counting it for every linked local consumer", (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-shared-consumers-"));

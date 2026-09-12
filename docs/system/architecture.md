@@ -63,6 +63,8 @@ The Hub host is not an implicit project. It opens a global loopback server with 
 
 Each initialized project keeps explicit configuration under `.context-room/`. The configuration defines authorized document paths, review coverage, startup discovery, and product organization. Owner-authorized review scope is protected by separate private authority state and cannot be narrowed merely by editing project JSON.
 
+Background synchronization replaces configuration atomically. Read-only settings access retries a changing snapshot at most twice, rechecking the same project root and all file guards each time. Configuration writes retain exact snapshot checks and reject a concurrent replacement instead of overwriting it.
+
 ## Shared control plane
 
 Each Shared repository has:
