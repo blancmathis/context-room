@@ -1847,7 +1847,8 @@ function normalizedRegistry(raw = {}, { refreshGit = false } = {}) {
         logicalProjectId: identity.logicalProjectId,
         root,
         rootIdentity,
-        title: cleanTitle(entry.title, rootAvailable && contextHubProjectControlFilesAreSafe(root) ? projectTitle(root) : path.basename(root) || "Local project"),
+        title: cleanTitle(entry.title, "")
+          || (rootAvailable && contextHubProjectControlFilesAreSafe(root) ? projectTitle(root) : path.basename(root) || "Local project"),
         registeredAt,
         lastOpenedAt: String(entry.lastOpenedAt || registeredAt),
         worktree: identity.worktree,
