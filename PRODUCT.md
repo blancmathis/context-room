@@ -16,7 +16,7 @@ This document defines why Context Room exists, who it serves, and the product pr
 
 ## Does not define
 
-This document does not define UI behavior, CLI syntax, storage layouts, Shared proposal mechanics, hosted deployment, or future roadmap items.
+This document does not define UI behavior, CLI syntax, storage layouts, Shared proposal mechanics,  or future roadmap items.
 
 ## Purpose
 
@@ -29,7 +29,7 @@ The product is not a generic file browser, a wiki, a vector database, or an auto
 - Project owners who decide what documentation is trusted.
 - Contributors who need current behavior before changing it.
 - Coding agents that need a bounded, machine-readable context surface.
-- Operators who verify local and hosted isolation.
+- Operators who verify filesystem isolation and recoverable changes.
 - Documentation maintainers who require one owner for each durable truth.
 
 ## Product principles
@@ -44,7 +44,7 @@ The Context Hub is always the top-level surface. Launching from a project or wor
 
 ### Deterministic evidence before model inference
 
-Inventory, graph construction, health checks, review state, proposal state, path boundaries, and effective-context resolution are deterministic. A model may research accepted documentation through `context-room ask`, but it does not define truth.
+Inventory, graph construction, health checks, review state, proposal state, path boundaries, and effective-context resolution are deterministic. Agents search and read accepted documentation through the CLI. Context Room does not launch a documentation model.
 
 ### Accepted truth and pending change are different objects
 
@@ -58,9 +58,9 @@ Humans accept or reject files and Shared proposals. Agent-facing commands do not
 
 A Shared repository keeps accepted truth on its configured default branch. Pending changes live in isolated proposal branches and worktrees. Acceptance delivers only the exact result reviewed by a human.
 
-### Hosted means Shared only
+### Each person runs Context Room locally
 
-A hosted Context Room receives only explicitly configured Shared repositories and scoped capabilities. It cannot read local files, local project settings, local prompt state, local provider homes, or local-only APIs.
+The supported runtime is local on macOS. Contributors collaborate on Shared through Git from their own computers. Context Room does not provide a hosted server or an additional approval-role system.
 
 ### Documentation describes reality
 
@@ -75,5 +75,5 @@ Context Room succeeds when:
 3. an agent can retrieve accepted context without gaining review authority;
 4. worktrees appear as variants of one logical project;
 5. Shared proposal delivery is exact, reviewable, and recoverable;
-6. hosted operation cannot cross into local state;
+6. local documents remain private and no hosted runtime is required;
 7. deterministic verification detects drift between code, contracts, tests, and documentation.

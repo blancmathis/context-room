@@ -43,20 +43,26 @@ This document does not define product behavior, technical contracts, security gu
 
 ## Product surfaces
 
+- [Document workflow, formats and optional tablet](features/document-workflow.md)
+
 - [Global Context Hub](features/context-hub.md)
 - [Shared Context](features/shared-context.md)
 - [Human review authority](features/review-authority.md)
 
 ## Assurance
 
-- [Hosted isolation](assurance/hosted-isolation.md)
+- [Human review authority](features/review-authority.md)
 
 ## Operations
 
-- [Hosted deployment](operations/hosted-deployment.md)
+- [Document workflow and migration](features/document-workflow.md)
 - [Release verification](operations/release-verification.md)
 
 ## Lifecycle
+
+Active implementation and its verification record:
+
+- [Refactor: consolidated decisions, architecture, migration and verification](lifecycle/changes/active/refactor/index.md)
 
 Historical evidence does not define current behavior:
 

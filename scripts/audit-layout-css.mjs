@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const root = process.cwd();
-const sourcePath = path.join(root, "src", "context_room.mjs");
+const sourcePath = path.join(root, "src", "ui", "app.mjs");
 const source = fs.readFileSync(sourcePath, "utf8");
 const styleStart = source.indexOf("<style>");
 const styleEnd = source.indexOf("</style>", styleStart);

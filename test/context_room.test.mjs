@@ -55,6 +55,9 @@ import {
   createFolder,
   createMarkdownFile,
   createMemoryServer,
+  createLocalDocumentationProposal,
+  submitLocalDocumentationProposal,
+  readDocReviewState,
   createDefaultProjectConfig,
   computeDocIssues,
   contextRoomProjectResponseAction,
@@ -611,7 +614,7 @@ test("Context Engine UI uses read-only API adapters and keeps proposal semantics
   assert.doesNotMatch(source, /listExactReviewInvalidations:[\s\S]{0,200}changedFiles\.map/);
   assert.match(script, /Shared Skills delta/);
   assert.match(script, /Existing reviews invalidated/);
-  assert.match(source, /semantic conflicts are not evaluated/i);
+  assert.match(script, /semantic conflicts are not evaluated/i);
   assert.match(script, /Semantic conflicts are not evaluated\./);
   assert.match(script, /Review invalidation is exact-revision only\./);
   assert.match(script, /function contextEngineEntryCanOpen\([\s\S]*metadata\?\.relativePath[\s\S]*!relPath\.startsWith\("~"\)/);
@@ -619,7 +622,7 @@ test("Context Engine UI uses read-only API adapters and keeps proposal semantics
 });
 
 test("single-project Startup environment resolves through the same Context Core surface", () => {
-  const source = fs.readFileSync(new URL("../src/context_room.mjs", import.meta.url), "utf8");
+  const source = fs.readFileSync(new URL("../src/ui/app.mjs", import.meta.url), "utf8");
   const html = renderAppHtml();
   const script = extractInlineAppScript(html);
 
@@ -4180,7 +4183,7 @@ test("shared review ledger verifies the same absolute path and content across ro
   assert.equal(buildDocQaReport(root).queue.some((item) => item.path === "README.md"), true);
 });
 
-test("accepted dependency changes require targeted human revalidation", () => {
+test("accepted dependency changes leave unchanged documents out of review", () => {
   const root = makeRoot();
   fs.mkdirSync(path.join(root, "docs"));
   const dependencyPath = path.join(root, "docs", "trust.md");
@@ -4201,25 +4204,8 @@ test("accepted dependency changes require targeted human revalidation", () => {
   assert.equal(buildDocQaReport(root).queue.some((item) => item.path === "docs/review.md"), false);
   writeDocReviewDecision(root, "docs/trust.md", { status: "verified" });
 
-  const invalidated = buildDocQaReport(root).queue.find((item) => item.path === "docs/review.md");
-  assert.ok(invalidated);
-  assert.equal(invalidated.reviewReason, "dependency-changed");
-  assert.equal(invalidated.dependencyChanges.length, 1);
-  assert.equal(invalidated.dependencyChanges[0].documentId, "strategy.trust");
-  assert.ok(buildContextRoomDoctorReport(root).issues.some((issue) => issue.type === "dependency_review_required" && issue.path === "docs/review.md"));
-  assert.throws(
-    () => writeDocReviewDecision(root, "docs/review.md", {
-      status: "verified",
-      expectedDependencyVersions: firstDependentReview.dependencyVersions,
-    }),
-    (error) => error?.statusCode === 409 && error?.code === "review_revision_conflict",
-  );
-
-  writeDocReviewDecision(root, "docs/review.md", {
-    status: "verified",
-    expectedDependencyVersions: invalidated.dependencyVersions,
-  });
   assert.equal(buildDocQaReport(root).queue.some((item) => item.path === "docs/review.md"), false);
+  assert.equal(buildContextRoomDoctorReport(root).issues.some((issue) => issue.type === "dependency_review_required"), false);
 });
 
 test("watched HTML changes enter the review queue", () => {
@@ -5661,11 +5647,11 @@ test("file diff skips repository-wide work outside Git", () => {
   const cachedStart = performance.now();
   const cachedDiff = readFileDiff(root, "AGENTS.md");
 
-  assert.equal(diff.available, false);
-  assert.equal(diff.changed, false);
-  assert.match(diff.reason, /outside a Git repository/);
-  assert.equal(cachedDiff.available, false);
-  assert.ok(performance.now() - cachedStart < 250, "negative Git lookup should be cached");
+  assert.equal(diff.available, true);
+  assert.equal(diff.changed, true);
+  assert.equal(diff.changeKind, "added");
+  assert.equal(cachedDiff.available, true);
+  assert.ok(performance.now() - cachedStart < 250, "no-Git baseline lookup should stay bounded");
   assert.match(readFileDiff.toString(), /if \(!gitTopLevelRoot\(root\)\)/);
 });
 
@@ -6680,16 +6666,17 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.doesNotMatch(html, /title:\s*"Always require review"/);
   assert.match(html, /title:\s*"Agent CLI guide"/);
   assert.match(html, /Give this to your agent/);
-  assert.match(html, /context-room ask/);
+  assert.match(html, /context-room docs search/);
+  assert.doesNotMatch(html, /context-room ask/);
   assert.match(html, /data-copy-agent-cli-prompt/);
   assert.match(html, /What remains human-owned/);
   assert.match(html, /Advanced capabilities/);
   assert.match(html, /Keep the root workflow small/);
-  assert.match(html, /Send a complete research brief and receive an implementation-ready answer from accepted project documentation/i);
+  assert.match(html, /Search accepted documentation and read exact documents or sections without launching a model/i);
   assert.doesNotMatch(html, /events --follow --since/);
-  assert.match(html, /Create a clearly described shared proposal, list open proposals, or restore an exact proposal worktree/);
-  assert.match(html, /Ask:<\/strong> research accepted project documentation from a complete task-specific brief, not keywords/);
-  assert.match(html, /Edit:<\/strong> create, list, or open shared proposal worktrees without making review decisions/);
+  assert.match(html, /Prepare, inspect, and submit isolated local or Shared proposals/);
+  assert.match(html, /Docs:<\/strong> search, read, and inspect accepted documentation/);
+  assert.match(html, /Changes:<\/strong> begin, inspect, and submit proposals without making review decisions/);
   assert.match(html, /Accepting or rejecting each file awaiting review/);
   assert.match(html, /the human explicitly puts the selected result on main or rejects the exact proposal/);
   assert.doesNotMatch(html, /Changing the owner-controlled Git review gate\./);
@@ -8749,4 +8736,46 @@ test("stale project identities cannot write session state after a port is reused
   }
   assert.equal(restartedResponse.status, 200);
   assert.equal(readCollaborationSessionState(secondRoot).selectedPath, "docs/guide.md");
+});
+
+test("local proposal HTTP review stays human-owned and accepts only the corrected file", async (t) => {
+  const root = makeFolderWatchRoot({ watchAllow: ["docs/"] });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  for (const rel of ["docs/direct.md", "docs/delete.md"]) writeDocReviewDecision(root, rel, { status: "verified" });
+  const draft = createLocalDocumentationProposal(root, { title: "Clarify the guide" });
+  fs.appendFileSync(path.join(draft.editRoot, "docs/direct.md"), "Agent proposal.\n");
+  fs.appendFileSync(path.join(draft.editRoot, "docs/delete.md"), "Other proposal.\n");
+  const submitted = submitLocalDocumentationProposal(root, draft.id);
+  const { server, ownerMutationNonce } = createMemoryServer({ root });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const body = { proposal: draft.id, path: "docs/direct.md", decision: "accepted", expectedRevision: submitted.submittedRevision, content: "# Human correction\n" };
+  const denied = await fetch(base + "/api/docqa/local-proposal-decision", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  assert.equal(denied.status, 403);
+  assert.equal(fs.readFileSync(path.join(root, "docs/direct.md"), "utf8"), "# Direct\n");
+  const response = await fetch(base + "/api/docqa/local-proposal-decision", { method: "POST", headers: { "content-type": "application/json", "x-context-room-owner-nonce": ownerMutationNonce }, body: JSON.stringify(body) });
+  const result = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(result));
+  assert.equal(result.status, "submitted");
+  assert.equal(fs.readFileSync(path.join(root, "docs/direct.md"), "utf8"), "# Human correction\n");
+  assert.equal(fs.readFileSync(path.join(root, "docs/delete.md"), "utf8"), "# Delete\n");
+  assert.equal(readDocReviewState(root).reviews["docs/direct.md"].status, "verified");
+  assert.equal(buildDocQaReport(root).queue.some((entry) => entry.path === "docs/direct.md"), false);
+  const asset = await fetch(base + "/assets/local-proposal-review.mjs");
+  assert.equal(asset.status, 200);
+  assert.match(asset.headers.get("content-type"), /javascript/);
+});
+
+test("local proposal creation works without Git and uses the accepted review baseline", (t) => {
+  const root = makeRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, "docs"));
+  fs.writeFileSync(path.join(root, "docs/guide.md"), "Accepted guide\n");
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+  writeDocReviewDecision(root, "docs/guide.md", { status: "verified" });
+  fs.writeFileSync(path.join(root, "docs/guide.md"), "Unaccepted outside edit\n");
+  const draft = createLocalDocumentationProposal(root, { title: "Independent update" });
+  assert.equal(fs.readFileSync(path.join(draft.editRoot, "docs/guide.md"), "utf8"), "Accepted guide\n");
+  assert.equal(fs.readFileSync(path.join(root, "docs/guide.md"), "utf8"), "Unaccepted outside edit\n");
 });

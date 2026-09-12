@@ -144,13 +144,13 @@ test("machine failures keep valid envelopes and canonical public command names",
   const { base, env, project } = fixture(t);
   const cases = [
     { args: ["edit", "open", "proposal/demo/example", "--unknown", "--format=json"], command: "edit", code: "unknown-option" },
-    { args: ["ask", "Research the accepted docs", "--unknown", "--format=json"], command: "ask", code: "unknown-option" },
+    { args: ["ask", "Research the accepted docs", "--unknown", "--format=json"], command: "ask", code: "removed-command" },
     { args: ["init", `--root=${project}`, "--title", "--format=json"], command: "init", code: "missing-option-value" },
     { args: ["shared", "connect", `--root=${project}`, "--format=json"], command: "shared.connect", code: "missing-repository" },
-    { args: ["ask", "Research the accepted docs", "--repository=/missing/shared.git", "--format=json"], command: "ask", code: "shared-target-incomplete" },
+    { args: ["ask", "Research the accepted docs", "--repository=/missing/shared.git", "--format=json"], command: "ask", code: "removed-command" },
     { args: ["agent", "prepare", "--task=Research", "--repository=/missing/shared.git", "--format=json"], command: "agent.prepare", code: "shared-target-incomplete", message: /--shared-project/ },
-    { args: ["ask", "--format=json"], command: "ask", code: "missing-research-brief" },
-    { args: ["ask", "Research", "--session=proposal", "--format=json"], command: "ask", code: "unsupported-proposal-overlay" },
+    { args: ["ask", "--format=json"], command: "ask", code: "removed-command" },
+    { args: ["ask", "Research", "--session=proposal", "--format=json"], command: "ask", code: "removed-command" },
   ];
   for (const entry of cases) {
     const result = runCli(entry.args, env, base);

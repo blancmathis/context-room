@@ -11,7 +11,7 @@ context_room:
 
 ## Summary
 
-Context Room is a Node.js package with one declarative CLI, a global loopback Hub, project and Shared data providers, deterministic context and documentation engines, human review authority, and a separate Shared-only hosted entry point.
+Context Room is a Node.js package with one declarative CLI, a global loopback Hub, project and Shared data providers, deterministic context and documentation engines, human review authority, and optional local document extensions.
 
 ## Defines
 
@@ -29,7 +29,7 @@ flowchart LR
     Registry --> AgentCLI[src/agent_cli.mjs]
     Registry --> Diagnostics[src/context_diagnostics.mjs]
     Registry --> Settings[src/context_settings.mjs]
-    Registry --> Docs[src/doc_agent.mjs]
+    Registry --> Docs[src/documentation.mjs]
 
     CLI --> Hub[src/context_hub.mjs]
     Hub --> Server[src/context_room.mjs]
@@ -38,9 +38,10 @@ flowchart LR
     Server --> Inventory[src/context_inventory.mjs]
     Server --> Shared[src/shared_context.mjs]
 
-    Remote[bin/context-room-remote.mjs] --> Server
-    Remote --> Gateway[src/qm_gateway.mjs]
-    Remote --> Identity[src/remote_identity.mjs]
+    Server --> UI[src/ui/app.mjs]
+    Server --> Assets[src/document_assets.mjs]
+    Server --> Cleanup[src/review_cleanup.mjs]
+    Server --> Tablet[src/lisiere_connector.mjs]
 
     Shared --> Locks[src/filesystem_lock.mjs]
     Shared --> GitHubToken[src/github_app_token.mjs]
@@ -48,7 +49,8 @@ flowchart LR
     Docs --> Metadata[src/doc_metadata.mjs]
     Docs --> MetadataEngine[src/document_metadata_engine.mjs]
     Docs --> Graph[src/document_graph.mjs]
-    Docs --> Researcher[isolated Codex process]
+    AgentCLI --> Local[src/local_proposals.mjs]
+    Server --> Local
 ```
 
 ## Global Hub control plane
@@ -104,7 +106,7 @@ The following surfaces are deterministic:
 - review state and proposal state;
 - path, schema, identity, and delivery verification.
 
-`context-room ask` is the documentation feature that launches a model. It starts one fresh, read-only Codex process over a frozen accepted-only corpus and validates the returned packet. Codex Prompt Center edits a compatible local runtime contract but does not call a model.
+Documentation search and reading use accepted snapshots directly. The integrated `ask` researcher and its model subprocess have been removed. Codex Prompt Center edits a compatible local runtime contract but does not call a model.
 
 ## Persistence classes
 
@@ -116,16 +118,16 @@ The following surfaces are deterministic:
 | Accepted Shared truth | configured default branch | Human-accepted Git history |
 | Proposal state | proposal branch, worktree, exact head | Pending change |
 | Generated evidence | graph, coverage, snapshots, receipts | Derived, non-normative |
-| Hosted service state | dedicated data root | Explicit Shared-only service scope |
+| Local proposal and asset state | CAS objects, workspaces, signed accepted assets, recovery journals | Prepared changes or human decision |
 
 ## Architectural constraints
 
-- Local project and worktree paths never become hosted inputs.
+- Only the loopback local runtime can start. Hosted configuration is rejected before state initialization.
 - Worktrees are location variants of one logical project.
 - Accepted Shared content and proposal content use different revisions and authority.
 - Provider destinations are resolved through versioned profiles, not guessed by name.
 - Read-only operations must not bootstrap or mutate review authority.
-- A route, provider, or persistence root must be explicitly assigned to each runtime profile.
+- Owner-only mutation routes and proposal inspection remain separate from normal accepted reads.
 
 ## Maintainability risk
 

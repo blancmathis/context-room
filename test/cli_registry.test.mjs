@@ -22,14 +22,14 @@ import {
   renderCliHelp,
 } from "../src/cli_contract.mjs";
 
-test("registry exposes three primary commands without exposing human review decisions", () => {
+test("registry exposes deterministic primary commands without exposing human review decisions", () => {
   const paths = CLI_COMMAND_REGISTRY.map((entry) => entry.path);
   assert.equal(new Set(paths).size, paths.length);
   assert.deepEqual(Object.fromEntries(Object.entries(CLI_PROFILE_COMMANDS).map(([profile, commands]) => [profile, commands.length])), {
-    worker: 1,
-    editing: 2,
-    admin: 21,
-    expert: 12,
+    worker: 3,
+    editing: 4,
+    admin: 22,
+    expert: 10,
   });
   assert.deepEqual(listCliCommands({ installedOnly: true, include: "canonical" }).map((entry) => entry.path).sort(), [...new Set([...CLI_PRIMARY_COMMANDS, ...Object.values(CLI_PROFILE_COMMANDS).flat()])].sort());
   assert.equal(paths.some((path) => /(?:accept|reject|verify)/i.test(path)), false);
@@ -47,7 +47,7 @@ test("registry exposes three primary commands without exposing human review deci
 
   const sectionCommands = Object.values(CLI_CAPABILITY_SECTIONS).flatMap((section) => section.commands);
   assert.equal(new Set(sectionCommands).size, sectionCommands.length);
-  assert.deepEqual(sectionCommands.sort(), Object.values(CLI_PROFILE_COMMANDS).flat().filter((path) => !CLI_PRIMARY_COMMANDS.includes(path)).sort());
+  assert.deepEqual(sectionCommands.sort(), Object.values(CLI_PROFILE_COMMANDS).flat().sort());
   for (const path of sectionCommands) assert.ok(getCliCommand(path).section, `${path} has no capability section`);
 });
 
@@ -80,20 +80,20 @@ test("capabilities expose the advanced catalog without choosing an operation", (
   assert.equal(catalog.contractAudience, "ai-agent");
   assert.equal(catalog.profile, undefined);
   assert.equal(catalog.view, "sections");
-  assert.deepEqual(catalog.primaryCommands.map((entry) => entry.path), ["ask", "edit"]);
-  assert.deepEqual(catalog.sections.map((entry) => entry.id), ["documentation", "context", "review", "shared", "workspace", "configuration"]);
+  assert.deepEqual(catalog.primaryCommands.map((entry) => entry.path), ["docs search", "docs read", "changes begin"]);
+  assert.deepEqual(catalog.sections.map((entry) => entry.id), ["changes", "documentation", "context", "review", "shared", "workspace", "configuration"]);
   assert.equal(catalog.humanDecisionPolicy.confirmationsRequired, 2);
   assert.match(catalog.humanDecisionPolicy.instruction, /second separate, unambiguous yes/i);
   assert.equal(Object.hasOwn(catalog, "commands"), false);
 
   const editing = cliCapabilitiesFromRegistry({ version: "test", profile: "editing" });
-  assert.deepEqual(editing.commands.map((entry) => entry.path), ["ask", "edit"]);
+  assert.deepEqual(editing.commands.map((entry) => entry.path), ["changes begin", "changes status", "changes submit", "changes list"]);
   assert.equal(editing.humanDecisionPolicy.confirmationsRequired, 2);
 
   const admin = cliCapabilitiesFromRegistry({ version: "test", profile: "admin" });
   const expert = cliCapabilitiesFromRegistry({ version: "test", profile: "expert" });
-  assert.equal(admin.commands.length, 21);
-  assert.equal(expert.commands.length, 12);
+  assert.equal(admin.commands.length, 22);
+  assert.equal(expert.commands.length, 10);
 
   const standard = cliCapabilitiesFromRegistry({ version: "test", profile: "admin", detail: "standard" });
   assert.deepEqual(standard.outputFormats, ["human", "json"]);
@@ -114,7 +114,7 @@ test("capabilities expose the advanced catalog without choosing an operation", (
 
   const docs = cliCapabilitiesFromRegistry({ version: "test", namespace: "docs" });
   assert.equal(docs.view, "namespace");
-  assert.deepEqual(docs.commands.map((entry) => entry.path), ["docs search", "docs inspect"]);
+  assert.deepEqual(docs.commands.map((entry) => entry.path), ["docs search", "docs read", "docs inspect"]);
 
   const review = cliCapabilitiesFromRegistry({ version: "test", namespace: "review" });
   assert.equal(review.view, "section");
@@ -132,11 +132,12 @@ test("capabilities remain a static inventory without automatic command selection
   assert.equal(capabilities.sections.some((entry) => Object.hasOwn(entry, "intents")), false);
 });
 
-test("help exposes only ask, edit, and capabilities at the root", () => {
+test("help exposes deterministic reading and isolated changes at the root", () => {
   const help = renderCliHelpFromRegistry();
-  assert.match(help, /context-room ask <research-brief>/);
-  assert.doesNotMatch(help, /context-room ask <task>/);
-  assert.match(help, /context-room edit <action> \[value\]/);
+  assert.match(help, /context-room docs search/);
+  assert.match(help, /context-room docs read/);
+  assert.match(help, /context-room changes begin/);
+  assert.doesNotMatch(help, /context-room ask/);
   assert.match(help, /context-room capabilities/);
   assert.doesNotMatch(help, /context-room docs edit/);
   assert.doesNotMatch(help, /context-room docs publish/);
@@ -144,7 +145,7 @@ test("help exposes only ask, edit, and capabilities at the root", () => {
   assert.match(help, /--help --all/);
 
   const allHelp = renderCliHelpFromRegistry({ all: true });
-  for (const command of ["edit", "project show", "shared assign", "context effective", "hub status"]) assert.match(allHelp, new RegExp(`context-room ${command.replace(" ", "\\s+")}`));
+  for (const command of ["changes begin", "project show", "shared assign", "context effective", "hub status"]) assert.match(allHelp, new RegExp(`context-room ${command.replace(" ", "\\s+")}`));
   for (const hidden of ["agent prepare", "shared propose", "settings apply", "context graph"]) assert.doesNotMatch(allHelp, new RegExp(`context-room ${hidden.replace(" ", "\\s+")}`));
 
   const docsHelp = renderCliHelpFromRegistry({ namespace: "docs" });
@@ -170,10 +171,10 @@ test("legacy cli_contract exports delegate to the registry projection", () => {
 
 test("canonical effects use direct, dry-run, or same-path protected apply", () => {
   const effects = new Map([
-    ["ask", "none"],
+    ["docs search", "none"],
     ["ui open", "ephemeral"],
     ["project register", "reversible-local"],
-    ["edit", "proposal-only"],
+    ["changes begin", "proposal-only"],
     ["watch set", "reversible-local"],
     ["settings set", "protected"],
   ]);

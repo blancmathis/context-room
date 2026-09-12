@@ -30,6 +30,12 @@ This document does not define queue ordering, diff rendering, Git delivery algor
 6. Snoozing changes visibility only; it does not change trust.
 7. Recovered or damaged authority evidence is not silently trusted.
 
+## Human corrections and cleanup
+
+Saving a human correction through the document editor accepts that exact corrected file. It does not accept the rest of a proposal or perform the separate Shared terminal decision. Subsequent agent changes reappear in review.
+
+Pending changes never expire by default. A human may request one-time rejection by age/project, or explicitly enable the same rule in the cleanup dialog. The stored rule is signed owner authority and is not an ordinary agent setting. Applying it performs real rejection with per-item receipts; unavailable, changed or conflicted revisions remain pending with an error.
+
 ## Agent confirmation protocol
 
 Before an agent performs a multi-file review mutation or assists with a terminal proposal action:
@@ -51,13 +57,13 @@ Context Room stores the last owner-authorized review scope outside project confi
 
 Trusted evidence binds to exact resource state, including canonical path, content hash or absence, file mode where relevant, resource version, dependency versions where required, and owner-authority integrity.
 
-A changed hash, restored deletion, changed mode, changed proposal head, or stale dependency invalidates the old decision.
+A changed hash, restored deletion, changed mode or changed proposal head invalidates the old decision. Dependency links provide navigation; unchanged dependent documents are not added to review.
 
 ## Terminal request binding
 
 The terminal UI requests a short-lived, one-use challenge bound to principal, review authority, action, repository, proposal branch, and exact head. The challenge is consumed before mutable terminal work begins. A retry requires a new challenge.
 
-Local mode proves continuity with the current owner-interface instance. Hosted mode also binds the signed allowed administrator identity and scope.
+The loopback runtime proves continuity with the current owner-interface instance. Context Room does not introduce an additional Shared administrator role.
 
 ## Security limit
 

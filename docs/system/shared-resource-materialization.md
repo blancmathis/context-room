@@ -10,7 +10,7 @@ context_room:
 
 ## Summary
 
-Accepted Shared skills, instructions, and metadata profiles are read from one immutable accepted repository revision and projected through Context Room-owned local destinations without overwriting unmanaged content.
+Accepted Shared skills, legacy instruction mappings, and metadata profiles are read from one immutable accepted repository revision and projected through Context Room-owned local destinations without overwriting unmanaged content.
 
 ## Defines
 
@@ -26,8 +26,7 @@ A Shared repository can define:
 
 - skill collections;
 - skill assignments;
-- instruction collections;
-- instruction assignments;
+- legacy instruction collections and assignments, preserved for compatibility;
 - metadata profiles;
 - project and global resource scopes.
 
@@ -66,17 +65,17 @@ Context Room never adopts or deletes unmanaged content implicitly.
 
 ## Skills
 
-A skill collection contains reviewed accepted skill directories with valid entry points. Assignments select collections for project, Shared, or device scope and one or more providers.
+A skill collection contains reviewed accepted skill directories with valid entry points. Assignments select collections and individual skills for declared projects. New repositories start with explicit empty assignments, so no skill is exposed globally by default. Native providers may be omitted: the CLI remains usable by any harness. Existing legacy manifests retain their original broader scope until explicitly changed.
 
 Editing canonical Shared skill content requires a `skills` proposal.
 
-## Instructions
+## Legacy instruction mappings
 
 An instruction collection contains reviewed accepted Markdown sources. An assignment declares the exact source, provider set, scope, and target path.
 
 A managed instruction can be installed without being active when the provider does not natively discover its target and no explicit provider configuration proves discovery.
 
-Editing canonical Shared instruction intent requires an `instructions` proposal.
+The separate instructions category has been removed from Settings. Existing source files, links and pending proposals are preserved. Legacy compatibility commands remain available to inspect, reconcile or finish this state; ordinary document proposals are the forward path.
 
 ## Scopes
 
@@ -105,4 +104,4 @@ A reconciliation failure restores captured state where safe. If filesystem state
 
 ## Shared consumers
 
-The Context Engine, Startup environment, Settings, Health, and documentation researcher must consume the same accepted resource projection and distinguish accepted, installed, active, inactive, conflicted, stale, and pending proposal states.
+The Context Engine, Startup environment, Settings, Health, and deterministic documentation CLI must consume the same accepted resource projection and distinguish accepted, installed, active, inactive, conflicted, stale, and pending proposal states.

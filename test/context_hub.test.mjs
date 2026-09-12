@@ -3025,7 +3025,7 @@ test("Context Hub accepts selected local file versions as one verified batch", a
   assert.deepEqual(project.localReviews.map((review) => review.path).sort(), ["docs/README.md", "docs/SECOND.md"]);
   const items = project.localReviews.map((review) => ({
     id: `local:${review.worktreeId || registered.id}:file:${review.path}`,
-    revisionToken: `local:${review.resourceState}:${review.resourceVersion || "-"}:${review.currentHash}`,
+    revisionToken: `local:${review.resourceState}:${review.resourceVersion || "-"}:${review.currentHash}:${review.resourceMode || "-"}`,
   }));
 
   const staleResponse = await fetch(origin + "/api/context-hub/accept", {
@@ -3184,7 +3184,7 @@ test("Context Room Home combines global review queues without nesting another Ho
   assert.deepEqual(secondLocalItem.reviews.map((review) => review.path).sort(), ["docs/README.md", "docs/SECOND.md"]);
   const snoozeReview = secondLocalItem.reviews.find((review) => review.path === "docs/SECOND.md");
   const snoozeId = `${secondLocalItem.id}:worktree:${snoozeReview.worktreeId || secondLocalItem.projectId}:file:${snoozeReview.path}`;
-  const snoozeToken = `local:${snoozeReview.resourceState}:${snoozeReview.resourceVersion || "-"}:${snoozeReview.currentHash}`;
+  const snoozeToken = `local:${snoozeReview.resourceState}:${snoozeReview.resourceVersion || "-"}:${snoozeReview.currentHash}:${snoozeReview.resourceMode || "-"}`;
   const snoozeResponse = await fetch(origin + "/api/context-hub/reviews/snooze", {
     method: "POST",
     headers: { "content-type": "application/json", "x-context-room-project": room.projectId },
@@ -3254,7 +3254,7 @@ test("Context Room Home combines global review queues without nesting another Ho
     const review = refreshedSecondProject.localReviews.find((item) => item.path === reviewPath);
     return {
       id: `local:${secondEntry.id}:file:${review.path}`,
-      revisionToken: `local:${review.resourceState}:${review.resourceVersion || "-"}:${review.currentHash}`,
+      revisionToken: `local:${review.resourceState}:${review.resourceVersion || "-"}:${review.currentHash}:${review.resourceMode || "-"}`,
     };
   });
   const unconfirmedBatch = await fetch(origin + "/api/context-hub/reject", {
@@ -3280,7 +3280,7 @@ test("Context Room Home combines global review queues without nesting another Ho
   assert.equal(rejectedBatch.status, 200, await rejectedBatch.text());
 
   const secondReview = refreshedSecondProject.localReviews.find((review) => review.path === "docs/SECOND.md");
-  const secondRevisionToken = `local:${secondReview.resourceState}:${secondReview.resourceVersion || "-"}:${secondReview.currentHash}`;
+  const secondRevisionToken = `local:${secondReview.resourceState}:${secondReview.resourceVersion || "-"}:${secondReview.currentHash}:${secondReview.resourceMode || "-"}`;
 
   const rejectedLocal = await fetch(origin + "/api/context-hub/reject", {
     method: "POST",
@@ -3297,8 +3297,8 @@ test("Context Room Home combines global review queues without nesting another Ho
   })).json();
   assert.equal(
     hubAfterRejection.projects.find((project) => project.id === secondEntry.id)
-      .localReviews.find((review) => review.path === "docs/SECOND.md").reviewStatus,
-    "needs_changes",
+      .localReviews.some((review) => review.path === "docs/SECOND.md"),
+    false,
   );
 
   const openedResponse = await fetch(origin + "/api/context-hub/project", {
@@ -3320,7 +3320,9 @@ test("Context Room Home combines global review queues without nesting another Ho
   assert.equal(projectFilesResponse.headers.get("x-context-room-target-project"), secondEntry.id);
   const projectFiles = await projectFilesResponse.json();
   assert.equal(fs.realpathSync(projectFiles.root), fs.realpathSync(second));
-  assert.ok(projectFiles.files.some((file) => file.path === "docs/SECOND.md"));
+  assert.equal(projectFiles.files.some((file) => file.path === "docs/SECOND.md"), false);
+  assert.equal(fs.existsSync(path.join(second, "docs/SECOND.md")), false);
+  assert.ok(projectFiles.files.some((file) => file.path === "docs/README.md"));
 });
 
 test("global Explorer context actions stay scoped to the selected local project", async (t) => {

@@ -36,7 +36,7 @@ test("context settings registry exposes only context-manageable settings and sco
   const entries = listContextSettings();
   assert.ok(entries.some((item) => item.key === "allowedPaths" && item.scope === "project"));
   assert.ok(entries.some((item) => item.key === "sharedSkills.providers.<provider>" && item.scope === "device"));
-  assert.equal(entries.some((item) => /appearance|sounds|reviewGate|markdownTemplates/.test(item.key)), false);
+  assert.equal(entries.some((item) => /reviewGate|reviewDecisions/.test(item.key)), false);
   assert.equal(explainContextSetting("sharedSkills.providerOverrides.codex").scope, "project/provider");
   assert.throws(() => explainContextSetting("reviewGate.operations"), (error) => error instanceof ContextSettingsError && error.code === "setting-not-manageable");
   assert.throws(() => explainContextSetting("unknown.value"), (error) => error.code === "unknown-setting");
@@ -116,7 +116,7 @@ test("typed validation rejects arbitrary JSON and unsafe setting families", () =
   assert.throws(() => planContextSettingsChange(adapter, { target, set: { "startupSkills.enabled": "yes" } }), (error) => error.code === "invalid-setting-value");
   assert.throws(() => planContextSettingsChange(adapter, { target, set: { watchRules: [{ path: "docs/", mode: "magic" }] } }), (error) => error.code === "invalid-setting-value");
   assert.throws(() => planContextSettingsChange(adapter, { target, set: { hubSections: [{ id: "main", title: "Main", cards: [], script: "nope" }] } }), (error) => error.code === "invalid-setting-value");
-  assert.throws(() => planContextSettingsChange(adapter, { target, set: { "appearance.fileTheme": "dracula" } }), (error) => error.code === "setting-not-manageable");
+  assert.throws(() => planContextSettingsChange(adapter, { target, set: { "appearance.fileTheme": "unknown-theme" } }), (error) => error.code === "invalid-setting-value");
   assert.throws(() => planContextSettingsChange(adapter, { target, set: { "sharedSkills.assignments.team": {} } }), (error) => error.code === "setting-not-manageable");
 });
 
@@ -152,3 +152,14 @@ test("plans cannot mix stores and expectedRevision is checked while planning", (
   assert.throws(() => planContextSettingsChange(adapter, { target, expectedRevision: "old", set: { allowedPaths: ["docs/"] } }), (error) => error.code === "stale-plan");
   assert.throws(() => planContextSettingsChange(adapter, { target, set: { allowedPaths: ["docs/"], "sharedSkills.providers.codex": "enabled" } }), (error) => error.code === "mixed-settings-scope");
 });
+
+ test("device preferences and templates are manageable without changing human review authority", () => {
+  const { adapter, target } = adapterFixture();
+  const plan = planContextSettingsChange(adapter, { target, set: { "appearance.fileTheme": "dracula", "sounds.volume": 0.2, "explorer.computerRoot": "~/Documents" } });
+  assert.equal(plan.store, "device-preferences");
+  applyContextSettingsPlan(adapter, plan.planId);
+  assert.equal(getContextSettings(adapter, { target, key: "appearance.fileTheme" }).value, "dracula");
+  const templates = planContextSettingsChange(adapter, { target, set: { markdownTemplates: [{ id: "decision", title: "Decision", content: "# Decision" }] } });
+  assert.equal(templates.store, "project");
+  assert.throws(() => planContextSettingsChange(adapter, { target, set: { "sounds.volume": 2 } }), /Volume/);
+ });

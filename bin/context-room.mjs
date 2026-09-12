@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { updateAllContextRooms } from "../scripts/update-context-rooms.mjs";
+import { planStateMigration, applyStateMigration } from "../src/state_migration.mjs";
 import {
   applyCliReviewAnnotation,
   applyAgentHandoff,
@@ -17,6 +18,8 @@ import {
   classifyAgentChanges,
   cliGitAuthor,
   createDocumentationChange,
+  inspectDocumentationChange,
+  listLocalDocumentationChanges,
   createSharedDocumentationProposal,
   createCliContextSnapshot,
   diffCliReview,
@@ -95,6 +98,7 @@ import {
 } from "../src/context_hub.mjs";
 import {
   backlinksDocumentation,
+  buildDocumentationCorpus,
   dependenciesDocumentation,
   diagramsDocumentation,
   inspectDocumentation,
@@ -102,13 +106,12 @@ import {
   metadataDocumentation,
   readDocumentation,
   relatedDocumentation,
-  renderDocumentationPacket,
   resolveDocumentationProjectRoot,
-  runDocumentationAgent,
   searchDocumentation,
   traceDocumentation,
   validateDocumentation,
-} from "../src/doc_agent.mjs";
+} from "../src/documentation.mjs";
+import { recordDocumentationRead } from "../src/documentation_readers.mjs";
 import {
   appendAgentAnnotation,
   buildContextRoomDoctorReport,
@@ -323,6 +326,7 @@ async function flushAndExit(code = 0) {
 }
 
 const KNOWN_OPTIONS = new Set([
+  "reader",
   "action", "actionable", "advisory", "all", "all-projects", "allow", "allow-stale", "apply", "branch", "budget", "contract", "cursor", "cwd", "depth", "description", "detail", "document", "dry-run", "enabled", "exclude", "expand", "fields", "files", "folder", "follow", "format", "fresh", "from", "goal", "h", "heading", "help", "highlight", "hook", "include",
   "assignment", "change", "collection", "collection-path", "collection-title", "destination", "id", "include", "json", "kind", "limit", "message", "mode", "name", "no-restart", "note", "operation", "path", "percent", "port", "profile", "project", "projects", "provider", "providers", "query",
   "expected-revision", "file", "filter", "idempotency-key", "label", "location", "no-color", "no-local", "non-interactive", "only", "plan", "profile", "project", "projects-file", "proposal", "quiet", "reason", "recent", "repository", "resource", "root", "scope", "search", "section", "selector", "session", "set", "settings", "severity", "shared", "shared-project", "shell", "since", "skills", "source", "status", "strict", "summary", "target", "task", "text", "title", "to", "types", "verbose", "version", "view", "watch", "workspace",
@@ -452,6 +456,9 @@ const primaryEditOpenByBranch = primaryEditCommand && String(args._[2] || "").tr
 const requestedCommand = args._[0] || "start";
 const command = ["start", "setup"].includes(requestedCommand) ? "hub" : requestedCommand;
 const reportedCommand = primaryAskCommand ? "ask" : primaryEditCommand ? "edit" : command;
+if (command === "context" && (args._[1] || "ask") === "ask") {
+  failAgentFirstCommand(reportedCommand, new ContextRoomCliError("removed-command", "The integrated documentation agent was removed. Use docs search, docs read, and docs inspect.", { exitCode: 2 }), { format: agentFirstFormat });
+}
 
 const unknownOption = Object.keys(args).find((key) => key !== "_" && !KNOWN_OPTIONS.has(key));
 if (unknownOption) {
@@ -553,8 +560,7 @@ function remoteUiTransport() {
   const url = String(process.env.CONTEXT_ROOM_REMOTE_URL || "").trim().replace(/\/$/, "");
   const token = String(process.env.CONTEXT_ROOM_REMOTE_TOKEN || "").trim();
   if (!url && !token) return null;
-  if (!url || !token) throw new ContextRoomCliError("remote-ui-config-invalid", "CONTEXT_ROOM_REMOTE_URL and CONTEXT_ROOM_REMOTE_TOKEN must be configured together.", { exitCode: 2 });
-  return { url, token };
+  throw new ContextRoomCliError("hosted-runtime-retired", "The hosted UI transport has been retired. Use the local Context Room CLI; Shared collaboration uses Git.", { exitCode: 2 });
 }
 
 async function requestRemoteUi(pathname, options = {}) {
@@ -662,7 +668,7 @@ if (command === "workspace") {
 }
 
 const requestedRoot = path.resolve(args.root || process.cwd());
-const documentationCommand = command === "docs" || (command === "context" && (args._[1] || "ask") === "ask");
+const documentationCommand = command === "docs";
 const documentationAction = documentationCommand ? (command === "docs" ? String(args._[1] || "") : "ask") : "";
 const localReadOnlyDocumentationAction = documentationAction === "ask" || new Set([
   "search",
@@ -681,22 +687,6 @@ const agentPrepareCommand = command === "agent" && args._[1] === "prepare";
 const contextBundleCommand = command === "context" && args._[1] === "bundle";
 const explicitSharedRepository = args.repository && args.repository !== true ? String(args.repository) : "";
 const explicitSharedProject = args["shared-project"] && args["shared-project"] !== true ? String(args["shared-project"]) : "";
-const documentationResearchBrief = documentationAction === "ask"
-  ? (args.task && args.task !== true ? String(args.task) : args._.slice(2).join(" ").trim())
-  : "";
-if (documentationAction === "ask" && args.session !== undefined) {
-  failEarlyCommand(primaryAskCommand ? "ask" : "context.ask", new ContextRoomCliError("unsupported-proposal-overlay", "context ask is accepted-only and does not accept --session or proposal overlays.", {
-    details: { option: "--session" },
-    exitCode: 2,
-  }));
-}
-if (documentationAction === "ask" && !documentationResearchBrief) {
-  const usageText = "Usage: context-room ask \"<complete research brief: task context, questions, constraints, and expected output>\" [--root . | --repository <git-url> --shared-project <project-id>] [--goal \"desired outcome\"] [--files path,...] [--depth quick|standard|exhaustive] [--budget 1200] [--json]";
-  failEarlyCommand(primaryAskCommand ? "ask" : "context.ask", new ContextRoomCliError("missing-research-brief", "context ask requires a complete research brief.", {
-    details: { usage: usageText },
-    exitCode: 2,
-  }), usageText);
-}
 if (documentationCommand && (args.repository === true || args.project === true || args["shared-project"] === true)) {
   failEarlyCommand(reportedCommand, new ContextRoomCliError("missing-option-value", "--repository, --project, and --shared-project each require a value.", {
     details: { options: ["--repository", "--project", "--shared-project"] },
@@ -771,6 +761,7 @@ const agentFirstTargetCommand = (
     && !(args.project && args.project !== true)
     && !(args.location && args.location !== true))
   || command === "review"
+  || (command === "changes" && ["begin", "list"].includes(args._[1]))
   || (command === "project" && ["current", "show", "register", "open"].includes(args._[1] || "current"))
   || localUiOpenCommand
   || command === "watch"
@@ -787,6 +778,7 @@ const agentFirstTargetCommand = (
   || (command === "shared" && args._[1] === "instructions" && args._[2] !== "status")
   || contextAgentFirstTargetCommand
   || command === "settings"
+  || command === "migrate"
   || (command === "doctor" && !args["all-projects"] && (Boolean(args._[1]) || Boolean(args.format || args.project || args.location || args.folder || args.provider || args.cursor || args.limit)))
 );
 let agentFirstTarget = null;
@@ -1678,27 +1670,34 @@ if (command === "context") {
   if (action !== "ask") {
     failAgentFirstCommand(`context.${action}`, new ContextRoomCliError("unknown-command", `Unknown context command: ${action}`, { exitCode: 2 }), { format: agentFirstFormat, target: agentFirstTarget });
   }
-  const task = documentationResearchBrief;
+  failAgentFirstCommand("context.ask", new ContextRoomCliError("removed-command", "The integrated documentation agent was removed. Use docs search, docs read, and docs inspect.", { exitCode: 2 }), { format: agentFirstFormat });
+}
+
+if (command === "migrate") {
   try {
-    const result = runDocumentationAgent({
-      root,
-      ...documentationTargetOptions,
-      cliPath: fileURLToPath(import.meta.url),
-      task,
-      goal: args.goal && args.goal !== true ? String(args.goal) : "",
-      files: splitList(args.files),
-      depth: args.depth && args.depth !== true ? String(args.depth) : "standard",
-      budget: args.budget === undefined ? undefined : args.budget,
+    const data = args.apply
+      ? applyStateMigration(agentFirstTarget.root, { expectedRevision: args.revision })
+      : planStateMigration(agentFirstTarget.root);
+    emitAgentFirstResult("migrate", { target: agentFirstTarget, data }, { format: agentFirstFormat });
+    process.exit(0);
+  } catch (error) { failAgentFirstCommand("migrate", error, { format: agentFirstFormat, target: agentFirstTarget }); }
+}
+
+if (command === "changes") {
+  const action = args._[1];
+  try {
+    let data;
+    if (action === "begin") data = createDocumentationChange(agentFirstTarget, {
+      task: args.task || args._.slice(2).join(" "), description: args.description || "", scope: args.scope || "local", sessionId: args.session || "",
     });
-    if ((args.contract && args.contract !== true && ["v2", "context-room.cli/2"].includes(String(args.contract).toLowerCase())) || (args.format && args.format !== true)) {
-      emitAgentFirstResult(primaryAskCommand ? "ask" : "context.ask", { data: result.packet }, { format: agentFirstFormat });
-    } else if (args.json) writeStdout(JSON.stringify(result.packet, null, 2));
-    else writeStdout(renderDocumentationPacket(result.packet), { newline: false });
-    await flushAndExit(0);
+    else if (action === "status") data = inspectDocumentationChange(args.change || args._[2]);
+    else if (action === "submit") data = publishDocumentationChange(args.change || args._[2], { summary: args.summary || "", description: args.description || "" });
+    else if (action === "list") data = args.scope === "shared" ? listSharedDocumentationProposals(agentFirstTarget) : listLocalDocumentationChanges(agentFirstTarget);
+    else throw new ContextRoomCliError("unknown-command", "changes requires begin, status, submit, or list.", { exitCode: 2 });
+    emitAgentFirstResult(`changes.${action}`, { target: agentFirstTarget, data }, { format: agentFirstFormat });
+    process.exit(0);
   } catch (error) {
-    if (machineContractRequested()) failAgentFirstCommand(primaryAskCommand ? "ask" : "context.ask", error, { format: agentFirstFormat });
-    console.error(`Context Room documentation agent failed: ${error.message}`);
-    process.exit(1);
+    failAgentFirstCommand(`changes.${action}`, error, { format: agentFirstFormat, target: agentFirstTarget });
   }
 }
 
@@ -1753,39 +1752,46 @@ if (command === "docs") {
       emitAgentFirstResult("docs.publish", { data }, { format: agentFirstFormat });
       process.exit(0);
     }
+    const corpus = buildDocumentationCorpus(root, { ...documentationTargetOptions, acceptedOnly: true, readOnly: true });
+    const withReader = (data) => ({ ...data, ...recordDocumentationRead(corpus,
+      data.results ? data.results.map((entry) => entry.path) : [data.path || data.document?.path || String(selector).split("#")[0]],
+      { readerToken: args.reader && args.reader !== true ? String(args.reader) : "", sessionId,
+        completePaths: action === "read" && !data.truncated && !data.section ? [data.path] : [] }),
+      freshness: { ...corpus.target, revision: corpus.revision.shared } });
     if (action === "search") {
       const query = args.query && args.query !== true ? String(args.query) : args._.slice(2).join(" ").trim();
-      const data = searchDocumentation(root, query, {
+      const data = withReader(searchDocumentation(root, query, {
         ...documentationTargetOptions,
+        corpus,
         status: args.status && args.status !== true ? String(args.status) : "",
         kind: args.kind && args.kind !== true ? String(args.kind) : "",
         limit: args.limit,
         budget: args.budget,
         sessionId,
-      });
+      }));
       if (machineContractRequested()) emitAgentFirstResult("docs.search", { data }, { format: agentFirstFormat });
       else writeStdout(JSON.stringify(data, null, 2));
       process.exit(0);
     }
     if (action === "read") {
-      const data = readDocumentation(root, selector, { ...documentationTargetOptions, section: args.section, budget: args.budget, sessionId });
+      const data = withReader(readDocumentation(root, selector, { corpus, section: args.section, budget: args.budget }));
       if (machineContractRequested()) emitAgentFirstResult("docs.read", { data }, { format: agentFirstFormat });
       else writeStdout(JSON.stringify(data, null, 2));
       process.exit(0);
     }
     if (action === "related") {
-      const data = relatedDocumentation(root, selector, { ...documentationTargetOptions, sessionId });
+      const data = withReader(relatedDocumentation(root, selector, { corpus }));
       if (machineContractRequested()) emitAgentFirstResult("docs.related", { data }, { format: agentFirstFormat });
       else writeStdout(JSON.stringify(data, null, 2));
       process.exit(0);
     }
     if (action === "trace") {
-      const data = traceDocumentation(root, selector, { ...documentationTargetOptions, section: args.section, sessionId });
+      const data = withReader(traceDocumentation(root, selector, { corpus, section: args.section }));
       if (machineContractRequested()) emitAgentFirstResult("docs.trace", { data }, { format: agentFirstFormat });
       else writeStdout(JSON.stringify(data, null, 2));
       process.exit(0);
     }
-    const inspectOptions = { ...documentationTargetOptions, sessionId };
+    const inspectOptions = { ...documentationTargetOptions, corpus };
     let data;
     if (action === "inspect") data = inspectDocumentation(root, selector, inspectOptions);
     else if (action === "metadata") data = metadataDocumentation(root, selector, inspectOptions);
@@ -1795,6 +1801,7 @@ if (command === "docs") {
     else if (action === "diagrams") data = diagramsDocumentation(root, selector, inspectOptions);
     else if (action === "validate") data = validateDocumentation(root, selector, inspectOptions);
     else throw new Error(`Unknown docs command: ${action}`);
+    data = withReader(data);
     if (machineContractRequested()) emitAgentFirstResult(`docs.${action}`, { data }, { format: agentFirstFormat });
     else writeStdout(JSON.stringify(data, null, 2));
     process.exit(0);

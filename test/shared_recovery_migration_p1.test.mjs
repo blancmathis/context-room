@@ -49,6 +49,8 @@ function makeSharedFixture(base, { skills = false } = {}) {
   git(base, ["clone", remote, seed]);
   configureGit(seed);
   initializeSharedRepository(seed, { name: "Shared recovery fixture" });
+  // This fixture represents the pre-refactor implicit skill assignments being recovered.
+  fs.unlinkSync(path.join(seed, "skill-locations.json"));
   writeFile(seed, "projects.json", JSON.stringify({
     version: 1,
     projects: [{ id: "demo", title: "Demo" }],

@@ -2414,7 +2414,7 @@ test("Context Hub rejects only the exact local review revision shown", async (t)
     return {
       id: `${group.id}:worktree:${review.worktreeId}:file:${review.path}`,
       review,
-      revisionToken: `local:${review.resourceState}:${review.resourceVersion || "-"}:${review.currentHash}`,
+      revisionToken: `local:${review.resourceState}:${review.resourceVersion || "-"}:${review.currentHash}:${review.resourceMode || "-"}`,
     };
   };
 

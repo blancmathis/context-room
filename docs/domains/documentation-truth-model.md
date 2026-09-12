@@ -20,6 +20,10 @@ This document defines document roles, stable IDs, direct maintenance dependencie
 
 This document does not define product behavior owned elsewhere, exact implementation schemas, every format style rule, or migration history.
 
+## Scope of this documentation profile
+
+The ownership, IDs, sections and metadata rules below organize this repository's documentation. They are not prerequisites imposed on Context Room users. Existing document trees work without front matter, stable IDs or reorganization. Dependency declarations enable navigation; Context Room does not turn unchanged dependent documents into review items or dispatch agents to maintain them.
+
 ## Document roles
 
 ### Owner
