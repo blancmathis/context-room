@@ -38,7 +38,7 @@ export function normalizeNotebookObject(value, id = value?.id) {
   const result = { id: notebookId(id), type: value.type };
   for (const key of ['x', 'y', 'width', 'height', 'x2', 'y2', 'rotation', 'fontSize', 'strokeWidth']) if (value[key] !== undefined) result[key] = numeric(value[key]);
   for (const key of ['color', 'fill']) if (value[key] !== undefined) {
-    if (typeof value[key] !== 'string' || !/^(#[a-fA-F0-9]{3,8}|black|white|transparent|none)$/.test(value[key])) failNotebook('notebook_color', 'Use a plain color, not a resource URL.');
+    if (typeof value[key] !== 'string' || !/^(#(?:[a-fA-F0-9]{3}|[a-fA-F0-9]{4}|[a-fA-F0-9]{6}|[a-fA-F0-9]{8})|black|white|transparent|none)$/.test(value[key])) failNotebook('notebook_color', 'Use a plain color, not a resource URL.');
     result[key] = value[key];
   }
   if (value.locked !== undefined) { if (typeof value.locked !== 'boolean') failNotebook('notebook_object', 'Invalid object lock.'); result.locked = value.locked; }
@@ -79,7 +79,7 @@ export function normalizeNotebookDocument(input) {
 }
 export const emptyNotebook = (id, title = 'Notebook') => normalizeNotebookDocument({ schemaVersion: NOTEBOOK_VERSION, mediaType: NOTEBOOK_MIME, id, title, revision: 0, objects: [], assets: {} });
 /** A batch compares exact object revisions, not an obsolete whole-scene snapshot. */
-export function applyNotebookEdits(document, tombstones, edits, actor) {
+export function applyNotebookEdits(document, tombstones, edits, actor, { origins = {} } = {}) {
   actor = notebookActor(actor);
   if (!Array.isArray(edits) || !edits.length || edits.length > NOTEBOOK_LIMITS.edits) failNotebook('notebook_edits', 'A batch needs 1–256 targeted edits.');
   const current = new Map(document.objects.map(o => [o.id, o])), seen = new Set(), changes = [], conflicts = [];
@@ -104,7 +104,7 @@ export function applyNotebookEdits(document, tombstones, edits, actor) {
       after = normalizeNotebookObject({ ...before, points: [...before.points, ...points(edit.points)] }, id);
     } else failNotebook('notebook_edit', 'Unsupported notebook operation.');
     if (after?.type === 'image' && !Object.hasOwn(document.assets, after.asset)) failNotebook('notebook_asset', 'Upload the exact image before referencing it.');
-    if (after) after = { ...after, revision: revision + 1, createdBy: before?.createdBy || actor, updatedBy: actor };
+    if (after) after = { ...after, revision: revision + 1, createdBy: before?.createdBy || origins[id] || actor, updatedBy: actor };
     changes.push({ id, before, after, revision: revision + 1 });
   }
   if (conflicts.length) failNotebook('notebook_object_conflict', 'Some objects changed. Your local work is retained for reconciliation.', { conflicts });

@@ -40,7 +40,7 @@ function applyFrame(state, frame, file) {
   if (state.receipts.has(frame.operationId)) failNotebook('notebook_recovery_conflict', 'A notebook history contains a duplicate operation.');
   if (frame.kind === 'edits') {
     const objects = new Map(state.document.objects.map(o => [o.id, o]));
-    for (const change of frame.changes) { if (change.after) objects.set(change.id, change.after); else objects.delete(change.id); state.tombstones[change.id] = change.revision; }
+    for (const change of frame.changes) { if (change.after) objects.set(change.id, change.after); else objects.delete(change.id); state.tombstones[change.id] = change.revision; if (change.after && !state.origins[change.id]) state.origins[change.id] = change.after.createdBy; }
     state.document = { ...state.document, revision: frame.sceneRevision, objects: [...objects.values()] };
   } else if (frame.kind === 'asset') {
     state.document.assets[frame.assetId] = frame.asset; state.document.revision = frame.sceneRevision;
@@ -59,7 +59,7 @@ function readState(root, id) {
   if (!header || header.schemaVersion !== 1 || header.document.id !== id) failNotebook('notebook_missing', 'Notebook working scene not found.');
   if (header.rootIdentity !== rootIdentity) failNotebook('notebook_root_conflict', 'This working scene belongs to another exact filesystem location.');
   const state = { document: decodeNotebook(Buffer.from(JSON.stringify(header.document))), locator: header.locator, rootIdentity, sequence: 0,
-    chain: notebookHash(header), tombstones: {}, receipts: new Map(), frozen: new Map(), submissions: new Map(), knownSources: new Set([header.locator.sourceHash]), history: [] };
+    chain: notebookHash(header), tombstones: {}, origins: Object.fromEntries(header.document.objects.map(o => [o.id, o.createdBy])), receipts: new Map(), frozen: new Map(), submissions: new Map(), knownSources: new Set([header.locator.sourceHash]), history: [] };
   const directory = safeNotebookPath(root, `${folder}/events`);
   const files = fs.existsSync(directory) ? fs.readdirSync(directory).sort() : [];
   for (const file of files) {
@@ -97,7 +97,10 @@ function requireWrite(state, canWrite) { if (!canWrite(state.locator.path)) fail
 function publicState(state, { since = 0, includeDocument = true } = {}) {
   return { protocolVersion: NOTEBOOK_VERSION, resourceId: state.document.id, locator: cloneNotebook(state.locator), revision: state.document.revision, sequence: state.sequence,
     ...(includeDocument ? { document: cloneNotebook(state.document), tombstones: { ...state.tombstones } } : {}),
-    history: cloneNotebook(state.history.filter(e => e.sequence > since).slice(-200)), submissions: cloneNotebook([...state.submissions.values()].slice(-50)), status: 'confirmed', accepted: false };
+    history: cloneNotebook(state.history.filter(e => e.sequence > since).slice(0, 200)),
+    historyComplete: state.history.filter(e => e.sequence > since).length <= 200,
+    nextSequence: state.history.filter(e => e.sequence > since).slice(0, 200).at(-1)?.sequence || since,
+    submissions: cloneNotebook([...state.submissions.values()].slice(-50)), status: 'confirmed', accepted: false };
 }
 export function openNotebook(root, { path, title = 'Notebook', id = randomUUID(), canWrite = () => false } = {}) {
   canonicalNotebookRoot(root); path = notebookPath(path); notebookId(id);
@@ -135,7 +138,7 @@ export function mutateNotebook(root, request, { actor, canWrite = () => false } 
     const state = readState(root, id); requireWrite(state, canWrite);
     const previous = replay(state, operationId, fingerprint, actor); if (previous) return previous;
     assertLocation(root, state, locationRevision);
-    const result = applyNotebookEdits(state.document, state.tombstones, edits, actor); encodeNotebook(result.document);
+    const result = applyNotebookEdits(state.document, state.tombstones, edits, actor, { origins: state.origins }); encodeNotebook(result.document);
     const receipt = { protocolVersion: NOTEBOOK_VERSION, operationId, resourceId: id, revision: result.document.revision, sequence: state.sequence + 1,
       objectRevisions: Object.fromEntries(result.changes.map(c => [c.id, c.revision])), status: 'confirmed', accepted: false, at: new Date().toISOString() };
     return publishFrame(root, state, { kind: 'edits', operationId, fingerprint, actor, sceneRevision: result.document.revision, changes: result.changes, receipt });

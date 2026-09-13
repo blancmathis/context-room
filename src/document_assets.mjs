@@ -8,6 +8,7 @@ import { beginLocalProposal, submitLocalProposal, decideLocalProposalFile } from
 const STORE = ".context-room/document-assets";
 const MAX_BYTES = 20 * 1024 * 1024;
 export const DOCUMENT_ASSET_FORMATS = new Map([
+  ["crnb", "application/vnd.context-room.notebook+json"],
   ["png", "image/png"], ["jpg", "image/jpeg"], ["jpeg", "image/jpeg"], ["gif", "image/gif"],
   ["webp", "image/webp"], ["avif", "image/avif"], ["svg", "image/svg+xml"], ["pdf", "application/pdf"],
   ["docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],

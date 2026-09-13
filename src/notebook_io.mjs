@@ -35,7 +35,7 @@ export function makeNotebookDirectory(root, rel) {
   for (const part of rel.split('/')) {
     prefix = prefix ? `${prefix}/${part}` : part;
     const target = safeNotebookPath(root, prefix);
-    try { fs.mkdirSync(target, { mode: 0o700 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+    try { fs.mkdirSync(target, { mode: 0o700 }); syncNotebookDirectory(path.dirname(target)); } catch (error) { if (error.code !== 'EEXIST') throw error; }
     if (!fs.lstatSync(safeNotebookPath(root, prefix)).isDirectory()) failNotebook('notebook_path_scope', 'A notebook directory was replaced.');
   }
   return safeNotebookPath(root, rel);

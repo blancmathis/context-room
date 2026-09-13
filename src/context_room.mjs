@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { renderAppShell } from "./ui/app.mjs";
+import { handleNotebookHttp, isNotebookMutation } from "./notebook_http.mjs";
 import { createLisiereConnector } from "./lisiere_connector.mjs";
 import { isDocumentAssetPath, listDocumentAssets, readDocumentAssetReview, recordAcceptedDocumentAsset, decideDocumentAsset } from "./document_assets.mjs";
 import { readReviewCleanupPolicy, writeReviewCleanupPolicy, previewReviewCleanup, applyReviewCleanup, recentReviewCleanupReceipts } from "./review_cleanup.mjs";
@@ -16951,6 +16952,7 @@ function isCodexPromptRequest(req) {
 }
 
 function isOwnerReviewAuthorityMutation(pathname = "", method = "GET") {
+  if (isNotebookMutation(method, pathname)) return true;
   const key = `${String(method || "GET").toUpperCase()} ${String(pathname || "")}`;
   return new Set([
     "POST /api/settings",
@@ -20206,6 +20208,14 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   assertManagedProjectRootIdentity(root, expectedRootIdentity);
   const requestRuntimeProfile = assertRuntimeProfile(runtimeProfile);
   const url = new URL(req.url, "http://context-room.invalid");
+  if (url.pathname === '/api/notebooks' || url.pathname.startsWith('/api/notebooks/')) {
+    if (req.method === 'POST') beforeManagedControlMutation?.();
+    if (await handleNotebookHttp(req, res, { root, url, readJsonBody, sendJson,
+      canRead: rel => canReviewDocumentAsset(root, rel),
+      canWrite: rel => canEditLocalProposalPath(root, rel),
+      actor: { kind: 'human', id: String(req.headers['x-context-room-notebook-client'] || 'desktop') },
+    })) return;
+  }
   const readContextHubForRequest = () => {
     if (!hostedSharedProvider) {
       const state = readFastContextHubState(root);

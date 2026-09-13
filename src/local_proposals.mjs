@@ -205,14 +205,22 @@ function publicProposal(ctx, proposal) {
 }
 
 /** The caller supplies the accepted corpus, never an unchecked working-tree snapshot. */
-export function beginLocalProposal(projectRoot, { title, description = "", files = [], allowedPaths = [] } = {}) {
+export function beginLocalProposal(projectRoot, { title, description = "", files = [], allowedPaths = [], requestId = "" } = {}) {
   if (!String(title || "").trim()) fail("local_proposal_title", "A proposal title is required.");
   const scopes = allowedPaths.map((entry) => {
     relative(entry.endsWith("/") ? entry.slice(0, -1) : entry);
     return entry;
   });
   return locked(projectRoot, (ctx) => {
-    const id = `local-${randomUUID()}`;
+    if (requestId && !/^[a-zA-Z0-9_-]{1,96}$/.test(requestId)) fail("local_proposal_request", "Invalid preparation request identifier.");
+    const key = requestId ? hash(requestId).slice(0, 32) : "";
+    const id = requestId ? `local-${key.slice(0,8)}-${key.slice(8,12)}-${key.slice(12,16)}-${key.slice(16,20)}-${key.slice(20)}` : `local-${randomUUID()}`;
+    const preparation = requestId ? revision({ title, description, allowedPaths: scopes, files: files.map(f => [f.path, hash(Buffer.from(f.content)), f.mode ?? 0o644]) }) : null;
+    if (requestId && fs.existsSync(safePath(ctx.root, `${STORE}/proposals/${id}.json`))) {
+      const existing = readProposal(ctx, id);
+      if (existing.preparation !== preparation) fail("local_proposal_request_conflict", "This preparation request already names different input.");
+      return publicProposal(ctx, existing);
+    }
     const workspace = `${STORE}/workspaces/${id}`;
     fs.mkdirSync(safePath(ctx.root, workspace), { recursive: true, mode: 0o700 });
     const base = Object.create(null);
@@ -227,12 +235,14 @@ export function beginLocalProposal(projectRoot, { title, description = "", files
       const destination = safePath(ctx.root, `${workspace}/${rel}`);
       fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
       // Reflink where supported; Node falls back to independent bytes. Never hardlink drafts.
-      fs.copyFileSync(safePath(ctx.root, blobPath(digest)), destination, fs.constants.COPYFILE_FICLONE | fs.constants.COPYFILE_EXCL);
+      const retained = requestId ? readBytes(ctx.root, `${workspace}/${rel}`) : null;
+      if (retained && (retained.hash !== digest || retained.mode !== mode)) fail("local_proposal_preparation_conflict", "Interrupted preparation contains newer bytes; nothing was overwritten.");
+      if (!retained) fs.copyFileSync(safePath(ctx.root, blobPath(digest)), destination, fs.constants.COPYFILE_FICLONE | fs.constants.COPYFILE_EXCL);
       fs.chmodSync(destination, mode);
     }
     const now = new Date().toISOString();
     const proposal = { schemaVersion: 1, id, scope: "local", title: String(title).trim(), description,
-      rootIdentity: ctx.rootIdentity, workspace, allowedPaths: scopes, base,
+      rootIdentity: ctx.rootIdentity, workspace, allowedPaths: scopes, base, ...(requestId ? { preparation } : {}),
       baseRevision: manifestRevision(base), status: "editing", createdAt: now, updatedAt: now, decisions: {} };
     saveProposal(ctx, proposal);
     return publicProposal(ctx, proposal);
