@@ -1,4 +1,5 @@
 /** Durable, portable notebook outbox. No optimistic documentary acceptance. */
+import { recordNotebookGesture, notebookGestureEdits } from './notebook_gestures.mjs';
 import { applyNotebookEdits, cloneNotebook, emptyNotebook, notebookActor, notebookId, notebookPath, NOTEBOOK_VERSION } from './notebook_protocol.mjs';
 
 const copy = value => value == null ? value : cloneNotebook(value);
@@ -13,6 +14,7 @@ const blank = () => ({ version: 0, metadata: {}, snapshot: null, operations: [] 
 export class MemoryNotebookStorage {
   records = new Map();
   async read(key) { return copy(this.records.get(key) || blank()); }
+  async list() { return [...this.records].filter(([, state]) => state.snapshot).map(([key, state]) => ({ key, snapshot: copy(state.snapshot), metadata: copy(state.metadata) })); }
   async commit(key, version, changes) {
     const state = this.records.get(key) || blank();
     if (state.version !== version) throw fault('notebook_cache_conflict', 'Another client changed this local resource.');
@@ -50,6 +52,16 @@ export class IndexedNotebookStorage {
       tx.onerror = tx.onabort = () => reject(tx.error || fault('notebook_storage_read', 'The local cache could not be read.'));
     });
   }
+  async list() {
+    const db = await this.ready;
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(['metadata', 'snapshots'], 'readonly');
+      const keys = tx.objectStore('snapshots').getAllKeys(), snapshots = tx.objectStore('snapshots').getAll();
+      const metaKeys = tx.objectStore('metadata').getAllKeys(), metas = tx.objectStore('metadata').getAll();
+      tx.oncomplete = () => { const metadata = new Map(metaKeys.result.map((key, i) => [key, metas.result[i]?.value || {}])); resolve(keys.result.map((key, i) => ({ key, snapshot: snapshots.result[i], metadata: metadata.get(key) || {} }))); };
+      tx.onerror = tx.onabort = () => reject(tx.error || fault('notebook_storage_read', 'The notebook cache could not be listed.'));
+    });
+  }
   async commit(key, version, changes) {
     const db = await this.ready;
     return new Promise((resolve, reject) => {
@@ -82,7 +94,9 @@ function visible(state, actor) {
     // A response can be lost after delivery; never apply the same acknowledged change twice.
     if (op.receipt && state.snapshot.sequence >= op.receipt.sequence) continue;
     try {
-      const applied = applyNotebookEdits(document, tombstones, op.request.edits, actor);
+      const applied = op.action === 'asset'
+        ? { document: { ...document, revision: document.revision + 1, assets: { ...document.assets, [op.assetId]: { mimeType: op.request.mimeType, data: op.request.data } } }, changes: [] }
+        : applyNotebookEdits(document, tombstones, op.request.edits, actor);
       document = applied.document;
       for (const change of applied.changes) tombstones[change.id] = change.revision;
     } catch (error) { conflicts.push({ ...copy(op), error: { code: error.code, message: error.message, details: error.details } }); }
@@ -99,7 +113,7 @@ export class NotebookClient {
   }
   async state() { return this.storage.read(this.key); }
   async view() { return visible(await this.state(), this.actor); }
-  async notify() { const view = await this.view(); if (!this.closed) this.onChange(view); return view; }
+  async notify() { const view = await this.view(); if (!this.closed) { try { await this.onChange(view); } catch (error) { this.observerError = error; } } return view; }
   async change(build) {
     for (let attempt = 0; attempt < 8; attempt++) {
       const state = await this.state(), changes = build(state);
@@ -134,19 +148,50 @@ export class NotebookClient {
       return { snapshot, deleteOperations: settled, metadata: { ...state.metadata, offline: false, confirmedAt: Date.now(), acknowledgements: [...(state.metadata.acknowledgements || []), ...state.operations.filter(op => settled.includes(op.operationId)).map(op => ({ operationId: op.operationId, receipt: op.receipt }))].slice(-200) } };
     });
   }
-  async enqueue(edits) {
+  async enqueue(edits, { gestureId } = {}) {
     return this.exclusive(async () => {
       const operationId = notebookId(this.newId());
       await this.change(state => {
         const view = visible(state, this.actor);
         if (!view) throw fault('notebook_cache_missing', 'Load this notebook before drawing.');
-        let conflict;
-        try { applyNotebookEdits(view.document, view.tombstones || {}, edits, this.actor); }
+        let conflict, applied;
+        try { applied = applyNotebookEdits(view.document, view.tombstones || {}, edits, this.actor); }
         catch (error) { if (Number(error.status || error.statusCode) !== 409) throw error; conflict = { code: error.code, message: error.message, details: error.details }; }
         const operation = { operationId, order: state.version + 1, state: conflict ? 'conflict' : 'queued', request: { protocolVersion: NOTEBOOK_VERSION, resourceId: this.scope.resourceId, operationId, locationRevision: state.snapshot.locator.revision, edits: copy(edits) }, path: state.snapshot.locator.path, createdAt: Date.now(), ...(conflict ? { error: conflict } : {}) };
-        return { putOperations: [operation] };
+        if (applied) operation.preview = applied.changes.map(change => ({ id: change.id, before: change.before, after: change.after }));
+        return { putOperations: [operation], ...(applied && gestureId ? { metadata: recordNotebookGesture(state.metadata, gestureId, applied.changes) } : {}) };
       });
       await this.notify(); return operationId;
+    });
+  }
+  async enqueueAsset({ mimeType, data, assetId }) {
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(mimeType) || typeof data !== 'string' || data.length > 20 * 1024 * 1024 || !/^[a-f0-9]{64}$/.test(assetId || '')) throw fault('notebook_asset', 'Use a bounded raster image with an exact SHA-256 address.');
+    return this.exclusive(async () => {
+      const operationId = notebookId(this.newId());
+      await this.change(state => {
+        if (!state.snapshot) throw fault('notebook_cache_missing', 'Load this notebook before adding an image.');
+        return { putOperations: [{ action: 'asset', assetId, operationId, order: state.version + 1, state: 'queued', createdAt: Date.now(), path: state.snapshot.locator.path,
+          request: { protocolVersion: NOTEBOOK_VERSION, resourceId: this.scope.resourceId, operationId, locationRevision: state.snapshot.locator.revision, mimeType, data } }] };
+      });
+      await this.notify(); return operationId;
+    });
+  }
+  async replayGesture(direction = 'undo') {
+    if (!['undo', 'redo'].includes(direction)) throw fault('notebook_undo', 'Choose undo or redo.');
+    return this.exclusive(async () => {
+      const operationId = notebookId(this.newId());
+      await this.change(state => {
+        const history = copy(state.metadata.gestureHistory || { undo: [], redo: [], archived: 0 }), gesture = history[direction].at(-1);
+        if (!gesture) return null;
+        const view = visible(state, this.actor), edits = notebookGestureEdits(gesture, direction);
+        const applied = applyNotebookEdits(view.document, view.tombstones || {}, edits, this.actor);
+        history[direction].pop();
+        for (const change of gesture.changes) change.revision = applied.changes.find(item => item.id === change.id).revision;
+        history[direction === 'undo' ? 'redo' : 'undo'].push(gesture);
+        return { metadata: { ...state.metadata, gestureHistory: history }, putOperations: [{ operationId, order: state.version + 1, state: 'queued', createdAt: Date.now(), path: state.snapshot.locator.path,
+          request: { protocolVersion: NOTEBOOK_VERSION, resourceId: this.scope.resourceId, operationId, locationRevision: state.snapshot.locator.revision, edits } }] };
+      });
+      return this.notify();
     });
   }
   async mark(operationId, fields) {
@@ -185,15 +230,15 @@ export class NotebookClient {
           }
           if (!receipt) {
             await this.mark(op.operationId, { state: 'sending' });
-            receipt = await this.transport.mutate(copy(op.request));
+            receipt = await (op.action === 'asset' ? this.transport.asset(copy(op.request)) : this.transport.mutate(copy(op.request)));
           }
-          if (receipt?.status !== 'confirmed' || receipt.operationId !== op.operationId || receipt.resourceId !== this.scope.resourceId || !Number.isSafeInteger(receipt.sequence)) throw fault('notebook_receipt_invalid', 'No valid canonical receipt was received. Local work is retained.');
+          if (receipt?.status !== 'confirmed' || (op.action === 'asset' && receipt.assetId !== op.assetId) || receipt.operationId !== op.operationId || receipt.resourceId !== this.scope.resourceId || !Number.isSafeInteger(receipt.sequence)) throw fault('notebook_receipt_invalid', 'No valid canonical receipt was received. Local work is retained.');
           await this.mark(op.operationId, { state: 'acknowledged', receipt });
           const snapshot = await this.transport.scene(this.scope.resourceId);
           if (snapshot.sequence < receipt.sequence) throw fault('notebook_receipt_stale', 'The scene response predates the confirmed operation.');
           await this.adopt(snapshot);
         } catch (error) {
-          const conflict = Number(error.status || error.statusCode) === 409 || /object_conflict|location_conflict|external_conflict|scope|authority|revoked|expired/.test(error.code || '');
+          const conflict = [400, 403, 404, 409, 410, 413, 415, 422].includes(Number(error.status || error.statusCode)) || /object_conflict|location_conflict|external_conflict|scope|authority|revoked|expired/.test(error.code || '');
           await this.mark(op.operationId, { state: conflict ? 'conflict' : op.receipt ? 'acknowledged' : 'uncertain', error: { code: error.code || 'network', message: error.message, details: error.details } });
           if (conflict) continue;
           throw error;
@@ -237,7 +282,20 @@ export class NotebookClient {
 
 export function notebookHttpTransport(request, actor) {
   const post = (action, body) => request(`/api/notebooks/${action}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-context-room-notebook-client': actor.id }, body: JSON.stringify(body) });
-  return { open: body => post('open', body), mutate: body => post('mutate', body),
+  return { open: body => post('open', body), mutate: body => post('mutate', body), asset: body => post('asset', body),
     receipt: (resourceId, operationId) => request(`/api/notebooks/receipt?${new URLSearchParams({ resourceId, operationId })}`),
     scene: resourceId => request(`/api/notebooks/scene?${new URLSearchParams({ resourceId })}`), post };
+}
+
+/** Resolve one durable browser identity atomically, including simultaneous first tabs. */
+export async function notebookBrowserIdentity(storage) {
+  const key = '@context-room-browser-identity';
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const state = await storage.read(key);
+    if (state.metadata.id) return notebookId(state.metadata.id);
+    const id = 'browser-' + globalThis.crypto.randomUUID();
+    try { await storage.commit(key, state.version, { metadata: { id } }); return id; }
+    catch (error) { if (error.code !== 'notebook_cache_conflict') throw error; }
+  }
+  throw fault('notebook_cache_conflict', 'The browser identity could not be persisted.');
 }

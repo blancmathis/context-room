@@ -37,3 +37,7 @@ R01–R06 retain the local service, exact worktrees, global Hub, authorized Comp
 ## Remaining implementation sequence
 
 L1 and the durable notebook/review part of L2 are implemented and tested. Desktop drawing surfaces, native Android cache/rendering, opt-in authenticated device transport, complementary navigation receipts, full remote parity, Shared submission, scoped voice/agent integration, recoverable migration and packaging remain in progress. These are not reduced to optional follow-ups. The standard Android test identity and key are isolated from existing installations. Native vendor integration and physical proof are tracked separately.
+
+## Gesture continuation
+
+The portable client now persists pressure samples during a gesture, groups segmented strokes for selective undo/redo across restart, and preserves exact object revisions. Embedded-image outbox entries and a transactionally initialized browser identity use the same cache. Inert SVG exports retain pressure geometry and identify agent modifications of human-origin objects. See [verification](verification.md) for synthetic tests and the remaining proof boundaries. These primitives alone do not constitute a delivered tablet interface.
