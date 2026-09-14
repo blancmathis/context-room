@@ -34,7 +34,9 @@ test('@smoke @notebook continuous ink, independent remote changes, undo, frozen 
     const dialog = await open(page); const resourceId = await dialog.getAttribute('data-resource-id');
     await draw(page, { up: false });
     await expect.poll(() => readNotebook(f.root, resourceId).document.objects.length).toBe(1);
-    const before = readNotebook(f.root, resourceId); expect(before.document.objects[0].points.length).toBeGreaterThan(1);
+    // The first point is a distinct canonical receipt; wait for the moving prefix while the pen stays down.
+    await expect.poll(() => readNotebook(f.root, resourceId).document.objects[0]?.points.length || 0).toBeGreaterThan(1);
+    const before = readNotebook(f.root, resourceId);
     mutateNotebook(f.root, { protocolVersion: 1, resourceId, operationId: 'independent-agent', locationRevision: before.locator.revision, edits: [{ kind: 'put', id: 'agent-object', expectedRevision: 0, object: { id: 'agent-object', type: 'rect', x: 400, y: 100, width: 120, height: 80 } }] }, { actor: { kind: 'agent', id: 'synthetic-agent' }, canWrite: () => true });
     await expect.poll(() => page.evaluate(() => testNotebook.surface.document.objects.length)).toBe(2);
     expect(await page.evaluate(() => testNotebook.surface.gesture.kind)).toBe('ink');

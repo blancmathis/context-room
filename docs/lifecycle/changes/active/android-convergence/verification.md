@@ -2,50 +2,113 @@
 
 ## Summary
 
-Incremental, synthetic evidence for the working convergence branch. This is not a claim that the complete Android/tablet product is delivered.
+The recovered notebook implementation and its local corrections have been
+verified on macOS with Node 22.23.0. This is evidence for a working desktop
+notebook foundation. The complete connected-device product is not delivered.
 
 ## Defines
 
-The verification state of added notebook gesture, rendering and cache behavior. The existing refactor requirements remain the regression contract.
+Observed checkpoint restoration, notebook contract tests, browser scenarios,
+regression results and the remaining implementation boundaries.
 
 ## Does not define
 
-Human acceptance of real documents, installation on a device, provider authentication, physical stylus measurements, or publication approval.
+Human acceptance of personal documents, an Android build or installation,
+authenticated agent/audio behavior, a migration of personal data, or physical
+BOOX performance. A synthetic agent operation is not a real provider call.
 
-## Continuous gestures and exact undo
+## Restoration on 2026-09-14
 
-On Node 22.16.0 / Linux, with `umask 022`:
+Main remains `05f5ded92cc1158b8c5aea09f4836fd08f4de27f`. Both checkpoint
+manifests and their file digests were verified before restoration. The source
+archives match their Git trees exactly: 187 files for `22c7a16803e27ba11e9049c26f8862ff0cfc705b`,
+195 files for `62cbd331e9b9a761d7504ac49e07f26aa6cdc92e`.
 
-```
+The original commits were retained through their Git bundle and merged with
+the remote transport-only continuation `c63b9c2a629de5c0f4e6e3f31efc4759cc4bb601`
+in an isolated checkout. No existing installation or private project data was
+used as a test fixture.
+
+## Notebook checks
+
+Use `umask 022`, preserving the existing exact file-mode assertions:
+
+```bash
 node --test test/notebook*.test.mjs test/local_proposals.test.mjs test/document_assets.test.mjs
+npx --no-install playwright test test/e2e/notebooks.spec.mjs --reporter=line
 ```
 
-Result: 48 tests passed, zero failures or skips. Added cases cover samples persisted before pen-up, segmented strokes, disk-failure recovery suffixes, restart-safe grouped undo/redo, independent agent objects, exact stale-object refusal, explicit lock undo, simultaneous browser identity initialization, and pressure geometry/origin in inert SVG export.
+The restored checkpoint first passed 53 contract tests and three Chromium
+desktop scenarios. Its corrections now pass **59 contract tests** and **16
+browser scenarios** across Chromium desktop, Chromium mobile, Firefox and
+WebKit. No tests are skipped in these checks.
 
-`npm run package:privacy`: passed (104 packaged files at this checkpoint). `git diff --check`: passed.
+The browser scenarios use real isolated Context Room servers and cover:
 
-The browser editor, device transport and Android application are not proved by these model tests. Full-suite, rendered-interface, native build, authenticated agent/audio and physical-device evidence must be recorded separately.
+- a growing stroke before pen-up, an independent synthetic agent edit, and
+  selective undo/redo;
+- a frozen local proposal, correction of that exact snapshot, human fixture
+  acceptance and exclusion of later working ink from the accepted file;
+- IndexedDB recovery after disconnecting and reopening, retaining operation
+  identifiers until canonical receipts arrive;
+- rapid strokes while local persistence is deliberately delayed;
+- grayscale rendering, visible 44-pixel button targets and automated WCAG A/AA
+  checks. Desktop and narrow-screen captures were inspected.
 
-## Folder and review surfaces
+The pen continuation fixes immediate successive pen-down events being consumed
+by a previous stroke's unfinished save. It retains lift coordinates, ordered
+undo across tool changes and recovery suffixes from every failed stroke.
 
-The continuation includes a folder-scoped notebook chooser, a retained drawing
-canvas, persisted pressure samples, selection/lasso, shapes, connectors, text,
-embedded raster images, locking, targeted undo/redo, exports and a frozen
-notebook correction surface in the existing human file review. The normal
-proposal reader and per-file decision endpoints remain the owners of acceptance.
-The working scene is explicitly labelled as unaccepted. No separate notes
-catalogue, Inbox, hosted profile or agent review authority was added.
+A second reproduced failure involved two independent writers observing the
+temporary hardlink used to publish a lock atomically. The same transition can
+affect immutable frames. Path checks now briefly wait for publication to finish
+before reading; persistent hardlinks and symlinks still fail closed. Controlled
+two-process publication tests verify both the transition and the retained
+refusal. No linked file is admitted to a notebook critical section or read.
 
-Node 22.16.0 with umask 022: `node --test test/notebook*.test.mjs
-test/local_proposals.test.mjs test/document_assets.test.mjs` passes 53 tests.
-`npm run package:privacy` passes with 111 package files. `git diff --check` passes.
-Portable canvas tests use synthetic event/graphics contracts; they are not a
-browser rendering, stylus latency or physical palm-rejection result.
+The first WebKit run observed the initial point's receipt before the subsequent
+moving-prefix receipt. Its test now waits for the intended growing-prefix
+condition while the pen remains down, using the unchanged assertion and test
+budget. The subsequent complete 16-scenario run passes. This does not measure
+physical stylus latency.
 
-Three real-server Chromium scenarios are in `test/e2e/notebooks.spec.mjs`.
-Their attempted execution was blocked at navigation with
-`net::ERR_BLOCKED_BY_ADMINISTRATOR`. No browser policy was changed, assertion
-relaxed, or alternate route used to evade that restriction. Their visual,
-accessibility and end-to-end assertions therefore remain unverified in this
-session. Run them in the repository's authorized browser matrix before treating
-these surfaces as finished. The existing CI browser and Node matrix is retained.
+## Existing regression suite
+
+`npm test` completed with **63 of 64 test processes passing**. Every Shared
+shard, including its exclusive performance check, passed. The single failing
+assertion was:
+
+```text
+Context Hub reopens a fresh exact legacy proposal room through the prepared fast path
+Observed: 365 ms. Required: less than 300 ms.
+```
+
+The same test passed in isolation at **198 ms**, with its original assertions,
+using:
+
+```bash
+node --test --test-name-pattern='^Context Hub reopens a fresh exact legacy proposal room through the prepared fast path$' test/context_hub.test.mjs
+```
+
+This does not turn the full parallel run into a successful run or establish a
+root cause for its timing sensitivity. No Hub implementation, freshness guard,
+timeout or performance threshold was changed. The preceding session's reported
+unspecified Shared failure was not reproduced by this full run.
+
+`node bin/context-room.mjs doctor --root .` exited successfully; external startup
+advisories remain visible. Package privacy, package dry-run and whitespace
+checks pass with this delivery checkpoint. The existing Node 20/22/24
+and browser CI matrices are retained.
+
+## Open product gates
+
+There is no Android project or APK in these checkpoints. Native pressure/palm
+handling, device pairing and revocation, secure remote transport, both tablet
+modes, exact remote application receipts, notebook submission to Shared,
+context-bound real dictation/conversation/co-drawing, data migration and final
+removal of the external compatibility dependency remain implementation work.
+
+The full application smoke/layout/accessibility/performance/soak release matrix
+has not been rerun for this recovery milestone. Notebook-specific checks do not
+stand in for it. Native instrumentation, installation/signature migration,
+physical BOOX testing and personal-data migration have not been performed.

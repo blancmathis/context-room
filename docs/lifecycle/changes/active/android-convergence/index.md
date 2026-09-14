@@ -2,7 +2,7 @@
 
 ## Summary
 
-The implementation branch starts at `05f5ded92cc1158b8c5aea09f4836fd08f4de27f`, preserving the refactor and concurrent configuration/navigation stabilization. This is an execution record, not human acceptance of project documents or a deployed release.
+The implementation branch starts at `05f5ded92cc1158b8c5aea09f4836fd08f4de27f`, preserving the refactor and concurrent configuration/navigation stabilization. The two source checkpoints have been restored and desktop notebook verification has resumed. This remains an incomplete convergence branch, not a deployed release.
 
 ## Defines
 
@@ -36,15 +36,18 @@ R01–R06 retain the local service, exact worktrees, global Hub, authorized Comp
 
 ## Remaining implementation sequence
 
-L1 and the durable notebook/review part of L2 are implemented and tested. Desktop drawing surfaces, native Android cache/rendering, opt-in authenticated device transport, complementary navigation receipts, full remote parity, Shared submission, scoped voice/agent integration, recoverable migration and packaging remain in progress. These are not reduced to optional follow-ups. The standard Android test identity and key are isolated from existing installations. Native vendor integration and physical proof are tracked separately.
+The notebook protocol and local review foundation are implemented. The desktop drawing surface is connected and its real-server Chromium scenarios pass. Common device/session authority contracts, native Android cache/rendering, opt-in authenticated device transport, complementary navigation receipts, full remote parity, notebook Shared submission, scoped voice/agent integration, recoverable migration and Android packaging remain to be implemented. There is no Android project or APK in this checkpoint. The product's connected-device and physical acceptance criteria remain open.
 
 ## Gesture continuation
 
 The portable client now persists pressure samples during a gesture, groups segmented strokes for selective undo/redo across restart, and preserves exact object revisions. Embedded-image outbox entries and a transactionally initialized browser identity use the same cache. Inert SVG exports retain pressure geometry and identify agent modifications of human-origin objects. See [verification](verification.md) for synthetic tests and the remaining proof boundaries. These primitives alone do not constitute a delivered tablet interface.
 
-The folder chooser and retained canvas are now wired to the existing local UI
-and the `.crnb` file path. Frozen notebook corrections reuse the existing human
-file decision route. The portable contract tests pass; the newly added browser
-scenarios have not passed their execution gate in the current environment.
-This does not complete the connected-device, native Android, voice or migration
-lots, and does not retire existing compatibility data.
+The folder chooser and retained canvas are wired to the existing local UI and
+the `.crnb` file path. Frozen notebook corrections reuse the existing human
+file decision route. Restored browser tests cover working ink, offline cache
+reopening, frozen correction and accepted-only reads. Further tests and fixes
+retain rapid successive strokes, their lift positions, ordered undo and every
+failed stroke's recovery data. Concurrent lock publication waits for its
+temporary link to disappear while retaining the rejection of persistent links.
+See [verification](verification.md) for commands, observed results and remaining
+checks. Existing compatibility data and installations are retained.
