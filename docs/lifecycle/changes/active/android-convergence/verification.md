@@ -311,6 +311,34 @@ the earlier unconfirmed attempt remains a recorded failure, with no claim
 that its cause has been established. This is emulator evidence, not a physical
 BOOX or Wi-Fi result.
 
+## Navigation performance follow-up
+
+The trace of the Shared checkpoint's sustained-navigation failure shows a
+slow file-row appearance during a worktree change. The eventual file read is
+under 9 ms; concurrent Hub requests wait while synchronous registry work
+occupies the server. An eight-cycle local diagnostic reproduces the unchanged
+2,000 ms file-opening failure at 2,388 ms. CPU sampling attributes 11.75 seconds
+of that run to registry lock-record synchronization.
+
+The fallback catalogue now obtains its snapshot, live project records and
+Shared repository records under one normal registry lock. Refresh scheduling
+reads freshness without constructing another fallback catalogue. Recovery,
+physical root identity, live project-control checks and durable lock publication
+remain intact. The same eight-cycle diagnostic passes both soak scenarios;
+sampled registry synchronization falls to 7.66 seconds. This short diagnostic
+does not replace the default fifteen-minute sustained run.
+
+The complete Hub regression passes **72 tests without skips**, including
+replacement-directory refusal and snapshot invalidation. Eight existing exact
+agent-navigation scenarios pass in all four browser configurations. A hosted
+Chromium run at `568511d` encountered `ECONNRESET` before receiving an HTTP
+response for the stable-id navigation command. That test's API client now
+retries only a transport reset, once, with the same id; HTTP response and exact
+visible-workspace assertions remain unchanged. The connection reset's cause
+has not been established. Soak passes at that commit, but its browser failure
+still makes hosted run `34871837645` fail. Measurements are now attached before
+the soak's final assertions, preserving diagnostics when a budget fails.
+
 ## Open product gates
 
 Both complete tablet modes, optional viewport following and presentation,

@@ -122,6 +122,7 @@ import {
   readContextHubAttention,
   readContextHubRegistry,
   readContextHubSnapshot,
+  readContextHubNavigationSnapshot,
   readContextHubSnapshotInputs,
   invalidateContextHubSnapshot,
   recordContextHubProjectOpened,
@@ -16446,9 +16447,9 @@ function contextHubAttentionItems(root, requestedId = "") {
   return buildAttentionItems({ reviews, freshness, decisions, healthIssues, project: selection.project });
 }
 
-function minimalContextHubState(root) {
+function minimalContextHubState(root, navigation) {
   const currentRoot = path.resolve(root);
-  const worktrees = listContextHubProjects().map((project) => ({
+  const worktrees = navigation.projects.map((project) => ({
     ...project,
     current: safeRealPath(project.root) === safeRealPath(currentRoot),
     localReviewCount: 0,
@@ -16463,7 +16464,7 @@ function minimalContextHubState(root) {
     generatedAt: "",
     currentProjectId: contextRoomProjectId(currentRoot),
     projects,
-    sharedRepositories: readContextHubRegistry().sharedRepositories.map((entry) => ({ repository: entry.repository })),
+    sharedRepositories: navigation.sharedRepositories.map((entry) => ({ repository: entry.repository })),
     proposals: [],
     items: [],
     repositoryErrors: [],
@@ -16472,7 +16473,7 @@ function minimalContextHubState(root) {
       localProjects: projects.length,
       localWorktrees: worktrees.length,
       sharedProjects: projects.filter((project) => project.mode !== "local").length,
-      sharedRepositories: readContextHubRegistry().sharedRepositories.length,
+      sharedRepositories: navigation.sharedRepositories.length,
       proposals: 0,
       localReviews: 0,
     },
@@ -16547,9 +16548,9 @@ function contextHubStateForRoot(state, root) {
 }
 
 function readFastContextHubState(root) {
-  const snapshot = readContextHubSnapshot();
+  const navigation = readContextHubNavigationSnapshot(), snapshot = navigation.snapshot;
   if (!snapshot?.state) {
-    return contextHubStateWithAttention(contextHubStateWithFreshness(contextHubStateForRoot(minimalContextHubState(root), root), { refreshing: true }));
+    return contextHubStateWithAttention(contextHubStateWithFreshness(contextHubStateForRoot(minimalContextHubState(root, navigation), root), { refreshing: true }));
   }
   const ageMs = Math.max(0, Date.now() - Date.parse(snapshot.generatedAt));
   const state = contextHubStateForRoot(snapshot.state, root);
@@ -18830,7 +18831,12 @@ export function createMemoryServer({
       })).catch(() => {});
       return refresh;
     }
-    const shouldNotify = Boolean(options.force || (!remoteAccess && readFastContextHubState(resolvedRoot).freshness?.refreshing));
+    // Scheduling only needs snapshot freshness. Constructing a whole fallback
+    // catalogue here repeats the foreground registry reads during every opening.
+    const retainedSnapshot = !remoteAccess && !options.force ? readContextHubSnapshot() : null;
+    const shouldNotify = Boolean(options.force || (!remoteAccess && (!retainedSnapshot?.state
+      || Date.now() - Date.parse(retainedSnapshot.generatedAt) > CONTEXT_HUB_SNAPSHOT_TTL_MS
+      || contextHubSnapshotRefreshes.has(resolvedRoot))));
     const refresh = Promise.resolve()
       .then(() => contextHubSnapshotRefresh(resolvedRoot, options))
       .then((snapshot) => {

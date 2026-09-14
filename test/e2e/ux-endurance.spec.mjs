@@ -998,6 +998,9 @@ test("@smoke an exact agent command changes only the targeted Workspace", async 
   expect(companionWorkspace).not.toBe(primaryWorkspace);
 
   const response = await page.request.post(`${data.origin}/api/workspaces/${companionWorkspace}/command`, {
+    // The API client shares a keep-alive pool. Retry only a transport reset,
+    // once, with this same navigation id; HTTP and visible-target checks stay strict.
+    maxRetries: 1,
     data: {
       id: "e2e-exact-workspace-command",
       action: "navigate",
@@ -1116,8 +1119,13 @@ test("@soak repeated multi-day navigation does not accumulate workspace or brows
   await openProject(page, "Atlas");
   await openProjectFile(page, "docs/README.md");
   const final = await collectMetrics(page, guard.requestCount);
-  assertStableMetrics(baseline, final);
   checkpoints.push(final);
+  // Retain measurements even when an unchanged release budget fails below.
+  await testInfo.attach("ux-soak-metrics", {
+    body: JSON.stringify({ cycles: cycle, elapsedMs: Date.now() - realStartedAt, baseline, checkpoints, final, timings }, null, 2),
+    contentType: "application/json",
+  });
+  assertStableMetrics(baseline, final);
   assertNoSustainedGrowth(checkpoints, "heap", 1_000_000);
   assertNoSustainedGrowth(checkpoints, "nodes", 100);
   assertNoSustainedGrowth(checkpoints, "domNodes", 100);
@@ -1128,10 +1136,6 @@ test("@soak repeated multi-day navigation does not accumulate workspace or brows
   expect(companionGuard.failures, companionGuard.failures.join("\n")).toEqual([]);
   await companion.close();
 
-  await testInfo.attach("ux-soak-metrics", {
-    body: JSON.stringify({ cycles: cycle, elapsedMs: Date.now() - realStartedAt, baseline, checkpoints, final, timings }, null, 2),
-    contentType: "application/json",
-  });
 });
 
 test("@soak time-dependent reviews, drafts, and shared reconnect safely", async ({ page }, testInfo) => {

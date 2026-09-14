@@ -27,6 +27,7 @@ import {
   readContextHubAttention,
   readContextHubRuntime,
   readContextHubSnapshot,
+  readContextHubNavigationSnapshot,
   recordContextHubProjectOpened,
   recoverContextHubSharedTransactions,
   registerContextHubProject,
@@ -177,6 +178,27 @@ test("Context Hub registry bookkeeping uses saved titles while the project list 
   assert.equal(configReads, 0, "opening bookkeeping must not reopen every registered project's config");
   assert.equal(listContextHubProjects().find((entry) => entry.id === project.id).title, "Live title");
   assert.ok(configReads > 0);
+});
+
+test("Context Hub navigation fallback retains live roots and follows snapshot invalidation", (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-navigation-snapshot-"));
+  withHubHome(t, path.join(base, "hub"));
+  const root = fs.realpathSync(makeProject(base, "Navigation snapshot"));
+  const project = registerContextHubProject(root);
+  const fallback = readContextHubNavigationSnapshot();
+  assert.equal(fallback.snapshot, null);
+  assert.equal(fallback.projects.find(item => item.id === project.id).available, true);
+  assert.deepEqual(fallback.sharedRepositories, []);
+  writeContextHubSnapshot({ marker: "known-current" });
+  assert.equal(readContextHubNavigationSnapshot().snapshot.state.marker, "known-current");
+  invalidateContextHubSnapshot();
+  fs.renameSync(root, root + "-original");
+  fs.mkdirSync(root);
+  const replaced = readContextHubNavigationSnapshot();
+  assert.equal(replaced.snapshot, null);
+  assert.equal(replaced.projects.find(item => item.id === project.id).available, false, "a replacement folder must not become an available registered project");
+  unregisterContextHubProject(root);
+  assert.deepEqual(readContextHubNavigationSnapshot().projects, []);
 });
 
 test("Context Hub keeps one shared proposal while counting it for every linked local consumer", (t) => {
