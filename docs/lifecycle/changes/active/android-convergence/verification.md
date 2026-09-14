@@ -221,6 +221,12 @@ It now holds both catalogue sources while asserting the same loading state.
 The focused boot case passes in all four browsers. Hosted checks on the new
 commit still need to finish.
 
+The first hosted Android job at `511d4ba` failed during environment setup
+because `sdkmanager` was absent from PATH. The workflow now explicitly installs
+the Android command-line tools with a pinned setup action before requesting
+platform and build-tools 35. This setup correction requires a new hosted run;
+it does not change the locally verified APK.
+
 ## Open product gates
 
 Both complete tablet modes, exact remote

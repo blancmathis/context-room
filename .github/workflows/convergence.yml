@@ -72,6 +72,9 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+        with:
+          packages: platform-tools
       - name: Install the pinned Android build platform
         run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
       - name: Build the separate preview and its instrumentation APK
