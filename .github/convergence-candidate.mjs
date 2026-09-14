@@ -12,7 +12,9 @@ const token = process.env.CANDIDATE_TOKEN; delete process.env.CANDIDATE_TOKEN;
 const sha = value => createHash('sha256').update(value).digest('hex');
 const git = (...args) => execFileSync('git', args, { encoding:'utf8', maxBuffer:64*1024*1024 }).trim();
 const manifest = JSON.parse(fs.readFileSync('.github/convergence-patch.json', 'utf8'));
-if (manifest.version !== 1 || !/^[a-f0-9]{40}$/.test(manifest.patchBlob) || !/^[a-f0-9]{64}$/.test(manifest.patchSha256) || !Array.isArray(manifest.files) || !manifest.files.length || manifest.files.length > 200) throw new Error('Invalid patch manifest.');
+const patchBlobs = manifest.patchBlobs || [manifest.patchBlob];
+if (manifest.version !== 1 || !Array.isArray(patchBlobs) || !patchBlobs.length || patchBlobs.length > 16 || !patchBlobs.every(id => /^[a-f0-9]{40}$/.test(id)) || !/^[a-f0-9]{64}$/.test(manifest.patchSha256) || !Array.isArray(manifest.files) || !manifest.files.length || manifest.files.length > 200) throw new Error('Invalid patch manifest.');
+if (manifest.patchBlobs && manifest.patchBlob) throw new Error('Choose one unambiguous patch transport.');
 const paths = new Set();
 for (const file of manifest.files) {
   if (!/^(src|test|android|scripts|docs|schemas|bin)\/[a-zA-Z0-9_.\/-]+$/.test(file.path) && !['package.json','package-lock.json','README.md','PRODUCT.md','LICENSE','.gitignore'].includes(file.path)) throw new Error('Patch path is outside the authorized source surface.');
@@ -44,9 +46,16 @@ function verifyOutputs() {
 }
 if (process.argv[2] === 'apply') {
   verifyInputs();
-  const blob = await api('/git/blobs/' + manifest.patchBlob);
-  if (blob.encoding !== 'base64' || blob.size > 8*1024*1024) throw new Error('Invalid bounded patch blob.');
-  const compressed = Buffer.from(blob.content, 'base64');
+  const chunks = []; let total = 0;
+  for (const id of patchBlobs) {
+    const blob = await api('/git/blobs/' + id);
+    if (blob.encoding !== 'base64' || !Number.isSafeInteger(blob.size) || blob.size < 1 || blob.size > 8*1024*1024) throw new Error('Invalid bounded patch blob.');
+    const bytes = Buffer.from(blob.content, 'base64');
+    total += bytes.length;
+    if (bytes.length !== blob.size || total > 8*1024*1024) throw new Error('The complete patch exceeds its transport bound.');
+    chunks.push(bytes);
+  }
+  const compressed = Buffer.concat(chunks);
   if (sha(compressed) !== manifest.patchSha256) throw new Error('Patch digest mismatch.');
   const patch = gunzipSync(compressed, {maxOutputLength:32*1024*1024});
   const target = path.join(process.env.RUNNER_TEMP, 'convergence-source.patch'); fs.writeFileSync(target, patch, {mode:0o600});
