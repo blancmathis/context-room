@@ -2,7 +2,7 @@
 
 ## Summary
 
-The implementation branch starts at `05f5ded92cc1158b8c5aea09f4836fd08f4de27f`, preserving the refactor and concurrent configuration/navigation stabilization. The notebook foundation includes an optional TLS device service and an Android preview with native drawing and the existing full owner interface, verified in an isolated emulator. Full convergence remains incomplete; this branch is not a deployed release.
+The implementation branch starts at `05f5ded92cc1158b8c5aea09f4836fd08f4de27f`, preserving the refactor and concurrent configuration/navigation stabilization. The notebook foundation includes an optional TLS device service and an Android preview with native drawing and the existing full owner interface, verified in an isolated emulator. A real Codex provider, scoped progressive drawing, private conversation bindings and local speech primitives are tested separately; their app integration is in progress. Full convergence remains incomplete; this branch is not a deployed release.
 
 ## Defines
 

@@ -475,10 +475,45 @@ native client does; three consecutive mobile runs pass. The production receipt
 checks and deadlines are unchanged. A separate local HTTP performance run passes
 at 724 ms; it does not erase the full-suite failure above.
 
+## Agent and local audio foundations
+
+The dedicated Codex stdio provider uses the existing account. Before any model
+turn, it verifies that shell, apps, plugins, additional agents, web search and
+every inherited MCP server are disabled for that child process. Codex CLI
+configuration tables merge rather than replace: an empty MCP table is
+insufficient. Quoted override segments also create a different key in the tested
+CLI, so unsupported server names fail closed. Global/Desktop configuration is
+not rewritten. A cold, separate metadata database did not initialize reliably;
+the product provider uses the account's configured store rather than copying it.
+
+A real fresh Codex task creates a three-step notebook diagram and a progressive
+ink stroke. Nine agent-authored objects and six durable pen positions are
+observed. The human object, accepted ordinary file and other project stay
+unchanged. First useful geometry takes 22,133 ms and the complete turn 26,377 ms:
+the ten-second simple-diagram objective is not met. The generated SVG was
+rendered and inspected; provenance labels still need visual refinement. This
+proves the model/engine path, not its app controls or physical pen display.
+
+A separate real connection resumes that exact Codex task, recalls the diagram
+and original human text, and leaves the scene unchanged. Private conversation
+bindings and send identities have focused tests for duplicate requests, original
+project scope, task reuse, interruption, revoked access and uncertain process
+termination. Uncertain sends are not automatically replayed. UI/API integration
+and explicit uncertain-turn recovery are still open.
+
+Local Whisper recognizes a synthetic French recording word for word in 2,031 ms.
+macOS speech produces the exact requested reply as 24 kHz mono PCM16 WAVE,
+lasting 3,643 ms. These tests invoke the real speech programs and a separate
+copy of the model weights. They do not use a physical microphone and do not
+claim playback. Audio scratch files are removed; a transcript is never sent
+automatically. The 18 provider, notebook-agent, audio and conversation-store
+contract tests pass. Standard tests do not invoke a model account.
+
 ## Open product gates
 
-Context-bound real dictation/conversation/co-drawing, data migration and final
-removal of the external compatibility dependency remain implementation work.
+App integration of context-bound dictation/conversation/co-drawing, data
+migration and final removal of the external compatibility dependency remain
+implementation work.
 The verified Android installation is an emulator preview. It does not establish
 physical Wi-Fi behavior or BOOX pen/palm latency.
 
