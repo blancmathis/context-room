@@ -473,6 +473,15 @@ function withReclaim(paths, deadline, options, operation) {
   let reclaim = null;
   while (reclaim === null) {
     assertBeforeDeadline(deadline, options);
+    // Inspect an existing generation before writing and syncing a temporary
+    // contender that cannot be published. Recovery still revalidates identity
+    // under its ticket protocol; publication races retain the EEXIST path below.
+    const existing = readLockRecord(paths.reclaim);
+    if (existing) {
+      if (lockIsStale(existing, options.staleMs, options)) recoverStaleReclaim(paths, deadline, existing, options);
+      else { assertBeforeDeadline(deadline, options); waitForLock(deadline); }
+      continue;
+    }
     try {
       reclaim = createLockRecord(paths.reclaim, { kind: "coordination", ownerLockPath: paths.lock });
     } catch (error) {

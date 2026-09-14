@@ -395,6 +395,14 @@ fails unchanged latency budgets after 225 cycles: maximum project opening
 retained privately. Neither the earlier short profile nor hosted soak alone
 resolves this local performance gate.
 
+The stale-lock path wrote and synchronized a temporary contender before
+discovering an existing reclaim record. It now inspects that record first,
+using the same stale-generation recovery and identity checks; publication
+races retain the existing `EEXIST` recovery path. All twelve filesystem-lock
+tests pass with their original deadlines and assertions, including the
+unsafe-sidecar refusal. Full regression and hosted verification of this
+correction remain separate checks.
+
 ## Open product gates
 
 Full tablet owner operation, context-bound real dictation/conversation/co-drawing,
