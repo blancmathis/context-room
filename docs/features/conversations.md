@@ -10,8 +10,9 @@ context_room:
 
 Discuss a document or notebook through the optional Codex connection. The
 conversation retains its original source while other documents remain usable.
-Dictation produces a local draft for review before sending. The Android owner
-preview also supports native microphone capture and exact-answer playback.
+Dictation produces a local draft for review before sending. Explicit Voice
+cycles between listening, the original agent and spoken answers. The Android
+owner preview uses native microphone capture and exact-answer playback.
 
 ## Defines
 
@@ -20,8 +21,8 @@ agent actions, explicit task recovery and foreground audio in the current previe
 
 ## Does not define
 
-Automatic documentary acceptance, continuous hands-free voice, physical BOOX
-performance, a standalone tablet agent, or a new notes application.
+Automatic documentary acceptance, physical BOOX performance, acoustic interruption
+during speaker playback, a standalone tablet agent, or a new notes application.
 
 ## Open and resume
 
@@ -57,7 +58,16 @@ capture, local transcription and stopped audio. The resulting text remains in
 the composer until **Send** is pressed. Silence does not generate a message.
 Recognition uses a local `whisper-cli` installation and model on the Mac;
 `CONTEXT_ROOM_WHISPER_MODEL` can point to a separately installed model file.
-Model installation and continuous voice are still convergence work.
+Model installation remains convergence work.
+
+**Voice** explicitly enables sending recognized phrases to this conversation.
+It requires a clear composer, keeps the transcript in the original history and
+returns to listening after the answer is played. While the agent thinks or
+draws, a new spoken phrase stops that exact turn before sending its replacement.
+During playback the microphone is off; **Interrupt and speak** stops the answer
+and returns to listening. **End voice** stops its microphone, playback and active
+voice turn. Returning from the background never restarts Voice automatically.
+Recognition or network failure stops the loop and retains recoverable input.
 
 **Read answer** prepares exact passages from the recorded answer with local
 macOS speech and plays them on the active surface. A prepared passage is not
@@ -71,14 +81,23 @@ different operation. Changing the conversation is disabled during capture,
 transcription and playback.
 
 The Android owner preview requests microphone permission only after the user
-starts dictation. It captures bounded PCM privately, closes the microphone on
+starts dictation or Voice. It captures bounded PCM privately, closes the microphone on
 backgrounding and retains unacknowledged recordings with their original source.
 **Recover dictation** restores one for an explicit transcription retry. Its audio
-is removed only after the composer draft is saved. The bridge is restricted to
+is removed only after the composer draft is saved, or an explicit **Discard dictation**.
+The bridge is restricted to
 the trusted main frame; document frames cannot request microphone or file access.
 Drawing-only pairings do not receive conversation or owner permissions.
 
-Completed desktop recordings also remain in the saved composer draft when
-transcription needs retry. Recovery of an unfinished browser recording is not
-implemented yet. See the [convergence verification](../lifecycle/changes/active/android-convergence/verification.md)
-for exact browser, provider, emulator and remaining physical proof boundaries.
+Desktop capture journals microphone chunks in private IndexedDB every half second.
+After reload, **Recover dictation** restores the saved chunks in their original
+conversation; the last uncommitted fraction cannot be guaranteed after a crash.
+A storage failure stops capture and preserves the earlier committed chunks.
+Neither recovery nor dictation starts the agent automatically. Completed recordings
+also remain with the composer when transcription needs retry. Controls wait for
+the original draft and history to finish loading before permitting a new capture.
+A microphone stop that cannot reach the Mac is retained with its exact controller
+identity and released on return; it cannot stop a newer audio controller.
+The current browser, provider, emulator and remaining physical
+proof boundaries are in `docs/lifecycle/changes/active/android-convergence/verification.md`
+in the Context Room source repository.

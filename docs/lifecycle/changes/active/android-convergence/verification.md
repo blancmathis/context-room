@@ -618,14 +618,62 @@ recovery panels were inspected.
 
 These native checks do not establish physical microphone quality, audible BOOX
 output or speech recognition through the tablet. Real Mac recognition and speech
-preparation are proven separately above. The current audio changes still need
-their complete regression/CI checkpoint; the preceding green run is identified
-explicitly rather than applied to newer uncommitted sources.
+preparation are proven separately above. The full local run at
+`0352a5682fe7e8d8db4d1642bc7c4e56079ed602` finishes **74/75 processes**:
+the new conversation guide was missing from generated agent context. CI run
+`34903905751` finds the same broken link on Node 20; the Node 22/24 jobs are
+cancelled by the matrix, while all four browsers and soak pass. The copy manifest
+and its source guide now retain valid generated links; the focused canonical-copy
+test passes. A fresh complete checkpoint is still required.
+
+## Continuous voice and browser recording recovery
+
+Explicit Voice uses speech endpoints to delimit a phrase, local Whisper to
+recognize it, the original Codex task to respond, and exact local speech passages
+for playback. It listens again after playback. A phrase spoken while the agent
+works stops the exact original turn before redirection. During speaker playback,
+the microphone is off and **Interrupt and speak** resumes listening explicitly.
+This is not proof of acoustic echo cancellation or hands-free speaker barge-in.
+
+Twenty-eight scenarios pass across Chromium desktop/mobile, Firefox and WebKit:
+original source/history, dictation and playback ordering, unfinished browser
+recording recovery, continuous voice, interruption, resumed listening and late
+transcription after End voice. Browser chunks are journaled separately from the
+composer, every half second. An out-of-order chunk is refused without replacing
+the prior journal, and another source's audio is neither recovered nor removed.
+Twelve focused audio, session and runtime tests pass, including a stale stop
+request refusing to stop a later turn.
+
+A separate real browser run uses a finite synthetic MediaStream and then silence.
+Actual capture and endpoint detection produce one Whisper transcript, one real
+Codex turn, one local macOS speech passage and one completed Web Audio receipt.
+Listening resumes and the explicit End voice stops it. The original Markdown
+stays byte-for-byte unchanged. Output is muted; physical input and audibility are
+not tested. The recognizer substitutes one word in the synthetic French prompt;
+the test does not claim word-perfect recognition. A separate manual-dictation
+run also passes real capture, Whisper, explicit Send, Codex and browser playback.
+Both rendered answer panels were inspected.
+
+The Android endpoint component passes with actual PCM capture/playback. The owner
+test revealed two readiness assumptions: a reload could still expose the old DOM,
+and the conversation history could still be loading. The test now requires a
+new page and restored source identity. Product controls also wait for the saved
+draft/history before enabling microphone or send actions. A further owner run
+found that backgrounding stopped native capture before the HTTP release could
+reach the Mac. Pending releases now survive reload with their exact client and
+epoch, without taking over another surface's controller. The final **32 scenarios**
+pass across all four browsers, including background release across reload. The corrected Android
+owner test passes permission, capture, recovery, reload, explicit Voice capture and
+foreground/background stop. Its two native component tests pass as well. The APK
+SHA-256 is `8eaca6a3bdbdfd9cf7a4c3703939dddc185fa86b66e77d2b15e149ee9d56e929`;
+signature v2, eight exact shared assets, Internet and microphone permissions pass.
+The recovered owner panel was visually inspected. Recognition and a real Codex
+voice turn through Android remain separate proof gates.
 
 ## Open product gates
 
-Continuous voice, voice alongside the native pen, document observation,
-unfinished browser-audio recovery, data migration and final removal of the
+Voice alongside the native pen, document observation,
+data migration and final removal of the
 external compatibility dependency remain implementation work. Native dictation
 and original-recording recovery have the emulator checks above; complete
 conversation and recognition through that surface remain to be verified.

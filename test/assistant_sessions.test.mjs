@@ -120,5 +120,11 @@ test('stop reaches the original provider task, and revoked source permissions bl
   service.send(f.original, conversation.id, { requestId: randomUUID(), text: 'Keep drawing until stopped' });
   await until(() => p.turns.length === 1); await service.stop(f.original, conversation.id); await until(() => !service.running.size);
   assert.equal(service.get(f.original, conversation.id).operation.status, 'stopped');
+  const previous = service.get(f.original, conversation.id).operation.id;
+  service.send(f.original, conversation.id, { requestId: randomUUID(), text: 'A later independent turn' });
+  await until(() => p.turns.length === 2);
+  await assert.rejects(() => service.stop(f.original, conversation.id, { operationId: previous }), { code: 'assistant_turn_changed' });
+  assert.equal(service.get(f.original, conversation.id).operation.status, 'running');
+  await service.stop(f.original, conversation.id); await until(() => !service.running.size);
   f.revoke(); assert.throws(() => service.get(f.original, conversation.id), { code: 'source_permission' });
 });

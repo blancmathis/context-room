@@ -28,7 +28,7 @@ for relative in ('debug/app-debug.apk', 'androidTest/debug/app-debug-androidTest
     installed = run(adb + ['install', '-r', str(repo / 'android/app/build/outputs/apk' / relative)], capture_output=True, text=True)
     if 'Success' not in installed.stdout:
         raise RuntimeError('APK installation was not confirmed')
-def instrument(class_name, fixture=None):
+def instrument(class_name, fixture=None, tests=1):
     command = adb + ['shell', 'am', 'instrument', '-w', '-r', '-e', 'class', 'app.contextroom.tablet.' + class_name]
     if fixture:
         command += ['-e', 'fixture', fixture]
@@ -36,11 +36,12 @@ def instrument(class_name, fixture=None):
     log_path = output / (class_name + '.log')
     with log_path.open('w') as log:
         result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=150)
-    if result.returncode != 0 or 'OK (1 test)' not in log_path.read_text() or 'FAILURES!!!' in log_path.read_text():
+    expected = f'OK ({tests} test' + ('s)' if tests != 1 else ')')
+    if result.returncode != 0 or expected not in log_path.read_text() or 'FAILURES!!!' in log_path.read_text():
         with (output / 'device-diagnostic.log').open('w') as log:
             subprocess.run(adb + ['logcat', '-d', '-s', 'System.out:I', 'AndroidRuntime:E', 'chromium:E', '*:S'], stdout=log, stderr=subprocess.STDOUT)
         raise RuntimeError('Native audio acceptance failed: ' + str(log_path))
-instrument('NativeAudioDeviceTest')
+instrument('NativeAudioDeviceTest', tests=2)
 run(adb + ['shell', 'pm', 'revoke', 'app.contextroom.tablet.preview', 'android.permission.RECORD_AUDIO'], capture_output=True)
 fixture_dir = output / 'fixture'
 with (output / 'fixture.log').open('w') as fixture_log:
@@ -61,6 +62,7 @@ with (output / 'fixture.log').open('w') as fixture_log:
             'dirty': bool(run(['git', 'status', '--porcelain'], cwd=repo, capture_output=True, text=True).stdout),
             'apk': json.loads(artifact), 'emulator': avd, 'actualPcmCapture': True, 'actualPlaybackFrames': True,
             'permissionDialog': True, 'backgroundStopAndOriginalRecovery': True, 'reloadRecovery': True,
+            'voiceForegroundAndBackgroundStop': True, 'nativeSpeechEndpointContract': True,
             'physicalMicrophoneAndAudibility': 'not-tested', 'recognitionThroughTablet': 'not-tested'
         }, indent=2) + '\n')
         print('Native PCM capture/playback and owner recovery: passed', flush=True)

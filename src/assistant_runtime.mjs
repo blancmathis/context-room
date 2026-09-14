@@ -134,7 +134,7 @@ export async function handleAssistantHttp(req, res, { root, url, runtime, readJs
   if (route === '/connect') { result = runtime.connect(); status = 202; }
   else if (route === '/conversations') { result = runtime.sessions.create(root, body); status = 201; }
   else if (/^\/conversations\/[^/]+\/send$/.test(route)) { result = runtime.sessions.send(root, route.split('/')[2], body); status = 202; }
-  else if (/^\/conversations\/[^/]+\/stop$/.test(route)) result = await runtime.sessions.stop(root, route.split('/')[2]);
+  else if (/^\/conversations\/[^/]+\/stop$/.test(route)) result = await runtime.sessions.stop(root, route.split('/')[2], body);
   else if (/^\/conversations\/[^/]+\/configure$/.test(route)) result = runtime.sessions.configure(root, route.split('/')[2], body);
   else if (/^\/conversations\/[^/]+\/recover$/.test(route)) { result = runtime.sessions.recover(root, route.split('/')[2]); status = 202; }
   else if (route === '/audio/controller') { const lease = runtime.lease(root, body); const { project, ...publicLease } = lease; result = publicLease; }

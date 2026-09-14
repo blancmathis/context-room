@@ -27,6 +27,20 @@ public final class NativeAudioDeviceTest {
     instrumentation.runOnMainSync(() -> { try { request.run(value -> { answer.set(value); done.countDown(); }); } catch (Exception error) { failure.set(error); done.countDown(); } });
     assertTrue("Native audio did not finish", done.await(15, TimeUnit.SECONDS)); if (failure.get() != null) throw failure.get(); return answer.get();
   }
+  @Test public void speechEndpointRequiresSustainedSpeechAndDetectsQuiet() {
+    byte[] voiced = new byte[640], quiet = new byte[640];
+    for (int i = 0; i < voiced.length; i += 2) { voiced[i] = 0; voiced[i + 1] = 12; }
+    SpeechEndpoint endpoint = new SpeechEndpoint();
+    for (int i = 0; i < 5; i++) assertNull(endpoint.push(voiced, voiced.length));
+    assertFalse(endpoint.started); endpoint.push(quiet, quiet.length);
+    for (int i = 0; i < 5; i++) assertNull(endpoint.push(voiced, voiced.length));
+    assertEquals("speech-start", endpoint.push(voiced, voiced.length));
+    for (int i = 0; i < 59; i++) assertNull(endpoint.push(quiet, quiet.length));
+    assertEquals("speech-end", endpoint.push(quiet, quiet.length));
+    SpeechEndpoint idle = new SpeechEndpoint();
+    for (int i = 0; i < 749; i++) assertNull(idle.push(quiet, quiet.length));
+    assertEquals("speech-end", idle.push(quiet, quiet.length)); assertFalse(idle.started);
+  }
   @Test public void actualPcmAudioAndPrivateRecoveryHonorForegroundAndEpoch() throws Exception {
     instrumentation.getUiAutomation().grantRuntimePermission(instrumentation.getTargetContext().getPackageName(), Manifest.permission.RECORD_AUDIO);
     try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {

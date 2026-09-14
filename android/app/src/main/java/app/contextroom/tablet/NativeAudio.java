@@ -85,6 +85,7 @@ final class NativeAudio {
     if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) throw new IOException("Autorisez le microphone pour dicter.");
     ensureFocus();
     Capture next = new Capture(UUID.randomUUID().toString(), epoch, scope, conversation); capture = next;
+    SpeechEndpoint endpoint = value.optBoolean("voice") ? new SpeechEndpoint() : null;
     inputWorker.execute(() -> {
       AudioRecord recorder = null; AcousticEchoCanceler echo = null; NoiseSuppressor noise = null; boolean announced = false;
       try {
@@ -108,6 +109,10 @@ final class NativeAudio {
             if (count < 0 || count % 2 != 0) throw new IOException("La lecture du microphone a été interrompue.");
             if (count == 0) continue; output.write(buffer, 0, count); size += count;
             if (SystemClock.elapsedRealtime() - synced >= 500) { output.getFD().sync(); synced = SystemClock.elapsedRealtime(); }
+            if (endpoint != null) {
+              String event = endpoint.push(buffer, count);
+              if (event != null) { emit(event, next.id); if (event.equals("speech-end")) next.finish = true; }
+            }
           }
           output.getFD().sync(); if (size >= MAX_BYTES) emit("recording-limit", next.id);
         }

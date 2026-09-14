@@ -2,7 +2,7 @@
 
 ## Summary
 
-The implementation branch starts at `05f5ded92cc1158b8c5aea09f4836fd08f4de27f`, preserving the refactor and concurrent configuration/navigation stabilization. The notebook foundation includes an optional TLS device service and an Android preview with native drawing and the existing full owner interface, verified in an isolated emulator. The browser connects document/notebook conversations to real Codex, scoped edits, progressive drawing and recoverable task identities. Native Android capture, playback, background stop and original-recording recovery have emulator checks; continuous voice and physical microphone verification remain unfinished. Full convergence remains incomplete; this branch is not a deployed release.
+The implementation branch starts at `05f5ded92cc1158b8c5aea09f4836fd08f4de27f`, preserving the refactor and concurrent configuration/navigation stabilization. The notebook foundation includes an optional TLS device service and an Android preview with native drawing and the existing full owner interface, verified in an isolated emulator. The browser connects document/notebook conversations to real Codex, scoped edits, progressive drawing and recoverable task identities. Continuous voice has a real browser recognition/agent/playback check using synthetic microphone input. Native Android capture, playback, background stop and original-recording recovery have emulator checks; physical microphone verification remains unfinished. Full convergence remains incomplete; this branch is not a deployed release.
 
 ## Defines
 
@@ -47,8 +47,8 @@ preview builds and its complementary drawing/restart path passes in an
 isolated emulator. Exact native opening receipts, optional
 viewport following, presentation and the connected owner interface are
 implemented. The owner file-picker round trip is verified on the emulator;
-continuous/native voice, observation and audio recovery, recoverable migration
-and release/upgrade packaging remain to be implemented. The complete
+voice alongside the native pen, observation, recoverable migration and
+release/upgrade packaging remain to be implemented. The complete
 connected-device and physical acceptance criteria remain open.
 
 ## Gesture continuation

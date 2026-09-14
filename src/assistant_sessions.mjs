@@ -185,8 +185,10 @@ export class AssistantSessions {
       }); } catch { this.failures.set(id, { requestId: job.requestId, message: 'Conversation status could not be saved. Inspect its original Codex task before continuing.' }); }
     } finally { clearTimeout(timer); clearTimeout(flushTimer); }
   }
-  async stop(root, id) {
-    this.authorize(this.read(id), root); const job = this.running.get(id);
+  async stop(root, id, { operationId } = {}) {
+    const original = this.read(id); this.authorize(original, root);
+    if (operationId && original.operation?.id !== operationId) throw fault('assistant_turn_changed', 'The original turn has changed. No later turn was stopped.');
+    const job = this.running.get(id);
     if (!job) {
       const state = this.read(id);
       if (activeStates.has(state.operation?.status)) throw fault('assistant_other_runtime', 'This conversation is running in another Context Room instance.');

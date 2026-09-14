@@ -285,6 +285,7 @@ const AGENT_CONTEXT_ASSET_FILENAMES = [
   "domains/truth-layers.md",
   "domains/shared-proposal-lifecycle.md",
   "features/document-workflow.md",
+  "features/conversations.md",
   "system/connected-devices.md",
 ];
 export const GLOBAL_PREFERENCES_FILE = "~/.context-room/preferences.json";
