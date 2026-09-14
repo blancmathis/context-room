@@ -19,6 +19,7 @@ A second project catalog, a hosted service, a notes inbox, automatic documentary
 - Stable operation ids, exact per-object revisions, author provenance, deletion tombstones and location revisions support independent edits, durable receipts, targeted conflicts and selective undo.
 - A frozen notebook contains its exact objects and embedded raster resources. Later working gestures cannot enter that frozen review.
 - Local submission uses the existing local proposal engine, with only the relevant accepted notebook as its base. A durable preparation request resumes safely after interruption without duplicating proposals or replacing newer workspace bytes.
+- Shared submission displays the exact connected repository, project and document destination before publishing. It retains a frozen version and preparation identity through the existing Shared engine, verifies the delivered branch and state ref, and recovers a lost receipt without another publication. The source connection, exact document bytes and unrelated workspace changes are revalidated. File review and terminal acceptance remain separate human decisions.
 - The existing human review decision accepts exactly the frozen notebook. Its later working scene is retained. A correction differing from the frozen scene requires explicit reconciliation.
 - Notebook HTTP mutations pass the existing origin, exact-project and owner-authority checks. There is no agent acceptance endpoint.
 
@@ -39,7 +40,7 @@ The notebook protocol, local review, desktop canvas, restricted drawing
 transport and initial native Android cache/rendering are implemented. The
 preview builds and its complementary drawing/restart path passes in an
 isolated emulator. Full complementary navigation receipts, remote owner parity,
-notebook Shared submission, scoped voice/agent integration, recoverable migration
+scoped voice/agent integration, recoverable migration
 and release/upgrade packaging remain to be implemented. The complete
 connected-device and physical acceptance criteria remain open.
 

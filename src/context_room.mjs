@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { renderAppShell } from "./ui/app.mjs";
 import { handleNotebookHttp, isNotebookMutation } from "./notebook_http.mjs";
+import { submitNotebookShared } from "./notebook_workflow.mjs";
 import { NOTEBOOK_WEB_ASSETS } from "./notebook_web_assets.mjs";
 import { createLisiereConnector } from "./lisiere_connector.mjs";
 import { isDocumentAssetPath, listDocumentAssets, readDocumentAssetReview, recordAcceptedDocumentAsset, decideDocumentAsset } from "./document_assets.mjs";
@@ -77,6 +78,7 @@ import {
   readPreparedSharedProposalRevision,
   readSharedMainRevision,
   readSharedProjectConnection,
+  readSharedNotebookTarget,
   readAcceptedSharedMetadataProfiles,
   readSharedRevisionDocuments,
   readSharedReview,
@@ -20251,6 +20253,10 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       canRead: rel => canReviewDocumentAsset(root, rel),
       canWrite: rel => canEditLocalProposalPath(root, rel),
       actor: { kind: 'human', id: String(req.headers['x-context-room-notebook-client'] || 'desktop') },
+      ...(readSharedProjectConnection(root) ? {
+        submitShared: (request, options) => submitNotebookShared(root, request, options),
+        sharedTarget: rel => readSharedNotebookTarget(root, rel),
+      } : {}),
     })) return;
   }
   const readContextHubForRequest = () => {

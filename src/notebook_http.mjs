@@ -9,7 +9,7 @@ export const NOTEBOOK_HTTP_PREFIX = '/api/notebooks';
 export function isNotebookMutation(method, pathname) { return method === 'POST' && pathname.startsWith(NOTEBOOK_HTTP_PREFIX + '/'); }
 
 /** Called only after the existing HTTP origin, owner authority and exact-project guards. */
-export async function handleNotebookHttp(req, res, { root, url, readJsonBody, sendJson, canRead = () => false, canWrite = () => false, actor, submitShared } = {}) {
+export async function handleNotebookHttp(req, res, { root, url, readJsonBody, sendJson, canRead = () => false, canWrite = () => false, actor, submitShared, sharedTarget } = {}) {
   if (!url.pathname.startsWith(NOTEBOOK_HTTP_PREFIX + '/') && url.pathname !== NOTEBOOK_HTTP_PREFIX) return false;
   const route = url.pathname.slice(NOTEBOOK_HTTP_PREFIX.length);
   if (req.method === 'GET' && route === '/capabilities') {
@@ -28,6 +28,10 @@ export async function handleNotebookHttp(req, res, { root, url, readJsonBody, se
   const id = notebookId(body.resourceId || url.searchParams.get('resourceId'));
   const scene = readNotebook(root, id, { includeDocument: false });
   if (!canRead(scene.locator.path)) failNotebook('notebook_path_scope', 'This notebook is outside the authorized folder.');
+  if (req.method === 'GET' && route === '/shared-target') {
+    if (typeof sharedTarget !== 'function') failNotebook('notebook_shared_unavailable', 'This exact worktree is not connected to Shared.');
+    sendJson(res, 200, { resourceId: id, target: await sharedTarget(scene.locator.path) }); return true;
+  }
   if (req.method === 'GET' && route === '/scene') {
     const since = Number(url.searchParams.get('since') || 0);
     if (!Number.isSafeInteger(since) || since < 0) failNotebook('notebook_cursor', 'Invalid notebook cursor.');

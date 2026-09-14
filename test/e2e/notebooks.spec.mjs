@@ -7,19 +7,23 @@ import { initializeContextRoomProject, writeMemoryWebappSettings, createMemorySe
 import { listNotebooks, readNotebook, mutateNotebook, decodeNotebook } from '../../src/notebooks.mjs';
 import { buildDocumentationCorpus } from '../../src/documentation.mjs';
 import { listLocalProposals } from '../../src/local_proposals.mjs';
+import { listSharedProposalWorkspaces } from '../../src/shared_context.mjs';
+import { addNotebookSharedFixture, removeNotebookSharedFixture, notebookFixtureGit } from '../fixtures/notebook_shared.mjs';
 
-async function fixture(page, { devices = false } = {}) {
-  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'context-room-notebook-browser-'))), root = path.join(base, 'project'), previous = {};
-  for (const key of ['CONTEXT_ROOM_HUB_HOME', 'CONTEXT_ROOM_SHARED_HOME', 'CONTEXT_ROOM_REVIEW_AUTHORITY_HOME']) { previous[key] = process.env[key]; process.env[key] = path.join(base, key); }
+async function fixture(page, { devices = false, shared = false } = {}) {
+  const scratch = fs.mkdtempSync(path.join(shared ? os.homedir() : os.tmpdir(), '.context-room-notebook-browser-'));
+  const base = fs.realpathSync(scratch), root = path.join(base, 'project'), previous = {};
+  for (const key of ['CONTEXT_ROOM_HUB_HOME', 'CONTEXT_ROOM_SHARED_HOME', 'CONTEXT_ROOM_REVIEW_AUTHORITY_HOME', 'GIT_CONFIG_GLOBAL']) { previous[key] = process.env[key]; process.env[key] = key === 'GIT_CONFIG_GLOBAL' ? '/dev/null' : path.join(scratch, key); }
   fs.mkdirSync(path.join(root, 'docs'), { recursive: true }); fs.writeFileSync(path.join(root, 'docs/guide.md'), '# Synthetic guide\n');
   initializeContextRoomProject(root, { title: 'Synthetic notebooks', allowedPaths: ['docs/'], watchAllow: ['docs/'] });
   writeMemoryWebappSettings(root, { startupContext: { enabled: false }, startupSkills: { enabled: false }, startupHooks: { enabled: false } });
+  const sharedFixture = shared ? addNotebookSharedFixture(root, base) : null;
   const deviceService = devices ? createContextRoomDeviceService({ root, stateRoot: path.join(base, 'private-devices') }) : null;
   if (deviceService) await deviceService.listen();
   const runtime = createMemoryServer({ root, deviceService }); await new Promise(resolve => runtime.server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${runtime.server.address().port}`, errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto(origin + '/'); await page.waitForFunction(() => typeof openContextRoomNotebook === 'function' && Boolean(state.ownerMutationNonce && state.projectId));
-  return { root, runtime, origin, errors, deviceService, async close() { await page.context().setOffline(false); if (!page.isClosed()) await page.goto('about:blank'); await new Promise(resolve => { runtime.server.close(resolve); runtime.server.closeAllConnections(); }); await runtime.waitForShutdown(); if (deviceService) await deviceService.close(); for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } fs.rmSync(base, { recursive: true, force: true }); } };
+  return { root, runtime, origin, errors, deviceService, sharedFixture, async close() { await page.context().setOffline(false); if (!page.isClosed()) await page.goto('about:blank'); await new Promise(resolve => { runtime.server.close(resolve); runtime.server.closeAllConnections(); }); await runtime.waitForShutdown(); if (deviceService) await deviceService.close(); for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } removeNotebookSharedFixture(base); } };
 }
 async function open(page, name = 'docs/Sketch.crnb') {
   await page.evaluate(async name => { window.testNotebook = await openContextRoomNotebook(name); }, name);
@@ -29,6 +33,31 @@ async function draw(page, { start = [90, 90], end = [260, 160], up = true } = {}
   const box = await page.locator('canvas.notebook-canvas').boundingBox();
   await page.mouse.move(box.x + start[0], box.y + start[1]); await page.mouse.down(); await page.mouse.move(box.x + end[0], box.y + end[1], { steps: 8 }); if (up) await page.mouse.up();
 }
+
+test('@smoke @notebook an owner sees the Shared destination and submits one exact frozen drawing', async ({ page }, testInfo) => {
+  const f = await fixture(page, { shared: true });
+  try {
+    const dialog = await open(page), main = notebookFixtureGit(f.sharedFixture.remote, ['rev-parse', 'main']);
+    await draw(page); await expect(dialog).toHaveAttribute('data-save-state', 'confirmed');
+    await dialog.getByRole('combobox', { name: 'Notebook proposal destination' }).selectOption('shared');
+    await expect(dialog.getByText('Shared: Synthetic Shared › Drawing project › Sketch.crnb.', { exact: false })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath('notebook-shared-destination.png'), fullPage: true });
+    const response = page.waitForResponse(response => response.url().endsWith('/api/notebooks/submit') && response.request().method() === 'POST');
+    await dialog.getByRole('button', { name: 'Submit for review', exact: true }).click();
+    const receipt = await (await response).json(); expect(receipt.status).toBe('submitted'); expect(receipt.scope).toBe('shared');
+    expect(receipt.accepted).toBe(false); expect(receipt.target.repositoryPath).toBe('projects/drawing/docs/Sketch.crnb');
+    expect(listSharedProposalWorkspaces(f.root)).toHaveLength(1);
+    await draw(page, { start: [90, 190], end: [250, 250] });
+    await expect(dialog).toHaveAttribute('data-save-state', 'confirmed');
+    const working = readNotebook(f.root, listNotebooks(f.root)[0].id);
+    expect(working.document.objects).toHaveLength(2);
+    const frozen = notebookFixtureGit(f.sharedFixture.remote, ['show', `${receipt.proposalRevision}:${receipt.target.repositoryPath}`]);
+    expect(decodeNotebook(Buffer.from(frozen)).objects).toHaveLength(1);
+    expect(notebookFixtureGit(f.sharedFixture.remote, ['rev-parse', 'main'])).toBe(main);
+    expect(fs.existsSync(path.join(f.root, 'docs/Sketch.crnb'))).toBe(false);
+    expect(f.errors).toEqual([]);
+  } finally { await f.close(); }
+});
 
 test('@smoke @notebook owner pairs and revokes a device for the displayed notebook', async ({ page }, testInfo) => {
   const f = await fixture(page, { devices: true });

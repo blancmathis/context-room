@@ -90,6 +90,18 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   const fingerLabel = notebookElement('label', 'Finger draws'), finger = document.createElement('input'); finger.type = 'checkbox'; finger.addEventListener('change', () => surface.fingerInk = finger.checked); fingerLabel.prepend(finger); actions.append(fingerLabel);
   const submitScope = document.createElement('select'); submitScope.setAttribute('aria-label', 'Notebook proposal destination');
   for (const [value, label] of [['local', 'Local proposal'], ['shared', 'Shared proposal']]) { const option = document.createElement('option'); option.value = value; option.textContent = label; option.disabled = value === 'shared' && !capabilities.sharedSubmission; submitScope.append(option); }
+  const destinationNote = notebookElement('p', '', 'notebook-notice'); destinationNote.hidden = true; notice.after(destinationNote);
+  let sharedDestination = null;
+  async function inspectSharedDestination() {
+    sharedDestination = null; destinationNote.hidden = submitScope.value !== 'shared';
+    if (destinationNote.hidden) return;
+    destinationNote.textContent = 'Loading the connected Shared destination…';
+    const response = await request('/api/notebooks/shared-target?resourceId=' + encodeURIComponent(resourceId));
+    if (response.resourceId !== resourceId || !response.target?.repositoryIdentity || !response.target?.repositoryPath) throw new Error('The exact Shared destination is unavailable. Your notebook remains local.');
+    sharedDestination = response.target;
+    destinationNote.textContent = 'Shared: ' + sharedDestination.repositoryName + ' › ' + sharedDestination.projectTitle + ' › ' + sharedDestination.documentPath + '. This publishes a proposal for human review.';
+  }
+  submitScope.addEventListener('change', () => run(inspectSharedDestination()));
   const submit = button(reviewKey ? 'Use this correction' : 'Submit for review', () => run(submitScene()), 'notebook-primary'); if (!reviewKey) header.append(submitScope); header.insertBefore(submit, closeButton);
   const retry = button('Reconnect', () => run(sync(true))); if (!reviewKey) statusRow.append(retry);
   if (onConversation) actions.append(button('Ask about selection', () => onConversation({ resourceId, path, revision: view?.revision, locationRevision: view?.locator.revision, selection: [...surface.selection], working: true })));
@@ -228,8 +240,12 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     // Persist the submission id BEFORE transmission. An uncertain response resumes this same intent.
     const state = await client.state(); let intent = state.metadata.submissionIntent;
     if (!intent) {
+      if (submitScope.value === 'shared' && !sharedDestination) throw new Error('Wait for the exact Shared destination before submitting.');
       intent = { protocolVersion: NOTEBOOK_VERSION, resourceId, operationId: crypto.randomUUID(), expectedRevision: current.revision, locationRevision: current.locator.revision, scope: submitScope.value, title: current.document.title };
+      if (intent.scope === 'shared') intent.target = structuredClone(sharedDestination);
       await client.change(value => ({ metadata: { ...value.metadata, submissionIntent: intent } }));
+    } else if (intent.scope !== submitScope.value) {
+      throw new Error('A previous submission is awaiting its receipt. Select its original ' + intent.scope + ' destination to resume it.');
     }
     const receipt = await transport.post('submit', intent);
     if (receipt.status !== 'submitted' || receipt.resourceId !== resourceId) throw new Error('No valid submission receipt was received. Its original request is retained.');

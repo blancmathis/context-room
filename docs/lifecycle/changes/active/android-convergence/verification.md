@@ -227,10 +227,51 @@ the Android command-line tools with a pinned setup action before requesting
 platform and build-tools 35. This setup correction requires a new hosted run;
 it does not change the locally verified APK.
 
+At `7eedb3899b795b2feb186cac33a46a51c68a5f72`, hosted CI run `34865450467`
+passes Node 20/22.23.0/24, all four browser QA jobs, performance, sustained
+navigation and the final CI gate. Convergence run `34865450493` also passes
+the notebook contracts and the signed Android build/artifact verification.
+These successful runs resolve the earlier hosted failures for that exact
+Android checkpoint. They do not validate later uncommitted Shared additions.
+
+## Shared notebook milestone
+
+Notebook submission now uses the existing Shared proposal creation,
+publication, scope policy, review and terminal delivery engine. The owner sees
+the connected repository, project and relative document path before submitting.
+A retained preparation id binds the original connection and frozen bytes. A
+pre-push check records the exact prepared commit and refuses changes introduced
+by a rebase. Delivered branch and active-state refs are fetched and verified
+before a receipt is reported. No new review engine or acceptance endpoint is
+introduced.
+
+Seven synthetic Shared contract scenarios pass against isolated local bare
+repositories. They cover the exact frozen scene, later working ink, correction
+and separate human acceptance, accepted-only ordinary reads, receipt recovery
+after delivery, refusal to overwrite a newer workspace correction, connection
+changes, a clean rebase over independently accepted context, unrelated edits,
+and a substituted symbolic-link destination. Repeating a submission after
+terminal acceptance returns its historical receipt without recreating a branch.
+The real owner HTTP route requires the displayed Shared target.
+
+The Shared submission browser scenario passes in Chromium desktop/mobile,
+Firefox and WebKit. Desktop and narrow-screen captures were inspected.
+The subsequent full run passes all 84 notebook/device/local-proposal/asset
+contract checks and all 24 notebook browser scenarios. The Android build is
+up to date; its unchanged APK passes the artifact boundary check. Package
+privacy passes after using the existing construction for the synthetic Git
+author address. Hosted checks for the new Shared commit remain a separate gate.
+The first fixture attempt exposed a lexical `/var` versus physical `/private/var`
+test-home mismatch on macOS; the fixture now retains its configured home alias,
+and notebook writes resolve the already-validated Shared worktree physically.
+The contract fixture also closes its server before removing only its own
+read-only snapshots. The earlier failed setup/cleanup runs do not count as
+successful verification.
+
 ## Open product gates
 
 Both complete tablet modes, exact remote
-application receipts, notebook submission to Shared,
+application receipts,
 context-bound real dictation/conversation/co-drawing, data migration and final
 removal of the external compatibility dependency remain implementation work.
 The verified Android installation is an emulator preview. It does not establish

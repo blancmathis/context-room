@@ -206,7 +206,8 @@ export function recordNotebookSubmission(root, request, { actor, canWrite = () =
     const snapshot = readFrozenNotebook(root, id, freezeId);
     if (snapshot.locationRevision !== state.locator.revision) failNotebook('notebook_location_stale', 'The notebook moved after it was frozen.');
     if (verifyProposal({ proposalId, proposalRevision, path: snapshot.path, sourceHash: snapshot.sourceHash }) !== true) failNotebook('notebook_submission_conflict', 'The canonical proposal does not contain this exact frozen document.');
-    const submission = { freezeId, proposalId, proposalRevision, sourceHash: snapshot.sourceHash, sceneRevision: snapshot.sceneRevision, path: snapshot.path };
+    const submission = { freezeId, proposalId, proposalRevision, sourceHash: snapshot.sourceHash, sceneRevision: snapshot.sceneRevision, path: snapshot.path,
+      ...(request.scope === 'shared' ? { scope: 'shared', target: request.target } : {}) };
     const receipt = { protocolVersion: NOTEBOOK_VERSION, operationId, resourceId: id, ...submission, status: 'submitted', accepted: false, at: new Date().toISOString() };
     return publishFrame(root, state, { kind: 'submit', operationId, fingerprint, actor, submission, receipt });
   });

@@ -15,7 +15,7 @@ Agents read accepted documentation and prepare isolated changes through the CLI.
 
 ## Defines
 
-Accepted local reads, local proposal behavior, direct-change recovery, supported review formats, reader continuity, state migration and the optional Lisière drawing bridge.
+Accepted local reads, local proposal behavior, direct-change recovery, editable notebooks, supported review formats, reader continuity, state migration and the optional Lisière drawing bridge.
 
 ## Does not define
 
@@ -54,6 +54,7 @@ Keeping the UI closed does not authorize those edits. They are detected on the n
 | Markdown and plain document text | Accepted/proposed text and existing document view | Edit and save the exact file |
 | HTML/HTM | Sandboxed rendered page; local proposal images and linked CSS are resolved from that exact proposal version | Agent edits source; human reviews the rendering, with no HTML source editor |
 | Mermaid `.mmd` / `.mermaid` | Rendered diagram beside editable source | Edit diagram source; executable directives and external resources are blocked |
+| Editable notebook `.crnb` | Frozen objects, pressure-aware ink and embedded raster assets, with author provenance | Correct the frozen scene, then decide that exact document |
 | PNG, JPEG, WebP | Before/after image | Draw at native resolution, undo/redo strokes, save and accept |
 | GIF, SVG and other recognized image assets | Before/after image where the browser decoder supports it | Review existing bytes; no animation or vector editing claim |
 | PDF, DOCX, XLSX, PPTX | Changed binary resource and size; no integrated renderer promised | Accept/reject exact bytes; office content editing is not implemented |
@@ -61,6 +62,26 @@ Keeping the UI closed does not authorize those edits. They are detected on the n
 Drawing is bounded to 16 million pixels; assets to 20 MiB. Larger or unsupported resources return an explicit limit, not a silent conversion. Supported binary changes use the same exact file decisions in Shared, followed by the separate proposal acceptance.
 
 HTML resources are intentionally local and non-executable. Nested CSS resource URLs and arbitrary interactive HTML applications are not supported by the proposal preview. Missing resources are identified.
+
+## Editable notebooks
+
+The notebook action opens a retained working scene in an authorized ordinary
+folder. Drawing, autosave and synchronization do not accept documentation.
+Objects retain stable identity, revision and authorship; selective gesture
+undo preserves independent edits. The original editable file and embedded
+images remain exportable.
+
+Submitting freezes one exact version into the existing local or Shared
+proposal lifecycle. Shared requires an existing connection and displays its
+repository, project and destination before publishing. A lost response resumes
+the retained submission, and a changed connection or newer proposal correction
+blocks replacement. Later working ink stays outside the frozen review.
+Correcting or accepting a proposal does not silently overwrite that later ink.
+
+The [connected-device guide](../system/connected-devices.md) describes the
+native Android preview, offline retention and restricted drawing permission.
+The complete remote owner, authenticated agent and voice workflows remain in
+development; the preview does not establish physical BOOX performance.
 
 ## Cleanup
 
