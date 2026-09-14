@@ -19,10 +19,12 @@ final class OwnerWorkspace {
     void ownerError(String message);
     void chooseOwnerFiles(ValueCallback<Uri[]> callback, String[] types, boolean multiple);
     void saveOwnerFile(byte[] bytes, String filename, String type, ValueCallback<Boolean> callback);
+    void requestOwnerMicrophone(ValueCallback<Boolean> callback);
   }
   final WebView web;
   final DeviceConnection connection;
   final Host host;
+  final NativeAudio audio;
   final String origin;
   final Handler main = new Handler(Looper.getMainLooper());
   final ThreadPoolExecutor network = new ThreadPoolExecutor(4, 4, 0, TimeUnit.SECONDS, new ArrayBlockingQueue<>(32));
@@ -38,6 +40,7 @@ final class OwnerWorkspace {
     if (!device.matches("[a-f0-9-]{36}")) throw new IOException("Identité de tablette invalide.");
     origin = "https://owner-" + connection.serverId + "." + device + ".contextroom.invalid";
     web = new WebView(context);
+    audio = new NativeAudio(context, event -> { if (!closed) web.evaluateJavascript("window.dispatchEvent(new CustomEvent('context-room-native-audio',{detail:" + event.toString() + "}))", null); });
     WebSettings settings = web.getSettings();
     settings.setJavaScriptEnabled(true); settings.setDomStorageEnabled(true);
     settings.setAllowFileAccess(false); settings.setAllowContentAccess(false);
@@ -59,6 +62,27 @@ final class OwnerWorkspace {
         errorReplyId = id;
         if (!foreground) { reply.postMessage(InkView.json("id", id, "error", "L’interface propriétaire est en pause.").toString()); return; }
         JSONObject value = input.getJSONObject("value");
+        if (action.startsWith("audio.")) {
+          ValueCallback<JSONObject> answer = result -> { if (!closed && requestedGeneration == generation) reply.postMessage((result.has("error")
+            ? InkView.json("id", id, "error", result.optString("error")) : InkView.json("id", id, "result", result)).toString()); };
+          if (action.equals("audio.controller")) { audio.bind(value); answer.onReceiveValue(InkView.json("bound", true)); }
+          else if (action.equals("audio.permission")) host.requestOwnerMicrophone(granted -> answer.onReceiveValue(InkView.json("granted", granted)));
+          else if (action.equals("audio.recording.start")) host.requestOwnerMicrophone(granted -> {
+            try { if (!granted || closed || !foreground || requestedGeneration != generation) throw new IOException("Le microphone n’a pas été autorisé pour cette conversation."); audio.start(value, answer); }
+            catch (Exception error) { answer.onReceiveValue(NativeAudio.error(error.getMessage())); }
+          });
+          else if (action.equals("audio.recording.finish")) audio.finish(value, answer);
+          else if (action.equals("audio.recording.recover")) audio.recover(value, answer);
+          else if (action.equals("audio.recording.acknowledge")) audio.acknowledge(value, answer);
+          else if (action.equals("audio.play")) audio.play(value, answer);
+          else if (action.equals("audio.stop-playback") || action.equals("audio.stop")) {
+            boolean current = audio.epoch.equals(value.optString("epoch")) && audio.conversation.equals(value.optString("conversationId"));
+            if (current) { if (action.equals("audio.stop")) audio.stop(); else audio.stopPlayback(); }
+            answer.onReceiveValue(InkView.json("stopped", current));
+          }
+          else throw new IOException("Opération audio indisponible.");
+          return;
+        }
         if (action.equals("file.choose-images")) {
           host.chooseOwnerFiles(uris -> {
             try { network.execute(() -> {
@@ -118,7 +142,7 @@ final class OwnerWorkspace {
       } catch (Exception error) { if (errorReplyId != null) reply.postMessage(InkView.json("id", errorReplyId, "error", safeError(error)).toString()); host.ownerError(safeError(error)); }
     });
     web.setWebViewClient(new WebViewClient() {
-      @Override public void onPageStarted(WebView source, String url, android.graphics.Bitmap favicon) { generation++; }
+      @Override public void onPageStarted(WebView source, String url, android.graphics.Bitmap favicon) { generation++; audio.stop(); }
       @Override public WebResourceResponse shouldInterceptRequest(WebView source, WebResourceRequest request) {
         if (closed || !foreground || !sameOrigin(request.getUrl()) || !request.getMethod().equals("GET")) return NotebookEngine.denied();
         String path = request.getUrl().getEncodedPath(), query = request.getUrl().getEncodedQuery();
@@ -160,7 +184,7 @@ final class OwnerWorkspace {
         main.post(() -> host.ownerError("Ce lien ne fait pas partie de l’interface Context Room connectée.")); return true;
       }
       @Override public void onReceivedSslError(WebView source, SslErrorHandler handler, android.net.http.SslError error) { handler.cancel(); }
-      @Override public boolean onRenderProcessGone(WebView source, RenderProcessGoneDetail detail) { closed = true; network.shutdownNow(); host.ownerError("L’interface s’est arrêtée. Revenez à la connexion pour la rouvrir."); return true; }
+      @Override public boolean onRenderProcessGone(WebView source, RenderProcessGoneDetail detail) { closed = true; audio.close(); network.shutdownNow(); host.ownerError("L’interface s’est arrêtée. Revenez à la connexion pour la rouvrir."); return true; }
     });
     web.setWebChromeClient(new WebChromeClient() {
       @Override public boolean onConsoleMessage(ConsoleMessage message) { return true; }
@@ -186,9 +210,10 @@ final class OwnerWorkspace {
   }
   void foreground(boolean enabled) {
     foreground = enabled;
+    audio.foreground(enabled);
     if (closed) return;
     web.evaluateJavascript("window.dispatchEvent(new CustomEvent('context-room-native-active',{detail:" + enabled + "}))", null);
     if (enabled) web.onResume(); else web.onPause();
   }
-  void close() { closed = true; network.shutdownNow(); WebViewCompat.removeWebMessageListener(web, "ContextRoomOwnerTransport"); web.destroy(); }
+  void close() { closed = true; audio.close(); network.shutdownNow(); WebViewCompat.removeWebMessageListener(web, "ContextRoomOwnerTransport"); web.destroy(); }
 }

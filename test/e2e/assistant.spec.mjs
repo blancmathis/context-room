@@ -52,3 +52,69 @@ test('@smoke @assistant notebook co-drawing reaches the canonical scene and the 
     await expect(pane.locator('.assistant-origin')).toHaveText('docs/Sketch.crnb'); expect(fs.existsSync(path.join(f.root, 'docs/Sketch.crnb'))).toBe(false);
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
+
+test('@smoke @assistant an unsent draft survives reload in its original conversation without starting Codex', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await page.evaluate(() => selectFile('docs/Original.md', { reviewMode: true })); await page.getByRole('button', { name: 'Discuss', exact: true }).click();
+    const pane = page.getByRole('complementary', { name: 'Original document conversation' });
+    const history = pane.getByLabel('Saved conversations for this original source'); await expect(history).not.toHaveValue(''); const id = await history.inputValue();
+    await pane.getByRole('textbox').fill('Keep this private draft with its original source.');
+    await expect.poll(() => page.evaluate(async id => {
+      const { readDraft } = await import('/assets/ui/assistant-drafts.mjs'); return (await readDraft(captureNotebookApi().scopeKey, id)).text;
+    }, id)).toBe('Keep this private draft with its original source.');
+    await page.reload(); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await page.evaluate(() => selectFile('docs/Original.md')); await page.getByRole('button', { name: 'Discuss', exact: true }).click();
+    await expect(history).toHaveValue(id); await expect(pane.getByRole('textbox')).toHaveValue('Keep this private draft with its original source.');
+    expect(f.connections()).toBe(0);
+    await pane.getByRole('button', { name: 'New conversation', exact: true }).click();
+    await expect(history).not.toHaveValue(id); await expect(pane.getByRole('textbox')).toHaveValue('');
+    await history.selectOption(id); await expect(pane.getByRole('textbox')).toHaveValue('Keep this private draft with its original source.');
+    expect(f.connections()).toBe(0);
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('@smoke @assistant a stopped dictation and late playback cannot send or acknowledge audio in another operation', async ({ page }) => {
+  let transcriptions = 0;
+  const f = await assistantFixture({ audio: {
+    async transcribe() { transcriptions++; return { text: 'Synthetic original-source dictation.', silent: false, submitted: false }; },
+    async synthesize(text) { return { text, pcm: Buffer.alloc(4800).toString('base64'), sampleRate: 24000, played: false }; },
+  } });
+  const receipts = []; page.on('request', request => { if (request.url().endsWith('/api/assistant/audio/receipt')) receipts.push(request.postDataJSON()); });
+  try {
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    // Synthetic bridge only for response-ordering contracts; device tests use
+    // the actual Java bridge, permission dialog, AudioRecord and AudioTrack.
+    await page.evaluate(() => {
+      const state = window.syntheticAudio = { acknowledgments: [], plays: [], stops: [] };
+      window.ContextRoomNativeOwner = {
+        active: true, async ensureMicrophone() {}, async audioController() {},
+        async startRecording() { return { recordingId: '00000000-0000-0000-0000-000000000010' }; },
+        finishRecording() { return new Promise(resolve => { state.finish = resolve; }); },
+        async cancelRecording() {}, async releaseAudio(value) { state.stops.push(value); },
+        async recoverRecordings() { return { recordings: [] }; }, async acknowledgeRecording(value) { state.acknowledgments.push(value); },
+        playAudio(value) { return new Promise(resolve => { state.plays.push({ value, resolve }); }); }, async stopAudio() {},
+      };
+    });
+    await page.evaluate(() => selectFile('docs/Original.md')); await page.getByRole('button', { name: 'Discuss', exact: true }).click();
+    const pane = page.getByRole('complementary', { name: 'Original document conversation' }), history = pane.getByLabel('Saved conversations for this original source');
+    await pane.getByRole('button', { name: 'Dictate', exact: true }).click(); await expect(pane.getByRole('button', { name: 'Finish dictation' })).toBeVisible();
+    await expect(history).toBeDisabled(); const id = await history.inputValue();
+    await pane.getByRole('button', { name: 'Finish dictation' }).click(); await page.waitForFunction(() => Boolean(syntheticAudio.finish));
+    await pane.getByRole('button', { name: 'Stop audio', exact: true }).click();
+    await page.evaluate(() => syntheticAudio.finish({ recordingId: '00000000-0000-0000-0000-000000000010', pcm: btoa('\0'.repeat(6400)) }));
+    await expect(pane.getByRole('button', { name: 'Retry dictation' })).toBeEnabled(); expect(transcriptions).toBe(0); expect(f.connections()).toBe(0);
+    await pane.getByRole('button', { name: 'Retry dictation' }).click();
+    await expect(pane.getByRole('textbox')).toHaveValue('Synthetic original-source dictation.'); expect(transcriptions).toBe(1); expect(f.turns).toHaveLength(0);
+    expect(await page.evaluate(() => syntheticAudio.acknowledgments[0].conversationId)).toBe(id);
+    await pane.getByRole('button', { name: 'Send', exact: true }).click(); await expect.poll(() => f.turns.length).toBe(1); f.finish('Read this exact synthetic answer.');
+    await expect(pane).toHaveAttribute('data-operation-status', 'completed'); await pane.getByRole('button', { name: 'Read answer' }).click();
+    await page.waitForFunction(() => syntheticAudio.plays.length === 1); await expect(history).toBeDisabled();
+    await pane.getByRole('button', { name: 'Stop audio', exact: true }).click();
+    await page.evaluate(() => syntheticAudio.plays[0].resolve({ played: true })); await expect(history).toBeEnabled(); expect(receipts).toHaveLength(0);
+    await pane.getByRole('button', { name: 'Read answer' }).click(); await page.waitForFunction(() => syntheticAudio.plays.length === 2);
+    await page.evaluate(() => syntheticAudio.plays[1].resolve({ played: true })); await expect.poll(() => receipts.length).toBe(1); expect(receipts[0].conversationId).toBe(id);
+    await expect(pane.locator('.assistant-audio-state')).toHaveText('Microphone off · audio stopped.');
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});

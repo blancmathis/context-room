@@ -4394,6 +4394,7 @@ async function openContextRoomNotebook(filePath, { directory = "", projectId = "
 
 async function openOriginalDocumentConversation(mode = "text") {
   if (!state.selected || state.selectedStartupContext || state.dirty || state.savedHash == null || state.fileLoadError
+    || activeFileConflict() || activeExternalChange() && activeExternalChange().source !== "review"
     || state.openingFilePath === state.selected && state.fileContentReadyPath !== state.selected) throw new Error("Save the original document before starting its conversation.");
   const captured = captureNotebookApi(), source = { kind: "document", path: state.selected, hash: state.savedHash };
   const editor = el("docEditor");
@@ -15118,9 +15119,9 @@ function renderFileActionButtons(options = {}) {
   return '<div class="file-actions">' + renderFileActionItems(options) + '</div>';
 }
 
-function renderFileActionItems({ reviewAction = null, secondaryReviewAction = null, nextReviewAction = null, dirty = false, templateState = null, blockedByConflict = false, readOnly = false, deletable = true, savable = true } = {}) {
+function renderFileActionItems({ reviewAction = null, secondaryReviewAction = null, nextReviewAction = null, dirty = false, templateState = null, blockedByConflict = false, conversationBlocked = blockedByConflict, readOnly = false, deletable = true, savable = true } = {}) {
   return '' +
-    (IS_LOCAL && state.selected && !state.selectedStartupContext && !readOnly && /\.(md|markdown|txt|html?)$/i.test(state.selected) ? '<button class="file-action" type="button" data-file-conversation' + (dirty || blockedByConflict ? ' disabled title="Save or resolve the original document first"' : '') + '>Discuss</button><button class="file-action" type="button" data-file-dictate' + (dirty || blockedByConflict ? ' disabled' : '') + '>Dictate</button>' : '') +
+    (IS_LOCAL && state.selected && !state.selectedStartupContext && !readOnly && /\.(md|markdown|txt|html?)$/i.test(state.selected) ? '<button class="file-action" type="button" data-file-conversation' + (dirty || conversationBlocked ? ' disabled title="Save or resolve the original document first"' : '') + '>Discuss</button><button class="file-action" type="button" data-file-dictate' + (dirty || conversationBlocked ? ' disabled' : '') + '>Dictate</button>' : '') +
     (templateState ? '<div class="empty-template-actions"><select class="file-template-select" data-empty-template-select aria-label="Template">' + renderFileTemplateOptions(templateState.selectedId) + '</select></div>' : '') +
     (reviewAction ? '<button class="file-action" type="button" data-file-review-decision="' + escapeHtml(reviewAction.status) + '">' + escapeHtml(reviewAction.label) + '</button>' : '') +
     (secondaryReviewAction ? '<button class="file-action" type="button" data-file-review-decision="' + escapeHtml(secondaryReviewAction.status) + '">' + escapeHtml(secondaryReviewAction.label) + '</button>' : '') +
@@ -20878,6 +20879,9 @@ function externalReviewFileActionOptions() {
     nextReviewAction: nextReviewActionForSelectedFile(),
     dirty: state.dirty,
     blockedByConflict: true,
+    // The current disk version can be discussed during review without accepting
+    // it. An unexpected external replacement must still be reconciled first.
+    conversationBlocked: activeExternalChange()?.source !== "review",
     deletable: !Boolean(state.selectedStartupContext),
     savable: !isHtmlDocumentPath(state.selected),
   };

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { initializeContextRoomProject, writeMemoryWebappSettings, createMemoryServer } from '../../src/context_room.mjs';
 
 /** Explicit synthetic provider for deterministic HTTP/browser contracts, never product fallback. */
-export async function assistantFixture() {
+export async function assistantFixture({ audio } = {}) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'context-room-assistant-fixture-'))), root = path.join(base, 'project'), previous = {};
   for (const key of ['CONTEXT_ROOM_HUB_HOME', 'CONTEXT_ROOM_SHARED_HOME', 'CONTEXT_ROOM_REVIEW_AUTHORITY_HOME']) { previous[key] = process.env[key]; process.env[key] = path.join(base, key); }
   fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
@@ -21,7 +21,7 @@ export async function assistantFixture() {
     async interrupt(threadId) { turns.findLast(turn => turn.threadId === threadId)?.onEvent({ type: 'completed', status: 'interrupted', failed: false }); },
     async close() {},
   };
-  const room = createMemoryServer({ root, assistantOptions: { root: path.join(base, 'private-assistant'), providerFactory: async () => { connections++; return provider; } } });
+  const room = createMemoryServer({ root, assistantOptions: { root: path.join(base, 'private-assistant'), ...(audio ? { audio } : {}), providerFactory: async () => { connections++; return provider; } } });
   await new Promise(resolve => room.server.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${room.server.address().port}`;
   return { base, root, room, url, turns, starts, resumes, connections: () => connections,

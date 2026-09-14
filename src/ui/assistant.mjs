@@ -1,3 +1,5 @@
+import { readDraft, writeDraft } from './assistant-drafts.mjs';
+
 const element = (tag, text = '', className = '') => { const node = document.createElement(tag); node.textContent = text; node.className = className; return node; };
 const button = (text, action) => { const node = element('button', text); node.type = 'button'; node.addEventListener('click', action); return node; };
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -7,21 +9,24 @@ let active = null;
 export function dockConversation(parent = document.body) { if (active) parent.append(active.panel); }
 
 /** A captured API, never a callback that reads the browser's later project selection. */
-export async function openConversation({ api, scopeKey, source, parent = document.body, mode = 'text' }) {
-  if (active && active.scopeKey === scopeKey && active.conversation.source.kind === source.kind && active.conversation.source.path === source.path
+export async function openConversation({ api, scopeKey, source, parent = document.body, mode = 'text', fresh = false }) {
+  if (!fresh && active && active.scopeKey === scopeKey && active.conversation.source.kind === source.kind && active.conversation.source.path === source.path
     && JSON.stringify(active.conversation.source.selection || []) === JSON.stringify(source.selection || [])) {
     parent.append(active.panel); active.panel.hidden = false; active.panel.classList.remove('assistant-minimized'); active.focus(); return active;
   }
-  if (active) await active.dispose();
   if (!document.getElementById('context-room-assistant-style')) { const link = element('link'); link.id = 'context-room-assistant-style'; link.rel = 'stylesheet'; link.href = '/assets/ui/assistant.css'; document.head.append(link); }
   const post = (route, body) => api('/api/assistant' + route, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-  const conversation = await post('/conversations', { requestId: crypto.randomUUID(), source });
+  const saved = fresh ? null : (await api('/api/assistant/conversations')).conversations.find(item => item.source.kind === source.kind && item.source.path === source.path
+    && JSON.stringify(item.source.selection || []) === JSON.stringify(source.selection || []));
+  const conversation = saved ? await api('/api/assistant/conversations/' + saved.id) : await post('/conversations', { requestId: crypto.randomUUID(), source });
+  if (active) await active.dispose();
   const panel = element('aside', '', 'assistant-panel'); panel.setAttribute('aria-label', 'Original document conversation');
   const heading = element('header'), title = element('h2', 'Conversation'), minimize = button('Minimize conversation', () => panel.classList.toggle('assistant-minimized'));
   heading.append(title, minimize); const original = element('p', conversation.source.path, 'assistant-origin');
   const boundary = element('p', 'Linked to this original source. Proposed changes require human review.', 'assistant-boundary');
   const history = element('select'); history.setAttribute('aria-label', 'Saved conversations for this original source');
-  const historyRow = element('div', '', 'assistant-controls'); historyRow.append(history);
+  const historyRow = element('div', '', 'assistant-controls'), newConversation = button('New conversation', () => run(openConversation({ api, scopeKey, source, parent, mode, fresh: true }))); historyRow.append(history, newConversation);
+  const audioStatus = element('p', 'Microphone off · audio stopped.', 'assistant-audio-state'); audioStatus.setAttribute('role', 'status');
   const messages = element('div', '', 'assistant-messages'); messages.tabIndex = 0; messages.setAttribute('role', 'log'); messages.setAttribute('aria-label', 'Conversation messages');
   const form = element('form'), input = element('textarea'); input.rows = 3; input.maxLength = 32000; input.setAttribute('aria-label', 'Message to the original document agent');
   const status = element('p', '', 'assistant-status'); status.setAttribute('role', 'status');
@@ -29,26 +34,50 @@ export async function openConversation({ api, scopeKey, source, parent = documen
   const controls = element('div', '', 'assistant-controls'), send = button('Send', () => {}); send.type = 'submit';
   const stop = button('Stop agent', () => run(stopTurn())), dictate = button('Dictate', () => run(toggleDictation())), speak = button('Read answer', () => run(readAnswer()));
   const audioStop = button('Stop audio', () => run(releaseAudio()));
+  const recoverAudio = button('Recover dictation', () => run(recoverNativeRecording())); recoverAudio.hidden = true;
   const recover = button('Inspect original task', () => run((async () => { current = await post('/conversations/' + current.id + '/recover', {}); render(); })())); recover.hidden = true;
-  controls.append(send, stop, dictate, speak, audioStop, recover); form.append(input, controls);
+  controls.append(send, stop, dictate, speak, audioStop, recoverAudio, recover); form.append(input, controls);
   const modelRow = element('details'), modelTitle = element('summary', 'Codex model'), models = element('select'), efforts = element('select');
   models.setAttribute('aria-label', 'Conversation Codex model'); efforts.setAttribute('aria-label', 'Conversation reasoning effort');
   const connect = button('Load available models', () => run((async () => { await post('/connect', {}); modelPending = true; await poll(); })()));
   modelRow.append(modelTitle, models, efforts, connect);
-  panel.append(heading, original, boundary, historyRow, messages, modelRow, form, status, errorBox); parent.append(panel);
+  panel.append(heading, original, audioStatus, boundary, historyRow, messages, modelRow, form, status, errorBox); parent.append(panel);
   const clientId = crypto.randomUUID();
   let closed = false, current = conversation, pollBusy = false, lease = null, renewTimer = null, recording = null, speaker = null,
-    audioContext = null, audioGeneration = 0, modelPending = false, rendered = '', sendRequest = null, retainedRecording = null, recordingRequest = null, audioBusy = false;
-  const fail = error => { if (!closed) errorBox.textContent = error.message || String(error); };
+    audioContext = null, audioGeneration = 0, modelPending = false, rendered = '', sendRequest = null, retainedRecording = null, recordingRequest = null, audioBusy = false, audioReading = false, changingConversation = false, draftWrites = Promise.resolve(), nativeRecordings = [];
+  const fail = error => { if (!closed && error.name !== 'AbortError') errorBox.textContent = error.message || String(error); };
   const run = promise => Promise.resolve(promise).catch(fail);
   const owned = () => ({ conversationId: current.id, clientId, epoch: lease?.epoch });
+  function saveDraft() {
+    const id = current.id, draft = { text: input.value, sendRequest, recording: retainedRecording };
+    const write = () => writeDraft(scopeKey, id, draft);
+    draftWrites = draftWrites.then(write, write); return draftWrites;
+  }
+  input.addEventListener('input', () => run(saveDraft()));
+  async function restoreDraft() {
+    const draft = await readDraft(scopeKey, current.id); input.value = draft.text || ''; sendRequest = draft.sendRequest || null; retainedRecording = draft.recording || null;
+    if (sendRequest && current.messages.some(message => message.id === sendRequest.requestId)) { input.value = ''; sendRequest = null; await saveDraft(); }
+    dictate.textContent = retainedRecording ? 'Retry dictation' : 'Dictate'; await refreshNativeRecordings();
+  }
+  async function refreshNativeRecordings() {
+    nativeRecordings = globalThis.ContextRoomNativeOwner?.recoverRecordings ? (await ContextRoomNativeOwner.recoverRecordings({ scopeKey, conversationId: current.id })).recordings : [];
+    recoverAudio.hidden = !nativeRecordings.length || Boolean(retainedRecording);
+  }
+  async function recoverNativeRecording() {
+    if (recording || retainedRecording || !nativeRecordings.length) return;
+    const item = nativeRecordings.sort((a, b) => a.createdAt - b.createdAt)[0];
+    retainedRecording = await ContextRoomNativeOwner.recoverRecordings({ scopeKey, conversationId: current.id, recordingId: item.recordingId });
+    await saveDraft(); recoverAudio.hidden = true; dictate.textContent = 'Retry dictation'; errorBox.textContent = 'Original recording recovered. Choose Retry dictation to transcribe it.';
+  }
   const self = { panel, scopeKey, conversation: current, focus: () => input.focus(), async dispose() {
-    if (closed) return; await releaseAudio(); closed = true; clearInterval(timer); panel.remove(); if (active === self) active = null;
+    if (closed) return; await saveDraft(); await releaseAudio(); closed = true; clearInterval(timer); panel.remove(); if (active === self) active = null;
   } }; active = self;
   function render() {
     self.conversation = current; const busy = activeStatuses.has(current.operation?.status), uncertain = current.operation?.status === 'uncertain';
     send.disabled = busy || uncertain; stop.disabled = !busy; models.disabled = busy || uncertain; efforts.disabled = busy || uncertain;
-    history.disabled = busy || uncertain; recover.hidden = !uncertain; recover.disabled = current.recovery === 'inspecting';
+    history.disabled = busy || uncertain || Boolean(recording) || audioBusy || audioReading || changingConversation;
+    newConversation.disabled = history.disabled;
+    recover.hidden = !uncertain; recover.disabled = current.recovery === 'inspecting';
     status.textContent = current.operation?.error || ({ queued: 'Message saved · connecting to Codex…', starting: 'Opening the original Codex task…', running: 'The agent is working in the original source.', stopping: 'Stopping the original turn…', completed: 'Response complete.', stopped: 'Agent stopped. Reached drawing remains saved.', failed: 'The turn failed.', uncertain: 'Check the original task before sending again.' }[current.operation?.status] || 'Ready. Nothing has been sent to the agent.');
     if (current.progress && !current.progress.completed) status.textContent = 'The agent is drawing · reached ink is saved.';
     if (current.recovery === 'inspecting') status.textContent = 'Inspecting the exact original Codex turn. Nothing is being resent.';
@@ -62,7 +91,7 @@ export async function openConversation({ api, scopeKey, source, parent = documen
       messages.replaceChildren(...current.messages.map(message => { const article = element('article'); article.append(element('strong', message.role === 'user' ? 'You' : 'Codex'), element('p', message.text)); return article; }));
       if (nearEnd) messages.scrollTop = messages.scrollHeight; rendered = value;
     }
-    speak.disabled = !current.messages.some(message => message.role === 'assistant' && message.text);
+    speak.disabled = Boolean(recording) || audioBusy || audioReading || !current.messages.some(message => message.role === 'assistant' && message.text);
   }
   async function poll() {
     if (closed || pollBusy) return; pollBusy = true;
@@ -93,31 +122,55 @@ export async function openConversation({ api, scopeKey, source, parent = documen
     } history.value = current.id;
   }
   history.addEventListener('change', () => run((async () => {
-    await releaseAudio(); const id = history.value; const next = await api('/api/assistant/conversations/' + id); current = next; rendered = ''; input.value = ''; sendRequest = null; showModels(); render();
+    if (recording || audioBusy || audioReading || changingConversation) { history.value = current.id; return; }
+    changingConversation = true; const id = history.value; render();
+    try { await saveDraft(); await releaseAudio(); const next = await api('/api/assistant/conversations/' + id); current = next; rendered = ''; await restoreDraft(); showModels(); }
+    finally { changingConversation = false; render(); }
   })()));
   form.addEventListener('submit', event => { event.preventDefault(); run((async () => {
     if (!input.value.trim() || activeStatuses.has(current.operation?.status)) return;
     const text = input.value;
     if (sendRequest && sendRequest.text !== text) throw new Error('The previous send is unconfirmed. Refresh its original conversation before changing the message.');
     sendRequest ||= { requestId: crypto.randomUUID(), text }; send.disabled = true;
-    try { current = await post('/conversations/' + current.id + '/send', sendRequest); input.value = ''; sendRequest = null; errorBox.textContent = ''; render(); }
+    await saveDraft();
+    try { current = await post('/conversations/' + current.id + '/send', sendRequest); input.value = ''; sendRequest = null; await saveDraft(); errorBox.textContent = ''; render(); }
     catch (error) {
       await poll();
       if (current.messages.some(item => item.id === sendRequest?.requestId)) { input.value = ''; sendRequest = null; }
       else if (error.status >= 400 && error.status < 500) sendRequest = null;
+      await saveDraft();
       throw error;
     }
   })()); });
   async function stopTurn() { current = await post('/conversations/' + current.id + '/stop', {}); render(); }
-  async function acquireAudio(takeover = false) {
+  async function acquireAudio(takeover = false, generation = audioGeneration) {
+    const id = current.id;
     const capabilities = await api('/api/assistant/capabilities');
-    try { lease = await post('/audio/controller', { ...owned(), action: 'acquire', takeover, epoch: takeover ? capabilities.audio.controller?.epoch : lease?.epoch }); }
+    if (closed || generation !== audioGeneration) throw new DOMException('Audio stopped.', 'AbortError');
+    try {
+      const acquired = await post('/audio/controller', { ...owned(), action: 'acquire', takeover, epoch: takeover ? capabilities.audio.controller?.epoch : lease?.epoch });
+      if (closed || generation !== audioGeneration || id !== current.id) {
+        await post('/audio/controller', { conversationId: id, clientId, epoch: acquired.epoch, action: 'release' }).catch(() => {});
+        throw new DOMException('Audio stopped.', 'AbortError');
+      }
+      lease = acquired;
+    }
     catch (error) {
       if (error.code === 'assistant_audio_owned' && !panel.querySelector('[data-audio-takeover]')) {
         const take = button('Take over audio', () => run(acquireAudio(true).then(() => { take.remove(); errorBox.textContent = 'Audio control moved here. Choose Dictate or Read answer.'; }))); take.dataset.audioTakeover = ''; controls.append(take);
       } throw error;
     }
-    clearInterval(renewTimer); renewTimer = setInterval(() => run(post('/audio/controller', { ...owned(), action: 'renew' }).catch(async error => { await releaseAudio(false); throw error; })), 5000);
+    if (globalThis.ContextRoomNativeOwner?.audioController) await ContextRoomNativeOwner.audioController({ ...lease, scopeKey });
+    if (closed || generation !== audioGeneration) throw new DOMException('Audio stopped.', 'AbortError');
+    clearInterval(renewTimer); renewTimer = setInterval(() => run((async () => {
+      const epoch = lease?.epoch, renewingGeneration = audioGeneration;
+      try {
+        const renewed = await post('/audio/controller', { ...owned(), action: 'renew' });
+        if (renewingGeneration !== audioGeneration || lease?.epoch !== epoch) return;
+        lease = renewed;
+        if (globalThis.ContextRoomNativeOwner?.audioController) await ContextRoomNativeOwner.audioController({ ...lease, scopeKey, renew: true });
+      } catch (error) { if (renewingGeneration === audioGeneration && lease?.epoch === epoch) { await releaseAudio(false); throw error; } }
+    })()), 5000);
   }
   async function waitAudio(job, generation) {
     while (job.status === 'running') { await sleep(250); if (closed || generation !== audioGeneration) throw new Error('Audio stopped.'); job = await post('/audio/job', { ...owned(), requestId: job.id }); }
@@ -125,37 +178,53 @@ export async function openConversation({ api, scopeKey, source, parent = documen
     return job;
   }
   async function releaseAudio(notify = true) {
-    audioGeneration++; clearInterval(renewTimer); renewTimer = null;
-    if (recording) { const capture = recording; recording = null; await capture.cancel(); }
-    speaker?.stop(); speaker = null; if (audioContext) { await audioContext.close().catch(() => {}); audioContext = null; }
-    if (lease && notify) await post('/audio/controller', { ...owned(), action: 'release' }).catch(() => {});
-    lease = null; dictate.textContent = retainedRecording ? 'Retry dictation' : 'Dictate';
+    const generation = ++audioGeneration, releasedLease = lease, capture = recording, player = speaker, context = audioContext;
+    lease = null; recording = null; speaker = null; audioContext = null; clearInterval(renewTimer); renewTimer = null;
+    dictate.textContent = retainedRecording ? 'Retry dictation' : 'Dictate'; audioStatus.textContent = 'Microphone off · audio stopped.';
+    player?.stop(); if (context) await context.close().catch(() => {});
+    if (capture) await capture.cancel();
+    if (releasedLease && globalThis.ContextRoomNativeOwner?.releaseAudio) await ContextRoomNativeOwner.releaseAudio({ conversationId: releasedLease.conversationId, epoch: releasedLease.epoch }).catch(() => {});
+    if (releasedLease && notify) await post('/audio/controller', { conversationId: releasedLease.conversationId, clientId, epoch: releasedLease.epoch, action: 'release' }).catch(() => {});
+    if (generation === audioGeneration && globalThis.ContextRoomNativeOwner?.active) await refreshNativeRecordings();
   }
   async function toggleDictation() {
-    if (audioBusy) return; audioBusy = true; dictate.disabled = true;
+    if (audioBusy || changingConversation) return; audioBusy = true; dictate.disabled = true; render(); let generation = audioGeneration;
     try {
     if (recording) {
-      const capture = recording; recording = null; retainedRecording = await capture.finish(); dictate.textContent = 'Transcribing…';
+      const capture = recording; recording = null; retainedRecording = await capture.finish(); await saveDraft(); dictate.textContent = 'Retry dictation';
+      if (closed || generation !== audioGeneration) return;
+      dictate.textContent = 'Transcribing…';
+      audioStatus.textContent = 'Microphone off · transcribing on the Mac…';
     } else if (!retainedRecording) {
-      const generation = audioGeneration; await acquireAudio(); errorBox.textContent = '';
-      const capture = await captureMicrophone(() => run(toggleDictation()));
+      if (audioReading) await releaseAudio();
+      if (globalThis.ContextRoomNativeOwner?.ensureMicrophone) await ContextRoomNativeOwner.ensureMicrophone();
+      if (closed) return;
+      generation = audioGeneration; await acquireAudio(false, generation); errorBox.textContent = '';
+      const capture = await captureMicrophone(() => run(toggleDictation()), { ...owned(), scopeKey });
       if (closed || generation !== audioGeneration) { await capture.cancel(); return; }
-      recording = capture; dictate.textContent = 'Finish dictation'; return;
+      recording = capture; dictate.textContent = 'Finish dictation'; audioStatus.textContent = 'Microphone on · dictation stays in this original source.'; return;
     }
-    if (!lease) await acquireAudio(); const generation = audioGeneration;
-    if (!recordingRequest || recordingRequest.epoch !== lease.epoch) recordingRequest = { ...owned(), requestId: crypto.randomUUID(), pcm: retainedRecording, language: 'fr' };
+    if (!lease) await acquireAudio(false, generation);
+    if (!recordingRequest || recordingRequest.epoch !== lease.epoch) recordingRequest = { ...owned(), requestId: crypto.randomUUID(), pcm: retainedRecording.pcm, language: 'fr' };
     const pending = await post('/audio/transcribe', recordingRequest);
     const job = await waitAudio(pending, generation);
     if (generation !== audioGeneration) return;
-    input.value += (input.value.trim() ? '\n' : '') + job.result.text; retainedRecording = null; recordingRequest = null; dictate.textContent = 'Dictate';
+    const completedRecording = retainedRecording;
+    input.value += (input.value.trim() ? '\n' : '') + job.result.text; retainedRecording = null; recordingRequest = null; await saveDraft(); dictate.textContent = 'Dictate';
+    if (completedRecording.recordingId && globalThis.ContextRoomNativeOwner?.acknowledgeRecording) await ContextRoomNativeOwner.acknowledgeRecording({ scopeKey, conversationId: current.id, recordingId: completedRecording.recordingId });
+    await refreshNativeRecordings();
+    await releaseAudio();
     errorBox.textContent = job.result.silent ? 'No speech detected. Nothing was sent.' : 'Dictation added to your draft. Read it before sending.'; input.focus();
     } catch (error) { dictate.textContent = retainedRecording ? 'Retry dictation' : 'Dictate'; if (error.audioStatus === 'failed' || error.audioStatus === 'cancelled') recordingRequest = null; throw error; }
-    finally { audioBusy = false; dictate.disabled = false; }
+    finally { audioBusy = false; dictate.disabled = false; render(); }
   }
   async function readAnswer() {
+    if (recording || audioBusy || audioReading || changingConversation) return;
+    audioReading = true; render(); const generation = ++audioGeneration;
+    try {
     speaker?.stop(); speaker = null;
     if (!globalThis.ContextRoomNativeOwner?.playAudio) { audioContext ||= new (window.AudioContext || window.webkitAudioContext)(); await audioContext.resume(); }
-    await acquireAudio(); const generation = ++audioGeneration;
+    await acquireAudio(false, generation); audioStatus.textContent = 'Microphone off · reading the original answer…';
     const message = current.messages.findLast(item => item.role === 'assistant' && item.text);
     if (!message) return;
     for (let start = 0; start < message.text.length && generation === audioGeneration; ) {
@@ -164,8 +233,10 @@ export async function openConversation({ api, scopeKey, source, parent = documen
       const job = await waitAudio(await post('/audio/speak', { ...owned(), requestId: crypto.randomUUID(), messageId: message.id, start, end }), generation);
       if (generation !== audioGeneration) return;
       if (globalThis.ContextRoomNativeOwner?.playAudio) {
-        speaker = { stop: () => ContextRoomNativeOwner.stopAudio() };
-        await ContextRoomNativeOwner.playAudio({ pcm: job.result.pcm, sampleRate: job.result.sampleRate, epoch: lease.epoch });
+        const ownership = owned();
+        speaker = { stop: () => ContextRoomNativeOwner.stopAudio(ownership).catch(() => {}) };
+        const playback = await ContextRoomNativeOwner.playAudio({ ...ownership, pcm: job.result.pcm, sampleRate: job.result.sampleRate });
+        if (playback?.played !== true) throw new Error('Playback did not confirm the complete passage.');
       } else {
         const bytes = Uint8Array.from(atob(job.result.pcm), character => character.charCodeAt(0)), view = new DataView(bytes.buffer);
         const buffer = audioContext.createBuffer(1, bytes.length / 2, job.result.sampleRate), channel = buffer.getChannelData(0);
@@ -176,20 +247,26 @@ export async function openConversation({ api, scopeKey, source, parent = documen
       speaker = null; if (generation !== audioGeneration) return;
       await post('/audio/receipt', { ...owned(), requestId: job.id, played: true }); start = end;
     }
+    } finally { audioReading = false; if (generation === audioGeneration) await releaseAudio(); render(); }
   }
-  const hidden = () => { if (document.visibilityState === 'hidden') void releaseAudio(); };
+  const hidden = () => { if (document.visibilityState === 'hidden') run(releaseAudio()); };
+  const nativeActivity = event => { if (event.detail === false) run(releaseAudio()); else run(refreshNativeRecordings()); };
   document.addEventListener('visibilitychange', hidden);
-  const dispose = self.dispose; self.dispose = async () => { document.removeEventListener('visibilitychange', hidden); await dispose(); };
-  const timer = setInterval(() => void poll(), 500); showModels(); render(); await refreshHistory();
+  window.addEventListener('context-room-native-active', nativeActivity);
+  const dispose = self.dispose; self.dispose = async () => { document.removeEventListener('visibilitychange', hidden); window.removeEventListener('context-room-native-active', nativeActivity); await dispose(); };
+  const timer = setInterval(() => void poll(), 500); showModels(); render(); await restoreDraft(); await refreshHistory();
   if (mode === 'dictate') errorBox.textContent = 'Choose Dictate to start the microphone for this source.';
   input.focus(); return self;
 }
 
-async function captureMicrophone(onLimit) {
+async function captureMicrophone(onLimit, ownership) {
   if (globalThis.ContextRoomNativeOwner) {
     if (!ContextRoomNativeOwner.startRecording) throw new Error('Microphone support is unavailable in this installed tablet build.');
-    await ContextRoomNativeOwner.startRecording();
-    return { finish: () => ContextRoomNativeOwner.finishRecording(), cancel: () => ContextRoomNativeOwner.cancelRecording() };
+    const capture = await ContextRoomNativeOwner.startRecording(ownership), value = { ...ownership, recordingId: capture.recordingId };
+    const event = event => { if (event.detail?.recordingId === capture.recordingId && event.detail.type === 'recording-limit') onLimit(); };
+    window.addEventListener('context-room-native-audio', event);
+    return { finish: () => { window.removeEventListener('context-room-native-audio', event); return ContextRoomNativeOwner.finishRecording(value); },
+      cancel: () => { window.removeEventListener('context-room-native-audio', event); return ContextRoomNativeOwner.cancelRecording(value).catch(() => {}); } };
   }
   if (!navigator.mediaDevices?.getUserMedia) throw new Error('Microphone access requires this local Context Room page.');
   const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }, video: false });
@@ -206,6 +283,6 @@ async function captureMicrophone(onLimit) {
     const pcm = new Uint8Array(count * 2), view = new DataView(pcm.buffer);
     for (let n = 0; n < count; n++) { const position = n * rate / 16000, left = Math.floor(position), fraction = position - left;
       const value = all[left] + ((all[left + 1] ?? all[left]) - all[left]) * fraction; view.setInt16(n * 2, Math.round(Math.max(-1, Math.min(1, value)) * 32767), true); }
-    let text = ''; for (let n = 0; n < pcm.length; n += 8192) text += String.fromCharCode(...pcm.subarray(n, n + 8192)); return btoa(text);
+    let text = ''; for (let n = 0; n < pcm.length; n += 8192) text += String.fromCharCode(...pcm.subarray(n, n + 8192)); return { pcm: btoa(text) };
   } };
 }

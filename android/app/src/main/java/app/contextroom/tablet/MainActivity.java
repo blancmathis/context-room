@@ -27,6 +27,8 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   boolean showingOwner;
   android.webkit.ValueCallback<android.net.Uri[]> ownerFileCallback;
   OwnerWorkspace fileChooserOwner;
+  android.webkit.ValueCallback<Boolean> microphonePermissionCallback;
+  Boolean microphonePermissionResult;
   byte[] ownerExportBytes;
   android.webkit.ValueCallback<Boolean> ownerExportCallback;
   NativeCommandJournal journal;
@@ -111,6 +113,20 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     } catch (Exception error) { showError(error.getMessage()); screen.addView(button("Réessayer", this::ownerScreen)); screen.addView(button("Connexions", this::pairingScreen)); }
   }
   @Override public void ownerError(String message) { if (!dead && showingOwner) showError(message); }
+  @Override public void requestOwnerMicrophone(android.webkit.ValueCallback<Boolean> callback) {
+    if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) { callback.onReceiveValue(true); return; }
+    if (microphonePermissionCallback != null) { callback.onReceiveValue(false); return; }
+    microphonePermissionCallback = callback; requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, 73);
+  }
+  void finishMicrophonePermission() {
+    if (!resumed || microphonePermissionResult == null || microphonePermissionCallback == null) return;
+    android.webkit.ValueCallback<Boolean> callback = microphonePermissionCallback; boolean granted = microphonePermissionResult;
+    microphonePermissionCallback = null; microphonePermissionResult = null; callback.onReceiveValue(granted);
+  }
+  @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
+    super.onRequestPermissionsResult(request, permissions, results);
+    if (request == 73) { microphonePermissionResult = results.length == 1 && results[0] == android.content.pm.PackageManager.PERMISSION_GRANTED; finishMicrophonePermission(); }
+  }
   @Override public void saveOwnerFile(byte[] bytes, String filename, String type, android.webkit.ValueCallback<Boolean> callback) {
     if (ownerExportCallback != null) { callback.onReceiveValue(false); ownerError("Terminez d’abord l’export ouvert."); return; }
     ownerExportBytes = bytes; ownerExportCallback = callback;
@@ -452,7 +468,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
       catch (Exception error) { runOnUiThread(() -> showError(error.getMessage())); } });
   }
   @Override protected void onPause() { resumed = false; if (ownerWorkspace != null) ownerWorkspace.foreground(false); views.setMode("independent"); navigation.foreground(false); if (ink != null) { ink.finishReachedInk(); ink.suspendBoox(true); viewport(); } super.onPause(); }
-  @Override protected void onResume() { super.onResume(); resumed = true; if (ownerWorkspace != null) ownerWorkspace.foreground(showingOwner); navigation.foreground(true); if (ink != null) ink.suspendBoox(false); if (engineReady && currentScope != null) engine.call("refresh"); }
+  @Override protected void onResume() { super.onResume(); resumed = true; if (ownerWorkspace != null) ownerWorkspace.foreground(showingOwner); finishMicrophonePermission(); navigation.foreground(true); if (ink != null) ink.suspendBoox(false); if (engineReady && currentScope != null) engine.call("refresh"); }
   @Override public void onBackPressed() { interaction(); if (presentation) { setPresentation(false); return; } if (showingOwner && ownerWorkspace.web.canGoBack()) { ownerWorkspace.web.goBack(); return; } if (connection != null && ink != null) whenJournalIdle(() -> { engine.call("close"); connectionHome(); }); else super.onBackPressed(); }
   @Override protected void onDestroy() { if (ink != null) ink.finishReachedInk(); dead = true; if (ownerFileCallback != null) { ownerFileCallback.onReceiveValue(null); ownerFileCallback = null; } if (ownerExportCallback != null) { ownerExportCallback.onReceiveValue(false); ownerExportCallback = null; ownerExportBytes = null; } if (ownerWorkspace != null) ownerWorkspace.close(); navigation.close(); engine.close(); disk.shutdown(); super.onDestroy(); }
 }

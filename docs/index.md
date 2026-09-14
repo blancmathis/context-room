@@ -45,6 +45,7 @@ This document does not define product behavior, technical contracts, security gu
 ## Product surfaces
 
 - [Document workflow, formats and optional tablet](features/document-workflow.md)
+- [Original-source conversations and dictation](features/conversations.md)
 
 - [Global Context Hub](features/context-hub.md)
 - [Shared Context](features/shared-context.md)
@@ -64,6 +65,7 @@ This document does not define product behavior, technical contracts, security gu
 Active implementation and its verification record:
 
 - [Refactor: consolidated decisions, architecture, migration and verification](lifecycle/changes/active/refactor/index.md)
+- [Connected notebooks and Android convergence](lifecycle/changes/active/android-convergence/index.md)
 
 Historical evidence does not define current behavior:
 

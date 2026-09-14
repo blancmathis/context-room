@@ -21,7 +21,8 @@ def command(*arguments):
 
 permissions = command(str(sdk / 'aapt'), 'dump', 'permissions', str(args.apk))
 assert "package: app.contextroom.tablet.preview" in permissions, 'Unexpected application identity'
-assert re.findall(r"uses-permission[^\n]*name='([^']+)'", permissions) == ['android.permission.INTERNET'], 'Unexpected Android permission'
+expected_permissions = ['android.permission.INTERNET', 'android.permission.RECORD_AUDIO']
+assert re.findall(r"uses-permission[^\n]*name='([^']+)'", permissions) == expected_permissions, 'Unexpected Android permission'
 manifest = command(str(sdk / 'aapt'), 'dump', 'xmltree', str(args.apk), 'AndroidManifest.xml')
 for attribute in ('allowBackup', 'usesCleartextTraffic'):
     assert re.search(r'android:' + attribute + r'\([^\n]+\)=\(type 0x12\)0x0\b', manifest), attribute + ' must be disabled'
@@ -35,4 +36,4 @@ with zipfile.ZipFile(args.apk) as archive:
         assert archive.read(entry) == source.read_bytes(), 'APK does not contain the current shared engine: ' + entry
     assert not any(name.endswith(('.keystore', '.jks', '.key', '.p12')) for name in archive.namelist()), 'Signing material in APK'
 print(json.dumps({'apkSha256': hashlib.sha256(args.apk.read_bytes()).hexdigest(), 'package': 'app.contextroom.tablet.preview',
-                  'permissions': ['android.permission.INTERNET'], 'signatureV2': True, 'exactSharedAssets': len(assets)}))
+                  'permissions': expected_permissions, 'signatureV2': True, 'exactSharedAssets': len(assets)}))

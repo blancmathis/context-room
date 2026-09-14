@@ -34,7 +34,8 @@ const sharedReceipt = submitNotebookShared(root, { protocolVersion: 1, scope: 's
   target: readSharedNotebookTarget(root, 'docs/Shared.crnb'), resourceId: sharedNotebook.resourceId,
   operationId: 'shared-submission', locationRevision: sharedNotebook.locator.revision, expectedRevision: 1 }, { actor, canWrite });
 const service = createContextRoomDeviceService({ root, stateRoot: path.join(base, 'devices') });
-const runtime = createMemoryServer({ root, deviceService: service, registerInHub: true, globalPreferencesPath });
+const runtime = createMemoryServer({ root, deviceService: service, registerInHub: true, globalPreferencesPath,
+  assistantOptions: { root: path.join(base, 'private-assistant'), ...(process.env.CONTEXT_ROOM_TEST_WHISPER_MODEL ? { modelPath: process.env.CONTEXT_ROOM_TEST_WHISPER_MODEL } : {}) } });
 await new Promise(resolve => runtime.server.listen(0, '127.0.0.1', resolve));
 await service.listen();
 const reviewResponse = await fetch(`http://127.0.0.1:${runtime.server.address().port}/api/shared-context/review`, {

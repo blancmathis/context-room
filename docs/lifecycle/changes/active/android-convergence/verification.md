@@ -573,15 +573,62 @@ Shared discovery trace isolates approximately 750 ms in the macOS
 `git-upload-pack` developer-tool launcher. Its synthetic helper now invokes
 `git upload-pack` directly; the existing one-second budget and two-connection
 assertion pass unchanged. The Context snapshot anomaly does not reproduce in
-the five-test module or six consecutive inspected snapshots. A fresh complete
-regression run is still required; narrower passes do not replace it.
+the five-test module or six consecutive inspected snapshots. The fresh complete
+run on `dc6fb172044e6389dd989c6d1fc55ea0fd7be7cd` passes **75/75 test
+processes**. CI run `34900810518` also passes all nine jobs: Node 20/22/24,
+the four browser profiles, soak and the final gate.
+
+## Native audio and original composer recovery
+
+The Android preview uses actual `AudioRecord` and `AudioTrack`, an explicit
+runtime microphone permission, and the existing trusted main-frame bridge.
+Capture writes bounded PCM in the private application directory and syncs it
+during recording. The original conversation and source hash remain attached.
+The native controller expires, rejects stale epochs and closes on backgrounding.
+Playback confirms reached frames instead of treating prepared bytes as heard.
+
+The real emulator component test passes capture, exact PCM recovery, wrong-source
+rejection, playback completion, background stop, old-epoch refusal and removal
+only after acknowledgment. The connected owner UI test also passes its Android
+permission dialog, backgrounding, recovery in the original conversation and
+reload with the retained recording. It never sends a message to Codex. The
+existing owner Hub/document/review/native-drawing/file-picker round trip passes
+again with the same APK. Its SHA-256 is
+`10cd87ece566ce9b73a9bc94c736a503303e44ad5c500bc995e5aae1bda366f0`;
+signature v2 and eight exact shared assets pass. Permissions are now Internet
+and microphone; no background audio service is added.
+
+Sixteen browser scenarios pass across all four profiles. They cover original
+source preservation, explicit sends with a synthetic test provider, restored
+drafts, original-history selection, late recording completion after Stop, and
+playback receipts fenced by the current operation. The audio-ordering fixture
+is explicitly synthetic; the Android tests exercise the real Java bridge and
+platform audio APIs. Sixteen focused HTTP, device-owner and asset contracts also
+pass. Empty messages no longer consume panel space, the microphone state remains
+visible, and long panel content scrolls normally.
+
+The first owner audio scenario found that Discuss inherited the Save block for
+a document awaiting review. It now permits discussing that exact current disk
+version while retaining the Save/review restrictions and external-conflict gate.
+Another run reached the existing 32-connection retention limit after repeated
+synthetic pairings. The isolated emulator's old encrypted pairing vault was
+archived reversibly with its Keystore and notebook caches intact; the limit was
+not weakened. The ensuing native and owner scenarios pass. Rendered capture and
+recovery panels were inspected.
+
+These native checks do not establish physical microphone quality, audible BOOX
+output or speech recognition through the tablet. Real Mac recognition and speech
+preparation are proven separately above. The current audio changes still need
+their complete regression/CI checkpoint; the preceding green run is identified
+explicitly rather than applied to newer uncommitted sources.
 
 ## Open product gates
 
-Continuous/native voice, document observation, durable audio recovery, data
-migration and final removal of the external compatibility dependency remain
-implementation work. Complete native owner conversation controls are not yet
-verified on the emulator, and the full regression failures above remain open.
+Continuous voice, voice alongside the native pen, document observation,
+unfinished browser-audio recovery, data migration and final removal of the
+external compatibility dependency remain implementation work. Native dictation
+and original-recording recovery have the emulator checks above; complete
+conversation and recognition through that surface remain to be verified.
 The verified Android installation is an emulator preview. It does not establish
 physical Wi-Fi behavior or BOOX pen/palm latency.
 

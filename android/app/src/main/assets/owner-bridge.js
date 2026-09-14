@@ -102,7 +102,18 @@
   document.addEventListener('visibilitychange', () => { if (!document.hidden) for (const stream of streams) stream.poll(); });
   window.addEventListener('pagehide', () => { for (const stream of streams) stream.close(); });
   window.ContextRoomNativeOwner = Object.freeze({
+    get active() { return active; },
     openNotebook: item => rpc('notebook.open', item),
+    audioController: value => rpc('audio.controller', value),
+    async ensureMicrophone() { const result = await rpc('audio.permission', {}, null, 0); if (!result.granted) throw new Error('Microphone permission was not granted.'); },
+    startRecording: value => rpc('audio.recording.start', value, null, 0),
+    finishRecording: value => rpc('audio.recording.finish', value),
+    cancelRecording: value => rpc('audio.stop', value),
+    recoverRecordings: value => rpc('audio.recording.recover', value),
+    acknowledgeRecording: value => rpc('audio.recording.acknowledge', value),
+    playAudio: value => rpc('audio.play', value, null, 75000),
+    stopAudio: value => rpc('audio.stop-playback', value),
+    releaseAudio: value => rpc('audio.stop', value),
     async chooseImages() {
       const result = await rpc('file.choose-images', {}, null, 0);
       return result.files.map(file => new File([decode(file.body)], file.name, { type: file.type }));

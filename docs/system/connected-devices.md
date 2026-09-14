@@ -23,8 +23,8 @@ relationship to notebook authority.
 
 ## Does not define
 
-Human file decisions, voice sessions, personal-device
-installation or migration. See [human authority](../features/review-authority.md)
+Human file decisions, conversation semantics, personal-device
+installation or migration. See [original-source conversations](../features/conversations.md), [human authority](../features/review-authority.md)
 and the active convergence at `docs/lifecycle/changes/active/android-convergence/index.md` in the Context Room source repository.
 
 ## Activation and pairing

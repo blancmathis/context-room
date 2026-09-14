@@ -2,7 +2,7 @@
 
 ## Summary
 
-The implementation branch starts at `05f5ded92cc1158b8c5aea09f4836fd08f4de27f`, preserving the refactor and concurrent configuration/navigation stabilization. The notebook foundation includes an optional TLS device service and an Android preview with native drawing and the existing full owner interface, verified in an isolated emulator. The browser now connects document/notebook conversations to real Codex, scoped edits, progressive drawing and recoverable task identities. Local audio routes and controls are present; native voice and microphone verification remain unfinished. Full convergence remains incomplete; this branch is not a deployed release.
+The implementation branch starts at `05f5ded92cc1158b8c5aea09f4836fd08f4de27f`, preserving the refactor and concurrent configuration/navigation stabilization. The notebook foundation includes an optional TLS device service and an Android preview with native drawing and the existing full owner interface, verified in an isolated emulator. The browser connects document/notebook conversations to real Codex, scoped edits, progressive drawing and recoverable task identities. Native Android capture, playback, background stop and original-recording recovery have emulator checks; continuous voice and physical microphone verification remain unfinished. Full convergence remains incomplete; this branch is not a deployed release.
 
 ## Defines
 
