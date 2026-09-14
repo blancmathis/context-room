@@ -4376,12 +4376,17 @@ function captureNotebookApi(targetProjectId = "") {
   return { api: request, scopeKey };
 }
 
+let contextRoomAssistantUi = null;
+async function loadContextRoomAssistantUi() {
+  return contextRoomAssistantUi ||= await import("/assets/ui/assistant.mjs");
+}
+
 async function openContextRoomNotebook(filePath, { directory = "", projectId = "" } = {}) {
   const captured = captureNotebookApi(projectId);
   const notebook = await import("/assets/ui/notebook-editor.mjs");
   const options = { ...captured,
-    onConversation: async (source, display) => { const assistant = await import("/assets/ui/assistant.mjs"); return assistant.openConversation({ ...captured, source, ...display }); },
-    onClosed: async () => { const assistant = await import("/assets/ui/assistant.mjs"); assistant.dockConversation(); },
+    onConversation: async (source, display) => { const assistant = await loadContextRoomAssistantUi(); return assistant.openConversation({ ...captured, source, ...display }); },
+    onClosed: () => contextRoomAssistantUi?.dockConversation(),
     onSubmitted: async () => { setStatus("Notebook submitted for human review. No file accepted."); if (typeof refreshDocQa === "function") await refreshDocQa(); } };
   if (filePath) return notebook.openNotebookEditor({ ...options, path: filePath });
   return notebook.chooseNotebook({ ...options, directory });
@@ -4393,7 +4398,7 @@ async function openOriginalDocumentConversation(mode = "text") {
   const captured = captureNotebookApi(), source = { kind: "document", path: state.selected, hash: state.savedHash };
   const editor = el("docEditor");
   if (editor && editor.selectionEnd > editor.selectionStart) source.selection = { start: editor.selectionStart, end: editor.selectionEnd, text: editor.value.slice(editor.selectionStart, editor.selectionEnd) };
-  const assistant = await import("/assets/ui/assistant.mjs"); return assistant.openConversation({ ...captured, source, mode });
+  const assistant = await loadContextRoomAssistantUi(); return assistant.openConversation({ ...captured, source, mode });
 }
 
 function contextRoomScopedRequestPath(requestPath) {
@@ -12151,22 +12156,27 @@ function applyInitialContextHubWhenReady(contextHubRequest) {
     enforceHostedHubSourceFilters();
     const requestedProjectId = new URLSearchParams(window.location.search).get("project") || "";
     let requestedProjectSelection = null;
+    let requestedProjectAmbiguous = false;
     try {
       requestedProjectSelection = requestedProjectId
         ? resolveContextHubProjectSelection(contextHub?.projects || [], requestedProjectId).project
         : null;
     } catch (error) {
       if (error?.code !== "context_hub_project_ambiguous") throw error;
+      requestedProjectAmbiguous = true;
     }
+    // A superseding runtime snapshot must resolve an ambiguous initial alias
+    // too; otherwise boot discards the selector and reports an unqualified ready.
     const recoverSupersededInitialProject = Boolean(
       IS_GLOBAL_CONTEXT_ROOM
-      && requestedProjectSelection
+      && (requestedProjectSelection || requestedProjectAmbiguous)
       && (
         !state.activeProjectLocationId
         || (
           document.body.classList.contains("app-booting")
           && (
-            state.globalExplorerMode !== "project"
+            requestedProjectAmbiguous
+            || state.globalExplorerMode !== "project"
             || state.globalExplorerProjectKey !== requestedProjectSelection.projectKey
           )
         )

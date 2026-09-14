@@ -9,7 +9,7 @@ async function checkDialogAccessibility(page) {
   expect(result.violations.map(({ id, nodes }) => ({ id, targets: nodes.map(node => node.target) }))).toEqual([]);
 }
 
-test("@smoke a newer Hub snapshot renders the Explorer when the initial catalogue was superseded", async ({ page }) => {
+for (const ambiguous of [false, true]) test(`@smoke a newer Hub snapshot ${ambiguous ? "preserves an ambiguous project warning" : "renders the Explorer"} when the initial catalogue was superseded`, async ({ page }) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-hub-render-ui-"));
   const previous = {};
   for (const key of ["CONTEXT_ROOM_HUB_HOME", "CONTEXT_ROOM_SHARED_HOME", "CONTEXT_ROOM_REVIEW_AUTHORITY_HOME"]) {
@@ -20,16 +20,31 @@ test("@smoke a newer Hub snapshot renders the Explorer when the initial catalogu
   const root = path.join(base, "project"); fs.mkdirSync(root);
   initializeContextRoomProject(root, { title: "Catalogue race" });
   registerContextHubProject(root, { title: "Catalogue race" });
+  if (ambiguous) {
+    const second = path.join(base, "second-project"); fs.mkdirSync(second);
+    initializeContextRoomProject(second, { title: "Catalogue race" });
+    registerContextHubProject(second, { title: "Catalogue race" });
+  }
   const runtime = createMemoryServer({ root });
   await new Promise(resolve => runtime.server.listen(0, "127.0.0.1", resolve));
   try {
     await page.goto(`http://127.0.0.1:${runtime.server.address().port}/?hub=1&view=hub&explorer=expanded`);
     const row = page.locator(".global-project-row", { hasText: "Catalogue race" });
-    await expect(row).toBeVisible();
-    await page.evaluate(async () => {
+    await expect(row).toHaveCount(ambiguous ? 2 : 1);
+    await expect(row.first()).toBeVisible();
+    await page.evaluate(async (ambiguous) => {
       stopWorkspaceRuntime();
       await Promise.allSettled([state.contextHubReadyPromise, state.runtimeContextHubRefreshPromise].filter(Boolean));
       const catalog = structuredClone(state.contextHub);
+      if (ambiguous) {
+        const url = new URL(location.href); url.searchParams.set("project", "Catalogue race");
+        history.replaceState(history.state, "", url);
+        state.activeProjectLocationId = "Catalogue race";
+        state.globalExplorerMode = "projects";
+        state.globalExplorerProjectKey = "";
+        document.body.classList.add("app-booting");
+        setStatus("ready");
+      }
       state.contextHub = null;
       renderGlobalProjectExplorer();
       const initialTicket = beginContextHubSnapshotRequest();
@@ -37,9 +52,14 @@ test("@smoke a newer Hub snapshot renders the Explorer when the initial catalogu
       await applyInitialContextHubWhenReady(Promise.resolve({ contextHub: catalog, ticket: newerTicket }));
       await applyInitialContextHubWhenReady(Promise.resolve({ contextHub: { ...catalog, projects: [] }, ticket: initialTicket }));
       await new Promise(resolve => requestAnimationFrame(resolve));
-    });
-    await expect(row).toBeVisible();
+      document.body.classList.remove("app-booting");
+    }, ambiguous);
+    await expect(row.first()).toBeVisible();
     await expect(page.locator("#globalProjectCount")).not.toHaveText("Loading…");
+    if (ambiguous) {
+      await expect(page.locator("#status")).toContainText("Several projects match");
+      expect(await page.evaluate(() => ({ active: state.activeProjectLocationId, selected: state.globalExplorerProjectKey }))).toEqual({ active: "", selected: "" });
+    }
   } finally {
     if (!page.isClosed()) await page.goto("about:blank");
     await new Promise(resolve => { runtime.server.close(resolve); runtime.server.closeAllConnections?.(); });

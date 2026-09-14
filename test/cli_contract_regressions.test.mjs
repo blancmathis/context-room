@@ -874,6 +874,8 @@ test("a freshly discovered proposal opens without a second network refresh", (t)
   const helper = path.join(helperRoot, "git-remote-counted");
   const countFile = path.join(base, "remote-helper-count.txt");
   fs.mkdirSync(helperRoot, { recursive: true });
+  // Use Git's own subcommand, avoiding the separate macOS developer-tool shim
+  // for git-upload-pack while keeping the original one-second discovery budget.
   fs.writeFileSync(helper, `#!/bin/sh
 while IFS= read -r command; do
   case "$command" in
@@ -887,7 +889,7 @@ while IFS= read -r command; do
       printf '%s\\n' "$count" > "$CONTEXT_ROOM_TEST_REMOTE_COUNT"
       if [ "$count" -ge 3 ]; then sleep 5; exit 1; fi
       printf '\\n'
-      exec git-upload-pack "$CONTEXT_ROOM_TEST_REMOTE_REPOSITORY"
+      exec git upload-pack "$CONTEXT_ROOM_TEST_REMOTE_REPOSITORY"
       ;;
     "option "*)
       printf 'unsupported\\n'

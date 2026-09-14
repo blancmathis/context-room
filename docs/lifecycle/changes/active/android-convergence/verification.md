@@ -559,7 +559,22 @@ reports 71/73 processes passing. One synthetic Shared fetch exceeds its
 1,000 ms discovery budget; one repeated Context snapshot produces a different
 hash. Its CI passes Node 20/22/24, mobile Chromium, Firefox, WebKit and soak,
 but the desktop browser suite loses an ambiguous-project notice to “ready”.
-Those failures remain open and are not erased by narrower passing checks.
+The follow-up identifies and fixes the Hub race: a runtime snapshot that
+supersedes the initial catalogue now resolves an ambiguous alias as well as a
+unique project. A deterministic browser regression reproduces the missing
+warning before the fix. Closing an offline notebook also no longer imports an
+unused conversation module, which had caused an unhandled network failure in
+all four CI browsers.
+
+The focused browser matrix completes 19/20 scenarios; one mobile worker exits
+inside Node/V8 module loading. That exact mobile scenario passes on its focused
+rerun. All four offline notebook and eight conversation scenarios pass. The
+Shared discovery trace isolates approximately 750 ms in the macOS
+`git-upload-pack` developer-tool launcher. Its synthetic helper now invokes
+`git upload-pack` directly; the existing one-second budget and two-connection
+assertion pass unchanged. The Context snapshot anomaly does not reproduce in
+the five-test module or six consecutive inspected snapshots. A fresh complete
+regression run is still required; narrower passes do not replace it.
 
 ## Open product gates
 
