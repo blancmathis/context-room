@@ -1,0 +1,57 @@
+name: Convergence verification
+
+on:
+  push:
+    branches: [mathis/context-room-android-convergence]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - 'src/notebook*'
+      - 'src/devices/**'
+      - 'src/ui/notebook*'
+      - 'test/notebook*'
+      - 'test/devices*'
+      - '.github/workflows/convergence.yml'
+
+permissions: {}
+
+concurrency:
+  group: convergence-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install exact dependency graph
+        run: npm ci
+      - name: Notebook and existing proposal contracts
+        run: |
+          umask 022
+          node --test test/notebook_protocol.test.mjs test/notebooks.test.mjs test/notebook_workflow.test.mjs test/local_proposals.test.mjs test/document_assets.test.mjs
+      - name: Package privacy
+        run: npm run package:privacy
+      - name: Export exact source tree without repository history or runtime state
+        run: |
+          mkdir -p "$RUNNER_TEMP/convergence-source"
+          git archive --format=tar.gz --prefix=context-room/ HEAD > "$RUNNER_TEMP/convergence-source/context-room-source.tar.gz"
+          git rev-parse HEAD > "$RUNNER_TEMP/convergence-source/SOURCE_COMMIT"
+          cd "$RUNNER_TEMP/convergence-source"
+          sha256sum context-room-source.tar.gz > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: convergence-source-${{ github.sha }}
+          path: ${{ runner.temp }}/convergence-source/
+          if-no-files-found: error
+          retention-days: 7
