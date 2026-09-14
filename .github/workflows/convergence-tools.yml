@@ -1,0 +1,33 @@
+name: Convergence verification dependencies
+on:
+  push:
+    branches: [mathis/context-room-android-convergence]
+    paths: ['.github/workflows/convergence-tools.yml']
+permissions: {}
+jobs:
+  dependencies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts
+      - name: Export verification dependencies only
+        run: |
+          mkdir -p "$RUNNER_TEMP/verification-dependencies"
+          tar --exclude='*.ttf' --exclude='*.otf' --exclude='*.woff' --exclude='*.woff2' --exclude='.npmrc' -czf "$RUNNER_TEMP/verification-dependencies/dependencies.tar.gz" node_modules
+          cp package-lock.json "$RUNNER_TEMP/verification-dependencies/"
+          cd "$RUNNER_TEMP/verification-dependencies"
+          sha256sum dependencies.tar.gz package-lock.json > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: convergence-verification-dependencies
+          path: ${{ runner.temp }}/verification-dependencies/
+          retention-days: 1
+          if-no-files-found: error
