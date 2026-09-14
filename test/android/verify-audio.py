@@ -10,6 +10,7 @@ import time
 parser = argparse.ArgumentParser()
 parser.add_argument('--serial', required=True)
 parser.add_argument('--output', type=Path, required=True)
+parser.add_argument('--native-pen', action='store_true', help='Verify conversation and microphone alongside the native pen')
 args = parser.parse_args()
 repo = Path(__file__).resolve().parents[2]
 output = args.output.resolve()
@@ -42,6 +43,8 @@ def instrument(class_name, fixture=None, tests=1):
             subprocess.run(adb + ['logcat', '-d', '-s', 'System.out:I', 'AndroidRuntime:E', 'chromium:E', '*:S'], stdout=log, stderr=subprocess.STDOUT)
         raise RuntimeError('Native audio acceptance failed: ' + str(log_path))
 instrument('NativeAudioDeviceTest', tests=2)
+if args.native_pen:
+    instrument('InkProgressDeviceTest')
 run(adb + ['shell', 'pm', 'revoke', 'app.contextroom.tablet.preview', 'android.permission.RECORD_AUDIO'], capture_output=True)
 fixture_dir = output / 'fixture'
 with (output / 'fixture.log').open('w') as fixture_log:
@@ -53,15 +56,18 @@ with (output / 'fixture.log').open('w') as fixture_log:
                 raise RuntimeError('The owner audio fixture did not become ready')
             time.sleep(.1)
         run(adb + ['push', str(fixture_dir / 'ticket.json'), '/data/local/tmp/context-room-owner-audio-ticket.json'], capture_output=True)
-        instrument('OwnerAudioDeviceTest', '/data/local/tmp/context-room-owner-audio-ticket.json')
-        for name in ('owner-audio-recording', 'owner-audio-recovered'):
+        instrument('OwnerNotebookConversationDeviceTest' if args.native_pen else 'OwnerAudioDeviceTest', '/data/local/tmp/context-room-owner-audio-ticket.json')
+        images = ('native-voice-and-pen', 'native-conversation-retained-owner') if args.native_pen else ('owner-audio-recording', 'owner-audio-recovered')
+        for name in images:
             with (output / (name + '.png')).open('wb') as image:
                 run(adb + ['exec-out', 'run-as', 'app.contextroom.tablet.preview', 'cat', 'files/' + name + '.png'], stdout=image)
         (output / 'proof.json').write_text(json.dumps({
             'sourceHead': run(['git', 'rev-parse', 'HEAD'], cwd=repo, capture_output=True, text=True).stdout.strip(),
             'dirty': bool(run(['git', 'status', '--porcelain'], cwd=repo, capture_output=True, text=True).stdout),
             'apk': json.loads(artifact), 'emulator': avd, 'actualPcmCapture': True, 'actualPlaybackFrames': True,
-            'permissionDialog': True, 'backgroundStopAndOriginalRecovery': True, 'reloadRecovery': True,
+            'permissionDialog': True, 'backgroundStopAndOriginalRecovery': not args.native_pen, 'reloadRecovery': not args.native_pen,
+            'voiceWithNativePen': args.native_pen, 'retainedOwnerNotebookAndConversation': args.native_pen,
+            'nativeProgressGeometry': args.native_pen,
             'voiceForegroundAndBackgroundStop': True, 'nativeSpeechEndpointContract': True,
             'physicalMicrophoneAndAudibility': 'not-tested', 'recognitionThroughTablet': 'not-tested'
         }, indent=2) + '\n')

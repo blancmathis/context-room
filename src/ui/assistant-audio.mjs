@@ -29,9 +29,10 @@ export function microphonePcm(chunks, sampleRate) {
 }
 export async function recoverBrowserRecording(ownership, recordingId) {
   const value = await readBrowserRecording(ownership.scopeKey, ownership.conversationId, recordingId);
-  return { browserRecordingId: recordingId, pcm: microphonePcm(value.data, value.sampleRate), sampleRate: 16000 };
+  return { browserRecordingId: recordingId, recordingScopeKey: ownership.scopeKey, pcm: microphonePcm(value.data, value.sampleRate), sampleRate: 16000 };
 }
 export async function acknowledgeRecording(ownership, value) {
+  ownership = { ...ownership, scopeKey: value.recordingScopeKey || ownership.scopeKey };
   if (value.browserRecordingId) return acknowledgeBrowserRecording(ownership.scopeKey, ownership.conversationId, value.browserRecordingId);
   if (value.recordingId && globalThis.ContextRoomNativeOwner?.acknowledgeRecording) return ContextRoomNativeOwner.acknowledgeRecording({ ...ownership, recordingId: value.recordingId });
 }

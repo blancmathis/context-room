@@ -632,6 +632,10 @@ export function cleanupFilesystemLockWorkerOwner(owner, options = {}) {
       assertBeforeDeadline(deadline, normalizedOptions);
       const abandonedReclaim = readLockRecord(paths.reclaim);
       if (recordBelongsToWorkerOwner(abandonedReclaim, owner) && removeUniqueLockRecord(paths.reclaim, abandonedReclaim)) removed += 1;
+      // Cleanup runs after this Worker exits. A missing or successor generation
+      // needs no mutation, so do not contend with a live owner just to inspect it.
+      // The matching generation is checked again under coordination below.
+      if (!recordBelongsToWorkerOwner(readLockRecord(paths.lock), owner)) continue;
       withReclaim(paths, deadline, normalizedOptions, () => {
         const current = readLockRecord(paths.lock);
         if (recordBelongsToWorkerOwner(current, owner) && removeLockGeneration(paths, current)) removed += 1;

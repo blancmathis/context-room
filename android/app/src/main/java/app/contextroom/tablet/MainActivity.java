@@ -24,7 +24,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   CredentialVault vault;
   DeviceConnection connection;
   OwnerWorkspace ownerWorkspace;
-  boolean showingOwner;
+  boolean showingOwner, showingConversation, conversationBusy;
   android.webkit.ValueCallback<android.net.Uri[]> ownerFileCallback;
   OwnerWorkspace fileChooserOwner;
   android.webkit.ValueCallback<Boolean> microphonePermissionCallback;
@@ -32,11 +32,11 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   byte[] ownerExportBytes;
   android.webkit.ValueCallback<Boolean> ownerExportCallback;
   NativeCommandJournal journal;
-  LinearLayout root, screen;
+  LinearLayout root, screen, drawingWorkspace;
   TextView status, title;
   EditText pairingInput;
   InkView ink;
-  JSONObject lastScene, currentScope;
+  JSONObject lastScene, currentScope, nativeConversationState;
   long sceneVersion = -1;
   int pendingNative;
   boolean engineReady, dead, journalFailed;
@@ -44,7 +44,8 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   String openingId, openingProject, openingPath;
   Runnable deferredNavigation;
   byte[] pendingExport;
-  Button undoButton, redoButton;
+  Button undoButton, redoButton, conversationButton;
+  long lastAgentRefresh;
   Button shareViewButton, followViewButton, presentationButton;
   TextView viewStatus;
   View drawingTools;
@@ -79,8 +80,8 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     result.setOnClickListener(view -> { interaction(); action.run(); }); return result;
   }
   void header(String heading, String detail) {
-    showingOwner = false;
-    if (ownerWorkspace != null) ownerWorkspace.foreground(false);
+    showingOwner = false; showingConversation = false; conversationBusy = false; nativeConversationState = null;
+    if (ownerWorkspace != null) { ownerWorkspace.leaveConversation(); ownerWorkspace.foreground(false); }
     navigationScreen = false;
     openingId = null;
     if (views != null) views.setMode("independent");
@@ -112,7 +113,49 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
       HorizontalScrollView toolbar = new HorizontalScrollView(this); toolbar.addView(controls); screen.addView(toolbar);
     } catch (Exception error) { showError(error.getMessage()); screen.addView(button("Réessayer", this::ownerScreen)); screen.addView(button("Connexions", this::pairingScreen)); }
   }
-  @Override public void ownerError(String message) { if (!dead && showingOwner) showError(message); }
+  @Override public void ownerError(String message) { if (!dead && (showingOwner || showingConversation)) showError(message); }
+  void nativeConversation() {
+    if (showingConversation) { closeNativeConversation(); return; }
+    if (connection == null || !connection.isOwner() || ink == null || lastScene == null || currentScope == null || lastScene.optBoolean("offline") || lastScene.optInt("pending") > 0) {
+      showError("Attendez la confirmation du carnet par le Mac avant d’ouvrir sa conversation."); return;
+    }
+    whenJournalIdle(() -> {
+      try {
+        if (ownerWorkspace == null || ownerWorkspace.closed) ownerWorkspace = new OwnerWorkspace(this, connection, this);
+        if (ownerWorkspace.web.getParent() instanceof ViewGroup) ((ViewGroup) ownerWorkspace.web.getParent()).removeView(ownerWorkspace.web);
+        boolean wide = getResources().getConfiguration().screenWidthDp >= 840;
+        drawingWorkspace.setOrientation(wide ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
+        ink.setLayoutParams(wide ? new LinearLayout.LayoutParams(0, -1, 1) : new LinearLayout.LayoutParams(-1, 0, 1));
+        drawingWorkspace.addView(ownerWorkspace.web, wide ? new LinearLayout.LayoutParams(dp(390), -1) : new LinearLayout.LayoutParams(-1, dp(280)));
+        showingConversation = true; ownerWorkspace.foreground(resumed); conversationButton.setText("Fermer la conversation");
+        JSONObject source = InkView.json("kind", "notebook", "projectId", lastScene.optString("projectId"), "resourceId", lastScene.optString("resourceId"),
+          "path", lastScene.optString("path"), "revision", lastScene.opt("sceneRevision"), "locationRevision", lastScene.opt("locationRevision"), "selection", new JSONArray(ink.selected));
+        ownerWorkspace.conversation(source);
+      } catch (Exception error) { showError(error.getMessage()); }
+    });
+  }
+  void closeNativeConversation() {
+    if (!showingConversation) return;
+    showingConversation = false; conversationBusy = false; nativeConversationState = null;
+    if (ownerWorkspace != null) {
+      ownerWorkspace.foreground(false); ownerWorkspace.leaveConversation();
+      if (ownerWorkspace.web.getParent() instanceof ViewGroup) ((ViewGroup) ownerWorkspace.web.getParent()).removeView(ownerWorkspace.web);
+    }
+    if (ink != null) { ink.setAgentProgress(null); ink.setLayoutParams(new LinearLayout.LayoutParams(-1, -1)); }
+    if (conversationButton != null) conversationButton.setText("Conversation");
+  }
+  @Override public void ownerConversationState(JSONObject value) {
+    if (!showingConversation || ink == null || lastScene == null) return;
+    if (value.has("error")) { showError(value.optString("error")); return; }
+    JSONObject source = value.optJSONObject("source");
+    if (source == null || !"notebook".equals(source.optString("kind")) || !lastScene.optString("projectId").equals(value.optString("projectId"))
+      || !lastScene.optString("resourceId").equals(source.optString("resourceId")) || !lastScene.optString("path").equals(source.optString("path"))
+      || !Objects.equals(lastScene.opt("locationRevision"), source.opt("locationRevision"))) return;
+    nativeConversationState = InkView.copy(value);
+    conversationBusy = !value.optBoolean("closed") && (value.optBoolean("busy") || value.optBoolean("audioActive") || value.optBoolean("hasDraft"));
+    JSONObject progress = value.optBoolean("closed") ? null : value.optJSONObject("progress"); ink.setAgentProgress(progress);
+    if (progress != null && !progress.optBoolean("completed") && SystemClock.elapsedRealtime() - lastAgentRefresh > 350) { lastAgentRefresh = SystemClock.elapsedRealtime(); engine.call("refresh"); }
+  }
   @Override public void requestOwnerMicrophone(android.webkit.ValueCallback<Boolean> callback) {
     if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) { callback.onReceiveValue(true); return; }
     if (microphonePermissionCallback != null) { callback.onReceiveValue(false); return; }
@@ -215,6 +258,8 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
       drawingTools = scrolling;
       LinearLayout tools = new LinearLayout(this); scrolling.addView(tools); screen.addView(scrolling);
       tools.addView(button(connection.isOwner() ? "Context Room" : "Carnets", () -> whenJournalIdle(() -> { engine.call("close"); connectionHome(); })));
+      conversationButton = null;
+      if (connection.isOwner()) { conversationButton = button("Conversation", this::nativeConversation); conversationButton.setEnabled(false); tools.addView(conversationButton); }
       ink = new InkView(this, this); ink.recordingHistory = false; ink.setEnabled(false);
       HashMap<String, Button> toolButtons = new HashMap<>();
       for (String[] tool : new String[][]{{"Stylo","ink"},{"Sélection","select"},{"Gomme","erase"},{"Texte","text"},{"Rectangle","rect"},{"Ellipse","ellipse"},{"Ligne","line"},{"Flèche","arrow"},{"Déplacer","pan"}}) {
@@ -239,7 +284,8 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
           detail.append(error == null ? "Geste en conflit" : error.optString("message")).append("\n\n"); }
         new AlertDialog.Builder(this).setTitle("Gestes à réconcilier").setMessage(detail.length() == 0 ? "Aucun conflit dans ce carnet." : detail.toString()).setPositiveButton("Fermer", null).show();
       }));
-      screen.addView(ink, new LinearLayout.LayoutParams(-1, 0, 1));
+      drawingWorkspace = new LinearLayout(this); drawingWorkspace.addView(ink, new LinearLayout.LayoutParams(-1, -1));
+      screen.addView(drawingWorkspace, new LinearLayout.LayoutParams(-1, 0, 1));
       HorizontalScrollView viewScrolling = new HorizontalScrollView(this); LinearLayout viewTools = new LinearLayout(this); viewScrolling.addView(viewTools);
       shareViewButton = button("Partager ma vue", () -> views.setMode(views.mode.equals("share") ? "independent" : "share"));
       followViewButton = button("Suivre le Mac", () -> views.setMode("follow"));
@@ -314,6 +360,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     else setStatus("Synchronisé avec le Mac · brouillon du carnet");
     undoButton.setEnabled(lastScene.optInt("undo") > 0 && !ink.drawing);
     redoButton.setEnabled(lastScene.optInt("redo") > 0 && !ink.drawing);
+    if (conversationButton != null) conversationButton.setEnabled(showingConversation || !ink.gestureActive() && pendingNative == 0 && inFlight == null && lastScene.optInt("pending") == 0 && !lastScene.optBoolean("offline"));
     ink.invalidate();
   }
 
@@ -366,7 +413,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     }
   }
   @Override public boolean navigationBusy() {
-    return !resumed || dead || !engineReady || !navigationScreen || !hasWindowFocus() || journalFailed || pendingNative > 0 || inFlight != null
+    return !resumed || dead || !engineReady || !navigationScreen || !hasWindowFocus() || journalFailed || conversationBusy || pendingNative > 0 || inFlight != null
       || deferredNavigation != null || ink != null && (ink.gestureActive() || currentScope == null || journal == null
         || lastScene == null || !InkView.sameJson(currentScope, lastScene.optJSONObject("scope")) || lastScene.optInt("pending") > 0 || lastScene.optBoolean("offline"));
   }
@@ -468,7 +515,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
       catch (Exception error) { runOnUiThread(() -> showError(error.getMessage())); } });
   }
   @Override protected void onPause() { resumed = false; if (ownerWorkspace != null) ownerWorkspace.foreground(false); views.setMode("independent"); navigation.foreground(false); if (ink != null) { ink.finishReachedInk(); ink.suspendBoox(true); viewport(); } super.onPause(); }
-  @Override protected void onResume() { super.onResume(); resumed = true; if (ownerWorkspace != null) ownerWorkspace.foreground(showingOwner); finishMicrophonePermission(); navigation.foreground(true); if (ink != null) ink.suspendBoox(false); if (engineReady && currentScope != null) engine.call("refresh"); }
-  @Override public void onBackPressed() { interaction(); if (presentation) { setPresentation(false); return; } if (showingOwner && ownerWorkspace.web.canGoBack()) { ownerWorkspace.web.goBack(); return; } if (connection != null && ink != null) whenJournalIdle(() -> { engine.call("close"); connectionHome(); }); else super.onBackPressed(); }
+  @Override protected void onResume() { super.onResume(); resumed = true; if (ownerWorkspace != null) ownerWorkspace.foreground(showingOwner || showingConversation); finishMicrophonePermission(); navigation.foreground(true); if (ink != null) ink.suspendBoox(false); if (engineReady && currentScope != null) engine.call("refresh"); }
+  @Override public void onBackPressed() { interaction(); if (showingConversation) { closeNativeConversation(); return; } if (presentation) { setPresentation(false); return; } if (showingOwner && ownerWorkspace.web.canGoBack()) { ownerWorkspace.web.goBack(); return; } if (connection != null && ink != null) whenJournalIdle(() -> { engine.call("close"); connectionHome(); }); else super.onBackPressed(); }
   @Override protected void onDestroy() { if (ink != null) ink.finishReachedInk(); dead = true; if (ownerFileCallback != null) { ownerFileCallback.onReceiveValue(null); ownerFileCallback = null; } if (ownerExportCallback != null) { ownerExportCallback.onReceiveValue(false); ownerExportCallback = null; ownerExportBytes = null; } if (ownerWorkspace != null) ownerWorkspace.close(); navigation.close(); engine.close(); disk.shutdown(); super.onDestroy(); }
 }

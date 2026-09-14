@@ -670,13 +670,84 @@ signature v2, eight exact shared assets, Internet and microphone permissions pas
 The recovered owner panel was visually inspected. Recognition and a real Codex
 voice turn through Android remain separate proof gates.
 
+## Retained native conversation and scope continuity
+
+The owner preview can place its existing conversation WebView alongside the
+native pen, retaining the original notebook dialog and its working state. It
+uses the same conversation, scoped API, microphone controller and recovery code.
+Wide screens put the panel beside the canvas; smaller screens put it below.
+During Voice, the visible End voice and interruption controls remain near the
+conversation instead of below the inactive text composer.
+
+Forty scenarios pass across Chromium desktop/mobile, Firefox and WebKit. They
+include return to the retained notebook, original-source dictation/voice and
+recovery of a prior preview's equivalent root scope. Explicitly clearing a
+composer cannot resurrect an older alias. Other project/worktree scopes remain
+distinct. Thirteen focused audio/session/runtime contracts pass.
+
+The Android owner round trip passes again: Hub, documents, Local and Shared human
+review, native pen, system image picker, exact editable export and return to the
+retained workspace. Four audio/pen component and owner tests pass, including
+actual foreground microphone capture while a native stylus gesture reaches the
+Mac, background stop and preserved conversation text. A geometry test refuses a
+tip for an absent/future point, a moved object, expired progress or a completed
+stroke. Rendered Voice controls and the native canvas were inspected.
+
+All six complementary-mode phases pass: native drawing, durable offline work,
+process restart, exact replay, remote opening, view following and presentation,
+stale-opening rejection and native storage boundaries. The first run found an
+empty coordination JSON while `adb push` was replacing the test receipt. The
+fixture now publishes that receipt through a temporary file and atomic rename;
+the full six-phase rerun passes. This changes test coordination, not device
+permissions or product deadlines.
+
+The complete local regression at `589354054b6b9152a3afec208bdfd805e5483177`
+passes **76/76 processes**. Both convergence CI runs pass. Its main CI run
+`34907254117` passes Node 20 and 22, all four browsers and soak, but Node 24
+times out cleaning an old Worker's lock while a live successor owns it. Cleanup
+now checks whether the old generation needs removal before writing a coordinated
+record, and still rechecks identity under coordination before every removal.
+A deterministic no-write probe reproduces the unnecessary write before the fix.
+The twelve lock tests pass with preservation and global-deadline coverage;
+the 52 revision-integrity tests also pass. The first focused run retained two
+old test assumptions that every no-op must contend; those now distinguish
+unrelated successors from actual pending cleanup without relaxing deadlines.
+Current-commit full CI remains a separate gate.
+
+## Real native agent, interruption and speech
+
+The explicit `test/android/verify-agent.py --run` helper connects a synthetic
+notebook and separate emulator to the actual local Codex provider. The native
+tip appears after **13,402 ms** for a new progressive ink request. Native human
+writing continues while it draws. Stop retains only the reached prefix; a second
+message in the original conversation adds an ellipse without replacing that
+prefix or either human stroke. Native undo/redo affects the human gesture while
+preserving the independent agent objects. The ordinary notebook file remains
+unchanged and unaccepted.
+
+The exact real answer is synthesized on the Mac and played through Android's
+AudioTrack, with one receipt after frame completion and no microphone capture.
+Emulator volume is muted; this verifies native playback completion, not physical
+audibility. Total time through both turns and playback is **40,993 ms**. Rendered
+progress and final native scenes were inspected. The first useful result still
+misses the sub-ten-second objective; no replay is substituted for a new request.
+
+The verified application APK SHA-256 remains
+`0049bc2884ab530545761f990adef2fc5197ae12385f2d90faf4610400ad9ef2`:
+signature v2, eight exact shared assets, Internet and microphone permissions
+pass. The owner interface is served by the Mac. The screenshots revealed that
+Stop agent was below the fold in a short conversation panel; it now stays in the
+sticky heading while an agent turn is active. Browser verification covers that
+small-panel control independently from the real provider turn.
+
 ## Open product gates
 
-Voice alongside the native pen, document observation,
+Document observation,
 data migration and final removal of the
 external compatibility dependency remain implementation work. Native dictation
 and original-recording recovery have the emulator checks above; complete
-conversation and recognition through that surface remain to be verified.
+recognition through that surface remains to be verified. Real native agent
+conversation, actions, interruption and playback have the separate check above.
 The verified Android installation is an emulator preview. It does not establish
 physical Wi-Fi behavior or BOOX pen/palm latency.
 

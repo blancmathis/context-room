@@ -89,6 +89,15 @@ The bridge is restricted to
 the trusted main frame; document frames cannot request microphone or file access.
 Drawing-only pairings do not receive conversation or owner permissions.
 
+In the native notebook, **Conversation** opens the same original-source panel
+beside the pen on wide screens, or below it on smaller screens. Voice and native
+writing can run together. The original selection is captured when opening the
+conversation. Agent progress shows a tip only on geometry already received by
+the native canvas; completed, expired or moved geometry cannot leave a live tip.
+Closing the panel stops its audio. Returning to the owner workspace retains its
+notebook dialog, working scene and conversation draft. An active conversation,
+microphone or unsent draft defers remote notebook navigation.
+
 Desktop capture journals microphone chunks in private IndexedDB every half second.
 After reload, **Recover dictation** restores the saved chunks in their original
 conversation; the last uncommitted fraction cannot be guaranteed after a crash.
@@ -98,6 +107,9 @@ also remain with the composer when transcription needs retry. Controls wait for
 the original draft and history to finish loading before permitting a new capture.
 A microphone stop that cannot reach the Mac is retained with its exact controller
 identity and released on return; it cannot stop a newer audio controller.
+Earlier previews' equivalent local-root scope keys remain recoverable. This
+compatibility is limited to that exact root; it does not combine worktrees,
+projects or review scopes, or resurrect an explicitly cleared composer draft.
 The current browser, provider, emulator and remaining physical
 proof boundaries are in `docs/lifecycle/changes/active/android-convergence/verification.md`
 in the Context Room source repository.

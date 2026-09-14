@@ -293,10 +293,14 @@ test("a live Worker lock is not stolen after staleMs, and exit cleanup removes o
 
   const successorOwner = createFilesystemLockWorkerOwner([lockPath]);
   const successor = await startHoldingWorker(t, { lockPath, owner: successorOwner, staleMs: 15 });
-  assert.deepEqual(
-    cleanupFilesystemLockWorkerOwner(firstOwner, { timeoutMs: 100, staleMs: 15 }),
-    { removed: 0 },
-  );
+  const sync = fs.fsyncSync;
+  try {
+    fs.fsyncSync = () => { throw new Error('A no-op cleanup must not publish and sync a coordination record for the live successor.'); };
+    assert.deepEqual(
+      cleanupFilesystemLockWorkerOwner(firstOwner, { timeoutMs: 100, staleMs: 15 }),
+      { removed: 0 },
+    );
+  } finally { fs.fsyncSync = sync; }
   assert.throws(
     () => withFilesystemLock(lockPath, () => {}, { timeoutMs: 35, staleMs: 15 }),
     (error) => error?.code === "filesystem_lock_busy",
@@ -327,11 +331,17 @@ test("cleanup removes abandoned coordination records exactly and preserves succe
   writeOwnerRecord(lockPath, successorOwner, { kind: "owner", token: "successor-lock" });
   writeOwnerRecord(reclaimPath, successorOwner, { kind: "coordination", token: "successor-reclaim" });
   writeOwnerRecord(ticketPath, successorOwner, { kind: "coordination", token: "successor-ticket" });
+  assert.deepEqual(cleanupFilesystemLockWorkerOwner(firstOwner, { timeoutMs: 35, staleMs: 10_000 }), { removed: 0 });
+  assert.equal(recordToken(lockPath), "successor-lock");
+  assert.equal(recordToken(reclaimPath), "successor-reclaim");
+  assert.equal(recordToken(ticketPath), "successor-ticket");
+  fs.unlinkSync(lockPath);
+  writeOwnerRecord(lockPath, firstOwner, { kind: "owner", token: "owned-cleanup" });
   assert.throws(
     () => cleanupFilesystemLockWorkerOwner(firstOwner, { timeoutMs: 35, staleMs: 10_000 }),
     (error) => error?.code === "filesystem_lock_cleanup_busy",
   );
-  assert.equal(recordToken(lockPath), "successor-lock");
+  assert.equal(recordToken(lockPath), "owned-cleanup");
   assert.equal(recordToken(reclaimPath), "successor-reclaim");
   assert.equal(recordToken(ticketPath), "successor-ticket");
 });
@@ -342,6 +352,7 @@ test("Worker-owner cleanup uses one global deadline across every supervised path
   const cleanupOwner = createFilesystemLockWorkerOwner(lockPaths);
   const blockingOwner = createFilesystemLockWorkerOwner(lockPaths);
   for (const [index, lockPath] of lockPaths.entries()) {
+    writeOwnerRecord(lockPath, cleanupOwner, { kind: "owner", token: `owned-${index}` });
     writeOwnerRecord(`${lockPath}.reclaim`, blockingOwner, {
       kind: "coordination",
       token: `blocker-${index}`,

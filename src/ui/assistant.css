@@ -1,5 +1,5 @@
 .assistant-panel { position: fixed; z-index: 20; right: 16px; bottom: 16px; width: min(420px, calc(100vw - 32px)); max-height: min(780px, calc(100dvh - 32px)); display: flex; flex-direction: column; box-sizing: border-box; overflow: auto; padding: 16px; gap: 10px; color: var(--text, #eee); background: var(--panel-strong, #202628); border: 1px solid var(--control-line, #777); border-radius: 12px; box-shadow: 0 8px 30px rgb(0 0 0 / .3); font: 14px/1.45 system-ui, sans-serif; }
-.assistant-panel > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0; }
+.assistant-panel > header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 0; position: sticky; top: 0; z-index: 1; background: var(--panel-strong, #202628); }
 .assistant-panel > * { flex-shrink: 0; }
 .assistant-audio-state { font-size: 12px; }
 .assistant-panel h2 { margin: 0; font-size: 18px; }
@@ -21,4 +21,10 @@
 .assistant-error { color: var(--danger, #fba); font-size: 13px; }
 .assistant-panel.assistant-minimized > :not(header):not(.assistant-origin) { display: none; }
 .assistant-panel details select { max-width: 100%; margin: 6px 4px 6px 0; }
+.assistant-voice-enabled .assistant-history, .assistant-voice-enabled .assistant-model, .assistant-voice-enabled .assistant-composer textarea, .assistant-voice-enabled .assistant-composer button:not([data-voice-control]) { display: none; }
+.assistant-voice-enabled .assistant-composer { position: sticky; bottom: 0; background: var(--panel-strong, #202628); padding-top: 6px; }
 @media (max-width: 650px) { .assistant-panel { right: 8px; bottom: 8px; width: calc(100vw - 16px); max-height: 68dvh; padding: 12px; } .assistant-messages { max-height: 22dvh; } }
+body.context-room-native-conversation > :not(.assistant-native-host):not(.assistant-panel) { display: none !important; }
+body.context-room-native-conversation .assistant-native-host:not(body) { position: fixed; inset: 0; display: block; width: 100%; height: 100dvh; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; }
+body.context-room-native-conversation .assistant-native-host > :not(.assistant-panel) { display: none !important; }
+body.context-room-native-conversation .assistant-panel { position: relative; inset: auto; width: 100%; height: 100dvh; max-height: 100dvh; margin: 0; border-radius: 0; box-shadow: none; }

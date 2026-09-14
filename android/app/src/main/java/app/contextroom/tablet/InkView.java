@@ -31,6 +31,7 @@ final class InkView extends View {
   final LinkedHashMap<String, JSONObject> objects = new LinkedHashMap<>();
   final LinkedHashMap<String, JSONObject> agentInk = new LinkedHashMap<>();
   PointF agentTip;
+  JSONObject agentProgress;
   final HashSet<String> selected = new HashSet<>();
   final HashMap<String, Long> revisions = new HashMap<>();
   final ArrayDeque<JSONArray> undoStack = new ArrayDeque<>(), redoStack = new ArrayDeque<>();
@@ -427,9 +428,27 @@ final class InkView extends View {
     try{draw(canvas);}finally{snapshotRecording=previous;}
   }
 
+  void setAgentProgress(JSONObject progress) { agentProgress = progress; resolveAgentTip(); invalidate(); if (progress != null) postInvalidateDelayed(3100); }
+  void resolveAgentTip() {
+    agentTip = null;
+    if (agentProgress == null || agentProgress.optBoolean("completed") || System.currentTimeMillis() - agentProgress.optLong("at") > 3000) return;
+    JSONObject stroke = objects.get(agentProgress.optString("objectId")); JSONArray expected = agentProgress.optJSONArray("point");
+    JSONArray reached = stroke == null ? null : stroke.optJSONArray("points");
+    if (expected == null || reached == null || reached.length() == 0) return;
+    // Only show a tip on geometry already received from the canonical scene.
+    // A delayed progress message cannot paint future ink or a moved object.
+    for (int i = reached.length() - 1; i >= 0; i--) {
+      JSONArray point = reached.optJSONArray(i);
+      if (point != null && point.optDouble(0) == expected.optDouble(0) && point.optDouble(1) == expected.optDouble(1)) {
+        JSONArray end = reached.optJSONArray(reached.length() - 1); agentTip = new PointF((float) end.optDouble(0), (float) end.optDouble(1)); return;
+      }
+    }
+  }
+
   @Override
   protected void onDraw(Canvas c) {
     super.onDraw(c);
+    resolveAgentTip();
     boolean dragging=transform&&transformMoved;
     boolean cached=!dragging&&sceneCache.draw(c);
     c.save();

@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { speechEndpoint, microphonePcm } from '../src/ui/assistant-audio.mjs';
+import { conversationScopeAliases } from '../src/ui/assistant-drafts.mjs';
+
+test('conversation migration aliases only the same runtime root, never another worktree', () => {
+  const root = JSON.stringify(['https://original.test', 'project-a', '', '']);
+  assert.deepEqual(conversationScopeAliases(root), [root, JSON.stringify(['https://original.test', 'project-a', 'project-a', ''])]);
+  const other = JSON.stringify(['https://original.test', 'project-a', 'other-worktree', '']);
+  assert.deepEqual(conversationScopeAliases(other), [other]); assert.deepEqual(conversationScopeAliases('opaque-original'), ['opaque-original']);
+});
 
 test('speech endpoints reject short transients, wait for a spoken phrase and stop at quiet or the bounded idle limit', () => {
   const detector = speechEndpoint(16000), frame = amplitude => new Float32Array(320).fill(amplitude);

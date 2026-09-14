@@ -4360,7 +4360,8 @@ const el = (id) => document.getElementById(id);
 
 function captureNotebookApi(targetProjectId = "") {
   const projectId = state.projectId || "";
-  const target = targetProjectId || (IS_GLOBAL_CONTEXT_ROOM && !state.contextRoomReviewDocumentScope ? state.activeProjectLocationId || "" : "");
+  const requestedTarget = targetProjectId || (IS_GLOBAL_CONTEXT_ROOM && !state.contextRoomReviewDocumentScope ? state.activeProjectLocationId || "" : "");
+  const target = requestedTarget === projectId ? "" : requestedTarget;
   const nonce = state.ownerMutationNonce || "";
   const reviewBase = (!IS_GLOBAL_CONTEXT_ROOM || state.contextRoomReviewDocumentScope) ? /^\/reviews\/[^/]+/.exec(location.pathname)?.[0] || "" : "";
   const scopeKey = JSON.stringify([location.origin, projectId, target, reviewBase]);
@@ -4401,6 +4402,26 @@ async function openOriginalDocumentConversation(mode = "text") {
   if (editor && editor.selectionEnd > editor.selectionStart) source.selection = { start: editor.selectionStart, end: editor.selectionEnd, text: editor.value.slice(editor.selectionStart, editor.selectionEnd) };
   const assistant = await loadContextRoomAssistantUi(); return assistant.openConversation({ ...captured, source, mode });
 }
+
+// The native canvas shares this retained conversation UI and captured API.
+// Existing notebook/review dialogs stay alive, with their working drafts intact.
+window.setContextRoomNativeConversationView = enabled => {
+  document.body.classList.toggle("context-room-native-conversation", enabled === true);
+  if (!enabled) for (const host of document.querySelectorAll(".assistant-native-host")) host.classList.remove("assistant-native-host");
+};
+window.openContextRoomNativeConversation = async target => {
+  if (!window.ContextRoomNativeOwner || !state.ownerMutationNonce || state.contextRoomReviewDocumentScope) throw new Error("Return to the main Context Room workspace before opening a native notebook conversation.");
+  if (!target || target.kind !== "notebook" || !target.projectId || !target.resourceId || !target.path || !Array.isArray(target.selection)) throw new Error("The original native notebook is unavailable.");
+  const captured = captureNotebookApi(target.projectId), source = { kind: "notebook", resourceId: target.resourceId, path: target.path,
+    revision: target.revision, locationRevision: target.locationRevision, selection: target.selection };
+  const parent = [...document.querySelectorAll("dialog[open]")].at(-1) || document.body;
+  window.setContextRoomNativeConversationView(false); parent.classList.add("assistant-native-host");
+  const assistant = await loadContextRoomAssistantUi();
+  const conversation = await assistant.openConversation({ ...captured, source, parent,
+    onState: state => window.ContextRoomNativeOwner.active && document.body.classList.contains("context-room-native-conversation")
+      ? window.ContextRoomNativeOwner.conversationState({ ...state, projectId: target.projectId }) : undefined });
+  window.setContextRoomNativeConversationView(true); conversation.notifyState(); return true;
+};
 
 function contextRoomScopedRequestPath(requestPath) {
   const value = String(requestPath || "");

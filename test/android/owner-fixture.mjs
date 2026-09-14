@@ -7,6 +7,7 @@ import { encodeNotebook, openNotebook, mutateNotebook } from '../../src/notebook
 import { submitNotebookShared } from '../../src/notebook_workflow.mjs';
 import { readSharedNotebookTarget } from '../../src/shared_context.mjs';
 import { addNotebookSharedFixture } from '../fixtures/notebook_shared.mjs';
+import { createCodexProvider } from '../../src/codex_provider.mjs';
 
 const [directory] = process.argv.slice(2);
 if (!directory || !path.isAbsolute(directory) || fs.existsSync(directory)) throw new Error('Choose a new private fixture directory.');
@@ -35,7 +36,9 @@ const sharedReceipt = submitNotebookShared(root, { protocolVersion: 1, scope: 's
   operationId: 'shared-submission', locationRevision: sharedNotebook.locator.revision, expectedRevision: 1 }, { actor, canWrite });
 const service = createContextRoomDeviceService({ root, stateRoot: path.join(base, 'devices') });
 const runtime = createMemoryServer({ root, deviceService: service, registerInHub: true, globalPreferencesPath,
-  assistantOptions: { root: path.join(base, 'private-assistant'), ...(process.env.CONTEXT_ROOM_TEST_WHISPER_MODEL ? { modelPath: process.env.CONTEXT_ROOM_TEST_WHISPER_MODEL } : {}) } });
+  assistantOptions: { root: path.join(base, 'private-assistant'), ...(process.env.CONTEXT_ROOM_TEST_WHISPER_MODEL ? { modelPath: process.env.CONTEXT_ROOM_TEST_WHISPER_MODEL } : {}),
+    ...(process.env.CONTEXT_ROOM_TEST_REAL_AGENT === '1' ? { providerFactory: options => createCodexProvider({ ...options,
+      ...(process.env.CONTEXT_ROOM_TEST_CODEX_STATE ? { stateRoot: process.env.CONTEXT_ROOM_TEST_CODEX_STATE } : {}) }) } : {}) } });
 await new Promise(resolve => runtime.server.listen(0, '127.0.0.1', resolve));
 await service.listen();
 const reviewResponse = await fetch(`http://127.0.0.1:${runtime.server.address().port}/api/shared-context/review`, {
@@ -47,7 +50,8 @@ const ticket = { ...service.describe(), ...service.createOwnerPairing({ label: '
   url: `https://10.0.2.2:${service.server.address().port}`, testProjectId: runtime.projectId,
   testSharedPath: new URL(sharedReview.url).pathname, testSharedHead: sharedReceipt.proposalRevision };
 fs.writeFileSync(path.join(base, 'ticket.json'), JSON.stringify(ticket), { mode: 0o600 });
-fs.writeFileSync(path.join(base, 'fixture.json'), JSON.stringify({ projectId: runtime.projectId, sourceRoot: root, serverId: service.serverId }), { mode: 0o600 });
+fs.writeFileSync(path.join(base, 'fixture.json'), JSON.stringify({ projectId: runtime.projectId, sourceRoot: root, serverId: service.serverId,
+  ownerUrl: `http://127.0.0.1:${runtime.server.address().port}` }), { mode: 0o600 });
 process.stdout.write('Isolated owner fixture ready.\n');
 async function close() {
   await service.close(); runtime.server.closeAllConnections();

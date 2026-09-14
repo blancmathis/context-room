@@ -10,13 +10,28 @@ function database() {
   });
 }
 const key = (scope, id) => JSON.stringify([scope, id]);
+// Earlier previews used both an empty target and the runtime's own project id
+// for its original root. Preserve only that exact alias; other locations differ.
+export function conversationScopeAliases(scope) {
+  try {
+    const parts = JSON.parse(scope);
+    if (Array.isArray(parts) && parts.length === 4 && typeof parts[1] === 'string' && parts[1] && parts[2] === '') {
+      const legacy = [...parts]; legacy[2] = parts[1]; return [scope, JSON.stringify(legacy)];
+    }
+  } catch { /* Older opaque scopes have no inferred alias. */ }
+  return [scope];
+}
 export async function readDraft(scope, id) {
   const db = await database();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction('drafts', 'readonly'), request = transaction.objectStore('drafts').get(key(scope, id));
-    request.onsuccess = () => resolve(request.result || { text: '', sendRequest: null, recording: null });
+  for (const original of conversationScopeAliases(scope)) {
+    const draft = await new Promise((resolve, reject) => {
+    const transaction = db.transaction('drafts', 'readonly'), request = transaction.objectStore('drafts').get(key(original, id));
+    request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(new Error('The saved conversation draft is unavailable.'));
-  });
+    });
+    if (draft) return { ...draft, recording: draft.recording ? { ...draft.recording, recordingScopeKey: draft.recording.recordingScopeKey || original } : null };
+  }
+  return { text: '', sendRequest: null, recording: null };
 }
 export async function writeDraft(scope, id, draft) {
   const db = await database();
@@ -46,11 +61,13 @@ export async function journalRecording(scope, conversationId, recordingId, sampl
 }
 export async function browserRecordings(scope, conversationId) {
   const db = await database();
-  return new Promise((resolve, reject) => {
-    const request = db.transaction('recordings').objectStore('recordings').getAll(IDBKeyRange.bound([scope, conversationId], [scope, conversationId, []]));
-    request.onsuccess = () => resolve(request.result.filter(item => item.frames > 0));
+  const records = [];
+  for (const original of conversationScopeAliases(scope)) records.push(...await new Promise((resolve, reject) => {
+    const request = db.transaction('recordings').objectStore('recordings').getAll(IDBKeyRange.bound([original, conversationId], [original, conversationId, []]));
+    request.onsuccess = () => resolve(request.result.filter(item => item.frames > 0).map(item => ({ ...item, recordingScopeKey: original })));
     request.onerror = () => reject(new Error('Saved microphone recordings are unavailable.'));
-  });
+  }));
+  return records;
 }
 export async function readBrowserRecording(scope, conversationId, recordingId) {
   const db = await database(), prefix = [scope, conversationId, recordingId];
@@ -77,10 +94,12 @@ export async function acknowledgeBrowserRecording(scope, conversationId, recordi
 
 export async function pendingAudioReleases(scope) {
   const db = await database();
-  return new Promise((resolve, reject) => {
-    const request = db.transaction('audioReleases').objectStore('audioReleases').getAll(IDBKeyRange.bound([scope], [scope, []]));
-    request.onsuccess = () => resolve(request.result); request.onerror = () => reject(new Error('The pending audio stop could not be read.'));
-  });
+  const records = [];
+  for (const original of conversationScopeAliases(scope)) records.push(...await new Promise((resolve, reject) => {
+    const request = db.transaction('audioReleases').objectStore('audioReleases').getAll(IDBKeyRange.bound([original], [original, []]));
+    request.onsuccess = () => resolve(request.result.map(item => ({ ...item, releaseScopeKey: original }))); request.onerror = () => reject(new Error('The pending audio stop could not be read.'));
+  }));
+  return records;
 }
 export async function saveAudioRelease(scope, lease, complete = false) {
   const db = await database();

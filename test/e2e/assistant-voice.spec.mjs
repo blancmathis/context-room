@@ -13,6 +13,7 @@ async function syntheticBridge(page) {
     const audio = window.voiceContract = { captures: [], plays: [], acknowledgments: [] };
     window.ContextRoomNativeOwner = {
       active: true, async ensureMicrophone() {}, async audioController() {}, async releaseAudio() {},
+      async conversationState(value) { audio.conversation = value; },
       async recoverRecordings() { return { recordings: [] }; },
       async startRecording(value) { const recordingId = crypto.randomUUID(); audio.captures.push({ ...value, recordingId }); return { recordingId }; },
       async finishRecording(value) { return { ...value, pcm: btoa('\0'.repeat(6400)), sampleRate: 16000 }; },
@@ -34,10 +35,11 @@ test('@smoke @assistant unfinished microphone chunks recover after reload only i
     const id = await pane.getByLabel('Saved conversations for this original source').inputValue();
     await page.evaluate(async id => {
       const audio = await import('/assets/ui/assistant-drafts.mjs'), scope = captureNotebookApi().scopeKey;
-      await audio.journalRecording(scope, id, 'original-crash-recording', 16000, [new Float32Array(8000).fill(.1)], 0, 8000);
-      await audio.journalRecording(scope, id, 'original-crash-recording', 16000, [new Float32Array(8000).fill(.2)], 1, 16000);
+      const legacyParts = JSON.parse(scope); legacyParts[2] = legacyParts[1]; const legacy = JSON.stringify(legacyParts);
+      await audio.journalRecording(legacy, id, 'original-crash-recording', 16000, [new Float32Array(8000).fill(.1)], 0, 8000);
+      await audio.journalRecording(legacy, id, 'original-crash-recording', 16000, [new Float32Array(8000).fill(.2)], 1, 16000);
       await audio.journalRecording(scope + '-different-project', id, 'other-recording', 16000, [new Float32Array(8000)], 0, 8000);
-      let failed = false; try { await audio.journalRecording(scope, id, 'original-crash-recording', 16000, [new Float32Array(10)], 0, 10); } catch { failed = true; }
+      let failed = false; try { await audio.journalRecording(legacy, id, 'original-crash-recording', 16000, [new Float32Array(10)], 0, 10); } catch { failed = true; }
       if (!failed) throw new Error('Out-of-order capture must retain its previous journal');
     }, id);
     await page.reload(); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
@@ -116,5 +118,58 @@ test('@smoke @assistant a background audio release survives reload and cannot oc
     await pane.getByRole('button', { name: 'Dictate', exact: true }).click(); await expect(pane.getByRole('button', { name: 'Finish dictation', exact: true })).toBeVisible();
     expect(await page.evaluate(async () => { const { pendingAudioReleases } = await import('/assets/ui/assistant-drafts.mjs'); return (await pendingAudioReleases(captureNotebookApi().scopeKey)).length; })).toBe(0);
     expect(f.connections()).toBe(0);
+  } finally { await page.goto('about:blank'); await f.close(); }
+});
+
+test('@smoke @assistant native conversation layout keeps the notebook dialog and its working state for return', async ({ page }, testInfo) => {
+  const f = await assistantFixture();
+  try {
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId)); await syntheticBridge(page);
+    await page.evaluate(async () => { window.retainedNativeNotebook = await openContextRoomNotebook('docs/Sketch.crnb'); });
+    await page.waitForFunction(() => document.querySelector('.notebook-dialog')?.dataset.saveState === 'confirmed');
+    await page.evaluate(async projectId => {
+      const binding = retainedNativeNotebook.binding();
+      await window.openContextRoomNativeConversation({ kind: 'notebook', projectId, resourceId: binding.resourceId, path: binding.path,
+        revision: binding.revision, locationRevision: binding.locationRevision, selection: binding.selection });
+    }, f.room.projectId);
+    const pane = page.getByRole('complementary', { name: 'Original document conversation' }); await expect(pane).toBeVisible();
+    await pane.getByRole('textbox').fill('Keep this original notebook draft while I draw.');
+    await page.waitForFunction(() => voiceContract.conversation?.hasDraft === true);
+    expect(await page.evaluate(() => voiceContract.conversation.source.resourceId)).toBe(await page.evaluate(() => retainedNativeNotebook.resourceId));
+    await page.screenshot({ path: testInfo.outputPath('retained-native-conversation-layout.png') });
+    await page.evaluate(() => window.setContextRoomNativeConversationView(false));
+    await expect(page.locator('.notebook-dialog canvas')).toBeVisible();
+    await expect(pane.getByRole('textbox')).toHaveValue('Keep this original notebook draft while I draw.');
+    expect(await page.evaluate(() => retainedNativeNotebook.dialog.open)).toBe(true); expect(f.connections()).toBe(0);
+  } finally { await page.goto('about:blank'); await f.close(); }
+});
+
+test('@smoke @assistant a legacy root draft is recovered once without resurrecting explicitly cleared text', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    let pane = await openOriginal(page, f.url), id = await pane.getByLabel('Saved conversations for this original source').inputValue();
+    await page.evaluate(async id => {
+      const { writeDraft } = await import('/assets/ui/assistant-drafts.mjs'), parts = JSON.parse(captureNotebookApi().scopeKey); parts[2] = parts[1];
+      await writeDraft(JSON.stringify(parts), id, { text: 'Retain the original legacy root draft.', sendRequest: null, recording: null });
+    }, id);
+    pane = await openOriginal(page, f.url); await expect(pane.getByRole('textbox')).toHaveValue('Retain the original legacy root draft.');
+    await pane.getByRole('textbox').fill('');
+    await expect.poll(() => page.evaluate(async id => { const { readDraft } = await import('/assets/ui/assistant-drafts.mjs'); return (await readDraft(captureNotebookApi().scopeKey, id)).text; }, id)).toBe('');
+    pane = await openOriginal(page, f.url); await expect(pane.getByRole('textbox')).toHaveValue(''); expect(f.connections()).toBe(0);
+  } finally { await page.goto('about:blank'); await f.close(); }
+});
+
+test('@smoke @assistant Stop agent stays in view when a small conversation panel scrolls', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    await page.setViewportSize({ width: 390, height: 500 });
+    const pane = await openOriginal(page, f.url);
+    await pane.getByRole('textbox').fill('Synthetic waiting turn. '.repeat(120));
+    await pane.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect(pane).toHaveAttribute('data-operation-status', 'running');
+    await pane.evaluate(node => { node.scrollTop = node.scrollHeight; });
+    const stop = pane.getByRole('button', { name: 'Stop agent', exact: true });
+    await expect(stop).toBeInViewport({ ratio: 0.99 });
+    await stop.click(); await expect(pane).toHaveAttribute('data-operation-status', 'stopped');
   } finally { await page.goto('about:blank'); await f.close(); }
 });

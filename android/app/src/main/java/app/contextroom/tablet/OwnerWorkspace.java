@@ -20,6 +20,7 @@ final class OwnerWorkspace {
     void chooseOwnerFiles(ValueCallback<Uri[]> callback, String[] types, boolean multiple);
     void saveOwnerFile(byte[] bytes, String filename, String type, ValueCallback<Boolean> callback);
     void requestOwnerMicrophone(ValueCallback<Boolean> callback);
+    void ownerConversationState(JSONObject state);
   }
   final WebView web;
   final DeviceConnection connection;
@@ -31,6 +32,7 @@ final class OwnerWorkspace {
   volatile boolean closed, foreground = true;
   volatile String runtimeOrigin = "";
   long generation;
+  JSONObject pendingConversation;
 
   OwnerWorkspace(Context context, DeviceConnection connection, Host host) throws Exception {
     if (!connection.isOwner() || !connection.serverId.matches("[a-f0-9-]{36}")) throw new IOException("Une connexion propriétaire explicite est nécessaire.");
@@ -62,6 +64,10 @@ final class OwnerWorkspace {
         errorReplyId = id;
         if (!foreground) { reply.postMessage(InkView.json("id", id, "error", "L’interface propriétaire est en pause.").toString()); return; }
         JSONObject value = input.getJSONObject("value");
+        if (action.equals("conversation.state")) {
+          if (value.toString().length() > 32000) throw new IOException("État de conversation trop grand.");
+          host.ownerConversationState(value); reply.postMessage(InkView.json("id", id, "result", InkView.json("received", true)).toString()); return;
+        }
         if (action.startsWith("audio.")) {
           ValueCallback<JSONObject> answer = result -> { if (!closed && requestedGeneration == generation) reply.postMessage((result.has("error")
             ? InkView.json("id", id, "error", result.optString("error")) : InkView.json("id", id, "result", result)).toString()); };
@@ -215,5 +221,22 @@ final class OwnerWorkspace {
     web.evaluateJavascript("window.dispatchEvent(new CustomEvent('context-room-native-active',{detail:" + enabled + "}))", null);
     if (enabled) web.onResume(); else web.onPause();
   }
+  void conversation(JSONObject target) {
+    pendingConversation = target; final long started = SystemClock.elapsedRealtime();
+    Runnable open = new Runnable() { public void run() {
+      if (closed || pendingConversation != target || !foreground) return;
+      web.evaluateJavascript("typeof window.openContextRoomNativeConversation==='function' && Boolean(state.ownerMutationNonce)", ready -> {
+        if (closed || pendingConversation != target || !foreground) return;
+        if (!"true".equals(ready)) {
+          if (SystemClock.elapsedRealtime() - started < 15000) main.postDelayed(this, 150);
+          else host.ownerError("L’interface de conversation n’est pas prête. Revenez à Context Room pour la recharger.");
+          return;
+        }
+        pendingConversation = null;
+        web.evaluateJavascript("window.openContextRoomNativeConversation(" + target + ").catch(error=>ContextRoomNativeOwner.conversationState({error:String(error.message)}))", null);
+      });
+    } }; open.run();
+  }
+  void leaveConversation() { pendingConversation = null; if (!closed) web.evaluateJavascript("window.setContextRoomNativeConversationView?.(false)", null); }
   void close() { closed = true; audio.close(); network.shutdownNow(); WebViewCompat.removeWebMessageListener(web, "ContextRoomOwnerTransport"); web.destroy(); }
 }

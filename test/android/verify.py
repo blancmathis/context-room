@@ -117,7 +117,9 @@ try:
         if next_stage and navigation_receipts.get('lastOwnerStage') != next_stage:
             acknowledgement = output / 'navigation-owner.json'
             acknowledgement.write_text(json.dumps({'serverId': fixture['serverId'], 'stage': next_stage}))
-            run(adb + ['push', str(acknowledgement), '/data/local/tmp/context-room-navigation-owner.json'], capture_output=True)
+            temporary = '/data/local/tmp/context-room-navigation-owner.pending'
+            run(adb + ['push', str(acknowledgement), temporary], capture_output=True)
+            run(adb + ['shell', 'mv', temporary, '/data/local/tmp/context-room-navigation-owner.json'], capture_output=True)
             navigation_receipts['lastOwnerStage'] = next_stage
 
     for phase in ('pairedNativeInkAndOfflineQueue', 'restartReplaysOfflineExactlyOnce', 'remoteOpeningPreservesInkAndHumanControl', 'nativeViewFollowingAndPresentation', 'nativeOpeningRejectsQueuedPreviousScene', 'nativeStorageBoundary'):
