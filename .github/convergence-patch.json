@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "patchBlob": "695f8db470d51a5678006344d3833a83024c3955",
+  "patchSha256": "7adf0e87724bd8358ea60d2e51c9794262dfb52c322503e5018fe5a31aff0519",
+  "message": "feat(notebooks): add durable client queue and shared canvas geometry",
+  "files": [
+    {"path":"src/notebook_client.mjs","mode":"100644","before":null,"after":"c32f901c052a955741a17ce6e66e069a1f4de039"},
+    {"path":"src/notebook_geometry.mjs","mode":"100644","before":null,"after":"23501d55202cba1e0a007797134983b10508e71a"},
+    {"path":"test/notebook_client.test.mjs","mode":"100644","before":null,"after":"bfe96c46f94644d8d80934b3b191d769714c6a17"},
+    {"path":"test/notebook_geometry.test.mjs","mode":"100644","before":null,"after":"8f28ff2df8da6e641061d6de5c72ed347d92e0ba"}
+  ]
+}
