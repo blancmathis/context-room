@@ -1867,9 +1867,17 @@ function currentSharedProjectCapability(root) {
     throw new Error(`Shared project root identity changed: ${projectRoot}`);
   }
   const rootIdentity = { dev: rootStats.dev.toString(), ino: rootStats.ino.toString() };
-  const gitRootValue = tryGit(projectRoot, ["rev-parse", "--show-toplevel"]);
-  const commonDirValue = tryGit(projectRoot, ["rev-parse", "--git-common-dir"]);
-  const gitDirValue = tryGit(projectRoot, ["rev-parse", "--git-dir"]);
+  // Ask Git for the same three live values in one process. Do not cache this
+  // attestation: replacing the root, .git entry or worktree must still revoke it.
+  const gitPaths = tryGit(projectRoot, ["rev-parse", "--show-toplevel", "--git-common-dir", "--git-dir"]);
+  let [gitRootValue, commonDirValue, gitDirValue] = gitPaths.split("\n");
+  if (gitPaths && gitPaths.split("\n").length !== 3) {
+    // Preserve paths containing newlines rather than interpreting their lines
+    // as a different Git membership.
+    gitRootValue = tryGit(projectRoot, ["rev-parse", "--show-toplevel"]);
+    commonDirValue = tryGit(projectRoot, ["rev-parse", "--git-common-dir"]);
+    gitDirValue = tryGit(projectRoot, ["rev-parse", "--git-dir"]);
+  }
   if (!gitRootValue || !commonDirValue || !gitDirValue) {
     return { root: projectRoot, rootIdentity, worktreeIdentity: { kind: "path" } };
   }

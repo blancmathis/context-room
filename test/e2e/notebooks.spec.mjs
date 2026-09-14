@@ -3,21 +3,23 @@ import os from 'node:os';
 import path from 'node:path';
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { initializeContextRoomProject, writeMemoryWebappSettings, createMemoryServer } from '../../src/context_room.mjs';
+import { initializeContextRoomProject, writeMemoryWebappSettings, createMemoryServer, createContextRoomDeviceService } from '../../src/context_room.mjs';
 import { listNotebooks, readNotebook, mutateNotebook, decodeNotebook } from '../../src/notebooks.mjs';
 import { buildDocumentationCorpus } from '../../src/documentation.mjs';
 import { listLocalProposals } from '../../src/local_proposals.mjs';
 
-async function fixture(page) {
+async function fixture(page, { devices = false } = {}) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'context-room-notebook-browser-'))), root = path.join(base, 'project'), previous = {};
   for (const key of ['CONTEXT_ROOM_HUB_HOME', 'CONTEXT_ROOM_SHARED_HOME', 'CONTEXT_ROOM_REVIEW_AUTHORITY_HOME']) { previous[key] = process.env[key]; process.env[key] = path.join(base, key); }
   fs.mkdirSync(path.join(root, 'docs'), { recursive: true }); fs.writeFileSync(path.join(root, 'docs/guide.md'), '# Synthetic guide\n');
   initializeContextRoomProject(root, { title: 'Synthetic notebooks', allowedPaths: ['docs/'], watchAllow: ['docs/'] });
   writeMemoryWebappSettings(root, { startupContext: { enabled: false }, startupSkills: { enabled: false }, startupHooks: { enabled: false } });
-  const runtime = createMemoryServer({ root }); await new Promise(resolve => runtime.server.listen(0, '127.0.0.1', resolve));
+  const deviceService = devices ? createContextRoomDeviceService({ root, stateRoot: path.join(base, 'private-devices') }) : null;
+  if (deviceService) await deviceService.listen();
+  const runtime = createMemoryServer({ root, deviceService }); await new Promise(resolve => runtime.server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${runtime.server.address().port}`, errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto(origin + '/'); await page.waitForFunction(() => typeof openContextRoomNotebook === 'function' && Boolean(state.ownerMutationNonce && state.projectId));
-  return { root, runtime, origin, errors, async close() { await page.context().setOffline(false); if (!page.isClosed()) await page.goto('about:blank'); await new Promise(resolve => { runtime.server.close(resolve); runtime.server.closeAllConnections(); }); await runtime.waitForShutdown(); for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } fs.rmSync(base, { recursive: true, force: true }); } };
+  return { root, runtime, origin, errors, deviceService, async close() { await page.context().setOffline(false); if (!page.isClosed()) await page.goto('about:blank'); await new Promise(resolve => { runtime.server.close(resolve); runtime.server.closeAllConnections(); }); await runtime.waitForShutdown(); if (deviceService) await deviceService.close(); for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } fs.rmSync(base, { recursive: true, force: true }); } };
 }
 async function open(page, name = 'docs/Sketch.crnb') {
   await page.evaluate(async name => { window.testNotebook = await openContextRoomNotebook(name); }, name);
@@ -27,6 +29,39 @@ async function draw(page, { start = [90, 90], end = [260, 160], up = true } = {}
   const box = await page.locator('canvas.notebook-canvas').boundingBox();
   await page.mouse.move(box.x + start[0], box.y + start[1]); await page.mouse.down(); await page.mouse.move(box.x + end[0], box.y + end[1], { steps: 8 }); if (up) await page.mouse.up();
 }
+
+test('@smoke @notebook owner pairs and revokes a device for the displayed notebook', async ({ page }, testInfo) => {
+  const f = await fixture(page, { devices: true });
+  try {
+    const notebook = await open(page);
+    await notebook.getByRole('button', { name: 'Connect tablet', exact: true }).click();
+    const pairing = page.getByRole('dialog', { name: 'Connect tablet', exact: true });
+    await expect(pairing).toBeVisible();
+    await pairing.getByLabel('Device name', { exact: true }).fill('Synthetic tablet');
+    await pairing.getByRole('button', { name: 'Create pairing code', exact: true }).click();
+    const code = pairing.getByRole('textbox', { name: 'One-use tablet pairing code', exact: true });
+    await expect(code).toBeVisible();
+    const ticket = JSON.parse(await code.inputValue());
+    expect(ticket.grants).toEqual([{ mode: 'draw', projectId: f.runtime.projectId, paths: ['docs/Sketch.crnb'] }]);
+    const device = f.deviceService.authority.pair(ticket).device;
+    // Pairing code is an ephemeral synthetic credential; screenshots show the form, not its value.
+    await pairing.getByRole('button', { name: 'Close connection', exact: true }).click();
+    await notebook.getByRole('button', { name: 'Connect tablet', exact: true }).click();
+    await expect(pairing.getByRole('button', { name: 'Disconnect Synthetic tablet', exact: true })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath('notebook-device-pairing.png'), fullPage: true });
+    const accessibility = await new AxeBuilder({ page }).include('.notebook-pair-dialog').analyze();
+    expect(accessibility.violations).toEqual([]);
+    await pairing.getByRole('button', { name: 'Disconnect Synthetic tablet', exact: true }).click();
+    await expect.poll(() => f.deviceService.authority.list().find(item => item.id === device.id).revokedAt).not.toBeNull();
+    await pairing.getByRole('button', { name: 'Create pairing code', exact: true }).click();
+    await expect(code).toBeVisible(); const unused = JSON.parse(await code.inputValue());
+    const cancelled = page.waitForResponse(response => response.url().endsWith('/api/devices/cancel-pairing') && response.request().method() === 'POST');
+    await pairing.getByRole('button', { name: 'Close connection', exact: true }).click();
+    expect((await cancelled).ok()).toBe(true);
+    expect(() => f.deviceService.authority.pair(unused)).toThrow('Pairing expired or is invalid.');
+    expect(f.errors).toEqual([]);
+  } finally { await f.close(); }
+});
 
 test('@smoke @notebook continuous ink, independent remote changes, undo, frozen review correction and accepted-only corpus', async ({ page }, testInfo) => {
   const f = await fixture(page);

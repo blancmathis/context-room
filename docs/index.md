@@ -39,6 +39,7 @@ This document does not define product behavior, technical contracts, security gu
 
 - [System architecture](system/architecture.md)
 - [Runtime profiles](system/runtime-profiles.md)
+- [Connected drawing devices](system/connected-devices.md)
 - [Shared resource materialization](system/shared-resource-materialization.md)
 
 ## Product surfaces

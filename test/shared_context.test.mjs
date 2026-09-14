@@ -6481,8 +6481,9 @@ test("direct proposal review reopening reuses the exact room and cached DocQA", 
   assert.match(secondResponse.headers.get("server-timing") || "", /payload;dur=/);
   assert.equal(materializationCalls, 1, "an exact warm room must not rematerialize");
   assert.equal(docQaCalls, 1, "unchanged review evidence must reuse the cached DocQA report");
-  t.diagnostic(`exact warm review reopened in ${Math.round(warmElapsedMs)}ms`);
-  assert.ok(warmElapsedMs < 300, `exact warm review reopening took ${Math.round(warmElapsedMs)}ms`);
+  const warmTiming = secondResponse.headers.get("server-timing") || "missing timing";
+  t.diagnostic(`exact warm review reopened in ${Math.round(warmElapsedMs)}ms (${warmTiming})`);
+  assert.ok(warmElapsedMs < 300, `exact warm review reopening took ${Math.round(warmElapsedMs)}ms (${warmTiming})`);
 
   await new Promise((resolve, reject) => room.server.close((error) => error ? reject(error) : resolve()));
   room = createMemoryServer({
@@ -6502,8 +6503,9 @@ test("direct proposal review reopening reuses the exact room and cached DocQA", 
   assert.equal(fs.realpathSync(restarted.reviewRoot), fs.realpathSync(first.reviewRoot));
   assert.equal(restarted.review.authorityId, first.review.authorityId);
   assert.equal(materializationCalls, 1, "restart must reuse the persisted exact authority");
-  t.diagnostic(`persisted exact review reopened after restart in ${Math.round(restartedElapsedMs)}ms`);
-  assert.ok(restartedElapsedMs < 300, `persisted exact review reopening took ${Math.round(restartedElapsedMs)}ms`);
+  const restartedTiming = restartedResponse.headers.get("server-timing") || "missing timing";
+  t.diagnostic(`persisted exact review reopened after restart in ${Math.round(restartedElapsedMs)}ms (${restartedTiming})`);
+  assert.ok(restartedElapsedMs < 300, `persisted exact review reopening took ${Math.round(restartedElapsedMs)}ms (${restartedTiming})`);
 });
 
 test("shared Context Room API lists proposals and opens an exact review room", async (t) => {

@@ -118,6 +118,7 @@ import {
   buildDocQaReport,
   contextHubUiState,
   createMemoryServer,
+  createContextRoomDeviceService,
   initializeContextRoomProject,
   readAgentAnnotations,
   readCollaborationSessionState,
@@ -326,6 +327,7 @@ async function flushAndExit(code = 0) {
 }
 
 const KNOWN_OPTIONS = new Set([
+  "device-host", "device-port", "device-state",
   "reader",
   "action", "actionable", "advisory", "all", "all-projects", "allow", "allow-stale", "apply", "branch", "budget", "contract", "cursor", "cwd", "depth", "description", "detail", "document", "dry-run", "enabled", "exclude", "expand", "fields", "files", "folder", "follow", "format", "fresh", "from", "goal", "h", "heading", "help", "highlight", "hook", "include",
   "assignment", "change", "collection", "collection-path", "collection-title", "destination", "id", "include", "json", "kind", "limit", "message", "mode", "name", "no-restart", "note", "operation", "path", "percent", "port", "profile", "project", "projects", "provider", "providers", "query",
@@ -1156,12 +1158,15 @@ if (command === "hub") {
         const expectedRoot = runtime.root ? fs.realpathSync(runtime.root) : "";
         const actualRoot = health?.root ? fs.realpathSync(health.root) : "";
         if (response.ok && health?.ok === true && expectedRoot && actualRoot === expectedRoot) {
+          if (args['device-host']) {
+            throw new ContextRoomCliError('device-service-already-running', 'A Context Room Hub is already running. Device startup options apply only to a new Hub process; the current Hub was not restarted.');
+          }
           const focus = focusedProject ? `&project=${encodeURIComponent(focusedProject.id)}` : "";
           console.log(`Context Room Hub: ${runtime.url}/?hub=1${focus}`);
           console.log(`Already running since: ${runtime.startedAt || "unknown"}`);
           process.exit(0);
         }
-      } catch {}
+      } catch (error) { if (error?.code === 'device-service-already-running') throw error; }
       clearContextHubRuntime(runtime.pid);
     }
     const hostRoot = contextHubHostRoot();
@@ -1172,18 +1177,26 @@ if (command === "hub") {
       watchAllow: [],
     });
     const port = selectedPort;
-    const { server } = createMemoryServer({ root: hostRoot, port, registerInHub: false, persistentDocumentGraphLayout: true });
+    const deviceService = args['device-host'] ? createContextRoomDeviceService({ root: hostRoot,
+      stateRoot: args['device-state'] ? path.resolve(String(args['device-state'])) : path.join(path.dirname(hostRoot), 'devices') }) : null;
+    const { server } = createMemoryServer({ root: hostRoot, port, registerInHub: false, persistentDocumentGraphLayout: true, deviceService });
     await new Promise((resolve, reject) => {
       const onError = (error) => reject(error);
       server.once("error", onError);
       server.listen(port, "127.0.0.1", () => { server.off("error", onError); resolve(); });
     });
     const url = `http://127.0.0.1:${port}`;
+    if (deviceService) {
+      try { await deviceService.listen({ host: String(args['device-host']), port: args['device-port'] === undefined ? 4318 : Number(args['device-port']) }); }
+      catch (error) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); throw error; }
+      console.log(`Context Room devices: ${deviceService.describe().url}`);
+    }
     writeContextHubRuntime({ port, root: hostRoot, url });
     const focus = focusedProject ? `&project=${encodeURIComponent(focusedProject.id)}` : "";
     console.log(`Context Room Hub: ${url}/?hub=1${focus}`);
     console.log(`Projects: ${listContextHubProjects().length}`);
-    const close = () => server.close(() => {
+    const close = () => server.close(async () => {
+      if (deviceService?.server.listening) await deviceService.close();
       clearContextHubRuntime(process.pid);
       process.exit(0);
     });

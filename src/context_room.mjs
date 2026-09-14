@@ -6,6 +6,7 @@ import { createLisiereConnector } from "./lisiere_connector.mjs";
 import { isDocumentAssetPath, listDocumentAssets, readDocumentAssetReview, recordAcceptedDocumentAsset, decideDocumentAsset } from "./document_assets.mjs";
 import { readReviewCleanupPolicy, writeReviewCleanupPolicy, previewReviewCleanup, applyReviewCleanup, recentReviewCleanupReceipts } from "./review_cleanup.mjs";
 import fs from "node:fs";
+import { createConnectedDeviceService } from './device_server.mjs';
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -16953,6 +16954,7 @@ function isCodexPromptRequest(req) {
 }
 
 function isOwnerReviewAuthorityMutation(pathname = "", method = "GET") {
+  if (pathname.startsWith('/api/devices') && method !== 'GET') return true;
   if (isNotebookMutation(method, pathname)) return true;
   const key = `${String(method || "GET").toUpperCase()} ${String(pathname || "")}`;
   return new Set([
@@ -18551,6 +18553,27 @@ function remoteReviewUnavailableHtml(requestUrl) {
 </html>`;
 }
 
+export function createContextRoomDeviceService({ root = process.cwd(), stateRoot } = {}) {
+  const primaryRoot = fs.realpathSync(path.resolve(root));
+  const primaryId = contextRoomProjectId(primaryRoot);
+  const primaryIdentity = managedProjectRootIdentity(primaryRoot);
+  return createConnectedDeviceService({ stateRoot, resolveProject(projectId) {
+    const project = projectId === primaryId
+      ? { root: primaryRoot, rootIdentity: primaryIdentity, available: true }
+      : registeredContextHubWorktree(projectId);
+    if (!project || !project.available || project.mode === 'shared') return null;
+    const projectRoot = path.resolve(project.root);
+    const expected = project.rootIdentity || managedProjectRootIdentity(projectRoot);
+    const settings = () => {
+      assertManagedProjectRootIdentity(projectRoot, expected);
+      return readMemoryWebappSettings(projectRoot, { readOnly: true, expectedRootIdentity: expected });
+    };
+    return { root: projectRoot,
+      canRead: rel => canReviewDocumentAsset(projectRoot, rel, settings()),
+      canWrite: rel => canEditLocalProposalPath(projectRoot, rel, settings()) };
+  } });
+}
+
 export function createMemoryServer({
   root = process.cwd(),
   contextHubRoot = root,
@@ -18573,6 +18596,7 @@ export function createMemoryServer({
   sharedReviewMaterializationTask = runSharedReviewMaterializationProcessTask,
   sharedReviewServerListen = listenContextRoomServer,
   sharedReviewDocQaTask = buildSharedReviewDocQaReport,
+  deviceService = null,
 } = {}) {
   if (remoteAccess) throw new Error("Hosted Context Room has been retired. Its stored repositories and review data are preserved; use a local room with Shared Git.");
   root = fs.realpathSync(path.resolve(root));
@@ -19218,6 +19242,7 @@ export function createMemoryServer({
     try {
       assertManagedProjectRootIdentity(requestRoot, requestExpectedRootIdentity);
       await routeRequest(req, res, requestRoot, globalPreferencesPath, {
+        deviceService,
         codexComposerInsert,
         codexReferenceInsert,
         codexPromptCenter: resolvedCodexPromptCenter,
@@ -20168,6 +20193,7 @@ function assertExpectedFileRevision(root, relPath, expectedRevision) {
 }
 
 async function routeRequest(req, res, root, globalPreferencesPath = null, {
+  deviceService = null,
   codexComposerInsert = insertIntoActiveCodexComposer,
   codexReferenceInsert = insertFileReferenceIntoActiveCodexComposer,
   codexPromptCenter = createCodexPromptCenterProvider(),
@@ -20209,6 +20235,25 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   assertManagedProjectRootIdentity(root, expectedRootIdentity);
   const requestRuntimeProfile = assertRuntimeProfile(runtimeProfile);
   const url = new URL(req.url, "http://context-room.invalid");
+  if (url.pathname === '/api/devices' || url.pathname.startsWith('/api/devices/')) {
+    if (req.method === 'GET' && url.pathname === '/api/devices') {
+      sendJson(res, 200, deviceService ? { enabled: true, ...deviceService.describe(), devices: deviceService.authority.list().filter(device => device.grants.some(grant => grant.projectId === contextRoomProjectId(root))) } : { enabled: false });
+      return;
+    }
+    if (!deviceService) throw sharedRequestError('Connected devices are disabled. Start Context Room with an explicit device address.', 409, 'device_service_disabled');
+    const body = await readJsonBody(req, { maxBytes: 16_384 });
+    if (req.method === 'POST' && url.pathname === '/api/devices/pair') {
+      sendJson(res, 201, { ...deviceService.createPairing({ projectId: contextRoomProjectId(root), paths: body.paths, label: body.label }), ...deviceService.describe() });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/devices/revoke') {
+      sendJson(res, 200, deviceService.authority.revoke(body.deviceId)); return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/devices/cancel-pairing') {
+      sendJson(res, 200, deviceService.authority.cancelPairing(body.pairingId)); return;
+    }
+    throw sharedRequestError('Unknown device operation.', 404, 'device_route');
+  }
   if (url.pathname === '/api/notebooks' || url.pathname.startsWith('/api/notebooks/')) {
     if (req.method === 'POST') beforeManagedControlMutation?.();
     if (await handleNotebookHttp(req, res, { root, url, readJsonBody, sendJson,
@@ -22379,7 +22424,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
   if (req.method === "POST" && url.pathname === "/api/shared-context/review") {
     const openingStartedAt = performance.now();
-    const openingTiming = { "exact-ref": 0, room: 0, docqa: 0, payload: 0 };
+    const openingTiming = { binding: 0, "exact-ref": 0, room: 0, docqa: 0, payload: 0 };
     const body = await readJsonBody(req);
     const proposal = String(body.proposal || "").trim();
     const expectedHead = String(body.expectedHead || "").trim();
@@ -22388,7 +22433,9 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       throw sharedRequestError("An exact proposal head is required.", 400, "shared_context_proposal_head_required");
     }
     if (!startSharedReview) throw sharedRequestError("Shared proposal review is unavailable", 503, "shared_context_review_unavailable");
+    const bindingStartedAt = performance.now();
     const connection = readSharedProjectConnection(root);
+    openingTiming.binding = performance.now() - bindingStartedAt;
     if (!connection) throw sharedRequestError("This project is not connected to shared context", 404, "shared_context_not_connected");
     // Reopening an exact room validates only its proposal, main, and terminal
     // refs. It never scans the global proposal catalog.
@@ -22455,6 +22502,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       throw sharedRequestError("The current shared main revision could not be verified.", 409, "shared_context_main_revision_unverified");
     }
     openingTiming["exact-ref"] += performance.now() - openingStartedAt
+      - openingTiming.binding
       - openingTiming["exact-ref"]
       - openingTiming.room
       - openingTiming.docqa

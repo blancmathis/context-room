@@ -2,7 +2,7 @@
 
 ## Summary
 
-The implementation branch starts at `05f5ded92cc1158b8c5aea09f4836fd08f4de27f`, preserving the refactor and concurrent configuration/navigation stabilization. The two source checkpoints have been restored and desktop notebook verification has resumed. This remains an incomplete convergence branch, not a deployed release.
+The implementation branch starts at `05f5ded92cc1158b8c5aea09f4836fd08f4de27f`, preserving the refactor and concurrent configuration/navigation stabilization. The restored notebook foundation now includes an optional TLS drawing service and owner pairing interface. The Android client and full convergence remain incomplete; this branch is not a deployed release.
 
 ## Defines
 
@@ -24,11 +24,10 @@ A second project catalog, a hosted service, a notes inbox, automatic documentary
 
 ## Verification through this milestone
 
-`npm exec --yes --package=node@24 -- node --test test/local_proposals.test.mjs test/document_assets.test.mjs test/notebook_protocol.test.mjs test/notebooks.test.mjs test/notebook_workflow.test.mjs` passed **32/32** with `umask 022`, matching the mode assumptions in existing fixtures. The same existing local-proposal fixtures fail under an inherited `umask 077` because their sources become mode 0600 while their supplied accepted base defaults to 0644. Exact mode assertions and application guards were not relaxed. The initial result is retained privately.
-
-The tests include two independent writer processes, lost-response replay, stale/conflicting writes, selective human undo retaining agent provenance, symlink and corrupt-history rejection, immutable snapshots, interrupted preparation and a real isolated HTTP server through an exact human fixture review. No personal documents, services or devices are used as fixtures.
-
-The initial complete-suite attempt used an unsupported Node runtime and was stopped; a clean-base Node 24 run also exposes existing failures/timeouts. Neither run is reported as a successful baseline. The complete branch suite, browser matrix, Android instrumentation and physical tests remain to be recorded separately.
+See [verification](verification.md) for the restored sources, exact test results,
+failed attempts, performance investigation and remaining proof boundaries.
+The [device service contract](../../../../system/connected-devices.md) owns
+activation, credential persistence and the restricted drawing permission.
 
 ## Preservation guard
 
@@ -36,7 +35,12 @@ R01–R06 retain the local service, exact worktrees, global Hub, authorized Comp
 
 ## Remaining implementation sequence
 
-The notebook protocol and local review foundation are implemented. The desktop drawing surface is connected and its real-server Chromium scenarios pass. Common device/session authority contracts, native Android cache/rendering, opt-in authenticated device transport, complementary navigation receipts, full remote parity, notebook Shared submission, scoped voice/agent integration, recoverable migration and Android packaging remain to be implemented. There is no Android project or APK in this checkpoint. The product's connected-device and physical acceptance criteria remain open.
+The notebook protocol, local review, desktop canvas and restricted drawing
+transport are implemented. Native Android cache/rendering, complementary
+navigation receipts, full remote owner parity, notebook Shared submission,
+scoped voice/agent integration, recoverable migration and Android packaging
+remain to be implemented. There is no Android project or APK in this checkpoint.
+The connected-device and physical acceptance criteria remain open.
 
 ## Gesture continuation
 

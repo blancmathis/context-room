@@ -4,7 +4,8 @@
 
 The recovered notebook implementation and its local corrections have been
 verified on macOS with Node 22.23.0. This is evidence for a working desktop
-notebook foundation. The complete connected-device product is not delivered.
+notebook foundation and an optional restricted TLS drawing service. The
+complete connected-device product is not delivered.
 
 ## Defines
 
@@ -90,23 +91,78 @@ using:
 node --test --test-name-pattern='^Context Hub reopens a fresh exact legacy proposal room through the prepared fast path$' test/context_hub.test.mjs
 ```
 
-This does not turn the full parallel run into a successful run or establish a
-root cause for its timing sensitivity. No Hub implementation, freshness guard,
-timeout or performance threshold was changed. The preceding session's reported
-unspecified Shared failure was not reproduced by this full run.
+This isolated result did not turn the full parallel run into a successful run.
+The preceding session's reported unspecified Shared failure was not reproduced
+by this full run.
+
+At commit `4aa10e45532515cc03d81df420a5766988dae1d2`, GitHub run
+`34849738136` passed Node 20 and 24, all four browser jobs and soak. Node 22
+failed the separate direct exact-review reopening assertion after restart:
+404 ms against the unchanged 300 ms requirement. The CI gate therefore failed.
+
+Local profiling reproduced this timing failure and identified synchronous Git
+membership attestation outside the existing reported timing spans. The same
+three current Git directory queries now run in one process, with a fallback
+for ambiguous newline-containing paths. Physical directory and `.git` identity
+checks remain live on each call. No binding or authority is cached or relaxed.
+The direct review timing header and assertion diagnostics now include the
+binding check. A subsequent isolated direct-review test passed at 80 ms warm
+and 225 ms after restart. This is an observed local result, not a replacement
+for CI on the new commit. Earlier timing failures remain recorded privately.
+The Hub legacy fast-path check also passed at 197 ms after the batching change.
 
 `node bin/context-room.mjs doctor --root .` exited successfully; external startup
 advisories remain visible. Package privacy, package dry-run and whitespace
 checks pass with this delivery checkpoint. The existing Node 20/22/24
 and browser CI matrices are retained.
 
+## Restricted drawing-device milestone
+
+The [device service](../../../../system/connected-devices.md) now uses the
+existing notebook engine through a separate, optional TLS listener. Seven
+initial contract tests pass for one-use and expiring pairing, hashed credentials,
+certificate pin refusal, exact notebook grants, server-assigned authorship,
+replay after a service restart, concurrent Mac edits, replaced directories,
+revocation during upload, rate limits and owner/agent route refusal. An
+additional actual-CLI startup check passes after adding the device flags to
+the CLI option registry.
+
+An additional two-process test holds the actual notebook lock, revokes the
+device after its upload reaches that lock, then permits the writer to proceed.
+The write is refused and the scene remains unchanged. Permission checks inside
+the notebook critical section re-read device authority rather than trusting
+the earlier upload authentication. The first test harness used an incorrect
+lock path; it was corrected to use the exported storage prefix.
+
+The existing CLI registry and contract regression run, together with the
+eight device checks available at that point, passed 39 tests. The additional
+revocation-under-lock check passed separately. Doctor, package privacy
+(114 packaged files), relative documentation links and whitespace checks pass.
+The final complete device test file then passed all nine checks without skips.
+
+A 21-test regression run also passed across devices, notebook workflow, Hub
+root/worktree capabilities, loopback security and retired runtime checks.
+These are isolated synthetic projects; no personal pairing or running Hub was
+changed.
+
+The browser matrix passed its existing 16 notebook scenarios and exposed a
+hidden pairing-code field in all four new scenarios. The field inherited the
+old generic textarea hiding rule. Its scoped display rule is corrected. The
+four pairing scenarios now pass across Chromium desktop/mobile, Firefox and
+WebKit, including accessible owner pairing, cancellation and revocation.
+Desktop and narrow captures were inspected. Layout CSS audit passes. The
+cancel test waits for the actual HTTP receipt and asserts refusal without
+mutating the authority inside a polling condition.
+
 ## Open product gates
 
 There is no Android project or APK in these checkpoints. Native pressure/palm
-handling, device pairing and revocation, secure remote transport, both tablet
-modes, exact remote application receipts, notebook submission to Shared,
+handling, a pinned native client, both complete tablet modes, exact remote
+application receipts, notebook submission to Shared,
 context-bound real dictation/conversation/co-drawing, data migration and final
 removal of the external compatibility dependency remain implementation work.
+The restricted TLS drawing service and desktop pairing UI do not establish
+an Android installation, full remote owner authority or a physical Wi-Fi test.
 
 The full application smoke/layout/accessibility/performance/soak release matrix
 has not been rerun for this recovery milestone. Notebook-specific checks do not

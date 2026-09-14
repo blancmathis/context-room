@@ -85,6 +85,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   imageInput.addEventListener('change', () => { const file = imageInput.files[0]; if (file) run(addImage(file)); imageInput.value = ''; }); dialog.append(imageInput); actions.append(button('Image', () => imageInput.click()));
   const exportFormat = document.createElement('select'); exportFormat.setAttribute('aria-label', 'Notebook export format'); for (const [value, label] of [['crnb', 'Editable notebook'], ['svg', 'SVG drawing'], ['png', 'PNG preview']]) { const option = document.createElement('option'); option.value = value; option.textContent = label; exportFormat.append(option); }
   actions.append(exportFormat, button('Export', () => run(exportDrawing(exportFormat.value))), button('Recover local work', () => run(exportRecovery())));
+  if (!reviewKey) actions.append(button('Connect tablet', () => run(connectTablet())));
   const eink = button('E-ink contrast', () => { dialog.classList.toggle('notebook-eink'); eink.setAttribute('aria-pressed', String(dialog.classList.contains('notebook-eink'))); run(client.change(state => ({ metadata: { ...state.metadata, eink: dialog.classList.contains('notebook-eink') } }))); }); eink.setAttribute('aria-pressed', 'false'); actions.append(eink);
   const fingerLabel = notebookElement('label', 'Finger draws'), finger = document.createElement('input'); finger.type = 'checkbox'; finger.addEventListener('change', () => surface.fingerInk = finger.checked); fingerLabel.prepend(finger); actions.append(fingerLabel);
   const submitScope = document.createElement('select'); submitScope.setAttribute('aria-label', 'Notebook proposal destination');
@@ -101,6 +102,44 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   properties.append(button('Apply properties', () => { const patch = Object.fromEntries(Object.entries(propertyInputs).filter(([, input]) => input.value !== '').map(([key, input]) => [key, Number(input.value)])); if (Object.keys(patch).length) surface.patchSelection(patch); }));
   const objectList = notebookElement('ul', '', 'notebook-objects'), objectCount = notebookElement('p'), more = button('Show more objects', () => { objectLimit += 100; renderObjects(); }); let objectLimit = 100;
   filter.addEventListener('input', () => { objectLimit = 100; renderObjects(); }); inspector.append(objectTitle, selectionText, selectionActions, properties, filter, objectCount, objectList, more);
+
+  async function connectTablet() {
+    const devices = await request('/api/devices');
+    if (!devices.enabled) throw new Error('Tablet connection is disabled. Enable the device listener when starting Context Room on the Mac.');
+    const sheet = notebookElement('dialog', '', 'notebook-pair-dialog'); sheet.setAttribute('aria-label', 'Connect tablet');
+    const heading = notebookElement('h2', 'Connect a tablet to this notebook');
+    const scope = notebookElement('p', path + ' · Drawing permission. File review stays on the Mac.');
+    const label = notebookElement('label', 'Device name'), input = document.createElement('input'); input.value = 'Tablet'; input.maxLength = 100; label.append(input);
+    const result = notebookElement('div'), message = notebookElement('p'); message.setAttribute('role', 'status');
+    let ticket = null, dismissed = false;
+    const create = button('Create pairing code', async () => {
+      create.disabled = true; message.textContent = '';
+      try {
+        if (ticket) await request('/api/devices/cancel-pairing', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pairingId: ticket.pairingId }) });
+        ticket = await request('/api/devices/pair', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ paths: [path], label: input.value }) });
+        if (dismissed) { await request('/api/devices/cancel-pairing', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pairingId: ticket.pairingId }) }); return; }
+        const code = document.createElement('textarea'); code.readOnly = true; code.setAttribute('aria-label', 'One-use tablet pairing code'); code.value = JSON.stringify(ticket);
+        result.replaceChildren(notebookElement('p', 'Paste this code in Context Room on the tablet within two minutes. It verifies this Mac and grants access to this notebook.'), code,
+          button('Copy pairing code', () => navigator.clipboard.writeText(code.value).then(() => { message.textContent = 'Pairing code copied.'; }).catch(() => { code.select(); message.textContent = 'Select and copy the code.'; })));
+      } catch (error) { message.textContent = error.message; }
+      finally { create.disabled = false; }
+    });
+    const paired = notebookElement('div');
+    for (const device of devices.devices.filter(item => !item.revokedAt && item.grants.some(grant => grant.paths.includes(path)))) {
+      const row = notebookElement('p', device.label + ' '), revoke = button('Disconnect ' + device.label, async () => {
+        revoke.disabled = true;
+        try { await request('/api/devices/revoke', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ deviceId: device.id }) }); row.textContent = device.label + ' disconnected.'; }
+        catch (error) { message.textContent = error.message; revoke.disabled = false; }
+      }); row.append(revoke); paired.append(row);
+    }
+    sheet.append(heading, scope, label, create, result, message, paired, button('Close connection', () => sheet.close()));
+    sheet.addEventListener('close', () => {
+      dismissed = true;
+      if (ticket) void request('/api/devices/cancel-pairing', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pairingId: ticket.pairingId }) }).catch(() => {});
+      sheet.remove();
+    }, { once: true });
+    dialog.append(sheet); sheet.showModal();
+  }
 
   function scheduleObjects() { clearTimeout(objectsTimer); objectsTimer = setTimeout(renderObjects, 100); }
   function renderObjects() {
