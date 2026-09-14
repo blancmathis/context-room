@@ -466,6 +466,15 @@ Transaction time is 1,544.6 ms, including 260.6 ms for events; projection time i
 0.7 ms. This is an open performance failure, alongside the existing navigation
 latency gate. Hosted checks for this milestone remain separate.
 
+At `54340b9`, hosted Node 20, 22.23 and 24 checks pass. The mobile view-following
+scenario fails because its simulated tablet acknowledges only viewport sequence
+3, while toolbar/status reflow publishes sequence 4 with a different height.
+The retained trace confirms that the server correctly leaves the new viewport
+unconfirmed. The fixture now follows and acknowledges subsequent frames, as the
+native client does; three consecutive mobile runs pass. The production receipt
+checks and deadlines are unchanged. A separate local HTTP performance run passes
+at 724 ms; it does not erase the full-suite failure above.
+
 ## Open product gates
 
 Context-bound real dictation/conversation/co-drawing, data migration and final

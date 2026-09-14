@@ -75,8 +75,12 @@ test('@smoke @notebook explicit view following stops on human input and presenta
     const paired = f.deviceService.authority.pair(f.deviceService.createPairing({ projectId: f.runtime.projectId, paths: ['docs/Sketch.crnb'], label: 'View tablet' }));
     const target = { projectId: f.runtime.projectId, resourceId, path: scene.locator.path, locationRevision: scene.locator.revision };
     const authenticate = () => f.deviceService.authority.authenticate(paired.token);
-    let deviceView = { sequence: 1, mode: 'share', target, viewport: [100, 50, 450, 300] }, latest;
-    const poll = () => latest = f.deviceService.navigation.poll(paired.device.id, authenticate, { clientSessionId: 'browser-view-fixture', view: deviceView }).view;
+    let deviceView = { sequence: 1, mode: 'share', target, viewport: [100, 50, 450, 300] }, latest, acknowledgeFrames = false;
+    const poll = () => {
+      if (acknowledgeFrames && latest?.frame) deviceView = { ...deviceView, receipt: { ...latest.frame, viewport: latest.frame.viewport } };
+      latest = f.deviceService.navigation.poll(paired.device.id, authenticate, { clientSessionId: 'browser-view-fixture', view: deviceView }).view;
+      return latest;
+    };
     poll(); pollTimer = setInterval(poll, 500);
     const original = await page.evaluate(() => testNotebook.surface.viewportBounds());
     await expect(notebook).toHaveAttribute('data-view-mode', 'independent');
@@ -105,7 +109,9 @@ test('@smoke @notebook explicit view following stops on human input and presenta
     await expect.poll(() => latest.frame?.target.resourceId).toBe(resourceId);
     await expect(notebook.locator('.notebook-view-state')).toContainText('display not yet confirmed');
     // Browser status contract only. Native rendering has its separate Android proof.
-    deviceView = { ...deviceView, receipt: { ...latest.frame, viewport: latest.frame.viewport } }; poll();
+    // A narrow toolbar/status reflow can publish another viewport. The fixture
+    // follows every subsequent frame, like the native client's rendered receipt.
+    acknowledgeFrames = true; poll();
     await expect(notebook.locator('.notebook-view-state')).toHaveText('Current view displayed on View tablet.');
     await notebook.getByRole('button', { name: 'Presentation', exact: true }).click();
     await expect(notebook).toHaveClass(/notebook-presentation/);
