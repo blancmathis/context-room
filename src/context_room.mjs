@@ -3,6 +3,7 @@ import { renderAppShell } from "./ui/app.mjs";
 import { handleNotebookHttp, isNotebookMutation } from "./notebook_http.mjs";
 import { submitNotebookShared } from "./notebook_workflow.mjs";
 import { NOTEBOOK_WEB_ASSETS } from "./notebook_web_assets.mjs";
+import { NOTEBOOK_LIMITS } from "./notebook_protocol.mjs";
 import { createLisiereConnector } from "./lisiere_connector.mjs";
 import { isDocumentAssetPath, listDocumentAssets, readDocumentAssetReview, recordAcceptedDocumentAsset, decideDocumentAsset } from "./document_assets.mjs";
 import { readReviewCleanupPolicy, writeReviewCleanupPolicy, previewReviewCleanup, applyReviewCleanup, recentReviewCleanupReceipts } from "./review_cleanup.mjs";
@@ -1104,14 +1105,15 @@ export function listExplorerFiles(root = process.cwd(), { externalRoots = [], sh
     if (!projectPathIsContained(root, abs)) continue;
     const stats = fs.existsSync(abs) ? fs.statSync(abs) : null;
     if (!stats?.isFile()) continue;
-    const canRead = isProjectReadableMemoryPath(rel, root);
+    const notebook = isProjectNotebookFile(rel);
+    const canRead = notebook || isProjectReadableMemoryPath(rel, root);
     const sensitive = isSensitiveProjectFile(rel);
     if (!canRead && !sensitive) continue;
-    const allowed = isAllowedMemoryPath(rel, settings);
+    const allowed = notebook ? canReviewDocumentAsset(root, rel, settings) : isAllowedMemoryPath(rel, settings);
     const visualAsset = isProjectVisualAssetFile(rel);
     const safeContent = sensitive
       ? redactedSensitiveFileContent(abs, rel)
-      : allowed && !visualAsset && stats.size <= MAX_FILE_BYTES
+      : allowed && !visualAsset && !notebook && stats.size <= MAX_FILE_BYTES
         ? fs.readFileSync(abs, "utf8")
         : "";
     byPath.set(rel, {
@@ -1206,7 +1208,7 @@ function projectExplorerFileMetadata(root, relPath, settings, stats = null) {
   const fileStats = stats || fs.statSync(absolute);
   const visualAsset = isProjectVisualAssetFile(normalized);
   const sensitive = isSensitiveProjectFile(normalized);
-  const allowed = isAllowedMemoryPath(normalized, settings);
+  const allowed = isProjectNotebookFile(normalized) ? canReviewDocumentAsset(root, normalized, settings) : isAllowedMemoryPath(normalized, settings);
   return {
     path: normalized,
     name: path.basename(normalized),
@@ -1268,7 +1270,7 @@ export function listProjectExplorerPage(root = process.cwd(), {
           hasChildren,
         }];
       }
-      if (!entry.isFile() || (!isProjectTextFile(relPath) && !isProjectVisualAssetFile(relPath))) return [];
+      if (!entry.isFile() || (!isProjectTextFile(relPath) && !isProjectVisualAssetFile(relPath) && !isProjectNotebookFile(relPath))) return [];
       return [{ path: relPath, name: entry.name, type: "file-candidate" }];
     }).sort((left, right) => Number(left.type !== "directory") - Number(right.type !== "directory") || left.name.localeCompare(right.name, "en"));
   }
@@ -1278,7 +1280,7 @@ export function listProjectExplorerPage(root = process.cwd(), {
     const relPath = typeof entry === "string" ? entry : entry.path;
     try {
       const metadata = projectExplorerFileMetadata(root, relPath, settings);
-      const maxBytes = isProjectVisualAssetFile(relPath) ? MAX_VISUAL_ASSET_BYTES : MAX_FILE_BYTES;
+      const maxBytes = isProjectNotebookFile(relPath) ? NOTEBOOK_LIMITS.bytes : isProjectVisualAssetFile(relPath) ? MAX_VISUAL_ASSET_BYTES : MAX_FILE_BYTES;
       return metadata.bytes <= maxBytes ? [metadata] : [];
     } catch {
       return [];
@@ -19486,6 +19488,7 @@ export function createMemoryServer({
     }
   };
   const server = http.createServer(requestHandler);
+  deviceService?.owner.attach(server);
   server.on("checkContinue", (req, res) => {
     req[HTTP_REQUEST_EXPECTS_CONTINUE] = true;
     void requestHandler(req, res);
@@ -20236,19 +20239,23 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   const url = new URL(req.url, "http://context-room.invalid");
   if (url.pathname === '/api/devices' || url.pathname.startsWith('/api/devices/')) {
     if (req.method === 'GET' && url.pathname === '/api/devices') {
-      sendJson(res, 200, deviceService ? { enabled: true, projectId: contextRoomProjectId(root), ...deviceService.describe(), devices: deviceService.authority.list().filter(device => device.grants.some(grant => grant.projectId === contextRoomProjectId(root))) } : { enabled: false });
+      sendJson(res, 200, deviceService ? { enabled: true, projectId: contextRoomProjectId(root), ownerAvailable: deviceService.owner.available(), ...deviceService.describe(), devices: deviceService.authority.list().filter(device => device.grants.some(grant => grant.mode === 'owner' || grant.projectId === contextRoomProjectId(root))) } : { enabled: false });
       return;
     }
     if (!deviceService) throw sharedRequestError('Connected devices are disabled. Start Context Room with an explicit device address.', 409, 'device_service_disabled');
     if (req.method === 'GET' && url.pathname === '/api/devices/navigation') {
       const deviceId = url.searchParams.get('deviceId');
       const device = deviceService.authority.inspect(deviceId);
-      if (!device.grants.some(grant => grant.projectId === contextRoomProjectId(root))) throw sharedRequestError('The device belongs to another project.', 403, 'device_project_scope');
+      if (!device.grants.some(grant => grant.mode === 'owner' || grant.projectId === contextRoomProjectId(root))) throw sharedRequestError('The device belongs to another project.', 403, 'device_project_scope');
       const navigation = deviceService.navigation.inspect(deviceId, url.searchParams.get('operationId') || '');
       if (navigation.command?.target.projectId !== contextRoomProjectId(root)) navigation.command = null;
       sendJson(res, 200, navigation); return;
     }
     const body = await readJsonBody(req, { maxBytes: 16_384 });
+    if (req.method === 'POST' && url.pathname === '/api/devices/pair-owner') {
+      if (body.mode !== 'owner') throw sharedRequestError('Choose the complete owner interface explicitly.', 400, 'device_owner_choice');
+      sendJson(res, 201, { ...deviceService.createOwnerPairing({ label: body.label }), ...deviceService.describe() }); return;
+    }
     if (req.method === 'POST' && url.pathname === '/api/devices/view') {
       sendJson(res, 200, deviceService.navigation.view({ ...body, projectId: contextRoomProjectId(root) })); return;
     }
@@ -20820,7 +20827,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     writeHttpResponse(res, 200, { "content-type": asset.type, "cache-control": "no-cache", "x-content-type-options": "nosniff" }, req.method === "HEAD" ? "" : fs.readFileSync(new URL("./" + asset.file, import.meta.url)));
     return;
   }
-  if (["GET", "HEAD"].includes(req.method) && ["/assets/local-proposal-review.mjs", "/assets/review-cleanup.mjs"].includes(url.pathname)) {
+  if (["GET", "HEAD"].includes(req.method) && ["/assets/local-proposal-review.mjs", "/assets/review-cleanup.mjs", "/assets/connected-devices.mjs"].includes(url.pathname)) {
     writeHttpResponse(res, 200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" }, req.method === "HEAD" ? "" : fs.readFileSync(new URL(`./ui/${path.basename(url.pathname)}`, import.meta.url)));
     return;
   }
@@ -23428,6 +23435,8 @@ function isProjectVisualAssetFile(relPath) {
   return PROJECT_VISUAL_ASSET_TYPES.has(path.extname(normalizeRelPath(String(relPath || ""))).toLowerCase());
 }
 
+function isProjectNotebookFile(relPath) { return /\.crnb$/i.test(String(relPath)); }
+
 function projectVisualAssetMimeType(relPath) {
   return PROJECT_VISUAL_ASSET_TYPES.get(path.extname(normalizeRelPath(String(relPath || ""))).toLowerCase()) || "application/octet-stream";
 }
@@ -23441,6 +23450,7 @@ function isProjectTextFile(relPath) {
 
 function fileKindForPath(relPath) {
   if (isSensitiveProjectFile(relPath)) return "secret";
+  if (isProjectNotebookFile(relPath)) return "notebook";
   const ext = path.extname(normalizeRelPath(String(relPath || ""))).toLowerCase();
   if (ext === ".csv" || ext === ".tsv") return "csv";
   if (ext === ".html" || ext === ".htm") return "html";
@@ -23625,9 +23635,9 @@ function walkProjectExplorerTextFiles(root, { showHiddenFiles = true } = {}) {
       if (isBlockedPath(rel) && !isSensitiveProjectFile(rel) && !isSafeEnvSamplePath(rel)) continue;
       if (entry.isDirectory()) {
         walk(abs);
-      } else if (entry.isFile() && (isProjectTextFile(rel) || isProjectVisualAssetFile(rel))) {
+      } else if (entry.isFile() && (isProjectTextFile(rel) || isProjectVisualAssetFile(rel) || isProjectNotebookFile(rel))) {
         try {
-          const maxBytes = isProjectVisualAssetFile(rel) ? MAX_VISUAL_ASSET_BYTES : MAX_FILE_BYTES;
+          const maxBytes = isProjectNotebookFile(rel) ? NOTEBOOK_LIMITS.bytes : isProjectVisualAssetFile(rel) ? MAX_VISUAL_ASSET_BYTES : MAX_FILE_BYTES;
           if (fs.statSync(abs).size <= maxBytes) results.push(rel);
         } catch {}
       }

@@ -61,10 +61,27 @@ final class DeviceConnection {
   }
 
   boolean permittedProject(String project) {
+    if (isOwner()) return project != null && project.matches("[a-f0-9]{24}");
     if (session == null) return false;
     JSONArray grants = session.optJSONObject("device").optJSONArray("grants");
     for (int n = 0; grants != null && n < grants.length(); n++) if (project.equals(grants.optJSONObject(n).optString("projectId"))) return true;
     return false;
+  }
+
+  boolean isOwner() {
+    JSONArray grants = session == null ? null : session.optJSONObject("device").optJSONArray("grants");
+    for (int n = 0; grants != null && n < grants.length(); n++) {
+      JSONObject grant = grants.optJSONObject(n);
+      if (grant != null && "owner".equals(grant.optString("mode")) && serverId.equals(grant.optString("serverId"))) return true;
+    }
+    return false;
+  }
+
+  JSONObject owner(String action, JSONObject request) throws Exception {
+    if (!isOwner() || credential.isEmpty() || !Arrays.asList("request", "events").contains(action)) throw new IOException("Cette connexion n’autorise pas l’interface complète.");
+    JSONObject response = exchange("/device/owner/" + action, "POST", request.toString(), "", true, 42 * 1024 * 1024);
+    if (response.getInt("status") != 200) throw new IOException(response.getJSONObject("body").optString("error", "Connexion propriétaire indisponible."));
+    return response.getJSONObject("body");
   }
 
   JSONObject request(String project, String path, String method, String body) throws Exception {
@@ -79,8 +96,11 @@ final class DeviceConnection {
   }
 
   JSONObject exchange(String path, String method, String body, String project, boolean authenticated) throws Exception {
+    return exchange(path, method, body, project, authenticated, MAX_BYTES);
+  }
+  JSONObject exchange(String path, String method, String body, String project, boolean authenticated, int maximum) throws Exception {
     byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-    if (bytes.length > MAX_BYTES) throw new IOException("Le geste dépasse la taille autorisée. Le journal est conservé.");
+    if (bytes.length > maximum) throw new IOException("La requête dépasse la taille autorisée. Le journal est conservé.");
     HttpsURLConnection connection = (HttpsURLConnection) endpoint.resolve(path).toURL().openConnection();
     connection.setSSLSocketFactory(sockets);
     // The exact leaf certificate, transferred by the local owner, is the authority.
@@ -104,13 +124,13 @@ final class DeviceConnection {
       }
       int status = connection.getResponseCode();
       if (status >= 300 && status < 400) throw new IOException("La connexion a demandé une redirection. Elle a été refusée.");
-      if (connection.getContentLengthLong() > MAX_BYTES) throw new IOException("Réponse trop grande.");
+      if (connection.getContentLengthLong() > maximum) throw new IOException("Réponse trop grande.");
       InputStream stream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
       if (stream == null) throw new IOException("Le Mac n’a pas renvoyé de réponse.");
       ByteArrayOutputStream data = new ByteArrayOutputStream();
       try (InputStream input = stream) {
         byte[] buffer = new byte[8192]; int count;
-        while ((count = input.read(buffer)) != -1) { if (data.size() + count > MAX_BYTES) throw new IOException("Réponse trop grande."); data.write(buffer, 0, count); }
+        while ((count = input.read(buffer)) != -1) { if (data.size() + count > maximum) throw new IOException("Réponse trop grande."); data.write(buffer, 0, count); }
       }
       JSONObject result = new JSONObject(data.toString(StandardCharsets.UTF_8.name()));
       return InkView.json("status", status, "body", result);
@@ -130,6 +150,7 @@ final class DeviceConnection {
     JSONObject body = answer.getJSONObject("body");
     if (answer.getInt("status") != 201) throw new IOException(body.optString("error", "Le code de connexion a été refusé."));
     if (body.optInt("protocolVersion") != 1 || !pending.serverId.equals(body.optString("serverId"))) throw new IOException("La réponse appartient à un autre Mac.");
+    if (!InkView.sameJson(ticket.optJSONArray("grants"), body.getJSONObject("device").optJSONArray("grants"))) throw new IOException("Les permissions reçues ne correspondent pas au code choisi.");
     JSONObject saved = InkView.copy(body);
     saved.put("url", pending.endpoint.toString()).put("fingerprint", pending.fingerprint);
     new DeviceConnection(saved);

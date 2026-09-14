@@ -24,7 +24,10 @@ async function catalogue(session) {
   publicSession = session;
   const cached = await storage.list(), notebooks = [];
   let offline = false;
-  for (const grant of session.device.grants) {
+  const owner = session.device.grants.some(grant => grant.mode === 'owner' && grant.serverId === session.serverId);
+  const grants = owner ? [...new Set(cached.filter(record => record.metadata?.capabilities?.projectId && sameScope(record, record.metadata.capabilities.projectId)).map(record => record.metadata.capabilities.projectId))]
+    .map(projectId => ({ mode: 'owner', projectId, paths: cached.filter(record => sameScope(record, projectId)).map(record => record.snapshot.locator.path) })) : session.device.grants;
+  for (const grant of grants) {
     let items = [];
     try { items = (await request('/api/notebooks', {}, grant.projectId)).notebooks; }
     catch { offline = true; }
@@ -44,7 +47,7 @@ async function open(item) {
   const run = ++generation;
   clearTimeout(poll); client?.close(); client = null;
   projectId = item.projectId;
-  const grant = publicSession.device.grants.find(g => g.projectId === projectId && g.paths.includes(item.path));
+  const grant = publicSession.device.grants.find(g => g.mode === 'owner' && g.serverId === publicSession.serverId || g.projectId === projectId && g.paths.includes(item.path));
   if (!grant) throw new Error('Ce carnet ne fait pas partie de cette connexion.');
   const selectedProject = projectId, actor = { kind: 'human', id: `device-${publicSession.device.id}` };
   const cached = (await storage.list()).find(record => sameScope(record, selectedProject) && record.snapshot.locator.path === item.path);
@@ -111,6 +114,7 @@ window.ContextRoomNative = {
     else pending.reject(Object.assign(new Error(body.error || 'La connexion au Mac a échoué.'), { status, code: body.code }));
   },
   catalogue: session => catalogue(session).catch(reportError),
+  session: session => { publicSession = session; },
   open: item => open(item).catch(error => reportError(error, { openId: item.nativeOpenId })),
   command(message) { serial = serial.then(() => command(message)).catch(error => { emit('command', { id: message.id, success: false, message: error.message }); reportError(error); }); },
   view: view => client?.saveView(view).catch(reportError),

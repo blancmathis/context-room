@@ -28,7 +28,7 @@ for attribute in ('allowBackup', 'usesCleartextTraffic'):
 signature = command(str(sdk / 'apksigner'), 'verify', '--verbose', str(args.apk))
 assert 'Verified using v2 scheme (APK Signature Scheme v2): true' in signature
 assets = {('assets/core/' + name): root / 'src' / name for name in ('notebook_client.mjs', 'notebook_protocol.mjs', 'notebook_gestures.mjs', 'notebook_native.mjs')}
-assets.update({('assets/' + name): root / 'android/app/src/main/assets' / name for name in ('engine.html', 'engine.mjs', 'compat.mjs')})
+assets.update({('assets/' + name): root / 'android/app/src/main/assets' / name for name in ('engine.html', 'engine.mjs', 'compat.mjs', 'owner-bridge.js')})
 with zipfile.ZipFile(args.apk) as archive:
     assert len(archive.namelist()) == len(set(archive.namelist())), 'Duplicate APK entries'
     for entry, source in assets.items():

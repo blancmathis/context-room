@@ -37,6 +37,37 @@ async function draw(page, { start = [90, 90], end = [260, 160], up = true } = {}
   await page.mouse.move(box.x + start[0], box.y + start[1]); await page.mouse.down(); await page.mouse.move(box.x + end[0], box.y + end[1], { steps: 8 }); if (up) await page.mouse.up();
 }
 
+test('@smoke @notebook full owner pairing requires an explicit choice in the existing settings', async ({ page }, testInfo) => {
+  const f = await fixture(page, { devices: true });
+  try {
+    await page.locator('#settingsButton').click();
+    await page.locator('#settings-tab-preferences').click();
+    await page.locator('summary').filter({ hasText: 'Connected devices' }).click();
+    await page.getByRole('button', { name: 'Manage connected devices', exact: true }).click();
+    const sheet = page.getByRole('dialog', { name: 'Connected devices', exact: true });
+    const create = sheet.getByRole('button', { name: 'Create owner pairing code', exact: true });
+    await expect(create).toBeDisabled();
+    await sheet.getByLabel('Device name', { exact: true }).fill('Synthetic full tablet');
+    await sheet.getByRole('checkbox').check();
+    await create.click();
+    const code = sheet.getByRole('textbox', { name: 'One-use owner pairing code' });
+    await expect(code).toBeVisible();
+    const ticket = JSON.parse(await code.inputValue());
+    expect(ticket.grants).toEqual([{ mode: 'owner', serverId: f.deviceService.serverId }]);
+    const paired = f.deviceService.authority.pair(ticket);
+    await sheet.getByRole('button', { name: 'Close devices', exact: true }).click();
+    await page.getByRole('button', { name: 'Manage connected devices', exact: true }).click();
+    await expect(sheet).toBeVisible();
+    await expect(sheet.getByRole('button', { name: 'Disconnect Synthetic full tablet', exact: true })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath('owner-pairing-permission.png') });
+    const accessibility = await new AxeBuilder({ page }).include('.connected-devices-dialog').analyze();
+    expect(accessibility.violations).toEqual([]);
+    await sheet.getByRole('button', { name: 'Disconnect Synthetic full tablet', exact: true }).click();
+    expect(f.deviceService.authority.list().find(device => device.id === paired.device.id).revokedAt).toBeTruthy();
+    expect(f.errors).toEqual([]);
+  } finally { await f.close(); }
+});
+
 test('@smoke @notebook explicit view following stops on human input and presentation retains the notebook', async ({ page }, testInfo) => {
   const f = await fixture(page, { devices: true }); let pollTimer, release;
   try {

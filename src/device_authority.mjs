@@ -93,7 +93,15 @@ function grant(value) {
   }
   return { mode: 'draw', projectId: value.projectId, root: value.root, rootIdentity: value.rootIdentity, paths: exactPaths(value.paths) };
 }
-const publicGrant = ({ mode, projectId, paths }) => ({ mode, projectId, paths });
+function savedGrant(value, serverId) {
+  if (value?.mode === 'owner') {
+    if (value.serverId !== serverId) throw deviceError('device_scope_invalid', 'The owner permission belongs to another Mac.', 409);
+    return { mode: 'owner', serverId };
+  }
+  return grant(value);
+}
+const publicGrant = value => value.mode === 'owner' ? { mode: 'owner', serverId: value.serverId }
+  : { mode: value.mode, projectId: value.projectId, paths: value.paths };
 const publicDevice = value => ({ id: value.id, label: value.label, createdAt: value.createdAt, expiresAt: value.expiresAt,
   revokedAt: value.revokedAt || null, grants: value.grants.map(publicGrant) });
 
@@ -117,11 +125,7 @@ export function createDeviceAuthority({ stateRoot, serverId, now = Date.now }) {
       return result;
     });
   }
-  return {
-    /** Local owner surface only. This function has no remote HTTP route. */
-    createPairing({ grants, label = 'Tablet' }) {
-      if (!Array.isArray(grants) || !grants.length || grants.length > 16) throw deviceError('device_scope_invalid', 'Choose an exact project scope.', 400);
-      const scopes = grants.map(grant);
+  function pairing(scopes, label) {
       const cleanLabel = String(label).trim().slice(0, 100);
       if (!cleanLabel || /[\x00-\x1f]/.test(cleanLabel)) throw deviceError('device_label_invalid', 'Choose a device name.', 400);
       return update(state => {
@@ -133,7 +137,15 @@ export function createDeviceAuthority({ stateRoot, serverId, now = Date.now }) {
         state.pairings.push({ id, hash: digest(secret), expiresAt, grants: scopes, label: cleanLabel });
         return { protocolVersion: DEVICE_PROTOCOL, serverId, pairingId: id, token: secret, expiresAt, grants: scopes.map(publicGrant) };
       });
+  }
+  return {
+    /** Drawing tickets cannot be upgraded by supplying another grant mode. */
+    createPairing({ grants, label = 'Tablet' }) {
+      if (!Array.isArray(grants) || !grants.length || grants.length > 16) throw deviceError('device_scope_invalid', 'Choose an exact project scope.', 400);
+      return pairing(grants.map(grant), label);
     },
+    /** Separate, explicit local owner pairing action. */
+    createOwnerPairing({ label = 'Owner tablet' } = {}) { return pairing([{ mode: 'owner', serverId }], label); },
     pair({ pairingId, token: secret, protocolVersion }) {
       if (protocolVersion !== DEVICE_PROTOCOL) throw deviceError('device_protocol', 'Update the device client before pairing.', 409);
       if (!validToken(secret) || typeof pairingId !== 'string') throw deviceError('device_pairing_invalid', 'Pairing expired or is invalid.');
@@ -145,7 +157,7 @@ export function createDeviceAuthority({ stateRoot, serverId, now = Date.now }) {
         }
         if (state.devices.length >= 128) throw deviceError('device_limit', 'Remove expired devices before pairing another.', 409);
         const credential = token();
-        const device = { id: randomUUID(), hash: digest(credential), label: pairing.label, grants: pairing.grants.map(grant),
+        const device = { id: randomUUID(), hash: digest(credential), label: pairing.label, grants: pairing.grants.map(value => savedGrant(value, serverId)),
           createdAt: now(), expiresAt: now() + DEVICE_MS, revokedAt: null };
         state.pairings.splice(index, 1);
         state.devices.push(device);
@@ -158,13 +170,13 @@ export function createDeviceAuthority({ stateRoot, serverId, now = Date.now }) {
       const device = read().devices.find(item => typeof item.hash === 'string' && /^[a-f0-9]{64}$/.test(item.hash)
         && timingSafeEqual(Buffer.from(item.hash, 'hex'), Buffer.from(hash, 'hex')));
       if (!device || device.revokedAt || !(device.expiresAt > now())) throw deviceError('device_unauthorized', 'Pairing expired or was revoked.');
-      return { ...publicDevice(device), grants: device.grants.map(grant) };
+      return { ...publicDevice(device), grants: device.grants.map(value => savedGrant(value, serverId)) };
     },
     list() { return read().devices.map(publicDevice); },
     inspect(id) {
       const device = read().devices.find(item => item.id === id);
       if (!device || device.revokedAt || !(device.expiresAt > now())) throw deviceError('device_unauthorized', 'Pairing expired or was revoked.');
-      return { ...publicDevice(device), grants: device.grants.map(grant) };
+      return { ...publicDevice(device), grants: device.grants.map(value => savedGrant(value, serverId)) };
     },
     revoke(id) {
       return update(state => {

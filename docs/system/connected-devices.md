@@ -4,19 +4,19 @@ context_room:
   depends_on: [system.runtime-profiles, assurance.review.human-authority]
 ---
 
-# Connected drawing devices
+# Connected devices
 
 ## Summary
 
-Context Room can start an optional TLS listener for a native drawing client.
-The Mac keeps the working notebook and its durable operation receipts. A
-device receives access only to the exact notebooks chosen in the owner UI.
-An Android preview provides the native drawing surface, local recovery and
-pinned connection. Full remote owner operation remains implementation work.
+Context Room can start an optional TLS listener for its Android client.
+The Mac keeps the projects, working notebooks, durable operation receipts and
+human review authority. Pairing explicitly selects either drawing in chosen
+notebooks or operating the existing owner interface. An Android preview
+provides both surfaces through a pinned native connection.
 
 ## Defines
 
-Device service activation, pairing and revocation, the drawing permission,
+Device service activation, pairing and revocation, drawing and owner permissions,
 Android transport and storage, confirmed notebook opening, optional view
 following and presentation, and their
 relationship to notebook authority.
@@ -53,6 +53,42 @@ The client must verify the SHA-256 fingerprint of the TLS leaf certificate
 before sending the code or device credential. Pairing returns a new random
 credential valid for 30 days. Revocation is checked on every authenticated
 request and again after a body upload, before applying its changes.
+
+## Operate Context Room from the tablet
+
+On the Mac, open **Settings → Preferences → Connected devices**. Choose the
+complete owner interface explicitly before creating its pairing code. This
+separate permission covers the current Hub, registered projects, authorized
+Computer folders, document readers, settings and human review decisions.
+It is bound to the paired Mac identity. A drawing code cannot be upgraded to
+owner access. Closing the pairing dialog cancels an unused code.
+
+An owner connection opens the existing Context Room UI in a retained Android
+WebView. **Draw with the native pen** opens the same working notebook in the
+native canvas; Android Back returns to the retained workspace. The same Mac
+HTTP handlers, exact-project headers, folder rules and displayed human review
+nonce remain authoritative. Autosave and a return from native drawing do not
+accept any file or proposal. The original frozen review remains available
+underneath **Open working notebook**.
+
+The owner transport can address only the running loopback server attached to
+this device service. It cannot proxy an arbitrary URL or port, call agent
+routes, or create another pairing. A fresh pairing always starts on the Mac.
+Revocation prevents subsequent requests and delivery of delayed responses.
+An already authorized operation may finish; an uncertain mutation is never
+silently retried.
+
+The Android origin includes both the Mac and device identities. Only the
+trusted top-level owner UI can call its native message bridge; rendered
+documents keep the existing inert frame boundary. Credentials remain in
+native storage. UI reads pause while the native canvas is active, then resume;
+runtime events replay through the existing cursor and event bus.
+
+Image import and notebook export use Android's document picker from the
+trusted owner surface. The user chooses each source or destination. A
+document frame cannot open the picker. No broad storage permission is added.
+Offline work remains available through **Carnets disponibles hors ligne**;
+operating the full owner interface requires the connected Mac.
 
 ## Open the notebook on a tablet
 
@@ -127,7 +163,7 @@ Each mutation keeps its own stable operation identifier and canonical receipt;
 an individual conflict cannot hide another result. Retrying a lost batch reply
 replays those identifiers without duplicating the working changes.
 
-Grants bind a registered project ID, its physical directory identity and exact
+Drawing grants bind a registered project ID, its physical directory identity and exact
 relative notebook paths. Current owner folder permissions are checked again
 on use. Moving or replacing the project invalidates the grant. There is no
 separate device project catalog and no arbitrary proxy to the local owner API.
@@ -136,7 +172,8 @@ This drawing permission does not admit proposal submission, relocation,
 freeze, acceptance/rejection, settings changes or agent endpoints. Browser
 requests carrying Origin, Referer or Fetch Metadata are refused. The service
 returns JSON and never renders a document or exposes a native HTML bridge.
-Full remote owner authority requires the remaining, separate convergence work.
+Owner grants use the separate transport described above; they do not widen a
+drawing grant or expose the old hosted runtime.
 
 ## Android preview
 
@@ -146,10 +183,11 @@ The packaged JavaScript engine imports the same `NotebookClient` and revision
 protocol as the desktop. It owns the durable outbox and gesture history; there
 is no second Android synchronization or review engine.
 
-Only packaged engine assets have a native bridge. That engine cannot navigate
+Only packaged engine assets have the drawing bridge. That engine cannot navigate
 to arbitrary pages, render project HTML or fetch over the network itself.
 The native transport checks the paired certificate fingerprint before sending
-a code or credential, refuses redirects and allows only the drawing routes.
+a code or credential and refuses redirects. Drawing routes and the separate
+owner transport both enforce the explicit stored permission.
 Credentials are encrypted with Android Keystore and stored outside Android
 backup. Pairing another notebook retains the earlier connection and cache.
 
@@ -185,9 +223,12 @@ checks the AVD identity, installs only the preview, creates its own Mac fixture,
 tests drawing, restart recovery, deferred remote opening, human cancellation,
 opt-in following, native presentation and rejection of a queued previous scene,
 and retains native screenshots, exact navigation receipts and logs.
-It refuses physical devices. The preview currently exposes the complementary
-drawing workflow; it does not yet provide the full Context Room owner UI,
-voice/conversation, Shared notebook submission or personal-data migration.
+It refuses physical devices. Run the separate owner acceptance with
+`python3 test/android/verify-owner.py --serial emulator-5580 --output /tmp/context-room-owner-proof`.
+That test uses a fresh synthetic Hub, configured Computer folder and real
+documents. It checks native drawing round trips, file pickers and the existing
+human file decision. Voice/conversation, personal-data migration, release
+signing and physical BOOX proof remain separate convergence work.
 
 ## Persistence and limits
 
@@ -218,5 +259,8 @@ route and scope refusal, and the actual CLI launch.
 
 Browser tests (`test/e2e/notebooks.spec.mjs`) exercise owner pairing, the separate
 request/deferral/display states and revocation in Chromium, Firefox and WebKit.
+`test/device_owner.test.mjs` checks explicit owner pairing, the running-runtime
+restriction, exact project/folder/nonce enforcement, event cursors and revoked
+delayed responses against real HTTP/TLS handlers.
 Exact observations and the remaining
 Android/physical-device gates are recorded in `docs/lifecycle/changes/active/android-convergence/verification.md` in the source repository.

@@ -261,6 +261,19 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
       accept.addEventListener("click", () => decide("accepted"));
       reject.addEventListener("click", () => decide("rejected"));
       footer.append(undo, reload, reject, accept);
+      if (item.type === 'local-asset' && /\.crnb$/i.test(file.path) && file.afterBase64 !== null) {
+        const working = element('button', 'Open working notebook', 'quiet-button'); working.type = 'button'; footer.prepend(working);
+        working.addEventListener('click', async () => {
+          if (busy) return;
+          if (isDirty()) { status.textContent = 'Save or undo the current correction first.'; return; }
+          working.disabled = true;
+          try {
+            const { openNotebookEditor } = await import('/assets/ui/notebook-editor.mjs');
+            await openNotebookEditor({ api: request, path: file.path, scopeKey });
+          } catch (error) { status.textContent = error.message; }
+          finally { working.disabled = false; }
+        });
+      }
       if (/\.png$/i.test(file.path) && file.afterBase64 !== null) {
         const tablet = element("button", "Draw with Lisière", "quiet-button"); tablet.type = "button"; footer.prepend(tablet);
         let session = null;

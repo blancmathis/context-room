@@ -26,6 +26,11 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
   <meta name="context-room-owner-nonce" content="${escapeHtmlServer(hosted ? "" : ownerMutationNonce)}" />
   <title>Context Room</title>
   <style>
+    .connected-devices-dialog { width: min(540px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); overflow: auto; box-sizing: border-box; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 12px; padding: 24px; }
+    .connected-devices-dialog::backdrop { background: #0008; }
+    .connected-devices-dialog label { display: block; margin-block: 16px; }
+    .connected-devices-dialog textarea { display: block; width: 100%; height: 140px; min-height: 120px; box-sizing: border-box; padding: 12px; font-size: 13px; }
+    .connected-devices-dialog button { margin-block: 8px; min-height: 44px; }
     :root {
       color-scheme: dark;
       --bg: #101416;
@@ -4086,7 +4091,7 @@ const SETTINGS_SECTION_ALIASES = {
   "codex-prompts": "advanced-extensions",
 };
 const AGENT_CLI_HANDOFF_PROMPT = "Use context-room docs search and docs read for accepted documentation. Resume readerToken with --reader to receive changes to documents already read. Use changes list, changes begin --scope local|shared, changes status, and changes submit for isolated proposals. Edit only the returned editRoot. Consult the relevant capabilities section for other operations. Never write directly to Shared main. " + HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction;
-const SETTINGS_DISCLOSURE_IDS = ["project-shared-explainer", "project-shared-repositories", "project-shared-connection", "review-agent-cli", "review-documents", "review-protection", "startup-context", "startup-skills", "startup-hooks", "shared-how", "shared-providers", "shared-collections", "shared-destinations", "shared-instructions-how", "shared-instructions-collections", "shared-instructions-assign", "shared-instructions-import", "appearance-theme", "appearance-explorer", "appearance-sounds", "appearance-shortcuts", "templates-list", "hub-project-priority", "hub-sections", "codex-prompts-editor"];
+const SETTINGS_DISCLOSURE_IDS = ["project-shared-explainer", "project-shared-repositories", "project-shared-connection", "review-agent-cli", "review-documents", "review-protection", "startup-context", "startup-skills", "startup-hooks", "shared-how", "shared-providers", "shared-collections", "shared-destinations", "shared-instructions-how", "shared-instructions-collections", "shared-instructions-assign", "shared-instructions-import", "connected-devices", "appearance-theme", "appearance-explorer", "appearance-sounds", "appearance-shortcuts", "templates-list", "hub-project-priority", "hub-sections", "codex-prompts-editor"];
 const SETTINGS_DISCLOSURE_DEFAULTS = {
   "project-shared-explainer": false,
   "project-shared-repositories": true,
@@ -4105,6 +4110,7 @@ const SETTINGS_DISCLOSURE_DEFAULTS = {
   "shared-instructions-assign": false,
   "shared-instructions-import": false,
   "shared-destinations": false,
+  "connected-devices": false,
   "appearance-theme": true,
   "appearance-explorer": false,
   "appearance-sounds": false,
@@ -4115,6 +4121,7 @@ const SETTINGS_DISCLOSURE_DEFAULTS = {
   "codex-prompts-editor": true,
 };
 const SETTINGS_SEARCH_ITEMS = [
+  { id: "connected-devices", label: "Connected devices", description: "Pair a tablet for drawing or the complete owner interface.", section: "appearance", group: "connected-devices", scope: "All rooms", keywords: "tablet android boox wifi drawing notebook owner pair pairing connected devices" },
   { id: "shared-repository-explainer", label: "What a Shared Context is", description: "Understand why one canonical documentation source stays shared across collaborators, branches, and worktrees.", section: "project", group: "", scope: "Project + Shared", target: "sharedContextHelpButton", keywords: "shared context canonical documentation source of truth repository collaborators branches worktrees projects docs documents skills instructions accepted proposals" },
   { id: "shared-repositories", label: "Shared repositories", description: "Add or remove the Shared Context Git repositories available on this device.", section: "project", group: "project-shared-repositories", scope: "Device", target: "sharedContextRepositoryInput", keywords: "shared context repository repositories github git add remove teams collaborators" },
   { id: "shared-project-connection", label: "Project shared context", description: "Connect or disconnect the selected local project from an accepted Shared Context repository.", section: "project", group: "project-shared-connection", scope: "Project", keywords: "shared context connect disconnect project repository team" },
@@ -16553,6 +16560,7 @@ function renderSettingsPanel() {
       '<div class="settings-grid compact"><div class="settings-field"><label for="fileTheme">App theme</label><select id="fileTheme">' + renderFileThemeOptions(appearance.fileTheme) + '</select></div>' +
       '<div class="settings-field"><label for="colorMode">Context Room appearance</label><select id="colorMode"><option value="system" ' + ((appearance.colorMode || "system") === "system" ? "selected" : "") + '>Follow system</option><option value="light" ' + (appearance.colorMode === "light" ? "selected" : "") + '>Light</option><option value="dark" ' + (appearance.colorMode === "dark" ? "selected" : "") + '>Dark</option></select><span class="settings-field-note">This mode applies to the Context Room theme. Explicit editor themes keep their own light or dark palette.</span></div></div>' + renderSettingsThemePreview(appearance.fileTheme)
     }) +
+    renderSettingsDisclosure({ id: "connected-devices", title: "Connected devices", copy: "Use Context Room on another device while this Mac keeps your files.", scope: "All rooms", body: '<button type="button" data-owner-device-settings>Manage connected devices</button>' }) +
     renderSettingsDisclosure({ id: "appearance-explorer", title: "Explorer and file behavior", copy: "Control hidden files, Git diff behavior, and the folder available through Computer mode.", status: appearance.showHiddenFiles !== false ? "Hidden files visible" : "Hidden files hidden", scope: "All rooms", trackDirty: true, body:
       '<div class="settings-grid compact"><div class="settings-field"><label class="settings-toggle" for="autoOpenGitDiff"><input id="autoOpenGitDiff" type="checkbox" ' + (appearance.autoOpenGitDiff !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Auto-open Git diff</strong><em>Turn this off to open the diff manually.</em></span></label></div>' +
       '<div class="settings-field"><label class="settings-toggle" for="showHiddenFiles"><input id="showHiddenFiles" type="checkbox" ' + (appearance.showHiddenFiles !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Show hidden files</strong><em>Display safe dotfiles and .context-room in every Explorer.</em></span></label></div>' +
@@ -16645,6 +16653,7 @@ function renderSettingsPanel() {
   holder.querySelectorAll("[data-remove-watch-rule]").forEach((button) => button.addEventListener("click", () => removeWatchRuleFromSettings(button.dataset.removeWatchRule).catch((error) => setStatus(error.message))));
   previewSelectedFileTheme();
   wireSettingsDirtyTracking(holder);
+  holder.querySelector('[data-owner-device-settings]')?.addEventListener('click', () => import('/assets/connected-devices.mjs').then(module => module.openOwnerDeviceSettings(api)).catch(error => setStatus(error.message)));
   el("saveSettings")?.addEventListener("click", () => saveSettings().catch((error) => setStatus(error.message)));
 }
 

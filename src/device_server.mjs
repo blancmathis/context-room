@@ -5,6 +5,7 @@ import { handleNotebookHttp } from './notebook_http.mjs';
 import { createDeviceAuthority, deviceError, DEVICE_PROTOCOL, ensureDeviceIdentity } from './device_authority.mjs';
 import { createDeviceNavigation } from './device_navigation.mjs';
 import { readNotebook } from './notebooks.mjs';
+import { createDeviceOwnerBridge } from './device_owner.mjs';
 
 const GET_ROUTES = new Set(['/api/notebooks', '/api/notebooks/capabilities', '/api/notebooks/scene', '/api/notebooks/receipt', '/api/notebooks/export']);
 const POST_ROUTES = new Set(['/api/notebooks/open', '/api/notebooks/mutate', '/api/notebooks/batch', '/api/notebooks/undo', '/api/notebooks/asset']);
@@ -39,11 +40,20 @@ function bearer(req) {
   return match?.[1] || '';
 }
 
-/** Optional native-device listener; never forwards arbitrary requests to the owner UI. */
+/** Optional native listener. Drawing and explicit owner credentials stay separate. */
 export function createConnectedDeviceService({ stateRoot, resolveProject, now = Date.now } = {}) {
   if (typeof resolveProject !== 'function') throw new TypeError('An existing Context Room project resolver is required.');
   const identity = ensureDeviceIdentity(stateRoot);
   const authority = createDeviceAuthority({ stateRoot, serverId: identity.serverId, now });
+  const owner = createDeviceOwnerBridge();
+  const isOwner = device => device.grants.some(scope => scope.mode === 'owner' && scope.serverId === identity.serverId);
+  function scopeFor(device, projectId) {
+    if (isOwner(device)) {
+      const project = resolveProject(projectId);
+      return project && { mode: 'owner', projectId, root: project.root, rootIdentity: canonicalNotebookRoot(project.root) };
+    }
+    return device.grants.find(item => item.mode === 'draw' && item.projectId === projectId);
+  }
   const bodyBudget = { bytes: 0 };
   const rates = new Map();
   function limit(key, maximum, period = 60_000) {
@@ -63,10 +73,10 @@ export function createConnectedDeviceService({ stateRoot, resolveProject, now = 
   }
   const navigation = createDeviceNavigation({ stateRoot, serverId: identity.serverId, now,
     inspectDevice: id => authority.inspect(id), resolveTarget: (device, projectId, resourceId) => {
-      const grant = device.grants.find(item => item.projectId === projectId);
+      const grant = scopeFor(device, projectId);
       if (!grant) throw deviceError('device_project_scope', 'This project is outside the device permission.');
       const project = projectFor(grant), scene = readNotebook(project.root, resourceId, { includeDocument: false });
-      if (!grant.paths.includes(scene.locator.path) || !project.canRead(scene.locator.path) || !project.canWrite(scene.locator.path)) throw deviceError('device_navigation_scope', 'This notebook is outside the current drawing permission.');
+      if (grant.mode !== 'owner' && !grant.paths.includes(scene.locator.path) || !project.canRead(scene.locator.path) || !project.canWrite(scene.locator.path)) throw deviceError('device_navigation_scope', 'This notebook is outside the current drawing permission.');
       return { projectId, resourceId, path: scene.locator.path, locationRevision: scene.locator.revision, sceneRevision: scene.revision };
     } });
   const server = https.createServer({ key: identity.key, cert: identity.cert, minVersion: 'TLSv1.2',
@@ -107,6 +117,19 @@ export function createConnectedDeviceService({ stateRoot, resolveProject, now = 
           device: { ...initialDevice, grants: initialDevice.grants.map(({ root, rootIdentity, ...scope }) => scope) } });
         return;
       }
+      if (req.method === 'POST' && ['/device/owner/request', '/device/owner/events'].includes(url.pathname)) {
+        const authenticate = () => {
+          const live = authority.authenticate(credential);
+          if (!isOwner(live)) throw deviceError('device_owner_required', 'Pair explicitly for the complete owner interface. Drawing permission is insufficient.');
+          return live;
+        };
+        authenticate();
+        const body = await readBody(req, 41 * 1024 * 1024, bodyBudget);
+        const controller = new AbortController();
+        res.once('close', () => controller.abort());
+        json(res, 200, await owner.request(body, { authenticate, signal: controller.signal, events: url.pathname.endsWith('/events') }));
+        return;
+      }
       if (req.method === 'POST' && ['/device/navigation/poll', '/device/navigation/receipt'].includes(url.pathname)) {
         const body = await readBody(req, 16_384, bodyBudget);
         if (body.protocolVersion !== DEVICE_PROTOCOL) throw deviceError('device_protocol', 'Update the device client before continuing.', 409);
@@ -121,15 +144,14 @@ export function createConnectedDeviceService({ stateRoot, resolveProject, now = 
       // Recheck revocation and expiry after any delayed body upload.
       const device = authority.authenticate(credential);
       const projectId = String(req.headers['x-context-room-device-project'] || '');
-      const scope = device.grants.find(item => item.projectId === projectId);
+      const scope = scopeFor(device, projectId);
       if (!scope) throw deviceError('device_project_scope', 'This project is outside the device permission.');
       const project = projectFor(scope);
       const permitted = (rel, write) => {
         // The notebook engine invokes this again inside its mutation lock.
         // A device revoked while waiting for that lock must not commit later.
-        const live = authority.authenticate(credential).grants.find(item => item.projectId === projectId
-          && item.root === scope.root && item.rootIdentity === scope.rootIdentity);
-        if (!live || !live.paths.includes(rel)) return false;
+        const live = scopeFor(authority.authenticate(credential), projectId);
+        if (!live || live.root !== scope.root || live.rootIdentity !== scope.rootIdentity || live.mode !== 'owner' && !live.paths.includes(rel)) return false;
         const current = projectFor(live);
         return write ? current.canWrite(rel) : current.canRead(rel);
       };
@@ -156,6 +178,7 @@ export function createConnectedDeviceService({ stateRoot, resolveProject, now = 
     serverId: identity.serverId,
     fingerprint: identity.fingerprint,
     authority,
+    owner,
     navigation,
     describe() {
       const address = server.address();
@@ -175,7 +198,11 @@ export function createConnectedDeviceService({ stateRoot, resolveProject, now = 
       });
       return { host, port: server.address().port, serverId: identity.serverId, fingerprint: identity.fingerprint };
     },
-    close() { return new Promise((resolve, reject) => { server.closeAllConnections(); server.close(error => error ? reject(error) : resolve()); }); },
+    close() { owner.close(); return new Promise((resolve, reject) => { server.closeAllConnections(); server.close(error => error ? reject(error) : resolve()); }); },
+    createOwnerPairing({ label } = {}) {
+      if (!owner.available()) throw deviceError('device_owner_unavailable', 'Start the local owner interface before pairing.', 503);
+      return { ...authority.createOwnerPairing({ label }), fingerprint: identity.fingerprint };
+    },
     createPairing({ projectId, paths, label }) {
       const project = resolveProject(projectId);
       if (!project || !Array.isArray(paths) || paths.some(rel => !project.canRead(rel) || !project.canWrite(rel))) {

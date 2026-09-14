@@ -403,13 +403,75 @@ tests pass with their original deadlines and assertions, including the
 unsafe-sidecar refusal. Full regression and hosted verification of this
 correction remain separate checks.
 
+## Connected owner interface milestone
+
+An explicitly selected owner pairing opens the existing Context Room UI in a
+separate retained Android WebView. The native connection reaches only the
+attached loopback runtime. Existing project/folder rules and human review
+nonces remain authoritative. The restricted drawing permission cannot enter
+this transport; an owner cannot silently create another pairing. Rendered
+documents remain inert and their frames cannot use the native owner bridge.
+Both pending upload bodies and response buffers have aggregate bounds.
+
+The real HTTP/TLS owner contracts pass, including invalid paths/headers, exact
+project and nonce requirements, current folder permission, event cursors,
+revocation before a delayed response and release of the aggregate upload
+budget. The notebook/device/local-proposal/asset group passes 96 tests before
+the additional upload-budget regression; all five owner tests then pass.
+All 32 notebook browser scenarios pass across desktop Chromium, mobile
+Chromium, Firefox and WebKit, including explicit owner pairing and accessibility.
+
+The emulator owner acceptance passes in 44.730 seconds. It operates the real
+Hub, configured synthetic Computer folder, project search, Markdown reader,
+inert HTML reader, notebook explorer entry, local frozen review and settings.
+It opens native pen input, confirms the stroke on the Mac and returns to the
+retained working notebook. Image selection uses the Android document picker;
+the image reaches the Mac before export. The saved editable notebook equals
+the acknowledged canonical scene, including both objects and its embedded
+image. A human UI file decision accepts the original frozen document while
+later working ink and the image remain separate. It also opens the exact Shared
+review URL returned by the Mac, including its missing trailing slash, and checks
+the frozen scene and object. A WebView visual-state receipt precedes its screenshot;
+the rendered Shared drawing was inspected. All six complementary drawing phases
+also pass, including restart/replay, opening conflicts, view following and storage
+boundaries.
+
+Verified preview APK:
+`8da6afe206615026781101480d22cf6b834a75621bdd7f228c1b4cc1f28bfa71`.
+Its eight packaged engine/transport assets match the source, its v2 signature
+verifies and its only Android permission is Internet. This is an emulator
+installation, not a physical BOOX result or a published release.
+
+Earlier attempts found a missing notebook Explorer entry, a missing path
+from frozen review to the working notebook, a hidden pairing-code textarea
+and background owner reads that could report a spurious error. These product
+issues were corrected. The file-picker tests also needed the real Android
+accessibility action and filename suffix behavior. One attempt exported
+locally saved work before the image was acknowledged; final acceptance waits
+for the Mac receipt and checks the saved bytes. The first Shared checks stopped
+at page/DOM presence and captured the page before the drawing was painted. The
+final check waits for the visible geometry and a committed WebView visual state.
+An intermediate attempt to require this receipt for every capture timed out;
+that failed run remains retained independently of the final successful check.
+
+Direct core-suite runs initially reached the personal Shared registry because
+only Hub storage was isolated. Both bounded background-worker tests failed in
+the pre-owner commit as well, then passed unchanged with isolated Shared
+storage. The suite now owns both temporary stores and makes only its own
+read-only snapshot directories removable during cleanup. The core suite
+passes through the normal runner. Doctor and package privacy pass.
+The full serial test run passes 68 of 69 processes. Its 80-file durable HTTP
+acceptance takes 1,562 ms against the unchanged 900 ms assertion and fails.
+Transaction time is 1,544.6 ms, including 260.6 ms for events; projection time is
+0.7 ms. This is an open performance failure, alongside the existing navigation
+latency gate. Hosted checks for this milestone remain separate.
+
 ## Open product gates
 
-Full tablet owner operation, context-bound real dictation/conversation/co-drawing,
-data migration and final
+Context-bound real dictation/conversation/co-drawing, data migration and final
 removal of the external compatibility dependency remain implementation work.
 The verified Android installation is an emulator preview. It does not establish
-full remote owner authority, physical Wi-Fi behavior or BOOX pen/palm latency.
+physical Wi-Fi behavior or BOOX pen/palm latency.
 
 The full application smoke/layout/accessibility/performance/soak release matrix
 has not been rerun for this recovery milestone. Notebook-specific checks do not

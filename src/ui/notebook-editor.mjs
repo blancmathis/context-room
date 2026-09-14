@@ -7,7 +7,7 @@ import { NotebookViewLink } from './notebook-views.mjs';
 
 export function notebookElement(tag, text = '', className = '') { const node = document.createElement(tag); node.textContent = text; if (className) node.className = className; return node; }
 export function notebookStyles() { if (document.getElementById('context-room-notebook-style')) return; const link = document.createElement('link'); link.id = 'context-room-notebook-style'; link.rel = 'stylesheet'; link.href = '/assets/ui/notebook.css'; document.head.append(link); }
-export function notebookDownload(bytes, filename, type = 'application/json') { const url = URL.createObjectURL(new Blob([bytes], { type })); const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); setTimeout(() => URL.revokeObjectURL(url), 60_000); }
+export function notebookDownload(bytes, filename, type = 'application/json') { if (globalThis.ContextRoomNativeOwner) return ContextRoomNativeOwner.saveFile(bytes, filename, type); const url = URL.createObjectURL(new Blob([bytes], { type })); const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); setTimeout(() => URL.revokeObjectURL(url), 60_000); }
 export function notebookBase64(bytes) { let text = ''; for (let offset = 0; offset < bytes.length; offset += 8192) text += String.fromCharCode(...bytes.subarray(offset, offset + 8192)); return btoa(text); }
 const button = (label, callback, className = '') => { const node = notebookElement('button', label, className); node.type = 'button'; if (callback) node.addEventListener('click', callback); return node; };
 async function metadata(storage, key, update) { for (let n = 0; n < 8; n++) { const state = await storage.read(key); try { await storage.commit(key, state.version, { metadata: update(state.metadata) }); return; } catch (error) { if (error.code !== 'notebook_cache_conflict') throw error; } } throw new Error('The local notebook cache is busy.'); }
@@ -104,10 +104,18 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   actions.append(undo, redo, button('Fit drawing', () => { onInteraction({ resourceId, path }); surface.fit(); }), button('Zoom in', () => surface.zoomAt(canvas.clientWidth / 2, canvas.clientHeight / 2, 1.2)), button('Zoom out', () => surface.zoomAt(canvas.clientWidth / 2, canvas.clientHeight / 2, 1 / 1.2)));
   const objectsButton = button('Objects', () => { inspector.hidden = !inspector.hidden; objectsButton.setAttribute('aria-expanded', String(!inspector.hidden)); }); objectsButton.setAttribute('aria-expanded', String(!inspector.hidden)); actions.append(objectsButton);
   const imageInput = document.createElement('input'); imageInput.type = 'file'; imageInput.accept = 'image/png,image/jpeg,image/webp'; imageInput.hidden = true;
-  imageInput.addEventListener('change', () => { const file = imageInput.files[0]; if (file) run(addImage(file)); imageInput.value = ''; }); dialog.append(imageInput); actions.append(button('Image', () => imageInput.click()));
+  imageInput.addEventListener('change', () => { const file = imageInput.files[0]; if (file) run(addImage(file)); imageInput.value = ''; }); dialog.append(imageInput); actions.append(button('Image', () => {
+    if (globalThis.ContextRoomNativeOwner) run((async () => { const [file] = await ContextRoomNativeOwner.chooseImages(); if (file) await addImage(file); })());
+    else imageInput.click();
+  }));
   const exportFormat = document.createElement('select'); exportFormat.setAttribute('aria-label', 'Notebook export format'); for (const [value, label] of [['crnb', 'Editable notebook'], ['svg', 'SVG drawing'], ['png', 'PNG preview']]) { const option = document.createElement('option'); option.value = value; option.textContent = label; exportFormat.append(option); }
   actions.append(exportFormat, button('Export', () => run(exportDrawing(exportFormat.value))), button('Recover local work', () => run(exportRecovery())));
   if (!reviewKey) actions.append(button('Connect tablet', () => run(connectTablet())));
+  if (!reviewKey && window.ContextRoomNativeOwner) actions.append(button('Draw with the native pen', () => run((async () => {
+    await surface.settle(); await client.flush();
+    const devices = await request('/api/devices');
+    await window.ContextRoomNativeOwner.openNotebook({ projectId: devices.projectId, resourceId, path, title });
+  })())));
   const eink = button('E-ink contrast', () => { dialog.classList.toggle('notebook-eink'); eink.setAttribute('aria-pressed', String(dialog.classList.contains('notebook-eink'))); run(client.change(state => ({ metadata: { ...state.metadata, eink: dialog.classList.contains('notebook-eink') } }))); }); eink.setAttribute('aria-pressed', 'false'); actions.append(eink);
   const fingerLabel = notebookElement('label', 'Finger draws'), finger = document.createElement('input'); finger.type = 'checkbox'; finger.addEventListener('change', () => surface.fingerInk = finger.checked); fingerLabel.prepend(finger); actions.append(fingerLabel);
   const submitScope = document.createElement('select'); submitScope.setAttribute('aria-label', 'Notebook proposal destination');
@@ -160,7 +168,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
       finally { create.disabled = false; }
     });
     const paired = notebookElement('div');
-    for (const device of devices.devices.filter(item => !item.revokedAt && item.grants.some(grant => grant.paths.includes(path)))) {
+    for (const device of devices.devices.filter(item => !item.revokedAt && item.grants.some(grant => grant.mode === 'owner' || grant.paths.includes(path)))) {
       const row = notebookElement('div'), label = notebookElement('p', device.label), detail = notebookElement('p', 'Checking tablet…');
       detail.setAttribute('role', 'status'); detail.setAttribute('aria-label', device.label + ' display status');
       let revoked = false, sending = false, inspecting = false, navigationTimer = null;
@@ -288,7 +296,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   }
   async function exportRecovery() {
     await surface.settle().catch(() => {}); const recovery = await client.exportRecovery();
-    notebookDownload(JSON.stringify({ ...recovery, failedLocalWork, failedStrokes: surface.failedStrokes, inProgress: surface.gesture?.stroke.recovery() || surface.failedStroke || null }, null, 2), 'context-room-notebook-recovery.json');
+    await notebookDownload(JSON.stringify({ ...recovery, failedLocalWork, failedStrokes: surface.failedStrokes, inProgress: surface.gesture?.stroke.recovery() || surface.failedStroke || null }, null, 2), 'context-room-notebook-recovery.json');
     status.textContent = 'Recovery export requested. Keep the file before closing unsaved work.';
   }
   async function exportDrawing(format) {
@@ -297,7 +305,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     const svg = notebookSvg(current);
     if (format === 'svg') return notebookDownload(svg, base + '.svg', 'image/svg+xml');
     const image = new Image(), url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
-    try { image.src = url; await image.decode(); const b = notebookBounds(current), scale = Math.min(1, 16384 / b.width, 16384 / b.height, Math.sqrt(16_000_000 / (b.width * b.height))); const output = document.createElement('canvas'); output.width = Math.max(1, Math.ceil(b.width * scale)); output.height = Math.max(1, Math.ceil(b.height * scale)); output.getContext('2d').drawImage(image, 0, 0, output.width, output.height); const blob = await new Promise(resolve => output.toBlob(resolve, 'image/png')); if (!blob) throw new Error('PNG export failed; editable source remains available.'); notebookDownload(await blob.arrayBuffer(), base + '.png', 'image/png'); }
+    try { image.src = url; await image.decode(); const b = notebookBounds(current), scale = Math.min(1, 16384 / b.width, 16384 / b.height, Math.sqrt(16_000_000 / (b.width * b.height))); const output = document.createElement('canvas'); output.width = Math.max(1, Math.ceil(b.width * scale)); output.height = Math.max(1, Math.ceil(b.height * scale)); output.getContext('2d').drawImage(image, 0, 0, output.width, output.height); const blob = await new Promise(resolve => output.toBlob(resolve, 'image/png')); if (!blob) throw new Error('PNG export failed; editable source remains available.'); await notebookDownload(await blob.arrayBuffer(), base + '.png', 'image/png'); }
     finally { URL.revokeObjectURL(url); }
   }
   async function submitScene() {

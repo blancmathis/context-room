@@ -73,6 +73,7 @@ import {
   isAllowedMemoryPath,
   listExplorerDirectories,
   listExplorerFiles,
+  listProjectExplorerPage,
   listMemoryFiles,
   listStartupContextFiles,
   listStartupHookFiles,
@@ -126,12 +127,27 @@ import {
 } from "../src/context_room.mjs";
 
 const previousSuiteHubHome = process.env.CONTEXT_ROOM_HUB_HOME;
+const previousSuiteSharedHome = process.env.CONTEXT_ROOM_SHARED_HOME;
 const contextRoomTestHubHome = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-suite-hub-"));
+const contextRoomTestSharedHome = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-suite-shared-"));
 process.env.CONTEXT_ROOM_HUB_HOME = contextRoomTestHubHome;
+process.env.CONTEXT_ROOM_SHARED_HOME = contextRoomTestSharedHome;
 test.after(() => {
   if (previousSuiteHubHome === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
   else process.env.CONTEXT_ROOM_HUB_HOME = previousSuiteHubHome;
+  if (previousSuiteSharedHome === undefined) delete process.env.CONTEXT_ROOM_SHARED_HOME;
+  else process.env.CONTEXT_ROOM_SHARED_HOME = previousSuiteSharedHome;
   fs.rmSync(contextRoomTestHubHome, { recursive: true, force: true });
+  // Shared snapshots are intentionally read-only. Only make the suite's own
+  // temporary directories removable; never follow a snapshot symlink.
+  const writableDirectories = (directory) => {
+    const stats = fs.lstatSync(directory);
+    if (!stats.isDirectory() || stats.isSymbolicLink()) return;
+    fs.chmodSync(directory, 0o700);
+    for (const name of fs.readdirSync(directory)) writableDirectories(path.join(directory, name));
+  };
+  writableDirectories(contextRoomTestSharedHome);
+  fs.rmSync(contextRoomTestSharedHome, { recursive: true, force: true });
 });
 
 function makeRoot() {
@@ -3225,6 +3241,18 @@ test("HTML documents are listed as visual documents", () => {
 
   assert.equal(file?.kind, "html");
   assert.equal(file?.exists, true);
+});
+
+test("Explorer exposes notebook files through directory and search without adding their source to editable text", () => {
+  const root = makeRoot(); fs.mkdirSync(path.join(root, 'docs'));
+  fs.writeFileSync(path.join(root, 'docs/Sketch.crnb'), '{"schemaVersion":1}');
+  initializeContextRoomProject(root, { allowedPaths: ['docs/'], watchAllow: ['docs/'] });
+  const entry = listExplorerFiles(root).find(file => file.path === 'docs/Sketch.crnb');
+  assert.equal(entry?.kind, 'notebook'); assert.equal(entry?.chars, 0);
+  assert.equal(entry?.readOnly, false);
+  assert.equal(listProjectExplorerPage(root, { directory: 'docs' }).entries.find(file => file.path === entry.path)?.kind, 'notebook');
+  assert.equal(listProjectExplorerPage(root, { query: 'Sketch' }).entries.find(file => file.path === entry.path)?.kind, 'notebook');
+  assert.equal(listMemoryFiles(root).some(file => file.path === entry.path), false);
 });
 
 test("Explorer lists image assets and diagram sources without treating binary files as editable text", () => {

@@ -71,7 +71,7 @@ final class NotebookEngine {
   static WebResourceResponse denied() { return new WebResourceResponse("text/plain", "UTF-8", 403, "Forbidden", Collections.emptyMap(), new ByteArrayInputStream(new byte[0])); }
   void call(String method, Object... args) {
     if (closed) return;
-    if (!Arrays.asList("response", "catalogue", "open", "command", "view", "refresh", "exportRecovery", "close").contains(method)) throw new IllegalArgumentException("Unknown engine method");
+    if (!Arrays.asList("response", "catalogue", "session", "open", "command", "view", "refresh", "exportRecovery", "close").contains(method)) throw new IllegalArgumentException("Unknown engine method");
     JSONArray array = new JSONArray(); for (Object arg : args) array.put(arg);
     String json = array.toString();
     main.post(() -> { if (!closed) web.evaluateJavascript("window.ContextRoomNative." + method + ".apply(null,JSON.parse(" + JSONObject.quote(json) + "))", null); });

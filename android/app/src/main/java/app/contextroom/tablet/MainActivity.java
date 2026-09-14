@@ -14,7 +14,7 @@ import java.util.concurrent.*;
 import org.json.*;
 
 /** Native pen surface attached to a scoped Context Room connection. */
-public final class MainActivity extends Activity implements InkView.Listener, NativeNavigation.Host, NativeViews.Host {
+public final class MainActivity extends Activity implements InkView.Listener, NativeNavigation.Host, NativeViews.Host, OwnerWorkspace.Host {
   final ExecutorService disk = Executors.newSingleThreadExecutor();
   final HashMap<String, Integer> pendingObjects = new HashMap<>();
   final JSONArray unsavedActions = new JSONArray();
@@ -23,6 +23,12 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   NativeViews views;
   CredentialVault vault;
   DeviceConnection connection;
+  OwnerWorkspace ownerWorkspace;
+  boolean showingOwner;
+  android.webkit.ValueCallback<android.net.Uri[]> ownerFileCallback;
+  OwnerWorkspace fileChooserOwner;
+  byte[] ownerExportBytes;
+  android.webkit.ValueCallback<Boolean> ownerExportCallback;
   NativeCommandJournal journal;
   LinearLayout root, screen;
   TextView status, title;
@@ -60,7 +66,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     header("Context Room", "Ouverture du stockage local…");
     disk.execute(() -> {
       try { JSONObject savedConnection = vault.read(); DeviceConnection found = savedConnection == null ? null : new DeviceConnection(savedConnection);
-        runOnUiThread(() -> { if (dead) return; useConnection(found); if (found == null) pairingScreen(); else if (engineReady) engine.call("catalogue", found.session); });
+        runOnUiThread(() -> { if (dead) return; useConnection(found); if (found == null) pairingScreen(); else if (engineReady) connectionHome(); });
       } catch (Exception error) { runOnUiThread(() -> { pairingScreen(); showError(error.getMessage()); }); }
     });
   }
@@ -71,6 +77,8 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     result.setOnClickListener(view -> { interaction(); action.run(); }); return result;
   }
   void header(String heading, String detail) {
+    showingOwner = false;
+    if (ownerWorkspace != null) ownerWorkspace.foreground(false);
     navigationScreen = false;
     openingId = null;
     if (views != null) views.setMode("independent");
@@ -80,11 +88,50 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   }
   void setStatus(String text) { if (status != null && !text.contentEquals(status.getText())) status.setText(text); }
   void showError(String message) { setStatus(message == null ? "Le travail local est conservé. Réessayez la connexion." : message); }
-  void useConnection(DeviceConnection selected) { if (views != null) views.setMode("independent"); connection = selected; engine.connection = selected; navigation.connect(selected); }
+  void useConnection(DeviceConnection selected) {
+    if (views != null) views.setMode("independent");
+    if (ownerWorkspace != null) { if (ownerWorkspace.web.getParent() instanceof android.view.ViewGroup) ((android.view.ViewGroup) ownerWorkspace.web.getParent()).removeView(ownerWorkspace.web); ownerWorkspace.close(); ownerWorkspace = null; }
+    connection = selected; engine.connection = selected; navigation.connect(selected);
+    if (engineReady && selected != null) engine.call("session", selected.session);
+  }
+  void connectionHome() { if (connection.isOwner()) ownerScreen(); else engine.call("catalogue", connection.session); }
+  void ownerScreen() {
+    engine.call("close"); engine.call("session", connection.session);
+    ink = null; currentScope = null; lastScene = null; journal = null;
+    header("Context Room", "Interface propriétaire · les fichiers et les décisions restent sur le Mac.");
+    try {
+      if (ownerWorkspace == null || ownerWorkspace.closed) ownerWorkspace = new OwnerWorkspace(this, connection, this);
+      screen.addView(ownerWorkspace.web, new LinearLayout.LayoutParams(-1, 0, 1));
+      showingOwner = true; ownerWorkspace.foreground(resumed);
+      LinearLayout controls = new LinearLayout(this);
+      controls.addView(button("Carnets disponibles hors ligne", () -> engine.call("catalogue", connection.session)));
+      controls.addView(button("Connexions", this::pairingScreen));
+      controls.addView(button("Recharger", () -> ownerWorkspace.web.reload()));
+      HorizontalScrollView toolbar = new HorizontalScrollView(this); toolbar.addView(controls); screen.addView(toolbar);
+    } catch (Exception error) { showError(error.getMessage()); screen.addView(button("Réessayer", this::ownerScreen)); screen.addView(button("Connexions", this::pairingScreen)); }
+  }
+  @Override public void ownerError(String message) { if (!dead && showingOwner) showError(message); }
+  @Override public void saveOwnerFile(byte[] bytes, String filename, String type, android.webkit.ValueCallback<Boolean> callback) {
+    if (ownerExportCallback != null) { callback.onReceiveValue(false); ownerError("Terminez d’abord l’export ouvert."); return; }
+    ownerExportBytes = bytes; ownerExportCallback = callback;
+    try { startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType(type).putExtra(Intent.EXTRA_TITLE, filename), 72); }
+    catch (ActivityNotFoundException error) { ownerExportBytes = null; ownerExportCallback = null; callback.onReceiveValue(false); ownerError("Le sélecteur de fichiers Android est indisponible."); }
+  }
+  @Override public void chooseOwnerFiles(android.webkit.ValueCallback<android.net.Uri[]> callback, String[] types, boolean multiple) {
+    if (ownerFileCallback != null) { callback.onReceiveValue(null); ownerError("Terminez d’abord la sélection ouverte."); return; }
+    ownerFileCallback = callback; fileChooserOwner = ownerWorkspace;
+    Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT); intent.addCategory(Intent.CATEGORY_OPENABLE); intent.setType("*/*");
+    ArrayList<String> accepted = new ArrayList<>();
+    for (String group : types) for (String value : group.split(",")) if (value.trim().matches("[a-z]+/[a-zA-Z0-9.+_*-]+")) accepted.add(value.trim());
+    if (!accepted.isEmpty()) intent.putExtra(Intent.EXTRA_MIME_TYPES, accepted.toArray(new String[0]));
+    intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, multiple);
+    try { startActivityForResult(intent, 71); }
+    catch (ActivityNotFoundException error) { ownerFileCallback = null; fileChooserOwner = null; callback.onReceiveValue(null); ownerError("Le sélecteur de fichiers Android est indisponible."); }
+  }
 
   void pairingScreen() {
     ink = null; header("Context Room", "Dessinez sur la tablette, retrouvez le même carnet sur votre Mac.");
-    screen.addView(label("Sur le Mac, ouvrez un carnet et choisissez « Connect tablet ». Collez ici le code de connexion créé pour ce carnet.", 17));
+    screen.addView(label("Sur le Mac : « Connect tablet » dans un carnet pour dessiner, ou Réglages → Connected devices pour l’interface complète. Collez le code correspondant ici.", 17));
     pairingInput = new EditText(this); pairingInput.setHint("Code de connexion"); pairingInput.setContentDescription("Code de connexion créé sur le Mac");
     pairingInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
     pairingInput.setMinLines(4); pairingInput.setMaxLines(8); pairingInput.setTextSize(14); pairingInput.setPadding(dp(16),dp(12),dp(16),dp(12));
@@ -94,7 +141,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
       if (text.length() > 8192) { showError("Ce code est trop long. Recopiez le code créé sur le Mac."); return; }
       try { pair(new JSONObject(text)); } catch (Exception error) { showError("Le code est incomplet. Collez le contenu entier créé sur le Mac."); }
     }); screen.addView(pair);
-    if (connection != null) screen.addView(button("Revenir aux carnets connectés", () -> engine.call("catalogue", connection.session)));
+    if (connection != null) screen.addView(button("Revenir à Context Room", this::connectionHome));
   }
 
   void pair(JSONObject ticket) {
@@ -103,7 +150,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
       try {
         JSONObject saved = DeviceConnection.pair(ticket); vault.save(saved); DeviceConnection paired = new DeviceConnection(saved);
         runOnUiThread(() -> { if (dead) return; useConnection(paired); if (pairingInput != null) pairingInput.setText("");
-          if (engineReady) engine.call("catalogue", paired.session); else setStatus("Connexion enregistrée. Ouverture du moteur local…"); });
+          if (engineReady) connectionHome(); else setStatus("Connexion enregistrée. Ouverture du moteur local…"); });
       } catch (Exception error) { runOnUiThread(() -> showError(error instanceof javax.net.ssl.SSLException ? "Le certificat ne correspond pas au code du Mac. La connexion est refusée." : error.getMessage())); }
     });
   }
@@ -122,6 +169,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     screen.addView(button("Actualiser la connexion", () -> engine.call("catalogue", connection.session)));
     screen.addView(button("Connecter un autre carnet", this::pairingScreen));
     screen.addView(button("Connexions enregistrées", this::savedConnections));
+    if (connection.isOwner()) screen.addView(button("Interface complète", this::ownerScreen));
     navigationScreen = true;
   }
 
@@ -129,17 +177,18 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     disk.execute(() -> {
       try { JSONArray saved = vault.list(); String[] labels = new String[saved.length()];
         for (int n = 0; n < saved.length(); n++) { JSONObject device = saved.getJSONObject(n).getJSONObject("device");
-          labels[n] = device.optString("label", "Tablette") + " · " + device.getJSONArray("grants").getJSONObject(0).getJSONArray("paths").getString(0); }
+          JSONObject grant = device.getJSONArray("grants").getJSONObject(0);
+          labels[n] = device.optString("label", "Tablette") + " · " + ("owner".equals(grant.optString("mode")) ? "Interface propriétaire" : grant.getJSONArray("paths").getString(0)); }
         runOnUiThread(() -> new AlertDialog.Builder(this).setTitle("Connexions enregistrées").setItems(labels, (dialog, selected) -> disk.execute(() -> {
           try { JSONObject value = saved.getJSONObject(selected); DeviceConnection picked = new DeviceConnection(value); vault.save(value);
-            runOnUiThread(() -> { if (dead) return; useConnection(picked); engine.call("close"); engine.call("catalogue", picked.session); });
+            runOnUiThread(() -> { if (dead) return; useConnection(picked); engine.call("close"); connectionHome(); });
           } catch (Exception error) { runOnUiThread(() -> showError(error.getMessage())); }
         })).setNegativeButton("Fermer", null).show());
       } catch (Exception error) { runOnUiThread(() -> showError(error.getMessage())); }
     });
   }
 
-  void openNotebook(JSONObject item) {
+  @Override public void openNotebook(JSONObject item) {
     whenJournalIdle(() -> {
       engine.call("close"); journal = null; currentScope = null; pendingObjects.clear(); sceneVersion = -1; lastScene = null; inFlight = null; journalFailed = false; viewRestored = false;
       header(item.optString("title", item.optString("path")), "Ouverture du carnet…");
@@ -149,7 +198,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
       HorizontalScrollView scrolling = new HorizontalScrollView(this); scrolling.setHorizontalScrollBarEnabled(false);
       drawingTools = scrolling;
       LinearLayout tools = new LinearLayout(this); scrolling.addView(tools); screen.addView(scrolling);
-      tools.addView(button("Carnets", () -> whenJournalIdle(() -> { engine.call("close"); engine.call("catalogue", connection.session); })));
+      tools.addView(button(connection.isOwner() ? "Context Room" : "Carnets", () -> whenJournalIdle(() -> { engine.call("close"); connectionHome(); })));
       ink = new InkView(this, this); ink.recordingHistory = false; ink.setEnabled(false);
       HashMap<String, Button> toolButtons = new HashMap<>();
       for (String[] tool : new String[][]{{"Stylo","ink"},{"Sélection","select"},{"Gomme","erase"},{"Texte","text"},{"Rectangle","rect"},{"Ellipse","ellipse"},{"Ligne","line"},{"Flèche","arrow"},{"Déplacer","pan"}}) {
@@ -191,7 +240,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   void engineEvent(JSONObject event) {
     if (dead) return;
     switch (event.optString("type")) {
-      case "ready": engineReady = true; if (connection != null) engine.call("catalogue", connection.session); break;
+      case "ready": engineReady = true; if (connection != null) { engine.call("session", connection.session); connectionHome(); } break;
       case "catalogue": catalogue(event); break;
       case "opened": {
         if (openingId == null || !openingId.equals(event.optString("openId")) || !openingPath.equals(event.optString("path"))) return;
@@ -372,13 +421,38 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   }
   @Override protected void onActivityResult(int request, int result, Intent data) {
     super.onActivityResult(request,result,data);
+    if (request == 72) {
+      android.webkit.ValueCallback<Boolean> callback = ownerExportCallback; byte[] bytes = ownerExportBytes;
+      ownerExportBytes = null; ownerExportCallback = null;
+      android.net.Uri uri = data == null ? null : data.getData();
+      if (callback == null) return;
+      if (result != RESULT_OK || bytes == null || uri == null || !"content".equals(uri.getScheme())) { callback.onReceiveValue(false); return; }
+      disk.execute(() -> {
+        try (OutputStream stream = getContentResolver().openOutputStream(uri, "w")) {
+          if (stream == null) throw new IOException("Destination indisponible."); stream.write(bytes);
+        } catch (Exception error) { runOnUiThread(() -> { callback.onReceiveValue(false); ownerError("L’export n’a pas été écrit. Le travail reste disponible."); }); return; }
+        runOnUiThread(() -> { callback.onReceiveValue(true); ownerError("Fichier exporté dans la destination choisie."); });
+      }); return;
+    }
+    if (request == 71) {
+      android.webkit.ValueCallback<android.net.Uri[]> callback = ownerFileCallback; ownerFileCallback = null;
+      boolean valid = fileChooserOwner == ownerWorkspace && showingOwner; fileChooserOwner = null;
+      ArrayList<android.net.Uri> selected = new ArrayList<>();
+      if (valid && result == RESULT_OK && data != null) {
+        if (data.getClipData() != null) for (int n = 0; n < Math.min(16, data.getClipData().getItemCount()); n++) selected.add(data.getClipData().getItemAt(n).getUri());
+        else if (data.getData() != null) selected.add(data.getData());
+      }
+      selected.removeIf(uri -> uri == null || !"content".equals(uri.getScheme()));
+      if (callback != null) callback.onReceiveValue(selected.isEmpty() ? null : selected.toArray(new android.net.Uri[0]));
+      return;
+    }
     if (request != 7 || result != RESULT_OK || data == null || data.getData() == null || pendingExport == null) return;
     byte[] bytes = pendingExport; pendingExport = null; android.net.Uri uri = data.getData();
     disk.execute(() -> { try (OutputStream stream = getContentResolver().openOutputStream(uri, "w")) { if (stream == null) throw new IOException("Le fichier ne peut pas être ouvert."); stream.write(bytes); runOnUiThread(() -> setStatus("Récupération exportée. Les gestes restent dans Context Room.")); }
       catch (Exception error) { runOnUiThread(() -> showError(error.getMessage())); } });
   }
-  @Override protected void onPause() { resumed = false; views.setMode("independent"); navigation.foreground(false); if (ink != null) { ink.finishReachedInk(); ink.suspendBoox(true); viewport(); } super.onPause(); }
-  @Override protected void onResume() { super.onResume(); resumed = true; navigation.foreground(true); if (ink != null) ink.suspendBoox(false); if (engineReady && currentScope != null) engine.call("refresh"); }
-  @Override public void onBackPressed() { interaction(); if (presentation) { setPresentation(false); return; } if (connection != null && ink != null) whenJournalIdle(() -> { engine.call("close"); engine.call("catalogue", connection.session); }); else super.onBackPressed(); }
-  @Override protected void onDestroy() { if (ink != null) ink.finishReachedInk(); dead = true; navigation.close(); engine.close(); disk.shutdown(); super.onDestroy(); }
+  @Override protected void onPause() { resumed = false; if (ownerWorkspace != null) ownerWorkspace.foreground(false); views.setMode("independent"); navigation.foreground(false); if (ink != null) { ink.finishReachedInk(); ink.suspendBoox(true); viewport(); } super.onPause(); }
+  @Override protected void onResume() { super.onResume(); resumed = true; if (ownerWorkspace != null) ownerWorkspace.foreground(showingOwner); navigation.foreground(true); if (ink != null) ink.suspendBoox(false); if (engineReady && currentScope != null) engine.call("refresh"); }
+  @Override public void onBackPressed() { interaction(); if (presentation) { setPresentation(false); return; } if (showingOwner && ownerWorkspace.web.canGoBack()) { ownerWorkspace.web.goBack(); return; } if (connection != null && ink != null) whenJournalIdle(() -> { engine.call("close"); connectionHome(); }); else super.onBackPressed(); }
+  @Override protected void onDestroy() { if (ink != null) ink.finishReachedInk(); dead = true; if (ownerFileCallback != null) { ownerFileCallback.onReceiveValue(null); ownerFileCallback = null; } if (ownerExportCallback != null) { ownerExportCallback.onReceiveValue(false); ownerExportCallback = null; ownerExportBytes = null; } if (ownerWorkspace != null) ownerWorkspace.close(); navigation.close(); engine.close(); disk.shutdown(); super.onDestroy(); }
 }
