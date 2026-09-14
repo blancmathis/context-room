@@ -36,8 +36,9 @@ export function pointInPolygon(point, polygon) {
   return inside;
 }
 export function notebookHit(document, point, tolerance = 6) {
+  const objects = new Map(document.objects.map(object => [object.id, object]));
   for (let i = document.objects.length - 1; i >= 0; i--) {
-    const object = document.objects[i], b = notebookObjectBounds(object, document.objects);
+    const object = document.objects[i], b = notebookObjectBounds(object, objects);
     if (point[0] >= b.x - tolerance && point[0] <= b.x + b.width + tolerance && point[1] >= b.y - tolerance && point[1] <= b.y + b.height + tolerance) {
       if (object.type !== 'ink' || object.points.some((p, index) => {
         const a = object.points[Math.max(0, index - 1)], dx = p[0] - a[0], dy = p[1] - a[1], norm = dx * dx + dy * dy;
@@ -55,7 +56,8 @@ export function translateNotebookObject(object, dx, dy) {
 }
 export function notebookSceneBounds(document) {
   if (!document.objects.length) return { x: 0, y: 0, width: 1200, height: 900 };
-  const all = document.objects.map(o => notebookObjectBounds(o, document.objects));
+  const objects = new Map(document.objects.map(object => [object.id, object]));
+  const all = document.objects.map(o => notebookObjectBounds(o, objects));
   const x = Math.min(...all.map(b => b.x)) - 24, y = Math.min(...all.map(b => b.y)) - 24;
   return { x, y, width: Math.max(64, Math.max(...all.map(b => b.x + b.width)) - x + 24), height: Math.max(64, Math.max(...all.map(b => b.y + b.height)) - y + 24) };
 }

@@ -4351,6 +4351,32 @@ const SATELLITE_POSITIONS = [
 ];
 const el = (id) => document.getElementById(id);
 
+function captureNotebookApi(targetProjectId = "") {
+  const projectId = state.projectId || "";
+  const target = targetProjectId || (IS_GLOBAL_CONTEXT_ROOM && !state.contextRoomReviewDocumentScope ? state.activeProjectLocationId || "" : "");
+  const nonce = state.ownerMutationNonce || "";
+  const reviewBase = (!IS_GLOBAL_CONTEXT_ROOM || state.contextRoomReviewDocumentScope) ? /^\/reviews\/[^/]+/.exec(location.pathname)?.[0] || "" : "";
+  const scopeKey = JSON.stringify([location.origin, projectId, target, reviewBase]);
+  const request = async (requestPath, options = {}) => {
+    if (!String(requestPath).startsWith("/api/")) throw new Error("Notebook requests must remain within their original Context Room.");
+    const headers = { ...options.headers, "x-context-room-project": projectId, ...(target ? { "x-context-room-target-project": target } : {}) };
+    if (!["GET", "HEAD"].includes(String(options.method || "GET").toUpperCase())) headers["x-context-room-owner-nonce"] = nonce;
+    const response = await fetch(reviewBase + requestPath, { ...options, headers, credentials: "same-origin" });
+    const result = await response.json();
+    if (!response.ok) { const error = new Error(result.error || result.message || "The original notebook location is unavailable."); error.code = result.code; error.status = response.status; throw error; }
+    return result;
+  };
+  return { api: request, scopeKey };
+}
+
+async function openContextRoomNotebook(filePath, { directory = "", projectId = "" } = {}) {
+  const captured = captureNotebookApi(projectId);
+  const notebook = await import("/assets/ui/notebook-editor.mjs");
+  const options = { ...captured, onSubmitted: async () => { setStatus("Notebook submitted for human review. No file accepted."); if (typeof refreshDocQa === "function") await refreshDocQa(); } };
+  if (filePath) return notebook.openNotebookEditor({ ...options, path: filePath });
+  return notebook.chooseNotebook({ ...options, directory });
+}
+
 function contextRoomScopedRequestPath(requestPath) {
   const value = String(requestPath || "");
   const scopesCurrentReview = !IS_GLOBAL_CONTEXT_ROOM || Boolean(state.contextRoomReviewDocumentScope);
@@ -6362,6 +6388,7 @@ function renderGlobalExplorerContextMenu(x, y) {
       + '<button class="secondary" type="button" data-global-context-startup title="Show the agent instructions, skills, and hooks active for this project">View startup environment</button>'
       + (target.kind === "folder" ? '<button class="secondary" type="button" data-global-context-inspect title="Resolve the exact instructions, skills, hooks, provider settings, and accepted documents for this folder">Inspect agent environment</button>' : '')
       + (target.kind === "folder" ? '<button class="secondary" type="button" data-global-context-shared-skills>Link this skill location to shared…</button>' : '')
+      + '<button class="secondary" type="button" data-global-context-notebook>Notebook…</button>'
       + '<button class="secondary" type="button" data-global-context-new-file>New file</button>'
       + '<button class="secondary" type="button" data-global-context-new-folder>New folder</button>'
       + '<button class="secondary" type="button" data-global-context-open-project>Open project</button>'
@@ -6399,6 +6426,7 @@ function renderGlobalExplorerContextMenu(x, y) {
   menu.style.top = y + "px";
   clampContextMenuToViewport(menu);
   prepareExplorerContextMenu(menu);
+  menu.querySelector("[data-global-context-notebook]")?.addEventListener("click", () => { hideExplorerContextMenu(); openContextRoomNotebook(null, { directory: folderDirectory, projectId: worktree?.id || project?.id }).catch(error => setStatus(error.message)); });
   menu.querySelector("[data-global-context-open]")?.addEventListener("click", () => {
     hideExplorerContextMenu();
     openContextHubProject(project.id, { filePath: target.path }).catch((error) => setStatus(error.message));
@@ -11057,7 +11085,8 @@ function renderExplorerContextMenu(x, y) {
   const folderReviews = target.kind === "folder"
     ? contextRoomReviewsForExplorerPath(state.projectId, target.path, "folder")
     : [];
-  const createActions = '<button class="secondary" type="button" data-context-new-file>New file</button>' +
+  const createActions = '<button class="secondary" type="button" data-context-notebook>Notebook…</button>' +
+    '<button class="secondary" type="button" data-context-new-file>New file</button>' +
     '<button class="secondary" type="button" data-context-new-folder>New folder</button>';
   const targetActions = target.path
     ? '<button class="secondary" type="button" data-context-watch>' + (target.kind === "folder" ? 'Watch this folder…' : 'Watch this file') + '</button>' +
@@ -11112,6 +11141,7 @@ function renderExplorerContextMenu(x, y) {
     hideExplorerContextMenu();
     openSharedSkillsWizard({ mode: 'import', sourceDirectory }).catch((error) => setStatus(error.message));
   });
+  document.querySelector("[data-context-notebook]")?.addEventListener("click", () => { const directory = target.directory || ""; hideExplorerContextMenu(); openContextRoomNotebook(null, { directory }).catch(error => setStatus(error.message)); });
   document.querySelector("[data-context-new-file]")?.addEventListener("click", showContextNewFileForm);
   document.querySelector("[data-context-new-folder]")?.addEventListener("click", showContextNewFolderForm);
   document.querySelector("[data-context-select]")?.addEventListener("click", selectExplorerContextTarget);
@@ -12872,7 +12902,7 @@ async function selectFile(path, options = {}) {
   if (IS_HOSTED_REVIEW) return selectHostedReviewFile(path, options);
   if (!path) return;
   await waitForReviewFinalizationBeforeNavigation();
-  if (state.sharedContext?.mode === "review" && /[.](?:png|jpe?g|gif|webp|avif|svg|pdf|docx|xlsx|pptx)$/i.test(path) && state.sharedContext.review?.proposalFiles?.includes(path)) {
+  if (state.sharedContext?.mode === "review" && /[.](?:crnb|png|jpe?g|gif|webp|avif|svg|pdf|docx|xlsx|pptx)$/i.test(path) && state.sharedContext.review?.proposalFiles?.includes(path)) {
     const { openLocalProposalReview } = await import("/assets/local-proposal-review.mjs");
     await openLocalProposalReview({ item: { type: "shared-asset", title: path, files: [path] }, api, onChange: async (result) => {
       state.docqa = result.docqa;
@@ -12883,6 +12913,13 @@ async function selectFile(path, options = {}) {
       renderProposalReviewPage();
     } });
     return;
+  }
+  if (/\.crnb$/i.test(path)) {
+    if (options.reviewMode) {
+      const { openLocalProposalReview } = await import("/assets/local-proposal-review.mjs");
+      return openLocalProposalReview({ item: { type: "local-asset", title: path, files: [path] }, ...captureNotebookApi(), onChange: async result => { if (result.docqa) state.docqa = result.docqa; renderViewer(); } });
+    }
+    return openContextRoomNotebook(path);
   }
   if (state.selected && path !== state.selected && !selectedFileExists()) reconcileMissingSelectedFile();
   if (state.dirty && !options.forceReload && !confirm("You have unsaved changes. Change file?")) return;
@@ -23968,7 +24005,7 @@ el("reviewQueue")?.addEventListener("click", (event) => {
   const item = contextHubReviewItems().find((candidate) => candidate.id === button.dataset.contextRoomReview);
   if (!item) return;
   if (item.type === "local-proposal" || item.type === "local-asset") {
-    import("/assets/local-proposal-review.mjs").then(({ openLocalProposalReview }) => openLocalProposalReview({ item, api, onChange: refreshContextRoomReviewQueue })).catch((error) => setStatus(error.message));
+    import("/assets/local-proposal-review.mjs").then(({ openLocalProposalReview }) => openLocalProposalReview({ item, ...captureNotebookApi(item.projectId || ""), onChange: refreshContextRoomReviewQueue })).catch((error) => setStatus(error.message));
     return;
   }
   if (item.type === "shared") {

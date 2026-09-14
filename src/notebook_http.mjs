@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { canonicalNotebookRoot, notebookHash } from './notebook_io.mjs';
 import { NOTEBOOK_VERSION, NOTEBOOK_LIMITS, notebookId, failNotebook } from './notebook_protocol.mjs';
 import { openNotebook, readNotebook, listNotebooks, mutateNotebook, undoNotebook, addNotebookAsset, freezeNotebook, readFrozenNotebook, notebookReceipt, relocateNotebook, encodeNotebook } from './notebooks.mjs';
 import { submitNotebookLocal } from './notebook_workflow.mjs';
@@ -12,7 +13,7 @@ export async function handleNotebookHttp(req, res, { root, url, readJsonBody, se
   if (!url.pathname.startsWith(NOTEBOOK_HTTP_PREFIX + '/') && url.pathname !== NOTEBOOK_HTTP_PREFIX) return false;
   const route = url.pathname.slice(NOTEBOOK_HTTP_PREFIX.length);
   if (req.method === 'GET' && route === '/capabilities') {
-    sendJson(res, 200, { protocolVersion: NOTEBOOK_VERSION, format: '.crnb', limits: NOTEBOOK_LIMITS, sourceAuthority: 'mac-working-scene', reviewAuthority: 'existing-human-file-review',
+    sendJson(res, 200, { protocolVersion: NOTEBOOK_VERSION, serverId: notebookHash(['context-room-notebook-location-v1', root, canonicalNotebookRoot(root)]), accountId: 'local-owner', actor, format: '.crnb', limits: NOTEBOOK_LIMITS, sourceAuthority: 'mac-working-scene', reviewAuthority: 'existing-human-file-review',
       operations: ['open', 'read', 'mutate', 'undo', 'asset', 'freeze', 'submit', 'receipt', 'relocate', 'export'], sharedSubmission: typeof submitShared === 'function' }); return true;
   }
   if (req.method === 'GET' && route === '') {

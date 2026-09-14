@@ -39,7 +39,7 @@ jobs:
       - name: Notebook and existing proposal contracts
         run: |
           umask 022
-          node --test test/notebook_protocol.test.mjs test/notebooks.test.mjs test/notebook_workflow.test.mjs test/local_proposals.test.mjs test/document_assets.test.mjs
+          node --test test/notebook*.test.mjs test/local_proposals.test.mjs test/document_assets.test.mjs
       - name: Package privacy
         run: npm run package:privacy
       - name: Export exact source tree without repository history or runtime state
