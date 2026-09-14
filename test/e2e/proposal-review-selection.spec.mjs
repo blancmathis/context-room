@@ -325,8 +325,10 @@ test("@smoke global boot stays pending until the Explorer catalogue is renderabl
   let markCatalogRequest;
   const catalogRequest = new Promise((resolve) => { markCatalogRequest = resolve; });
   const catalogGate = new Promise((resolve) => { releaseCatalog = resolve; });
-  await page.route("**/api/context-hub/catalog", async (route) => {
-    markCatalogRequest();
+  // Runtime events can request a full catalogue while the initial light request
+  // is pending. Hold both data sources to exercise an actually unavailable list.
+  await page.route(url => ["/api/context-hub/catalog", "/api/context-hub"].includes(url.pathname), async (route) => {
+    if (new URL(route.request().url()).pathname === "/api/context-hub/catalog") markCatalogRequest();
     await catalogGate;
     await route.continue();
   });

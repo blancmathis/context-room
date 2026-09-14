@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""Verify the preview APK on an explicitly named, isolated ContextRoom emulator."""
+import argparse
+import hashlib
+import json
+import os
+import shutil
+from pathlib import Path
+import subprocess
+import time
+import urllib.request
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--serial', required=True)
+parser.add_argument('--output', type=Path, required=True, help='New private evidence directory outside the repository')
+args = parser.parse_args()
+repo = Path(__file__).resolve().parents[2]
+output = args.output.resolve()
+if output.exists() or output.is_relative_to(repo):
+    raise SystemExit('Choose a new evidence directory outside the source repository.')
+if not args.serial.startswith('emulator-'):
+    raise SystemExit('This automatic fixture accepts only a separate Android emulator, never a physical device.')
+sdk = Path(os.environ['ANDROID_HOME'])
+adb = [str(sdk / 'platform-tools/adb'), '-s', args.serial]
+
+def run(argv, **options):
+    return subprocess.run(argv, check=True, **options)
+
+avd = run(adb + ['emu', 'avd', 'name'], capture_output=True, text=True).stdout.splitlines()[0]
+if not avd.startswith('ContextRoom_'):
+    raise SystemExit('Use an isolated AVD whose name starts with ContextRoom_. Existing personal emulators are preserved.')
+output.mkdir(parents=True, mode=0o700)
+fixture_dir = output / 'fixture'
+fixture_log = (output / 'fixture.log').open('w')
+service = subprocess.Popen(['node', str(repo / 'test/android/fixture.mjs'), str(fixture_dir)], cwd=repo, stdout=fixture_log, stderr=subprocess.STDOUT)
+
+try:
+    deadline = time.monotonic() + 15
+    while not (fixture_dir / 'fixture.json').exists():
+        if service.poll() is not None or time.monotonic() > deadline:
+            raise RuntimeError('Fixture did not become ready; inspect fixture.log')
+        time.sleep(.1)
+    fixture = json.loads((fixture_dir / 'fixture.json').read_text())
+    apk = repo / 'android/app/build/outputs/apk/debug/app-debug.apk'
+    test_apk = repo / 'android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk'
+    artifact = run(['python3', str(repo / 'scripts/check-android-artifact.py'), '--apk', str(apk)], capture_output=True, text=True)
+    (output / 'artifact.json').write_text(artifact.stdout)
+    for source in (apk, test_apk):
+        result = run(adb + ['install', '-r', str(source)], capture_output=True, text=True)
+        if 'Success' not in result.stdout:
+            raise RuntimeError('APK installation was not confirmed')
+    request = urllib.request.Request(fixture['ownerUrl'] + '/ticket', method='POST')
+    with urllib.request.urlopen(request, timeout=10) as response:
+        ticket = json.load(response)['path']
+    run(adb + ['push', ticket, '/data/local/tmp/context-room-ticket.json'], capture_output=True)
+    durations = {}
+    for phase in ('pairedNativeInkAndOfflineQueue', 'restartReplaysOfflineExactlyOnce', 'nativeStorageBoundary'):
+        # The target is the fixture preview only, on the checked, separate emulator.
+        run(adb + ['shell', 'am', 'force-stop', 'app.contextroom.tablet.preview'], capture_output=True)
+        started = time.monotonic()
+        log_path = output / (phase + '.log')
+        with log_path.open('w') as log:
+            run(adb + ['shell', 'am', 'instrument', '-w', '-r', '-e', 'class', 'app.contextroom.tablet.NotebookDeviceTest#' + phase,
+                       '-e', 'fixture', '/data/local/tmp/context-room-ticket.json',
+                       'app.contextroom.tablet.preview.test/androidx.test.runner.AndroidJUnitRunner'], stdout=log, stderr=subprocess.STDOUT, timeout=100)
+        content = log_path.read_text()
+        # am instrument can return process exit 0 for a failed JUnit test.
+        if 'OK (1 test)' not in content or 'FAILURES!!!' in content:
+            raise RuntimeError('Android acceptance phase failed: ' + str(log_path))
+        durations[phase] = round(time.monotonic() - started, 2)
+        print(phase + ': passed', flush=True)
+    for name in ('notebook-offline', 'notebook-recovered'):
+        with (output / (name + '.png')).open('wb') as image:
+            run(adb + ['exec-out', 'run-as', 'app.contextroom.tablet.preview', 'cat', 'files/' + name + '.png'], stdout=image)
+        if not (output / (name + '.png')).read_bytes().startswith(b'\x89PNG\r\n\x1a\n'):
+            raise RuntimeError('Missing rendered Android capture')
+    with urllib.request.urlopen(fixture['ownerUrl'] + '/scene', timeout=10) as response:
+        scene = json.load(response)
+    assert len(scene['document']['objects']) == 11
+    assert scene['accepted'] is False
+    assert not (fixture_dir / 'project/docs/Tablet.crnb').exists()
+    proof = {'schemaVersion': 1, 'device': 'isolated Android emulator', 'avd': avd, 'physicalBoox': False,
+             'apkSha256': hashlib.sha256(apk.read_bytes()).hexdigest(), 'durationsSeconds': durations,
+             'canonicalObjects': 11, 'accepted': False,
+             'sourceHead': run(['git', 'rev-parse', 'HEAD'], cwd=repo, capture_output=True, text=True).stdout.strip(),
+             'sourceHasUncommittedChanges': bool(run(['git', 'status', '--porcelain'], cwd=repo, capture_output=True, text=True).stdout.strip())}
+    (output / 'proof.json').write_text(json.dumps(proof, indent=2) + '\n')
+    shutil.copyfile(apk, output / 'Context-Room-preview.apk')
+    print('Native drawing, local durability, process restart and canonical replay verified. ' + str(output), flush=True)
+finally:
+    service.terminate()
+    try:
+        service.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        service.kill()
+        service.wait()
+    fixture_log.close()

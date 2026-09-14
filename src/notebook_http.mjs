@@ -14,7 +14,7 @@ export async function handleNotebookHttp(req, res, { root, url, readJsonBody, se
   const route = url.pathname.slice(NOTEBOOK_HTTP_PREFIX.length);
   if (req.method === 'GET' && route === '/capabilities') {
     sendJson(res, 200, { protocolVersion: NOTEBOOK_VERSION, serverId: notebookHash(['context-room-notebook-location-v1', root, canonicalNotebookRoot(root)]), accountId: 'local-owner', actor, format: '.crnb', limits: NOTEBOOK_LIMITS, sourceAuthority: 'mac-working-scene', reviewAuthority: 'existing-human-file-review',
-      operations: ['open', 'read', 'mutate', 'undo', 'asset', 'freeze', 'submit', 'receipt', 'relocate', 'export'], sharedSubmission: typeof submitShared === 'function' }); return true;
+      operations: ['open', 'read', 'mutate', 'batch', 'undo', 'asset', 'freeze', 'submit', 'receipt', 'relocate', 'export'], sharedSubmission: typeof submitShared === 'function' }); return true;
   }
   if (req.method === 'GET' && route === '') {
     sendJson(res, 200, { protocolVersion: NOTEBOOK_VERSION, notebooks: listNotebooks(root).filter(item => canRead(item.path)) }); return true;
@@ -48,7 +48,24 @@ export async function handleNotebookHttp(req, res, { root, url, readJsonBody, se
   if (body.protocolVersion !== NOTEBOOK_VERSION) failNotebook('notebook_version', 'The notebook client protocol is incompatible.');
   const options = { actor, canWrite };
   let result;
-  if (route === '/mutate') result = mutateNotebook(root, body, options);
+  if (route === '/batch') {
+    if (!Array.isArray(body.operations) || !body.operations.length || body.operations.length > 16) failNotebook('notebook_batch', 'A batch needs 1–16 notebook operations.');
+    const ids = new Set();
+    for (const request of body.operations) {
+      if (!request || request.protocolVersion !== NOTEBOOK_VERSION || request.resourceId !== id || ids.has(notebookId(request.operationId))) failNotebook('notebook_batch', 'Each operation must identify the same notebook and a distinct receipt.');
+      ids.add(request.operationId);
+    }
+    const results = body.operations.map(request => {
+      try { return { operationId: request.operationId, receipt: mutateNotebook(root, request, options) }; }
+      catch (error) {
+        if (!String(error.code || '').startsWith('notebook_')) throw error;
+        return { operationId: request.operationId, error: { code: error.code, message: error.message, status: error.statusCode || 400, details: error.details } };
+      }
+    });
+    if (!canRead(scene.locator.path)) failNotebook('notebook_path_scope', 'This notebook is outside the authorized folder.');
+    result = { protocolVersion: NOTEBOOK_VERSION, resourceId: id, results, snapshot: readNotebook(root, id) };
+  }
+  else if (route === '/mutate') result = mutateNotebook(root, body, options);
   else if (route === '/undo') result = undoNotebook(root, body, options);
   else if (route === '/asset') result = addNotebookAsset(root, body, options);
   else if (route === '/freeze') result = freezeNotebook(root, body, options);

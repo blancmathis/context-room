@@ -10,6 +10,22 @@ export function notebookCacheKey({ serverId, accountId, deviceId, resourceId }) 
 }
 const blank = () => ({ version: 0, metadata: {}, snapshot: null, operations: [] });
 
+/** A native journal delivers one ordered channel until the same IDB commit is acknowledged.
+ * Keeping its watermark with the operation makes process-death replay idempotent even after
+ * the network receipt has left the small interactive acknowledgement index. */
+function nativeCommandProgress(metadata, command) {
+  if (!command) return { replayed: false, metadata };
+  notebookId(command.channel); notebookId(command.id);
+  if (!Number.isSafeInteger(command.sequence) || command.sequence < 1) throw fault('notebook_native_command', 'Invalid native command sequence.');
+  const previous = metadata.nativeChannels?.[command.channel];
+  if (previous && command.sequence <= previous.sequence) {
+    if (command.sequence === previous.sequence && command.id !== previous.id) throw fault('notebook_native_command', 'The native journal changed an acknowledged command.');
+    return { replayed: true, metadata };
+  }
+  if (command.sequence !== (previous?.sequence || 0) + 1) throw fault('notebook_native_command', 'A native command is missing. Keep the recovery journal.');
+  return { replayed: false, metadata: { ...metadata, nativeChannels: { ...metadata.nativeChannels, [command.channel]: { sequence: command.sequence, id: command.id } } } };
+}
+
 /** Test/reference storage; the browser implementation writes only changed rows. */
 export class MemoryNotebookStorage {
   records = new Map();
@@ -101,7 +117,7 @@ function visible(state, actor) {
       for (const change of applied.changes) tombstones[change.id] = change.revision;
     } catch (error) { conflicts.push({ ...copy(op), error: { code: error.code, message: error.message, details: error.details } }); }
   }
-  return { ...copy(state.snapshot), document, tombstones, conflicts, pending: state.operations.length, accepted: false,
+  return { ...copy(state.snapshot), document, tombstones, conflicts, pending: state.operations.length, accepted: false, cacheVersion: state.version,
     status: conflicts.length ? 'conflict' : state.operations.length || state.metadata.pendingCreate ? 'pending' : state.metadata.offline ? 'cached' : 'confirmed',
     offline: Boolean(state.metadata.offline), locallySaved: true, pendingCreate: Boolean(state.metadata.pendingCreate) };
 }
@@ -148,10 +164,12 @@ export class NotebookClient {
       return { snapshot, deleteOperations: settled, metadata: { ...state.metadata, offline: false, confirmedAt: Date.now(), acknowledgements: [...(state.metadata.acknowledgements || []), ...state.operations.filter(op => settled.includes(op.operationId)).map(op => ({ operationId: op.operationId, receipt: op.receipt }))].slice(-200) } };
     });
   }
-  async enqueue(edits, { gestureId } = {}) {
+  async enqueue(edits, { gestureId, nativeCommand } = {}) {
     return this.exclusive(async () => {
-      const operationId = notebookId(this.newId());
+      const operationId = notebookId(nativeCommand?.id || this.newId());
       await this.change(state => {
+        const progress = nativeCommandProgress(state.metadata, nativeCommand);
+        if (progress.replayed) return null;
         const view = visible(state, this.actor);
         if (!view) throw fault('notebook_cache_missing', 'Load this notebook before drawing.');
         let conflict, applied;
@@ -159,7 +177,7 @@ export class NotebookClient {
         catch (error) { if (Number(error.status || error.statusCode) !== 409) throw error; conflict = { code: error.code, message: error.message, details: error.details }; }
         const operation = { operationId, order: state.version + 1, state: conflict ? 'conflict' : 'queued', request: { protocolVersion: NOTEBOOK_VERSION, resourceId: this.scope.resourceId, operationId, locationRevision: state.snapshot.locator.revision, edits: copy(edits) }, path: state.snapshot.locator.path, createdAt: Date.now(), ...(conflict ? { error: conflict } : {}) };
         if (applied) operation.preview = applied.changes.map(change => ({ id: change.id, before: change.before, after: change.after }));
-        return { putOperations: [operation], ...(applied && gestureId ? { metadata: recordNotebookGesture(state.metadata, gestureId, applied.changes) } : {}) };
+        return { putOperations: [operation], metadata: applied && gestureId ? recordNotebookGesture(progress.metadata, gestureId, applied.changes) : progress.metadata };
       });
       await this.notify(); return operationId;
     });
@@ -176,19 +194,21 @@ export class NotebookClient {
       await this.notify(); return operationId;
     });
   }
-  async replayGesture(direction = 'undo') {
+  async replayGesture(direction = 'undo', { nativeCommand } = {}) {
     if (!['undo', 'redo'].includes(direction)) throw fault('notebook_undo', 'Choose undo or redo.');
     return this.exclusive(async () => {
-      const operationId = notebookId(this.newId());
+      const operationId = notebookId(nativeCommand?.id || this.newId());
       await this.change(state => {
+        const progress = nativeCommandProgress(state.metadata, nativeCommand);
+        if (progress.replayed) return null;
         const history = copy(state.metadata.gestureHistory || { undo: [], redo: [], archived: 0 }), gesture = history[direction].at(-1);
-        if (!gesture) return null;
+        if (!gesture) return nativeCommand ? { metadata: progress.metadata } : null;
         const view = visible(state, this.actor), edits = notebookGestureEdits(gesture, direction);
         const applied = applyNotebookEdits(view.document, view.tombstones || {}, edits, this.actor);
         history[direction].pop();
         for (const change of gesture.changes) change.revision = applied.changes.find(item => item.id === change.id).revision;
         history[direction === 'undo' ? 'redo' : 'undo'].push(gesture);
-        return { metadata: { ...state.metadata, gestureHistory: history }, putOperations: [{ operationId, order: state.version + 1, state: 'queued', createdAt: Date.now(), path: state.snapshot.locator.path,
+        return { metadata: { ...progress.metadata, gestureHistory: history }, putOperations: [{ operationId, order: state.version + 1, state: 'queued', createdAt: Date.now(), path: state.snapshot.locator.path,
           request: { protocolVersion: NOTEBOOK_VERSION, resourceId: this.scope.resourceId, operationId, locationRevision: state.snapshot.locator.revision, edits } }] };
       });
       return this.notify();
@@ -209,6 +229,34 @@ export class NotebookClient {
     if (this.flushing) return this.flushing;
     this.flushing = this.performFlush().finally(() => { this.flushing = null; }); return this.flushing;
   }
+  async deliverBatch(operations) {
+    const ids = new Set(operations.map(op => op.operationId));
+    await this.change(state => ({ putOperations: state.operations.filter(op => ids.has(op.operationId)).map(op => ({ ...op, state: 'sending' })) }));
+    try {
+      const reply = await this.transport.batch({ protocolVersion: NOTEBOOK_VERSION, resourceId: this.scope.resourceId, operations: operations.map(op => copy(op.request)) });
+      if (reply?.protocolVersion !== NOTEBOOK_VERSION || reply.resourceId !== this.scope.resourceId || !Array.isArray(reply.results) || reply.results.length !== operations.length || !reply.snapshot)
+        throw fault('notebook_receipt_invalid', 'The batch response is incomplete. Local work is retained.');
+      const delivered = new Map();
+      for (const result of reply.results) {
+        if (!ids.has(result.operationId) || delivered.has(result.operationId)) throw fault('notebook_receipt_invalid', 'Unexpected batch receipt.');
+        const receipt = result.receipt;
+        if (receipt) {
+          if (receipt.status !== 'confirmed' || receipt.operationId !== result.operationId || receipt.resourceId !== this.scope.resourceId || !Number.isSafeInteger(receipt.sequence) || reply.snapshot.sequence < receipt.sequence)
+            throw fault('notebook_receipt_invalid', 'No current canonical receipt was received.');
+          delivered.set(result.operationId, { state: 'acknowledged', receipt });
+        } else {
+          if (!result.error || typeof result.error.code !== 'string' || ![400, 403, 404, 409, 410, 413, 415, 422].includes(result.error.status)) throw fault('notebook_receipt_invalid', 'An operation has no definitive batch result.');
+          delivered.set(result.operationId, { state: 'conflict', error: result.error });
+        }
+      }
+      await this.change(state => ({ putOperations: state.operations.filter(op => delivered.has(op.operationId)).map(op => ({ ...op, ...delivered.get(op.operationId) })) }));
+      await this.adopt(reply.snapshot);
+    } catch (error) {
+      const permanent = [400, 403, 404, 409, 410, 413, 415, 422].includes(Number(error.status || error.statusCode));
+      await this.change(state => ({ putOperations: state.operations.filter(op => ids.has(op.operationId) && op.state !== 'conflict').map(op => ({ ...op, state: op.receipt ? 'acknowledged' : permanent ? 'conflict' : 'uncertain', error: { code: error.code || 'network', message: error.message } })) }));
+      throw error;
+    }
+  }
   async performFlush() {
     try {
       let state = await this.state();
@@ -220,8 +268,19 @@ export class NotebookClient {
       // Bound one flush so long queues cannot monopolize navigation.
       for (let count = 0; count < 64 && !this.closed; count++) {
         state = await this.state();
-        const op = [...state.operations].sort((a, b) => a.order - b.order).find(item => item.state !== 'conflict');
+        const waiting = [...state.operations].sort((a, b) => a.order - b.order).filter(item => item.state !== 'conflict');
+        const op = waiting[0];
         if (!op) break;
+        if (typeof this.transport.batch === 'function' && !op.action) {
+          const group = []; let bytes = 0;
+          for (const item of waiting.slice(0, Math.min(16, 64 - count))) {
+            if (item.action) break;
+            bytes += JSON.stringify(item.request).length;
+            if (bytes > 1024 * 1024) break;
+            group.push(item);
+          }
+          if (group.length > 1) { await this.deliverBatch(group); count += group.length - 1; continue; }
+        }
         try {
           let receipt = op.receipt;
           if (!receipt && ['sending', 'uncertain'].includes(op.state)) {
@@ -280,11 +339,11 @@ export class NotebookClient {
   close() { this.closed = true; } // Closing or signing out never deletes the outbox.
 }
 
-export function notebookHttpTransport(request, actor) {
+export function notebookHttpTransport(request, actor, { batch = false } = {}) {
   const post = (action, body) => request(`/api/notebooks/${action}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-context-room-notebook-client': actor.id }, body: JSON.stringify(body) });
   return { open: body => post('open', body), mutate: body => post('mutate', body), asset: body => post('asset', body),
     receipt: (resourceId, operationId) => request(`/api/notebooks/receipt?${new URLSearchParams({ resourceId, operationId })}`),
-    scene: resourceId => request(`/api/notebooks/scene?${new URLSearchParams({ resourceId })}`), post };
+    scene: resourceId => request(`/api/notebooks/scene?${new URLSearchParams({ resourceId })}`), post, ...(batch ? { batch: body => post('batch', body) } : {}) };
 }
 
 /** Resolve one durable browser identity atomically, including simultaneous first tabs. */

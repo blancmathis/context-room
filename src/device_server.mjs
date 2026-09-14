@@ -5,7 +5,7 @@ import { handleNotebookHttp } from './notebook_http.mjs';
 import { createDeviceAuthority, deviceError, DEVICE_PROTOCOL, ensureDeviceIdentity } from './device_authority.mjs';
 
 const GET_ROUTES = new Set(['/api/notebooks', '/api/notebooks/capabilities', '/api/notebooks/scene', '/api/notebooks/receipt', '/api/notebooks/export']);
-const POST_ROUTES = new Set(['/api/notebooks/open', '/api/notebooks/mutate', '/api/notebooks/undo', '/api/notebooks/asset']);
+const POST_ROUTES = new Set(['/api/notebooks/open', '/api/notebooks/mutate', '/api/notebooks/batch', '/api/notebooks/undo', '/api/notebooks/asset']);
 function json(res, status, value) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store',
     'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; frame-ancestors 'none'" });
@@ -120,7 +120,7 @@ export function createConnectedDeviceService({ stateRoot, resolveProject, now = 
       await handleNotebookHttp(req, res, { root: project.root, url, readJsonBody: async () => body,
         sendJson: (response, status, result) => json(response, status, url.pathname === '/api/notebooks/capabilities'
           ? { ...result, serverId: identity.serverId, accountId: `device:${device.id}:project:${projectId}`,
-            deviceId: device.id, projectId, reviewAuthority: 'unavailable', operations: ['open', 'read', 'mutate', 'undo', 'asset', 'receipt', 'export'] }
+            deviceId: device.id, projectId, reviewAuthority: 'unavailable', operations: ['open', 'read', 'mutate', 'batch', 'undo', 'asset', 'receipt', 'export'] }
           : result),
         canRead, canWrite, actor: { kind: 'human', id: `device-${device.id}` } });
     } catch (error) {

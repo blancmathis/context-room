@@ -4,7 +4,8 @@
 
 The recovered notebook implementation and its local corrections have been
 verified on macOS with Node 22.23.0. This is evidence for a working desktop
-notebook foundation and an optional restricted TLS drawing service. The
+notebook foundation, an optional restricted TLS drawing service and a native
+Android drawing preview verified in an isolated emulator. The
 complete connected-device product is not delivered.
 
 ## Defines
@@ -14,7 +15,7 @@ regression results and the remaining implementation boundaries.
 
 ## Does not define
 
-Human acceptance of personal documents, an Android build or installation,
+Human acceptance of personal documents or personal-device installation,
 authenticated agent/audio behavior, a migration of personal data, or physical
 BOOX performance. A synthetic agent operation is not a real provider call.
 
@@ -154,17 +155,82 @@ Desktop and narrow captures were inspected. Layout CSS audit passes. The
 cancel test waits for the actual HTTP receipt and asserts refusal without
 mutating the authority inside a polling condition.
 
+## Native Android milestone
+
+The Android project builds a signed preview and instrumentation APK with
+JDK 17, Gradle 8.11.1, Android platform/build-tools 35 and the existing BOOX
+pen SDK version 1.5.4. Manifest conflicts and duplicate vendor C++ libraries
+were resolved explicitly. The merged preview manifest requests only Internet;
+unrelated permissions inherited from the SDK are removed. APK signature v2
+verification passes.
+
+The preview APK with SHA-256
+`29a346c0113cb77bb26c2d4d6d2528cdbb27c00300f1857576e9f532e61e0d1b`
+was installed only on a new, isolated API 35 ARM64 tablet emulator. Its sources
+were the then-uncommitted Android milestone on top of `c0e9965`; the private
+proof records that distinction explicitly.
+
+Three native instrumentation phases pass through real TLS and the packaged
+portable notebook client. They prove certificate-pin refusal, native pairing,
+display of Mac objects, growing canonical ink before pen-up, server-assigned
+human provenance, eight durably queued offline gestures, recovery after the
+application process stops, and selective undo/redo without duplication. The
+Mac ends with exactly eleven working objects and no accepted ordinary file.
+Native offline and synchronized screenshots were inspected. The storage phase
+also verifies encrypted credentials, tamper refusal, retained connections and
+ordered durable native commands. Total phase durations were 21.68 s, 15.99 s
+and 0.99 s, including startup and all checks; these figures are not pen latency
+measurements. The packaged seven engine assets match the current sources
+byte for byte, and the copied APK has a verified v2 signature and Internet-only
+permissions.
+
+A preceding run passed the data assertions but rendered a blank canvas. Visual
+inspection traced this to Android's missing-value `optDouble` returning NaN
+for optional object rotation. Rendering now uses a finite zero default. Native
+pixel assertions check both the Mac rectangle and tablet ink; all three phases
+and both inspected captures pass with the corrected APK above. The preceding
+data-only result is not treated as a successful rendered milestone.
+
+The first individual-request recovery attempt exceeded its unchanged 25-second
+condition budget; the remaining gestures reached the Mac in the following
+attempt. This was not proven data loss or a definitive conflict. Negotiated
+mutation batches now reduce the request count while retaining individual
+receipts. A new, complete two-phase fixture run passes. Batch unit/integration
+checks also cover a lost entire response, wrong-scope acknowledgements,
+targeted conflicts, stable replay and documentary authority. Together with
+the native adapter and portable client/device regressions, that run passes
+24 checks. An earlier broader notebook/gesture/device run passed 32 checks.
+
+The final complete notebook, device, local-proposal and document-asset contract
+run passes 77 checks without skips, under the documented `umask 022`. The
+complete notebook and owner-pairing browser matrix passes all 20 scenarios
+across Chromium desktop/mobile, Firefox and WebKit.
+
+The native write-ahead journal and the shared client's atomic command watermark
+are exercised separately for process-death replay, sequence gaps, duplicate
+undo and storage failure. The Android storage/Keystore boundary has its own
+instrumentation case. The verifier checks JUnit output explicitly, because
+`am instrument` can return exit code zero even when a test fails.
+
+The CI run for `c0e9965` exposed a missing generated agent-guide dependency:
+`runtime-profiles.md` linked to the new device guide, which was not in the
+managed bundle. That guide is now included from the same asset manifest;
+the exact generated-link regression passes. The WebKit boot fixture also
+allowed an event-driven full catalogue to bypass the held initial catalogue.
+It now holds both catalogue sources while asserting the same loading state.
+The focused boot case passes in all four browsers. Hosted checks on the new
+commit still need to finish.
+
 ## Open product gates
 
-There is no Android project or APK in these checkpoints. Native pressure/palm
-handling, a pinned native client, both complete tablet modes, exact remote
+Both complete tablet modes, exact remote
 application receipts, notebook submission to Shared,
 context-bound real dictation/conversation/co-drawing, data migration and final
 removal of the external compatibility dependency remain implementation work.
-The restricted TLS drawing service and desktop pairing UI do not establish
-an Android installation, full remote owner authority or a physical Wi-Fi test.
+The verified Android installation is an emulator preview. It does not establish
+full remote owner authority, physical Wi-Fi behavior or BOOX pen/palm latency.
 
 The full application smoke/layout/accessibility/performance/soak release matrix
 has not been rerun for this recovery milestone. Notebook-specific checks do not
-stand in for it. Native instrumentation, installation/signature migration,
-physical BOOX testing and personal-data migration have not been performed.
+stand in for it. Installation/signature migration, physical BOOX testing and
+personal-data migration have not been performed.

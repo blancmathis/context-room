@@ -46,6 +46,29 @@ async function serviceFor(t, fixture) {
 }
 const put = id => ({ kind: 'put', id, expectedRevision: 0, object: { id, type: 'rect', x: 10, y: 10, width: 80, height: 40 } });
 
+test('TLS batches keep per-operation receipts, scope and targeted conflicts', async t => {
+  const f = fixture(t), service = await serviceFor(t, f);
+  const paired = service.authority.pair(service.createPairing({ projectId: f.projectId, paths: ['docs/Sketch.crnb'] }));
+  const headers = { 'x-context-room-device-project': f.projectId };
+  const api = (route, body) => request(service, route, { credential: paired.token, headers, body });
+  const opened = (await api('/api/notebooks/open', { protocolVersion: 1, id: 'batch-book', path: 'docs/Sketch.crnb' })).body;
+  const mutation = (operationId, edits) => ({ protocolVersion: 1, resourceId: opened.resourceId, locationRevision: opened.locator.revision, operationId, edits });
+  const operations = [mutation('first', [put('one')]), mutation('conflicted', [put('one')]), mutation('independent', [put('two')])];
+  const body = { protocolVersion: 1, resourceId: opened.resourceId, operations };
+  const first = await api('/api/notebooks/batch', body);
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.equal(first.body.results[0].receipt.status, 'confirmed');
+  assert.equal(first.body.results[1].error.code, 'notebook_object_conflict');
+  assert.equal(first.body.results[2].receipt.status, 'confirmed');
+  assert.equal(first.body.snapshot.document.objects.length, 2);
+  assert.equal((await api('/api/notebooks/batch', body)).body.snapshot.sequence, first.body.snapshot.sequence);
+  assert.equal((await api('/api/notebooks/batch', { ...body, operations: [operations[0], operations[0]] })).status, 400);
+  assert.equal((await api('/api/notebooks/batch', { ...body, operations: [{ ...operations[0], resourceId: 'another-book' }] })).status, 400);
+  assert.equal((await api('/api/notebooks/batch', { ...body, operations: [{ ...mutation('escape', [put('escape')]), action: 'accept' }] })).status, 200);
+  // Extra action fields do not turn a working mutation into a documentary decision.
+  assert.equal(fs.existsSync(path.join(f.root, 'docs/Sketch.crnb')), false);
+});
+
 test('pairing is single-use, expires, persists only hashes and cannot grant owner review', t => {
   const f = fixture(t), identity = ensureDeviceIdentity(f.stateRoot); let time = Date.now();
   const authority = createDeviceAuthority({ stateRoot: f.stateRoot, serverId: identity.serverId, now: () => time });

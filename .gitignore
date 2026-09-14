@@ -12,3 +12,10 @@ npm-debug.log*
 .context-room/memory-webapp-backups/
 test-results/
 .DS_Store
+android/.gradle/
+android/**/build/
+android/local.properties
+android/.local/
+android/.idea/
+*.keystore
+*.jks

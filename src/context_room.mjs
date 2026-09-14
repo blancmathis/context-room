@@ -278,6 +278,7 @@ const AGENT_CONTEXT_ASSET_FILENAMES = [
   "domains/truth-layers.md",
   "domains/shared-proposal-lifecycle.md",
   "features/document-workflow.md",
+  "system/connected-devices.md",
 ];
 export const GLOBAL_PREFERENCES_FILE = "~/.context-room/preferences.json";
 const CONFIG_SCHEMA_URL = "https://unpkg.com/context-room@latest/schemas/config.schema.json";
@@ -13094,17 +13095,7 @@ export function syncContextRoomAgentContext(root = process.cwd()) {
   const projectRoot = assertExistingProjectRoot(root);
   const sourceRoot = path.resolve(path.dirname(__filename), "..", "docs");
   const targetRoot = path.join(projectRoot, AGENT_CONTEXT_DIR);
-  const assets = [
-    [path.join(sourceRoot, "product-overview.md"), AGENT_CONTEXT_ASSET_FILENAMES[0]],
-    [path.join(sourceRoot, "system", "architecture.md"), AGENT_CONTEXT_ASSET_FILENAMES[1]],
-    [path.join(sourceRoot, "system", "runtime-profiles.md"), AGENT_CONTEXT_ASSET_FILENAMES[2]],
-    [path.join(sourceRoot, "features", "context-hub.md"), AGENT_CONTEXT_ASSET_FILENAMES[3]],
-    [path.join(sourceRoot, "features", "shared-context.md"), AGENT_CONTEXT_ASSET_FILENAMES[4]],
-    [path.join(sourceRoot, "features", "review-authority.md"), AGENT_CONTEXT_ASSET_FILENAMES[5]],
-    [path.join(sourceRoot, "domains", "truth-layers.md"), AGENT_CONTEXT_ASSET_FILENAMES[6]],
-    [path.join(sourceRoot, "domains", "shared-proposal-lifecycle.md"), AGENT_CONTEXT_ASSET_FILENAMES[7]],
-    [path.join(sourceRoot, "features", "document-workflow.md"), AGENT_CONTEXT_ASSET_FILENAMES[8]],
-  ];
+  const assets = AGENT_CONTEXT_ASSET_FILENAMES.map(fileName => [path.join(sourceRoot, fileName), fileName]);
   const missing = assets.filter(([source]) => !fs.existsSync(source)).map(([source]) => source);
   if (missing.length) throw new Error(`Context Room agent context is incomplete: ${missing.join(", ")}`);
 

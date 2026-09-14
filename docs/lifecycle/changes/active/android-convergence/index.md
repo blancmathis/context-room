@@ -2,7 +2,7 @@
 
 ## Summary
 
-The implementation branch starts at `05f5ded92cc1158b8c5aea09f4836fd08f4de27f`, preserving the refactor and concurrent configuration/navigation stabilization. The restored notebook foundation now includes an optional TLS drawing service and owner pairing interface. The Android client and full convergence remain incomplete; this branch is not a deployed release.
+The implementation branch starts at `05f5ded92cc1158b8c5aea09f4836fd08f4de27f`, preserving the refactor and concurrent configuration/navigation stabilization. The notebook foundation now includes an optional TLS drawing service, owner pairing and a native Android drawing preview verified in an isolated emulator. Full convergence remains incomplete; this branch is not a deployed release.
 
 ## Defines
 
@@ -10,7 +10,7 @@ The implementation state, contracts, preservation guard and synthetic verificati
 
 ## Does not define
 
-A second project catalog, a hosted service, a notes inbox, automatic documentary acceptance, an installed Android application, or a physical BOOX result.
+A second project catalog, a hosted service, a notes inbox, automatic documentary acceptance, a personal-device installation, or a physical BOOX result.
 
 ## Completed contracts
 
@@ -35,12 +35,13 @@ R01–R06 retain the local service, exact worktrees, global Hub, authorized Comp
 
 ## Remaining implementation sequence
 
-The notebook protocol, local review, desktop canvas and restricted drawing
-transport are implemented. Native Android cache/rendering, complementary
-navigation receipts, full remote owner parity, notebook Shared submission,
-scoped voice/agent integration, recoverable migration and Android packaging
-remain to be implemented. There is no Android project or APK in this checkpoint.
-The connected-device and physical acceptance criteria remain open.
+The notebook protocol, local review, desktop canvas, restricted drawing
+transport and initial native Android cache/rendering are implemented. The
+preview builds and its complementary drawing/restart path passes in an
+isolated emulator. Full complementary navigation receipts, remote owner parity,
+notebook Shared submission, scoped voice/agent integration, recoverable migration
+and release/upgrade packaging remain to be implemented. The complete
+connected-device and physical acceptance criteria remain open.
 
 ## Gesture continuation
 
