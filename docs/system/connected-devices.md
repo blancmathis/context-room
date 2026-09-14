@@ -17,7 +17,8 @@ pinned connection. Full remote owner operation remains implementation work.
 ## Defines
 
 Device service activation, pairing and revocation, the drawing permission,
-Android transport and storage, confirmed notebook opening, and their
+Android transport and storage, confirmed notebook opening, optional view
+following and presentation, and their
 relationship to notebook authority.
 
 ## Does not define
@@ -74,10 +75,44 @@ restart, a newer opening, revocation or a changed target. The original request
 and terminal receipt remain in private device state. This receipt records a
 display event; it never freezes, submits or accepts notebook content.
 
+Every native opening has its own identifier. Queued scene or opening events
+from a previous notebook cannot populate the new canvas, select its scope or
+advance its cache version. The visible scene must match the current scope
+before drawing controls or an applied receipt become available.
+
 The native navigation routes are not exposed through the generic JavaScript
 transport. The canvas callback supplies the applied receipt. Tests for the
 server protocol and the browser status text are separate from the Android
 rendering proof.
+
+## Share a view or present a notebook
+
+Views remain independent by default. In **Connect tablet**, the Mac owner
+can choose **Share my view with [tablet]** or **Follow [tablet]**. The tablet
+offers **Partager ma vue** and **Suivre le Mac**. Sharing and following are
+mutually exclusive on each surface; both sides must choose their role.
+The target includes the original project, notebook, path and location revision.
+Following never opens another notebook automatically.
+
+The receiving canvas fits the shared world area to its own aspect ratio.
+The publisher sees an unconfirmed state until a receipt identifies the frame
+and the area actually drawn. Native receipts come from the attached canvas;
+the browser likewise reports after rendering. A later frame, another native
+session or a new following action cannot reuse an earlier receipt. Sharing
+expires after five seconds without a heartbeat. These ephemeral camera states
+are discarded when the service restarts and never enter notebook operation
+history, documentary review or accepted content.
+
+A pen or finger contact, a tool or keyboard action immediately stops following
+on that surface. A late network response cannot resume it or move the current
+gesture. **Stop view sharing / following** and the native stop buttons return
+to independent views. Hiding the browser or pausing the native app stops the
+session; it is not restored automatically.
+
+**Presentation** on the Mac and **Plein écran** on Android expand the canvas
+and hide editing chrome. The exit control remains visible. Escape/Back leaves
+presentation while preserving the open notebook. Browsers without fullscreen
+permission retain a viewport-sized presentation.
 
 ## Authority and protocol
 
@@ -147,7 +182,8 @@ python3 test/android/verify.py --serial emulator-5580 --output /tmp/context-room
 
 Choose a new output directory outside the source repository. The verifier
 checks the AVD identity, installs only the preview, creates its own Mac fixture,
-tests drawing, restart recovery, deferred remote opening and human cancellation,
+tests drawing, restart recovery, deferred remote opening, human cancellation,
+opt-in following, native presentation and rejection of a queued previous scene,
 and retains native screenshots, exact navigation receipts and logs.
 It refuses physical devices. The preview currently exposes the complementary
 drawing workflow; it does not yet provide the full Context Room owner UI,

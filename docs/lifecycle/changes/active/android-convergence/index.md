@@ -22,7 +22,8 @@ A second project catalog, a hosted service, a notes inbox, automatic documentary
 - Shared submission displays the exact connected repository, project and document destination before publishing. It retains a frozen version and preparation identity through the existing Shared engine, verifies the delivered branch and state ref, and recovers a lost receipt without another publication. The source connection, exact document bytes and unrelated workspace changes are revalidated. File review and terminal acceptance remain separate human decisions.
 - The existing human review decision accepts exactly the frozen notebook. Its later working scene is retained. A correction differing from the frozen scene requires explicit reconciliation.
 - Notebook HTTP mutations pass the existing origin, exact-project and owner-authority checks. There is no agent acceptance endpoint.
-- Remote notebook opening retains an exact target and request identifier. The Android client waits for a held gesture and its Mac receipts, confirms after native rendering, and lets a new human action cancel a pending opening. A stale session, deadline or changed target cannot supply an applied receipt. This does not yet implement viewport following or full remote owner operation.
+- Remote notebook opening retains an exact target and request identifier. The Android client waits for a held gesture and its Mac receipts, confirms after native rendering, and lets a new human action cancel a pending opening. A stale session, deadline, changed target or queued previous scene cannot supply an applied receipt or populate another canvas.
+- View sharing and following require explicit choices on the participating surfaces. They remain bound to one exact notebook, expire without a heartbeat and acknowledge the rendered area. Human input stops following immediately, including while a response is in flight. Desktop and Android presentation preserve a visible exit and the open notebook. Full remote owner operation remains separate work.
 
 ## Verification through this milestone
 
@@ -40,8 +41,8 @@ R01–R06 retain the local service, exact worktrees, global Hub, authorized Comp
 The notebook protocol, local review, desktop canvas, restricted drawing
 transport and initial native Android cache/rendering are implemented. The
 preview builds and its complementary drawing/restart path passes in an
-isolated emulator. Exact native opening receipts are implemented; optional
-viewport following and presentation, remote owner parity,
+isolated emulator. Exact native opening receipts, optional
+viewport following and presentation are implemented; remote owner parity,
 scoped voice/agent integration, recoverable migration
 and release/upgrade packaging remain to be implemented. The complete
 connected-device and physical acceptance criteria remain open.

@@ -5,8 +5,8 @@ const clone = value => structuredClone(value);
 
 /** Retained canvas: live pen/transform state never belongs to an incoming server snapshot. */
 export class NotebookCanvas {
-  constructor(canvas, { enqueue, onSelection = () => {}, onText = () => {}, onView = () => {}, onInteraction = () => {}, onError = () => {}, onSaving = () => {} } = {}) {
-    Object.assign(this, { canvas, enqueue, onSelection, onText, onView, onInteraction, onError, onSaving });
+  constructor(canvas, { enqueue, onSelection = () => {}, onText = () => {}, onView = () => {}, onInteraction = () => {}, onRendered = () => {}, onError = () => {}, onSaving = () => {} } = {}) {
+    Object.assign(this, { canvas, enqueue, onSelection, onText, onView, onInteraction, onRendered, onError, onSaving });
     this.document = { objects: [], assets: {} }; this.selection = new Set(); this.tool = 'ink'; this.brush = { color: '#000000', width: 3 };
     this.view = { x: 32, y: 32, scale: 1 }; this.fingerInk = false; this.readOnly = false; this.closed = false;
     this.images = new Map(); this.paths = new Map(); this.pointers = new Map(); this.tasks = new Set(); this.frame = 0; this.gesture = null;
@@ -18,6 +18,7 @@ export class NotebookCanvas {
     listen('lostpointercapture', event => { if (this.pointers.has(event.pointerId)) this.up(event); });
     listen('wheel', event => { event.preventDefault(); if (this.gesture?.kind === 'ink') return; this.onInteraction(); const at = this.screen(event); this.zoomAt(...at, Math.exp(-Math.max(-200, Math.min(200, event.deltaY)) * .003)); }, { passive: false });
     listen('keydown', event => {
+      this.onInteraction();
       if (this.readOnly || event.ctrlKey || event.metaKey || event.altKey) return;
       if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key) && this.selection.size) {
         event.preventDefault(); const step = event.shiftKey ? 10 : 1;
@@ -44,6 +45,15 @@ export class NotebookCanvas {
   fit() {
     const b = notebookSceneBounds(this.document), rect = this.canvas.getBoundingClientRect(), scale = Math.max(.05, Math.min(4, Math.min((rect.width - 48) / b.width, (rect.height - 48) / b.height)));
     this.view = { x: (rect.width - b.width * scale) / 2 - b.x * scale, y: (rect.height - b.height * scale) / 2 - b.y * scale, scale }; this.onView({ ...this.view }); this.schedule();
+  }
+  viewportBounds() { return [-this.view.x / this.view.scale, -this.view.y / this.view.scale, this.canvas.clientWidth / this.view.scale, this.canvas.clientHeight / this.view.scale]; }
+  frameViewport(bounds) {
+    if (this.gesture || !Array.isArray(bounds) || bounds.length !== 4 || bounds.some((n, i) => !Number.isFinite(n) || (i < 2 ? Math.abs(n) > 1e7 : n < 1 || n > 1e6))) return false;
+    const [x, y, width, height] = bounds, w = this.canvas.clientWidth, h = this.canvas.clientHeight;
+    if (w < 1 || h < 1) return false;
+    const scale = Math.min(20, w / width, h / height);
+    this.view = { x: w / 2 - (x + width / 2) * scale, y: h / 2 - (y + height / 2) * scale, scale };
+    this.onView({ ...this.view }); this.schedule(); return true;
   }
   async run(work) {
     const promise = Promise.resolve(work); this.tasks.add(promise); this.onSaving(this.tasks.size);
@@ -194,6 +204,7 @@ export class NotebookCanvas {
     ctx.lineWidth = 1 / this.view.scale; ctx.strokeStyle = '#333333'; ctx.setLineDash([6 / this.view.scale, 4 / this.view.scale]);
     for (const o of this.selected()) { const b = notebookObjectBounds(transforming.has(o.id) ? { ...o, ...translateNotebookObject(o, g.dx, g.dy) } : o, this.byId); ctx.strokeRect(b.x - 4 / this.view.scale, b.y - 4 / this.view.scale, b.width + 8 / this.view.scale, b.height + 8 / this.view.scale); }
     if (g?.kind === 'lasso' && g.points.length) { ctx.beginPath(); g.points.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.closePath(); ctx.stroke(); }
+    this.onRendered();
   }
   async settle() { if (this.gesture) { const id = this.gesture.pointerId; if (id !== null && id !== undefined) this.up({ pointerId: id }); else { this.gesture = null; this.pointers.clear(); } } await Promise.allSettled([...this.tasks]); }
   dispose() { this.closed = true; this.controller.abort(); this.observer.disconnect(); cancelAnimationFrame(this.frame); this.images.clear(); this.paths.clear(); }

@@ -711,6 +711,19 @@ final class InkView extends View {
     invalidate();if(boox!=null)boox.refresh();return true;
   }
 
+  boolean frameSharedView(JSONArray bounds) {
+    if(gestureActive()||getWidth()<1||getHeight()<1||bounds==null||bounds.length()!=4)return false;
+    double[] b=new double[4];
+    for(int n=0;n<4;n++){
+      Object value=bounds.opt(n);if(!(value instanceof Number))return false;b[n]=((Number)value).doubleValue();
+      if(!Double.isFinite(b[n])||(n<2?Math.abs(b[n])>1e7:b[n]<1||b[n]>1e6))return false;
+    }
+    scale=(float)Math.min(20,Math.min(getWidth()/b[2],getHeight()/b[3]));
+    offsetX=(float)(getWidth()/2.0-(b[0]+b[2]/2)*scale);
+    offsetY=(float)(getHeight()/2.0-(b[1]+b[3]/2)*scale);
+    invalidate();if(boox!=null)boox.refresh();return true;
+  }
+
   RectF contentBounds() {
     RectF result = new RectF();
     boolean first = true;

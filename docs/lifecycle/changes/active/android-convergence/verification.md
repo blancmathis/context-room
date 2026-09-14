@@ -339,10 +339,66 @@ has not been established. Soak passes at that commit, but its browser failure
 still makes hosted run `34871837645` fail. Measurements are now attached before
 the soak's final assertions, preserving diagnostics when a budget fails.
 
+## View following and native opening isolation
+
+The view exchange uses the existing drawing authority and native foreground
+poll, with short-lived camera state separate from notebook persistence.
+Server contracts cover explicit consent, opposite sharing/following roles,
+exact locations, stale sequences, competing owner windows, five-second expiry,
+new native sessions, bounded world areas and revocation. A display receipt
+records the rendered area and cannot be reused for a new following action.
+
+Four focused browser scenarios pass across Chromium desktop/mobile, Firefox
+and WebKit, including a delayed response after human input, the separate
+unconfirmed/displayed states, presentation and accessibility. Desktop and
+narrow-screen captures were inspected. An initial route harness released its
+interception while it was still being handled; it now waits for completion.
+The first mobile assertion compared canvas height even though status text
+changed that height. It now checks the exact camera translation and scale,
+preserving the requirement that a late response cannot move the human view.
+
+The first native run reproduced the intermittent opening failure. Its retained
+state had the second notebook's current scope but the first notebook's scene
+and cache version; the screenshot showed the first scene under the second
+path. A JavaScript event already queued on Android's main thread could arrive
+after the native opening reset. Its larger, unrelated cache version then
+excluded the new notebook's scenes. Each opening now carries a native request
+identifier through scene/opened/error events. Scope checks also guard rendering
+and readiness. A deterministic instrumentation case injects the previous
+scene at that precise transition, with the largest possible cache version,
+and verifies that the second notebook still opens correctly.
+
+APK SHA-256 `9d703e970b73aedd1dc38e6363f322446de4561e2e2de888b64b31ca5ebfc07d`
+passes all six phases in a fresh emulator fixture: drawing/offline durability,
+process replay, deferred opening/cancellation, optional following/presentation,
+queued-scene isolation and native storage. Durations are 14.90 / 14.87 / 26.15 /
+18.36 / 8.16 / 0.72 seconds, including startup. The fixture verifies a real
+native rendering receipt, immediate finger cancellation, refusal of a later
+camera update, presentation exit and no silent restoration after pause. The
+Mac retains twelve objects in the first notebook and three in the second;
+neither is an accepted ordinary file. Native following and fullscreen captures
+were inspected. Signature v2, Internet-only permissions and the seven exact
+shared engine assets pass artifact verification. These are emulator results.
+
+The complete notebook/device/view/local-proposal/asset run passes **92 tests
+without skips**. All **28 notebook browser scenarios** pass across the four
+browser configurations in 3.2 minutes. Doctor, the generated agent-guide
+regression, layout CSS audit, package privacy (120 files) and package dry-run
+also pass.
+
+At `73f607ba6e075f420c8d2a2738d5895b97cadca7`, hosted run `34874609818`
+passes soak and all four browsers, but Node 20 fails the existing stale-lock
+symlink test: `filesystem_lock_busy` instead of `filesystem_lock_unsafe_sidecar`.
+The CI gate fails. A local default-duration soak in a detached checkout also
+fails unchanged latency budgets after 225 cycles: maximum project opening
+3,137 ms and file opening 2,934 ms. The complete measurements and traces are
+retained privately. Neither the earlier short profile nor hosted soak alone
+resolves this local performance gate.
+
 ## Open product gates
 
-Both complete tablet modes, optional viewport following and presentation,
-context-bound real dictation/conversation/co-drawing, data migration and final
+Full tablet owner operation, context-bound real dictation/conversation/co-drawing,
+data migration and final
 removal of the external compatibility dependency remain implementation work.
 The verified Android installation is an emulator preview. It does not establish
 full remote owner authority, physical Wi-Fi behavior or BOOX pen/palm latency.

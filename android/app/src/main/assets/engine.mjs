@@ -16,7 +16,7 @@ const sameScope = (record, project) => {
   try { const scope = JSON.parse(record.key); return scope[0] === publicSession.serverId && scope[1] === `device:${publicSession.device.id}:project:${project}` && scope[2] === publicSession.device.id; }
   catch { return false; }
 };
-const reportError = error => emit('error', { code: error.code || 'notebook_native', message: error.message });
+const reportError = (error, context = {}) => emit('error', { ...context, code: error.code || 'notebook_native', message: error.message });
 
 async function catalogue(session) {
   const run = ++generation;
@@ -66,7 +66,7 @@ async function open(item) {
     if (run !== generation || !view) return;
     const state = await selected.state();
     if (run !== generation) return;
-    emit('scene', { scope, projectId: selectedProject, resourceId: scope.resourceId, locationRevision: view.locator.revision, sceneRevision: view.revision,
+    emit('scene', { openId: item.nativeOpenId, scope, projectId: selectedProject, resourceId: scope.resourceId, locationRevision: view.locator.revision, sceneRevision: view.revision,
       version: view.cacheVersion, objects: view.document.objects.map(notebookNativeObject), assets: view.document.assets,
       path: view.locator.path, title: view.document.title, status: view.status, offline: view.offline, pending: view.pending,
       conflicts: view.conflicts.length, conflictDetails: view.conflicts.map(op => ({ operationId: op.operationId, error: op.error })),
@@ -78,7 +78,7 @@ async function open(item) {
   else await selected.initialize(scene);
   if (capabilities) await selected.change(state => ({ metadata: { ...state.metadata, capabilities } }));
   if (run !== generation) return;
-  emit('opened', { scope, path: item.path });
+  emit('opened', { openId: item.nativeOpenId, scope, path: item.path });
   schedule(run, 0);
 }
 
@@ -111,7 +111,7 @@ window.ContextRoomNative = {
     else pending.reject(Object.assign(new Error(body.error || 'La connexion au Mac a échoué.'), { status, code: body.code }));
   },
   catalogue: session => catalogue(session).catch(reportError),
-  open: item => open(item).catch(reportError),
+  open: item => open(item).catch(error => reportError(error, { openId: item.nativeOpenId })),
   command(message) { serial = serial.then(() => command(message)).catch(error => { emit('command', { id: message.id, success: false, message: error.message }); reportError(error); }); },
   view: view => client?.saveView(view).catch(reportError),
   refresh: () => schedule(generation, 0),

@@ -14,12 +14,13 @@ import java.util.concurrent.*;
 import org.json.*;
 
 /** Native pen surface attached to a scoped Context Room connection. */
-public final class MainActivity extends Activity implements InkView.Listener, NativeNavigation.Host {
+public final class MainActivity extends Activity implements InkView.Listener, NativeNavigation.Host, NativeViews.Host {
   final ExecutorService disk = Executors.newSingleThreadExecutor();
   final HashMap<String, Integer> pendingObjects = new HashMap<>();
   final JSONArray unsavedActions = new JSONArray();
   NotebookEngine engine;
   NativeNavigation navigation;
+  NativeViews views;
   CredentialVault vault;
   DeviceConnection connection;
   NativeCommandJournal journal;
@@ -32,9 +33,14 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   int pendingNative;
   boolean engineReady, dead, journalFailed;
   String inFlight;
+  String openingId, openingProject, openingPath;
   Runnable deferredNavigation;
   byte[] pendingExport;
   Button undoButton, redoButton;
+  Button shareViewButton, followViewButton, presentationButton;
+  TextView viewStatus;
+  View drawingTools;
+  boolean presentation;
   boolean viewRestored, navigationScreen, resumed;
 
   @Override public void onCreate(Bundle saved) {
@@ -47,6 +53,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     root.addView(screen, new LinearLayout.LayoutParams(-1, 0, 1));
     engine = new NotebookEngine(this, this::engineEvent);
     navigation = new NativeNavigation(engine.network, this);
+    views = new NativeViews(this);
     engine.web.setVisibility(View.INVISIBLE); engine.web.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
     root.addView(engine.web, new LinearLayout.LayoutParams(1, 1));
     vault = new CredentialVault(this);
@@ -65,12 +72,15 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   }
   void header(String heading, String detail) {
     navigationScreen = false;
+    openingId = null;
+    if (views != null) views.setMode("independent");
+    setPresentation(false);
     screen.removeAllViews(); title = label(heading, 24); title.setTypeface(Typeface.DEFAULT, Typeface.BOLD); screen.addView(title);
     status = label(detail, 15); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); screen.addView(status);
   }
   void setStatus(String text) { if (status != null && !text.contentEquals(status.getText())) status.setText(text); }
   void showError(String message) { setStatus(message == null ? "Le travail local est conservé. Réessayez la connexion." : message); }
-  void useConnection(DeviceConnection selected) { connection = selected; engine.connection = selected; navigation.connect(selected); }
+  void useConnection(DeviceConnection selected) { if (views != null) views.setMode("independent"); connection = selected; engine.connection = selected; navigation.connect(selected); }
 
   void pairingScreen() {
     ink = null; header("Context Room", "Dessinez sur la tablette, retrouvez le même carnet sur votre Mac.");
@@ -133,7 +143,11 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     whenJournalIdle(() -> {
       engine.call("close"); journal = null; currentScope = null; pendingObjects.clear(); sceneVersion = -1; lastScene = null; inFlight = null; journalFailed = false; viewRestored = false;
       header(item.optString("title", item.optString("path")), "Ouverture du carnet…");
+      openingId = UUID.randomUUID().toString(); openingProject = item.optString("projectId"); openingPath = item.optString("path");
+      JSONObject openItem = InkView.copy(item);
+      try { openItem.put("nativeOpenId", openingId); } catch (JSONException error) { throw new IllegalStateException(error); }
       HorizontalScrollView scrolling = new HorizontalScrollView(this); scrolling.setHorizontalScrollBarEnabled(false);
+      drawingTools = scrolling;
       LinearLayout tools = new LinearLayout(this); scrolling.addView(tools); screen.addView(scrolling);
       tools.addView(button("Carnets", () -> whenJournalIdle(() -> { engine.call("close"); engine.call("catalogue", connection.session); })));
       ink = new InkView(this, this); ink.recordingHistory = false; ink.setEnabled(false);
@@ -161,7 +175,16 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
         new AlertDialog.Builder(this).setTitle("Gestes à réconcilier").setMessage(detail.length() == 0 ? "Aucun conflit dans ce carnet." : detail.toString()).setPositiveButton("Fermer", null).show();
       }));
       screen.addView(ink, new LinearLayout.LayoutParams(-1, 0, 1));
-      engine.call("open", item);
+      HorizontalScrollView viewScrolling = new HorizontalScrollView(this); LinearLayout viewTools = new LinearLayout(this); viewScrolling.addView(viewTools);
+      shareViewButton = button("Partager ma vue", () -> views.setMode(views.mode.equals("share") ? "independent" : "share"));
+      followViewButton = button("Suivre le Mac", () -> views.setMode("follow"));
+      // A selected Follow button is also a direct stop; the generic button handler
+      // already returns the view to human control before the action runs.
+      followViewButton.setOnClickListener(v -> { if (views.mode.equals("follow")) interaction(); else { interaction(); views.setMode("follow"); } });
+      presentationButton = button("Plein écran", () -> setPresentation(!presentation));
+      viewTools.addView(shareViewButton); viewTools.addView(followViewButton); viewTools.addView(presentationButton); screen.addView(viewScrolling);
+      viewStatus = label("Vues indépendantes.", 13); viewStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); screen.addView(viewStatus);
+      engine.call("open", openItem);
     });
   }
 
@@ -171,6 +194,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
       case "ready": engineReady = true; if (connection != null) engine.call("catalogue", connection.session); break;
       case "catalogue": catalogue(event); break;
       case "opened": {
+        if (openingId == null || !openingId.equals(event.optString("openId")) || !openingPath.equals(event.optString("path"))) return;
         currentScope = event.optJSONObject("scope"); JSONObject scope = InkView.copy(currentScope);
         disk.execute(() -> {
           try { NativeCommandJournal opened = new NativeCommandJournal(this, scope); JSONObject recovery = opened.recovery();
@@ -184,17 +208,18 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
         }); break;
       }
       case "scene":
+        if (openingId == null || !openingId.equals(event.optString("openId")) || !openingProject.equals(event.optString("projectId")) || !openingPath.equals(event.optString("path"))) return;
         if (ink == null || currentScope != null && !InkView.sameJson(currentScope, event.optJSONObject("scope")) || event.optLong("version") < sceneVersion) return;
         sceneVersion = event.optLong("version"); lastScene = event; renderScene(); break;
       case "command": completeCommand(event); break;
       case "export": export(event.optJSONObject("data")); break;
       case "engineStopped": navigationScreen = false; navigation.unavailable(); if (ink != null) ink.setEnabled(false); showError(event.optString("message")); break;
-      case "error": if (currentScope == null) navigation.unavailable(); showError(event.optString("message")); break;
+      case "error": if (event.has("openId") && (openingId == null || !openingId.equals(event.optString("openId")))) return; if (currentScope == null) navigation.unavailable(); showError(event.optString("message")); break;
     }
   }
 
   void renderScene() {
-    if (ink == null || lastScene == null || journalFailed) return;
+    if (ink == null || lastScene == null || currentScope == null || !InkView.sameJson(currentScope, lastScene.optJSONObject("scope")) || journalFailed) return;
     ink.merge(lastScene.optJSONArray("objects"), pendingObjects.keySet(), true);
     if (!viewRestored && journal != null) {
       JSONObject saved = lastScene.optJSONObject("savedView");
@@ -278,7 +303,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   @Override public boolean navigationBusy() {
     return !resumed || dead || !engineReady || !navigationScreen || !hasWindowFocus() || journalFailed || pendingNative > 0 || inFlight != null
       || deferredNavigation != null || ink != null && (ink.gestureActive() || currentScope == null || journal == null
-        || lastScene == null || lastScene.optInt("pending") > 0 || lastScene.optBoolean("offline"));
+        || lastScene == null || !InkView.sameJson(currentScope, lastScene.optJSONObject("scope")) || lastScene.optInt("pending") > 0 || lastScene.optBoolean("offline"));
   }
   @Override public void remoteOpen(JSONObject target) {
     JSONObject item = InkView.copy(target);
@@ -286,19 +311,43 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     openNotebook(item);
   }
   @Override public void navigationNotice(String message) { setStatus(message); }
-  @Override public void interaction() { if (navigation != null) navigation.interaction(); }
+  @Override public void interaction() { if (views != null) views.interaction(); if (navigation != null) navigation.interaction(); }
   @Override public void rendered(InkView source) {
     final JSONObject renderedScene = lastScene;
     source.post(() -> {
       if (dead || ink != source || renderedScene != lastScene) return;
       settleNavigation();
       if (ink == source && !navigationBusy() && source.isAttachedToWindow() && source.isShown()
-          && InkView.sameJson(currentScope, renderedScene == null ? null : renderedScene.optJSONObject("scope"))) navigation.rendered(renderedScene);
+          && InkView.sameJson(currentScope, renderedScene == null ? null : renderedScene.optJSONObject("scope"))) { navigation.rendered(renderedScene); views.rendered(); }
     });
   }
   @Override public void change(JSONArray operations) { changeGesture(operations, UUID.randomUUID().toString()); }
   @Override public void changeGesture(JSONArray operations, String gesture) { enqueue(InkView.json("action", "edit", "gestureId", gesture, "operations", operations)); }
   @Override public void viewport() { if (ink != null && currentScope != null) engine.call("view", InkView.json("x", ink.offsetX, "y", ink.offsetY, "scale", ink.scale)); }
+  @Override public JSONObject viewState() { return views.body(); }
+  @Override public void receiveView(JSONObject data, JSONObject sent) { views.receive(data, sent); }
+  @Override public void viewFailure() { views.setMode("independent"); }
+  @Override public JSONObject viewTarget() {
+    if (!resumed || dead || !navigationScreen || !hasWindowFocus() || ink == null || currentScope == null || lastScene == null || !InkView.sameJson(currentScope, lastScene.optJSONObject("scope")) || lastScene.optBoolean("offline")) return null;
+    return InkView.json("projectId", lastScene.optString("projectId"), "resourceId", lastScene.optString("resourceId"), "path", lastScene.optString("path"), "locationRevision", lastScene.opt("locationRevision"));
+  }
+  @Override public JSONArray viewBounds() { return ink == null ? null : ink.viewportBounds(); }
+  @Override public boolean viewBusy() { return navigationBusy(); }
+  @Override public boolean frameView(JSONArray bounds) { if (ink == null || navigationBusy() || !ink.frameSharedView(bounds)) return false; viewport(); return true; }
+  @Override public void viewNotice(String mode, String message) {
+    if (viewStatus != null) viewStatus.setText(message);
+    if (shareViewButton != null) { shareViewButton.setSelected(mode.equals("share")); shareViewButton.setText(mode.equals("share") ? "Arrêter le partage" : "Partager ma vue"); }
+    if (followViewButton != null) { followViewButton.setSelected(mode.equals("follow")); followViewButton.setText(mode.equals("follow") ? "Arrêter le suivi" : "Suivre le Mac"); }
+  }
+  void setPresentation(boolean enabled) {
+    presentation = enabled;
+    if (title != null) title.setVisibility(enabled ? View.GONE : View.VISIBLE);
+    if (status != null) status.setVisibility(enabled ? View.GONE : View.VISIBLE);
+    if (drawingTools != null) drawingTools.setVisibility(enabled ? View.GONE : View.VISIBLE);
+    if (presentationButton != null) presentationButton.setText(enabled ? "Quitter le plein écran" : "Plein écran");
+    getWindow().getDecorView().setSystemUiVisibility(enabled ? View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+      : View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+  }
   @Override public void selection(int count) { }
   @Override public void draft(JSONArray points) { }
   @Override public void text(float x, float y) {
@@ -328,8 +377,8 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     disk.execute(() -> { try (OutputStream stream = getContentResolver().openOutputStream(uri, "w")) { if (stream == null) throw new IOException("Le fichier ne peut pas être ouvert."); stream.write(bytes); runOnUiThread(() -> setStatus("Récupération exportée. Les gestes restent dans Context Room.")); }
       catch (Exception error) { runOnUiThread(() -> showError(error.getMessage())); } });
   }
-  @Override protected void onPause() { resumed = false; navigation.foreground(false); if (ink != null) { ink.finishReachedInk(); ink.suspendBoox(true); viewport(); } super.onPause(); }
+  @Override protected void onPause() { resumed = false; views.setMode("independent"); navigation.foreground(false); if (ink != null) { ink.finishReachedInk(); ink.suspendBoox(true); viewport(); } super.onPause(); }
   @Override protected void onResume() { super.onResume(); resumed = true; navigation.foreground(true); if (ink != null) ink.suspendBoox(false); if (engineReady && currentScope != null) engine.call("refresh"); }
-  @Override public void onBackPressed() { interaction(); if (connection != null && ink != null) whenJournalIdle(() -> { engine.call("close"); engine.call("catalogue", connection.session); }); else super.onBackPressed(); }
+  @Override public void onBackPressed() { interaction(); if (presentation) { setPresentation(false); return; } if (connection != null && ink != null) whenJournalIdle(() -> { engine.call("close"); engine.call("catalogue", connection.session); }); else super.onBackPressed(); }
   @Override protected void onDestroy() { if (ink != null) ink.finishReachedInk(); dead = true; navigation.close(); engine.close(); disk.shutdown(); super.onDestroy(); }
 }

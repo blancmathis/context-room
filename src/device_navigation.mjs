@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readNotebookJson, writeNotebookJson, withNotebookLock, notebookHash } from './notebook_io.mjs';
 import { deviceError, DEVICE_PROTOCOL } from './device_authority.mjs';
+import { createDeviceViews } from './device_views.mjs';
 
 const PRESENCE_MS = 15_000, REQUEST_MS = 30_000;
 const id = value => {
@@ -13,6 +14,7 @@ const exactTarget = (left, right) => left && right && ['projectId', 'resourceId'
 /** Navigation receipts are separate from durable notebook edits and never accept a file. */
 export function createDeviceNavigation({ stateRoot, serverId, inspectDevice, resolveTarget, now = Date.now }) {
   const epoch = randomUUID();
+  const views = createDeviceViews({ resolveTarget, now });
   const prefix = deviceId => `navigation/${id(deviceId)}`;
   const commandPath = (deviceId, operationId) => `${prefix(deviceId)}/commands/${id(operationId)}.json`;
   function update(deviceId, authenticate, action) {
@@ -64,7 +66,7 @@ export function createDeviceNavigation({ stateRoot, serverId, inspectDevice, res
         return command;
       });
     },
-    poll(deviceId, authenticate, { clientSessionId, busy = false } = {}) {
+    poll(deviceId, authenticate, { clientSessionId, busy = false, view } = {}) {
       id(clientSessionId);
       return update(deviceId, authenticate, (state, device, command) => {
         if (state.retiredSessions.includes(clientSessionId)) throw deviceError('device_navigation_session', 'This tablet session has been replaced. Reopen the application.', 409);
@@ -78,6 +80,7 @@ export function createDeviceNavigation({ stateRoot, serverId, inspectDevice, res
           catch { command = save(deviceId, { ...command, status: 'unavailable', reason: 'target_changed', completedAt: now() }); }
         }
         return { protocolVersion: DEVICE_PROTOCOL, serverId, serverEpoch: epoch, deviceId, clientSessionId, serverTime: now(),
+          ...(view ? { view: views.exchange(device, clientSessionId, 'device', view) } : {}),
           command: command && !terminal.has(command.status) ? command : null };
       });
     },
@@ -108,6 +111,13 @@ export function createDeviceNavigation({ stateRoot, serverId, inspectDevice, res
         const command = operationId ? readNotebookJson(stateRoot, commandPath(deviceId, operationId)) : current;
         const online = Boolean(state.presence?.serverEpoch === epoch && state.presence.at + PRESENCE_MS > now());
         return { protocolVersion: DEVICE_PROTOCOL, serverId, deviceId, online, busy: online && state.presence.busy, command };
+      });
+    },
+    view({ deviceId, projectId, ...body }) {
+      return update(deviceId, () => inspectDevice(deviceId), (state, device) => {
+        if (!state.presence || state.presence.serverEpoch !== epoch || state.presence.at + PRESENCE_MS <= now()) throw deviceError('device_navigation_offline', 'Open Context Room on the tablet before sharing a view.', 409);
+        if (!device.grants.some(grant => grant.projectId === projectId)) throw deviceError('device_view_scope', 'The view belongs to another project.');
+        return views.exchange(device, state.presence.clientSessionId, 'owner', body, projectId);
       });
     },
   };

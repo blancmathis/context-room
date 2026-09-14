@@ -3,6 +3,7 @@ import { normalizeNotebookDocument, notebookPath, NOTEBOOK_VERSION } from '../no
 import { notebookSvg, notebookBounds } from '../notebook_render.mjs';
 import { notebookSceneBounds } from '../notebook_geometry.mjs';
 import { NotebookCanvas } from './notebook-canvas.mjs';
+import { NotebookViewLink } from './notebook-views.mjs';
 
 export function notebookElement(tag, text = '', className = '') { const node = document.createElement(tag); node.textContent = text; if (className) node.className = className; return node; }
 export function notebookStyles() { if (document.getElementById('context-room-notebook-style')) return; const link = document.createElement('link'); link.id = 'context-room-notebook-style'; link.rel = 'stylesheet'; link.href = '/assets/ui/notebook.css'; document.head.append(link); }
@@ -58,7 +59,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   const statusRow = notebookElement('footer', '', 'notebook-state'), status = notebookElement('p'), zoomLabel = notebookElement('p', '100%'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); statusRow.append(status, zoomLabel);
   const errorBox = notebookElement('p', '', 'notebook-error'); errorBox.setAttribute('role', 'alert'); const conflicts = notebookElement('div', '', 'notebook-conflicts');
   dialog.append(header, notice, tools, actions, workspace, conflicts, errorBox, statusRow); document.body.append(dialog); dialog.showModal();
-  let view, client, surface, closed = false, syncing = false, saving = 0, timer, objectsTimer, textForm = null, lastConflictKey = '', authBlocked = false;
+  let view, client, surface, viewLink, closed = false, syncing = false, saving = 0, timer, objectsTimer, textForm = null, lastConflictKey = '', authBlocked = false;
   const failedLocalWork = [], cleanup = new AbortController();
   const navigationRequests = new Map();
   const fail = error => { if (!closed) errorBox.textContent = error.message || String(error); };
@@ -69,9 +70,29 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     catch (error) { failedLocalWork.push({ ...retained, error: error.message }); throw error; }
   };
   client = new NotebookClient({ storage, transport, scope, actor, onChange: render });
-  surface = new NotebookCanvas(canvas, { enqueue, onSelection: () => scheduleObjects(), onText: at => run(editText(at)), onInteraction: () => onInteraction({ resourceId, path }),
+  const interact = () => { viewLink?.interaction(); onInteraction({ resourceId, path }); };
+  surface = new NotebookCanvas(canvas, { enqueue, onSelection: () => scheduleObjects(), onText: at => run(editText(at)), onInteraction: interact, onRendered: () => viewLink?.rendered(),
     onView: viewport => { zoomLabel.textContent = Math.round(viewport.scale * 100) + '%'; run(client.saveView(viewport)); }, onError: fail,
     onSaving: count => { saving = count; renderStatus(); } });
+  const viewState = notebookElement('p', '', 'notebook-view-state'); viewState.setAttribute('aria-live', 'polite'); viewState.hidden = true;
+  const stopView = button('Stop view sharing / following', () => run(viewLink.release())); stopView.hidden = true;
+  statusRow.append(viewState, stopView);
+  viewLink = new NotebookViewLink({ request, surface,
+    target: projectId => view && !view.offline && !authBlocked ? { projectId, resourceId, path: view.locator.path, locationRevision: view.locator.revision } : null,
+    busy: () => Boolean(surface.gesture || textForm || saving || !view || view.offline || view.pending),
+    changed: state => { viewState.textContent = state.text; viewState.hidden = !state.text; stopView.hidden = state.mode === 'independent'; dialog.dataset.viewMode = state.mode; } });
+  for (const node of [header, tools, actions, inspector]) {
+    node.addEventListener('pointerdown', interact, { signal: cleanup.signal }); node.addEventListener('keydown', interact, { signal: cleanup.signal });
+  }
+  let presentation = false;
+  const present = button('Presentation', () => run(setPresentation(!presentation)), 'notebook-presentation-control'); present.setAttribute('aria-pressed', 'false'); header.append(present);
+  async function setPresentation(enabled) {
+    presentation = enabled; dialog.classList.toggle('notebook-presentation', enabled); present.setAttribute('aria-pressed', String(enabled)); present.textContent = enabled ? 'Exit presentation' : 'Presentation';
+    if (enabled && dialog.requestFullscreen) { try { await dialog.requestFullscreen(); } catch { /* The viewport-sized presentation remains available. */ } }
+    else if (!enabled && document.fullscreenElement === dialog) await document.exitFullscreen();
+    surface.schedule();
+  }
+  document.addEventListener('fullscreenchange', () => { if (presentation && !document.fullscreenElement) void setPresentation(false); }, { signal: cleanup.signal });
   const toolButtons = new Map();
   for (const [key, label] of [['ink', 'Pen'], ['eraser', 'Eraser'], ['select', 'Select / lasso'], ['pan', 'Pan'], ['rect', 'Rectangle'], ['ellipse', 'Ellipse'], ['line', 'Line'], ['arrow', 'Arrow'], ['connector', 'Connect'], ['text', 'Text']]) {
     const node = button(label, () => { if (!surface.setTool(key)) return; for (const [id, item] of toolButtons) item.setAttribute('aria-pressed', String(key === id)); }); node.setAttribute('aria-pressed', String(key === 'ink')); tools.append(node); toolButtons.set(key, node);
@@ -185,7 +206,10 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
         revoke.disabled = true;
         try { await request('/api/devices/revoke', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ deviceId: device.id }) }); revoked = true; navigationRequests.delete(device.id); row.textContent = device.label + ' disconnected.'; }
         catch (error) { message.textContent = error.message; revoke.disabled = false; }
-      }); row.append(label, open, revoke, detail); paired.append(row); void inspect();
+      });
+      const share = button('Share my view with ' + device.label, () => run(viewLink.select(device, devices.projectId, 'share').then(() => sheet.close())));
+      const follow = button('Follow ' + device.label, () => run(viewLink.select(device, devices.projectId, 'follow').then(() => sheet.close())));
+      row.append(label, open, share, follow, revoke, detail); paired.append(row); void inspect();
     }
     sheet.append(heading, scope, label, create, result, message, paired, button('Close connection', () => sheet.close()));
     sheet.addEventListener('close', () => {
@@ -299,15 +323,16 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   async function close() {
     if (closed) return; await surface.settle().catch(fail);
     if ((failedLocalWork.length || surface.failedStroke) && !confirm('Some samples could not be saved. Export recovery before closing. Close without those unsaved samples?')) return;
+    await viewLink.close(); if (presentation) await setPresentation(false);
     closed = true; clearInterval(timer); clearTimeout(objectsTimer); cleanup.abort(); client.close(); surface.dispose(); dialog.close(); dialog.remove(); await onClosed();
     // Keep the connection alive until in-flight durable operations settle; cache contents are never deleted.
     await client.serial; await Promise.resolve(client.flushing).catch(() => {}); await storage.close();
   }
-  dialog.addEventListener('cancel', event => { event.preventDefault(); run(close()); });
+  dialog.addEventListener('cancel', event => { event.preventDefault(); run(presentation ? setPresentation(false) : close()); });
   dialog.addEventListener('keydown', event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !['INPUT', 'TEXTAREA'].includes(event.target.tagName)) { event.preventDefault(); run(replayGesture(event.shiftKey ? 'redo' : 'undo')); } });
   window.addEventListener('beforeunload', event => { if (saving || failedLocalWork.length) { event.preventDefault(); event.returnValue = ''; } }, { signal: cleanup.signal });
   window.addEventListener('online', () => void sync(), { signal: cleanup.signal });
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') void sync(); }, { signal: cleanup.signal });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') void sync(); else run(viewLink.release()); }, { signal: cleanup.signal });
   try {
     if (createOffline) await client.createOffline({ path, title: title || path.split('/').pop().replace(/\.crnb$/i, '') });
     else if (!cached || !reviewKey) await client.initialize(snapshot);

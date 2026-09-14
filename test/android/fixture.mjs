@@ -40,6 +40,14 @@ const owner = http.createServer(async (req, res) => {
     } else if (req.method === 'GET' && url.pathname === '/navigation') {
       const device = service.authority.list().find(item => !item.revokedAt);
       data = service.navigation.inspect(device.id, url.searchParams.get('operationId') || '');
+    } else if (req.method === 'POST' && url.pathname === '/view') {
+      const chunks = []; let bytes = 0;
+      for await (const chunk of req) { bytes += chunk.length; if (bytes > 8192) throw new Error('Fixture view request too large'); chunks.push(chunk); }
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      const current = readNotebook(root, scene.resourceId, { includeDocument: false });
+      const device = service.authority.list().find(item => !item.revokedAt);
+      data = service.navigation.view({ ...body, sessionId: 'android-fixture-owner', deviceId: device.id, projectId,
+        target: { projectId, resourceId: scene.resourceId, path: scene.locator.path, locationRevision: current.locator.revision } });
     }
     else if (req.method === 'POST' && url.pathname === '/offline') { if (service.server.listening) await service.close(); data = { online: false }; }
     else if (req.method === 'POST' && url.pathname === '/online') { if (!service.server.listening) await service.listen({ port: devicePort }); data = { online: true }; }

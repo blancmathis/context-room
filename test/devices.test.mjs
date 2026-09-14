@@ -116,6 +116,25 @@ test('navigation expires across device sessions and service restarts, and revoca
   assert.equal(fs.existsSync(path.join(f.root, scene.locator.path)), false);
 });
 
+test('TLS view following remains scoped, native-only and revoked with drawing authority', async t => {
+  const f = fixture(t), service = await serviceFor(t, f);
+  const scene = openNotebook(f.root, { id: 'view-notebook', path: 'docs/Sketch.crnb', canWrite: f.canWrite });
+  const paired = service.authority.pair(service.createPairing({ projectId: f.projectId, paths: ['docs/Sketch.crnb'] }));
+  const target = { projectId: f.projectId, resourceId: scene.resourceId, path: scene.locator.path, locationRevision: scene.locator.revision };
+  const poll = view => request(service, '/device/navigation/poll', { credential: paired.token, body: { protocolVersion: 1, clientSessionId: 'native-view-session', view } });
+  await poll({ mode: 'independent', sequence: 1 });
+  const sharing = { deviceId: paired.device.id, projectId: f.projectId, sessionId: 'owner-view-session', sequence: 1, mode: 'share', target, viewport: [0, 0, 800, 600] };
+  assert.equal(service.navigation.view(sharing).receipt, null);
+  const followed = await poll({ mode: 'follow', sequence: 2, target });
+  assert.equal(followed.status, 200); assert.deepEqual(followed.body.view.frame.viewport, sharing.viewport);
+  assert.equal((await request(service, '/api/devices/view', { credential: paired.token, body: sharing })).status, 403);
+  assert.equal((await request(service, '/device/navigation/poll', { credential: paired.token, headers: { origin: 'https://page.invalid' }, body: {} })).status, 403);
+  service.authority.revoke(paired.device.id);
+  assert.equal((await poll({ mode: 'follow', sequence: 2, target })).status, 403);
+  assert.throws(() => service.navigation.view(sharing));
+  assert.equal(fs.existsSync(path.join(f.root, scene.locator.path)), false);
+});
+
 test('TLS batches keep per-operation receipts, scope and targeted conflicts', async t => {
   const f = fixture(t), service = await serviceFor(t, f);
   const paired = service.authority.pair(service.createPairing({ projectId: f.projectId, paths: ['docs/Sketch.crnb'] }));

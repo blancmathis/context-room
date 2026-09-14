@@ -29,6 +29,11 @@
 .notebook-selection-actions { display: flex; flex-wrap: wrap; gap: 6px; padding-block: 8px; }
 .notebook-state { display: flex; align-items: start; justify-content: space-between; gap: 12px; padding: 10px 16px; border-top: 1px solid var(--line, #777); font: 12px/1.5 system-ui, sans-serif; }
 .notebook-state p { margin: 0; }
+.notebook-view-state { max-width: 32em; }
+.notebook-dialog.notebook-presentation { width: 100vw; height: 100dvh; margin: 0; border: 0; border-radius: 0; }
+.notebook-presentation > header > :not(.notebook-presentation-control), .notebook-presentation > .notebook-toolbar,
+.notebook-presentation > .notebook-notice, .notebook-presentation .notebook-inspector { display: none; }
+.notebook-presentation > header { justify-content: flex-end; padding: 4px 10px; }
 .notebook-state [role=status] { flex: 1; }
 .notebook-error { margin: 0; padding: 10px 16px; border-top: 2px solid var(--danger, #ee8793); font: 13px/1.5 system-ui, sans-serif; overflow-wrap: anywhere; }
 .notebook-error:empty { display: none; }

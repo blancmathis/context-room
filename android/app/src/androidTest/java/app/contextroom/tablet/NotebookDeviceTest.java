@@ -43,12 +43,75 @@ public final class NotebookDeviceTest {
     assertEquals("Canonical scene response", 200, response.getInt("status")); return response.getJSONObject("body");
   }
   void pen(MainActivity activity, int action, float x, float y, float pressure, long down) {
+    pointer(activity, action, x, y, pressure, down, MotionEvent.TOOL_TYPE_STYLUS);
+  }
+  void pointer(MainActivity activity, int action, float x, float y, float pressure, long down, int tool) {
     instrumentation.runOnMainSync(() -> {
-      MotionEvent.PointerProperties property = new MotionEvent.PointerProperties(); property.id = 0; property.toolType = MotionEvent.TOOL_TYPE_STYLUS;
+      MotionEvent.PointerProperties property = new MotionEvent.PointerProperties(); property.id = 0; property.toolType = tool;
       MotionEvent.PointerCoords coords = new MotionEvent.PointerCoords(); coords.x = x; coords.y = y; coords.pressure = pressure; coords.size = .1f;
       MotionEvent event = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, 1, new MotionEvent.PointerProperties[]{property}, new MotionEvent.PointerCoords[]{coords}, 0, 0, 1, 1, 0, 0, InputDevice.SOURCE_STYLUS, 0);
       activity.ink.onTouchEvent(event); event.recycle();
     });
+  }
+
+  @Test public void nativeViewFollowingAndPresentation() throws Exception {
+    try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
+      MainActivity activity = activity(scenario);
+      waitFor("Saved connection did not open", () -> onUi(activity, () -> activity.engineReady && activity.connection != null));
+      open(activity, activity.connection);
+      waitFor("Native view is not ready", () -> onUi(activity, () -> !activity.navigationBusy()));
+      assertTrue(onUi(activity, () -> activity.views.mode.equals("independent")));
+      AtomicReference<String> before = new AtomicReference<>();
+      instrumentation.runOnMainSync(() -> before.set(activity.ink.viewportBounds().toString()));
+      navigationStage(activity, "viewIndependent"); ownerObserved(activity, "viewSourceReady");
+      SystemClock.sleep(1500);
+      assertTrue("Sharing from the Mac cannot enable following", onUi(activity, () -> before.get().equals(activity.ink.viewportBounds().toString()) && activity.views.receipt == null));
+      instrumentation.runOnMainSync(() -> activity.followViewButton.performClick());
+      navigationStage(activity, "viewFollowing");
+      waitFor("The native canvas did not acknowledge the shared viewport", () -> onUi(activity, () -> activity.views.receipt != null));
+      ownerObserved(activity, "viewApplied"); screenshot(activity, "notebook-following");
+      long down = SystemClock.uptimeMillis();
+      pointer(activity, MotionEvent.ACTION_DOWN, 100, 100, .5f, down, MotionEvent.TOOL_TYPE_FINGER);
+      assertTrue("Finger contact must stop following synchronously", onUi(activity, () -> activity.views.mode.equals("independent") && activity.views.pending == null));
+      pointer(activity, MotionEvent.ACTION_MOVE, 140, 110, .5f, down, MotionEvent.TOOL_TYPE_FINGER);
+      pointer(activity, MotionEvent.ACTION_UP, 140, 110, .5f, down, MotionEvent.TOOL_TYPE_FINGER);
+      instrumentation.runOnMainSync(() -> before.set(activity.ink.viewportBounds().toString()));
+      navigationStage(activity, "viewStopped"); ownerObserved(activity, "viewSourceChanged"); SystemClock.sleep(1500);
+      assertTrue("A later Mac frame cannot restart following", onUi(activity, () -> before.get().equals(activity.ink.viewportBounds().toString())));
+      AtomicInteger height = new AtomicInteger();
+      instrumentation.runOnMainSync(() -> { height.set(activity.ink.getHeight()); activity.presentationButton.performClick(); });
+      waitFor("Fullscreen presentation did not expand the native canvas", () -> onUi(activity, () -> activity.presentation && activity.ink.getHeight() > height.get() && activity.drawingTools.getVisibility() == View.GONE));
+      screenshot(activity, "notebook-presentation");
+      instrumentation.runOnMainSync(activity::onBackPressed);
+      assertTrue("Back leaves presentation without closing the notebook", onUi(activity, () -> !activity.presentation && activity.currentScope != null));
+      instrumentation.runOnMainSync(() -> activity.shareViewButton.performClick()); navigationStage(activity, "tabletSharing"); ownerObserved(activity, "tabletViewReceived");
+      assertTrue("Receipt-free sharing cannot claim a Mac display", onUi(activity, () -> activity.views.mode.equals("share") && activity.viewStatus.getText().toString().contains("non confirmé")));
+      scenario.moveToState(androidx.lifecycle.Lifecycle.State.STARTED);
+      scenario.moveToState(androidx.lifecycle.Lifecycle.State.RESUMED);
+      assertTrue("View following and sharing are never silently restored", onUi(activity, () -> activity.views.mode.equals("independent")));
+    }
+  }
+
+  @Test public void nativeOpeningRejectsQueuedPreviousScene() throws Exception {
+    try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
+      MainActivity activity = activity(scenario);
+      waitFor("Saved connection did not open", () -> onUi(activity, () -> activity.engineReady && activity.connection != null));
+      open(activity, activity.connection); waitFor("Initial notebook did not settle", () -> onUi(activity, () -> !activity.navigationBusy()));
+      instrumentation.runOnMainSync(() -> {
+        JSONObject stale = InkView.copy(activity.lastScene), oldScope = InkView.copy(activity.currentScope); String previous = activity.openingId;
+        try { stale.put("version", Long.MAX_VALUE); } catch (JSONException error) { throw new IllegalStateException(error); }
+        activity.openNotebook(InkView.json("projectId", activity.openingProject, "path", "docs/Second.crnb"));
+        // Model JavaScript events already queued on Android's main thread before
+        // the new engine open call has run. Cache versions belong to their scopes.
+        activity.engineEvent(stale);
+        activity.engineEvent(InkView.json("type", "opened", "openId", previous, "path", "docs/Tablet.crnb", "scope", oldScope));
+        assertNull("A previous scene cannot populate the new canvas", activity.lastScene);
+        assertNull("A previous opening cannot select the old scope", activity.currentScope);
+        assertEquals(-1, activity.sceneVersion);
+      });
+      waitFor("The new exact notebook did not render", () -> onUi(activity, () -> !activity.navigationBusy() && activity.currentScope != null
+        && "android-second".equals(activity.currentScope.optString("resourceId")) && "android-second".equals(activity.lastScene.optString("resourceId"))));
+    }
   }
 
   void screenshot(MainActivity activity, String name) throws Exception {
@@ -144,7 +207,8 @@ public final class NotebookDeviceTest {
       navigationStage(activity, "cancelledSecond"); ownerObserved(activity, "cancelledSecond");
       screenshot(activity, "notebook-remote-open");
       } catch (Throwable error) {
-        instrumentation.runOnMainSync(() -> System.out.println("Navigation failure state: " + InkView.json("scope", activity.currentScope, "scene", activity.lastScene,
+        instrumentation.runOnMainSync(() -> System.out.println("Navigation failure state: " + InkView.json("scope", activity.currentScope,
+          "sceneScope", activity.lastScene == null ? null : activity.lastScene.optJSONObject("scope"), "sceneVersion", activity.sceneVersion, "openingId", activity.openingId,
           "status", activity.status.getText().toString(), "busy", activity.navigationBusy(), "opening", activity.navigation.opening,
           "command", activity.navigation.command, "receipt", activity.navigation.receipt, "deadlineRemaining", activity.navigation.deadline - SystemClock.elapsedRealtime(),
           "attached", activity.ink != null && activity.ink.isAttachedToWindow(), "shown", activity.ink != null && activity.ink.isShown(), "focused", activity.hasWindowFocus())));

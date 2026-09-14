@@ -20236,7 +20236,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   const url = new URL(req.url, "http://context-room.invalid");
   if (url.pathname === '/api/devices' || url.pathname.startsWith('/api/devices/')) {
     if (req.method === 'GET' && url.pathname === '/api/devices') {
-      sendJson(res, 200, deviceService ? { enabled: true, ...deviceService.describe(), devices: deviceService.authority.list().filter(device => device.grants.some(grant => grant.projectId === contextRoomProjectId(root))) } : { enabled: false });
+      sendJson(res, 200, deviceService ? { enabled: true, projectId: contextRoomProjectId(root), ...deviceService.describe(), devices: deviceService.authority.list().filter(device => device.grants.some(grant => grant.projectId === contextRoomProjectId(root))) } : { enabled: false });
       return;
     }
     if (!deviceService) throw sharedRequestError('Connected devices are disabled. Start Context Room with an explicit device address.', 409, 'device_service_disabled');
@@ -20249,6 +20249,9 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       sendJson(res, 200, navigation); return;
     }
     const body = await readJsonBody(req, { maxBytes: 16_384 });
+    if (req.method === 'POST' && url.pathname === '/api/devices/view') {
+      sendJson(res, 200, deviceService.navigation.view({ ...body, projectId: contextRoomProjectId(root) })); return;
+    }
     if (req.method === 'POST' && url.pathname === '/api/devices/open') {
       sendJson(res, 200, deviceService.navigation.request({ deviceId: body.deviceId, operationId: body.operationId,
         projectId: contextRoomProjectId(root), resourceId: body.resourceId })); return;

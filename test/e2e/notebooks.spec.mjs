@@ -23,7 +23,10 @@ async function fixture(page, { devices = false, shared = false } = {}) {
   const runtime = createMemoryServer({ root, deviceService }); await new Promise(resolve => runtime.server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${runtime.server.address().port}`, errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto(origin + '/'); await page.waitForFunction(() => typeof openContextRoomNotebook === 'function' && Boolean(state.ownerMutationNonce && state.projectId));
-  return { root, runtime, origin, errors, deviceService, sharedFixture, async close() { await page.context().setOffline(false); if (!page.isClosed()) await page.goto('about:blank'); await new Promise(resolve => { runtime.server.close(resolve); runtime.server.closeAllConnections(); }); await runtime.waitForShutdown(); if (deviceService) await deviceService.close(); for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } removeNotebookSharedFixture(base); } };
+  return { root, runtime, origin, errors, deviceService, sharedFixture, async close() {
+    try { if (!page.isClosed()) { await page.context().setOffline(false); await page.goto('about:blank'); } }
+    finally { await new Promise(resolve => { runtime.server.close(resolve); runtime.server.closeAllConnections(); }); await runtime.waitForShutdown(); if (deviceService) await deviceService.close(); for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } removeNotebookSharedFixture(base); }
+  } };
 }
 async function open(page, name = 'docs/Sketch.crnb') {
   await page.evaluate(async name => { window.testNotebook = await openContextRoomNotebook(name); }, name);
@@ -33,6 +36,59 @@ async function draw(page, { start = [90, 90], end = [260, 160], up = true } = {}
   const box = await page.locator('canvas.notebook-canvas').boundingBox();
   await page.mouse.move(box.x + start[0], box.y + start[1]); await page.mouse.down(); await page.mouse.move(box.x + end[0], box.y + end[1], { steps: 8 }); if (up) await page.mouse.up();
 }
+
+test('@smoke @notebook explicit view following stops on human input and presentation retains the notebook', async ({ page }, testInfo) => {
+  const f = await fixture(page, { devices: true }); let pollTimer, release;
+  try {
+    const notebook = await open(page), resourceId = await notebook.getAttribute('data-resource-id'), scene = readNotebook(f.root, resourceId);
+    const paired = f.deviceService.authority.pair(f.deviceService.createPairing({ projectId: f.runtime.projectId, paths: ['docs/Sketch.crnb'], label: 'View tablet' }));
+    const target = { projectId: f.runtime.projectId, resourceId, path: scene.locator.path, locationRevision: scene.locator.revision };
+    const authenticate = () => f.deviceService.authority.authenticate(paired.token);
+    let deviceView = { sequence: 1, mode: 'share', target, viewport: [100, 50, 450, 300] }, latest;
+    const poll = () => latest = f.deviceService.navigation.poll(paired.device.id, authenticate, { clientSessionId: 'browser-view-fixture', view: deviceView }).view;
+    poll(); pollTimer = setInterval(poll, 500);
+    const original = await page.evaluate(() => testNotebook.surface.viewportBounds());
+    await expect(notebook).toHaveAttribute('data-view-mode', 'independent');
+    expect(await page.evaluate(() => testNotebook.surface.viewportBounds())).toEqual(original);
+    await notebook.getByRole('button', { name: 'Connect tablet', exact: true }).click();
+    await page.getByRole('button', { name: 'Follow View tablet', exact: true }).click();
+    await expect(notebook.locator('.notebook-view-state')).toContainText('Following View tablet.');
+    await expect.poll(() => latest.receipt?.sequence).toBe(1);
+    expect(await page.evaluate(() => testNotebook.surface.viewportBounds())).not.toEqual(original);
+    const held = new Promise(resolve => { release = resolve; }); let observed;
+    const requested = new Promise(resolve => { observed = resolve; });
+    let complete; const continued = new Promise(resolve => { complete = resolve; });
+    await page.route('**/api/devices/view', async route => { observed(); await held; await route.continue(); complete(); });
+    deviceView = { ...deviceView, sequence: 2, viewport: [3000, 3000, 800, 500] }; poll();
+    await requested;
+    const humanView = await page.evaluate(() => ({ ...testNotebook.surface.view }));
+    await draw(page, { start: [60, 40], end: [160, 80], up: false });
+    await expect(notebook).toHaveAttribute('data-view-mode', 'independent');
+    release(); await continued; await page.unroute('**/api/devices/view'); await page.mouse.up();
+    await expect(notebook).toHaveAttribute('data-save-state', 'confirmed');
+    expect(await page.evaluate(() => ({ ...testNotebook.surface.view }))).toEqual(humanView);
+
+    deviceView = { sequence: 3, mode: 'follow', target }; poll();
+    await notebook.getByRole('button', { name: 'Connect tablet', exact: true }).click();
+    await page.getByRole('button', { name: 'Share my view with View tablet', exact: true }).click();
+    await expect.poll(() => latest.frame?.target.resourceId).toBe(resourceId);
+    await expect(notebook.locator('.notebook-view-state')).toContainText('display not yet confirmed');
+    // Browser status contract only. Native rendering has its separate Android proof.
+    deviceView = { ...deviceView, receipt: { ...latest.frame, viewport: latest.frame.viewport } }; poll();
+    await expect(notebook.locator('.notebook-view-state')).toHaveText('Current view displayed on View tablet.');
+    await notebook.getByRole('button', { name: 'Presentation', exact: true }).click();
+    await expect(notebook).toHaveClass(/notebook-presentation/);
+    await expect(notebook.getByRole('toolbar', { name: 'Notebook tools' })).toBeHidden();
+    await page.screenshot({ path: testInfo.outputPath('notebook-presentation.png'), fullPage: true });
+    const accessibility = await new AxeBuilder({ page }).include('.notebook-dialog').withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
+    expect(accessibility.violations).toEqual([]);
+    await notebook.getByRole('button', { name: 'Exit presentation', exact: true }).click();
+    await expect(notebook).not.toHaveClass(/notebook-presentation/);
+    await expect(notebook.getByRole('toolbar', { name: 'Notebook tools' })).toBeVisible();
+    expect(fs.existsSync(path.join(f.root, scene.locator.path))).toBe(false);
+    expect(f.errors).toEqual([]);
+  } finally { release?.(); clearInterval(pollTimer); await f.close(); }
+});
 
 test('@smoke @notebook an owner sees the Shared destination and submits one exact frozen drawing', async ({ page }, testInfo) => {
   const f = await fixture(page, { shared: true });

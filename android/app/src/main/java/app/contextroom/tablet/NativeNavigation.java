@@ -14,6 +14,9 @@ final class NativeNavigation {
     boolean navigationBusy();
     void remoteOpen(JSONObject target);
     void navigationNotice(String message);
+    JSONObject viewState();
+    void receiveView(JSONObject data, JSONObject sent);
+    void viewFailure();
   }
   final Handler main = new Handler(Looper.getMainLooper());
   final Executor network;
@@ -45,7 +48,7 @@ final class NativeNavigation {
     if (closed || !foreground || connection == null || running) return;
     final DeviceConnection selected = connection; final int run = generation;
     final JSONObject sent = receipt;
-    final JSONObject body = sent == null ? InkView.json("protocolVersion", 1, "clientSessionId", session, "busy", host.navigationBusy()) : sent;
+    final JSONObject body = sent == null ? InkView.json("protocolVersion", 1, "clientSessionId", session, "busy", host.navigationBusy(), "view", host.viewState()) : sent;
     running = true;
     try {
       network.execute(() -> {
@@ -65,7 +68,8 @@ final class NativeNavigation {
             } else if (status == 200 && data != null && data.optInt("protocolVersion") == 1 && selected.serverId.equals(data.optString("serverId"))
                 && selected.session.optJSONObject("device").optString("id").equals(data.optString("deviceId")) && session.equals(data.optString("clientSessionId"))) {
               receive(data);
-            } else if (status == 401 || status == 403 || status == 409) clearCommand();
+              host.receiveView(data.optJSONObject("view"), body.optJSONObject("view"));
+            } else if (status == 401 || status == 403 || status == 409) { clearCommand(); host.viewFailure(); }
           }
           schedule(receipt != null && result != null ? 0 : result == null ? 3000 : 1200);
         });
