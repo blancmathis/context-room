@@ -3,6 +3,8 @@ import { isIP } from 'node:net';
 import { canonicalNotebookRoot } from './notebook_io.mjs';
 import { handleNotebookHttp } from './notebook_http.mjs';
 import { createDeviceAuthority, deviceError, DEVICE_PROTOCOL, ensureDeviceIdentity } from './device_authority.mjs';
+import { createDeviceNavigation } from './device_navigation.mjs';
+import { readNotebook } from './notebooks.mjs';
 
 const GET_ROUTES = new Set(['/api/notebooks', '/api/notebooks/capabilities', '/api/notebooks/scene', '/api/notebooks/receipt', '/api/notebooks/export']);
 const POST_ROUTES = new Set(['/api/notebooks/open', '/api/notebooks/mutate', '/api/notebooks/batch', '/api/notebooks/undo', '/api/notebooks/asset']);
@@ -59,6 +61,14 @@ export function createConnectedDeviceService({ stateRoot, resolveProject, now = 
     }
     return project;
   }
+  const navigation = createDeviceNavigation({ stateRoot, serverId: identity.serverId, now,
+    inspectDevice: id => authority.inspect(id), resolveTarget: (device, projectId, resourceId) => {
+      const grant = device.grants.find(item => item.projectId === projectId);
+      if (!grant) throw deviceError('device_project_scope', 'This project is outside the device permission.');
+      const project = projectFor(grant), scene = readNotebook(project.root, resourceId, { includeDocument: false });
+      if (!grant.paths.includes(scene.locator.path) || !project.canRead(scene.locator.path) || !project.canWrite(scene.locator.path)) throw deviceError('device_navigation_scope', 'This notebook is outside the current drawing permission.');
+      return { projectId, resourceId, path: scene.locator.path, locationRevision: scene.locator.revision, sceneRevision: scene.revision };
+    } });
   const server = https.createServer({ key: identity.key, cert: identity.cert, minVersion: 'TLSv1.2',
     maxHeaderSize: 8192, requestTimeout: 15_000, headersTimeout: 10_000 }, async (req, res) => {
     try {
@@ -95,6 +105,13 @@ export function createConnectedDeviceService({ stateRoot, resolveProject, now = 
       if (req.method === 'GET' && url.pathname === '/device/session') {
         json(res, 200, { protocolVersion: DEVICE_PROTOCOL, serverId: identity.serverId,
           device: { ...initialDevice, grants: initialDevice.grants.map(({ root, rootIdentity, ...scope }) => scope) } });
+        return;
+      }
+      if (req.method === 'POST' && ['/device/navigation/poll', '/device/navigation/receipt'].includes(url.pathname)) {
+        const body = await readBody(req, 16_384, bodyBudget);
+        if (body.protocolVersion !== DEVICE_PROTOCOL) throw deviceError('device_protocol', 'Update the device client before continuing.', 409);
+        const authenticate = () => authority.authenticate(credential);
+        json(res, 200, url.pathname.endsWith('/poll') ? navigation.poll(initialDevice.id, authenticate, body) : navigation.receipt(initialDevice.id, authenticate, body));
         return;
       }
       if (!(req.method === 'GET' && GET_ROUTES.has(url.pathname) || req.method === 'POST' && POST_ROUTES.has(url.pathname))) {
@@ -139,6 +156,7 @@ export function createConnectedDeviceService({ stateRoot, resolveProject, now = 
     serverId: identity.serverId,
     fingerprint: identity.fingerprint,
     authority,
+    navigation,
     describe() {
       const address = server.address();
       if (!address || typeof address === 'string') throw deviceError('device_service_unavailable', 'The device listener is not running.', 503);

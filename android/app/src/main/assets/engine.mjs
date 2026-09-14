@@ -57,11 +57,17 @@ async function open(item) {
   try { scene = await transport.open({ protocolVersion: 1, path: item.path, id: cached?.snapshot.resourceId || crypto.randomUUID() }); }
   catch (error) { if (!cached) throw error; scene = cached.snapshot; offline = true; }
   if (run !== generation) return;
+  if (item.expectedTarget && (scene.resourceId !== item.expectedTarget.resourceId || scene.locator.path !== item.expectedTarget.path
+      || scene.locator.revision !== item.expectedTarget.locationRevision || scene.revision < item.expectedTarget.sceneRevision || offline)) {
+    throw new Error('Le carnet demandé par le Mac n’est plus disponible à cet emplacement.');
+  }
   const scope = { serverId: publicSession.serverId, accountId: `device:${publicSession.device.id}:project:${selectedProject}`, deviceId: publicSession.device.id, resourceId: scene.resourceId };
   const selected = new NotebookClient({ storage, transport, scope, actor, onChange: async view => {
     if (run !== generation || !view) return;
     const state = await selected.state();
-    emit('scene', { resourceId: scope.resourceId, version: view.cacheVersion, objects: view.document.objects.map(notebookNativeObject), assets: view.document.assets,
+    if (run !== generation) return;
+    emit('scene', { scope, projectId: selectedProject, resourceId: scope.resourceId, locationRevision: view.locator.revision, sceneRevision: view.revision,
+      version: view.cacheVersion, objects: view.document.objects.map(notebookNativeObject), assets: view.document.assets,
       path: view.locator.path, title: view.document.title, status: view.status, offline: view.offline, pending: view.pending,
       conflicts: view.conflicts.length, conflictDetails: view.conflicts.map(op => ({ operationId: op.operationId, error: op.error })),
       connectionError: state.metadata.lastError || null, undo: state.metadata.gestureHistory?.undo.length || 0, redo: state.metadata.gestureHistory?.redo.length || 0,
@@ -71,6 +77,7 @@ async function open(item) {
   if (offline) { await selected.change(state => ({ metadata: { ...state.metadata, offline: true } })); await selected.notify(); }
   else await selected.initialize(scene);
   if (capabilities) await selected.change(state => ({ metadata: { ...state.metadata, capabilities } }));
+  if (run !== generation) return;
   emit('opened', { scope, path: item.path });
   schedule(run, 0);
 }

@@ -117,6 +117,12 @@ final class DeviceConnection {
     } finally { connection.disconnect(); }
   }
 
+  // Called only by native foreground navigation, never by the JavaScript bridge.
+  JSONObject navigation(String action, JSONObject body) throws Exception {
+    if (!Arrays.asList("poll", "receipt").contains(action) || credential.isEmpty() || session == null) throw new IOException("Navigation hors de cette connexion.");
+    return exchange("/device/navigation/" + action, "POST", body.toString(), "", true);
+  }
+
   static JSONObject pair(JSONObject ticket) throws Exception {
     if (ticket.optInt("protocolVersion") != 1 || ticket.optLong("expiresAt") <= System.currentTimeMillis()) throw new IOException("Ce code a expiré. Créez-en un autre sur le Mac.");
     DeviceConnection pending = new DeviceConnection(InkView.json("url", ticket.getString("url"), "fingerprint", ticket.getString("fingerprint"), "serverId", ticket.getString("serverId")));

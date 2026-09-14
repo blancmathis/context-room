@@ -17,7 +17,8 @@ pinned connection. Full remote owner operation remains implementation work.
 ## Defines
 
 Device service activation, pairing and revocation, the drawing permission,
-Android transport and storage, and their relationship to notebook authority.
+Android transport and storage, confirmed notebook opening, and their
+relationship to notebook authority.
 
 ## Does not define
 
@@ -51,6 +52,32 @@ The client must verify the SHA-256 fingerprint of the TLS leaf certificate
 before sending the code or device credential. Pairing returns a new random
 credential valid for 30 days. Revocation is checked on every authenticated
 request and again after a body upload, before applying its changes.
+
+## Open the notebook on a tablet
+
+For a paired device, **Open on [device name]** requests the currently displayed
+notebook. The owner sees requested, deferred or confirmed opening separately.
+A successful send does not mean the tablet displayed the notebook. The request
+binds the original project, resource, location revision and minimum scene
+revision, with one retained operation identifier for uncertain retries.
+
+The foreground Android client defers while a gesture, text dialog or local save
+is active, and while the current notebook still awaits its Mac receipts. Once
+idle, it opens the exact requested notebook and confirms only after its attached,
+visible native canvas draws the corresponding online scene. An actual native
+toolbar or pointer action cancels a pending opening. Each device keeps its own
+viewport; opening does not enable presentation or viewport following.
+
+Presence expires after 15 seconds without a foreground poll. An opening expires
+after 30 seconds and is invalidated by a replacement client session, a service
+restart, a newer opening, revocation or a changed target. The original request
+and terminal receipt remain in private device state. This receipt records a
+display event; it never freezes, submits or accepts notebook content.
+
+The native navigation routes are not exposed through the generic JavaScript
+transport. The canvas callback supplies the applied receipt. Tests for the
+server protocol and the browser status text are separate from the Android
+rendering proof.
 
 ## Authority and protocol
 
@@ -120,7 +147,8 @@ python3 test/android/verify.py --serial emulator-5580 --output /tmp/context-room
 
 Choose a new output directory outside the source repository. The verifier
 checks the AVD identity, installs only the preview, creates its own Mac fixture,
-tests drawing and restart recovery, and retains native screenshots and logs.
+tests drawing, restart recovery, deferred remote opening and human cancellation,
+and retains native screenshots, exact navigation receipts and logs.
 It refuses physical devices. The preview currently exposes the complementary
 drawing workflow; it does not yet provide the full Context Room owner UI,
 voice/conversation, Shared notebook submission or personal-data migration.
@@ -152,6 +180,7 @@ device edits, and restart the service before replaying a lost receipt. They
 also check revocation during upload, expired credentials, replaced directories,
 route and scope refusal, and the actual CLI launch.
 
-Browser tests (`test/e2e/notebooks.spec.mjs`) exercise owner pairing and
-revocation in Chromium, Firefox and WebKit. Exact observations and the remaining
+Browser tests (`test/e2e/notebooks.spec.mjs`) exercise owner pairing, the separate
+request/deferral/display states and revocation in Chromium, Firefox and WebKit.
+Exact observations and the remaining
 Android/physical-device gates are recorded in `docs/lifecycle/changes/active/android-convergence/verification.md` in the source repository.

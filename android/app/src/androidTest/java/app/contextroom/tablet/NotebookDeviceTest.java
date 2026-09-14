@@ -84,6 +84,76 @@ public final class NotebookDeviceTest {
     return found;
   }
 
+  void navigationStage(MainActivity activity, String stage) throws Exception {
+    android.util.AtomicFile file = new android.util.AtomicFile(new File(activity.getFilesDir(), "navigation-stage.json"));
+    FileOutputStream output = file.startWrite();
+    try { output.write(InkView.json("serverId", activity.connection.serverId, "stage", stage).toString().getBytes(StandardCharsets.UTF_8)); file.finishWrite(output); }
+    catch (Exception error) { file.failWrite(output); throw error; }
+  }
+  void ownerObserved(MainActivity activity, String stage) throws Exception {
+    waitFor("Fixture owner did not observe " + stage, () -> {
+      try (InputStream file = new FileInputStream("/data/local/tmp/context-room-navigation-owner.json")) {
+        JSONObject observed = new JSONObject(new String(file.readAllBytes(), StandardCharsets.UTF_8));
+        return activity.connection.serverId.equals(observed.optString("serverId")) && stage.equals(observed.optString("stage"));
+      } catch (FileNotFoundException error) { return false; }
+    });
+  }
+  android.widget.Button findButton(View view, String text) {
+    if (view instanceof android.widget.Button && text.contentEquals(((android.widget.Button)view).getText())) return (android.widget.Button)view;
+    if (view instanceof ViewGroup) for (int n = 0; n < ((ViewGroup)view).getChildCount(); n++) {
+      android.widget.Button found = findButton(((ViewGroup)view).getChildAt(n), text); if (found != null) return found;
+    }
+    return null;
+  }
+
+  @Test public void remoteOpeningPreservesInkAndHumanControl() throws Exception {
+    try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
+      MainActivity activity = activity(scenario);
+      waitFor("Saved connection did not open", () -> onUi(activity, () -> activity.engineReady && activity.connection != null));
+      DeviceConnection connection = activity.connection; open(activity, connection);
+      try {
+      waitFor("Initial scene did not settle", () -> onUi(activity, () -> !activity.navigationBusy() && activity.lastScene != null));
+      InkView first = activity.ink;
+      long down = SystemClock.uptimeMillis();
+      pen(activity, MotionEvent.ACTION_DOWN, 70, 80, .3f, down);
+      SystemClock.sleep(380); pen(activity, MotionEvent.ACTION_MOVE, 140, 110, .7f, down);
+      navigationStage(activity, "drawingFirst");
+      waitFor("Remote opening was not deferred during a held pen", () -> onUi(activity, () -> activity.navigation.deferred));
+      assertTrue(onUi(activity, () -> activity.ink == first && first.drawing));
+      ownerObserved(activity, "deferredFirst");
+      pen(activity, MotionEvent.ACTION_MOVE, 200, 140, .8f, down);
+      pen(activity, MotionEvent.ACTION_UP, 240, 170, .4f, down);
+      waitFor("Second notebook did not render and receive its native acknowledgement", () -> onUi(activity, () -> activity.currentScope != null
+        && "android-second".equals(activity.currentScope.optString("resourceId")) && activity.navigation.command == null && !activity.navigationBusy()));
+      JSONArray firstObjects = scene(connection).getJSONObject("document").getJSONArray("objects");
+      assertEquals("All first-notebook gestures must remain in their original notebook", 12, firstObjects.length());
+      assertTrue("The held gesture must retain the samples reached after the remote request", firstObjects.getJSONObject(11).getJSONArray("points").length() >= 4);
+      navigationStage(activity, "secondDisplayed"); ownerObserved(activity, "appliedFirst");
+
+      InkView second = activity.ink;
+      down = SystemClock.uptimeMillis(); pen(activity, MotionEvent.ACTION_DOWN, 90, 330, .3f, down);
+      SystemClock.sleep(380); pen(activity, MotionEvent.ACTION_MOVE, 150, 365, .8f, down);
+      navigationStage(activity, "drawingSecond");
+      waitFor("Return navigation did not wait for the second gesture", () -> onUi(activity, () -> activity.navigation.deferred));
+      ownerObserved(activity, "deferredSecond");
+      // A real native toolbar action reclaims the view before the queued opening.
+      instrumentation.runOnMainSync(() -> { android.widget.Button pen = findButton(activity.screen, "Stylo"); assertNotNull(pen); pen.performClick(); });
+      pen(activity, MotionEvent.ACTION_UP, 210, 390, .5f, down);
+      waitFor("Human cancellation did not settle", () -> onUi(activity, () -> activity.navigation.command == null && activity.pendingNative == 0 && activity.lastScene.optInt("pending") == 0));
+      assertTrue("A human action must keep the chosen notebook", onUi(activity, () -> activity.ink == second && "android-second".equals(activity.currentScope.optString("resourceId"))));
+      navigationStage(activity, "cancelledSecond"); ownerObserved(activity, "cancelledSecond");
+      screenshot(activity, "notebook-remote-open");
+      } catch (Throwable error) {
+        instrumentation.runOnMainSync(() -> System.out.println("Navigation failure state: " + InkView.json("scope", activity.currentScope, "scene", activity.lastScene,
+          "status", activity.status.getText().toString(), "busy", activity.navigationBusy(), "opening", activity.navigation.opening,
+          "command", activity.navigation.command, "receipt", activity.navigation.receipt, "deadlineRemaining", activity.navigation.deadline - SystemClock.elapsedRealtime(),
+          "attached", activity.ink != null && activity.ink.isAttachedToWindow(), "shown", activity.ink != null && activity.ink.isShown(), "focused", activity.hasWindowFocus())));
+        try { screenshot(activity, "notebook-navigation-failure"); } catch (Exception capture) { error.addSuppressed(capture); }
+        throw error;
+      }
+    }
+  }
+
   @Test public void pairedNativeInkAndOfflineQueue() throws Exception {
     JSONObject ticket = fixture();
     JSONObject wrong = InkView.copy(ticket); wrong.put("fingerprint", "0".repeat(64));
@@ -96,6 +166,9 @@ public final class NotebookDeviceTest {
       waitFor("Pairing did not produce a native credential", () -> onUi(activity, () -> activity.connection != null && activity.connection.serverId.equals(ticket.optString("serverId"))));
       DeviceConnection connection = activity.connection;
       assertFalse("Only the native session may contain the credential", connection.session.toString().contains(connection.credential));
+      boolean navigationRefused = false;
+      try { connection.request("", "/device/navigation/receipt", "POST", "{}"); } catch (IOException expected) { navigationRefused = true; }
+      assertTrue("The generic WebView transport cannot claim native display receipts", navigationRefused);
       open(activity, connection);
       waitFor("Mac drawing did not appear", () -> onUi(activity, () -> activity.ink.objects.containsKey("mac-box")));
       int before = scene(connection).getJSONObject("document").getJSONArray("objects").length();

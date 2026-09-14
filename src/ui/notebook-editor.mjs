@@ -60,6 +60,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   dialog.append(header, notice, tools, actions, workspace, conflicts, errorBox, statusRow); document.body.append(dialog); dialog.showModal();
   let view, client, surface, closed = false, syncing = false, saving = 0, timer, objectsTimer, textForm = null, lastConflictKey = '', authBlocked = false;
   const failedLocalWork = [], cleanup = new AbortController();
+  const navigationRequests = new Map();
   const fail = error => { if (!closed) errorBox.textContent = error.message || String(error); };
   const run = work => Promise.resolve(work).catch(fail);
   const enqueue = async (edits, options) => {
@@ -124,6 +125,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     const label = notebookElement('label', 'Device name'), input = document.createElement('input'); input.value = 'Tablet'; input.maxLength = 100; label.append(input);
     const result = notebookElement('div'), message = notebookElement('p'); message.setAttribute('role', 'status');
     let ticket = null, dismissed = false;
+    const navigationTimers = new Set();
     const create = button('Create pairing code', async () => {
       create.disabled = true; message.textContent = '';
       try {
@@ -138,15 +140,57 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     });
     const paired = notebookElement('div');
     for (const device of devices.devices.filter(item => !item.revokedAt && item.grants.some(grant => grant.paths.includes(path)))) {
-      const row = notebookElement('p', device.label + ' '), revoke = button('Disconnect ' + device.label, async () => {
+      const row = notebookElement('div'), label = notebookElement('p', device.label), detail = notebookElement('p', 'Checking tablet…');
+      detail.setAttribute('role', 'status'); detail.setAttribute('aria-label', device.label + ' display status');
+      let revoked = false, sending = false, inspecting = false, navigationTimer = null;
+      const terminal = new Set(['applied', 'cancelled', 'superseded', 'expired', 'unavailable']);
+      const display = state => {
+        const command = state.command?.target.resourceId === resourceId ? state.command : null;
+        if (command && !terminal.has(command.status)) navigationRequests.set(device.id, command.operationId);
+        else if (command) navigationRequests.delete(device.id);
+        const messages = { requested: 'Opening requested · waiting for the tablet.', deferred: 'Tablet is drawing or editing · opening deferred.',
+          applied: 'Displayed on ' + device.label + '.', cancelled: 'Opening cancelled on the tablet.', superseded: 'Replaced by a newer opening request.',
+          expired: 'Opening expired. Request it again when the tablet is ready.', unavailable: 'The requested notebook is no longer available.' };
+        detail.textContent = command ? messages[command.status] || 'Waiting for the tablet.' : state.online ? 'Tablet connected.' : 'Open Context Room on the tablet to receive this notebook.';
+        open.disabled = sending || Boolean(command && !terminal.has(command.status));
+      };
+      async function inspect() {
+        if (dismissed || closed || revoked || inspecting) return;
+        inspecting = true;
+        if (navigationTimer) { clearTimeout(navigationTimer); navigationTimers.delete(navigationTimer); navigationTimer = null; }
+        try {
+          const operationId = navigationRequests.get(device.id);
+          const state = await request('/api/devices/navigation?deviceId=' + encodeURIComponent(device.id) + (operationId ? '&operationId=' + encodeURIComponent(operationId) : ''));
+          if (dismissed || closed || revoked) return;
+          display(state);
+          if (state.command && terminal.has(state.command.status) && state.command.target.resourceId === resourceId) return;
+        } catch (error) { detail.textContent = error.message + ' The display is not confirmed.'; open.disabled = sending; }
+        finally { inspecting = false; }
+        if (!dismissed && !closed && !revoked) {
+          navigationTimer = setTimeout(() => { navigationTimers.delete(navigationTimer); navigationTimer = null; void inspect(); }, 1200); navigationTimers.add(navigationTimer);
+        }
+      }
+      const open = button('Open on ' + device.label, async () => {
+        if (sending) return;
+        sending = true; open.disabled = true;
+        const operationId = navigationRequests.get(device.id) || crypto.randomUUID(); navigationRequests.set(device.id, operationId);
+        try {
+          const command = await request('/api/devices/open', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ deviceId: device.id, operationId, resourceId }) });
+          if (!dismissed && !revoked) display({ command, online: true });
+        } catch (error) { detail.textContent = error.message + ' The display is not confirmed.'; open.disabled = false; }
+        finally { sending = false; }
+        void inspect();
+      }); open.disabled = true;
+      const revoke = button('Disconnect ' + device.label, async () => {
         revoke.disabled = true;
-        try { await request('/api/devices/revoke', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ deviceId: device.id }) }); row.textContent = device.label + ' disconnected.'; }
+        try { await request('/api/devices/revoke', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ deviceId: device.id }) }); revoked = true; navigationRequests.delete(device.id); row.textContent = device.label + ' disconnected.'; }
         catch (error) { message.textContent = error.message; revoke.disabled = false; }
-      }); row.append(revoke); paired.append(row);
+      }); row.append(label, open, revoke, detail); paired.append(row); void inspect();
     }
     sheet.append(heading, scope, label, create, result, message, paired, button('Close connection', () => sheet.close()));
     sheet.addEventListener('close', () => {
       dismissed = true;
+      for (const timer of navigationTimers) clearTimeout(timer);
       if (ticket) void request('/api/devices/cancel-pairing', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pairingId: ticket.pairingId }) }).catch(() => {});
       sheet.remove();
     }, { once: true });

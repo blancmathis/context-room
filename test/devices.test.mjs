@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { createConnectedDeviceService } from '../src/device_server.mjs';
 import { createDeviceAuthority, ensureDeviceIdentity } from '../src/device_authority.mjs';
+import { createDeviceNavigation } from '../src/device_navigation.mjs';
 import { canonicalNotebookRoot } from '../src/notebook_io.mjs';
 import { readNotebook, mutateNotebook, openNotebook, NOTEBOOK_STORE } from '../src/notebooks.mjs';
 import { createContextRoomDeviceService, createMemoryServer, initializeContextRoomProject } from '../src/context_room.mjs';
@@ -45,6 +46,75 @@ async function serviceFor(t, fixture) {
   return service;
 }
 const put = id => ({ kind: 'put', id, expectedRevision: 0, object: { id, type: 'rect', x: 10, y: 10, width: 80, height: 40 } });
+
+test('navigation recovers an interrupted control pointer and rejects acknowledgements after its deadline', async t => {
+  const f = fixture(t), service = await serviceFor(t, f);
+  const scene = openNotebook(f.root, { id: 'navigation-book', path: 'docs/Sketch.crnb', canWrite: f.canWrite });
+  const paired = service.authority.pair(service.createPairing({ projectId: f.projectId, paths: ['docs/Sketch.crnb'] }));
+  let time = 1000;
+  const target = { projectId: f.projectId, resourceId: scene.resourceId, path: scene.locator.path, locationRevision: scene.locator.revision, sceneRevision: scene.revision };
+  const navigation = createDeviceNavigation({ stateRoot: f.stateRoot, serverId: service.describe().serverId, now: () => time,
+    inspectDevice: id => service.authority.inspect(id), resolveTarget: () => target });
+  const authenticate = () => service.authority.authenticate(paired.token), clientSessionId = 'synthetic-native-session';
+  navigation.poll(paired.device.id, authenticate, { clientSessionId });
+  const controlPath = path.join(f.stateRoot, 'navigation', paired.device.id, 'control.json');
+  const beforePointer = fs.readFileSync(controlPath);
+  const request = { deviceId: paired.device.id, projectId: f.projectId, resourceId: scene.resourceId, operationId: 'interrupted-request' };
+  navigation.request(request);
+  // Model a process ending after its immutable command write but before the control pointer.
+  fs.writeFileSync(controlPath, beforePointer);
+  assert.equal(navigation.request(request).replayed, true);
+  assert.equal(navigation.inspect(paired.device.id).command.operationId, request.operationId);
+  time += 31_000;
+  assert.equal(navigation.inspect(paired.device.id).command.status, 'expired');
+  assert.throws(() => navigation.receipt(paired.device.id, authenticate, { clientSessionId, operationId: request.operationId, status: 'applied', target }), { code: 'device_navigation_stale' });
+  assert.equal(navigation.request(request).status, 'expired');
+  assert.throws(() => navigation.request({ ...request, operationId: 'new-offline-request' }), { code: 'device_navigation_offline' });
+});
+
+test('remote notebook navigation is scoped, session-bound and confirmed only by an exact device receipt', async t => {
+  const f = fixture(t), service = await serviceFor(t, f);
+  const scene = openNotebook(f.root, { id: 'navigation-book', path: 'docs/Sketch.crnb', canWrite: f.canWrite });
+  const paired = service.authority.pair(service.createPairing({ projectId: f.projectId, paths: ['docs/Sketch.crnb'] }));
+  const command = { deviceId: paired.device.id, operationId: 'open-notebook-once', projectId: f.projectId, resourceId: scene.resourceId };
+  assert.throws(() => service.navigation.request(command), { code: 'device_navigation_offline' });
+  const poll = body => request(service, '/device/navigation/poll', { credential: paired.token, body: { protocolVersion: 1, clientSessionId: 'native-session-one', ...body } });
+  assert.equal((await poll({})).body.command, null);
+  const sent = service.navigation.request(command); assert.equal(sent.status, 'requested'); assert.equal(sent.accepted, false);
+  assert.equal(service.navigation.request(command).replayed, true);
+  assert.equal((await poll({ busy: true })).body.command.operationId, command.operationId);
+  const receipt = body => request(service, '/device/navigation/receipt', { credential: paired.token, body: { protocolVersion: 1, clientSessionId: 'native-session-one', operationId: command.operationId, ...body } });
+  assert.equal((await receipt({ status: 'deferred' })).body.status, 'deferred');
+  assert.equal(service.navigation.inspect(paired.device.id).command.status, 'deferred');
+  assert.equal((await receipt({ status: 'applied', target: { ...sent.target, resourceId: 'other-resource' } })).status, 409);
+  assert.equal((await receipt({ status: 'applied', target: { ...sent.target, sceneRevision: sent.target.sceneRevision + 1 } })).status, 409);
+  assert.equal((await receipt({ status: 'applied', target: sent.target, clientSessionId: 'different-session' })).status, 403);
+  const applied = await receipt({ status: 'applied', target: sent.target }); assert.equal(applied.body.status, 'applied');
+  assert.equal((await receipt({ status: 'applied', target: sent.target })).body.replayed, true);
+  assert.equal(service.navigation.inspect(paired.device.id).command.status, 'applied');
+  assert.equal((await poll({})).body.command, null);
+  assert.equal(fs.existsSync(path.join(f.root, scene.locator.path)), false);
+});
+
+test('navigation expires across device sessions and service restarts, and revocation stops receipts', async t => {
+  const f = fixture(t); let service = await serviceFor(t, f);
+  const scene = openNotebook(f.root, { id: 'navigation-book', path: 'docs/Sketch.crnb', canWrite: f.canWrite });
+  const paired = service.authority.pair(service.createPairing({ projectId: f.projectId, paths: ['docs/Sketch.crnb'] }));
+  const poll = session => request(service, '/device/navigation/poll', { credential: paired.token, body: { protocolVersion: 1, clientSessionId: session } });
+  const send = operationId => service.navigation.request({ deviceId: paired.device.id, operationId, projectId: f.projectId, resourceId: scene.resourceId });
+  await poll('native-session-one'); send('first-request');
+  await poll('native-session-two'); assert.equal(service.navigation.inspect(paired.device.id).command.status, 'cancelled');
+  assert.equal((await poll('native-session-one')).status, 409);
+  send('second-request'); const latest = send('third-request');
+  assert.equal(service.navigation.inspect(paired.device.id, 'second-request').command.status, 'superseded');
+  await service.close(); service = await serviceFor(t, f);
+  assert.equal(service.navigation.inspect(paired.device.id).command.status, 'expired');
+  await poll('native-session-two');
+  assert.equal((await poll('native-session-two')).body.command, null);
+  service.authority.revoke(paired.device.id);
+  assert.equal((await request(service, '/device/navigation/receipt', { credential: paired.token, body: { protocolVersion: 1, operationId: latest.operationId, clientSessionId: 'native-session-two', status: 'applied', target: latest.target } })).status, 403);
+  assert.equal(fs.existsSync(path.join(f.root, scene.locator.path)), false);
+});
 
 test('TLS batches keep per-operation receipts, scope and targeted conflicts', async t => {
   const f = fixture(t), service = await serviceFor(t, f);

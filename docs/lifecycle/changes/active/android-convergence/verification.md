@@ -268,10 +268,52 @@ The contract fixture also closes its server before removing only its own
 read-only snapshots. The earlier failed setup/cleanup runs do not count as
 successful verification.
 
+At Shared commit `1f8811a2e9c4b465d51b2d41bb7bd309a274292e`, hosted run
+`34867901737` passes all three Node versions and all four browser jobs.
+The sustained navigation job fails its unchanged maximum file-opening budget:
+2,488 ms observed against less than 2,000 ms. The CI gate therefore fails.
+Convergence run `34867901963` passes its contracts and Android artifact job.
+The sustained-navigation failure remains under investigation; the earlier
+green checkpoint does not turn this commit into a green release.
+
+## Native opening receipts
+
+The owner can request a notebook on a paired drawing tablet and observe
+requested, deferred and applied states. The native receipt binds the exact
+project/resource/path/location and a displayed canonical scene revision. It is
+sent by the native canvas callback, outside the JavaScript transport. The
+client waits for a held gesture and its current Mac receipts, and a native
+toolbar action can reclaim the view. Server tests also cover retired sessions,
+supersession, expiry, revocation and recovery of an interrupted control-pointer
+publication without another request.
+
+The complete focused contract run passes **87 tests without skips**. The
+opening/pairing browser scenario passes in all four browser configurations,
+including its accessibility check; the narrow-screen capture was inspected.
+The subsequent complete notebook browser matrix passes all **24 scenarios**
+in 2.7 minutes. Doctor, the generated agent-guide regression, package privacy
+(118 packaged files), package dry-run and the staged secret scan pass.
+
+APK SHA-256 `c6cc2373e075b54de63f557f490528d412623133a6f541ef5ffb39a47e2a79e5`
+passes four instrumentation phases in two consecutive fresh emulator fixtures.
+The first run takes 18.75 s / 16.98 s / 26.62 s / 1.82 s, including startup.
+The retained native screenshots include the second notebook and its ink.
+Both fixtures end with twelve objects in the first notebook, three in the
+second, an applied opening receipt and a human-cancelled return request.
+Neither notebook becomes an accepted ordinary file. The generic WebView
+transport is separately checked to refuse native navigation receipts.
+
+An initial driver attempt misread `adb exec-out` success when the stage file
+did not yet exist; the driver now uses the shell protocol's actual exit code.
+A subsequent attempt timed out waiting for the first native display receipt.
+Targeted failure diagnostics were added and the next two complete runs pass;
+the earlier unconfirmed attempt remains a recorded failure, with no claim
+that its cause has been established. This is emulator evidence, not a physical
+BOOX or Wi-Fi result.
+
 ## Open product gates
 
-Both complete tablet modes, exact remote
-application receipts,
+Both complete tablet modes, optional viewport following and presentation,
 context-bound real dictation/conversation/co-drawing, data migration and final
 removal of the external compatibility dependency remain implementation work.
 The verified Android installation is an emulator preview. It does not establish

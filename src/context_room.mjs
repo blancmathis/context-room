@@ -20234,7 +20234,19 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       return;
     }
     if (!deviceService) throw sharedRequestError('Connected devices are disabled. Start Context Room with an explicit device address.', 409, 'device_service_disabled');
+    if (req.method === 'GET' && url.pathname === '/api/devices/navigation') {
+      const deviceId = url.searchParams.get('deviceId');
+      const device = deviceService.authority.inspect(deviceId);
+      if (!device.grants.some(grant => grant.projectId === contextRoomProjectId(root))) throw sharedRequestError('The device belongs to another project.', 403, 'device_project_scope');
+      const navigation = deviceService.navigation.inspect(deviceId, url.searchParams.get('operationId') || '');
+      if (navigation.command?.target.projectId !== contextRoomProjectId(root)) navigation.command = null;
+      sendJson(res, 200, navigation); return;
+    }
     const body = await readJsonBody(req, { maxBytes: 16_384 });
+    if (req.method === 'POST' && url.pathname === '/api/devices/open') {
+      sendJson(res, 200, deviceService.navigation.request({ deviceId: body.deviceId, operationId: body.operationId,
+        projectId: contextRoomProjectId(root), resourceId: body.resourceId })); return;
+    }
     if (req.method === 'POST' && url.pathname === '/api/devices/pair') {
       sendJson(res, 201, { ...deviceService.createPairing({ projectId: contextRoomProjectId(root), paths: body.paths, label: body.label }), ...deviceService.describe() });
       return;

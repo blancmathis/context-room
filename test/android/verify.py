@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import time
 import urllib.request
+import urllib.parse
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--serial', required=True)
@@ -54,34 +55,94 @@ try:
         ticket = json.load(response)['path']
     run(adb + ['push', ticket, '/data/local/tmp/context-room-ticket.json'], capture_output=True)
     durations = {}
-    for phase in ('pairedNativeInkAndOfflineQueue', 'restartReplaysOfflineExactlyOnce', 'nativeStorageBoundary'):
+    navigation_receipts = {}
+
+    def owner(route, method='GET'):
+        with urllib.request.urlopen(urllib.request.Request(fixture['ownerUrl'] + route, method=method), timeout=10) as response:
+            return json.load(response)
+
+    def navigation_progress():
+        stage_file = subprocess.run(adb + ['shell', 'run-as', 'app.contextroom.tablet.preview', 'cat', 'files/navigation-stage.json'], capture_output=True)
+        if stage_file.returncode != 0:
+            return
+        stage = json.loads(stage_file.stdout)
+        if stage.get('serverId') != fixture['serverId']:
+            return
+        stage = stage['stage']
+        current = owner('/navigation')
+        next_stage = None
+        if stage == 'drawingFirst':
+            if current['online'] and 'firstRequested' not in navigation_receipts:
+                navigation_receipts['firstRequested'] = owner('/open?target=second&operationId=fixture-first-opening', 'POST')
+            if (current.get('command') or {}).get('status') == 'deferred':
+                navigation_receipts['firstDeferred'] = current['command']
+                next_stage = 'deferredFirst'
+        elif stage == 'secondDisplayed':
+            assert current['command']['status'] == 'applied', current
+            assert current['command']['appliedTarget']['resourceId'] == 'android-second'
+            navigation_receipts['firstApplied'] = current['command']
+            next_stage = 'appliedFirst'
+        elif stage == 'drawingSecond':
+            if 'secondRequested' not in navigation_receipts:
+                navigation_receipts['secondRequested'] = owner('/open?target=first&operationId=fixture-second-opening', 'POST')
+            if current['command']['operationId'] == 'fixture-second-opening' and current['command']['status'] == 'deferred':
+                navigation_receipts['secondDeferred'] = current['command']
+                next_stage = 'deferredSecond'
+        elif stage == 'cancelledSecond':
+            assert current['command']['status'] == 'cancelled', current
+            navigation_receipts['secondCancelled'] = current['command']
+            next_stage = 'cancelledSecond'
+        if next_stage and navigation_receipts.get('lastOwnerStage') != next_stage:
+            acknowledgement = output / 'navigation-owner.json'
+            acknowledgement.write_text(json.dumps({'serverId': fixture['serverId'], 'stage': next_stage}))
+            run(adb + ['push', str(acknowledgement), '/data/local/tmp/context-room-navigation-owner.json'], capture_output=True)
+            navigation_receipts['lastOwnerStage'] = next_stage
+
+    for phase in ('pairedNativeInkAndOfflineQueue', 'restartReplaysOfflineExactlyOnce', 'remoteOpeningPreservesInkAndHumanControl', 'nativeStorageBoundary'):
         # The target is the fixture preview only, on the checked, separate emulator.
         run(adb + ['shell', 'am', 'force-stop', 'app.contextroom.tablet.preview'], capture_output=True)
         started = time.monotonic()
         log_path = output / (phase + '.log')
         with log_path.open('w') as log:
-            run(adb + ['shell', 'am', 'instrument', '-w', '-r', '-e', 'class', 'app.contextroom.tablet.NotebookDeviceTest#' + phase,
+            process = subprocess.Popen(adb + ['shell', 'am', 'instrument', '-w', '-r', '-e', 'class', 'app.contextroom.tablet.NotebookDeviceTest#' + phase,
                        '-e', 'fixture', '/data/local/tmp/context-room-ticket.json',
-                       'app.contextroom.tablet.preview.test/androidx.test.runner.AndroidJUnitRunner'], stdout=log, stderr=subprocess.STDOUT, timeout=100)
+                       'app.contextroom.tablet.preview.test/androidx.test.runner.AndroidJUnitRunner'], stdout=log, stderr=subprocess.STDOUT)
+            while process.poll() is None:
+                if time.monotonic() - started > 100:
+                    raise RuntimeError('Android phase exceeded its deadline: ' + str(log_path))
+                if phase == 'remoteOpeningPreservesInkAndHumanControl':
+                    navigation_progress()
+                time.sleep(.35)
+            if process.returncode != 0:
+                raise RuntimeError('Android instrumentation command failed: ' + str(log_path))
         content = log_path.read_text()
         # am instrument can return process exit 0 for a failed JUnit test.
         if 'OK (1 test)' not in content or 'FAILURES!!!' in content:
+            with (output / (phase + '-diagnostic.log')).open('w') as diagnostic:
+                subprocess.run(adb + ['logcat', '-d', '-s', 'System.out:I', '*:S'], stdout=diagnostic, stderr=subprocess.STDOUT)
+            (output / 'navigation-receipts.json').write_text(json.dumps(navigation_receipts, indent=2) + '\n')
             raise RuntimeError('Android acceptance phase failed: ' + str(log_path))
         durations[phase] = round(time.monotonic() - started, 2)
         print(phase + ': passed', flush=True)
-    for name in ('notebook-offline', 'notebook-recovered'):
+    for name in ('notebook-offline', 'notebook-recovered', 'notebook-remote-open'):
         with (output / (name + '.png')).open('wb') as image:
             run(adb + ['exec-out', 'run-as', 'app.contextroom.tablet.preview', 'cat', 'files/' + name + '.png'], stdout=image)
         if not (output / (name + '.png')).read_bytes().startswith(b'\x89PNG\r\n\x1a\n'):
             raise RuntimeError('Missing rendered Android capture')
     with urllib.request.urlopen(fixture['ownerUrl'] + '/scene', timeout=10) as response:
         scene = json.load(response)
-    assert len(scene['document']['objects']) == 11
+    assert len(scene['document']['objects']) == 12
     assert scene['accepted'] is False
     assert not (fixture_dir / 'project/docs/Tablet.crnb').exists()
+    second = owner('/scene?target=second')
+    assert len(second['document']['objects']) == 3 and second['accepted'] is False
+    assert not (fixture_dir / 'project/docs/Second.crnb').exists()
+    assert navigation_receipts['firstApplied']['accepted'] is False
+    assert navigation_receipts['secondCancelled']['accepted'] is False
+    (output / 'navigation-receipts.json').write_text(json.dumps(navigation_receipts, indent=2) + '\n')
     proof = {'schemaVersion': 1, 'device': 'isolated Android emulator', 'avd': avd, 'physicalBoox': False,
              'apkSha256': hashlib.sha256(apk.read_bytes()).hexdigest(), 'durationsSeconds': durations,
-             'canonicalObjects': 11, 'accepted': False,
+             'canonicalObjects': 12, 'secondNotebookObjects': 3, 'nativeDisplayReceipt': True, 'humanCancelledOpening': True, 'accepted': False,
              'sourceHead': run(['git', 'rev-parse', 'HEAD'], cwd=repo, capture_output=True, text=True).stdout.strip(),
              'sourceHasUncommittedChanges': bool(run(['git', 'status', '--porcelain'], cwd=repo, capture_output=True, text=True).stdout.strip())}
     (output / 'proof.json').write_text(json.dumps(proof, indent=2) + '\n')

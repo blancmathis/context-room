@@ -59,7 +59,7 @@ test('@smoke @notebook an owner sees the Shared destination and submits one exac
   } finally { await f.close(); }
 });
 
-test('@smoke @notebook owner pairs and revokes a device for the displayed notebook', async ({ page }, testInfo) => {
+test('@smoke @notebook owner pairs, requests an exact display receipt and revokes a device', async ({ page }, testInfo) => {
   const f = await fixture(page, { devices: true });
   try {
     const notebook = await open(page);
@@ -72,11 +72,28 @@ test('@smoke @notebook owner pairs and revokes a device for the displayed notebo
     await expect(code).toBeVisible();
     const ticket = JSON.parse(await code.inputValue());
     expect(ticket.grants).toEqual([{ mode: 'draw', projectId: f.runtime.projectId, paths: ['docs/Sketch.crnb'] }]);
-    const device = f.deviceService.authority.pair(ticket).device;
+    const pairedDevice = f.deviceService.authority.pair(ticket), device = pairedDevice.device;
+    const authenticate = () => f.deviceService.authority.authenticate(pairedDevice.token);
+    const clientSessionId = 'synthetic-native-session';
+    f.deviceService.navigation.poll(device.id, authenticate, { clientSessionId });
     // Pairing code is an ephemeral synthetic credential; screenshots show the form, not its value.
     await pairing.getByRole('button', { name: 'Close connection', exact: true }).click();
     await notebook.getByRole('button', { name: 'Connect tablet', exact: true }).click();
     await expect(pairing.getByRole('button', { name: 'Disconnect Synthetic tablet', exact: true })).toBeVisible();
+    const display = pairing.getByRole('status', { name: 'Synthetic tablet display status', exact: true });
+    await expect(display).toHaveText('Tablet connected.');
+    await pairing.getByRole('button', { name: 'Open on Synthetic tablet', exact: true }).click();
+    await expect(display).toHaveText('Opening requested · waiting for the tablet.');
+    const command = f.deviceService.navigation.poll(device.id, authenticate, { clientSessionId, busy: true }).command;
+    expect(command.target.resourceId).toBe(await notebook.getAttribute('data-resource-id'));
+    expect(command.target.projectId).toBe(f.runtime.projectId);
+    f.deviceService.navigation.receipt(device.id, authenticate, { clientSessionId, operationId: command.operationId, status: 'deferred' });
+    await expect(display).toHaveText('Tablet is drawing or editing · opening deferred.');
+    // This is the browser's receipt rendering contract. Actual native rendering is
+    // separately checked by the Android instrumentation, never inferred from this fixture.
+    f.deviceService.navigation.receipt(device.id, authenticate, { clientSessionId, operationId: command.operationId, status: 'applied', target: command.target });
+    await expect(display).toHaveText('Displayed on Synthetic tablet.');
+    expect(fs.existsSync(path.join(f.root, 'docs/Sketch.crnb'))).toBe(false);
     await page.screenshot({ path: testInfo.outputPath('notebook-device-pairing.png'), fullPage: true });
     const accessibility = await new AxeBuilder({ page }).include('.notebook-pair-dialog').analyze();
     expect(accessibility.violations).toEqual([]);

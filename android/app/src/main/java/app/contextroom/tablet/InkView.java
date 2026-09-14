@@ -24,6 +24,8 @@ final class InkView extends View {
     default void interaction() {}
 
     default void remoteApplied(InkView source) {}
+
+    default void rendered(InkView source) {}
   }
 
   final LinkedHashMap<String, JSONObject> objects = new LinkedHashMap<>();
@@ -479,7 +481,7 @@ final class InkView extends View {
     }
     drawSelection(c);
     c.restore();
-    if(!snapshotRecording)dragRaster.prepare();
+    if(!snapshotRecording) { dragRaster.prepare(); listener.rendered(this); }
   }
 
   void render(Canvas c, boolean selections) {

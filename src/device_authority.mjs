@@ -161,6 +161,11 @@ export function createDeviceAuthority({ stateRoot, serverId, now = Date.now }) {
       return { ...publicDevice(device), grants: device.grants.map(grant) };
     },
     list() { return read().devices.map(publicDevice); },
+    inspect(id) {
+      const device = read().devices.find(item => item.id === id);
+      if (!device || device.revokedAt || !(device.expiresAt > now())) throw deviceError('device_unauthorized', 'Pairing expired or was revoked.');
+      return { ...publicDevice(device), grants: device.grants.map(grant) };
+    },
     revoke(id) {
       return update(state => {
         const device = state.devices.find(item => item.id === id);
