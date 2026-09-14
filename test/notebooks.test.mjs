@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { openNotebook, readNotebook, mutateNotebook, undoNotebook, freezeNotebook, readFrozenNotebook, recordNotebookSubmission, notebookReceipt, relocateNotebook, NOTEBOOK_STORE, encodeNotebook, decodeNotebook, addNotebookAsset } from '../src/notebooks.mjs';
-import { notebookHash } from '../src/notebook_io.mjs';
+import { notebookHash, withNotebookLock, readNotebookBytes } from '../src/notebook_io.mjs';
 const human = {kind:'human',id:'human-fixture'}, agent = {kind:'agent',id:'agent-fixture'};
 const canWrite = value => value.startsWith('docs/') && value.endsWith('.crnb');
 function fixture(t) {
@@ -96,4 +96,48 @@ test('independent processes share canonical object revisions and durable receipt
   assert.equal(notebookReceipt(root,scene.resourceId,'client-one-op-7').status,'confirmed');
   assert.equal(notebookReceipt(root,scene.resourceId,'client-two-op-7').status,'confirmed');
   assert.equal(notebookHash(encodeNotebook(result.document)),notebookHash(encodeNotebook(decodeNotebook(encodeNotebook(result.document)))));
+});
+
+test('a contender waits for atomic lock publication, while persistent hardlinks still fail closed', async t => {
+  const { root } = fixture(t), rel = `${NOTEBOOK_STORE}/publication.lock`, target = path.join(root, rel);
+  const moduleUrl = new URL('../src/filesystem_lock.mjs', import.meta.url).href;
+  const code = `import fs from 'node:fs'; import {withFilesystemLock} from ${JSON.stringify(moduleUrl)};
+    const target=process.env.CR_NOTEBOOK_TEST_LOCK, link=fs.linkSync;
+    fs.linkSync=(from,to)=>{link(from,to);if(to===target){fs.writeSync(1,'published\\n');fs.readSync(0,Buffer.alloc(1),0,1,null);Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,100);}};
+    withFilesystemLock(target,()=>{});`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', code], { env: { ...process.env, CR_NOTEBOOK_TEST_LOCK: target }, stdio: ['pipe', 'pipe', 'pipe'] });
+  let stderr = '';
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  const exited = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', code => code === 0 ? resolve() : reject(new Error(stderr || `child exit ${code}`))); });
+  t.after(() => { if (child.exitCode === null) child.kill(); });
+  await new Promise((resolve, reject) => { child.stdout.once('data', resolve); child.once('error', reject); child.once('exit', code => { if (code !== 0) reject(new Error(stderr)); }); });
+  try {
+    assert.equal(fs.lstatSync(target).nlink, 2);
+    child.stdin.end('x');
+    assert.equal(withNotebookLock(root, rel, () => fs.lstatSync(target).nlink), 1);
+  } finally { child.stdin.end(); await exited; }
+  const foreign = path.join(root, 'retained-lock-data');
+  fs.writeFileSync(foreign, 'Retained synthetic bytes'); fs.linkSync(foreign, target);
+  assert.throws(() => withNotebookLock(root, rel, () => assert.fail('linked lock must not be used')), { code: 'notebook_path_scope' });
+  assert.equal(fs.readFileSync(foreign, 'utf8'), 'Retained synthetic bytes');
+  assert.equal(fs.lstatSync(target).nlink, 2);
+  assert.throws(() => readNotebookBytes(root, rel), { code: 'notebook_path_scope' });
+});
+
+test('a reader waits for an immutable frame to finish its exclusive publication', async t => {
+  const { root } = fixture(t), rel = `${NOTEBOOK_STORE}/synthetic-frame.json`, target = path.join(root, rel);
+  const moduleUrl = new URL('../src/notebook_io.mjs', import.meta.url).href;
+  const code = `import fs from 'node:fs'; import {writeNotebookBytes} from ${JSON.stringify(moduleUrl)};
+    const link=fs.linkSync;fs.linkSync=(from,to)=>{link(from,to);fs.writeSync(1,'published\\n');fs.readSync(0,Buffer.alloc(1),0,1,null);Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,100);};
+    writeNotebookBytes(process.env.CR_NOTEBOOK_TEST_ROOT,${JSON.stringify(rel)},Buffer.from('complete frame'),{exclusive:true});`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', code], { env: { ...process.env, CR_NOTEBOOK_TEST_ROOT: root }, stdio: ['pipe', 'pipe', 'pipe'] });
+  let stderr = ''; child.stderr.on('data', chunk => { stderr += chunk; });
+  const exited = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', code => code === 0 ? resolve() : reject(new Error(stderr || `child exit ${code}`))); });
+  t.after(() => { if (child.exitCode === null) child.kill(); });
+  await new Promise((resolve, reject) => { child.stdout.once('data', resolve); child.once('error', reject); child.once('exit', code => { if (code !== 0) reject(new Error(stderr)); }); });
+  try {
+    assert.equal(fs.lstatSync(target).nlink, 2); child.stdin.end('x');
+    assert.equal(readNotebookBytes(root, rel).toString(), 'complete frame');
+    assert.equal(fs.lstatSync(target).nlink, 1);
+  } finally { child.stdin.end(); await exited; }
 });

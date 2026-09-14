@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { withFilesystemLock } from './filesystem_lock.mjs';
 import { failNotebook } from './notebook_protocol.mjs';
 
@@ -11,6 +12,17 @@ export function stableNotebookJson(value) {
 }
 export const notebookHash = value => createHash('sha256').update(typeof value === 'string' || Buffer.isBuffer(value) ? value : stableNotebookJson(value)).digest('hex');
 export const notebookFileIdentity = stats => `${stats.dev}:${stats.ino}`;
+const publicationWait = new Int32Array(new SharedArrayBuffer(4));
+function notebookPathStat(target) {
+  const deadline = performance.now() + 250;
+  while (true) {
+    const stat = fs.lstatSync(target);
+    // Exclusive publication briefly links a completed temporary record before unlinking it.
+    // Never read a linked file: recheck that transition, then reject persistent links as before.
+    if (!stat.isFile() || stat.nlink === 1 || performance.now() >= deadline) return stat;
+    Atomics.wait(publicationWait, 0, 0, 5);
+  }
+}
 export function canonicalNotebookRoot(root) {
   if (typeof root !== 'string' || path.resolve(root) !== root) failNotebook('notebook_root_scope', 'Use the exact absolute filesystem location.');
   const stats = fs.lstatSync(root);
@@ -24,7 +36,7 @@ export function safeNotebookPath(root, rel) {
   for (const part of rel.split('/')) {
     current = path.join(current, part);
     try {
-      const stats = fs.lstatSync(current);
+      const stats = notebookPathStat(current);
       if (stats.isSymbolicLink() || !stats.isDirectory() && (!stats.isFile() || stats.nlink !== 1)) failNotebook('notebook_path_scope', 'Linked and special files are not permitted in notebook storage.');
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
