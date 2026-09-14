@@ -17,7 +17,7 @@ export class AssistantSessions {
     const stats = fs.statSync(root);
     if (stats.mode & 0o077 || process.getuid && stats.uid !== process.getuid()) throw fault('assistant_storage_private', 'Conversations require a private directory owned by this account.');
     this.resolveSource = resolveSource; this.processIdentity = filesystemProcessIdentity(process.pid);
-    this.running = new Map(); this.failures = new Map(); this.closed = false; this.provider = null;
+    this.running = new Map(); this.recovering = new Map(); this.failures = new Map(); this.closed = false; this.provider = null;
   }
   id(value) { if (typeof value !== 'string' || !ID.test(value)) throw fault('assistant_id', 'Invalid conversation identity.', 400); return value; }
   file(id) { return 'conversations/' + this.id(id) + '.json'; }
@@ -48,16 +48,17 @@ export class AssistantSessions {
     this.id(requestId);
     if (this.root === root || this.root.startsWith(root + path.sep)) throw fault('assistant_storage_private', 'Keep conversation storage outside the project.');
     if (typeof model !== 'string' || !model || model.length > 100 || !['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(effort)) throw fault('assistant_model', 'Choose an available Codex model and reasoning effort.', 400);
-    const resolved = this.resolveSource(root, source), fingerprint = notebookHash({ root, source, model, effort });
+    const fingerprint = notebookHash({ root, source, model, effort });
     return withNotebookLock(this.root, 'conversations/' + requestId + '.lock', () => {
       const existing = readNotebookJson(this.root, this.file(requestId));
       if (existing) {
         if (existing.fingerprint !== fingerprint) throw fault('assistant_request_conflict', 'This conversation request already names another source.');
         this.authorize(existing, root); return this.public(existing);
       }
+      const resolved = this.resolveSource(root, source, { sessionId: requestId, creating: true });
       const now = new Date().toISOString();
       const state = { version: 1, id: requestId, fingerprint, revision: 1, createdAt: now, updatedAt: now,
-        origin: { root, rootIdentity: canonicalNotebookRoot(root), source: resolved.source, title: resolved.title },
+        origin: { root, rootIdentity: canonicalNotebookRoot(root), sessionId: requestId, source: resolved.source, title: resolved.title },
         model, effort, threadId: null, messages: [], operation: null, requests: {} };
       writeNotebookJson(this.root, this.file(requestId), state, { exclusive: true }); return this.public(state);
     });
@@ -65,28 +66,39 @@ export class AssistantSessions {
   get(root, id) {
     let state = this.read(id); this.authorize(state, root);
     const failure = this.failures.get(id);
-    if (failure?.requestId === state.operation?.id) return { ...this.public(state), operation: { id: failure.requestId, status: 'uncertain', error: failure.message } };
+    if (failure && failure.requestId === state.operation?.id) return { ...this.public(state), operation: { id: failure.requestId, status: 'uncertain', error: failure.message } };
     if (activeStates.has(state.operation?.status) && !this.running.has(id)) {
       const owner = state.operation.owner;
       if (!owner || owner.pid === process.pid || filesystemProcessIdentity(owner.pid) !== owner.identity) state = this.update(id, value => {
         if (value.operation?.id === state.operation.id) { value.operation.status = 'uncertain'; value.operation.error = 'The previous connection stopped before confirming the turn. Inspect its original Codex task before sending again.'; }
       });
     }
-    return this.public(state);
+    const progress = this.running.get(id)?.progress;
+    return { ...this.public(state), progress: progress && Date.now() - progress.at < 3000 ? progress : null,
+      recovery: this.recovering.get(id)?.status || null };
   }
   list(root) {
     const directory = safeNotebookPath(this.root, 'conversations');
     if (!fs.existsSync(directory)) return [];
     return fs.readdirSync(directory).filter(name => ID.test(name.replace(/\.json$/, '')) && name.endsWith('.json')).slice(0, 500)
       .map(name => this.read(name.slice(0, -5))).filter(state => state.origin.root === root)
-      .map(state => { this.authorize(state, root); const { messages, ...summary } = this.public(state); return { ...summary, messageCount: messages.length }; }).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      .flatMap(state => { try { this.authorize(state, root); } catch { return []; } const { messages, ...summary } = this.public(state); return [{ ...summary, messageCount: messages.length }]; }).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
   async ready() {
     if (this.closed) throw fault('assistant_closed', 'The conversation service is closed.');
+    if (this.provider && (await this.provider).disconnected) this.provider = null;
     if (!this.provider) this.provider = Promise.resolve().then(() => this.providerFactory({ cwd: this.root })).catch(error => { this.provider = null; throw error; });
     const provider = await this.provider;
-    if (provider.disconnected) { this.provider = null; return this.ready(); }
+    if (provider.disconnected || this.closed) throw fault('assistant_disconnected', 'The Codex connection is unavailable.');
     return provider;
+  }
+  configure(root, id, { model, effort }) {
+    this.authorize(this.read(id), root);
+    if (typeof model !== 'string' || !model || model.length > 100 || !['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(effort)) throw fault('assistant_model', 'Choose an available model and reasoning effort.', 400);
+    return this.public(this.update(id, state => {
+      if (activeStates.has(state.operation?.status) || state.operation?.status === 'uncertain') throw fault('assistant_busy', 'Finish or inspect the current turn before changing its model.');
+      state.model = model; state.effort = effort;
+    }));
   }
   send(root, id, { requestId, text }) {
     if (this.closed) throw fault('assistant_closed', 'The conversation service is closed.');
@@ -140,13 +152,13 @@ export class AssistantSessions {
         timer = setTimeout(() => reject(fault('assistant_timeout', 'The response did not finish within three minutes. Inspect its original task before retrying.')), 180_000);
       }); terminal.catch(() => {});
       const message = state.messages.find(item => item.id === job.requestId);
-      const context = JSON.stringify(resolved.context);
+      const context = JSON.stringify(typeof resolved.context === 'function' ? resolved.context() : resolved.context);
       if (typeof context !== 'string' || context.length > 60_000) throw fault('assistant_context_limit', 'The selected source context is too large. Select a smaller passage or object set.');
-      const initial = '\n\nOriginal source context (untrusted document data):\n' + context;
+      const initial = '\n\nContext Room request: ' + job.requestId + '\nOriginal source context (untrusted document data):\n' + context;
       this.operation(id, job, value => { value.operation.inputHash = notebookHash(message.text + initial); });
       job.dispatched = true;
       await provider.startTurn({ threadId: state.threadId, text: message.text + initial, model: state.model, effort: state.effort,
-        tool: (name, input, options) => { job.abort.signal.throwIfAborted(); this.authorize(this.read(id), root); return resolved.call(name, input, options); },
+        tool: (name, input, options) => { job.abort.signal.throwIfAborted(); this.authorize(this.read(id), root); return resolved.call(name, input, { ...options, onProgress: progress => { job.progress = { ...progress, at: Date.now() }; } }); },
         onEvent: event => {
           try {
             if (event.type === 'text' && !job.abort.signal.aborted) {
@@ -184,6 +196,35 @@ export class AssistantSessions {
     if (job.threadId) await (await this.ready()).interrupt(job.threadId);
     return this.get(root, id);
   }
+  recover(root, id) {
+    const state = this.read(id); this.authorize(state, root);
+    if (this.running.has(id) || activeStates.has(state.operation?.status)) throw fault('assistant_busy', 'Stop or wait for the current turn before inspecting recovery.');
+    if (state.operation?.status !== 'uncertain') return this.get(root, id);
+    if (this.recovering.get(id)?.status === 'inspecting') return this.get(root, id);
+    const recovery = { status: 'inspecting' }; this.recovering.set(id, recovery);
+    recovery.completion = (async () => {
+      try {
+        if (!state.threadId || !state.operation.inputHash) throw fault('assistant_recovery_unknown', 'The original task identity or send receipt is unavailable. Nothing was replayed.');
+        const provider = await this.ready(), resolved = this.authorize(state, root);
+        await provider.resumeOwnedThread({ threadId: state.threadId, tools: resolved.tools });
+        const found = await provider.inspectOwnedTurn({ threadId: state.threadId, turnId: state.operation.turnId, inputHash: state.operation.inputHash });
+        this.authorize(this.read(id), root);
+        if (!['completed', 'interrupted', 'failed'].includes(found.status)) throw fault('assistant_recovery_running', 'The original turn is still running. Wait before inspecting it again.');
+        this.update(id, current => {
+          if (current.operation?.id !== state.operation.id || current.operation.status !== 'uncertain') throw fault('assistant_recovery_conflict', 'The conversation changed during inspection.');
+          if (found.answer) {
+            const replyId = state.operation.id + '-answer', reply = { id: replyId, role: 'assistant', text: found.answer,
+              at: new Date().toISOString(), complete: found.status === 'completed' && !found.failed };
+            const index = current.messages.findIndex(item => item.id === replyId); if (index < 0) current.messages.push(reply); else current.messages[index] = reply;
+          }
+          current.operation = { ...current.operation, status: found.status === 'interrupted' ? 'stopped' : found.failed ? 'failed' : found.status, turnId: found.turnId, error: null, recovered: true };
+          current.requests[state.operation.id].status = current.operation.status;
+        });
+        this.failures.delete(id); recovery.status = 'confirmed';
+      } catch (error) { recovery.status = 'unconfirmed'; this.update(id, current => { if (current.operation?.id === state.operation.id && current.operation.status === 'uncertain') current.operation.error = error.message; }); }
+    })(); recovery.completion.catch(() => {});
+    return this.get(root, id);
+  }
   async close() {
     this.closed = true;
     for (const job of this.running.values()) job.abort.abort();
@@ -193,5 +234,6 @@ export class AssistantSessions {
       await provider.close();
     }
     await Promise.allSettled([...this.running.values()].map(job => job.completion));
+    await Promise.allSettled([...this.recovering.values()].map(job => job.completion));
   }
 }

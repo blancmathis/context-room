@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter, once } from 'node:events';
 import { PassThrough } from 'node:stream';
+import { createHash } from 'node:crypto';
 import { CodexStdio, createCodexProvider } from '../src/codex_provider.mjs';
 
 function fixture({ refuseRestriction = false, dottedName = false } = {}) {
@@ -42,6 +43,25 @@ function fixture({ refuseRestriction = false, dottedName = false } = {}) {
 }
 const turn = () => new Promise(resolve => setImmediate(resolve));
 const tool = { type: 'function', name: 'notebook_scene', description: 'Read the original synthetic scene', inputSchema: { type: 'object', additionalProperties: false, properties: {} } };
+
+test('recovery reads only an owned exact turn and requires the recorded input hash', async t => {
+  const f = fixture(), provider = await f.provider(); t.after(() => provider.close());
+  const { threadId } = await provider.startThread({ instructions: 'Synthetic recovery', tools: [tool] });
+  const input = 'Unique original input', inputHash = createHash('sha256').update(input).digest('hex');
+  const requests = [], items = [ { type: 'userMessage', content: [{ type: 'text', text: input }] }, { type: 'reasoning', content: ['Not returned to UI'] }, { type: 'agentMessage', text: 'Recovered original answer.' } ];
+  provider.rpc.request = async (method, params) => {
+    requests.push({ method, params });
+    if (method === 'thread/turns/list') return { data: [{ id: 'original-turn', status: 'completed' }] };
+    assert.equal(method, 'thread/items/list'); const index = Number(params.cursor || 0);
+    return { data: [{ turnId: 'original-turn', item: items[index] }], nextCursor: index < items.length - 1 ? String(index + 1) : null };
+  };
+  await assert.rejects(provider.inspectOwnedTurn({ threadId: 'foreign', turnId: 'original-turn', inputHash }), { code: 'codex_thread_scope' });
+  assert.equal(requests.length, 0);
+  const recovered = await provider.inspectOwnedTurn({ threadId, turnId: 'original-turn', inputHash });
+  assert.equal(recovered.answer, 'Recovered original answer.'); assert.equal(recovered.status, 'completed');
+  assert.ok(requests.every(request => request.params.threadId === threadId));
+  await assert.rejects(provider.inspectOwnedTurn({ threadId, turnId: 'original-turn', inputHash: 'wrong' }), { code: 'codex_recovery_uncertain' });
+});
 
 test('the provider explicitly disables every inherited MCP entry before starting a thread', async t => {
   const f = fixture(), provider = await f.provider(); t.after(() => provider.close());

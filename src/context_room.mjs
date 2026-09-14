@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 import { renderAppShell } from "./ui/app.mjs";
 import { handleNotebookHttp, isNotebookMutation } from "./notebook_http.mjs";
+import { AssistantRuntime, handleAssistantHttp } from "./assistant_runtime.mjs";
+import { createAssistantSourceResolver } from "./assistant_sources.mjs";
+import { notebookHash, readNotebookBytes, writeNotebookBytes, makeNotebookDirectory } from "./notebook_io.mjs";
 import { submitNotebookShared } from "./notebook_workflow.mjs";
 import { NOTEBOOK_WEB_ASSETS } from "./notebook_web_assets.mjs";
 import { NOTEBOOK_LIMITS } from "./notebook_protocol.mjs";
@@ -16950,6 +16953,7 @@ function isCodexPromptRequest(req) {
 }
 
 function isOwnerReviewAuthorityMutation(pathname = "", method = "GET") {
+  if (pathname.startsWith('/api/assistant/') && method !== 'GET') return true;
   if (pathname.startsWith('/api/devices') && method !== 'GET') return true;
   if (isNotebookMutation(method, pathname)) return true;
   const key = `${String(method || "GET").toUpperCase()} ${String(pathname || "")}`;
@@ -18593,6 +18597,7 @@ export function createMemoryServer({
   sharedReviewServerListen = listenContextRoomServer,
   sharedReviewDocQaTask = buildSharedReviewDocQaReport,
   deviceService = null,
+  assistantOptions = {},
 } = {}) {
   if (remoteAccess) throw new Error("Hosted Context Room has been retired. Its stored repositories and review data are preserved; use a local room with Shared Git.");
   root = fs.realpathSync(path.resolve(root));
@@ -18613,6 +18618,33 @@ export function createMemoryServer({
   const projectId = contextRoomProjectId(root);
   const promptMutationNonce = randomBytes(32).toString("base64url");
   const ownerMutationNonce = randomBytes(32).toString("base64url");
+  let assistantRuntime = null;
+  const getAssistantRuntime = () => assistantRuntime ||= new AssistantRuntime({ ...assistantOptions,
+    resolveSource: createAssistantSourceResolver({
+      canRead: (project, rel, kind) => {
+        if (typeof rel !== 'string' || path.isAbsolute(rel) || rel.startsWith('~') || rel.includes('\\')
+          || rel.split('/').some(part => !part || part === '.' || part === '..') || isSensitiveProjectFile(rel) || isBlockedPath(rel)) return false;
+        const settings = readMemoryWebappSettings(project);
+        return kind === 'notebook' ? canReviewDocumentAsset(project, rel, settings)
+          : /\.(?:md|markdown|txt|html?)$/i.test(rel) && isAllowedMemoryPath(rel, settings);
+      },
+      canWrite: (project, rel) => canEditLocalProposalPath(project, rel),
+      proposeDocument: (project, input) => {
+        input.signal?.throwIfAborted();
+        if (!canEditLocalProposalPath(project, input.path)) throw sharedRequestError('The original document is no longer editable.', 403, 'assistant_proposal_scope');
+        const current = readNotebookBytes(project, input.path, 1024 * 1024);
+        if (!current || notebookHash(current) !== input.expectedHash) throw sharedRequestError('The original document changed before proposal preparation.', 409, 'assistant_document_conflict');
+        const proposal = createLocalDocumentationProposal(project, { requestId: input.requestId, title: input.title || 'Conversation edit', description: 'Proposed from the original document conversation. Human review is required.' });
+        if (proposal.status === 'editing') {
+          const parent = path.posix.dirname(input.path); if (parent !== '.') makeNotebookDirectory(proposal.editRoot, parent);
+          const previous = readNotebookBytes(proposal.editRoot, input.path, 1024 * 1024);
+          writeNotebookBytes(proposal.editRoot, input.path, Buffer.from(input.content), { expectedHash: previous ? notebookHash(previous) : null, mode: 0o644 });
+        }
+        const submitted = submitLocalDocumentationProposal(project, proposal.id);
+        return { proposalId: submitted.id, scope: 'local', status: submitted.status, submittedRevision: submitted.submittedRevision, path: input.path, accepted: false };
+      },
+    }),
+  });
   const runtimeProfile = remoteAccess ? "hosted-hub" : "local";
   const resolvedCodexPromptCenter = codexPromptCenter || (remoteAccess ? null : createCodexPromptCenterProvider());
   const terminalDecisionChallenges = createTerminalDecisionChallengeStore();
@@ -19244,6 +19276,7 @@ export function createMemoryServer({
       assertManagedProjectRootIdentity(requestRoot, requestExpectedRootIdentity);
       await routeRequest(req, res, requestRoot, globalPreferencesPath, {
         deviceService,
+        getAssistantRuntime,
         codexComposerInsert,
         codexReferenceInsert,
         codexPromptCenter: resolvedCodexPromptCenter,
@@ -19517,6 +19550,7 @@ export function createMemoryServer({
     const pendingRefreshes = [...contextHubRefreshNotifications.values()];
     const pendingProjectSyncs = [...contextHubProjectSyncs.values()].map((entry) => entry.promise);
     const backgroundTerminations = [];
+    if (assistantRuntime) backgroundTerminations.push(assistantRuntime.close());
     const backgroundClosingTokens = new Map();
     terminalDecisionChallenges.clear();
     if (ownsVerifiedAcceptanceFlashes) acceptanceFlashStore.clear();
@@ -20196,6 +20230,7 @@ function assertExpectedFileRevision(root, relPath, expectedRevision) {
 
 async function routeRequest(req, res, root, globalPreferencesPath = null, {
   deviceService = null,
+  getAssistantRuntime = null,
   codexComposerInsert = insertIntoActiveCodexComposer,
   codexReferenceInsert = insertFileReferenceIntoActiveCodexComposer,
   codexPromptCenter = createCodexPromptCenterProvider(),
@@ -20237,6 +20272,11 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   assertManagedProjectRootIdentity(root, expectedRootIdentity);
   const requestRuntimeProfile = assertRuntimeProfile(runtimeProfile);
   const url = new URL(req.url, "http://context-room.invalid");
+  if (url.pathname.startsWith('/api/assistant/')) {
+    if (!getAssistantRuntime) throw sharedRequestError('Conversations are unavailable in this runtime.', 409, 'assistant_unavailable');
+    if (req.method === 'POST') beforeManagedControlMutation?.();
+    await handleAssistantHttp(req, res, { root, url, runtime: getAssistantRuntime(), readJsonBody, sendJson }); return;
+  }
   if (url.pathname === '/api/devices' || url.pathname.startsWith('/api/devices/')) {
     if (req.method === 'GET' && url.pathname === '/api/devices') {
       sendJson(res, 200, deviceService ? { enabled: true, projectId: contextRoomProjectId(root), ownerAvailable: deviceService.owner.available(), ...deviceService.describe(), devices: deviceService.authority.list().filter(device => device.grants.some(grant => grant.mode === 'owner' || grant.projectId === contextRoomProjectId(root))) } : { enabled: false });

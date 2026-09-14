@@ -2,7 +2,7 @@
 
 ## Summary
 
-The implementation branch starts at `05f5ded92cc1158b8c5aea09f4836fd08f4de27f`, preserving the refactor and concurrent configuration/navigation stabilization. The notebook foundation includes an optional TLS device service and an Android preview with native drawing and the existing full owner interface, verified in an isolated emulator. A real Codex provider, scoped progressive drawing, private conversation bindings and local speech primitives are tested separately; their app integration is in progress. Full convergence remains incomplete; this branch is not a deployed release.
+The implementation branch starts at `05f5ded92cc1158b8c5aea09f4836fd08f4de27f`, preserving the refactor and concurrent configuration/navigation stabilization. The notebook foundation includes an optional TLS device service and an Android preview with native drawing and the existing full owner interface, verified in an isolated emulator. The browser now connects document/notebook conversations to real Codex, scoped edits, progressive drawing and recoverable task identities. Local audio routes and controls are present; native voice and microphone verification remain unfinished. Full convergence remains incomplete; this branch is not a deployed release.
 
 ## Defines
 
@@ -25,6 +25,8 @@ A second project catalog, a hosted service, a notes inbox, automatic documentary
 - Remote notebook opening retains an exact target and request identifier. The Android client waits for a held gesture and its Mac receipts, confirms after native rendering, and lets a new human action cancel a pending opening. A stale session, deadline, changed target or queued previous scene cannot supply an applied receipt or populate another canvas.
 - View sharing and following require explicit choices on the participating surfaces. They remain bound to one exact notebook, expire without a heartbeat and acknowledge the rendered area. Human input stops following immediately, including while a response is in flight. Desktop and Android presentation preserve a visible exit and the open notebook.
 - A separate, explicitly selected owner pairing opens the existing Context Room interface through the pinned Android transport. The attached loopback runtime retains project/folder permissions and the normal human review nonce. Drawing credentials cannot gain this permission. The retained web workspace and native canvas operate on the same working notebook; document frames cannot use the owner bridge.
+- A conversation retains its original project, file, selection and Codex task. Browsing another document does not retarget it. Notebook tools recheck object/location revisions; document replacements create a proposal through the existing local review engine. No agent tool can accept, reject or publish.
+- Conversation sends have durable identities. Explicit recovery compares the original turn and input hash before restoring a response; it never silently resends. The server starts its owned Codex child only after an explicit connection or message action.
 
 ## Verification through this milestone
 
@@ -45,7 +47,7 @@ preview builds and its complementary drawing/restart path passes in an
 isolated emulator. Exact native opening receipts, optional
 viewport following, presentation and the connected owner interface are
 implemented. The owner file-picker round trip is verified on the emulator;
-scoped voice/agent integration, recoverable migration
+continuous/native voice, observation and audio recovery, recoverable migration
 and release/upgrade packaging remain to be implemented. The complete
 connected-device and physical acceptance criteria remain open.
 

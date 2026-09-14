@@ -1,0 +1,21 @@
+.assistant-panel { position: fixed; z-index: 20; right: 16px; bottom: 16px; width: min(420px, calc(100vw - 32px)); max-height: min(780px, calc(100dvh - 32px)); display: flex; flex-direction: column; box-sizing: border-box; overflow: auto; padding: 16px; gap: 10px; color: var(--text, #eee); background: var(--panel-strong, #202628); border: 1px solid var(--control-line, #777); border-radius: 12px; box-shadow: 0 8px 30px rgb(0 0 0 / .3); font: 14px/1.45 system-ui, sans-serif; }
+.assistant-panel > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0; }
+.assistant-panel h2 { margin: 0; font-size: 18px; }
+.assistant-panel p { margin: 0; overflow-wrap: anywhere; }
+.assistant-origin { font-weight: 600; }
+.assistant-boundary, .assistant-status { color: var(--muted, #bbb); font-size: 12px; }
+.assistant-panel button, .assistant-panel select { min-height: 44px; border-radius: 6px; padding: 8px; border: 1px solid var(--control-line, #777); background: var(--panel, #242b2e); color: inherit; font: inherit; }
+.assistant-panel button:disabled { opacity: .5; }
+.assistant-panel [hidden] { display: none; }
+.assistant-panel button:focus-visible, .assistant-panel select:focus-visible, .assistant-panel textarea:focus-visible { outline: 2px solid var(--accent, #8cc); outline-offset: 2px; }
+.assistant-panel textarea { display: block; width: 100%; min-height: 86px; max-height: 250px; resize: vertical; box-sizing: border-box; border: 1px solid var(--control-line, #777); border-radius: 6px; background: var(--panel, #242b2e); color: inherit; padding: 10px; font: inherit; margin-bottom: 8px; }
+.assistant-controls { display: flex; flex-wrap: wrap; gap: 6px; }
+.assistant-controls select { width: 100%; }
+.assistant-messages { overflow: auto; min-height: 50px; max-height: 35dvh; }
+.assistant-messages article { padding: 10px 0; border-bottom: 1px solid var(--control-line, #777); }
+.assistant-messages article p { white-space: pre-wrap; }
+.assistant-error:empty { display: none; }
+.assistant-error { color: var(--danger, #fba); font-size: 13px; }
+.assistant-panel.assistant-minimized > :not(header):not(.assistant-origin) { display: none; }
+.assistant-panel details select { max-width: 100%; margin: 6px 4px 6px 0; }
+@media (max-width: 650px) { .assistant-panel { right: 8px; bottom: 8px; width: calc(100vw - 16px); max-height: 68dvh; padding: 12px; } .assistant-messages { max-height: 22dvh; } }

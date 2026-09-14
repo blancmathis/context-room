@@ -86,6 +86,22 @@ test('a stopped owner process leaves an uncertain receipt and never silently res
   assert.equal(calls, 0);
 });
 
+test('explicit recovery reconciles the original recorded turn without generating or copying a task', async t => {
+  const f = fixture(t), p = providerFixture(); const inspections = [];
+  p.provider.inspectOwnedTurn = async input => { inspections.push(input); return { turnId: 'exact-turn', status: 'completed', failed: false, answer: 'Recovered confirmed response.' }; };
+  const service = f.service(async () => p.provider), conversation = service.create(f.original, { source: f.source }), requestId = randomUUID();
+  service.update(conversation.id, state => {
+    state.threadId = 'owned-codex-task'; state.operation = { id: requestId, status: 'uncertain', turnId: 'exact-turn', inputHash: 'recorded-input-hash' };
+    state.messages = [{ id: requestId, role: 'user', text: 'Original request' }]; state.requests[requestId] = { status: 'uncertain' };
+  });
+  assert.equal(service.recover(f.original, conversation.id).recovery, 'inspecting');
+  await until(() => service.get(f.original, conversation.id).recovery === 'confirmed');
+  const recovered = service.get(f.original, conversation.id);
+  assert.equal(recovered.operation.status, 'completed'); assert.equal(recovered.messages.at(-1).text, 'Recovered confirmed response.');
+  assert.deepEqual(inspections, [{ threadId: 'owned-codex-task', turnId: 'exact-turn', inputHash: 'recorded-input-hash' }]);
+  assert.equal(p.started.length, 0); assert.equal(p.turns.length, 0); assert.equal(p.resumed.length, 1);
+});
+
 test('provider startup failure is visible and a later explicit send still includes original context', async t => {
   const f = fixture(t), p = providerFixture(); let count = 0;
   const service = f.service(async () => { if (++count === 1) throw new Error('Synthetic startup unavailable'); return p.provider; });

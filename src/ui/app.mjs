@@ -4379,9 +4379,21 @@ function captureNotebookApi(targetProjectId = "") {
 async function openContextRoomNotebook(filePath, { directory = "", projectId = "" } = {}) {
   const captured = captureNotebookApi(projectId);
   const notebook = await import("/assets/ui/notebook-editor.mjs");
-  const options = { ...captured, onSubmitted: async () => { setStatus("Notebook submitted for human review. No file accepted."); if (typeof refreshDocQa === "function") await refreshDocQa(); } };
+  const options = { ...captured,
+    onConversation: async (source, display) => { const assistant = await import("/assets/ui/assistant.mjs"); return assistant.openConversation({ ...captured, source, ...display }); },
+    onClosed: async () => { const assistant = await import("/assets/ui/assistant.mjs"); assistant.dockConversation(); },
+    onSubmitted: async () => { setStatus("Notebook submitted for human review. No file accepted."); if (typeof refreshDocQa === "function") await refreshDocQa(); } };
   if (filePath) return notebook.openNotebookEditor({ ...options, path: filePath });
   return notebook.chooseNotebook({ ...options, directory });
+}
+
+async function openOriginalDocumentConversation(mode = "text") {
+  if (!state.selected || state.selectedStartupContext || state.dirty || state.savedHash == null || state.fileLoadError
+    || state.openingFilePath === state.selected && state.fileContentReadyPath !== state.selected) throw new Error("Save the original document before starting its conversation.");
+  const captured = captureNotebookApi(), source = { kind: "document", path: state.selected, hash: state.savedHash };
+  const editor = el("docEditor");
+  if (editor && editor.selectionEnd > editor.selectionStart) source.selection = { start: editor.selectionStart, end: editor.selectionEnd, text: editor.value.slice(editor.selectionStart, editor.selectionEnd) };
+  const assistant = await import("/assets/ui/assistant.mjs"); return assistant.openConversation({ ...captured, source, mode });
 }
 
 function contextRoomScopedRequestPath(requestPath) {
@@ -15098,6 +15110,7 @@ function renderFileActionButtons(options = {}) {
 
 function renderFileActionItems({ reviewAction = null, secondaryReviewAction = null, nextReviewAction = null, dirty = false, templateState = null, blockedByConflict = false, readOnly = false, deletable = true, savable = true } = {}) {
   return '' +
+    (IS_LOCAL && state.selected && !state.selectedStartupContext && !readOnly && /\.(md|markdown|txt|html?)$/i.test(state.selected) ? '<button class="file-action" type="button" data-file-conversation' + (dirty || blockedByConflict ? ' disabled title="Save or resolve the original document first"' : '') + '>Discuss</button><button class="file-action" type="button" data-file-dictate' + (dirty || blockedByConflict ? ' disabled' : '') + '>Dictate</button>' : '') +
     (templateState ? '<div class="empty-template-actions"><select class="file-template-select" data-empty-template-select aria-label="Template">' + renderFileTemplateOptions(templateState.selectedId) + '</select></div>' : '') +
     (reviewAction ? '<button class="file-action" type="button" data-file-review-decision="' + escapeHtml(reviewAction.status) + '">' + escapeHtml(reviewAction.label) + '</button>' : '') +
     (secondaryReviewAction ? '<button class="file-action" type="button" data-file-review-decision="' + escapeHtml(secondaryReviewAction.status) + '">' + escapeHtml(secondaryReviewAction.label) + '</button>' : '') +
@@ -20759,6 +20772,8 @@ function markdownDocLinkAtOffset(text, offset) {
 }
 
 function wireFileActionButtons(root = document) {
+  root.querySelector("[data-file-conversation]")?.addEventListener("click", () => openOriginalDocumentConversation().catch(error => setStatus(error.message)));
+  root.querySelector("[data-file-dictate]")?.addEventListener("click", () => openOriginalDocumentConversation("dictate").catch(error => setStatus(error.message)));
   root.querySelectorAll("[data-file-review-decision]").forEach((button) => button.addEventListener("click", (event) => requestReviewDecision(state.selected, event.currentTarget.dataset.fileReviewDecision).catch((error) => setStatus(error.message))));
   root.querySelector("[data-next-review]")?.addEventListener("click", () => openNextReviewManually().catch((error) => setStatus(error.message)));
   root.querySelector("[data-file-save]")?.addEventListener("click", () => saveCurrent().catch((error) => setStatus(error.message)));

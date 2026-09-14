@@ -35,6 +35,7 @@ export class NotebookCanvas {
     this.schedule();
   }
   select(ids) { this.selection = new Set(ids); this.onSelection([...this.selection]); this.schedule(); }
+  setAgentPen(progress) { this.agentPen = progress && !progress.completed ? progress : null; this.schedule(); }
   setTool(tool) { if (this.gesture) return false; this.tool = tool; this.connectorFrom = null; this.canvas.style.cursor = tool === 'pan' ? 'grab' : tool === 'text' ? 'text' : 'crosshair'; return true; }
   screen(event) { const box = this.canvas.getBoundingClientRect(); return [event.clientX - box.left, event.clientY - box.top]; }
   world(event, view = this.view) { const p = this.screen(event); return [(p[0] - view.x) / view.scale, (p[1] - view.y) / view.scale, event.pointerType === 'pen' ? Math.max(0, Math.min(1, event.pressure)) : .65]; }
@@ -204,6 +205,12 @@ export class NotebookCanvas {
     ctx.lineWidth = 1 / this.view.scale; ctx.strokeStyle = '#333333'; ctx.setLineDash([6 / this.view.scale, 4 / this.view.scale]);
     for (const o of this.selected()) { const b = notebookObjectBounds(transforming.has(o.id) ? { ...o, ...translateNotebookObject(o, g.dx, g.dy) } : o, this.byId); ctx.strokeRect(b.x - 4 / this.view.scale, b.y - 4 / this.view.scale, b.width + 8 / this.view.scale, b.height + 8 / this.view.scale); }
     if (g?.kind === 'lasso' && g.points.length) { ctx.beginPath(); g.points.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.closePath(); ctx.stroke(); }
+    const pen = this.agentPen, reached = pen && this.byId?.get(pen.objectId)?.points?.at(-1);
+    if (pen && reached && Date.now() - pen.at < 3000 && reached[0] === pen.point?.[0] && reached[1] === pen.point?.[1]) {
+      ctx.save(); ctx.setLineDash([]); ctx.fillStyle = '#ffffff'; ctx.strokeStyle = '#000000'; ctx.lineWidth = 2 / this.view.scale;
+      ctx.beginPath(); ctx.arc(reached[0], reached[1], 6 / this.view.scale, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#000000'; ctx.font = `${12 / this.view.scale}px system-ui`; ctx.fillText('Codex', reached[0] + 10 / this.view.scale, reached[1] - 10 / this.view.scale); ctx.restore();
+    }
     this.onRendered();
   }
   async settle() { if (this.gesture) { const id = this.gesture.pointerId; if (id !== null && id !== undefined) this.up({ pointerId: id }); else { this.gesture = null; this.pointers.clear(); } } await Promise.allSettled([...this.tasks]); }

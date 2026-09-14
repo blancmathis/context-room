@@ -5,7 +5,7 @@ import { readNotebook, mutateNotebook } from './notebooks.mjs';
 
 export const NOTEBOOK_AGENT_TOOL = {
   type: 'function', name: 'context_room_notebook',
-  description: 'Read or edit only the notebook originally selected for this conversation. Scene returns exact object revisions; edit applies a targeted batch. Draw advances a NEW ink object progressively and preserves only the reached path when interrupted. Working changes never accept a document. Read the scene before changing existing objects.',
+  description: 'Read or edit only the notebook originally selected for this conversation. Scene returns exact object revisions; read it before editing existing objects. An edit is {kind:"put",id,expectedRevision:0,object:{id,type,...}} for a new object, {kind:"patch",id,expectedRevision,patch:{...}} or {kind:"delete",id,expectedRevision}. Use a stable unique string id. Object types: rect and ellipse use x,y,width,height; text uses x,y,text,fontSize; line and arrow use x,y,x2,y2; ink uses points [[x,y,pressure],...]. Color and strokeWidth are optional. Draw requires stroke:{id,type:"ink",points,...} and advances a NEW stroke progressively; interruption keeps only reached geometry. Drawings and working changes never accept a document.',
   inputSchema: { type: 'object', additionalProperties: false, required: ['action'], properties: {
     action: { type: 'string', enum: ['scene', 'edit', 'draw'] },
     offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 200 },

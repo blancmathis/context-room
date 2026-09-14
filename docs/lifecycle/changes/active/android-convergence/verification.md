@@ -498,8 +498,8 @@ A separate real connection resumes that exact Codex task, recalls the diagram
 and original human text, and leaves the scene unchanged. Private conversation
 bindings and send identities have focused tests for duplicate requests, original
 project scope, task reuse, interruption, revoked access and uncertain process
-termination. Uncertain sends are not automatically replayed. UI/API integration
-and explicit uncertain-turn recovery are still open.
+termination. Uncertain sends are not automatically replayed. The subsequent
+interface milestone below connects those paths and adds explicit recovery.
 
 Local Whisper recognizes a synthetic French recording word for word in 2,031 ms.
 macOS speech produces the exact requested reply as 24 kHz mono PCM16 WAVE,
@@ -509,11 +509,64 @@ claim playback. Audio scratch files are removed; a transcript is never sent
 automatically. The 18 provider, notebook-agent, audio and conversation-store
 contract tests pass. Standard tests do not invoke a model account.
 
+## Scoped conversation interface
+
+Document Discuss/Dictate and notebook selection controls open a persistent
+conversation panel. Its captured API retains the exact project and source
+through navigation and notebook closing. Saved conversations can be selected
+explicitly. Model choices come from the actual account after an explicit
+connection action; stopping targets the original turn. Original selections are
+retained even if selected objects are later removed. Current notebook revisions
+are read before edits, and document replacements become frozen local proposals
+through the existing review engine. Ordinary files and acceptance are unchanged.
+
+Thirty-five focused contracts cover source selection, HTTP owner/origin/project
+guards, proposal preparation, duplicate sends, provider isolation, progressive
+ink, recovery and exclusive audio control. Eight browser scenarios pass across
+Chromium desktop/mobile, Firefox and WebKit, including scoped navigation,
+same-task continuation, stop, canonical notebook edits and accessibility of
+the conversation panel. Failures during development exposed an empty-session
+read, an incorrect loaded-document guard and a missing keyboard focus target;
+these are fixed. A test initially tried to click a model control inside a closed
+disclosure; its corrected interaction preserves the application behavior.
+
+Real Codex is also verified through the browser UI in an isolated synthetic
+project. It creates three notebook objects, including a progressive stroke,
+then proposes an edit to the original Markdown while another document is
+displayed. Both ordinary Markdown files remain byte-for-byte unchanged. The
+notebook conversation survives server restart and explicit history selection.
+The first proof script reached the completed notebook turn but used the wrong
+notebook-list field; the corrected continuation reuses that recorded turn
+instead of generating it again. Rendered notebook and document panels were
+inspected. This run has no valid first-geometry latency measurement.
+
+A separate real provider connection reads the earlier exact completed turn
+through paginated history, checks its recorded input hash, and recovers the
+172-character answer without generation or a new task. Recovery fails closed
+when the original turn cannot be matched uniquely.
+
+Audio uses one expiring controller across surfaces. Explicit takeover requires
+the current epoch; stale clients cannot prepare, read or acknowledge audio.
+Recognition and exact-answer speech are asynchronous jobs so the tablet bridge
+does not wait for a long HTTP response. Dictation remains a reviewable composer
+draft and never sends automatically. Browser capture and speech controls are
+wired, but their microphone/playback path, continuous conversation, durable
+recording recovery and native Android audio still need end-to-end verification.
+
+The preview APK rebuilds and retains its existing native permissions and shared
+assets. On the preceding foundation commit, the complete serial local suite
+reports 71/73 processes passing. One synthetic Shared fetch exceeds its
+1,000 ms discovery budget; one repeated Context snapshot produces a different
+hash. Its CI passes Node 20/22/24, mobile Chromium, Firefox, WebKit and soak,
+but the desktop browser suite loses an ambiguous-project notice to “ready”.
+Those failures remain open and are not erased by narrower passing checks.
+
 ## Open product gates
 
-App integration of context-bound dictation/conversation/co-drawing, data
+Continuous/native voice, document observation, durable audio recovery, data
 migration and final removal of the external compatibility dependency remain
-implementation work.
+implementation work. Complete native owner conversation controls are not yet
+verified on the emulator, and the full regression failures above remain open.
 The verified Android installation is an emulator preview. It does not establish
 physical Wi-Fi behavior or BOOX pen/palm latency.
 

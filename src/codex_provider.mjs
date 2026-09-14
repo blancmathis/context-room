@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 
 const MAX_FRAME = 8 * 1024 * 1024;
 const DISABLED_FEATURES = ['shell_tool', 'apps', 'plugins', 'multi_agent'];
@@ -172,6 +173,30 @@ class CodexProvider {
     if (result.thread?.id !== threadId) throw fault('codex_thread_scope', 'Codex did not resume the original conversation.');
     this.threads.set(threadId, { tools: new Set(tools.map(tool => tool.name)), active: null });
     return { threadId, model: result.model };
+  }
+  async inspectOwnedTurn({ threadId, turnId, inputHash }) {
+    if (!this.threads.has(threadId)) throw fault('codex_thread_scope', 'This provider does not own the selected conversation.');
+    const response = await this.rpc.request('thread/turns/list', { threadId, limit: 20, sortDirection: 'desc', itemsView: 'notLoaded' });
+    const turns = response.data || [], candidates = turnId ? turns.filter(turn => turn.id === turnId) : turns;
+    const matches = [];
+    for (const turn of candidates) {
+      let cursor = null, userText = '', answer = '', items = 0;
+      do {
+        const page = await this.rpc.request('thread/items/list', { threadId, turnId: turn.id, limit: 1, sortDirection: 'asc', ...(cursor ? { cursor } : {}) });
+        for (const entry of page.data || []) {
+          if (entry.turnId !== turn.id) throw fault('codex_turn_scope', 'Codex returned an item from another turn.');
+          const item = entry.item;
+          if (item?.type === 'userMessage') userText += (item.content || []).filter(value => value.type === 'text').map(value => value.text).join('');
+          if (item?.type === 'agentMessage') answer += item.text || '';
+        }
+        cursor = page.nextCursor;
+        if (++items > 600 || userText.length > 100_000 || answer.length > 128_000) throw fault('codex_recovery_limit', 'The original turn exceeds bounded recovery.');
+      } while (cursor);
+      if (createHash('sha256').update(userText).digest('hex') === inputHash) matches.push({ turnId: turn.id, status: turn.status, failed: Boolean(turn.error), answer });
+      // A persisted exact ID must also match its recorded input, never just a nearby response.
+    }
+    if (matches.length !== 1) throw fault('codex_recovery_uncertain', 'The original turn could not be matched uniquely. Nothing was replayed.');
+    return matches[0];
   }
   async startTurn({ threadId, text, images = [], model, effort, tool, onEvent = () => {} }) {
     const thread = this.threads.get(threadId);

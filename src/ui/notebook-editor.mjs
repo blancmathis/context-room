@@ -61,6 +61,10 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   dialog.append(header, notice, tools, actions, workspace, conflicts, errorBox, statusRow); document.body.append(dialog); dialog.showModal();
   let view, client, surface, viewLink, closed = false, syncing = false, saving = 0, timer, objectsTimer, textForm = null, lastConflictKey = '', authBlocked = false;
   const failedLocalWork = [], cleanup = new AbortController();
+  document.addEventListener('context-room-assistant-progress', event => {
+    if (event.detail?.scopeKey !== scopeKey || event.detail.resourceId !== resourceId || reviewKey) return;
+    surface?.setAgentPen(event.detail.progress); if (event.detail.progress) void sync();
+  }, { signal: cleanup.signal });
   const navigationRequests = new Map();
   const fail = error => { if (!closed) errorBox.textContent = error.message || String(error); };
   const run = work => Promise.resolve(work).catch(fail);
@@ -134,7 +138,14 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   submitScope.addEventListener('change', () => run(inspectSharedDestination()));
   const submit = button(reviewKey ? 'Use this correction' : 'Submit for review', () => run(submitScene()), 'notebook-primary'); if (!reviewKey) header.append(submitScope); header.insertBefore(submit, closeButton);
   const retry = button('Reconnect', () => run(sync(true))); if (!reviewKey) statusRow.append(retry);
-  if (onConversation) actions.append(button('Ask about selection', () => onConversation({ resourceId, path, revision: view?.revision, locationRevision: view?.locator.revision, selection: [...surface.selection], working: true })));
+  if (onConversation && !reviewKey) {
+    const converse = async mode => {
+      await surface.settle(); await sync(true);
+      if (!view || view.offline || view.pending || view.conflicts.length || failedLocalWork.length) throw new Error('Confirm the current notebook changes on the Mac before starting this conversation.');
+      await onConversation({ kind: 'notebook', resourceId, path, revision: view.revision, locationRevision: view.locator.revision, selection: [...surface.selection] }, { parent: dialog, mode });
+    };
+    actions.append(button('Ask about selection', () => run(converse('text'))), button('Dictate about notebook', () => run(converse('dictate'))));
+  }
   const objectTitle = notebookElement('h3', 'Objects'), filter = document.createElement('input'); filter.type = 'search'; filter.placeholder = 'Filter objects'; filter.setAttribute('aria-label', 'Filter notebook objects');
   const selectionText = notebookElement('p', 'Nothing selected'), selectionActions = notebookElement('div', '', 'notebook-selection-actions');
   selectionActions.append(button('Delete selected', () => surface.deleteSelection()), button('Lock selected', () => surface.patchSelection({ locked: true })), button('Unlock selected', () => surface.patchSelection({ locked: false })));
