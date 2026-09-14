@@ -89,6 +89,30 @@ test('@smoke @notebook offline device cache survives reopening without a false r
   } finally { await f.close(); }
 });
 
+test('@smoke @notebook rapid handwriting survives slow local storage with separate undo', async ({ page }) => {
+  const f = await fixture(page);
+  try {
+    const dialog = await open(page), resourceId = await dialog.getAttribute('data-resource-id');
+    await page.evaluate(() => {
+      const enqueue = testNotebook.surface.enqueue;
+      const gate = new Promise(resolve => { window.releaseNotebookStorage = resolve; });
+      testNotebook.surface.enqueue = async (...args) => { await gate; return enqueue(...args); };
+    });
+    await draw(page, { start: [40, 30], end: [95, 60] });
+    await draw(page, { start: [115, 30], end: [175, 60] });
+    expect(readNotebook(f.root, resourceId).document.objects).toHaveLength(0);
+    expect(await page.evaluate(() => testNotebook.surface.finishingStrokes.size)).toBe(2);
+    await page.evaluate(() => releaseNotebookStorage());
+    await expect(dialog).toHaveAttribute('data-save-state', 'confirmed');
+    expect(readNotebook(f.root, resourceId).document.objects).toHaveLength(2);
+    await dialog.getByRole('button', { name: 'Undo gesture', exact: true }).click();
+    await expect.poll(() => readNotebook(f.root, resourceId).document.objects.length).toBe(1);
+    await dialog.getByRole('button', { name: 'Redo gesture', exact: true }).click();
+    await expect.poll(() => readNotebook(f.root, resourceId).document.objects.length).toBe(2);
+    expect(f.errors).toEqual([]);
+  } finally { await f.close(); }
+});
+
 test('@a11y @layout @notebook tactile targets, grayscale and keyboard-accessible objects', async ({ page }, testInfo) => {
   const f = await fixture(page);
   try {

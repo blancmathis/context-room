@@ -47,6 +47,65 @@ test('a transform compares its pointer-down revision and does not replace a newe
   assert.equal((await client.view()).document.objects[0].x,250);assert.equal((await client.view()).conflicts.length,1); assert.equal((await client.view()).conflicts[0].error.code,'notebook_object_conflict'); assert.deepEqual(errors,[]);
 });
 
+test('back-to-back strokes retain their lift coordinates and separate undo while storage is delayed', async t => {
+  const { surface, client, event, errors } = await surfaceFixture(t);
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  surface.enqueue = async (...args) => { await gate; return client.enqueue(...args); };
+  surface.down(event(1, 50, 50)); surface.move(event(1, 100, 100)); surface.up(event(1, 150, 150));
+  surface.down(event(2, 250, 100));
+  assert.equal(surface.gesture.pointerId, 2, 'a saving gesture cannot consume the next pen-down');
+  surface.move(event(2, 300, 150)); surface.up(event(2, 350, 200));
+  assert.equal(surface.gesture, null);
+  assert.equal(surface.finishingStrokes.size, 2, 'unsaved previews remain visible');
+  assert.equal((await client.view()).document.objects.length, 0);
+  release(); await surface.settle();
+  const objects = (await client.view()).document.objects;
+  assert.equal(objects.length, 2);
+  assert.deepEqual(objects.map(object => object.points.at(-1)), [[118, 118, .5], [318, 168, .5]]);
+  assert.equal((await client.state()).metadata.gestureHistory.undo.length, 2);
+  await client.replayGesture('undo');
+  assert.deepEqual((await client.view()).document.objects.map(object => object.id), [objects[0].id]);
+  await client.replayGesture('undo'); assert.equal((await client.view()).document.objects.length, 0);
+  assert.equal(surface.finishingStrokes.size, 0); assert.deepEqual(errors, []);
+});
+
+test('pen lift finishes shape geometry but cancellation does not invent a new ink point', async t => {
+  const { surface, client, event, errors } = await surfaceFixture(t);
+  surface.setTool('rect'); surface.down(event(1, 50, 50)); surface.up(event(1, 150, 160)); await surface.settle();
+  const shape = (await client.view()).document.objects[0];
+  assert.deepEqual([shape.x, shape.y, shape.width, shape.height], [18, 18, 100, 110]);
+  surface.setTool('ink'); surface.down(event(2, 100, 100)); surface.move(event(2, 120, 120));
+  surface.up({ ...event(2, 900, 900), type: 'pointercancel' }); await surface.settle();
+  const ink = (await client.view()).document.objects.find(object => object.type === 'ink');
+  assert.deepEqual(ink.points, [[68, 68, .5], [88, 88, .5]]); assert.deepEqual(errors, []);
+});
+
+test('changing tools while a stroke saves preserves whole-gesture undo order', async t => {
+  const { surface, client, event } = await surfaceFixture(t);
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  surface.enqueue = async (...args) => { await gate; return client.enqueue(...args); };
+  surface.down(event(1, 50, 50)); surface.move(event(1, 100, 100)); surface.up(event(1, 150, 150));
+  surface.setTool('rect'); surface.down(event(2, 250, 100)); surface.up(event(2, 350, 200));
+  release(); await surface.settle();
+  assert.deepEqual((await client.view()).document.objects.map(object => object.type), ['ink', 'rect']);
+  await client.replayGesture('undo');
+  assert.deepEqual((await client.view()).document.objects.map(object => object.type), ['ink']);
+  await client.replayGesture('undo'); assert.equal((await client.view()).document.objects.length, 0);
+});
+
+test('consecutive failed saves retain every stroke recovery suffix', async t => {
+  const { surface, event, errors } = await surfaceFixture(t);
+  surface.enqueue = async () => { throw new Error('Synthetic storage unavailable'); };
+  surface.down(event(1, 50, 50)); surface.up(event(1, 100, 100));
+  surface.down(event(2, 150, 150)); surface.up(event(2, 200, 200));
+  await surface.settle();
+  assert.equal(surface.failedStrokes.length, 2);
+  assert.deepEqual(surface.failedStrokes.map(stroke => stroke.unsavedSamples.flat().at(-1)), [[68, 68, .5], [168, 168, .5]]);
+  assert.ok(errors.every(error => error.message === 'Synthetic storage unavailable'));
+});
+
 test('touch navigation and keyboard selection do not rewrite the scene or another object',async t=>{
   const {surface,client,event,errors}=await surfaceFixture(t);
   surface.down(event(1,60,80,'touch'));surface.move(event(1,120,150,'touch'));surface.up(event(1,120,150,'touch'));

@@ -77,7 +77,8 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   }
   const colorLabel = notebookElement('label', 'Ink'), color = document.createElement('input'); color.type = 'color'; color.value = '#000000'; color.setAttribute('aria-label', 'Notebook ink color'); color.addEventListener('input', () => surface.brush.color = color.value); colorLabel.append(color);
   const widthLabel = notebookElement('label', 'Width'), width = document.createElement('input'); width.type = 'range'; width.min = '1'; width.max = '24'; width.value = '3'; width.setAttribute('aria-label', 'Notebook ink width'); width.addEventListener('input', () => surface.brush.width = Number(width.value)); widthLabel.append(width); tools.append(colorLabel, widthLabel);
-  const undo = button('Undo gesture', () => run(client.replayGesture('undo').then(() => sync()))), redo = button('Redo gesture', () => run(client.replayGesture('redo').then(() => sync())));
+  async function replayGesture(direction) { await surface.settle(); await client.replayGesture(direction); await sync(); }
+  const undo = button('Undo gesture', () => run(replayGesture('undo'))), redo = button('Redo gesture', () => run(replayGesture('redo')));
   actions.append(undo, redo, button('Fit drawing', () => { onInteraction({ resourceId, path }); surface.fit(); }), button('Zoom in', () => surface.zoomAt(canvas.clientWidth / 2, canvas.clientHeight / 2, 1.2)), button('Zoom out', () => surface.zoomAt(canvas.clientWidth / 2, canvas.clientHeight / 2, 1 / 1.2)));
   const objectsButton = button('Objects', () => { inspector.hidden = !inspector.hidden; objectsButton.setAttribute('aria-expanded', String(!inspector.hidden)); }); objectsButton.setAttribute('aria-expanded', String(!inspector.hidden)); actions.append(objectsButton);
   const imageInput = document.createElement('input'); imageInput.type = 'file'; imageInput.accept = 'image/png,image/jpeg,image/webp'; imageInput.hidden = true;
@@ -168,7 +169,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   }
   async function exportRecovery() {
     await surface.settle().catch(() => {}); const recovery = await client.exportRecovery();
-    notebookDownload(JSON.stringify({ ...recovery, failedLocalWork, inProgress: surface.gesture?.stroke.recovery() || surface.failedStroke || null }, null, 2), 'context-room-notebook-recovery.json');
+    notebookDownload(JSON.stringify({ ...recovery, failedLocalWork, failedStrokes: surface.failedStrokes, inProgress: surface.gesture?.stroke.recovery() || surface.failedStroke || null }, null, 2), 'context-room-notebook-recovery.json');
     status.textContent = 'Recovery export requested. Keep the file before closing unsaved work.';
   }
   async function exportDrawing(format) {
@@ -204,7 +205,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     await client.serial; await Promise.resolve(client.flushing).catch(() => {}); await storage.close();
   }
   dialog.addEventListener('cancel', event => { event.preventDefault(); run(close()); });
-  dialog.addEventListener('keydown', event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !['INPUT', 'TEXTAREA'].includes(event.target.tagName)) { event.preventDefault(); run(client.replayGesture(event.shiftKey ? 'redo' : 'undo').then(() => sync())); } });
+  dialog.addEventListener('keydown', event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !['INPUT', 'TEXTAREA'].includes(event.target.tagName)) { event.preventDefault(); run(replayGesture(event.shiftKey ? 'redo' : 'undo')); } });
   window.addEventListener('beforeunload', event => { if (saving || failedLocalWork.length) { event.preventDefault(); event.returnValue = ''; } }, { signal: cleanup.signal });
   window.addEventListener('online', () => void sync(), { signal: cleanup.signal });
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') void sync(); }, { signal: cleanup.signal });

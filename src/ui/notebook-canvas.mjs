@@ -10,6 +10,7 @@ export class NotebookCanvas {
     this.document = { objects: [], assets: {} }; this.selection = new Set(); this.tool = 'ink'; this.brush = { color: '#000000', width: 3 };
     this.view = { x: 32, y: 32, scale: 1 }; this.fingerInk = false; this.readOnly = false; this.closed = false;
     this.images = new Map(); this.paths = new Map(); this.pointers = new Map(); this.tasks = new Set(); this.frame = 0; this.gesture = null;
+    this.finishingStrokes = new Set(); this.failedStrokes = []; this.lastStrokeWrite = Promise.resolve();
     this.controller = new AbortController();
     const listen = (name, callback, options = {}) => canvas.addEventListener(name, callback, { ...options, signal: this.controller.signal });
     listen('pointerdown', event => this.down(event)); listen('pointermove', event => this.move(event));
@@ -49,7 +50,11 @@ export class NotebookCanvas {
     try { return await promise; } catch (error) { this.onError(error); return null; }
     finally { this.tasks.delete(promise); this.onSaving(this.tasks.size); }
   }
-  edit(edits, gestureId = crypto.randomUUID()) { return this.readOnly || !edits.length ? Promise.resolve(null) : this.run(this.enqueue(edits, { gestureId })); }
+  edit(edits, gestureId = crypto.randomUUID()) {
+    if (this.readOnly || !edits.length) return Promise.resolve(null);
+    const written = this.lastStrokeWrite.then(() => this.enqueue(edits, { gestureId }));
+    this.lastStrokeWrite = written.catch(() => {}); return this.run(written);
+  }
   down(event) {
     if (event.button !== 0 && !(event.pointerType === 'pen' && event.button === 5)) return;
     event.preventDefault(); this.canvas.focus({ preventScroll: true });
@@ -62,7 +67,9 @@ export class NotebookCanvas {
     if (this.readOnly || this.tool === 'pan' || event.pointerType === 'touch' && !this.fingerInk) { this.gesture = { kind: 'pan', pointerId: event.pointerId, last: screen }; return; }
     const tool = event.pointerType === 'pen' && event.button === 5 ? 'eraser' : this.tool;
     if (tool === 'ink') {
-      const stroke = new NotebookStroke({ enqueue: (...args) => this.enqueue(...args), color: this.brush.color, width: this.brush.width });
+      // Let the next pen-down draw immediately while preserving gesture order in the durable undo history.
+      const previousWrite = this.lastStrokeWrite;
+      const stroke = new NotebookStroke({ enqueue: async (...args) => { await previousWrite; return this.enqueue(...args); }, color: this.brush.color, width: this.brush.width });
       this.gesture = { kind: 'ink', pointerId: event.pointerId, stroke, points: [at], view: { ...this.view } }; this.run(stroke.append([at]));
     } else if (tool === 'eraser') { this.gesture = { kind: 'eraser', pointerId: event.pointerId, erased: new Set(), id: crypto.randomUUID() }; this.erase(at); }
     else if (tool === 'select') {
@@ -108,9 +115,23 @@ export class NotebookCanvas {
     const g = this.gesture; if (!g) return;
     if (g.kind === 'pan') { const remaining = [...this.pointers.entries()][0]; if (remaining) { g.pointerId = remaining[0]; g.last = remaining[1]; g.pinch = null; } else this.gesture = null; this.onView({ ...this.view }); return; }
     if (g.pointerId !== event.pointerId) return;
-    if (g.kind === 'ink') this.run(g.stroke.finish()).then(() => { if (g.stroke.error) this.failedStroke = g.stroke.recovery(); if (this.gesture === g) this.gesture = null; this.schedule(); });
+    const finalPoint = (!event.type || event.type === 'pointerup') && Number.isFinite(event.clientX) && Number.isFinite(event.clientY) ? this.world(event, g.view) : null;
+    if (g.kind === 'ink') {
+      if (finalPoint && finalPoint.some((value, index) => value !== g.points.at(-1)[index])) { g.points.push(finalPoint); this.run(g.stroke.append([finalPoint])); }
+      this.gesture = null; this.finishingStrokes.add(g);
+      const finished = g.stroke.finish(); this.lastStrokeWrite = finished.catch(() => {});
+      this.run(finished).then(() => {
+        if (g.stroke.error) { this.failedStroke = g.stroke.recovery(); this.failedStrokes.push(this.failedStroke); }
+        this.finishingStrokes.delete(g); this.schedule();
+      });
+    }
     else {
       this.gesture = null;
+      if (finalPoint) {
+        if (g.kind === 'shape') g.end = finalPoint;
+        else if (g.kind === 'transform') { g.dx = finalPoint[0] - g.start[0]; g.dy = finalPoint[1] - g.start[1]; }
+        else if (g.kind === 'lasso') g.points.push(finalPoint);
+      }
       if (g.kind === 'transform' && Math.abs(g.dx) + Math.abs(g.dy) > .1) this.edit(g.before.map(object => ({ kind: 'patch', id: object.id, expectedRevision: object.revision, patch: translateNotebookObject(object, g.dx, g.dy) })));
       else if (g.kind === 'lasso') this.select([...new Set([...g.initial, ...this.document.objects.filter(object => { const b = notebookObjectBounds(object, this.document.objects); return pointInPolygon([b.x + b.width / 2, b.y + b.height / 2], g.points); }).map(object => object.id)])]);
       else if (g.kind === 'shape') { const object = this.shape(g); this.edit([{ kind: 'put', id: object.id, expectedRevision: 0, object }]); this.select([object.id]); }
@@ -167,6 +188,7 @@ export class NotebookCanvas {
     const visible = { x: -this.view.x / this.view.scale, y: -this.view.y / this.view.scale, width: rect.width / this.view.scale, height: rect.height / this.view.scale };
     for (const o of this.document.objects) { const b = notebookObjectBounds(o, this.byId); if (!transforming.has(o.id) && b.x + b.width >= visible.x && b.x <= visible.x + visible.width && b.y + b.height >= visible.y && b.y <= visible.y + visible.height) this.paintObject(ctx, o); }
     if (g?.kind === 'transform') for (const o of g.before) this.paintObject(ctx, { ...o, ...translateNotebookObject(o, g.dx, g.dy), revision: -1 });
+    for (const pending of this.finishingStrokes) this.paintObject(ctx, { id: 'pending-preview', type: 'ink', points: pending.points, revision: -1, color: pending.stroke.color, strokeWidth: pending.stroke.width });
     if (g?.kind === 'ink') this.paintObject(ctx, { id: 'live-preview', type: 'ink', points: g.points, revision: -1, color: g.stroke.color, strokeWidth: g.stroke.width });
     if (g?.kind === 'shape') this.paintObject(ctx, this.shape(g));
     ctx.lineWidth = 1 / this.view.scale; ctx.strokeStyle = '#333333'; ctx.setLineDash([6 / this.view.scale, 4 / this.view.scale]);
