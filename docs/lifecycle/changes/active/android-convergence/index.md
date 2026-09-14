@@ -41,3 +41,10 @@ L1 and the durable notebook/review part of L2 are implemented and tested. Deskto
 ## Gesture continuation
 
 The portable client now persists pressure samples during a gesture, groups segmented strokes for selective undo/redo across restart, and preserves exact object revisions. Embedded-image outbox entries and a transactionally initialized browser identity use the same cache. Inert SVG exports retain pressure geometry and identify agent modifications of human-origin objects. See [verification](verification.md) for synthetic tests and the remaining proof boundaries. These primitives alone do not constitute a delivered tablet interface.
+
+The folder chooser and retained canvas are now wired to the existing local UI
+and the `.crnb` file path. Frozen notebook corrections reuse the existing human
+file decision route. The portable contract tests pass; the newly added browser
+scenarios have not passed their execution gate in the current environment.
+This does not complete the connected-device, native Android, voice or migration
+lots, and does not retire existing compatibility data.

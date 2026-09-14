@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { notebookImageSize } from './notebook_images.mjs';
 import { randomUUID } from 'node:crypto';
 import { NOTEBOOK_VERSION, NOTEBOOK_LIMITS, notebookId, notebookPath, notebookActor, failNotebook, emptyNotebook, normalizeNotebookDocument, applyNotebookEdits, cloneNotebook } from './notebook_protocol.mjs';
 import { notebookHash, stableNotebookJson, canonicalNotebookRoot, safeNotebookPath, makeNotebookDirectory, readNotebookBytes, writeNotebookBytes, readNotebookJson, writeNotebookJson, withNotebookLock } from './notebook_io.mjs';
@@ -13,6 +14,7 @@ function validateImage(asset) {
     : asset.mimeType === 'image/jpeg' ? bytes.length >= 4 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255
     : asset.mimeType === 'image/webp' ? bytes.length >= 16 && bytes.subarray(0, 4).toString() === 'RIFF' && bytes.subarray(8, 12).toString() === 'WEBP' : false;
   if (!valid || bytes.toString('base64') !== asset.data) failNotebook('notebook_asset', 'The embedded raster image does not match its declared format.');
+  notebookImageSize(bytes, asset.mimeType);
   return bytes;
 }
 export function encodeNotebook(input) {

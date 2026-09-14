@@ -1,13 +1,10 @@
 import { notebookInkOutline, notebookInkRadius } from './notebook_ink.mjs';
 import { normalizeNotebookDocument } from './notebook_protocol.mjs';
+import { notebookSceneBounds, center } from './notebook_geometry.mjs';
 const xml = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c]);
 export function notebookBounds(document) {
-  let left = 0, top = 0, right = 1200, bottom = 900;
-  for (const o of document.objects) {
-    const samples = o.type === 'ink' ? o.points : [[o.x || 0, o.y || 0], [o.x2 ?? (o.x || 0) + (o.width || 140), o.y2 ?? (o.y || 0) + (o.height || 80)]];
-    for (const p of samples) { left = Math.min(left, p[0] - 24); top = Math.min(top, p[1] - 24); right = Math.max(right, p[0] + 24); bottom = Math.max(bottom, p[1] + 24); }
-  }
-  return { x: left, y: top, width: right - left, height: bottom - top };
+  const bounds = notebookSceneBounds(document), x = Math.min(0, bounds.x), y = Math.min(0, bounds.y);
+  return { x, y, width: Math.max(1200, bounds.x + bounds.width) - x, height: Math.max(900, bounds.y + bounds.height) - y };
 }
 /** Deterministic, inert export of this exact scene. No provider calls or external resources. */
 export function notebookSvg(input, { showOrigins = false } = {}) {
@@ -27,7 +24,7 @@ export function notebookSvg(input, { showOrigins = false } = {}) {
     else if (o.type === 'image') { const a = document.assets[o.asset]; body = `<image x="${x}" y="${y}" width="${Math.abs(w)}" height="${Math.abs(h)}" href="data:${a.mimeType};base64,${a.data}"/>`; }
     else {
       let x1 = x, y1 = y, x2 = o.x2 ?? x + w, y2 = o.y2 ?? y + h;
-      if (o.type === 'connector') { const a = objects.get(o.from), b = objects.get(o.to); if (!a || !b) return ''; x1 = (a.x || 0) + (a.width || 140) / 2; y1 = (a.y || 0) + (a.height || 80) / 2; x2 = (b.x || 0) + (b.width || 140) / 2; y2 = (b.y || 0) + (b.height || 80) / 2; }
+      if (o.type === 'connector') { const a = objects.get(o.from), b = objects.get(o.to); if (!a || !b) return ''; [x1, y1] = center(a); [x2, y2] = center(b); }
       body = `<path d="M${x1} ${y1} L${x2} ${y2}" ${style}/>`;
       if (o.type !== 'line') { const a = Math.atan2(y2 - y1, x2 - x1), size = 12; body += `<path d="M${x2 - size * Math.cos(a - .45)} ${y2 - size * Math.sin(a - .45)} L${x2} ${y2} L${x2 - size * Math.cos(a + .45)} ${y2 - size * Math.sin(a + .45)}" ${style}/>`; }
     }

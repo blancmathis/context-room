@@ -23,7 +23,7 @@ async function renderDiagram(source, holder) {
   } catch (error) { if (holder.dataset.renderId === renderId) holder.textContent = error.message; }
 }
 
-export async function openLocalProposalReview({ item, api, onChange }) {
+export async function openLocalProposalReview({ item, api, scopeKey, onChange }) {
   document.querySelector("dialog.local-proposal-review")?.close();
   const dialog = element("dialog", "", "local-proposal-review");
   dialog.setAttribute("aria-label", item.title);
@@ -66,10 +66,11 @@ export async function openLocalProposalReview({ item, api, onChange }) {
   let busy = false;
   let drawing = null;
   let importedDrawing = null;
+  let notebookCorrection = null;
   let requestId = 0;
   let correctionListener = null;
   let files = [...item.files];
-  const isDirty = () => Boolean(editor && editor.value !== initialText || drawing?.dirty || importedDrawing);
+  const isDirty = () => Boolean(editor && editor.value !== initialText || drawing?.dirty || importedDrawing || notebookCorrection);
   const cleanupUrls = () => { objectUrls.forEach((url) => URL.revokeObjectURL(url)); objectUrls = []; };
   dialog.addEventListener("close", () => { requestId++; cleanupUrls(); dialog.remove(); }, { once: true });
   const mayClose = () => {
@@ -110,6 +111,14 @@ export async function openLocalProposalReview({ item, api, onChange }) {
           if (results.some((result) => result.status === "rejected")) section.append(element("p", "Some linked assets are absent from this version."));
         });
       }
+    } else if (extension === "crnb") {
+      import("/assets/ui/notebook-review.mjs").then(({ renderNotebookReview }) => {
+        if (!section.isConnected) return;
+        return renderNotebookReview(section, { bytes, file, editable, api: request, scopeKey,
+          onBusy: value => { busy = value; renderNavigation(); for (const node of footer.querySelectorAll("button")) node.disabled = value; close.disabled = value; },
+          onCorrection: contentBase64 => { notebookCorrection = contentBase64; dialog.dispatchEvent(new Event("correction")); },
+        });
+      }).catch(error => { status.textContent = "Notebook rendering failed: " + error.message; });
     } else if (["png", "jpg", "jpeg", "gif", "webp", "avif", "svg"].includes(extension)) {
       const image = element("img");
       image.alt = `${label}: ${file.path}`;
@@ -203,6 +212,7 @@ export async function openLocalProposalReview({ item, api, onChange }) {
     editor = null;
     drawing = null;
     importedDrawing = null;
+    notebookCorrection = null;
     footer.replaceChildren();
     renderNavigation();
     status.textContent = "Loading versions…";
@@ -217,9 +227,9 @@ export async function openLocalProposalReview({ item, api, onChange }) {
       const reload = element("button", "Reload review", "quiet-button");
       for (const button of [accept, reject, undo, reload]) button.type = "button";
       undo.hidden = !editor;
-      undo.addEventListener("click", () => { if (editor) editor.value = initialText; drawing?.undo(); if (importedDrawing) { importedDrawing = null; openFile(filePath).catch((error) => { status.textContent = error.message; }); } accept.textContent = "Accept file"; });
+      undo.addEventListener("click", () => { if (editor) editor.value = initialText; drawing?.undo(); if (importedDrawing || notebookCorrection) { importedDrawing = null; notebookCorrection = null; openFile(filePath).catch((error) => { status.textContent = error.message; }); } accept.textContent = "Accept file"; });
       if (correctionListener) dialog.removeEventListener("correction", correctionListener);
-      const correction = () => { undo.hidden = !editor && !drawing; accept.textContent = isDirty() ? "Save and accept file" : "Accept file"; };
+      const correction = () => { undo.hidden = !editor && !drawing && !notebookCorrection && !importedDrawing; accept.textContent = isDirty() ? "Save and accept file" : "Accept file"; };
       correctionListener = correction;
       dialog.addEventListener("correction", correction);
       editor?.addEventListener("input", () => { accept.textContent = isDirty() ? "Save and accept file" : "Accept file"; });
@@ -234,10 +244,12 @@ export async function openLocalProposalReview({ item, api, onChange }) {
             ...(decision === "accepted" && editor && isDirty() ? { content: editor.value } : {}),
             ...(decision === "accepted" && drawing?.dirty ? { contentBase64: drawing.canvas.toDataURL(drawing.type).split(",")[1] } : {}),
             ...(decision === "accepted" && importedDrawing ? { contentBase64: importedDrawing } : {}),
+            ...(decision === "accepted" && notebookCorrection ? { contentBase64: notebookCorrection } : {}),
           }) });
           editor = null;
           drawing = null;
           importedDrawing = null;
+          notebookCorrection = null;
           dialog.removeEventListener("correction", correction);
           files = result.changes.filter((change) => !change.decision).map((change) => change.path);
           await onChange(result);

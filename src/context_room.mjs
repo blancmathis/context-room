@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { renderAppShell } from "./ui/app.mjs";
 import { handleNotebookHttp, isNotebookMutation } from "./notebook_http.mjs";
+import { NOTEBOOK_WEB_ASSETS } from "./notebook_web_assets.mjs";
 import { createLisiereConnector } from "./lisiere_connector.mjs";
 import { isDocumentAssetPath, listDocumentAssets, readDocumentAssetReview, recordAcceptedDocumentAsset, decideDocumentAsset } from "./document_assets.mjs";
 import { readReviewCleanupPolicy, writeReviewCleanupPolicy, previewReviewCleanup, applyReviewCleanup, recentReviewCleanupReceipts } from "./review_cleanup.mjs";
@@ -20749,6 +20750,11 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       bundle.html,
       { frameAncestorPorts, method: req.method },
     );
+    return;
+  }
+  if (["GET", "HEAD"].includes(req.method) && NOTEBOOK_WEB_ASSETS.has(url.pathname)) {
+    const asset = NOTEBOOK_WEB_ASSETS.get(url.pathname);
+    writeHttpResponse(res, 200, { "content-type": asset.type, "cache-control": "no-cache", "x-content-type-options": "nosniff" }, req.method === "HEAD" ? "" : fs.readFileSync(new URL("./" + asset.file, import.meta.url)));
     return;
   }
   if (["GET", "HEAD"].includes(req.method) && ["/assets/local-proposal-review.mjs", "/assets/review-cleanup.mjs"].includes(url.pathname)) {
