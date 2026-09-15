@@ -60,9 +60,13 @@ and later human review pass across all four browser configurations.
 Selected Android text journals also reconstruct into Local working proposals,
 retaining exact source records and uncertain delivery without replaying requests.
 Android outbox reconciliation,
-recording-context reconciliation, handoff collection, writer cutover and release/upgrade packaging
+recording-context reconciliation, handoff collection, writer cutover and release packaging
 remain to be implemented. The complete
 connected-device and physical acceptance criteria remain open.
+An explicit Android recovery build now preserves the original application
+identity and signing key. Its local ZIP export, original-data preservation,
+cancel/reopen recovery and extraction on the Mac pass on an isolated emulator.
+Direct ZIP ingestion and personal-device upgrade remain separate work.
 An optional version-2 recovery export now retains original Android PCM files
 without reading the old credentials or starting recognition.
 

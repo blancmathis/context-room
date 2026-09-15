@@ -212,6 +212,10 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
       if (text.length() > 8192) { showError("Ce code est trop long. Recopiez le code créé sur le Mac."); return; }
       try { pair(new JSONObject(text)); } catch (Exception error) { showError("Le code est incomplet. Collez le contenu entier créé sur le Mac."); }
     }); screen.addView(pair);
+    if (LegacyRecoveryArchive.available(this)) {
+      screen.addView(label("Vos données Lisière sont conservées sur cet appareil. Préparez leur récupération avant de poursuivre la migration sur le Mac.", 16));
+      screen.addView(button("Récupérer Lisière", () -> startActivity(new Intent(this, LegacyRecoveryActivity.class))));
+    }
     if (connection != null) screen.addView(button("Revenir à Context Room", this::connectionHome));
   }
 

@@ -1254,8 +1254,48 @@ uses the browser's own timers. The duration/Soak scenarios retain their explicit
 clock controls. The unchanged local WebKit check passes three repetitions,
 consistent with the intermittent hosted failure; the corrected real-timer
 check passes **12/12** across all four configurations with three repetitions
-each. Error guards and navigation assertions remain in place. Linux verification
-of this correction remains pending.
+each. Error guards and navigation assertions remain in place. At `e22b2a0`,
+all three Node jobs and all four hosted browser configurations pass in run
+`34939886132`; its Soak and final gate are still pending.
+
+## Original Android identity and native recovery export
+
+The explicit recovery build retains the original `fr.lisiere.android` package
+and verifies the original signer and a higher version code. The ordinary
+preview keeps its own identity, key and output. An original version-95 APK
+seeded a synthetic real Android database with committed WAL larger than 2 MiB,
+an int64 operation sequence, Float/Double arguments, a text draft, an unreadable
+binary request and original PCM. It was upgraded to version 96; later recovery
+revisions reused that exact retained fixture without resetting or downgrading it.
+
+The final recovery APK is SHA-256
+`7f3a18fa7256e39a50e0e241fbceb1824a253f9e7106f4b789335f30ac234847`.
+Native export through the actual DocumentsUI picker passes. The Mac verifies
+the complete ZIP inventory and hashes, original database/WAL/PCM preservation,
+excluded-but-preserved authentication preferences, and exact original Android
+JSON serialization of the large binary row. The unreadable request remains
+explicit. The first Mac snapshot step exposed Android's `android_metadata`
+table; the reader now retains that known locale table and the retained export
+completes successfully. Unknown schema remains refused.
+
+Four additional native archive contracts pass: completed-copy integrity,
+future-version/unknown-recording refusal without replacing the saved receipt,
+linked or occupied-file protection, bounded decoding and explicit malformed-row
+retention. They exposed Android's clean PERSIST journal, which is now preserved
+and checked on a disposable database copy. The platform itself refuses hard-link
+creation in this emulator; the test retains that distinction. Activity recreation,
+actual picker cancellation and reopening the exact prepared copy also pass.
+The entry, exported state and cancelled-state renderings were inspected.
+
+The focused SQLite, recording and Android-draft regression passes **12/12**,
+including nine Python snapshot contracts. Both APK variants build and pass
+signature/permission/shared-source verification. The ordinary preview APK is
+SHA-256 `934f324c1e092be6e9bb4713b9f6545ef5d651033012de4ca3dcb592faa31cf6`.
+Its existing owner workflow regression also passes: rendered documents, native
+drawing, image import, exact file-picker export and synthetic human/Shared
+review retain the accepted original. Doctor, package privacy and package
+dry-run pass. This milestone's full hosted result remains a separate check.
+No personal installation or migration is claimed.
 
 ## Open product gates
 
@@ -1269,5 +1309,6 @@ physical Wi-Fi behavior or BOOX pen/palm latency.
 
 The latest complete hosted application matrix passes at `626c4d7`; later
 changes need their own regression and hosted result. Notebook-specific checks
-do not stand in for that matrix. Installation/signature migration, physical BOOX testing and
-personal-data migration have not been performed.
+do not stand in for that matrix. The original Android identity upgrade/export
+has the isolated emulator proof above. Physical BOOX testing, personal-device
+upgrade, full writer cutover and personal-data migration have not been performed.

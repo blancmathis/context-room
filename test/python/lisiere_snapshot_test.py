@@ -88,6 +88,8 @@ class SnapshotContracts(unittest.TestCase):
     def test_android_compressed_objects_and_exact_large_integer_survive(self):
         with sqlite3.connect(self.database) as db:
             db.executescript('''PRAGMA user_version=1;
+              CREATE TABLE android_metadata (locale TEXT);
+              INSERT INTO android_metadata VALUES('fr_FR');
               CREATE TABLE cache(key TEXT PRIMARY KEY,value TEXT);
               CREATE TABLE outbox(seq INTEGER PRIMARY KEY,id TEXT,operation TEXT,args TEXT,error TEXT);
               CREATE TABLE board_headers(board TEXT PRIMARY KEY,value TEXT);
@@ -102,6 +104,7 @@ class SnapshotContracts(unittest.TestCase):
         self.assertEqual(base64.b64decode(self.table(plan, 'board_objects', output)[0]['value']['base64']), payload)
         self.assertEqual(self.table(plan, 'outbox', output)[0]['seq'], {'integer': '9007199254740993'})
         self.assertEqual(self.table(plan, 'cache', output)[0]['value'], 'Unsent draft 🖊️')
+        self.assertEqual(self.table(plan, 'android_metadata', output), [{'locale': 'fr_FR'}])
 
     def test_asset_identity_and_bytes_are_verified(self):
         with self.mac():

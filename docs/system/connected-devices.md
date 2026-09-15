@@ -208,8 +208,10 @@ The output is `android/app/build/outputs/apk/debug/app-debug.apk`, with the
 separate application ID `app.contextroom.tablet.preview`. The script generates
 an isolated development key in ignored local build state; it does not reuse
 an installed application's signing identity. Dependency provenance is recorded
-in `android/NOTICE.md`. Release signing, upgrade and physical BOOX validation
-remain separate gates.
+in `android/NOTICE.md`. The explicit [Lisière recovery build](lisiere-migration.md#recover-an-existing-android-installation)
+retains an original installation's signing identity and data; it has a separate
+output and emulator upgrade/export checks. Release packaging, personal-device
+installation and physical BOOX validation remain separate gates.
 
 For repeatable synthetic verification on a separately created emulator whose
 AVD name starts with `ContextRoom_`:

@@ -76,6 +76,49 @@ configuration. This does not remove sensitive material the user wrote in their
 own content. Android recording files are included only with `--recordings`.
 Earlier project handoff directories are not part of this database export.
 
+## Recover an existing Android installation
+
+The ordinary preview uses a separate application identity. To access data kept
+inside an existing Lisière installation, the explicit recovery build uses the
+same `fr.lisiere.android` identity and the preserved original signing key. It
+packages the same Context Room source with a higher Android version code:
+
+```bash
+scripts/build-android-recovery.sh /absolute/path/to/original-lisiere.apk HIGHER_VERSION_CODE
+```
+
+JDK 17, Android SDK/build-tools 35 and the original key in
+`~/.local/share/lisiere/signing/development.keystore` are required. The command
+builds and checks the original/new package identities, signer and increasing
+version. It does not install anything. Its APK is
+`android/.local/legacy-recovery-build/app/outputs/apk/debug/app-debug.apk`;
+ordinary preview output and signing remain separate. Keep signing material
+outside Git. A different key cannot upgrade the existing installation.
+
+After an authorized upgrade, **Récupérer Lisière** on the connection screen
+opens an explicit local export. **Préparer une copie** retains the original
+database, committed WAL or rollback journal, and original PCM recordings.
+SQLite opens only a disposable copy for consistency and queue decoding.
+Private authentication preferences are preserved by the upgrade and excluded
+from the ZIP. The new app does not load their old connection or send the old
+queue. A prepared copy survives activity recreation and picker cancellation.
+**Enregistrer le fichier ZIP** saves it through Android's document picker;
+the original data and private prepared copy stay on the device.
+
+The ZIP is bounded to 512 MiB of source/derived data. Its final `manifest.json`
+identifies every file by size and SHA-256. `derived/outbox-args.jsonl` retains
+the original Android JSON serialization, including Float/Double formatting,
+and binds each decoded row to its original argument bytes. Unreadable rows
+remain explicit reconciliation items in the preserved database. Delivery is
+never inferred. A partial preparation cannot replace a completed receipt;
+changed or linked copies are refused when reopened.
+
+This recovery ZIP is a private transfer artifact, distinct from the versioned
+Mac snapshot above. Direct ZIP ingestion and queue reconciliation remain
+implementation work. The isolated emulator verifies native export and Mac
+snapshot extraction from its checked contents. It does not establish a
+personal-device upgrade, writer cutover or automatic rollback.
+
 ## Recovery
 
 Export directories use mode 0700 and new files use 0600. A private staging area

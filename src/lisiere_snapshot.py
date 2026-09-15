@@ -34,7 +34,7 @@ MAC_COLUMNS = {
     'desktop_submissions': 'id project thread digest state result created updated',
     'devices': 'id name token created', 'pairs': 'token expires',
 }
-ANDROID_COLUMNS = {'cache': 'key value', 'outbox': 'seq id operation args error',
+ANDROID_COLUMNS = {'android_metadata': 'locale', 'cache': 'key value', 'outbox': 'seq id operation args error',
                    'board_headers': 'board value', 'board_objects': 'board id value'}
 # A native request's generated prompt contains its old executable grant. Keep
 # original text/context/history, never transfer that grant to a new runtime.
@@ -82,7 +82,7 @@ def snapshot(source, output=None, recordings=None):
     identity = regular(database)
     if identity.st_size > MAX_BYTES:
         raise ValueError('The legacy database exceeds the bounded snapshot size.')
-    for suffix in ('-wal', '-shm'):
+    for suffix in ('-wal', '-shm', '-journal'):
         sidecar = Path(str(database) + suffix)
         if sidecar.exists() or sidecar.is_symlink():
             regular(sidecar)
