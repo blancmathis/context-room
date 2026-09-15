@@ -2,11 +2,10 @@
 
 ## Summary
 
-The recovered notebook implementation and its local corrections have been
-verified on macOS with Node 22.23.0. This is evidence for a working desktop
-notebook foundation, an optional restricted TLS drawing service and a native
-Android drawing preview verified in an isolated emulator. The
-complete connected-device product is not delivered.
+This journal preserves checkpoint-specific macOS, browser, emulator and portable
+proofs. Those historical successes do not validate later commits. The final
+consolidated-delivery section is the current status and the single C/R/V matrix.
+It separates source packaging from a completed product or personal installation.
 
 ## Defines
 
@@ -1374,115 +1373,108 @@ complete dependency installation: missing `yaml/index.js` stopped those imports.
 Only the separately runnable local proposal baseline passed 17/17 under the
 prescribed mask. No conclusion attributes every original failure to umask.
 
-## 2026-09-15 — current PR 42 recovery extension
+## 2026-09-15 — current PR 42 consolidated delivery
 
-Remote baseline: `b41e8945786cd5821e7adb45695fb6b271849336`, with main still at
-`1a2cdcec1435d60cd8d07a3762a369e066508ce1`. Both complete runs are green:
-CI **34966764884** and convergence **34966764731**. The Soak now passes. The
-review module aliases are served; keyed review rows preserve click/focus targets.
-The Shared fixture waits for the original exact current-symlink, skill and config
-assertions together, rather than treating catalog status as disk completion.
-These corrections are already in b41; they were preserved, not rewritten here.
+### Exact identity and evidence boundary
 
-Full-suite input: `0b932abf868de1238a9368a09aa5908da6e3418f`.
-Final software/test input: `22b998d4c08289ec377801c64a8f352a0f5c1b83`.
-The only later software/test change fixes the installation script's derived
-source path and adds its real CLI contract. All other executable inputs of the
-full campaign are unchanged. The final documentation-only delivery commit is in
-the external `DELIVERY.json` and source `SOURCE_COMMIT`. Seven software/test
-commits and documentation commits extend the same branch; read-only GitHub
-actions in this session cannot push them.
+This section replaces the earlier current-status summary; previous milestones
+above remain historical. The one delivery HEAD is recorded in the ZIP's
+`livraison/SOURCE_COMMIT` and `livraison/DELIVERY.json`, the ZIP Git comment, and
+the bundle's single branch reference. The distribution copy of this section has
+the full HEAD in its heading. Source files are exact Git bytes, without export
+substitution; the versioned document does not embed its own commit hash.
 
-### New portable implementation and evidence
+Remote baseline remains `b41e8945786cd5821e7adb45695fb6b271849336` on
+`mathis/context-room-recovery-hardening-20260915`, PR 42 open/draft, not merged.
+The last retained original local commit is
+`f6cee69d0f698f3db279ec0d7c610cbc38bae8c6`. The original local commit object
+`36e8180ea03ab640fc8ba489bcfe72259613aeef` was missing from its incremental bundle.
+Its two supplied files were recovered byte-for-byte in
+`170918d44a40517324a264477fe6c6523a05d7cd`; this is **not** a claim to have recovered
+the original commit metadata or original SHA. The closing commit changes only
+documents. No manual source-file supplement is required after bundle restoration.
+The incremental bundle requires public b41; no other refs or private Git history
+are included.
 
-- Exact retained Android arguments are compared to Mac digests, ordinary results,
-  history and object revisions. Sixteen Python receipt/undo/number contracts are
-  called by the Node suite; SQL fixtures exercise real preview/apply/repeat.
-- A retained tablet cache requires an explicit queue-versus-copy choice. A copy
-  preserves local-only ink and original cells; revision 1 is labeled an import,
-  never an inferred Mac receipt. Missing raster data blocks conversion.
-- Explicit original PCM links live in the private assistant store, outside the
-  project, with current source authorization and content hashes. Four CLI/HTTP/
-  storage contracts pass; no automatic playback, transcript or send is allowed.
-- Recognized-service cutover pauses writes, stops/disables the old launch agent,
-  verifies closed files and unchanged snapshot, retains the full private source
-  and fences the old SQLite path. Synthetic tests use actual filesystem and
-  SQLite operations, not an actual macOS service. Safe rollback retains recent
-  work and never restarts old requests. It is not functional legacy downgrade.
-- Mac preparation has four tests of exact files/modes, refusal, resumption,
-  parsed plist arguments and the real CLI default-source path. It stages only; it does not install dependencies,
-  models or an active service. The actual activation procedure remains local.
-- Android `OwnerRecordingTest` and `verify-owner.py --recording` are prepared.
-  Their owner fixture starts with synthetic PCM and no provider. The new native
-  instrumentation has not been compiled/executed. Build stopped before source
-  compilation: Gradle 8.11.1 is not cached and DNS resolution for its distribution
-  failed. The SDK is unconfigured in this runtime.
+### Results actually available
 
-Complete portable campaign at 0b932ab: **101/102 test processes passed; overall exit 1** under `umask 022`, Node 22.16.0,
-Python 3.13.5. The complete original test harness and assertions were retained.
-The only failing case is `GitHub security setup installs and verifies a no-bypass
-pull-request ruleset` in `shared_context.test.mjs:401`: the container has no
-`ssh-keygen`, so restricted-credential creation stops before its assertions.
-The same exact case also fails at unmodified b41 with the same missing executable.
-The other 40 cases in that shard, all three remaining Shared shards, and the
-exclusive performance/network/fetch tests pass. This is **not** an all-green local
-suite; no skip, replacement key generator, relaxed assertion or rerun-as-success
-was introduced. Run that exact case once with real OpenSSH available. Upstream
-b41 CI remains independently green, not evidence for these new commits.
-`package:privacy` and `npm pack --dry-run` passed. A clean synthetic `doctor`
-returns no project issues and honestly reports absent optional audio dependencies;
-no assistant store is created. An earlier fixture reduction of startupSkills
-scope correctly produced a critical owner-authority warning. That negative result
-is retained; the clean fixture no longer changes the owner's scope.
+Evidence labels are shared with `RELAIS-CODEX-LOCAL.md`:
 
+| Evidence | Source input | Terminal / limit |
+| --- | --- | --- |
+| E01 | Public b41; CI 34966764884 / convergence 34966764731 | Historical success: three Node jobs, four browsers, Soak/gate and Android build. No attribution to subsequent commits. |
+| E02 | Campaign attributed to 0b932ab by the retained relay | Preserved npm log ends at **101/102 test processes**, overall failure. Shared shard: 40/41, missing ssh-keygen before security assertions. The log itself does not embed a HEAD. |
+| E03 | Unchanged b41 prerequisite control | Preserved single-case log: **0/1**, same missing-OpenSSH error. Not skipped or simulated. |
+| E04 | Mac CLI fix 22b998d, per retained relay | Preserved focused log: **4/4**, including actual kit preview/apply/verify/repeat. Not a new full suite. |
+| E05 | Retained Shared 36e8180 file inputs | Preserved negative control **0/2** and corrected **2/2**; delivered source/test hashes match those supplied files. Not rerun during packaging. |
+| E06 | Previously launched `umask 022; CI=1 npm test` at 36e8180 | No terminal recovered. Restored environment has no active test process or corresponding final log. No restart; no inferred full total or success from intermediate observations. |
+| E07 | Prior relay's browser / Gradle attempt | Administrator block before UI; missing Gradle 8.11.1 cache and DNS failure before compilation. Raw logs not retained here; failures reported, not reproduced or bypassed. |
+| E08 | Present source consolidation | Object/file equality, Git restoration, artifact inventories/hashes and package checks are recorded in the delivery receipts. These checks are not a new business-test campaign. |
 
-The real package-kit preparation then found a separate default-path bug: a
-file-URL directory ended with `/`, correctly rejected by the canonical-root
-contract. Commit `22b998d4c08289ec377801c64a8f352a0f5c1b83` normalizes only that
-derived default, not explicit user roots. Four focused installation tests pass,
-including real CLI preview/apply/verify/repeat and refusal of an explicit
-noncanonical root. The actual full package kit also prepares, verifies and
-replays, with a plist parsed by Python. No key generator or security assertion
-was changed. Unchanged full-suite jobs were not rerun to seek a green result.
-The source kit is preparation, not a dependency installation or activated Mac
-service; its final revision and hash are distributed with the delivery receipt.
+E02 did not cover the later Shared guards. E04 verifies the later Mac-script
+change; E05 verifies only its two new Shared scenarios. This is composed, partial
+evidence with a known failing process and a missing later terminal, **not a green
+full suite on the delivered HEAD**. Assertions, performance goals, review
+controls and the original test runner were not reduced. No OpenSSH, browser,
+Gradle or full-suite attempt was made during consolidation.
 
-New browser attempt: **not executed**, `net::ERR_BLOCKED_BY_ADMINISTRATOR` while
-navigating to the synthetic loopback server. No policy bypass, reduced assertion,
-route substitute or mocked-success screenshot was used. Baseline browser/Soak
-success is not relabeled as execution of the new recording UI.
+The current Shared guard checks enrolled writer authority during creation/reuse,
+notebook publication and immediately before push; repository-scoped publication
+also respects the proposal's original project. A pause keeps a prepared commit
+local, preserves later bytes and produces no remote success receipt. The
+recovered code is in `src/shared_context.mjs`; its two tests are in
+`test/shared_writer_authority.test.mjs`. No further functional change was added.
 
-Baseline APK SHA-256:
-`d0f711540bc8008ca9d09413ce2e458c1d920c5c75ceeebf2b4a0d77ddbe2f8c`.
-Its CI source is `a868511baa87b37e582001b48440afba79da1610` (same tree as b41).
-Eight embedded production assets match current files. This APK is a labeled
-baseline, not an APK containing the new instrumentation. No APK was executed.
+### Original-scope gaps versus local checks and extra capabilities
+
+The full progressive legacy pen-job receipt reconciler is still absent (C/V14).
+The requested application-controlled true-agent latency work has not delivered
+a measured improvement over 13.402/14.189 seconds toward ten seconds (F/V17).
+Mac delivery provides a verified source-kit generator, inert plist and local
+procedure, not a demonstrated installed/activated product (E/C01/V02).
+
+Code already exists for ordinary queue reconciliation, tablet-cache choice,
+retained transfers, private PCM associations, standard-service cutover and safe
+pause/resume. The missing browser PCM, Darwin/launchctl, clean Mac installation,
+current Android instrumentation, authenticated-provider and BOOX tests are listed
+separately in the relay. **Physical BOOX validation remains original scope.**
+
+The rollback pauses enrolled writes without restoring older bytes or replaying
+old requests; it does not reactivate Lisière. A fully automatic bidirectional
+legacy downgrade, universal custom-installation support, repair of unknown or
+replaced fences, and a generic unattended updater were not explicitly required
+and are not silently added as new acceptance criteria. These boundaries do not
+prove that the specified standard migration is complete. A tablet without the
+connected Mac, separate Inbox, hosted service, Office editor and paid speech
+fallback are outside or contrary to the original request. No such expansion was
+introduced. See relay §7 for the precise separation.
 
 ### Current delivery coverage matrix
 
-This is the single current matrix. Earlier milestones above are historical.
-“Preserved” refers to stated source/contract evidence, not new physical validation.
-A successful subset does not complete its broader acceptance criterion.
+This is the single current 56-row matrix. “Preserved” records code/invariant
+review and only the evidence attributed above. It is not current-head or physical
+validation. E08 is packaging proof; E01–E05 remain tied to their actual inputs.
+A successful subset never closes a broader criterion.
 
 #### C01–C08 — product outcome
 
 | ID | State | Evidence | Limit / remaining work |
 | --- | --- | --- | --- |
-| C01 | Partial | Native drawing/CLI no longer need the old companion; private Mac kit and recognized-service cutover are implemented. | Mac installation/activation is unverified; this is not a completed automatic installer/upgrader. |
-| C02 | Implemented; scoped proofs | Existing editable notebooks plus queue projection and separate tablet-cache copies preserve working scenes and import provenance. | Progressive legacy pen-job receipt reconciliation is unsupported; no new real-provider drawing trial. |
-| C03 | Implemented; UI proof pending | PCM attachment uses explicit document/conversation scope, exact bytes and no automatic send/playback; CLI/HTTP contracts pass. | New browser and owner-WebView recording flow still needs execution. |
+| C01 | Partial delivery | Native connector, deterministic CLI, Mac kit generator and standard-service cutover exist. E02/E04 cover portable subsets. | Only kit/plist preparation is delivered. Installed Mac activation and clean-install behavior remain unverified; an automatic updater is not an added acceptance requirement. |
+| C02 | Implemented; scoped proof | Editable notebooks, queue projection and explicit tablet-cache copies retain working state and provenance (E02). | Full progressive legacy pen-job receipt reconciliation is absent; no new real-provider trial. |
+| C03 | Implemented; UI untested | Explicit source/conversation PCM links, exact bytes, authorization and no automatic send/playback have CLI/HTTP evidence at 0b932ab (E02). | Current browser and owner-WebView recording flow not executed (E07). |
 | C04 | Preserved | Baseline complementary mode, per-object revisions, display receipts and independent views are unchanged. | No new simultaneous physical Mac/BOOX session. |
-| C05 | Preserved and extended | Owner transport and human review retained; a native test now covers recording association and export. | New instrumentation has not compiled or run here. |
-| C06 | Baseline built; new test pending | Baseline b41 APK signature/build succeeded; eight embedded assets match current production inputs. | Current instrumentation build stopped at missing Gradle distribution/DNS; no APK execution. |
+| C05 | Inherited plus prepared | Owner transport and human review preserved; new OwnerRecordingTest and fixture are present. | A prepared native test is not a passed test; current instrumentation has not compiled or run. |
+| C06 | Baseline build only | The b41 baseline APK was built and its eight production assets match the delivery files. | No current instrumentation build or APK execution; Gradle failure was before compilation (E07). |
 | C07 | Preserved | Recovery uses explicit ordinary project paths and the existing conversation panel. | No Inbox, alternate catalog or separate ideas application introduced. |
-| C08 | Partial | Source receipts, cache copies, PCM, private retirement, resumed phases and recent-work preservation have synthetic contracts. | Whole personal migration and physical replacement are not established; functional legacy downgrade absent. |
+| C08 | Partial | Recovery copies, private retirement, journal replay and recent-work preservation have synthetic evidence; Shared pause guard adds E05. | Full migration/replacement not established. Progressive job reconciliation is missing; physical acceptance remains in scope. |
 
 #### R01–R29 — grooming preservation
 
 | ID | State | Evidence | Limit / remaining work |
 | --- | --- | --- | --- |
 | R01 | Preserved | Local canonical service remains; no hosted or paid fallback added. | Production macOS service shutdown/activation still needs verification. |
-| R02 | Preserved | Baseline four browser jobs and Soak pass; current Node Hub/report contracts remain in the final campaign. | Baseline browser evidence is not relabeled as current-head UI execution. |
+| R02 | Preserved; scoped evidence | b41 browser/Soak result E01; Hub/report process success in 0b932ab campaign E02. | No terminal complete campaign for the later code and no current-head browser execution. |
 | R03 | Preserved | Root identity, source revision, exact worktree/path and explicit destination remain bound. | No automatic project/worktree destination guessing. |
 | R04 | Preserved | Existing Projects/Computer and device scopes retained; migration paths use canonical files and scope predicates. | No new general remote filesystem grant. |
 | R05 | Preserved | No Hub reset, catalog or shell button; synthetic cutover asserts configuration bytes unchanged. | Not proof for every customized personal Hub. |
@@ -1491,10 +1483,10 @@ A successful subset does not complete its broader acceptance criterion.
 | R08 | Preserved | No agent accept/reject or migration authorization tool was introduced. | Only synthetic human-review contracts were executed. |
 | R09 | Preserved | Existing exact frozen correction and independent terminal decision routes remain. | Browser drawing/review success is verified at b41, not the new UI input. |
 | R10 | Preserved | Imports reuse importNotebookDraft; later submission uses existing Local/Shared engines. | No alternative tablet proposal engine. |
-| R11 | Preserved | Baseline b41 waits for exact Shared current/skill/config materialization; current Shared suite retains assertions. | One local security-setup case is blocked by absent ssh-keygen; actual macOS permission/rollback execution remains pending. |
+| R11 | Extended; targeted proof | Shared exact revision/terminal assertions retained; writer authority now guards create/reuse and pre-push, including original project scope (E05: 2/2). | E02 Shared security case failed for missing ssh-keygen. Later full-suite terminal is unavailable (E06). |
 | R12 | Preserved | Reconciliation/PCM working imports need no Git repository at the project destination. | Git remains necessary for Shared, not Local working scenes. |
 | R13 | Preserved | Direct-change and integrity tests retained; new imports do not overwrite ordinary files. | No new physical sleep/restart evidence. |
-| R14 | Extended | Exact preconditions block stale undo; rollback pauses writing without restoring old files over new work. | Safe pause is not an implemented functional downgrade to Lisière. |
+| R14 | Extended | Exact undo preconditions and safe rollback pause preserve newer working files; E02/E05 are scoped evidence. | Rollback means pause/resume, not restoring the legacy writer or a bidirectional format migration. |
 | R15 | Preserved | No age-based discard or cleanup of original history/PCM was added. | Retention does not mean every unknown source is automatically interpretable. |
 | R16 | Preserved | Normal migration CLI and deterministic helpers remain harness-independent. | A real agent is still required only for explicit generative collaboration. |
 | R17 | Preserved | Accepted-search and provenance owners were not replaced; targeted recovery summaries avoid full text. | No broader search-completeness claim. |
@@ -1508,29 +1500,29 @@ A successful subset does not complete its broader acceptance criterion.
 | R25 | Preserved | Native connector replaces external runtime; recovery reads retained formats without launching Lisière. | Cutover helper can stop the recognized original service only on explicitly authorized apply. |
 | R26 | Preserved | No automatic researcher/subagent, paid transcription or model download; linking does not invoke inference. | Real-provider timing/acoustic quality remain unmeasured. |
 | R27 | Preserved | No hosted-hub/review/remote profile restored; personal-device service stays opt-in. | Kit LaunchAgent does not implicitly expose a device listener. |
-| R28 | Extended; partial | Immutable source copies, mappings, private retirement and resumed recorded phases preserve recent work/configuration. | Custom legacy installations, arbitrary interrupted partial fence repair and functional downgrade require additional implementation or explicit recovery. |
-| R29 | Preserved | Local commits extend the exact existing branch; source archive, incremental bundle and patches are provided. | GitHub tools expose read operations only here; new commits were not pushed or merged. |
+| R28 | Extended; partial | Original bytes, mappings, private retirement, recorded phases and Shared pre-push pause guard preserve recent work/configuration. | Standard-layout Darwin behavior still untested. Unknown/custom or replaced fences fail closed, not automatically repaired. |
+| R29 | Delivery consolidated | Same local branch, source ZIP and incremental bundle bound to one HEAD; supplied Shared files integrated byte-for-byte. | Remote PR remains at b41. Original 36e8180 object was not retained; restored code has a new commit identity. No push or merge. |
 
 #### V01–V19 — acceptance evidence
 
 | ID | State | Evidence | Limit / remaining work |
 | --- | --- | --- | --- |
-| V01 | Scoped evidence | All R rows reviewed; existing assertions and removed-profile boundaries retained. | Current new UI cannot be declared browser-validated. |
-| V02 | Partial | Kit source integrity, CLI prerequisites and doctor on a clean synthetic project; no old service invoked. | Fresh installed Mac runtime, reboot and activation remain unverified. |
-| V03 | Inherited | Baseline device/owner and notebook contracts retained; embedded production Android assets compared byte-for-byte. | No new two-device native drawing/display execution. |
-| V04 | Inherited plus prepared | b41 drawing/review/PNG tests are green; new owner PCM instrumentation follows the existing TLS and file-picker path. | New owner sequence not executed. |
-| V05 | Partial | Recorded cutover phases, lost acknowledgements, repeated PCM/import apply and older ZIP interruption tests pass. | Not a fresh native network/gesture shutdown test. |
-| V06 | Extended | Digest/result/history mismatch, predecessor conflicts, exact undo, duplicate queue identity, cache choice and newer-work replay tested. | Unknown/progressive pen jobs do not become automatic successes. |
-| V07 | Inherited | Current notebook agent/undo/stop contracts retained; no replay advertised as generation. | Real authenticated provider redirection and latency not rerun. |
-| V08 | Preserved | Working-only imports and ordinary-file absence are asserted; b41 frozen review excludes later gestures. | Current new UI requires browser confirmation. |
-| V09 | Preserved | Existing Local permissions/review and Shared revision/terminal-CAS suites included unchanged. | One security-setup case fails before assertions because ssh-keygen is missing; actual Mac filesystem behavior still needs local checks. |
-| V10 | Extended; partial | PCM CLI/HTTP/stream/hash/source controls pass without provider creation; owner/browser tests prepared. | No new actual microphone, acoustic playback, native recording UI or provider trial. |
+| V01 | Scoped audit | All 29 grooming rows retained and reviewed; delivery changes only documentation after exact Shared reassembly. | Static review and historical contracts are not current-head UI or native validation. |
+| V02 | Partial; preparation not installation | Kit source integrity and default CLI path E04; historical synthetic doctor statement is attributed in the relay. | Operational clean Mac install/activation/reboot and one coherent running service are not demonstrated. |
+| V03 | Inherited only | Device/owner/notebook production inputs preserved; eight baseline embedded assets match. | No new simultaneous Mac/Android drawing and rendered-receipt execution. |
+| V04 | Inherited plus unexecuted test | b41 complete drawing/review/PNG scenarios E01; PCM owner instrumentation prepared. | No new end-to-end owner PCM scenario execution. |
+| V05 | Partial synthetic proof | Snapshot publication, journalled cutover, repeated import/PCM apply and lost-response cases have earlier scoped tests E02. | Does not establish current native closure/network interruption behavior. |
+| V06 | Extended; partial | Digest/result/history mismatches, successor conflicts, stale undo, queue duplicates and explicit cache selection covered at 0b932ab. | Private progressive pen-job reconciliation absent; arbitrary unknown jobs are retained, not acknowledged. |
+| V07 | Inherited; performance work open | Prior notebook agent/undo/stop contracts retained; no replay claimed as generation. | No delivered, measured application-side fix for the true-agent first-useful-result delay in this continuation. Authenticated trials remain to perform. |
+| V08 | Scoped proof | Working imports do not write ordinary accepted files (E02); b41 frozen review excludes later gestures (E01). | New recording UI and full final source still lack a complete execution record. |
+| V09 | Extended; partial proof | Local/Shared exact assertions retained; E05 verifies pause refusal and locally retained prepared commits without push. | E02 is globally failing; E03 reproduces OpenSSH prerequisite failure at b41; E06 terminal not recovered. |
+| V10 | Extended; UI/native untested | PCM storage, CLI, HTTP, hashes and source control have E02 evidence without provider creation. | No new browser/Android PCM, real microphone/acoustic playback or provider trial. |
 | V11 | Preserved | Existing rendered formats/HTML and notebook asset-resolution tests retained. | No invented Office/PDF editing expansion. |
-| V12 | Preserved | Accepted-only corpus, per-reader integrity and Shared cache contracts retained in final Node suite. | No new physical offline-reader trial. |
-| V13 | Extended | Scope/origin/nonce, unsafe-path, modified-source/asset, mismatched identity and missing writer fence refuse. | Cutover is not a defense against a local owner deliberately bypassing the service/data path. |
-| V14 | Partial | Real synthetic SQLite queue/cache recovery, PCM links, retirement, resumed phases and preserved recent work. | Progressive job reconciliation and functional downgrade remain software gaps; no personal migration performed. |
-| V15 | Inherited plus prepared | Identity/signature/compatibility code unchanged; emulator-only guard preserved; new test class supplied. | Current instrumentation build unavailable; no current signed upgrade execution. |
-| V16 | Inherited plus unexecuted UI | b41 four-browser layout/smoke/accessibility pass; new screenshot/axe recording scenario prepared. | Local Chromium navigation is blocked by administrator policy; no new screenshots or native ergonomic proof. |
-| V17 | Inherited; target open | b41 Soak and desktop performance pass; current portable suite preserves timing assertions. | No new real-provider improvement over 13.402/14.189 seconds; BOOX ink/audio/memory measurements absent. |
-| V18 | Not tested | No physical result claimed. | Pressure, palm, latency, ghosting, microphone/speaker, interruption, Wi-Fi/sleep and comfort require BOOX. |
-| V19 | Partial delivery proof | Exact source commits, package privacy/dry-run, 101/102 local processes and baseline APK hash/embedded assets checked. | New code is not in remote CI; Android instrumentation and browser execution remain pending. |
+| V12 | Scoped historical proof | Accepted-only corpus, reader integrity and Shared cache processes passed in E02 at 0b932ab. | Do not relabel those successes as a complete suite at the delivery HEAD; physical offline behavior not rerun. |
+| V13 | Extended; bounded | Origin/nonce/scope/path/source guards retained; writer pause/pre-push behavior has E05. | Operational enrolled-writer boundary is not protection against a local administrator deliberately starting a different writer. |
+| V14 | Partial | Synthetic queue/cache/PCM recovery, retirement, recorded-phase recovery and pause preserving newer data have E02/E05. | Progressive jobs unsupported; full standard-installation Mac migration not tested. Functional downgrade is not claimed and was not an explicit bidirectional-migration requirement. |
+| V15 | Inherited plus unexecuted instrumentation | Production identity/signature/client compatibility preserved; dedicated-emulator guard and new recording class retained. | No current instrumentation compilation or signed upgrade/interruption execution. |
+| V16 | Inherited plus untested UI | b41 layout/smoke/accessibility E01; new recording screenshot/axe scenario exists. | Administrator browser block E07; no new captures or Android ergonomic proof. |
+| V17 | Target open | b41 Soak/performance historical success; existing performance assertions retained. | 13.402/14.189-second true-agent reference exceeds ten seconds; no new measured application improvement. BOOX ink/voice/memory remain untested. |
+| V18 | Not tested — initial scope | No physical result claimed. | BOOX pressure, palm, latency, ghosting, microphone/speaker, interruption, Wi-Fi/sleep and comfort are required local tests, not out-of-scope extensions. |
+| V19 | Packaging finalized; validation partial | ZIP/bundle share one verified HEAD and exact source tree; inventory/hashes/privacy/restore in E08. E02/E04/E05 retain their distinct inputs. | Incremental bundle requires b41. No final full-suite terminal, current native instrumentation build or current-head remote CI. No release. |

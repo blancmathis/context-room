@@ -254,10 +254,11 @@ not create an ordinary `.crnb` file or an accepted baseline. Use the existing
 notebook freeze/submission and human review workflow to produce and decide an
 ordinary document. The migration receipts never substitute for that decision.
 
-This command imports one canonical Mac board. Android outbox reconciliation,
-recording-context recovery, old handoff import and automatic rollback
-are separate unfinished work. It does not acknowledge an old operation, resume
-an old agent task or switch off the legacy writer.
+This command imports one canonical Mac board. Queue comparison, explicit PCM
+association, retained-transfer recovery and single-writer cutover use the separate
+commands documented below; this import does not perform them. Progressive pen-job
+receipt reconciliation remains unsupported. Import does not acknowledge an old
+operation, resume an old agent task or switch off the legacy writer.
 
 ## Import a retained text draft
 
@@ -355,8 +356,10 @@ delivery are never invented. This import does not switch the legacy writer.
 
 ## Completion boundary
 
-The old installation remains active and can receive later writes. This snapshot
-is a point-in-time recovery copy, not a synchronization or single-writer fence.
+Export and import alone leave the old installation active and able to receive
+later writes. A snapshot is a point-in-time recovery copy, not synchronization or
+a single-writer fence. Only the separate, explicitly authorized cutover below
+retires the recognized legacy writer; it has its own validation requirements.
 Do not retire the old installation until imports, pending work, conversation
 links, device identity and physical validation have their own receipts. The
 convergence verification record at
@@ -390,18 +393,17 @@ Repetition reuses the original import receipt without overwriting newer gestures
 Old task identities and uncertain sends remain historical; no provider task or
 legacy queue is resumed. Symlinks and occupied unrelated destinations are refused.
 
-This completes the native replacement of the former drawing connector calls,
-not the Android/Mac pending-queue reconciliation. Android `board.create`,
-`board.metadata`, `asset.put`, `board.mutate` and progressive frames still need
-receipt-digest and revision-chain reconciliation before any operation can be
-classified as delivered or safely applied. Native ZIP conversion and retained
-transfer recovery are not substitutes for that missing migration function.
+This replaces the external drawing connector calls. Android/Mac queue comparison
+is a separate command below: it handles recognized creation, metadata, asset and
+ordinary mutation/undo cases, with explicit conflicts and preserved originals.
+Private progressive pen-job receipt reconciliation remains unimplemented. ZIP
+conversion and retained-transfer recovery do not themselves confirm delivery.
 
-Preserved PCM recordings still have `context: unassigned` unless an original
-binding is already available in their retained source. A filename hash is not
-used to infer a document or conversation. The explicit audio-association
-selection/review workflow remains implementation work; do not claim that
-recording preservation alone delivers that workflow.
+Snapshot PCM inventory remains `context: unassigned`; it never guesses context
+from a filename hash. Explicit associations are now available through the CLI
+and conversation panel below, in a separate private store. Their storage/CLI/HTTP
+contracts have scoped evidence; the new browser and Android UI execution does not.
+Recording preservation alone is still not proof of a reviewed association.
 
 ## Comparing the retained Android queue with Mac receipts
 
@@ -495,7 +497,12 @@ partially prepared unrecognized fence fails closed for explicit recovery. New
 legacy bytes saved during shutdown prevent retirement; export those bytes to a
 new snapshot and preview the interrupted transition again. Do not overwrite the
 old snapshot. Existing projects, accepted versions, proposals and Hub settings
-are not reset. Other original workspaces need their own explicit handover.
+are not reset. Other original workspaces need their own explicit handover. Shared proposal
+creation/reuse and publication also check the enrolled project writer, including
+a repository-scoped publication of a local proposal. A second check immediately
+before push preserves a prepared local commit when migration has paused writing;
+no remote publication or receipt is reported. These guards have targeted synthetic
+proof, not a recovered final full-suite result for the delivery HEAD.
 
 ```bash
 context-room migrate --root /path/to/project --rollback-cutover

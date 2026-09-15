@@ -1,78 +1,92 @@
 ## Summary
 
-Relais d’exécution et de livraison de la PR 42. Cette continuation ajoute du code,
-des tests et un kit de préparation Mac. Elle ne déclare pas le remplacement
-complet de Lisière ni une installation personnelle terminée.
+Relais de la livraison regroupée de la PR 42. Le ZIP et le bundle représentent
+le même HEAD. Le correctif Shared précédemment fourni à part est inclus ; aucun
+remplacement manuel de fichier ni patch additionnel n’est nécessaire.
+Le regroupement n’ajoute aucune fonctionnalité, n’installe rien et ne clôt pas
+les exigences produit qui restent ouvertes.
 
 ## Defines
 
-Les entrées exactes des preuves, les nouveaux fichiers, la reprise sur la branche
-existante et les vérifications restantes. La matrice canonique actuelle est en
-fin de `docs/lifecycle/changes/active/android-convergence/verification.md` ; ses
-56 lignes distinguent preuve héritée, contrat exécuté et comportement non testé.
+L’identité des sources, les preuves effectivement conservées, les limites et la
+reprise sur la branche existante. La seule matrice canonique courante est la
+section finale de `docs/lifecycle/changes/active/android-convergence/verification.md`.
+La copie `livraison/MATRICE-COUVERTURE.md` du ZIP en est une extraction, pas un
+second état édité indépendamment.
 
 ## Does not define
 
-Une autorisation de fusion de PR, release/npm, installation personnelle,
+Une autorisation de fusion, publication, release/npm, installation personnelle,
 modification d’appairage, arrêt de Codex/Desktop/Tailscale ou migration privée.
-Les décisions documentaires restent humaines et distinctes de la revue Git.
-Les fixtures et les contrôles d’intégration n’acceptent aucun document personnel.
+Aucun contrôle de livraison ne constitue une acceptation documentaire humaine.
 
-# Relais Codex local — continuation du 15 septembre 2026
+# Relais Codex local — livraison regroupée du 15 septembre 2026
 
-## 1. Commits exacts et reprise de la même branche
+## 1. HEAD unique, provenance et restauration
 
+Le HEAD **de livraison** complet est inscrit dans `livraison/SOURCE_COMMIT` et
+`livraison/DELIVERY.json` du ZIP, dans son commentaire Git, et dans l’unique
+référence de branche du bundle. La copie de ce relais dans `livraison/` porte ce
+même SHA en en-tête. Le présent fichier versionné évite une autoréférence de
+hash : son commit ne peut contenir son propre identifiant. Tous les fichiers
+sous `context-room/` restent les octets Git exacts ; aucune substitution d’export.
+
+- Branche : `mathis/context-room-recovery-hardening-20260915` ; PR : nº 42.
 - Base publique de la PR : `1a2cdcec1435d60cd8d07a3762a369e066508ce1`.
-- Dernier HEAD **distant** vérifié : `b41e8945786cd5821e7adb45695fb6b271849336`.
-- HEAD **logiciel et tests** de cette livraison : `22b998d4c08289ec377801c64a8f352a0f5c1b83`.
-- Branche : `mathis/context-room-recovery-hardening-20260915`.
-- PR : `blancmathis/context-room#42`, ouverte et en brouillon.
+- Base publique et prérequis du bundle : `b41e8945786cd5821e7adb45695fb6b271849336`.
+- Dernier objet d’entrée conservé : `f6cee69d0f698f3db279ec0d7c610cbc38bae8c6`.
+- Dernier commit contenant un changement logiciel : `170918d44a40517324a264477fe6c6523a05d7cd`.
+- Correctif d’origine : `36e8180ea03ab640fc8ba489bcfe72259613aeef`.
 
-Les sept commits logiciels sont locaux et **ne sont pas poussés**. Les actions
-GitHub exposées ici sont en lecture seule ; aucune autre connexion autorisée ne
-permet la poussée. Un commit final ne modifie que ce relais et la documentation.
-Son SHA exact est dans le reçu de distribution `DELIVERY.json` / `SOURCE_COMMIT`
-qui accompagne les sources et le bundle. Ne pas présenter la CI de b41 comme la
-CI de cette livraison.
+L’objet Git local 36e8180 n’était pas dans le bundle d’entrée. Ses deux fichiers
+étaient conservés : ils ont été réintégrés **octet pour octet**, sans modification,
+dans le commit logiciel ci-dessus. Il a une nouvelle identité Git ; 36e8180
+n’est pas présenté comme un ancêtre présent dans le bundle. Le journal des commits
+jusqu’à f6cee69 est conservé à l’identique. Le commit de clôture ne modifie que la
+documentation. La branche distante est toujours b41, ouverte et en brouillon ;
+aucune poussée, fusion ou publication n’a été effectuée lors du regroupement.
 
-| Commit local | Lot |
-| --- | --- |
-| `715f2f8435c80bd77dafc193008fa078effc0bae` | Rapprochement des intentions Android et des reçus/révisions Mac |
-| `e566fd2eafb0c950e6903dd2c98a835ccf8629d1` | Rattachement PCM explicite, CLI, HTTP et panneau de conversation |
-| `ada764db142341743c416a88314d2c71653a6bc4` | Bascule journalisée, arrêt vérifié de l’ancien service et pause de retour arrière |
-| `fe3f10edff6552947f12ee8a70bc70071465ac35` | Kit Mac vérifiable et définition LaunchAgent inerte |
-| `a6989eee73ddbee75aaae03ca05e1663ad5a7748` | Fixture native et instrumentation Android du rattachement PCM |
-| `0b932abf868de1238a9368a09aa5908da6e3418f` | Copie explicite du cache tablette et préconditions exactes d’annulation |
-| `22b998d4c08289ec377801c64a8f352a0f5c1b83` | Normalisation du chemin par défaut du kit et test CLI réel complet |
+Empreintes des deux fichiers récupérés, inchangés dans le HEAD livré :
 
-Le bundle est **incrémental**, avec b41 comme prérequis. Il ne contient pas
-l’historique privé Lisière. Avoir seulement main/1a2cdce ne suffit pas. Reprendre
-dans un clone ou worktree dédié, propre, sans réinitialisation ni force-push :
+```text
+606111e3592945cecf4826238906d0554274aa5f53ba78cf66585dae6e5dd748  src/shared_context.mjs
+52abc8b557e89f7025ed8301d2ef9e94f4c4f12a5b79326a83bf0e9f41e96c4e  test/shared_writer_authority.test.mjs
+```
+
+Le bundle est **incrémental sur b41**, et contient uniquement cette branche de
+livraison et ses objets nouveaux. Il ne contient ni les autres références ni
+l’historique privé Lisière. Un clone contenant seulement main/1a2cdce ne satisfait
+pas le prérequis. Le ZIP est autonome pour les **sources**, sans dépendances
+installées. Aucun complément logiciel ne doit être appliqué à l’un ou à l’autre.
+
+Après extraction dans un nouveau dossier, garder `context-room/` pour les sources
+et `livraison/` pour l’identité et les preuves. La restauration Git se fait dans
+un clone dédié possédant b41. Ne pas toucher un worktree personnel modifié :
 
 ```sh
 umask 022
 BRANCH=mathis/context-room-recovery-hardening-20260915
 BASE=b41e8945786cd5821e7adb45695fb6b271849336
-CODE_HEAD=22b998d4c08289ec377801c64a8f352a0f5c1b83
-BUNDLE=/chemin/vers/context-room-pr42-continuation.bundle
+BUNDLE=/chemin/absolu/vers/context-room-pr42-final.bundle
+DELIVERY=/chemin/absolu/vers/le/zip-extrait/livraison
+EXPECTED_HEAD=$(cat "$DELIVERY/SOURCE_COMMIT")
 
-git fetch origin "$BRANCH"
 git cat-file -e "$BASE^{commit}"
-git status --short              # ne pas continuer avec un travail non conservé
-git switch "$BRANCH"
+test -z "$(git status --porcelain)" || exit 1
 git bundle verify "$BUNDLE"
 git fetch "$BUNDLE" "refs/heads/$BRANCH"
-git merge --ff-only FETCH_HEAD  # avance locale seulement, pas une fusion de PR
-git merge-base --is-ancestor "$CODE_HEAD" HEAD
-git rev-parse HEAD
+test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_HEAD"
+# Vérification isolée, sans déplacer la branche ni fusionner :
+git switch --detach FETCH_HEAD
+test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+git fsck --full
 ```
 
-Si la branche distante a avancé de façon divergente, arrêter l’avance rapide et
-intégrer les changements en préservant les deux travaux. Ni `reset --hard` ni
-force-push. Les patches offrent un second moyen de reprise ; **ne pas appliquer
-à la fois patches et bundle**. La PR existante est la destination, pas une PR ou
-branche concurrente. Une éventuelle poussée ultérieure doit nommer cette branche
-et n’autorise aucune fusion ou publication.
+L’avance de la branche existante se fera ensuite uniquement en avance rapide et
+après contrôle de non-divergence. Une restauration ne fusionne pas la PR.
+Les empreintes globales du ZIP et du bundle sont dans le `SHA256SUMS` externe ;
+`livraison/FILES-SHA256.json` lie chaque fichier source à son mode et son blob Git.
+Le reçu de restauration précise le prérequis, le HEAD et l’arbre reconstruits.
 
 ## 2. Corrections navigateur déjà présentes dans la base distante
 
@@ -90,8 +104,8 @@ il ne confond plus catalogue actualisé et matérialisation disque terminée.
 Aucune de ces assertions n’a été retirée dans cette continuation.
 
 Les parcours complets carnet → dessin → instantané → relecture/correction →
-acceptation humaine, y compris le PNG natif, réussissent **sur b41**. Les sept
-nouveaux commits prolongent cette base sans réécrire ces corrections. Ils ne
+acceptation humaine, y compris le PNG natif, réussissent **sur b41**. Les lots
+locaux prolongent cette base sans réécrire ces corrections. Ils ne
 possèdent pas encore de résultat CI distant.
 
 ## 3. Nouveaux comportements livrés
@@ -196,70 +210,77 @@ La source complète retirée peut contenir des données privées et credentials 
 elle reste uniquement dans son répertoire privé local. Ne jamais joindre cette
 rétention à une PR, aux logs publics ou à cette distribution de sources.
 
-## 4. Preuves déjà exécutées et limites exactes
+### Complément Shared désormais intégré
 
-Entrée de la campagne finale : **0b932abf868de1238a9368a09aa5908da6e3418f**,
-Linux, Node **22.16.0**, Python **3.13.5**, `umask 022`.
+`src/shared_context.mjs` consulte l’autorité d’écriture à la création/réutilisation
+et publication d’une proposition, pour le carnet figé et **juste avant le push**.
+La publication depuis un dépôt Shared réautorise aussi le projet d’origine de la
+proposition. La pause pendant la préparation conserve le commit local, sans
+push ni faux reçu distant. `test/shared_writer_authority.test.mjs` couvre ces
+chemins via les API et la vraie CLI avec dépôts synthétiques. Ces garanties ont
+les deux preuves ciblées E05 ; elles n’ont pas de terminal complet récupéré.
 
-| Contrôle | Résultat observé |
-| --- | --- |
-| `npm test` avec le runner et les assertions d’origine | **101/102 processus**, code de sortie **1** ; pas une suite entièrement verte |
-| Cas restant du shard Shared 1/4 | `shared_context.test.mjs:401`, « GitHub security setup installs and verifies a no-bypass pull-request ruleset » ; `ssh-keygen` absent, arrêt avant assertions |
-| Comparaison ciblée à b41 inchangé | Même test, même erreur `ssh-keygen is required to create the restricted agent credential` |
-| Reste de ce shard | 40/41 cas passent ; les shards 2/4, 3/4, 4/4 et les tests exclusifs Shared passent |
-| Nouveaux modules de réconciliation/cache/PCM/bascule/kit/fixture | Tous leurs processus passent dans la campagne finale, sans skip ajouté |
-| Réconciliation Python | 16 contrats, incluant nombres exacts et annulations périmées, appelés par la suite Node |
-| `node --check` et compilation Python en mémoire | 32 fichiers nouveaux/modifiés vérifiés ; contrôle du script Mac corrigé ensuite |
-| Script Mac final | **4/4** contrats ciblés, dont preview/apply/verify/repeat via la vraie CLI |
-| `npm run package:privacy` | Réussite |
-| `npm pack --dry-run` | Réussite ; version **0.6.17** inchangée, aucune publication |
-| `doctor` sur projet synthétique neuf, sans réduction du périmètre | Aucune erreur projet ; dépendances audio facultatives absentes annoncées, aucun store d’agent créé |
-| Fixture doctor négative | Une réduction `startupSkills.enabled` a correctement déclenché `review_authority_tamper` ; résultat conservé, aucun contournement |
-| Nouveau navigateur PCM | Navigation refusée : `net::ERR_BLOCKED_BY_ADMINISTRATOR` avant exécution du scénario |
-| Build Android local | Échec **avant compilation** : distribution Gradle 8.11.1 non mise en cache, résolution DNS indisponible ; SDK non configuré |
+## 4. Résultats terminaux disponibles — ne pas les cumuler en CI verte
 
-Le dossier de distribution contient un résumé assaini des preuves. Les logs
-complets ne sont pas publiés indistinctement : les fixtures peuvent produire des
-identifiants temporaires. Aucune donnée personnelle n’a servi aux tests.
+Les journaux fournis ne portent pas tous le SHA en interne. Leur attribution aux
+commits ci-dessous vient du relais conservé et du tour précédent ; les résumés
+terminaux sont, eux, relus dans les fichiers. Le reçu liste les empreintes des
+originaux et des copies assainies, sans modifier les erreurs ou assertions.
 
-Ne pas répéter la campagne complète inchangée pour chercher du vert. Le test
-bloqué doit être lancé avec le vrai OpenSSH, pas un wrapper simulé ou une assertion
-réduite :
+| Référence | Entrée / preuve | Résultat et portée |
+| --- | --- | --- |
+| E01 | CI b41 : 34966764884 ; convergence : 34966764731 | Succès historiques propres à **b41**. Soak et quatre navigateurs compris ; jamais attribués aux commits locaux suivants. |
+| E02 | `preuves/npm-test-0b932ab.log` ; campagne associée à **0b932ab**, `umask 022`, Node 22.16.0 / Python 3.13.5 | **101/102 processus**, échec global. Le fichier termine bien par ce total ; le code de sortie 1 est consigné dans le relais précédent. |
+| E03 | `preuves/baseline-ssh-prerequisite.log` | Même cas exécuté à b41 inchangé : **0/1**, même erreur `ssh-keygen is required to create the restricted agent credential`. Le blocage n’est pas une réussite. |
+| E04 | `preuves/mac-installation-cli-fixed.log`, associé à **22b998d** | **4/4**, dont vrai parcours CLI preview/apply/verify/repeat. Preuve ciblée, pas une nouvelle suite complète. |
+| E05 | `preuves/shared-writer-red.log` puis `preuves/shared-writer-green.log` | **0/2 avant**, **2/2 après** le correctif Shared transmis. Les deux sources sont maintenant identiques à celles récupérées ; tests non rejoués pour le seul empaquetage. |
+| E06 | Campagne `umask 022; CI=1 npm test` annoncée à **36e8180** | **Résultat terminal non récupéré.** Aucun processus actif ni journal terminal correspondant dans les fichiers restaurés. Pas de relance ; pas de total final déduit des étapes intermédiaires. |
+| E07 | Navigateur PCM et Gradle, selon relais précédent | `ERR_BLOCKED_BY_ADMINISTRATOR` avant scénario ; Gradle 8.11.1 absent du cache / résolution DNS impossible avant compilation. Journaux bruts non conservés dans les entrées actuelles. Non réessayés. |
+| E08 | Contrôles du présent regroupement | Identité des sources, restauration bundle, inventaire, absence de fichiers privés interdits, confidentialité du package et packaging à blanc : résultats exacts dans `livraison/VALIDATION.json` et reçu externe. Ce ne sont pas des tests métier. |
+
+Dans E02, le cas de configuration de sécurité Shared
+`GitHub security setup installs and verifies a no-bypass pull-request ruleset`
+(`test/shared_context.test.mjs:401`) échoue avant ses assertions à cause
+d’OpenSSH absent. Le shard concerné est à **40/41** ; les autres processus
+réussis ne changent pas le statut global. Aucun skip ou remplacement de clé,
+assouplissement de droits, retrait d’assertion ou requalification en intermittence.
+
+La vérification actuelle des archives ne recrée pas le résultat de la campagne
+36e8180. Les sept lots initiaux disposent d’E02 ; la correction du script Mac
+d’E04 ; le correctif Shared d’E05. Cet ensemble reste une **preuve composée et
+partielle**, avec un échec enregistré et sans terminal complet pour les derniers
+changements Shared. E02 passe notamment la réconciliation/cache/PCM/bascule,
+mais ne couvre pas le garde Shared ajouté ensuite.
+
+Les succès de `doctor`, du package et des compilations en mémoire rapportés avant
+ce regroupement sont des preuves historiques ; leurs journaux détaillés ne sont
+pas présents. Le doctor négatif sur un rétrécissement de `startupSkills` reste
+signalé comme refus correct, jamais contourné. Les contrôles de package réalisés
+ici sont identifiés séparément et ne démarrent aucun projet, agent ou service.
+
+Le processus d’empaquetage n’exécute ni `npm test`, ni navigateur, ni OpenSSH,
+ni Gradle. Une unique lecture Git HTTPS a échoué sur la résolution de nom ; la
+base exacte a été vérifiée avec l’archive CI déjà disponible et les métadonnées
+publiques lues via le connecteur autorisé. Aucun accès refusé n’a été contourné.
+
+À reprendre uniquement dans un environnement où le vrai prérequis est disponible :
 
 ```sh
-command -v ssh-keygen
 umask 022
 node --test \
   --test-name-pattern='^GitHub security setup installs and verifies a no-bypass pull-request ruleset$' \
   test/shared_context.test.mjs
 ```
 
-La fabrication réelle du kit a ensuite trouvé un défaut du script : le chemin
-par défaut dérivé d’une URL de dossier comportait un slash final. Le garde
-canonique avait raison de le refuser. Le commit **22b998d4c08289ec377801c64a8f352a0f5c1b83**
-normalise seulement ce défaut dérivé et conserve le refus des sources explicites
-non canoniques. Le nouveau test CLI prépare le vrai package et vérifie la seconde
-exécution ; **4/4 contrats Mac passent**. Le kit réel est aussi préparé, vérifié
-et rejoué. Ce résultat n’efface pas l’échec initial, consigné dans les preuves.
-
-Les entrées exécutables de la campagne complète, hors ce script et son test,
-sont inchangées entre 0b932ab et le HEAD logiciel final. Les résultats sont donc
-composés de cette campagne et du contrôle ciblé corrigé, pas présentés comme un
-nouveau `npm test` entièrement vert. Le kit de distribution a ses propres
-révision/empreinte ; il ne contient aucune dépendance installée.
-
-Le dernier commit de distribution ne change que des documents. Si le logiciel
-est modifié lors d’une reprise, exécuter d’abord les tests affectés, puis une
-campagne finale pertinente sur le nouvel état. La réussite CI b41 est réutilisable
-seulement pour ses entrées réellement inchangées, jamais pour valider l’UI PCM.
+Les tests ciblés ne sont à répéter qu’après correction affectant leurs entrées.
+Une campagne complète sur le HEAD livré reste une preuve manquante ; obtenir
+son terminal sur l’environnement autorisé, sans effacer les résultats E02/E03.
 
 ## 5. Préparation et vérification Mac
 
-Le kit fourni est du **code préparé, pas une installation**. Il ne contient ni
+Le générateur de kit fourni prépare du **code, pas une installation**. Aucun ancien kit généré sur un autre HEAD n’est joint comme kit courant. Il ne contient ni
 node_modules, ni modèle Whisper, ni clé, ni base, ni plist activé. Son manifeste
-fixe les fichiers, modes et SHA-256. La configuration livrée désigne
-`/opt/homebrew/bin/node` comme chemin cible à vérifier sur le Mac ; aucun constat
-de disponibilité de ce chemin n’a été fait dans cette session Linux.
+fixe les fichiers, modes et SHA-256. Le chemin Node cible doit être choisi sur le Mac avec `--node` ; aucun chemin local personnel ni dépendance installée n’est livré.
 
 Conserver le kit à un emplacement privé stable et vérifier **avant** d’ajouter
 les dépendances. Utiliser les sources complètes pour régénérer un kit lorsque le
@@ -326,13 +347,13 @@ La fixture `test/android/owner-fixture.mjs` et le vérificateur
 le Mac a changé : les anciennes preuves owner-WebView ne couvrent pas ce nouvel
 écran, même avec un APK production byte-for-byte compatible.
 
-L’archive APK fournie est explicitement la **baseline b41** issue du run
+L’archive APK conservée dans les entrées de reprise est explicitement la **baseline b41** issue du run
 34966764731, artefact 10396110115, commit CI `a868511baa87b37e582001b48440afba79da1610`
 (arbre identique à b41).
 
 - APK : `d0f711540bc8008ca9d09413ce2e458c1d920c5c75ceeebf2b4a0d77ddbe2f8c`.
 - ZIP d’artefact : `1dca8d9913eb3a899267eb158c44d53c7a58588d9f65731fc4c483063f8687d3`.
-- Comparaison des huit assets production avec les fichiers livrés : identique.
+- Comparaison des huit assets production avec les fichiers livrés : identique, recontrôlée lors du regroupement. Le reçu de distribution contient leurs empreintes.
 - APK exécuté ici : **non**. Nouvelle instrumentation compilée/exécutée : **non**.
 
 Build local avec les vrais outils, sans importer la clé privée personnelle dans
@@ -422,26 +443,65 @@ non destructive : pression, paume, encre/latence, ghosting, micro/haut-parleur,
 interruption vocale, réseau, veille/reprise Wi-Fi, clavier/zoom et confort. Ne pas
 assouplir les scripts d’émulateur pour les faire agir sur la tablette personnelle.
 
-## 7. Logiciel incomplet, à ne pas renommer « test local restant »
+## 7. Exigences initiales ouvertes, vérifications et limites hors périmètre
 
-1. Les reçus de jobs de dessin progressif historiques ne disposent pas d’un
-   rapprochement automatique complet. Ils restent explicitement bloqués/conservés,
-   jamais assimilés à une mutation ordinaire. Les scènes/cache sélectionnés restent
-   récupérables séparément ; aucune ancienne exécution ne redémarre.
-2. La bascule reconnaît l’installation standard Lisière. Les installations
-   personnalisées et la réparation automatique de barrières partielles ou
-   remplacées ne sont pas implémentées. Leur état est conservé et bloque l’écriture.
-3. Le retour arrière fonctionnel vers Lisière, fusionnant tout le travail nouveau,
-   n’est pas implémenté. Le rollback livré est la pause réversible décrite plus haut.
-4. Le kit et la définition LaunchAgent sont préparés ; un installateur/upgrader
-   macOS automatique remplaçant en sécurité une installation active n’est pas livré.
+Le classement se réfère aux travaux A–G et aux matrices C/R/V du cadrage initial.
+Une fonction volontairement refusée avec conservation des originaux n’est pas
+un succès ; une extension qui n’était pas demandée n’est pas ajoutée aux critères.
 
-Cela est distinct des **vérifications** restantes : OpenSSH du cas Shared,
-exécution navigateur PCM, vrais appels launchctl/Darwin, compilation et exécution
-instrumentation Android, fournisseur Codex authentifié et BOOX physique.
-Ne pas déclarer C08/V14/V18/V19 complètement validés.
+### 7.1 Logiciel demandé encore absent ou partiel
 
-## 8. Fichiers nouveaux dans les sept commits logiciels
+| Cadrage | État exact non terminé |
+| --- | --- |
+| C ; C02/C08, R28, V06/V14 | Le rapprochement **complet des reçus de jobs/frames de dessin progressif** n’est pas implémenté. Ils sont conservés et bloquent l’application de file ; la copie explicite du cache ne prouve pas leur livraison. |
+| F ; V07/V17 | Aucune amélioration dédiée et mesurée de la partie applicative du délai de **premier résultat utile avec vrai agent** n’a été livrée dans cette continuation. Les références restent 13,402 s et 14,189 s pour une cible de dix secondes. Ce n’est pas seulement une mesure BOOX manquante. |
+| E ; C01, V02/V14 | La livraison Mac se limite au **générateur de kit, aux contrôles d’intégrité, au plist inerte et à la procédure locale**. Ce n’est pas un parcours installé/activé de bout en bout. L’installation cohérente ne peut être déclarée terminée ; la disponibilité et les effets réels macOS relèvent aussi de 7.2. Un auto-updater n’est pas une exigence implicite ajoutée. |
+
+La réconciliation ordinaire create/metadata/asset/mutate/delete/undo, la copie
+explicite du cache, les anciens transferts, les liens PCM et le coordinateur de
+bascule standard **sont implémentés**. Leurs tests partiels et refus documentés ne
+permettent toutefois pas de clôturer la migration intégrale V14.
+
+### 7.2 Code présent, preuves seulement non obtenues
+
+| Périmètre | Vérification restant réellement à faire |
+| --- | --- |
+| A/G, V09/V19 | Cas sécurité Shared avec vrai OpenSSH ; terminal complet des derniers changements Shared et de la livraison. E02 reste en échec. |
+| D/F, C03/C05, V04/V10/V16 | Nouveau parcours PCM dans les quatre navigateurs : sélection/revue, association à la bonne source, changement de conversation, absence d’autoplay/envoi, export exact, captures et accessibilité. |
+| E, C01/R01/V02 | Installation neuve effective sans Lisière, dépendances locales, unicité du Hub, plist/launchctl, arrêt/redémarrage et reboot. Le kit seul ne prouve pas cela. |
+| E, R28/V14 | Adaptateur Darwin : arrêt du service standard, `lsof`, `renamex_np(RENAME_EXCL)`, interruption/reprise et pause/reprise sur compte Mac synthétique. Les contrats Linux ne sont pas une preuve Darwin. |
+| G, C06/V04/V15/V19 | Compilation de la nouvelle classe d’instrumentation, puis exécution sur émulateur dédié, y compris PCM owner, compatibilité/mise à jour. APK b41 : baseline uniquement. |
+| F, C02/C03, V07/V10/V17 | Fournisseur Codex authentifié, vrai modèle Whisper choisi, interruption/redirection et nouveaux temps. Aucun mock ne clôt cette preuve. |
+| V18, C04/C06, V03/V05/V16/V17 | BOOX physique : pression, paume, latence, ghosting, micro/haut-parleur, interruption, Wi-Fi/veille-reprise, clavier/zoom et confort. **C’est bien dans le périmètre initial**, pas une limitation hors demande. |
+| C08/V14 | Recette complète de remplacement avec données synthétiques représentatives. Aucune migration personnelle réalisée ou autorisée implicitement. |
+
+### 7.3 Limites réelles à ne pas transformer en exigences nouvelles
+
+- Le rollback livré **met en pause les écritures inscrites à la migration**, puis
+  permet leur reprise révisionnée. Il ne réactive pas Lisière et ne réinjecte pas
+  les nouvelles données dans son ancien format. Un inverseur bidirectionnel ou
+  retour fonctionnel automatique avec fusion de tout le travail récent n’était
+  pas explicitement exigé. La préservation du travail récent, elle, l’était.
+- La bascule reconnaît le service et le workspace Lisière standards. Les
+  déploiements personnalisés non spécifiés, writers déplacés/manuels et réparations
+  automatiques de barrières inconnues ou remplacées ne sont pas pris en charge.
+  Ils échouent en sécurité ; aucune couverture exhaustive de ces variantes n’est
+  revendiquée. Cela n’efface pas la recette de l’installation standard à faire.
+- Un utilisateur local privilégié peut modifier la barrière ou démarrer ailleurs
+  un writer non inscrit. Le coordinateur n’est pas une isolation contre
+  l’administrateur du Mac.
+- Un installateur silencieux, un auto-updater générique ou une distribution
+  notarialisée universelle ne sont pas des livrables explicitement demandés.
+- Le mode tablette complet **requiert le service Mac connecté**. Le fonctionnement
+  autonome sans Mac, une Inbox/bibliothèque séparée, un éditeur Office, un serveur
+  hébergé obligatoire et une API de transcription payante de remplacement sont
+  hors demande ou contraires au cadrage ; aucune de ces fonctions n’a été ajoutée.
+- Dépassements de bornes, schémas inconnus et assets manquants produisent un refus
+  explicite avec conservation des sources, pas une réparation supposée ni une
+  conversion universelle de formats futurs.
+
+## 8. Fichiers nouveaux dans les lots logiciels
+
 
 ```text
 android/app/src/androidTest/java/app/contextroom/tablet/OwnerRecordingTest.java
@@ -467,6 +527,7 @@ test/mac_installation.test.mjs
 test/owner_recording_fixture.test.mjs
 test/python/lisiere_reconcile_test.py
 test/python/mac_legacy_quiescence_test.py
+test/shared_writer_authority.test.mjs
 ```
 
 Les sources complètes incluent ces fichiers et les propriétaires canoniques
