@@ -19,10 +19,15 @@
 .assistant-messages article p { white-space: pre-wrap; }
 .assistant-error:empty { display: none; }
 .assistant-error { color: var(--danger, #fba); font-size: 13px; }
+.assistant-info { color: var(--muted, #bbb); font-size: 13px; }
+.assistant-info:empty { display: none; }
 .assistant-panel.assistant-minimized > :not(header):not(.assistant-origin) { display: none; }
 .assistant-panel details select { max-width: 100%; margin: 6px 4px 6px 0; }
 .assistant-voice-enabled .assistant-history, .assistant-voice-enabled .assistant-model, .assistant-voice-enabled .assistant-composer textarea, .assistant-voice-enabled .assistant-composer button:not([data-voice-control]) { display: none; }
 .assistant-voice-enabled .assistant-composer { position: sticky; bottom: 0; background: var(--panel-strong, #202628); padding-top: 6px; }
+.assistant-direct .assistant-history, .assistant-direct .assistant-model { display: none; }
+.assistant-direct-dictation .assistant-messages, .assistant-direct-dictation .assistant-composer button:not([data-dictation-control]) { display: none; }
+.assistant-direct-dictation[data-capturing=true] .assistant-composer textarea { display: none; }
 @media (max-width: 650px) { .assistant-panel { right: 8px; bottom: 8px; width: calc(100vw - 16px); max-height: 68dvh; padding: 12px; } .assistant-messages { max-height: 22dvh; } }
 body.context-room-native-conversation > :not(.assistant-native-host):not(.assistant-panel) { display: none !important; }
 body.context-room-native-conversation .assistant-native-host:not(body) { position: fixed; inset: 0; display: block; width: 100%; height: 100dvh; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; }

@@ -6,14 +6,28 @@ const button = (text, action) => { const node = element('button', text); node.ty
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const activeStatuses = new Set(['queued', 'starting', 'running', 'stopping']);
 let active = null;
+let opening = Promise.resolve();
 
 export function dockConversation(parent = document.body) { if (active) parent.append(active.panel); }
+export function prepareVoiceAudio() {
+  if (globalThis.ContextRoomNativeOwner?.playAudio) return null;
+  const context = new (window.AudioContext || window.webkitAudioContext)(), resumed = context.resume(); resumed.catch(() => {});
+  return { context, resumed };
+}
 
 /** A captured API, never a callback that reads the browser's later project selection. */
-export async function openConversation({ api, scopeKey, source, parent = document.body, mode = 'text', fresh = false, onState = () => {} }) {
+export function openConversation(options) {
+  // Unlock browser output in the direct Voice gesture, before loading history.
+  const activation = options.voiceActivation || (options.mode === 'voice' ? prepareVoiceAudio() : null);
+  const primedAudioContext = activation?.context || null, primed = activation?.resumed;
+  const result = opening.then(async () => { await primed; return buildConversation({ ...options, primedAudioContext }); });
+  opening = result.catch(async () => { if (primedAudioContext?.state !== 'closed') await primedAudioContext?.close(); });
+  return result;
+}
+async function buildConversation({ api, scopeKey, source, parent = document.body, mode = 'text', fresh = false, onState = () => {}, dictationTarget = null, primedAudioContext = null }) {
   if (!fresh && active && active.scopeKey === scopeKey && active.conversation.source.kind === source.kind && active.conversation.source.path === source.path
     && JSON.stringify(active.conversation.source.selection || []) === JSON.stringify(source.selection || [])) {
-    parent.append(active.panel); active.onState = onState; active.notifyState(); active.panel.hidden = false; active.panel.classList.remove('assistant-minimized'); active.focus(); return active;
+    parent.append(active.panel); active.onState = onState; active.notifyState(); active.panel.hidden = false; active.panel.classList.remove('assistant-minimized'); active.present(mode, dictationTarget, primedAudioContext); return active;
   }
   if (!document.getElementById('context-room-assistant-style')) { const link = element('link'); link.id = 'context-room-assistant-style'; link.rel = 'stylesheet'; link.href = '/assets/ui/assistant.css'; document.head.append(link); }
   const post = (route, body) => api('/api/assistant' + route, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -22,16 +36,18 @@ export async function openConversation({ api, scopeKey, source, parent = documen
   const conversation = saved ? await api('/api/assistant/conversations/' + saved.id) : await post('/conversations', { requestId: crypto.randomUUID(), source });
   if (active) await active.dispose();
   const panel = element('aside', '', 'assistant-panel'); panel.setAttribute('aria-label', 'Original document conversation');
-  const heading = element('header'), title = element('h2', 'Conversation'), minimize = button('Minimize conversation', () => panel.classList.toggle('assistant-minimized'));
-  heading.append(title, minimize); const original = element('p', conversation.source.path, 'assistant-origin');
+  const heading = element('header'), title = element('h2', 'Conversation'), minimize = button('Minimize conversation', () => panel.classList.contains('assistant-direct') ? run(self.dispose().then(() => self.notifyState({ dismiss: true }))) : panel.classList.toggle('assistant-minimized'));
+  const expand = button('Open conversation', () => self.present('text', self.dictationTarget)); expand.hidden = true;
+  heading.append(title, expand, minimize); const original = element('p', conversation.source.path, 'assistant-origin');
   const boundary = element('p', 'Linked to this original source. Proposed changes require human review.', 'assistant-boundary');
   const history = element('select'); history.setAttribute('aria-label', 'Saved conversations for this original source');
-  const historyRow = element('div', '', 'assistant-controls assistant-history'), newConversation = button('New conversation', () => run(openConversation({ api, scopeKey, source, parent, mode, fresh: true, onState: self.onState }))); historyRow.append(history, newConversation);
+  const historyRow = element('div', '', 'assistant-controls assistant-history'), newConversation = button('New conversation', () => run(openConversation({ api, scopeKey, source, parent, mode: 'text', fresh: true, onState: self.onState }))); historyRow.append(history, newConversation);
   const audioStatus = element('p', 'Microphone off · audio stopped.', 'assistant-audio-state'); audioStatus.setAttribute('role', 'status');
   const messages = element('div', '', 'assistant-messages'); messages.tabIndex = 0; messages.setAttribute('role', 'log'); messages.setAttribute('aria-label', 'Conversation messages');
   const form = element('form', '', 'assistant-composer'), input = element('textarea'); input.rows = 3; input.maxLength = 32000; input.setAttribute('aria-label', 'Message to the original document agent');
   const status = element('p', '', 'assistant-status'); status.setAttribute('role', 'status');
   const errorBox = element('p', '', 'assistant-error'); errorBox.setAttribute('role', 'alert');
+  const infoBox = element('p', '', 'assistant-info'); infoBox.setAttribute('role', 'status');
   const controls = element('div', '', 'assistant-controls'), send = button('Send', () => {}); send.type = 'submit';
   const stop = button('Stop agent', () => run(stopTurn())), dictate = button('Dictate', () => run(toggleDictation())), speak = button('Read answer', () => run(readAnswer()));
   stop.dataset.agentStop = ''; heading.insertBefore(stop, minimize);
@@ -41,17 +57,24 @@ export async function openConversation({ api, scopeKey, source, parent = documen
   voiceButton.dataset.voiceControl = ''; interruptVoiceButton.dataset.voiceControl = '';
   const recoverAudio = button('Recover dictation', () => run(recoverNativeRecording())); recoverAudio.hidden = true;
   const discardAudio = button('Discard dictation', () => run(discardDictation())); discardAudio.hidden = true;
+  const useDictation = button('Copy into draft', () => run((async () => {
+    if (!self.dictationTarget || audioBusy || recording || voice || !input.value.trim()) return;
+    await saveDraft(); await self.dictationTarget.apply(input.value);
+    inform('Copied into the original draft. This transcript is kept here until you clear it.');
+  })())); useDictation.hidden = true;
+  for (const control of [dictate, audioStop, recoverAudio, discardAudio, useDictation]) control.dataset.dictationControl = '';
   const recover = button('Inspect original task', () => run((async () => { current = await post('/conversations/' + current.id + '/recover', {}); render(); })())); recover.hidden = true;
-  controls.append(send, dictate, voiceButton, interruptVoiceButton, speak, audioStop, recoverAudio, discardAudio, recover); form.append(input, controls);
+  controls.append(send, dictate, voiceButton, interruptVoiceButton, speak, audioStop, recoverAudio, discardAudio, useDictation, recover); form.append(input, controls);
   const modelRow = element('details', '', 'assistant-model'), modelTitle = element('summary', 'Codex model'), models = element('select'), efforts = element('select');
   models.setAttribute('aria-label', 'Conversation Codex model'); efforts.setAttribute('aria-label', 'Conversation reasoning effort');
   const connect = button('Load available models', () => run((async () => { await post('/connect', {}); modelPending = true; await poll(); })()));
   modelRow.append(modelTitle, models, efforts, connect);
-  panel.append(heading, original, audioStatus, boundary, historyRow, messages, modelRow, form, status, errorBox); parent.append(panel);
+  panel.append(heading, original, audioStatus, boundary, historyRow, messages, modelRow, form, status, infoBox, errorBox); parent.append(panel);
   const clientId = crypto.randomUUID();
   let closed = false, current = conversation, pollBusy = false, lease = null, renewTimer = null, recording = null, speaker = null,
     audioContext = null, audioGeneration = 0, modelPending = false, rendered = '', sendRequest = null, retainedRecording = null, recordingRequest = null, audioBusy = false, audioReading = false, changingConversation = false, draftWrites = Promise.resolve(), nativeRecordings = [], voice = null, voiceClosing = false, initializing = true;
-  const fail = error => { if (!closed && error.name !== 'AbortError') errorBox.textContent = error.message || String(error); };
+  const fail = error => { if (!closed && error.name !== 'AbortError') { infoBox.textContent = ''; errorBox.textContent = error.message || String(error); } };
+  function inform(text) { errorBox.textContent = ''; infoBox.textContent = text; }
   const run = promise => Promise.resolve(promise).catch(fail);
   const owned = () => ({ conversationId: current.id, clientId, epoch: lease?.epoch });
   function saveDraft() {
@@ -59,7 +82,7 @@ export async function openConversation({ api, scopeKey, source, parent = documen
     const write = () => writeDraft(scopeKey, id, draft);
     draftWrites = draftWrites.then(write, write); return draftWrites;
   }
-  input.addEventListener('input', () => { run(saveDraft()); self.notifyState(); });
+  input.addEventListener('input', () => { run(saveDraft()); render(); });
   async function restoreDraft() {
     const draft = await readDraft(scopeKey, current.id); input.value = draft.text || ''; sendRequest = draft.sendRequest || null; retainedRecording = draft.recording || null;
     if (sendRequest && current.messages.some(message => message.id === sendRequest.requestId)) { input.value = ''; sendRequest = null; await saveDraft(); }
@@ -79,29 +102,50 @@ export async function openConversation({ api, scopeKey, source, parent = documen
     const original = item.recordingScopeKey || scopeKey;
     retainedRecording = item.browser ? await recoverBrowserRecording({ scopeKey: original, conversationId: current.id }, item.recordingId) :
       { ...await ContextRoomNativeOwner.recoverRecordings({ scopeKey: original, conversationId: current.id, recordingId: item.recordingId }), recordingScopeKey: original };
-    await saveDraft(); recoverAudio.hidden = true; dictate.textContent = 'Retry dictation'; errorBox.textContent = 'Original recording recovered. Choose Retry dictation to transcribe it.'; render();
+    await saveDraft(); recoverAudio.hidden = true; dictate.textContent = 'Retry dictation'; inform('Original recording recovered. Choose Retry dictation to transcribe it.'); render();
   }
   async function discardDictation() {
     if (!retainedRecording || audioBusy || recording || voice) return;
     const discarded = retainedRecording; retainedRecording = null; recordingRequest = null; await saveDraft();
     await acknowledgeRecording({ scopeKey, conversationId: current.id }, discarded); await refreshNativeRecordings();
-    dictate.textContent = 'Dictate'; errorBox.textContent = 'Recorded dictation discarded. Your text draft is unchanged.'; render();
+    dictate.textContent = 'Dictate'; inform('Recorded dictation discarded. Your text draft is unchanged.'); render();
   }
-  const self = { panel, scopeKey, conversation: current, onState, focus: () => input.focus(), notifyState() {
+  const self = { panel, scopeKey, conversation: current, onState, dictationTarget, focus: () => input.focus(), present(mode, target = null, primedContext = null) {
+    if (mode === 'dictate' && voice) { run(endVoice().then(() => self.present(mode, target, primedContext))); return; }
+    if (mode === 'voice' && !voice && (recording || retainedRecording || audioBusy || input.value.trim() || sendRequest || activeStatuses.has(current.operation?.status))) {
+      if (primedContext && primedContext.state !== 'closed') run(primedContext.close());
+      throw new Error('Finish or clear the original dictation or draft before starting Voice. It has been retained.');
+    }
+    self.dictationTarget = target;
+    const direct = mode === 'dictate' || mode === 'voice';
+    panel.classList.toggle('assistant-direct', direct); panel.classList.toggle('assistant-direct-dictation', mode === 'dictate');
+    panel.classList.remove('assistant-minimized'); panel.dataset.mode = mode;
+    title.textContent = mode === 'dictate' ? 'Dictation' : mode === 'voice' ? 'Voice' : 'Conversation';
+    panel.setAttribute('aria-label', mode === 'dictate' ? 'Original source dictation' : 'Original document conversation');
+    expand.hidden = !direct; minimize.textContent = direct ? 'Close' : 'Minimize conversation';
+    minimize.setAttribute('aria-label', direct ? mode === 'dictate' ? 'Close dictation' : 'Close voice' : 'Minimize conversation');
+    useDictation.textContent = target?.label || 'Copy into draft'; render();
+    if (mode === 'dictate' && !initializing && !recording && !audioBusy && !retainedRecording) run(toggleDictation());
+    if (mode === 'voice' && !voice) run(startVoice(primedContext).finally(() => { if (primedContext && primedContext.state !== 'closed') return primedContext.close(); }));
+    else if (primedContext && primedContext.state !== 'closed') run(primedContext.close());
+    if (mode !== 'voice') input.focus();
+  }, notifyState(extra = {}) {
     run(self.onState({ conversationId: current.id, scopeKey, source: current.source, progress: current.progress, closed,
-      busy: activeStatuses.has(current.operation?.status), audioActive: Boolean(recording) || audioBusy || audioReading || Boolean(voice), hasDraft: Boolean(input.value.trim() || retainedRecording) }));
+      busy: activeStatuses.has(current.operation?.status), audioActive: Boolean(recording) || audioBusy || audioReading || Boolean(voice), hasDraft: Boolean(input.value.trim() || retainedRecording), ...extra }));
   }, async dispose() {
     if (closed) return; await endVoice(); await saveDraft(); await releaseAudio(); closed = true; self.notifyState(); clearInterval(timer); panel.remove(); if (active === self) active = null;
   } }; active = self;
   function render() {
     self.conversation = current; const busy = activeStatuses.has(current.operation?.status), uncertain = current.operation?.status === 'uncertain';
     panel.dataset.ready = String(!initializing); panel.setAttribute('aria-busy', String(initializing));
+    panel.dataset.capturing = String(Boolean(recording));
     panel.classList.toggle('assistant-voice-enabled', Boolean(voice));
     send.disabled = initializing || busy || uncertain || Boolean(voice); stop.disabled = !busy; stop.hidden = !busy; models.disabled = initializing || busy || uncertain || Boolean(voice); efforts.disabled = models.disabled;
     history.disabled = initializing || busy || uncertain || Boolean(recording) || audioBusy || audioReading || changingConversation || Boolean(voice) || voiceClosing;
     newConversation.disabled = history.disabled;
     dictate.disabled = initializing || audioBusy || Boolean(voice); input.readOnly = initializing || Boolean(voice);
     discardAudio.hidden = !retainedRecording; discardAudio.disabled = initializing || audioBusy || Boolean(voice);
+    useDictation.hidden = !self.dictationTarget; useDictation.disabled = initializing || audioBusy || Boolean(recording) || Boolean(voice) || !input.value.trim();
     voiceButton.textContent = voice ? 'End voice' : 'Voice'; voiceButton.setAttribute('aria-pressed', String(Boolean(voice)));
     voiceButton.disabled = initializing || voiceClosing || changingConversation || !voice && (Boolean(recording) || audioBusy || audioReading || busy || uncertain);
     interruptVoiceButton.hidden = !voice; interruptVoiceButton.disabled = !audioReading && !busy;
@@ -167,7 +211,7 @@ export async function openConversation({ api, scopeKey, source, parent = documen
     if (voiceSession && voice !== voiceSession) return;
     if (voiceSession) voiceSession.requestId = sendRequest.requestId;
     try {
-      current = await post('/conversations/' + current.id + '/send', sendRequest); input.value = ''; sendRequest = null; await saveDraft(); errorBox.textContent = ''; render();
+      current = await post('/conversations/' + current.id + '/send', sendRequest); input.value = ''; sendRequest = null; await saveDraft(); inform(''); render();
       if (voiceSession && voice !== voiceSession && activeStatuses.has(current.operation?.status)) await stopTurn(voiceSession.requestId);
     }
     catch (error) {
@@ -197,7 +241,7 @@ export async function openConversation({ api, scopeKey, source, parent = documen
     }
     catch (error) {
       if (error.code === 'assistant_audio_owned' && !panel.querySelector('[data-audio-takeover]')) {
-        const take = button('Take over audio', () => run(acquireAudio(true).then(() => { take.remove(); errorBox.textContent = 'Audio control moved here. Choose Dictate or Read answer.'; }))); take.dataset.audioTakeover = ''; controls.append(take);
+        const take = button('Take over audio', () => run(acquireAudio(true).then(() => { take.remove(); inform('Audio control moved here. Choose Dictate or Read answer.'); }))); take.dataset.audioTakeover = ''; controls.append(take);
       } throw error;
     }
     if (globalThis.ContextRoomNativeOwner?.audioController) await ContextRoomNativeOwner.audioController({ ...lease, scopeKey });
@@ -257,7 +301,7 @@ export async function openConversation({ api, scopeKey, source, parent = documen
       if (audioReading) await releaseAudio();
       if (globalThis.ContextRoomNativeOwner?.ensureMicrophone) await ContextRoomNativeOwner.ensureMicrophone();
       if (closed) return;
-      generation = audioGeneration; await acquireAudio(false, generation); errorBox.textContent = '';
+      generation = audioGeneration; await acquireAudio(false, generation); inform('');
       const capture = await captureMicrophone(() => run(toggleDictation()), { ...owned(), scopeKey }, { onError: error => run(releaseAudio().then(() => { throw error; })) });
       if (closed || generation !== audioGeneration) { await capture.cancel(); return; }
       recording = capture; dictate.textContent = 'Finish dictation'; audioStatus.textContent = 'Microphone on · dictation stays in this original source.'; return;
@@ -268,11 +312,12 @@ export async function openConversation({ api, scopeKey, source, parent = documen
     const job = await waitAudio(pending, generation);
     if (generation !== audioGeneration) return;
     const completedRecording = retainedRecording;
-    input.value += (input.value.trim() ? '\n' : '') + job.result.text; retainedRecording = null; recordingRequest = null; await saveDraft(); dictate.textContent = 'Dictate';
+    if (job.result.text) input.value += (input.value.trim() ? '\n' : '') + job.result.text;
+    retainedRecording = null; recordingRequest = null; await saveDraft(); dictate.textContent = 'Dictate';
     await acknowledgeRecording({ scopeKey, conversationId: current.id }, completedRecording);
     await refreshNativeRecordings();
     await releaseAudio();
-    errorBox.textContent = job.result.silent ? 'No speech detected. Nothing was sent.' : 'Dictation added to your draft. Read it before sending.'; input.focus();
+    inform(job.result.silent ? 'No speech detected. Nothing was sent.' : 'Dictation added to your draft. Read it before sending.'); input.focus();
     } catch (error) { dictate.textContent = retainedRecording ? 'Retry dictation' : 'Dictate'; if (error.audioStatus === 'failed' || error.audioStatus === 'cancelled') recordingRequest = null; throw error; }
     finally { audioBusy = false; dictate.disabled = false; render(); }
   }
@@ -291,6 +336,7 @@ export async function openConversation({ api, scopeKey, source, parent = documen
       if (end < message.text.length) { const space = message.text.lastIndexOf(' ', end); if (space > start + 150) end = space + 1; }
       const job = await waitAudio(await post('/audio/speak', { ...owned(), requestId: crypto.randomUUID(), messageId: message.id, start, end }), generation);
       if (generation !== audioGeneration) return;
+      if (job.result.played === true) { start = end; continue; }
       if (globalThis.ContextRoomNativeOwner?.playAudio) {
         const ownership = owned();
         speaker = { stop: () => ContextRoomNativeOwner.stopAudio(ownership).catch(() => {}) };
@@ -323,7 +369,7 @@ export async function openConversation({ api, scopeKey, source, parent = documen
     if (session.phase === 'speaking') { session.interrupted = true; await releaseAudio(); }
     if (session.requestId === current.operation?.id && activeStatuses.has(current.operation?.status)) await stopTurn(session.requestId);
   }
-  async function startVoice() {
+  async function startVoice(primedContext = null) {
     if (initializing || voice || voiceClosing || audioBusy || audioReading || recording || activeStatuses.has(current.operation?.status)) return;
     if (input.value.trim() || sendRequest || retainedRecording) throw new Error('Send or clear the saved draft before starting Voice. Recoverable dictation stays separate.');
     if (globalThis.ContextRoomNativeOwner?.ensureMicrophone) {
@@ -334,8 +380,8 @@ export async function openConversation({ api, scopeKey, source, parent = documen
     const session = { phase: 'starting', requestId: null, context: null, interrupted: false, stopping: null }; voice = session; render();
     try {
       // Unlock browser output in this explicit user gesture, before any network wait.
-      if (!globalThis.ContextRoomNativeOwner?.playAudio) { session.context = new (window.AudioContext || window.webkitAudioContext)(); await session.context.resume(); }
-      errorBox.textContent = '';
+      if (!globalThis.ContextRoomNativeOwner?.playAudio) { session.context = primedContext || new (window.AudioContext || window.webkitAudioContext)(); await session.context.resume(); }
+      inform('');
       while (voice === session && !closed) {
         const generation = audioGeneration; await acquireAudio(false, generation);
         if (voice !== session) break;
@@ -397,6 +443,5 @@ export async function openConversation({ api, scopeKey, source, parent = documen
   window.addEventListener('context-room-native-audio', nativeAudioInterrupted);
   const dispose = self.dispose; self.dispose = async () => { document.removeEventListener('visibilitychange', hidden); window.removeEventListener('context-room-native-active', nativeActivity); window.removeEventListener('context-room-native-audio', nativeAudioInterrupted); await dispose(); };
   const timer = setInterval(() => void poll(), 500); showModels(); render(); await restoreDraft(); await refreshHistory(); initializing = false; render();
-  if (mode === 'dictate') errorBox.textContent = 'Choose Dictate to start the microphone for this source.';
-  input.focus(); return self;
+  self.present(mode, dictationTarget, primedAudioContext); return self;
 }

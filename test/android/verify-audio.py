@@ -57,7 +57,7 @@ with (output / 'fixture.log').open('w') as fixture_log:
             time.sleep(.1)
         run(adb + ['push', str(fixture_dir / 'ticket.json'), '/data/local/tmp/context-room-owner-audio-ticket.json'], capture_output=True)
         instrument('OwnerNotebookConversationDeviceTest' if args.native_pen else 'OwnerAudioDeviceTest', '/data/local/tmp/context-room-owner-audio-ticket.json')
-        images = ('native-voice-and-pen', 'native-conversation-retained-owner') if args.native_pen else ('owner-audio-recording', 'owner-audio-recovered')
+        images = ('native-voice-and-pen', 'native-direct-dictation', 'native-conversation-retained-owner') if args.native_pen else ('owner-audio-recording', 'owner-audio-recovered')
         for name in images:
             with (output / (name + '.png')).open('wb') as image:
                 run(adb + ['exec-out', 'run-as', 'app.contextroom.tablet.preview', 'cat', 'files/' + name + '.png'], stdout=image)
@@ -68,6 +68,7 @@ with (output / 'fixture.log').open('w') as fixture_log:
             'permissionDialog': True, 'backgroundStopAndOriginalRecovery': not args.native_pen, 'reloadRecovery': not args.native_pen,
             'voiceWithNativePen': args.native_pen, 'retainedOwnerNotebookAndConversation': args.native_pen,
             'nativeProgressGeometry': args.native_pen,
+            'directNativeDictationAndVoice': args.native_pen,
             'voiceForegroundAndBackgroundStop': True, 'nativeSpeechEndpointContract': True,
             'physicalMicrophoneAndAudibility': 'not-tested', 'recognitionThroughTablet': 'not-tested'
         }, indent=2) + '\n')

@@ -4,6 +4,7 @@ import { notebookSvg, notebookBounds } from '../notebook_render.mjs';
 import { notebookSceneBounds } from '../notebook_geometry.mjs';
 import { NotebookCanvas } from './notebook-canvas.mjs';
 import { NotebookViewLink } from './notebook-views.mjs';
+import { prepareVoiceAudio } from './assistant.mjs';
 
 export function notebookElement(tag, text = '', className = '') { const node = document.createElement(tag); node.textContent = text; if (className) node.className = className; return node; }
 export function notebookStyles() { if (document.getElementById('context-room-notebook-style')) return; const link = document.createElement('link'); link.id = 'context-room-notebook-style'; link.rel = 'stylesheet'; link.href = '/assets/ui/notebook.css'; document.head.append(link); }
@@ -139,12 +140,23 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   const submit = button(reviewKey ? 'Use this correction' : 'Submit for review', () => run(submitScene()), 'notebook-primary'); if (!reviewKey) header.append(submitScope); header.insertBefore(submit, closeButton);
   const retry = button('Reconnect', () => run(sync(true))); if (!reviewKey) statusRow.append(retry);
   if (onConversation && !reviewKey) {
-    const converse = async mode => {
+    const converse = async (mode, copyToDraft = false) => {
+      const voiceActivation = mode === 'voice' ? prepareVoiceAudio() : null;
+      try {
       await surface.settle(); await sync(true);
       if (!view || view.offline || view.pending || view.conflicts.length || failedLocalWork.length) throw new Error('Confirm the current notebook changes on the Mac before starting this conversation.');
-      await onConversation({ kind: 'notebook', resourceId, path, revision: view.revision, locationRevision: view.locator.revision, selection: [...surface.selection] }, { parent: dialog, mode });
+      const originalLocation = view.locator.revision, originalForm = textForm, originalText = textForm?.querySelector('textarea').value;
+      const dictationTarget = copyToDraft ? { label: 'Copy into notebook text draft', apply: async text => {
+        if (closed || view.locator.revision !== originalLocation || textForm !== originalForm || textForm && textForm.querySelector('textarea').value !== originalText)
+          throw new Error('The original notebook text draft changed. Your transcript is retained in its original dictation.');
+        if (textForm) { textForm.querySelector('textarea').value += (originalText?.trim() ? '\n' : '') + text; await textForm.persistDraft(); }
+        else await editText({ x: (canvas.clientWidth / 2 - surface.view.x) / surface.view.scale, y: (canvas.clientHeight / 2 - surface.view.y) / surface.view.scale, text });
+      } } : null;
+      await onConversation({ kind: 'notebook', resourceId, path, revision: view.revision, locationRevision: view.locator.revision, selection: [...surface.selection] }, { parent: dialog, mode, dictationTarget, voiceActivation });
+      } catch (error) { if (voiceActivation?.context.state !== 'closed') await voiceActivation?.context.close(); throw error; }
     };
-    actions.append(button('Ask about selection', () => run(converse('text'))), button('Dictate about notebook', () => run(converse('dictate'))));
+    actions.append(button('Ask about selection', () => run(converse('text'))), button('Dictate about notebook', () => run(converse('dictate'))),
+      button('Dictate text', () => run(converse('dictate', true))), button('Voice', () => run(converse('voice'))));
   }
   const objectTitle = notebookElement('h3', 'Objects'), filter = document.createElement('input'); filter.type = 'search'; filter.placeholder = 'Filter objects'; filter.setAttribute('aria-label', 'Filter notebook objects');
   const selectionText = notebookElement('p', 'Nothing selected'), selectionActions = notebookElement('div', '', 'notebook-selection-actions');
@@ -285,6 +297,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     const form = textForm = notebookElement('form', '', 'notebook-text-form'), label = notebookElement('label', object ? 'Edit selected text' : 'Text draft'), input = document.createElement('textarea'); input.value = text; input.setAttribute('aria-label', 'Notebook text draft'); label.append(input); form.append(label);
     const target = { x, y, object: object ? structuredClone(object) : null };
     const persist = () => { const text = input.value; return client.exclusive(() => client.change(state => ({ metadata: { ...state.metadata, textDraft: { ...target, text } } }))); };
+    form.persistDraft = persist;
     input.addEventListener('input', () => run(persist()));
     const cancel = button('Cancel text', () => run(client.exclusive(() => client.change(state => ({ metadata: { ...state.metadata, textDraft: null } }))).then(() => { form.remove(); textForm = null; canvas.focus(); })));
     const add = button(object ? 'Update text' : 'Add text', null, 'notebook-primary'); add.type = 'submit'; form.append(add, cancel); stage.append(form); input.focus(); await persist();

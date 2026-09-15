@@ -84,3 +84,49 @@ test('dictation retries are bounded and never send a turn; speech uses the exact
   assert.equal(f.runtime.receipt(f.root, { ...body, requestId: speech.id, played: true }).played, true); assert.equal(f.starts(), 0);
   f.revoke(); assert.throws(() => f.runtime.job(f.root, speech.id, body), { code: 'assistant_source_scope' });
 });
+
+test('long speech releases played PCM while retaining exact request receipts in the active epoch', async t => {
+  const f = fixture(t), conversation = f.conversation(), clientId = randomUUID();
+  const lease = f.runtime.lease(f.root, { conversationId: conversation.id, clientId }), body = { conversationId: conversation.id, clientId, epoch: lease.epoch };
+  const answer = 'Long synthetic answer. '.repeat(650);
+  f.runtime.sessions.update(conversation.id, value => value.messages.push({ id: 'long-reply', role: 'assistant', text: answer, complete: true }));
+  let generated = 0; const synthesize = f.runtime.audio.synthesize;
+  f.runtime.audio.synthesize = async (...args) => { generated++; return { ...await synthesize(...args), data: 'Synthetic waveform bytes' }; };
+  const requests = [];
+  for (let start = 0; start < answer.length; start += 400) {
+    const request = { ...body, requestId: randomUUID(), messageId: 'long-reply', start, end: Math.min(start + 400, answer.length) }; requests.push(request);
+    const job = f.runtime.speak(f.root, request); assert.equal((await settled(f, body, job.id)).result.played, false);
+    assert.equal(f.runtime.receipt(f.root, { ...body, requestId: job.id, played: true }).played, true);
+    const completed = f.runtime.job(f.root, job.id, body); assert.equal(completed.result.played, true);
+    assert.equal(completed.result.pcm, undefined); assert.equal(completed.result.data, undefined);
+  }
+  assert.ok(requests.length > 24);
+  assert.equal(f.runtime.speak(f.root, requests[0]).result.played, true);
+  assert.equal(f.runtime.receipt(f.root, { ...body, requestId: requests[0].requestId, played: true }).played, true);
+  assert.equal(generated, requests.length, 'An acknowledged request must not synthesize again');
+  assert.throws(() => f.runtime.speak(f.root, { ...requests[0], end: 10 }), { code: 'assistant_audio_replay' });
+  f.runtime.lease(f.root, { ...body, action: 'release' });
+  const next = f.runtime.lease(f.root, { conversationId: conversation.id, clientId });
+  assert.throws(() => f.runtime.speak(f.root, requests[0]), { code: 'assistant_audio_stale' });
+  const fresh = { ...body, epoch: next.epoch, requestId: randomUUID(), pcm: 'AAMAAg==' };
+  f.runtime.transcribe(f.root, fresh); assert.equal(f.runtime.jobs.size, 1, 'A new epoch drops inaccessible old receipts');
+  await settled(f, fresh, fresh.requestId); assert.equal(f.starts(), 0);
+});
+
+test('unconsumed audio stays bounded and expiry cannot silently rerun the same request', async t => {
+  const f = fixture(t), conversation = f.conversation(), clientId = randomUUID();
+  const lease = f.runtime.lease(f.root, { conversationId: conversation.id, clientId }), body = { conversationId: conversation.id, clientId, epoch: lease.epoch };
+  let processed = 0; const transcribe = f.runtime.audio.transcribe;
+  f.runtime.audio.transcribe = async (...args) => { processed++; return transcribe(...args); };
+  let first;
+  for (let index = 0; index < 24; index++) {
+    const request = { ...body, requestId: randomUUID(), pcm: 'AAMAAg==' }; first ||= request;
+    const job = f.runtime.transcribe(f.root, request); await settled(f, body, job.id);
+  }
+  assert.throws(() => f.runtime.transcribe(f.root, { ...first, requestId: randomUUID() }), { code: 'assistant_audio_busy' });
+  for (let index = 0; index < 21; index++) { f.advance(29_000); f.runtime.lease(f.root, { ...body, action: 'renew' }); }
+  const expired = f.runtime.transcribe(f.root, first); assert.equal(expired.status, 'failed'); assert.equal(expired.result, null);
+  assert.equal(processed, 24, 'An expired request retains its failure identity in the current epoch');
+  const retry = { ...first, requestId: randomUUID() }; f.runtime.transcribe(f.root, retry); await settled(f, body, retry.requestId);
+  assert.equal(processed, 25);
+});

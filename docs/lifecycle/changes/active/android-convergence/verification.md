@@ -16,7 +16,7 @@ regression results and the remaining implementation boundaries.
 ## Does not define
 
 Human acceptance of personal documents or personal-device installation,
-authenticated agent/audio behavior, a migration of personal data, or physical
+a migration of personal data, or physical
 BOOX performance. A synthetic agent operation is not a real provider call.
 
 ## Restoration on 2026-09-14
@@ -740,13 +740,59 @@ Stop agent was below the fold in a short conversation panel; it now stays in the
 sticky heading while an agent turn is active. Browser verification covers that
 small-panel control independently from the real provider turn.
 
+## Direct dictation and native recognition
+
+Document and notebook controls now start compact dictation or Voice directly.
+Reviewed dictation can be copied into the unchanged original Markdown/text
+draft or a retained notebook text draft. Copying does not save a document,
+create a notebook object or send an agent message. Original-source checks
+refuse a changed editor, project, file or notebook text draft; normal human
+undo remains available. Success messages use a neutral status area. Silence
+does not append a newline or otherwise change an existing draft.
+
+The current focused matrix passes **64 browser scenarios**: 48 voice/dictation
+checks and 16 conversation checks across Chromium desktop/mobile, Firefox and
+WebKit. It includes real double-click handling, original-source navigation,
+explicit draft insertion and notebook addition, Voice-to-Dictate switching,
+silence and answers longer than 24 speech passages. Consumed playback drops
+its PCM payload while retaining an exact request receipt. The 15 focused
+audio/runtime/session contracts pass. Doctor and package privacy pass.
+
+The four Android native audio/progress/owner checks pass with **Dicter** and
+**Parler** alongside the pen. Closing compact dictation stops capture and
+returns the native canvas space. The additional explicit
+`test/android/verify-dictation.py --run` check passes real local Whisper
+recognition through the owner transport. It first starts real native capture,
+then substitutes a synthetic voice sample into that fixture's stopped recording.
+The transcript returns in **4,930 ms**, stays in the original conversation and
+survives WebView reload. Only saved text acknowledges removal of the native
+recording. A separate maximum-size **3,840,000-byte** silent recording traverses
+the same path without changing that draft or sending an agent message. The
+ordinary source file remains unchanged. Both rendered results were inspected.
+This is transport and local-recognition evidence with synthetic input, not a
+physical microphone-speech claim.
+
+The application APK SHA-256 is
+`7075e8ff3539a7e0cbb75023ed7d1b2d84912847428b74eb281670ae51366308`;
+signature v2, all eight exact shared assets, Internet and microphone permissions
+pass. The first recognition harness selected a document without entering its
+project in the Hub; the corrected test uses the actual project/file navigation.
+
+The complete local regression for `4f159afcfc63fffed1f27b57248df1fa6cec2d71`
+finishes **75/76 processes**. CI `34910248215` fails the same Settings-search
+test: its extracted function fixture also evaluated unrelated browser bindings
+and raised `window is not defined`. The test now extracts only the catalog and
+search functions, retaining every original assertion; its focused rerun passes.
+That CI's four browser jobs and soak pass, as do both convergence runs. A full
+regression and CI on the new checkpoint remain separate gates.
+
 ## Open product gates
 
 Document observation,
 data migration and final removal of the
-external compatibility dependency remain implementation work. Native dictation
-and original-recording recovery have the emulator checks above; complete
-recognition through that surface remains to be verified. Real native agent
+external compatibility dependency remain implementation work. Native dictation,
+original-recording recovery and recognition have the emulator checks above.
+Real native agent
 conversation, actions, interruption and playback have the separate check above.
 The verified Android installation is an emulator preview. It does not establish
 physical Wi-Fi behavior or BOOX pen/palm latency.

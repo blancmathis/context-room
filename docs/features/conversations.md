@@ -26,8 +26,9 @@ during speaker playback, a standalone tablet agent, or a new notes application.
 
 ## Open and resume
 
-Use **Discuss** or **Dictate** beside a saved Markdown, text or HTML document,
-or **Ask about selection** in a notebook. Save local edits and resolve external
+Use **Discuss**, **Dictate** or **Voice** beside a Markdown, text or HTML document,
+or the notebook's conversation controls. Discuss and Voice require saved local
+edits; dictation can enrich an existing editable draft. Resolve external
 conflicts first. A document's current disk version can be discussed during its
 human review; this does not accept it. Frozen proposal review remains separate.
 
@@ -53,9 +54,21 @@ an answer when the provider can supply that evidence.
 
 ## Dictation and playback
 
-Choose **Dictate**, then **Finish dictation**. A visible indicator distinguishes
-capture, local transcription and stopped audio. The resulting text remains in
-the composer until **Send** is pressed. Silence does not generate a message.
+Choose the source's **Dictate** control to start capture directly in a compact
+panel, then **Finish dictation**. **Open conversation** expands the same session.
+A visible indicator distinguishes capture, local transcription and stopped
+audio. The resulting text remains in the composer until **Send** is pressed.
+Silence preserves the existing draft and does not generate a message.
+
+**Append to document draft** copies reviewed text into the original Markdown or
+text editor; an original text selection instead offers explicit replacement.
+This remains an unsaved, undoable human edit. Changing the document, its disk
+version or the captured editor draft prevents the copy until the original state
+is restored. HTML dictation stays in the linked composer.
+In a notebook, **Dictate text** offers **Copy into notebook text draft**. The
+text draft is retained locally; **Add text** remains a separate human action.
+**Dictate about notebook** keeps text in the conversation only.
+
 Recognition uses a local `whisper-cli` installation and model on the Mac;
 `CONTEXT_ROOM_WHISPER_MODEL` can point to a separately installed model file.
 Model installation remains convergence work.
@@ -74,6 +87,8 @@ macOS speech and plays them on the active surface. A prepared passage is not
 reported as played until playback completes. **Stop audio**, loss of the audio
 controller, closing the page or backgrounding interrupts it. The microphone
 and answer playback do not run together in this preview.
+Long answers release consumed audio payloads as they play, while retaining
+compact receipts to prevent a retried passage from being spoken twice.
 
 Only one surface owns the expiring audio controller. **Take over audio** is an
 explicit action; stale responses and epochs cannot restart or acknowledge a
@@ -89,7 +104,8 @@ The bridge is restricted to
 the trusted main frame; document frames cannot request microphone or file access.
 Drawing-only pairings do not receive conversation or owner permissions.
 
-In the native notebook, **Conversation** opens the same original-source panel
+In the native notebook, **Conversation** opens the same original-source panel;
+**Dicter** and **Parler** start dictation and Voice directly. The panel sits
 beside the pen on wide screens, or below it on smaller screens. Voice and native
 writing can run together. The original selection is captured when opening the
 conversation. Agent progress shows a tip only on geometry already received by

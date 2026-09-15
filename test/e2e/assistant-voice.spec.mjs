@@ -1,4 +1,6 @@
 import { test, expect } from '@playwright/test';
+import fs from 'node:fs';
+import path from 'node:path';
 import { assistantFixture } from '../fixtures/assistant.mjs';
 
 async function openOriginal(page, url) {
@@ -54,7 +56,7 @@ test('@smoke @assistant unfinished microphone chunks recover after reload only i
       const { browserRecordings } = await import('/assets/ui/assistant-drafts.mjs'), scope = captureNotebookApi().scopeKey;
       return [(await browserRecordings(scope, id)).length, (await browserRecordings(scope + '-different-project', id)).length];
     }, id); expect(counts).toEqual([0, 1]);
-  } finally { await page.goto('about:blank'); await f.close(); }
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
 
 test('@smoke @assistant explicit Voice interrupts the original agent, speaks its answer and resumes listening until ended', async ({ page }, testInfo) => {
@@ -87,7 +89,7 @@ test('@smoke @assistant explicit Voice interrupts the original agent, speaks its
     await pane.getByRole('button', { name: 'End voice', exact: true }).click(); await expect(pane).toHaveAttribute('data-voice-state', 'off');
     const counts = await page.evaluate(() => voiceContract.captures.length); await page.waitForTimeout(650); expect(await page.evaluate(() => voiceContract.captures.length)).toBe(counts);
     expect(errors).toEqual([]); await page.screenshot({ path: testInfo.outputPath('voice-original-source.png') });
-  } finally { await page.goto('about:blank'); await f.close(); }
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
 
 test('@smoke @assistant ending Voice during transcription retains audio without a late send or microphone restart', async ({ page }) => {
@@ -101,7 +103,7 @@ test('@smoke @assistant ending Voice during transcription retains audio without 
     expect(f.turns).toHaveLength(0); expect(await page.evaluate(() => voiceContract.captures.length)).toBe(1);
     await pane.getByRole('button', { name: 'New conversation', exact: true }).click(); await expect(pane.getByRole('textbox')).toHaveValue('');
     expect(f.connections()).toBe(0);
-  } finally { await page.goto('about:blank'); await f.close(); }
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
 
 test('@smoke @assistant a background audio release survives reload and cannot occupy the next microphone', async ({ page }) => {
@@ -118,7 +120,7 @@ test('@smoke @assistant a background audio release survives reload and cannot oc
     await pane.getByRole('button', { name: 'Dictate', exact: true }).click(); await expect(pane.getByRole('button', { name: 'Finish dictation', exact: true })).toBeVisible();
     expect(await page.evaluate(async () => { const { pendingAudioReleases } = await import('/assets/ui/assistant-drafts.mjs'); return (await pendingAudioReleases(captureNotebookApi().scopeKey)).length; })).toBe(0);
     expect(f.connections()).toBe(0);
-  } finally { await page.goto('about:blank'); await f.close(); }
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
 
 test('@smoke @assistant native conversation layout keeps the notebook dialog and its working state for return', async ({ page }, testInfo) => {
@@ -141,7 +143,7 @@ test('@smoke @assistant native conversation layout keeps the notebook dialog and
     await expect(page.locator('.notebook-dialog canvas')).toBeVisible();
     await expect(pane.getByRole('textbox')).toHaveValue('Keep this original notebook draft while I draw.');
     expect(await page.evaluate(() => retainedNativeNotebook.dialog.open)).toBe(true); expect(f.connections()).toBe(0);
-  } finally { await page.goto('about:blank'); await f.close(); }
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
 
 test('@smoke @assistant a legacy root draft is recovered once without resurrecting explicitly cleared text', async ({ page }) => {
@@ -156,7 +158,7 @@ test('@smoke @assistant a legacy root draft is recovered once without resurrecti
     await pane.getByRole('textbox').fill('');
     await expect.poll(() => page.evaluate(async id => { const { readDraft } = await import('/assets/ui/assistant-drafts.mjs'); return (await readDraft(captureNotebookApi().scopeKey, id)).text; }, id)).toBe('');
     pane = await openOriginal(page, f.url); await expect(pane.getByRole('textbox')).toHaveValue(''); expect(f.connections()).toBe(0);
-  } finally { await page.goto('about:blank'); await f.close(); }
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
 
 test('@smoke @assistant Stop agent stays in view when a small conversation panel scrolls', async ({ page }) => {
@@ -171,5 +173,118 @@ test('@smoke @assistant Stop agent stays in view when a small conversation panel
     const stop = pane.getByRole('button', { name: 'Stop agent', exact: true });
     await expect(stop).toBeInViewport({ ratio: 0.99 });
     await stop.click(); await expect(pane).toHaveAttribute('data-operation-status', 'stopped');
-  } finally { await page.goto('about:blank'); await f.close(); }
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('@smoke @assistant a long answer completes more than 24 speech passages exactly once', async ({ page }) => {
+  const spoken = [], errors = [], answer = 'A complete synthetic spoken passage for the original document. '.repeat(210);
+  const f = await assistantFixture({ audio: { async synthesize(text) { spoken.push(text); return { text, pcm: 'AAA=', sampleRate: 24000, played: false }; } } });
+  page.on('pageerror', error => errors.push(error.message));
+  try {
+    const pane = await openOriginal(page, f.url); await syntheticBridge(page);
+    await page.evaluate(() => { ContextRoomNativeOwner.playAudio = async value => { voiceContract.plays.push(value); return { played: true }; }; });
+    await pane.getByRole('textbox').fill('Prepare the synthetic long answer.'); await pane.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect.poll(() => f.turns.length).toBe(1); f.finish(answer);
+    await expect(pane).toHaveAttribute('data-operation-status', 'completed');
+    await pane.getByRole('button', { name: 'Read answer', exact: true }).click();
+    await expect.poll(() => spoken.join(''), { timeout: 30000 }).toBe(answer);
+    await expect(pane.getByRole('button', { name: 'Read answer', exact: true })).toBeEnabled();
+    expect(spoken.length).toBeGreaterThan(24);
+    expect(await page.evaluate(() => voiceContract.plays.length)).toBe(spoken.length);
+    expect(await page.evaluate(() => voiceContract.captures.length)).toBe(0);
+    expect(errors).toEqual([]); expect(f.turns).toHaveLength(1);
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('@smoke @assistant direct dictation starts once and retains its original source while navigation continues', async ({ page }, testInfo) => {
+  const f = await assistantFixture({ audio: { async transcribe() { return { text: 'Review this original spoken draft.', silent: false }; } } });
+  const original = fs.readFileSync(path.join(f.root, 'docs/Original.md'), 'utf8'), other = fs.readFileSync(path.join(f.root, 'docs/Other.md'), 'utf8');
+  try {
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId)); await syntheticBridge(page);
+    await page.evaluate(() => selectFile('docs/Original.md'));
+    await page.locator('[data-file-dictate]').dblclick();
+    const pane = page.getByRole('complementary', { name: 'Original source dictation' });
+    await expect(pane.getByRole('button', { name: 'Finish dictation', exact: true })).toBeVisible();
+    expect(await page.evaluate(() => voiceContract.captures.length)).toBe(1);
+    await page.evaluate(() => selectFile('docs/Other.md'));
+    await pane.getByRole('button', { name: 'Finish dictation', exact: true }).click();
+    await expect(pane.getByRole('textbox')).toHaveValue('Review this original spoken draft.');
+    await expect(pane.locator('.assistant-origin')).toHaveText('docs/Original.md');
+    expect(f.connections()).toBe(0); expect(f.turns).toHaveLength(0);
+    await page.screenshot({ path: testInfo.outputPath('direct-original-dictation.png') });
+    await pane.getByRole('button', { name: 'Append to document draft', exact: true }).click();
+    await expect(pane.getByRole('alert')).toContainText('Return to the unchanged original document draft');
+    expect(await page.locator('#docEditor').inputValue()).toBe(other);
+    await page.evaluate(() => selectFile('docs/Original.md'));
+    await pane.getByRole('button', { name: 'Append to document draft', exact: true }).click();
+    await expect(page.locator('#docEditor')).toHaveValue(original + 'Review this original spoken draft.');
+    await pane.getByRole('button', { name: 'Append to document draft', exact: true }).click();
+    await expect(pane.getByRole('alert')).toContainText('Return to the unchanged original document draft');
+    expect(await page.locator('#docEditor').inputValue()).toBe(original + 'Review this original spoken draft.');
+    const undo = await page.evaluate(() => isMacPlatform() ? 'Meta+z' : 'Control+z');
+    await page.locator('#docEditor').press(undo); await expect(page.locator('#docEditor')).toHaveValue(original);
+    expect(fs.readFileSync(path.join(f.root, 'docs/Original.md'), 'utf8')).toBe(original);
+    expect(fs.readFileSync(path.join(f.root, 'docs/Other.md'), 'utf8')).toBe(other);
+    await pane.getByRole('button', { name: 'Open conversation', exact: true }).click();
+    await expect(pane).toHaveCount(0);
+    const conversation = page.getByRole('complementary', { name: 'Original document conversation' });
+    await expect(conversation.getByRole('textbox')).toHaveValue('Review this original spoken draft.');
+    expect(await page.evaluate(() => voiceContract.captures.length)).toBe(1);
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('@smoke @assistant silent dictation leaves the existing original draft unchanged', async ({ page }) => {
+  const f = await assistantFixture({ audio: { async transcribe() { return { text: '', silent: true }; } } });
+  try {
+    const pane = await openOriginal(page, f.url); await syntheticBridge(page);
+    const original = 'An existing original draft.\n';
+    await pane.getByRole('textbox').fill(original);
+    await pane.getByRole('button', { name: 'Dictate', exact: true }).click();
+    await pane.getByRole('button', { name: 'Finish dictation', exact: true }).click();
+    await expect(pane.locator('.assistant-info')).toContainText('No speech detected');
+    await expect(pane.getByRole('textbox')).toHaveValue(original);
+    expect(f.connections()).toBe(0); expect(f.turns).toHaveLength(0);
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('@smoke @assistant direct notebook dictation creates a retained text draft before an explicit human addition', async ({ page }, testInfo) => {
+  const f = await assistantFixture({ audio: { async transcribe() { return { text: 'A dictated notebook idea.', silent: false }; } } });
+  try {
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId)); await syntheticBridge(page);
+    await page.evaluate(async () => { window.dictatedNotebook = await openContextRoomNotebook('docs/Dictated.crnb'); });
+    const notebook = page.getByRole('dialog', { name: 'Notebook: docs/Dictated.crnb', exact: true });
+    await expect(notebook).toHaveAttribute('data-save-state', 'confirmed');
+    await notebook.getByRole('button', { name: 'Dictate text', exact: true }).click();
+    const pane = page.getByRole('complementary', { name: 'Original source dictation' });
+    await pane.getByRole('button', { name: 'Finish dictation', exact: true }).click();
+    await expect(pane.getByRole('textbox')).toHaveValue('A dictated notebook idea.');
+    await pane.getByRole('button', { name: 'Copy into notebook text draft', exact: true }).click();
+    await expect.poll(() => page.evaluate(async () => (await dictatedNotebook.client.state()).metadata.textDraft?.text)).toBe('A dictated notebook idea.');
+    expect(await page.evaluate(() => dictatedNotebook.surface.document.objects.length)).toBe(0);
+    await pane.getByRole('button', { name: 'Close dictation', exact: true }).click();
+    await expect(notebook.getByLabel('Notebook text draft')).toHaveValue('A dictated notebook idea.');
+    await page.screenshot({ path: testInfo.outputPath('dictated-notebook-text-draft.png') });
+    await notebook.getByRole('button', { name: 'Add text', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => dictatedNotebook.surface.document.objects.length)).toBe(1);
+    expect(await page.evaluate(() => dictatedNotebook.surface.document.objects[0].createdBy.kind)).toBe('human');
+    expect(f.connections()).toBe(0); expect(f.turns).toHaveLength(0);
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('@smoke @assistant direct Voice starts from the document and switching to Dictate preserves control of the original source', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId)); await syntheticBridge(page);
+    await page.evaluate(() => selectFile('docs/Original.md'));
+    await page.locator('[data-file-voice]').click();
+    const pane = page.getByRole('complementary', { name: 'Original document conversation' });
+    await expect(pane).toHaveAttribute('data-voice-state', 'listening');
+    await page.locator('[data-file-dictate]').click();
+    const dictation = page.getByRole('complementary', { name: 'Original source dictation' });
+    await expect(dictation).toHaveAttribute('data-voice-state', 'off');
+    await expect(dictation.getByRole('button', { name: 'Finish dictation', exact: true })).toBeVisible();
+    expect(await page.evaluate(() => voiceContract.captures.length)).toBe(2);
+    await dictation.getByRole('button', { name: 'Close dictation', exact: true }).click();
+    expect(f.connections()).toBe(0); expect(f.turns).toHaveLength(0);
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });

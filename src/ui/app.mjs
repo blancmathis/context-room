@@ -4394,13 +4394,33 @@ async function openContextRoomNotebook(filePath, { directory = "", projectId = "
 }
 
 async function openOriginalDocumentConversation(mode = "text") {
-  if (!state.selected || state.selectedStartupContext || state.dirty || state.savedHash == null || state.fileLoadError
+  if (!state.selected || state.selectedStartupContext || state.dirty && mode !== "dictate" || state.savedHash == null || state.fileLoadError
     || activeFileConflict() || activeExternalChange() && activeExternalChange().source !== "review"
     || state.openingFilePath === state.selected && state.fileContentReadyPath !== state.selected) throw new Error("Save the original document before starting its conversation.");
+  let voiceActivation = null;
+  if (mode === "voice" && !globalThis.ContextRoomNativeOwner?.playAudio) {
+    const context = new (window.AudioContext || window.webkitAudioContext)(), resumed = context.resume(); resumed.catch(() => {}); voiceActivation = { context, resumed };
+  }
   const captured = captureNotebookApi(), source = { kind: "document", path: state.selected, hash: state.savedHash };
   const editor = el("docEditor");
-  if (editor && editor.selectionEnd > editor.selectionStart) source.selection = { start: editor.selectionStart, end: editor.selectionEnd, text: editor.value.slice(editor.selectionStart, editor.selectionEnd) };
-  const assistant = await loadContextRoomAssistantUi(); return assistant.openConversation({ ...captured, source, mode });
+  if (!state.dirty && editor && editor.selectionEnd > editor.selectionStart) source.selection = { start: editor.selectionStart, end: editor.selectionEnd, text: editor.value.slice(editor.selectionStart, editor.selectionEnd) };
+  let dictationTarget = null;
+  if (mode === "dictate" && editor && !editor.readOnly && /\.(md|markdown|txt)$/i.test(source.path)) {
+    const originalText = editor.value, start = editor.selectionEnd > editor.selectionStart ? editor.selectionStart : originalText.length, end = editor.selectionEnd > editor.selectionStart ? editor.selectionEnd : originalText.length;
+    dictationTarget = { label: end > start ? "Replace original selection in draft" : "Append to document draft", apply: async text => {
+      const currentEditor = el("docEditor");
+      if (state.selected !== source.path || captureNotebookApi().scopeKey !== captured.scopeKey || state.savedHash !== source.hash || !currentEditor || currentEditor.readOnly
+        || currentEditor.value !== originalText || activeFileConflict() || activeExternalChange() && activeExternalChange().source !== "review")
+        throw new Error("Return to the unchanged original document draft before inserting this dictation. The transcript is retained here.");
+      const insertion = (start === originalText.length && originalText && !originalText.endsWith("\n") ? "\n" : "") + text;
+      currentEditor.setSelectionRange(start, end);
+      currentEditor.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, inputType: "insertFromPaste", data: insertion }));
+      currentEditor.setRangeText(insertion, start, end, "end");
+      currentEditor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertFromPaste", data: insertion }));
+    } };
+  }
+  try { const assistant = await loadContextRoomAssistantUi(); return await assistant.openConversation({ ...captured, source, mode, dictationTarget, voiceActivation }); }
+  catch (error) { if (voiceActivation?.context.state !== 'closed') await voiceActivation?.context.close(); throw error; }
 }
 
 // The native canvas shares this retained conversation UI and captured API.
@@ -4417,7 +4437,7 @@ window.openContextRoomNativeConversation = async target => {
   const parent = [...document.querySelectorAll("dialog[open]")].at(-1) || document.body;
   window.setContextRoomNativeConversationView(false); parent.classList.add("assistant-native-host");
   const assistant = await loadContextRoomAssistantUi();
-  const conversation = await assistant.openConversation({ ...captured, source, parent,
+  const conversation = await assistant.openConversation({ ...captured, source, parent, mode: ['dictate', 'voice'].includes(target.mode) ? target.mode : 'text',
     onState: state => window.ContextRoomNativeOwner.active && document.body.classList.contains("context-room-native-conversation")
       ? window.ContextRoomNativeOwner.conversationState({ ...state, projectId: target.projectId }) : undefined });
   window.setContextRoomNativeConversationView(true); conversation.notifyState(); return true;
@@ -15142,7 +15162,7 @@ function renderFileActionButtons(options = {}) {
 
 function renderFileActionItems({ reviewAction = null, secondaryReviewAction = null, nextReviewAction = null, dirty = false, templateState = null, blockedByConflict = false, conversationBlocked = blockedByConflict, readOnly = false, deletable = true, savable = true } = {}) {
   return '' +
-    (IS_LOCAL && state.selected && !state.selectedStartupContext && !readOnly && /\.(md|markdown|txt|html?)$/i.test(state.selected) ? '<button class="file-action" type="button" data-file-conversation' + (dirty || conversationBlocked ? ' disabled title="Save or resolve the original document first"' : '') + '>Discuss</button><button class="file-action" type="button" data-file-dictate' + (dirty || conversationBlocked ? ' disabled' : '') + '>Dictate</button>' : '') +
+    (IS_LOCAL && state.selected && !state.selectedStartupContext && !readOnly && /\.(md|markdown|txt|html?)$/i.test(state.selected) ? '<button class="file-action" type="button" data-file-conversation' + (dirty || conversationBlocked ? ' disabled title="Save or resolve the original document first"' : '') + '>Discuss</button><button class="file-action" type="button" data-file-dictate' + (conversationBlocked ? ' disabled' : '') + '>Dictate</button><button class="file-action" type="button" data-file-voice' + (dirty || conversationBlocked ? ' disabled' : '') + '>Voice</button>' : '') +
     (templateState ? '<div class="empty-template-actions"><select class="file-template-select" data-empty-template-select aria-label="Template">' + renderFileTemplateOptions(templateState.selectedId) + '</select></div>' : '') +
     (reviewAction ? '<button class="file-action" type="button" data-file-review-decision="' + escapeHtml(reviewAction.status) + '">' + escapeHtml(reviewAction.label) + '</button>' : '') +
     (secondaryReviewAction ? '<button class="file-action" type="button" data-file-review-decision="' + escapeHtml(secondaryReviewAction.status) + '">' + escapeHtml(secondaryReviewAction.label) + '</button>' : '') +
@@ -20806,6 +20826,7 @@ function markdownDocLinkAtOffset(text, offset) {
 function wireFileActionButtons(root = document) {
   root.querySelector("[data-file-conversation]")?.addEventListener("click", () => openOriginalDocumentConversation().catch(error => setStatus(error.message)));
   root.querySelector("[data-file-dictate]")?.addEventListener("click", () => openOriginalDocumentConversation("dictate").catch(error => setStatus(error.message)));
+  root.querySelector("[data-file-voice]")?.addEventListener("click", () => openOriginalDocumentConversation("voice").catch(error => setStatus(error.message)));
   root.querySelectorAll("[data-file-review-decision]").forEach((button) => button.addEventListener("click", (event) => requestReviewDecision(state.selected, event.currentTarget.dataset.fileReviewDecision).catch((error) => setStatus(error.message))));
   root.querySelector("[data-next-review]")?.addEventListener("click", () => openNextReviewManually().catch((error) => setStatus(error.message)));
   root.querySelector("[data-file-save]")?.addEventListener("click", () => saveCurrent().catch((error) => setStatus(error.message)));

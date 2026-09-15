@@ -7082,8 +7082,13 @@ test("rendered app supports selectable file themes and colored markdown reading"
 
 test("Settings search matches aliases, technical names, scopes, and advanced groups", () => {
   const script = extractInlineAppScript(renderAppHtml());
-  const source = script.slice(
-    script.indexOf("const SETTINGS_SEARCH_ITEMS ="),
+  const itemsStart = script.indexOf("const SETTINGS_SEARCH_ITEMS =");
+  const itemsEnd = script.indexOf("\n];", itemsStart);
+  assert.ok(itemsStart >= 0 && itemsEnd > itemsStart, "The settings catalog must have an exact declaration boundary");
+  // Evaluate the catalog and search functions, not unrelated browser bindings
+  // located between them in the application script.
+  const source = script.slice(itemsStart, itemsEnd + 3) + "\n" + script.slice(
+    script.indexOf("function normalizedSettingsSearch"),
     script.indexOf("function renderSettingsSearchResults"),
   );
   const { matchingSettingsSearchItems } = Function(

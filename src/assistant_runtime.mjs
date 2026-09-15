@@ -9,6 +9,7 @@ import { canonicalNotebookRoot, notebookHash, readNotebookJson, writeNotebookJso
 const fault = (code, message, statusCode = 409) => Object.assign(new Error(message), { code, statusCode });
 const uuid = value => { if (typeof value !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value)) throw fault('assistant_identity', 'An exact client or request identity is required.', 400); return value; };
 const LEASE_MS = 30_000;
+const MAX_AUDIO_RESULTS = 24, MAX_AUDIO_RECEIPTS = 1024;
 
 /** One local owner runtime. Constructed lazily, never by doctor, guard or brief. */
 export class AssistantRuntime {
@@ -63,7 +64,16 @@ export class AssistantRuntime {
     this.sessions.get(project, body.conversationId); return current;
   }
   prune() {
-    for (const [id, job] of this.jobs) if (!job.controller && job.expiresAt <= this.now()) this.jobs.delete(id);
+    const lease = this.readLease();
+    for (const [id, job] of this.jobs) {
+      if (job.controller) continue;
+      // Another epoch can never read or replay these results. Within the live
+      // epoch, keep the request identity even after its payload expires.
+      if (!lease || job.epoch !== lease.epoch) this.jobs.delete(id);
+      else if (job.status === 'completed' && !job.result?.played && job.expiresAt <= this.now()) {
+        job.status = 'failed'; job.result = null; job.error = 'This audio result expired. The original recording or answer remains available for an explicit new request.';
+      }
+    }
   }
   asyncJob(project, input, type, fingerprint, run) {
     if (this.closed) throw fault('assistant_closed', 'The conversation service is closed.');
@@ -73,7 +83,10 @@ export class AssistantRuntime {
       if (previous.project !== project || previous.fingerprint !== fingerprint) throw fault('assistant_audio_replay', 'This audio request already names a different recording or passage.');
       return this.job(project, input.requestId, input);
     }
-    if (this.jobs.size >= 24 || [...this.jobs.values()].filter(job => job.controller).length >= 2) throw fault('assistant_audio_busy', 'Finish the current audio processing before starting another recording.');
+    const jobs = [...this.jobs.values()];
+    if (jobs.filter(job => job.controller).length >= 2 || jobs.filter(job => job.controller || job.result && !job.result.played).length >= MAX_AUDIO_RESULTS)
+      throw fault('assistant_audio_busy', 'Finish the current audio processing or playback before preparing another passage.');
+    if (this.jobs.size >= MAX_AUDIO_RECEIPTS) throw fault('assistant_audio_history_limit', 'Stop audio before starting a new listening or playback session. Completed receipts are retained until this audio controller ends.');
     const controller = new AbortController();
     const job = { id: input.requestId, project, type, fingerprint, conversationId: input.conversationId, clientId: input.clientId, epoch: input.epoch,
       status: 'running', controller, result: null, expiresAt: this.now() + 10 * 60_000 };
@@ -87,7 +100,7 @@ export class AssistantRuntime {
   }
   publicJob(job) { return { id: job.id, conversationId: job.conversationId, epoch: job.epoch, type: job.type, status: job.status, result: job.result, error: job.error || null }; }
   job(project, id, body) {
-    this.checkAudio(project, body); const job = this.jobs.get(uuid(id));
+    this.checkAudio(project, body); this.prune(); const job = this.jobs.get(uuid(id));
     if (!job || job.project !== project || job.conversationId !== body.conversationId || job.clientId !== body.clientId || job.epoch !== body.epoch) throw fault('assistant_audio_job', 'This audio result belongs to another surface or has expired.', 404);
     return this.publicJob(job);
   }
@@ -112,7 +125,10 @@ export class AssistantRuntime {
   receipt(project, body) {
     this.job(project, body.requestId, body); const job = this.jobs.get(body.requestId);
     if (job.type !== 'speech' || job.status !== 'completed' || body.played !== true) throw fault('assistant_audio_receipt', 'Only completed playback may acknowledge a prepared passage.');
-    job.result.played = true; return { id: job.id, played: true, epoch: job.epoch };
+    // Receipt retries retain the exact identity without retaining two base64
+    // copies of every already-played passage in a long answer.
+    const { pcm, data, ...receipt } = job.result;
+    job.result = { ...receipt, played: true }; return { id: job.id, played: true, epoch: job.epoch };
   }
   async close() {
     this.closed = true; for (const job of this.jobs.values()) job.controller?.abort();

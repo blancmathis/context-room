@@ -44,7 +44,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   String openingId, openingProject, openingPath;
   Runnable deferredNavigation;
   byte[] pendingExport;
-  Button undoButton, redoButton, conversationButton;
+  Button undoButton, redoButton, conversationButton, dictateButton, voiceButton;
   long lastAgentRefresh;
   Button shareViewButton, followViewButton, presentationButton;
   TextView viewStatus;
@@ -116,7 +116,10 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   @Override public void ownerError(String message) { if (!dead && (showingOwner || showingConversation)) showError(message); }
   void nativeConversation() {
     if (showingConversation) { closeNativeConversation(); return; }
-    if (connection == null || !connection.isOwner() || ink == null || lastScene == null || currentScope == null || lastScene.optBoolean("offline") || lastScene.optInt("pending") > 0) {
+    nativeConversation("text");
+  }
+  void nativeConversation(String mode) {
+    if (connection == null || !connection.isOwner() || ink == null || ink.gestureActive() || pendingNative > 0 || inFlight != null || lastScene == null || currentScope == null || lastScene.optBoolean("offline") || lastScene.optInt("pending") > 0) {
       showError("Attendez la confirmation du carnet par le Mac avant d’ouvrir sa conversation."); return;
     }
     whenJournalIdle(() -> {
@@ -129,7 +132,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
         drawingWorkspace.addView(ownerWorkspace.web, wide ? new LinearLayout.LayoutParams(dp(390), -1) : new LinearLayout.LayoutParams(-1, dp(280)));
         showingConversation = true; ownerWorkspace.foreground(resumed); conversationButton.setText("Fermer la conversation");
         JSONObject source = InkView.json("kind", "notebook", "projectId", lastScene.optString("projectId"), "resourceId", lastScene.optString("resourceId"),
-          "path", lastScene.optString("path"), "revision", lastScene.opt("sceneRevision"), "locationRevision", lastScene.opt("locationRevision"), "selection", new JSONArray(ink.selected));
+          "path", lastScene.optString("path"), "revision", lastScene.opt("sceneRevision"), "locationRevision", lastScene.opt("locationRevision"), "selection", new JSONArray(ink.selected), "mode", mode);
         ownerWorkspace.conversation(source);
       } catch (Exception error) { showError(error.getMessage()); }
     });
@@ -151,6 +154,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     if (source == null || !"notebook".equals(source.optString("kind")) || !lastScene.optString("projectId").equals(value.optString("projectId"))
       || !lastScene.optString("resourceId").equals(source.optString("resourceId")) || !lastScene.optString("path").equals(source.optString("path"))
       || !Objects.equals(lastScene.opt("locationRevision"), source.opt("locationRevision"))) return;
+    if (value.optBoolean("closed") && value.optBoolean("dismiss")) { closeNativeConversation(); return; }
     nativeConversationState = InkView.copy(value);
     conversationBusy = !value.optBoolean("closed") && (value.optBoolean("busy") || value.optBoolean("audioActive") || value.optBoolean("hasDraft"));
     JSONObject progress = value.optBoolean("closed") ? null : value.optJSONObject("progress"); ink.setAgentProgress(progress);
@@ -258,8 +262,11 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
       drawingTools = scrolling;
       LinearLayout tools = new LinearLayout(this); scrolling.addView(tools); screen.addView(scrolling);
       tools.addView(button(connection.isOwner() ? "Context Room" : "Carnets", () -> whenJournalIdle(() -> { engine.call("close"); connectionHome(); })));
-      conversationButton = null;
-      if (connection.isOwner()) { conversationButton = button("Conversation", this::nativeConversation); conversationButton.setEnabled(false); tools.addView(conversationButton); }
+      conversationButton = null; dictateButton = null; voiceButton = null;
+      if (connection.isOwner()) {
+        conversationButton = button("Conversation", this::nativeConversation); dictateButton = button("Dicter", () -> nativeConversation("dictate")); voiceButton = button("Parler", () -> nativeConversation("voice"));
+        for (Button action : new Button[]{conversationButton, dictateButton, voiceButton}) { action.setEnabled(false); tools.addView(action); }
+      }
       ink = new InkView(this, this); ink.recordingHistory = false; ink.setEnabled(false);
       HashMap<String, Button> toolButtons = new HashMap<>();
       for (String[] tool : new String[][]{{"Stylo","ink"},{"Sélection","select"},{"Gomme","erase"},{"Texte","text"},{"Rectangle","rect"},{"Ellipse","ellipse"},{"Ligne","line"},{"Flèche","arrow"},{"Déplacer","pan"}}) {
@@ -360,7 +367,10 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     else setStatus("Synchronisé avec le Mac · brouillon du carnet");
     undoButton.setEnabled(lastScene.optInt("undo") > 0 && !ink.drawing);
     redoButton.setEnabled(lastScene.optInt("redo") > 0 && !ink.drawing);
-    if (conversationButton != null) conversationButton.setEnabled(showingConversation || !ink.gestureActive() && pendingNative == 0 && inFlight == null && lastScene.optInt("pending") == 0 && !lastScene.optBoolean("offline"));
+    if (conversationButton != null) {
+      boolean ready = !ink.gestureActive() && pendingNative == 0 && inFlight == null && lastScene.optInt("pending") == 0 && !lastScene.optBoolean("offline");
+      conversationButton.setEnabled(showingConversation || ready); dictateButton.setEnabled(ready); voiceButton.setEnabled(ready);
+    }
     ink.invalidate();
   }
 
