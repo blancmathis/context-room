@@ -1,3 +1,4 @@
+import { assertProjectWriter } from './writer_authority.mjs';
 import { isDocumentAssetPath } from "./document_assets.mjs";
 import { decodeNotebook } from "./notebooks.mjs";
 import { notebookHash, readNotebookBytes, writeNotebookBytes } from "./notebook_io.mjs";
@@ -7129,6 +7130,7 @@ function createSharedProposalFromStateLocked(synced, { sourceRoot = "", title, d
   const proposalRoot = path.join(repositoryCacheRoot(connection.repository), "proposals", hashKey(proposal));
   if (fs.existsSync(proposalRoot)) throw new Error(`Proposal workspace already exists: ${proposalRoot}`);
   const resolvedSourceRoot = connection.projectRoot || (sourceRoot ? path.resolve(sourceRoot) : "");
+  if (resolvedSourceRoot) assertProjectWriter(resolvedSourceRoot);
   const source = resolvedSourceRoot ? sourceIdentity(resolvedSourceRoot) : null;
   const sourceCommit = resolvedSourceRoot ? tryGit(resolvedSourceRoot, ["rev-parse", "HEAD"]) : "";
   const sourceBranch = resolvedSourceRoot ? tryGit(resolvedSourceRoot, ["branch", "--show-current"]) : "";
@@ -7191,6 +7193,7 @@ function discardUnpublishedSharedProposalLocked(synced, proposal) {
 }
 
 export function createSharedProposal(root, options = {}) {
+  assertProjectWriter(root);
   const synced = syncSharedContext(root, {
     allowOffline: false,
     timeoutMs: options.timeoutMs,
@@ -7428,6 +7431,7 @@ export function ensureSharedProposal(root, {
   push = null,
   timeoutMs = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS,
 } = {}) {
+  assertProjectWriter(root);
   const normalizedSession = safeSessionId(sessionId);
   const normalizedTitle = proposalTitle(title);
   const normalizedDescription = proposalDescription(description);
@@ -7444,6 +7448,7 @@ export function ensureSharedProposal(root, {
   }
   const synced = syncSharedContext(root, { allowOffline: false, push, timeoutMs });
   return withProposalRegistryLock(synced.connection.repository, () => {
+    assertProjectWriter(root);
     const { connection } = synced;
     const registry = readProposalRegistry(connection.repository);
     const checkout = repositoryCheckout(connection.repository);
@@ -7799,6 +7804,12 @@ function publishSharedProposalFromStateLocked(synced, options = {}) {
   } = options;
   const expectedHeadProvided = Object.prototype.hasOwnProperty.call(options, "expectedHead");
   const { connection, entry, registry } = proposalEntryForConnection(synced.connection, proposal);
+  // A repository-scoped publication of a locally prepared proposal must retain
+  // that proposal's original migration gate, not bypass it via its cache root.
+  const checkWriter = () => {
+    for (const source of new Set([connection.projectRoot, entry.sourceRoot].filter(Boolean))) assertProjectWriter(source);
+  };
+  checkWriter();
   authenticatedSharedGit(connection.repository, options.push, timeoutMs);
   const commitEnv = author?.name && author?.email ? {
     GIT_AUTHOR_NAME: String(author.name),
@@ -7997,6 +8008,7 @@ function publishSharedProposalFromStateLocked(synced, options = {}) {
   // A frozen-document adapter can retain its exact prepared head before any
   // network publication. Rebase must not silently change the frozen bytes.
   options.verifyBeforePublish?.({ entry, registry, head, files });
+  checkWriter(); // A pause during preparation keeps the commit local; no remote receipt.
   try {
     runSharedNetworkGit(entry.root, pushArgs, {
       stdio: ["ignore", "ignore", "pipe"],
@@ -8079,6 +8091,7 @@ function publishSharedProposalFromStateLocked(synced, options = {}) {
 }
 
 export function publishSharedProposal(root, options = {}) {
+  assertProjectWriter(root);
   const synced = syncSharedContext(root, {
     allowOffline: false,
     timeoutMs: options.timeoutMs,
@@ -8151,6 +8164,7 @@ export function publishSharedNotebookSnapshot(root, {
   submissionId, sourcePath, bytes, target, title = "Notebook", canPublish = () => false,
   timeoutMs = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS, push = null,
 } = {}) {
+  assertProjectWriter(root);
   if (!/^[a-f0-9]{64}$/.test(submissionId || "")) throw sharedNotebookConflict("A durable notebook submission identifier is required.");
   decodeNotebook(bytes);
   const sourceHash = notebookHash(bytes);
@@ -8161,6 +8175,7 @@ export function publishSharedNotebookSnapshot(root, {
       throw sharedNotebookConflict("The notebook's original Shared connection changed. Its frozen work is retained.");
     }
     return withProposalRegistryLock(connection.repository, () => withSharedRepositoryCloneLock(connection.repository, () => {
+      assertProjectWriter(root);
       const synced = syncSharedContextInternal(root, { allowOffline: false, timeoutMs, push }, { registryLockHeld: true, repositoryLockHeld: true });
       const destination = sharedNotebookTarget(synced, sourcePath);
       if (!sameNotebookTarget(destination, target) || canPublish() !== true) throw sharedNotebookConflict("The notebook destination or editable scope changed before publication.");
