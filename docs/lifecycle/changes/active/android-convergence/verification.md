@@ -805,6 +805,34 @@ recalls a synthetic marker from the first exchange; the later request does not
 repeat that marker or replay the prior input. Both unloads are confirmed by the
 real provider. No personal task is used.
 
+## Notebook controls and complete-regression follow-up
+
+CI `34913392115` at `0fcfd073daaccd2cb42b9d2cda5ba1dda782b2c8`
+passes all three Node versions, Firefox, Chromium mobile and soak. Its gate
+still fails: WebKit catches an object button detached during the tactile-size
+check, and Chromium desktop retains a pending pen upload while the test removes
+network interception. The existing size, save, scope and timing assertions remain.
+
+A deterministic keyboard-focus test reproduces the object-list problem. The
+list now reuses controls for stable object identities and reads the current
+object revision when a control is activated. Unchanged polling and independent
+scene additions retain focus. The view-following fixture keeps interception
+installed while pen receipts are in flight; the CI trace places the stranded
+upload immediately after interception is disabled. Failure diagnostics now
+capture the live notebook before fixture cleanup.
+
+The twelve targeted checks pass across all four browsers, including their
+44-pixel targets and automated accessibility checks. The subsequent complete
+notebook matrix passes **36 scenarios** across those browsers. The grayscale
+WebKit and Chromium presentation captures were inspected. Doctor, package
+privacy, dry-run and the Android preview build pass.
+
+The complete local run for that checkpoint passes **75/76 processes**. Its sole
+failure is a synthetic Git clone exceeding the unchanged one-second proposal
+discovery budget under parallel load. The exact test passes in isolation.
+The runner now schedules that CLI contract file exclusively, like the existing
+Shared performance probe, without widening the product budget or assertion.
+
 ## Open product gates
 
 Document observation,
@@ -817,6 +845,6 @@ The verified Android installation is an emulator preview. It does not establish
 physical Wi-Fi behavior or BOOX pen/palm latency.
 
 The full application smoke/layout/accessibility/performance/soak release matrix
-has not been rerun for this recovery milestone. Notebook-specific checks do not
-stand in for it. Installation/signature migration, physical BOOX testing and
+is not green yet; its latest results and corrections are recorded above.
+Notebook-specific checks do not stand in for it. Installation/signature migration, physical BOOX testing and
 personal-data migration have not been performed.

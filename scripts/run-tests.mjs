@@ -62,7 +62,9 @@ function jobs() {
   return [
     ...testFiles()
       .filter((file) => file !== SHARED_CONTEXT_TEST)
-      .map((file) => ({ label: file, args: ["--test", file] })),
+      // The CLI discovery contract performs real clones inside a one-second
+      // budget. Keep that deadline while isolating its test-process I/O load.
+      .map((file) => ({ label: file, args: ["--test", file], exclusive: file === "test/cli_contract_regressions.test.mjs" })),
     ...sharedContextShards(),
   ];
 }

@@ -256,12 +256,24 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   function renderObjects() {
     if (!view || closed) return; const query = filter.value.toLocaleLowerCase();
     const all = view.document.objects.filter(object => [object.id, object.type, object.text, object.createdBy.kind, object.updatedBy.kind].join(' ').toLocaleLowerCase().includes(query));
-    objectList.replaceChildren();
-    for (const object of all.slice(0, objectLimit)) {
+    const existing = new Map([...objectList.children].map(row => [row.firstElementChild.dataset.objectId, row]));
+    for (const [index, object] of all.slice(0, objectLimit).entries()) {
       const label = (object.text?.slice(0, 60) || object.type) + ' · ' + object.createdBy.kind + (object.updatedBy.kind !== object.createdBy.kind ? ' → ' + object.updatedBy.kind : '') + (object.locked ? ' · locked' : '') + ' · r' + object.revision;
-      const node = button(label, () => { surface.select([object.id]); if (object.type === 'text') run(editText({ x: object.x || 0, y: object.y || 0, object })); }); node.setAttribute('aria-current', String(surface.selection.has(object.id))); node.dataset.objectId = object.id;
-      const row = notebookElement('li'); row.append(node); objectList.append(row);
+      let row = existing.get(object.id); existing.delete(object.id);
+      if (!row) {
+        row = notebookElement('li'); const id = object.id;
+        const node = button('', () => {
+          const current = view.document.objects.find(object => object.id === id); if (!current) return;
+          surface.select([id]); if (current.type === 'text') run(editText({ x: current.x || 0, y: current.y || 0, object: current }));
+        }); node.dataset.objectId = id; row.append(node);
+      }
+      // Polling must retain the user's focused control, including when another
+      // surface adds an object or changes its current revision.
+      const node = row.firstElementChild; if (node.textContent !== label) node.textContent = label;
+      node.setAttribute('aria-current', String(surface.selection.has(object.id)));
+      if (objectList.children[index] !== row) objectList.insertBefore(row, objectList.children[index] || null);
     }
+    for (const row of existing.values()) row.remove();
     objectCount.textContent = `Showing ${Math.min(objectLimit, all.length)} of ${all.length} objects`; more.hidden = objectLimit >= all.length;
     selectionText.textContent = surface.selection.size ? `${surface.selection.size} selected. Arrow keys move; Delete removes only these objects.` : 'Nothing selected. Use Select / lasso or the object list.';
     for (const node of selectionActions.querySelectorAll('button')) node.disabled = !surface.selection.size;

@@ -99,7 +99,9 @@ test('@smoke @notebook explicit view following stops on human input and presenta
     const humanView = await page.evaluate(() => ({ ...testNotebook.surface.view }));
     await draw(page, { start: [60, 40], end: [160, 80], up: false });
     await expect(notebook).toHaveAttribute('data-view-mode', 'independent');
-    release(); await continued; await page.unroute('**/api/devices/view'); await page.mouse.up();
+    // Keep test interception stable until pen receipts finish. Disabling it
+    // during a Chromium request can strand an unrelated notebook upload.
+    release(); await continued; await page.mouse.up();
     await expect(notebook).toHaveAttribute('data-save-state', 'confirmed');
     expect(await page.evaluate(() => ({ ...testNotebook.surface.view }))).toEqual(humanView);
 
@@ -124,6 +126,14 @@ test('@smoke @notebook explicit view following stops on human input and presenta
     await expect(notebook.getByRole('toolbar', { name: 'Notebook tools' })).toBeVisible();
     expect(fs.existsSync(path.join(f.root, scene.locator.path))).toBe(false);
     expect(f.errors).toEqual([]);
+  } catch (error) {
+    await testInfo.attach('notebook-save-state', { contentType: 'application/json', body: Buffer.from(JSON.stringify(await page.evaluate(() => ({
+      status: document.querySelector('.notebook-state')?.textContent, error: document.querySelector('.notebook-error')?.textContent,
+      gesture: testNotebook.surface.gesture?.kind, pendingSurfaceTasks: testNotebook.surface.tasks.size,
+      finishingStrokes: testNotebook.surface.finishingStrokes.size, flushPending: Boolean(testNotebook.client.flushing),
+      body: document.querySelector('.notebook-dialog')?.outerHTML.slice(-5000)
+    })))) });
+    await page.screenshot({ path: testInfo.outputPath('notebook-before-cleanup.png') }); throw error;
   } finally { release?.(); clearInterval(pollTimer); await f.close(); }
 });
 
@@ -286,6 +296,22 @@ test('@smoke @notebook rapid handwriting survives slow local storage with separa
     await dialog.getByRole('button', { name: 'Redo gesture', exact: true }).click();
     await expect.poll(() => readNotebook(f.root, resourceId).document.objects.length).toBe(2);
     expect(f.errors).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test('@smoke @a11y @notebook object controls retain keyboard focus through independent scene updates', async ({ page }) => {
+  const f = await fixture(page);
+  try {
+    const dialog = await open(page); await draw(page); await expect(dialog).toHaveAttribute('data-save-state', 'confirmed');
+    if (!await dialog.getByRole('complementary', { name: 'Notebook objects and selection' }).isVisible()) await dialog.getByRole('button', { name: 'Objects', exact: true }).click();
+    await dialog.locator('.notebook-objects button').first().focus();
+    await page.evaluate(() => { window.originalObjectControl = document.activeElement; });
+    const scene = readNotebook(f.root, await dialog.getAttribute('data-resource-id'));
+    mutateNotebook(f.root, { protocolVersion: 1, resourceId: scene.resourceId, operationId: 'independent-keyboard-shape', locationRevision: scene.locator.revision,
+      edits: [{ kind: 'put', id: 'independent-shape', expectedRevision: 0, object: { type: 'rect', x: 60, y: 80, width: 90, height: 70 } }] },
+    { actor: { kind: 'human', id: 'other-synthetic-surface' }, canWrite: () => true });
+    await expect(dialog.locator('[data-object-id="independent-shape"]')).toBeVisible();
+    expect(await page.evaluate(() => originalObjectControl.isConnected && document.activeElement === originalObjectControl)).toBe(true);
   } finally { await f.close(); }
 });
 
