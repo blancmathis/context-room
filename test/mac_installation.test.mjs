@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { prepareMacInstallation, verifyMacInstallation, macLaunchAgent } from '../src/mac_installation.mjs';
 
 function fixture(t) {
@@ -59,4 +60,29 @@ test('rendered LaunchAgent uses exact arguments, no shell, no registration or pa
   assert.equal(parsed.EnvironmentVariables.PATH.startsWith('/opt/Node & tools:'), true);
   assert.equal(Object.keys(parsed.EnvironmentVariables).some(key => key.endsWith('_HOME')), false);
   assert.equal(fs.existsSync(home), false); assert.doesNotMatch(xml, /lisiere|shell|whisper|device-host|sudo/);
+});
+
+// The exported library receives canonical roots, but a directory file: URL has a
+// trailing slash. Exercise the actual installed script's default, not a fixture
+// that bypasses its URL-to-path conversion. Explicit user roots remain strict.
+test('installation CLI canonicalizes its own default source and prepares the actual package without a legacy runtime', t => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cr-mac-install-cli-')));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const output = path.join(base, 'kit');
+  const script = fileURLToPath(new URL('../scripts/prepare-mac-install.mjs', import.meta.url));
+  const args = [script, '--output', output, '--node', '/opt/context-room-node/bin/node'];
+  const options = { cwd: base, encoding: 'utf8', timeout: 30000, maxBuffer: 4 * 1024 * 1024, stdio: 'pipe' };
+  const invoke = extra => JSON.parse(execFileSync(process.execPath, [...args, ...extra], options));
+  const plan = invoke([]);
+  assert.equal(plan.prepared, false); assert.equal(fs.existsSync(output), false);
+  assert.match(plan.revision, /^[0-9a-f]{64}$/); assert.ok(plan.files > 100);
+  const applied = invoke(['--apply', '--revision', plan.revision]);
+  assert.equal(applied.prepared, true); assert.equal(applied.activated, false);
+  const verified = invoke(['--verify', '--revision', plan.revision]);
+  assert.equal(verified.verified, true); assert.equal(verified.dependenciesIncluded, false);
+  assert.equal(fs.existsSync(path.join(output, 'runtime/node_modules')), false);
+  assert.equal(invoke(['--apply', '--revision', plan.revision]).replayed, true);
+  assert.deepEqual(fs.readFileSync(path.join(output, 'runtime/scripts/prepare-mac-install.mjs')), fs.readFileSync(script));
+  // Normalization belongs to the derived default; it must not weaken root checks.
+  assert.throws(() => invoke(['--source', fileURLToPath(new URL('..', import.meta.url))]), /exact absolute filesystem location/);
 });

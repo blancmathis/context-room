@@ -18,7 +18,7 @@ try {
       process.stdout.write(macLaunchAgent({ runtime: path.join(args['--output'], 'runtime'), nodePath: result.nodePath, home: args['--home'], whisperPath: result.whisperPath, modelPath: result.modelPath, port: result.port }));
       process.exit(0);
     }
-  } else result = prepareMacInstallation(args['--source'] || fileURLToPath(new URL('..', import.meta.url)), {
+  } else result = prepareMacInstallation(args['--source'] || path.resolve(fileURLToPath(new URL('..', import.meta.url))), {
     output: args['--output'], nodePath: args['--node'], whisperPath: args['--whisper'] ?? null, modelPath: args['--model'] ?? null, port: args['--port'] === undefined ? 4317 : Number(args['--port']),
     apply: Boolean(args['--apply']), expectedRevision: args['--revision'],
   });
