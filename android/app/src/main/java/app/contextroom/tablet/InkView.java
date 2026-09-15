@@ -323,6 +323,12 @@ final class InkView extends View {
     return transform&&(!resize||proportionalResize)&&transformMoved&&before.get(object.optString("id"))==object&&object.optString("type").equals("ink");
   }
 
+  static float inkPressure(JSONObject object, JSONArray point) {
+    boolean linear=object.optString("pressureCurve").equals("linear");
+    float pressure=Math.max(0f,Math.min(1f,(float)point.optDouble(2,linear?1:.5)));
+    return linear?Math.max(.15f,pressure):.2f+.8f*pressure;
+  }
+
   RectF rawInkBounds(JSONObject o) {
       String id=o.optString("id");boolean retained=objects.get(id)==o;
       RectF cached=retained?inkBounds.get(id):null;
@@ -333,7 +339,7 @@ final class InkView extends View {
         for (int i = 0; i < p.length(); i++) {
           JSONArray q = p.optJSONArray(i);
           float x = (float) q.optDouble(0), y = (float) q.optDouble(1);
-          radius=Math.max(radius,(float)o.optDouble("width",2)*Math.max(.15f,(float)q.optDouble(2,1))/2);
+          radius=Math.max(radius,(float)o.optDouble("width",2)*inkPressure(o,q)/2);
           if (i == 0) r.set(x, y, x + .1f, y + .1f);
           else r.union(x, y);
         }
@@ -383,7 +389,7 @@ final class InkView extends View {
         JSONArray q = a.optJSONArray(i);
         float x = (float) q.optDouble(0), y = (float) q.optDouble(1);
         float radius =
-            (float) o.optDouble("width", 2) * Math.max(.15f, (float) q.optDouble(2, 1)) / 2;
+            (float) o.optDouble("width", 2) * inkPressure(o,q) / 2;
         // Omit only geometrically redundant samples from the rendered path.
         // The original points stay intact for synchronization, undo and export.
         // Equal pressure, exact collinearity and forward travel preserve the
@@ -392,8 +398,8 @@ final class InkView extends View {
           JSONArray prev=a.optJSONArray(previous), next=a.optJSONArray(i+1);
           float px=(float)prev.optDouble(0), py=(float)prev.optDouble(1);
           float nx=(float)next.optDouble(0), ny=(float)next.optDouble(1);
-          float pressure=Math.max(.15f,(float)q.optDouble(2,1));
-          if(pressure==Math.max(.15f,(float)prev.optDouble(2,1)) && pressure==Math.max(.15f,(float)next.optDouble(2,1))
+          float pressure=inkPressure(o,q);
+          if(pressure==inkPressure(o,prev) && pressure==inkPressure(o,next)
               && (double)(x-px)*(ny-y)==(double)(y-py)*(nx-x)
               && (double)(x-px)*(nx-x)+(double)(y-py)*(ny-y)>=0)continue;
         }
@@ -407,7 +413,7 @@ final class InkView extends View {
                 ny = (x - px) / length,
                 pr =
                     (float) o.optDouble("width", 2)
-                        * Math.max(.15f, (float) prev.optDouble(2, 1))
+                        * inkPressure(o,prev)
                         / 2;
             // Match the clockwise circles so overlapping joins add, rather than cancel.
             p.moveTo(px - nx * pr, py - ny * pr);

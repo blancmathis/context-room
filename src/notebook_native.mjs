@@ -25,7 +25,7 @@ export function notebookObjectFromNative(value, id = value.id) {
   }
   if (changed('y')) object.y = value.y + (value.type === 'text' ? value.fontSize || 18 : 0);
   if (changed('width')) object.strokeWidth = value.width;
-  if (value.type === 'ink') { if (changed('points')) object.points = cloneNotebook(value.points); }
+  if (value.type === 'ink') { if (changed('points')) object.points = cloneNotebook(value.points); if (changed('pressureCurve')) object.pressureCurve = value.pressureCurve; }
   else if (['line', 'arrow'].includes(value.type)) {
     if (changed('x') || changed('w')) object.x2 = (value.x || 0) + (value.w || 0);
     if (changed('y') || changed('h')) object.y2 = (value.y || 0) + (value.h || 0);

@@ -37,9 +37,20 @@ public final class LegacyVisualDeviceTest {
         for (JSONObject value : Arrays.asList(upper,lower,connector,text)) view.drawObject(canvas,value,false);
         assertEquals(Arrays.asList(122f,152.8f),baselines);
         assertTrue(Color.red(image.getPixel(152,225))<128);
+        JSONObject linear = InkView.json("id","legacy-ink","type","ink","width",20,"pressureCurve","linear","points",new JSONArray("[[50,390.5,0.1],[250,390.5,0.1]]"));
+        JSONObject soft = InkView.json("id","current-ink","type","ink","width",20,"points",new JSONArray("[[50,420.5,0.1],[250,420.5,0.1]]"));
+        float[] inputs={0f,.1f,.5f,1f},expectedLinear={.15f,.15f,.5f,1f},expectedSoft={.2f,.28f,.6f,1f};
+        for(int index=0;index<inputs.length;index++){
+          JSONArray point=new JSONArray().put(0).put(0).put(inputs[index]);
+          assertEquals(expectedLinear[index],InkView.inkPressure(linear,point),.00001f);
+          assertEquals(expectedSoft[index],InkView.inkPressure(soft,point),.00001f);
+        }
+        view.drawObject(canvas,linear,false);view.drawObject(canvas,soft,false);
+        assertEquals(Color.WHITE,image.getPixel(100,392));
+        assertTrue(Color.red(image.getPixel(100,422))<128);
         File target = new File(instrumentation.getTargetContext().getCacheDir(),"legacy-editable-native.png");
         try (FileOutputStream output = new FileOutputStream(target)) { assertTrue(image.compress(Bitmap.CompressFormat.PNG,100,output)); }
-      } catch (IOException failure) { throw new AssertionError(failure); }
+      } catch (IOException|JSONException failure) { throw new AssertionError(failure); }
       finally { image.recycle(); }
     });
   }

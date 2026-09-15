@@ -50,7 +50,9 @@ implemented. The owner file-picker round trip is verified on the emulator;
 voice alongside the native pen is implemented with emulator checks. Explicit
 original-source observation is implemented, including an unfinished native
 shape identified by the real agent from its image. A recoverable private SQLite
-export now preserves legacy database data with exact-revision checks. Import,
+export now preserves legacy database data with exact-revision checks. Selected
+Mac notebooks import as editable working scenes with retained source copies,
+identity mappings and restart receipts. Android draft/outbox reconciliation,
 recording/handoff collection, writer cutover and release/upgrade packaging
 remain to be implemented. The complete
 connected-device and physical acceptance criteria remain open.

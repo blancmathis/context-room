@@ -951,9 +951,57 @@ Each object paint now resets that style. Eight targeted browser checks pass
 after the correction, including a solid-line pixel check and existing tactile
 accessibility. The corrected mobile canvas and native bitmap are inspected.
 Complete notebook-browser regression then passes **40/40** across the four
-browsers. The new checkpoint's broader/hosted checks remain pending.
+browsers. The checkpoint at `e86780e` passes **80/80** complete local test
+processes, the full hosted CI and both hosted convergence workflows.
 These are preparation and rendering proofs, not a
 completed import, Android outbox replay or a physical BOOX check.
+
+## Recoverable canonical notebook import
+
+`migrate --import-lisiere` now converts one selected Mac board from a fully
+verified recovery export into a private working notebook. Preview is read-only;
+apply binds the source, original project identity, destination and current
+configuration. Original rows, deletion records, ID mapping and exact selected
+assets are retained before atomic notebook publication. Immutable phase
+receipts recover interruption without replacing later human work or creating
+an accepted baseline. A changed configuration requires a fresh preview.
+
+The converter preserves supported object IDs/revisions, all supported pressure
+samples, text baselines/spacing, connector routes and original raster bytes.
+Unsupported or over-limit content is refused with its source snapshot intact.
+Imported ink retains the legacy linear pressure curve; the native renderer now
+also matches the portable soft curve for new ink. The shared editing protocol
+retains this property through native edits and file export.
+
+The targeted contracts cover actual SQLite export/import through
+the CLI, source tampering, mid-import permission revocation, occupied paths,
+altered retained records, source isolation, exact image bytes and interrupted
+backup/header/completion publication. Repeating after later human edits keeps
+those edits. Actual Git checks confirm that private working scenes, migration
+records and old handoff directories are excluded from ordinary staging.
+An additional regression restores and deletes valid inherited JavaScript names
+such as `valueOf`, then checks that a different restorer cannot replace the
+original author. Dictionary lookups now use own entries for these IDs.
+
+The 40-check notebook browser run initially reports **36/40**: the new pressure
+pixel assertion expected black while the fixture used the normal dark-gray
+brush. The corrected darkness/width assertion passes in all four browsers.
+A separate four-browser scenario opens a recovered notebook from the existing
+folder chooser, draws new human ink and verifies that original ink, provenance,
+tombstones and unaccepted state remain intact. Inspecting that mobile canvas
+reveals small white holes where stroke bodies overlap their end caps. Matching
+the path winding fixes those holes; browser pixel checks now cover both ends.
+
+Two actual native instrumentation checks pass on the dedicated emulator:
+retained presentation/pressure and progressive ink. The rendered bitmap is
+inspected. The rebuilt preview APK has SHA-256
+`ad2ae0c34727ad4f55e5344d93ef186f30c853dbf6725606e99281fa828f7ffa`,
+a verified v2 signature and eight exact shared assets. The subsequent identity
+fix rebuild also verifies those properties at APK SHA-256
+`55dde71ed0c0b18c14952e519a2020415f60c526576bc2fbf7e311c86b3b9623`.
+These are emulator and
+browser proofs; physical pen/microphone behavior and personal migration remain
+unverified. The broader regression for this import checkpoint is pending.
 
 ## Open product gates
 

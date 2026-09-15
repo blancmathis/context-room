@@ -1,4 +1,5 @@
 /** Shared deterministic geometry; no browser, provider, or filesystem dependency. */
+import { notebookInkRadius } from './notebook_ink.mjs';
 export function notebookObjectBounds(object, objects = []) {
   const byId = objects instanceof Map ? objects : new Map(objects.map(item => [item.id, item]));
   let samples;
@@ -40,7 +41,7 @@ export function notebookConnectorRoute(object, objects, visiting = new Set(), me
     }
     if (item.type === 'ink') {
       let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity, radius = 3;
-      for (const [x, y, pressure = 1] of item.points) { left = Math.min(left, x); top = Math.min(top, y); right = Math.max(right, x); bottom = Math.max(bottom, y); radius = Math.max(radius, (item.strokeWidth || 2) * Math.max(.15, pressure) / 2); }
+      for (const point of item.points) { const [x, y] = point; left = Math.min(left, x); top = Math.min(top, y); right = Math.max(right, x); bottom = Math.max(bottom, y); radius = Math.max(radius, notebookInkRadius(point, item.strokeWidth || 2, item.pressureCurve)); }
       return [left - radius, top - radius, right + radius, bottom + radius];
     }
     const font = item.fontSize || 18, x = item.x || 0, y = (item.y || 0) - (item.type === 'text' ? font : 0);

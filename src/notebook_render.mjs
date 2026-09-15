@@ -14,9 +14,9 @@ export function notebookSvg(input, { showOrigins = false } = {}) {
     const style = `stroke="${xml(o.color || '#222222')}" stroke-width="${Math.max(.1, o.strokeWidth || 2)}" stroke-linecap="round" stroke-linejoin="round" fill="${xml(o.fill || 'none')}"`;
     let body;
     if (o.type === 'ink') {
-      const outline = notebookInkOutline(o.points, o.strokeWidth || 2);
+      const outline = notebookInkOutline(o.points, o.strokeWidth || 2, o.pressureCurve);
       body = `<polygon points="${outline.map(p => p.join(',')).join(' ')}" fill="${xml(o.color || '#222222')}"/>`;
-      for (const p of [o.points[0], o.points.at(-1)]) body += `<circle cx="${p[0]}" cy="${p[1]}" r="${notebookInkRadius(p, o.strokeWidth || 2)}" fill="${xml(o.color || '#222222')}"/>`;
+      for (const p of [o.points[0], o.points.at(-1)]) body += `<circle cx="${p[0]}" cy="${p[1]}" r="${notebookInkRadius(p, o.strokeWidth || 2, o.pressureCurve)}" fill="${xml(o.color || '#222222')}"/>`;
     }
     else if (o.type === 'rect') body = `<rect x="${Math.min(x, x + w)}" y="${Math.min(y, y + h)}" width="${Math.abs(w)}" height="${Math.abs(h)}" ${style}/>`;
     else if (o.type === 'ellipse') body = `<ellipse cx="${x + w / 2}" cy="${y + h / 2}" rx="${Math.abs(w / 2)}" ry="${Math.abs(h / 2)}" ${style}/>`;

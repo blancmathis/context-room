@@ -8,6 +8,16 @@ export const NOTEBOOK_STORE = '.context-room/notebooks/v1';
 const resourcePath = id => `${NOTEBOOK_STORE}/resources/${notebookId(id)}`;
 const eventPattern = /^(\d{16})-([a-f0-9]{64})\.json$/;
 const maxFrameBytes = 64 * 1024 * 1024;
+function initialTombstones(document, value = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length > NOTEBOOK_LIMITS.objects) failNotebook('notebook_recovery_conflict', 'Invalid imported deletion index.');
+  const live = new Set(document.objects.map(object => object.id)), result = {};
+  for (const [id, revision] of Object.entries(value)) {
+    notebookId(id);
+    if (live.has(id) || !Number.isSafeInteger(revision) || revision < 1 || revision > document.revision) failNotebook('notebook_recovery_conflict', 'An imported deletion has an inconsistent revision.');
+    result[id] = revision;
+  }
+  return result;
+}
 function validateImage(asset) {
   const bytes = Buffer.from(asset.data, 'base64');
   const valid = asset.mimeType === 'image/png' ? bytes.length >= 24 && bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))
@@ -42,7 +52,7 @@ function applyFrame(state, frame, file) {
   if (state.receipts.has(frame.operationId)) failNotebook('notebook_recovery_conflict', 'A notebook history contains a duplicate operation.');
   if (frame.kind === 'edits') {
     const objects = new Map(state.document.objects.map(o => [o.id, o]));
-    for (const change of frame.changes) { if (change.after) objects.set(change.id, change.after); else objects.delete(change.id); state.tombstones[change.id] = change.revision; if (change.after && !state.origins[change.id]) state.origins[change.id] = change.after.createdBy; }
+    for (const change of frame.changes) { if (change.after) objects.set(change.id, change.after); else objects.delete(change.id); state.tombstones[change.id] = change.revision; if (change.after && !Object.hasOwn(state.origins, change.id)) state.origins[change.id] = change.after.createdBy; }
     state.document = { ...state.document, revision: frame.sceneRevision, objects: [...objects.values()] };
   } else if (frame.kind === 'asset') {
     state.document.assets[frame.assetId] = frame.asset; state.document.revision = frame.sceneRevision;
@@ -61,7 +71,7 @@ function readState(root, id) {
   if (!header || header.schemaVersion !== 1 || header.document.id !== id) failNotebook('notebook_missing', 'Notebook working scene not found.');
   if (header.rootIdentity !== rootIdentity) failNotebook('notebook_root_conflict', 'This working scene belongs to another exact filesystem location.');
   const state = { document: decodeNotebook(Buffer.from(JSON.stringify(header.document))), locator: header.locator, rootIdentity, sequence: 0,
-    chain: notebookHash(header), tombstones: {}, origins: Object.fromEntries(header.document.objects.map(o => [o.id, o.createdBy])), receipts: new Map(), frozen: new Map(), submissions: new Map(), knownSources: new Set([header.locator.sourceHash]), history: [] };
+    chain: notebookHash(header), tombstones: initialTombstones(header.document, header.tombstones), origins: Object.fromEntries(header.document.objects.map(o => [o.id, o.createdBy])), receipts: new Map(), frozen: new Map(), submissions: new Map(), knownSources: new Set([header.locator.sourceHash]), history: [] };
   const directory = safeNotebookPath(root, `${folder}/events`);
   const files = fs.existsSync(directory) ? fs.readdirSync(directory).sort() : [];
   for (const file of files) {
@@ -116,6 +126,35 @@ export function openNotebook(root, { path, title = 'Notebook', id = randomUUID()
     writeNotebookJson(root, `${resourcePath(document.id)}/header.json`, { schemaVersion: 1, rootIdentity, locator, document }, { exclusive: true });
     return readNotebook(root, document.id);
   });
+}
+/** Import one immutable source as working state. It never writes an ordinary file
+ * or accepts a version; the original header is also its atomic replay receipt. */
+export function importNotebookDraft(root, { path, document, tombstones = {}, requestId, sourceRevision } = {}, { canWrite = () => false, preview = false } = {}) {
+  const rootIdentity = canonicalNotebookRoot(root); path = notebookPath(path); notebookId(requestId);
+  if (typeof sourceRevision !== 'string' || !/^[a-f0-9]{64}$/.test(sourceRevision)) failNotebook('notebook_recovery_conflict', 'An exact immutable import source revision is required.');
+  document = decodeNotebook(encodeNotebook(document)); tombstones = initialTombstones(document, tombstones);
+  if (document.objects.some(object => object.revision > document.revision || object.createdBy.kind !== 'import' || object.updatedBy.kind !== 'import')) failNotebook('notebook_recovery_conflict', 'Imported objects require consistent revisions and explicit import provenance.');
+  if (!canWrite(path)) failNotebook('notebook_path_scope', 'This import destination is outside the editable document scope.');
+  const id = document.id, locator = { path, sourceHash: null, revision: notebookHash({ rootIdentity, path, id, sourceHash: null }) };
+  const identity = { schemaVersion: 1, rootIdentity, locator, document, tombstones };
+  const imported = { requestId, sourceRevision, fingerprint: notebookHash({ ...identity, requestId, sourceRevision }) };
+  const execute = () => {
+    if (!canWrite(path)) failNotebook('notebook_path_scope', 'This import destination is outside the editable document scope.');
+    const previous = readNotebookJson(root, `${resourcePath(id)}/header.json`);
+    if (previous) {
+      const { imported: receipt, ...initial } = previous;
+      if (!receipt || notebookHash(receipt) !== notebookHash(imported) || notebookHash(initial) !== notebookHash(identity)) failNotebook('notebook_location_conflict', 'This notebook identity already belongs to different working data. Nothing was replaced.');
+      const state = readState(root, id); requireWrite(state, canWrite); assertLocation(root, state, state.locator.revision);
+      return { ...publicState(state), imported: cloneNotebook(imported), replayed: true, preview };
+    }
+    if (listNotebooks(root).some(entry => entry.path === path) || readNotebookBytes(root, path, NOTEBOOK_LIMITS.bytes) !== null) failNotebook('notebook_location_conflict', 'The import destination is occupied. Choose an unused notebook path; nothing was replaced.');
+    if (preview) return { protocolVersion: NOTEBOOK_VERSION, resourceId: id, locator, revision: document.revision, document, tombstones, imported,
+      accepted: false, replayed: false, preview: true };
+    writeNotebookJson(root, `${resourcePath(id)}/header.json`, { ...identity, imported }, { exclusive: true });
+    const state = readState(root, id); assertLocation(root, state, state.locator.revision);
+    return { ...publicState(state), imported: cloneNotebook(imported), replayed: false, preview: false };
+  };
+  return preview ? execute() : withNotebookLock(root, `${NOTEBOOK_STORE}/registry.lock`, execute);
 }
 export function listNotebooks(root) {
   canonicalNotebookRoot(root); const directory = safeNotebookPath(root, `${NOTEBOOK_STORE}/resources`);

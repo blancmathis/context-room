@@ -42,7 +42,13 @@ export function normalizeNotebookObject(value, id = value?.id) {
     result[key] = value[key];
   }
   if (value.locked !== undefined) { if (typeof value.locked !== 'boolean') failNotebook('notebook_object', 'Invalid object lock.'); result.locked = value.locked; }
-  if (value.type === 'ink') result.points = points(value.points);
+  if (value.type === 'ink') {
+    result.points = points(value.points);
+    if (value.pressureCurve !== undefined) {
+      if (!['soft', 'linear'].includes(value.pressureCurve)) failNotebook('notebook_points', 'Unsupported pressure curve.');
+      result.pressureCurve = value.pressureCurve;
+    }
+  }
   if (value.type === 'text') {
     if (typeof value.text !== 'string' || value.text.length > NOTEBOOK_LIMITS.text) failNotebook('notebook_text', 'Text exceeds the notebook limit.');
     result.text = value.text;
@@ -107,7 +113,7 @@ export function applyNotebookEdits(document, tombstones, edits, actor, { origins
     if (seen.has(id)) failNotebook('notebook_edit', 'An object may occur only once in a batch.');
     seen.add(id);
     if (!Number.isSafeInteger(edit.expectedRevision) || edit.expectedRevision < 0) failNotebook('notebook_revision', 'Each edit needs an exact object revision.');
-    const revision = before?.revision || tombstones[id] || 0;
+    const revision = before?.revision || (Object.hasOwn(tombstones, id) ? tombstones[id] : 0);
     if (revision !== edit.expectedRevision) { conflicts.push({ id, expectedRevision: edit.expectedRevision, actualRevision: revision, current: before }); continue; }
     if (before?.locked && !(edit.kind === 'patch' && Object.keys(edit.patch || {}).length === 1 && edit.patch.locked === false)) failNotebook('notebook_locked_conflict', 'Unlock the object explicitly before editing it.', { id });
     let after = null;
@@ -122,7 +128,7 @@ export function applyNotebookEdits(document, tombstones, edits, actor, { origins
       after = normalizeNotebookObject({ ...before, points: [...before.points, ...points(edit.points)] }, id);
     } else failNotebook('notebook_edit', 'Unsupported notebook operation.');
     if (after?.type === 'image' && !Object.hasOwn(document.assets, after.asset)) failNotebook('notebook_asset', 'Upload the exact image before referencing it.');
-    if (after) after = { ...after, revision: revision + 1, createdBy: before?.createdBy || origins[id] || actor, updatedBy: actor };
+    if (after) after = { ...after, revision: revision + 1, createdBy: before?.createdBy || (Object.hasOwn(origins, id) ? origins[id] : actor), updatedBy: actor };
     changes.push({ id, before, after, revision: revision + 1 });
   }
   if (conflicts.length) failNotebook('notebook_object_conflict', 'Some objects changed. Your local work is retained for reconciliation.', { conflicts });

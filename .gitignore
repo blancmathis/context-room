@@ -10,6 +10,9 @@ npm-debug.log*
 .context-room/review-ledger.json
 .context-room/review-baselines/
 .context-room/memory-webapp-backups/
+.context-room/notebooks/
+.context-room/migrations/
+.context-room/lisiere/
 test-results/
 .DS_Store
 android/.gradle/

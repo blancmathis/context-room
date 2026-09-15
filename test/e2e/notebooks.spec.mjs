@@ -4,7 +4,8 @@ import path from 'node:path';
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import { initializeContextRoomProject, writeMemoryWebappSettings, createMemoryServer, createContextRoomDeviceService } from '../../src/context_room.mjs';
-import { listNotebooks, readNotebook, mutateNotebook, decodeNotebook } from '../../src/notebooks.mjs';
+import { listNotebooks, readNotebook, mutateNotebook, decodeNotebook, importNotebookDraft } from '../../src/notebooks.mjs';
+import { convertLisiereBoard } from '../../src/lisiere_notebook.mjs';
 import { buildDocumentationCorpus } from '../../src/documentation.mjs';
 import { listLocalProposals } from '../../src/local_proposals.mjs';
 import { listSharedProposalWorkspaces } from '../../src/shared_context.mjs';
@@ -324,10 +325,12 @@ test('@smoke @notebook legacy connector routes and text spacing remain editable 
       { id: 'lower', type: 'rect', x: 200, y: 300, width: 120, height: 50 },
       { id: 'return', type: 'connector', from: 'upper', to: 'lower', fromSide: 'left', toSide: 'left', route: 'outside-left', routeOffset: 48 },
       { id: 'label', type: 'text', x: 350, y: 122, width: 180, height: 100, fontSize: 22, lineHeight: 1.4, text: 'Original\nSecond line' },
+      { id: 'legacy-ink', type: 'ink', strokeWidth: 20, pressureCurve: 'linear', points: [[50, 390.5, .1], [250, 390.5, .1]] },
+      { id: 'current-ink', type: 'ink', strokeWidth: 20, points: [[50, 420.5, .1], [250, 420.5, .1]] },
     ];
     mutateNotebook(f.root, { protocolVersion: 1, resourceId: scene.resourceId, operationId: 'legacy-preview', locationRevision: scene.locator.revision,
       edits: values.map(object => ({ kind: 'put', id: object.id, expectedRevision: 0, object })) }, { actor: { kind: 'import', id: 'synthetic-import' }, canWrite: () => true });
-    await expect.poll(() => page.evaluate(() => testNotebook.surface.document.objects.length)).toBe(4);
+    await expect.poll(() => page.evaluate(() => testNotebook.surface.document.objects.length)).toBe(6);
     await dialog.getByRole('button', { name: 'Fit drawing', exact: true }).click();
     await expect.poll(() => page.evaluate(() => {
       const { canvas, view } = testNotebook.surface, ratio = canvas.width / canvas.clientWidth;
@@ -343,9 +346,45 @@ test('@smoke @notebook legacy connector routes and text spacing remain editable 
       return true;
     })).toBe(true);
     expect(await page.evaluate(() => testNotebook.surface.document.objects.find(item => item.id === 'label').lineHeight)).toBe(1.4);
+    const pressurePixels = await page.evaluate(() => {
+      const canvas = document.createElement('canvas'); canvas.width = 640; canvas.height = 440;
+      const context = canvas.getContext('2d'); context.fillStyle = '#fff'; context.fillRect(0, 0, 640, 440);
+      for (const id of ['legacy-ink', 'current-ink']) testNotebook.surface.paintObject(context, testNotebook.surface.document.objects.find(item => item.id === id));
+      return [context.getImageData(100, 392, 1, 1).data[0], context.getImageData(100, 422, 1, 1).data[0],
+        context.getImageData(249, 420, 1, 1).data[0], context.getImageData(50, 420, 1, 1).data[0]];
+    });
+    expect(pressurePixels[0]).toBe(255); expect(pressurePixels[1]).toBeLessThan(128);
+    expect(pressurePixels[2]).toBeLessThan(128); expect(pressurePixels[3]).toBeLessThan(128);
     await dialog.locator('canvas').screenshot({ path: testInfo.outputPath('legacy-editable-canvas.png') });
     expect(fs.existsSync(path.join(f.root, 'docs/Sketch.crnb'))).toBe(false);
     expect(readNotebook(f.root, scene.resourceId).accepted).toBe(false); expect(f.errors).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test('@smoke @notebook recovered working notebook is discoverable and editable without an ordinary accepted file', async ({ page }, testInfo) => {
+  const f = await fixture(page);
+  try {
+    const converted = convertLisiereBoard({ id: 'recovered-board', title: 'Recovered notebook', revision: 4 }, [
+      { board: 'recovered-board', id: 'original-ink', revision: 3, data: JSON.stringify({ type: 'ink', width: 4, points: [[60, 90, .2], [190, 150, .8]] }) },
+      { board: 'recovered-board', id: 'deleted-shape', revision: 4, data: null },
+    ]);
+    importNotebookDraft(f.root, { path: 'docs/Recovered.crnb', document: converted.document, tombstones: converted.tombstones,
+      requestId: 'synthetic-recovery', sourceRevision: 'a'.repeat(64) }, { canWrite: () => true });
+    await page.evaluate(() => openContextRoomNotebook(null, { directory: 'docs' }));
+    await page.getByRole('dialog', { name: 'Notebook in this folder', exact: true }).getByRole('button', { name: 'docs/Recovered.crnb · working scene', exact: true }).click();
+    const dialog = page.locator('dialog.notebook-dialog[open]');
+    await expect(dialog).toHaveAttribute('data-resource-id', 'recovered-board');
+    await expect(dialog).toHaveAttribute('data-save-state', 'confirmed');
+    await draw(page, { start: [110, 210], end: [250, 260] });
+    await expect.poll(() => readNotebook(f.root, 'recovered-board').document.objects.length).toBe(2);
+    await expect(dialog).toHaveAttribute('data-save-state', 'confirmed');
+    const after = readNotebook(f.root, 'recovered-board');
+    expect(after.document.objects.find(object => object.id === 'original-ink')).toEqual(converted.document.objects[0]);
+    expect(after.document.objects.find(object => object.id !== 'original-ink').createdBy.kind).toBe('human');
+    expect(after.tombstones['deleted-shape']).toBe(4); expect(after.accepted).toBe(false);
+    expect(fs.existsSync(path.join(f.root, 'docs/Recovered.crnb'))).toBe(false);
+    await dialog.locator('canvas').screenshot({ path: testInfo.outputPath('recovered-editable-notebook.png') });
+    expect(f.errors).toEqual([]);
   } finally { await f.close(); }
 });
 

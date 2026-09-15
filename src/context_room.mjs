@@ -8,6 +8,7 @@ import { submitNotebookShared } from "./notebook_workflow.mjs";
 import { NOTEBOOK_WEB_ASSETS } from "./notebook_web_assets.mjs";
 import { NOTEBOOK_LIMITS } from "./notebook_protocol.mjs";
 import { createLisiereConnector } from "./lisiere_connector.mjs";
+import { planLisiereNotebookImport, applyLisiereNotebookImport } from "./lisiere_migration.mjs";
 import { isDocumentAssetPath, listDocumentAssets, readDocumentAssetReview, recordAcceptedDocumentAsset, decideDocumentAsset } from "./document_assets.mjs";
 import { readReviewCleanupPolicy, writeReviewCleanupPolicy, previewReviewCleanup, applyReviewCleanup, recentReviewCleanupReceipts } from "./review_cleanup.mjs";
 import fs from "node:fs";
@@ -7782,6 +7783,11 @@ function canEditLocalProposalPath(root, rel, settings = readMemoryWebappSettings
     && Boolean(watchStateForPath(rel, settings));
 }
 
+export function migrateLisiereNotebook(root, options = {}) {
+  const authority = { canWrite: rel => canEditLocalProposalPath(root, rel), beforeWrite: () => ensureRuntimeGitExcludes(root) };
+  return options.apply ? applyLisiereNotebookImport(root, options, authority) : planLisiereNotebookImport(root, options, authority);
+}
+
 function canReviewDocumentAsset(root, rel, settings = readMemoryWebappSettings(root)) {
   return isDocumentAssetPath(rel) && !isBlockedPath(rel) && !isSensitiveProjectFile(rel) && !rel.startsWith("~")
     && !path.isAbsolute(rel) && !rel.split("/").some((part) => part === ".." || part === "." || !part)
@@ -13259,6 +13265,9 @@ export function ensureRuntimeGitExcludes(root = process.cwd()) {
     ".context-room/local-proposals/",
     ".context-room/document-assets/",
     ".context-room/review-cleanup/",
+    ".context-room/notebooks/",
+    ".context-room/migrations/",
+    ".context-room/lisiere/",
     ".context-room/memory-webapp-backups/",
   ].map((entry) => prefix + entry);
   const entries = [...new Set([".context-room/review-ledger.json", ...roomEntries])];

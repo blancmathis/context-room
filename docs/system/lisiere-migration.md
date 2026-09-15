@@ -11,12 +11,14 @@ context_room:
 Context Room exports a private, versioned snapshot of a legacy Mac workspace
 or Android workspace database. Preview and apply compare the same content
 revision. Export is read-only against the source and does not require the
-Lisière executable or service. Import and installation cutover remain in progress.
+Lisière executable or service. A selected canonical Mac board can then become
+an editable, unaccepted working notebook. Tablet reconciliation and installation
+cutover remain in progress.
 
 ## Defines
 
 The recovery snapshot format, source compatibility, private export, exact
-revision precondition and interrupted-export recovery.
+revision precondition, selected-board import and interrupted-operation recovery.
 
 ## Does not define
 
@@ -68,6 +70,55 @@ and destination. Existing files must match exactly; the exporter fills missing
 files and refuses changed ones. Repeating a completed export is idempotent.
 If the source has advanced, retain the partial export and preview into a new
 destination. No retry replaces the original workspace or a newer destination.
+
+## Import a canonical Mac notebook
+
+Choose the source board ID from the exported `boards` table and an unused
+ordinary `.crnb` path in an existing Context Room project's writable, watched
+folders. A free legacy board can use any such explicitly chosen destination;
+there is no new inbox or project catalog.
+
+```bash
+context-room migrate --root /path/to/project --import-lisiere /path/to/private-snapshot --legacy-board BOARD_ID --path docs/Ideas.crnb
+context-room migrate --root /path/to/project --import-lisiere /path/to/private-snapshot --legacy-board BOARD_ID --path docs/Ideas.crnb --apply --revision REVISION
+```
+
+Preview does not create directories, locks or documents. Apply checks the same
+source, original project identity and configuration, then checks live write
+authority again. An occupied path, changed source, conflicting notebook ID or
+altered recovery record is refused. Keep the original full snapshot.
+
+The importer retains original object IDs when the notebook protocol accepts
+them, otherwise records a deterministic mapping. It retains object/deletion
+revisions, all supported pen samples, original embedded raster bytes, connector
+ports/routes and text spacing. Imported ink explicitly uses the legacy linear
+pressure curve; new ink keeps the current soft curve. Browser, SVG and native
+renderers use that retained choice. Missing assets/endpoints, unknown types,
+cycles and data exceeding editable limits stop the import without truncation.
+The original snapshot remains available for reconciliation.
+
+Before publishing the working scene, apply retains the selected original board,
+its rows, identity map and image assets under
+`.context-room/migrations/lisiere-v1/`. Immutable plan, authorization, backup
+and completion receipts permit interruption recovery. Other projects' content,
+credentials and pending operation queues are not copied into this project.
+The CLI also excludes migration records, working notebooks and legacy handoff
+directories from ordinary Git staging through the project's local excludes.
+
+Repeat the same apply command after interruption. Matching records are reused;
+later human notebook edits remain intact. If project configuration changed,
+obtain a fresh preview before resuming the same retained import. Changed backup
+bytes require reconciliation and are never overwritten.
+
+Import creates private working state, with explicit import provenance. It does
+not create an ordinary `.crnb` file or an accepted baseline. Use the existing
+notebook freeze/submission and human review workflow to produce and decide an
+ordinary document. The migration receipts never substitute for that decision.
+
+This command imports one canonical Mac board. Android draft/outbox reconciliation,
+recordings, conversation continuation, old handoff import and automatic rollback
+are separate unfinished work. It does not acknowledge an old operation, resume
+an old agent task or switch off the legacy writer.
 
 ## Completion boundary
 

@@ -178,8 +178,11 @@ export class NotebookCanvas {
     if (o.type === 'ink') {
       let cached = o.revision > 0 ? this.paths.get(o.id) : null;
       if (!cached || cached.revision !== o.revision || cached.points !== o.points.length) {
-        const outline = notebookInkOutline(o.points, o.strokeWidth || 2), line = new Path2D(); outline.forEach(([px, py], i) => i ? line.lineTo(px, py) : line.moveTo(px, py)); line.closePath();
-        for (const p of [o.points[0], o.points.at(-1)]) { const r = notebookInkRadius(p, o.strokeWidth || 2); line.moveTo(p[0] + r, p[1]); line.arc(p[0], p[1], r, 0, Math.PI * 2); }
+        const outline = notebookInkOutline(o.points, o.strokeWidth || 2, o.pressureCurve), line = new Path2D();
+        // Match the clockwise end circles. Opposite winding leaves white holes
+        // where each rounded cap overlaps the retained stroke body.
+        outline.reverse().forEach(([px, py], i) => i ? line.lineTo(px, py) : line.moveTo(px, py)); line.closePath();
+        for (const p of [o.points[0], o.points.at(-1)]) { const r = notebookInkRadius(p, o.strokeWidth || 2, o.pressureCurve); line.moveTo(p[0] + r, p[1]); line.arc(p[0], p[1], r, 0, Math.PI * 2); }
         cached = { revision: o.revision, points: o.points.length, line }; if (o.revision > 0) this.paths.set(o.id, cached);
       }
       ctx.fillStyle = o.color || '#222222'; ctx.fill(cached.line);
