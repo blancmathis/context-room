@@ -332,7 +332,7 @@ async function flushAndExit(code = 0) {
 }
 
 const KNOWN_OPTIONS = new Set([
-  "cutover-lisiere", "legacy-plist", "rollback-cutover", "resume-cutover", "legacy-recording", "conversation-id", "reconcile-lisiere", "mac-snapshot", "legacy-actor", "export-lisiere", "import-lisiere", "inspect-lisiere", "legacy-board", "legacy-draft", "legacy-conversation", "legacy-session", "session-frame", "recordings", "output", "revision",
+  "cutover-lisiere", "legacy-plist", "rollback-cutover", "resume-cutover", "legacy-recording", "conversation-id", "reconcile-lisiere", "recovery-view", "mac-snapshot", "legacy-actor", "export-lisiere", "import-lisiere", "inspect-lisiere", "legacy-board", "legacy-draft", "legacy-conversation", "legacy-session", "session-frame", "recordings", "output", "revision",
   "device-host", "device-port", "device-state",
   "reader",
   "action", "actionable", "advisory", "all", "all-projects", "allow", "allow-stale", "apply", "branch", "budget", "contract", "cursor", "cwd", "depth", "description", "detail", "document", "dry-run", "enabled", "exclude", "expand", "fields", "files", "folder", "follow", "format", "fresh", "from", "goal", "h", "heading", "help", "highlight", "hook", "include",
@@ -1710,6 +1710,7 @@ if (command === "migrate") {
     if (args["reconcile-lisiere"] && (args["legacy-draft"] || args["legacy-conversation"] || args["legacy-recording"])) throw new ContextRoomCliError("invalid-arguments", "Reconciliation selects an exact board, not a draft or conversation.", { exitCode: 2 });
     if (args["conversation-id"] && !args["legacy-recording"]) throw new ContextRoomCliError("invalid-arguments", "--conversation-id requires --legacy-recording.", { exitCode: 2 });
     if (args["legacy-recording"] && Boolean(args.path) === Boolean(args["conversation-id"])) throw new ContextRoomCliError("invalid-arguments", "Select exactly one original --path or --conversation-id for the recording.", { exitCode: 2 });
+    if (args["recovery-view"] && !args["reconcile-lisiere"]) throw new ContextRoomCliError("invalid-arguments", "--recovery-view requires --reconcile-lisiere.", { exitCode: 2 });
     if (args["legacy-actor"] && !args["reconcile-lisiere"]) throw new ContextRoomCliError("invalid-arguments", "--legacy-actor requires --reconcile-lisiere.", { exitCode: 2 });
     if (args["legacy-plist"] && !args["cutover-lisiere"]) throw new ContextRoomCliError("invalid-arguments", "--legacy-plist requires --cutover-lisiere.", { exitCode: 2 });
     const cutoverOptions = { legacySource: args["cutover-lisiere"], legacyPlist: args["legacy-plist"], macSnapshot: args["mac-snapshot"], expectedRevision: args.revision };
@@ -1718,7 +1719,7 @@ if (command === "migrate") {
       : args["rollback-cutover"] || args["resume-cutover"]
       ? changeCutoverMode(agentFirstTarget.root, { resume: Boolean(args["resume-cutover"]), apply: Boolean(args.apply), expectedRevision: args.revision })
       : args["reconcile-lisiere"]
-      ? reconcileLisiereNotebook(agentFirstTarget.root, { androidSnapshot: args["reconcile-lisiere"], macSnapshot: args["mac-snapshot"], boardId: args["legacy-board"], actor: args["legacy-actor"], path: args.path, apply: Boolean(args.apply), expectedRevision: args.revision })
+      ? reconcileLisiereNotebook(agentFirstTarget.root, { androidSnapshot: args["reconcile-lisiere"], macSnapshot: args["mac-snapshot"], boardId: args["legacy-board"], actor: args["legacy-actor"], recoveryView: args["recovery-view"], path: args.path, apply: Boolean(args.apply), expectedRevision: args.revision })
       : args["legacy-session"]
       ? migrateLisiereDrawingSession(agentFirstTarget.root, { sessionId: args["legacy-session"], frame: args["session-frame"], path: args.path, apply: Boolean(args.apply), expectedRevision: args.revision })
       : args["export-lisiere"]

@@ -127,6 +127,25 @@ class ReconciliationContracts(unittest.TestCase):
         f['mac']['objects'][0]['revision'] = 3
         self.assertTrue(reconcile(f)['blocked'])
 
+    def test_old_history_undo_is_never_rebased_over_a_later_queued_gesture(self):
+        f = fixture(); first = mutation(f, 'first'); record(f, first, 2)
+        mutation(f, 'later-gesture')
+        queue(f, 'board.undo', {'id': 'first', 'operationId': 'undo-old'})
+        result = reconcile(f)
+        self.assertTrue(result['blocked'])
+        self.assertEqual(result['operations'][-1]['reason'], 'object-concurrent-change')
+        self.assertEqual(result['objects'][0]['revision'], 3)
+        self.assertIsNotNone(result['objects'][0]['data'])
+
+    def test_history_undo_does_not_manufacture_an_android_successor_ack(self):
+        f = fixture(); first = mutation(f, 'first'); record(f, first, 2); f['queue'] = []
+        queue(f, 'board.undo', {'id': 'first', 'operationId': 'undo'})
+        mutation(f, 'later', expected=2)
+        result = reconcile(f)
+        self.assertTrue(result['blocked'])
+        self.assertEqual(result['operations'][0]['status'], 'pending-compatible')
+        self.assertEqual(result['operations'][1]['reason'], 'object-concurrent-change')
+
     def test_progressive_pen_is_not_an_ordinary_receipt(self):
         f = fixture(); mutation(f, 'pen-frame'); f['mac']['pen_jobs'] = [{'id': 'pen-frame', 'board': 'board'}]
         result = reconcile(f); self.assertTrue(result['blocked']); self.assertEqual(result['operations'][0]['reason'], 'progressive-pen-needs-job-reconciliation')

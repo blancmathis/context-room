@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readLisiereSnapshot, legacyError } from './lisiere_archive.mjs';
+import { retainedTabletBoard, tabletCopyProjection } from './lisiere_tablet_notebook.mjs';
 import { convertLisiereBoard } from './lisiere_notebook.mjs';
 import { importNotebookDraft, encodeNotebook } from './notebooks.mjs';
 import { canonicalNotebookRoot, notebookHash, stableNotebookJson, readNotebookBytes, withNotebookLock } from './notebook_io.mjs';
@@ -16,10 +17,13 @@ const cells = row => Object.fromEntries(Object.entries(row).map(([key, value]) =
 const config = root => { const raw = readNotebookBytes(root, '.context-room/config.json', 8 * 1024 * 1024); return raw === null ? null : notebookHash(raw); };
 
 /** Pure comparison of two complete exports. No operation is sent or acknowledged. */
-export function inspectLisiereReconciliation({ androidSnapshot, macSnapshot, boardId, actor } = {}) {
-  check(typeof boardId === 'string' && boardId && typeof actor === 'string' && actor, 'Choose the exact original board and original tablet actor. Neither is inferred.');
+export function inspectLisiereReconciliation({ androidSnapshot, macSnapshot, boardId, actor, recoveryView } = {}) {
+  check(recoveryView === undefined || ['queue', 'tablet'].includes(recoveryView), 'Choose queue reconciliation or a separate tablet cache copy.');
+  check(typeof boardId === 'string' && boardId && (recoveryView === 'tablet' || typeof actor === 'string' && actor), 'Choose the exact original board and original tablet actor. Neither is inferred.');
   const android = readLisiereSnapshot(androidSnapshot), mac = readLisiereSnapshot(macSnapshot);
   check(android.manifest.kind === 'android-workspace' && mac.manifest.kind === 'mac-workspace', 'Select an Android recovery snapshot and its canonical Mac snapshot.');
+  if (recoveryView === 'tablet') return tabletCopyProjection(android, mac, boardId, actor || null);
+  const cached = retainedTabletBoard(android, boardId);
   const wire = new Map([...android.androidArguments()].map(row => [row.seq, row]));
   const queue = []; let count = 0;
   for (const row of android.rows('outbox')) {
@@ -48,9 +52,11 @@ export function inspectLisiereReconciliation({ androidSnapshot, macSnapshot, boa
     : String(error.stderr || 'The bounded reconciliation did not complete.').trim().slice(0, 600)); }
   check(report.version === 1 && report.boardId === boardId && report.actor === actor && report.accepted === false && report.legacyQueueChanged === false,
     'Invalid reconciliation helper result.');
-  const source = { android: android.manifest.revision, mac: mac.manifest.revision, boardId, actor };
+  const source = { android: android.manifest.revision, mac: mac.manifest.revision, boardId, actor, recoveryView: 'queue' };
+  const needsCacheChoice = Boolean(cached && recoveryView === undefined);
   const summary = { version: 1, kind: 'lisiere-reconciliation', source, operations: report.operations, revisionMapping: report.revisionMapping,
-    blocked: report.blocked, canonicalRevision: report.canonicalRevision, projectedRevision: report.board?.revision ?? null,
+    cachedView: cached?.counts || null, needsCacheChoice, ...(needsCacheChoice ? { choices: ['queue', 'tablet'], notice: 'The tablet also has a retained cached scene. Explicitly choose the queue projection or an independent tablet copy; neither overwrites the other.' } : {}),
+    blocked: report.blocked || needsCacheChoice, canonicalRevision: report.canonicalRevision, projectedRevision: report.board?.revision ?? null,
     accepted: false, legacyQueueChanged: false, effect: report.effect };
   const selectedIds = new Set(report.operations.filter(row => row.selected).map(row => row.id));
   return { summary, report, android, mac, original: {
@@ -81,7 +87,7 @@ function prepare(root, options, canWrite) {
         sourceRevision: notebookHash(summary.source) };
       encodeNotebook(input.document);
       current = importNotebookDraft(root, input, { canWrite, preview: true });
-    } catch (error) { conversionError = { code: error.code || 'lisiere_recovery_conflict', message: error.message }; }
+    } catch (error) { conversionError = { code: error.code || 'lisiere_recovery_conflict', message: error.message }; converted = input = current = null; }
   }
   const revision = notebookHash({ identity, configuration, conversion: converted ? notebookHash(encodeNotebook(converted.document)) : null });
   return { rootIdentity, configuration, revision, identity, recovery, input, current, original, inspected,

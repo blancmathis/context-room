@@ -507,3 +507,26 @@ new explicit revision-bound action. A functional downgrade to the old Lisière
 application is not implemented. The production `launchctl`, open-file check and
 Darwin no-replace rename require local macOS verification; Linux synthetic
 contracts exercise the coordinator and actual file/database protection only.
+
+### Queue projection versus retained tablet scene
+
+When the selected Android board also has cached objects, an unspecified
+recovery view blocks application rather than silently choosing the queue over
+local-only ink. With `--reconcile-lisiere`, explicitly choose
+`--recovery-view queue` to project the verified queue, or `--recovery-view tablet`
+to import a **separate editable cache copy** into an unused ordinary notebook
+location. Both use the same preview/apply revision protocol and existing notebook
+working store. Neither changes or acknowledges the legacy queue.
+
+The tablet copy preserves the selected original cache cells and any shadowed old
+compact board, remaps cached object revisions to an explicit import revision,
+and retains the original-revision mapping. Missing cache objects are not treated
+as deletions on the Mac. Missing rasters fail closed rather than being replaced
+with placeholders. A queue projection and tablet copy have different resource
+identities and can be reviewed independently. This makes local-only free ideas
+recoverable without claiming that their cached revision proves Mac delivery.
+The original Android and Mac snapshots remain necessary for unresolved intents.
+A `board.undo` retains its exact historical precondition; it is not rebased as
+if it were a `board.mutate` successor. Progressive pen-job receipt reconciliation
+remains unsupported and explicitly blocks queue application, not preservation of
+an independently chosen cached scene.

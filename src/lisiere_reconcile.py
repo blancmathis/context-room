@@ -256,14 +256,17 @@ def reconcile(data):
                         matched = next(item for item in result['objects'] if item['id'] == change['id'])
                         expected = None if matched.get('deleted') is True else matched
                         require(packed(actual) == packed(expected), 'canonical-object-receipt-content')
-                    successor[change['id']] = result['revision']
+                    if op == 'board.mutate':
+                        successor[change['id']] = result['revision']
                 continue
             require(row['id'] not in pen_jobs, 'progressive-pen-needs-job-reconciliation')
             rewritten = []
             for change in operations:
                 id = change['id']
                 require(id not in blocked_objects, 'predecessor-unresolved')
-                effective = max(change['expectedRevision'], successor.get(id, 0))
+                # The original queue advances only board.mutate successors. A
+                # history undo keeps its original exact precondition.
+                effective = max(change['expectedRevision'], successor.get(id, 0)) if op == 'board.mutate' else change['expectedRevision']
                 current = objects.get(id)
                 require((current['revision'] if current else 0) == effective, 'object-concurrent-change')
                 exact_for_notebook(change['value'])
@@ -276,7 +279,8 @@ def reconcile(data):
                 mapping.append({'operationId': row['id'], 'objectId': id, 'originalExpected': change['expectedRevision'],
                                 'effectiveExpected': effective, 'importedRevision': revision,
                                 'predecessorEvidence': 'confirmed-or-projected-first-successor' if id in successor else 'canonical-object'})
-                successor[id] = revision
+                if op == 'board.mutate':
+                    successor[id] = revision
             board['revision'] = revision
             summary.update(status='pending-compatible', importedRevision=revision)
         except (ValueError, TypeError, KeyError, OverflowError, UnicodeError) as error:
