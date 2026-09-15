@@ -10,6 +10,8 @@ import { NOTEBOOK_LIMITS } from "./notebook_protocol.mjs";
 import { createLisiereConnector } from "./lisiere_connector.mjs";
 import { planLisiereNotebookImport, applyLisiereNotebookImport } from "./lisiere_migration.mjs";
 import { migrateLisiereDocument } from "./lisiere_documents.mjs";
+import { migrateLisiereConversationHistory } from "./lisiere_conversations.mjs";
+import { listNotebooks, readNotebook } from "./notebooks.mjs";
 import { isDocumentAssetPath, listDocumentAssets, readDocumentAssetReview, recordAcceptedDocumentAsset, decideDocumentAsset } from "./document_assets.mjs";
 import { readReviewCleanupPolicy, writeReviewCleanupPolicy, previewReviewCleanup, applyReviewCleanup, recentReviewCleanupReceipts } from "./review_cleanup.mjs";
 import fs from "node:fs";
@@ -7784,9 +7786,49 @@ function canEditLocalProposalPath(root, rel, settings = readMemoryWebappSettings
     && Boolean(watchStateForPath(rel, settings));
 }
 
+export function createProjectAssistantSourceResolver() {
+  return createAssistantSourceResolver({
+      canRead: (project, rel, kind) => {
+        if (typeof rel !== 'string' || path.isAbsolute(rel) || rel.startsWith('~') || rel.includes('\\')
+          || rel.split('/').some(part => !part || part === '.' || part === '..') || isSensitiveProjectFile(rel) || isBlockedPath(rel)) return false;
+        const settings = readMemoryWebappSettings(project);
+        return kind === 'notebook' ? canReviewDocumentAsset(project, rel, settings)
+          : /\.(?:md|markdown|txt|html?)$/i.test(rel) && isAllowedMemoryPath(rel, settings);
+      },
+      canWrite: (project, rel) => canEditLocalProposalPath(project, rel),
+      proposeDocument: (project, input) => {
+        input.signal?.throwIfAborted();
+        if (!canEditLocalProposalPath(project, input.path)) throw sharedRequestError('The original document is no longer editable.', 403, 'assistant_proposal_scope');
+        const current = readNotebookBytes(project, input.path, 1024 * 1024);
+        if (!current || notebookHash(current) !== input.expectedHash) throw sharedRequestError('The original document changed before proposal preparation.', 409, 'assistant_document_conflict');
+        const proposal = createLocalDocumentationProposal(project, { requestId: input.requestId, title: input.title || 'Conversation edit', description: 'Proposed from the original document conversation. Human review is required.' });
+        if (proposal.status === 'editing') {
+          const parent = path.posix.dirname(input.path); if (parent !== '.') makeNotebookDirectory(proposal.editRoot, parent);
+          const previous = readNotebookBytes(proposal.editRoot, input.path, 1024 * 1024);
+          writeNotebookBytes(proposal.editRoot, input.path, Buffer.from(input.content), { expectedHash: previous ? notebookHash(previous) : null, mode: 0o644 });
+        }
+        const submitted = submitLocalDocumentationProposal(project, proposal.id);
+        return { proposalId: submitted.id, scope: 'local', status: submitted.status, submittedRevision: submitted.submittedRevision, path: input.path, accepted: false };
+      },
+    });
+}
+
 export function migrateLisiereNotebook(root, options = {}) {
   const authority = { canWrite: rel => canEditLocalProposalPath(root, rel), beforeWrite: () => ensureRuntimeGitExcludes(root) };
   return options.apply ? applyLisiereNotebookImport(root, options, authority) : planLisiereNotebookImport(root, options, authority);
+}
+
+export function migrateLisiereConversation(root, options = {}, { storageRoot } = {}) {
+  return migrateLisiereConversationHistory(root, options, { ...(storageRoot ? { storageRoot } : {}),
+    resolveSource: createProjectAssistantSourceResolver(),
+    sourceForPath: (project, rel) => {
+      if (typeof rel !== 'string' || !rel) throw sharedRequestError('Choose the document or imported notebook to link with this history.', 400, 'assistant_source_scope');
+      if (!rel.endsWith('.crnb')) return { kind: 'document', path: rel };
+      const matches = listNotebooks(project).filter(item => item.path === rel);
+      if (matches.length !== 1) throw sharedRequestError('Open or import this notebook before linking its recovered history.', 409, 'assistant_source_missing');
+      const scene = readNotebook(project, matches[0].id);
+      return { kind: 'notebook', path: rel, resourceId: scene.resourceId, revision: scene.revision, locationRevision: scene.locator.revision, selection: [] };
+    } });
 }
 
 export function migrateLisiereDraft(root, options = {}) {
@@ -18657,32 +18699,7 @@ export function createMemoryServer({
   const promptMutationNonce = randomBytes(32).toString("base64url");
   const ownerMutationNonce = randomBytes(32).toString("base64url");
   let assistantRuntime = null;
-  const getAssistantRuntime = () => assistantRuntime ||= new AssistantRuntime({ ...assistantOptions,
-    resolveSource: createAssistantSourceResolver({
-      canRead: (project, rel, kind) => {
-        if (typeof rel !== 'string' || path.isAbsolute(rel) || rel.startsWith('~') || rel.includes('\\')
-          || rel.split('/').some(part => !part || part === '.' || part === '..') || isSensitiveProjectFile(rel) || isBlockedPath(rel)) return false;
-        const settings = readMemoryWebappSettings(project);
-        return kind === 'notebook' ? canReviewDocumentAsset(project, rel, settings)
-          : /\.(?:md|markdown|txt|html?)$/i.test(rel) && isAllowedMemoryPath(rel, settings);
-      },
-      canWrite: (project, rel) => canEditLocalProposalPath(project, rel),
-      proposeDocument: (project, input) => {
-        input.signal?.throwIfAborted();
-        if (!canEditLocalProposalPath(project, input.path)) throw sharedRequestError('The original document is no longer editable.', 403, 'assistant_proposal_scope');
-        const current = readNotebookBytes(project, input.path, 1024 * 1024);
-        if (!current || notebookHash(current) !== input.expectedHash) throw sharedRequestError('The original document changed before proposal preparation.', 409, 'assistant_document_conflict');
-        const proposal = createLocalDocumentationProposal(project, { requestId: input.requestId, title: input.title || 'Conversation edit', description: 'Proposed from the original document conversation. Human review is required.' });
-        if (proposal.status === 'editing') {
-          const parent = path.posix.dirname(input.path); if (parent !== '.') makeNotebookDirectory(proposal.editRoot, parent);
-          const previous = readNotebookBytes(proposal.editRoot, input.path, 1024 * 1024);
-          writeNotebookBytes(proposal.editRoot, input.path, Buffer.from(input.content), { expectedHash: previous ? notebookHash(previous) : null, mode: 0o644 });
-        }
-        const submitted = submitLocalDocumentationProposal(project, proposal.id);
-        return { proposalId: submitted.id, scope: 'local', status: submitted.status, submittedRevision: submitted.submittedRevision, path: input.path, accepted: false };
-      },
-    }),
-  });
+  const getAssistantRuntime = () => assistantRuntime ||= new AssistantRuntime({ ...assistantOptions, resolveSource: createProjectAssistantSourceResolver() });
   const runtimeProfile = remoteAccess ? "hosted-hub" : "local";
   const resolvedCodexPromptCenter = codexPromptCenter || (remoteAccess ? null : createCodexPromptCenterProvider());
   const terminalDecisionChallenges = createTerminalDecisionChallengeStore();

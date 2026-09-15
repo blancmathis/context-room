@@ -9,7 +9,8 @@ import { notebookViewportPreview } from './assistant-observation.mjs';
 
 export function notebookElement(tag, text = '', className = '') { const node = document.createElement(tag); node.textContent = text; if (className) node.className = className; return node; }
 export function notebookStyles() { if (document.getElementById('context-room-notebook-style')) return; const link = document.createElement('link'); link.id = 'context-room-notebook-style'; link.rel = 'stylesheet'; link.href = '/assets/ui/notebook.css'; document.head.append(link); }
-export function notebookDownload(bytes, filename, type = 'application/json') { if (globalThis.ContextRoomNativeOwner) return ContextRoomNativeOwner.saveFile(bytes, filename, type); const url = URL.createObjectURL(new Blob([bytes], { type })); const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); setTimeout(() => URL.revokeObjectURL(url), 60_000); }
+import { notebookDownload } from './notebook-download.mjs';
+export { notebookDownload } from './notebook-download.mjs';
 export function notebookBase64(bytes) { let text = ''; for (let offset = 0; offset < bytes.length; offset += 8192) text += String.fromCharCode(...bytes.subarray(offset, offset + 8192)); return btoa(text); }
 const button = (label, callback, className = '') => { const node = notebookElement('button', label, className); node.type = 'button'; if (callback) node.addEventListener('click', callback); return node; };
 async function metadata(storage, key, update) { for (let n = 0; n < 8; n++) { const state = await storage.read(key); try { await storage.commit(key, state.version, { metadata: update(state.metadata) }); return; } catch (error) { if (error.code !== 'notebook_cache_conflict') throw error; } } throw new Error('The local notebook cache is busy.'); }

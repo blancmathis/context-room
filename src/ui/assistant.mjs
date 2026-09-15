@@ -1,12 +1,15 @@
 import { readDraft, writeDraft, browserRecordings, pendingAudioReleases, saveAudioRelease, conversationScopeAliases } from './assistant-drafts.mjs';
 import { captureMicrophone, recoverBrowserRecording, acknowledgeRecording } from './assistant-audio.mjs';
 import { LiveSourcePreview } from './assistant-observation.mjs';
+import { createRetainedHistory } from './assistant-legacy.mjs';
 export { documentDraftPreview } from './assistant-observation.mjs';
 
 const element = (tag, text = '', className = '') => { const node = document.createElement(tag); node.textContent = text; node.className = className; return node; };
 const button = (text, action) => { const node = element('button', text); node.type = 'button'; node.addEventListener('click', action); return node; };
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const activeStatuses = new Set(['queued', 'starting', 'running', 'stopping']);
+const historyLabel = value => new Date(value.createdAt).toLocaleString() + ' · ' + (value.messageCount ?? value.messages?.length ?? 0) + ' messages'
+  + (value.legacy ? ' · ' + value.legacy.messageCount + ' retained' : '');
 let active = null;
 let opening = Promise.resolve();
 
@@ -81,7 +84,8 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   models.setAttribute('aria-label', 'Conversation Codex model'); efforts.setAttribute('aria-label', 'Conversation reasoning effort');
   const connect = button('Load available models', () => run((async () => { await post('/connect', {}); modelPending = true; await poll(); })()));
   modelRow.append(modelTitle, models, efforts, connect);
-  panel.append(heading, original, audioStatus, boundary, historyRow, messages, modelRow, form, status, infoBox, errorBox); parent.append(panel);
+  const retainedHistory = createRetainedHistory({ api });
+  panel.append(heading, original, audioStatus, boundary, historyRow, retainedHistory.section, messages, modelRow, form, status, infoBox, errorBox); parent.append(panel);
   const clientId = crypto.randomUUID();
   let closed = false, current = conversation, pollBusy = false, lease = null, renewTimer = null, recording = null, speaker = null,
     audioContext = null, audioGeneration = 0, modelPending = false, rendered = '', sendRequest = null, retainedRecording = null, recordingRequest = null, audioBusy = false, audioReading = false, changingConversation = false, draftWrites = Promise.resolve(), nativeRecordings = [], voice = null, voiceClosing = false, initializing = true, historyCursor = null, historyLoading = false;
@@ -164,6 +168,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   run(preview.refresh());
   function render() {
     self.conversation = current; const busy = activeStatuses.has(current.operation?.status), uncertain = current.operation?.status === 'uncertain';
+    retainedHistory.set(current);
     panel.dataset.ready = String(!initializing); panel.setAttribute('aria-busy', String(initializing));
     panel.dataset.capturing = String(Boolean(recording));
     panel.classList.toggle('assistant-voice-enabled', Boolean(voice));
@@ -185,7 +190,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     if (current.source.kind === 'notebook') document.dispatchEvent(new CustomEvent('context-room-assistant-progress', { detail: { scopeKey, resourceId: current.source.resourceId, progress: current.progress } }));
     panel.dataset.operationStatus = current.operation?.status || 'idle';
     const selectedHistory = [...history.options].find(option => option.value === current.id);
-    if (selectedHistory) selectedHistory.textContent = new Date(current.createdAt).toLocaleString() + ' · ' + current.messages.length + ' messages';
+    if (selectedHistory) selectedHistory.textContent = historyLabel(current);
     const value = JSON.stringify(current.messages);
     if (value !== rendered) {
       const nearEnd = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 60;
@@ -228,7 +233,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
       const known = new Set([...history.options].map(option => option.value));
       for (const item of [...result.conversations, { ...current, messageCount: current.messages.length }]) {
         if (known.has(item.id)) continue;
-        const option = element('option', new Date(item.createdAt).toLocaleString() + ' · ' + item.messageCount + ' messages'); option.value = item.id; history.append(option); known.add(item.id);
+        const option = element('option', historyLabel(item)); option.value = item.id; history.append(option); known.add(item.id);
       }
       history.value = current.id; historyCursor = result.pagination?.nextCursor || null; olderHistory.hidden = !historyCursor;
     } catch (error) {

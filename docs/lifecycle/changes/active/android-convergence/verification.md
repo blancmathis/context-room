@@ -1149,6 +1149,53 @@ repair remain in place. The identity suite and exact concurrent-creation test
 pass on the isolated corrected checkout. The next hosted matrix must confirm
 the fix on Linux as well.
 
+## Retained legacy conversations and explicit continuation
+
+The migration CLI now retains a selected canonical Mac conversation outside the
+project and links it to a chosen document or working notebook. It preserves
+original SQLite cells, task identity, per-message contexts, unknown events,
+partial responses and unconfirmed Desktop requests. Import and viewing do not
+start a provider. A later explicit message or Voice action creates a separate
+scoped Context Room task with read-only access to the retained history; it does
+not resume the old task or replay an old request. Desktop transcripts absent
+from the snapshot remain absent, with their original identity retained.
+
+The focused store, recovery, owner HTTP/runtime and CLI checks pass **26/26**.
+They include exact int64/binary context, long-message paging, interrupted
+archive/binding/provenance publication, changed preview refusal, later human
+continuation retention, source revocation, foreign-project refusal, forged
+browser import metadata and export revocation between one-MiB chunks. The CLI
+links an actual working notebook without writing its ordinary file or accepting
+it. A first CLI test read errors from stdout; it was corrected to the existing
+stderr error contract.
+
+The conversation/import browser matrix passes **24/24** across Chromium
+desktop/mobile, Firefox and WebKit. A first pagination assertion expected a
+finished, hidden button to remain in the accessibility tree; the corrected
+assertion tracks that same control through hiding. The final expanded export
+scenario passes **4/4**, including multiple byte-identical download chunks and
+an explicitly synthetic native-save cancellation. Accessibility checks pass.
+Mobile inspection led to grouping the retained records in a collapsible panel.
+The final mobile rendering was inspected. These are browser checks, not native
+or physical-device export proof.
+
+Real local Codex reads the imported first message through its history tool,
+reads the linked notebook and adds the requested rectangle and exact original
+text as two canonical working objects. It creates one new task and never resumes
+the recorded legacy identity. The original synthetic database and independent
+document remain unchanged, and no ordinary notebook is written. The first check
+reaches useful ink in 13,253 ms. After codec changes, the first rerun stopped
+before provider startup because its assertion preceded history readiness; the
+readiness condition was corrected. The final real-provider run passes in
+14,189 ms with source-file hashes retained in its private proof. The drawing
+latency objective remains open.
+
+Doctor, package privacy, package dry-run, layout audit, Android rebuild and
+artifact verification pass. The preview APK remains SHA-256
+`55dde71ed0c0b18c14952e519a2020415f60c526576bc2fbf7e311c86b3b9623`, with its
+v2 signature and eight exact shared assets. Full regression and hosted results
+for this recovery milestone remain pending.
+
 ## Open product gates
 
 Data migration and final removal of the

@@ -11,10 +11,11 @@ const fault = (code, message, statusCode = 409) => Object.assign(new Error(messa
 const uuid = value => { if (typeof value !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value)) throw fault('assistant_identity', 'An exact client or request identity is required.', 400); return value; };
 const LEASE_MS = 30_000;
 const MAX_AUDIO_RESULTS = 24, MAX_AUDIO_RECEIPTS = 1024;
+export const assistantStorageRoot = () => path.resolve(process.env.CONTEXT_ROOM_ASSISTANT_HOME || path.join(os.homedir(), '.context-room', 'assistant'));
 
 /** One local owner runtime. Constructed lazily, never by doctor, guard or brief. */
 export class AssistantRuntime {
-  constructor({ root = path.join(os.homedir(), '.context-room', 'assistant'), resolveSource, providerFactory, audio,
+  constructor({ root = assistantStorageRoot(), resolveSource, providerFactory, audio,
     modelPath = process.env.CONTEXT_ROOM_WHISPER_MODEL || path.join(root, 'models', 'ggml-large-v3-turbo-q5_0.bin'), now = () => Date.now() } = {}) {
     fs.mkdirSync(root, { recursive: true, mode: 0o700 }); canonicalNotebookRoot(root);
     this.root = root; this.now = now;
@@ -162,6 +163,19 @@ export async function handleAssistantHttp(req, res, { root, url, runtime, readJs
       sendJson(res, 200, runtime.sessions.history(root, { source, limit: q.get('limit') ?? 50, cursor: q.get('cursor'), selectionHash: q.get('selectionHash') })); return;
     }
     if (/^\/conversations\/[^/]+$/.test(route)) { sendJson(res, 200, runtime.sessions.get(root, route.split('/')[2])); return; }
+    if (/^\/conversations\/[^/]+\/legacy-history$/.test(route)) {
+      const id = route.split('/')[2];
+      if (url.searchParams.get('download') === '1') {
+        const bytes = runtime.sessions.legacyArchive(root, id);
+        const offset = Number(url.searchParams.get('offset') ?? 0);
+        if (!Number.isSafeInteger(offset) || offset < 0 || offset >= bytes.length) throw fault('assistant_legacy_history', 'Choose a valid original-history byte position.', 400);
+        const end = Math.min(bytes.length, offset + 1024 * 1024);
+        sendJson(res, 200, { name: 'retained-lisiere-history.json', sha256: notebookHash(bytes), totalBytes: bytes.length, offset,
+          nextOffset: end < bytes.length ? end : null, data: bytes.subarray(offset, end).toString('base64') }); return;
+      }
+      const query = Object.fromEntries(url.searchParams);
+      sendJson(res, 200, runtime.sessions.legacyHistory(root, id, query)); return;
+    }
     if (/^\/conversations\/[^/]+\/observation$/.test(route)) { sendJson(res, 200, runtime.observations.status(root, route.split('/')[2])); return; }
   }
   if (req.method !== 'POST') throw fault('assistant_route', 'Unknown conversation operation.', 404);

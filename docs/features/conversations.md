@@ -48,6 +48,26 @@ make room for another conversation.
 Composer text and an unconfirmed send identity remain in the current browser's
 private IndexedDB. They are restored with that conversation after reload.
 
+## Recovered Lisière history
+
+The [recovery CLI](../system/lisiere-migration.md#import-a-retained-conversation)
+can link a retained conversation to a chosen document or working notebook.
+**Read retained messages** shows the original text, context and partial answers.
+**Export original history** keeps the exact source records, including events
+that have no readable projection. Long messages and exports use bounded pages;
+an interrupted or cancelled export leaves the private original available.
+
+The original task identity remains recorded. Sending a new message or starting
+Voice explicitly creates a separate Context Room task for the selected source.
+It can read the retained messages through a scoped history tool. Original
+contexts, approvals and uncertain requests are historical data; they do not
+expand its permission or get replayed. Later Context Room messages resume this
+new task through the usual saved-conversation workflow.
+
+Legacy Desktop bindings may contain only an identity and retained requests in
+the snapshot. The interface does not invent missing messages or claim an old
+request was delivered. The original task remains in Codex.
+
 The model catalog is loaded only after an explicit connection action. Reading,
 drawing, `doctor`, `guard` and `brief` do not require an agent. The adapter starts
 its own local stdio Codex process; it never restarts Desktop. Model tools remain

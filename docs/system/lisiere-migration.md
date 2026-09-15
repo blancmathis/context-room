@@ -153,7 +153,7 @@ notebook freeze/submission and human review workflow to produce and decide an
 ordinary document. The migration receipts never substitute for that decision.
 
 This command imports one canonical Mac board. Android draft/outbox reconciliation,
-recording-context recovery, conversation continuation, old handoff import and automatic rollback
+recording-context recovery, old handoff import and automatic rollback
 are separate unfinished work. It does not acknowledge an old operation, resume
 an old agent task or switch off the legacy writer.
 
@@ -192,8 +192,50 @@ The same interface is available through an authorized connected owner tablet.
 The editor supports 256 working files and 64 MiB per proposal, with 16 MiB per
 opened file. Larger workspaces remain on disk for the existing CLI workflow.
 
-Android journal/outbox reconciliation and conversation or recording attachment
+Android journal/outbox reconciliation and recording attachment
 are separate from this canonical Mac text import.
+
+## Import a retained conversation
+
+Choose a `selector` from the `conversations` inventory and an existing readable
+document or working notebook in the target project. Open or import the notebook
+first. This is an explicit link to that destination; original per-message
+contexts remain historical records and do not silently retarget it.
+
+```sh
+context-room migrate --root PROJECT --import-lisiere SNAPSHOT \
+  --legacy-conversation SELECTOR --path docs/Original.md
+context-room migrate --root PROJECT --import-lisiere SNAPSHOT \
+  --legacy-conversation SELECTOR --path docs/Original.md \
+  --apply --revision PREVIEW_REVISION
+```
+
+Preview is read-only. Apply retains the selected conversation's original
+SQLite cells, task identity, events and Desktop requests in the private
+conversation store outside the project. Integer and binary cells retain their
+exact encodings. A separate readable projection combines identified response
+deltas with their completed item, labels partial answers and keeps unknown
+events in the full export. An inactive request is not taken as delivery proof.
+Recovery supports an archive of up to 30 MiB; larger input is refused with its
+original snapshot intact. Apply and interrupted-publication retries preserve
+later human messages and their new task identity.
+
+The default store is `~/.context-room/assistant`; an owner can use the same
+`CONTEXT_ROOM_ASSISTANT_HOME` for the migration CLI and Mac runtime to select a
+different private location. It must stay outside the project. Imports never
+write accepted documents, start a provider, resume an old task or replay a send.
+
+In the document or notebook's conversation, **Read retained messages** and
+**Export original history** work without Codex. Export verifies every transfer
+and the complete archive hash, rechecking access for each one-MiB chunk. A later
+explicit new message or Voice action starts a separate Context Room task with
+the original source tool and a read-only history tool. Historical contexts and
+approvals cannot authorize new work. The original Lisière or Desktop task remains
+unchanged; subsequent new messages resume the new Context Room task.
+
+A Mac snapshot can contain only part of a Desktop task's transcript. Its
+original task identity remains available; missing messages and unconfirmed
+delivery are never invented. This import does not switch the legacy writer.
 
 ## Completion boundary
 

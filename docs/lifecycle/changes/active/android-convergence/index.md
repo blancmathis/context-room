@@ -27,6 +27,7 @@ A second project catalog, a hosted service, a notes inbox, automatic documentary
 - A separate, explicitly selected owner pairing opens the existing Context Room interface through the pinned Android transport. The attached loopback runtime retains project/folder permissions and the normal human review nonce. Drawing credentials cannot gain this permission. The retained web workspace and native canvas operate on the same working notebook; document frames cannot use the owner bridge.
 - A conversation retains its original project, file, selection and Codex task. Browsing another document does not retarget it. Notebook tools recheck object/location revisions; document replacements create a proposal through the existing local review engine. No agent tool can accept, reject or publish.
 - Conversation sends have durable identities. Explicit recovery compares the original turn and input hash before restoring a response; it never silently resends. The server starts its owned Codex child only after an explicit connection or message action.
+- Legacy conversation import retains original task identities, exact historical records and uncertain requests privately. A chosen document or working notebook can host an explicit new scoped continuation. Import and reading never resume the legacy task or replay its requests.
 
 ## Verification through this milestone
 
