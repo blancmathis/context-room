@@ -14,18 +14,22 @@ revision. Export is read-only against the source and does not require the
 Lisière executable or service. A selected canonical Mac board can then become
 an editable, unaccepted working notebook. Selected Mac text drafts can become
 Local working proposals; selected Android journals reconstruct their retained
-text into the same workflow. Tablet outbox reconciliation and installation
-cutover remain in progress.
+text into the same workflow. Exact Android/Mac queue comparison, separate tablet
+cache copies and explicit PCM associations are available through preview/apply.
+A recognized-service cutover and safe write-pause rollback are implemented; actual
+macOS shutdown and activation still require local verification.
 
 ## Defines
 
 The recovery snapshot format, source compatibility, private export, exact
-revision precondition, selected-board and text-draft import, and interrupted-operation recovery.
+revision precondition, selected-board and text-draft import, original PCM links,
+queue/cache recovery and the explicit recognized-service writer handover.
 
 ## Does not define
 
-Human acceptance, installation on a personal device, project destination
-mapping or switching the active writer. An export does not complete migration.
+Human acceptance, personal installation authorization, automatic project
+destination inference or a functional downgrade to Lisière. An export alone does
+not switch the active writer or complete migration.
 
 ## Export
 
@@ -426,9 +430,9 @@ The chosen destination must be unused and in the existing editable project
 scope. Original selected records and revision/ID mapping are retained privately.
 The header doubles as the immutable replay receipt: an interrupted retry keeps
 later human edits. The existing Local/Shared submission and human review are
-still required to publish accepted documentation. Cache-only drawings without
-an interpretable queue, and private progressive-pen job reconciliation, are not
-implemented by this comparison.
+still required to publish accepted documentation. Cache-only drawings use the
+explicit tablet-copy view below; private progressive-pen job reconciliation is
+not implemented by the queue comparison.
 
 ## Explicit original PCM associations
 

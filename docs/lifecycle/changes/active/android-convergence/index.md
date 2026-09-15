@@ -59,16 +59,22 @@ The Hub opens their saved working text or rendered HTML; explicit submission
 and later human review pass across all four browser configurations.
 Selected Android text journals also reconstruct into Local working proposals,
 retaining exact source records and uncertain delivery without replaying requests.
-Android outbox reconciliation,
-recording-context reconciliation, handoff collection, writer cutover and release packaging
-remain to be implemented. The complete
-connected-device and physical acceptance criteria remain open.
-An explicit Android recovery build now preserves the original application
-identity and signing key. Its local ZIP export, original-data preservation,
-cancel/reopen recovery and extraction on the Mac pass on an isolated emulator.
-Direct ZIP ingestion and personal-device upgrade remain separate work.
-An optional version-2 recovery export now retains original Android PCM files
-without reading the old credentials or starting recognition.
+Exact Android/Mac ordinary queue reconciliation, explicit tablet-cache copies,
+original PCM associations, native transfer recovery and a recognized-service
+writer cutover are now implemented. Safe rollback pauses writes without restoring
+old data over recent work. The Mac installation kit is prepared without activating
+a service. Progressive legacy pen-job reconciliation and a functional downgrade
+remain software gaps. Custom legacy installation layouts are refused rather than
+guessed. The latest coverage and test boundaries are in the current matrix in
+[verification](verification.md).
+
+Direct native ZIP ingestion is implemented and tested. The original Android
+identity recovery build retains its earlier isolated-emulator evidence; personal
+upgrade remains unauthorized here. The new PCM owner test is prepared but not
+executed, and its instrumentation APK could not be built in this environment.
+Actual macOS service control/installation, fresh browser execution of the new
+recording UI, authenticated-provider performance and physical BOOX acceptance
+remain separate verification tasks. No release has been published.
 
 ## Gesture continuation
 

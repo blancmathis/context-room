@@ -1,304 +1,460 @@
 ## Summary
 
-Relais d'exécution pour la branche de finalisation de Context Room, après la
-fusion de la convergence initiale. Les changements livrés sont du code intégré ;
-la migration complète et le remplacement à 100 % ne sont pas déclarés terminés.
+Relais d’exécution et de livraison de la PR 42. Cette continuation ajoute du code,
+des tests et un kit de préparation Mac. Elle ne déclare pas le remplacement
+complet de Lisière ni une installation personnelle terminée.
 
 ## Defines
 
-La base publique, les modifications conservées, les preuves déjà obtenues,
-les commandes restantes et les frontières entre code portable encore manquant,
-émulateur, fournisseur réel et BOOX physique.
+Les entrées exactes des preuves, les nouveaux fichiers, la reprise sur la branche
+existante et les vérifications restantes. La matrice canonique actuelle est en
+fin de `docs/lifecycle/changes/active/android-convergence/verification.md` ; ses
+56 lignes distinguent preuve héritée, contrat exécuté et comportement non testé.
 
 ## Does not define
 
-Une autorisation de fusion, publication, installation personnelle, modification
-d'appairages ou migration de données privées. La review Git et l'acceptation
-documentaire humaine restent distinctes.
+Une autorisation de fusion de PR, release/npm, installation personnelle,
+modification d’appairage, arrêt de Codex/Desktop/Tailscale ou migration privée.
+Les décisions documentaires restent humaines et distinctes de la revue Git.
+Les fixtures et les contrôles d’intégration n’acceptent aucun document personnel.
 
-# Relais Codex local — 15 septembre 2026
+# Relais Codex local — continuation du 15 septembre 2026
 
-## Base et HEAD
+## 1. Commits exacts et reprise de la même branche
 
-Base publique : `1a2cdcec1435d60cd8d07a3762a369e066508ce1`.
-Branche : `mathis/context-room-recovery-hardening-20260915`.
-PR de revue : `blancmathis/context-room#42` ; aucune fusion automatique.
-Checkpoint du code et des tests : `98c437035970344e9b44d6e857d81bafd0dbcc2e`.
-Le HEAD exact de livraison est le commit contenant ce relais, indiqué dans la PR
-et dans `SOURCE_COMMIT` des artefacts CI. Vérifier cet identifiant avant tout test ;
-un commit synthétique de merge CI peut avoir un SHA distinct et le même arbre.
+- Base publique de la PR : `1a2cdcec1435d60cd8d07a3762a369e066508ce1`.
+- Dernier HEAD **distant** vérifié : `b41e8945786cd5821e7adb45695fb6b271849336`.
+- HEAD **logiciel et tests** de cette livraison : `0b932abf868de1238a9368a09aa5908da6e3418f`.
+- Branche : `mathis/context-room-recovery-hardening-20260915`.
+- PR : `blancmathis/context-room#42`, ouverte et en brouillon.
+
+Les six commits logiciels sont locaux et **ne sont pas poussés**. Les actions
+GitHub exposées ici sont en lecture seule ; aucune autre connexion autorisée ne
+permet la poussée. Un commit final ne modifie que ce relais et la documentation.
+Son SHA exact est dans le reçu de distribution `DELIVERY.json` / `SOURCE_COMMIT`
+qui accompagne les sources et le bundle. Ne pas présenter la CI de b41 comme la
+CI de cette livraison.
+
+| Commit local | Lot |
+| --- | --- |
+| `715f2f8435c80bd77dafc193008fa078effc0bae` | Rapprochement des intentions Android et des reçus/révisions Mac |
+| `e566fd2eafb0c950e6903dd2c98a835ccf8629d1` | Rattachement PCM explicite, CLI, HTTP et panneau de conversation |
+| `ada764db142341743c416a88314d2c71653a6bc4` | Bascule journalisée, arrêt vérifié de l’ancien service et pause de retour arrière |
+| `fe3f10edff6552947f12ee8a70bc70071465ac35` | Kit Mac vérifiable et définition LaunchAgent inerte |
+| `a6989eee73ddbee75aaae03ca05e1663ad5a7748` | Fixture native et instrumentation Android du rattachement PCM |
+| `0b932abf868de1238a9368a09aa5908da6e3418f` | Copie explicite du cache tablette et préconditions exactes d’annulation |
+
+Le bundle est **incrémental**, avec b41 comme prérequis. Il ne contient pas
+l’historique privé Lisière. Avoir seulement main/1a2cdce ne suffit pas. Reprendre
+dans un clone ou worktree dédié, propre, sans réinitialisation ni force-push :
 
 ```sh
 umask 022
-BASE=1a2cdcec1435d60cd8d07a3762a369e066508ce1
-CODE_HEAD=98c437035970344e9b44d6e857d81bafd0dbcc2e
 BRANCH=mathis/context-room-recovery-hardening-20260915
-HEAD=$(git rev-parse HEAD)
-git merge-base --is-ancestor "$BASE" "$HEAD"
-git merge-base --is-ancestor "$CODE_HEAD" "$HEAD"
-git status --short
-git log --oneline "$BASE..$HEAD"
+BASE=b41e8945786cd5821e7adb45695fb6b271849336
+CODE_HEAD=0b932abf868de1238a9368a09aa5908da6e3418f
+BUNDLE=/chemin/vers/context-room-pr42-continuation.bundle
+
+git fetch origin "$BRANCH"
+git cat-file -e "$BASE^{commit}"
+git status --short              # ne pas continuer avec un travail non conservé
+git switch "$BRANCH"
+git bundle verify "$BUNDLE"
+git fetch "$BUNDLE" "refs/heads/$BRANCH"
+git merge --ff-only FETCH_HEAD  # avance locale seulement, pas une fusion de PR
+git merge-base --is-ancestor "$CODE_HEAD" HEAD
+git rev-parse HEAD
 ```
 
-Travailler dans un clone/worktree dédié. Ne pas réinitialiser un arbre contenant
-un travail récent. Le bundle éventuel ne contient que les nouveaux commits et
-nécessite les objets de la base publique ; `git bundle verify` doit réussir après
-récupération de cette base. L'archive de sources ne doit pas inclure node_modules,
-les clés preview/personnelles, les bases, les enregistrements ou l'historique privé.
+Si la branche distante a avancé de façon divergente, arrêter l’avance rapide et
+intégrer les changements en préservant les deux travaux. Ni `reset --hard` ni
+force-push. Les patches offrent un second moyen de reprise ; **ne pas appliquer
+à la fois patches et bundle**. La PR existante est la destination, pas une PR ou
+branche concurrente. Une éventuelle poussée ultérieure doit nommer cette branche
+et n’autorise aucune fusion ou publication.
 
-## Changements conservés
+## 2. Corrections navigateur déjà présentes dans la base distante
 
-`7af7f0c…` : `migrate --export-lisiere` accepte un ZIP natif Android v1 et produit
-un snapshot v3. Les formats de dossier v1/v2 restent lisibles. Les originaux,
-les dérivés Android, les identités int64 et les PCM sont conservés ; le dossier
-temporaire n'entre pas dans l'identité preview/apply. SQLite travaille sur une
-copie privée, avec WAL/journal. La publication reprend seulement un préfixe exact,
-sans écrasement ni lien physique persistant après interruption.
+Les anciens échecs ne sont plus ouverts à b41. La CI **34966764884** a réussi :
+Node 20/22.23.0/24, Chromium desktop/mobile, Firefox, WebKit, accessibilité,
+performances desktop, Soak et gate. La convergence **34966764731** a réussi
+(contrats, confidentialité du package, build Android).
 
-`21f2ed0…` : application explicite du mode examiné sur le nouveau descripteur de
-fichier. Le bug 0644→0600 / 0755→0700 sous umask 077 a été reproduit avant correction.
-Les contrôles de révision, origine et modification concurrente de permissions sont
-conservés.
+Les deux URL de review sont servies : `/assets/local-proposal-review.mjs` et
+`/assets/ui/local-proposal-review.mjs`. Le module `native-drawing.mjs` est exposé.
+Les lignes de review conservent leur nœud DOM lors du rafraîchissement, notamment
+entre pointerdown et pointerup. Le test Shared attend ensemble les assertions
+originelles de révision exacte de `current`, du lien de skill et de configuration ;
+il ne confond plus catalogue actualisé et matérialisation disque terminée.
+Aucune de ces assertions n’a été retirée dans cette continuation.
 
-`9f74529…`, `8b6f0e7…` et `98c4370…` : le connecteur de dessin utilise les carnets
-natifs, sans exécutable/service Lisière. Le parcours PNG demande une destination
-éditable, conserve une scène figée et ne l'accepte que par la décision humaine
-existante. La récupération des anciens transferts permet un choix explicite
-source/aperçu/objets, conserve les tombstones et refuse les assets/révisions
-inconnus. Les diagnostics audio vérifient les dépendances locales, sans installation
-ni inférence. Des tests CLI et un scénario navigateur réel couvrent les nouvelles
-entrées ; leurs résultats doivent être lus sur le HEAD de livraison.
+Les parcours complets carnet → dessin → instantané → relecture/correction →
+acceptation humaine, y compris le PNG natif, réussissent **sur b41**. Les six
+nouveaux commits prolongent cette base sans réécrire ces corrections. Ils ne
+possèdent pas encore de résultat CI distant.
 
-Fichiers nouveaux :
+## 3. Nouveaux comportements livrés
 
+### Réconciliation et cache tablette
+
+`src/lisiere_reconcile.py` compare les arguments Android retenus avec la
+sérialisation et les digests Mac d’origine, sans passage des entiers historiques
+par des nombres JavaScript. Les cellules, dérivés et identités doivent concorder.
+Une mutation confirmée exige digest, résultat, historique et révisions cohérents.
+Une identité ou un contenu ressemblant ne constitue pas un reçu.
+
+Les chaînes `board.mutate` projettent uniquement les révisions de leurs propres
+prédécesseurs vérifiés ou projetés. Les annulations gardent, au contraire, la
+précondition exacte du geste historique : aucune adaptation sur un geste récent.
+Créations, métadonnées, dossiers/projets, assets, suppressions et intentions
+compatibles peuvent former une **nouvelle scène de récupération**. La source Mac,
+les objets indépendants et les deux snapshots restent inchangés.
+
+Un cache tablette présent impose le choix explicite `queue` ou `tablet`. Le
+second récupère les objets locaux, même absents de la file, dans une copie
+éditable distincte. Les révisions d’import et leur correspondance originale sont
+conservées ; elles ne prétendent pas être des révisions reçues du Mac. L’absence
+d’un objet du cache ne devient pas une suppression Mac. Les assets manquants,
+valeurs non représentables et conflits restent bloquants, avec originaux retenus.
+
+```sh
+node bin/context-room.mjs migrate --root "$PROJECT" \
+  --reconcile-lisiere "$ANDROID_SNAPSHOT" --mac-snapshot "$MAC_SNAPSHOT" \
+  --legacy-board "$BOARD_ID" --legacy-actor "$ORIGINAL_ACTOR" \
+  --path docs/Recovered.crnb
+
+# Après lecture du plan et choix explicite :
+node bin/context-room.mjs migrate --root "$PROJECT" \
+  --reconcile-lisiere "$ANDROID_SNAPSHOT" --mac-snapshot "$MAC_SNAPSHOT" \
+  --legacy-board "$BOARD_ID" --legacy-actor "$ORIGINAL_ACTOR" \
+  --path docs/Recovered.crnb --recovery-view queue
+# Ajouter --apply --revision REVISION pour appliquer exactement ce second plan.
+# Choisir tablet et un autre chemin pour une copie distincte du cache.
 ```
-src/lisiere_android_export.py
-src/local_audio_diagnostics.mjs
-src/ui/native-drawing.mjs
-test/lisiere_android_export.test.mjs
-test/python/lisiere_android_export_test.py
-test/local_proposal_permissions.test.mjs
-test/local_audio_diagnostics.test.mjs
-test/native_recovery_cli.test.mjs
-RELAIS-CODEX-LOCAL.md
+
+Ne pas déduire automatiquement `ORIGINAL_ACTOR` du nom de la tablette. Réutiliser
+l’inventaire du snapshot. Aucun ancien envoi n’est rejoué ou acquitté. L’import
+n’écrit pas un document ordinaire accepté ; la soumission et la décision humaine
+restent les parcours Local/Shared existants.
+
+### PCM explicitement lié
+
+`src/lisiere_recording_links.mjs` conserve l’audio et l’association dans le store
+privé de l’assistant, **hors du projet**, avec hash, source et version choisis.
+Le nom haché du PCM n’est jamais utilisé pour deviner un contexte. Chaque lecture
+réautorise le document/carnet et, le cas échéant, la conversation d’origine.
+
+```sh
+node bin/context-room.mjs migrate --root "$PROJECT" \
+  --import-lisiere "$SNAPSHOT" --legacy-recording "$PCM_NAME" \
+  --path docs/Guide.md --label "Dictée récupérée"
+# Ou --conversation-id UUID à la place de --path, jamais les deux.
+# Appliquer ensuite avec --apply --revision REVISION après lecture du plan.
 ```
 
-Fichiers existants modifiés : snapshot Python/Node et lecteur/inventaire associé,
-connecteur Lisière, CLI/registry, application serveur, moteur Local de propositions,
-rendu SVG, UI de review PNG, runtime/audio locaux, tests de connecteur et de snapshot,
-scénario `test/e2e/notebooks.spec.mjs`, propriétaires documentaires de migration,
-workflow documentaire, conversations, runtime et journal de vérification.
-`git diff --name-status "$BASE" "$HEAD"` donne la liste exhaustive du commit reçu.
+Le panneau existant de conversation propose « Recovered recordings » : sélection,
+aperçu, rattachement, chargement audio **sans autoplay** et export PCM exact.
+Ni transcription, ni envoi de message, ni création de tâche d’agent ne résultent
+d’un rattachement. Les tests HTTP/CLI et hashes passent ; le nouveau parcours
+navigateur et son ergonomie restent non exécutés ici.
 
-## Preuves déjà obtenues — ne pas les répéter sur des entrées inchangées
+### Bascule et retour arrière sans écrasement
 
-Le journal canonique est
-`docs/lifecycle/changes/active/android-convergence/verification.md`, section
-« post-merge native runtime delivery », avec toutes les lignes C01–C08/R01–R29/V01–V19.
+L’action `--cutover-lisiere` vise uniquement le service standard reconnu
+`fr.lisiere.companion`, son plist original et son répertoire de données standard.
+Le plan vérifie un snapshot Mac terminé et identique à la source vivante.
+L’application met l’écriture en transition, demande l’arrêt/désactivation du
+service, vérifie l’absence de fichiers ouverts, puis déplace **sans remplacement**
+le répertoire original complet vers sa rétention privée. Un répertoire bloquant
+remplace l’ancien chemin SQLite. L’écriture Context Room n’est autorisée qu’après
+vérification de cette barrière et du snapshot retenu. Les journaux reprennent les
+phases enregistrées, sans remplacer un occupant inconnu.
 
-Le premier checkpoint `7af7f0c…` a passé les trois jobs Node 20/22.23/24 et les
-quatre jobs navigateur de la CI **34949046038**, avec les contrôles package du
-job Node 22. Le Soak n'est pas vert : la navigation prolongée a passé, mais la
-seconde fenêtre du scénario temporel échoue sur l'expansion de `notes`.
-L'ancien échec « slow project activation » n'a pas été reproduit par ce run ;
-aucune correction ou intermittence n'en est déduite.
+```sh
+# macOS, compte synthétique pour le premier essai ; aucune donnée personnelle :
+node bin/context-room.mjs migrate --root "$PROJECT" \
+  --cutover-lisiere "$LEGACY_SOURCE" --mac-snapshot "$MAC_SNAPSHOT" \
+  --legacy-plist "$LEGACY_PLIST"
+# L’application exige un choix humain local explicite, puis --apply --revision R.
 
-Dans le clone isolé, avec Node 26.3.1/Python 3.14.6 et umask 022 : 18 tests Python
-ZIP, 9 tests Python snapshot historiques, puis **40/40** tests Node ciblés sur
-les fichiers ci-dessous ont passé. Ce dernier total couvre 8 contrats connecteur,
-4 diagnostics audio, 7 contrats audio préexistants et 21 contrats Local de
-propositions. Il n'inclut pas les deux nouveaux tests CLI ni le nouveau parcours
-navigateur ; vérifier leur CI avant de les déclarer validés.
+node bin/context-room.mjs migrate --root "$PROJECT" --rollback-cutover
+# --apply --revision R => pause de toute écriture inscrite à cette migration.
+node bin/context-room.mjs migrate --root "$PROJECT" --resume-cutover
+# --apply --revision R => reprise de Context Room si la barrière reste intacte.
+```
+
+**Ce rollback est une pause sûre, pas un retour fonctionnel à Lisière.** Il
+préserve les gestes, fichiers, propositions et configurations récents en place.
+Il ne restaure pas d’anciens fichiers sur les nouveaux et ne redémarre aucune
+ancienne file. Répéter une transition dont la réponse s’est perdue n’agit pas sur
+une génération ultérieure. `doctor`, les lectures et les actions de sécurité
+restent accessibles pendant la pause. Une barrière ou une autorité manquante
+bloque les mutations au lieu de les déclarer réussies.
+
+La source complète retirée peut contenir des données privées et credentials ;
+elle reste uniquement dans son répertoire privé local. Ne jamais joindre cette
+rétention à une PR, aux logs publics ou à cette distribution de sources.
+
+## 4. Preuves déjà exécutées et limites exactes
+
+Entrée de la campagne finale : **0b932abf868de1238a9368a09aa5908da6e3418f**,
+Linux, Node **22.16.0**, Python **3.13.5**, `umask 022`.
+
+| Contrôle | Résultat observé |
+| --- | --- |
+| `npm test` avec le runner et les assertions d’origine | **101/102 processus**, code de sortie **1** ; pas une suite entièrement verte |
+| Cas restant du shard Shared 1/4 | `shared_context.test.mjs:401`, « GitHub security setup installs and verifies a no-bypass pull-request ruleset » ; `ssh-keygen` absent, arrêt avant assertions |
+| Comparaison ciblée à b41 inchangé | Même test, même erreur `ssh-keygen is required to create the restricted agent credential` |
+| Reste de ce shard | 40/41 cas passent ; les shards 2/4, 3/4, 4/4 et les tests exclusifs Shared passent |
+| Nouveaux modules de réconciliation/cache/PCM/bascule/kit/fixture | Tous leurs processus passent dans la campagne finale, sans skip ajouté |
+| Réconciliation Python | 16 contrats, incluant nombres exacts et annulations périmées, appelés par la suite Node |
+| `node --check` et compilation Python en mémoire | 32 fichiers nouveaux/modifiés vérifiés |
+| `npm run package:privacy` | Réussite |
+| `npm pack --dry-run` | Réussite ; version **0.6.17** inchangée, aucune publication |
+| `doctor` sur projet synthétique neuf, sans réduction du périmètre | Aucune erreur projet ; dépendances audio facultatives absentes annoncées, aucun store d’agent créé |
+| Fixture doctor négative | Une réduction `startupSkills.enabled` a correctement déclenché `review_authority_tamper` ; résultat conservé, aucun contournement |
+| Nouveau navigateur PCM | Navigation refusée : `net::ERR_BLOCKED_BY_ADMINISTRATOR` avant exécution du scénario |
+| Build Android local | Échec **avant compilation** : distribution Gradle 8.11.1 non mise en cache, résolution DNS indisponible ; SDK non configuré |
+
+Le dossier de distribution contient un résumé assaini des preuves. Les logs
+complets ne sont pas publiés indistinctement : les fixtures peuvent produire des
+identifiants temporaires. Aucune donnée personnelle n’a servi aux tests.
+
+Ne pas répéter la campagne complète inchangée pour chercher du vert. Le test
+bloqué doit être lancé avec le vrai OpenSSH, pas un wrapper simulé ou une assertion
+réduite :
+
+```sh
+command -v ssh-keygen
+umask 022
+node --test \
+  --test-name-pattern='^GitHub security setup installs and verifies a no-bypass pull-request ruleset$' \
+  test/shared_context.test.mjs
+```
+
+Le dernier commit de distribution ne change que des documents. Si le logiciel
+est modifié lors d’une reprise, exécuter d’abord les tests affectés, puis une
+campagne finale pertinente sur le nouvel état. La réussite CI b41 est réutilisable
+seulement pour ses entrées réellement inchangées, jamais pour valider l’UI PCM.
+
+## 5. Préparation et vérification Mac
+
+Le kit fourni est du **code préparé, pas une installation**. Il ne contient ni
+node_modules, ni modèle Whisper, ni clé, ni base, ni plist activé. Son manifeste
+fixe les fichiers, modes et SHA-256. La configuration livrée désigne
+`/opt/homebrew/bin/node` comme chemin cible à vérifier sur le Mac ; aucun constat
+de disponibilité de ce chemin n’a été fait dans cette session Linux.
+
+Conserver le kit à un emplacement privé stable et vérifier **avant** d’ajouter
+les dépendances. Utiliser les sources complètes pour régénérer un kit lorsque le
+chemin Node ou les options doivent changer, plutôt que modifier le manifeste :
+
+```sh
+NODE_ON_MAC=/chemin/absolu/vers/node
+KIT=/chemin/prive/stable/context-room-kit
+node scripts/prepare-mac-install.mjs --output "$KIT" --node "$NODE_ON_MAC"
+# Puis --apply --revision REVISION, avec les mêmes options.
+node scripts/prepare-mac-install.mjs --verify --output "$KIT" --revision "$REVISION"
+```
+
+Prérequis locaux à vérifier : Node 20+, npm, Git, Python 3 compatible avec les
+helpers, OpenSSH pour la configuration sécurisée Shared ; JDK 17/SDK 35 pour
+Android. Whisper et son modèle restent optionnels. Aucune API payante n’est
+substituée. Ajouter `--whisper /chemin/whisper-cli --model /chemin/modele.bin`
+lors de la préparation seulement après choix et vérification locaux.
+
+Avec autorisation explicite de téléchargement des dépendances :
+
+```sh
+cd "$KIT/runtime"
+npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+# --offline peut être ajouté si le cache est déjà complet.
+node bin/context-room.mjs doctor --root "$SYNTHETIC_PROJECT"
+node bin/context-room.mjs hub status --format json
+```
+
+Le vérificateur du kit refuse les fichiers non listés, y compris les dépendances
+installées ensuite ; son reçu concerne le code préparé avant cette expansion.
+La définition LaunchAgent se rend donc **avant** `npm ci`, depuis les sources
+complètes, et se conserve hors du kit sans écrasement :
+
+```sh
+node scripts/prepare-mac-install.mjs --launch-plist --output "$KIT" \
+  --revision "$REVISION" --home "$HOME" > "$NEW_PRIVATE_PLIST"
+```
+
+`NEW_PRIVATE_PLIST` doit être absent ; utiliser le mode shell `noclobber` ou une
+création exclusive. Inspecter les processus, le port choisi et tout ancien plist
+`app.contextroom.local` avant activation. La définition ne crée pas de store
+alternatif, ne réenregistre pas le projet du runtime et n’expose pas implicitement
+un listener tablette. En compte de test et après autorisation, valider avec
+`plutil -lint`, enregistrer le plist sans remplacer un existant, puis utiliser
+`launchctl bootstrap gui/$(id -u) CHEMIN_PLIST`. Vérifier arrêt, redémarrage,
+reconnexion, archives et absence d’un deuxième Hub. Ces actions ne sont **pas**
+exécutées par la préparation du kit.
+
+L’adaptateur d’arrêt Lisière, `lsof` et `renamex_np(RENAME_EXCL)` doivent être
+exercés sur macOS. Les contrats Linux utilisent de vrais fichiers/SQLite et le
+renommage Linux sans remplacement ; ils ne prouvent pas le comportement Darwin.
+Ne pas tester l’arrêt avec le compte/service personnel : préparer un compte
+synthétique et un service factice explicitement contrôlé sous les chemins du
+contrat. Conserver hors dépôt tout état produit par ces essais.
+
+## 6. Android : fichiers touchés, artefact et exécution locale
+
+Production Java/Gradle et les huit assets embarqués restent inchangés depuis b41.
+**Nouveau code natif de test** :
+`android/app/src/androidTest/java/app/contextroom/tablet/OwnerRecordingTest.java`.
+La fixture `test/android/owner-fixture.mjs` et le vérificateur
+`test/android/verify-owner.py --recording` sont étendus. L’interface servie par
+le Mac a changé : les anciennes preuves owner-WebView ne couvrent pas ce nouvel
+écran, même avec un APK production byte-for-byte compatible.
+
+L’archive APK fournie est explicitement la **baseline b41** issue du run
+34966764731, artefact 10396110115, commit CI `a868511baa87b37e582001b48440afba79da1610`
+(arbre identique à b41).
+
+- APK : `d0f711540bc8008ca9d09413ce2e458c1d920c5c75ceeebf2b4a0d77ddbe2f8c`.
+- ZIP d’artefact : `1dca8d9913eb3a899267eb158c44d53c7a58588d9f65731fc4c483063f8687d3`.
+- Comparaison des huit assets production avec les fichiers livrés : identique.
+- APK exécuté ici : **non**. Nouvelle instrumentation compilée/exécutée : **non**.
+
+Build local avec les vrais outils, sans importer la clé privée personnelle dans
+ChatGPT/GitHub :
 
 ```sh
 umask 022
-node --test --test-concurrency=1 \
-  test/lisiere_connector.test.mjs test/local_proposal_permissions.test.mjs \
-  test/local_proposals.test.mjs test/local_proposal_initial.test.mjs \
-  test/local_audio_diagnostics.test.mjs test/local_audio.test.mjs \
-  test/assistant_audio.test.mjs
-```
-
-L'installation npm locale a été interrompue et a laissé `yaml/index.js` absent.
-Des chargements de suites HTTP/CLI ont donc échoué avant leurs tests ; ce n'est pas
-une preuve de défaut produit ni d'effet umask. La régression macOS initiale complète
-et le cas Shared 0755/0700 restent à établir dans une installation complète.
-Une lecture privée et une analyse de trace ont été bloquées par les contrôles de
-la session Web ; elles n'ont pas été contournées. Aucun contenu privé n'a été publié.
-
-## Validation portable restante sur le HEAD reçu
-
-Utiliser une version Node prise en charge, de préférence celle de la CI, et une
-installation neuve dans le clone dédié. Lire d'abord le statut final de ses jobs,
-pour ne pas répéter tous les tests déjà verts sur les mêmes entrées.
-
-```sh
-umask 022
-npm ci
-npm test
-node bin/context-room.mjs doctor
-node bin/context-room.mjs doctor --format json
-npm run package:privacy
-npm pack --dry-run
-```
-
-Le nouveau test CLI exécute réellement `doctor` et la récupération des transferts,
-dans des dossiers synthétiques et sans companion. Pour un échec circonscrit :
-
-```sh
-node --test test/native_recovery_cli.test.mjs test/lisiere_android_export.test.mjs
-npx playwright test test/e2e/notebooks.spec.mjs --project=chromium-desktop \
-  --grep 'PNG review uses native editable source'
-npx playwright test test/e2e/ux-endurance.spec.mjs --project=chromium-desktop \
-  --grep '@soak time-dependent reviews, drafts, and shared reconnect safely'
-```
-
-Ne pas lancer à nouveau les quinze minutes de navigation pour examiner seulement
-l'échec de la seconde fenêtre. Conserver capture de cette seconde page, requêtes
-ciblées, projet/worktree sélectionné, erreurs, état de génération du catalogue et
-réponses Explorer. Résoudre le défaut ou démontrer la fixture incorrecte sans
-supprimer l'assertion d'expansion ni augmenter le budget de latence arbitrairement.
-
-Le nouveau scénario PNG vérifie : scène native réelle, source éditable non acceptée,
-PNG aux dimensions d'origine, conservation d'un geste ultérieur dans la scène mais
-exclusion de ce geste des octets examinés puis acceptés. Inspecter sa capture ; un
-sous-test module ou une seule image ne valide pas tous les formats/écrans.
-
-## Développement portable encore manquant — pas un blocage BOOX
-
-La réconciliation Android/Mac des opérations en attente n'est pas implémentée.
-Reprendre explicitement `board.create`, `board.metadata`, `asset.put`, `board.mutate`,
-les suppressions/annulations, carnets libres et frames progressives. Une identité
-seule ne prouve rien : lier contenu et reçu Mac, préserver les chaînes de révisions
-ajustées par la file d'origine, produire la correspondance global→objet, et conserver
-les cas inconnus dans une récupération exploitable. Le contrôle Float/Double du
-ZIP est un round-trip typé, pas la preuve d'une sérialisation wire unique ; ne pas
-l'utiliser pour fabriquer un acquittement. Tester perte de réponse, doublons,
-révisions périmées, conflits, gros binaires, reprise et idempotence.
-
-Le rattachement explicite des PCM à un document/conversation reste à développer.
-L'inventaire conserve `context: unassigned`. Il faut une sélection/revue et une
-preuve de lien ; aucun contexte ne doit être déduit du nom haché.
-
-La bascule versionnée vers un seul système d'écriture et le rollback complet
-restent à terminer. Préserver configuration, Hub, propositions et états acceptés,
-ainsi que les éditions nouvelles. Ne jamais relancer automatiquement une file
-ancienne incertaine. Les journaux de snapshots/transferts ne constituent pas à eux
-seuls une transaction de migration de tout le système.
-
-L'installation Mac complète n'est pas réalisée ici. Les diagnostics existent ;
-vérifier l'installation propre, les chemins de l'exécutable et du modèle, puis une
-reconnaissance locale réelle. Aucun téléchargement ou remplacement payant n'est
-silencieusement déclenché. Les sources Android et leurs protections de protocole
-n'ont pas changé dans ce lot ; aucune nouvelle protection native d'upgrade n'est
-prétendue.
-
-## Android : build, artefacts et portée des anciens essais
-
-Aucun Java, ressource Android, Gradle ou bridge embarqué n'a été modifié. Le rendu
-SVG et la UI PNG servie par le Mac ont changé : les anciens essais owner-WebView
-ne couvrent pas ce nouveau parcours. Les preuves natives antérieures restent
-historiques pour leurs sources inchangées, pas une validation de la livraison.
-
-Le workflow existant **Convergence verification** compile le preview et les tests
-d'instrumentation sur JDK 17/SDK 35 quand cette PR modifie les sources notebook.
-Son artefact preview contient le commit source et les empreintes. Récupérer
-`SOURCE_COMMIT`, `SHA256SUMS` et le rapport du vérificateur depuis le run correspondant
-au HEAD. Aucun nouveau hash APK local n'est enregistré à ce checkpoint : ne pas
-réutiliser un ancien APK pour couvrir une source différente.
-
-Pour reconstruire sans installer :
-
-```sh
-umask 022
-# JAVA_HOME doit désigner un JDK 17 existant ; ANDROID_HOME un SDK avec
-# platform-tools, platforms/android-35 et build-tools/35.0.0.
-java -version
+export JAVA_HOME=$(/usr/libexec/java_home -v 17)
+export ANDROID_HOME="$HOME/Library/Android/sdk"
 scripts/build-android.sh
-python3 scripts/check-android-artifact.py \
-  --apk android/app/build/outputs/apk/debug/app-debug.apk
-shasum -a 256 android/app/build/outputs/apk/debug/app-debug.apk
+python3 scripts/check-android-artifact.py
 ```
 
-Le script utilise sa clé **preview** locale non personnelle, et produit aussi
-`android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk`.
-Le vérificateur contrôle identité preview, signature v2, permissions, absence de
-clé incluse et huit assets partagés exacts. Cela ne lance pas l'APK.
-
-La variante récupération exige un APK original et un versionCode strictement
-supérieur, avec la même identité/signature. Commande uniquement après accord
-local et présence de la vraie clé sur le Mac, sans transfert ni secret CI :
+Pour la variante de récupération, uniquement après autorisation et avec APK/
+clé d’origine déjà présents localement :
 
 ```sh
-scripts/build-android-recovery.sh "$ORIGINAL_APK_ABSOLUTE" "$HIGHER_VERSION_CODE"
-python3 scripts/check-android-artifact.py \
-  --apk android/.local/legacy-recovery-build/app/outputs/apk/debug/app-debug.apk \
-  --upgrade-from "$ORIGINAL_APK_ABSOLUTE"
+scripts/build-android-recovery.sh "$ORIGINAL_APK" "$HIGHER_VERSION_CODE"
 ```
 
-Un refus de signature/version n'autorise jamais désinstallation, downgrade,
-effacement ou copie de la clé vers ChatGPT/GitHub.
+Ce script exige le chemin absolu de l’APK original et un code de version supérieur,
+vérifie l’identité/signature, et ne doit pas réinitialiser l’application d’origine.
+La vraie clé n’est jamais transférée ou ajoutée à un secret CI.
 
-## Émulateur dédié : à autoriser et exécuter localement
+### Émulateur dédié : nouveau scénario PCM
 
-Ces commandes installent/interagissent avec des APK. Elles n'ont pas été exécutées
-dans cette session. Obtenir l'autorisation avant exécution. Utiliser un émulateur
-jetable `emulator-*`, AVD `ContextRoom_*`, jamais un appareil/émulateur personnel,
-et un répertoire de preuve privé nouveau hors dépôt. Le vérificateur de récupération
-refuse les autres identités et dispose de reprises explicites.
+Sélectionner un AVD nommé `ContextRoom_...`, avec un serial `emulator-...`.
+Les vérificateurs refusent les appareils physiques ou les émulateurs personnels.
+La fixture Shared doit être sous le home : choisir un **nouveau** dossier privé
+sous `$HOME`, hors du dépôt, et ne jamais recycler les fichiers d’un essai ambigu.
+Le script installe les deux APK sur cet émulateur ; cela requiert l’autorisation
+locale d’installation sur cet émulateur dédié.
 
 ```sh
-case "$SERIAL" in emulator-*) ;; *) echo 'Émulateur dédié requis' >&2; exit 1;; esac
-python3 test/android/verify.py --serial "$SERIAL" --output "$PRIVATE_OUTPUT/core"
-python3 test/android/verify-owner.py --serial "$SERIAL" --output "$PRIVATE_OUTPUT/owner"
-python3 test/android/verify-owner.py --serial "$SERIAL" --output "$PRIVATE_OUTPUT/history" --history
-python3 test/android/verify-owner.py --serial "$SERIAL" --output "$PRIVATE_OUTPUT/draft" --draft
-python3 test/android/verify-legacy-upgrade.py --serial "$SERIAL" \
-  --original-apk "$ORIGINAL_APK_ABSOLUTE" --output "$PRIVATE_OUTPUT/recovery"
+EVIDENCE="$HOME/.context-room-verification/pcm-$(date +%Y%m%d-%H%M%S)"
+python3 test/android/verify-owner.py --serial "$EMULATOR_SERIAL" \
+  --output "$EVIDENCE" --recording
 ```
 
-Pour une interruption de récupération déjà amorcée, utiliser seulement le dossier
-exact appartenant à la fixture et `--resume-from` ; pour un export natif réussi
-restant à exploiter côté Mac, utiliser `--resume-export-from`. Ne pas inventer de
-marqueur de réussite ou réensemencer un appareil pour obtenir du vert.
+Attendu : navigation réelle vers la conversation, sélection et preview du PCM
+synthétique, association exacte, lecteur chargé mais en pause, export via le
+sélecteur natif, hash PCM inchangé, source/document/carnet initial inchangés,
+aucune tâche ou requête d’agent. Le test conserve trois captures et un reçu JSON.
+Aucune prise de son ni qualité acoustique n’est déduite de ce scénario.
 
-Sur l'owner-WebView, vérifier en plus le nouveau scénario PNG : destination explicite,
-clavier/cibles, ouverture du carnet, dessin, retour à la review, scène figée, autre
-édition concurrente, acceptation des seuls octets vus, permissions retirées, source
-modifiée, rotation et reprise. Le test navigateur fourni prépare la logique ; il ne
-remplace pas cette instrumentation/native UX.
-
-## Fournisseur Codex et voix réels : preuves séparées
-
-Aucun nouveau temps de génération authentifiée n'est annoncé. Les valeurs
-historiques 13,402 et 14,189 secondes restent au-dessus de la cible de dix secondes.
-Les dessins synthétiques/tests de rendu ne sont pas des mesures de génération.
-Utiliser les fixtures prévues et une connexion Codex locale autorisée, sans
-redémarrer Codex ou ChatGPT Desktop personnels ni reprendre une tâche historique.
+### Navigateur autorisé : nouvelle UI et non-régression pertinente
 
 ```sh
-python3 test/android/verify-agent.py --run --serial "$SERIAL" \
-  --output "$PRIVATE_OUTPUT/agent" --codex-state "$APPROVED_CODEX_TEST_STATE"
-python3 test/android/verify-observation.py --run --serial "$SERIAL" \
-  --output "$PRIVATE_OUTPUT/observation" --codex-state "$APPROVED_CODEX_TEST_STATE"
-python3 test/android/verify-dictation.py --run --serial "$SERIAL" \
-  --output "$PRIVATE_OUTPUT/dictation" --model "$LOCAL_WHISPER_MODEL" \
-  --sample "$SYNTHETIC_SPEECH_WAV"
-python3 test/android/verify-audio.py --serial "$SERIAL" \
-  --output "$PRIVATE_OUTPUT/audio" --native-pen
+npx playwright install chromium firefox webkit
+npx playwright test test/e2e/recovery-recordings.spec.mjs --project=chromium-desktop
+# Puis les autres projets autorisés, après correction éventuelle ciblée :
+npx playwright test test/e2e/recovery-recordings.spec.mjs --project=chromium-mobile
+npx playwright test test/e2e/recovery-recordings.spec.mjs --project=firefox-desktop
+npx playwright test test/e2e/recovery-recordings.spec.mjs --project=webkit-desktop
 ```
 
-Mesurer demande utilisateur→premier résultat réellement utile, séparer attente
-fournisseur, bridge, persistance et affichage, conserver interruption/redirection et
-provenance. Le test de dictée avec audio synthétique ne valide pas un microphone
-BOOX. Les chemins/états d'authentification restent privés hors dépôt.
+Inspecter les captures et les résultats axe ; vérifier sélection, passage à une
+autre conversation, absence d’autoplay, absence d’envoi et exactitude de l’export.
+La première commande installe les navigateurs de test : utiliser un cache existant
+ou obtenir l’autorisation de téléchargement. Aucun contournement de la politique
+Chromium locale n’a été tenté ici. Après intégration/poussée sur la branche
+existante, lire les vrais résultats CI du nouveau SHA plutôt que supposer du vert.
 
-## BOOX physique : aucune preuve remplacée par l'émulateur
+### Fournisseur authentifié et BOOX : preuves distinctes
 
-Après autorisation d'installation/appairage spécifique, vérifier séparément pression,
-paume, fidélité du trait et latence d'encre, ghosting et rafraîchissement, portrait/
-paysage, zoom et lecteur d'écran, clavier/cibles en niveaux de gris, micro/haut-parleur,
-interruption vocale, veille/reprise et coupure/reconnexion Wi-Fi. Tester les deux
-modes tablette et conserver les gestes/brouillons en cours. Ces résultats sont
-entièrement non vérifiés ici ; aucun des tests synthétiques, captures navigateur
-ou builds ne valide V18.
+Les tests d’agent simulé ne valent pas preuve de génération réelle. Les derniers
+temps authentifiés historiques restent **13,402 s et 14,189 s** ; aucun résultat
+sous dix secondes n’est annoncé. Sur l’environnement local autorisé :
+
+```sh
+python3 test/android/verify-agent.py --run --serial "$EMULATOR_SERIAL" \
+  --output "$NEW_AGENT_EVIDENCE" --codex-state "$LOCAL_CODEX_STATE"
+python3 test/android/verify-observation.py --run --serial "$EMULATOR_SERIAL" \
+  --output "$NEW_OBSERVATION_EVIDENCE" --codex-state "$LOCAL_CODEX_STATE"
+python3 test/android/verify-dictation.py --run --serial "$EMULATOR_SERIAL" \
+  --output "$NEW_DICTATION_EVIDENCE" --model "$LOCAL_WHISPER_MODEL" \
+  --sample "$SYNTHETIC_WAV"
+```
+
+Lire leurs contrôles locaux avant lancement ; ces essais utilisent réellement
+le fournisseur ou le modèle choisi. Garder l’état Codex, les logs et toute clé
+hors dépôt public. Mesurer séparément coût applicatif, premier résultat utile du
+fournisseur et reçu d’affichage ; ne pas vendre un replay comme une génération.
+
+Les essais BOOX physiques nécessitent une autorisation séparée et une procédure
+non destructive : pression, paume, encre/latence, ghosting, micro/haut-parleur,
+interruption vocale, réseau, veille/reprise Wi-Fi, clavier/zoom et confort. Ne pas
+assouplir les scripts d’émulateur pour les faire agir sur la tablette personnelle.
+
+## 7. Logiciel incomplet, à ne pas renommer « test local restant »
+
+1. Les reçus de jobs de dessin progressif historiques ne disposent pas d’un
+   rapprochement automatique complet. Ils restent explicitement bloqués/conservés,
+   jamais assimilés à une mutation ordinaire. Les scènes/cache sélectionnés restent
+   récupérables séparément ; aucune ancienne exécution ne redémarre.
+2. La bascule reconnaît l’installation standard Lisière. Les installations
+   personnalisées et la réparation automatique de barrières partielles ou
+   remplacées ne sont pas implémentées. Leur état est conservé et bloque l’écriture.
+3. Le retour arrière fonctionnel vers Lisière, fusionnant tout le travail nouveau,
+   n’est pas implémenté. Le rollback livré est la pause réversible décrite plus haut.
+4. Le kit et la définition LaunchAgent sont préparés ; un installateur/upgrader
+   macOS automatique remplaçant en sécurité une installation active n’est pas livré.
+
+Cela est distinct des **vérifications** restantes : OpenSSH du cas Shared,
+exécution navigateur PCM, vrais appels launchctl/Darwin, compilation et exécution
+instrumentation Android, fournisseur Codex authentifié et BOOX physique.
+Ne pas déclarer C08/V14/V18/V19 complètement validés.
+
+## 8. Fichiers nouveaux dans les six commits logiciels
+
+```text
+android/app/src/androidTest/java/app/contextroom/tablet/OwnerRecordingTest.java
+scripts/prepare-mac-install.mjs
+src/exclusive_rename.py
+src/lisiere_cutover.mjs
+src/lisiere_reconcile.mjs
+src/lisiere_reconcile.py
+src/lisiere_recording_links.mjs
+src/lisiere_tablet_notebook.mjs
+src/mac_installation.mjs
+src/mac_legacy_quiescence.py
+src/ui/assistant-recordings.mjs
+src/writer_authority.mjs
+test/e2e/recovery-recordings.spec.mjs
+test/fixtures/lisiere-reconciliation.mjs
+test/fixtures/lisiere-recording.mjs
+test/lisiere_cutover.test.mjs
+test/lisiere_reconcile.test.mjs
+test/lisiere_recording_links.test.mjs
+test/lisiere_tablet_notebook.test.mjs
+test/mac_installation.test.mjs
+test/owner_recording_fixture.test.mjs
+test/python/lisiere_reconcile_test.py
+test/python/mac_legacy_quiescence_test.py
+```
+
+Les sources complètes incluent ces fichiers et les propriétaires canoniques
+modifiés. Aucun dépôt Lisière complet, son historique Git, fichier de signature,
+node_modules, base réelle, enregistrement personnel ou credential n’est inclus.
+Les références privées consultées servent seulement à comprendre le contrat du
+format d’origine ; elles ne sont pas nécessaires pour exécuter les tests fournis.
