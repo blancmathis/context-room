@@ -1384,10 +1384,14 @@ The Shared fixture waits for the original exact current-symlink, skill and confi
 assertions together, rather than treating catalog status as disk completion.
 These corrections are already in b41; they were preserved, not rewritten here.
 
-New implementation/test input: `0b932abf868de1238a9368a09aa5908da6e3418f`.
-The final delivery may add documentation only; its exact commit is in the
-external `DELIVERY.json` and source `SOURCE_COMMIT`. Six local commits extend the
-same branch; read-only GitHub actions in this session cannot push them.
+Full-suite input: `0b932abf868de1238a9368a09aa5908da6e3418f`.
+Final software/test input: `22b998d4c08289ec377801c64a8f352a0f5c1b83`.
+The only later software/test change fixes the installation script's derived
+source path and adds its real CLI contract. All other executable inputs of the
+full campaign are unchanged. The final documentation-only delivery commit is in
+the external `DELIVERY.json` and source `SOURCE_COMMIT`. Seven software/test
+commits and documentation commits extend the same branch; read-only GitHub
+actions in this session cannot push them.
 
 ### New portable implementation and evidence
 
@@ -1405,8 +1409,8 @@ same branch; read-only GitHub actions in this session cannot push them.
   and fences the old SQLite path. Synthetic tests use actual filesystem and
   SQLite operations, not an actual macOS service. Safe rollback retains recent
   work and never restarts old requests. It is not functional legacy downgrade.
-- Mac preparation has three tests of exact files/modes, refusal, resumption and
-  parsed plist arguments. It stages only; it does not install dependencies,
+- Mac preparation has four tests of exact files/modes, refusal, resumption,
+  parsed plist arguments and the real CLI default-source path. It stages only; it does not install dependencies,
   models or an active service. The actual activation procedure remains local.
 - Android `OwnerRecordingTest` and `verify-owner.py --recording` are prepared.
   Their owner fixture starts with synthetic PCM and no provider. The new native
@@ -1414,7 +1418,7 @@ same branch; read-only GitHub actions in this session cannot push them.
   compilation: Gradle 8.11.1 is not cached and DNS resolution for its distribution
   failed. The SDK is unconfigured in this runtime.
 
-Final portable campaign: **101/102 test processes passed; overall exit 1** under `umask 022`, Node 22.16.0,
+Complete portable campaign at 0b932ab: **101/102 test processes passed; overall exit 1** under `umask 022`, Node 22.16.0,
 Python 3.13.5. The complete original test harness and assertions were retained.
 The only failing case is `GitHub security setup installs and verifies a no-bypass
 pull-request ruleset` in `shared_context.test.mjs:401`: the container has no
@@ -1430,6 +1434,18 @@ returns no project issues and honestly reports absent optional audio dependencie
 no assistant store is created. An earlier fixture reduction of startupSkills
 scope correctly produced a critical owner-authority warning. That negative result
 is retained; the clean fixture no longer changes the owner's scope.
+
+
+The real package-kit preparation then found a separate default-path bug: a
+file-URL directory ended with `/`, correctly rejected by the canonical-root
+contract. Commit `22b998d4c08289ec377801c64a8f352a0f5c1b83` normalizes only that
+derived default, not explicit user roots. Four focused installation tests pass,
+including real CLI preview/apply/verify/repeat and refusal of an explicit
+noncanonical root. The actual full package kit also prepares, verifies and
+replays, with a plist parsed by Python. No key generator or security assertion
+was changed. Unchanged full-suite jobs were not rerun to seek a green result.
+The source kit is preparation, not a dependency installation or activated Mac
+service; its final revision and hash are distributed with the delivery receipt.
 
 New browser attempt: **not executed**, `net::ERR_BLOCKED_BY_ADMINISTRATOR` while
 navigating to the synthetic loopback server. No policy bypass, reduced assertion,

@@ -24,11 +24,11 @@ Les fixtures et les contrôles d’intégration n’acceptent aucun document per
 
 - Base publique de la PR : `1a2cdcec1435d60cd8d07a3762a369e066508ce1`.
 - Dernier HEAD **distant** vérifié : `b41e8945786cd5821e7adb45695fb6b271849336`.
-- HEAD **logiciel et tests** de cette livraison : `0b932abf868de1238a9368a09aa5908da6e3418f`.
+- HEAD **logiciel et tests** de cette livraison : `22b998d4c08289ec377801c64a8f352a0f5c1b83`.
 - Branche : `mathis/context-room-recovery-hardening-20260915`.
 - PR : `blancmathis/context-room#42`, ouverte et en brouillon.
 
-Les six commits logiciels sont locaux et **ne sont pas poussés**. Les actions
+Les sept commits logiciels sont locaux et **ne sont pas poussés**. Les actions
 GitHub exposées ici sont en lecture seule ; aucune autre connexion autorisée ne
 permet la poussée. Un commit final ne modifie que ce relais et la documentation.
 Son SHA exact est dans le reçu de distribution `DELIVERY.json` / `SOURCE_COMMIT`
@@ -43,6 +43,7 @@ CI de cette livraison.
 | `fe3f10edff6552947f12ee8a70bc70071465ac35` | Kit Mac vérifiable et définition LaunchAgent inerte |
 | `a6989eee73ddbee75aaae03ca05e1663ad5a7748` | Fixture native et instrumentation Android du rattachement PCM |
 | `0b932abf868de1238a9368a09aa5908da6e3418f` | Copie explicite du cache tablette et préconditions exactes d’annulation |
+| `22b998d4c08289ec377801c64a8f352a0f5c1b83` | Normalisation du chemin par défaut du kit et test CLI réel complet |
 
 Le bundle est **incrémental**, avec b41 comme prérequis. Il ne contient pas
 l’historique privé Lisière. Avoir seulement main/1a2cdce ne suffit pas. Reprendre
@@ -52,7 +53,7 @@ dans un clone ou worktree dédié, propre, sans réinitialisation ni force-push 
 umask 022
 BRANCH=mathis/context-room-recovery-hardening-20260915
 BASE=b41e8945786cd5821e7adb45695fb6b271849336
-CODE_HEAD=0b932abf868de1238a9368a09aa5908da6e3418f
+CODE_HEAD=22b998d4c08289ec377801c64a8f352a0f5c1b83
 BUNDLE=/chemin/vers/context-room-pr42-continuation.bundle
 
 git fetch origin "$BRANCH"
@@ -89,7 +90,7 @@ il ne confond plus catalogue actualisé et matérialisation disque terminée.
 Aucune de ces assertions n’a été retirée dans cette continuation.
 
 Les parcours complets carnet → dessin → instantané → relecture/correction →
-acceptation humaine, y compris le PNG natif, réussissent **sur b41**. Les six
+acceptation humaine, y compris le PNG natif, réussissent **sur b41**. Les sept
 nouveaux commits prolongent cette base sans réécrire ces corrections. Ils ne
 possèdent pas encore de résultat CI distant.
 
@@ -208,7 +209,8 @@ Linux, Node **22.16.0**, Python **3.13.5**, `umask 022`.
 | Reste de ce shard | 40/41 cas passent ; les shards 2/4, 3/4, 4/4 et les tests exclusifs Shared passent |
 | Nouveaux modules de réconciliation/cache/PCM/bascule/kit/fixture | Tous leurs processus passent dans la campagne finale, sans skip ajouté |
 | Réconciliation Python | 16 contrats, incluant nombres exacts et annulations périmées, appelés par la suite Node |
-| `node --check` et compilation Python en mémoire | 32 fichiers nouveaux/modifiés vérifiés |
+| `node --check` et compilation Python en mémoire | 32 fichiers nouveaux/modifiés vérifiés ; contrôle du script Mac corrigé ensuite |
+| Script Mac final | **4/4** contrats ciblés, dont preview/apply/verify/repeat via la vraie CLI |
 | `npm run package:privacy` | Réussite |
 | `npm pack --dry-run` | Réussite ; version **0.6.17** inchangée, aucune publication |
 | `doctor` sur projet synthétique neuf, sans réduction du périmètre | Aucune erreur projet ; dépendances audio facultatives absentes annoncées, aucun store d’agent créé |
@@ -231,6 +233,20 @@ node --test \
   --test-name-pattern='^GitHub security setup installs and verifies a no-bypass pull-request ruleset$' \
   test/shared_context.test.mjs
 ```
+
+La fabrication réelle du kit a ensuite trouvé un défaut du script : le chemin
+par défaut dérivé d’une URL de dossier comportait un slash final. Le garde
+canonique avait raison de le refuser. Le commit **22b998d4c08289ec377801c64a8f352a0f5c1b83**
+normalise seulement ce défaut dérivé et conserve le refus des sources explicites
+non canoniques. Le nouveau test CLI prépare le vrai package et vérifie la seconde
+exécution ; **4/4 contrats Mac passent**. Le kit réel est aussi préparé, vérifié
+et rejoué. Ce résultat n’efface pas l’échec initial, consigné dans les preuves.
+
+Les entrées exécutables de la campagne complète, hors ce script et son test,
+sont inchangées entre 0b932ab et le HEAD logiciel final. Les résultats sont donc
+composés de cette campagne et du contrôle ciblé corrigé, pas présentés comme un
+nouveau `npm test` entièrement vert. Le kit de distribution a ses propres
+révision/empreinte ; il ne contient aucune dépendance installée.
 
 Le dernier commit de distribution ne change que des documents. Si le logiciel
 est modifié lors d’une reprise, exécuter d’abord les tests affectés, puis une
@@ -425,7 +441,7 @@ exécution navigateur PCM, vrais appels launchctl/Darwin, compilation et exécut
 instrumentation Android, fournisseur Codex authentifié et BOOX physique.
 Ne pas déclarer C08/V14/V18/V19 complètement validés.
 
-## 8. Fichiers nouveaux dans les six commits logiciels
+## 8. Fichiers nouveaux dans les sept commits logiciels
 
 ```text
 android/app/src/androidTest/java/app/contextroom/tablet/OwnerRecordingTest.java
