@@ -28,13 +28,16 @@ export function openConversation(options) {
 }
 async function buildConversation({ api, scopeKey, source, parent = document.body, mode = 'text', fresh = false, onState = () => {}, dictationTarget = null, captureSource = null, primedAudioContext = null }) {
   if (!fresh && active && active.scopeKey === scopeKey && active.conversation.source.kind === source.kind && active.conversation.source.path === source.path
+    && (!source.resourceId || active.conversation.source.resourceId === source.resourceId && active.conversation.source.locationRevision === source.locationRevision)
     && JSON.stringify(active.conversation.source.selection || []) === JSON.stringify(source.selection || [])) {
     parent.append(active.panel); active.onState = onState; active.captureSource = captureSource; active.notifyState(); active.panel.hidden = false; active.panel.classList.remove('assistant-minimized'); active.present(mode, dictationTarget, primedAudioContext); return active;
   }
   if (!document.getElementById('context-room-assistant-style')) { const link = element('link'); link.id = 'context-room-assistant-style'; link.rel = 'stylesheet'; link.href = '/assets/ui/assistant.css'; document.head.append(link); }
   const post = (route, body) => api('/api/assistant' + route, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-  const saved = fresh ? null : (await api('/api/assistant/conversations')).conversations.find(item => item.source.kind === source.kind && item.source.path === source.path
-    && JSON.stringify(item.source.selection || []) === JSON.stringify(source.selection || []));
+  const historyQuery = new URLSearchParams({ kind: source.kind, path: source.path, ...(source.resourceId ? { resourceId: source.resourceId } : {}), ...(source.locationRevision ? { locationRevision: source.locationRevision } : {}) });
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(source.selection || [])));
+  const selectionHash = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  const saved = fresh ? null : (await api('/api/assistant/conversations?' + historyQuery + '&limit=1&selectionHash=' + selectionHash)).conversations[0];
   const conversation = saved ? await api('/api/assistant/conversations/' + saved.id) : await post('/conversations', { requestId: crypto.randomUUID(), source });
   if (active) await active.dispose();
   const panel = element('aside', '', 'assistant-panel'); panel.setAttribute('aria-label', 'Original document conversation');
@@ -43,7 +46,9 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   heading.append(title, expand, minimize); const original = element('p', conversation.source.path, 'assistant-origin');
   const boundary = element('p', 'Linked to this original source. Proposed changes require human review.', 'assistant-boundary');
   const history = element('select'); history.setAttribute('aria-label', 'Saved conversations for this original source');
-  const historyRow = element('div', '', 'assistant-controls assistant-history'), newConversation = button('New conversation', () => run(openConversation({ api, scopeKey, source, parent, mode: 'text', fresh: true, onState: self.onState, captureSource: self.captureSource }))); historyRow.append(history, newConversation);
+  const historyRow = element('div', '', 'assistant-controls assistant-history'), newConversation = button('New conversation', () => run(openConversation({ api, scopeKey, source, parent, mode: 'text', fresh: true, onState: self.onState, captureSource: self.captureSource })));
+  const olderHistory = button('Load older conversations', () => run(refreshHistory({ append: true }))), reloadHistory = button('Refresh history', () => run(refreshHistory()));
+  olderHistory.hidden = true; historyRow.append(history, newConversation, olderHistory, reloadHistory);
   const audioStatus = element('p', 'Microphone off · audio stopped.', 'assistant-audio-state'); audioStatus.setAttribute('role', 'status');
   const observationRow = element('div', '', 'assistant-observation');
   const observationStatus = element('p', 'Live preview off.'); observationStatus.setAttribute('role', 'status');
@@ -79,7 +84,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   panel.append(heading, original, audioStatus, boundary, historyRow, messages, modelRow, form, status, infoBox, errorBox); parent.append(panel);
   const clientId = crypto.randomUUID();
   let closed = false, current = conversation, pollBusy = false, lease = null, renewTimer = null, recording = null, speaker = null,
-    audioContext = null, audioGeneration = 0, modelPending = false, rendered = '', sendRequest = null, retainedRecording = null, recordingRequest = null, audioBusy = false, audioReading = false, changingConversation = false, draftWrites = Promise.resolve(), nativeRecordings = [], voice = null, voiceClosing = false, initializing = true;
+    audioContext = null, audioGeneration = 0, modelPending = false, rendered = '', sendRequest = null, retainedRecording = null, recordingRequest = null, audioBusy = false, audioReading = false, changingConversation = false, draftWrites = Promise.resolve(), nativeRecordings = [], voice = null, voiceClosing = false, initializing = true, historyCursor = null, historyLoading = false;
   const fail = error => { if (!closed && error.name !== 'AbortError') { infoBox.textContent = ''; errorBox.textContent = error.message || String(error); } };
   function inform(text) { errorBox.textContent = ''; infoBox.textContent = text; }
   const run = promise => Promise.resolve(promise).catch(fail);
@@ -163,8 +168,9 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     panel.dataset.capturing = String(Boolean(recording));
     panel.classList.toggle('assistant-voice-enabled', Boolean(voice));
     send.disabled = initializing || busy || uncertain || Boolean(voice); stop.disabled = !busy; stop.hidden = !busy; models.disabled = initializing || busy || uncertain || Boolean(voice); efforts.disabled = models.disabled;
-    history.disabled = initializing || busy || uncertain || Boolean(recording) || audioBusy || audioReading || changingConversation || Boolean(voice) || voiceClosing;
+    history.disabled = initializing || busy || uncertain || Boolean(recording) || audioBusy || audioReading || changingConversation || Boolean(voice) || voiceClosing || historyLoading;
     newConversation.disabled = history.disabled;
+    olderHistory.disabled = reloadHistory.disabled = history.disabled;
     dictate.disabled = initializing || audioBusy || Boolean(voice); input.readOnly = initializing || Boolean(voice);
     discardAudio.hidden = !retainedRecording; discardAudio.disabled = initializing || audioBusy || Boolean(voice);
     useDictation.hidden = !self.dictationTarget; useDictation.disabled = initializing || audioBusy || Boolean(recording) || Boolean(voice) || !input.value.trim();
@@ -211,11 +217,24 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   }
   async function configure() { current = await post('/conversations/' + current.id + '/configure', { model: models.value, effort: efforts.value }); render(); }
   models.addEventListener('change', () => { showEfforts(); run(configure()); }); efforts.addEventListener('change', () => run(configure()));
-  async function refreshHistory() {
-    const result = await api('/api/assistant/conversations'); history.replaceChildren();
-    for (const item of result.conversations.filter(item => item.source.path === source.path && item.source.kind === source.kind)) {
-      const option = element('option', new Date(item.createdAt).toLocaleString() + ' · ' + item.messageCount + ' messages'); option.value = item.id; history.append(option);
-    } history.value = current.id;
+  async function refreshHistory({ append = false } = {}) {
+    if (historyLoading || append && !historyCursor) return;
+    historyLoading = true; render();
+    try {
+      const query = new URLSearchParams(historyQuery); if (append) query.set('cursor', historyCursor);
+      const result = await api('/api/assistant/conversations?' + query);
+      if (closed) return;
+      if (!append) history.replaceChildren();
+      const known = new Set([...history.options].map(option => option.value));
+      for (const item of [...result.conversations, { ...current, messageCount: current.messages.length }]) {
+        if (known.has(item.id)) continue;
+        const option = element('option', new Date(item.createdAt).toLocaleString() + ' · ' + item.messageCount + ' messages'); option.value = item.id; history.append(option); known.add(item.id);
+      }
+      history.value = current.id; historyCursor = result.pagination?.nextCursor || null; olderHistory.hidden = !historyCursor;
+    } catch (error) {
+      if (error.code === 'assistant_history_changed') { historyCursor = null; olderHistory.hidden = true; }
+      throw error;
+    } finally { historyLoading = false; render(); }
   }
   history.addEventListener('change', () => run((async () => {
     if (recording || audioBusy || audioReading || changingConversation || voice || voiceClosing) { history.value = current.id; return; }

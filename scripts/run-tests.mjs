@@ -12,6 +12,7 @@ const SHARED_CONTEXT_TEST = "test/shared_context.test.mjs";
 const SHARED_CONTEXT_ISOLATED_TESTS = [
   { label: 'performance', name: 'large proposal acceptance returns a durable exact HTTP projection within one second' },
   { label: 'network timeout', name: 'proposal rejection bounds a stalled archive push without recording a terminal decision' },
+  { label: 'fetch timeout', name: 'shared repository refresh bounds a stalled Git fetch' },
 ];
 const JOB_TIMEOUT_MS = 300_000;
 const SLOW_JOB_TIMEOUT_MS = 600_000;

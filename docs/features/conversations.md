@@ -36,6 +36,11 @@ The panel names its original file. Changing the visible project or document
 does not change that source, its captured selection or its Codex task. Reopening
 the same source resumes its latest matching conversation. **New conversation**
 starts a separate one; the history selector retains earlier conversations.
+**Load older conversations** continues beyond the first 50 entries. History
+filters by the original project, file and notebook location before paging;
+conversations in other files cannot hide the matching conversation. If the
+saved list changes, **Refresh history** reloads it while keeping the selected
+conversation and its unsent text. Neither action starts Codex or sends a message.
 Inactive tasks can leave the provider's bounded memory cache. Reopening them
 resumes their saved original Codex identity and history. An active turn, a task
 being prepared or inspected, or an uncertain outcome cannot be unloaded to

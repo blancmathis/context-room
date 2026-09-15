@@ -77,12 +77,47 @@ export class AssistantSessions {
     return { ...this.public(state), progress: progress && Date.now() - progress.at < 3000 ? progress : null,
       recovery: this.recovering.get(id)?.status || null };
   }
-  list(root) {
+  list(root, { source = null, selectionHash = null } = {}) {
     const directory = safeNotebookPath(this.root, 'conversations');
     if (!fs.existsSync(directory)) return [];
-    return fs.readdirSync(directory).filter(name => ID.test(name.replace(/\.json$/, '')) && name.endsWith('.json')).slice(0, 500)
-      .map(name => this.read(name.slice(0, -5))).filter(state => state.origin.root === root)
-      .flatMap(state => { try { this.authorize(state, root); } catch { return []; } const { messages, ...summary } = this.public(state); return [{ ...summary, messageCount: messages.length }]; }).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const result = [];
+    for (const name of fs.readdirSync(directory)) {
+      if (!name.endsWith('.json') || !ID.test(name.slice(0, -5))) continue;
+      // Drop each full transcript after reading its metadata, rather than
+      // holding hundreds of other projects' transcripts before filtering.
+      const state = this.read(name.slice(0, -5));
+      if (state.origin.root !== root || source && Object.entries(source).some(([key, value]) => state.origin.source[key] !== value)
+        || selectionHash && notebookHash(JSON.stringify(state.origin.source.selection || [])) !== selectionHash) continue;
+      try { this.authorize(state, root); } catch { continue; }
+      const { messages, ...summary } = this.public(state); result.push({ ...summary, messageCount: messages.length });
+    }
+    return result.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id));
+  }
+  history(root, { limit = 50, cursor = null, source = null, selectionHash = null } = {}) {
+    limit = Number(limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200 || source !== null && (!source || typeof source !== 'object'
+      || !['document', 'notebook'].includes(source.kind) || typeof source.path !== 'string' || source.path.length > 4096
+      || Object.keys(source).some(key => !['kind', 'path', 'resourceId', 'locationRevision'].includes(key))
+      || source.resourceId !== undefined && (typeof source.resourceId !== 'string' || source.resourceId.length > 160)
+      || source.locationRevision !== undefined && (typeof source.locationRevision !== 'string' || !/^[a-f0-9]{64}$/.test(source.locationRevision)))
+      || selectionHash !== null && (typeof selectionHash !== 'string' || !/^[a-f0-9]{64}$/.test(selectionHash))) throw fault('assistant_history_query', 'Choose a valid source and a history page of 1–200 conversations.', 400);
+    const scope = notebookHash({ store: this.identity, root, rootIdentity: canonicalNotebookRoot(root), source, selectionHash });
+    const all = this.list(root, { source, selectionHash }), revision = notebookHash(all.map(item => [item.id, item.revision, item.updatedAt]));
+    let offset = 0;
+    if (cursor !== null) {
+      let parsed;
+      try {
+        if (typeof cursor !== 'string' || cursor.length > 1024 || Buffer.from(cursor, 'base64url').toString('base64url') !== cursor) throw new Error();
+        parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+      } catch { throw fault('assistant_history_cursor', 'Invalid saved-history cursor.', 400); }
+      if (parsed?.version !== 1 || parsed.scope !== scope || !Number.isSafeInteger(parsed.offset) || parsed.offset < 1) throw fault('assistant_history_cursor', 'This history page belongs to another original source.', 400);
+      if (parsed.revision !== revision) throw fault('assistant_history_changed', 'Saved conversations changed. Refresh history before loading older conversations.');
+      offset = parsed.offset;
+      if (offset >= all.length) throw fault('assistant_history_cursor', 'This history page is outside the retained conversations.', 400);
+    }
+    const nextOffset = offset + limit;
+    return { conversations: all.slice(offset, nextOffset), pagination: { total: all.length, limit, revision,
+      nextCursor: nextOffset < all.length ? Buffer.from(JSON.stringify({ version: 1, scope, revision, offset: nextOffset })).toString('base64url') : null } };
   }
   async ready() {
     if (this.closed) throw fault('assistant_closed', 'The conversation service is closed.');

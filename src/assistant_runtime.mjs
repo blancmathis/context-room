@@ -155,7 +155,12 @@ export async function handleAssistantHttp(req, res, { root, url, runtime, readJs
   const route = url.pathname.slice('/api/assistant'.length);
   if (req.method === 'GET') {
     if (route === '/capabilities') { sendJson(res, 200, runtime.capabilities(root)); return; }
-    if (route === '/conversations') { sendJson(res, 200, { conversations: runtime.sessions.list(root) }); return; }
+    if (route === '/conversations') {
+      const q = url.searchParams;
+      const source = q.has('kind') || q.has('path') || q.has('resourceId') || q.has('locationRevision') ? { kind: q.get('kind'), path: q.get('path'),
+        ...(q.has('resourceId') ? { resourceId: q.get('resourceId') } : {}), ...(q.has('locationRevision') ? { locationRevision: q.get('locationRevision') } : {}) } : null;
+      sendJson(res, 200, runtime.sessions.history(root, { source, limit: q.get('limit') ?? 50, cursor: q.get('cursor'), selectionHash: q.get('selectionHash') })); return;
+    }
     if (/^\/conversations\/[^/]+$/.test(route)) { sendJson(res, 200, runtime.sessions.get(root, route.split('/')[2])); return; }
     if (/^\/conversations\/[^/]+\/observation$/.test(route)) { sendJson(res, 200, runtime.observations.status(root, route.split('/')[2])); return; }
   }

@@ -75,6 +75,43 @@ test('@smoke @assistant an unsent draft survives reload in its original conversa
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
 
+test('@smoke @assistant older original-source history remains reachable beyond other files and preserves its selected unsent draft', async ({ page }, testInfo) => {
+  const f = await assistantFixture();
+  try {
+    const templates = [];
+    for (const rel of ['docs/Other.md', 'docs/Original.md']) {
+      const created = await f.post('/api/assistant/conversations', { requestId: crypto.randomUUID(), source: { kind: 'document', path: rel } });
+      expect(created.status).toBe(201);
+      const file = path.join(f.base, 'private-assistant/conversations', created.body.id + '.json');
+      templates.push(JSON.parse(fs.readFileSync(file))); fs.unlinkSync(file);
+    }
+    let originalId;
+    for (let i = 0; i < 572; i++) {
+      const other = i < 501, saved = structuredClone(templates[other ? 0 : 1]);
+      saved.id = `${other ? '00000000' : 'ffffffff'}-0000-4000-8000-${i.toString(16).padStart(12, '0')}`;
+      saved.origin.sessionId = saved.id; saved.updatedAt = new Date(Date.UTC(2024, 0, 1) + i).toISOString();
+      if (i === 501) originalId = saved.id;
+      else if (!other) saved.origin.source.selection = { start: 0, end: 1, text: '#' };
+      fs.writeFileSync(path.join(f.base, 'private-assistant/conversations', saved.id + '.json'), JSON.stringify(saved), { mode: 0o600 });
+    }
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await page.evaluate(() => selectFile('docs/Original.md')); await page.getByRole('button', { name: 'Discuss', exact: true }).click();
+    const pane = page.getByRole('complementary', { name: 'Original document conversation' });
+    const history = pane.getByLabel('Saved conversations for this original source'), older = pane.getByRole('button', { name: 'Load older conversations' });
+    await expect(history).toHaveValue(originalId); await expect(history.locator('option')).toHaveCount(51);
+    await pane.getByRole('textbox').fill('Keep my unsent text while I inspect older conversations.');
+    const configured = await f.post('/api/assistant/conversations/' + originalId + '/configure', { model: 'gpt-6-astra', effort: 'high' }); expect(configured.status).toBe(200);
+    await older.click(); await expect(pane).toContainText('Saved conversations changed. Refresh history');
+    await expect(history).toHaveValue(originalId); await expect(pane.getByRole('textbox')).toHaveValue('Keep my unsent text while I inspect older conversations.');
+    await pane.getByRole('button', { name: 'Refresh history' }).click(); await expect(older).toBeVisible(); await older.click();
+    await expect(history.locator('option')).toHaveCount(71); await expect(older).toBeHidden(); await expect(history).toHaveValue(originalId);
+    await expect(pane.getByRole('textbox')).toHaveValue('Keep my unsent text while I inspect older conversations.');
+    expect(fs.readdirSync(path.join(f.base, 'private-assistant/conversations')).filter(name => name.endsWith('.json'))).toHaveLength(572);
+    expect(f.connections()).toBe(0);
+    await page.screenshot({ path: testInfo.outputPath('retained-history-pages.png') });
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
 test('@smoke @assistant a stopped dictation and late playback cannot send or acknowledge audio in another operation', async ({ page }) => {
   let transcriptions = 0;
   const f = await assistantFixture({ audio: {

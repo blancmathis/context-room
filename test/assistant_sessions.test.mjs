@@ -6,7 +6,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AssistantSessions } from '../src/assistant_sessions.mjs';
-import { readNotebookJson, writeNotebookJson } from '../src/notebook_io.mjs';
+import { readNotebookJson, writeNotebookJson, notebookHash } from '../src/notebook_io.mjs';
 
 async function until(check) { const end = Date.now() + 5000; while (!check()) { if (Date.now() > end) throw new Error('Synthetic session did not settle'); await delay(10); } }
 function providerFixture() {
@@ -39,7 +39,7 @@ function fixture(t) {
   const services = []; t.after(async () => { await Promise.all(services.map(service => service.close())); });
   return { root, original, other, calls, revoke: () => { permitted = false; },
     service: providerFactory => { const service = new AssistantSessions({ root, resolveSource, providerFactory }); services.push(service); return service; },
-    source: { kind: 'notebook', path: 'docs/Scene.crnb', resourceId: 'original' } };
+    source: { kind: 'notebook', path: 'docs/Scene.crnb', resourceId: 'original', locationRevision: notebookHash('original-location') } };
 }
 
 test('creating and listing conversations never start a provider; duplicate sends run only once', async t => {
@@ -60,6 +60,46 @@ test('creating and listing conversations never start a provider; duplicate sends
   assert.equal(saved.operation.status, 'completed'); assert.equal(saved.messages.length, 2); assert.equal(saved.messages[1].complete, true);
   assert.equal(service.list(f.original)[0].messages, undefined); assert.deepEqual(service.list(f.other), []);
   assert.equal(p.turns.length, 1);
+});
+
+test('history filters the complete retained store before paging and binds continuation to its exact source snapshot', t => {
+  const f = fixture(t); let connections = 0;
+  const service = f.service(() => { connections++; throw new Error('History must not start a provider'); });
+  const templates = [f.other, f.original].map(root => {
+    const created = service.create(root, { source: f.source }), state = service.read(created.id);
+    fs.unlinkSync(path.join(f.root, service.file(created.id))); return state;
+  });
+  for (let i = 0; i < 624; i++) {
+    const other = i < 501, state = structuredClone(templates[other ? 0 : 1]);
+    state.id = `${other ? '00000000' : 'ffffffff'}-0000-4000-8000-${i.toString(16).padStart(12, '0')}`;
+    state.origin.sessionId = state.id; state.updatedAt = new Date(Date.UTC(2024, 0, 1) + i).toISOString();
+    state.origin.source.selection = i >= 601 ? ['selected-object'] : [];
+    fs.writeFileSync(path.join(f.root, service.file(state.id)), JSON.stringify(state), { mode: 0o600 });
+  }
+  assert.equal(service.list(f.original).length, 123);
+  const source = { ...f.source };
+  const first = service.history(f.original, { source }); assert.equal(first.conversations.length, 50); assert.equal(first.pagination.total, 123);
+  const ids = first.conversations.map(item => item.id); let cursor = first.pagination.nextCursor;
+  while (cursor) { const page = service.history(f.original, { source, cursor }); ids.push(...page.conversations.map(item => item.id)); cursor = page.pagination.nextCursor; }
+  assert.equal(new Set(ids).size, 123); assert.equal(ids.length, 123);
+  const selected = service.history(f.original, { source, limit: 1, selectionHash: notebookHash(JSON.stringify([])) });
+  assert.equal(selected.pagination.total, 100); assert.deepEqual(selected.conversations[0].source.selection, []);
+  assert.throws(() => service.history(f.other, { source, cursor: first.pagination.nextCursor }), { code: 'assistant_history_cursor' });
+  assert.throws(() => service.history(f.original, { source: { ...source, resourceId: 'other' }, cursor: first.pagination.nextCursor }), { code: 'assistant_history_cursor' });
+  assert.deepEqual(service.history(f.original, { source: { ...source, locationRevision: notebookHash('another-location') } }).conversations, []);
+  service.update(first.conversations[0].id, state => { state.model = 'configured-later'; });
+  assert.throws(() => service.history(f.original, { source, cursor: first.pagination.nextCursor }), { code: 'assistant_history_changed' });
+  assert.equal(connections, 0);
+});
+
+test('history refuses malformed limits and cursors without changing retained conversations', t => {
+  const f = fixture(t), service = f.service(() => { throw new Error('No provider'); });
+  const conversation = service.create(f.original, { source: f.source }), file = path.join(f.root, service.file(conversation.id)), before = fs.readFileSync(file);
+  for (const limit of [0, 201, 1.5, 'NaN']) assert.throws(() => service.history(f.original, { limit }), { code: 'assistant_history_query' });
+  for (const cursor of ['', 'invalid!', Buffer.from('null').toString('base64url')]) assert.throws(() => service.history(f.original, { cursor }), { code: 'assistant_history_cursor' });
+  assert.throws(() => service.history(f.original, { source: { kind: 'document', path: 'docs/A.md', unrecognized: true } }), { code: 'assistant_history_query' });
+  for (const locationRevision of [0, 1, '1', '', 'x'.repeat(64)]) assert.throws(() => service.history(f.original, { source: { ...f.source, locationRevision } }), { code: 'assistant_history_query' });
+  assert.equal(fs.readFileSync(file).equals(before), true);
 });
 
 test('restart resumes the same owned Codex task with the preserved original context', async t => {

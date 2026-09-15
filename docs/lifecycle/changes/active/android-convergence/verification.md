@@ -1102,11 +1102,40 @@ Android build and artifact verification pass. The unchanged packaged preview
 remains SHA-256 `55dde71ed0c0b18c14952e519a2020415f60c526576bc2fbf7e311c86b3b9623`,
 with its valid v2 signature and eight exact shared assets. The new draft
 interface is served by the Mac owner runtime. This check does not add physical
-device evidence. The full regression for this milestone remains pending.
+device evidence. The complete local regression at `dfa78fb` passes **86/87**
+test processes. Its sole failure was the stalled-fetch test's one-second
+wall-clock bound under concurrent Git-heavy suites; the unchanged test passes
+in isolation. The runner now isolates that check without relaxing its deadline.
 
-The full hosted CI and convergence workflows at `0a0e997` pass, including Node
-20, 22.23.0 and 24, all four browser jobs and soak. That result predates these
-new draft import and editing changes.
+The full hosted CI at `dfa78fb` passes (run `34930070069`), including Node
+20, 22.23.0 and 24, all four browser jobs and soak. Both convergence workflows
+also pass (`34930070098`, `34930067816`).
+
+## Complete original-source history
+
+Saved history now filters every retained conversation by its exact project,
+source and notebook location before pagination. Reopening also filters the
+captured selection before choosing the latest conversation. This removes the
+earlier 500-file directory cutoff. A continuation is tied to that source and
+list revision; a changed list requires explicit refresh. Paging and refresh
+preserve the selected conversation and its unsent composer text and never
+connect to a provider.
+
+The nine store tests pass, including 624 retained conversations spanning two
+projects, distinct selections, changed notebook locations and stale or malformed
+continuations. The first browser regression exposed numeric parsing of the
+notebook location hash. The corrected route retains its exact string identity.
+All **20 conversation scenarios** then pass across Chromium desktop/mobile,
+Firefox and WebKit. The pagination scenario reaches 71 matching conversations
+among 572 retained records, keeps an older selected conversation outside the
+first page and preserves text across a changed-list refusal and explicit refresh.
+The mobile rendering was inspected. Owner HTTP/runtime checks, Doctor, layout,
+package privacy and the package dry-run also pass.
+
+The Android preview rebuild and artifact verification pass with unchanged
+SHA-256 `55dde71ed0c0b18c14952e519a2020415f60c526576bc2fbf7e311c86b3b9623`.
+This interface is served by the Mac runtime. Full regression and hosted results
+for this history change remain pending.
 
 ## Open product gates
 
@@ -1118,7 +1147,7 @@ conversation, actions, interruption and playback have the separate check above.
 The verified Android installation is an emulator preview. It does not establish
 physical Wi-Fi behavior or BOOX pen/palm latency.
 
-The latest complete hosted application matrix passes at `0a0e997`; later
+The latest complete hosted application matrix passes at `dfa78fb`; later
 changes need their own regression and hosted result. Notebook-specific checks
 do not stand in for that matrix. Installation/signature migration, physical BOOX testing and
 personal-data migration have not been performed.
