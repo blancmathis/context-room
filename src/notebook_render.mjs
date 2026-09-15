@@ -1,6 +1,6 @@
 import { notebookInkOutline, notebookInkRadius } from './notebook_ink.mjs';
 import { normalizeNotebookDocument } from './notebook_protocol.mjs';
-import { notebookSceneBounds, center } from './notebook_geometry.mjs';
+import { notebookSceneBounds, notebookConnectorRoute } from './notebook_geometry.mjs';
 const xml = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c]);
 export function notebookBounds(document) {
   const bounds = notebookSceneBounds(document), x = Math.min(0, bounds.x), y = Math.min(0, bounds.y);
@@ -20,12 +20,14 @@ export function notebookSvg(input, { showOrigins = false } = {}) {
     }
     else if (o.type === 'rect') body = `<rect x="${Math.min(x, x + w)}" y="${Math.min(y, y + h)}" width="${Math.abs(w)}" height="${Math.abs(h)}" ${style}/>`;
     else if (o.type === 'ellipse') body = `<ellipse cx="${x + w / 2}" cy="${y + h / 2}" rx="${Math.abs(w / 2)}" ry="${Math.abs(h / 2)}" ${style}/>`;
-    else if (o.type === 'text') body = `<text x="${x}" y="${y}" font-family="sans-serif" font-size="${Math.max(8, o.fontSize || 18)}" fill="${xml(o.color || '#222222')}">${o.text.split('\n').map((s, i) => `<tspan x="${x}" dy="${i ? '1.3em' : 0}">${xml(s)}</tspan>`).join('')}</text>`;
+    else if (o.type === 'text') body = `<text x="${x}" y="${y}" font-family="sans-serif" font-size="${Math.max(8, o.fontSize || 18)}" fill="${xml(o.color || '#222222')}">${o.text.split('\n').map((s, i) => `<tspan x="${x}" dy="${i ? `${o.lineHeight || 1.3}em` : 0}">${xml(s)}</tspan>`).join('')}</text>`;
     else if (o.type === 'image') { const a = document.assets[o.asset]; body = `<image x="${x}" y="${y}" width="${Math.abs(w)}" height="${Math.abs(h)}" href="data:${a.mimeType};base64,${a.data}"/>`; }
     else {
       let x1 = x, y1 = y, x2 = o.x2 ?? x + w, y2 = o.y2 ?? y + h;
-      if (o.type === 'connector') { const a = objects.get(o.from), b = objects.get(o.to); if (!a || !b) return ''; [x1, y1] = center(a); [x2, y2] = center(b); }
-      body = `<path d="M${x1} ${y1} L${x2} ${y2}" ${style}/>`;
+      const route = o.type === 'connector' ? notebookConnectorRoute(o, objects) : [[x1, y1], [x2, y2]];
+      if (!route.length) return '';
+      [x1, y1] = route.at(-2); [x2, y2] = route.at(-1);
+      body = `<path d="${route.map(([px, py], i) => `${i ? 'L' : 'M'}${px} ${py}`).join(' ')}" ${style}/>`;
       if (o.type !== 'line') { const a = Math.atan2(y2 - y1, x2 - x1), size = 12; body += `<path d="M${x2 - size * Math.cos(a - .45)} ${y2 - size * Math.sin(a - .45)} L${x2} ${y2} L${x2 - size * Math.cos(a + .45)} ${y2 - size * Math.sin(a + .45)}" ${style}/>`; }
     }
     const transform = o.rotation ? ` transform="rotate(${o.rotation} ${x + w / 2} ${y + h / 2})"` : '';

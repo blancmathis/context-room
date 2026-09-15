@@ -71,6 +71,11 @@ Objects retain stable identity, revision and authorship; selective gesture
 undo preserves independent edits. The original editable file and embedded
 images remain exportable.
 
+Connectors can retain explicit attachment sides and a routed return; text can
+retain explicit line spacing. These properties survive editable-file export,
+native editing and browser rendering. Selection outlines do not change the
+style of the saved shapes.
+
 Submitting freezes one exact version into the existing local or Shared
 proposal lifecycle. Shared requires an existing connection and displays its
 repository, project and destination before publishing. A lost response resumes
@@ -80,8 +85,9 @@ Correcting or accepting a proposal does not silently overwrite that later ink.
 
 The [connected-device guide](../system/connected-devices.md) describes the
 native Android preview, offline retention and restricted drawing permission.
-The complete remote owner, authenticated agent and voice workflows remain in
-development; the preview does not establish physical BOOX performance.
+The connected owner and [original-source conversations](conversations.md)
+have their own scoped workflows and recovery checks. The preview does not
+establish physical BOOX performance.
 
 ## Cleanup
 

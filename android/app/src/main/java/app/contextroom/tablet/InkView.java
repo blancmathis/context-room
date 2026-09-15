@@ -605,7 +605,7 @@ final class InkView extends View {
         float ty = b.top + paint.getTextSize();
         for (String line : o.optString("text").split("\n")) {
           c.drawText(line, b.left, ty, paint);
-          ty += paint.getTextSize() * 1.3f;
+          ty += paint.getTextSize() * (float)o.optDouble("lineHeight",1.3);
         }
         break;
       case "image":

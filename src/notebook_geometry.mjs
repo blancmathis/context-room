@@ -4,13 +4,11 @@ export function notebookObjectBounds(object, objects = []) {
   let samples;
   if (object.type === 'ink') samples = object.points;
   else if (object.type === 'connector') {
-    const a = byId.get(object.from), b = byId.get(object.to);
-    if (!a || !b) return { x: 0, y: 0, width: 0, height: 0 };
-    samples = [center(a), center(b)];
+    samples = notebookConnectorRoute(object, byId);
   } else {
     const x = object.x || 0, y = object.y || 0;
     const width = object.width ?? (object.type === 'text' ? Math.max(...object.text.split('\n').map(line => line.length), 1) * (object.fontSize || 18) * .65 : 140);
-    const height = object.height ?? (object.type === 'text' ? object.text.split('\n').length * (object.fontSize || 18) * 1.3 : 80);
+    const height = object.height ?? (object.type === 'text' ? object.text.split('\n').length * (object.fontSize || 18) * (object.lineHeight || 1.3) : 80);
     samples = [[x, y], [object.x2 ?? x + width, object.y2 ?? y + height]];
     if (object.type === 'text') samples = [[x, y - (object.fontSize || 18)], [x + width, y + height - (object.fontSize || 18)]];
   }
@@ -27,6 +25,41 @@ export function notebookObjectBounds(object, objects = []) {
   return { x: left - margin, y: top - margin, width: right - left + 2 * margin, height: bottom - top + 2 * margin };
 }
 export const center = object => [(object.x || 0) + (object.width ?? 140) / 2, (object.y || 0) + (object.height ?? 80) / 2];
+/** Logical attachment boxes match the native canvas; rotation does not retarget a port. */
+export function notebookConnectorRoute(object, objects, visiting = new Set(), memo = new Map()) {
+  const byId = objects instanceof Map ? objects : new Map(objects.map(item => [item.id, item]));
+  if (memo.has(object.id)) return memo.get(object.id);
+  if (visiting.has(object.id) || visiting.size >= 64) return [];
+  const a = byId.get(object.from), b = byId.get(object.to); if (!a || !b) return [];
+  const next = new Set([...visiting, object.id]);
+  function box(item) {
+    if (item.type === 'connector') {
+      const points = notebookConnectorRoute(item, byId, next, memo); if (!points.length) return null;
+      const xs = points.map(point => point[0]), ys = points.map(point => point[1]);
+      return [Math.min(...xs) - 12, Math.min(...ys) - 12, Math.max(...xs) + 12, Math.max(...ys) + 12];
+    }
+    if (item.type === 'ink') {
+      let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity, radius = 3;
+      for (const [x, y, pressure = 1] of item.points) { left = Math.min(left, x); top = Math.min(top, y); right = Math.max(right, x); bottom = Math.max(bottom, y); radius = Math.max(radius, (item.strokeWidth || 2) * Math.max(.15, pressure) / 2); }
+      return [left - radius, top - radius, right + radius, bottom + radius];
+    }
+    const font = item.fontSize || 18, x = item.x || 0, y = (item.y || 0) - (item.type === 'text' ? font : 0);
+    const w = item.width ?? (item.type === 'text' ? Math.max(...item.text.split('\n').map(line => line.length), 1) * font * .65 : 140);
+    const h = item.height ?? (item.type === 'text' ? item.text.split('\n').length * font * (item.lineHeight || 1.3) : 80);
+    const x2 = item.x2 ?? x + w, y2 = item.y2 ?? y + h;
+    return [Math.min(x, x2), Math.min(y, y2), Math.max(x, x2), Math.max(y, y2)];
+  }
+  function port(bounds, side) {
+    const [left, top, right, bottom] = bounds, cx = (left + right) / 2, cy = (top + bottom) / 2;
+    const ports = { left: [left, cy], right: [right, cy], top: [cx, top], bottom: [cx, bottom] };
+    return Object.hasOwn(ports, side) ? ports[side] : [cx, cy];
+  }
+  const fromBox = box(a), toBox = box(b); if (!fromBox || !toBox) { memo.set(object.id, []); return []; }
+  const from = port(fromBox, object.fromSide), to = port(toBox, object.toSide);
+  if (object.route !== 'outside-left') { const route = [from, to]; memo.set(object.id, route); return route; }
+  const lane = Math.min(from[0], to[0]) - (object.routeOffset || 48);
+  const route = [from, [lane, from[1]], [lane, to[1]], to]; memo.set(object.id, route); return route;
+}
 export function pointInPolygon(point, polygon) {
   let inside = false;
   for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {

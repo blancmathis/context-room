@@ -315,6 +315,40 @@ test('@smoke @a11y @notebook object controls retain keyboard focus through indep
   } finally { await f.close(); }
 });
 
+test('@smoke @notebook legacy connector routes and text spacing remain editable on the rendered canvas', async ({ page }, testInfo) => {
+  const f = await fixture(page);
+  try {
+    const dialog = await open(page), scene = readNotebook(f.root, await dialog.getAttribute('data-resource-id'));
+    const values = [
+      { id: 'upper', type: 'rect', x: 200, y: 100, width: 120, height: 50 },
+      { id: 'lower', type: 'rect', x: 200, y: 300, width: 120, height: 50 },
+      { id: 'return', type: 'connector', from: 'upper', to: 'lower', fromSide: 'left', toSide: 'left', route: 'outside-left', routeOffset: 48 },
+      { id: 'label', type: 'text', x: 350, y: 122, width: 180, height: 100, fontSize: 22, lineHeight: 1.4, text: 'Original\nSecond line' },
+    ];
+    mutateNotebook(f.root, { protocolVersion: 1, resourceId: scene.resourceId, operationId: 'legacy-preview', locationRevision: scene.locator.revision,
+      edits: values.map(object => ({ kind: 'put', id: object.id, expectedRevision: 0, object })) }, { actor: { kind: 'import', id: 'synthetic-import' }, canWrite: () => true });
+    await expect.poll(() => page.evaluate(() => testNotebook.surface.document.objects.length)).toBe(4);
+    await dialog.getByRole('button', { name: 'Fit drawing', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => {
+      const { canvas, view } = testNotebook.surface, ratio = canvas.width / canvas.clientWidth;
+      const x = Math.round((view.x + 152 * view.scale) * ratio);
+      // Verify a solid stretch after multiple paints, not one coincidentally
+      // dark pixel from a leaked selection dash pattern.
+      for (let worldY = 180; worldY < 250; worldY += 3) {
+        const y = Math.round((view.y + worldY * view.scale) * ratio);
+        const pixels = canvas.getContext('2d').getImageData(x - 2, y, 5, 1).data; let dark = false;
+        for (let offset = 0; offset < pixels.length; offset += 4) if (pixels[offset] < 128 && pixels[offset + 1] < 128 && pixels[offset + 2] < 128 && pixels[offset + 3] > 200) dark = true;
+        if (!dark) return false;
+      }
+      return true;
+    })).toBe(true);
+    expect(await page.evaluate(() => testNotebook.surface.document.objects.find(item => item.id === 'label').lineHeight)).toBe(1.4);
+    await dialog.locator('canvas').screenshot({ path: testInfo.outputPath('legacy-editable-canvas.png') });
+    expect(fs.existsSync(path.join(f.root, 'docs/Sketch.crnb'))).toBe(false);
+    expect(readNotebook(f.root, scene.resourceId).accepted).toBe(false); expect(f.errors).toEqual([]);
+  } finally { await f.close(); }
+});
+
 test('@a11y @layout @notebook tactile targets, grayscale and keyboard-accessible objects', async ({ page }, testInfo) => {
   const f = await fixture(page);
   try {

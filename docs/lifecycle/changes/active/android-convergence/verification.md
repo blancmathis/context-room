@@ -922,7 +922,38 @@ link to the new migration document, which was missing from the canonical copy
 list. Hosted Node 20 finds the same issue; all four hosted browser jobs and
 soak pass. The canonical list is corrected and its focused regression passes.
 One convergence job fails only while uploading its already verified APK to
-GitHub (403); the other execution passes, and the failed job is retried.
+GitHub (403); the other execution passes, and the failed job passes on retry.
+At `092e9ca`, both convergence workflows pass. The complete affected local
+application suite passes **236/236** after the generated-context correction.
+
+## Recovery readers and retained visual properties
+
+The import preparation now checks a completed export's manifest, journal,
+inventory, every byte count/hash, independent file identity and row count.
+Tables stream through bounded UTF-8 records. Binary SQLite cells and int64
+values remain exact; the LSJ1 reader preserves Java UTF-16 code units, including
+an unfinished surrogate. Draft recovery replays only the captured epoch/version
+in UTF-16 order and refuses missing seeds/final deltas, wrong identities,
+invalid ranges and incomplete text. It does not send or acknowledge any work.
+Six recovery contracts use actual synthetic SQLite exports and mutation cases.
+
+Notebook objects now retain connector sides/routes and explicit text line
+spacing through normalization, the native adapter and editable export. Browser
+and SVG renderers follow the routed path; Android uses the retained spacing.
+Twenty-three focused core checks pass, then the complete notebook/recovery
+contract group passes **77/77**. The new scenario passes in all four browsers.
+The actual native Canvas check passes on the dedicated emulator; its path and
+text baselines match the expected values and its rendered bitmap is retained.
+The APK is rebuilt with a verified v2 signature and eight exact shared assets.
+
+Visual inspection then finds selection dashes leaking into later browser paints.
+Each object paint now resets that style. Eight targeted browser checks pass
+after the correction, including a solid-line pixel check and existing tactile
+accessibility. The corrected mobile canvas and native bitmap are inspected.
+Complete notebook-browser regression then passes **40/40** across the four
+browsers. The new checkpoint's broader/hosted checks remain pending.
+These are preparation and rendering proofs, not a
+completed import, Android outbox replay or a physical BOOX check.
 
 ## Open product gates
 

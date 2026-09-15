@@ -10,7 +10,7 @@ export function notebookNativeObject(object, order = 0) {
     w: ['line', 'arrow'].includes(type) ? (item.x2 ?? ((item.x || 0) + (item.width ?? 140))) - (item.x || 0)
       : item.width ?? (type === 'text' ? Math.max(...item.text.split('\n').map(line => line.length), 1) * fontSize * .65 : 140),
     h: ['line', 'arrow'].includes(type) ? (item.y2 ?? ((item.y || 0) + (item.height ?? 80))) - (item.y || 0)
-      : item.height ?? (type === 'text' ? item.text.split('\n').length * fontSize * 1.3 : 80),
+      : item.height ?? (type === 'text' ? item.text.split('\n').length * fontSize * (item.lineHeight || 1.3) : 80),
     width: item.strokeWidth ?? 2,
     ...(type === 'text' ? { fontSize } : {}),
     ...(type === 'image' ? { assetId: item.asset } : {}) };
@@ -20,7 +20,7 @@ export function notebookObjectFromNative(value, id = value.id) {
   const object = { ...(value.canonical || {}), id, type: value.type };
   const baseline = value.canonical ? notebookNativeObject(value.canonical) : null;
   const changed = key => Object.hasOwn(value, key) && (!baseline || JSON.stringify(value[key]) !== JSON.stringify(baseline[key]));
-  for (const key of ['x', 'rotation', 'fontSize', 'text', 'locked', 'color', 'fill', 'from', 'to']) {
+  for (const key of ['x', 'rotation', 'fontSize', 'lineHeight', 'text', 'locked', 'color', 'fill', 'from', 'to', 'fromSide', 'toSide', 'route', 'routeOffset']) {
     if (changed(key)) object[key] = value[key];
   }
   if (changed('y')) object.y = value.y + (value.type === 'text' ? value.fontSize || 18 : 0);

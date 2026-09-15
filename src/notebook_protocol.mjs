@@ -46,12 +46,30 @@ export function normalizeNotebookObject(value, id = value?.id) {
   if (value.type === 'text') {
     if (typeof value.text !== 'string' || value.text.length > NOTEBOOK_LIMITS.text) failNotebook('notebook_text', 'Text exceeds the notebook limit.');
     result.text = value.text;
+    if (value.lineHeight !== undefined) {
+      if (typeof value.lineHeight !== 'number' || !Number.isFinite(value.lineHeight) || value.lineHeight <= 0 || value.lineHeight > 8) failNotebook('notebook_text', 'Invalid text line spacing.');
+      result.lineHeight = value.lineHeight;
+    }
   }
   if (value.type === 'image') {
     if (!/^[a-f0-9]{64}$/.test(value.asset || '')) failNotebook('notebook_asset', 'Images reference an embedded content-addressed asset.');
     result.asset = value.asset;
   }
-  if (value.type === 'connector') for (const key of ['from', 'to']) result[key] = notebookId(value[key]);
+  if (value.type === 'connector') {
+    for (const key of ['from', 'to']) result[key] = notebookId(value[key]);
+    for (const key of ['fromSide', 'toSide']) if (value[key] !== undefined) {
+      if (!['left', 'right', 'top', 'bottom', 'center'].includes(value[key])) failNotebook('notebook_connector', 'Invalid connector attachment side.');
+      result[key] = value[key];
+    }
+    if (value.route !== undefined) {
+      if (!['straight', 'outside-left'].includes(value.route)) failNotebook('notebook_connector', 'Unsupported connector route.');
+      result.route = value.route;
+    }
+    if (value.routeOffset !== undefined) {
+      if (typeof value.routeOffset !== 'number' || !Number.isFinite(value.routeOffset) || value.routeOffset <= 0 || value.routeOffset > 10000) failNotebook('notebook_connector', 'Invalid connector route offset.');
+      result.routeOffset = value.routeOffset;
+    }
+  }
   return result;
 }
 export function normalizeNotebookDocument(input) {

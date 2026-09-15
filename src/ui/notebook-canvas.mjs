@@ -1,4 +1,4 @@
-import { notebookObjectBounds, notebookHit, pointInPolygon, translateNotebookObject, notebookSceneBounds, center } from '../notebook_geometry.mjs';
+import { notebookObjectBounds, notebookHit, pointInPolygon, translateNotebookObject, notebookSceneBounds, notebookConnectorRoute } from '../notebook_geometry.mjs';
 import { notebookInkOutline, notebookInkRadius } from '../notebook_ink.mjs';
 import { NotebookStroke } from '../notebook_gestures.mjs';
 const clone = value => structuredClone(value);
@@ -171,6 +171,9 @@ export class NotebookCanvas {
   paintObject(ctx, o) {
     const x = o.x || 0, y = o.y || 0, w = o.width ?? 140, h = o.height ?? 80;
     ctx.save(); ctx.strokeStyle = o.color || '#222222'; ctx.fillStyle = !o.fill || o.fill === 'none' ? 'transparent' : o.fill; ctx.lineWidth = o.strokeWidth || 2; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    // Selection uses dashes after the scene. They must not leak into the next
+    // paint, otherwise saved shapes change appearance after a refresh or fit.
+    ctx.setLineDash([]);
     if (o.rotation) { ctx.translate(x + w / 2, y + h / 2); ctx.rotate(o.rotation * Math.PI / 180); ctx.translate(-x - w / 2, -y - h / 2); }
     if (o.type === 'ink') {
       let cached = o.revision > 0 ? this.paths.get(o.id) : null;
@@ -180,13 +183,15 @@ export class NotebookCanvas {
         cached = { revision: o.revision, points: o.points.length, line }; if (o.revision > 0) this.paths.set(o.id, cached);
       }
       ctx.fillStyle = o.color || '#222222'; ctx.fill(cached.line);
-    } else if (o.type === 'text') { ctx.fillStyle = o.color || '#222222'; ctx.font = `${o.fontSize || 18}px sans-serif`; o.text.split('\n').forEach((line, i) => ctx.fillText(line, x, y + i * (o.fontSize || 18) * 1.3)); }
+    } else if (o.type === 'text') { ctx.fillStyle = o.color || '#222222'; ctx.font = `${o.fontSize || 18}px sans-serif`; o.text.split('\n').forEach((line, i) => ctx.fillText(line, x, y + i * (o.fontSize || 18) * (o.lineHeight || 1.3))); }
     else if (o.type === 'image') { const image = this.image(o.asset); if (image?.complete && image.naturalWidth && image.naturalWidth * image.naturalHeight <= 16_000_000) ctx.drawImage(image, x, y, Math.abs(w), Math.abs(h)); else { ctx.strokeRect(x, y, Math.abs(w), Math.abs(h)); ctx.fillStyle = '#222222'; ctx.font = '14px sans-serif'; ctx.fillText('Image loading / unavailable', x + 8, y + 24); } }
     else if (o.type === 'rect' || o.type === 'ellipse') { ctx.beginPath(); if (o.type === 'rect') ctx.rect(x, y, w, h); else ctx.ellipse(x + w / 2, y + h / 2, Math.abs(w / 2), Math.abs(h / 2), 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); }
     else {
       let from = [x, y], to = [o.x2 ?? x + w, o.y2 ?? y + h];
-      if (o.type === 'connector') { const a = this.byId.get(o.from), b = this.byId.get(o.to); if (!a || !b) { ctx.restore(); return; } from = center(a); to = center(b); }
-      ctx.beginPath(); ctx.moveTo(...from); ctx.lineTo(...to); ctx.stroke();
+      const route = o.type === 'connector' ? notebookConnectorRoute(o, this.byId) : [from, to];
+      if (!route.length) { ctx.restore(); return; }
+      from = route.at(-2); to = route.at(-1);
+      ctx.beginPath(); route.forEach((point, i) => i ? ctx.lineTo(...point) : ctx.moveTo(...point)); ctx.stroke();
       if (o.type !== 'line') { const angle = Math.atan2(to[1] - from[1], to[0] - from[0]), size = Math.max(10, ctx.lineWidth * 3); ctx.beginPath(); ctx.moveTo(to[0] - Math.cos(angle - .45) * size, to[1] - Math.sin(angle - .45) * size); ctx.lineTo(...to); ctx.lineTo(to[0] - Math.cos(angle + .45) * size, to[1] - Math.sin(angle + .45) * size); ctx.stroke(); }
     }
     ctx.restore();
