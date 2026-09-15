@@ -208,7 +208,19 @@ test("@smoke Shared image review saves exact drawn bytes while main remains unch
     const errors = []; page.on("pageerror", error => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${runtime.server.address().port}/?view=proposal`);
     const row = page.locator(`[data-proposal-review-path="${imagePath}"]`);
-    await expect(row).toBeVisible({ timeout: 45000 }); await row.click();
+    await expect(row).toBeVisible({ timeout: 45000 });
+    // Deterministically reproduce a metadata refresh between the two halves of
+    // a real click. Both the focused row and its clicked child must survive.
+    await row.focus();
+    await row.evaluate(node => { window.reviewPointerTarget = node; window.reviewPointerChild = node.querySelector('strong'); });
+    const labelBox = await row.locator('strong').boundingBox();
+    await page.mouse.move(labelBox.x + labelBox.width / 2, labelBox.y + labelBox.height / 2);
+    await page.mouse.down();
+    expect(await page.evaluate(() => {
+      renderProposalReviewPage();
+      return { row: reviewPointerTarget.isConnected, child: reviewPointerChild.isConnected, focused: document.activeElement === reviewPointerTarget };
+    })).toEqual({ row: true, child: true, focused: true });
+    await page.mouse.up();
     const dialog = page.getByRole("dialog", { name: imagePath });
     await expect(dialog.getByRole("img", { name: `Accepted: ${imagePath}` })).toBeVisible();
     await dialog.getByRole("button", { name: "Draw on image", exact: true }).click();
