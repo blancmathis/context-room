@@ -37,6 +37,16 @@ Context Room cannot hide physical files from programs reading the project direct
 
 `changes status` reads current proposal state. `changes submit` freezes a manifest and puts its changed files in the Review Queue. A draft with existing file decisions cannot be silently resubmitted as another version.
 
+The Hub also lists saved **Working drafts** separately from submitted reviews.
+Open one to edit Markdown or plain text, save its working version, or preview
+HTML visually. Saving never changes the ordinary document or accepted baseline.
+**Submit for review** checks the exact saved workspace revision. A concurrent
+edit or changed scope blocks replacement or submission, keeping the author's
+unsaved text in the editor. Closing with unsaved changes requires saving or
+undoing those unsaved edits. The connected owner tablet uses the same interface.
+The integrated editor bounds a proposal to 256 working files and 64 MiB and an
+opened text file to 16 MiB. Larger workspaces remain available to the CLI.
+
 Accepting applies only the selected exact file delta. Saving a correction applies and accepts those corrected bytes. Rejecting an isolated file leaves its original unchanged. The remaining files retain their own pending decisions. The local proposal completes when all its files have decisions; it does not have an additional remote delivery step.
 
 Application checks the project identity, scope, exact base, file mode, paths and staged Git state where relevant. A conflicting external edit blocks application. A journal precedes the filesystem change; replaced bytes remain recoverable. Publication does not overwrite a file created concurrently at the destination. An interrupted application either resumes idempotently or reports recovery required.

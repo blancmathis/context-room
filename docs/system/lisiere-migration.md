@@ -12,13 +12,14 @@ Context Room exports a private, versioned snapshot of a legacy Mac workspace
 or Android workspace database. Preview and apply compare the same content
 revision. Export is read-only against the source and does not require the
 Lisière executable or service. A selected canonical Mac board can then become
-an editable, unaccepted working notebook. Tablet reconciliation and installation
+an editable, unaccepted working notebook. Selected Mac text drafts can become
+Local working proposals. Tablet reconciliation and installation
 cutover remain in progress.
 
 ## Defines
 
 The recovery snapshot format, source compatibility, private export, exact
-revision precondition, selected-board import and interrupted-operation recovery.
+revision precondition, selected-board and text-draft import, and interrupted-operation recovery.
 
 ## Does not define
 
@@ -155,6 +156,44 @@ This command imports one canonical Mac board. Android draft/outbox reconciliatio
 recording-context recovery, conversation continuation, old handoff import and automatic rollback
 are separate unfinished work. It does not acknowledge an old operation, resume
 an old agent task or switch off the legacy writer.
+
+## Import a canonical Mac text draft
+
+Choose the exact `selector` from the `drafts` inventory, an existing Context Room
+project and a writable, watched `.md`, `.markdown`, `.txt`, `.html` or `.htm` path:
+
+```bash
+context-room migrate --root /path/to/project --import-lisiere /path/to/private-snapshot --legacy-draft SELECTOR --path docs/Recovered.md
+context-room migrate --root /path/to/project --import-lisiere /path/to/private-snapshot --legacy-draft SELECTOR --path docs/Recovered.md --apply --revision REVISION
+```
+
+An unused destination keeps recovery separate from existing work. Reusing the
+original path requires its current bytes to match the legacy base hash and an
+available accepted Context Room baseline. A changed or deleted original requires
+reconciliation or another unused path. Text is retained exactly within a 16 MiB
+UTF-8 limit; unfinished UTF-16 composition remains original recovery data.
+
+Preview does not write. Apply retains the original selected record, its source
+revision and its exact accepted base in the private migration store before
+publishing an editing proposal through the existing Local engine. It does not
+write the ordinary document, submit it or accept it. Initial working bytes and
+proposal metadata are synced before successful acknowledgement.
+
+Repeat the same command after interruption. The stable source-record identity
+reuses its proposal even if unrelated legacy content changes in a later full
+snapshot. Later human edits, submission and decisions remain intact. Changed
+source records receive different identities; changed recovery bytes are refused.
+
+The Hub's **Working drafts** opens saved Local proposals. Markdown and plain
+text can be edited and saved there; HTML retains a sandboxed visual preview.
+**Submit for review** freezes the displayed saved revision through the usual
+Local workflow. It leaves the ordinary file untouched until human review.
+The same interface is available through an authorized connected owner tablet.
+The editor supports 256 working files and 64 MiB per proposal, with 16 MiB per
+opened file. Larger workspaces remain on disk for the existing CLI workflow.
+
+Android journal/outbox reconciliation and conversation or recording attachment
+are separate from this canonical Mac text import.
 
 ## Completion boundary
 

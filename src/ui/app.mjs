@@ -3513,6 +3513,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
                 <input id="contextRoomReviewSearch" class="context-room-review-search" type="search" placeholder="Search reviews or projects…" aria-label="Search reviews and projects" />
               </div>
               <button type="button" class="quiet-button" data-review-cleanup>Clean up older changes</button>
+              <div id="contextRoomWorkingDrafts" class="context-room-other-attention" hidden></div>
               <div id="contextRoomReviewSelection" class="context-room-review-selection" hidden></div>
               <div id="reviewQueue" class="review-list"></div>
               <div id="contextRoomReviewContextMenu" class="explorer-context-menu context-room-review-context-menu" role="menu" aria-label="Review actions" hidden></div>
@@ -7647,6 +7648,16 @@ function renderContextRoomGlobalReviewQueue() {
   const selectedProject = IS_GLOBAL_CONTEXT_ROOM
     ? (hub.projects || []).find((project) => project.projectKey === state.sharedProposalProject) || null
     : currentProject;
+  const drafts = (hub.workingDrafts || []).filter(draft => IS_GLOBAL_CONTEXT_ROOM
+      ? !state.sharedProposalProject || draft.projectKey === state.sharedProposalProject
+      : currentProject && draft.projectKey === currentProject.projectKey);
+  const draftsPanel = el("contextRoomWorkingDrafts");
+  if (draftsPanel) {
+    draftsPanel.hidden = !drafts.length;
+    draftsPanel.innerHTML = drafts.length ? '<strong>Working drafts</strong><p>Saved work awaiting submission.</p>'
+      + drafts.map(draft => '<button type="button" class="quiet-button" data-local-draft="' + escapeHtml(draft.id)
+        + '" data-draft-project="' + escapeHtml(draft.projectId) + '">' + escapeHtml(draft.projectTitle) + ' · ' + escapeHtml(draft.title) + '</button>').join("") : "";
+  }
   const localReviewCount = reviews.filter((item) => item.type === "local").length;
   const sharedReviewCount = reviews.filter((item) => item.type === "shared" || item.type === "local-proposal").length;
   const hiddenReviewCount = Math.max(0, renderedReviews.length - visibleReviews.length);
@@ -7690,7 +7701,7 @@ function renderContextRoomGlobalReviewQueue() {
   const refreshedAt = state.contextHub?.freshness?.generatedAt || state.contextHub?.generatedAt || state.docqa?.generatedAt || "";
   const refreshedLabel = refreshedAt && !Number.isNaN(Date.parse(refreshedAt)) ? new Date(refreshedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "just now";
   queueElement.innerHTML = cleanQueue
-    ? '<div class="review-all-clear" role="status"><strong>Everything is reviewed</strong><span>' + (IS_HOSTED_HUB ? 'New shared proposals' : 'New local files and shared proposals') + ' will appear here. Last checked ' + escapeHtml(refreshedLabel) + '.</span><button class="quiet-button" type="button" data-review-refresh>Refresh</button></div>'
+    ? '<div class="review-all-clear" role="status"><strong>' + (drafts.length ? 'No submitted review pending' : 'Everything is reviewed') + '</strong><span>' + (drafts.length ? 'Working drafts remain unaccepted. ' : (IS_HOSTED_HUB ? 'New shared proposals' : 'New local files and shared proposals') + ' will appear here. ') + 'Last checked ' + escapeHtml(refreshedLabel) + '.</span><button class="quiet-button" type="button" data-review-refresh>Refresh</button></div>'
     : modeWarning + unconfirmedReviewMarkup + (queueMarkup || (hubReady
       ? (reviewStateUnconfirmed && noPendingReviews ? "" : '<div class="issue">' + emptyQueueCopy + '</div>')
       : '<div class="issue">Loading project reviews…</div>'));
@@ -12321,6 +12332,7 @@ async function loadInitialContextHubData({ openRequestedProject = false } = {}) 
       ...catalog,
       attention: reviews.attention || catalog.attention,
       freshness: reviews.freshness || catalog.freshness,
+      workingDrafts: reviews.workingDrafts || catalog.workingDrafts || [],
       projects: (catalog.projects || []).map((project) => ({ ...project, hubSections: sectionsByProject.get(project.projectKey) || [] })),
       proposals: (reviews.items || []).filter((item) => item.type === "shared"),
       items: reviews.items || [],
@@ -24118,6 +24130,14 @@ el("reviewQueue")?.addEventListener("click", (event) => {
 document.addEventListener("click", (event) => {
   if (!event.target.closest("[data-review-cleanup]")) return;
   import("/assets/review-cleanup.mjs").then(({ openReviewCleanup }) => openReviewCleanup({ api, onChange: refreshContextRoomReviewQueue })).catch((error) => setStatus(error.message));
+});
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-local-draft]");
+  if (!button) return;
+  const item = (state.contextHub?.workingDrafts || []).find(draft => draft.id === button.dataset.localDraft && draft.projectId === button.dataset.draftProject);
+  if (!item) return;
+  import("/assets/local-draft-editor.mjs").then(({ openLocalDraftEditor }) => openLocalDraftEditor({ item,
+    ...captureNotebookApi(item.projectId), onChange: refreshContextRoomReviewQueue })).catch(error => setStatus(error.message));
 });
 el("proposalReviewFiles")?.addEventListener("click", (event) => {
   if (event.target.closest("[data-proposal-review-more]")) {

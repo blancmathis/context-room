@@ -59,7 +59,7 @@ export function planLisiereNotebookImport(root, options, { canWrite = () => fals
   return { ...prepare(root, options, canWrite).summary, applied: false };
 }
 
-function retain(root, rel, bytes) {
+export function retainLisiereRecoveryBytes(root, rel, bytes) {
   let existing = readNotebookBytes(root, rel, MAX_SOURCE);
   if (existing === null) {
     try { writeNotebookBytes(root, rel, bytes, { exclusive: true }); }
@@ -68,6 +68,7 @@ function retain(root, rel, bytes) {
   }
   requireValue(existing?.equals(bytes), 'The retained migration copy or receipt changed. Reconcile it without replacing newer work.');
 }
+const retain = retainLisiereRecoveryBytes;
 
 /** Durable phase receipts permit recovery after any acknowledgement is lost.
  * Only selected board data is copied into this project, never other projects,

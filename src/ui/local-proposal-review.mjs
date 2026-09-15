@@ -6,7 +6,7 @@ function element(tag, text = "", className = "") {
 }
 
 const bytesOf = (base64) => base64 === null ? null : Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
-const textOf = (bytes) => bytes ? new TextDecoder().decode(bytes) : "";
+const textOf = (bytes) => bytes ? new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes) : "";
 let rendererPromise;
 async function renderDiagram(source, holder) {
   const renderId = holder.dataset.renderId = crypto.randomUUID();
@@ -63,6 +63,7 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
   let activePath = "";
   let editor = null;
   let initialText = "";
+  let lineEnding = "\n";
   let busy = false;
   let drawing = null;
   let importedDrawing = null;
@@ -173,8 +174,10 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
       section.append(element("p", `${bytes.length.toLocaleString()} bytes. Integrated preview is not available for this format yet.`));
     } else if (editable) {
       editor = element("textarea");
-      initialText = textOf(bytes);
-      editor.value = initialText;
+      const original = textOf(bytes);
+      lineEnding = original.includes('\r\n') && !/[\r\n]/.test(original.replace(/\r\n/g, '')) ? '\r\n' : original.includes('\r') && !original.includes('\n') ? '\r' : '\n';
+      editor.value = original;
+      initialText = editor.value;
       editor.setAttribute("aria-label", `Proposed content: ${file.path}`);
       editor.spellcheck = false;
       section.append(editor);
@@ -241,7 +244,7 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
         try {
           const result = await request(item.type === "shared-asset" ? "/api/docqa/shared-asset-decision" : item.type === "local-asset" ? "/api/docqa/asset-decision" : "/api/docqa/local-proposal-decision", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
             proposal: item.proposalId, path: file.path, decision, expectedRevision: file.revision,
-            ...(decision === "accepted" && editor && isDirty() ? { content: editor.value } : {}),
+            ...(decision === "accepted" && editor && isDirty() ? { content: editor.value.replace(/\n/g, lineEnding) } : {}),
             ...(decision === "accepted" && drawing?.dirty ? { contentBase64: drawing.canvas.toDataURL(drawing.type).split(",")[1] } : {}),
             ...(decision === "accepted" && importedDrawing ? { contentBase64: importedDrawing } : {}),
             ...(decision === "accepted" && notebookCorrection ? { contentBase64: notebookCorrection } : {}),

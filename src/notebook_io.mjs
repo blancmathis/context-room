@@ -79,7 +79,7 @@ export function writeNotebookBytes(root, rel, bytes, { exclusive = false, mode =
   const target = safeNotebookPath(root, rel), directory = path.dirname(target), parentIdentity = notebookFileIdentity(fs.lstatSync(directory));
   const tempRel = `${parent === '.' ? '' : parent + '/'}.${path.basename(rel)}.${randomUUID()}.tmp`, temp = safeNotebookPath(root, tempRel);
   const descriptor = fs.openSync(temp, 'wx', mode);
-  try { fs.writeFileSync(descriptor, bytes); fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+  try { fs.writeFileSync(descriptor, bytes); fs.fchmodSync(descriptor, mode); fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
   try {
     if (canonicalNotebookRoot(root) !== rootIdentity || notebookFileIdentity(fs.lstatSync(directory)) !== parentIdentity) failNotebook('notebook_root_conflict', 'The storage directory changed before publication.');
     safeNotebookPath(root, rel);

@@ -52,7 +52,11 @@ original-source observation is implemented, including an unfinished native
 shape identified by the real agent from its image. A recoverable private SQLite
 export now preserves legacy database data with exact-revision checks. Selected
 Mac notebooks import as editable working scenes with retained source copies,
-identity mappings and restart receipts. Android draft/outbox reconciliation,
+identity mappings and restart receipts. Canonical Mac text drafts import as
+Local editing proposals with retained source records and restart receipts.
+The Hub opens their saved working text or rendered HTML; explicit submission
+and later human review pass across all four browser configurations.
+Android draft/outbox reconciliation,
 recording-context reconciliation, handoff collection, writer cutover and release/upgrade packaging
 remain to be implemented. The complete
 connected-device and physical acceptance criteria remain open.

@@ -1053,6 +1053,61 @@ or automatic context assignment.
 The combined recovery, import, inventory and CLI-argument regression passes
 **40/40**; Doctor and package privacy also pass.
 
+## Canonical Mac text draft recovery
+
+Selected versioned Mac drafts now retain their original text, source record,
+snapshot revision and accepted base before creating an editing proposal through
+the existing Local engine. Its ordinary document and accepted version remain
+unchanged. An interrupted initial write or lost acknowledgement resumes the
+same proposal; later human edits and later submission are preserved. An unchanged
+record in a later full snapshot reuses the original preparation rather than
+capturing a newer accepted base.
+
+The initial ten draft/proposal tests found two incorrect expectations of the
+existing submitted status; both were corrected to the engine's `submitted`
+contract. Thirty focused recovery/proposal/CLI checks then pass. After adding
+the integrated draft editor, 21 core checks and the six draft import/owner HTTP
+checks pass. The HTTP checks cover owner nonce, origin, exact project, stale
+save/submission, missing revision and separation from human acceptance.
+
+The first browser pass found the global textarea rule hiding the working text;
+the scoped display rule is corrected. Subsequent browser validation found a
+missing working-draft field in the Hub's compact projection after reload.
+All full/catalog/paginated projections now retain the separate working-draft
+inventory. The queue explicitly distinguishes unaccepted working drafts from
+submitted review work. A real HTTP regression covers all three projections.
+
+The final focused core/CLI regression passes **34/34**. Exact working file modes
+also survive a restrictive process umask: the previous temporary writer used
+the masked mode, and now applies the requested mode before syncing. The owner
+HTTP fixture uses isolated registries throughout startup and shutdown. Its
+initial temporary registration in the default Hub was removed through the
+registry API, with other project entries verified unchanged.
+
+The recovered Markdown and HTML browser flows pass **8/8** across Chromium
+desktop/mobile, Firefox and WebKit. They exercise saved-draft reopening,
+explicit submission, separate human acceptance and retained original source
+bytes. Markdown editing and review correction preserve UTF-8 BOM and CRLF;
+opening a textarea no longer falsely marks that text changed. HTML remains a
+sandboxed rendering without a source editor. Mobile and desktop screenshots
+were inspected. Owner-dialog accessibility checks pass; HTML uses the analyzer's
+single-page mode and excludes the original document iframe after WebKit twice
+stalled while creating the analyzer's auxiliary page. The iframe's actual
+heading rendering remains separately checked.
+The existing correction/HTML rejection/drawing review scenario also passes
+**4/4** across the browser configurations. Doctor, package privacy, package
+dry-run and the layout CSS audit pass.
+
+Android build and artifact verification pass. The unchanged packaged preview
+remains SHA-256 `55dde71ed0c0b18c14952e519a2020415f60c526576bc2fbf7e311c86b3b9623`,
+with its valid v2 signature and eight exact shared assets. The new draft
+interface is served by the Mac owner runtime. This check does not add physical
+device evidence. The full regression for this milestone remains pending.
+
+The full hosted CI and convergence workflows at `0a0e997` pass, including Node
+20, 22.23.0 and 24, all four browser jobs and soak. That result predates these
+new draft import and editing changes.
+
 ## Open product gates
 
 Data migration and final removal of the
@@ -1063,7 +1118,7 @@ conversation, actions, interruption and playback have the separate check above.
 The verified Android installation is an emulator preview. It does not establish
 physical Wi-Fi behavior or BOOX pen/palm latency.
 
-The full application smoke/layout/accessibility/performance/soak release matrix
-is not green yet; its latest results and corrections are recorded above.
-Notebook-specific checks do not stand in for it. Installation/signature migration, physical BOOX testing and
+The latest complete hosted application matrix passes at `0a0e997`; later
+changes need their own regression and hosted result. Notebook-specific checks
+do not stand in for that matrix. Installation/signature migration, physical BOOX testing and
 personal-data migration have not been performed.

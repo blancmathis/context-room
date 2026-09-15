@@ -9,6 +9,7 @@ import { NOTEBOOK_WEB_ASSETS } from "./notebook_web_assets.mjs";
 import { NOTEBOOK_LIMITS } from "./notebook_protocol.mjs";
 import { createLisiereConnector } from "./lisiere_connector.mjs";
 import { planLisiereNotebookImport, applyLisiereNotebookImport } from "./lisiere_migration.mjs";
+import { migrateLisiereDocument } from "./lisiere_documents.mjs";
 import { isDocumentAssetPath, listDocumentAssets, readDocumentAssetReview, recordAcceptedDocumentAsset, decideDocumentAsset } from "./document_assets.mjs";
 import { readReviewCleanupPolicy, writeReviewCleanupPolicy, previewReviewCleanup, applyReviewCleanup, recentReviewCleanupReceipts } from "./review_cleanup.mjs";
 import fs from "node:fs";
@@ -23,7 +24,7 @@ import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:zlib";
 import { appendContextRoomEvent, appendContextRoomEvents } from "./event_journal.mjs";
-import { beginLocalProposal, listLocalProposals, submitLocalProposal, decideLocalProposalFile, readLocalProposalFile, readLocalProposalResource } from "./local_proposals.mjs";
+import { beginLocalProposal, listLocalProposals, submitLocalProposal, decideLocalProposalFile, readLocalProposalFile, readLocalProposalResource, readLocalProposalDraft, writeLocalProposalDraft } from "./local_proposals.mjs";
 import {
   cleanupFilesystemLockWorkerOwner,
   createFilesystemLockWorkerOwner,
@@ -7788,6 +7789,21 @@ export function migrateLisiereNotebook(root, options = {}) {
   return options.apply ? applyLisiereNotebookImport(root, options, authority) : planLisiereNotebookImport(root, options, authority);
 }
 
+export function migrateLisiereDraft(root, options = {}) {
+  const perform = () => migrateLisiereDocument(root, options, {
+    canWrite: rel => canEditLocalProposalPath(root, rel), beforeWrite: () => ensureRuntimeGitExcludes(root),
+    acceptedBase: rel => {
+      const entry = readDocReviewState(root, { readOnly: true }).reviews[rel];
+      if (entry?.status !== 'verified' && entry?.acceptedVersion?.status !== 'verified') return null;
+      if ((entry.acceptedVersion || entry).resourceState === 'absent') return null;
+      const base = readReviewBaseFile(root, rel, { readOnly: true });
+      if (!base.available || base.changeKind === 'added') return null;
+      return { bytes: Buffer.from(base.baseContent), mode: base.baselineMode ? Number.parseInt(base.baselineMode, 8) & 0o777 : 0o644 };
+    },
+  });
+  return options.apply ? withDocReviewEvidenceLock(root, perform) : perform();
+}
+
 function canReviewDocumentAsset(root, rel, settings = readMemoryWebappSettings(root)) {
   return isDocumentAssetPath(rel) && !isBlockedPath(rel) && !isSensitiveProjectFile(rel) && !rel.startsWith("~")
     && !path.isAbsolute(rel) && !rel.split("/").some((part) => part === ".." || part === "." || !part)
@@ -7835,9 +7851,9 @@ export function createLocalDocumentationProposal(root, options = {}) {
   });
 }
 
-export function submitLocalDocumentationProposal(root, id) {
+export function submitLocalDocumentationProposal(root, id, { expectedDraftRevision } = {}) {
   const settings = readMemoryWebappSettings(root);
-  return submitLocalProposal(root, id, { canWrite: (rel) => canEditLocalProposalPath(root, rel, settings) });
+  return submitLocalProposal(root, id, { expectedDraftRevision, canWrite: (rel) => canEditLocalProposalPath(root, rel, settings) });
 }
 
 export function reviewLocalDocumentationProposal(root, id, options = {}) {
@@ -15835,6 +15851,7 @@ function contextHubStateWithAttention(state = {}) {
   const attention = readContextHubAttention();
   const ranks = new Map(attention.projectOrder.map((id, index) => [id, index]));
   const proposalItems = [];
+  const workingDrafts = [];
   const visitedRoots = new Set();
   const projects = (state.projects || []).map((project) => {
     let localProposalError = "";
@@ -15847,7 +15864,13 @@ function contextHubStateWithAttention(state = {}) {
             projectKey: project.projectKey, projectTitle: project.title, title: asset.path, assetPath: asset.path,
             files: [asset.path], fileCount: 1, revisionToken: asset.revision, reviewStatus: "submitted" });
         }
-        for (const proposal of listLocalProposals(location.root, { readyOnly: true })) {
+        for (const proposal of listLocalProposals(location.root)) {
+          if (proposal.status === 'editing') {
+            workingDrafts.push({ id: proposal.id, projectId: location.id, projectKey: project.projectKey,
+              projectTitle: project.title, title: proposal.title, updatedAt: proposal.updatedAt });
+            continue;
+          }
+          if (proposal.status !== 'submitted') continue;
           const pending = proposal.changes.filter((entry) => !entry.decision);
           if (!pending.length) continue;
           proposalItems.push({ id: `local-proposal:${location.id}:${proposal.id}`, type: "local-proposal",
@@ -15864,6 +15887,7 @@ function contextHubStateWithAttention(state = {}) {
   return {
     ...state,
     items: [...(state.items || []).filter((item) => !["local-proposal", "local-asset"].includes(item.type)), ...proposalItems],
+    workingDrafts,
     attention,
     projects: projects.map((project) => {
       const priorityId = contextHubProjectPriorityId(project);
@@ -16690,6 +16714,7 @@ function paginatedContextHubReviews(state, { cursor = 0, limit = 80 } = {}) {
     freshness: state.freshness,
     attention: state.attention,
     items: items.slice(offset, offset + pageSize).map(compactContextHubReviewQueueItem),
+    workingDrafts: state.workingDrafts || [],
     total: items.length,
     nextCursor: offset + pageSize < items.length ? offset + pageSize : null,
   };
@@ -16978,6 +17003,8 @@ function isOwnerReviewAuthorityMutation(pathname = "", method = "GET") {
     "POST /api/review-gate",
     "POST /api/docqa/review",
     "POST /api/docqa/local-proposal-decision",
+    "POST /api/docqa/local-draft",
+    "POST /api/docqa/local-draft-submit",
     "POST /api/docqa/asset-decision",
     "POST /api/docqa/shared-asset-decision",
     "POST /api/lisiere/prepare",
@@ -20878,7 +20905,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     writeHttpResponse(res, 200, { "content-type": asset.type, "cache-control": "no-cache", "x-content-type-options": "nosniff" }, req.method === "HEAD" ? "" : fs.readFileSync(new URL("./" + asset.file, import.meta.url)));
     return;
   }
-  if (["GET", "HEAD"].includes(req.method) && ["/assets/local-proposal-review.mjs", "/assets/review-cleanup.mjs", "/assets/connected-devices.mjs"].includes(url.pathname)) {
+  if (["GET", "HEAD"].includes(req.method) && ["/assets/local-proposal-review.mjs", "/assets/local-draft-editor.mjs", "/assets/review-cleanup.mjs", "/assets/connected-devices.mjs"].includes(url.pathname)) {
     writeHttpResponse(res, 200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" }, req.method === "HEAD" ? "" : fs.readFileSync(new URL(`./ui/${path.basename(url.pathname)}`, import.meta.url)));
     return;
   }
@@ -21688,6 +21715,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       })),
       attention: state.attention,
       sharedRepositories: state.sharedRepositories || [],
+      workingDrafts: state.workingDrafts || [],
       repositoryErrors: state.repositoryErrors || [],
       summary: state.summary || {},
       freshness: state.freshness,
@@ -23319,6 +23347,22 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   if (req.method === "GET" && url.pathname === "/api/docqa/local-proposals") {
     sendJson(res, 200, { proposals: listLocalProposals(root, { readyOnly: true }).map(({ id, title, submittedRevision, changes }) => ({ id, title, revision: submittedRevision, changes })) });
     return;
+  }
+  if (url.pathname === '/api/docqa/local-draft' && req.method === 'GET') {
+    sendJson(res, 200, readLocalProposalDraft(root, url.searchParams.get('proposal'), url.searchParams.has('path') ? url.searchParams.get('path') : undefined,
+      { canRead: rel => canEditLocalProposalPath(root, rel) })); return;
+  }
+  if (url.pathname === '/api/docqa/local-draft' && req.method === 'POST') {
+    const body = await readJsonBody(req, { maxBytes: 24 * 1024 * 1024 });
+    sendJson(res, 200, withDocReviewEvidenceLock(root, () => writeLocalProposalDraft(root, body.proposal, body,
+      { canWrite: rel => canEditLocalProposalPath(root, rel) }), { expectedRootIdentity })); return;
+  }
+  if (url.pathname === '/api/docqa/local-draft-submit' && req.method === 'POST') {
+    const body = await readJsonBody(req);
+    if (typeof body.expectedRevision !== 'string' || !body.expectedRevision) throw sharedRequestError('Reload the saved draft before submission.', 400, 'local_proposal_stale');
+    const result = withDocReviewEvidenceLock(root, () => submitLocalDocumentationProposal(root, body.proposal,
+      { expectedDraftRevision: body.expectedRevision }), { expectedRootIdentity });
+    scheduleContextHubRefresh(); sendJson(res, 200, { id: result.id, status: result.status, revision: result.submittedRevision }); return;
   }
   if (url.pathname === "/api/docqa/asset-file" && req.method === "GET") {
     const rel = url.searchParams.get("path");
