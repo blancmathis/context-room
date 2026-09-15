@@ -1,3 +1,4 @@
+import { inspectLocalAudio } from './local_audio_diagnostics.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -64,7 +65,7 @@ function runAudioProcess(executable, args, { cwd, signal, timeoutMs }) {
 
 /** Local recognition and exact-text speech. Neither operation invokes an agent or sends a message. */
 export class LocalAudio {
-  constructor({ root, modelPath, whisper = 'whisper-cli', speech = '/usr/bin/say', run = runAudioProcess }) {
+  constructor({ root, modelPath, whisper = process.env.CONTEXT_ROOM_WHISPER_BIN || 'whisper-cli', speech = '/usr/bin/say', run = runAudioProcess }) {
     canonicalNotebookRoot(root); Object.assign(this, { root, modelPath, whisper, speech, run });
     this.rootIdentity = canonicalNotebookRoot(root); this.transcribing = false; this.speaking = false;
   }
@@ -73,6 +74,8 @@ export class LocalAudio {
     const directory = makeNotebookDirectory(this.root, 'audio-jobs');
     return fs.mkdtempSync(path.join(directory, 'job-'));
   }
+  diagnostics() { return inspectLocalAudio({ root: this.root, modelPath: this.modelPath, whisper: this.whisper, speech: this.speech }); }
+
   async transcribe(pcm, { language = 'fr', signal } = {}) {
     signal?.throwIfAborted(); const wave = pcm16Wave(pcm);
     if (!/^(auto|[a-z]{2,3})$/.test(language)) throw fault('audio_language', 'Choose a supported transcription language.');

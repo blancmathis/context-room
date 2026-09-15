@@ -358,3 +358,43 @@ links, device identity and physical validation have their own receipts. The
 convergence verification record at
 `docs/lifecycle/changes/active/android-convergence/verification.md` in the
 Context Room source repository tracks those open gates.
+
+## Retained drawing-transfer sessions without a legacy runtime
+
+Inside the selected original project, inspect one exact retained session:
+
+```sh
+context-room migrate --legacy-session ORIGINAL_SESSION_ID
+context-room migrate --legacy-session ORIGINAL_SESSION_ID --session-frame board:REVISION --path docs/recovered-drawing.crnb
+context-room migrate --legacy-session ORIGINAL_SESSION_ID --session-frame board:REVISION --path docs/recovered-drawing.crnb --apply --revision PREVIEW_REVISION
+```
+
+The inventory also offers `source` and retained `preview:REVISION` frames. Those
+choices explicitly recover an embedded raster, not reconstructed editable pen
+objects. A structured `board:REVISION` import requires exact original object IDs
+and revisions; tombstones are retained and pressure samples use the normal legacy
+board converter. Flat object projections and projections with an explicit `value`
+are supported. An absent asset, unknown object format or missing revision is
+refused for structured import; the original files remain available and no raster
+fallback is silently substituted.
+
+Preview binds the original `session.json`, selected frame, source PNG, exact
+project location, configuration and destination. Apply retains those originals
+and their ID mapping in a versioned recovery journal, imports a working notebook
+through the existing native engine, and leaves accepted documentation untouched.
+Repetition reuses the original import receipt without overwriting newer gestures.
+Old task identities and uncertain sends remain historical; no provider task or
+legacy queue is resumed. Symlinks and occupied unrelated destinations are refused.
+
+This completes the native replacement of the former drawing connector calls,
+not the Android/Mac pending-queue reconciliation. Android `board.create`,
+`board.metadata`, `asset.put`, `board.mutate` and progressive frames still need
+receipt-digest and revision-chain reconciliation before any operation can be
+classified as delivered or safely applied. Native ZIP conversion and retained
+transfer recovery are not substitutes for that missing migration function.
+
+Preserved PCM recordings still have `context: unassigned` unless an original
+binding is already available in their retained source. A filename hash is not
+used to infer a document or conversation. The explicit audio-association
+selection/review workflow remains implementation work; do not claim that
+recording preservation alone delivers that workflow.

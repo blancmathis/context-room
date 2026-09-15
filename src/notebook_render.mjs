@@ -7,8 +7,10 @@ export function notebookBounds(document) {
   return { x, y, width: Math.max(1200, bounds.x + bounds.width) - x, height: Math.max(900, bounds.y + bounds.height) - y };
 }
 /** Deterministic, inert export of this exact scene. No provider calls or external resources. */
-export function notebookSvg(input, { showOrigins = false } = {}) {
-  const document = normalizeNotebookDocument(input), objects = new Map(document.objects.map(o => [o.id, o])), bounds = notebookBounds(document);
+export function notebookSvg(input, { showOrigins = false, bounds: viewport = null } = {}) {
+  const document = normalizeNotebookDocument(input), objects = new Map(document.objects.map(o => [o.id, o])), bounds = viewport || notebookBounds(document);
+  if (!['x', 'y', 'width', 'height'].every(key => typeof bounds[key] === 'number' && Number.isFinite(bounds[key]) && Math.abs(bounds[key]) <= 1e7)
+      || bounds.width <= 0 || bounds.height <= 0) throw new Error('Use finite positive SVG export bounds.');
   const items = document.objects.map(o => {
     const x = o.x || 0, y = o.y || 0, w = o.width ?? 140, h = o.height ?? 80;
     const style = `stroke="${xml(o.color || '#222222')}" stroke-width="${Math.max(.1, o.strokeWidth || 2)}" stroke-linecap="round" stroke-linejoin="round" fill="${xml(o.fill || 'none')}"`;

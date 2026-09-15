@@ -37,9 +37,33 @@ process. It has its own restricted TLS routes and does not enable a hosted
 profile or expose the loopback owner API. See [connected devices](connected-devices.md)
 for activation, pairing and the current implementation boundary.
 
-## Optional Lisière
+## Native drawing and optional local voice
 
-Lisière is a separate local companion. Context Room starts and reviews documents without it. A requested drawing handoff uses an isolated workspace and the installed CLI; no Lisière token is placed in a document or sent through the browser. The current protocol can create and read a board, but does not remotely open it on the tablet.
+Context Room's PNG review, editable notebook and connected-device drawing paths
+use the native notebook engine. The compatibility route names `/api/lisiere/*`
+are retained for existing clients, but no separate companion executable or
+service is invoked. Original transfer sessions require explicit migration,
+not automatic continuation of old tasks. Recovery coverage and its remaining
+queue-reconciliation boundary are owned by
+[Lisière migration](lisiere-migration.md).
+
+Voice remains a separate optional local dependency, not a requirement for Hub,
+review, notebooks or the CLI. `doctor` reports missing local audio prerequisites
+without installing software, downloading a model, starting Codex or changing
+review health decisions. The runtime no longer treats a model filename alone
+as configured transcription: an executable Whisper CLI and a readable, nonempty
+regular model file must both be present. This is readiness to attempt recognition,
+not proof of model compatibility or acoustic quality.
+
+Set `CONTEXT_ROOM_WHISPER_BIN` to an installed local `whisper-cli` executable
+(or make it available on an absolute PATH entry). Set
+`CONTEXT_ROOM_WHISPER_MODEL` to the chosen compatible local model. The unchanged
+default model location is
+`$CONTEXT_ROOM_ASSISTANT_HOME/models/ggml-large-v3-turbo-q5_0.bin`, under
+`~/.context-room/assistant` when that home is not set. Speech synthesis uses the
+local macOS speech executable; other platforms report that dependency unavailable
+rather than silently falling back to a paid API. These diagnostics do not perform
+installation or verify an actual microphone, speaker or recognition result.
 
 ## Verification
 

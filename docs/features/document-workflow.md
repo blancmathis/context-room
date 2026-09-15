@@ -15,7 +15,7 @@ Agents read accepted documentation and prepare isolated changes through the CLI.
 
 ## Defines
 
-Accepted local reads, local proposal behavior, direct-change recovery, editable notebooks, supported review formats, reader continuity, state migration and the optional Lisière drawing bridge.
+Accepted local reads, local proposal behavior, direct-change recovery, editable notebooks, supported review formats, reader continuity, state migration and native drawing recovery and exact PNG corrections.
 
 ## Does not define
 
@@ -49,7 +49,7 @@ opened text file to 16 MiB. Larger workspaces remain available to the CLI.
 
 Accepting applies only the selected exact file delta. Saving a correction applies and accepts those corrected bytes. Rejecting an isolated file leaves its original unchanged. The remaining files retain their own pending decisions. The local proposal completes when all its files have decisions; it does not have an additional remote delivery step.
 
-Application checks the project identity, scope, exact base, file mode, paths and staged Git state where relevant. A conflicting external edit blocks application. A journal precedes the filesystem change; replaced bytes remain recoverable. Publication does not overwrite a file created concurrently at the destination. An interrupted application either resumes idempotently or reports recovery required.
+Application checks the project identity, scope, exact base, file mode, paths and staged Git state where relevant. The exact reviewed mode is explicitly applied to the new file descriptor, independently of the process umask; a concurrent permission-only origin change still blocks application. A conflicting external edit blocks application. A journal precedes the filesystem change; replaced bytes remain recoverable. Publication does not overwrite a file created concurrently at the destination. An interrupted application either resumes idempotently or reports recovery required.
 
 ## Direct changes
 
@@ -105,17 +105,28 @@ Pending changes remain indefinitely unless the human decides otherwise. The clea
 
 Selection binds exact revisions. Unknown age starts at first observation, not a guessed filesystem timestamp. A changed revision starts a new age. Drafts, unavailable items and stale selections are excluded or reported; a partial failure is recorded and is not reported as full success. Cleanup rejects changes rather than merely hiding the rows.
 
-## Legacy Lisière handoffs
+## Native drawing and retained transfer recovery
 
-Context Room's notebook and connected-device interfaces run without Lisière.
-The older PNG bridge remains as compatibility server routes. Existing handoff
-directories retain the original document revision, stable board revision,
-editable objects and rendered preview for recovery. The current interface uses
-Context Room notebooks; it no longer exposes the old drawing/import buttons.
+The PNG review action **Draw in Context Room** asks for an explicit editable
+`.crnb` path in an existing permitted directory. It opens the native notebook
+editor and its normal conversation/co-drawing controls; no Lisière CLI or service
+is called. Preparation and autosave create a working scene, never an accepted PNG
+or an accepted notebook. Scope, worktree and original review revision remain
+bound throughout the session.
 
-Removing those external compatibility calls and importing their editable sources
-remain part of the convergence work. Physical tablet behavior requires a
-separate device check.
+**Use saved drawing** freezes the exact editable scene and renders an inert SVG
+to PNG at the original image dimensions. The person inspects that raster before
+**Save and accept file** accepts exactly its bytes. Later working gestures are
+not added to the frozen correction. Objects outside the original PNG crop remain
+in the complete editable notebook; the interface states that distinction. The
+existing integrated raster correction remains available alongside this action.
+
+Original `.context-room/lisiere/sessions/<id>/` transfers are not restarted.
+`migrate --legacy-session ID` inventories retained source, preview and structured
+frames. Recovery requires an explicit frame and an unused ordinary `.crnb` path;
+missing assets, object identities or revisions require reconciliation rather
+than guessed content. See [Lisière recovery](../system/lisiere-migration.md) for
+preview/apply and retained provenance. Old task identities remain history.
 
 ## Migration
 
