@@ -4,6 +4,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { updateAllContextRooms } from "../scripts/update-context-rooms.mjs";
 import { planStateMigration, applyStateMigration } from "../src/state_migration.mjs";
+import { exportLisiereSnapshot } from "../src/lisiere_snapshot.mjs";
+import { inspectLisiereSnapshot } from "../src/lisiere_inventory.mjs";
+import { migrateLisiereNotebook, migrateLisiereDraft, migrateLisiereConversation } from "../src/context_room.mjs";
 import {
   applyCliReviewAnnotation,
   applyAgentHandoff,
@@ -118,6 +121,7 @@ import {
   buildDocQaReport,
   contextHubUiState,
   createMemoryServer,
+  createContextRoomDeviceService,
   initializeContextRoomProject,
   readAgentAnnotations,
   readCollaborationSessionState,
@@ -326,6 +330,8 @@ async function flushAndExit(code = 0) {
 }
 
 const KNOWN_OPTIONS = new Set([
+  "export-lisiere", "import-lisiere", "inspect-lisiere", "legacy-board", "legacy-draft", "legacy-conversation", "recordings", "output", "revision",
+  "device-host", "device-port", "device-state",
   "reader",
   "action", "actionable", "advisory", "all", "all-projects", "allow", "allow-stale", "apply", "branch", "budget", "contract", "cursor", "cwd", "depth", "description", "detail", "document", "dry-run", "enabled", "exclude", "expand", "fields", "files", "folder", "follow", "format", "fresh", "from", "goal", "h", "heading", "help", "highlight", "hook", "include",
   "assignment", "change", "collection", "collection-path", "collection-title", "destination", "id", "include", "json", "kind", "limit", "message", "mode", "name", "no-restart", "note", "operation", "path", "percent", "port", "profile", "project", "projects", "provider", "providers", "query",
@@ -778,7 +784,7 @@ const agentFirstTargetCommand = (
   || (command === "shared" && args._[1] === "instructions" && args._[2] !== "status")
   || contextAgentFirstTargetCommand
   || command === "settings"
-  || command === "migrate"
+  || (command === "migrate" && !args["export-lisiere"] && !args["inspect-lisiere"])
   || (command === "doctor" && !args["all-projects"] && (Boolean(args._[1]) || Boolean(args.format || args.project || args.location || args.folder || args.provider || args.cursor || args.limit)))
 );
 let agentFirstTarget = null;
@@ -838,7 +844,8 @@ if (!rootStats?.isDirectory()) {
 }
 
 const nativePlanCommand = (
-  (command === "agent" && args._[1] === "handoff")
+  command === "migrate"
+  || (command === "agent" && args._[1] === "handoff")
   || (command === "agent" && ["watch", "unwatch", "open", "navigate", "scroll", "highlight", "annotate"].includes(args._[1]))
   || (command === "review" && args._[1] === "annotate")
   || (command === "shared" && args._[1] === "skills")
@@ -850,7 +857,8 @@ const nativePlanCommand = (
   || (command === "shared" && ["local", "security"].includes(args._[1]))
 );
 const nativeApplyCommand = (
-  (command === "agent" && args._[1] === "handoff")
+  command === "migrate"
+  || (command === "agent" && args._[1] === "handoff")
   || (command === "review" && args._[1] === "annotate")
   || (command === "shared" && args._[1] === "skills")
   || (command === "shared" && args._[1] === "instructions")
@@ -1156,12 +1164,15 @@ if (command === "hub") {
         const expectedRoot = runtime.root ? fs.realpathSync(runtime.root) : "";
         const actualRoot = health?.root ? fs.realpathSync(health.root) : "";
         if (response.ok && health?.ok === true && expectedRoot && actualRoot === expectedRoot) {
+          if (args['device-host']) {
+            throw new ContextRoomCliError('device-service-already-running', 'A Context Room Hub is already running. Device startup options apply only to a new Hub process; the current Hub was not restarted.');
+          }
           const focus = focusedProject ? `&project=${encodeURIComponent(focusedProject.id)}` : "";
           console.log(`Context Room Hub: ${runtime.url}/?hub=1${focus}`);
           console.log(`Already running since: ${runtime.startedAt || "unknown"}`);
           process.exit(0);
         }
-      } catch {}
+      } catch (error) { if (error?.code === 'device-service-already-running') throw error; }
       clearContextHubRuntime(runtime.pid);
     }
     const hostRoot = contextHubHostRoot();
@@ -1172,18 +1183,26 @@ if (command === "hub") {
       watchAllow: [],
     });
     const port = selectedPort;
-    const { server } = createMemoryServer({ root: hostRoot, port, registerInHub: false, persistentDocumentGraphLayout: true });
+    const deviceService = args['device-host'] ? createContextRoomDeviceService({ root: hostRoot,
+      stateRoot: args['device-state'] ? path.resolve(String(args['device-state'])) : path.join(path.dirname(hostRoot), 'devices') }) : null;
+    const { server } = createMemoryServer({ root: hostRoot, port, registerInHub: false, persistentDocumentGraphLayout: true, deviceService });
     await new Promise((resolve, reject) => {
       const onError = (error) => reject(error);
       server.once("error", onError);
       server.listen(port, "127.0.0.1", () => { server.off("error", onError); resolve(); });
     });
     const url = `http://127.0.0.1:${port}`;
+    if (deviceService) {
+      try { await deviceService.listen({ host: String(args['device-host']), port: args['device-port'] === undefined ? 4318 : Number(args['device-port']) }); }
+      catch (error) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); throw error; }
+      console.log(`Context Room devices: ${deviceService.describe().url}`);
+    }
     writeContextHubRuntime({ port, root: hostRoot, url });
     const focus = focusedProject ? `&project=${encodeURIComponent(focusedProject.id)}` : "";
     console.log(`Context Room Hub: ${url}/?hub=1${focus}`);
     console.log(`Projects: ${listContextHubProjects().length}`);
-    const close = () => server.close(() => {
+    const close = () => server.close(async () => {
+      if (deviceService?.server.listening) await deviceService.close();
       clearContextHubRuntime(process.pid);
       process.exit(0);
     });
@@ -1675,7 +1694,25 @@ if (command === "context") {
 
 if (command === "migrate") {
   try {
-    const data = args.apply
+    if (args.plan && args.apply) throw new ContextRoomCliError("invalid-arguments", "Choose a migration preview or --apply, not both.", { exitCode: 2 });
+    if (args._[1]) throw new ContextRoomCliError("unknown-command", "Migration takes named options, not a subcommand.", { exitCode: 2 });
+    if ([args["export-lisiere"], args["import-lisiere"], args["inspect-lisiere"]].filter(Boolean).length > 1) throw new ContextRoomCliError("invalid-arguments", "Choose a legacy export, inventory or notebook import.", { exitCode: 2 });
+    if (args["inspect-lisiere"] && args.apply) throw new ContextRoomCliError("invalid-arguments", "Recovery inventory is read-only; it cannot apply or acknowledge work.", { exitCode: 2 });
+    if (!args["import-lisiere"] && (args["legacy-board"] || args["legacy-draft"] || args["legacy-conversation"] || args.path)) throw new ContextRoomCliError("invalid-arguments", "--legacy-board, --legacy-draft, --legacy-conversation and --path require --import-lisiere.", { exitCode: 2 });
+    if ([args["legacy-board"], args["legacy-draft"], args["legacy-conversation"]].filter(Boolean).length > 1) throw new ContextRoomCliError("invalid-arguments", "Choose one legacy board, draft or conversation.", { exitCode: 2 });
+    if (!args["export-lisiere"] && args.output) throw new ContextRoomCliError("invalid-arguments", "--output requires --export-lisiere.", { exitCode: 2 });
+    if (!args["export-lisiere"] && args.recordings) throw new ContextRoomCliError("invalid-arguments", "--recordings requires --export-lisiere.", { exitCode: 2 });
+    const data = args["export-lisiere"]
+      ? await exportLisiereSnapshot({ source: args["export-lisiere"], output: args.output, recordings: args.recordings, apply: Boolean(args.apply), expectedRevision: args.revision })
+      : args["inspect-lisiere"]
+      ? inspectLisiereSnapshot(args["inspect-lisiere"], { kind: args.kind || 'all', limit: args.limit ?? 50, ...(args.cursor === undefined ? {} : { cursor: args.cursor }) })
+      : args["import-lisiere"]
+      ? args["legacy-conversation"]
+        ? migrateLisiereConversation(agentFirstTarget.root, { snapshot: args["import-lisiere"], selector: args["legacy-conversation"], path: args.path, apply: Boolean(args.apply), expectedRevision: args.revision })
+        : args["legacy-draft"]
+        ? migrateLisiereDraft(agentFirstTarget.root, { snapshot: args["import-lisiere"], selector: args["legacy-draft"], path: args.path, apply: Boolean(args.apply), expectedRevision: args.revision })
+        : migrateLisiereNotebook(agentFirstTarget.root, { snapshot: args["import-lisiere"], boardId: args["legacy-board"], path: args.path, apply: Boolean(args.apply), expectedRevision: args.revision })
+      : args.apply
       ? applyStateMigration(agentFirstTarget.root, { expectedRevision: args.revision })
       : planStateMigration(agentFirstTarget.root);
     emitAgentFirstResult("migrate", { target: agentFirstTarget, data }, { format: agentFirstFormat });

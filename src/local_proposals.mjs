@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { withFilesystemLock } from "./filesystem_lock.mjs";
+import { writeNotebookBytes, makeNotebookDirectory, syncNotebookDirectory } from "./notebook_io.mjs";
 
 const STORE = ".context-room/local-proposals";
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -42,7 +43,7 @@ function safePath(root, rel) {
   return current;
 }
 
-function readBytes(root, rel) {
+function readBytes(root, rel, maxBytes = Infinity) {
   const target = safePath(root, rel);
   let fd;
   try { fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); } catch (error) {
@@ -52,6 +53,7 @@ function readBytes(root, rel) {
   try {
     const before = fs.fstatSync(fd);
     if (!before.isFile()) fail("local_proposal_path", `Expected a regular file: ${rel}`);
+    if (before.size > maxBytes) fail("local_proposal_size", `This draft exceeds the integrated editor limit: ${rel}`);
     const bytes = fs.readFileSync(fd);
     const after = fs.fstatSync(fd);
     if (identity(before) !== identity(after) || before.size !== after.size || before.mtimeMs !== after.mtimeMs
@@ -64,7 +66,7 @@ function readBytes(root, rel) {
 
 function atomicWrite(root, rel, bytes, mode = 0o600) {
   const target = safePath(root, rel);
-  fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+  makeNotebookDirectory(root, path.posix.dirname(rel));
   const tempRel = `${rel}.${randomUUID()}.tmp`;
   const temp = safePath(root, tempRel);
   const fd = fs.openSync(temp, "wx", mode);
@@ -75,6 +77,7 @@ function atomicWrite(root, rel, bytes, mode = 0o600) {
   try {
     safePath(root, rel);
     fs.renameSync(temp, target);
+    syncNotebookDirectory(path.dirname(target));
   } finally {
     if (fs.existsSync(temp)) fs.unlinkSync(temp);
   }
@@ -93,7 +96,7 @@ function context(projectRoot, { create = false } = {}) {
   const root = fs.realpathSync(projectRoot);
   const rootIdentity = identity(fs.statSync(root));
   const store = safePath(root, STORE);
-  if (create) fs.mkdirSync(store, { recursive: true, mode: 0o700 });
+  if (create) makeNotebookDirectory(root, STORE);
   return { root, rootIdentity, store };
 }
 
@@ -167,9 +170,10 @@ function submissionRevision(proposal, submitted) {
     base: manifestRevision(proposal.base), submitted: manifestRevision(submitted) });
 }
 
-function workspaceManifest(ctx, proposal) {
+function workspaceManifest(ctx, proposal, { store = true, maxFiles = Infinity, maxBytes = Infinity } = {}) {
   const workspace = safePath(ctx.root, proposal.workspace);
   const result = Object.create(null);
+  let totalBytes = 0, fileCount = 0;
   function visit(folder = "") {
     for (const entry of fs.readdirSync(path.join(workspace, folder), { withFileTypes: true })) {
       const rel = folder ? `${folder}/${entry.name}` : entry.name;
@@ -177,9 +181,11 @@ function workspaceManifest(ctx, proposal) {
       if (entry.isDirectory()) visit(rel);
       else {
         if (!inScope(rel, proposal.allowedPaths)) fail("local_proposal_scope", `File outside the proposal scope: ${rel}`);
-        const file = readBytes(workspace, rel);
+        if (fileCount++ >= maxFiles) fail("local_proposal_size", "This workspace exceeds the integrated editor file limit.");
+        const file = readBytes(workspace, rel, maxBytes - totalBytes);
         if (!file) fail("local_proposal_conflict", `File disappeared during submission: ${rel}`);
-        result[rel] = { hash: storeBlob(ctx, file.bytes), mode: file.mode };
+        totalBytes += file.bytes.length;
+        result[rel] = { hash: store ? storeBlob(ctx, file.bytes) : file.hash, mode: file.mode };
       }
     }
   }
@@ -205,16 +211,39 @@ function publicProposal(ctx, proposal) {
 }
 
 /** The caller supplies the accepted corpus, never an unchecked working-tree snapshot. */
-export function beginLocalProposal(projectRoot, { title, description = "", files = [], allowedPaths = [] } = {}) {
+export function beginLocalProposal(projectRoot, { title, description = "", files = [], initialFiles = [], allowedPaths = [], requestId = "" } = {}) {
   if (!String(title || "").trim()) fail("local_proposal_title", "A proposal title is required.");
   const scopes = allowedPaths.map((entry) => {
     relative(entry.endsWith("/") ? entry.slice(0, -1) : entry);
     return entry;
   });
   return locked(projectRoot, (ctx) => {
-    const id = `local-${randomUUID()}`;
+    if (requestId && !/^[a-zA-Z0-9_-]{1,96}$/.test(requestId)) fail("local_proposal_request", "Invalid preparation request identifier.");
+    if (!Array.isArray(initialFiles) || initialFiles.length > 256 || initialFiles.length && !requestId) fail("local_proposal_preparation", "Initial working files require a stable preparation request and a bounded file list.");
+    const initial = new Map(); let initialBytes = 0;
+    for (const file of initialFiles) {
+      const rel = relative(file.path);
+      if (!inScope(rel, scopes) || initial.has(rel)) fail("local_proposal_scope", "An initial working file is duplicated or outside the proposal scope.");
+      if (typeof file.content !== 'string' && !Buffer.isBuffer(file.content)) fail("local_proposal_preparation", "Initial working content must be text or exact bytes.");
+      const bytes = Buffer.from(file.content), mode = file.mode ?? files.find(base => base.path === rel)?.mode ?? 0o644;
+      initialBytes += bytes.length;
+      if (bytes.length > 32 * 1024 * 1024 || initialBytes > 64 * 1024 * 1024 || !Number.isInteger(mode) || mode < 0 || mode > 0o777) fail("local_proposal_preparation", "Initial working files exceed the bounded size or have an invalid mode.");
+      initial.set(rel, { bytes, hash: hash(bytes), mode });
+    }
+    const key = requestId ? hash(requestId).slice(0, 32) : "";
+    const id = requestId ? `local-${key.slice(0,8)}-${key.slice(8,12)}-${key.slice(12,16)}-${key.slice(16,20)}-${key.slice(20)}` : `local-${randomUUID()}`;
+    const preparation = requestId ? revision({ title, description, allowedPaths: scopes, files: files.map(f => [f.path, hash(Buffer.from(f.content)), f.mode ?? 0o644]),
+      ...(initial.size ? { initialFiles: [...initial].map(([rel, file]) => [rel, file.hash, file.mode]) } : {}) }) : null;
+    if (requestId && fs.existsSync(safePath(ctx.root, `${STORE}/proposals/${id}.json`))) {
+      const existing = readProposal(ctx, id);
+      if (existing.preparation !== preparation) fail("local_proposal_request_conflict", "This preparation request already names different input.");
+      return publicProposal(ctx, existing);
+    }
     const workspace = `${STORE}/workspaces/${id}`;
-    fs.mkdirSync(safePath(ctx.root, workspace), { recursive: true, mode: 0o700 });
+    if (initial.size) {
+      syncNotebookDirectory(path.dirname(ctx.store));
+      makeNotebookDirectory(ctx.root, workspace);
+    } else fs.mkdirSync(safePath(ctx.root, workspace), { recursive: true, mode: 0o700 });
     const base = Object.create(null);
     for (const file of files) {
       const rel = relative(file.path);
@@ -225,15 +254,28 @@ export function beginLocalProposal(projectRoot, { title, description = "", files
       const mode = file.mode ?? 0o644;
       base[rel] = { hash: digest, mode };
       const destination = safePath(ctx.root, `${workspace}/${rel}`);
-      fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
+      if (initial.size) makeNotebookDirectory(ctx.root, path.posix.dirname(`${workspace}/${rel}`));
+      else fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
       // Reflink where supported; Node falls back to independent bytes. Never hardlink drafts.
-      fs.copyFileSync(safePath(ctx.root, blobPath(digest)), destination, fs.constants.COPYFILE_FICLONE | fs.constants.COPYFILE_EXCL);
-      fs.chmodSync(destination, mode);
+      const retained = requestId ? readBytes(ctx.root, `${workspace}/${rel}`) : null;
+      const working = initial.get(rel), retainedWorking = working && retained?.hash === working.hash && retained.mode === working.mode;
+      if (retained && (retained.hash !== digest || retained.mode !== mode) && !retainedWorking) fail("local_proposal_preparation_conflict", "Interrupted preparation contains newer bytes; nothing was overwritten.");
+      if (!retained) fs.copyFileSync(safePath(ctx.root, blobPath(digest)), destination, fs.constants.COPYFILE_FICLONE | fs.constants.COPYFILE_EXCL);
+      if (!retainedWorking) fs.chmodSync(destination, mode);
+    }
+    for (const [rel, working] of initial) {
+      const retained = readBytes(ctx.root, `${workspace}/${rel}`);
+      if (retained && !((retained.hash === working.hash && retained.mode === working.mode)
+        || (retained.hash === base[rel]?.hash && retained.mode === base[rel]?.mode))) fail("local_proposal_preparation_conflict", "Interrupted preparation contains newer working content; nothing was overwritten.");
+      // Complete and sync the initial working bytes before publishing the
+      // proposal's replay receipt. Existing published requests return above.
+      writeNotebookBytes(ctx.root, `${workspace}/${rel}`, working.bytes, { expectedHash: retained?.hash ?? null, mode: working.mode });
     }
     const now = new Date().toISOString();
     const proposal = { schemaVersion: 1, id, scope: "local", title: String(title).trim(), description,
-      rootIdentity: ctx.rootIdentity, workspace, allowedPaths: scopes, base,
-      baseRevision: manifestRevision(base), status: "editing", createdAt: now, updatedAt: now, decisions: {} };
+      rootIdentity: ctx.rootIdentity, workspace, allowedPaths: scopes, base, ...(requestId ? { preparation } : {}),
+      baseRevision: manifestRevision(base), ...(initial.size ? { initial: Object.fromEntries([...initial].map(([rel, file]) => [rel, { hash: file.hash, mode: file.mode }])) } : {}),
+      status: "editing", createdAt: now, updatedAt: now, decisions: {} };
     saveProposal(ctx, proposal);
     return publicProposal(ctx, proposal);
   });
@@ -254,13 +296,51 @@ export function inspectLocalProposal(projectRoot, id) {
   return publicProposal(ctx, readProposal(ctx, id));
 }
 
-export function submitLocalProposal(projectRoot, id, { canWrite = () => true } = {}) {
+const draftRevision = (proposal, working) => revision({ id: proposal.id, rootIdentity: proposal.rootIdentity, base: proposal.baseRevision, working: manifestRevision(working) });
+
+function workingDraft(ctx, proposal, canRead) {
+  if (proposal.status !== 'editing') fail('local_proposal_closed', 'This draft was submitted or reviewed. Open its review instead.');
+  const working = workspaceManifest(ctx, proposal, { store: false, maxFiles: 256, maxBytes: 64 * 1024 * 1024 });
+  const files = [...new Set([...Object.keys(proposal.base), ...Object.keys(working)])].sort();
+  if (files.some(rel => !canRead(rel))) fail('local_proposal_scope', 'A draft document is no longer in the editable project scope.');
+  return { id: proposal.id, title: proposal.title, status: proposal.status, working,
+    revision: draftRevision(proposal, working),
+    files: files.map(rel => ({ path: rel, kind: !working[rel] ? 'deleted' : !proposal.base[rel] ? 'added' : 'modified' })) };
+}
+
+/** Read working drafts without populating content storage or accepting bytes. */
+export function readLocalProposalDraft(projectRoot, id, rel, { canRead = () => false } = {}) {
+  const ctx = context(projectRoot), proposal = readProposal(ctx, id), draft = workingDraft(ctx, proposal, canRead);
+  const { working, ...summary } = draft;
+  if (rel === undefined) return summary;
+  if (!draft.files.some(file => file.path === relative(rel))) fail('local_proposal_path', 'Choose a file retained by this draft.');
+  const file = readBytes(ctx.root, `${proposal.workspace}/${rel}`, 16 * 1024 * 1024);
+  if (!sameVersion(file, working[rel])) fail('local_proposal_stale', 'The working draft changed while opening it. Reload this version.');
+  return { ...summary, path: rel, afterBase64: file?.bytes.toString('base64') ?? null };
+}
+
+export function writeLocalProposalDraft(projectRoot, id, { path: rel, content, expectedRevision } = {}, { canWrite = () => false } = {}) {
+  return locked(projectRoot, ctx => {
+    const proposal = readProposal(ctx, id), draft = workingDraft(ctx, proposal, canWrite);
+    if (expectedRevision !== draft.revision) fail('local_proposal_stale', 'The saved draft changed. Your text is retained in the editor; reload the saved version before reconciling.');
+    if (!draft.files.some(file => file.path === relative(rel)) || !/\.(?:md|markdown|txt)$/i.test(rel)) fail('local_proposal_scope', 'Only retained text documents can be edited here.');
+    if (typeof content !== 'string' || Buffer.byteLength(content) > 16 * 1024 * 1024 || Buffer.from(content).toString('utf8') !== content) fail('local_proposal_size', 'Keep this draft within the supported UTF-8 text limit.');
+    const current = draft.working[rel];
+    writeNotebookBytes(ctx.root, `${proposal.workspace}/${rel}`, Buffer.from(content), { expectedHash: current?.hash ?? null, mode: current?.mode ?? proposal.base[rel]?.mode ?? 0o644 });
+    proposal.updatedAt = new Date().toISOString(); saveProposal(ctx, proposal);
+    return readLocalProposalDraft(ctx.root, id, rel, { canRead: canWrite });
+  });
+}
+
+export function submitLocalProposal(projectRoot, id, { canWrite = () => true, expectedDraftRevision } = {}) {
   return locked(projectRoot, (ctx) => {
     const proposal = readProposal(ctx, id);
+    if (expectedDraftRevision !== undefined && workingDraft(ctx, proposal, canWrite).revision !== expectedDraftRevision) fail('local_proposal_stale', 'The draft changed before submission. Reload its saved version.');
     if (["accepted", "rejected", "resolved"].includes(proposal.status) || Object.keys(proposal.decisions).length) {
       fail("local_proposal_closed", "A reviewed proposal cannot be resubmitted. Create a new proposal for further changes.");
     }
     const submitted = workspaceManifest(ctx, proposal);
+    if (expectedDraftRevision !== undefined && draftRevision(proposal, submitted) !== expectedDraftRevision) fail('local_proposal_stale', 'The draft changed during submission. Reload its saved version.');
     for (const entry of changesFor({ ...proposal, submitted })) {
       if (!canWrite(entry.path)) fail("local_proposal_scope", `This document is no longer editable in the proposal: ${entry.path}`);
     }

@@ -325,8 +325,10 @@ test("@smoke global boot stays pending until the Explorer catalogue is renderabl
   let markCatalogRequest;
   const catalogRequest = new Promise((resolve) => { markCatalogRequest = resolve; });
   const catalogGate = new Promise((resolve) => { releaseCatalog = resolve; });
-  await page.route("**/api/context-hub/catalog", async (route) => {
-    markCatalogRequest();
+  // Runtime events can request a full catalogue while the initial light request
+  // is pending. Hold both data sources to exercise an actually unavailable list.
+  await page.route(url => ["/api/context-hub/catalog", "/api/context-hub"].includes(url.pathname), async (route) => {
+    if (new URL(route.request().url()).pathname === "/api/context-hub/catalog") markCatalogRequest();
     await catalogGate;
     await route.continue();
   });
@@ -1240,6 +1242,9 @@ test("@smoke Back cancels a delayed proposal opening and Forward starts one clea
     title: "Proposal history cancellation",
     reviewStatus: "ready",
   }]);
+  // A global Hub can already show Shared proposals before any local report is
+  // available. Back must still repaint its busy controls and restore focus.
+  await page.evaluate(() => { state.docqa = null; });
   await page.route("**/api/context-hub/review", async (route) => {
     reviewPosts += 1;
     if (reviewPosts === 1) {

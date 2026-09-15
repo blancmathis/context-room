@@ -1,0 +1,56 @@
+plugins { id 'com.android.application' }
+
+// Explicit upgrade profile: one source tree, a separate output directory and
+// the original signing identity. The ordinary preview remains a separate app.
+def legacyRecovery = providers.gradleProperty('contextRoomLegacyRecovery').orElse('false').get() == 'true'
+def legacyCode = legacyRecovery ? providers.gradleProperty('contextRoomLegacyVersionCode').get().toInteger() : 1
+def legacyKey = new File(System.getProperty('user.home'), '.local/share/lisiere/signing/development.keystore')
+if (legacyRecovery) {
+    if (legacyCode <= 0 || !legacyKey.isFile()) throw new GradleException('Legacy recovery needs an explicit version code and the preserved original signing key.')
+    layout.buildDirectory.set(rootProject.layout.projectDirectory.dir('.local/legacy-recovery-build/app'))
+}
+
+android {
+    namespace 'app.contextroom.tablet'
+    compileSdk 35
+    buildToolsVersion '35.0.0'
+    defaultConfig {
+        applicationId legacyRecovery ? 'fr.lisiere.android' : 'app.contextroom.tablet'
+        minSdk 28
+        targetSdk 35
+        versionCode legacyCode
+        versionName legacyRecovery ? '0.1.0-recovery-preview' : '0.1.0-preview'
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+    signingConfigs {
+        debug {
+            storeFile legacyRecovery ? legacyKey : rootProject.file('.local/preview.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
+    buildTypes {
+        debug { applicationIdSuffix legacyRecovery ? '' : '.preview'; debuggable true }
+        release { minifyEnabled false }
+    }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    sourceSets.main.assets.srcDir layout.buildDirectory.dir('generated/notebook-assets')
+    packaging { jniLibs { pickFirsts += ['lib/*/libc++_shared.so'] } }
+}
+
+// Package the actual portable client; never maintain an Android fork of its outbox.
+def notebookAssets = tasks.register('notebookAssets', Sync) {
+    from('../../src') { include 'notebook_client.mjs', 'notebook_protocol.mjs', 'notebook_gestures.mjs', 'notebook_native.mjs' }
+    into(layout.buildDirectory.dir('generated/notebook-assets/core'))
+}
+tasks.named('preBuild').configure { dependsOn notebookAssets }
+
+dependencies {
+    implementation 'com.onyx.android.sdk:onyxsdk-pen:1.5.4'
+    implementation 'androidx.webkit:webkit:1.16.0'
+    implementation platform('org.jetbrains.kotlin:kotlin-bom:1.8.22')
+    androidTestImplementation 'androidx.test:runner:1.6.2'
+    androidTestImplementation 'androidx.test:rules:1.6.1'
+    androidTestImplementation 'androidx.test.ext:junit:1.2.1'
+}

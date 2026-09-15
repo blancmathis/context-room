@@ -30,6 +30,13 @@ Owner-authenticated routes handle file decisions, corrections, cleanup rules and
 
 The old hosted implementation still has internal compatibility helpers during this refactor. They are unreachable as supported server profiles. Their compatibility status is tracked in the repository dossier at `docs/lifecycle/changes/active/refactor/index.md`.
 
+## Connected drawing devices
+
+The optional native drawing-device listener is part of the local Context Room
+process. It has its own restricted TLS routes and does not enable a hosted
+profile or expose the loopback owner API. See [connected devices](connected-devices.md)
+for activation, pairing and the current implementation boundary.
+
 ## Optional Lisière
 
 Lisière is a separate local companion. Context Room starts and reviews documents without it. A requested drawing handoff uses an isolated workspace and the installed CLI; no Lisière token is placed in a document or sent through the browser. The current protocol can create and read a board, but does not remotely open it on the tablet.

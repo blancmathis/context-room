@@ -1,0 +1,96 @@
+name: Convergence verification
+
+on:
+  push:
+    branches: [mathis/context-room-android-convergence]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - 'src/notebook*'
+      - 'src/device*.mjs'
+      - 'src/ui/notebook*'
+      - 'test/notebook*'
+      - 'test/device*'
+      - 'test/android/**'
+      - 'scripts/build-android.sh'
+      - 'scripts/check-android-artifact.py'
+      - '.github/workflows/convergence.yml'
+
+permissions: {}
+
+concurrency:
+  group: convergence-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install exact dependency graph
+        run: npm ci
+      - name: Notebook and existing proposal contracts
+        run: |
+          umask 022
+          node --test test/notebook*.test.mjs test/device*.test.mjs test/local_proposals.test.mjs test/document_assets.test.mjs
+      - name: Package privacy
+        run: npm run package:privacy
+      - name: Export exact source tree without repository history or runtime state
+        run: |
+          mkdir -p "$RUNNER_TEMP/convergence-source"
+          git archive --format=tar.gz --prefix=context-room/ HEAD > "$RUNNER_TEMP/convergence-source/context-room-source.tar.gz"
+          git rev-parse HEAD > "$RUNNER_TEMP/convergence-source/SOURCE_COMMIT"
+          cd "$RUNNER_TEMP/convergence-source"
+          sha256sum context-room-source.tar.gz > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: convergence-source-${{ github.sha }}
+          path: ${{ runner.temp }}/convergence-source/
+          if-no-files-found: error
+          retention-days: 7
+
+  android-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+        with:
+          packages: platform-tools
+      - name: Install the pinned Android build platform
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Build the separate preview and its instrumentation APK
+        run: scripts/build-android.sh
+      - name: Verify the APK signature and permission boundary
+        run: python3 scripts/check-android-artifact.py
+      - name: Record build identity
+        run: |
+          mkdir -p "$RUNNER_TEMP/android-preview"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "$RUNNER_TEMP/android-preview/Context-Room-preview.apk"
+          git rev-parse HEAD > "$RUNNER_TEMP/android-preview/SOURCE_COMMIT"
+          cd "$RUNNER_TEMP/android-preview"
+          sha256sum Context-Room-preview.apk > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: android-preview-${{ github.sha }}
+          path: ${{ runner.temp }}/android-preview/
+          if-no-files-found: error
+          retention-days: 7

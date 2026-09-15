@@ -1955,6 +1955,21 @@ export function readContextHubSnapshot() {
   return withRegistryLock(readContextHubSnapshotLocked);
 }
 
+// A missing snapshot must not require three separately published registry locks
+// to build the same fallback. Read one coherent set while retaining all normal
+// transaction recovery, root identity and live project-control checks.
+export function readContextHubNavigationSnapshot() {
+  return withRegistryLock(() => {
+    const snapshot = readContextHubSnapshotLocked();
+    if (snapshot?.state) return { snapshot };
+    return {
+      snapshot: null,
+      projects: listContextHubProjects(),
+      sharedRepositories: readContextHubRegistry().sharedRepositories,
+    };
+  });
+}
+
 export function writeContextHubSnapshot(state, {
   generatedAt = new Date().toISOString(),
   registryRevision = "",

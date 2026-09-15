@@ -1,4 +1,6 @@
 import { isDocumentAssetPath } from "./document_assets.mjs";
+import { decodeNotebook } from "./notebooks.mjs";
+import { notebookHash, readNotebookBytes, writeNotebookBytes } from "./notebook_io.mjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1721,7 +1723,12 @@ function writeRepositoryIdentityClaim(cacheRoot, repository) {
   if (claimStats && (claimStats.isSymbolicLink() || !claimStats.isFile())) {
     throw unsafeSharedFilesystemPath(`Shared repository identity claim must be a physical file: ${claimPath}`);
   }
-  if (claimStats) assertRepositoryIdentityClaim(cacheRoot, repository, { allowMissing: false });
+  if (claimStats) {
+    assertRepositoryIdentityClaim(cacheRoot, repository, { allowMissing: false });
+    // Identity claims are immutable once valid and private. Replacing identical
+    // bytes on every refresh races with readers validating the previous inode.
+    if ((claimStats.mode & 0o777) === 0o600) return;
+  }
   const transport = safeRepository(repository);
   writePrivateJson(claimPath, {
     version: 1,
@@ -1867,9 +1874,17 @@ function currentSharedProjectCapability(root) {
     throw new Error(`Shared project root identity changed: ${projectRoot}`);
   }
   const rootIdentity = { dev: rootStats.dev.toString(), ino: rootStats.ino.toString() };
-  const gitRootValue = tryGit(projectRoot, ["rev-parse", "--show-toplevel"]);
-  const commonDirValue = tryGit(projectRoot, ["rev-parse", "--git-common-dir"]);
-  const gitDirValue = tryGit(projectRoot, ["rev-parse", "--git-dir"]);
+  // Ask Git for the same three live values in one process. Do not cache this
+  // attestation: replacing the root, .git entry or worktree must still revoke it.
+  const gitPaths = tryGit(projectRoot, ["rev-parse", "--show-toplevel", "--git-common-dir", "--git-dir"]);
+  let [gitRootValue, commonDirValue, gitDirValue] = gitPaths.split("\n");
+  if (gitPaths && gitPaths.split("\n").length !== 3) {
+    // Preserve paths containing newlines rather than interpreting their lines
+    // as a different Git membership.
+    gitRootValue = tryGit(projectRoot, ["rev-parse", "--show-toplevel"]);
+    commonDirValue = tryGit(projectRoot, ["rev-parse", "--git-common-dir"]);
+    gitDirValue = tryGit(projectRoot, ["rev-parse", "--git-dir"]);
+  }
   if (!gitRootValue || !commonDirValue || !gitDirValue) {
     return { root: projectRoot, rootIdentity, worktreeIdentity: { kind: "path" } };
   }
@@ -7064,7 +7079,7 @@ function sharedProjectRepositoryState(repository, projectId, options = {}) {
   };
 }
 
-function createSharedProposalFromStateLocked(synced, { sourceRoot = "", title, description = "", scope = "project", branch = "", sessionId = process.env.CODEX_THREAD_ID || "" } = {}) {
+function createSharedProposalFromStateLocked(synced, { sourceRoot = "", title, description = "", scope = "project", branch = "", sessionId = process.env.CODEX_THREAD_ID || "", notebookSubmission = null } = {}) {
   const { connection, repositoryConfig, revision } = synced;
   const safeTitle = proposalTitle(title);
   const safeDescription = proposalDescription(description);
@@ -7131,6 +7146,7 @@ function createSharedProposalFromStateLocked(synced, { sourceRoot = "", title, d
     sourceBranch,
     sourceCommit: /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(sourceCommit) ? sourceCommit : "",
     sessionId: safeSessionId(sessionId),
+    ...(notebookSubmission ? { notebookSubmission } : {}),
     createdAt: new Date().toISOString(),
   };
   writeProposalRegistry(connection.repository, registry);
@@ -7978,6 +7994,9 @@ function publishSharedProposalFromStateLocked(synced, options = {}) {
       force: true,
     },
   ]);
+  // A frozen-document adapter can retain its exact prepared head before any
+  // network publication. Rebase must not silently change the frozen bytes.
+  options.verifyBeforePublish?.({ entry, registry, head, files });
   try {
     runSharedNetworkGit(entry.root, pushArgs, {
       stdio: ["ignore", "ignore", "pipe"],
@@ -8079,6 +8098,141 @@ export function publishSharedRepositoryProposal(repository, options = {}) {
       push: options.push || null,
     });
     return publishSharedProposalFromStateLocked(synced, options);
+  });
+}
+
+function sharedNotebookConflict(message, details = {}) {
+  const error = sharedContextError("notebook_shared_conflict", message, details);
+  error.statusCode = 409;
+  return error;
+}
+
+function sharedNotebookTarget(synced, sourcePath) {
+  const localPath = safeRelativePath(sourcePath, "notebook source path");
+  const documentPath = localPath.startsWith("docs/") ? localPath.slice(5) : localPath;
+  if (!/\.crnb$/i.test(documentPath) || documentPath.split("/").some(part => part.startsWith("."))) {
+    throw sharedNotebookConflict("Shared notebooks require an ordinary .crnb document path.");
+  }
+  const projectId = safeId(synced.connection.projectId, "projectId");
+  const project = synced.catalog.projects.find(item => item.id === projectId);
+  if (!project) throw sharedNotebookConflict("The connected Shared project no longer exists.");
+  return {
+    repositoryIdentity: sharedRepositoryIdentity(synced.connection.repository),
+    repositoryName: synced.repositoryConfig.name,
+    projectId,
+    projectTitle: project.title,
+    documentPath,
+    repositoryPath: `${synced.repositoryConfig.projectsPath}/${projectId}/docs/${documentPath}`,
+  };
+}
+
+/** Display the exact destination before the owner submits a frozen notebook. */
+export function readSharedNotebookTarget(root, sourcePath) {
+  const connection = readSharedProjectConnection(root);
+  if (!connection) return null;
+  return sharedNotebookTarget(cachedSharedRepositoryState(connection.repository, { projectId: connection.projectId }), sourcePath);
+}
+
+function sameNotebookTarget(left, right) {
+  return left && right && ["repositoryIdentity", "projectId", "repositoryPath", "documentPath"].every(key => left[key] === right[key]);
+}
+
+function sharedNotebookBlob(checkout, revision, file) {
+  const entry = gitTreeEntries(checkout, safeRevision(revision), [file]).find(item => item.path === file);
+  if (!entry) return null;
+  if (entry.type !== "blob" || !["100644", "100755"].includes(entry.mode)) throw sharedNotebookConflict("The notebook destination is not an ordinary document.");
+  const bytes = runGit(checkout, ["cat-file", "blob", entry.object], { encoding: null, maxBuffer: 20 * 1024 * 1024 + 1 });
+  decodeNotebook(bytes);
+  return { hash: notebookHash(bytes), mode: entry.mode === "100755" ? 0o755 : 0o644 };
+}
+
+/** Reuse the existing Shared proposal lifecycle; this adapter never reviews or accepts. */
+export function publishSharedNotebookSnapshot(root, {
+  submissionId, sourcePath, bytes, target, title = "Notebook", canPublish = () => false,
+  timeoutMs = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS, push = null,
+} = {}) {
+  if (!/^[a-f0-9]{64}$/.test(submissionId || "")) throw sharedNotebookConflict("A durable notebook submission identifier is required.");
+  decodeNotebook(bytes);
+  const sourceHash = notebookHash(bytes);
+  const fingerprint = notebookHash({ submissionId, sourceHash, sourcePath, target, title });
+  return withSharedRegistryLock(() => {
+    const connection = readSharedProjectConnection(root);
+    if (!connection || sharedRepositoryIdentity(connection.repository) !== target?.repositoryIdentity || connection.projectId !== target?.projectId) {
+      throw sharedNotebookConflict("The notebook's original Shared connection changed. Its frozen work is retained.");
+    }
+    return withProposalRegistryLock(connection.repository, () => withSharedRepositoryCloneLock(connection.repository, () => {
+      const synced = syncSharedContextInternal(root, { allowOffline: false, timeoutMs, push }, { registryLockHeld: true, repositoryLockHeld: true });
+      const destination = sharedNotebookTarget(synced, sourcePath);
+      if (!sameNotebookTarget(destination, target) || canPublish() !== true) throw sharedNotebookConflict("The notebook destination or editable scope changed before publication.");
+      const checkout = repositoryCheckout(connection.repository);
+      const branch = safeBranchName(`${synced.repositoryConfig.proposalPrefix}${connection.projectId}/notebook-${submissionId.slice(0, 48)}`);
+      let entry = readProposalRegistry(connection.repository).proposals[branch];
+      if (!entry) {
+        entry = createSharedProposalFromStateLocked(synced, {
+          sourceRoot: root, branch, scope: "project", sessionId: `notebook-${submissionId}`,
+          title: String(title).slice(0, MAX_PROPOSAL_TITLE_LENGTH),
+          description: "Frozen notebook snapshot for human review. Later working gestures remain separate.",
+          notebookSubmission: { fingerprint, sourceHash, target: destination },
+        });
+      }
+      if (entry.notebookSubmission?.fingerprint !== fingerprint || entry.sourceRoot !== stableRoot(root) || entry.scope !== "project" || entry.projectId !== connection.projectId) {
+        throw sharedNotebookConflict("This submission identifier already belongs to another proposal. No draft was replaced.");
+      }
+      if (entry.notebookSubmission.receipt) return { ...entry.notebookSubmission.receipt, replayed: true };
+      assertSharedProposalWorkspaceRootNoFollow(synced, entry);
+      const writableRoot = fs.realpathSync(entry.root);
+      const repositoryPath = destination.repositoryPath;
+      const verifyHead = (head, baseRevision) => {
+        const paths = proposalChangePaths(gitNameStatusChanges(checkout, baseRevision, head));
+        const version = sharedNotebookBlob(checkout, head, repositoryPath);
+        if (paths.length !== 1 || paths[0] !== repositoryPath || version?.hash !== sourceHash) {
+          throw sharedNotebookConflict("The proposal no longer contains only the exact frozen notebook. Newer work was retained.");
+        }
+      };
+      const retainReceipt = (head, baseRevision, replayed) => {
+        verifyHead(head, baseRevision);
+        const receipt = { scope: "shared", ...destination, proposalId: branch, proposalRevision: head, baseRevision, sourceHash, accepted: false };
+        const registry = readProposalRegistry(connection.repository);
+        registry.proposals[branch].notebookSubmission.receipt = receipt;
+        writeProposalRegistry(connection.repository, registry);
+        return { ...receipt, replayed };
+      };
+      const remoteHead = remoteBranchRevision(checkout, branch), remoteState = checkedRemoteProposalState(checkout, branch, remoteHead);
+      if (remoteHead || remoteState.status !== "missing") {
+        const prepared = entry.notebookSubmission;
+        if (remoteState.status !== "active" || !remoteHead || remoteHead !== prepared.preparedHead) {
+          throw sharedNotebookConflict("The proposal changed or reached a terminal decision while its receipt was pending. The original submission is retained.");
+        }
+        return retainReceipt(remoteHead, prepared.preparedBase, true);
+      }
+      if (entry.lastPublishedHead) throw sharedNotebookConflict("The previously published proposal is no longer available. It will not be recreated.");
+      const pending = changedFiles(entry.root, entry.baseRevision);
+      if (pending.some(file => file !== repositoryPath)) throw sharedNotebookConflict("The notebook proposal contains another edit. No files were overwritten or published.");
+      const base = sharedNotebookBlob(checkout, entry.baseRevision, repositoryPath);
+      const current = readNotebookBytes(writableRoot, repositoryPath);
+      const currentHash = current ? notebookHash(current) : null;
+      if (currentHash !== sourceHash) {
+        if (currentHash !== (base?.hash || null)) throw sharedNotebookConflict("A newer correction exists in the proposal workspace. It was not replaced.");
+        writeNotebookBytes(writableRoot, repositoryPath, bytes, { expectedHash: currentHash, mode: base?.mode || 0o644 });
+      }
+      const published = publishSharedProposalFromStateLocked(synced, {
+        proposal: branch, expectedHead: "", title: entry.title, description: entry.description,
+        author: { name: "Context Room", email: ["context-room", "local.invalid"].join("@") }, push, timeoutMs,
+        verifyBeforePublish: ({ entry: preparing, registry, head }) => {
+          if (canPublish() !== true) throw sharedNotebookConflict("The notebook scope changed before publication.");
+          verifyHead(head, preparing.baseRevision);
+          preparing.notebookSubmission.preparedHead = head;
+          preparing.notebookSubmission.preparedBase = preparing.baseRevision;
+          writeProposalRegistry(connection.repository, registry);
+        },
+      });
+      // Fetch the delivered refs before acknowledging an exact remote snapshot.
+      syncSharedRepositoryStateUnderLock(connection.repository, { allowOffline: false, timeoutMs, push });
+      const deliveredHead = remoteBranchRevision(checkout, branch);
+      const deliveredState = checkedRemoteProposalState(checkout, branch, deliveredHead);
+      if (deliveredHead !== published.head || deliveredState.status !== "active") throw sharedNotebookConflict("The exact published notebook could not be verified. Retry the retained submission.");
+      return retainReceipt(deliveredHead, published.baseRevision, false);
+    }, timeoutMs));
   });
 }
 

@@ -26,6 +26,11 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
   <meta name="context-room-owner-nonce" content="${escapeHtmlServer(hosted ? "" : ownerMutationNonce)}" />
   <title>Context Room</title>
   <style>
+    .connected-devices-dialog { width: min(540px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); overflow: auto; box-sizing: border-box; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 12px; padding: 24px; }
+    .connected-devices-dialog::backdrop { background: #0008; }
+    .connected-devices-dialog label { display: block; margin-block: 16px; }
+    .connected-devices-dialog textarea { display: block; width: 100%; height: 140px; min-height: 120px; box-sizing: border-box; padding: 12px; font-size: 13px; }
+    .connected-devices-dialog button { margin-block: 8px; min-height: 44px; }
     :root {
       color-scheme: dark;
       --bg: #101416;
@@ -3508,6 +3513,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
                 <input id="contextRoomReviewSearch" class="context-room-review-search" type="search" placeholder="Search reviews or projects…" aria-label="Search reviews and projects" />
               </div>
               <button type="button" class="quiet-button" data-review-cleanup>Clean up older changes</button>
+              <div id="contextRoomWorkingDrafts" class="context-room-other-attention" hidden></div>
               <div id="contextRoomReviewSelection" class="context-room-review-selection" hidden></div>
               <div id="reviewQueue" class="review-list"></div>
               <div id="contextRoomReviewContextMenu" class="explorer-context-menu context-room-review-context-menu" role="menu" aria-label="Review actions" hidden></div>
@@ -4086,7 +4092,7 @@ const SETTINGS_SECTION_ALIASES = {
   "codex-prompts": "advanced-extensions",
 };
 const AGENT_CLI_HANDOFF_PROMPT = "Use context-room docs search and docs read for accepted documentation. Resume readerToken with --reader to receive changes to documents already read. Use changes list, changes begin --scope local|shared, changes status, and changes submit for isolated proposals. Edit only the returned editRoot. Consult the relevant capabilities section for other operations. Never write directly to Shared main. " + HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction;
-const SETTINGS_DISCLOSURE_IDS = ["project-shared-explainer", "project-shared-repositories", "project-shared-connection", "review-agent-cli", "review-documents", "review-protection", "startup-context", "startup-skills", "startup-hooks", "shared-how", "shared-providers", "shared-collections", "shared-destinations", "shared-instructions-how", "shared-instructions-collections", "shared-instructions-assign", "shared-instructions-import", "appearance-theme", "appearance-explorer", "appearance-sounds", "appearance-shortcuts", "templates-list", "hub-project-priority", "hub-sections", "codex-prompts-editor"];
+const SETTINGS_DISCLOSURE_IDS = ["project-shared-explainer", "project-shared-repositories", "project-shared-connection", "review-agent-cli", "review-documents", "review-protection", "startup-context", "startup-skills", "startup-hooks", "shared-how", "shared-providers", "shared-collections", "shared-destinations", "shared-instructions-how", "shared-instructions-collections", "shared-instructions-assign", "shared-instructions-import", "connected-devices", "appearance-theme", "appearance-explorer", "appearance-sounds", "appearance-shortcuts", "templates-list", "hub-project-priority", "hub-sections", "codex-prompts-editor"];
 const SETTINGS_DISCLOSURE_DEFAULTS = {
   "project-shared-explainer": false,
   "project-shared-repositories": true,
@@ -4105,6 +4111,7 @@ const SETTINGS_DISCLOSURE_DEFAULTS = {
   "shared-instructions-assign": false,
   "shared-instructions-import": false,
   "shared-destinations": false,
+  "connected-devices": false,
   "appearance-theme": true,
   "appearance-explorer": false,
   "appearance-sounds": false,
@@ -4115,6 +4122,7 @@ const SETTINGS_DISCLOSURE_DEFAULTS = {
   "codex-prompts-editor": true,
 };
 const SETTINGS_SEARCH_ITEMS = [
+  { id: "connected-devices", label: "Connected devices", description: "Pair a tablet for drawing or the complete owner interface.", section: "appearance", group: "connected-devices", scope: "All rooms", keywords: "tablet android boox wifi drawing notebook owner pair pairing connected devices" },
   { id: "shared-repository-explainer", label: "What a Shared Context is", description: "Understand why one canonical documentation source stays shared across collaborators, branches, and worktrees.", section: "project", group: "", scope: "Project + Shared", target: "sharedContextHelpButton", keywords: "shared context canonical documentation source of truth repository collaborators branches worktrees projects docs documents skills instructions accepted proposals" },
   { id: "shared-repositories", label: "Shared repositories", description: "Add or remove the Shared Context Git repositories available on this device.", section: "project", group: "project-shared-repositories", scope: "Device", target: "sharedContextRepositoryInput", keywords: "shared context repository repositories github git add remove teams collaborators" },
   { id: "shared-project-connection", label: "Project shared context", description: "Connect or disconnect the selected local project from an accepted Shared Context repository.", section: "project", group: "project-shared-connection", scope: "Project", keywords: "shared context connect disconnect project repository team" },
@@ -4350,6 +4358,106 @@ const SATELLITE_POSITIONS = [
   [23, 18], [77, 18], [17, 54], [83, 54], [32, 82], [68, 82], [50, 12], [50, 88]
 ];
 const el = (id) => document.getElementById(id);
+
+function captureNotebookApi(targetProjectId = "") {
+  const projectId = state.projectId || "";
+  const requestedTarget = targetProjectId || (IS_GLOBAL_CONTEXT_ROOM && !state.contextRoomReviewDocumentScope ? state.activeProjectLocationId || "" : "");
+  const target = requestedTarget === projectId ? "" : requestedTarget;
+  const nonce = state.ownerMutationNonce || "";
+  const reviewBase = (!IS_GLOBAL_CONTEXT_ROOM || state.contextRoomReviewDocumentScope) ? /^\/reviews\/[^/]+/.exec(location.pathname)?.[0] || "" : "";
+  const scopeKey = JSON.stringify([location.origin, projectId, target, reviewBase]);
+  const request = async (requestPath, options = {}) => {
+    if (!String(requestPath).startsWith("/api/")) throw new Error("Notebook requests must remain within their original Context Room.");
+    const headers = { ...options.headers, "x-context-room-project": projectId, ...(target ? { "x-context-room-target-project": target } : {}) };
+    if (!["GET", "HEAD"].includes(String(options.method || "GET").toUpperCase())) headers["x-context-room-owner-nonce"] = nonce;
+    const response = await fetch(reviewBase + requestPath, { ...options, headers, credentials: "same-origin" });
+    const result = await response.json();
+    if (!response.ok) { const error = new Error(result.error || result.message || "The original notebook location is unavailable."); error.code = result.code; error.status = response.status; throw error; }
+    return result;
+  };
+  return { api: request, scopeKey };
+}
+
+let contextRoomAssistantUi = null;
+async function loadContextRoomAssistantUi() {
+  return contextRoomAssistantUi ||= await import("/assets/ui/assistant.mjs");
+}
+
+async function openContextRoomNotebook(filePath, { directory = "", projectId = "" } = {}) {
+  const captured = captureNotebookApi(projectId);
+  const notebook = await import("/assets/ui/notebook-editor.mjs");
+  const options = { ...captured,
+    onConversation: async (source, display) => { const assistant = await loadContextRoomAssistantUi(); return assistant.openConversation({ ...captured, source, ...display }); },
+    onClosed: () => contextRoomAssistantUi?.dockConversation(),
+    onSubmitted: async () => { setStatus("Notebook submitted for human review. No file accepted."); if (typeof refreshDocQa === "function") await refreshDocQa(); } };
+  if (filePath) return notebook.openNotebookEditor({ ...options, path: filePath });
+  return notebook.chooseNotebook({ ...options, directory });
+}
+
+async function openOriginalDocumentConversation(mode = "text") {
+  if (!state.selected || state.selectedStartupContext || state.dirty && mode !== "dictate" || state.savedHash == null || state.fileLoadError
+    || activeFileConflict() || activeExternalChange() && activeExternalChange().source !== "review"
+    || state.openingFilePath === state.selected && state.fileContentReadyPath !== state.selected) throw new Error("Save the original document before starting its conversation.");
+  let voiceActivation = null;
+  if (mode === "voice" && !globalThis.ContextRoomNativeOwner?.playAudio) {
+    const context = new (window.AudioContext || window.webkitAudioContext)(), resumed = context.resume(); resumed.catch(() => {}); voiceActivation = { context, resumed };
+  }
+  const captured = captureNotebookApi(), source = { kind: "document", path: state.selected, hash: state.savedHash };
+  const editor = el("docEditor");
+  if (!state.dirty && editor && editor.selectionEnd > editor.selectionStart) source.selection = { start: editor.selectionStart, end: editor.selectionEnd, text: editor.value.slice(editor.selectionStart, editor.selectionEnd) };
+  let dictationTarget = null;
+  if (mode === "dictate" && editor && !editor.readOnly && /\.(md|markdown|txt)$/i.test(source.path)) {
+    const originalText = editor.value, start = editor.selectionEnd > editor.selectionStart ? editor.selectionStart : originalText.length, end = editor.selectionEnd > editor.selectionStart ? editor.selectionEnd : originalText.length;
+    dictationTarget = { label: end > start ? "Replace original selection in draft" : "Append to document draft", apply: async text => {
+      const currentEditor = el("docEditor");
+      if (state.selected !== source.path || captureNotebookApi().scopeKey !== captured.scopeKey || state.savedHash !== source.hash || !currentEditor || currentEditor.readOnly
+        || currentEditor.value !== originalText || activeFileConflict() || activeExternalChange() && activeExternalChange().source !== "review")
+        throw new Error("Return to the unchanged original document draft before inserting this dictation. The transcript is retained here.");
+      const insertion = (start === originalText.length && originalText && !originalText.endsWith("\n") ? "\n" : "") + text;
+      currentEditor.setSelectionRange(start, end);
+      currentEditor.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, inputType: "insertFromPaste", data: insertion }));
+      currentEditor.setRangeText(insertion, start, end, "end");
+      currentEditor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertFromPaste", data: insertion }));
+    } };
+  }
+  try {
+    const assistant = await loadContextRoomAssistantUi();
+    const captureSource = original => {
+      if (state.selected !== original.path || captureNotebookApi().scopeKey !== captured.scopeKey || state.selectedStartupContext || state.fileLoadError
+        || state.savedHash == null || activeFileConflict() || activeExternalChange() && activeExternalChange().source !== "review"
+        || state.openingFilePath === state.selected && state.fileContentReadyPath !== state.selected) return null;
+      const currentEditor = el("docEditor"), textEditor = currentEditor?.tagName === "TEXTAREA" ? currentEditor : el("editor");
+      const text = textEditor?.value ?? state.saved;
+      if (typeof text !== "string") return null;
+      const selection = textEditor && textEditor.selectionEnd > textEditor.selectionStart ? { start: textEditor.selectionStart, end: textEditor.selectionEnd } : null;
+      return assistant.documentDraftPreview(text, state.savedHash, selection);
+    };
+    return await assistant.openConversation({ ...captured, source, mode, dictationTarget, voiceActivation, captureSource });
+  }
+  catch (error) { if (voiceActivation?.context.state !== 'closed') await voiceActivation?.context.close(); throw error; }
+}
+
+// The native canvas shares this retained conversation UI and captured API.
+// Existing notebook/review dialogs stay alive, with their working drafts intact.
+window.setContextRoomNativeConversationView = enabled => {
+  document.body.classList.toggle("context-room-native-conversation", enabled === true);
+  if (!enabled) for (const host of document.querySelectorAll(".assistant-native-host")) host.classList.remove("assistant-native-host");
+};
+window.openContextRoomNativeConversation = async target => {
+  if (!window.ContextRoomNativeOwner || !state.ownerMutationNonce || state.contextRoomReviewDocumentScope) throw new Error("Return to the main Context Room workspace before opening a native notebook conversation.");
+  if (!target || target.kind !== "notebook" || !target.projectId || !target.resourceId || !target.path || !Array.isArray(target.selection)) throw new Error("The original native notebook is unavailable.");
+  const captured = captureNotebookApi(target.projectId), source = { kind: "notebook", resourceId: target.resourceId, path: target.path,
+    revision: target.revision, locationRevision: target.locationRevision, selection: target.selection };
+  const parent = [...document.querySelectorAll("dialog[open]")].at(-1) || document.body;
+  window.setContextRoomNativeConversationView(false); parent.classList.add("assistant-native-host");
+  const assistant = await loadContextRoomAssistantUi();
+  const conversation = await assistant.openConversation({ ...captured, source, parent, mode: ['dictate', 'voice'].includes(target.mode) ? target.mode : 'text',
+    captureSource: original => window.ContextRoomNativeOwner.active && document.body.classList.contains("context-room-native-conversation")
+      ? window.ContextRoomNativeOwner.observation({ projectId: target.projectId, source: original }) : undefined,
+    onState: state => window.ContextRoomNativeOwner.active && document.body.classList.contains("context-room-native-conversation")
+      ? window.ContextRoomNativeOwner.conversationState({ ...state, projectId: target.projectId }) : undefined });
+  window.setContextRoomNativeConversationView(true); conversation.notifyState(); return true;
+};
 
 function contextRoomScopedRequestPath(requestPath) {
   const value = String(requestPath || "");
@@ -6362,6 +6470,7 @@ function renderGlobalExplorerContextMenu(x, y) {
       + '<button class="secondary" type="button" data-global-context-startup title="Show the agent instructions, skills, and hooks active for this project">View startup environment</button>'
       + (target.kind === "folder" ? '<button class="secondary" type="button" data-global-context-inspect title="Resolve the exact instructions, skills, hooks, provider settings, and accepted documents for this folder">Inspect agent environment</button>' : '')
       + (target.kind === "folder" ? '<button class="secondary" type="button" data-global-context-shared-skills>Link this skill location to shared…</button>' : '')
+      + '<button class="secondary" type="button" data-global-context-notebook>Notebook…</button>'
       + '<button class="secondary" type="button" data-global-context-new-file>New file</button>'
       + '<button class="secondary" type="button" data-global-context-new-folder>New folder</button>'
       + '<button class="secondary" type="button" data-global-context-open-project>Open project</button>'
@@ -6399,6 +6508,7 @@ function renderGlobalExplorerContextMenu(x, y) {
   menu.style.top = y + "px";
   clampContextMenuToViewport(menu);
   prepareExplorerContextMenu(menu);
+  menu.querySelector("[data-global-context-notebook]")?.addEventListener("click", () => { hideExplorerContextMenu(); openContextRoomNotebook(null, { directory: folderDirectory, projectId: worktree?.id || project?.id }).catch(error => setStatus(error.message)); });
   menu.querySelector("[data-global-context-open]")?.addEventListener("click", () => {
     hideExplorerContextMenu();
     openContextHubProject(project.id, { filePath: target.path }).catch((error) => setStatus(error.message));
@@ -7538,6 +7648,16 @@ function renderContextRoomGlobalReviewQueue() {
   const selectedProject = IS_GLOBAL_CONTEXT_ROOM
     ? (hub.projects || []).find((project) => project.projectKey === state.sharedProposalProject) || null
     : currentProject;
+  const drafts = (hub.workingDrafts || []).filter(draft => IS_GLOBAL_CONTEXT_ROOM
+      ? !state.sharedProposalProject || draft.projectKey === state.sharedProposalProject
+      : currentProject && draft.projectKey === currentProject.projectKey);
+  const draftsPanel = el("contextRoomWorkingDrafts");
+  if (draftsPanel) {
+    draftsPanel.hidden = !drafts.length;
+    draftsPanel.innerHTML = drafts.length ? '<strong>Working drafts</strong><p>Saved work awaiting submission.</p>'
+      + drafts.map(draft => '<button type="button" class="quiet-button" data-local-draft="' + escapeHtml(draft.id)
+        + '" data-draft-project="' + escapeHtml(draft.projectId) + '">' + escapeHtml(draft.projectTitle) + ' · ' + escapeHtml(draft.title) + '</button>').join("") : "";
+  }
   const localReviewCount = reviews.filter((item) => item.type === "local").length;
   const sharedReviewCount = reviews.filter((item) => item.type === "shared" || item.type === "local-proposal").length;
   const hiddenReviewCount = Math.max(0, renderedReviews.length - visibleReviews.length);
@@ -7581,7 +7701,7 @@ function renderContextRoomGlobalReviewQueue() {
   const refreshedAt = state.contextHub?.freshness?.generatedAt || state.contextHub?.generatedAt || state.docqa?.generatedAt || "";
   const refreshedLabel = refreshedAt && !Number.isNaN(Date.parse(refreshedAt)) ? new Date(refreshedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "just now";
   queueElement.innerHTML = cleanQueue
-    ? '<div class="review-all-clear" role="status"><strong>Everything is reviewed</strong><span>' + (IS_HOSTED_HUB ? 'New shared proposals' : 'New local files and shared proposals') + ' will appear here. Last checked ' + escapeHtml(refreshedLabel) + '.</span><button class="quiet-button" type="button" data-review-refresh>Refresh</button></div>'
+    ? '<div class="review-all-clear" role="status"><strong>' + (drafts.length ? 'No submitted review pending' : 'Everything is reviewed') + '</strong><span>' + (drafts.length ? 'Working drafts remain unaccepted. ' : (IS_HOSTED_HUB ? 'New shared proposals' : 'New local files and shared proposals') + ' will appear here. ') + 'Last checked ' + escapeHtml(refreshedLabel) + '.</span><button class="quiet-button" type="button" data-review-refresh>Refresh</button></div>'
     : modeWarning + unconfirmedReviewMarkup + (queueMarkup || (hubReady
       ? (reviewStateUnconfirmed && noPendingReviews ? "" : '<div class="issue">' + emptyQueueCopy + '</div>')
       : '<div class="issue">Loading project reviews…</div>'));
@@ -11057,7 +11177,8 @@ function renderExplorerContextMenu(x, y) {
   const folderReviews = target.kind === "folder"
     ? contextRoomReviewsForExplorerPath(state.projectId, target.path, "folder")
     : [];
-  const createActions = '<button class="secondary" type="button" data-context-new-file>New file</button>' +
+  const createActions = '<button class="secondary" type="button" data-context-notebook>Notebook…</button>' +
+    '<button class="secondary" type="button" data-context-new-file>New file</button>' +
     '<button class="secondary" type="button" data-context-new-folder>New folder</button>';
   const targetActions = target.path
     ? '<button class="secondary" type="button" data-context-watch>' + (target.kind === "folder" ? 'Watch this folder…' : 'Watch this file') + '</button>' +
@@ -11112,6 +11233,7 @@ function renderExplorerContextMenu(x, y) {
     hideExplorerContextMenu();
     openSharedSkillsWizard({ mode: 'import', sourceDirectory }).catch((error) => setStatus(error.message));
   });
+  document.querySelector("[data-context-notebook]")?.addEventListener("click", () => { const directory = target.directory || ""; hideExplorerContextMenu(); openContextRoomNotebook(null, { directory }).catch(error => setStatus(error.message)); });
   document.querySelector("[data-context-new-file]")?.addEventListener("click", showContextNewFileForm);
   document.querySelector("[data-context-new-folder]")?.addEventListener("click", showContextNewFolderForm);
   document.querySelector("[data-context-select]")?.addEventListener("click", selectExplorerContextTarget);
@@ -12102,22 +12224,27 @@ function applyInitialContextHubWhenReady(contextHubRequest) {
     enforceHostedHubSourceFilters();
     const requestedProjectId = new URLSearchParams(window.location.search).get("project") || "";
     let requestedProjectSelection = null;
+    let requestedProjectAmbiguous = false;
     try {
       requestedProjectSelection = requestedProjectId
         ? resolveContextHubProjectSelection(contextHub?.projects || [], requestedProjectId).project
         : null;
     } catch (error) {
       if (error?.code !== "context_hub_project_ambiguous") throw error;
+      requestedProjectAmbiguous = true;
     }
+    // A superseding runtime snapshot must resolve an ambiguous initial alias
+    // too; otherwise boot discards the selector and reports an unqualified ready.
     const recoverSupersededInitialProject = Boolean(
       IS_GLOBAL_CONTEXT_ROOM
-      && requestedProjectSelection
+      && (requestedProjectSelection || requestedProjectAmbiguous)
       && (
         !state.activeProjectLocationId
         || (
           document.body.classList.contains("app-booting")
           && (
-            state.globalExplorerMode !== "project"
+            requestedProjectAmbiguous
+            || state.globalExplorerMode !== "project"
             || state.globalExplorerProjectKey !== requestedProjectSelection.projectKey
           )
         )
@@ -12205,6 +12332,7 @@ async function loadInitialContextHubData({ openRequestedProject = false } = {}) 
       ...catalog,
       attention: reviews.attention || catalog.attention,
       freshness: reviews.freshness || catalog.freshness,
+      workingDrafts: reviews.workingDrafts || catalog.workingDrafts || [],
       projects: (catalog.projects || []).map((project) => ({ ...project, hubSections: sectionsByProject.get(project.projectKey) || [] })),
       proposals: (reviews.items || []).filter((item) => item.type === "shared"),
       items: reviews.items || [],
@@ -12872,7 +13000,7 @@ async function selectFile(path, options = {}) {
   if (IS_HOSTED_REVIEW) return selectHostedReviewFile(path, options);
   if (!path) return;
   await waitForReviewFinalizationBeforeNavigation();
-  if (state.sharedContext?.mode === "review" && /[.](?:png|jpe?g|gif|webp|avif|svg|pdf|docx|xlsx|pptx)$/i.test(path) && state.sharedContext.review?.proposalFiles?.includes(path)) {
+  if (state.sharedContext?.mode === "review" && /[.](?:crnb|png|jpe?g|gif|webp|avif|svg|pdf|docx|xlsx|pptx)$/i.test(path) && state.sharedContext.review?.proposalFiles?.includes(path)) {
     const { openLocalProposalReview } = await import("/assets/local-proposal-review.mjs");
     await openLocalProposalReview({ item: { type: "shared-asset", title: path, files: [path] }, api, onChange: async (result) => {
       state.docqa = result.docqa;
@@ -12883,6 +13011,13 @@ async function selectFile(path, options = {}) {
       renderProposalReviewPage();
     } });
     return;
+  }
+  if (/\.crnb$/i.test(path)) {
+    if (options.reviewMode) {
+      const { openLocalProposalReview } = await import("/assets/local-proposal-review.mjs");
+      return openLocalProposalReview({ item: { type: "local-asset", title: path, files: [path] }, ...captureNotebookApi(), onChange: async result => { if (result.docqa) state.docqa = result.docqa; renderViewer(); } });
+    }
+    return openContextRoomNotebook(path);
   }
   if (state.selected && path !== state.selected && !selectedFileExists()) reconcileMissingSelectedFile();
   if (state.dirty && !options.forceReload && !confirm("You have unsaved changes. Change file?")) return;
@@ -13549,10 +13684,11 @@ function showHome() {
 }
 
 function renderDocQaDashboard() {
-  const report = state.docqa;
-  if (!report) return;
   renderSharedContextControls();
   renderContextRoomGlobalReviewQueue();
+  // Shared Hub controls also exist before a local document report is loaded.
+  // In particular, cancelling an opening must clear their disabled state.
+  if (!state.docqa) return;
   renderContextHealth();
   renderHubFolders();
 }
@@ -15052,8 +15188,9 @@ function renderFileActionButtons(options = {}) {
   return '<div class="file-actions">' + renderFileActionItems(options) + '</div>';
 }
 
-function renderFileActionItems({ reviewAction = null, secondaryReviewAction = null, nextReviewAction = null, dirty = false, templateState = null, blockedByConflict = false, readOnly = false, deletable = true, savable = true } = {}) {
+function renderFileActionItems({ reviewAction = null, secondaryReviewAction = null, nextReviewAction = null, dirty = false, templateState = null, blockedByConflict = false, conversationBlocked = blockedByConflict, readOnly = false, deletable = true, savable = true } = {}) {
   return '' +
+    (IS_LOCAL && state.selected && !state.selectedStartupContext && !readOnly && /\.(md|markdown|txt|html?)$/i.test(state.selected) ? '<button class="file-action" type="button" data-file-conversation' + (dirty || conversationBlocked ? ' disabled title="Save or resolve the original document first"' : '') + '>Discuss</button><button class="file-action" type="button" data-file-dictate' + (conversationBlocked ? ' disabled' : '') + '>Dictate</button><button class="file-action" type="button" data-file-voice' + (dirty || conversationBlocked ? ' disabled' : '') + '>Voice</button>' : '') +
     (templateState ? '<div class="empty-template-actions"><select class="file-template-select" data-empty-template-select aria-label="Template">' + renderFileTemplateOptions(templateState.selectedId) + '</select></div>' : '') +
     (reviewAction ? '<button class="file-action" type="button" data-file-review-decision="' + escapeHtml(reviewAction.status) + '">' + escapeHtml(reviewAction.label) + '</button>' : '') +
     (secondaryReviewAction ? '<button class="file-action" type="button" data-file-review-decision="' + escapeHtml(secondaryReviewAction.status) + '">' + escapeHtml(secondaryReviewAction.label) + '</button>' : '') +
@@ -16516,6 +16653,7 @@ function renderSettingsPanel() {
       '<div class="settings-grid compact"><div class="settings-field"><label for="fileTheme">App theme</label><select id="fileTheme">' + renderFileThemeOptions(appearance.fileTheme) + '</select></div>' +
       '<div class="settings-field"><label for="colorMode">Context Room appearance</label><select id="colorMode"><option value="system" ' + ((appearance.colorMode || "system") === "system" ? "selected" : "") + '>Follow system</option><option value="light" ' + (appearance.colorMode === "light" ? "selected" : "") + '>Light</option><option value="dark" ' + (appearance.colorMode === "dark" ? "selected" : "") + '>Dark</option></select><span class="settings-field-note">This mode applies to the Context Room theme. Explicit editor themes keep their own light or dark palette.</span></div></div>' + renderSettingsThemePreview(appearance.fileTheme)
     }) +
+    renderSettingsDisclosure({ id: "connected-devices", title: "Connected devices", copy: "Use Context Room on another device while this Mac keeps your files.", scope: "All rooms", body: '<button type="button" data-owner-device-settings>Manage connected devices</button>' }) +
     renderSettingsDisclosure({ id: "appearance-explorer", title: "Explorer and file behavior", copy: "Control hidden files, Git diff behavior, and the folder available through Computer mode.", status: appearance.showHiddenFiles !== false ? "Hidden files visible" : "Hidden files hidden", scope: "All rooms", trackDirty: true, body:
       '<div class="settings-grid compact"><div class="settings-field"><label class="settings-toggle" for="autoOpenGitDiff"><input id="autoOpenGitDiff" type="checkbox" ' + (appearance.autoOpenGitDiff !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Auto-open Git diff</strong><em>Turn this off to open the diff manually.</em></span></label></div>' +
       '<div class="settings-field"><label class="settings-toggle" for="showHiddenFiles"><input id="showHiddenFiles" type="checkbox" ' + (appearance.showHiddenFiles !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Show hidden files</strong><em>Display safe dotfiles and .context-room in every Explorer.</em></span></label></div>' +
@@ -16608,6 +16746,7 @@ function renderSettingsPanel() {
   holder.querySelectorAll("[data-remove-watch-rule]").forEach((button) => button.addEventListener("click", () => removeWatchRuleFromSettings(button.dataset.removeWatchRule).catch((error) => setStatus(error.message))));
   previewSelectedFileTheme();
   wireSettingsDirtyTracking(holder);
+  holder.querySelector('[data-owner-device-settings]')?.addEventListener('click', () => import('/assets/connected-devices.mjs').then(module => module.openOwnerDeviceSettings(api)).catch(error => setStatus(error.message)));
   el("saveSettings")?.addEventListener("click", () => saveSettings().catch((error) => setStatus(error.message)));
 }
 
@@ -20713,6 +20852,9 @@ function markdownDocLinkAtOffset(text, offset) {
 }
 
 function wireFileActionButtons(root = document) {
+  root.querySelector("[data-file-conversation]")?.addEventListener("click", () => openOriginalDocumentConversation().catch(error => setStatus(error.message)));
+  root.querySelector("[data-file-dictate]")?.addEventListener("click", () => openOriginalDocumentConversation("dictate").catch(error => setStatus(error.message)));
+  root.querySelector("[data-file-voice]")?.addEventListener("click", () => openOriginalDocumentConversation("voice").catch(error => setStatus(error.message)));
   root.querySelectorAll("[data-file-review-decision]").forEach((button) => button.addEventListener("click", (event) => requestReviewDecision(state.selected, event.currentTarget.dataset.fileReviewDecision).catch((error) => setStatus(error.message))));
   root.querySelector("[data-next-review]")?.addEventListener("click", () => openNextReviewManually().catch((error) => setStatus(error.message)));
   root.querySelector("[data-file-save]")?.addEventListener("click", () => saveCurrent().catch((error) => setStatus(error.message)));
@@ -20807,6 +20949,9 @@ function externalReviewFileActionOptions() {
     nextReviewAction: nextReviewActionForSelectedFile(),
     dirty: state.dirty,
     blockedByConflict: true,
+    // The current disk version can be discussed during review without accepting
+    // it. An unexpected external replacement must still be reconciled first.
+    conversationBlocked: activeExternalChange()?.source !== "review",
     deletable: !Boolean(state.selectedStartupContext),
     savable: !isHtmlDocumentPath(state.selected),
   };
@@ -23968,7 +24113,7 @@ el("reviewQueue")?.addEventListener("click", (event) => {
   const item = contextHubReviewItems().find((candidate) => candidate.id === button.dataset.contextRoomReview);
   if (!item) return;
   if (item.type === "local-proposal" || item.type === "local-asset") {
-    import("/assets/local-proposal-review.mjs").then(({ openLocalProposalReview }) => openLocalProposalReview({ item, api, onChange: refreshContextRoomReviewQueue })).catch((error) => setStatus(error.message));
+    import("/assets/local-proposal-review.mjs").then(({ openLocalProposalReview }) => openLocalProposalReview({ item, ...captureNotebookApi(item.projectId || ""), onChange: refreshContextRoomReviewQueue })).catch((error) => setStatus(error.message));
     return;
   }
   if (item.type === "shared") {
@@ -23985,6 +24130,14 @@ el("reviewQueue")?.addEventListener("click", (event) => {
 document.addEventListener("click", (event) => {
   if (!event.target.closest("[data-review-cleanup]")) return;
   import("/assets/review-cleanup.mjs").then(({ openReviewCleanup }) => openReviewCleanup({ api, onChange: refreshContextRoomReviewQueue })).catch((error) => setStatus(error.message));
+});
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-local-draft]");
+  if (!button) return;
+  const item = (state.contextHub?.workingDrafts || []).find(draft => draft.id === button.dataset.localDraft && draft.projectId === button.dataset.draftProject);
+  if (!item) return;
+  import("/assets/local-draft-editor.mjs").then(({ openLocalDraftEditor }) => openLocalDraftEditor({ item,
+    ...captureNotebookApi(item.projectId), onChange: refreshContextRoomReviewQueue })).catch(error => setStatus(error.message));
 });
 el("proposalReviewFiles")?.addEventListener("click", (event) => {
   if (event.target.closest("[data-proposal-review-more]")) {

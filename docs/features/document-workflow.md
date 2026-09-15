@@ -15,7 +15,7 @@ Agents read accepted documentation and prepare isolated changes through the CLI.
 
 ## Defines
 
-Accepted local reads, local proposal behavior, direct-change recovery, supported review formats, reader continuity, state migration and the optional Lisière drawing bridge.
+Accepted local reads, local proposal behavior, direct-change recovery, editable notebooks, supported review formats, reader continuity, state migration and the optional Lisière drawing bridge.
 
 ## Does not define
 
@@ -37,6 +37,16 @@ Context Room cannot hide physical files from programs reading the project direct
 
 `changes status` reads current proposal state. `changes submit` freezes a manifest and puts its changed files in the Review Queue. A draft with existing file decisions cannot be silently resubmitted as another version.
 
+The Hub also lists saved **Working drafts** separately from submitted reviews.
+Open one to edit Markdown or plain text, save its working version, or preview
+HTML visually. Saving never changes the ordinary document or accepted baseline.
+**Submit for review** checks the exact saved workspace revision. A concurrent
+edit or changed scope blocks replacement or submission, keeping the author's
+unsaved text in the editor. Closing with unsaved changes requires saving or
+undoing those unsaved edits. The connected owner tablet uses the same interface.
+The integrated editor bounds a proposal to 256 working files and 64 MiB and an
+opened text file to 16 MiB. Larger workspaces remain available to the CLI.
+
 Accepting applies only the selected exact file delta. Saving a correction applies and accepts those corrected bytes. Rejecting an isolated file leaves its original unchanged. The remaining files retain their own pending decisions. The local proposal completes when all its files have decisions; it does not have an additional remote delivery step.
 
 Application checks the project identity, scope, exact base, file mode, paths and staged Git state where relevant. A conflicting external edit blocks application. A journal precedes the filesystem change; replaced bytes remain recoverable. Publication does not overwrite a file created concurrently at the destination. An interrupted application either resumes idempotently or reports recovery required.
@@ -54,6 +64,7 @@ Keeping the UI closed does not authorize those edits. They are detected on the n
 | Markdown and plain document text | Accepted/proposed text and existing document view | Edit and save the exact file |
 | HTML/HTM | Sandboxed rendered page; local proposal images and linked CSS are resolved from that exact proposal version | Agent edits source; human reviews the rendering, with no HTML source editor |
 | Mermaid `.mmd` / `.mermaid` | Rendered diagram beside editable source | Edit diagram source; executable directives and external resources are blocked |
+| Editable notebook `.crnb` | Frozen objects, pressure-aware ink and embedded raster assets, with author provenance | Correct the frozen scene, then decide that exact document |
 | PNG, JPEG, WebP | Before/after image | Draw at native resolution, undo/redo strokes, save and accept |
 | GIF, SVG and other recognized image assets | Before/after image where the browser decoder supports it | Review existing bytes; no animation or vector editing claim |
 | PDF, DOCX, XLSX, PPTX | Changed binary resource and size; no integrated renderer promised | Accept/reject exact bytes; office content editing is not implemented |
@@ -62,21 +73,54 @@ Drawing is bounded to 16 million pixels; assets to 20 MiB. Larger or unsupported
 
 HTML resources are intentionally local and non-executable. Nested CSS resource URLs and arbitrary interactive HTML applications are not supported by the proposal preview. Missing resources are identified.
 
+## Editable notebooks
+
+The notebook action opens a retained working scene in an authorized ordinary
+folder. Drawing, autosave and synchronization do not accept documentation.
+Objects retain stable identity, revision and authorship; selective gesture
+undo preserves independent edits. The original editable file and embedded
+images remain exportable.
+
+Connectors can retain explicit attachment sides and a routed return; text can
+retain explicit line spacing. These properties survive editable-file export,
+native editing and browser rendering. Selection outlines do not change the
+style of the saved shapes.
+
+Submitting freezes one exact version into the existing local or Shared
+proposal lifecycle. Shared requires an existing connection and displays its
+repository, project and destination before publishing. A lost response resumes
+the retained submission, and a changed connection or newer proposal correction
+blocks replacement. Later working ink stays outside the frozen review.
+Correcting or accepting a proposal does not silently overwrite that later ink.
+
+The [connected-device guide](../system/connected-devices.md) describes the
+native Android preview, offline retention and restricted drawing permission.
+The connected owner and [original-source conversations](conversations.md)
+have their own scoped workflows and recovery checks. The preview does not
+establish physical BOOX performance.
+
 ## Cleanup
 
 Pending changes remain indefinitely unless the human decides otherwise. The cleanup dialog can preview and reject changes older than a chosen number of days, across all or selected projects. Automatic cleanup is initially off and requires an explicit human setting.
 
 Selection binds exact revisions. Unknown age starts at first observation, not a guessed filesystem timestamp. A changed revision starts a new age. Drafts, unavailable items and stale selections are excluded or reported; a partial failure is recorded and is not reported as full success. Cleanup rejects changes rather than merely hiding the rows.
 
-## Optional Lisière
+## Legacy Lisière handoffs
 
-Context Room runs without Lisière. For a PNG review, `Draw with Lisière` detects the installed local companion and creates a separate drawing workspace. The original document remains unchanged. Open the identified project and carnet on the tablet, then use `Import saved drawing` in Context Room.
+Context Room's notebook and connected-device interfaces run without Lisière.
+The older PNG bridge remains as compatibility server routes. Existing handoff
+directories retain the original document revision, stable board revision,
+editable objects and rendered preview for recovery. The current interface uses
+Context Room notebooks; it no longer exposes the old drawing/import buttons.
 
-The import binds the original document revision and a stable board revision. Editable board objects and the rendered PNG are retained. Saving in Context Room accepts the imported file; Context Room does not issue a separate Lisière proposal decision.
-
-The current companion protocol cannot navigate the tablet to a carnet automatically. PNG handoff is limited to 4096 pixels per side. Physical tablet behavior requires a separate device check.
+Removing those external compatibility calls and importing their editable sources
+remain part of the convergence work. Physical tablet behavior requires a
+separate device check.
 
 ## Migration
+
+For Lisière data, see the [private recovery export](../system/lisiere-migration.md).
+It is separate from the existing Context Room control-state migration below.
 
 Run `context-room migrate --root /path/to/project --format json` to inspect the compatibility migration. Apply the returned exact revision with `--apply --revision REVISION`. It backs up control-file bytes under `.context-room/migrations/workflow-v1/`, records a journal and installs the versioned workflow marker. Repeating it is idempotent and finishes an interrupted completion journal.
 

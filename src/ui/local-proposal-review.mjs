@@ -6,7 +6,7 @@ function element(tag, text = "", className = "") {
 }
 
 const bytesOf = (base64) => base64 === null ? null : Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
-const textOf = (bytes) => bytes ? new TextDecoder().decode(bytes) : "";
+const textOf = (bytes) => bytes ? new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes) : "";
 let rendererPromise;
 async function renderDiagram(source, holder) {
   const renderId = holder.dataset.renderId = crypto.randomUUID();
@@ -23,7 +23,7 @@ async function renderDiagram(source, holder) {
   } catch (error) { if (holder.dataset.renderId === renderId) holder.textContent = error.message; }
 }
 
-export async function openLocalProposalReview({ item, api, onChange }) {
+export async function openLocalProposalReview({ item, api, scopeKey, onChange }) {
   document.querySelector("dialog.local-proposal-review")?.close();
   const dialog = element("dialog", "", "local-proposal-review");
   dialog.setAttribute("aria-label", item.title);
@@ -63,13 +63,15 @@ export async function openLocalProposalReview({ item, api, onChange }) {
   let activePath = "";
   let editor = null;
   let initialText = "";
+  let lineEnding = "\n";
   let busy = false;
   let drawing = null;
   let importedDrawing = null;
+  let notebookCorrection = null;
   let requestId = 0;
   let correctionListener = null;
   let files = [...item.files];
-  const isDirty = () => Boolean(editor && editor.value !== initialText || drawing?.dirty || importedDrawing);
+  const isDirty = () => Boolean(editor && editor.value !== initialText || drawing?.dirty || importedDrawing || notebookCorrection);
   const cleanupUrls = () => { objectUrls.forEach((url) => URL.revokeObjectURL(url)); objectUrls = []; };
   dialog.addEventListener("close", () => { requestId++; cleanupUrls(); dialog.remove(); }, { once: true });
   const mayClose = () => {
@@ -110,6 +112,14 @@ export async function openLocalProposalReview({ item, api, onChange }) {
           if (results.some((result) => result.status === "rejected")) section.append(element("p", "Some linked assets are absent from this version."));
         });
       }
+    } else if (extension === "crnb") {
+      import("/assets/ui/notebook-review.mjs").then(({ renderNotebookReview }) => {
+        if (!section.isConnected) return;
+        return renderNotebookReview(section, { bytes, file, editable, api: request, scopeKey,
+          onBusy: value => { busy = value; renderNavigation(); for (const node of footer.querySelectorAll("button")) node.disabled = value; close.disabled = value; },
+          onCorrection: contentBase64 => { notebookCorrection = contentBase64; dialog.dispatchEvent(new Event("correction")); },
+        });
+      }).catch(error => { status.textContent = "Notebook rendering failed: " + error.message; });
     } else if (["png", "jpg", "jpeg", "gif", "webp", "avif", "svg"].includes(extension)) {
       const image = element("img");
       image.alt = `${label}: ${file.path}`;
@@ -164,8 +174,10 @@ export async function openLocalProposalReview({ item, api, onChange }) {
       section.append(element("p", `${bytes.length.toLocaleString()} bytes. Integrated preview is not available for this format yet.`));
     } else if (editable) {
       editor = element("textarea");
-      initialText = textOf(bytes);
-      editor.value = initialText;
+      const original = textOf(bytes);
+      lineEnding = original.includes('\r\n') && !/[\r\n]/.test(original.replace(/\r\n/g, '')) ? '\r\n' : original.includes('\r') && !original.includes('\n') ? '\r' : '\n';
+      editor.value = original;
+      initialText = editor.value;
       editor.setAttribute("aria-label", `Proposed content: ${file.path}`);
       editor.spellcheck = false;
       section.append(editor);
@@ -203,6 +215,7 @@ export async function openLocalProposalReview({ item, api, onChange }) {
     editor = null;
     drawing = null;
     importedDrawing = null;
+    notebookCorrection = null;
     footer.replaceChildren();
     renderNavigation();
     status.textContent = "Loading versions…";
@@ -217,9 +230,9 @@ export async function openLocalProposalReview({ item, api, onChange }) {
       const reload = element("button", "Reload review", "quiet-button");
       for (const button of [accept, reject, undo, reload]) button.type = "button";
       undo.hidden = !editor;
-      undo.addEventListener("click", () => { if (editor) editor.value = initialText; drawing?.undo(); if (importedDrawing) { importedDrawing = null; openFile(filePath).catch((error) => { status.textContent = error.message; }); } accept.textContent = "Accept file"; });
+      undo.addEventListener("click", () => { if (editor) editor.value = initialText; drawing?.undo(); if (importedDrawing || notebookCorrection) { importedDrawing = null; notebookCorrection = null; openFile(filePath).catch((error) => { status.textContent = error.message; }); } accept.textContent = "Accept file"; });
       if (correctionListener) dialog.removeEventListener("correction", correctionListener);
-      const correction = () => { undo.hidden = !editor && !drawing; accept.textContent = isDirty() ? "Save and accept file" : "Accept file"; };
+      const correction = () => { undo.hidden = !editor && !drawing && !notebookCorrection && !importedDrawing; accept.textContent = isDirty() ? "Save and accept file" : "Accept file"; };
       correctionListener = correction;
       dialog.addEventListener("correction", correction);
       editor?.addEventListener("input", () => { accept.textContent = isDirty() ? "Save and accept file" : "Accept file"; });
@@ -231,13 +244,15 @@ export async function openLocalProposalReview({ item, api, onChange }) {
         try {
           const result = await request(item.type === "shared-asset" ? "/api/docqa/shared-asset-decision" : item.type === "local-asset" ? "/api/docqa/asset-decision" : "/api/docqa/local-proposal-decision", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
             proposal: item.proposalId, path: file.path, decision, expectedRevision: file.revision,
-            ...(decision === "accepted" && editor && isDirty() ? { content: editor.value } : {}),
+            ...(decision === "accepted" && editor && isDirty() ? { content: editor.value.replace(/\n/g, lineEnding) } : {}),
             ...(decision === "accepted" && drawing?.dirty ? { contentBase64: drawing.canvas.toDataURL(drawing.type).split(",")[1] } : {}),
             ...(decision === "accepted" && importedDrawing ? { contentBase64: importedDrawing } : {}),
+            ...(decision === "accepted" && notebookCorrection ? { contentBase64: notebookCorrection } : {}),
           }) });
           editor = null;
           drawing = null;
           importedDrawing = null;
+          notebookCorrection = null;
           dialog.removeEventListener("correction", correction);
           files = result.changes.filter((change) => !change.decision).map((change) => change.path);
           await onChange(result);
@@ -249,6 +264,19 @@ export async function openLocalProposalReview({ item, api, onChange }) {
       accept.addEventListener("click", () => decide("accepted"));
       reject.addEventListener("click", () => decide("rejected"));
       footer.append(undo, reload, reject, accept);
+      if (item.type === 'local-asset' && /\.crnb$/i.test(file.path) && file.afterBase64 !== null) {
+        const working = element('button', 'Open working notebook', 'quiet-button'); working.type = 'button'; footer.prepend(working);
+        working.addEventListener('click', async () => {
+          if (busy) return;
+          if (isDirty()) { status.textContent = 'Save or undo the current correction first.'; return; }
+          working.disabled = true;
+          try {
+            const { openNotebookEditor } = await import('/assets/ui/notebook-editor.mjs');
+            await openNotebookEditor({ api: request, path: file.path, scopeKey });
+          } catch (error) { status.textContent = error.message; }
+          finally { working.disabled = false; }
+        });
+      }
       if (/\.png$/i.test(file.path) && file.afterBase64 !== null) {
         const tablet = element("button", "Draw with Lisière", "quiet-button"); tablet.type = "button"; footer.prepend(tablet);
         let session = null;

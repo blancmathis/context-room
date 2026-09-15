@@ -9,7 +9,11 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TEST_DIRECTORY = path.join(ROOT, "test");
 const SHARED_CONTEXT_TEST = "test/shared_context.test.mjs";
-const SHARED_CONTEXT_PERFORMANCE_TEST = "large proposal acceptance returns a durable exact HTTP projection within one second";
+const SHARED_CONTEXT_ISOLATED_TESTS = [
+  { label: 'performance', name: 'large proposal acceptance returns a durable exact HTTP projection within one second' },
+  { label: 'network timeout', name: 'proposal rejection bounds a stalled archive push without recording a terminal decision' },
+  { label: 'fetch timeout', name: 'shared repository refresh bounds a stalled Git fetch' },
+];
 const JOB_TIMEOUT_MS = 300_000;
 const SLOW_JOB_TIMEOUT_MS = 600_000;
 // GitHub-hosted runners expose several logical CPUs but the Git-heavy suites
@@ -38,7 +42,9 @@ function sharedContextShards(count = 4) {
     throw new Error(`No tests found in ${SHARED_CONTEXT_TEST}`);
   }
   const shards = Array.from({ length: count }, () => []);
-  names.filter((name) => name !== SHARED_CONTEXT_PERFORMANCE_TEST)
+  const isolated = new Set(SHARED_CONTEXT_ISOLATED_TESTS.map(item => item.name));
+  if ([...isolated].some(name => !names.includes(name))) throw new Error('An isolated Shared contract was renamed or removed.');
+  names.filter((name) => !isolated.has(name))
     .forEach((name, index) => shards[index % count].push(name));
   return [...shards.map((shard, index) => ({
     label: `${SHARED_CONTEXT_TEST} [${index + 1}/${count}]`,
@@ -47,22 +53,24 @@ function sharedContextShards(count = 4) {
       `--test-name-pattern=^(?:${shard.map(escapePattern).join("|")})$`,
       SHARED_CONTEXT_TEST,
     ],
-  })), {
-    label: `${SHARED_CONTEXT_TEST} [performance]`,
+  })), ...SHARED_CONTEXT_ISOLATED_TESTS.map(({ label, name }) => ({
+    label: `${SHARED_CONTEXT_TEST} [${label}]`,
     args: [
       "--test",
-      `--test-name-pattern=^${escapePattern(SHARED_CONTEXT_PERFORMANCE_TEST)}$`,
+      `--test-name-pattern=^${escapePattern(name)}$`,
       SHARED_CONTEXT_TEST,
     ],
     exclusive: true,
-  }];
+  }))];
 }
 
 function jobs() {
   return [
     ...testFiles()
       .filter((file) => file !== SHARED_CONTEXT_TEST)
-      .map((file) => ({ label: file, args: ["--test", file] })),
+      // The CLI discovery contract performs real clones inside a one-second
+      // budget. Keep that deadline while isolating its test-process I/O load.
+      .map((file) => ({ label: file, args: ["--test", file], exclusive: file === "test/cli_contract_regressions.test.mjs" })),
     ...sharedContextShards(),
   ];
 }

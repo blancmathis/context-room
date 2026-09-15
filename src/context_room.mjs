@@ -1,9 +1,21 @@
 #!/usr/bin/env node
 import { renderAppShell } from "./ui/app.mjs";
+import { handleNotebookHttp, isNotebookMutation } from "./notebook_http.mjs";
+import { AssistantRuntime, handleAssistantHttp } from "./assistant_runtime.mjs";
+import { createAssistantSourceResolver } from "./assistant_sources.mjs";
+import { notebookHash, readNotebookBytes, writeNotebookBytes, makeNotebookDirectory } from "./notebook_io.mjs";
+import { submitNotebookShared } from "./notebook_workflow.mjs";
+import { NOTEBOOK_WEB_ASSETS } from "./notebook_web_assets.mjs";
+import { NOTEBOOK_LIMITS } from "./notebook_protocol.mjs";
 import { createLisiereConnector } from "./lisiere_connector.mjs";
+import { planLisiereNotebookImport, applyLisiereNotebookImport } from "./lisiere_migration.mjs";
+import { migrateLisiereDocument } from "./lisiere_documents.mjs";
+import { migrateLisiereConversationHistory } from "./lisiere_conversations.mjs";
+import { listNotebooks, readNotebook } from "./notebooks.mjs";
 import { isDocumentAssetPath, listDocumentAssets, readDocumentAssetReview, recordAcceptedDocumentAsset, decideDocumentAsset } from "./document_assets.mjs";
 import { readReviewCleanupPolicy, writeReviewCleanupPolicy, previewReviewCleanup, applyReviewCleanup, recentReviewCleanupReceipts } from "./review_cleanup.mjs";
 import fs from "node:fs";
+import { createConnectedDeviceService } from './device_server.mjs';
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -14,7 +26,7 @@ import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:zlib";
 import { appendContextRoomEvent, appendContextRoomEvents } from "./event_journal.mjs";
-import { beginLocalProposal, listLocalProposals, submitLocalProposal, decideLocalProposalFile, readLocalProposalFile, readLocalProposalResource } from "./local_proposals.mjs";
+import { beginLocalProposal, listLocalProposals, submitLocalProposal, decideLocalProposalFile, readLocalProposalFile, readLocalProposalResource, readLocalProposalDraft, writeLocalProposalDraft } from "./local_proposals.mjs";
 import {
   cleanupFilesystemLockWorkerOwner,
   createFilesystemLockWorkerOwner,
@@ -74,6 +86,7 @@ import {
   readPreparedSharedProposalRevision,
   readSharedMainRevision,
   readSharedProjectConnection,
+  readSharedNotebookTarget,
   readAcceptedSharedMetadataProfiles,
   readSharedRevisionDocuments,
   readSharedReview,
@@ -117,6 +130,7 @@ import {
   readContextHubAttention,
   readContextHubRegistry,
   readContextHubSnapshot,
+  readContextHubNavigationSnapshot,
   readContextHubSnapshotInputs,
   invalidateContextHubSnapshot,
   recordContextHubProjectOpened,
@@ -275,6 +289,9 @@ const AGENT_CONTEXT_ASSET_FILENAMES = [
   "domains/truth-layers.md",
   "domains/shared-proposal-lifecycle.md",
   "features/document-workflow.md",
+  "features/conversations.md",
+  "system/connected-devices.md",
+  "system/lisiere-migration.md",
 ];
 export const GLOBAL_PREFERENCES_FILE = "~/.context-room/preferences.json";
 const CONFIG_SCHEMA_URL = "https://unpkg.com/context-room@latest/schemas/config.schema.json";
@@ -1097,14 +1114,15 @@ export function listExplorerFiles(root = process.cwd(), { externalRoots = [], sh
     if (!projectPathIsContained(root, abs)) continue;
     const stats = fs.existsSync(abs) ? fs.statSync(abs) : null;
     if (!stats?.isFile()) continue;
-    const canRead = isProjectReadableMemoryPath(rel, root);
+    const notebook = isProjectNotebookFile(rel);
+    const canRead = notebook || isProjectReadableMemoryPath(rel, root);
     const sensitive = isSensitiveProjectFile(rel);
     if (!canRead && !sensitive) continue;
-    const allowed = isAllowedMemoryPath(rel, settings);
+    const allowed = notebook ? canReviewDocumentAsset(root, rel, settings) : isAllowedMemoryPath(rel, settings);
     const visualAsset = isProjectVisualAssetFile(rel);
     const safeContent = sensitive
       ? redactedSensitiveFileContent(abs, rel)
-      : allowed && !visualAsset && stats.size <= MAX_FILE_BYTES
+      : allowed && !visualAsset && !notebook && stats.size <= MAX_FILE_BYTES
         ? fs.readFileSync(abs, "utf8")
         : "";
     byPath.set(rel, {
@@ -1199,7 +1217,7 @@ function projectExplorerFileMetadata(root, relPath, settings, stats = null) {
   const fileStats = stats || fs.statSync(absolute);
   const visualAsset = isProjectVisualAssetFile(normalized);
   const sensitive = isSensitiveProjectFile(normalized);
-  const allowed = isAllowedMemoryPath(normalized, settings);
+  const allowed = isProjectNotebookFile(normalized) ? canReviewDocumentAsset(root, normalized, settings) : isAllowedMemoryPath(normalized, settings);
   return {
     path: normalized,
     name: path.basename(normalized),
@@ -1261,7 +1279,7 @@ export function listProjectExplorerPage(root = process.cwd(), {
           hasChildren,
         }];
       }
-      if (!entry.isFile() || (!isProjectTextFile(relPath) && !isProjectVisualAssetFile(relPath))) return [];
+      if (!entry.isFile() || (!isProjectTextFile(relPath) && !isProjectVisualAssetFile(relPath) && !isProjectNotebookFile(relPath))) return [];
       return [{ path: relPath, name: entry.name, type: "file-candidate" }];
     }).sort((left, right) => Number(left.type !== "directory") - Number(right.type !== "directory") || left.name.localeCompare(right.name, "en"));
   }
@@ -1271,7 +1289,7 @@ export function listProjectExplorerPage(root = process.cwd(), {
     const relPath = typeof entry === "string" ? entry : entry.path;
     try {
       const metadata = projectExplorerFileMetadata(root, relPath, settings);
-      const maxBytes = isProjectVisualAssetFile(relPath) ? MAX_VISUAL_ASSET_BYTES : MAX_FILE_BYTES;
+      const maxBytes = isProjectNotebookFile(relPath) ? NOTEBOOK_LIMITS.bytes : isProjectVisualAssetFile(relPath) ? MAX_VISUAL_ASSET_BYTES : MAX_FILE_BYTES;
       return metadata.bytes <= maxBytes ? [metadata] : [];
     } catch {
       return [];
@@ -7768,6 +7786,66 @@ function canEditLocalProposalPath(root, rel, settings = readMemoryWebappSettings
     && Boolean(watchStateForPath(rel, settings));
 }
 
+export function createProjectAssistantSourceResolver() {
+  return createAssistantSourceResolver({
+      canRead: (project, rel, kind) => {
+        if (typeof rel !== 'string' || path.isAbsolute(rel) || rel.startsWith('~') || rel.includes('\\')
+          || rel.split('/').some(part => !part || part === '.' || part === '..') || isSensitiveProjectFile(rel) || isBlockedPath(rel)) return false;
+        const settings = readMemoryWebappSettings(project);
+        return kind === 'notebook' ? canReviewDocumentAsset(project, rel, settings)
+          : /\.(?:md|markdown|txt|html?)$/i.test(rel) && isAllowedMemoryPath(rel, settings);
+      },
+      canWrite: (project, rel) => canEditLocalProposalPath(project, rel),
+      proposeDocument: (project, input) => {
+        input.signal?.throwIfAborted();
+        if (!canEditLocalProposalPath(project, input.path)) throw sharedRequestError('The original document is no longer editable.', 403, 'assistant_proposal_scope');
+        const current = readNotebookBytes(project, input.path, 1024 * 1024);
+        if (!current || notebookHash(current) !== input.expectedHash) throw sharedRequestError('The original document changed before proposal preparation.', 409, 'assistant_document_conflict');
+        const proposal = createLocalDocumentationProposal(project, { requestId: input.requestId, title: input.title || 'Conversation edit', description: 'Proposed from the original document conversation. Human review is required.' });
+        if (proposal.status === 'editing') {
+          const parent = path.posix.dirname(input.path); if (parent !== '.') makeNotebookDirectory(proposal.editRoot, parent);
+          const previous = readNotebookBytes(proposal.editRoot, input.path, 1024 * 1024);
+          writeNotebookBytes(proposal.editRoot, input.path, Buffer.from(input.content), { expectedHash: previous ? notebookHash(previous) : null, mode: 0o644 });
+        }
+        const submitted = submitLocalDocumentationProposal(project, proposal.id);
+        return { proposalId: submitted.id, scope: 'local', status: submitted.status, submittedRevision: submitted.submittedRevision, path: input.path, accepted: false };
+      },
+    });
+}
+
+export function migrateLisiereNotebook(root, options = {}) {
+  const authority = { canWrite: rel => canEditLocalProposalPath(root, rel), beforeWrite: () => ensureRuntimeGitExcludes(root) };
+  return options.apply ? applyLisiereNotebookImport(root, options, authority) : planLisiereNotebookImport(root, options, authority);
+}
+
+export function migrateLisiereConversation(root, options = {}, { storageRoot } = {}) {
+  return migrateLisiereConversationHistory(root, options, { ...(storageRoot ? { storageRoot } : {}),
+    resolveSource: createProjectAssistantSourceResolver(),
+    sourceForPath: (project, rel) => {
+      if (typeof rel !== 'string' || !rel) throw sharedRequestError('Choose the document or imported notebook to link with this history.', 400, 'assistant_source_scope');
+      if (!rel.endsWith('.crnb')) return { kind: 'document', path: rel };
+      const matches = listNotebooks(project).filter(item => item.path === rel);
+      if (matches.length !== 1) throw sharedRequestError('Open or import this notebook before linking its recovered history.', 409, 'assistant_source_missing');
+      const scene = readNotebook(project, matches[0].id);
+      return { kind: 'notebook', path: rel, resourceId: scene.resourceId, revision: scene.revision, locationRevision: scene.locator.revision, selection: [] };
+    } });
+}
+
+export function migrateLisiereDraft(root, options = {}) {
+  const perform = () => migrateLisiereDocument(root, options, {
+    canWrite: rel => canEditLocalProposalPath(root, rel), beforeWrite: () => ensureRuntimeGitExcludes(root),
+    acceptedBase: rel => {
+      const entry = readDocReviewState(root, { readOnly: true }).reviews[rel];
+      if (entry?.status !== 'verified' && entry?.acceptedVersion?.status !== 'verified') return null;
+      if ((entry.acceptedVersion || entry).resourceState === 'absent') return null;
+      const base = readReviewBaseFile(root, rel, { readOnly: true });
+      if (!base.available || base.changeKind === 'added') return null;
+      return { bytes: Buffer.from(base.baseContent), mode: base.baselineMode ? Number.parseInt(base.baselineMode, 8) & 0o777 : 0o644 };
+    },
+  });
+  return options.apply ? withDocReviewEvidenceLock(root, perform) : perform();
+}
+
 function canReviewDocumentAsset(root, rel, settings = readMemoryWebappSettings(root)) {
   return isDocumentAssetPath(rel) && !isBlockedPath(rel) && !isSensitiveProjectFile(rel) && !rel.startsWith("~")
     && !path.isAbsolute(rel) && !rel.split("/").some((part) => part === ".." || part === "." || !part)
@@ -7815,9 +7893,9 @@ export function createLocalDocumentationProposal(root, options = {}) {
   });
 }
 
-export function submitLocalDocumentationProposal(root, id) {
+export function submitLocalDocumentationProposal(root, id, { expectedDraftRevision } = {}) {
   const settings = readMemoryWebappSettings(root);
-  return submitLocalProposal(root, id, { canWrite: (rel) => canEditLocalProposalPath(root, rel, settings) });
+  return submitLocalProposal(root, id, { expectedDraftRevision, canWrite: (rel) => canEditLocalProposalPath(root, rel, settings) });
 }
 
 export function reviewLocalDocumentationProposal(root, id, options = {}) {
@@ -13091,17 +13169,7 @@ export function syncContextRoomAgentContext(root = process.cwd()) {
   const projectRoot = assertExistingProjectRoot(root);
   const sourceRoot = path.resolve(path.dirname(__filename), "..", "docs");
   const targetRoot = path.join(projectRoot, AGENT_CONTEXT_DIR);
-  const assets = [
-    [path.join(sourceRoot, "product-overview.md"), AGENT_CONTEXT_ASSET_FILENAMES[0]],
-    [path.join(sourceRoot, "system", "architecture.md"), AGENT_CONTEXT_ASSET_FILENAMES[1]],
-    [path.join(sourceRoot, "system", "runtime-profiles.md"), AGENT_CONTEXT_ASSET_FILENAMES[2]],
-    [path.join(sourceRoot, "features", "context-hub.md"), AGENT_CONTEXT_ASSET_FILENAMES[3]],
-    [path.join(sourceRoot, "features", "shared-context.md"), AGENT_CONTEXT_ASSET_FILENAMES[4]],
-    [path.join(sourceRoot, "features", "review-authority.md"), AGENT_CONTEXT_ASSET_FILENAMES[5]],
-    [path.join(sourceRoot, "domains", "truth-layers.md"), AGENT_CONTEXT_ASSET_FILENAMES[6]],
-    [path.join(sourceRoot, "domains", "shared-proposal-lifecycle.md"), AGENT_CONTEXT_ASSET_FILENAMES[7]],
-    [path.join(sourceRoot, "features", "document-workflow.md"), AGENT_CONTEXT_ASSET_FILENAMES[8]],
-  ];
+  const assets = AGENT_CONTEXT_ASSET_FILENAMES.map(fileName => [path.join(sourceRoot, fileName), fileName]);
   const missing = assets.filter(([source]) => !fs.existsSync(source)).map(([source]) => source);
   if (missing.length) throw new Error(`Context Room agent context is incomplete: ${missing.join(", ")}`);
 
@@ -13255,6 +13323,9 @@ export function ensureRuntimeGitExcludes(root = process.cwd()) {
     ".context-room/local-proposals/",
     ".context-room/document-assets/",
     ".context-room/review-cleanup/",
+    ".context-room/notebooks/",
+    ".context-room/migrations/",
+    ".context-room/lisiere/",
     ".context-room/memory-webapp-backups/",
   ].map((entry) => prefix + entry);
   const entries = [...new Set([".context-room/review-ledger.json", ...roomEntries])];
@@ -15822,6 +15893,7 @@ function contextHubStateWithAttention(state = {}) {
   const attention = readContextHubAttention();
   const ranks = new Map(attention.projectOrder.map((id, index) => [id, index]));
   const proposalItems = [];
+  const workingDrafts = [];
   const visitedRoots = new Set();
   const projects = (state.projects || []).map((project) => {
     let localProposalError = "";
@@ -15834,7 +15906,13 @@ function contextHubStateWithAttention(state = {}) {
             projectKey: project.projectKey, projectTitle: project.title, title: asset.path, assetPath: asset.path,
             files: [asset.path], fileCount: 1, revisionToken: asset.revision, reviewStatus: "submitted" });
         }
-        for (const proposal of listLocalProposals(location.root, { readyOnly: true })) {
+        for (const proposal of listLocalProposals(location.root)) {
+          if (proposal.status === 'editing') {
+            workingDrafts.push({ id: proposal.id, projectId: location.id, projectKey: project.projectKey,
+              projectTitle: project.title, title: proposal.title, updatedAt: proposal.updatedAt });
+            continue;
+          }
+          if (proposal.status !== 'submitted') continue;
           const pending = proposal.changes.filter((entry) => !entry.decision);
           if (!pending.length) continue;
           proposalItems.push({ id: `local-proposal:${location.id}:${proposal.id}`, type: "local-proposal",
@@ -15851,6 +15929,7 @@ function contextHubStateWithAttention(state = {}) {
   return {
     ...state,
     items: [...(state.items || []).filter((item) => !["local-proposal", "local-asset"].includes(item.type)), ...proposalItems],
+    workingDrafts,
     attention,
     projects: projects.map((project) => {
       const priorityId = contextHubProjectPriorityId(project);
@@ -16450,9 +16529,9 @@ function contextHubAttentionItems(root, requestedId = "") {
   return buildAttentionItems({ reviews, freshness, decisions, healthIssues, project: selection.project });
 }
 
-function minimalContextHubState(root) {
+function minimalContextHubState(root, navigation) {
   const currentRoot = path.resolve(root);
-  const worktrees = listContextHubProjects().map((project) => ({
+  const worktrees = navigation.projects.map((project) => ({
     ...project,
     current: safeRealPath(project.root) === safeRealPath(currentRoot),
     localReviewCount: 0,
@@ -16467,7 +16546,7 @@ function minimalContextHubState(root) {
     generatedAt: "",
     currentProjectId: contextRoomProjectId(currentRoot),
     projects,
-    sharedRepositories: readContextHubRegistry().sharedRepositories.map((entry) => ({ repository: entry.repository })),
+    sharedRepositories: navigation.sharedRepositories.map((entry) => ({ repository: entry.repository })),
     proposals: [],
     items: [],
     repositoryErrors: [],
@@ -16476,7 +16555,7 @@ function minimalContextHubState(root) {
       localProjects: projects.length,
       localWorktrees: worktrees.length,
       sharedProjects: projects.filter((project) => project.mode !== "local").length,
-      sharedRepositories: readContextHubRegistry().sharedRepositories.length,
+      sharedRepositories: navigation.sharedRepositories.length,
       proposals: 0,
       localReviews: 0,
     },
@@ -16551,9 +16630,9 @@ function contextHubStateForRoot(state, root) {
 }
 
 function readFastContextHubState(root) {
-  const snapshot = readContextHubSnapshot();
+  const navigation = readContextHubNavigationSnapshot(), snapshot = navigation.snapshot;
   if (!snapshot?.state) {
-    return contextHubStateWithAttention(contextHubStateWithFreshness(contextHubStateForRoot(minimalContextHubState(root), root), { refreshing: true }));
+    return contextHubStateWithAttention(contextHubStateWithFreshness(contextHubStateForRoot(minimalContextHubState(root, navigation), root), { refreshing: true }));
   }
   const ageMs = Math.max(0, Date.now() - Date.parse(snapshot.generatedAt));
   const state = contextHubStateForRoot(snapshot.state, root);
@@ -16677,6 +16756,7 @@ function paginatedContextHubReviews(state, { cursor = 0, limit = 80 } = {}) {
     freshness: state.freshness,
     attention: state.attention,
     items: items.slice(offset, offset + pageSize).map(compactContextHubReviewQueueItem),
+    workingDrafts: state.workingDrafts || [],
     total: items.length,
     nextCursor: offset + pageSize < items.length ? offset + pageSize : null,
   };
@@ -16951,6 +17031,9 @@ function isCodexPromptRequest(req) {
 }
 
 function isOwnerReviewAuthorityMutation(pathname = "", method = "GET") {
+  if (pathname.startsWith('/api/assistant/') && method !== 'GET') return true;
+  if (pathname.startsWith('/api/devices') && method !== 'GET') return true;
+  if (isNotebookMutation(method, pathname)) return true;
   const key = `${String(method || "GET").toUpperCase()} ${String(pathname || "")}`;
   return new Set([
     "POST /api/settings",
@@ -16962,6 +17045,8 @@ function isOwnerReviewAuthorityMutation(pathname = "", method = "GET") {
     "POST /api/review-gate",
     "POST /api/docqa/review",
     "POST /api/docqa/local-proposal-decision",
+    "POST /api/docqa/local-draft",
+    "POST /api/docqa/local-draft-submit",
     "POST /api/docqa/asset-decision",
     "POST /api/docqa/shared-asset-decision",
     "POST /api/lisiere/prepare",
@@ -18548,6 +18633,27 @@ function remoteReviewUnavailableHtml(requestUrl) {
 </html>`;
 }
 
+export function createContextRoomDeviceService({ root = process.cwd(), stateRoot } = {}) {
+  const primaryRoot = fs.realpathSync(path.resolve(root));
+  const primaryId = contextRoomProjectId(primaryRoot);
+  const primaryIdentity = managedProjectRootIdentity(primaryRoot);
+  return createConnectedDeviceService({ stateRoot, resolveProject(projectId) {
+    const project = projectId === primaryId
+      ? { root: primaryRoot, rootIdentity: primaryIdentity, available: true }
+      : registeredContextHubWorktree(projectId);
+    if (!project || !project.available || project.mode === 'shared') return null;
+    const projectRoot = path.resolve(project.root);
+    const expected = project.rootIdentity || managedProjectRootIdentity(projectRoot);
+    const settings = () => {
+      assertManagedProjectRootIdentity(projectRoot, expected);
+      return readMemoryWebappSettings(projectRoot, { readOnly: true, expectedRootIdentity: expected });
+    };
+    return { root: projectRoot,
+      canRead: rel => canReviewDocumentAsset(projectRoot, rel, settings()),
+      canWrite: rel => canEditLocalProposalPath(projectRoot, rel, settings()) };
+  } });
+}
+
 export function createMemoryServer({
   root = process.cwd(),
   contextHubRoot = root,
@@ -18570,6 +18676,8 @@ export function createMemoryServer({
   sharedReviewMaterializationTask = runSharedReviewMaterializationProcessTask,
   sharedReviewServerListen = listenContextRoomServer,
   sharedReviewDocQaTask = buildSharedReviewDocQaReport,
+  deviceService = null,
+  assistantOptions = {},
 } = {}) {
   if (remoteAccess) throw new Error("Hosted Context Room has been retired. Its stored repositories and review data are preserved; use a local room with Shared Git.");
   root = fs.realpathSync(path.resolve(root));
@@ -18590,6 +18698,8 @@ export function createMemoryServer({
   const projectId = contextRoomProjectId(root);
   const promptMutationNonce = randomBytes(32).toString("base64url");
   const ownerMutationNonce = randomBytes(32).toString("base64url");
+  let assistantRuntime = null;
+  const getAssistantRuntime = () => assistantRuntime ||= new AssistantRuntime({ ...assistantOptions, resolveSource: createProjectAssistantSourceResolver() });
   const runtimeProfile = remoteAccess ? "hosted-hub" : "local";
   const resolvedCodexPromptCenter = codexPromptCenter || (remoteAccess ? null : createCodexPromptCenterProvider());
   const terminalDecisionChallenges = createTerminalDecisionChallengeStore();
@@ -18810,7 +18920,12 @@ export function createMemoryServer({
       })).catch(() => {});
       return refresh;
     }
-    const shouldNotify = Boolean(options.force || (!remoteAccess && readFastContextHubState(resolvedRoot).freshness?.refreshing));
+    // Scheduling only needs snapshot freshness. Constructing a whole fallback
+    // catalogue here repeats the foreground registry reads during every opening.
+    const retainedSnapshot = !remoteAccess && !options.force ? readContextHubSnapshot() : null;
+    const shouldNotify = Boolean(options.force || (!remoteAccess && (!retainedSnapshot?.state
+      || Date.now() - Date.parse(retainedSnapshot.generatedAt) > CONTEXT_HUB_SNAPSHOT_TTL_MS
+      || contextHubSnapshotRefreshes.has(resolvedRoot))));
     const refresh = Promise.resolve()
       .then(() => contextHubSnapshotRefresh(resolvedRoot, options))
       .then((snapshot) => {
@@ -19215,6 +19330,8 @@ export function createMemoryServer({
     try {
       assertManagedProjectRootIdentity(requestRoot, requestExpectedRootIdentity);
       await routeRequest(req, res, requestRoot, globalPreferencesPath, {
+        deviceService,
+        getAssistantRuntime,
         codexComposerInsert,
         codexReferenceInsert,
         codexPromptCenter: resolvedCodexPromptCenter,
@@ -19459,6 +19576,7 @@ export function createMemoryServer({
     }
   };
   const server = http.createServer(requestHandler);
+  deviceService?.owner.attach(server);
   server.on("checkContinue", (req, res) => {
     req[HTTP_REQUEST_EXPECTS_CONTINUE] = true;
     void requestHandler(req, res);
@@ -19487,6 +19605,7 @@ export function createMemoryServer({
     const pendingRefreshes = [...contextHubRefreshNotifications.values()];
     const pendingProjectSyncs = [...contextHubProjectSyncs.values()].map((entry) => entry.promise);
     const backgroundTerminations = [];
+    if (assistantRuntime) backgroundTerminations.push(assistantRuntime.close());
     const backgroundClosingTokens = new Map();
     terminalDecisionChallenges.clear();
     if (ownsVerifiedAcceptanceFlashes) acceptanceFlashStore.clear();
@@ -20165,6 +20284,8 @@ function assertExpectedFileRevision(root, relPath, expectedRevision) {
 }
 
 async function routeRequest(req, res, root, globalPreferencesPath = null, {
+  deviceService = null,
+  getAssistantRuntime = null,
   codexComposerInsert = insertIntoActiveCodexComposer,
   codexReferenceInsert = insertFileReferenceIntoActiveCodexComposer,
   codexPromptCenter = createCodexPromptCenterProvider(),
@@ -20206,6 +20327,61 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   assertManagedProjectRootIdentity(root, expectedRootIdentity);
   const requestRuntimeProfile = assertRuntimeProfile(runtimeProfile);
   const url = new URL(req.url, "http://context-room.invalid");
+  if (url.pathname.startsWith('/api/assistant/')) {
+    if (!getAssistantRuntime) throw sharedRequestError('Conversations are unavailable in this runtime.', 409, 'assistant_unavailable');
+    if (req.method === 'POST') beforeManagedControlMutation?.();
+    await handleAssistantHttp(req, res, { root, url, runtime: getAssistantRuntime(), readJsonBody, sendJson }); return;
+  }
+  if (url.pathname === '/api/devices' || url.pathname.startsWith('/api/devices/')) {
+    if (req.method === 'GET' && url.pathname === '/api/devices') {
+      sendJson(res, 200, deviceService ? { enabled: true, projectId: contextRoomProjectId(root), ownerAvailable: deviceService.owner.available(), ...deviceService.describe(), devices: deviceService.authority.list().filter(device => device.grants.some(grant => grant.mode === 'owner' || grant.projectId === contextRoomProjectId(root))) } : { enabled: false });
+      return;
+    }
+    if (!deviceService) throw sharedRequestError('Connected devices are disabled. Start Context Room with an explicit device address.', 409, 'device_service_disabled');
+    if (req.method === 'GET' && url.pathname === '/api/devices/navigation') {
+      const deviceId = url.searchParams.get('deviceId');
+      const device = deviceService.authority.inspect(deviceId);
+      if (!device.grants.some(grant => grant.mode === 'owner' || grant.projectId === contextRoomProjectId(root))) throw sharedRequestError('The device belongs to another project.', 403, 'device_project_scope');
+      const navigation = deviceService.navigation.inspect(deviceId, url.searchParams.get('operationId') || '');
+      if (navigation.command?.target.projectId !== contextRoomProjectId(root)) navigation.command = null;
+      sendJson(res, 200, navigation); return;
+    }
+    const body = await readJsonBody(req, { maxBytes: 16_384 });
+    if (req.method === 'POST' && url.pathname === '/api/devices/pair-owner') {
+      if (body.mode !== 'owner') throw sharedRequestError('Choose the complete owner interface explicitly.', 400, 'device_owner_choice');
+      sendJson(res, 201, { ...deviceService.createOwnerPairing({ label: body.label }), ...deviceService.describe() }); return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/devices/view') {
+      sendJson(res, 200, deviceService.navigation.view({ ...body, projectId: contextRoomProjectId(root) })); return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/devices/open') {
+      sendJson(res, 200, deviceService.navigation.request({ deviceId: body.deviceId, operationId: body.operationId,
+        projectId: contextRoomProjectId(root), resourceId: body.resourceId })); return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/devices/pair') {
+      sendJson(res, 201, { ...deviceService.createPairing({ projectId: contextRoomProjectId(root), paths: body.paths, label: body.label }), ...deviceService.describe() });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/devices/revoke') {
+      sendJson(res, 200, deviceService.authority.revoke(body.deviceId)); return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/devices/cancel-pairing') {
+      sendJson(res, 200, deviceService.authority.cancelPairing(body.pairingId)); return;
+    }
+    throw sharedRequestError('Unknown device operation.', 404, 'device_route');
+  }
+  if (url.pathname === '/api/notebooks' || url.pathname.startsWith('/api/notebooks/')) {
+    if (req.method === 'POST') beforeManagedControlMutation?.();
+    if (await handleNotebookHttp(req, res, { root, url, readJsonBody, sendJson,
+      canRead: rel => canReviewDocumentAsset(root, rel),
+      canWrite: rel => canEditLocalProposalPath(root, rel),
+      actor: { kind: 'human', id: String(req.headers['x-context-room-notebook-client'] || 'desktop') },
+      ...(readSharedProjectConnection(root) ? {
+        submitShared: (request, options) => submitNotebookShared(root, request, options),
+        sharedTarget: rel => readSharedNotebookTarget(root, rel),
+      } : {}),
+    })) return;
+  }
   const readContextHubForRequest = () => {
     if (!hostedSharedProvider) {
       const state = readFastContextHubState(root);
@@ -20741,7 +20917,12 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     );
     return;
   }
-  if (["GET", "HEAD"].includes(req.method) && ["/assets/local-proposal-review.mjs", "/assets/review-cleanup.mjs"].includes(url.pathname)) {
+  if (["GET", "HEAD"].includes(req.method) && NOTEBOOK_WEB_ASSETS.has(url.pathname)) {
+    const asset = NOTEBOOK_WEB_ASSETS.get(url.pathname);
+    writeHttpResponse(res, 200, { "content-type": asset.type, "cache-control": "no-cache", "x-content-type-options": "nosniff" }, req.method === "HEAD" ? "" : fs.readFileSync(new URL("./" + asset.file, import.meta.url)));
+    return;
+  }
+  if (["GET", "HEAD"].includes(req.method) && ["/assets/local-proposal-review.mjs", "/assets/local-draft-editor.mjs", "/assets/review-cleanup.mjs", "/assets/connected-devices.mjs"].includes(url.pathname)) {
     writeHttpResponse(res, 200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" }, req.method === "HEAD" ? "" : fs.readFileSync(new URL(`./ui/${path.basename(url.pathname)}`, import.meta.url)));
     return;
   }
@@ -21551,6 +21732,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       })),
       attention: state.attention,
       sharedRepositories: state.sharedRepositories || [],
+      workingDrafts: state.workingDrafts || [],
       repositoryErrors: state.repositoryErrors || [],
       summary: state.summary || {},
       freshness: state.freshness,
@@ -22363,7 +22545,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
   if (req.method === "POST" && url.pathname === "/api/shared-context/review") {
     const openingStartedAt = performance.now();
-    const openingTiming = { "exact-ref": 0, room: 0, docqa: 0, payload: 0 };
+    const openingTiming = { binding: 0, "exact-ref": 0, room: 0, docqa: 0, payload: 0 };
     const body = await readJsonBody(req);
     const proposal = String(body.proposal || "").trim();
     const expectedHead = String(body.expectedHead || "").trim();
@@ -22372,7 +22554,9 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       throw sharedRequestError("An exact proposal head is required.", 400, "shared_context_proposal_head_required");
     }
     if (!startSharedReview) throw sharedRequestError("Shared proposal review is unavailable", 503, "shared_context_review_unavailable");
+    const bindingStartedAt = performance.now();
     const connection = readSharedProjectConnection(root);
+    openingTiming.binding = performance.now() - bindingStartedAt;
     if (!connection) throw sharedRequestError("This project is not connected to shared context", 404, "shared_context_not_connected");
     // Reopening an exact room validates only its proposal, main, and terminal
     // refs. It never scans the global proposal catalog.
@@ -22439,6 +22623,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       throw sharedRequestError("The current shared main revision could not be verified.", 409, "shared_context_main_revision_unverified");
     }
     openingTiming["exact-ref"] += performance.now() - openingStartedAt
+      - openingTiming.binding
       - openingTiming["exact-ref"]
       - openingTiming.room
       - openingTiming.docqa
@@ -23180,6 +23365,22 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     sendJson(res, 200, { proposals: listLocalProposals(root, { readyOnly: true }).map(({ id, title, submittedRevision, changes }) => ({ id, title, revision: submittedRevision, changes })) });
     return;
   }
+  if (url.pathname === '/api/docqa/local-draft' && req.method === 'GET') {
+    sendJson(res, 200, readLocalProposalDraft(root, url.searchParams.get('proposal'), url.searchParams.has('path') ? url.searchParams.get('path') : undefined,
+      { canRead: rel => canEditLocalProposalPath(root, rel) })); return;
+  }
+  if (url.pathname === '/api/docqa/local-draft' && req.method === 'POST') {
+    const body = await readJsonBody(req, { maxBytes: 24 * 1024 * 1024 });
+    sendJson(res, 200, withDocReviewEvidenceLock(root, () => writeLocalProposalDraft(root, body.proposal, body,
+      { canWrite: rel => canEditLocalProposalPath(root, rel) }), { expectedRootIdentity })); return;
+  }
+  if (url.pathname === '/api/docqa/local-draft-submit' && req.method === 'POST') {
+    const body = await readJsonBody(req);
+    if (typeof body.expectedRevision !== 'string' || !body.expectedRevision) throw sharedRequestError('Reload the saved draft before submission.', 400, 'local_proposal_stale');
+    const result = withDocReviewEvidenceLock(root, () => submitLocalDocumentationProposal(root, body.proposal,
+      { expectedDraftRevision: body.expectedRevision }), { expectedRootIdentity });
+    scheduleContextHubRefresh(); sendJson(res, 200, { id: result.id, status: result.status, revision: result.submittedRevision }); return;
+  }
   if (url.pathname === "/api/docqa/asset-file" && req.method === "GET") {
     const rel = url.searchParams.get("path");
     if (!canReviewDocumentAsset(root, rel)) throw sharedRequestError("Asset outside the review scope.", 403, "asset_scope");
@@ -23346,6 +23547,8 @@ function isProjectVisualAssetFile(relPath) {
   return PROJECT_VISUAL_ASSET_TYPES.has(path.extname(normalizeRelPath(String(relPath || ""))).toLowerCase());
 }
 
+function isProjectNotebookFile(relPath) { return /\.crnb$/i.test(String(relPath)); }
+
 function projectVisualAssetMimeType(relPath) {
   return PROJECT_VISUAL_ASSET_TYPES.get(path.extname(normalizeRelPath(String(relPath || ""))).toLowerCase()) || "application/octet-stream";
 }
@@ -23359,6 +23562,7 @@ function isProjectTextFile(relPath) {
 
 function fileKindForPath(relPath) {
   if (isSensitiveProjectFile(relPath)) return "secret";
+  if (isProjectNotebookFile(relPath)) return "notebook";
   const ext = path.extname(normalizeRelPath(String(relPath || ""))).toLowerCase();
   if (ext === ".csv" || ext === ".tsv") return "csv";
   if (ext === ".html" || ext === ".htm") return "html";
@@ -23543,9 +23747,9 @@ function walkProjectExplorerTextFiles(root, { showHiddenFiles = true } = {}) {
       if (isBlockedPath(rel) && !isSensitiveProjectFile(rel) && !isSafeEnvSamplePath(rel)) continue;
       if (entry.isDirectory()) {
         walk(abs);
-      } else if (entry.isFile() && (isProjectTextFile(rel) || isProjectVisualAssetFile(rel))) {
+      } else if (entry.isFile() && (isProjectTextFile(rel) || isProjectVisualAssetFile(rel) || isProjectNotebookFile(rel))) {
         try {
-          const maxBytes = isProjectVisualAssetFile(rel) ? MAX_VISUAL_ASSET_BYTES : MAX_FILE_BYTES;
+          const maxBytes = isProjectNotebookFile(rel) ? NOTEBOOK_LIMITS.bytes : isProjectVisualAssetFile(rel) ? MAX_VISUAL_ASSET_BYTES : MAX_FILE_BYTES;
           if (fs.statSync(abs).size <= maxBytes) results.push(rel);
         } catch {}
       }

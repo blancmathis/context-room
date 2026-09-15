@@ -1,0 +1,50 @@
+name: Exact convergence candidate
+on:
+  push:
+    branches: [mathis/context-room-android-convergence]
+    paths: ['.github/convergence-patch.json']
+permissions: {}
+concurrency:
+  group: exact-convergence-candidate
+  cancel-in-progress: false
+jobs:
+  candidate:
+    if: github.repository == 'blancmathis/context-room'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - name: Apply exact audited source patch
+        run: node .github/convergence-candidate.mjs apply
+        env:
+          CANDIDATE_TOKEN: ${{ github.token }}
+      - run: npm ci
+      - name: Check changed JavaScript and convergence contracts
+        run: |
+          umask 022
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import {execFileSync} from 'node:child_process';
+          const manifest = JSON.parse(fs.readFileSync('.github/convergence-patch.json'));
+          for (const file of manifest.files) if (file.after && file.path.endsWith('.mjs')) execFileSync(process.execPath, ['--check', file.path], {stdio:'inherit'});
+          const tests = fs.readdirSync('test').filter(name => /^(notebook|devices|device_|convergence|local_proposals|document_assets).*\.test\.mjs$/.test(name));
+          execFileSync(process.execPath, ['--test', ...tests.map(name => 'test/' + name)], {stdio:'inherit'});
+          NODE
+      - run: npm run package:privacy
+      - name: Prepare candidate commit without moving a branch
+        run: node .github/convergence-candidate.mjs publish
+        env:
+          CANDIDATE_TOKEN: ${{ github.token }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: convergence-candidate-${{ github.sha }}
+          path: ${{ runner.temp }}/convergence-candidate/
+          if-no-files-found: error
+          retention-days: 7

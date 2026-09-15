@@ -473,6 +473,15 @@ function withReclaim(paths, deadline, options, operation) {
   let reclaim = null;
   while (reclaim === null) {
     assertBeforeDeadline(deadline, options);
+    // Inspect an existing generation before writing and syncing a temporary
+    // contender that cannot be published. Recovery still revalidates identity
+    // under its ticket protocol; publication races retain the EEXIST path below.
+    const existing = readLockRecord(paths.reclaim);
+    if (existing) {
+      if (lockIsStale(existing, options.staleMs, options)) recoverStaleReclaim(paths, deadline, existing, options);
+      else { assertBeforeDeadline(deadline, options); waitForLock(deadline); }
+      continue;
+    }
     try {
       reclaim = createLockRecord(paths.reclaim, { kind: "coordination", ownerLockPath: paths.lock });
     } catch (error) {
@@ -623,6 +632,10 @@ export function cleanupFilesystemLockWorkerOwner(owner, options = {}) {
       assertBeforeDeadline(deadline, normalizedOptions);
       const abandonedReclaim = readLockRecord(paths.reclaim);
       if (recordBelongsToWorkerOwner(abandonedReclaim, owner) && removeUniqueLockRecord(paths.reclaim, abandonedReclaim)) removed += 1;
+      // Cleanup runs after this Worker exits. A missing or successor generation
+      // needs no mutation, so do not contend with a live owner just to inspect it.
+      // The matching generation is checked again under coordination below.
+      if (!recordBelongsToWorkerOwner(readLockRecord(paths.lock), owner)) continue;
       withReclaim(paths, deadline, normalizedOptions, () => {
         const current = readLockRecord(paths.lock);
         if (recordBelongsToWorkerOwner(current, owner) && removeLockGeneration(paths, current)) removed += 1;
