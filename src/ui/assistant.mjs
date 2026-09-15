@@ -21,6 +21,15 @@ export function prepareVoiceAudio() {
   return { context, resumed };
 }
 
+/** Draft recovery gates sending; the unrelated history catalogue does not.
+ * Late catalogue failures stay visible without blocking the original source.
+ */
+export async function initializeConversationInput({ restoreDraft, ready, loadHistory, onError }) {
+  await restoreDraft();
+  ready();
+  void Promise.resolve().then(loadHistory).catch(onError);
+}
+
 /** A captured API, never a callback that reads the browser's later project selection. */
 export function openConversation(options) {
   // Unlock browser output in the direct Voice gesture, before loading history.
@@ -489,6 +498,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   window.addEventListener('context-room-native-active', nativeActivity);
   window.addEventListener('context-room-native-audio', nativeAudioInterrupted);
   const dispose = self.dispose; self.dispose = async () => { document.removeEventListener('visibilitychange', hidden); window.removeEventListener('context-room-native-active', nativeActivity); window.removeEventListener('context-room-native-audio', nativeAudioInterrupted); await dispose(); };
-  const timer = setInterval(() => void poll(), 500); showModels(); render(); await restoreDraft(); await refreshHistory(); initializing = false; render();
+  const timer = setInterval(() => void poll(), 500); showModels(); render();
+  await initializeConversationInput({ restoreDraft, ready: () => { initializing = false; render(); }, loadHistory: () => refreshHistory(), onError: fail });
   self.present(mode, dictationTarget, primedAudioContext); return self;
 }
