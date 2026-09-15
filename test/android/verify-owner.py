@@ -12,7 +12,9 @@ import time
 parser = argparse.ArgumentParser()
 parser.add_argument('--serial', required=True)
 parser.add_argument('--output', type=Path, required=True)
-parser.add_argument('--history', action='store_true', help='Verify recovered conversation export instead of the general owner workflow.')
+mode = parser.add_mutually_exclusive_group()
+mode.add_argument('--history', action='store_true', help='Verify recovered conversation export instead of the general owner workflow.')
+mode.add_argument('--draft', action='store_true', help='Verify editing and reopening a recovered Android draft through the owner Hub.')
 args = parser.parse_args()
 repo = Path(__file__).resolve().parents[2]
 output = args.output.resolve()
@@ -39,6 +41,8 @@ fixture_log = (output / 'fixture.log').open('w')
 fixture_env = dict(os.environ)
 if args.history:
     fixture_env['CONTEXT_ROOM_TEST_LEGACY_HISTORY'] = '1'
+if args.draft:
+    fixture_env['CONTEXT_ROOM_TEST_TABLET_DRAFT'] = '1'
 fixture = subprocess.Popen(['node', str(repo / 'test/android/owner-fixture.mjs'), str(fixture_dir)], cwd=repo, env=fixture_env, stdout=fixture_log, stderr=subprocess.STDOUT)
 try:
     deadline = time.monotonic() + 20
@@ -49,6 +53,9 @@ try:
     state = json.loads((fixture_dir / 'fixture.json').read_text())
     original = fixture_dir / 'project/docs/Owner.crnb'
     before = hashlib.sha256(original.read_bytes()).hexdigest()
+    if args.draft:
+        legacy_database = Path(state['tabletDraft']['source']) / 'workspace.sqlite'
+        legacy_before = hashlib.sha256(legacy_database.read_bytes()).hexdigest()
     artifact = run(['python3', str(repo / 'scripts/check-android-artifact.py')], capture_output=True, text=True)
     (output / 'artifact.json').write_text(artifact.stdout)
     for relative in ('debug/app-debug.apk', 'androidTest/debug/app-debug-androidTest.apk'):
@@ -61,12 +68,12 @@ try:
         # Android may append its collision suffix after an unknown extension.
         pattern = r'retained-lisiere-history(?: \(\d+\))?\.json(?: \(\d+\))?' if args.history else r'Owner(?: \(\d+\))?\.crnb(?: \(\d+\))?'
         return {name for name in entries if re.fullmatch(pattern, name)}
-    exports_before = exported_names()
+    exports_before = exported_names() if not args.draft else set()
     run(adb + ['shell', 'am', 'force-stop', 'app.contextroom.tablet.preview'], capture_output=True)
     started = time.monotonic()
     log_path = output / 'owner-workspace.log'
     with log_path.open('w') as log:
-        test_class = 'app.contextroom.tablet.OwnerHistoryTest' if args.history else 'app.contextroom.tablet.OwnerWorkspaceTest'
+        test_class = 'app.contextroom.tablet.OwnerDraftTest' if args.draft else 'app.contextroom.tablet.OwnerHistoryTest' if args.history else 'app.contextroom.tablet.OwnerWorkspaceTest'
         result = subprocess.run(adb + ['shell', 'am', 'instrument', '-w', '-r', '-e', 'class', test_class,
             '-e', 'fixture', '/data/local/tmp/context-room-owner-ticket.json', 'app.contextroom.tablet.preview.test/androidx.test.runner.AndroidJUnitRunner'], stdout=log, stderr=subprocess.STDOUT, timeout=150)
     if result.returncode != 0 or 'OK (1 test)' not in log_path.read_text() or 'FAILURES!!!' in log_path.read_text():
@@ -76,22 +83,34 @@ try:
             run(adb + ['exec-out', 'run-as', 'app.contextroom.tablet.preview', 'cat', 'files/owner-failure.png'], stdout=image)
         raise RuntimeError('Owner UI acceptance failed: ' + str(log_path))
     captures = ('owner-retained-history', 'owner-exported-history') if args.history else ('owner-rendered-document', 'owner-native-drawing', 'owner-retained-workspace', 'owner-imported-image', 'owner-exported-notebook', 'owner-human-file-decision', 'owner-settings', 'owner-shared-review')
+    if args.draft:
+        captures = ('owner-recovered-tablet-draft', 'owner-saved-tablet-draft')
     for name in captures:
         with (output / (name + '.png')).open('wb') as image:
             run(adb + ['exec-out', 'run-as', 'app.contextroom.tablet.preview', 'cat', 'files/' + name + '.png'], stdout=image)
-    if not args.history:
+    if not (args.history or args.draft):
         scene = json.loads(run(['node', '--input-type=module', '-e',
             "import {readNotebook} from './src/notebooks.mjs'; process.stdout.write(JSON.stringify(readNotebook(process.argv[1], 'owner-native-notebook')));",
             state['sourceRoot']], cwd=repo, capture_output=True, text=True).stdout)
         assert len(scene['document']['objects']) == 2 and scene['accepted'] is False
         assert any(obj['type'] == 'image' for obj in scene['document']['objects'])
-    exported = exported_names() - exports_before
-    assert len(exported) == 1, 'The system picker must create one new export'
-    name = exported.pop()
-    # exec-out preserves argv; shell quotes would become part of the filename.
-    exported_bytes = run(adb + ['exec-out', 'cat', '/sdcard/Download/' + name], capture_output=True).stdout
-    (output / ('exported-history.json' if args.history else 'exported-owner.crnb')).write_bytes(exported_bytes)
-    if args.history:
+    if not args.draft:
+        exported = exported_names() - exports_before
+        assert len(exported) == 1, 'The system picker must create one new export'
+        name = exported.pop()
+        # exec-out preserves argv; shell quotes would become part of the filename.
+        exported_bytes = run(adb + ['exec-out', 'cat', '/sdcard/Download/' + name], capture_output=True).stdout
+        (output / ('exported-history.json' if args.history else 'exported-owner.crnb')).write_bytes(exported_bytes)
+    if args.draft:
+        expected = state['tabletDraft']
+        saved = (Path(expected['editRoot']) / expected['path']).read_bytes()
+        assert saved == (expected['content'] + '\r\nAdded on the connected Android owner.\r\n').encode('utf-8'), 'Native owner editing must save exact working bytes'
+        retained = json.loads((Path(state['sourceRoot']) / expected['recovery'] / 'source-draft.json').read_text())
+        assert retained['reconstructed']['content'] == expected['content'] and retained['source']['delivery'] == 'not-inferred'
+        assert not (Path(state['sourceRoot']) / expected['path']).exists(), 'Saving cannot create or accept the ordinary file'
+        assert hashlib.sha256(legacy_database.read_bytes()).hexdigest() == legacy_before, 'The original tablet database must stay unchanged'
+        detail = {'recoveredTabletDraft': 'passed', 'workingSha256': hashlib.sha256(saved).hexdigest(), 'sourceUnchanged': True, 'ordinaryFileAbsent': True}
+    elif args.history:
         expected = state['legacyHistory']
         assert hashlib.sha256(exported_bytes).hexdigest() == expected['hash'], 'Android must export the byte-identical complete original history'
         assert len(exported_bytes) > 1024 * 1024, 'The owner transport must receive more than one download chunk'
@@ -108,7 +127,7 @@ try:
         'apk': json.loads(artifact.stdout), 'emulator': avd, 'durationSeconds': round(time.monotonic() - started, 2),
         **detail, 'acceptedFileUnchanged': True, 'physicalBoox': 'not-tested'
     }, indent=2) + '\n')
-    print('Real owner UI and Android retained-history export: passed' if args.history else 'Real owner UI, rendered documents and native notebook round trip: passed', flush=True)
+    print('Real Android owner draft recovery and editing: passed' if args.draft else 'Real owner UI and Android retained-history export: passed' if args.history else 'Real owner UI, rendered documents and native notebook round trip: passed', flush=True)
 finally:
     if fixture.poll() is None:
         fixture.terminate()

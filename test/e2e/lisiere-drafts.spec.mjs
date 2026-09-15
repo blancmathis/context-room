@@ -4,29 +4,38 @@ import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { tabletDraftSnapshot } from '../fixtures/lisiere-tablet-drafts.mjs';
 
-for (const format of ['md', 'html']) test(`@smoke recovered ${format} drafts remain working until explicit submission and human review`, async ({ page }, testInfo) => {
+for (const originKind of ['md', 'html', 'tablet']) test(`@smoke recovered ${originKind} drafts remain working until explicit submission and human review`, async ({ page }, testInfo) => {
+  const format = originKind === 'tablet' ? 'md' : originKind;
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cr-recovered-draft-ui-'))), previous = {};
   for (const key of ['CONTEXT_ROOM_HUB_HOME', 'CONTEXT_ROOM_SHARED_HOME', 'CONTEXT_ROOM_REVIEW_AUTHORITY_HOME']) { previous[key] = process.env[key]; process.env[key] = path.join(base, key); }
-  const root = path.join(base, 'project'), source = path.join(base, 'legacy'), snapshot = path.join(base, 'snapshot');
-  const filePath = `docs/Recovered.${format}`, original = format === 'md' ? '\ufeff# Retained notebook ideas\r\n\r\nA sentence recovered from the tablet. 🖊️\r\n' : '<h1>Retained visual ideas</h1><p>An original recovered page.</p>';
+  const root = path.join(base, 'project'), source = path.join(base, 'legacy'); let snapshot = path.join(base, 'snapshot');
+  const filePath = `docs/Recovered.${format}`;
+  let original = format === 'md' ? '\ufeff# Retained notebook ideas\r\n\r\nA sentence recovered from the tablet. 🖊️\r\n' : '<h1>Retained visual ideas</h1><p>An original recovered page.</p>';
   let runtime;
   try {
-    fs.mkdirSync(root); fs.mkdirSync(source);
+    fs.mkdirSync(root);
     const { initializeContextRoomProject, writeMemoryWebappSettings, migrateLisiereDraft, createMemoryServer } = await import('../../src/context_room.mjs');
     const { registerContextHubProject } = await import('../../src/context_hub.mjs');
     const { exportLisiereSnapshot } = await import('../../src/lisiere_snapshot.mjs');
     const { inspectLisiereSnapshot } = await import('../../src/lisiere_inventory.mjs');
     initializeContextRoomProject(root, { title: 'Recovered ideas', allowedPaths: ['docs/'], watchAllow: ['docs/'] });
     writeMemoryWebappSettings(root, { startupContext: { enabled: false }, startupSkills: { enabled: false }, startupHooks: { enabled: false } });
-    execFileSync('python3', ['-B', '-c', `import sqlite3,sys
+    let selector;
+    if (originKind === 'tablet') {
+      const retained = await tabletDraftSnapshot(base); snapshot = retained.snapshot; selector = retained.selector; original = retained.content;
+    } else {
+      fs.mkdirSync(source);
+      execFileSync('python3', ['-B', '-c', `import sqlite3,sys
 with sqlite3.connect(sys.argv[1]) as db:
  db.executescript('CREATE TABLE projects(id TEXT PRIMARY KEY,name TEXT,root TEXT); CREATE TABLE boards(id TEXT PRIMARY KEY,title TEXT,project TEXT,revision INTEGER); CREATE TABLE objects(board TEXT,id TEXT,revision INTEGER,data TEXT,PRIMARY KEY(board,id)); CREATE TABLE drafts(project TEXT,path TEXT,device TEXT,base TEXT,content TEXT,version INTEGER,PRIMARY KEY(project,path,device));')
  db.execute('INSERT INTO projects VALUES(?,?,?)',('original','Original project','/synthetic/original'))
  db.execute('INSERT INTO drafts VALUES(?,?,?,?,?,?)',('original',sys.argv[2],'tablet',None,sys.argv[3],9))`, path.join(source, 'workspace.sqlite'), filePath, original], { stdio: 'pipe' });
-    const preview = await exportLisiereSnapshot({ source, output: snapshot });
-    await exportLisiereSnapshot({ source, output: snapshot, apply: true, expectedRevision: preview.revision });
-    const selector = inspectLisiereSnapshot(snapshot, { kind: 'drafts' }).items[0].selector;
+      const preview = await exportLisiereSnapshot({ source, output: snapshot });
+      await exportLisiereSnapshot({ source, output: snapshot, apply: true, expectedRevision: preview.revision });
+      selector = inspectLisiereSnapshot(snapshot, { kind: 'drafts' }).items[0].selector;
+    }
     const options = { snapshot, selector, path: filePath }, plan = migrateLisiereDraft(root, options);
     const imported = migrateLisiereDraft(root, { ...options, apply: true, expectedRevision: plan.revision });
     registerContextHubProject(root, { title: 'Recovered ideas' });
@@ -84,7 +93,9 @@ with sqlite3.connect(sys.argv[1]) as db:
       await review.getByRole('button', { name: 'Accept file', exact: true }).click();
     }
     await expect.poll(() => fs.existsSync(path.join(root, filePath)) && fs.readFileSync(path.join(root, filePath), 'utf8')).toBe(expected);
-    expect(JSON.parse(fs.readFileSync(path.join(root, imported.recovery, 'source-draft.json'))).content).toBe(original);
+    const retained = JSON.parse(fs.readFileSync(path.join(root, imported.recovery, 'source-draft.json')));
+    expect(originKind === 'tablet' ? retained.reconstructed.content : retained.content).toBe(original);
+    if (originKind === 'tablet') expect(retained.source.delivery).toBe('not-inferred');
     expect(migrateLisiereDraft(root, { ...options, apply: true, expectedRevision: plan.revision }).proposalId).toBe(imported.proposalId);
     expect(errors).toEqual([]);
   } finally {

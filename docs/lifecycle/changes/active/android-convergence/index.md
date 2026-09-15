@@ -57,7 +57,9 @@ identity mappings and restart receipts. Canonical Mac text drafts import as
 Local editing proposals with retained source records and restart receipts.
 The Hub opens their saved working text or rendered HTML; explicit submission
 and later human review pass across all four browser configurations.
-Android draft/outbox reconciliation,
+Selected Android text journals also reconstruct into Local working proposals,
+retaining exact source records and uncertain delivery without replaying requests.
+Android outbox reconciliation,
 recording-context reconciliation, handoff collection, writer cutover and release/upgrade packaging
 remain to be implemented. The complete
 connected-device and physical acceptance criteria remain open.

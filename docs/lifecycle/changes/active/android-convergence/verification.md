@@ -1213,6 +1213,36 @@ an emulator proof, not a physical BOOX result. The existing full native owner
 workflow also passes with this helper, including image import and byte-identical
 editable notebook export through the system picker.
 
+The isolated full regression at `626c4d7` passes **90/90** test processes.
+
+## Retained Android text journals
+
+The existing draft import now accepts an exact Android journal or earlier pending
+record. It reconstructs the retained UTF-16 edits and preserves the selected raw
+records, counters and pending correction backups before creating a Local editing
+proposal. Unknown delivery stays explicit, and neither the original SQLite
+database nor its operation queue is changed. A newer journal blocks fallback to
+an older pending text. A divergent or unknown original base requires a separate
+destination instead of replacing the current Mac document.
+
+The final combined archive, Mac draft and Android draft regression passes
+**20/20**. It covers binary deltas, version gaps, exact BOM/CRLF, partial journals,
+earlier conflicting seeds, unfinished composition, interrupted completion,
+preserved later human edits, changed snapshots and the actual CLI permissions.
+The Android draft browser workflow passes **4/4** across Chromium desktop/mobile,
+Firefox and WebKit, including editing, saving, reopening, explicit submission
+and a separate human review correction. Accessibility checks pass and the
+mobile rendering was inspected.
+
+The real pinned owner transport on the isolated Android emulator also opens
+the recovered draft from the Hub, saves a new edit on the Mac and reopens its
+exact content after reload. Instrumentation and the host byte checks pass;
+the source database and accepted notebook are unchanged, and the recovered
+ordinary file remains absent. The first test attempted its second click in the
+departing document; the corrected check waits for the new page before reopening.
+The final native rendering was inspected. Both APK builds and artifact checks
+pass with the unchanged preview hash above. Physical BOOX testing remains open.
+
 ## Open product gates
 
 Data migration and final removal of the

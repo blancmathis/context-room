@@ -1,6 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
-import { readLisiereSnapshot, legacyError } from './lisiere_archive.mjs';
+import { readLisiereSnapshot, decodeLisiereObject, recoverLisiereDraft, legacyError } from './lisiere_archive.mjs';
 import { lisiereRecordSelector } from './lisiere_inventory.mjs';
 import { retainLisiereRecoveryBytes } from './lisiere_migration.mjs';
 import { beginLocalProposal } from './local_proposals.mjs';
@@ -12,6 +12,56 @@ const bytes = value => Buffer.from(stableNotebookJson(value) + '\n');
 const check = (value, message) => { if (!value) throw legacyError(message); };
 function configHash(root) { const current = readNotebookBytes(root, '.context-room/config.json', 8 * 1024 * 1024); return current === null ? null : notebookHash(current); }
 
+function archivedRow(row) {
+  return Object.fromEntries(Object.entries(row).map(([key, value]) => [key,
+    Buffer.isBuffer(value) ? { base64: value.toString('base64') } : typeof value === 'bigint' ? { integer: String(value) } : value]));
+}
+
+function selectedDraft(archive, selector) {
+  if (archive.manifest.kind === 'mac-workspace') {
+    let row;
+    for (const candidate of archive.rows('drafts')) if (lisiereRecordSelector('drafts', candidate) === selector) {
+      check(!row, 'This retained draft identity is duplicated.'); row = candidate;
+    }
+    check(row && ['project', 'path', 'device'].every(key => typeof row[key] === 'string' && row[key].length > 0)
+      && Number.isSafeInteger(row.version) && row.version >= 0 && typeof row.content === 'string'
+      && (row.base === null || typeof row.base === 'string'), 'The selected versioned draft is absent or malformed.');
+    return { row, original: bytes(row), source: { project: row.project, path: row.path, device: row.device, version: row.version } };
+  }
+  let selected;
+  for (const row of archive.rows('cache')) if (lisiereRecordSelector('drafts', row) === selector) {
+    check(!selected, 'This retained draft identity is duplicated.'); selected = row;
+  }
+  check(selected && typeof selected.key === 'string' && /^(?:draftmeta|dirtydraft):/.test(selected.key),
+    'Choose the tablet draft journal or earlier pending record from the inventory. A text seed alone has no delivery or version authority.');
+  const key = selected.key.slice(selected.key.indexOf(':') + 1), selectedValue = decodeLisiereObject(selected.value);
+  const prefix = selected.key.startsWith('draftmeta:') && typeof selectedValue.epoch === 'string' && selectedValue.epoch && !selectedValue.epoch.includes(':')
+    ? `draftdelta:${selectedValue.epoch}:` : null;
+  const keys = new Set(['draftmeta:', 'dirtydraft:', 'draftdoc:', 'draftclock:', 'draftmerge:', 'draftmerge-backup:'].map(name => name + key));
+  const cache = new Map(), records = []; let size = 0;
+  for (const row of archive.rows('cache')) if (keys.has(row.key) || prefix && row.key.startsWith(prefix)) {
+    check(!cache.has(row.key), 'The tablet draft journal contains duplicate records.');
+    const original = archivedRow(row); size += bytes(original).length;
+    check(size <= 32 * 1024 * 1024 && records.length < 100000, 'The selected tablet journal exceeds the bounded recovery copy.');
+    cache.set(row.key, row.value); records.push(original);
+  }
+  check(!selected.key.startsWith('dirtydraft:') || !cache.has(`draftmeta:${key}`),
+    'A newer tablet journal exists. Select its exact draftmeta record; an older pending value cannot replace it.');
+  const recovered = recoverLisiereDraft(cache, key);
+  check(recovered.project.length > 0 && recovered.path.length > 0, 'The original tablet document identity is empty.');
+  check(recovered.base == null || typeof recovered.base === 'string', 'The original tablet document base is invalid.');
+  // A local ack can also be an accepted-baseline marker. It never proves which
+  // Mac request arrived, and recovery never sends or acknowledges that request.
+  const source = { kind: 'android-workspace', project: recovered.project, path: recovered.path, device: null,
+    sourceKey: key, epoch: recovered.epoch, version: recovered.version,
+    acknowledgedVersion: recovered.acknowledgedVersion, pending: recovered.pending, changed: recovered.changed,
+    delivery: 'not-inferred', pendingReconciliation: cache.has(`draftmerge:${key}`) };
+  records.sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+  return { row: { ...recovered, base: recovered.baseKnown ? recovered.base : null }, source,
+    original: bytes({ version: 1, kind: 'lisiere-tablet-draft', selectedKey: selected.key, source, records,
+      reconstructed: { content: recovered.content, consumedDeltas: recovered.consumedDeltas } }) };
+}
+
 function prepare(root, options, { canWrite, acceptedBase }) {
   const rootIdentity = canonicalNotebookRoot(root), target = options?.path;
   check(typeof target === 'string' && target.length <= 1024 && /\.(?:md|markdown|txt|html?)$/i.test(target)
@@ -20,20 +70,12 @@ function prepare(root, options, { canWrite, acceptedBase }) {
   check(canWrite(target), 'The recovered draft destination is outside the editable document scope.');
   check(typeof options?.selector === 'string' && /^[a-f0-9]{64}$/.test(options.selector), 'Choose the exact draft selector from the recovery inventory.');
   const archive = readLisiereSnapshot(options.snapshot);
-  check(archive.manifest.kind === 'mac-workspace', 'This draft import needs the canonical Mac snapshot. Tablet journal reconciliation is separate.');
-  let row;
-  for (const candidate of archive.rows('drafts')) if (lisiereRecordSelector('drafts', candidate) === options.selector) {
-    check(!row, 'This retained draft identity is duplicated.'); row = candidate;
-  }
-  check(row && ['project', 'path', 'device'].every(key => typeof row[key] === 'string' && row[key].length > 0)
-    && Number.isSafeInteger(row.version) && row.version >= 0 && typeof row.content === 'string'
-    && (row.base === null || typeof row.base === 'string'), 'The selected versioned draft is absent or malformed.');
-  const content = Buffer.from(row.content), original = bytes(row);
+  const { row, original, source } = selectedDraft(archive, options.selector), content = Buffer.from(row.content);
   check(content.length <= LIMIT && content.toString('utf8') === row.content && original.length <= 32 * 1024 * 1024,
     'This retained text is oversized or has unfinished UTF-16 composition. Keep its exact original for reconciliation.');
   const requestId = `draft-${notebookHash({ rootIdentity, selector: options.selector, path: target })}`, recovery = `${STORE}/${requestId}`;
   const identity = { version: 1, kind: 'lisiere-document-import', rootIdentity, requestId, selector: options.selector, path: target,
-    source: { project: row.project, path: row.path, device: row.device, version: row.version }, contentHash: notebookHash(content), accepted: false };
+    source, contentHash: notebookHash(content), accepted: false };
   let intent = readNotebookJson(root, `${recovery}/intent.json`);
   if (intent !== null) check(intent && typeof intent === 'object' && intent.identity && notebookHash(intent.identity) === notebookHash(identity), 'The retained draft preparation belongs to different source data.');
   else {

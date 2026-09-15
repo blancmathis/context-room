@@ -8,8 +8,9 @@ import { submitNotebookShared } from '../../src/notebook_workflow.mjs';
 import { readSharedNotebookTarget } from '../../src/shared_context.mjs';
 import { addNotebookSharedFixture } from '../fixtures/notebook_shared.mjs';
 import { createCodexProvider } from '../../src/codex_provider.mjs';
-import { migrateLisiereConversation } from '../../src/context_room.mjs';
+import { migrateLisiereConversation, migrateLisiereDraft } from '../../src/context_room.mjs';
 import { legacyConversationSnapshot } from '../fixtures/lisiere-conversations.mjs';
+import { tabletDraftSnapshot } from '../fixtures/lisiere-tablet-drafts.mjs';
 
 const [directory] = process.argv.slice(2);
 if (!directory || !path.isAbsolute(directory) || fs.existsSync(directory)) throw new Error('Choose a new private fixture directory.');
@@ -31,6 +32,13 @@ if (process.env.CONTEXT_ROOM_TEST_LEGACY_HISTORY === '1') {
   const imported = migrateLisiereConversation(root, { ...options, apply: true, expectedRevision: preview.revision }, authority);
   const binding = JSON.parse(fs.readFileSync(path.join(authority.storageRoot, 'conversations', imported.conversationId + '.json')));
   legacyHistory = { conversationId: imported.conversationId, hash: binding.legacy.hash, originalThreadId: imported.originalThreadId };
+}
+let tabletDraft = null;
+if (process.env.CONTEXT_ROOM_TEST_TABLET_DRAFT === '1') {
+  const source = await tabletDraftSnapshot(base), options = { snapshot: source.snapshot, selector: source.selector, path: 'docs/Recovered.md' };
+  const preview = migrateLisiereDraft(root, options), imported = migrateLisiereDraft(root, { ...options, apply: true, expectedRevision: preview.revision });
+  tabletDraft = { proposalId: imported.proposalId, path: options.path, content: source.content,
+    editRoot: imported.editRoot, recovery: imported.recovery, source: source.source };
 }
 const computer = path.join(base, 'computer'); fs.mkdirSync(computer);
 fs.writeFileSync(path.join(computer, 'Idea.md'), '# Synthetic unassigned idea\n');
@@ -74,10 +82,11 @@ if (!reviewResponse.ok) throw new Error('Synthetic Shared review did not open: '
 const sharedReview = await reviewResponse.json();
 const ticket = { ...service.describe(), ...service.createOwnerPairing({ label: 'Synthetic owner tablet' }),
   url: `https://10.0.2.2:${service.server.address().port}`, testProjectId: runtime.projectId,
-  testSharedPath: new URL(sharedReview.url).pathname, testSharedHead: sharedReceipt.proposalRevision, ...(legacyHistory ? { testLegacyHistory: legacyHistory } : {}) };
+  testSharedPath: new URL(sharedReview.url).pathname, testSharedHead: sharedReceipt.proposalRevision,
+  ...(legacyHistory ? { testLegacyHistory: legacyHistory } : {}), ...(tabletDraft ? { testTabletDraft: tabletDraft } : {}) };
 fs.writeFileSync(path.join(base, 'ticket.json'), JSON.stringify(ticket), { mode: 0o600 });
 fs.writeFileSync(path.join(base, 'fixture.json'), JSON.stringify({ projectId: runtime.projectId, sourceRoot: root, serverId: service.serverId,
-  ownerUrl: `http://127.0.0.1:${runtime.server.address().port}`, ...(legacyHistory ? { legacyHistory } : {}) }), { mode: 0o600 });
+  ownerUrl: `http://127.0.0.1:${runtime.server.address().port}`, ...(legacyHistory ? { legacyHistory } : {}), ...(tabletDraft ? { tabletDraft } : {}) }), { mode: 0o600 });
 process.stdout.write('Isolated owner fixture ready.\n');
 async function close() {
   await service.close(); runtime.server.closeAllConnections();

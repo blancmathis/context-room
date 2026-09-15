@@ -13,7 +13,8 @@ or Android workspace database. Preview and apply compare the same content
 revision. Export is read-only against the source and does not require the
 Lisière executable or service. A selected canonical Mac board can then become
 an editable, unaccepted working notebook. Selected Mac text drafts can become
-Local working proposals. Tablet reconciliation and installation
+Local working proposals; selected Android journals reconstruct their retained
+text into the same workflow. Tablet outbox reconciliation and installation
 cutover remain in progress.
 
 ## Defines
@@ -66,7 +67,8 @@ export never guesses a destination from a hashed filename.
 SHA-256 hashes. Binary cells use a `base64` wrapper; integers outside JavaScript's
 exact range use an `integer` decimal wrapper. Original drafts, deletion records,
 queued operations and history remain recovery data, with `accepted: false`.
-Binary Android cells stay exact and have not yet been replayed or imported.
+Binary Android cells stay exact. Draft recovery decodes their original journal
+without replaying legacy requests.
 
 Known pairing tokens and executable native-request grants are excluded. The
 export does not read authentication preferences, private keys or integration
@@ -152,12 +154,12 @@ not create an ordinary `.crnb` file or an accepted baseline. Use the existing
 notebook freeze/submission and human review workflow to produce and decide an
 ordinary document. The migration receipts never substitute for that decision.
 
-This command imports one canonical Mac board. Android draft/outbox reconciliation,
+This command imports one canonical Mac board. Android outbox reconciliation,
 recording-context recovery, old handoff import and automatic rollback
 are separate unfinished work. It does not acknowledge an old operation, resume
 an old agent task or switch off the legacy writer.
 
-## Import a canonical Mac text draft
+## Import a retained text draft
 
 Choose the exact `selector` from the `drafts` inventory, an existing Context Room
 project and a writable, watched `.md`, `.markdown`, `.txt`, `.html` or `.htm` path:
@@ -166,6 +168,21 @@ project and a writable, watched `.md`, `.markdown`, `.txt`, `.html` or `.htm` pa
 context-room migrate --root /path/to/project --import-lisiere /path/to/private-snapshot --legacy-draft SELECTOR --path docs/Recovered.md
 context-room migrate --root /path/to/project --import-lisiere /path/to/private-snapshot --legacy-draft SELECTOR --path docs/Recovered.md --apply --revision REVISION
 ```
+
+For a Mac snapshot, select its versioned draft row. For an Android snapshot,
+select the `draftmeta:` journal or an earlier `dirtydraft:` pending record.
+The importer reconstructs the original seed and ordered UTF-16 edits, including
+LSJ1 binary records. A newer journal takes precedence over an earlier pending
+record. A missing final delta, conflicting earlier seed or invalid epoch stops
+the import; a standalone text seed cannot supply missing version authority.
+
+Android recovery retains the exact selected records, original counters and
+pending correction/merge backup alongside the reconstructed text. The private
+copy contains only this document's journal, bounded to 32 MiB. A local
+acknowledgement counter is retained as recorded; it does not prove delivery to
+the Mac or authorize an old request. Other drafts, operation queues and
+conversations remain in the full snapshot. Recovery neither acknowledges nor
+sends them, and it does not claim writer cutover or synchronization.
 
 An unused destination keeps recovery separate from existing work. Reusing the
 original path requires its current bytes to match the legacy base hash and an
@@ -192,8 +209,7 @@ The same interface is available through an authorized connected owner tablet.
 The editor supports 256 working files and 64 MiB per proposal, with 16 MiB per
 opened file. Larger workspaces remain on disk for the existing CLI workflow.
 
-Android journal/outbox reconciliation and recording attachment
-are separate from this canonical Mac text import.
+Android outbox reconciliation and recording attachment remain separate work.
 
 ## Import a retained conversation
 
