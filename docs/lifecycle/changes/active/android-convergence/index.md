@@ -63,9 +63,11 @@ Exact Android/Mac ordinary queue reconciliation, explicit tablet-cache copies,
 original PCM associations, native transfer recovery and a recognized-service
 writer cutover are now implemented. Safe rollback pauses writes without restoring
 old data over recent work. The Mac installation kit is prepared without activating
-a service. Progressive legacy pen-job reconciliation and a functional downgrade
-remain software gaps. Custom legacy installation layouts are refused rather than
-guessed. The latest coverage and test boundaries are in the current matrix in
+a service. Historical progressive jobs now reconcile committed frame events and
+grouped history with the saved descriptor; interrupted prefixes are retained, not
+resumed. Missing original normalized requests remain explicit evidence conflicts.
+A functional downgrade is not implemented or added as a new bidirectional-migration
+requirement. Custom legacy installation layouts are refused rather than guessed. The latest coverage and test boundaries are in the current matrix in
 [verification](verification.md).
 
 Direct native ZIP ingestion is implemented and tested. The original Android
@@ -74,7 +76,10 @@ upgrade remains unauthorized here. The new PCM owner test is prepared but not
 executed, and its instrumentation APK could not be built in this environment.
 Actual macOS service control/installation, fresh browser execution of the new
 recording UI, authenticated-provider performance and physical BOOX acceptance
-remain separate verification tasks. No release has been published.
+remain separate verification tasks. Application-side startup, history-catalogue
+and first-text waits are reduced with deterministic contracts and monotonic
+instrumentation; no new true-agent latency target is claimed. No release has been
+published.
 
 ## Gesture continuation
 
