@@ -329,7 +329,7 @@ async function flushAndExit(code = 0) {
 }
 
 const KNOWN_OPTIONS = new Set([
-  "export-lisiere", "import-lisiere", "legacy-board", "output", "revision",
+  "export-lisiere", "import-lisiere", "legacy-board", "recordings", "output", "revision",
   "device-host", "device-port", "device-state",
   "reader",
   "action", "actionable", "advisory", "all", "all-projects", "allow", "allow-stale", "apply", "branch", "budget", "contract", "cursor", "cwd", "depth", "description", "detail", "document", "dry-run", "enabled", "exclude", "expand", "fields", "files", "folder", "follow", "format", "fresh", "from", "goal", "h", "heading", "help", "highlight", "hook", "include",
@@ -1698,8 +1698,9 @@ if (command === "migrate") {
     if (args["export-lisiere"] && args["import-lisiere"]) throw new ContextRoomCliError("invalid-arguments", "Choose a legacy export or notebook import.", { exitCode: 2 });
     if (!args["import-lisiere"] && (args["legacy-board"] || args.path)) throw new ContextRoomCliError("invalid-arguments", "--legacy-board and --path require --import-lisiere.", { exitCode: 2 });
     if (!args["export-lisiere"] && args.output) throw new ContextRoomCliError("invalid-arguments", "--output requires --export-lisiere.", { exitCode: 2 });
+    if (!args["export-lisiere"] && args.recordings) throw new ContextRoomCliError("invalid-arguments", "--recordings requires --export-lisiere.", { exitCode: 2 });
     const data = args["export-lisiere"]
-      ? await exportLisiereSnapshot({ source: args["export-lisiere"], output: args.output, apply: Boolean(args.apply), expectedRevision: args.revision })
+      ? await exportLisiereSnapshot({ source: args["export-lisiere"], output: args.output, recordings: args.recordings, apply: Boolean(args.apply), expectedRevision: args.revision })
       : args["import-lisiere"]
       ? migrateLisiereNotebook(agentFirstTarget.root, { snapshot: args["import-lisiere"], boardId: args["legacy-board"], path: args.path, apply: Boolean(args.apply), expectedRevision: args.revision })
       : args.apply

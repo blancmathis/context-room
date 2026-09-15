@@ -10,7 +10,7 @@ export function legacyError(message) { return Object.assign(new Error(message), 
 function requireValue(condition, message) { if (!condition) throw legacyError(message); }
 
 function entryMetadata(value) {
-  requireValue(plain(value) && typeof value.path === 'string' && /^(?:tables\/[a-z_]+\.jsonl|assets\/[a-f0-9]{64})$/.test(value.path)
+  requireValue(plain(value) && typeof value.path === 'string' && /^(?:tables\/[a-z_]+\.jsonl|assets\/[a-f0-9]{64}|recordings\/[a-f0-9]{64}\.pcm)$/.test(value.path)
     && shaPattern.test(value.sha256 || '') && Number.isSafeInteger(value.bytes) && value.bytes >= 0 && value.bytes <= LEGACY_SNAPSHOT_LIMIT, 'Invalid legacy snapshot file entry.');
   if (value.path.startsWith('assets/')) requireValue(value.sha256 === value.path.slice(7), 'An archived asset changed its content identity.');
   return { path: value.path, bytes: value.bytes, sha256: value.sha256 };
@@ -63,7 +63,7 @@ export function readLisiereSnapshot(directory) {
   let manifest; try { manifest = JSON.parse(raw); } catch { throw legacyError('The recovery manifest is not valid JSON.'); }
   requireValue(plain(manifest), 'A recovery manifest object is required.');
   const { revision, ...unsigned } = manifest;
-  requireValue(manifest.version === 1 && manifest.mediaType === 'application/vnd.context-room.lisiere-snapshot+json'
+  requireValue([1, 2].includes(manifest.version) && manifest.mediaType === 'application/vnd.context-room.lisiere-snapshot+json'
     && ['mac-workspace', 'android-workspace'].includes(manifest.kind) && [0, 1].includes(manifest.databaseVersion)
     && manifest.accepted === false && shaPattern.test(revision || '') && notebookHash(unsigned) === revision, 'Unsupported, altered or invalid recovery manifest.');
   const journal = readNotebookBytes(directory, 'export-journal.json', 8 * 1024 * 1024);
@@ -73,6 +73,15 @@ export function readLisiereSnapshot(directory) {
   for (const value of manifest.files) {
     const entry = entryMetadata(value); total += entry.bytes;
     requireValue(!files.has(entry.path) && total <= LEGACY_SNAPSHOT_LIMIT, 'Duplicate or oversized recovery inventory.'); files.set(entry.path, entry);
+  }
+  const recordings = [...files.keys()].filter(rel => rel.startsWith('recordings/'));
+  if (manifest.version === 1) requireValue(recordings.length === 0 && !Object.hasOwn(manifest, 'recordings'), 'Recording recovery requires snapshot version 2.');
+  else {
+    const description = manifest.recordings;
+    requireValue(manifest.kind === 'android-workspace' && plain(description) && description.encoding === 'pcm-s16le'
+      && description.sampleRate === 16000 && description.channels === 1 && Array.isArray(description.paths)
+      && notebookHash(description.paths) === notebookHash(recordings), 'The original recording format or inventory is inconsistent.');
+    for (const rel of recordings) requireValue(files.get(rel).bytes <= 16000 * 2 * 120 && files.get(rel).bytes % 2 === 0, 'A retained recording exceeds its original format limit.');
   }
   const tables = new Map();
   for (const value of manifest.tables) {
@@ -117,6 +126,10 @@ export function readLisiereSnapshot(directory) {
       requireValue(entry.bytes <= 20 * 1024 * 1024, 'A legacy image exceeds its original size limit.');
       const retained = []; for (const part of chunks(directory, entry)) retained.push(Buffer.from(part)); return Buffer.concat(retained);
     },
+    recording(name) {
+      requireValue(typeof name === 'string' && /^[a-f0-9]{64}\.pcm$/.test(name) && files.has(`recordings/${name}`), 'The exact original recording is missing.');
+      const retained = []; for (const part of chunks(directory, files.get(`recordings/${name}`))) retained.push(Buffer.from(part)); return Buffer.concat(retained);
+    },
   };
 }
 
@@ -157,6 +170,7 @@ export function decodeLisiereObject(value) {
 /** Reconstruct the retained document journal, without acknowledging or sending it. */
 export function recoverLisiereDraft(cache, key) {
   requireValue(cache instanceof Map && typeof key === 'string', 'An exact legacy draft key is required.');
+  if (!cache.has(`draftmeta:${key}`)) return recoverPreviousDraft(cache, key);
   const meta = decodeLisiereObject(cache.get(`draftmeta:${key}`));
   requireValue(typeof meta.project === 'string' && typeof meta.path === 'string' && key === `${meta.project}:${meta.path}`
     && typeof meta.epoch === 'string' && meta.epoch && !meta.epoch.includes(':'), 'Legacy draft identity is inconsistent.');
@@ -186,4 +200,25 @@ export function recoverLisiereDraft(cache, key) {
   return { sourceKey: key, epoch: meta.epoch, project: meta.project, path: meta.path, base: meta.base, baseKnown: meta.baseKnown === true,
     version: meta.version, acknowledgedVersion: meta.ack, changed: meta.changed === true, pending: meta.version > meta.ack, accepted: false,
     content, consumedDeltas: records.map(record => record.name) };
+}
+
+/** Earlier tablet builds retained one pending value instead of an epoch log.
+ * Its delivery state is unknown: recovery must never invent an acknowledgement
+ * or choose between conflicting retained texts. */
+function recoverPreviousDraft(cache, key) {
+  requireValue(cache.has(`dirtydraft:${key}`), 'The legacy draft has no versioned journal or pending record. Retain its seed for explicit reconciliation.');
+  const pending = decodeLisiereObject(cache.get(`dirtydraft:${key}`));
+  requireValue(typeof pending.project === 'string' && pending.project.length > 0 && typeof pending.path === 'string' && pending.path.length > 0
+    && key === `${pending.project}:${pending.path}`, 'Legacy draft identity is inconsistent.');
+  requireValue(typeof pending.content === 'string' && pending.content.length <= MAX_ROW
+    && Number.isSafeInteger(pending.version) && pending.version >= 0, 'The earlier legacy draft content or version is invalid.');
+  requireValue(!Object.hasOwn(pending, 'base') || typeof pending.base === 'string', 'The original legacy draft base is invalid.');
+  const seed = cache.get(`draftdoc:${key}`), clock = cache.get(`draftclock:${key}`);
+  requireValue(seed === undefined || seed === pending.content, 'The earlier pending text and retained seed disagree. Reconcile both originals before import.');
+  requireValue(clock === undefined || typeof clock === 'string' && /^(?:0|[1-9][0-9]{0,18})$/.test(clock)
+    && BigInt(clock) <= 9223372036854775807n && BigInt(clock) >= BigInt(pending.version), 'The earlier legacy draft clock is invalid or older than its pending version.');
+  return { sourceKey: key, epoch: null, project: pending.project, path: pending.path, base: pending.base ?? null,
+    baseKnown: typeof pending.base === 'string' && pending.base.length > 0, version: pending.version,
+    acknowledgedVersion: null, changed: true, pending: true, accepted: false, content: pending.content,
+    consumedDeltas: [], legacyClock: clock ?? null };
 }

@@ -74,9 +74,10 @@ def checked_directory(value):
     return value.resolve(strict=True)
 
 
-def snapshot(source, output=None):
+def snapshot(source, output=None, recordings=None):
     """One read transaction; plan and export have the same content revision."""
     source = checked_directory(source)
+    recordings = checked_directory(recordings) if recordings is not None else None
     database = source / 'workspace.sqlite'
     identity = regular(database)
     if identity.st_size > MAX_BYTES:
@@ -126,6 +127,8 @@ def snapshot(source, output=None):
         known = MAC_COLUMNS if kind == 'mac-workspace' else ANDROID_COLUMNS
         if kind is None or set(schema) - set(known):
             raise ValueError('Unsupported legacy database schema. The original is unchanged.')
+        if recordings is not None and kind != 'android-workspace':
+            raise ValueError('An explicit recordings directory belongs to an Android workspace snapshot.')
         user_version = connection.execute('PRAGMA user_version').fetchone()[0]
         if user_version not in (0, 1):
             raise ValueError('Unsupported legacy database version. The original is unchanged.')
@@ -155,7 +158,7 @@ def snapshot(source, output=None):
             entry = store('tables/' + name + '.jsonl', rows())
             tables.append({'name': name, 'columns': selected, 'schema': [{'name': row[1], 'type': row[2], 'primary': row[5]} for row in columns], 'rows': count[0], **entry})
         # Legacy raster resources are immutable content-addressed bytes. Android
-        # compressed board objects and draft deltas remain exact SQLite cells.
+        # binary board objects and draft deltas remain exact SQLite cells.
         assets = source / 'assets'
         if kind == 'mac-workspace' and (assets.exists() or assets.is_symlink()):
             checked_directory(assets)
@@ -176,18 +179,49 @@ def snapshot(source, output=None):
                     entry = store('assets/' + file.name, iter(lambda: content.read(1024 * 1024), b''))
                 if entry['sha256'] != file.name:
                     raise ValueError('A legacy asset does not match its content identity.')
+        recording_inventory = None
+        if recordings is not None:
+            directory_identity = recordings.stat()
+            paths = sorted(recordings.iterdir())
+            if len(paths) > 20000:
+                raise ValueError('Too many legacy recordings for one bounded snapshot.')
+            retained = []
+            for file in paths:
+                if not file.name.endswith('.pcm') or len(file.stem) != 64 or any(character not in '0123456789abcdef' for character in file.stem):
+                    raise ValueError('An unknown legacy recording needs inspection before export.')
+                info = regular(file)
+                if info.st_nlink != 1 or info.st_size > 16000 * 2 * 120 or info.st_size % 2:
+                    raise ValueError('A legacy recording is linked, incomplete or exceeds its original two-minute limit.')
+                descriptor = os.open(file, os.O_RDONLY | os.O_NOFOLLOW)
+                with os.fdopen(descriptor, 'rb') as content:
+                    opened = os.fstat(content.fileno())
+                    def recording_signature(value):
+                        return (value.st_dev, value.st_ino, value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+                    if recording_signature(opened) != recording_signature(info):
+                        raise ValueError('A legacy recording changed while opening it.')
+                    entry = store('recordings/' + file.name, iter(lambda: content.read(64 * 1024), b''))
+                    if recording_signature(os.fstat(content.fileno())) != recording_signature(info) or recording_signature(regular(file)) != recording_signature(info) or entry['bytes'] != info.st_size:
+                        raise ValueError('A legacy recording changed during the snapshot. Retain the original and preview again.')
+                retained.append(entry['path'])
+            after = checked_directory(recordings).stat()
+            if (after.st_dev, after.st_ino) != (directory_identity.st_dev, directory_identity.st_ino) or sorted(recordings.iterdir()) != paths:
+                raise ValueError('The legacy recordings directory changed during the snapshot.')
+            recording_inventory = {'encoding': 'pcm-s16le', 'sampleRate': 16000, 'channels': 1,
+                                   'sourceIdentity': [directory_identity.st_dev, directory_identity.st_ino], 'paths': retained}
         current = regular(database)
         if (identity.st_dev, identity.st_ino) != (current.st_dev, current.st_ino):
             raise ValueError('The original database was replaced during the snapshot.')
-        manifest = {'version': VERSION, 'mediaType': 'application/vnd.context-room.lisiere-snapshot+json', 'kind': kind,
+        manifest = {'version': 2 if recordings is not None else VERSION, 'mediaType': 'application/vnd.context-room.lisiere-snapshot+json', 'kind': kind,
                     'databaseVersion': user_version, 'sourceIdentity': [identity.st_dev, identity.st_ino],
                     'tables': tables, 'files': files, 'excludedCredentials': excluded, 'accepted': False}
+        if recording_inventory is not None:
+            manifest['recordings'] = recording_inventory
         return {**manifest, 'revision': digest(packed(manifest))}
     finally:
         connection.close()
 
 
-def export(source, destination, expected_revision):
+def export(source, destination, expected_revision, recordings=None):
     if not expected_revision:
         raise ValueError('Preview the snapshot and supply its exact revision before exporting.')
     destination = Path(destination).absolute()
@@ -196,13 +230,14 @@ def export(source, destination, expected_revision):
         raise ValueError('Choose an exact new export directory name.')
     destination = parent / destination.name
     source = checked_directory(source)
-    if destination.is_symlink() or destination.is_relative_to(source):
+    recordings = checked_directory(recordings) if recordings is not None else None
+    if destination.is_symlink() or destination.is_relative_to(source) or recordings is not None and destination.is_relative_to(recordings):
         raise ValueError('Choose a new private destination outside the original workspace.')
     if destination.exists() and not (destination / 'export-journal.json').is_file():
         raise ValueError('Choose a new private destination; this occupied directory is not an interrupted export.')
     staging = Path(tempfile.mkdtemp(prefix='.context-room-snapshot-', dir=parent))
     try:
-        manifest = snapshot(source, staging)
+        manifest = snapshot(source, staging, recordings)
         if manifest['revision'] != expected_revision:
             raise ValueError('The legacy workspace changed after its snapshot preview. Preview it again.')
         content = packed(manifest) + b'\n'
@@ -258,8 +293,9 @@ if __name__ == '__main__':
     parser.add_argument('--source', type=Path, required=True)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--revision')
+    parser.add_argument('--recordings', type=Path)
     args = parser.parse_args()
     if args.action == 'export' and not args.output:
         parser.error('export requires --output and --revision')
-    result = snapshot(args.source) if args.action == 'plan' else export(args.source, args.output, args.revision)
+    result = snapshot(args.source, recordings=args.recordings) if args.action == 'plan' else export(args.source, args.output, args.revision, args.recordings)
     print(json.dumps(result, ensure_ascii=False))

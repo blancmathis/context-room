@@ -999,9 +999,38 @@ inspected. The rebuilt preview APK has SHA-256
 a verified v2 signature and eight exact shared assets. The subsequent identity
 fix rebuild also verifies those properties at APK SHA-256
 `55dde71ed0c0b18c14952e519a2020415f60c526576bc2fbf7e311c86b3b9623`.
+That APK is installed over the dedicated preview without clearing its data;
+both native instrumentation checks pass again.
 These are emulator and
 browser proofs; physical pen/microphone behavior and personal migration remain
-unverified. The broader regression for this import checkpoint is pending.
+unverified. The complete local regression at `6bc128f` reports **82/83** test
+processes passing. The only failure occurs when the stalled-push rejection test
+times out during its preceding Git fetch while other Shared suites run. The
+same exact test passes in isolation with its unchanged one-second limit. The
+runner now isolates that timing contract, as it already does the acceptance
+performance contract. No product timeout or assertion is relaxed.
+
+## Retained Android recordings and earlier drafts
+
+The snapshot CLI accepts an explicit Android dictation directory and writes a
+version-2 inventory containing the original PCM bytes and their hashes. Readers
+still accept version-1 database snapshots. Recording files must be independent,
+bounded original PCM files and remain unchanged throughout the read. Format
+metadata retains 16 kHz, mono, signed little-endian samples. Export does not read
+authentication preferences, open a microphone, recognize speech or send text.
+
+Four recording contracts pass using synthetic PCM and actual SQLite/CLI
+execution: preview/apply/repeat, exact multi-buffer bytes, unchanged original
+database, modified backup refusal, stale source, symlinks, odd/oversized data,
+unknown filenames and a recording modified during reading. Earlier pending
+draft recovery also retains exact UTF-16 text and large clock strings without
+inventing an epoch or delivery acknowledgement. Conflicting seeds, malformed
+clocks, missing identity and damaged newer journals remain explicit conflicts.
+The eight recovery-reader contracts pass. These retained files and texts still
+need context mapping and pending-operation reconciliation before writer cutover.
+The combined recovery, real CLI and argument regression passes **39/39**.
+Doctor, package privacy and package dry-run pass for this follow-up. Its full
+regression remains pending.
 
 ## Open product gates
 

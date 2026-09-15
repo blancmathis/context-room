@@ -114,10 +114,34 @@ test('missing final delta, missing seed, wrong identity, invalid ranges and inco
   const change = work => { const edited = new Map(cache); work(edited); return edited; };
   assert.throws(() => recoverLisiereDraft(change(next => next.delete(second)), key), /latest.*missing/);
   assert.throws(() => recoverLisiereDraft(change(next => next.delete(`draftdoc:${key}`)), key), /seed is missing/);
-  assert.throws(() => recoverLisiereDraft(cache, 'foreign:docs/Idea.md'), /binary JSON version/);
+  assert.throws(() => recoverLisiereDraft(cache, 'foreign:docs/Idea.md'), /no versioned journal or pending record/);
   assert.throws(() => recoverLisiereDraft(change(next => next.set(first, '{"start":99,"removed":0,"inserted":"x"}')), key), /UTF-16 range/);
   assert.throws(() => recoverLisiereDraft(change(next => next.set(`draftmeta:${key}`, JSON.stringify({ ...meta, seedVersion: 107 }))), key), /incomplete/);
   const compacted = change(next => { next.set(`draftdoc:${key}`, 'Ready'); next.set(`draftmeta:${key}`, JSON.stringify({ ...meta, seedVersion: 107, ack: 107, length: 5 })); });
   const result = recoverLisiereDraft(compacted, key); assert.equal(result.content, 'Ready'); assert.equal(result.pending, false); assert.equal(result.accepted, false);
   assert.deepEqual(result.consumedDeltas, []);
+});
+
+test('earlier pending drafts retain exact UTF-16 text and unknown acknowledgements without fabricating an epoch', () => {
+  const key = 'project:docs/Earlier.md', value = { project: 'project', path: 'docs/Earlier.md', base: 'original-base', content: 'é🖊️\ud83d', version: 17 };
+  const cache = new Map([[`dirtydraft:${key}`, JSON.stringify(value)], [`draftdoc:${key}`, value.content], [`draftclock:${key}`, '9007199254740993']]);
+  const before = [...cache], recovered = recoverLisiereDraft(cache, key);
+  assert.equal(recovered.content, value.content); assert.equal(recovered.version, 17); assert.equal(recovered.epoch, null);
+  assert.equal(recovered.acknowledgedVersion, null); assert.equal(recovered.pending, true); assert.equal(recovered.accepted, false);
+  assert.equal(recovered.legacyClock, '9007199254740993'); assert.deepEqual([...cache], before);
+  cache.delete(`draftdoc:${key}`); assert.equal(recoverLisiereDraft(cache, key).content, value.content);
+});
+
+test('earlier seed conflicts, missing versioned identity and invalid clocks stay explicit recovery conflicts', () => {
+  const key = 'p:docs/A.md', pending = { project: 'p', path: 'docs/A.md', content: 'Original', version: 3 };
+  const cache = new Map([[`dirtydraft:${key}`, JSON.stringify(pending)], [`draftdoc:${key}`, 'Different newer text']]);
+  assert.throws(() => recoverLisiereDraft(cache, key), /disagree/); cache.delete(`draftdoc:${key}`);
+  for (const clock of ['2', '-1', '01', '9223372036854775808', 'unknown']) {
+    cache.set(`draftclock:${key}`, clock); assert.throws(() => recoverLisiereDraft(cache, key), /clock/);
+  }
+  cache.delete(`draftclock:${key}`); cache.set(`dirtydraft:${key}`, JSON.stringify({ ...pending, project: 'another' }));
+  assert.throws(() => recoverLisiereDraft(cache, key), /identity/);
+  cache.set(`dirtydraft:${key}`, JSON.stringify(pending)); cache.set(`draftmeta:${key}`, '{}');
+  assert.throws(() => recoverLisiereDraft(cache, key), /identity/); // Do not hide a damaged newer journal by falling back.
+  assert.throws(() => recoverLisiereDraft(new Map([[`draftdoc:${key}`, 'Unversioned seed']]), key), /explicit reconciliation/);
 });

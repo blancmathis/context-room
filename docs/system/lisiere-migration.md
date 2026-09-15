@@ -45,6 +45,21 @@ The helper reads a consistent SQLite transaction, including committed WAL data.
 It accepts the recognized Mac and Android schemas at database version 0 or 1.
 Unknown tables, columns and later versions are refused for explicit inspection.
 The snapshot is bounded to 512 MiB, including Mac content-addressed assets.
+Database-only exports keep format version 1. To include original Android audio,
+select the old application's dictation directory explicitly:
+
+```bash
+context-room migrate --export-lisiere /path/to/android-databases --recordings /path/to/android-dictation --output /path/to/private-snapshot
+context-room migrate --export-lisiere /path/to/android-databases --recordings /path/to/android-dictation --output /path/to/private-snapshot --apply --revision REVISION
+```
+
+This produces format version 2. Each retained recording keeps its original name,
+byte count and SHA-256, with signed little-endian PCM metadata at 16 kHz mono.
+The original two-minute/3,840,000-byte bound applies. Linked, odd-length,
+oversized, unknown or changing files are refused. No microphone, recognition,
+playback, authentication preferences or agent task is opened. Recordings remain
+unassigned recovery data until their original context is reconciled; the
+export never guesses a destination from a hashed filename.
 
 `manifest.json` lists JSONL tables, column order, row counts, byte lengths and
 SHA-256 hashes. Binary cells use a `base64` wrapper; integers outside JavaScript's
@@ -55,8 +70,8 @@ Binary Android cells stay exact and have not yet been replayed or imported.
 Known pairing tokens and executable native-request grants are excluded. The
 export does not read authentication preferences, private keys or integration
 configuration. This does not remove sensitive material the user wrote in their
-own content. Android recording files and earlier project handoff directories
-are not yet part of this database export.
+own content. Android recording files are included only with `--recordings`.
+Earlier project handoff directories are not part of this database export.
 
 ## Recovery
 
@@ -116,7 +131,7 @@ notebook freeze/submission and human review workflow to produce and decide an
 ordinary document. The migration receipts never substitute for that decision.
 
 This command imports one canonical Mac board. Android draft/outbox reconciliation,
-recordings, conversation continuation, old handoff import and automatic rollback
+recording-context recovery, conversation continuation, old handoff import and automatic rollback
 are separate unfinished work. It does not acknowledge an old operation, resume
 an old agent task or switch off the legacy writer.
 
