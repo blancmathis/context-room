@@ -128,7 +128,7 @@ export class AssistantSessions {
     return this.update(id, state => { if (state.operation?.id !== job.requestId) throw fault('assistant_stale_turn', 'This turn no longer owns the conversation.'); update(state); });
   }
   async run(root, id, job) {
-    let provider, finished, timer, flushTimer, answer = '', lastSaved = '', completed = false;
+    let provider, heldThreadId, finished, timer, flushTimer, answer = '', lastSaved = '', completed = false;
     const flush = () => {
       clearTimeout(flushTimer); flushTimer = null;
       if (answer === lastSaved) return;
@@ -144,8 +144,9 @@ export class AssistantSessions {
       let state = this.read(id); const resolved = this.authorize(state, root);
       if (!state.threadId) {
         const started = await provider.startThread({ instructions, tools: resolved.tools, model: state.model });
+        heldThreadId = started.threadId;
         state = this.operation(id, job, value => { value.threadId = started.threadId; });
-      } else await provider.resumeOwnedThread({ threadId: state.threadId, tools: resolved.tools });
+      } else { await provider.resumeOwnedThread({ threadId: state.threadId, tools: resolved.tools }); heldThreadId = state.threadId; }
       job.threadId = state.threadId; job.abort.signal.throwIfAborted();
       const terminal = new Promise((resolve, reject) => {
         finished = { resolve, reject };
@@ -183,7 +184,7 @@ export class AssistantSessions {
         state.operation.status = error.name === 'AbortError' ? 'stopped' : job.dispatched ? 'uncertain' : 'failed';
         state.operation.error = error.message; state.requests[job.requestId].status = state.operation.status;
       }); } catch { this.failures.set(id, { requestId: job.requestId, message: 'Conversation status could not be saved. Inspect its original Codex task before continuing.' }); }
-    } finally { clearTimeout(timer); clearTimeout(flushTimer); }
+    } finally { clearTimeout(timer); clearTimeout(flushTimer); if (heldThreadId) provider?.releaseOwnedThread?.(heldThreadId); }
   }
   async stop(root, id, { operationId } = {}) {
     const original = this.read(id); this.authorize(original, root);
@@ -205,10 +206,12 @@ export class AssistantSessions {
     if (this.recovering.get(id)?.status === 'inspecting') return this.get(root, id);
     const recovery = { status: 'inspecting' }; this.recovering.set(id, recovery);
     recovery.completion = (async () => {
+      let provider, heldThreadId;
       try {
         if (!state.threadId || !state.operation.inputHash) throw fault('assistant_recovery_unknown', 'The original task identity or send receipt is unavailable. Nothing was replayed.');
-        const provider = await this.ready(), resolved = this.authorize(state, root);
+        provider = await this.ready(); const resolved = this.authorize(state, root);
         await provider.resumeOwnedThread({ threadId: state.threadId, tools: resolved.tools });
+        heldThreadId = state.threadId;
         const found = await provider.inspectOwnedTurn({ threadId: state.threadId, turnId: state.operation.turnId, inputHash: state.operation.inputHash });
         this.authorize(this.read(id), root);
         if (!['completed', 'interrupted', 'failed'].includes(found.status)) throw fault('assistant_recovery_running', 'The original turn is still running. Wait before inspecting it again.');
@@ -224,6 +227,7 @@ export class AssistantSessions {
         });
         this.failures.delete(id); recovery.status = 'confirmed';
       } catch (error) { recovery.status = 'unconfirmed'; this.update(id, current => { if (current.operation?.id === state.operation.id && current.operation.status === 'uncertain') current.operation.error = error.message; }); }
+      finally { if (heldThreadId) provider?.releaseOwnedThread?.(heldThreadId); }
     })(); recovery.completion.catch(() => {});
     return this.get(root, id);
   }

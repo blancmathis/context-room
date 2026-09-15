@@ -36,6 +36,10 @@ The panel names its original file. Changing the visible project or document
 does not change that source, its captured selection or its Codex task. Reopening
 the same source resumes its latest matching conversation. **New conversation**
 starts a separate one; the history selector retains earlier conversations.
+Inactive tasks can leave the provider's bounded memory cache. Reopening them
+resumes their saved original Codex identity and history. An active turn, a task
+being prepared or inspected, or an uncertain outcome cannot be unloaded to
+make room for another conversation.
 Composer text and an unconfirmed send identity remain in the current browser's
 private IndexedDB. They are restored with that conversation after reload.
 

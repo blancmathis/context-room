@@ -786,6 +786,25 @@ search functions, retaining every original assertion; its focused rerun passes.
 That CI's four browser jobs and soak pass, as do both convergence runs. A full
 regression and CI on the new checkpoint remain separate gates.
 
+## Bounded provider residency and original history
+
+The provider's 64 resident-task limit now bounds simultaneous loaded work,
+rather than the lifetime number of conversations. Acquiring a task protects it
+until its send or recovery finishes. Inactive tasks leave memory only after an
+explicit provider unsubscribe receipt; their private original bindings remain
+on disk. Active and uncertain turns cannot be chosen. Exact recovery also
+clears a missed completion before permitting another turn in that task.
+
+All **18 provider/session contracts** pass. They include more than 64 distinct
+conversations with a two-entry cache, serialized simultaneous starts, protection
+before dispatch and during generation, unsubscribe failure, uncertain outcomes,
+and release after a source failure. An opt-in actual-Codex check with a one-entry
+cache unloads the completed original task, opens an empty temporary task and
+resumes the exact original identity. Its second generated answer correctly
+recalls a synthetic marker from the first exchange; the later request does not
+repeat that marker or replay the prior input. Both unloads are confirmed by the
+real provider. No personal task is used.
+
 ## Open product gates
 
 Document observation,

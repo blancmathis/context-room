@@ -10,16 +10,17 @@ import { readNotebookJson, writeNotebookJson } from '../src/notebook_io.mjs';
 
 async function until(check) { const end = Date.now() + 5000; while (!check()) { if (Date.now() > end) throw new Error('Synthetic session did not settle'); await delay(10); } }
 function providerFixture() {
-  const turns = [], started = [], resumed = [];
+  const turns = [], started = [], resumed = [], released = [];
   const provider = {
     models: [{ id: 'fixture' }],
     async startThread(input) { started.push(input); return { threadId: 'owned-codex-task', model: 'fixture' }; },
     async resumeOwnedThread(input) { resumed.push(input); return { threadId: input.threadId }; },
+    releaseOwnedThread(threadId) { released.push(threadId); },
     async startTurn(input) { const turn = { ...input, turnId: 'turn-' + (turns.length + 1) }; turns.push(turn); input.onEvent({ type: 'started', turnId: turn.turnId }); return { threadId: input.threadId, turnId: turn.turnId }; },
     async interrupt(threadId) { const turn = turns.findLast(value => value.threadId === threadId); turn?.onEvent({ type: 'completed', turnId: turn.turnId, status: 'interrupted', failed: false }); },
     async close() {},
   };
-  return { provider, turns, started, resumed, finish(text = 'Confirmed synthetic answer') {
+  return { provider, turns, started, resumed, released, finish(text = 'Confirmed synthetic answer') {
     const active = turns.at(-1); active.onEvent({ type: 'text', delta: text }); active.onEvent({ type: 'completed', turnId: active.turnId, status: 'completed', failed: false });
   } };
 }
@@ -100,6 +101,18 @@ test('explicit recovery reconciles the original recorded turn without generating
   assert.equal(recovered.operation.status, 'completed'); assert.equal(recovered.messages.at(-1).text, 'Recovered confirmed response.');
   assert.deepEqual(inspections, [{ threadId: 'owned-codex-task', turnId: 'exact-turn', inputHash: 'recorded-input-hash' }]);
   assert.equal(p.started.length, 0); assert.equal(p.turns.length, 0); assert.equal(p.resumed.length, 1);
+  assert.deepEqual(p.released, ['owned-codex-task']);
+});
+
+test('a prepared original task is released if context resolution fails before generation', async t => {
+  const f = fixture(t), p = providerFixture(), service = f.service(async () => p.provider);
+  const resolve = service.resolveSource;
+  service.resolveSource = (...args) => ({ ...resolve(...args), context: () => { throw new Error('Synthetic source changed before dispatch'); } });
+  const conversation = service.create(f.original, { source: f.source });
+  service.send(f.original, conversation.id, { requestId: randomUUID(), text: 'Keep this failed draft in the original task' });
+  await until(() => !service.running.size);
+  assert.equal(service.get(f.original, conversation.id).operation.status, 'failed');
+  assert.equal(p.started.length, 1); assert.equal(p.turns.length, 0); assert.deepEqual(p.released, ['owned-codex-task']);
 });
 
 test('provider startup failure is visible and a later explicit send still includes original context', async t => {

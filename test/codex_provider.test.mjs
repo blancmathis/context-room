@@ -5,7 +5,7 @@ import { PassThrough } from 'node:stream';
 import { createHash } from 'node:crypto';
 import { CodexStdio, createCodexProvider } from '../src/codex_provider.mjs';
 
-function fixture({ refuseRestriction = false, dottedName = false } = {}) {
+function fixture({ refuseRestriction = false, dottedName = false, maxResidentThreads = 64 } = {}) {
   const children = [], requests = [], replies = [];
   let threadSequence = 0, turnSequence = 0;
   function launch(args) {
@@ -31,6 +31,8 @@ function fixture({ refuseRestriction = false, dottedName = false } = {}) {
           } }
           : value.method === 'model/list' ? { data: [{ id: 'fixture-model', displayName: 'Protocol fixture', supportedReasoningEfforts: [{ reasoningEffort: 'low' }], defaultReasoningEffort: 'low' }] }
           : value.method === 'thread/start' ? { thread: { id: 'thread-' + ++threadSequence }, model: 'fixture-model' }
+          : value.method === 'thread/resume' ? { thread: { id: value.params.threadId }, model: 'fixture-model' }
+          : value.method === 'thread/unsubscribe' ? { status: 'unsubscribed' }
           : value.method === 'turn/start' ? { turn: { id: 'turn-' + ++turnSequence } }
           : value.method === 'turn/interrupt' ? {} : undefined;
         if (value.method === 'turn/start') child.send({ method: 'turn/started', params: { threadId: value.params.threadId, turn: result.turn } });
@@ -39,10 +41,56 @@ function fixture({ refuseRestriction = false, dottedName = false } = {}) {
     });
     return child;
   }
-  return { launch, children, requests, replies, provider: () => createCodexProvider({ cwd: '/synthetic/owner', stateRoot: '/synthetic/state', launch }) };
+  return { launch, children, requests, replies, provider: () => createCodexProvider({ cwd: '/synthetic/owner', stateRoot: '/synthetic/state', launch, maxResidentThreads }) };
 }
 const turn = () => new Promise(resolve => setImmediate(resolve));
 const tool = { type: 'function', name: 'notebook_scene', description: 'Read the original synthetic scene', inputSchema: { type: 'object', additionalProperties: false, properties: {} } };
+
+test('inactive threads leave bounded residency and resume the same original identity after more than 64 conversations', async t => {
+  const f = fixture({ maxResidentThreads: 2 }), provider = await f.provider(); t.after(() => provider.close());
+  const original = await provider.startThread({ tools: [tool] }); provider.releaseOwnedThread(original.threadId);
+  for (let index = 0; index < 70; index++) {
+    const next = await provider.startThread(); provider.releaseOwnedThread(next.threadId); assert.ok(provider.threads.size <= 2);
+  }
+  assert.equal(provider.threads.has(original.threadId), false);
+  const resumed = await provider.resumeOwnedThread({ threadId: original.threadId, tools: [tool] });
+  assert.equal(resumed.threadId, original.threadId); assert.equal(provider.threads.size, 2);
+  assert.equal(f.requests.filter(request => request.method === 'thread/start').length, 71);
+  assert.deepEqual(f.requests.find(request => request.method === 'thread/resume').params, { threadId: original.threadId, sandbox: 'read-only', approvalPolicy: 'never' });
+  assert.equal(f.requests.filter(request => request.method === 'thread/unsubscribe').length, 70);
+  assert.deepEqual([...provider.threads.get(original.threadId).tools], [tool.name]);
+  await provider.startTurn({ threadId: original.threadId, text: 'Continue the original conversation' });
+  assert.equal(f.requests.filter(request => request.method === 'turn/start').length, 1);
+});
+
+test('allocation protects acquired and active turns, serializes simultaneous starts, and keeps uncertain tasks resident', async t => {
+  const f = fixture({ maxResidentThreads: 1 }), provider = await f.provider(); t.after(() => provider.close());
+  const results = await Promise.allSettled([provider.startThread(), provider.startThread()]);
+  assert.equal(results[0].status, 'fulfilled'); assert.equal(results[1].reason.code, 'codex_thread_limit');
+  const { threadId } = results[0].value;
+  const active = await provider.startTurn({ threadId, text: 'Do not evict an active turn' });
+  provider.releaseOwnedThread(threadId);
+  await assert.rejects(provider.startThread(), { code: 'codex_thread_limit' });
+  f.children.at(-1).send({ method: 'turn/completed', params: { threadId, turn: { id: active.turnId, status: 'completed' } } });
+  const next = await provider.startThread();
+  const request = provider.rpc.request.bind(provider.rpc);
+  provider.rpc.request = (method, params) => method === 'turn/start' ? Promise.reject(Object.assign(new Error('Synthetic uncertain start'), { code: 'codex_timeout' })) : request(method, params);
+  await assert.rejects(provider.startTurn({ threadId: next.threadId, text: 'Uncertain delivery' }), { code: 'codex_timeout' });
+  provider.releaseOwnedThread(next.threadId);
+  await assert.rejects(provider.startThread(), { code: 'codex_thread_limit' });
+  assert.equal(f.requests.filter(request => request.method === 'thread/unsubscribe').length, 1, 'An uncertain task must never be unloaded to make room');
+});
+
+test('an unconfirmed unsubscribe preserves the old binding and a later allocation can retry', async t => {
+  const f = fixture({ maxResidentThreads: 1 }), provider = await f.provider(); t.after(() => provider.close());
+  const original = await provider.startThread(); provider.releaseOwnedThread(original.threadId);
+  const request = provider.rpc.request.bind(provider.rpc);
+  provider.rpc.request = (method, params) => method === 'thread/unsubscribe' ? Promise.resolve({ status: 'unknown' }) : request(method, params);
+  await assert.rejects(provider.startThread(), { code: 'codex_protocol' });
+  assert.equal(provider.threads.has(original.threadId), true); assert.equal(f.requests.filter(request => request.method === 'thread/start').length, 1);
+  provider.rpc.request = request;
+  await provider.startThread(); assert.equal(provider.threads.has(original.threadId), false);
+});
 
 test('recovery reads only an owned exact turn and requires the recorded input hash', async t => {
   const f = fixture(), provider = await f.provider(); t.after(() => provider.close());
@@ -61,6 +109,23 @@ test('recovery reads only an owned exact turn and requires the recorded input ha
   assert.equal(recovered.answer, 'Recovered original answer.'); assert.equal(recovered.status, 'completed');
   assert.ok(requests.every(request => request.params.threadId === threadId));
   await assert.rejects(provider.inspectOwnedTurn({ threadId, turnId: 'original-turn', inputHash: 'wrong' }), { code: 'codex_recovery_uncertain' });
+});
+
+test('exact recovery clears a lost completion before another original turn may start', async t => {
+  const f = fixture({ maxResidentThreads: 1 }), provider = await f.provider(); t.after(() => provider.close());
+  const { threadId } = await provider.startThread(), input = 'Original turn with a lost completion';
+  const { turnId } = await provider.startTurn({ threadId, text: input });
+  provider.releaseOwnedThread(threadId); await provider.resumeOwnedThread({ threadId });
+  const request = provider.rpc.request.bind(provider.rpc);
+  provider.rpc.request = async (method, params) => {
+    if (method === 'thread/turns/list') return { data: [{ id: turnId, status: 'completed' }] };
+    if (method === 'thread/items/list') return { data: [{ turnId, item: { type: 'userMessage', content: [{ type: 'text', text: input }] } }], nextCursor: null };
+    return request(method, params);
+  };
+  await provider.inspectOwnedTurn({ threadId, turnId, inputHash: createHash('sha256').update(input).digest('hex') });
+  assert.equal(provider.threads.get(threadId).active, null);
+  await provider.startTurn({ threadId, text: 'Continue after the exact recovered completion' });
+  assert.equal(f.requests.filter(request => request.method === 'turn/start').length, 2);
 });
 
 test('the provider explicitly disables every inherited MCP entry before starting a thread', async t => {
