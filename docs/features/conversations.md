@@ -56,6 +56,35 @@ turn and preserves already recorded ink. An uncertain send is not replayed:
 **Inspect original task** verifies its exact turn and input before recovering
 an answer when the provider can supply that evidence.
 
+## Sharing the current source with Codex
+
+In the expanded conversation, **Share live source** explicitly shares the original document draft or the
+visible notebook area. It starts off and never captures the rest of the screen.
+The notebook image includes an unfinished gesture, the viewport and up to 64
+selected objects. A document supplies a bounded draft excerpt around its text
+selection. These previews remain working context, separate from saved content
+and human acceptance.
+
+Codex receives the current preview when it reads the original source using its
+existing document or notebook tool. The indicator shows when that read occurs;
+sharing does not itself start a turn. **Stop sharing source** remains in the
+conversation header, including while minimized. Another surface must explicitly
+choose **Take over source sharing**. Navigating to another document pauses its
+preview; closing the notebook, leaving the foreground, closing the conversation
+or switching to direct dictation stops this surface's sharing. Reload does not
+restart it.
+
+The Mac holds at most eight active previews in memory. They expire after five
+seconds without renewal. Images are limited to 1024 pixels per side and one MiB;
+document excerpts to 20,000 characters. Each frame rechecks the original project,
+source and sharing controller. No preview file is written to the project.
+An image or passage already read by Codex can remain in its conversation
+history; stopping sharing prevents new reads and does not erase prior context.
+
+Android owner conversations capture only the visible native drawing area.
+Compression runs outside the UI thread. A document frame or restricted drawing
+connection cannot use the owner preview bridge.
+
 ## Dictation and playback
 
 Choose the source's **Dictate** control to start capture directly in a compact

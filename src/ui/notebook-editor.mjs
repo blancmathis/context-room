@@ -5,6 +5,7 @@ import { notebookSceneBounds } from '../notebook_geometry.mjs';
 import { NotebookCanvas } from './notebook-canvas.mjs';
 import { NotebookViewLink } from './notebook-views.mjs';
 import { prepareVoiceAudio } from './assistant.mjs';
+import { notebookViewportPreview } from './assistant-observation.mjs';
 
 export function notebookElement(tag, text = '', className = '') { const node = document.createElement(tag); node.textContent = text; if (className) node.className = className; return node; }
 export function notebookStyles() { if (document.getElementById('context-room-notebook-style')) return; const link = document.createElement('link'); link.id = 'context-room-notebook-style'; link.rel = 'stylesheet'; link.href = '/assets/ui/notebook.css'; document.head.append(link); }
@@ -152,7 +153,13 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
         if (textForm) { textForm.querySelector('textarea').value += (originalText?.trim() ? '\n' : '') + text; await textForm.persistDraft(); }
         else await editText({ x: (canvas.clientWidth / 2 - surface.view.x) / surface.view.scale, y: (canvas.clientHeight / 2 - surface.view.y) / surface.view.scale, text });
       } } : null;
-      await onConversation({ kind: 'notebook', resourceId, path, revision: view.revision, locationRevision: view.locator.revision, selection: [...surface.selection] }, { parent: dialog, mode, dictationTarget, voiceActivation });
+      await onConversation({ kind: 'notebook', resourceId, path, revision: view.revision, locationRevision: view.locator.revision, selection: [...surface.selection] }, {
+        parent: dialog, mode, dictationTarget, voiceActivation, captureSource: original => {
+          if (closed || original.resourceId !== resourceId || original.locationRevision !== view.locator.revision || original.path !== path) return undefined;
+          if (document.body.classList.contains('context-room-native-conversation')) return null;
+          return notebookViewportPreview(surface, { ...view, resourceId });
+        },
+      });
       } catch (error) { if (voiceActivation?.context.state !== 'closed') await voiceActivation?.context.close(); throw error; }
     };
     actions.append(button('Ask about selection', () => run(converse('text'))), button('Dictate about notebook', () => run(converse('dictate'))),

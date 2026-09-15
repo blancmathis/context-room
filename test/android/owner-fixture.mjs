@@ -37,8 +37,23 @@ const sharedReceipt = submitNotebookShared(root, { protocolVersion: 1, scope: 's
 const service = createContextRoomDeviceService({ root, stateRoot: path.join(base, 'devices') });
 const runtime = createMemoryServer({ root, deviceService: service, registerInHub: true, globalPreferencesPath,
   assistantOptions: { root: path.join(base, 'private-assistant'), ...(process.env.CONTEXT_ROOM_TEST_WHISPER_MODEL ? { modelPath: process.env.CONTEXT_ROOM_TEST_WHISPER_MODEL } : {}),
-    ...(process.env.CONTEXT_ROOM_TEST_REAL_AGENT === '1' ? { providerFactory: options => createCodexProvider({ ...options,
-      ...(process.env.CONTEXT_ROOM_TEST_CODEX_STATE ? { stateRoot: process.env.CONTEXT_ROOM_TEST_CODEX_STATE } : {}) }) } : {}) } });
+    ...(process.env.CONTEXT_ROOM_TEST_REAL_AGENT === '1' ? { providerFactory: async options => {
+      const provider = await createCodexProvider({ ...options, ...(process.env.CONTEXT_ROOM_TEST_CODEX_STATE ? { stateRoot: process.env.CONTEXT_ROOM_TEST_CODEX_STATE } : {}) });
+      if (process.env.CONTEXT_ROOM_TEST_OBSERVATION_TRACE === '1') {
+        const handle = provider.rpc.onRequest;
+        provider.rpc.onRequest = async (method, params) => {
+          const result = await handle(method, params);
+          if (method === 'item/tool/call' && result?.success) {
+            const value = JSON.parse(result.contentItems.find(item => item.type === 'inputText')?.text || '{}');
+            fs.appendFileSync(path.join(base, 'observation-receipts.jsonl'), JSON.stringify({ tool: params.tool, action: params.arguments?.action,
+              turnId: params.turnId, observation: value.observation, objectCount: value.document?.objects?.length,
+              images: result.contentItems.filter(item => item.type === 'inputImage').length }) + '\n', { mode: 0o600 });
+          }
+          return result;
+        };
+      }
+      return provider;
+    } } : {}) } });
 await new Promise(resolve => runtime.server.listen(0, '127.0.0.1', resolve));
 await service.listen();
 const reviewResponse = await fetch(`http://127.0.0.1:${runtime.server.address().port}/api/shared-context/review`, {

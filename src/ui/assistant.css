@@ -21,7 +21,9 @@
 .assistant-error { color: var(--danger, #fba); font-size: 13px; }
 .assistant-info { color: var(--muted, #bbb); font-size: 13px; }
 .assistant-info:empty { display: none; }
-.assistant-panel.assistant-minimized > :not(header):not(.assistant-origin) { display: none; }
+.assistant-panel.assistant-minimized > :not(header):not(.assistant-origin):not(.assistant-observation) { display: none; }
+.assistant-observation { display: flex; flex-basis: 100%; flex-wrap: wrap; align-items: center; gap: 6px; }
+.assistant-observation p { color: var(--muted, #bbb); font-size: 12px; }
 .assistant-panel details select { max-width: 100%; margin: 6px 4px 6px 0; }
 .assistant-voice-enabled .assistant-history, .assistant-voice-enabled .assistant-model, .assistant-voice-enabled .assistant-composer textarea, .assistant-voice-enabled .assistant-composer button:not([data-voice-control]) { display: none; }
 .assistant-voice-enabled .assistant-composer { position: sticky; bottom: 0; background: var(--panel-strong, #202628); padding-top: 6px; }

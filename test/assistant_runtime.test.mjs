@@ -9,6 +9,7 @@ import { createAssistantSourceResolver } from '../src/assistant_sources.mjs';
 import { AssistantRuntime } from '../src/assistant_runtime.mjs';
 import { openNotebook, mutateNotebook, readNotebook } from '../src/notebooks.mjs';
 import { notebookHash } from '../src/notebook_io.mjs';
+import { codexToolContent } from '../src/assistant_observations.mjs';
 
 function fixture(t) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'context-room-assistant-runtime-'))), root = path.join(base, 'project'), privateRoot = path.join(base, 'private');
@@ -26,6 +27,24 @@ function fixture(t) {
     conversation: () => runtime.sessions.create(root, { source: { kind: 'document', path: 'docs/Original.md' } }) };
 }
 async function settled(f, body, id) { for (let n = 0; n < 100; n++) { const job = f.runtime.job(f.root, id, body); if (job.status !== 'running') return job; await delay(10); } throw new Error('Audio job did not finish'); }
+
+test('the existing original read tool exposes only an explicitly shared draft and keeps the source untouched', async t => {
+  const f = fixture(t), conversation = f.conversation(), saved = fs.readFileSync(path.join(f.root, 'docs/Original.md'), 'utf8');
+  const resolved = f.runtime.sessions.authorize(f.runtime.sessions.read(conversation.id), f.root);
+  const before = await resolved.call('context_room_document', { action: 'read' }); assert.equal(before.observation.state, 'off');
+  const identity = { conversationId: conversation.id, clientId: randomUUID() };
+  const { epoch } = f.runtime.observations.control(f.root, { ...identity, action: 'start' });
+  const text = 'Unfinished private draft, explicitly shared.';
+  f.runtime.observations.publish(f.root, { ...identity, epoch, sequence: 1, frame: { baseHash: notebookHash(saved), text, totalLength: text.length, offset: 0, selection: null } });
+  const during = await resolved.call('context_room_document', { action: 'read' });
+  assert.equal(during.content, saved); assert.equal(during.observation.text, text); assert.equal(during.observation.accepted, false);
+  assert.equal(codexToolContent(during).length, 1); assert.equal(f.starts(), 0);
+  assert.equal(fs.readFileSync(path.join(f.root, 'docs/Original.md'), 'utf8'), saved);
+  assert.equal(JSON.stringify(f.runtime.sessions.read(conversation.id)).includes(text), false, 'Live previews do not enter Context Room conversation storage');
+  f.runtime.observations.control(f.root, { ...identity, epoch, action: 'stop' });
+  assert.equal((await resolved.call('context_room_document', { action: 'read' })).observation.state, 'off');
+  f.revoke(); await assert.rejects(resolved.call('context_room_document', { action: 'read' }), { code: 'assistant_source_scope' });
+});
 
 test('original document selection is retained, current hashes are required and path injection is rejected', async t => {
   const f = fixture(t), original = f.resolveSource(f.root, { kind: 'document', path: 'docs/Original.md', selection: { start: 0, end: 8, text: 'Original' } }, { creating: true, sessionId: randomUUID() });

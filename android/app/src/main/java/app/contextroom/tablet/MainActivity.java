@@ -160,6 +160,14 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     JSONObject progress = value.optBoolean("closed") ? null : value.optJSONObject("progress"); ink.setAgentProgress(progress);
     if (progress != null && !progress.optBoolean("completed") && SystemClock.elapsedRealtime() - lastAgentRefresh > 350) { lastAgentRefresh = SystemClock.elapsedRealtime(); engine.call("refresh"); }
   }
+  @Override public InkView.SourcePreview ownerObservation(JSONObject request) throws Exception {
+    JSONObject source = request.optJSONObject("source");
+    if (dead || !resumed || !showingConversation || ink == null || lastScene == null || nativeConversationState == null || nativeConversationState.optBoolean("closed")
+      || source == null || !"notebook".equals(source.optString("kind")) || !lastScene.optString("projectId").equals(request.optString("projectId"))
+      || !lastScene.optString("resourceId").equals(source.optString("resourceId")) || !lastScene.optString("path").equals(source.optString("path"))
+      || !Objects.equals(lastScene.opt("locationRevision"), source.opt("locationRevision"))) throw new IOException("Revenez au carnet d’origine pour partager son aperçu.");
+    return ink.sourcePreview(lastScene);
+  }
   @Override public void requestOwnerMicrophone(android.webkit.ValueCallback<Boolean> callback) {
     if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) { callback.onReceiveValue(true); return; }
     if (microphonePermissionCallback != null) { callback.onReceiveValue(false); return; }

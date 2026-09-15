@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { codexToolContent } from './assistant_observations.mjs';
 
 const MAX_FRAME = 8 * 1024 * 1024;
 const DISABLED_FEATURES = ['shell_tool', 'apps', 'plugins', 'multi_agent'];
@@ -146,9 +147,7 @@ class CodexProvider {
         try {
           active.abort.signal.throwIfAborted();
           const result = await active.tool(params.tool, params.arguments, { signal: active.abort.signal, callId: params.callId, turnId: params.turnId });
-          const text = JSON.stringify(result);
-          if (typeof text !== 'string' || Buffer.byteLength(text) > 4 * 1024 * 1024) throw fault('codex_result_limit', 'Inspect the scoped action receipt.');
-          return { success: true, contentItems: [{ type: 'inputText', text }] };
+          return { success: true, contentItems: codexToolContent(result) };
         } catch (error) {
           return { success: false, contentItems: [{ type: 'inputText', text: JSON.stringify({ code: error.code || 'action_failed', message: 'The scoped action did not complete. Inspect the current state before retrying.' }) }] };
         }

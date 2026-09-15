@@ -21,6 +21,7 @@ final class OwnerWorkspace {
     void saveOwnerFile(byte[] bytes, String filename, String type, ValueCallback<Boolean> callback);
     void requestOwnerMicrophone(ValueCallback<Boolean> callback);
     void ownerConversationState(JSONObject state);
+    default InkView.SourcePreview ownerObservation(JSONObject request) throws Exception { throw new IOException("Aperçu du carnet indisponible."); }
   }
   final WebView web;
   final DeviceConnection connection;
@@ -64,6 +65,25 @@ final class OwnerWorkspace {
         errorReplyId = id;
         if (!foreground) { reply.postMessage(InkView.json("id", id, "error", "L’interface propriétaire est en pause.").toString()); return; }
         JSONObject value = input.getJSONObject("value");
+        if (action.equals("conversation.observation")) {
+          if (value.toString().length() > 32000) throw new IOException("Source d’aperçu trop grande.");
+          InkView.SourcePreview preview = host.ownerObservation(value);
+          try { network.execute(() -> {
+            JSONObject answer;
+            try {
+              ByteArrayOutputStream bytes = new ByteArrayOutputStream(); String type = "image/png";
+              if (!preview.image.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, bytes)) throw new IOException("Aperçu indisponible.");
+              if (bytes.size() > 1024 * 1024) { bytes.reset(); type = "image/jpeg"; if (!preview.image.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, bytes)) throw new IOException("Aperçu indisponible."); }
+              if (bytes.size() > 1024 * 1024) throw new IOException("Aperçu trop grand.");
+              preview.frame.put("image", "data:" + type + ";base64," + android.util.Base64.encodeToString(bytes.toByteArray(), android.util.Base64.NO_WRAP));
+              answer = InkView.json("id", id, "result", preview.frame);
+            } catch (Exception error) { answer = InkView.json("id", id, "error", "L’aperçu du carnet n’a pas pu être préparé."); }
+            finally { preview.image.recycle(); }
+            final String response = answer.toString();
+            main.post(() -> { if (!closed && foreground && generation == requestedGeneration) reply.postMessage(response); });
+          }); } catch (RejectedExecutionException error) { preview.image.recycle(); throw new IOException("La préparation des aperçus est occupée."); }
+          return;
+        }
         if (action.equals("conversation.state")) {
           if (value.toString().length() > 32000) throw new IOException("État de conversation trop grand.");
           host.ownerConversationState(value); reply.postMessage(InkView.json("id", id, "result", InkView.json("received", true)).toString()); return;

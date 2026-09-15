@@ -419,6 +419,10 @@ test("@a11y review and Explorer selection expose state while snooze restores foc
   });
 
   const reviewEntry = page.locator('[data-context-room-review-entry^="a11y-local-review:"]').first();
+  // Opening the synthetic review legitimately refreshes the Hub catalog.
+  // Keep its server fixture consistent with the seeded accessibility item.
+  const syntheticCatalog = await page.evaluate(() => structuredClone(state.contextHub));
+  await page.route('**/api/context-hub', route => route.fulfill({ json: syntheticCatalog }));
   await expect(reviewEntry).toBeVisible();
   const reviewId = await reviewEntry.getAttribute("data-context-room-review-entry");
   const reviewButton = () => page.locator(`[data-context-room-review-entry=${JSON.stringify(reviewId)}] [data-context-room-review]`).first();

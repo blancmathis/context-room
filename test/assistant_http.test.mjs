@@ -10,6 +10,21 @@ import { writeDocReviewDecision } from '../src/context_room.mjs';
 
 async function until(check) { for (let n = 0; n < 150; n++) { if (check()) return; await delay(20); } throw new Error('Synthetic provider did not start'); }
 
+test('live previews require the existing exact-project owner and origin guards without starting an agent', async t => {
+  const f = await assistantFixture(); t.after(() => f.close());
+  const created = await f.post('/api/assistant/conversations', { source: { kind: 'document', path: 'docs/Original.md' } });
+  const body = { conversationId: created.body.id, clientId: randomUUID(), action: 'start' };
+  for (const route of ['/api/assistant/observation/controller', '/api/assistant/observation/frame']) {
+    assert.equal((await f.post(route, body, { 'x-context-room-owner-nonce': '' })).status, 403);
+    assert.equal((await f.post(route, body, { origin: 'https://untrusted.invalid' })).status, 403);
+    assert.equal((await f.post(route, body, { 'x-context-room-project': 'different-project' })).status, 409);
+  }
+  assert.equal((await f.post('/api/assistant/observation/controller', body)).status, 200);
+  const response = await fetch(f.url + '/api/assistant/conversations/' + created.body.id + '/observation');
+  const status = await response.json(); assert.equal(status.active, true); assert.equal(status.paused, true);
+  assert.equal(JSON.stringify(status).includes('image'), false); assert.equal(f.connections(), 0);
+});
+
 test('assistant HTTP creation requires owner, original project and trusted browser; no provider starts on reads', async t => {
   const f = await assistantFixture(); t.after(() => f.close());
   const request = { requestId: randomUUID(), source: { kind: 'document', path: 'docs/Original.md' } };

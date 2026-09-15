@@ -4,6 +4,7 @@ import { EventEmitter, once } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { createHash } from 'node:crypto';
 import { CodexStdio, createCodexProvider } from '../src/codex_provider.mjs';
+import { withSourceObservation } from '../src/assistant_observations.mjs';
 
 function fixture({ refuseRestriction = false, dottedName = false, maxResidentThreads = 64 } = {}) {
   const children = [], requests = [], replies = [];
@@ -45,6 +46,19 @@ function fixture({ refuseRestriction = false, dottedName = false, maxResidentThr
 }
 const turn = () => new Promise(resolve => setImmediate(resolve));
 const tool = { type: 'function', name: 'notebook_scene', description: 'Read the original synthetic scene', inputSchema: { type: 'object', additionalProperties: false, properties: {} } };
+
+test('authorized original preview images reach the existing scoped Codex tool response as image content', async t => {
+  const f = fixture(), provider = await f.provider(); t.after(() => provider.close());
+  const { threadId } = await provider.startThread({ tools: [tool] });
+  const imageUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK1kAAAAASUVORK5CYII=';
+  const active = await provider.startTurn({ threadId, text: 'Inspect the current preview', tool: async () => withSourceObservation({ accepted: false }, { state: 'live', imageUrl }) });
+  f.children.at(-1).send({ id: 'preview', method: 'item/tool/call', params: { threadId, turnId: active.turnId, callId: 'preview', tool: tool.name, arguments: {} } });
+  await turn();
+  const result = f.replies.find(reply => reply.id === 'preview').result;
+  assert.equal(result.success, true); assert.equal(result.contentItems.length, 2);
+  assert.deepEqual(result.contentItems[1], { type: 'inputImage', imageUrl });
+  assert.equal(result.contentItems[0].text.includes(imageUrl), false);
+});
 
 test('inactive threads leave bounded residency and resume the same original identity after more than 64 conversations', async t => {
   const f = fixture({ maxResidentThreads: 2 }), provider = await f.provider(); t.after(() => provider.close());

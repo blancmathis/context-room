@@ -428,6 +428,23 @@ final class InkView extends View {
     try{draw(canvas);}finally{snapshotRecording=previous;}
   }
 
+  static final class SourcePreview {
+    final Bitmap image;
+    final JSONObject frame;
+    SourcePreview(Bitmap image, JSONObject frame) { this.image = image; this.frame = frame; }
+  }
+  SourcePreview sourcePreview(JSONObject scene) {
+    if (!isShown() || getWidth() < 1 || getHeight() < 1) throw new IllegalStateException("Le carnet d’origine n’est pas visible.");
+    float factor = Math.min(1, Math.min(1024f / getWidth(), 1024f / getHeight()));
+    Bitmap bitmap = Bitmap.createBitmap(Math.max(1, Math.round(getWidth() * factor)), Math.max(1, Math.round(getHeight() * factor)), Bitmap.Config.ARGB_8888);
+    try {
+      Canvas canvas = new Canvas(bitmap); canvas.scale(factor, factor); drawSnapshot(canvas);
+      JSONArray selection = new JSONArray(); for (String id : selected) { if (selection.length() >= 64) break; selection.put(id); }
+      return new SourcePreview(bitmap, json("resourceId", scene.optString("resourceId"), "locationRevision", scene.opt("locationRevision"),
+        "revision", scene.opt("sceneRevision"), "viewport", viewportBounds(), "selection", selection));
+    } catch (RuntimeException error) { bitmap.recycle(); throw error; }
+  }
+
   void setAgentProgress(JSONObject progress) { agentProgress = progress; resolveAgentTip(); invalidate(); if (progress != null) postInvalidateDelayed(3100); }
   void resolveAgentTip() {
     agentTip = null;

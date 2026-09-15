@@ -47,7 +47,9 @@ preview builds and its complementary drawing/restart path passes in an
 isolated emulator. Exact native opening receipts, optional
 viewport following, presentation and the connected owner interface are
 implemented. The owner file-picker round trip is verified on the emulator;
-voice alongside the native pen is implemented with emulator checks. Observation, recoverable migration and
+voice alongside the native pen is implemented with emulator checks. Explicit
+original-source observation is implemented, including an unfinished native
+shape identified by the real agent from its image. Recoverable migration and
 release/upgrade packaging remain to be implemented. The complete
 connected-device and physical acceptance criteria remain open.
 

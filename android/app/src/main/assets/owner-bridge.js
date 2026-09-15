@@ -105,6 +105,7 @@
     get active() { return active; },
     openNotebook: item => rpc('notebook.open', item),
     conversationState: value => rpc('conversation.state', value),
+    observation: value => rpc('conversation.observation', value),
     audioController: value => rpc('audio.controller', value),
     async ensureMicrophone() { const result = await rpc('audio.permission', {}, null, 0); if (!result.granted) throw new Error('Microphone permission was not granted.'); },
     startRecording: value => rpc('audio.recording.start', value, null, 0),

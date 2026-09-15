@@ -833,10 +833,61 @@ discovery budget under parallel load. The exact test passes in isolation.
 The runner now schedules that CLI contract file exclusively, like the existing
 Shared performance probe, without widening the product budget or assertion.
 
+The subsequent complete run at `3251c1fddcab961a546a0f3040da8f5abc816541`
+passes **76/76 processes**. CI `34915027228` passes all Node versions, Firefox,
+Chromium mobile, WebKit and soak. Chromium desktop still finds a synthetic
+accessibility fixture inconsistent with its server: opening the fake review
+refreshes the real catalog and removes that client-only item. The test now
+returns its seeded catalog on that refresh; its role and focus assertions stay
+unchanged. Convergence verification `34915027261` passes.
+
+## Explicit original-source observation
+
+The existing document read and notebook scene tools now include an explicitly
+shared draft excerpt or viewport image. A source-only browser capture and the
+native owner bridge feed bounded, expiring memory on the Mac. The provider
+sends authorized images as actual image content in the existing tool response,
+so earlier conversations keep their original task and tool identities.
+
+Core and HTTP checks pass **28 tests**, covering explicit activation, original
+scope, current document base, moved notebooks, image limits, ordered frames,
+takeover, revocation, expiry and image transport. The new browser scenarios
+pass **12/12** across Chromium desktop/mobile, Firefox and WebKit. An early
+fixture incorrectly expected an active ink stroke to be absent from the scene;
+ink prefixes are intentionally saved during drawing. The corrected case uses
+an unfinished shape and retains the assertion that observation does not commit it.
+
+`test/android/verify-observation.py --run --serial <isolated-emulator>
+--codex-state <private-test-state> --output <new-private-directory>` verifies
+the actual owner UI, native shape, pinned transport and real Codex. The first
+run passes in **44.41 s**: the answer is **Ellipse**, with two actual image tool
+receipts while the canonical scene has zero objects. The original accepted
+file stays unchanged; a foreign project is refused; backgrounding stops
+sharing without automatically resuming it. The first observed turn takes
+**23,614 ms**. This verifies image understanding, not low-latency turn initiation
+or physical BOOX behavior. Screenshot inspection then moved the sharing control
+into the sticky header so it stays accessible while scrolling.
+The repeated native check after that layout change also passes, with three
+real image receipts and a **26,310 ms** turn. Both updated captures were inspected;
+the sharing control is visible and the resumed activity reports sharing off.
+
+The combined conversation, Voice and preview matrix then passes **75/76**
+scenarios. Its mobile failure shows that an inactive sharing button enlarged
+compact Voice over the document's Dictate action. Preview activation now lives
+in the expanded conversation; an active preview retains its stop control.
+All **20 targeted scenarios** pass across the four browsers after that fix,
+including the existing Voice switch, review accessibility, takeover and the
+sharing button's viewport visibility during scrolling. Mobile and Firefox
+captures were inspected. Doctor, package privacy, dry-run and the secret scan
+pass; the Android artifact has a verified v2 signature and eight exact shared
+assets. Complete regression and hosted CI are required for this new checkpoint.
+
+An already consumed preview may remain in Codex history. Disabling sharing
+prevents new observations and cannot erase that earlier context.
+
 ## Open product gates
 
-Document observation,
-data migration and final removal of the
+Data migration and final removal of the
 external compatibility dependency remain implementation work. Native dictation,
 original-recording recovery and recognition have the emulator checks above.
 Real native agent

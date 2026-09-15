@@ -1,5 +1,7 @@
 import { readDraft, writeDraft, browserRecordings, pendingAudioReleases, saveAudioRelease, conversationScopeAliases } from './assistant-drafts.mjs';
 import { captureMicrophone, recoverBrowserRecording, acknowledgeRecording } from './assistant-audio.mjs';
+import { LiveSourcePreview } from './assistant-observation.mjs';
+export { documentDraftPreview } from './assistant-observation.mjs';
 
 const element = (tag, text = '', className = '') => { const node = document.createElement(tag); node.textContent = text; node.className = className; return node; };
 const button = (text, action) => { const node = element('button', text); node.type = 'button'; node.addEventListener('click', action); return node; };
@@ -24,10 +26,10 @@ export function openConversation(options) {
   opening = result.catch(async () => { if (primedAudioContext?.state !== 'closed') await primedAudioContext?.close(); });
   return result;
 }
-async function buildConversation({ api, scopeKey, source, parent = document.body, mode = 'text', fresh = false, onState = () => {}, dictationTarget = null, primedAudioContext = null }) {
+async function buildConversation({ api, scopeKey, source, parent = document.body, mode = 'text', fresh = false, onState = () => {}, dictationTarget = null, captureSource = null, primedAudioContext = null }) {
   if (!fresh && active && active.scopeKey === scopeKey && active.conversation.source.kind === source.kind && active.conversation.source.path === source.path
     && JSON.stringify(active.conversation.source.selection || []) === JSON.stringify(source.selection || [])) {
-    parent.append(active.panel); active.onState = onState; active.notifyState(); active.panel.hidden = false; active.panel.classList.remove('assistant-minimized'); active.present(mode, dictationTarget, primedAudioContext); return active;
+    parent.append(active.panel); active.onState = onState; active.captureSource = captureSource; active.notifyState(); active.panel.hidden = false; active.panel.classList.remove('assistant-minimized'); active.present(mode, dictationTarget, primedAudioContext); return active;
   }
   if (!document.getElementById('context-room-assistant-style')) { const link = element('link'); link.id = 'context-room-assistant-style'; link.rel = 'stylesheet'; link.href = '/assets/ui/assistant.css'; document.head.append(link); }
   const post = (route, body) => api('/api/assistant' + route, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -41,8 +43,13 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   heading.append(title, expand, minimize); const original = element('p', conversation.source.path, 'assistant-origin');
   const boundary = element('p', 'Linked to this original source. Proposed changes require human review.', 'assistant-boundary');
   const history = element('select'); history.setAttribute('aria-label', 'Saved conversations for this original source');
-  const historyRow = element('div', '', 'assistant-controls assistant-history'), newConversation = button('New conversation', () => run(openConversation({ api, scopeKey, source, parent, mode: 'text', fresh: true, onState: self.onState }))); historyRow.append(history, newConversation);
+  const historyRow = element('div', '', 'assistant-controls assistant-history'), newConversation = button('New conversation', () => run(openConversation({ api, scopeKey, source, parent, mode: 'text', fresh: true, onState: self.onState, captureSource: self.captureSource }))); historyRow.append(history, newConversation);
   const audioStatus = element('p', 'Microphone off · audio stopped.', 'assistant-audio-state'); audioStatus.setAttribute('role', 'status');
+  const observationRow = element('div', '', 'assistant-observation');
+  const observationStatus = element('p', 'Live preview off.'); observationStatus.setAttribute('role', 'status');
+  const observationButton = button('Share live source', () => run(preview.stream ? preview.stop() : preview.start(Boolean(preview.remote?.active))));
+  observationButton.title = 'Share only this source, including unfinished work. Codex receives its current preview when it reads the source.';
+  observationRow.append(observationButton, observationStatus); heading.append(observationRow);
   const messages = element('div', '', 'assistant-messages'); messages.tabIndex = 0; messages.setAttribute('role', 'log'); messages.setAttribute('aria-label', 'Conversation messages');
   const form = element('form', '', 'assistant-composer'), input = element('textarea'); input.rows = 3; input.maxLength = 32000; input.setAttribute('aria-label', 'Message to the original document agent');
   const status = element('p', '', 'assistant-status'); status.setAttribute('role', 'status');
@@ -110,13 +117,15 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     await acknowledgeRecording({ scopeKey, conversationId: current.id }, discarded); await refreshNativeRecordings();
     dictate.textContent = 'Dictate'; inform('Recorded dictation discarded. Your text draft is unchanged.'); render();
   }
-  const self = { panel, scopeKey, conversation: current, onState, dictationTarget, focus: () => input.focus(), present(mode, target = null, primedContext = null) {
+  const self = { panel, scopeKey, conversation: current, onState, dictationTarget, captureSource, focus: () => input.focus(), present(mode, target = null, primedContext = null) {
     if (mode === 'dictate' && voice) { run(endVoice().then(() => self.present(mode, target, primedContext))); return; }
     if (mode === 'voice' && !voice && (recording || retainedRecording || audioBusy || input.value.trim() || sendRequest || activeStatuses.has(current.operation?.status))) {
       if (primedContext && primedContext.state !== 'closed') run(primedContext.close());
       throw new Error('Finish or clear the original dictation or draft before starting Voice. It has been retained.');
     }
     self.dictationTarget = target;
+    if (mode === 'dictate') run(preview.stop());
+    observationRow.hidden = !self.captureSource || mode === 'dictate' || mode === 'voice' && !preview.stream;
     const direct = mode === 'dictate' || mode === 'voice';
     panel.classList.toggle('assistant-direct', direct); panel.classList.toggle('assistant-direct-dictation', mode === 'dictate');
     panel.classList.remove('assistant-minimized'); panel.dataset.mode = mode;
@@ -133,8 +142,21 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     run(self.onState({ conversationId: current.id, scopeKey, source: current.source, progress: current.progress, closed,
       busy: activeStatuses.has(current.operation?.status), audioActive: Boolean(recording) || audioBusy || audioReading || Boolean(voice), hasDraft: Boolean(input.value.trim() || retainedRecording), ...extra }));
   }, async dispose() {
-    if (closed) return; await endVoice(); await saveDraft(); await releaseAudio(); closed = true; self.notifyState(); clearInterval(timer); panel.remove(); if (active === self) active = null;
+    if (closed) return; await preview.dispose().catch(fail); await endVoice(); await saveDraft(); await releaseAudio(); closed = true; self.notifyState(); clearInterval(timer); panel.remove(); if (active === self) active = null;
   } }; active = self;
+  const preview = new LiveSourcePreview({ api, identity: () => ({ conversationId: current.id, clientId }),
+    capture: () => self.captureSource?.(current.source), visible: () => !closed && panel.isConnected && !panel.hidden && document.visibilityState === 'visible', onError: fail,
+    onState: value => {
+      observationRow.hidden = !self.captureSource || panel.dataset.mode === 'dictate' || panel.dataset.mode === 'voice' && !value.active;
+      observationButton.textContent = value.active ? 'Stop sharing source' : value.elsewhere ? 'Take over source sharing' : 'Share live source';
+      observationButton.disabled = value.busy && !value.active;
+      observationButton.setAttribute('aria-pressed', String(value.active));
+      panel.dataset.observation = value.active ? value.paused ? 'paused' : 'live' : value.elsewhere ? 'elsewhere' : 'off';
+      observationStatus.textContent = value.active ? value.paused ? 'Sharing paused · return to the original source.'
+        : value.lastObservedAt ? 'Sharing this source · last read by Codex at ' + new Date(value.lastObservedAt).toLocaleTimeString() + '.'
+          : 'Sharing this source · waiting for Codex to read it.' : value.elsewhere ? 'Another surface is sharing this source.' : 'Live preview off.';
+    } });
+  run(preview.refresh());
   function render() {
     self.conversation = current; const busy = activeStatuses.has(current.operation?.status), uncertain = current.operation?.status === 'uncertain';
     panel.dataset.ready = String(!initializing); panel.setAttribute('aria-busy', String(initializing));
@@ -198,7 +220,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   history.addEventListener('change', () => run((async () => {
     if (recording || audioBusy || audioReading || changingConversation || voice || voiceClosing) { history.value = current.id; return; }
     changingConversation = true; const id = history.value; render();
-    try { await saveDraft(); await releaseAudio(); const next = await api('/api/assistant/conversations/' + id); current = next; rendered = ''; await restoreDraft(); showModels(); }
+    try { await preview.stop(); await saveDraft(); await releaseAudio(); const next = await api('/api/assistant/conversations/' + id); current = next; rendered = ''; await restoreDraft(); await preview.refresh(); showModels(); }
     finally { changingConversation = false; render(); }
   })()));
   form.addEventListener('submit', event => { event.preventDefault(); if (!voice) run(submitMessage()); });

@@ -4419,7 +4419,20 @@ async function openOriginalDocumentConversation(mode = "text") {
       currentEditor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertFromPaste", data: insertion }));
     } };
   }
-  try { const assistant = await loadContextRoomAssistantUi(); return await assistant.openConversation({ ...captured, source, mode, dictationTarget, voiceActivation }); }
+  try {
+    const assistant = await loadContextRoomAssistantUi();
+    const captureSource = original => {
+      if (state.selected !== original.path || captureNotebookApi().scopeKey !== captured.scopeKey || state.selectedStartupContext || state.fileLoadError
+        || state.savedHash == null || activeFileConflict() || activeExternalChange() && activeExternalChange().source !== "review"
+        || state.openingFilePath === state.selected && state.fileContentReadyPath !== state.selected) return null;
+      const currentEditor = el("docEditor"), textEditor = currentEditor?.tagName === "TEXTAREA" ? currentEditor : el("editor");
+      const text = textEditor?.value ?? state.saved;
+      if (typeof text !== "string") return null;
+      const selection = textEditor && textEditor.selectionEnd > textEditor.selectionStart ? { start: textEditor.selectionStart, end: textEditor.selectionEnd } : null;
+      return assistant.documentDraftPreview(text, state.savedHash, selection);
+    };
+    return await assistant.openConversation({ ...captured, source, mode, dictationTarget, voiceActivation, captureSource });
+  }
   catch (error) { if (voiceActivation?.context.state !== 'closed') await voiceActivation?.context.close(); throw error; }
 }
 
@@ -4438,6 +4451,8 @@ window.openContextRoomNativeConversation = async target => {
   window.setContextRoomNativeConversationView(false); parent.classList.add("assistant-native-host");
   const assistant = await loadContextRoomAssistantUi();
   const conversation = await assistant.openConversation({ ...captured, source, parent, mode: ['dictate', 'voice'].includes(target.mode) ? target.mode : 'text',
+    captureSource: original => window.ContextRoomNativeOwner.active && document.body.classList.contains("context-room-native-conversation")
+      ? window.ContextRoomNativeOwner.observation({ projectId: target.projectId, source: original }) : undefined,
     onState: state => window.ContextRoomNativeOwner.active && document.body.classList.contains("context-room-native-conversation")
       ? window.ContextRoomNativeOwner.conversationState({ ...state, projectId: target.projectId }) : undefined });
   window.setContextRoomNativeConversationView(true); conversation.notifyState(); return true;
