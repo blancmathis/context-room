@@ -464,10 +464,12 @@ orphaned or contradictory evidence blocks the projection, without dropping it.
 The original grouped history does not contain every intermediate frame’s geometry,
 and the descriptor omits the future drawing plan. These absent bytes are **not
 reconstructed** from an ID, an image or a similar layout. A retained expanded
-`board.draw` request can be matched to the job digest with Python number semantics,
+`board.draw` request, or its bounded absolute M/L/Q/C/Z path form, can be matched
+to the job digest with Python number semantics,
 original actor, duration and retained lease. Its actually reached objects must
 also agree with the request prefix. A completed status with a mismatching or
-incomplete retained request is a conflict. Compact layouts lacking their original
+incomplete retained request is a conflict. Compact paths are decoded only to compare the original digest; their undrawn tail
+is never applied. Font-dependent diagram/table layouts lacking their original
 normalized operations cannot be hashed from substitute font metrics; they remain
 an explicit missing-evidence case, not authorization to re-execute the request.
 A consistent job without the original request still permits recovery of the

@@ -1,5 +1,6 @@
 """Wholly synthetic job/frame transactions, without the legacy executor."""
 import copy
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -191,6 +192,38 @@ class PenRecoveryContracts(unittest.TestCase):
         f['mac']['history'][0]['changes'] = raw([{'id': 'ink', 'before': None, 'after': data['objects'][0], 'afterRevision': 3}])
         f['mac']['objects'][0]['data'] = raw(data['objects'][0])
         self.assertFalse(reconcile(f)['blocked'])
+
+    def test_compact_paths_match_the_normalized_digest_without_drawing_the_tail(self):
+        for command in ['M0 0 L25 0 L100 0', 'M0 0 Q12.5 0 25 0 C50 0 75 0 100 0']:
+            f, _, data, _ = pen_fixture()
+            oid = 'curve-' + hashlib.sha256(b'board\0gesture').hexdigest()[:32] + '-0'
+            points = [[0.0, 0.0, 1], [25.0, 0.0, 1], [100.0, 0.0, 1]]
+            operations = [{'id': oid, 'expectedRevision': 0, 'value': {'type': 'ink', 'width': 3, 'points': points}}]
+            prefix = dict(data['objects'][0], id=oid, width=3, points=points[:2])
+            data.update(durationMs=1800, objects=[prefix])
+            f['mac']['pen_jobs'][0].update(data=raw(data), digest=sha(['board',operations,1800,'tablet','original-turn']))
+            f['mac']['objects'][0].update(id=oid, data=raw(prefix))
+            f['mac']['history'][0]['changes'] = raw([{'id':oid,'before':None,'after':prefix,'afterRevision':3}])
+            queue(f, 'board.draw', {'board':'board','operationId':'gesture','paths':[command]})
+            result = reconcile(f)
+            self.assertFalse(result['blocked'], result['operations'])
+            self.assertEqual(json.loads(result['objects'][0]['data'])['points'], points[:2])
+            self.assertFalse(result['penRecovery']['framesReplayed'])
+            f['queue'] = []
+            queue(f,'board.draw',{'board':'board','operationId':'gesture','paths':['M0 0 L26 0 L100 0']})
+            result = reconcile(f); self.assertTrue(result['blocked'])
+            self.assertEqual(result['operations'][0]['reason'], 'pen-request-digest-conflict')
+
+    def test_compact_path_bounds_and_language_are_not_loosened_for_recovery(self):
+        from lisiere_pen_recovery import expand_pen_paths
+        for paths in [['m0 0 l10 0'], ['M0 0 10 0'], ['M0 0 L1e100 0'], ['M0 0 Z'],
+                      ['M0 0 L1 0']*65, ['M0 0 '+ 'L1 0 '*2050]]:
+            with self.subTest(paths=str(paths)[:30]), self.assertRaises(ValueError):
+                expand_pen_paths({'board':'board','operationId':'gesture','paths':paths})
+        decoded = expand_pen_paths({'board':'board','operationId':'gesture','paths':['M0 0 L10 0 Z M20 0 L30 0']})
+        self.assertEqual(len(decoded['operations']),2)
+        self.assertEqual(decoded['operations'][0]['value']['points'], [[0.0,0.0,1],[10.0,0.0,1],[0.0,0.0,1]])
+        self.assertEqual(decoded['operations'][1]['value']['points'], [[20.0,0.0,1],[30.0,0.0,1]])
 
     def test_missing_normalized_request_and_private_frame_never_fake_delivery(self):
         f, _, _, _ = pen_fixture()

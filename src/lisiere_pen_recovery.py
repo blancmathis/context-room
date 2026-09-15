@@ -2,7 +2,7 @@
 
 A frame transaction wrote objects, the grouped history and a board event together.
 The job descriptor was saved afterwards. It is NOT a per-frame request receipt,
-nor an instruction to finish a stopped drawing. No geometry is generated here.
+nor an instruction to finish a stopped drawing. No uncommitted geometry is imported.
 """
 import hashlib
 import json
@@ -265,14 +265,85 @@ def request_prefix_agrees(operations, history, completed):
     require(not completed or len(saved) == len(operations), 'pen-completed-request-incomplete')
 
 
+def expand_pen_paths(args):
+    """Decode the original compact absolute path request for digest comparison.
+
+    This is bounded format compatibility, not pen execution. Arrays decoded from
+    an original request never replace the independently proved committed prefix.
+    Layout/table requests still need their original font-dependent normalized plan.
+    """
+    if 'paths' not in args:
+        return args
+    require(set(args) <= {'board', 'operationId', 'paths', 'width', 'durationMs'}, 'pen-original-expanded-request-required')
+    sources, width = args['paths'], args.get('width', 3)
+    require(type(sources) is list and 1 <= len(sources) <= 64
+            and all(type(x) is str and x.strip() for x in sources)
+            and sum(map(len, sources)) <= 20000, 'pen-path-source-bounds')
+    require(type(width) in (int, float) and math.isfinite(width) and .2 <= width <= 40, 'pen-request-width')
+    require(type(args.get('board')) is str and args['board'] and type(args.get('operationId')) is str
+            and 0 < len(args['operationId']) <= 100, 'pen-request-identity')
+    pattern = re.compile(r'[MLQCZ]|[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?')
+    strokes, total = [], 0
+    def finish(points):
+        nonlocal total
+        require(len(points) >= 2 and any(p[:2] != points[0][:2] for p in points[1:]), 'pen-path-zero-stroke')
+        total += len(points)
+        require(len(strokes) < 64 and total <= 8192, 'pen-path-total-points')
+        strokes.append(points)
+    def flat_distance(p, a, b):
+        dx, dy = b[0]-a[0], b[1]-a[1]; length = dx*dx+dy*dy
+        fraction = max(0, min(1, ((p[0]-a[0])*dx+(p[1]-a[1])*dy)/length)) if length else 0
+        return math.hypot(p[0]-a[0]-fraction*dx, p[1]-a[1]-fraction*dy)
+    def flatten(controls, output, depth=0):
+        require(len(output) < 2048, 'pen-path-stroke-points')
+        if max(flat_distance(p, controls[0], controls[-1]) for p in controls[1:-1]) <= .35:
+            output.append([*controls[-1], 1]); return
+        require(depth < 16, 'pen-path-curve-depth')
+        rows = [controls]
+        while len(rows[-1]) > 1:
+            row = rows[-1]
+            rows.append([((a[0]+b[0])/2, (a[1]+b[1])/2) for a,b in zip(row,row[1:])])
+        flatten([row[0] for row in rows], output, depth+1)
+        flatten([row[-1] for row in reversed(rows)], output, depth+1)
+    for source in sources:
+        tokens, previous = [], 0
+        for match in pattern.finditer(source):
+            require(not source[previous:match.start()].strip(' \t\r\n,'), 'pen-path-token')
+            tokens.append(match.group()); previous = match.end()
+        require(tokens and not source[previous:].strip(' \t\r\n,'), 'pen-path-token')
+        offset, points = 0, []
+        while offset < len(tokens):
+            command = tokens[offset]; offset += 1
+            size = {'M':2, 'L':2, 'Q':4, 'C':6, 'Z':0}.get(command)
+            require(size is not None and offset+size <= len(tokens), 'pen-path-command')
+            coordinates = [float(n) for n in tokens[offset:offset+size]]; offset += size
+            require(all(math.isfinite(n) and abs(n) <= 1e6 for n in coordinates), 'pen-path-coordinate')
+            pairs = list(zip(coordinates[::2], coordinates[1::2]))
+            if command == 'M':
+                if points: finish(points)
+                points = [[*pairs[0], 1]]
+            else:
+                require(points, 'pen-path-missing-move')
+                if command == 'L': points.append([*pairs[0], 1])
+                elif command in ('Q', 'C'): flatten([tuple(points[-1][:2]), *pairs], points)
+                elif command == 'Z' and points[-1][:2] != points[0][:2]: points.append(points[0][:])
+            require(len(points) <= 2048, 'pen-path-stroke-points')
+        finish(points)
+    prefix = hashlib.sha256((args['board']+'\0'+args['operationId']).encode()).hexdigest()[:32]
+    return {'board':args['board'], 'operationId':args['operationId'], 'durationMs':args.get('durationMs',1800),
+            'operations':[{'id':f'curve-{prefix}-{n}', 'expectedRevision':0,
+                           'value':{'type':'ink','width':width,'points':points}} for n,points in enumerate(strokes)]}
+
+
 def match_pen_request(args, actor, job, report, history):
-    """Only a captured expanded request can be compared with the job digest.
+    """Compare an expanded request or its bounded absolute-path form with the job digest.
 
     The legacy descriptor omits the future plan. Layouts depended on the original
     font metrics. Neither IDs nor a similar final drawing reconstruct that input.
     A missing expanded input is missing evidence, not permission to run an agent.
     """
     require(job is not None and report is not None and not report['blocksSelection'], 'pen-job-evidence-missing')
+    args = expand_pen_paths(args)
     require(set(args) <= {'board', 'operationId', 'operations', 'durationMs'} and type(args.get('operations')) is list,
             'pen-original-expanded-request-required')
     data = record(job['data'])
