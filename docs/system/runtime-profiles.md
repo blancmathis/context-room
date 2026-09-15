@@ -68,3 +68,11 @@ installation or verify an actual microphone, speaker or recognition result.
 ## Verification
 
 `test/local_runtime.test.mjs` checks early rejection and local capabilities. `test/server_security.test.mjs` checks loopback and owner-interface boundaries. These tests do not establish physical tablet behavior.
+
+## Enrolled migration writer
+
+An explicit legacy cutover enrolls the chosen project in a revisioned writer
+authority. Transition and rollback-pause reject document, notebook, proposal and
+owner HTTP mutations; readback and safety actions such as stopping an agent or
+revoking a device remain available. `doctor` reports this state read-only and
+never restarts either runtime. See [cutover and safe rollback](lisiere-migration.md#explicit-single-writer-cutover).

@@ -456,3 +456,54 @@ None of these operations transcribes, submits, sends, invokes Codex or changes
 accepted documents. Closing/switching a conversation disposes the old audio.
 This new browser/Android owner-WebView path requires execution validation; the
 portable CLI, storage and HTTP contracts have independent synthetic tests.
+
+## Explicit single-writer cutover
+
+`migrate --cutover-lisiere` is a separate local-owner action, never part of an
+import, doctor, startup, or agent call. First export and reconcile the original
+Mac workspace. Preview is read-only. Apply requires the exact preview revision:
+
+```bash
+context-room migrate --root /path/to/project --cutover-lisiere /path/to/legacy-workspace --mac-snapshot /path/to/private-mac-snapshot --legacy-plist /path/to/original-companion.plist
+context-room migrate --root /path/to/project --cutover-lisiere /path/to/legacy-workspace --mac-snapshot /path/to/private-mac-snapshot --legacy-plist /path/to/original-companion.plist --apply --revision REVISION
+```
+
+The macOS adapter recognizes only this account's original
+`fr.lisiere.companion` LaunchAgent and default workspace. It refuses custom
+workspace overrides, unknown process state and open legacy files. Apply pauses
+Context Room mutations, durably disables and unloads that one legacy service,
+checks for a manual companion, and checks the completed snapshot against the
+closed original. It never stops Codex, Desktop, Tailscale or another service.
+
+The complete original directory is retained under a new private sibling name,
+including files that were excluded from the portable snapshot. No credentials
+are copied into a project. A no-replace directory move publishes a fence at the
+old location: `workspace.sqlite` is a directory, so a restarted old client cannot
+open a writable database there. Context Room enables its enrolled writer only
+once this fence is checked. Deleting or replacing it blocks later writes. This
+is an operational handover for the recognized service, not protection against a
+local owner deliberately modifying the retirement directory or starting an
+unmanaged writer elsewhere.
+
+Interruption at the recorded pause, retirement and fence-publication phases
+resumes from the journal. A different occupant, missing control record or
+partially prepared unrecognized fence fails closed for explicit recovery. New
+legacy bytes saved during shutdown prevent retirement; export those bytes to a
+new snapshot and preview the interrupted transition again. Do not overwrite the
+old snapshot. Existing projects, accepted versions, proposals and Hub settings
+are not reset. Other original workspaces need their own explicit handover.
+
+```bash
+context-room migrate --root /path/to/project --rollback-cutover
+context-room migrate --root /path/to/project --rollback-cutover --apply --revision REVISION
+context-room migrate --root /path/to/project --resume-cutover
+context-room migrate --root /path/to/project --resume-cutover --apply --revision REVISION
+```
+
+Rollback here means **pause all enrolled writes and retain recent work in place**.
+It does not restore an old database over new gestures, undo human acceptance,
+restart the old queue, or reactivate the old product. Resuming Context Room is a
+new explicit revision-bound action. A functional downgrade to the old Lisière
+application is not implemented. The production `launchctl`, open-file check and
+Darwin no-replace rename require local macOS verification; Linux synthetic
+contracts exercise the coordinator and actual file/database protection only.

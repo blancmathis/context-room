@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { assertProjectWriter, inspectProjectWriter } from './writer_authority.mjs';
 import { inspectLocalAudio } from './local_audio_diagnostics.mjs';
 import { renderAppShell } from "./ui/app.mjs";
 import { handleNotebookHttp, isNotebookMutation } from "./notebook_http.mjs";
@@ -3222,6 +3223,7 @@ export function saveHumanReviewedFile(root, relPath, content, { expectedContentH
 }
 
 function writeMemoryFileWithExpectedHash(root, relPath, content, expectedContentHash, { expectedRootIdentity = null } = {}) {
+  assertProjectWriter(root);
   assertManagedProjectRootIdentity(root, expectedRootIdentity);
   if (typeof content !== "string") throw new Error("Content must be a string");
   if (Buffer.byteLength(content, "utf8") > MAX_FILE_BYTES) throw new Error("Content is too large for the local context room");
@@ -7004,6 +7006,7 @@ function activeDocReviewEvidenceLock(root = process.cwd()) {
 }
 
 function withDocReviewEvidenceLock(root, operation, { expectedRootIdentity = null } = {}) {
+  assertProjectWriter(root);
   assertManagedProjectRootIdentity(root, expectedRootIdentity);
   const lockPath = docReviewEvidenceLockPath(root);
   const active = activeDocReviewEvidenceLock(root);
@@ -11126,8 +11129,10 @@ function sortHealthIssues(issues = []) {
 }
 
 export function buildContextRoomDoctorReport(root = process.cwd(), options = {}) {
-  const readOnly = options.readOnly === true;
-  const configurationIssues = [];
+  const writerAuthority = inspectProjectWriter(root);
+  const readOnly = options.readOnly === true || !writerAuthority.writable;
+  const configurationIssues = writerAuthority.writable ? [] : [{ type: "migration_writer_paused", severity: "high",
+    message: writerAuthority.error || "Migration has paused writing. Read the cutover journal; rollback does not restart a legacy queue." }];
   let fileTransactionRecovery = { recovered: [], active: [], unresolved: [] };
   try {
     if (!readOnly) fileTransactionRecovery = recoverInterruptedFileMutationTransactions(root);
@@ -11202,7 +11207,7 @@ export function buildContextRoomDoctorReport(root = process.cwd(), options = {})
       startupContext: settings.startupContext,
       startupHooks: settings.startupHooks,
     },
-    runtimeDependencies: { audio: inspectLocalAudio() },
+    runtimeDependencies: { audio: inspectLocalAudio(), writerAuthority },
     docqa: docqa.summary,
     graph: graph.summary,
     issues,
@@ -20355,6 +20360,10 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   assertManagedProjectRootIdentity(root, expectedRootIdentity);
   const requestRuntimeProfile = assertRuntimeProfile(runtimeProfile);
   const url = new URL(req.url, "http://context-room.invalid");
+  // Security revocation and stopping an already-running operation remain available.
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)
+    && !/^\/api\/assistant\/conversations\/[^/]+\/stop$/.test(url.pathname)
+    && !['/api/assistant/audio/cancel', '/api/devices/revoke', '/api/devices/cancel-pairing'].includes(url.pathname)) assertProjectWriter(root);
   if (url.pathname.startsWith('/api/assistant/')) {
     if (!getAssistantRuntime) throw sharedRequestError('Conversations are unavailable in this runtime.', 409, 'assistant_unavailable');
     if (req.method === 'POST') beforeManagedControlMutation?.();

@@ -1,3 +1,4 @@
+import { assertProjectWriter } from './writer_authority.mjs';
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -104,9 +105,11 @@ function context(projectRoot, { create = false } = {}) {
 }
 
 function locked(projectRoot, operation, recoveryId = null) {
+  assertProjectWriter(projectRoot);
   const ctx = context(projectRoot, { create: true });
   return withFilesystemLock(path.join(ctx.store, "mutation.lock"), () => {
     if (identity(fs.statSync(ctx.root)) !== ctx.rootIdentity) fail("local_proposal_conflict", "The project directory changed.");
+    assertProjectWriter(ctx.root);
     safePath(ctx.root, STORE);
     const journals = safePath(ctx.root, `${STORE}/journal`);
     for (const name of fs.existsSync(journals) ? fs.readdirSync(journals) : []) {
