@@ -266,3 +266,24 @@ restriction, exact project/folder/nonce enforcement, event cursors and revoked
 delayed responses against real HTTP/TLS handlers.
 Exact observations and the remaining
 Android/physical-device gates are recorded in `docs/lifecycle/changes/active/android-convergence/verification.md` in the source repository.
+
+### Retained recording owner verification
+
+After building both preview APKs from the current checkout, the isolated
+emulator-only verifier has an additional mode:
+
+```bash
+python3 test/android/verify-owner.py --serial emulator-SERIAL --output "$HOME/private-evidence/recording-run" --recording
+```
+
+Use a new output directory under the user home, outside the repository, because
+the synthetic Shared cache must remain inside that home. The AVD name must begin
+`ContextRoom_`; physical and personal devices remain refused. This mode prepares
+an unlinked synthetic PCM and exercises document → conversation → explicit link
+preview → attach → load without autoplay → system-picker export. The host then
+checks the original PCM hash, original database and document, exact association,
+and absence of any agent task. It does not exercise physical audibility,
+microphone quality or real speech recognition. `OwnerRecordingTest.java` requires
+a newly built instrumentation APK; an older successful preview build does not
+validate that test or the new Mac-served interface. No execution result is claimed
+until the instrumentation and host checks complete.

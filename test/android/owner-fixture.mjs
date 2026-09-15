@@ -10,9 +10,12 @@ import { addNotebookSharedFixture } from '../fixtures/notebook_shared.mjs';
 import { createCodexProvider } from '../../src/codex_provider.mjs';
 import { migrateLisiereConversation, migrateLisiereDraft } from '../../src/context_room.mjs';
 import { legacyConversationSnapshot } from '../fixtures/lisiere-conversations.mjs';
+import { recordingFixture } from '../fixtures/lisiere-recording.mjs';
+import { notebookHash } from '../../src/notebook_io.mjs';
 import { tabletDraftSnapshot } from '../fixtures/lisiere-tablet-drafts.mjs';
 
 const [directory] = process.argv.slice(2);
+if (process.env.CONTEXT_ROOM_TEST_RECORDING === '1' && ['CONTEXT_ROOM_TEST_REAL_AGENT', 'CONTEXT_ROOM_TEST_LEGACY_HISTORY', 'CONTEXT_ROOM_TEST_TABLET_DRAFT'].some(key => process.env[key] === '1')) throw new Error('Recording-only verification must not mix other fixture modes.');
 if (!directory || !path.isAbsolute(directory) || fs.existsSync(directory)) throw new Error('Choose a new private fixture directory.');
 fs.mkdirSync(directory, { mode: 0o700 });
 const base = fs.realpathSync(directory), root = path.join(base, 'project');
@@ -40,6 +43,13 @@ if (process.env.CONTEXT_ROOM_TEST_TABLET_DRAFT === '1') {
   tabletDraft = { proposalId: imported.proposalId, path: options.path, content: source.content,
     editRoot: imported.editRoot, recovery: imported.recovery, source: source.source };
 }
+let recording = null;
+if (process.env.CONTEXT_ROOM_TEST_RECORDING === '1') {
+  const original = await recordingFixture(base);
+  recording = { snapshot: original.snapshot, name: original.name, sha256: notebookHash(original.pcm), bytes: original.pcm.length,
+    source: original.source, sourceHash: notebookHash(fs.readFileSync(path.join(original.source, 'workspace.sqlite'))),
+    documentHash: notebookHash(fs.readFileSync(path.join(root, 'docs/Guide.md'))) };
+}
 const computer = path.join(base, 'computer'); fs.mkdirSync(computer);
 fs.writeFileSync(path.join(computer, 'Idea.md'), '# Synthetic unassigned idea\n');
 const globalPreferencesPath = path.join(base, 'preferences.json');
@@ -55,7 +65,10 @@ const sharedReceipt = submitNotebookShared(root, { protocolVersion: 1, scope: 's
   operationId: 'shared-submission', locationRevision: sharedNotebook.locator.revision, expectedRevision: 1 }, { actor, canWrite });
 const service = createContextRoomDeviceService({ root, stateRoot: path.join(base, 'devices') });
 const runtime = createMemoryServer({ root, deviceService: service, registerInHub: true, globalPreferencesPath,
-  assistantOptions: { root: path.join(base, 'private-assistant'), ...(process.env.CONTEXT_ROOM_TEST_WHISPER_MODEL ? { modelPath: process.env.CONTEXT_ROOM_TEST_WHISPER_MODEL } : {}),
+  assistantOptions: { root: path.join(base, 'private-assistant'), ...(recording ? { providerFactory: () => {
+    fs.writeFileSync(path.join(base, 'unexpected-provider-start'), 'A recording-only test attempted to start an agent');
+    throw new Error('Recording-only fixture cannot start an agent');
+  } } : {}), ...(process.env.CONTEXT_ROOM_TEST_WHISPER_MODEL ? { modelPath: process.env.CONTEXT_ROOM_TEST_WHISPER_MODEL } : {}),
     ...(process.env.CONTEXT_ROOM_TEST_REAL_AGENT === '1' ? { providerFactory: async options => {
       const provider = await createCodexProvider({ ...options, ...(process.env.CONTEXT_ROOM_TEST_CODEX_STATE ? { stateRoot: process.env.CONTEXT_ROOM_TEST_CODEX_STATE } : {}) });
       if (process.env.CONTEXT_ROOM_TEST_OBSERVATION_TRACE === '1') {
@@ -83,10 +96,10 @@ const sharedReview = await reviewResponse.json();
 const ticket = { ...service.describe(), ...service.createOwnerPairing({ label: 'Synthetic owner tablet' }),
   url: `https://10.0.2.2:${service.server.address().port}`, testProjectId: runtime.projectId,
   testSharedPath: new URL(sharedReview.url).pathname, testSharedHead: sharedReceipt.proposalRevision,
-  ...(legacyHistory ? { testLegacyHistory: legacyHistory } : {}), ...(tabletDraft ? { testTabletDraft: tabletDraft } : {}) };
+  ...(legacyHistory ? { testLegacyHistory: legacyHistory } : {}), ...(tabletDraft ? { testTabletDraft: tabletDraft } : {}), ...(recording ? { testRecording: recording } : {}) };
 fs.writeFileSync(path.join(base, 'ticket.json'), JSON.stringify(ticket), { mode: 0o600 });
 fs.writeFileSync(path.join(base, 'fixture.json'), JSON.stringify({ projectId: runtime.projectId, sourceRoot: root, serverId: service.serverId,
-  ownerUrl: `http://127.0.0.1:${runtime.server.address().port}`, ...(legacyHistory ? { legacyHistory } : {}), ...(tabletDraft ? { tabletDraft } : {}) }), { mode: 0o600 });
+  ownerUrl: `http://127.0.0.1:${runtime.server.address().port}`, ...(legacyHistory ? { legacyHistory } : {}), ...(tabletDraft ? { tabletDraft } : {}), ...(recording ? { recording } : {}) }), { mode: 0o600 });
 process.stdout.write('Isolated owner fixture ready.\n');
 async function close() {
   await service.close(); runtime.server.closeAllConnections();
