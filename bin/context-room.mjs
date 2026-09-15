@@ -7,7 +7,7 @@ import { updateAllContextRooms } from "../scripts/update-context-rooms.mjs";
 import { planStateMigration, applyStateMigration } from "../src/state_migration.mjs";
 import { exportLisiereSnapshot } from "../src/lisiere_snapshot.mjs";
 import { inspectLisiereSnapshot } from "../src/lisiere_inventory.mjs";
-import { migrateLisiereNotebook, migrateLisiereDraft, migrateLisiereConversation, migrateLisiereDrawingSession } from "../src/context_room.mjs";
+import { migrateLisiereNotebook, migrateLisiereDraft, migrateLisiereConversation, migrateLisiereDrawingSession, reconcileLisiereNotebook } from "../src/context_room.mjs";
 import {
   applyCliReviewAnnotation,
   applyAgentHandoff,
@@ -331,7 +331,7 @@ async function flushAndExit(code = 0) {
 }
 
 const KNOWN_OPTIONS = new Set([
-  "export-lisiere", "import-lisiere", "inspect-lisiere", "legacy-board", "legacy-draft", "legacy-conversation", "legacy-session", "session-frame", "recordings", "output", "revision",
+  "reconcile-lisiere", "mac-snapshot", "legacy-actor", "export-lisiere", "import-lisiere", "inspect-lisiere", "legacy-board", "legacy-draft", "legacy-conversation", "legacy-session", "session-frame", "recordings", "output", "revision",
   "device-host", "device-port", "device-state",
   "reader",
   "action", "actionable", "advisory", "all", "all-projects", "allow", "allow-stale", "apply", "branch", "budget", "contract", "cursor", "cwd", "depth", "description", "detail", "document", "dry-run", "enabled", "exclude", "expand", "fields", "files", "folder", "follow", "format", "fresh", "from", "goal", "h", "heading", "help", "highlight", "hook", "include",
@@ -1697,15 +1697,19 @@ if (command === "migrate") {
   try {
     if (args.plan && args.apply) throw new ContextRoomCliError("invalid-arguments", "Choose a migration preview or --apply, not both.", { exitCode: 2 });
     if (args._[1]) throw new ContextRoomCliError("unknown-command", "Migration takes named options, not a subcommand.", { exitCode: 2 });
-    if ([args["export-lisiere"], args["import-lisiere"], args["inspect-lisiere"], args["legacy-session"]].filter(Boolean).length > 1) throw new ContextRoomCliError("invalid-arguments", "Choose a legacy export, inventory or notebook import.", { exitCode: 2 });
+    if ([args["export-lisiere"], args["import-lisiere"], args["inspect-lisiere"], args["legacy-session"], args["reconcile-lisiere"]].filter(Boolean).length > 1) throw new ContextRoomCliError("invalid-arguments", "Choose a legacy export, inventory or notebook import.", { exitCode: 2 });
     if (args["inspect-lisiere"] && args.apply) throw new ContextRoomCliError("invalid-arguments", "Recovery inventory is read-only; it cannot apply or acknowledge work.", { exitCode: 2 });
-    if (!args["import-lisiere"] && !args["legacy-session"] && (args["legacy-board"] || args["legacy-draft"] || args["legacy-conversation"] || args.path)) throw new ContextRoomCliError("invalid-arguments", "--legacy-board, --legacy-draft, --legacy-conversation and --path require --import-lisiere.", { exitCode: 2 });
+    if (!args["import-lisiere"] && !args["legacy-session"] && !args["reconcile-lisiere"] && (args["legacy-board"] || args["legacy-draft"] || args["legacy-conversation"] || args.path)) throw new ContextRoomCliError("invalid-arguments", "--legacy-board, --legacy-draft, --legacy-conversation and --path require --import-lisiere.", { exitCode: 2 });
     if ([args["legacy-board"], args["legacy-draft"], args["legacy-conversation"]].filter(Boolean).length > 1) throw new ContextRoomCliError("invalid-arguments", "Choose one legacy board, draft or conversation.", { exitCode: 2 });
     if (!args["export-lisiere"] && args.output) throw new ContextRoomCliError("invalid-arguments", "--output requires --export-lisiere.", { exitCode: 2 });
     if (!args["export-lisiere"] && args.recordings) throw new ContextRoomCliError("invalid-arguments", "--recordings requires --export-lisiere.", { exitCode: 2 });
     if (args["session-frame"] && !args["legacy-session"]) throw new ContextRoomCliError("invalid-arguments", "--session-frame requires --legacy-session.", { exitCode: 2 });
     if (args["legacy-session"] && (args["legacy-board"] || args["legacy-draft"] || args["legacy-conversation"])) throw new ContextRoomCliError("invalid-arguments", "Select a transfer session or a snapshot record, not both.", { exitCode: 2 });
-    const data = args["legacy-session"]
+    if ((args["mac-snapshot"] || args["legacy-actor"]) && !args["reconcile-lisiere"]) throw new ContextRoomCliError("invalid-arguments", "--mac-snapshot and --legacy-actor require --reconcile-lisiere.", { exitCode: 2 });
+    if (args["reconcile-lisiere"] && (args["legacy-draft"] || args["legacy-conversation"])) throw new ContextRoomCliError("invalid-arguments", "Reconciliation selects an exact board, not a draft or conversation.", { exitCode: 2 });
+    const data = args["reconcile-lisiere"]
+      ? reconcileLisiereNotebook(agentFirstTarget.root, { androidSnapshot: args["reconcile-lisiere"], macSnapshot: args["mac-snapshot"], boardId: args["legacy-board"], actor: args["legacy-actor"], path: args.path, apply: Boolean(args.apply), expectedRevision: args.revision })
+      : args["legacy-session"]
       ? migrateLisiereDrawingSession(agentFirstTarget.root, { sessionId: args["legacy-session"], frame: args["session-frame"], path: args.path, apply: Boolean(args.apply), expectedRevision: args.revision })
       : args["export-lisiere"]
       ? await exportLisiereSnapshot({ source: args["export-lisiere"], output: args.output, recordings: args.recordings, apply: Boolean(args.apply), expectedRevision: args.revision })

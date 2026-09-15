@@ -10,6 +10,7 @@ import { NOTEBOOK_WEB_ASSETS } from "./notebook_web_assets.mjs";
 import { NOTEBOOK_LIMITS } from "./notebook_protocol.mjs";
 import { createLisiereConnector, migrateLisiereSession as recoverLisiereSession } from "./lisiere_connector.mjs";
 import { planLisiereNotebookImport, applyLisiereNotebookImport } from "./lisiere_migration.mjs";
+import { migrateLisiereReconciliation } from './lisiere_reconcile.mjs';
 import { migrateLisiereDocument } from "./lisiere_documents.mjs";
 import { migrateLisiereConversationHistory } from "./lisiere_conversations.mjs";
 import { listNotebooks, readNotebook } from "./notebooks.mjs";
@@ -7816,6 +7817,11 @@ export function createProjectAssistantSourceResolver() {
 
 export function migrateLisiereDrawingSession(root, options = {}) {
   return recoverLisiereSession(root, options, { canWrite: rel => canEditLocalProposalPath(root, rel), beforeWrite: () => ensureRuntimeGitExcludes(root) });
+}
+
+export function reconcileLisiereNotebook(root, options = {}) {
+  return migrateLisiereReconciliation(root, options, { canWrite: rel => canEditLocalProposalPath(root, rel),
+    beforeWrite: () => ensureRuntimeGitExcludes(root) });
 }
 
 export function migrateLisiereNotebook(root, options = {}) {

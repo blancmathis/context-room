@@ -398,3 +398,34 @@ binding is already available in their retained source. A filename hash is not
 used to infer a document or conversation. The explicit audio-association
 selection/review workflow remains implementation work; do not claim that
 recording preservation alone delivers that workflow.
+
+## Comparing the retained Android queue with Mac receipts
+
+`migrate --reconcile-lisiere ANDROID_SNAPSHOT --mac-snapshot MAC_SNAPSHOT
+--legacy-board BOARD_ID --legacy-actor ACTOR --path docs/Recovered.crnb`
+previews a new working notebook. Both inputs must be complete private exports;
+`ACTOR` is the exact original tablet identity, not inferred from an operation ID.
+Apply only its exact `--revision` together with `--apply`.
+
+The comparison uses the Mac request-digest contract with Python number semantics.
+Native typed arguments are rechecked against their original SQLite cells. A
+matching ordinary mutation requires its request digest, result, history and
+compatible canonical object revisions, not simply a matching ID. The digest
+match establishes the recorded normalized request, not a unique raw HTTP wire
+serialization. Assets prove content presence, never delivery of an upload.
+
+Compatible unsent mutations, metadata changes, creations, deletions and history
+undo are projected in order into a **separate** editable working notebook. Each
+object records original/effective preconditions and imported revision. Only the
+first successor receives a predecessor's acknowledged/projected revision, as in
+the original queue. Independent Mac work is preserved. Conflicts block import;
+unknown operations and private progressive-pen jobs remain explicit recovery
+items. No original queue entry is removed, acknowledged or sent.
+
+The chosen destination must be unused and in the existing editable project
+scope. Original selected records and revision/ID mapping are retained privately.
+The header doubles as the immutable replay receipt: an interrupted retry keeps
+later human edits. The existing Local/Shared submission and human review are
+still required to publish accepted documentation. Cache-only drawings without
+an interpretable queue, and private progressive-pen job reconciliation, are not
+implemented by this comparison.
