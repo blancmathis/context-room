@@ -1146,8 +1146,10 @@ repository identity file on every refresh. A regression against unchanged
 `b77cc67` confirms that its inode was replaced. Valid private claims now retain
 their inode; the existing identity validation, hard-link refusal and private-mode
 repair remain in place. The identity suite and exact concurrent-creation test
-pass on the isolated corrected checkout. The next hosted matrix must confirm
-the fix on Linux as well.
+pass on the isolated corrected checkout. Hosted run `34933207082` then passes
+Node 20, 22.23.0, 24 and Soak. Its WebKit workspace endurance check reports one
+registration access-control page error; the following run passes all four
+browser jobs. Neither run is a complete hosted pass.
 
 ## Retained legacy conversations and explicit continuation
 
@@ -1193,8 +1195,23 @@ latency objective remains open.
 Doctor, package privacy, package dry-run, layout audit, Android rebuild and
 artifact verification pass. The preview APK remains SHA-256
 `55dde71ed0c0b18c14952e519a2020415f60c526576bc2fbf7e311c86b3b9623`, with its
-v2 signature and eight exact shared assets. Full regression and hosted results
-for this recovery milestone remain pending.
+v2 signature and eight exact shared assets. Full regression at `676ef9e` passes
+89/90 processes. Local and hosted Node checks identify the same obsolete test
+expectation: the migration argument error now includes conversations alongside
+boards and drafts. The corrected structured-error assertion and all six draft
+tests pass. A complete hosted result for this correction remains pending.
+
+The native owner interface also reads and exports the retained conversation
+through the real pinned transport and Android system file picker. The completed
+instrumentation test and host-side byte check pass: the 1,103,362-byte original
+history spans multiple transport chunks and retains its exact SHA-256. Reading
+and exporting leave the current task, operation and messages empty; the ordinary
+notebook is unchanged. The final emulator rendering was inspected. The first
+attempt clicked the document's Save control before the picker appeared; the
+test now waits for a visible, enabled control in Android DocumentsUI. This is
+an emulator proof, not a physical BOOX result. The existing full native owner
+workflow also passes with this helper, including image import and byte-identical
+editable notebook export through the system picker.
 
 ## Open product gates
 

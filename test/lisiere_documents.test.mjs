@@ -99,7 +99,10 @@ test('CLI restores a selected draft using existing project permissions without s
   const applied = JSON.parse(execFileSync(process.execPath, [...args, '--apply', '--revision', plan.revision], options)).data;
   assert.equal(applied.status, 'editing'); assert.equal(applied.accepted, false); assert.equal(fs.existsSync(path.join(f.root, f.options.path)), false);
   const mixed = spawnSync(process.execPath, [...args, '--legacy-board', 'board'], options);
-  assert.notEqual(mixed.status, 0); assert.match(mixed.stdout + mixed.stderr, /Choose one legacy board or retained draft/);
+  assert.notEqual(mixed.status, 0);
+  const conflict = JSON.parse(mixed.stderr);
+  assert.equal(conflict.error.code, 'invalid-arguments');
+  assert.match(conflict.error.message, /Choose one legacy board, draft or conversation/);
 });
 
 test('owner HTTP draft actions keep origin, nonce, project and exact saved revision boundaries', async t => {

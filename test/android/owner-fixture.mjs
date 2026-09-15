@@ -8,6 +8,8 @@ import { submitNotebookShared } from '../../src/notebook_workflow.mjs';
 import { readSharedNotebookTarget } from '../../src/shared_context.mjs';
 import { addNotebookSharedFixture } from '../fixtures/notebook_shared.mjs';
 import { createCodexProvider } from '../../src/codex_provider.mjs';
+import { migrateLisiereConversation } from '../../src/context_room.mjs';
+import { legacyConversationSnapshot } from '../fixtures/lisiere-conversations.mjs';
 
 const [directory] = process.argv.slice(2);
 if (!directory || !path.isAbsolute(directory) || fs.existsSync(directory)) throw new Error('Choose a new private fixture directory.');
@@ -21,6 +23,15 @@ fs.writeFileSync(path.join(root, 'docs/Diagram.html'), '<!doctype html><html><he
 fs.writeFileSync(path.join(root, 'docs/Owner.crnb'), encodeNotebook(emptyNotebook('owner-native-notebook', 'Owner notebook')));
 initializeContextRoomProject(root, { title: 'Owner integration project', allowedPaths: ['docs/'], watchAllow: ['docs/'] });
 writeMemoryWebappSettings(root, { startupContext: { enabled: false }, startupSkills: { enabled: false }, startupHooks: { enabled: false } });
+let legacyHistory = null;
+if (process.env.CONTEXT_ROOM_TEST_LEGACY_HISTORY === '1') {
+  const source = await legacyConversationSnapshot(base, { desktop: true, extraRecordBytes: 1100000 });
+  const options = { snapshot: source.snapshot, selector: source.selector, path: 'docs/Guide.md' }, authority = { storageRoot: path.join(base, 'private-assistant') };
+  const preview = migrateLisiereConversation(root, options, authority);
+  const imported = migrateLisiereConversation(root, { ...options, apply: true, expectedRevision: preview.revision }, authority);
+  const binding = JSON.parse(fs.readFileSync(path.join(authority.storageRoot, 'conversations', imported.conversationId + '.json')));
+  legacyHistory = { conversationId: imported.conversationId, hash: binding.legacy.hash, originalThreadId: imported.originalThreadId };
+}
 const computer = path.join(base, 'computer'); fs.mkdirSync(computer);
 fs.writeFileSync(path.join(computer, 'Idea.md'), '# Synthetic unassigned idea\n');
 const globalPreferencesPath = path.join(base, 'preferences.json');
@@ -63,10 +74,10 @@ if (!reviewResponse.ok) throw new Error('Synthetic Shared review did not open: '
 const sharedReview = await reviewResponse.json();
 const ticket = { ...service.describe(), ...service.createOwnerPairing({ label: 'Synthetic owner tablet' }),
   url: `https://10.0.2.2:${service.server.address().port}`, testProjectId: runtime.projectId,
-  testSharedPath: new URL(sharedReview.url).pathname, testSharedHead: sharedReceipt.proposalRevision };
+  testSharedPath: new URL(sharedReview.url).pathname, testSharedHead: sharedReceipt.proposalRevision, ...(legacyHistory ? { testLegacyHistory: legacyHistory } : {}) };
 fs.writeFileSync(path.join(base, 'ticket.json'), JSON.stringify(ticket), { mode: 0o600 });
 fs.writeFileSync(path.join(base, 'fixture.json'), JSON.stringify({ projectId: runtime.projectId, sourceRoot: root, serverId: service.serverId,
-  ownerUrl: `http://127.0.0.1:${runtime.server.address().port}` }), { mode: 0o600 });
+  ownerUrl: `http://127.0.0.1:${runtime.server.address().port}`, ...(legacyHistory ? { legacyHistory } : {}) }), { mode: 0o600 });
 process.stdout.write('Isolated owner fixture ready.\n');
 async function close() {
   await service.close(); runtime.server.closeAllConnections();
