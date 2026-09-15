@@ -287,6 +287,7 @@ const AGENT_CONTEXT_ASSET_FILENAMES = [
   "features/document-workflow.md",
   "features/conversations.md",
   "system/connected-devices.md",
+  "system/lisiere-migration.md",
 ];
 export const GLOBAL_PREFERENCES_FILE = "~/.context-room/preferences.json";
 const CONFIG_SCHEMA_URL = "https://unpkg.com/context-room@latest/schemas/config.schema.json";

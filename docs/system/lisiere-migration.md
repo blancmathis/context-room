@@ -48,7 +48,7 @@ The snapshot is bounded to 512 MiB, including Mac content-addressed assets.
 SHA-256 hashes. Binary cells use a `base64` wrapper; integers outside JavaScript's
 exact range use an `integer` decimal wrapper. Original drafts, deletion records,
 queued operations and history remain recovery data, with `accepted: false`.
-Compressed Android cells stay exact and have not yet been replayed or imported.
+Binary Android cells stay exact and have not yet been replayed or imported.
 
 Known pairing tokens and executable native-request grants are excluded. The
 export does not read authentication preferences, private keys or integration
@@ -75,5 +75,6 @@ The old installation remains active and can receive later writes. This snapshot
 is a point-in-time recovery copy, not a synchronization or single-writer fence.
 Do not retire the old installation until imports, pending work, conversation
 links, device identity and physical validation have their own receipts. The
-[convergence verification record](../lifecycle/changes/active/android-convergence/verification.md)
-tracks those open gates.
+convergence verification record at
+`docs/lifecycle/changes/active/android-convergence/verification.md` in the
+Context Room source repository tracks those open gates.

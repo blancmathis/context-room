@@ -917,7 +917,12 @@ pass. No personal database, Android application or pairing was changed.
 This milestone exports database recovery data. It does not yet import editable
 notebooks, replay Android drafts/outboxes, collect recording files or old project
 handoffs, or switch the active writer. The complete regression and hosted CI
-for this checkpoint remain to be checked.
+at `af37bea` reports **77/78**: the sole failure is a generated agent-context
+link to the new migration document, which was missing from the canonical copy
+list. Hosted Node 20 finds the same issue; all four hosted browser jobs and
+soak pass. The canonical list is corrected and its focused regression passes.
+One convergence job fails only while uploading its already verified APK to
+GitHub (403); the other execution passes, and the failed job is retried.
 
 ## Open product gates
 
