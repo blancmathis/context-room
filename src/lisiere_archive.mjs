@@ -4,13 +4,15 @@ import { canonicalNotebookRoot, safeNotebookPath, readNotebookBytes, notebookHas
 
 export const LEGACY_SNAPSHOT_LIMIT = 512 * 1024 * 1024;
 const MAX_ROW = 32 * 1024 * 1024;
+const MAX_SQLITE_ROW = 48 * 1024 * 1024;
+const MAX_WIRE_ROW = MAX_ROW * 6 + 16384;
 const shaPattern = /^[a-f0-9]{64}$/;
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 export function legacyError(message) { return Object.assign(new Error(message), { code: 'lisiere_recovery_conflict' }); }
 function requireValue(condition, message) { if (!condition) throw legacyError(message); }
 
 function entryMetadata(value) {
-  requireValue(plain(value) && typeof value.path === 'string' && /^(?:tables\/[a-z_]+\.jsonl|assets\/[a-f0-9]{64}|recordings\/[a-f0-9]{64}\.pcm)$/.test(value.path)
+  requireValue(plain(value) && typeof value.path === 'string' && /^(?:tables\/[a-z_]+\.jsonl|assets\/[a-f0-9]{64}|recordings\/[a-f0-9]{64}\.pcm|derived\/(?:outbox-args\.jsonl|android-export-manifest\.json))$/.test(value.path)
     && shaPattern.test(value.sha256 || '') && Number.isSafeInteger(value.bytes) && value.bytes >= 0 && value.bytes <= LEGACY_SNAPSHOT_LIMIT, 'Invalid legacy snapshot file entry.');
   if (value.path.startsWith('assets/')) requireValue(value.sha256 === value.path.slice(7), 'An archived asset changed its content identity.');
   return { path: value.path, bytes: value.bytes, sha256: value.sha256 };
@@ -63,7 +65,7 @@ export function readLisiereSnapshot(directory) {
   let manifest; try { manifest = JSON.parse(raw); } catch { throw legacyError('The recovery manifest is not valid JSON.'); }
   requireValue(plain(manifest), 'A recovery manifest object is required.');
   const { revision, ...unsigned } = manifest;
-  requireValue([1, 2].includes(manifest.version) && manifest.mediaType === 'application/vnd.context-room.lisiere-snapshot+json'
+  requireValue([1, 2, 3].includes(manifest.version) && manifest.mediaType === 'application/vnd.context-room.lisiere-snapshot+json'
     && ['mac-workspace', 'android-workspace'].includes(manifest.kind) && [0, 1].includes(manifest.databaseVersion)
     && manifest.accepted === false && shaPattern.test(revision || '') && notebookHash(unsigned) === revision, 'Unsupported, altered or invalid recovery manifest.');
   const journal = readNotebookBytes(directory, 'export-journal.json', 8 * 1024 * 1024);
@@ -83,6 +85,25 @@ export function readLisiereSnapshot(directory) {
       && notebookHash(description.paths) === notebookHash(recordings), 'The original recording format or inventory is inconsistent.');
     for (const rel of recordings) requireValue(files.get(rel).bytes <= 16000 * 2 * 120 && files.get(rel).bytes % 2 === 0, 'A retained recording exceeds its original format limit.');
   }
+  const derived = [...files.keys()].filter(rel => rel.startsWith('derived/'));
+  if (manifest.version < 3) requireValue(!derived.length && !Object.hasOwn(manifest, 'androidExport'), 'Native Android arguments require snapshot version 3.');
+  else {
+    const native = manifest.androidExport, verification = native?.verification;
+    requireValue(manifest.kind === 'android-workspace' && plain(native) && native.version === 1
+      && native.mediaType === 'application/vnd.context-room.lisiere-android-export+json'
+      && native.sourcePackage === 'fr.lisiere.android' && shaPattern.test(native.sha256 || '')
+      && Number.isSafeInteger(native.bytes) && native.bytes > 0 && native.bytes <= LEGACY_SNAPSHOT_LIMIT + 8 * 1024 * 1024
+      && native.delivery === 'not-inferred' && plain(native.queue) && native.queue.encoding === 'android-org-json' && native.queue.delivery === 'not-inferred'
+      && ['rows', 'decoded', 'requiresReconciliation'].every(key => Number.isSafeInteger(native.queue[key]) && native.queue[key] >= 0 && native.queue[key] <= 100000)
+      && native.queue.decoded + native.queue.requiresReconciliation === native.queue.rows
+      && plain(verification) && verification.version === 1 && verification.rowBindings === 'exact-original-cells'
+      && verification.arguments === 'typed-roundtrip' && verification.wireBytes === 'retained-not-reconstructed' && verification.delivery === 'not-inferred'
+      && Number.isSafeInteger(verification.floatingRows) && verification.floatingRows >= 0 && verification.floatingRows <= native.queue.decoded
+      && notebookHash(manifest.sourceIdentity) === notebookHash(['android-export-sha256', native.sha256])
+      && notebookHash(manifest.recordings.sourceIdentity) === notebookHash(['android-export-sha256', native.sha256, 'recordings'])
+      && derived.length === 2 && files.has('derived/outbox-args.jsonl') && files.has('derived/android-export-manifest.json'),
+      'Invalid native Android snapshot provenance or derived inventory.');
+  }
   const tables = new Map();
   for (const value of manifest.tables) {
     const entry = entryMetadata(value), listed = files.get(entry.path);
@@ -101,7 +122,7 @@ export function readLisiereSnapshot(directory) {
     for (const part of chunks(directory, entry)) { for (let at = part.indexOf(10); at !== -1; at = part.indexOf(10, at + 1)) lines++; last = part.at(-1); }
     if (entry.path.startsWith('tables/')) requireValue(lines === tables.get(entry.path.slice(7, -6)).rows && (entry.bytes === 0 || last === 10), 'The archived row count is incomplete.');
   }
-  return {
+  const archive = {
     directory, manifest,
     *rows(name) {
       const entry = tables.get(name); if (!entry) return;
@@ -109,16 +130,50 @@ export function readLisiereSnapshot(directory) {
       for (const part of chunks(directory, entry)) {
         pending += decoder.decode(part, { stream: true }); let end;
         while ((end = pending.indexOf('\n')) !== -1) {
-          requireValue(end <= MAX_ROW, 'An archived row exceeds the bounded import size.');
+          requireValue(end <= MAX_SQLITE_ROW, 'An archived row exceeds the bounded import size.');
           let row; try { row = JSON.parse(pending.slice(0, end)); } catch { throw legacyError('An archived table row is invalid JSON.'); }
           pending = pending.slice(end + 1); count++;
           requireValue(Array.isArray(row) && row.length === entry.columns.length, 'An archived row has a different column count.');
           yield Object.fromEntries(entry.columns.map((key, index) => [key, cell(row[index])]));
         }
-        requireValue(pending.length <= MAX_ROW, 'An archived row exceeds the bounded import size.');
+        requireValue(pending.length <= MAX_SQLITE_ROW, 'An archived row exceeds the bounded import size.');
       }
       pending += decoder.decode();
       requireValue(!pending && count === entry.rows, 'An archived table is incomplete.');
+    },
+    *androidArguments() {
+      if (manifest.version !== 3) return;
+      const entry = files.get('derived/outbox-args.jsonl'), original = archive.rows('outbox');
+      const decoder = new TextDecoder('utf-8', { fatal: true }); let pending = '', count = 0, decoded = 0;
+      for (const part of chunks(directory, entry)) {
+        pending += decoder.decode(part, { stream: true }); let end;
+        while ((end = pending.indexOf('\n')) !== -1) {
+          requireValue(end <= MAX_WIRE_ROW, 'A native argument row exceeds its bounded size.');
+          let wire; try { wire = JSON.parse(pending.slice(0, end)); } catch { throw legacyError('Invalid retained Android arguments.'); }
+          pending = pending.slice(end + 1);
+          const next = original.next(), row = next.value;
+          requireValue(!next.done && plain(wire) && wire.seq === String(row.seq) && wire.id === row.id && wire.operation === row.operation
+            && ['decoded', 'requires-reconciliation'].includes(wire.status), 'A retained Android argument row lost its original identity.');
+          const bytes = Buffer.isBuffer(row.args) ? row.args : typeof row.args === 'string' ? Buffer.from(row.args) : null;
+          if (bytes) requireValue(wire.sourceEncoding === (Buffer.isBuffer(row.args) ? 'blob' : 'text'), 'The original argument encoding changed.');
+          if (Object.hasOwn(wire, 'sourceArgsBytes') || Object.hasOwn(wire, 'sourceArgsSha256')) {
+            requireValue(Number.isSafeInteger(wire.sourceArgsBytes) && wire.sourceArgsBytes >= 0 && wire.sourceArgsBytes <= MAX_ROW
+              && shaPattern.test(wire.sourceArgsSha256 || '') && (!bytes || bytes.length === wire.sourceArgsBytes && notebookHash(bytes) === wire.sourceArgsSha256),
+              'Retained Android arguments do not match their original byte hash.');
+          }
+          if (wire.status === 'decoded') {
+            requireValue(bytes && bytes.length === wire.sourceArgsBytes && notebookHash(bytes) === wire.sourceArgsSha256 && typeof wire.argsJson === 'string',
+              'Decoded Android arguments have no exact original binding.');
+            decoded++;
+          } else requireValue(!Object.hasOwn(wire, 'argsJson'), 'Unreconciled Android arguments cannot be executed.');
+          count++;
+          yield wire; // argsJson remains the captured string, never a number round trip.
+        }
+        requireValue(pending.length <= MAX_WIRE_ROW, 'A native argument row exceeds its bounded size.');
+      }
+      pending += decoder.decode();
+      requireValue(!pending && original.next().done && count === manifest.androidExport.queue.rows && decoded === manifest.androidExport.queue.decoded,
+        'The retained Android argument inventory is incomplete.');
     },
     asset(hash) {
       requireValue(shaPattern.test(hash || '') && files.has(`assets/${hash}`), 'A legacy image asset is missing.');
@@ -131,6 +186,24 @@ export function readLisiereSnapshot(directory) {
       const retained = []; for (const part of chunks(directory, files.get(`recordings/${name}`))) retained.push(Buffer.from(part)); return Buffer.concat(retained);
     },
   };
+  if (manifest.version === 3) {
+    const entry = files.get('derived/android-export-manifest.json');
+    requireValue(entry.bytes <= 8 * 1024 * 1024, 'The retained native manifest is oversized.');
+    const parts = []; for (const part of chunks(directory, entry)) parts.push(Buffer.from(part));
+    let native; try { native = JSON.parse(Buffer.concat(parts).toString('utf8')); } catch { throw legacyError('Invalid retained native manifest.'); }
+    requireValue(plain(native) && native.version === 1 && native.mediaType === manifest.androidExport.mediaType
+      && native.accepted === false && native.sourceUnchanged === true && native.sourcePackage === manifest.androidExport.sourcePackage
+      && native.exporterVersionCode === manifest.androidExport.exporterVersionCode
+      && notebookHash(native.queue) === notebookHash(manifest.androidExport.queue) && Array.isArray(native.files),
+      'The native manifest no longer matches the converted snapshot.');
+    for (const rel of ['derived/outbox-args.jsonl', ...recordings]) {
+      const matches = native.files.filter(file => file.path === rel), retained = files.get(rel);
+      requireValue(matches.length === 1 && matches[0].bytes === retained.bytes && matches[0].sha256 === retained.sha256,
+        'A native derivative or recording changed during conversion.');
+    }
+    for (const _ of archive.androidArguments()) { /* Bind the complete inventory before any import can publish. */ }
+  }
+  return archive;
 }
 
 /** Decode the legacy LSJ1 wire format, including exact Java UTF-16 code units. */

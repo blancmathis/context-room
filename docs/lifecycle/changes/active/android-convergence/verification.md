@@ -1312,3 +1312,11 @@ changes need their own regression and hosted result. Notebook-specific checks
 do not stand in for that matrix. The original Android identity upgrade/export
 has the isolated emulator proof above. Physical BOOX testing, personal-device
 upgrade, full writer cutover and personal-data migration have not been performed.
+
+## 2026-09-15 — post-merge native ZIP recovery checkpoint
+
+The current public main was rechecked at `1a2cdcec1435d60cd8d07a3762a369e066508ce1`; work is isolated on `mathis/context-room-recovery-hardening-20260915`. Native ZIP v1 now converts through `migrate --export-lisiere` to snapshot v3, preserving native derivatives, int64 cells and PCM. No queue delivery or document acceptance is inferred. The canonical format and remaining receipt boundary are described in `docs/system/lisiere-migration.md`.
+
+Targeted evidence (Node 26.3.1, Python 3.14.6, `umask 022`): 18 synthetic native-ZIP Python contracts passed, including WAL/hot rollback recovery and a real SIGKILL during publication; all 9 existing directory-snapshot Python contracts passed; the 2 new Node library/security tests passed. The old interruption fixture now interrupts `_publish_snapshot_file` rather than removed hard-link publication; its interruption, exact resumption, hashes and newer-byte preservation assertions are unchanged.
+
+The installed CLI test and full suite are not validated by this checkpoint. An interrupted dependency installation left `yaml/index.js` absent; the resulting module-load errors are not classified as product or umask failures. The separately runnable local-proposal and initial-proposal baseline had 17 passing tests under `umask 022`. Android source is unchanged; no new APK, emulator execution, real-provider timing or BOOX evidence is claimed here.

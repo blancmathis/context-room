@@ -151,14 +151,14 @@ class SnapshotContracts(unittest.TestCase):
         with self.mac():
             plan = snapshot.snapshot(self.source)
             output = self.base / 'recoverable'
-            original_link = os.link
+            original_publish = snapshot._publish_snapshot_file
             calls = [0]
             def interrupt(*args, **kwargs):
                 calls[0] += 1
                 if calls[0] == 4:
                     raise OSError('Synthetic publication interruption')
-                return original_link(*args, **kwargs)
-            with patch.object(os, 'link', interrupt):
+                return original_publish(*args, **kwargs)
+            with patch.object(snapshot, '_publish_snapshot_file', interrupt):
                 with self.assertRaisesRegex(OSError, 'Synthetic publication'):
                     snapshot.export(self.source, output, plan['revision'])
             self.assertTrue((output / 'export-journal.json').is_file())
