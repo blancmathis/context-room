@@ -9,6 +9,7 @@ import { exportLisiereSnapshot } from '../src/lisiere_snapshot.mjs';
 import { planLisiereNotebookImport, applyLisiereNotebookImport } from '../src/lisiere_migration.mjs';
 import { readNotebook, mutateNotebook, NOTEBOOK_STORE } from '../src/notebooks.mjs';
 import { initializeContextRoomProject } from '../src/context_room.mjs';
+import { inspectLisiereSnapshot } from '../src/lisiere_inventory.mjs';
 
 const authority = { canWrite: rel => rel.startsWith('docs/') && rel.endsWith('.crnb') };
 async function fixture(t) {
@@ -24,7 +25,8 @@ assets=Path(sys.argv[1]).parent/'assets'
 assets.mkdir()
 (assets/asset_id).write_bytes(asset)
 with sqlite3.connect(sys.argv[1]) as db:
- db.executescript('CREATE TABLE projects(id TEXT PRIMARY KEY,name TEXT,root TEXT); CREATE TABLE boards(id TEXT PRIMARY KEY,title TEXT,project TEXT,revision INTEGER); CREATE TABLE objects(board TEXT,id TEXT,revision INTEGER,data TEXT,PRIMARY KEY(board,id));')
+ db.executescript('CREATE TABLE projects(id TEXT PRIMARY KEY,name TEXT,root TEXT); CREATE TABLE boards(id TEXT PRIMARY KEY,title TEXT,project TEXT,revision INTEGER); CREATE TABLE objects(board TEXT,id TEXT,revision INTEGER,data TEXT,PRIMARY KEY(board,id)); CREATE TABLE drafts(project TEXT,path TEXT,device TEXT,base TEXT,content TEXT,version INTEGER,PRIMARY KEY(project,path,device));')
+ db.execute('INSERT INTO drafts VALUES(?,?,?,?,?,?)',('another-project','docs/Earlier.md','original-tablet','original-base','Unsent original text kept in the archive',17))
  db.execute('INSERT INTO projects VALUES(?,?,?)',('another-project','Unrelated private project','/synthetic/private'))
  db.executemany('INSERT INTO boards VALUES(?,?,?,?)',[('board','Original notebook',None,7),('other-board','Unrelated title','another-project',1)])
  db.executemany('INSERT INTO objects VALUES(?,?,?,?)',[('board','shape',7,json.dumps({'type':'rect','x':10,'y':20,'w':100,'h':60})),('board','deleted',5,None),('board','zz-picture',6,json.dumps({'type':'image','assetId':asset_id,'x':200,'y':20,'w':10,'h':10})),('other-board','other',1,json.dumps({'type':'text','text':'Unrelated private content'}))])`, path.join(source, 'workspace.sqlite')], { timeout: 10000, stdio: 'pipe' });
@@ -127,4 +129,33 @@ test('installed CLI imports through live project watch and write permissions wit
   const denied = run([], 'outside/Ideas.crnb'); assert.notEqual(denied.status, 0); assert.match(denied.stdout + denied.stderr, /permission|scope/i);
   const mixed = run(['--export-lisiere', f.source, '--output', path.join(f.base, 'second-snapshot')]); assert.notEqual(mixed.status, 0); assert.match(mixed.stdout + mixed.stderr, /Choose a legacy export/);
   assert.equal(fs.existsSync(path.join(f.base, 'second-snapshot')), false);
+});
+
+test('inventory paginates exact retained source records without loading a project or exposing draft text', async t => {
+  const f = await fixture(t), items = []; let cursor;
+  do {
+    const page = inspectLisiereSnapshot(f.snapshot, { limit: 1, ...(cursor ? { cursor } : {}) });
+    items.push(...page.items); cursor = page.pagination.nextCursor;
+    assert.deepEqual(page.counts, { projects: 1, boards: 2, drafts: 1, conversations: 0, operations: 0, recordings: 0 });
+  } while (cursor);
+  assert.equal(items.length, 4); assert.equal(new Set(items.map(item => item.selector)).size, 4);
+  assert.equal(items.find(item => item.kind === 'boards' && item.id === 'board').project, null);
+  const draft = items.find(item => item.kind === 'drafts'); assert.equal(draft.version, 17); assert.equal(draft.delivery, 'unconfirmed');
+  assert.doesNotMatch(JSON.stringify(items), /Unsent original text/); assert.deepEqual(fs.readdirSync(f.root), []);
+  const first = inspectLisiereSnapshot(f.snapshot, { limit: 1 });
+  assert.throws(() => inspectLisiereSnapshot(f.snapshot, { kind: 'drafts', cursor: first.pagination.nextCursor }), /another snapshot or selection/);
+  assert.throws(() => inspectLisiereSnapshot(f.snapshot, { cursor: '../bad' }), /cursor/);
+  for (const limit of [0, 201, Infinity, 'not a number']) assert.throws(() => inspectLisiereSnapshot(f.snapshot, { limit }), /page size/);
+  execFileSync('python3', ['-B', '-c', "import sqlite3,sys\nwith sqlite3.connect(sys.argv[1]) as db: db.execute(\"UPDATE drafts SET content='Different retained text'\")", path.join(f.source, 'workspace.sqlite')], { stdio: 'pipe' });
+  const output = path.join(f.base, 'later-snapshot'), plan = await exportLisiereSnapshot({ source: f.source, output });
+  await exportLisiereSnapshot({ source: f.source, output, apply: true, expectedRevision: plan.revision });
+  assert.throws(() => inspectLisiereSnapshot(output, { cursor: first.pagination.nextCursor }), /another snapshot or selection/);
+  assert.notEqual(inspectLisiereSnapshot(output, { kind: 'drafts' }).items[0].selector, draft.selector);
+  const cli = fileURLToPath(new URL('../bin/context-room.mjs', import.meta.url));
+  const args = [cli, 'migrate', '--inspect-lisiere', f.snapshot, '--kind', 'drafts'];
+  const options = { cwd: f.base, encoding: 'utf8', timeout: 30000, env: { ...process.env, HOME: f.base,
+    CONTEXT_ROOM_HUB_HOME: path.join(f.base, 'hub'), CONTEXT_ROOM_SHARED_HOME: path.join(f.base, 'shared') } };
+  const response = JSON.parse(execFileSync(process.execPath, args, options)); assert.equal(response.ok, true); assert.equal(response.target, null);
+  assert.equal(response.data.items[0].selector, draft.selector);
+  const denied = spawnSync(process.execPath, [...args, '--apply'], options); assert.notEqual(denied.status, 0); assert.match(denied.stdout + denied.stderr, /read-only/);
 });

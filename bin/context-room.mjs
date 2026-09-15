@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { updateAllContextRooms } from "../scripts/update-context-rooms.mjs";
 import { planStateMigration, applyStateMigration } from "../src/state_migration.mjs";
 import { exportLisiereSnapshot } from "../src/lisiere_snapshot.mjs";
+import { inspectLisiereSnapshot } from "../src/lisiere_inventory.mjs";
 import { migrateLisiereNotebook } from "../src/context_room.mjs";
 import {
   applyCliReviewAnnotation,
@@ -329,7 +330,7 @@ async function flushAndExit(code = 0) {
 }
 
 const KNOWN_OPTIONS = new Set([
-  "export-lisiere", "import-lisiere", "legacy-board", "recordings", "output", "revision",
+  "export-lisiere", "import-lisiere", "inspect-lisiere", "legacy-board", "recordings", "output", "revision",
   "device-host", "device-port", "device-state",
   "reader",
   "action", "actionable", "advisory", "all", "all-projects", "allow", "allow-stale", "apply", "branch", "budget", "contract", "cursor", "cwd", "depth", "description", "detail", "document", "dry-run", "enabled", "exclude", "expand", "fields", "files", "folder", "follow", "format", "fresh", "from", "goal", "h", "heading", "help", "highlight", "hook", "include",
@@ -783,7 +784,7 @@ const agentFirstTargetCommand = (
   || (command === "shared" && args._[1] === "instructions" && args._[2] !== "status")
   || contextAgentFirstTargetCommand
   || command === "settings"
-  || (command === "migrate" && !args["export-lisiere"])
+  || (command === "migrate" && !args["export-lisiere"] && !args["inspect-lisiere"])
   || (command === "doctor" && !args["all-projects"] && (Boolean(args._[1]) || Boolean(args.format || args.project || args.location || args.folder || args.provider || args.cursor || args.limit)))
 );
 let agentFirstTarget = null;
@@ -1695,12 +1696,15 @@ if (command === "migrate") {
   try {
     if (args.plan && args.apply) throw new ContextRoomCliError("invalid-arguments", "Choose a migration preview or --apply, not both.", { exitCode: 2 });
     if (args._[1]) throw new ContextRoomCliError("unknown-command", "Migration takes named options, not a subcommand.", { exitCode: 2 });
-    if (args["export-lisiere"] && args["import-lisiere"]) throw new ContextRoomCliError("invalid-arguments", "Choose a legacy export or notebook import.", { exitCode: 2 });
+    if ([args["export-lisiere"], args["import-lisiere"], args["inspect-lisiere"]].filter(Boolean).length > 1) throw new ContextRoomCliError("invalid-arguments", "Choose a legacy export, inventory or notebook import.", { exitCode: 2 });
+    if (args["inspect-lisiere"] && args.apply) throw new ContextRoomCliError("invalid-arguments", "Recovery inventory is read-only; it cannot apply or acknowledge work.", { exitCode: 2 });
     if (!args["import-lisiere"] && (args["legacy-board"] || args.path)) throw new ContextRoomCliError("invalid-arguments", "--legacy-board and --path require --import-lisiere.", { exitCode: 2 });
     if (!args["export-lisiere"] && args.output) throw new ContextRoomCliError("invalid-arguments", "--output requires --export-lisiere.", { exitCode: 2 });
     if (!args["export-lisiere"] && args.recordings) throw new ContextRoomCliError("invalid-arguments", "--recordings requires --export-lisiere.", { exitCode: 2 });
     const data = args["export-lisiere"]
       ? await exportLisiereSnapshot({ source: args["export-lisiere"], output: args.output, recordings: args.recordings, apply: Boolean(args.apply), expectedRevision: args.revision })
+      : args["inspect-lisiere"]
+      ? inspectLisiereSnapshot(args["inspect-lisiere"], { kind: args.kind || 'all', limit: args.limit ?? 50, ...(args.cursor === undefined ? {} : { cursor: args.cursor }) })
       : args["import-lisiere"]
       ? migrateLisiereNotebook(agentFirstTarget.root, { snapshot: args["import-lisiere"], boardId: args["legacy-board"], path: args.path, apply: Boolean(args.apply), expectedRevision: args.revision })
       : args.apply

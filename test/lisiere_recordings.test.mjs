@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { exportLisiereSnapshot } from '../src/lisiere_snapshot.mjs';
 import { readLisiereSnapshot } from '../src/lisiere_archive.mjs';
+import { inspectLisiereSnapshot } from '../src/lisiere_inventory.mjs';
 
 function fixture(t) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cr-legacy-recordings-')));
@@ -16,7 +17,8 @@ function fixture(t) {
   execFileSync('python3', ['-B', '-c', `import sqlite3,sys
 with sqlite3.connect(sys.argv[1]) as db:
  db.executescript('CREATE TABLE cache(key TEXT PRIMARY KEY,value TEXT); CREATE TABLE outbox(seq INTEGER PRIMARY KEY,id TEXT,operation TEXT,args TEXT,error TEXT);')
- db.execute('INSERT INTO cache VALUES(?,?)',('native-voice-draft:original:unresolved','{"queued":{"text":"Original unsent phrase"}}'))`, path.join(source, 'workspace.sqlite')], { stdio: 'pipe' });
+ db.execute('INSERT INTO cache VALUES(?,?)',('native-voice-draft:original:unresolved','{"queued":{"text":"Original unsent phrase"}}'))
+ db.execute('INSERT INTO outbox VALUES(?,?,?,?,?)',(9007199254740993,'original-operation','board.mutate','{"board":"original-board","operationId":"original-operation","operations":[]}',None))`, path.join(source, 'workspace.sqlite')], { stdio: 'pipe' });
   // Synthetic PCM spans multiple reader chunks; no microphone is opened.
   const pcm = Buffer.alloc(160000); for (let at = 0; at < pcm.length; at += 2) pcm.writeInt16LE(at % 32000 - 16000, at);
   const name = 'b'.repeat(64) + '.pcm', file = path.join(recordings, name); fs.writeFileSync(file, pcm);
@@ -68,6 +70,11 @@ test('installed export CLI includes an explicitly selected recording directory w
   const applied = JSON.parse(execFileSync(process.execPath, [...args, '--apply', '--revision', plan.data.revision], options));
   assert.equal(applied.ok, true); assert.equal(applied.data.exported, true);
   assert.deepEqual(readLisiereSnapshot(f.output).recording(f.name), f.pcm);
+  const inventory = inspectLisiereSnapshot(f.output);
+  assert.equal(inventory.counts.operations, 2); assert.equal(inventory.counts.recordings, 1);
+  assert.equal(inventory.items.find(item => item.id === 'original-operation').seq, '9007199254740993');
+  assert.equal(inventory.items.find(item => item.kind === 'recordings').context, 'unassigned');
+  assert.doesNotMatch(JSON.stringify(inventory), /Original unsent phrase/);
 });
 
 test('a recording changed during its bounded read cannot produce a completed recovery snapshot', t => {

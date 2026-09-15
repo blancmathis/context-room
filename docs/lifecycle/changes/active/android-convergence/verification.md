@@ -1032,6 +1032,27 @@ The combined recovery, real CLI and argument regression passes **39/39**.
 Doctor, package privacy and package dry-run pass for this follow-up. Its full
 regression remains pending.
 
+The complete isolated regression at `0a0e997` then passes **85/85** test
+processes, including both isolated timing contracts. The full hosted CI and
+both convergence workflows at `6bc128f` pass, including Node 20, 22.23.0 and
+24, all four browser jobs and soak.
+
+## Recovery source inventory
+
+The read-only inventory now lists source projects, boards, drafts, conversation
+records, pending operations and unassigned recordings. Bounded pages use a
+cursor tied to the completed snapshot revision and selected kind. Exact record
+selectors change when retained content changes; full draft and queued-message
+text is not printed. Large SQLite operation sequence numbers remain exact.
+
+Eleven focused import, recording and inventory tests pass. They include actual
+SQLite snapshots and the CLI without project registration, complete pagination,
+free-board identity, changed source/selection refusal and read-only apply refusal.
+Inventory is preparation for pending-work reconciliation, not a delivery receipt
+or automatic context assignment.
+The combined recovery, import, inventory and CLI-argument regression passes
+**40/40**; Doctor and package privacy also pass.
+
 ## Open product gates
 
 Data migration and final removal of the

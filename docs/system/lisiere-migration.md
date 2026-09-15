@@ -86,9 +86,30 @@ files and refuses changed ones. Repeating a completed export is idempotent.
 If the source has advanced, retain the partial export and preview into a new
 destination. No retry replaces the original workspace or a newer destination.
 
+## Inspect retained work
+
+```bash
+context-room migrate --inspect-lisiere /path/to/private-snapshot --kind boards
+context-room migrate --inspect-lisiere /path/to/private-snapshot --kind drafts
+```
+
+The inventory reads a completed, verified snapshot without a registered project
+or legacy executable. Kinds are `all`, `projects`, `boards`, `drafts`,
+`conversations`, `operations` and `recordings`. Pages default to 50 entries;
+`--limit` accepts 1–200. Pass the returned `pagination.nextCursor` through
+`--cursor` to continue the same source and selection. A changed snapshot or
+different selection invalidates that cursor.
+
+Entries describe original identities and versions without printing full draft
+or queued-message text. Record selectors identify exact retained content.
+Android journal records and text seeds remain distinguishable, and other cache
+rows stay accounted for in the table inventory. A retained operation is not
+proof of delivery; recordings remain unassigned. Inspection cannot apply,
+acknowledge, accept or restart work.
+
 ## Import a canonical Mac notebook
 
-Choose the source board ID from the exported `boards` table and an unused
+Choose the source board ID from the inventory and an unused
 ordinary `.crnb` path in an existing Context Room project's writable, watched
 folders. A free legacy board can use any such explicitly chosen destination;
 there is no new inbox or project catalog.
