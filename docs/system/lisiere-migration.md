@@ -73,7 +73,7 @@ without replaying legacy requests.
 Known pairing tokens and executable native-request grants are excluded. The
 export does not read authentication preferences, private keys or integration
 configuration. This does not remove sensitive material the user wrote in their
-own content. Android recording files are included only with `--recordings`.
+own content. Directory-based Android exports include recording files only with `--recordings`; native ZIP exports already declare and include their retained PCM files.
 Earlier project handoff directories are not part of this database export.
 
 ## Recover an existing Android installation
@@ -113,11 +113,64 @@ remain explicit reconciliation items in the preserved database. Delivery is
 never inferred. A partial preparation cannot replace a completed receipt;
 changed or linked copies are refused when reopened.
 
-This recovery ZIP is a private transfer artifact, distinct from the versioned
-Mac snapshot above. Direct ZIP ingestion and queue reconciliation remain
-implementation work. The isolated emulator verifies native export and Mac
+This native recovery ZIP is a private transfer artifact, not a snapshot-format-1
+Mac export. Context Room now converts it directly to a verified format-3 snapshot.
+Queue reconciliation and proof of delivery remain separate from this conversion. The isolated emulator verifies native export and Mac
 snapshot extraction from its checked contents. It does not establish a
 personal-device upgrade, writer cutover or automatic rollback.
+
+
+### Direct native ZIP conversion
+
+Use the existing preview/apply protocol; no manual extraction or legacy service
+is required:
+
+```sh
+context-room migrate --export-lisiere /path/to/android-recovery.zip --output /path/to/private-snapshot
+context-room migrate --export-lisiere /path/to/android-recovery.zip --output /path/to/private-snapshot --apply --revision REVISION
+context-room migrate --inspect-lisiere /path/to/private-snapshot --kind operations
+```
+
+Native container version 1, directory snapshot versions 1/2, and converted
+snapshot version 3 have distinct contracts. Versions 1/2 keep their existing
+content identity and remain readable. Version 3 retains the exact native
+`derived/outbox-args.jsonl` and `derived/android-export-manifest.json`, alongside
+exported SQLite rows and original PCM. Do not add `--recordings` to a ZIP input.
+
+The converter checks the bounded final ZIP directory before extraction; rejects
+unsafe paths, duplicate members, links, unsupported compression and incomplete
+inventories; and verifies sizes, hashes, SQLite schema and PCM declarations.
+SQLite WAL/rollback recovery runs only in an exclusive disposable copy. The
+original ZIP, including its physical database journals, is never written. The
+converted snapshot contains the committed SQLite view, not a replay of the old
+outbox. Both the native source/derived budget and converted snapshot are bounded
+to 512 MiB. SQLite JSONL envelopes are bounded to 48 MiB per row, allowing base64
+for the original 32 MiB binary-cell bound; native serialized rows also have a
+bounded JSON-escaping allowance.
+
+Every derived operation is checked against its exact sequence, ID, operation,
+original argument encoding and byte hash. Decoded arguments are compared with
+the original typed values, preserving int64 and the Float/Double distinction.
+The retained `argsJson` is never reconstructed through JavaScript numbers.
+Floating-point verification is a typed round trip, **not proof of a unique
+original wire serialization or Mac receipt**. Snapshot provenance records this
+limit and `delivery: not-inferred`. Unknown rows remain non-executable recovery
+records. No import accepts a document or acknowledges an old send.
+
+Preview and apply bind the original ZIP SHA-256, not disposable directory
+inodes. Copying the same ZIP bytes to a different ordinary file does not change
+its revision. An occupied unrelated destination is refused. Interrupted export
+journals and files can resume only an exact retained prefix, through locked
+private file descriptors; no existing byte is replaced and no hard link is left
+by a killed exporter. A changed or truncated completed snapshot is refused,
+rather than silently repaired over potentially newer work.
+
+Portable evidence is in `test/python/lisiere_android_export_test.py` and
+`test/lisiere_android_export.test.mjs`: synthetic native-format archives, WAL and
+hot rollback journals, original-byte/typed-argument tampering, bounded extraction,
+occupied destinations and actual killed-process recovery. These are not an APK
+execution or a physical BOOX test. This converter changes no Android source and
+does not extend the scope of prior emulator evidence.
 
 ## Recovery
 
@@ -305,3 +358,43 @@ links, device identity and physical validation have their own receipts. The
 convergence verification record at
 `docs/lifecycle/changes/active/android-convergence/verification.md` in the
 Context Room source repository tracks those open gates.
+
+## Retained drawing-transfer sessions without a legacy runtime
+
+Inside the selected original project, inspect one exact retained session:
+
+```sh
+context-room migrate --legacy-session ORIGINAL_SESSION_ID
+context-room migrate --legacy-session ORIGINAL_SESSION_ID --session-frame board:REVISION --path docs/recovered-drawing.crnb
+context-room migrate --legacy-session ORIGINAL_SESSION_ID --session-frame board:REVISION --path docs/recovered-drawing.crnb --apply --revision PREVIEW_REVISION
+```
+
+The inventory also offers `source` and retained `preview:REVISION` frames. Those
+choices explicitly recover an embedded raster, not reconstructed editable pen
+objects. A structured `board:REVISION` import requires exact original object IDs
+and revisions; tombstones are retained and pressure samples use the normal legacy
+board converter. Flat object projections and projections with an explicit `value`
+are supported. An absent asset, unknown object format or missing revision is
+refused for structured import; the original files remain available and no raster
+fallback is silently substituted.
+
+Preview binds the original `session.json`, selected frame, source PNG, exact
+project location, configuration and destination. Apply retains those originals
+and their ID mapping in a versioned recovery journal, imports a working notebook
+through the existing native engine, and leaves accepted documentation untouched.
+Repetition reuses the original import receipt without overwriting newer gestures.
+Old task identities and uncertain sends remain historical; no provider task or
+legacy queue is resumed. Symlinks and occupied unrelated destinations are refused.
+
+This completes the native replacement of the former drawing connector calls,
+not the Android/Mac pending-queue reconciliation. Android `board.create`,
+`board.metadata`, `asset.put`, `board.mutate` and progressive frames still need
+receipt-digest and revision-chain reconciliation before any operation can be
+classified as delivered or safely applied. Native ZIP conversion and retained
+transfer recovery are not substitutes for that missing migration function.
+
+Preserved PCM recordings still have `context: unassigned` unless an original
+binding is already available in their retained source. A filename hash is not
+used to infer a document or conversation. The explicit audio-association
+selection/review workflow remains implementation work; do not claim that
+recording preservation alone delivers that workflow.

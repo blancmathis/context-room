@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { inspectLocalAudio } from './local_audio_diagnostics.mjs';
 import { renderAppShell } from "./ui/app.mjs";
 import { handleNotebookHttp, isNotebookMutation } from "./notebook_http.mjs";
 import { AssistantRuntime, handleAssistantHttp } from "./assistant_runtime.mjs";
@@ -7,7 +8,7 @@ import { notebookHash, readNotebookBytes, writeNotebookBytes, makeNotebookDirect
 import { submitNotebookShared } from "./notebook_workflow.mjs";
 import { NOTEBOOK_WEB_ASSETS } from "./notebook_web_assets.mjs";
 import { NOTEBOOK_LIMITS } from "./notebook_protocol.mjs";
-import { createLisiereConnector } from "./lisiere_connector.mjs";
+import { createLisiereConnector, migrateLisiereSession as recoverLisiereSession } from "./lisiere_connector.mjs";
 import { planLisiereNotebookImport, applyLisiereNotebookImport } from "./lisiere_migration.mjs";
 import { migrateLisiereDocument } from "./lisiere_documents.mjs";
 import { migrateLisiereConversationHistory } from "./lisiere_conversations.mjs";
@@ -7813,6 +7814,10 @@ export function createProjectAssistantSourceResolver() {
     });
 }
 
+export function migrateLisiereDrawingSession(root, options = {}) {
+  return recoverLisiereSession(root, options, { canWrite: rel => canEditLocalProposalPath(root, rel), beforeWrite: () => ensureRuntimeGitExcludes(root) });
+}
+
 export function migrateLisiereNotebook(root, options = {}) {
   const authority = { canWrite: rel => canEditLocalProposalPath(root, rel), beforeWrite: () => ensureRuntimeGitExcludes(root) };
   return options.apply ? applyLisiereNotebookImport(root, options, authority) : planLisiereNotebookImport(root, options, authority);
@@ -11175,6 +11180,7 @@ export function buildContextRoomDoctorReport(root = process.cwd(), options = {})
       startupContext: settings.startupContext,
       startupHooks: settings.startupHooks,
     },
+    runtimeDependencies: { audio: inspectLocalAudio() },
     docqa: docqa.summary,
     graph: graph.summary,
     issues,
@@ -23409,8 +23415,8 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     if ((!body.shared && !canReviewDocumentAsset(root, rel)) || !/\.png$/i.test(rel)) throw sharedRequestError("Select a PNG drawing in this project's review scope.", 403, "asset_scope");
     const file = body.shared ? readSharedDocumentAsset(root, rel) : body.proposal ? readLocalProposalFile(root, body.proposal, rel) : readDocumentAssetReview(root, rel);
     if (file.revision !== body.expectedRevision) throw sharedRequestError("The document revision changed.", 409, "review_revision_conflict");
-    const source = { path: rel, proposal: body.proposal || "", shared: Boolean(body.shared), revision: file.revision }, connector = createLisiereConnector();
-    const result = url.pathname.endsWith("/prepare") ? await connector.prepare(root, { source, bytes: file.afterBytes || file.after?.bytes || (file.afterBase64 ? Buffer.from(file.afterBase64, "base64") : null), title: path.basename(rel) }) : await connector.read(root, body.session, source);
+    const source = { path: rel, proposal: body.proposal || "", shared: Boolean(body.shared), revision: file.revision }, connector = createLisiereConnector({ canWrite: target => canEditLocalProposalPath(root, target), beforeWrite: () => ensureRuntimeGitExcludes(root) });
+    const result = url.pathname.endsWith("/prepare") ? await connector.prepare(root, { source, bytes: file.afterBytes || file.after?.bytes || (file.afterBase64 ? Buffer.from(file.afterBase64, "base64") : null), title: path.basename(rel), destination: body.notebookPath }) : await connector.read(root, body.session, source);
     sendJson(res, 200, result); return;
   }
   if (url.pathname === "/api/docqa/asset-decision" && req.method === "POST") {

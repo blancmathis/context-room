@@ -237,7 +237,7 @@ test('@smoke @notebook continuous ink, independent remote changes, undo, frozen 
     const frozenRevision = readNotebook(f.root, resourceId).document.revision;
     await draw(page, { start: [150, 190], end: [300, 250] }); await expect.poll(() => readNotebook(f.root, resourceId).document.objects.length).toBe(3);
     await dialog.getByRole('button', { name: 'Close notebook', exact: true }).click(); await expect(dialog).toHaveCount(0);
-    await page.evaluate(async proposalId => { const { openLocalProposalReview } = await import('/assets/local-proposal-review.mjs'); await openLocalProposalReview({ item: { proposalId, type: 'local-proposal', title: 'Frozen notebook review', files: ['docs/Sketch.crnb'] }, ...captureNotebookApi(), onChange: () => {} }); }, proposal.id);
+    await page.evaluate(async proposalId => { const { openLocalProposalReview } = await import('/assets/ui/local-proposal-review.mjs'); await openLocalProposalReview({ item: { proposalId, type: 'local-proposal', title: 'Frozen notebook review', files: ['docs/Sketch.crnb'] }, ...captureNotebookApi(), onChange: () => {} }); }, proposal.id);
     const review = page.getByRole('dialog', { name: 'Frozen notebook review', exact: true });
     await expect(review.locator('.notebook-review-render svg')).toHaveCount(1); await expect(review.locator('textarea')).toHaveCount(0);
     await expect(review.locator('svg g[data-object-id]')).toHaveCount(2);
@@ -399,6 +399,59 @@ test('@a11y @layout @notebook tactile targets, grayscale and keyboard-accessible
     expect(canvas.height).toBeGreaterThan(100); expect(box.width).toBeLessThanOrEqual(page.viewportSize().width);
     const targetSizes = await dialog.locator('button:visible').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().height)); expect(Math.min(...targetSizes)).toBeGreaterThanOrEqual(44);
     await page.screenshot({ path: testInfo.outputPath('notebook-eink.png'), fullPage: true });
+    expect(f.errors).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test('@smoke @notebook PNG review uses native editable source and accepts only the inspected raster snapshot', async ({ page }, testInfo) => {
+  const f = await fixture(page);
+  try {
+    const { createLocalDocumentationProposal, submitLocalDocumentationProposal } = await import('../../src/context_room.mjs');
+    const original = Buffer.from(await page.evaluate(() => {
+      const canvas = document.createElement('canvas'); canvas.width = 320; canvas.height = 180;
+      const context = canvas.getContext('2d'); context.fillStyle = 'white'; context.fillRect(0, 0, 320, 180);
+      context.fillStyle = 'black'; context.fillRect(25, 25, 20, 20);
+      return canvas.toDataURL('image/png').split(',')[1];
+    }), 'base64');
+    let proposal = createLocalDocumentationProposal(f.root, { title: 'Synthetic native PNG review' });
+    fs.mkdirSync(path.join(proposal.editRoot, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(proposal.editRoot, 'docs/drawing.png'), original);
+    proposal = submitLocalDocumentationProposal(f.root, proposal.id);
+    await page.evaluate(async id => {
+      const { openLocalProposalReview } = await import('/assets/ui/local-proposal-review.mjs');
+      await openLocalProposalReview({ item: { type: 'local-proposal', proposalId: id, title: 'Synthetic native PNG review', files: ['docs/drawing.png'] }, ...captureNotebookApi(), onChange: async () => {} });
+    }, proposal.id);
+    const review = page.getByRole('dialog', { name: 'Synthetic native PNG review', exact: true });
+    await expect(review).toBeVisible();
+    await review.getByLabel('Editable drawing notebook path', { exact: true }).fill('docs/native-drawing.crnb');
+    await review.getByRole('button', { name: 'Draw in Context Room', exact: true }).click();
+    const notebook = page.locator('dialog.notebook-dialog[open]');
+    await expect(notebook).toBeVisible(); await expect(notebook).toHaveAttribute('data-save-state', 'confirmed');
+    await draw(page); await expect(notebook).toHaveAttribute('data-save-state', 'confirmed');
+    const resourceId = await notebook.getAttribute('data-resource-id');
+    expect(readNotebook(f.root, resourceId).document.objects.length).toBeGreaterThan(1);
+    await notebook.getByRole('button', { name: 'Close notebook', exact: true }).click();
+    await expect(notebook).toHaveCount(0);
+    await review.getByRole('button', { name: 'Use saved drawing', exact: true }).click();
+    const preview = review.getByAltText('Exact saved Context Room drawing snapshot', { exact: true });
+    await expect(preview).toBeVisible();
+    await expect.poll(() => preview.evaluate(image => [image.naturalWidth, image.naturalHeight])).toEqual([320, 180]);
+    const exactPreview = Buffer.from((await preview.getAttribute('src')).split(',')[1], 'base64');
+    expect(fs.existsSync(path.join(f.root, 'docs/drawing.png'))).toBe(false);
+    expect(fs.existsSync(path.join(f.root, 'docs/native-drawing.crnb'))).toBe(false);
+    expect(listLocalProposals(f.root).find(item => item.id === proposal.id).status).not.toBe('accepted');
+    // A later independent gesture must remain in the working scene, not enter
+    // the frozen raster correction the person has already inspected.
+    const scene = readNotebook(f.root, resourceId);
+    mutateNotebook(f.root, { protocolVersion: 1, resourceId, operationId: 'after-raster-inspection', locationRevision: scene.locator.revision,
+      edits: [{ kind: 'put', id: 'later-object', expectedRevision: 0, object: { type: 'rect', x: 30, y: 30, width: 60, height: 50, fill: '#000000' } }] },
+    { actor: { kind: 'human', id: 'other-reviewer' }, canWrite: () => true });
+    await page.screenshot({ path: testInfo.outputPath('native-drawing-frozen-review.png'), fullPage: true });
+    await review.getByRole('button', { name: 'Save and accept file', exact: true }).click();
+    await expect(review).not.toBeVisible();
+    expect(fs.readFileSync(path.join(f.root, 'docs/drawing.png'))).toEqual(exactPreview);
+    expect(readNotebook(f.root, resourceId).document.objects.some(object => object.id === 'later-object')).toBe(true);
+    expect(fs.existsSync(path.join(f.root, 'docs/native-drawing.crnb'))).toBe(false);
     expect(f.errors).toEqual([]);
   } finally { await f.close(); }
 });

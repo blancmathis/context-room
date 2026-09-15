@@ -187,3 +187,13 @@ projects or review scopes, or resurrect an explicitly cleared composer draft.
 The current browser, provider, emulator and remaining physical
 proof boundaries are in `docs/lifecycle/changes/active/android-convergence/verification.md`
 in the Context Room source repository.
+
+## Local voice dependency diagnostics
+
+The assistant capabilities and local `doctor` expose deterministic optional audio
+diagnostics. A model path alone is not configured transcription: the local Whisper
+executable and a readable, nonempty regular model must be present. The diagnostics
+never run recognition, play audio, download files or contact a paid replacement.
+Readiness for an attempt is distinct from verified model compatibility, recording
+quality or BOOX acoustics. Configuration belongs to
+[runtime profiles](../system/runtime-profiles.md).

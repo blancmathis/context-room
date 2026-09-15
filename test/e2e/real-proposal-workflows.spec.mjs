@@ -184,12 +184,12 @@ function expectProjectSharedEffects(root, item, expected) {
 }
 
 async function expectProjectSharedEffectsEventually(root, item, expected) {
-  if (expected?.revision) {
-    await expect.poll(() => sharedContextStatus(root).revision, {
-      message: `Shared snapshot ${expected.revision} becomes current for ${item.projectTitle}`,
-    }).toBe(expected.revision);
-  }
-  expectProjectSharedEffects(root, item, expected);
+  // Repository catalogue refresh can publish state.revision before the separately
+  // scheduled project activation materializes current and managed resource links.
+  // Wait for the complete physical postcondition, not only that earlier catalogue
+  // receipt. Every exact revision, link, content and configuration assertion above
+  // remains required, in the same bounded window as the previous poll.
+  await expect(() => expectProjectSharedEffects(root, item, expected)).toPass({ timeout: 12_000 });
 }
 
 async function waitForBoot(page) {

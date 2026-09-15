@@ -72,6 +72,9 @@ function atomicWrite(root, rel, bytes, mode = 0o600) {
   const fd = fs.openSync(temp, "wx", mode);
   try {
     fs.writeFileSync(fd, bytes);
+    // A reviewed mode is part of the exact accepted version, not a creation
+    // preference subject to the host umask. Set it on the new descriptor only.
+    fs.fchmodSync(fd, mode);
     fs.fsyncSync(fd);
   } finally { fs.closeSync(fd); }
   try {

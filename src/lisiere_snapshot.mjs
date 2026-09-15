@@ -10,7 +10,7 @@ function failure(code, message, cause) { return Object.assign(new Error(message,
 /** Private recovery export, never starts the legacy service or accepts documents. */
 export async function exportLisiereSnapshot({ source, output, recordings, apply = false, expectedRevision } = {}) {
   if (typeof source !== 'string' || !source || typeof output !== 'string' || !output)
-    throw failure('migration_arguments', 'Choose --export-lisiere <workspace directory> and --output <private snapshot directory>.');
+    throw failure('migration_arguments', 'Choose --export-lisiere <workspace directory or native Android ZIP> and --output <private snapshot directory>.');
   if (apply && (typeof expectedRevision !== 'string' || !/^[a-f0-9]{64}$/.test(expectedRevision)))
     throw failure('migration_revision', 'Preview the Lisière snapshot first, then use --apply --revision <exact revision>.');
   if (recordings !== undefined && (typeof recordings !== 'string' || !recordings))
@@ -28,7 +28,7 @@ export async function exportLisiereSnapshot({ source, output, recordings, apply 
   }
   let manifest;
   try { manifest = JSON.parse(result.stdout); } catch (error) { throw failure('migration_snapshot_format', 'The SQLite helper returned an invalid snapshot manifest.', error); }
-  if (![1, 2].includes(manifest.version) || manifest.mediaType !== 'application/vnd.context-room.lisiere-snapshot+json' || !/^[a-f0-9]{64}$/.test(manifest.revision || ''))
+  if (![1, 2, 3].includes(manifest.version) || manifest.mediaType !== 'application/vnd.context-room.lisiere-snapshot+json' || !/^[a-f0-9]{64}$/.test(manifest.revision || ''))
     throw failure('migration_snapshot_format', 'Unsupported legacy snapshot manifest. The original workspace is unchanged.');
   return { ...manifest, source, output, exported: apply, accepted: false,
     next: 'This is a private recovery snapshot. Import and a single-writer cutover are separate steps; the legacy installation remains unchanged.' };

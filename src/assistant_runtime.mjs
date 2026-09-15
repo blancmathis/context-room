@@ -37,9 +37,9 @@ export class AssistantRuntime {
     this.jobs = new Map(); this.connection = { status: 'idle', models: [] }; this.closed = false;
   }
   capabilities(project) {
-    const lease = this.readLease();
+    const lease = this.readLease(), diagnostics = this.audio.diagnostics?.() || null;
     return { conversations: true, provider: 'local-codex-stdio', connection: this.connection,
-      audio: { local: true, configured: Boolean(this.audio.modelPath && fs.existsSync(this.audio.modelPath)), sampleRate: 16000, maxSeconds: 120,
+      audio: { local: true, configured: diagnostics ? diagnostics.transcriptionReadyForAttempt : Boolean(this.audio.modelPath && fs.existsSync(this.audio.modelPath)), diagnostics, sampleRate: 16000, maxSeconds: 120,
         controller: lease ? { ...(lease.project === project ? { conversationId: lease.conversationId, clientId: lease.clientId } : {}), epoch: lease.epoch, expiresAt: lease.expiresAt } : null,
         busyElsewhere: Boolean(lease && lease.project !== project) } };
   }

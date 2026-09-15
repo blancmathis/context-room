@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { inspectLocalAudio } from '../src/local_audio_diagnostics.mjs';
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,7 +7,7 @@ import { updateAllContextRooms } from "../scripts/update-context-rooms.mjs";
 import { planStateMigration, applyStateMigration } from "../src/state_migration.mjs";
 import { exportLisiereSnapshot } from "../src/lisiere_snapshot.mjs";
 import { inspectLisiereSnapshot } from "../src/lisiere_inventory.mjs";
-import { migrateLisiereNotebook, migrateLisiereDraft, migrateLisiereConversation } from "../src/context_room.mjs";
+import { migrateLisiereNotebook, migrateLisiereDraft, migrateLisiereConversation, migrateLisiereDrawingSession } from "../src/context_room.mjs";
 import {
   applyCliReviewAnnotation,
   applyAgentHandoff,
@@ -330,7 +331,7 @@ async function flushAndExit(code = 0) {
 }
 
 const KNOWN_OPTIONS = new Set([
-  "export-lisiere", "import-lisiere", "inspect-lisiere", "legacy-board", "legacy-draft", "legacy-conversation", "recordings", "output", "revision",
+  "export-lisiere", "import-lisiere", "inspect-lisiere", "legacy-board", "legacy-draft", "legacy-conversation", "legacy-session", "session-frame", "recordings", "output", "revision",
   "device-host", "device-port", "device-state",
   "reader",
   "action", "actionable", "advisory", "all", "all-projects", "allow", "allow-stale", "apply", "branch", "budget", "contract", "cursor", "cwd", "depth", "description", "detail", "document", "dry-run", "enabled", "exclude", "expand", "fields", "files", "folder", "follow", "format", "fresh", "from", "goal", "h", "heading", "help", "highlight", "hook", "include",
@@ -1696,13 +1697,17 @@ if (command === "migrate") {
   try {
     if (args.plan && args.apply) throw new ContextRoomCliError("invalid-arguments", "Choose a migration preview or --apply, not both.", { exitCode: 2 });
     if (args._[1]) throw new ContextRoomCliError("unknown-command", "Migration takes named options, not a subcommand.", { exitCode: 2 });
-    if ([args["export-lisiere"], args["import-lisiere"], args["inspect-lisiere"]].filter(Boolean).length > 1) throw new ContextRoomCliError("invalid-arguments", "Choose a legacy export, inventory or notebook import.", { exitCode: 2 });
+    if ([args["export-lisiere"], args["import-lisiere"], args["inspect-lisiere"], args["legacy-session"]].filter(Boolean).length > 1) throw new ContextRoomCliError("invalid-arguments", "Choose a legacy export, inventory or notebook import.", { exitCode: 2 });
     if (args["inspect-lisiere"] && args.apply) throw new ContextRoomCliError("invalid-arguments", "Recovery inventory is read-only; it cannot apply or acknowledge work.", { exitCode: 2 });
-    if (!args["import-lisiere"] && (args["legacy-board"] || args["legacy-draft"] || args["legacy-conversation"] || args.path)) throw new ContextRoomCliError("invalid-arguments", "--legacy-board, --legacy-draft, --legacy-conversation and --path require --import-lisiere.", { exitCode: 2 });
+    if (!args["import-lisiere"] && !args["legacy-session"] && (args["legacy-board"] || args["legacy-draft"] || args["legacy-conversation"] || args.path)) throw new ContextRoomCliError("invalid-arguments", "--legacy-board, --legacy-draft, --legacy-conversation and --path require --import-lisiere.", { exitCode: 2 });
     if ([args["legacy-board"], args["legacy-draft"], args["legacy-conversation"]].filter(Boolean).length > 1) throw new ContextRoomCliError("invalid-arguments", "Choose one legacy board, draft or conversation.", { exitCode: 2 });
     if (!args["export-lisiere"] && args.output) throw new ContextRoomCliError("invalid-arguments", "--output requires --export-lisiere.", { exitCode: 2 });
     if (!args["export-lisiere"] && args.recordings) throw new ContextRoomCliError("invalid-arguments", "--recordings requires --export-lisiere.", { exitCode: 2 });
-    const data = args["export-lisiere"]
+    if (args["session-frame"] && !args["legacy-session"]) throw new ContextRoomCliError("invalid-arguments", "--session-frame requires --legacy-session.", { exitCode: 2 });
+    if (args["legacy-session"] && (args["legacy-board"] || args["legacy-draft"] || args["legacy-conversation"])) throw new ContextRoomCliError("invalid-arguments", "Select a transfer session or a snapshot record, not both.", { exitCode: 2 });
+    const data = args["legacy-session"]
+      ? migrateLisiereDrawingSession(agentFirstTarget.root, { sessionId: args["legacy-session"], frame: args["session-frame"], path: args.path, apply: Boolean(args.apply), expectedRevision: args.revision })
+      : args["export-lisiere"]
       ? await exportLisiereSnapshot({ source: args["export-lisiere"], output: args.output, recordings: args.recordings, apply: Boolean(args.apply), expectedRevision: args.revision })
       : args["inspect-lisiere"]
       ? inspectLisiereSnapshot(args["inspect-lisiere"], { kind: args.kind || 'all', limit: args.limit ?? 50, ...(args.cursor === undefined ? {} : { cursor: args.cursor }) })
@@ -1986,6 +1991,7 @@ if (command === "doctor") {
     }
     failAgentFirstCommand("doctor", error, { format: agentFirstFormat, target: agentFirstTarget });
   }
+  report.runtimeDependencies ??= { audio: inspectLocalAudio() };
   if (args.format || args.project || args.location || args.folder || args.provider || args.cursor || args.limit) {
     emitAgentFirstResult("doctor", { target: agentFirstTarget, data: report }, { format: agentFirstFormat });
     if ((args.strict || args.profile === "strict") && report.issues?.some((issue) => ["critical", "high"].includes(issue.severity))) process.exit(1);
@@ -2000,6 +2006,11 @@ if (command === "doctor") {
   console.log(`Docs in graph: ${report.graph.docs}`);
   console.log(`Missing metadata: ${report.graph.missingMetadata}`);
   console.log(`Health issues: ${report.issues.length}`);
+  const audioDependencies = report.runtimeDependencies?.audio;
+  if (audioDependencies) {
+    console.log(`Local voice: ${audioDependencies.transcriptionReadyForAttempt ? "ready for a recognition attempt; quality not verified" : "dependencies incomplete"}`);
+    for (const issue of audioDependencies.issues) console.log(`- [optional audio: ${issue.code}] ${issue.action}`);
+  }
   for (const issue of report.issues.slice(0, 20)) {
     console.log(`- [${issue.severity}] ${issue.path ? `${issue.path}: ` : ""}${issue.message}`);
   }
