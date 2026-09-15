@@ -197,3 +197,12 @@ never run recognition, play audio, download files or contact a paid replacement.
 Readiness for an attempt is distinct from verified model compatibility, recording
 quality or BOOX acoustics. Configuration belongs to
 [runtime profiles](../system/runtime-profiles.md).
+
+### Recovered recording attachments
+
+**Recovered recordings** keeps explicitly selected historical PCM beside its
+original source or conversation. Preview the exact target before attaching.
+Loading, pressing Play, exporting the original PCM, and sending a message are
+separate actions. Attachments never automatically become transcripts or agent
+inputs. A newer document version is labelled without moving or deleting the
+historical association. See [recording recovery](../system/lisiere-migration.md#explicit-original-pcm-associations).

@@ -429,3 +429,30 @@ later human edits. The existing Local/Shared submission and human review are
 still required to publish accepted documentation. Cache-only drawings without
 an interpretable queue, and private progressive-pen job reconciliation, are not
 implemented by this comparison.
+
+## Explicit original PCM associations
+
+`migrate --import-lisiere SNAPSHOT --legacy-recording ORIGINAL_NAME.pcm
+--path docs/Idea.md` previews an attachment to an existing authorized document or
+working notebook. `--conversation-id ID` selects an existing conversation instead
+of `--path`; the two are mutually exclusive. `--label` is optional. Apply with the
+exact preview `--revision` and `--apply`.
+
+The original SHA-256, sample count, selected source/version and conversation
+identity are retained in the private assistant store outside the project.
+The hashed filename is never used to guess a destination. Preview creates no
+recording store, changed source bytes invalidate a pending preview, and replay
+of a published link preserves newer source work. Files and bindings have strict
+bounds, private permissions and immutable checksums. Corrupt or replaced data
+requires explicit recovery from the original snapshot.
+
+An existing conversation also offers **Recovered recordings**. The owner chooses
+a private snapshot directory and exact PCM name, previews the association, then
+chooses **Attach this exact recording**. Source-only attachments appear only in
+conversations for that source; conversation-only attachments remain exclusive to
+that conversation. **Load audio for review** creates a lossless WAVE envelope
+and does not start playback. **Export original PCM** preserves original samples.
+None of these operations transcribes, submits, sends, invokes Codex or changes
+accepted documents. Closing/switching a conversation disposes the old audio.
+This new browser/Android owner-WebView path requires execution validation; the
+portable CLI, storage and HTTP contracts have independent synthetic tests.

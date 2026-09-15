@@ -2,7 +2,9 @@
 import { inspectLocalAudio } from './local_audio_diagnostics.mjs';
 import { renderAppShell } from "./ui/app.mjs";
 import { handleNotebookHttp, isNotebookMutation } from "./notebook_http.mjs";
-import { AssistantRuntime, handleAssistantHttp } from "./assistant_runtime.mjs";
+import { AssistantRuntime, handleAssistantHttp, assistantStorageRoot } from "./assistant_runtime.mjs";
+import { attachLisiereRecording, recordingTargetFromResolved } from './lisiere_recording_links.mjs';
+import { AssistantSessions } from './assistant_sessions.mjs';
 import { createAssistantSourceResolver } from "./assistant_sources.mjs";
 import { notebookHash, readNotebookBytes, writeNotebookBytes, makeNotebookDirectory } from "./notebook_io.mjs";
 import { submitNotebookShared } from "./notebook_workflow.mjs";
@@ -7829,17 +7831,31 @@ export function migrateLisiereNotebook(root, options = {}) {
   return options.apply ? applyLisiereNotebookImport(root, options, authority) : planLisiereNotebookImport(root, options, authority);
 }
 
+function legacyRecoverySourceForPath(project, rel) {
+  if (typeof rel !== 'string' || !rel) throw sharedRequestError('Choose the document or imported notebook to link with this recovery.', 400, 'assistant_source_scope');
+  if (!rel.endsWith('.crnb')) return { kind: 'document', path: rel };
+  const matches = listNotebooks(project).filter(item => item.path === rel);
+  if (matches.length !== 1) throw sharedRequestError('Open or import this notebook before linking recovered content.', 409, 'assistant_source_missing');
+  const scene = readNotebook(project, matches[0].id);
+  return { kind: 'notebook', path: rel, resourceId: scene.resourceId, revision: scene.revision, locationRevision: scene.locator.revision, selection: [] };
+}
+
+export function migrateLisiereRecording(root, options = {}, { storageRoot = assistantStorageRoot() } = {}) {
+  const resolveSource = createProjectAssistantSourceResolver();
+  return attachLisiereRecording(root, options, { storageRoot, resolveTarget: (project, input) => {
+    if (input.conversationId) {
+      const sessions = new AssistantSessions({ root: storageRoot, resolveSource, providerFactory: () => { throw new Error('Recording recovery never starts an agent'); } });
+      try { return recordingTargetFromResolved(sessions.authorize(sessions.read(input.conversationId), project), input.conversationId); }
+      finally { void sessions.close(); }
+    }
+    return recordingTargetFromResolved(resolveSource(project, legacyRecoverySourceForPath(project, input.path), { creating: true }));
+  } });
+}
+
 export function migrateLisiereConversation(root, options = {}, { storageRoot } = {}) {
   return migrateLisiereConversationHistory(root, options, { ...(storageRoot ? { storageRoot } : {}),
     resolveSource: createProjectAssistantSourceResolver(),
-    sourceForPath: (project, rel) => {
-      if (typeof rel !== 'string' || !rel) throw sharedRequestError('Choose the document or imported notebook to link with this history.', 400, 'assistant_source_scope');
-      if (!rel.endsWith('.crnb')) return { kind: 'document', path: rel };
-      const matches = listNotebooks(project).filter(item => item.path === rel);
-      if (matches.length !== 1) throw sharedRequestError('Open or import this notebook before linking its recovered history.', 409, 'assistant_source_missing');
-      const scene = readNotebook(project, matches[0].id);
-      return { kind: 'notebook', path: rel, resourceId: scene.resourceId, revision: scene.revision, locationRevision: scene.locator.revision, selection: [] };
-    } });
+    sourceForPath: legacyRecoverySourceForPath });
 }
 
 export function migrateLisiereDraft(root, options = {}) {
