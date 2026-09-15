@@ -1,0 +1,80 @@
+name: Recovery targeted candidate
+on:
+  push:
+    branches: [mathis/context-room-recovery-hardening-20260915]
+    paths: ['.github/workflows/recovery-candidate.yml', '.github/recovery-candidate.mjs', '.github/recovery-patch.json']
+permissions: {}
+jobs:
+  dependencies:
+    if: github.repository == 'blancmathis/context-room'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts
+      - name: Export locked verification dependencies only
+        run: |
+          mkdir -p "$RUNNER_TEMP/recovery-dependencies"
+          tar --exclude='*.ttf' --exclude='*.otf' --exclude='*.woff' --exclude='*.woff2' --exclude='.npmrc' -czf "$RUNNER_TEMP/recovery-dependencies/dependencies.tar.gz" node_modules
+          cp package-lock.json "$RUNNER_TEMP/recovery-dependencies/"
+          git rev-parse HEAD > "$RUNNER_TEMP/recovery-dependencies/SOURCE_COMMIT"
+          cd "$RUNNER_TEMP/recovery-dependencies"
+          sha256sum dependencies.tar.gz package-lock.json > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: recovery-dependencies-${{ github.sha }}
+          path: ${{ runner.temp }}/recovery-dependencies/
+          if-no-files-found: error
+          retention-days: 1
+  candidate:
+    if: github.repository == 'blancmathis/context-room'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - id: patch
+        run: |
+          if test -f .github/recovery-patch.json; then echo 'present=true' >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        if: steps.patch.outputs.present == 'true'
+        with:
+          node-version: 24
+      - name: Apply exact source patch without moving any branch
+        if: steps.patch.outputs.present == 'true'
+        run: node .github/recovery-candidate.mjs apply
+      - if: steps.patch.outputs.present == 'true'
+        run: npm ci
+      - if: steps.patch.outputs.present == 'true'
+        run: npx playwright install --with-deps chromium firefox webkit
+      - name: Run the explicitly selected contract tests
+        if: steps.patch.outputs.present == 'true'
+        run: |
+          umask 022
+          node .github/recovery-candidate.mjs test
+      - if: steps.patch.outputs.present == 'true'
+        run: npm run package:privacy
+      - name: Create an unattached verified candidate only
+        if: steps.patch.outputs.present == 'true'
+        run: node .github/recovery-candidate.mjs publish
+        env:
+          CANDIDATE_TOKEN: ${{ github.token }}
+      - if: steps.patch.outputs.present == 'true' && always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: recovery-candidate-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/recovery-candidate/
+            test-results/
+          if-no-files-found: warn
+          retention-days: 7
