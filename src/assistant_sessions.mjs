@@ -244,19 +244,28 @@ export class AssistantSessions {
       this.operation(id, job, value => { value.operation.inputHash = notebookHash(message.text + initial); });
       job.timing.mark('dispatch'); job.dispatched = true;
       await provider.startTurn({ threadId: state.threadId, text: message.text + initial, model: state.model, effort: state.effort,
-        tool: async (name, input, options) => {
-          job.timing.mark('firstToolCall'); const toolStarted = performance.now();
+        tool: (name, input, options) => {
+          job.timing.mark('firstToolCall'); const toolStarted = performance.now(); let asynchronous = false;
+          const recorded = () => job.timing.addTool(performance.now() - toolStarted);
+          const observe = result => {
+            if (name === 'context_room_notebook' && input.action === 'edit' && result?.status === 'confirmed' && !result.replayed)
+              job.timing.mark('firstMutation');
+            return result;
+          };
           try {
+            // Preserve the original synchronous authorization boundary. Timing
+            // must not turn a revoked scope into an unobserved promise rejection.
             job.abort.signal.throwIfAborted(); this.authorize(this.read(id), root);
-            const result = await resolved.call(name, input, { ...options, onProgress: progress => {
+            const result = resolved.call(name, input, { ...options, onProgress: progress => {
               job.timing.mark('firstMutation');
               if (progress.reachedLength >= 1) job.timing.mark('firstDrawSegment');
               job.progress = { ...progress, at: Date.now() };
             } });
-            if (name === 'context_room_notebook' && input.action === 'edit' && result?.status === 'confirmed' && !result.replayed)
-              job.timing.mark('firstMutation');
-            return result;
-          } finally { job.timing.addTool(performance.now() - toolStarted); }
+            if (result && typeof result.then === 'function') {
+              asynchronous = true; return Promise.resolve(result).then(observe).finally(recorded);
+            }
+            return observe(result);
+          } finally { if (!asynchronous) recorded(); }
         },
         onEvent: event => {
           try {
