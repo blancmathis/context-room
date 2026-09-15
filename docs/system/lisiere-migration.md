@@ -256,8 +256,8 @@ ordinary document. The migration receipts never substitute for that decision.
 
 This command imports one canonical Mac board. Queue comparison, explicit PCM
 association, retained-transfer recovery and single-writer cutover use the separate
-commands documented below; this import does not perform them. Progressive pen-job
-receipt reconciliation remains unsupported. Import does not acknowledge an old
+commands documented below; this import does not perform them. Progressive job/frame
+evidence is reconciled by the queue comparison below, not by this single-board import. Import does not acknowledge an old
 operation, resume an old agent task or switch off the legacy writer.
 
 ## Import a retained text draft
@@ -396,8 +396,9 @@ legacy queue is resumed. Symlinks and occupied unrelated destinations are refuse
 This replaces the external drawing connector calls. Android/Mac queue comparison
 is a separate command below: it handles recognized creation, metadata, asset and
 ordinary mutation/undo cases, with explicit conflicts and preserved originals.
-Private progressive pen-job receipt reconciliation remains unimplemented. ZIP
-conversion and retained-transfer recovery do not themselves confirm delivery.
+The queue comparison also audits progressive job descriptors, grouped history and
+committed frame events. ZIP conversion and retained-transfer recovery do not
+themselves confirm delivery.
 
 Snapshot PCM inventory remains `context: unassigned`; it never guesses context
 from a filename hash. Explicit associations are now available through the CLI
@@ -425,16 +426,60 @@ undo are projected in order into a **separate** editable working notebook. Each
 object records original/effective preconditions and imported revision. Only the
 first successor receives a predecessor's acknowledged/projected revision, as in
 the original queue. Independent Mac work is preserved. Conflicts block import;
-unknown operations and private progressive-pen jobs remain explicit recovery
-items. No original queue entry is removed, acknowledged or sent.
+unknown operations and inconsistent progressive-pen evidence remain explicit
+recovery items. No original queue entry is removed, acknowledged or sent.
 
 The chosen destination must be unused and in the existing editable project
 scope. Original selected records and revision/ID mapping are retained privately.
 The header doubles as the immutable replay receipt: an interrupted retry keeps
 later human edits. The existing Local/Shared submission and human review are
 still required to publish accepted documentation. Cache-only drawings use the
-explicit tablet-copy view below; private progressive-pen job reconciliation is
-not implemented by the queue comparison.
+explicit tablet-copy view below. The progressive-pen audit described next is part
+of the same queue comparison and the same working import, not a second writer.
+
+## Historical progressive jobs and committed frames
+
+The queue view audits `pen_jobs`, the `pen:<job>` grouped history, selected board
+`events` and canonical object cells. A private frame ID `pen:<job>:<number>` is
+**not** an ordinary mutation receipt. Frame events and grouped history were
+committed with object changes; the job descriptor was saved afterwards in a
+separate transaction. The recovered `penRecovery` summary separates these facts.
+
+Recognized states are `drawing`, `stopped`, `interrupted` and `completed`.
+Recovery retains only the committed prefix and current canonical scene. It also
+recognizes a descriptor one committed frame late, an initial empty descriptor
+before/after the first frame, and a failed attempt counter one beyond the actual
+frame events. A restart’s `drawing` → `interrupted` status overlay is permitted.
+No such state resumes a stroke or asks an agent to generate its missing tail.
+
+Each job requires contiguous frame numbers, distinct exact event sequences,
+increasing canonical revisions, matching actors and grouped object identity.
+Grouped `before` must retain the new-object precondition. The last frame must
+agree with the group’s latest revision. Same-revision current objects must match
+exactly; newer canonical edits and tombstones win over old descriptor contents.
+An undone group requires advanced canonical revisions. An old undo still uses
+its original per-object revision and conflicts with later work. Missing, duplicate,
+orphaned or contradictory evidence blocks the projection, without dropping it.
+
+The original grouped history does not contain every intermediate frame’s geometry,
+and the descriptor omits the future drawing plan. These absent bytes are **not
+reconstructed** from an ID, an image or a similar layout. A retained expanded
+`board.draw` request can be matched to the job digest with Python number semantics,
+original actor, duration and retained lease. Its actually reached objects must
+also agree with the request prefix. A completed status with a mismatching or
+incomplete retained request is a conflict. Compact layouts lacking their original
+normalized operations cannot be hashed from substitute font metrics; they remain
+an explicit missing-evidence case, not authorization to re-execute the request.
+A consistent job without the original request still permits recovery of the
+canonical saved prefix, but reports `completedRequestProven: false`.
+
+`original-records.json` retains the selected original job descriptors, grouped
+history and event cells, including int64 sequences. The original snapshots remain
+untouched. The public plan contains identities/revisions, not old prompts or
+leases. `framesReplayed`, `agentStarted`, `resumed` and `accepted` stay false.
+The only apply effect is the existing separate, revision-bound working notebook;
+normal Local/Shared submission and human review are still necessary. Snapshots
+without pen evidence retain their previous preview and receipt byte schema.
 
 ## Explicit original PCM associations
 
@@ -538,6 +583,6 @@ identities and can be reviewed independently. This makes local-only free ideas
 recoverable without claiming that their cached revision proves Mac delivery.
 The original Android and Mac snapshots remain necessary for unresolved intents.
 A `board.undo` retains its exact historical precondition; it is not rebased as
-if it were a `board.mutate` successor. Progressive pen-job receipt reconciliation
-remains unsupported and explicitly blocks queue application, not preservation of
-an independently chosen cached scene.
+if it were a `board.mutate` successor. A progressive group uses each object’s last
+committed revision, never the latest global board revision. Inconsistent job/frame
+evidence blocks queue application, not an independently chosen cached scene.

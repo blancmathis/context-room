@@ -11,6 +11,7 @@ import json
 import math
 import sys
 from lisiere_android_export import arguments_agree, decode_binary, json_object
+from lisiere_pen_recovery import reconcile_pen_jobs, match_pen_request
 
 LIMIT = 64 * 1024 * 1024
 
@@ -120,6 +121,8 @@ def reconcile(data):
     histories = unique(mac['history'], 'id')
     creations = unique(mac['board_creations'], 'id')
     pen_jobs = unique(mac['pen_jobs'], 'id')
+    pen_recovery = reconcile_pen_jobs(mac, board_id)
+    pen_reports = {r['id']: r for r in pen_recovery['jobs']}
     entries = sorted(data['queue'], key=lambda entry: cell(entry['row']['seq']))
     require(len(entries) <= 100000, 'queue-too-large')
     unique([entry['row'] for entry in entries], 'id')
@@ -153,7 +156,7 @@ def reconcile(data):
                 if sha in mac['assetHashes']:
                     summary['status'] = 'asset-present-on-mac'
                 continue
-            known = op in ('board.create', 'board.metadata', 'board.mutate', 'board.undo')
+            known = op in ('board.create', 'board.metadata', 'board.mutate', 'board.undo', 'board.draw')
             if not relevant:
                 if not known and not args.get('board'):
                     summary.update(status='requires-reconciliation', reason='unknown-operation-scope', blocksSelection=True)
@@ -184,6 +187,14 @@ def reconcile(data):
                 continue
             require(board is not None and number(board.get('revision')), 'canonical-board-missing')
             require(args.get('operationId') == row['id'], 'queue-operation-id-mismatch')
+            if op == 'board.draw':
+                proof = pen_reports.get(row['id'])
+                h = match_pen_request(args, actor, pen_jobs.get(row['id']), proof, histories.get('pen:' + row['id']))
+                summary.update(status='pen-request-matched-prefix-retained', requestDigest=h,
+                               delivery='recorded-job-request-match-not-completion',
+                               lastCommittedFrame=proof['lastCommittedFrame'],
+                               macRevision=proof['lastCommittedRevision'], resumed=False)
+                continue
             if op == 'board.metadata':
                 require(set(args) <= {'board', 'title', 'project', 'attach', 'expected', 'directory', 'operationId'}, 'unknown-metadata-field')
                 expected, title, project, attach, directory = args.get('expected'), args.get('title'), args.get('project'), args.get('attach', False), args.get('directory')
@@ -226,6 +237,9 @@ def reconcile(data):
             if op == 'board.undo':
                 require(set(args) <= {'id', 'operationId'}, 'unknown-undo-field')
                 old = histories[args['id']]
+                if args['id'].startswith('pen:'):
+                    proof = pen_reports.get(args['id'][4:])
+                    require(proof is not None and not proof['blocksSelection'], 'pen-undo-evidence-missing')
                 changes = json.loads(old['changes'])
                 require(type(changes) is list, 'undo-history-invalid')
                 operations = [{'id': c['id'], 'expectedRevision': c['afterRevision'], 'value': c['before']} for c in changes]
@@ -242,7 +256,12 @@ def reconcile(data):
             # numbers until a hash happens to match a Mac receipt.
             h = digest([board_id, operations, actor, undo_of])
             summary['requestDigest'] = h
+            # Private progressive frames never belonged to the Android outbox.
+            # A frame-shaped ID without the original per-frame digest cannot be
+            # promoted to an ordinary replay, even if its final geometry agrees.
             prior = receipts.get(row['id'])
+            require(prior is not None or not row['id'].startswith('pen:') and row['id'] not in pen_jobs,
+                    'progressive-pen-needs-job-reconciliation')
             if prior:
                 require(prior['hash'] == h, 'receipt-payload-conflict')
                 result = result_matches(prior, board_id, row['id'], operations, actor, histories.get(row['id']))
@@ -292,9 +311,9 @@ def reconcile(data):
                     blocked_objects.update(change['id'] for change in args.get('operations', []))
                 except (TypeError, KeyError, AttributeError):
                     pass
-    blocked = board is None or any(item.get('blocksSelection') for item in report)
+    blocked = board is None or pen_recovery['blocked'] or any(item.get('blocksSelection') for item in report)
     return {'version': 1, 'boardId': board_id, 'actor': actor, 'operations': report, 'selectedSeqs': selected,
-            'blocked': blocked, 'board': board, 'objects': list(objects.values()), 'revisionMapping': mapping,
+            'blocked': blocked, 'penRecovery': pen_recovery, 'board': board, 'objects': list(objects.values()), 'revisionMapping': mapping,
             'assets': assets, 'accepted': False, 'legacyQueueChanged': False,
             'effect': 'new-working-notebook-only', 'canonicalRevision': original_board['revision'] if original_board else None}
 

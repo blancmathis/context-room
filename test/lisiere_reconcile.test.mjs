@@ -27,6 +27,9 @@ test('real SQLite exports reconcile into a separate working scene with exact map
   assert.equal(plan.operations[0].seq, '9007199254740993');
   const apply = { ...f, apply: true, expectedRevision: plan.revision };
   const imported = migrateLisiereReconciliation(root, apply, authority);
+  assert.equal(plan.penRecovery, undefined, 'ordinary preview identity must not change for an empty pen audit');
+  const retained = JSON.parse(fs.readFileSync(path.join(root, plan.recovery, 'original-records.json')));
+  assert.equal(retained.mac.events, undefined, 'ordinary recovery receipt keeps its original byte schema');
   assert.equal(imported.accepted, false); assert.equal(imported.legacyQueueChanged, false);
   assert.equal(fs.existsSync(path.join(root, f.path)), false); assert.equal(listNotebooks(root).length, 1);
   const state = readNotebook(root, imported.resourceId);

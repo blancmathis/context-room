@@ -41,6 +41,7 @@ export function inspectLisiereReconciliation({ androidSnapshot, macSnapshot, boa
   };
   const history = selected('history', row => row.board === boardId);
   const input = { version: 1, actor, boardId, queue, mac: {
+    events: selected('events', row => row.kind === 'board' && row.entity === boardId),
     boards: selected('boards', row => row.id === boardId), objects: selected('objects', row => row.board === boardId), history,
     operations: selected('operations', row => ids.has(row.id)), board_creations: selected('board_creations', row => row.id === boardId),
     pen_jobs: selected('pen_jobs', row => row.board === boardId), assetHashes: mac.manifest.files.filter(f => f.path.startsWith('assets/')).map(f => f.path.slice(7)),
@@ -54,13 +55,17 @@ export function inspectLisiereReconciliation({ androidSnapshot, macSnapshot, boa
     'Invalid reconciliation helper result.');
   const source = { android: android.manifest.revision, mac: mac.manifest.revision, boardId, actor, recoveryView: 'queue' };
   const needsCacheChoice = Boolean(cached && recoveryView === undefined);
-  const summary = { version: 1, kind: 'lisiere-reconciliation', source, operations: report.operations, revisionMapping: report.revisionMapping,
+  const summary = { version: 1, kind: 'lisiere-reconciliation', source, operations: report.operations,
+    ...(report.penRecovery.jobs.length || report.penRecovery.problems.length ? { penRecovery: report.penRecovery } : {}), revisionMapping: report.revisionMapping,
     cachedView: cached?.counts || null, needsCacheChoice, ...(needsCacheChoice ? { choices: ['queue', 'tablet'], notice: 'The tablet also has a retained cached scene. Explicitly choose the queue projection or an independent tablet copy; neither overwrites the other.' } : {}),
     blocked: report.blocked || needsCacheChoice, canonicalRevision: report.canonicalRevision, projectedRevision: report.board?.revision ?? null,
     accepted: false, legacyQueueChanged: false, effect: report.effect };
   const selectedIds = new Set(report.operations.filter(row => row.selected).map(row => row.id));
+  const retainedMac = { ...input.mac };
+  // Preserve the byte identity of existing ordinary recovery receipts.
+  if (!summary.penRecovery) delete retainedMac.events;
   return { summary, report, android, mac, original: {
-    version: 1, source, mac: { ...input.mac, operations: input.mac.operations.filter(row => selectedIds.has(row.id)) },
+    version: 1, source, mac: { ...retainedMac, operations: input.mac.operations.filter(row => selectedIds.has(row.id)) },
     queue: queue.filter(entry => report.selectedSeqs.includes(String(entry.row.seq?.integer ?? entry.row.seq))),
   } };
 }
