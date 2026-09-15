@@ -1320,3 +1320,140 @@ The current public main was rechecked at `1a2cdcec1435d60cd8d07a3762a369e066508c
 Targeted evidence (Node 26.3.1, Python 3.14.6, `umask 022`): 18 synthetic native-ZIP Python contracts passed, including WAL/hot rollback recovery and a real SIGKILL during publication; all 9 existing directory-snapshot Python contracts passed; the 2 new Node library/security tests passed. The old interruption fixture now interrupts `_publish_snapshot_file` rather than removed hard-link publication; its interruption, exact resumption, hashes and newer-byte preservation assertions are unchanged.
 
 The installed CLI test and full suite are not validated by this checkpoint. An interrupted dependency installation left `yaml/index.js` absent; the resulting module-load errors are not classified as product or umask failures. The separately runnable local-proposal and initial-proposal baseline had 17 passing tests under `umask 022`. Android source is unchanged; no new APK, emulator execution, real-provider timing or BOOX evidence is claimed here.
+
+## 2026-09-15 — post-merge native runtime delivery
+
+Public base: `1a2cdcec1435d60cd8d07a3762a369e066508ce1`.
+Code and test checkpoint: `98c437035970344e9b44d6e857d81bafd0dbcc2e` on
+`mathis/context-room-recovery-hardening-20260915`, PR #42. Subsequent delivery
+metadata does not retroactively change the input commit of an older proof.
+
+### Completed code and bounded proofs
+
+- Native Android ZIP ingestion: `7af7f0c1271cdc081eaa64e80e0e727ba9cec284`.
+  Eighteen Python ZIP contracts, nine existing directory-snapshot contracts,
+  the Node reader/inventory and installed ZIP CLI pass in the first checkpoint's
+  CI Node matrix. Native v1 containers produce snapshot v3; directory v1/v2
+  compatibility remains. The exact retained Android argument string is not
+  reserialized through JavaScript numbers. Typed Float/Double agreement is not
+  a unique wire-canonicalization or Mac-delivery proof.
+- Exact reviewed permissions: `21f2ed06039199e555c524600906611453969df0`.
+  Before the fix, an explicit reviewed `0644` became `0600`, and `0755` became
+  `0700`, under `umask 077`. The new descriptor is now explicitly chmod'ed to the
+  reviewed mode. Four regression contracts include two successive proposals for
+  each mode and a concurrent permission-only origin change that must still fail.
+- Native drawing and original transfer recovery:
+  `9f7452945ae41b5bd2c4186857a9cb47ccebaf6a`.
+  The compatibility connector uses actual native notebook creation, mutation,
+  frozen SVG/PNG review and explicit old-frame recovery, not a stub, replayed
+  agent or external companion. Eight module contracts cover scope/occupancy,
+  current edits, exact original source, unknown assets/revisions, deletion
+  tombstones, retained frames, interruption and bounded raster cropping.
+- Optional local audio diagnostics: the same native-runtime commit plus
+  `8b6f0e7adf785ebd6dd99b39263cb1834ed05298` for scoped CLI output.
+  Executable and readable nonempty regular model checks replace model-path-only
+  native readiness. Four diagnostics contracts and seven existing audio
+  contracts pass. Nothing is installed, downloaded, played or sent to a provider.
+- The combined seven-file targeted Node run passed **40/40** with `umask 022`,
+  Node 26.3.1 and Python 3.14.6. It does not include the newly added installed
+  CLI contracts or browser PNG-review scenario; those require the delivery CI.
+  Syntax and whitespace checks passed. Initial new-fixture errors (an assumed
+  uncropped SVG margin and a noncanonical macOS temporary path) were corrected;
+  production bounds and canonical-path requirements were not weakened.
+
+First-checkpoint CI: run **34949046038**, head `7af7f0c…`, tested PR merge commit
+`8edca1386c709f5771c330b5f93237ef44482a65`. Node 20, 22.23 and 24 passed, including
+Node 22 package checks; Chromium desktop/mobile, Firefox and WebKit passed the
+browser jobs. The Soak job **failed**: its multi-day navigation test passed, but
+`ux-endurance.spec.mjs:1142` failed at the second-window `openProjectFile` call
+(line 1219), with “Expand notes in Explorer”, expected `true`, observed `missing`.
+Artifact `playwright-soak-34949046038-1` retains the failure evidence. Its analysis
+is not complete; the test has not been removed, relaxed or classified as flaky.
+
+The historical Chromium slow-activation test passed in this first-checkpoint
+run without a browser-product change. That is not proof that the historical
+failure is fixed. The original full macOS failure set was not reproduced in a
+complete dependency installation: missing `yaml/index.js` stopped those imports.
+Only the separately runnable local proposal baseline passed 17/17 under the
+prescribed mask. No conclusion attributes every original failure to umask.
+
+### Delivery coverage matrix
+
+“Preserved” means the owning path was not replaced or bypassed, with the stated
+source/contract scope; it is not a new physical validation. “Partial” or “open”
+identifies missing implementation or proof, not a successful overall criterion.
+The run attached to the final PR head is the authority for its final CI result.
+`RELAIS-CODEX-LOCAL.md` at the repository root contains executable follow-up
+commands and the separation between remaining portable code, emulator tests,
+real-provider checks and physical BOOX trials.
+
+#### C01–C08
+
+| ID | Current coverage | Remaining boundary |
+| --- | --- | --- |
+| C01 | Partial: native PNG/carnet paths no longer execute a companion CLI; native recovery CLI and optional voice diagnostics added. | Fresh complete Mac installation, all migration paths and single-writer cutover are not proven. |
+| C02 | Native structured notebooks, editable source and human/agent provenance preserved; old-frame recovery and native raster review added. | No new authenticated co-drawing or physical pen measurement. |
+| C03 | Existing source-bound conversation/dictation preserved; dependency reporting improved. | Preserved old PCM still needs an explicit document/conversation association workflow. |
+| C04 | Existing native client, permissions, same-content transport and independent views preserved. | No new Mac-plus-BOOX simultaneous session. |
+| C05 | Existing full-owner tablet surface preserved; new PNG correction uses the same Mac service and scope. | New PNG flow requires browser/owner-WebView proof; no claim of serverless tablet use. |
+| C06 | Existing APK sources and preview/recovery variants preserved; build is handled by the unchanged convergence workflow. | A build is not APK execution or BOOX validation. |
+| C07 | Recovery targets explicit ordinary paths in existing permitted folders. | No independent Inbox, ideas app or library was introduced. |
+| C08 | Original bytes, recovery journals, no implicit acceptance and newer-edit refusal extended. | Android/Mac pending queues, PCM associations and final cutover/rollback remain incomplete. |
+
+#### R01–R29
+
+| ID | Coverage and evidence | Limit |
+| --- | --- | --- |
+| R01 | Local Mac canonical storage preserved; private ZIP conversion and native working scenes need no hosted service. | New complete macOS install not run. |
+| R02 | Global Hub/Health/Review Queue and project navigation owners unchanged. | Known second-window Soak failure remains open. |
+| R03 | Drawing/recovery binds canonical project identity, destination and original review; relocated/mismatched roots fail. | Not a new test of every worktree-switch browser race. |
+| R04 | Projects/Computer remain; native recovery uses existing canWrite scope and safe paths. | No grant widening or arbitrary remote filesystem access. |
+| R05 | Existing Hub sections, Startup and customizations unchanged; recovery uses ordinary paths. | Full cutover preservation not yet exercised. |
+| R06 | Audio prerequisites are optional runtime diagnostics, not automatic document alerts or acceptance. | Existing navigation Soak issue unresolved. |
+| R07 | New imports remain working scenes; module/CLI contracts assert accepted=false and no accepted .crnb file. | Final browser acceptance contract must run on delivery head. |
+| R08 | Native agent interface remains existing conversation/working engine; PNG acceptance stays explicit human review. | No new real-provider authority trial. |
+| R09 | PNG correction freezes the inspected scene; mode fix applies exact reviewed bytes/mode. | Added browser test checks later gestures excluded from accepted raster. |
+| R10 | Notebook import/submit and Local/Shared decision engines reused, not duplicated. | Pending legacy outbox reconciliation still absent. |
+| R11 | Shared Git isolation and terminal decision owners preserved; review source revision checks remain. | Original macOS rollback-mode fixture failure not fully diagnosed. |
+| R12 | New recovery and PNG source work without requiring Git in the target project. | No full new-install proof on a user's computer. |
+| R13 | Direct-change detection owners unchanged; new scenes do not write ordinary accepted paths. | Inherits existing coverage, not a fresh physical interruption test. |
+| R14 | Scope, origin, current-content and permission-only conflicts remain refusals; partial export resumes exact prefixes only. | Global rollback/cutover remains incomplete. |
+| R15 | Retention policy unchanged; original sessions and ZIP originals are never aged out or deleted here. | No cleanup automation introduced. |
+| R16 | ZIP/session migration and doctor work through normal CLI; no provider or companion required for those operations. | Voice/co-drawing generation still needs its explicit provider. |
+| R17 | Accepted-search and result provenance code unchanged. | No new search design or completeness claim. |
+| R18 | Existing reader freshness/Shared revision paths preserved; new imports bind exact preview revisions. | Not proof that the second-window navigation race is solved. |
+| R19 | Native offline transport unchanged; legacy snapshots and rows explicitly report delivery not inferred. | Unconfirmed old sends cannot be counted as received. |
+| R20 | Project skills selection unchanged; no new Shared-instructions category/native installation requirement. | Inherited scope only. |
+| R21 | No user front matter, corpus structure or document reorganization required; user chooses recovery destination. | `.crnb` is only required for explicit editable drawing recovery. |
+| R22 | Native editable scene versus frozen PNG crop versus retained raster recovery explicitly distinguished. | Missing source assets/revisions refuse structured recovery; no Office editor claim. |
+| R23 | Rendered HTML review unchanged; no human HTML source editor added. | Existing browser coverage must remain green. |
+| R24 | Raster correction retained; native structured working source and provenance now replace the external handoff. | No new real-agent generation latency proof. |
+| R25 | Connector implementation has no child-process legacy CLI or companion RPC path. | Full product replacement still depends on outstanding migration/cutover work. |
+| R26 | Optional audio diagnostics only inspect files/executability; no automatic research, sub-agent, inference or paid fallback. | Dependency readiness is not acoustic quality. |
+| R27 | No hosted-hub, hosted-review or context-room-remote reintroduced. | Existing opt-in device service remains required for tablet connection. |
+| R28 | Versioned v3 snapshot and transfer journals preserve originals; newer destination/scene bytes are not overwritten. | Config/proposal/accepted-state whole-system cutover and rollback are not complete. |
+| R29 | Code, tests, commits and a draft PR are delivered for review. | No merge, publication, installation or personal documentary decision is authorized by synthetic tests. |
+
+#### V01–V19
+
+| ID | Precise available coverage | Missing proof or implementation |
+| --- | --- | --- |
+| V01 | This R matrix plus first-checkpoint full Node/browser jobs; native mode/source contracts added. | Final-head CI and open Soak failure prevent blanket validation. |
+| V02 | Real native notebook engine and CLI paths do not call a legacy executable/service; clean CI has only public dependencies. | Complete fresh Mac install/autonomy not run. |
+| V03 | Existing display-receipt/device engine untouched; inherited browser/native history remains scoped to those inputs. | No new simultaneous Mac/physical Android test. |
+| V04 | Existing owner review retained; new PNG browser case tests exact human raster decision. | New owner WebView flow not instrumented; no new APK execution. |
+| V05 | ZIP publication interruption includes actual SIGKILL, exact-prefix resume and second execution; native offline code unchanged. | This is not Wi-Fi interruption, pen shutdown or native queue proof. |
+| V06 | Permission/origin conflicts, occupied recovery targets, later scene edits and idempotence tested. | Cross-client Android/Mac old queue and reordered legacy receipt reconciliation incomplete. |
+| V07 | Existing native agent/stop/undo code not replaced; drawing entry invokes that real engine. | No new authenticated provider generation/stop-redirection trial. |
+| V08 | Imports never accept; frozen source/hash preserved; new browser test excludes a later gesture from accepted PNG. | Browser success must be read from the final head's run, not assumed. |
+| V09 | Four mode regressions and 17 existing Local contracts passed; first-checkpoint Shared suite passed on Linux Node matrix. | Original macOS Shared rollback failure unresolved; no assertion removed. |
+| V10 | Seven existing audio plus four new dependency contracts passed. | Old PCM association workflow and new real microphone/conversation/audio/BOOX proof missing. |
+| V11 | HTML rendered review and existing formats unchanged; full editable source vs bounded PNG crop tested explicitly. | New complete browser review still requires its run; not a new PDF/Office capability. |
+| V12 | Accepted-only search and independent-reader code inherited from base; first-checkpoint Node coverage passed. | No new acceptance/freshness guarantee beyond those exact owners. |
+| V13 | ZIP unsafe paths/links/hash/type changes and native scope/origin/occupancy are rejected; device authorization owners unchanged. | Not a new exhaustive native credential/replay test. |
+| V14 | ZIP and old-frame imports have synthetic corruption/interruption/repeat/newer-work tests and preserve PCM. | Realistic Android/Mac pending operation reconciliation, PCM links and full rollback remain incomplete. |
+| V15 | Android identity/signature/build scripts and compatibility sources unchanged; recovery verifier still demands a dedicated ContextRoom_ emulator. | No new signed personal upgrade or interrupted update execution. |
+| V16 | First-checkpoint four browser jobs passed; new native PNG flow has a screenshot-producing browser case. | Inspect final screenshots and owner WebView; no new physical keyboard/gray-scale/BOOX ergonomics proof. |
+| V17 | First-checkpoint desktop performance job and 15-minute navigation portion passed. | Second Soak fails; no new real-provider improvement over historical 13.402/14.189 seconds; no sustained native memory/audio measurements. |
+| V18 | None added. | Physical BOOX pressure, palm, latency, ghosting, microphone/speaker, sleep and Wi-Fi comfort require authorized hardware trials. |
+| V19 | Public base/new branch/commits, bounded ZIP validation, source-only synthetic fixtures, first-checkpoint Node/privacy/pack checks. | Final CI/artifact hashes must be recorded for final HEAD; build success does not validate execution or complete migration. |
