@@ -1213,7 +1213,9 @@ an emulator proof, not a physical BOOX result. The existing full native owner
 workflow also passes with this helper, including image import and byte-identical
 editable notebook export through the system picker.
 
-The isolated full regression at `626c4d7` passes **90/90** test processes.
+The isolated full regression at `626c4d7` passes **90/90** test processes. Hosted
+run `34935226099` also passes the complete Node 20/22.23.0/24, four-browser and
+Soak matrix, together with both convergence checks.
 
 ## Retained Android text journals
 
@@ -1243,6 +1245,18 @@ departing document; the corrected check waits for the new page before reopening.
 The final native rendering was inspected. Both APK builds and artifact checks
 pass with the unchanged preview hash above. Physical BOOX testing remains open.
 
+The isolated full regression at `90f004f` passes **91/91** processes and both
+convergence checks pass. Hosted Node, Chromium, Firefox and Soak checks pass;
+the WebKit navigation smoke repeats the registration access-control error from
+`b0a8387`. Its trace places a simulated-clock callback in the departing document
+during browser Back. This scenario has no simulated-time assertion, so it now
+uses the browser's own timers. The duration/Soak scenarios retain their explicit
+clock controls. The unchanged local WebKit check passes three repetitions,
+consistent with the intermittent hosted failure; the corrected real-timer
+check passes **12/12** across all four configurations with three repetitions
+each. Error guards and navigation assertions remain in place. Linux verification
+of this correction remains pending.
+
 ## Open product gates
 
 Data migration and final removal of the
@@ -1253,7 +1267,7 @@ conversation, actions, interruption and playback have the separate check above.
 The verified Android installation is an emulator preview. It does not establish
 physical Wi-Fi behavior or BOOX pen/palm latency.
 
-The latest complete hosted application matrix passes at `dfa78fb`; later
+The latest complete hosted application matrix passes at `626c4d7`; later
 changes need their own regression and hosted result. Notebook-specific checks
 do not stand in for that matrix. Installation/signature migration, physical BOOX testing and
 personal-data migration have not been performed.

@@ -566,7 +566,8 @@ async function assertWorkbenchGutters(page, data, width) {
 test("@smoke Context Room keeps its critical workspace state stable", async ({ page, context }, testInfo) => {
   const data = fixture();
   const guard = attachFailureGuards(page);
-  await page.clock.setFixedTime(new Date());
+  // Exercise real navigation with the browser's own timers. Simulated time is
+  // installed only by the duration/soak scenarios that explicitly advance it.
   await page.goto(`${data.origin}/?hub=1&view=hub`);
   await waitForReady(page);
 
