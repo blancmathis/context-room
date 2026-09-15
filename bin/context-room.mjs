@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { inspectLocalAudio } from '../src/local_audio_diagnostics.mjs';
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1990,6 +1991,7 @@ if (command === "doctor") {
     }
     failAgentFirstCommand("doctor", error, { format: agentFirstFormat, target: agentFirstTarget });
   }
+  report.runtimeDependencies ??= { audio: inspectLocalAudio() };
   if (args.format || args.project || args.location || args.folder || args.provider || args.cursor || args.limit) {
     emitAgentFirstResult("doctor", { target: agentFirstTarget, data: report }, { format: agentFirstFormat });
     if ((args.strict || args.profile === "strict") && report.issues?.some((issue) => ["critical", "high"].includes(issue.severity))) process.exit(1);
