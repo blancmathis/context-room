@@ -49,8 +49,10 @@ viewport following, presentation and the connected owner interface are
 implemented. The owner file-picker round trip is verified on the emulator;
 voice alongside the native pen is implemented with emulator checks. Explicit
 original-source observation is implemented, including an unfinished native
-shape identified by the real agent from its image. Recoverable migration and
-release/upgrade packaging remain to be implemented. The complete
+shape identified by the real agent from its image. A recoverable private SQLite
+export now preserves legacy database data with exact-revision checks. Import,
+recording/handoff collection, writer cutover and release/upgrade packaging
+remain to be implemented. The complete
 connected-device and physical acceptance criteria remain open.
 
 ## Gesture continuation

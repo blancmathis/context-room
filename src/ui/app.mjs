@@ -13672,10 +13672,11 @@ function showHome() {
 }
 
 function renderDocQaDashboard() {
-  const report = state.docqa;
-  if (!report) return;
   renderSharedContextControls();
   renderContextRoomGlobalReviewQueue();
+  // Shared Hub controls also exist before a local document report is loaded.
+  // In particular, cancelling an opening must clear their disabled state.
+  if (!state.docqa) return;
   renderContextHealth();
   renderHubFolders();
 }

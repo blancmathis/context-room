@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { updateAllContextRooms } from "../scripts/update-context-rooms.mjs";
 import { planStateMigration, applyStateMigration } from "../src/state_migration.mjs";
+import { exportLisiereSnapshot } from "../src/lisiere_snapshot.mjs";
 import {
   applyCliReviewAnnotation,
   applyAgentHandoff,
@@ -327,6 +328,7 @@ async function flushAndExit(code = 0) {
 }
 
 const KNOWN_OPTIONS = new Set([
+  "export-lisiere", "output", "revision",
   "device-host", "device-port", "device-state",
   "reader",
   "action", "actionable", "advisory", "all", "all-projects", "allow", "allow-stale", "apply", "branch", "budget", "contract", "cursor", "cwd", "depth", "description", "detail", "document", "dry-run", "enabled", "exclude", "expand", "fields", "files", "folder", "follow", "format", "fresh", "from", "goal", "h", "heading", "help", "highlight", "hook", "include",
@@ -780,7 +782,7 @@ const agentFirstTargetCommand = (
   || (command === "shared" && args._[1] === "instructions" && args._[2] !== "status")
   || contextAgentFirstTargetCommand
   || command === "settings"
-  || command === "migrate"
+  || (command === "migrate" && !args["export-lisiere"])
   || (command === "doctor" && !args["all-projects"] && (Boolean(args._[1]) || Boolean(args.format || args.project || args.location || args.folder || args.provider || args.cursor || args.limit)))
 );
 let agentFirstTarget = null;
@@ -840,7 +842,8 @@ if (!rootStats?.isDirectory()) {
 }
 
 const nativePlanCommand = (
-  (command === "agent" && args._[1] === "handoff")
+  command === "migrate"
+  || (command === "agent" && args._[1] === "handoff")
   || (command === "agent" && ["watch", "unwatch", "open", "navigate", "scroll", "highlight", "annotate"].includes(args._[1]))
   || (command === "review" && args._[1] === "annotate")
   || (command === "shared" && args._[1] === "skills")
@@ -852,7 +855,8 @@ const nativePlanCommand = (
   || (command === "shared" && ["local", "security"].includes(args._[1]))
 );
 const nativeApplyCommand = (
-  (command === "agent" && args._[1] === "handoff")
+  command === "migrate"
+  || (command === "agent" && args._[1] === "handoff")
   || (command === "review" && args._[1] === "annotate")
   || (command === "shared" && args._[1] === "skills")
   || (command === "shared" && args._[1] === "instructions")
@@ -1688,7 +1692,12 @@ if (command === "context") {
 
 if (command === "migrate") {
   try {
-    const data = args.apply
+    if (args.plan && args.apply) throw new ContextRoomCliError("invalid-arguments", "Choose a migration preview or --apply, not both.", { exitCode: 2 });
+    if (args._[1]) throw new ContextRoomCliError("unknown-command", "Migration takes named options, not a subcommand.", { exitCode: 2 });
+    if (!args["export-lisiere"] && args.output) throw new ContextRoomCliError("invalid-arguments", "--output requires --export-lisiere.", { exitCode: 2 });
+    const data = args["export-lisiere"]
+      ? await exportLisiereSnapshot({ source: args["export-lisiere"], output: args.output, apply: Boolean(args.apply), expectedRevision: args.revision })
+      : args.apply
       ? applyStateMigration(agentFirstTarget.root, { expectedRevision: args.revision })
       : planStateMigration(agentFirstTarget.root);
     emitAgentFirstResult("migrate", { target: agentFirstTarget, data }, { format: agentFirstFormat });

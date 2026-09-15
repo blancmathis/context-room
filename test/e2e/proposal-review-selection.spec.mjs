@@ -1242,6 +1242,9 @@ test("@smoke Back cancels a delayed proposal opening and Forward starts one clea
     title: "Proposal history cancellation",
     reviewStatus: "ready",
   }]);
+  // A global Hub can already show Shared proposals before any local report is
+  // available. Back must still repaint its busy controls and restore focus.
+  await page.evaluate(() => { state.docqa = null; });
   await page.route("**/api/context-hub/review", async (route) => {
     reviewPosts += 1;
     if (reviewPosts === 1) {

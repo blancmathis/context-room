@@ -880,10 +880,44 @@ including the existing Voice switch, review accessibility, takeover and the
 sharing button's viewport visibility during scrolling. Mobile and Firefox
 captures were inspected. Doctor, package privacy, dry-run and the secret scan
 pass; the Android artifact has a verified v2 signature and eight exact shared
-assets. Complete regression and hosted CI are required for this new checkpoint.
+assets. Complete local regression passes **77/77** at `a0b75e4`.
+
+Hosted CI at that commit passes the three Node versions, soak and three browser
+jobs, but Chromium desktop finds a Hub navigation defect: Back cancels proposal
+opening in state while the controls stay disabled if no local report has loaded.
+The browser regression now explicitly reproduces that condition. Shared Hub
+controls render independently of the local report; all **16 targeted browser
+scenarios** pass after correction, across the four browsers. The pre-fix failure
+and CI trace are retained. Hosted CI remains a separate completion gate.
 
 An already consumed preview may remain in Codex history. Disabling sharing
 prevents new observations and cannot erase that earlier context.
+
+## Private legacy snapshot export
+
+`context-room migrate --export-lisiere <workspace> --output <private-directory>`
+previews a recognized SQLite workspace without loading Lisière. Applying its
+exact revision publishes a recoverable private snapshot, with the completed
+manifest last. Original data and unacknowledged work remain unchanged.
+The [snapshot contract](../../../../system/lisiere-migration.md) defines its
+format and the remaining import boundary.
+
+Nine contracts use real synthetic SQLite files, including committed WAL data,
+Android binary cells and exact large integers, credentials exclusion, retained
+drafts/deletions, asset identity, version refusal, changed source, symbolic paths,
+occupied destinations and an injected publication interruption followed by
+resume, repeat and destination-conflict refusal. The installed CLI performs a
+preview, apply and repeat without a registered project or old executable.
+The actual control-state migration CLI also exposed two existing dispatch
+omissions (`--revision` and native apply); both are corrected and covered.
+All **35 targeted Node checks**, including the nine Python contracts, pass.
+Doctor, package privacy, package dry-run, APK rebuild and artifact verification
+pass. No personal database, Android application or pairing was changed.
+
+This milestone exports database recovery data. It does not yet import editable
+notebooks, replay Android drafts/outboxes, collect recording files or old project
+handoffs, or switch the active writer. The complete regression and hosted CI
+for this checkpoint remain to be checked.
 
 ## Open product gates
 

@@ -89,15 +89,22 @@ Pending changes remain indefinitely unless the human decides otherwise. The clea
 
 Selection binds exact revisions. Unknown age starts at first observation, not a guessed filesystem timestamp. A changed revision starts a new age. Drafts, unavailable items and stale selections are excluded or reported; a partial failure is recorded and is not reported as full success. Cleanup rejects changes rather than merely hiding the rows.
 
-## Optional Lisière
+## Legacy Lisière handoffs
 
-Context Room runs without Lisière. For a PNG review, `Draw with Lisière` detects the installed local companion and creates a separate drawing workspace. The original document remains unchanged. Open the identified project and carnet on the tablet, then use `Import saved drawing` in Context Room.
+Context Room's notebook and connected-device interfaces run without Lisière.
+The older PNG bridge remains as compatibility server routes. Existing handoff
+directories retain the original document revision, stable board revision,
+editable objects and rendered preview for recovery. The current interface uses
+Context Room notebooks; it no longer exposes the old drawing/import buttons.
 
-The import binds the original document revision and a stable board revision. Editable board objects and the rendered PNG are retained. Saving in Context Room accepts the imported file; Context Room does not issue a separate Lisière proposal decision.
-
-The current companion protocol cannot navigate the tablet to a carnet automatically. PNG handoff is limited to 4096 pixels per side. Physical tablet behavior requires a separate device check.
+Removing those external compatibility calls and importing their editable sources
+remain part of the convergence work. Physical tablet behavior requires a
+separate device check.
 
 ## Migration
+
+For Lisière data, see the [private recovery export](../system/lisiere-migration.md).
+It is separate from the existing Context Room control-state migration below.
 
 Run `context-room migrate --root /path/to/project --format json` to inspect the compatibility migration. Apply the returned exact revision with `--apply --revision REVISION`. It backs up control-file bytes under `.context-room/migrations/workflow-v1/`, records a journal and installs the versioned workflow marker. Repeating it is idempotent and finishes an interrupted completion journal.
 
