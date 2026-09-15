@@ -81,6 +81,26 @@ function cacheKey(value) {
   return createHash("sha256").update(String(value)).digest("hex").slice(0, 16);
 }
 
+test("verified repository identity claims remain immutable across refreshes and still reject hard links", t => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-stable-claim-"));
+  withHomes(t, base); t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const repository = makeSharedRepository(base, [{ id: "demo", title: "Demo" }]);
+  readSharedMainRevision(repository.remote);
+  const sharedHome = process.env.CONTEXT_ROOM_SHARED_HOME;
+  const caches = fs.readdirSync(sharedHome).filter(name => /^[a-f0-9]{16}$/.test(name)); assert.equal(caches.length, 1);
+  const claim = path.join(sharedHome, caches[0], "repository-identity.json"), bytes = fs.readFileSync(claim), before = fs.statSync(claim, { bigint: true });
+  for (let i = 0; i < 2; i++) {
+    readSharedMainRevision(repository.remote, { refresh: true }); const after = fs.statSync(claim, { bigint: true });
+    assert.equal(after.ino, before.ino, "A verified identity must not be replaced while another process may be validating its inode");
+    assert.equal(after.dev, before.dev); assert.equal(after.nlink, 1n); assert.equal(fs.readFileSync(claim).equals(bytes), true);
+  }
+  const alias = path.join(base, "unsafe-identity-alias.json"); fs.linkSync(claim, alias);
+  assert.throws(() => readSharedMainRevision(repository.remote, { refresh: true }), { code: "shared-path-unsafe" });
+  assert.equal(fs.readFileSync(alias).equals(bytes), true); fs.unlinkSync(alias);
+  fs.chmodSync(claim, 0o640); readSharedMainRevision(repository.remote, { refresh: true });
+  assert.equal(fs.statSync(claim).mode & 0o777, 0o600); assert.equal(fs.readFileSync(claim).equals(bytes), true);
+});
+
 test("Shared source detection preserves non-GitHub SSH users and transport forms", (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-source-identity-"));
   withHomes(t, base);

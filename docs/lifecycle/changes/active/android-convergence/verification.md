@@ -1134,8 +1134,20 @@ package privacy and the package dry-run also pass.
 
 The Android preview rebuild and artifact verification pass with unchanged
 SHA-256 `55dde71ed0c0b18c14952e519a2020415f60c526576bc2fbf7e311c86b3b9623`.
-This interface is served by the Mac runtime. Full regression and hosted results
-for this history change remain pending.
+This interface is served by the Mac runtime. The full local regression at
+`b77cc67` passes **88/88** test processes. Hosted run `34931262047` found a
+separate Shared repository-claim race on Node 20; the other Node jobs were
+cancelled by that failure. It is not a complete hosted pass.
+
+## Stable Shared repository identity claims
+
+Concurrent proposal creation exposed unnecessary replacement of a valid private
+repository identity file on every refresh. A regression against unchanged
+`b77cc67` confirms that its inode was replaced. Valid private claims now retain
+their inode; the existing identity validation, hard-link refusal and private-mode
+repair remain in place. The identity suite and exact concurrent-creation test
+pass on the isolated corrected checkout. The next hosted matrix must confirm
+the fix on Linux as well.
 
 ## Open product gates
 

@@ -1723,7 +1723,12 @@ function writeRepositoryIdentityClaim(cacheRoot, repository) {
   if (claimStats && (claimStats.isSymbolicLink() || !claimStats.isFile())) {
     throw unsafeSharedFilesystemPath(`Shared repository identity claim must be a physical file: ${claimPath}`);
   }
-  if (claimStats) assertRepositoryIdentityClaim(cacheRoot, repository, { allowMissing: false });
+  if (claimStats) {
+    assertRepositoryIdentityClaim(cacheRoot, repository, { allowMissing: false });
+    // Identity claims are immutable once valid and private. Replacing identical
+    // bytes on every refresh races with readers validating the previous inode.
+    if ((claimStats.mode & 0o777) === 0o600) return;
+  }
   const transport = safeRepository(repository);
   writePrivateJson(claimPath, {
     version: 1,
