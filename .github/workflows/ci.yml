@@ -37,10 +37,9 @@ jobs:
         # The hosted runner has unrelated, non-inspectable same-user processes.
         # Give the real tests a private /proc without relaxing the product's
         # refusal of incomplete visibility. Tests still run as the runner user.
-        run: |
-          sudo unshare --pid --fork --mount-proc \
-            runuser -u "$(id -un)" -- env PATH="$PATH" CI=true \
-            /bin/bash -c 'node --test test/lisiere_cutover.test.mjs && npm test'
+        env:
+          CONTEXT_ROOM_TEST_PID_NAMESPACE: "1"
+        run: npm test
       - name: Audit dependencies
         run: npm audit --audit-level=high
       - name: Package dry run
