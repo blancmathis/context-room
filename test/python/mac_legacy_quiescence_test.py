@@ -6,11 +6,23 @@ import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'src'))
-from mac_legacy_quiescence import original_agent, stop_agent, verify_agent
+from mac_legacy_quiescence import original_agent, stop_agent, verify_agent, no_open_files
 
 
 class QuiescenceContracts(unittest.TestCase):
+    def test_macos_open_files_and_incomplete_visibility_are_distinct_and_both_refused(self):
+        with tempfile.TemporaryDirectory() as base, patch('mac_legacy_quiescence.sys.platform', 'darwin'):
+            def command(code, out='', err=''):
+                return lambda argv: SimpleNamespace(returncode=code, stdout=out, stderr=err)
+            self.assertTrue(no_open_files(base, command(1))['closedFilesVerified'])
+            with self.assertRaisesRegex(ValueError, 'file is open'):
+                no_open_files(base, command(0, 'p123\n'))
+            for code, out, err in [(1, '', 'Permission denied'), (0, 'p123\n', 'Warning'), (2, '', '')]:
+                with self.assertRaisesRegex(ValueError, 'incomplete process visibility'):
+                    no_open_files(base, command(code, out, err))
+
     def test_only_original_owned_plist_is_accepted(self):
         with tempfile.TemporaryDirectory() as base:
             home = Path(base).resolve(); source = home / '.local/share/lisiere/workspace'

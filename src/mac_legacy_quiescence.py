@@ -89,6 +89,8 @@ def no_open_files(directory, command=run):
     directory = str(Path(directory).resolve(strict=True))
     if sys.platform == 'darwin':
         result = command(['/usr/sbin/lsof', '-F', 'p', '+D', directory])
+        if result.returncode in (0, 1) and result.stdout.strip() and not result.stderr.strip():
+            raise ValueError('An original file is open. Stop its writer before retiring the workspace.')
         if result.returncode not in (0, 1) or result.stdout.strip() or result.stderr.strip():
             raise ValueError('Open legacy files or incomplete process visibility prevent retirement.')
     elif sys.platform == 'linux':
