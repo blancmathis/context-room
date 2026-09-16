@@ -22,7 +22,7 @@ export function createLinkedRecordings({ api }) {
   apply.hidden = true; fields.append(preview, cancel); form.append(fields, review, apply); form.hidden = true;
   const choose = button('Attach recovered recording', () => { form.hidden = false; snapshot.focus(); });
   const refresh = button('Refresh recording links', () => void load());
-  details.append(element('p', 'Select the source explicitly. Loading audio, playing it and sending a message are separate actions.'), list, choose, refresh, form, status);
+  details.append(summary, element('p', 'Select the source explicitly. Loading audio, playing it and sending a message are separate actions.'), list, choose, refresh, form, status);
   section.append(details);
   let id = null, epoch = 0, loaded = false, plan = null, prepared = null, urls = [], audios = [], busy = false;
   const valid = (original, generation) => id === original && epoch === generation && section.isConnected;
