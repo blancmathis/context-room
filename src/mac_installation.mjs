@@ -101,7 +101,7 @@ export function macLaunchAgent({ runtime, nodePath, home, whisperPath = null, mo
   for (const value of [runtime, nodePath, home]) check(typeof value === 'string' && path.isAbsolute(value) && !/[\x00-\x1f]/.test(value), 'Launch locations must be exact absolute paths.');
   check(Number.isInteger(port) && port >= 1024 && port <= 65535, 'Invalid local port.');
   const args = [nodePath, path.join(runtime, 'bin/context-room.mjs'), 'hub', '--no-local', '--port', String(port)];
-  const environment = { PATH: [...new Set([path.dirname(nodePath), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'])].join(':') };
+  const environment = { PATH: [...new Set([path.dirname(nodePath), path.join(home, '.local/bin'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'])].join(':') };
   for (const [key, value] of [['CONTEXT_ROOM_WHISPER_BIN', whisperPath], ['CONTEXT_ROOM_WHISPER_MODEL', modelPath]]) {
     check(value === null || typeof value === 'string' && path.isAbsolute(value) && !/[\x00-\x1f]/.test(value), 'Invalid explicit local audio path.');
     if (value !== null) environment[key] = value;
