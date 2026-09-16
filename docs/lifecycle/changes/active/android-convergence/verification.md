@@ -1585,12 +1585,18 @@ These local observations supersede the earlier unexecuted Mac/native statements.
 | M04 | Real Codex browser and native calls passed, including progressive ink, stop/redirection, human-ink preservation and source-bound document proposal. Native proof records clean `d14e64d`. | First useful result: 12,394 ms native, 14,048 ms browser, 21,247 ms detailed verifier. These are different scenarios, not a benchmark distribution. Ten-second target remains unmet. |
 | M05 | Actual local Whisper dictation returned the expected text in 2,038 ms. Real Codex answer, macOS synthesis, Web Audio receipt and continuous Voice resume/end passed. | Synthetic microphone input and muted output; no physical acoustic proof. The historical Voice verifier hardcoded `dirty: true`; it now measures Git state. |
 | M06 | Native PCM capture/playback, permission dialog, simultaneous voice/pen, original conversation retention, background stop and recording recovery passed. | Permission tests now target PermissionController explicitly while file-picker tests remain restricted to DocumentsUI. |
-| M07 | Private installation kit verified; temporary actual LaunchAgent activation, kickstart and HTTP readback passed. | Does not claim machine reboot or production activation; final installation receipt is local. |
+| M07 | Private kit and production installation verified at `eadc14c`: activation, service restart, HTTP readback, zero-issue recovery-project doctor, retained notebooks/history and actual Codex catalogue. Independent Whisper model and TLS listener verified. | Machine reboot and physical BOOX pairing are not tested. Private installed-file digests and service receipts remain local; later source revisions require their own installation check. |
 | M08 | Selected original notebooks and conversation records recovered; a pending legacy proposal retained as an editing copy. Original bytes and historical identities preserved, no acceptance or old-task replay. | Physical device cache/outbox/recordings and final single-writer retirement remain open. No private data is published as evidence. |
 | M09 | Direct Voice panel regression fixed and original desktop/mobile checks both passed. | Full CI is required on the final PR head. Prior green browser/convergence jobs are checkpoint evidence only. |
+| M10 | WebKit caught 4.43:1 contrast in small Shared-skills step text. The stronger theme text token passes the unchanged responsive accessibility scenario in all four profiles (4/4). | Prior successes did not establish sufficient contrast margin. No accessibility rule or budget was removed. |
 
-The full local suite and final hosted CI are separate gates; consult the exact PR
-head checks, not an earlier green run. The CI process namespace does not change
+The full local suite passed 105/105 processes; its run started before the scoped
+corrections, which have separate passing checks. Final hosted CI is a separate
+gate; consult [PR 42](https://github.com/blancmathis/context-room/pull/42) at its
+exact head, not an earlier green run. A previous Soak file-open measurement
+exceeded its unchanged two-second budget (2.843 s); the next run at `eadc14c`
+passed. This does not erase the earlier timing failure or guarantee every host.
+The CI process namespace does not change
 test assertions, time budgets, production code, user authority or process checks.
 
 ### Current coverage — 56 initial criteria
@@ -1599,7 +1605,7 @@ test assertions, time budgets, production code, user authority or process checks
 
 | ID | State | Evidence | Limit / remaining work |
 | --- | --- | --- | --- |
-| C01 | Local validation; installation gate | M07 verifies the kit and actual temporary macOS service. | Production activation receipt and reboot are separate; physical acceptance remains open. |
+| C01 | Installed Mac checkpoint verified | M07 verifies the kit, production service and recovered-source UI. | Reboot and physical acceptance remain open; later installed versions need their own receipt. |
 | C02 | Implemented; real-provider proof | P01/P02/F01/F02 plus M04 native progressive ink, stop/redirection and human-ink preservation. | Unavailable historical tails are not regenerated; physical BOOX remains open. |
 | C03 | Browser and emulator verified | M02 checks PCM selection/playback/export in four browser profiles and Android owner. | Actual BOOX recordings and acoustics remain open. |
 | C04 | Emulator and real-provider verified | M03/M04/M06 retain independent views, source identity and native writing during Voice. | Simultaneous physical Mac/BOOX session remains open. |
@@ -1647,7 +1653,7 @@ test assertions, time budgets, production code, user authority or process checks
 | ID | State | Evidence | Limit / remaining work |
 | --- | --- | --- | --- |
 | V01 | Preservation audit | All 29 grooming requirements retained; targeted CI environment and UI corrections documented above. | Whole-product acceptance still needs the remaining device gates. |
-| V02 | Kit and native service check | M07 activation, restart and HTTP readback. | Final production receipt is private; machine reboot not tested. |
+| V02 | Mac installation verified | M07 activation, restart, source integrity, doctor and original-source UI. | Final production receipt is private; machine reboot not tested. |
 | V03 | Native and real-provider proof | M03/M04/M06 actual emulator geometry, native pen, voice and acknowledgments. | Physical pressure, palm rejection and e-ink comfort untested. |
 | V04 | Owner PCM executed | M02/M03 actual native WebView, playback/export and file-picker checks. | No physical BOOX evidence. |
 | V05 | Extended synthetic proof | Lost import acknowledgment, delayed descriptor, failed frame attempt and repeated recovery preserve original and recent bytes (P01/P02/F01/F02). | Does not establish Android process/network behavior physically. |
@@ -1661,7 +1667,7 @@ test assertions, time budgets, production code, user authority or process checks
 | V13 | Actual account exercised | M04/M05 verify real local Codex with existing scope restrictions and inherited-MCP isolation. | Not an adversarial local-admin security proof. |
 | V14 | Selected personal recovery complete | M08 retains original private source records and pending review state. | Device-only data and retirement remain open; missing evidence cannot be reconstructed. |
 | V15 | Current instrumentation built and run | M03/M06 signed install, native owner/PCM/audio/pen checks. | Physical-device upgrade and interruption remain open. |
-| V16 | Rendered browser/native verified | M02/M03/M09 rendered UI, four-profile PCM accessibility and direct Voice regression. | Final whole-suite browser checks remain a separate gate; BOOX ergonomics open. |
+| V16 | Rendered browser/native verified | M02/M03/M09/M10 rendered UI, four-profile accessibility and direct Voice regression. | Final whole-suite browser checks remain a separate gate; BOOX ergonomics open. |
 | V17 | Measured; target open | M04: native 12.394 s; browser 14.048 s; detailed agent 21.247 s, with setup measured separately. | No sub-ten-second claim or silent model/effort downgrade. |
 | V18 | Not tested — initial scope | No physical result claimed. | BOOX pressure, palm, latency, ghosting, microphone/speaker, interruption, Wi-Fi/sleep and comfort are required local tests, not out-of-scope extensions. |
 | V19 | Exact source and signed APK | Source equality plus M01–M09 local evidence. | Final global CI, final installation and physical-device acceptance must not be inferred from package checks. |

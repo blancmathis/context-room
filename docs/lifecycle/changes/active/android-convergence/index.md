@@ -74,8 +74,9 @@ The 2026-09-16 local continuation builds and verifies the signed APK and runs
 owner, PCM recovery, native audio/pen and real-provider scenarios on a dedicated
 emulator. PCM recovery also passes in all four browser configurations. Actual
 Codex, local Whisper and continuous voice execute through the browser; generated
-microphone input and muted playback do not prove physical acoustics. A temporary
-macOS LaunchAgent passes activation, restart and HTTP checks. Private selected
+microphone input and muted playback do not prove physical acoustics. The installed
+macOS LaunchAgent passes activation, restart and HTTP checks, and the installed UI
+opens the recovered notebooks and source-linked histories. Private selected
 legacy data is recovered with its originals and pending review state preserved.
 The current verification checkpoint records source identities and remaining
 installation/CI gates. Physical BOOX, device-only queues/recordings, reboot and

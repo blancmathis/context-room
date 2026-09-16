@@ -1630,7 +1630,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .shared-skills-dialog { width: min(760px, 100%); grid-template-rows: auto minmax(0, 1fr) auto; }
     .shared-skills-wizard-body { min-height: 0; overflow-y: auto; display: grid; gap: 16px; padding: 16px 18px 20px; border-top: 1px solid var(--line); background: var(--surface-sidebar); }
     .shared-skills-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-    .shared-skills-step { display: grid; gap: 3px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); font-size: 10px; }
+    .shared-skills-step { display: grid; gap: 3px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; color: var(--text-soft); font-size: 10px; }
     .shared-skills-step strong { color: var(--text-soft); font-size: 11px; }
     .shared-skills-step.active { border-color: color-mix(in srgb, var(--accent) 52%, var(--line)); background: color-mix(in srgb, var(--accent) 9%, transparent); }
     .shared-skills-step.active strong { color: var(--text); }
