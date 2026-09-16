@@ -40,7 +40,7 @@ jobs:
         run: |
           sudo unshare --pid --fork --mount-proc \
             runuser -u "$(id -un)" -- env PATH="$PATH" CI=true \
-            "$(command -v npm)" test
+            /bin/bash -c 'node --test test/lisiere_cutover.test.mjs && npm test'
       - name: Audit dependencies
         run: npm audit --audit-level=high
       - name: Package dry run

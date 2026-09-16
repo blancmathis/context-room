@@ -110,7 +110,8 @@ def no_open_files(directory, command=run):
             except FileNotFoundError:
                 continue
             except PermissionError as error:
-                raise ValueError('Process visibility is incomplete; retirement is refused.') from error
+                raise ValueError('Process visibility is incomplete; retirement is refused. '
+                                 f'Cannot inspect PID {process.name}: {error.filename} ({error.strerror}).') from error
     else:
         raise ValueError('This platform has no supported closed-file verification.')
     return {'closedFilesVerified': True}
