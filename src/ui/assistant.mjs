@@ -146,6 +146,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     if (mode === 'dictate') run(preview.stop());
     observationRow.hidden = !self.captureSource || mode === 'dictate' || mode === 'voice' && !preview.stream;
     const direct = mode === 'dictate' || mode === 'voice';
+    linkedRecordings.section.hidden = direct;
     panel.classList.toggle('assistant-direct', direct); panel.classList.toggle('assistant-direct-dictation', mode === 'dictate');
     panel.classList.remove('assistant-minimized'); panel.dataset.mode = mode;
     title.textContent = mode === 'dictate' ? 'Dictation' : mode === 'voice' ? 'Voice' : 'Conversation';

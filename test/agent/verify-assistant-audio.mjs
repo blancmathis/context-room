@@ -87,7 +87,7 @@ try {
     transcription = { text: await pane.getByRole('textbox').inputValue(), elapsedMs: Date.now() - started };
     fs.writeFileSync(path.join(output, 'transcription.json'), JSON.stringify(transcription, null, 2), { mode: 0o600 });
     assert.ok(!option('--expected') || transcription.text.includes(option('--expected')), transcription.text);
-    assert.equal(await pane.locator('.assistant-messages').textContent(), '', 'Dictation must not send a message');
+    assert.equal(await pane.getByRole('log', { name: 'Conversation messages', includeHidden: true }).textContent(), '', 'Dictation must not send a message');
     await page.screenshot({ path: path.join(output, 'reviewable-dictation.png') });
   } else transcription = JSON.parse(fs.readFileSync(path.join(output, 'transcription.json')));
   const conversation = await (await fetch(`http://127.0.0.1:${room.server.address().port}/api/assistant/conversations/${id}`)).json();

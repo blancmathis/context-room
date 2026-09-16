@@ -279,6 +279,7 @@ test('@smoke @assistant direct Voice starts from the document and switching to D
     await page.locator('[data-file-voice]').click();
     const pane = page.getByRole('complementary', { name: 'Original document conversation' });
     await expect(pane).toHaveAttribute('data-voice-state', 'listening');
+    await expect(pane.getByRole('region', { name: 'Recovered recordings' })).toBeHidden();
     await page.locator('[data-file-dictate]').click();
     const dictation = page.getByRole('complementary', { name: 'Original source dictation' });
     await expect(dictation).toHaveAttribute('data-voice-state', 'off');
