@@ -1,3 +1,4 @@
+import { assertProjectWriter } from './writer_authority.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -92,12 +93,14 @@ export function writeNotebookBytes(root, rel, bytes, { exclusive = false, mode =
 export const readNotebookJson = (root, rel, fallback = null) => { const bytes = readNotebookBytes(root, rel); return bytes === null ? fallback : JSON.parse(bytes.toString('utf8')); };
 export const writeNotebookJson = (root, rel, value, options) => writeNotebookBytes(root, rel, stableNotebookJson(value) + '\n', options);
 export function withNotebookLock(root, rel, operation) {
+  if (rel.startsWith('.context-room/')) assertProjectWriter(root);
   const identity = canonicalNotebookRoot(root), parent = path.posix.dirname(rel);
   if (parent !== '.') makeNotebookDirectory(root, parent);
   const target = safeNotebookPath(root, rel);
   return withFilesystemLock(target, () => {
     if (canonicalNotebookRoot(root) !== identity) failNotebook('notebook_root_conflict', 'The original directory was replaced.');
     safeNotebookPath(root, rel);
+    if (rel.startsWith('.context-room/')) assertProjectWriter(root);
     return operation();
   });
 }

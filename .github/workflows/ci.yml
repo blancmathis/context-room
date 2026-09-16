@@ -33,6 +33,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Test Context Room
+        # Closed-file migration checks must see every process in their scope.
+        # The hosted runner has unrelated, non-inspectable same-user processes.
+        # Give the real tests a private /proc without relaxing the product's
+        # refusal of incomplete visibility. Tests still run as the runner user.
+        env:
+          CONTEXT_ROOM_TEST_PID_NAMESPACE: "1"
         run: npm test
       - name: Audit dependencies
         run: npm audit --audit-level=high

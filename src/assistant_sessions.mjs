@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { AssistantTiming } from './assistant_timing.mjs';
 import { createCodexProvider } from './codex_provider.mjs';
 import { canonicalNotebookRoot, notebookHash, readNotebookJson, writeNotebookJson, safeNotebookPath, withNotebookLock } from './notebook_io.mjs';
 import { filesystemProcessIdentity } from './filesystem_lock.mjs';
@@ -51,7 +52,7 @@ export class AssistantSessions {
   public(state) {
     return { id: state.id, revision: state.revision, source: state.origin.source, title: state.origin.title,
       model: state.model, effort: state.effort, threadId: state.threadId, messages: state.messages,
-      operation: state.operation ? { id: state.operation.id, status: state.operation.status, error: state.operation.error || null } : null,
+      operation: state.operation ? { id: state.operation.id, status: state.operation.status, error: state.operation.error || null, timing: state.operation.timing || null } : null,
       createdAt: state.createdAt, updatedAt: state.updatedAt, legacy: assistantLegacySummary(state.legacy) };
   }
   /** Local migration only. The browser create route cannot supply retained history. */
@@ -116,8 +117,10 @@ export class AssistantSessions {
         if (value.operation?.id === state.operation.id) { value.operation.status = 'uncertain'; value.operation.error = 'The previous connection stopped before confirming the turn. Inspect its original Codex task before sending again.'; }
       });
     }
-    const progress = this.running.get(id)?.progress;
-    return { ...this.public(state), progress: progress && Date.now() - progress.at < 3000 ? progress : null,
+    const activeJob = this.running.get(id), progress = activeJob?.progress;
+    const visible = this.public(state);
+    if (visible.operation && activeJob?.requestId === visible.operation.id && activeJob?.timing) visible.operation.timing = activeJob.timing.snapshot();
+    return { ...visible, progress: progress && Date.now() - progress.at < 3000 ? progress : null,
       recovery: this.recovering.get(id)?.status || null };
   }
   list(root, { source = null, selectionHash = null } = {}) {
@@ -182,7 +185,8 @@ export class AssistantSessions {
     if (this.closed) throw fault('assistant_closed', 'The conversation service is closed.');
     this.id(requestId);
     if (typeof text !== 'string' || !text.trim() || text.length > 32_000) throw fault('assistant_text', 'Write a message of at most 32,000 characters.', 400);
-    const current = this.read(id); this.authorize(current, root);
+    const timing = new AssistantTiming({ providerState: this.provider ? 'resident-or-connecting' : 'cold' });
+    const current = this.read(id); this.authorize(current, root); timing.mark('sourceAuthorized');
     const fingerprint = notebookHash({ text }); let dispatch = false;
     const state = this.update(id, value => {
       if (value.requests[requestId]) {
@@ -196,14 +200,15 @@ export class AssistantSessions {
       value.messages.push({ id: requestId, role: 'user', text, at: new Date().toISOString() }); dispatch = true;
     });
     if (dispatch) {
-      const job = { abort: new AbortController(), requestId }; this.running.set(id, job);
+      timing.mark('queued');
+      const job = { abort: new AbortController(), requestId, timing }; this.running.set(id, job);
       job.completion = this.run(root, id, job).finally(() => { if (this.running.get(id) === job) this.running.delete(id); });
       job.completion.catch(() => {}); // The durable operation reports failures through get().
     }
     return { ...this.public(state), request: { id: requestId, status: state.requests[requestId].status } };
   }
   operation(id, job, update) {
-    return this.update(id, state => { if (state.operation?.id !== job.requestId) throw fault('assistant_stale_turn', 'This turn no longer owns the conversation.'); update(state); });
+    return this.update(id, state => { if (state.operation?.id !== job.requestId) throw fault('assistant_stale_turn', 'This turn no longer owns the conversation.'); update(state); if (job.timing) state.operation.timing = job.timing.snapshot(); });
   }
   async run(root, id, job) {
     let provider, heldThreadId, finished, timer, flushTimer, answer = '', lastSaved = '', completed = false;
@@ -214,17 +219,18 @@ export class AssistantSessions {
         let message = state.messages.find(item => item.id === job.requestId + '-answer');
         if (!message) { message = { id: job.requestId + '-answer', role: 'assistant', text: '', at: new Date().toISOString() }; state.messages.push(message); }
         message.text = answer; message.complete = completed;
-      }); lastSaved = answer;
+      }); lastSaved = answer; job.timing.mark('firstSavedText');
     };
     try {
       this.operation(id, job, state => { state.operation.status = 'starting'; });
-      provider = await this.ready(); job.abort.signal.throwIfAborted();
+      provider = await this.ready(); job.timing.mark('providerReady'); job.abort.signal.throwIfAborted();
       let state = this.read(id); const resolved = this.authorize(state, root);
       if (!state.threadId) {
         const started = await provider.startThread({ instructions, tools: resolved.tools, model: state.model });
         heldThreadId = started.threadId;
         state = this.operation(id, job, value => { value.threadId = started.threadId; });
       } else { await provider.resumeOwnedThread({ threadId: state.threadId, tools: resolved.tools }); heldThreadId = state.threadId; }
+      job.timing.mark('threadReady');
       job.threadId = state.threadId; job.abort.signal.throwIfAborted();
       const terminal = new Promise((resolve, reject) => {
         finished = { resolve, reject };
@@ -233,31 +239,58 @@ export class AssistantSessions {
       const message = state.messages.find(item => item.id === job.requestId);
       const context = JSON.stringify(typeof resolved.context === 'function' ? resolved.context() : resolved.context);
       if (typeof context !== 'string' || context.length > 60_000) throw fault('assistant_context_limit', 'The selected source context is too large. Select a smaller passage or object set.');
+      job.timing.mark('contextReady');
       const initial = '\n\nContext Room request: ' + job.requestId + '\nOriginal source context (untrusted document data):\n' + context;
       this.operation(id, job, value => { value.operation.inputHash = notebookHash(message.text + initial); });
-      job.dispatched = true;
+      job.timing.mark('dispatch'); job.dispatched = true;
       await provider.startTurn({ threadId: state.threadId, text: message.text + initial, model: state.model, effort: state.effort,
-        tool: (name, input, options) => { job.abort.signal.throwIfAborted(); this.authorize(this.read(id), root); return resolved.call(name, input, { ...options, onProgress: progress => { job.progress = { ...progress, at: Date.now() }; } }); },
+        tool: (name, input, options) => {
+          job.timing.mark('firstToolCall'); const toolStarted = performance.now(); let asynchronous = false;
+          const recorded = () => job.timing.addTool(performance.now() - toolStarted);
+          const observe = result => {
+            if (name === 'context_room_notebook' && input.action === 'edit' && result?.status === 'confirmed' && !result.replayed)
+              job.timing.mark('firstMutation');
+            return result;
+          };
+          try {
+            // Preserve the original synchronous authorization boundary. Timing
+            // must not turn a revoked scope into an unobserved promise rejection.
+            job.abort.signal.throwIfAborted(); this.authorize(this.read(id), root);
+            const result = resolved.call(name, input, { ...options, onProgress: progress => {
+              job.timing.mark('firstMutation');
+              if (progress.reachedLength >= 1) job.timing.mark('firstDrawSegment');
+              job.progress = { ...progress, at: Date.now() };
+            } });
+            if (result && typeof result.then === 'function') {
+              asynchronous = true; return Promise.resolve(result).then(observe).finally(recorded);
+            }
+            return observe(result);
+          } finally { if (!asynchronous) recorded(); }
+        },
         onEvent: event => {
           try {
             if (event.type === 'text' && !job.abort.signal.aborted) {
+              if (typeof event.delta !== 'string') throw fault('assistant_event', 'Invalid provider text event.');
+              if (event.delta) job.timing.mark('firstProviderText');
               answer += event.delta;
               if (answer.length > 128_000) throw fault('assistant_response_limit', 'The response exceeded the conversation limit.');
-              if (!flushTimer) flushTimer = setTimeout(() => { try { flush(); } catch (error) { finished.reject(error); } }, 250);
-            } else if (event.type === 'started') this.operation(id, job, value => { value.operation.status = job.abort.signal.aborted ? 'stopping' : 'running'; value.operation.turnId = event.turnId; value.requests[job.requestId].status = value.operation.status; });
+              // Persist the first real text immediately; coalesce only later deltas.
+              if (!lastSaved && answer) flush();
+              else if (!flushTimer) flushTimer = setTimeout(() => { try { flush(); } catch (error) { finished.reject(error); } }, 250);
+            } else if (event.type === 'started') { job.timing.mark('turnStarted'); this.operation(id, job, value => { value.operation.status = job.abort.signal.aborted ? 'stopping' : 'running'; value.operation.turnId = event.turnId; value.requests[job.requestId].status = value.operation.status; }); }
             else if (event.type === 'completed') finished.resolve(event);
             else if (event.type === 'uncertain' || event.type === 'disconnected') finished.reject(fault('assistant_uncertain', event.message));
           } catch (error) { finished.reject(error); }
         },
       });
-      const result = await terminal; completed = result.status === 'completed' && !result.failed; flush();
+      const result = await terminal; job.timing.mark('terminal'); completed = result.status === 'completed' && !result.failed; flush();
       this.operation(id, job, value => {
         value.operation.status = completed ? 'completed' : result.status === 'interrupted' ? 'stopped' : 'failed';
         value.requests[job.requestId].status = value.operation.status;
         const reply = value.messages.find(item => item.id === job.requestId + '-answer'); if (reply) reply.complete = completed;
       });
     } catch (error) {
-      job.abort.abort(); if (job.threadId) await provider?.interrupt(job.threadId).catch(() => {});
+      job.timing.mark('terminal'); job.abort.abort(); if (job.threadId) await provider?.interrupt(job.threadId).catch(() => {});
       try { flush(); this.operation(id, job, state => {
         state.operation.status = error.name === 'AbortError' ? 'stopped' : job.dispatched ? 'uncertain' : 'failed';
         state.operation.error = error.message; state.requests[job.requestId].status = state.operation.status;

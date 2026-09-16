@@ -15,6 +15,7 @@ parser.add_argument('--output', type=Path, required=True)
 mode = parser.add_mutually_exclusive_group()
 mode.add_argument('--history', action='store_true', help='Verify recovered conversation export instead of the general owner workflow.')
 mode.add_argument('--draft', action='store_true', help='Verify editing and reopening a recovered Android draft through the owner Hub.')
+mode.add_argument('--recording', action='store_true', help='Verify explicit PCM attachment, non-autoplay and exact native file-picker export without an agent.')
 args = parser.parse_args()
 repo = Path(__file__).resolve().parents[2]
 output = args.output.resolve()
@@ -43,6 +44,8 @@ if args.history:
     fixture_env['CONTEXT_ROOM_TEST_LEGACY_HISTORY'] = '1'
 if args.draft:
     fixture_env['CONTEXT_ROOM_TEST_TABLET_DRAFT'] = '1'
+if args.recording:
+    fixture_env['CONTEXT_ROOM_TEST_RECORDING'] = '1'
 fixture = subprocess.Popen(['node', str(repo / 'test/android/owner-fixture.mjs'), str(fixture_dir)], cwd=repo, env=fixture_env, stdout=fixture_log, stderr=subprocess.STDOUT)
 try:
     deadline = time.monotonic() + 20
@@ -67,13 +70,15 @@ try:
         entries = run(adb + ['shell', 'ls', '-1', '/sdcard/Download'], capture_output=True, text=True).stdout.splitlines()
         # Android may append its collision suffix after an unknown extension.
         pattern = r'retained-lisiere-history(?: \(\d+\))?\.json(?: \(\d+\))?' if args.history else r'Owner(?: \(\d+\))?\.crnb(?: \(\d+\))?'
+        if args.recording:
+            pattern = re.escape(state['recording']['name'][:-4]) + r'(?: \(\d+\))?\.pcm(?: \(\d+\))?'
         return {name for name in entries if re.fullmatch(pattern, name)}
     exports_before = exported_names() if not args.draft else set()
     run(adb + ['shell', 'am', 'force-stop', 'app.contextroom.tablet.preview'], capture_output=True)
     started = time.monotonic()
     log_path = output / 'owner-workspace.log'
     with log_path.open('w') as log:
-        test_class = 'app.contextroom.tablet.OwnerDraftTest' if args.draft else 'app.contextroom.tablet.OwnerHistoryTest' if args.history else 'app.contextroom.tablet.OwnerWorkspaceTest'
+        test_class = 'app.contextroom.tablet.OwnerRecordingTest' if args.recording else 'app.contextroom.tablet.OwnerDraftTest' if args.draft else 'app.contextroom.tablet.OwnerHistoryTest' if args.history else 'app.contextroom.tablet.OwnerWorkspaceTest'
         result = subprocess.run(adb + ['shell', 'am', 'instrument', '-w', '-r', '-e', 'class', test_class,
             '-e', 'fixture', '/data/local/tmp/context-room-owner-ticket.json', 'app.contextroom.tablet.preview.test/androidx.test.runner.AndroidJUnitRunner'], stdout=log, stderr=subprocess.STDOUT, timeout=150)
     if result.returncode != 0 or 'OK (1 test)' not in log_path.read_text() or 'FAILURES!!!' in log_path.read_text():
@@ -85,10 +90,12 @@ try:
     captures = ('owner-retained-history', 'owner-exported-history') if args.history else ('owner-rendered-document', 'owner-native-drawing', 'owner-retained-workspace', 'owner-imported-image', 'owner-exported-notebook', 'owner-human-file-decision', 'owner-settings', 'owner-shared-review')
     if args.draft:
         captures = ('owner-recovered-tablet-draft', 'owner-saved-tablet-draft')
+    if args.recording:
+        captures = ('owner-recording-preview', 'owner-recording-loaded', 'owner-recording-exported')
     for name in captures:
         with (output / (name + '.png')).open('wb') as image:
             run(adb + ['exec-out', 'run-as', 'app.contextroom.tablet.preview', 'cat', 'files/' + name + '.png'], stdout=image)
-    if not (args.history or args.draft):
+    if not (args.history or args.draft or args.recording):
         scene = json.loads(run(['node', '--input-type=module', '-e',
             "import {readNotebook} from './src/notebooks.mjs'; process.stdout.write(JSON.stringify(readNotebook(process.argv[1], 'owner-native-notebook')));",
             state['sourceRoot']], cwd=repo, capture_output=True, text=True).stdout)
@@ -100,8 +107,21 @@ try:
         name = exported.pop()
         # exec-out preserves argv; shell quotes would become part of the filename.
         exported_bytes = run(adb + ['exec-out', 'cat', '/sdcard/Download/' + name], capture_output=True).stdout
-        (output / ('exported-history.json' if args.history else 'exported-owner.crnb')).write_bytes(exported_bytes)
-    if args.draft:
+        (output / ('exported-recording.pcm' if args.recording else 'exported-history.json' if args.history else 'exported-owner.crnb')).write_bytes(exported_bytes)
+    if args.recording:
+        expected = state['recording']
+        assert len(exported_bytes) == expected['bytes'] and hashlib.sha256(exported_bytes).hexdigest() == expected['sha256'], 'Native picker must export exact original PCM'
+        links = list((fixture_dir / 'private-assistant/legacy-recordings/v1/links').glob('*.json'))
+        assert len(links) == 1, 'Exactly one explicit original-source association is required'
+        link = json.loads(links[0].read_text())
+        assert link['target']['source']['path'] == 'docs/Guide.md' and link['accepted'] is False
+        conversation = json.loads((fixture_dir / 'private-assistant/conversations' / (link['target']['conversationId'] + '.json')).read_text())
+        assert conversation['threadId'] is None and conversation['operation'] is None and conversation['messages'] == [], 'Attaching/listening/exporting must never send'
+        assert not (fixture_dir / 'unexpected-provider-start').exists(), 'No provider may be constructed'
+        assert hashlib.sha256((Path(expected['source']) / 'workspace.sqlite').read_bytes()).hexdigest() == expected['sourceHash']
+        assert hashlib.sha256((Path(state['sourceRoot']) / 'docs/Guide.md').read_bytes()).hexdigest() == expected['documentHash']
+        detail = {'recordingAttachment': 'passed', 'autoplay': False, 'agentStarted': False, 'pcmSha256': expected['sha256'], 'bytes': len(exported_bytes)}
+    elif args.draft:
         expected = state['tabletDraft']
         saved = (Path(expected['editRoot']) / expected['path']).read_bytes()
         assert saved == (expected['content'] + '\r\nAdded on the connected Android owner.\r\n').encode('utf-8'), 'Native owner editing must save exact working bytes'
@@ -127,7 +147,7 @@ try:
         'apk': json.loads(artifact.stdout), 'emulator': avd, 'durationSeconds': round(time.monotonic() - started, 2),
         **detail, 'acceptedFileUnchanged': True, 'physicalBoox': 'not-tested'
     }, indent=2) + '\n')
-    print('Real Android owner draft recovery and editing: passed' if args.draft else 'Real owner UI and Android retained-history export: passed' if args.history else 'Real owner UI, rendered documents and native notebook round trip: passed', flush=True)
+    print('Real owner recording association and exact PCM export: passed' if args.recording else 'Real Android owner draft recovery and editing: passed' if args.draft else 'Real owner UI and Android retained-history export: passed' if args.history else 'Real owner UI, rendered documents and native notebook round trip: passed', flush=True)
 finally:
     if fixture.poll() is None:
         fixture.terminate()

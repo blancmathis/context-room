@@ -87,8 +87,13 @@ export class CodexStdio extends EventEmitter {
     }, 90_000); // First startup can backfill the private Codex metadata database.
     this.write({ method: 'initialized' }); return result;
   }
-  async close() {
+  async close({ idleProbe = false } = {}) {
     this.fail(fault('codex_closed', 'The Context Room Codex connection was closed.'));
+    // Only initialization uses this path: no thread or tool was started.
+    // Terminate that owned idle probe now, not after the normal 5 s grace.
+    // Still await its actual exit before allocating the restricted child.
+    if (idleProbe) await new Promise(resolve => setImmediate(resolve)); // let an already finishing EOF settle
+    if (idleProbe && this.child.exitCode === null && this.child.signalCode === null) this.child.kill('SIGTERM');
     const timer = setTimeout(() => { if (this.child.exitCode === null && this.child.signalCode === null) this.child.kill('SIGTERM'); }, 5_000);
     const killTimer = setTimeout(() => { if (this.child.exitCode === null && this.child.signalCode === null) this.child.kill('SIGKILL'); }, 10_000);
     try { await this.exited; } finally { clearTimeout(timer); clearTimeout(killTimer); }
@@ -101,25 +106,37 @@ export async function createCodexProvider({ cwd, stateRoot, launch, maxResidentT
   if (!Number.isInteger(maxResidentThreads) || maxResidentThreads < 1 || maxResidentThreads > 64) throw fault('codex_thread_limit', 'Use between one and 64 resident conversations.');
   const overrides = [...DISABLED_FEATURES.map(name => `features.${name}=false`), 'web_search="disabled"',
     'sandbox_mode="read-only"', 'approval_policy="never"', ...(stateRoot ? [`sqlite_home=${JSON.stringify(stateRoot)}`] : [])];
+  const started = performance.now(), stages = {};
+  const timed = async (name, work) => { const at = performance.now(); try { return await work(); } finally { stages[name] = performance.now() - at; } };
   let rpc = new CodexStdio({ cwd, overrides, launch });
   try {
-    await rpc.initialize();
-    const discovered = await rpc.request('config/read', { includeLayers: false });
+    await timed('initialInitializeMs', () => rpc.initialize());
+    const discovered = await timed('initialConfigurationMs', () => rpc.request('config/read', { includeLayers: false }));
     const names = Object.keys(discovered.config?.mcp_servers || {});
     // Codex 0.153.4 CLI overrides split dotted keys literally; quoted TOML
     // segments create another server instead of selecting the existing one.
     if (names.some(name => !/^[A-Za-z0-9_-]{1,120}$/.test(name))) throw fault('codex_scope_unavailable', 'An inherited MCP name cannot be safely disabled by this Codex CLI.');
-    await rpc.close();
-    rpc = new CodexStdio({ cwd, launch, overrides: [...overrides, ...names.map(name => `mcp_servers.${name}.enabled=false`)] });
-    await rpc.initialize();
-    const effective = (await rpc.request('config/read', { includeLayers: false })).config;
+    // The probe already has the restrictive feature/sandbox overlays. Keep it
+    // only if its *effective* configuration needs no MCP override. Starting a
+    // second identical child added a shutdown and another initialization to
+    // every cold request, even with no inherited server enabled.
+    const restartRequired = Object.values(discovered.config?.mcp_servers || {}).some(server => server?.enabled !== false);
+    let effective = discovered.config;
+    if (restartRequired) {
+      await timed('isolationShutdownMs', () => rpc.close({ idleProbe: true }));
+      rpc = new CodexStdio({ cwd, launch, overrides: [...overrides, ...names.map(name => `mcp_servers.${name}.enabled=false`)] });
+      await timed('restrictedInitializeMs', () => rpc.initialize());
+      effective = (await timed('restrictedConfigurationMs', () => rpc.request('config/read', { includeLayers: false }))).config;
+    }
     if (!effective || DISABLED_FEATURES.some(name => effective.features?.[name] !== false)
       || Object.values(effective.mcp_servers || {}).some(server => server.enabled !== false)
       || effective.web_search !== 'disabled') throw fault('codex_scope_unavailable', 'The local Codex configuration cannot provide the restricted Context Room tools.');
-    const listed = await rpc.request('model/list', { limit: 100 });
+    const listed = await timed('modelCatalogMs', () => rpc.request('model/list', { limit: 100 }));
     const models = (listed.data || []).map(item => ({ id: item.id, name: item.displayName || item.id,
       efforts: (item.supportedReasoningEfforts || []).map(value => value.reasoningEffort), defaultEffort: item.defaultReasoningEffort }));
-    return new CodexProvider(rpc, models, maxResidentThreads);
+    const provider = new CodexProvider(rpc, models, maxResidentThreads);
+    provider.setupTiming = { version: 1, stages, restartRequired, totalMs: performance.now() - started };
+    return provider;
   } catch (error) { await rpc.close(); throw error; }
 }
 

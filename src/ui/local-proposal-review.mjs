@@ -278,27 +278,39 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
         });
       }
       if (/\.png$/i.test(file.path) && file.afterBase64 !== null) {
-        const tablet = element("button", "Draw with Lisière", "quiet-button"); tablet.type = "button"; footer.prepend(tablet);
-        let session = null;
-        tablet.addEventListener("click", async () => {
+        const tablet = element("button", "Draw in Context Room", "quiet-button"), useDrawing = element("button", "Use saved drawing", "quiet-button");
+        tablet.type = useDrawing.type = "button"; useDrawing.hidden = true;
+        const destinationLabel = element("label", "Editable notebook path "), destination = element("input");
+        destination.type = "text"; destination.value = file.path.replace(/\.png$/i, "-drawing.crnb");
+        destination.setAttribute("aria-label", "Editable drawing notebook path"); destinationLabel.append(destination);
+        footer.prepend(destinationLabel, tablet, useDrawing); let session = null;
+        const runDrawing = async work => {
+          if (busy) return;
           if (isDirty()) { status.textContent = "Save or undo the current correction first."; return; }
-          busy = true; tablet.disabled = true; [accept, reject, undo, reload].forEach(button => { button.disabled = true; }); renderNavigation();
-          try {
-            const payload = { path: file.path, proposal: item.proposalId || "", shared: item.type === "shared-asset", expectedRevision: file.revision };
-            if (!session) {
-              session = await request("/api/lisiere/prepare", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
-              status.textContent = session.instruction; tablet.textContent = "Import saved drawing";
-            } else {
-              const imported = await request("/api/lisiere/read", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...payload, session: session.id }) });
-              importedDrawing = imported.contentBase64;
-              const preview = element("img"); preview.alt = "Drawing imported from Lisière"; preview.src = `data:image/png;base64,${importedDrawing}`;
-              versions.lastElementChild.replaceChildren(element("h3", "Your drawing"), preview);
-              undo.hidden = false; accept.textContent = "Save and accept file";
-              status.textContent = `Imported board revision ${imported.boardRevision}. The editable drawing remains in Lisière.`;
-            }
-          } catch (error) { status.textContent = error.message; }
-          finally { busy = false; tablet.disabled = false; [accept, reject, undo, reload].forEach(button => { button.disabled = false; }); renderNavigation(); }
-        });
+          busy = true; [tablet, useDrawing, destination, accept, reject, undo, reload, close].forEach(button => { button.disabled = true; }); renderNavigation();
+          try { await work(); }
+          catch (error) { if (serial === requestId && dialog.isConnected) status.textContent = error.message; }
+          finally { busy = false; [tablet, useDrawing, destination, accept, reject, undo, reload, close].forEach(button => { button.disabled = false; }); destination.readOnly = Boolean(session); renderNavigation(); }
+        };
+        const payload = { path: file.path, proposal: item.proposalId || "", shared: item.type === "shared-asset", expectedRevision: file.revision };
+        tablet.addEventListener("click", () => runDrawing(async () => {
+          if (!session) session = await request("/api/lisiere/prepare", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...payload, notebookPath: destination.value.trim() }) });
+          if (serial !== requestId || !dialog.isConnected) return;
+          status.textContent = session.instruction; tablet.textContent = "Open working drawing"; useDrawing.hidden = false;
+          const { openNativeDrawing } = await import('/assets/ui/native-drawing.mjs');
+          if (serial === requestId && dialog.isConnected) await openNativeDrawing({ api: request, scopeKey, session });
+        }));
+        useDrawing.addEventListener("click", () => runDrawing(async () => {
+          const snapshot = await request("/api/lisiere/read", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...payload, session: session.id }) });
+          const { nativeDrawingPng } = await import('/assets/ui/native-drawing.mjs');
+          const content = await nativeDrawingPng(snapshot);
+          if (serial !== requestId || !dialog.isConnected) return;
+          importedDrawing = content;
+          const preview = element("img"); preview.alt = "Exact saved Context Room drawing snapshot"; preview.src = `data:image/png;base64,${content}`;
+          versions.lastElementChild.replaceChildren(element("h3", "Your drawing"), preview);
+          undo.hidden = false; accept.textContent = "Save and accept file";
+          status.textContent = `Snapshot r${snapshot.boardRevision} at the original PNG bounds. Inspect it before deciding. All editable objects, including those outside this crop, remain in ${snapshot.path}.`;
+        }));
       }
       status.textContent = file.kind === "deleted" ? "Accepting removes this file. Its accepted content stays available for recovery." : "Only this file will receive your decision.";
     } finally { busy = false; renderNavigation(); }

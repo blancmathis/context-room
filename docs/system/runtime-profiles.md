@@ -37,10 +37,91 @@ process. It has its own restricted TLS routes and does not enable a hosted
 profile or expose the loopback owner API. See [connected devices](connected-devices.md)
 for activation, pairing and the current implementation boundary.
 
-## Optional Lisière
+## Native drawing and optional local voice
 
-Lisière is a separate local companion. Context Room starts and reviews documents without it. A requested drawing handoff uses an isolated workspace and the installed CLI; no Lisière token is placed in a document or sent through the browser. The current protocol can create and read a board, but does not remotely open it on the tablet.
+Context Room's PNG review, editable notebook and connected-device drawing paths
+use the native notebook engine. The compatibility route names `/api/lisiere/*`
+are retained for existing clients, but no separate companion executable or
+service is invoked. Original transfer sessions require explicit migration,
+not automatic continuation of old tasks. Recovery coverage and its remaining
+queue-reconciliation boundary are owned by
+[Lisière migration](lisiere-migration.md).
+
+Voice remains a separate optional local dependency, not a requirement for Hub,
+review, notebooks or the CLI. `doctor` reports missing local audio prerequisites
+without installing software, downloading a model, starting Codex or changing
+review health decisions. The runtime no longer treats a model filename alone
+as configured transcription: an executable Whisper CLI and a readable, nonempty
+regular model file must both be present. This is readiness to attempt recognition,
+not proof of model compatibility or acoustic quality.
+
+Set `CONTEXT_ROOM_WHISPER_BIN` to an installed local `whisper-cli` executable
+(or make it available on an absolute PATH entry). Set
+`CONTEXT_ROOM_WHISPER_MODEL` to the chosen compatible local model. The unchanged
+default model location is
+`$CONTEXT_ROOM_ASSISTANT_HOME/models/ggml-large-v3-turbo-q5_0.bin`, under
+`~/.context-room/assistant` when that home is not set. Speech synthesis uses the
+local macOS speech executable; other platforms report that dependency unavailable
+rather than silently falling back to a paid API. These diagnostics do not perform
+installation or verify an actual microphone, speaker or recognition result.
 
 ## Verification
 
 `test/local_runtime.test.mjs` checks early rejection and local capabilities. `test/server_security.test.mjs` checks loopback and owner-interface boundaries. These tests do not establish physical tablet behavior.
+
+## Enrolled migration writer
+
+An explicit legacy cutover enrolls the chosen project in a revisioned writer
+authority. Transition and rollback-pause reject document, notebook, proposal and
+owner HTTP mutations; readback and safety actions such as stopping an agent or
+revoking a device remain available. `doctor` reports this state read-only and
+never restarts either runtime. See [cutover and safe rollback](lisiere-migration.md#explicit-single-writer-cutover).
+
+## Preparing a macOS installation kit
+
+`node scripts/prepare-mac-install.mjs --output /path/to/private-kit --node /absolute/mac/node`
+previews an exact package-source kit. Repeat with `--apply --revision REVISION` to
+prepare it, or `--verify --output /path/to/private-kit --revision REVISION` to
+verify every staged file and mode. The destination must be outside the source;
+occupied destinations, links, credentials, generated directories and different
+later bytes are refused. `--node` describes the target Mac executable, not an
+assertion that the current machine is macOS. Python 3 and Node 20 or later remain
+runtime prerequisites for the migration helpers and product respectively.
+
+This is staging, not an installed service. The kit includes no `node_modules`,
+Whisper executable, model or credentials. Preparation is read-only by default,
+and does not access user project state, install dependencies, alter pairings,
+register a project or start any application. Optional `--whisper` and `--model`
+absolute paths configure an existing local recognizer and model in the rendered
+LaunchAgent; they do not download or validate recognition quality.
+
+After local installation authorization, keep the kit at its final stable private
+location. Verify it **before** adding dependencies. Inside its `runtime/`, inspect
+the dependency lock and run `npm ci --omit=dev --ignore-scripts --no-audit --no-fund`
+only with authorization for dependency downloads (or add `--offline` for an
+already populated cache). This downloads the pinned JavaScript dependencies,
+not a speech model. `node bin/context-room.mjs doctor --root /path/to/synthetic-project`
+and `node bin/context-room.mjs hub status --format json` provide local diagnostics.
+The kit verifier intentionally rejects a runtime directory with unlisted files,
+including newly installed dependencies; its verification receipt applies to the
+prepared source, not to a later expanded `node_modules` tree.
+
+Rendering `--launch-plist --output /path/to/private-kit --revision REVISION --home "$HOME"`
+prints an inert definition for `app.contextroom.local`. It runs the exact Node
+and CLI paths with `hub --no-local --port 4317` (or the explicit `--port`). It does
+not replace global/shared/assistant stores. Its PATH includes the selected Node
+folder and standard Homebrew/system locations for local tools. No device network
+listener is enabled implicitly. Connected-device startup stays opt-in through
+the existing documented device options.
+
+On the Mac, inspect `launchctl print gui/$(id -u)/app.contextroom.local`, existing
+Hub processes and `~/Library/LaunchAgents/app.contextroom.local.plist` first.
+An occupied plist or running Hub requires explicit local reconciliation, not
+replacement. Only after that review, save the definition without overwriting an
+existing file, validate it with `plutil -lint`, then bootstrap the exact plist
+with `launchctl bootstrap gui/$(id -u) PATH_TO_PLIST`. Stopping it uses an explicit
+`launchctl bootout gui/$(id -u)/app.contextroom.local`; do not remove user data.
+Service installation/activation, local dependency availability and reboot
+behavior have not been tested by kit preparation. Use a synthetic account/project
+for the first local verification. No older service is stopped automatically by
+this installation procedure; legacy retirement is the separate migration action.

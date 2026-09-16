@@ -81,7 +81,7 @@ export class NotebookAgentContext {
         'pen-' + notebookHash({ operationId, step: step++ }), signal);
       expectedRevision = receipt.objectRevisions[stroke.id];
       // The visible head is published only after the reached geometry is durable.
-      onProgress({ objectId: stroke.id, point: points.at(-1), revision: receipt.revision, completed: fraction === 1 });
+      onProgress({ objectId: stroke.id, point: points.at(-1), revision: receipt.revision, reachedPoints: points.length, reachedLength: total * fraction, completed: fraction === 1 });
       if (fraction === 1) break;
       try { await delay(Math.min(100, durationMs - (performance.now() - started)), undefined, { signal }); }
       catch (error) { if (error.name !== 'AbortError') throw error; }

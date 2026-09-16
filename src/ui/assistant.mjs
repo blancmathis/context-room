@@ -1,6 +1,7 @@
 import { readDraft, writeDraft, browserRecordings, pendingAudioReleases, saveAudioRelease, conversationScopeAliases } from './assistant-drafts.mjs';
 import { captureMicrophone, recoverBrowserRecording, acknowledgeRecording } from './assistant-audio.mjs';
 import { LiveSourcePreview } from './assistant-observation.mjs';
+import { createLinkedRecordings } from './assistant-recordings.mjs';
 import { createRetainedHistory } from './assistant-legacy.mjs';
 export { documentDraftPreview } from './assistant-observation.mjs';
 
@@ -18,6 +19,15 @@ export function prepareVoiceAudio() {
   if (globalThis.ContextRoomNativeOwner?.playAudio) return null;
   const context = new (window.AudioContext || window.webkitAudioContext)(), resumed = context.resume(); resumed.catch(() => {});
   return { context, resumed };
+}
+
+/** Draft recovery gates sending; the unrelated history catalogue does not.
+ * Late catalogue failures stay visible without blocking the original source.
+ */
+export async function initializeConversationInput({ restoreDraft, ready, loadHistory, onError }) {
+  await restoreDraft();
+  ready();
+  void Promise.resolve().then(loadHistory).catch(onError);
 }
 
 /** A captured API, never a callback that reads the browser's later project selection. */
@@ -84,8 +94,8 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   models.setAttribute('aria-label', 'Conversation Codex model'); efforts.setAttribute('aria-label', 'Conversation reasoning effort');
   const connect = button('Load available models', () => run((async () => { await post('/connect', {}); modelPending = true; await poll(); })()));
   modelRow.append(modelTitle, models, efforts, connect);
-  const retainedHistory = createRetainedHistory({ api });
-  panel.append(heading, original, audioStatus, boundary, historyRow, retainedHistory.section, messages, modelRow, form, status, infoBox, errorBox); parent.append(panel);
+  const retainedHistory = createRetainedHistory({ api }), linkedRecordings = createLinkedRecordings({ api });
+  panel.append(heading, original, audioStatus, boundary, historyRow, retainedHistory.section, linkedRecordings.section, messages, modelRow, form, status, infoBox, errorBox); parent.append(panel);
   const clientId = crypto.randomUUID();
   let closed = false, current = conversation, pollBusy = false, lease = null, renewTimer = null, recording = null, speaker = null,
     audioContext = null, audioGeneration = 0, modelPending = false, rendered = '', sendRequest = null, retainedRecording = null, recordingRequest = null, audioBusy = false, audioReading = false, changingConversation = false, draftWrites = Promise.resolve(), nativeRecordings = [], voice = null, voiceClosing = false, initializing = true, historyCursor = null, historyLoading = false;
@@ -136,6 +146,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     if (mode === 'dictate') run(preview.stop());
     observationRow.hidden = !self.captureSource || mode === 'dictate' || mode === 'voice' && !preview.stream;
     const direct = mode === 'dictate' || mode === 'voice';
+    linkedRecordings.section.hidden = direct;
     panel.classList.toggle('assistant-direct', direct); panel.classList.toggle('assistant-direct-dictation', mode === 'dictate');
     panel.classList.remove('assistant-minimized'); panel.dataset.mode = mode;
     title.textContent = mode === 'dictate' ? 'Dictation' : mode === 'voice' ? 'Voice' : 'Conversation';
@@ -151,7 +162,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     run(self.onState({ conversationId: current.id, scopeKey, source: current.source, progress: current.progress, closed,
       busy: activeStatuses.has(current.operation?.status), audioActive: Boolean(recording) || audioBusy || audioReading || Boolean(voice), hasDraft: Boolean(input.value.trim() || retainedRecording), ...extra }));
   }, async dispose() {
-    if (closed) return; await preview.dispose().catch(fail); await endVoice(); await saveDraft(); await releaseAudio(); closed = true; self.notifyState(); clearInterval(timer); panel.remove(); if (active === self) active = null;
+    if (closed) return; await preview.dispose().catch(fail); await endVoice(); await saveDraft(); await releaseAudio(); closed = true; linkedRecordings.dispose(); self.notifyState(); clearInterval(timer); panel.remove(); if (active === self) active = null;
   } }; active = self;
   const preview = new LiveSourcePreview({ api, identity: () => ({ conversationId: current.id, clientId }),
     capture: () => self.captureSource?.(current.source), visible: () => !closed && panel.isConnected && !panel.hidden && document.visibilityState === 'visible', onError: fail,
@@ -168,7 +179,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   run(preview.refresh());
   function render() {
     self.conversation = current; const busy = activeStatuses.has(current.operation?.status), uncertain = current.operation?.status === 'uncertain';
-    retainedHistory.set(current);
+    retainedHistory.set(current); linkedRecordings.set(current);
     panel.dataset.ready = String(!initializing); panel.setAttribute('aria-busy', String(initializing));
     panel.dataset.capturing = String(Boolean(recording));
     panel.classList.toggle('assistant-voice-enabled', Boolean(voice));
@@ -488,6 +499,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   window.addEventListener('context-room-native-active', nativeActivity);
   window.addEventListener('context-room-native-audio', nativeAudioInterrupted);
   const dispose = self.dispose; self.dispose = async () => { document.removeEventListener('visibilitychange', hidden); window.removeEventListener('context-room-native-active', nativeActivity); window.removeEventListener('context-room-native-audio', nativeAudioInterrupted); await dispose(); };
-  const timer = setInterval(() => void poll(), 500); showModels(); render(); await restoreDraft(); await refreshHistory(); initializing = false; render();
+  const timer = setInterval(() => void poll(), 500); showModels(); render();
+  await initializeConversationInput({ restoreDraft, ready: () => { initializing = false; render(); }, loadHistory: () => refreshHistory(), onError: fail });
   self.present(mode, dictationTarget, primedAudioContext); return self;
 }

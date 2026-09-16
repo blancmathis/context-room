@@ -71,7 +71,7 @@ try {
     assert.ok(!option('--expected') || user[0].text.includes(option('--expected')), user[0].text);
     assert.equal(completed.operation.status, 'completed'); assert.deepEqual(errors, []); assert.deepEqual(fs.readFileSync(documentPath), original);
     await page.screenshot({ path: path.join(output, 'continuous-voice-original-answer.png') });
-    const proof = { sourceHead: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), dirty: true,
+    const proof = { sourceHead: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), dirty: Boolean(execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' })),
       microphoneInput: 'finite synthetic browser MediaStream, then silence', endpoint: 'actual browser capture and speech endpoint',
       transcription: user[0].text, provider: 'real local Codex', answer: completed.messages.findLast(message => message.role === 'assistant')?.text,
       synthesis: 'real local macOS speech', playback: 'actual Web Audio completion with muted output', playbackReceipts: receipts.length,
@@ -87,7 +87,7 @@ try {
     transcription = { text: await pane.getByRole('textbox').inputValue(), elapsedMs: Date.now() - started };
     fs.writeFileSync(path.join(output, 'transcription.json'), JSON.stringify(transcription, null, 2), { mode: 0o600 });
     assert.ok(!option('--expected') || transcription.text.includes(option('--expected')), transcription.text);
-    assert.equal(await pane.locator('.assistant-messages').textContent(), '', 'Dictation must not send a message');
+    assert.equal(await pane.getByRole('log', { name: 'Conversation messages', includeHidden: true }).textContent(), '', 'Dictation must not send a message');
     await page.screenshot({ path: path.join(output, 'reviewable-dictation.png') });
   } else transcription = JSON.parse(fs.readFileSync(path.join(output, 'transcription.json')));
   const conversation = await (await fetch(`http://127.0.0.1:${room.server.address().port}/api/assistant/conversations/${id}`)).json();

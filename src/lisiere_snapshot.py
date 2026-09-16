@@ -6,6 +6,7 @@ The output is private recovery data, not an accepted project document.
 import argparse
 import base64
 import hashlib
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,8 @@ import shutil
 import sqlite3
 import stat
 import tempfile
+import time
+
 
 VERSION = 1
 MAX_BYTES = 512 * 1024 * 1024
@@ -74,7 +77,7 @@ def checked_directory(value):
     return value.resolve(strict=True)
 
 
-def snapshot(source, output=None, recordings=None):
+def _snapshot_directory(source, output=None, recordings=None):
     """One read transaction; plan and export have the same content revision."""
     source = checked_directory(source)
     recordings = checked_directory(recordings) if recordings is not None else None
@@ -153,7 +156,10 @@ def snapshot(source, output=None, recordings=None):
             def rows():
                 for row in connection.execute('SELECT ' + names + ' FROM "' + name + '" ORDER BY ' + order):
                     count[0] += 1
-                    yield packed([encoded(cell) for cell in row]) + b'\n'
+                    line = packed([encoded(cell) for cell in row]) + b'\n'
+                    if len(line) > 48 * 1024 * 1024:
+                        raise ValueError('An archived SQLite row exceeds the bounded recovery reader. Keep its original for explicit reconciliation.')
+                    yield line
 
             entry = store('tables/' + name + '.jsonl', rows())
             tables.append({'name': name, 'columns': selected, 'schema': [{'name': row[1], 'type': row[2], 'primary': row[5]} for row in columns], 'rows': count[0], **entry})
@@ -221,6 +227,132 @@ def snapshot(source, output=None, recordings=None):
         connection.close()
 
 
+
+def snapshot(source, output=None, recordings=None):
+    """Directory formats v1/v2 stay compatible; native ZIPs produce stable v3."""
+    source = Path(source).absolute()
+    if source.is_dir():
+        return _snapshot_directory(source, output, recordings)
+    if recordings is not None:
+        raise ValueError('An Android ZIP already declares its recordings; do not combine it with --recordings.')
+    from lisiere_android_export import read_android_export
+    with read_android_export(source) as (copy, native):
+        manifest = _snapshot_directory(copy / 'workspace', output, copy / 'recordings')
+        manifest.pop('revision')
+        manifest['version'] = 3
+        # Disposable inode numbers cannot invalidate the next apply. The exact
+        # original archive bytes, including journals and derived JSON, bind it.
+        manifest['sourceIdentity'] = ['android-export-sha256', native['sha256']]
+        manifest['recordings']['sourceIdentity'] = ['android-export-sha256', native['sha256'], 'recordings']
+        manifest['androidExport'] = native
+        total = sum(entry['bytes'] for entry in manifest['files'])
+        for relative in ('derived/outbox-args.jsonl', 'derived/android-export-manifest.json'):
+            original = copy / relative
+            size = original.stat().st_size
+            total += size
+            if total > MAX_BYTES:
+                raise ValueError('The converted Android snapshot exceeds 512 MiB. Keep the original ZIP for explicit reconciliation.')
+            sha = hashlib.sha256()
+            destination = None
+            if output:
+                target = output / relative
+                target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                destination = target.open('xb')
+                os.chmod(target, 0o600)
+            try:
+                with original.open('rb') as content:
+                    for chunk in iter(lambda: content.read(64 * 1024), b''):
+                        sha.update(chunk)
+                        if destination:
+                            destination.write(chunk)
+                if destination:
+                    destination.flush()
+                    os.fsync(destination.fileno())
+            finally:
+                if destination:
+                    destination.close()
+            manifest['files'].append({'path': relative, 'bytes': size, 'sha256': sha.hexdigest()})
+        return {**manifest, 'revision': digest(packed(manifest))}
+
+
+def _publish_snapshot_file(source, target, expected_sha, resume=True):
+    """Publish/resume an exact prefix through a pinned private parent directory.
+
+    Nothing is replaced, and no hard link can survive a killed exporter. Locks
+    serialize competing exporters, not unrelated human filesystem changes.
+    """
+    checked_directory(target.parent)
+    expected_parent = target.parent.stat()
+    parent_fd = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        parent = os.fstat(parent_fd)
+        if (parent.st_dev, parent.st_ino) != (expected_parent.st_dev, expected_parent.st_ino) or parent.st_mode & 0o077 or parent.st_uid != os.getuid():
+            raise ValueError('The private export directory changed. Nothing was replaced.')
+        flags = os.O_RDWR | os.O_NOFOLLOW
+        try:
+            fd = os.open(target.name, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent_fd)
+        except FileExistsError:
+            visible = os.stat(target.name, dir_fd=parent_fd, follow_symlinks=False)
+            if not stat.S_ISREG(visible.st_mode):
+                raise ValueError('A linked or special export destination cannot be resumed.')
+            fd = os.open(target.name, flags, dir_fd=parent_fd)
+        try:
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise ValueError('Another export still owns this exact destination. Retry after it finishes.')
+                    time.sleep(0.02)
+            before = os.fstat(fd)
+            visible = os.stat(target.name, dir_fd=parent_fd, follow_symlinks=False)
+            size = source.stat().st_size
+            if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_uid != os.getuid()
+                    or stat.S_IMODE(before.st_mode) != 0o600 or before.st_size > size
+                    or (before.st_dev, before.st_ino) != (visible.st_dev, visible.st_ino)
+                    or not resume and before.st_size != size):
+                raise ValueError('The export destination has different data, links or permissions. Nothing was replaced.')
+            with source.open('rb') as expected:
+                remaining = before.st_size
+                while remaining:
+                    current = os.read(fd, min(64 * 1024, remaining))
+                    if not current or current != expected.read(len(current)):
+                        raise ValueError('An interrupted export contains different data. Nothing was replaced.')
+                    remaining -= len(current)
+                checked = os.fstat(fd)
+                if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (checked.st_size, checked.st_mtime_ns, checked.st_ctime_ns):
+                    raise ValueError('The interrupted export changed while checking its prefix.')
+                for chunk in iter(lambda: expected.read(64 * 1024), b''):
+                    pending = memoryview(chunk)
+                    while pending:
+                        written = os.write(fd, pending)
+                        if written <= 0:
+                            raise OSError('The snapshot copy did not advance.')
+                        pending = pending[written:]
+            os.fsync(fd)
+            after = os.fstat(fd)
+            os.lseek(fd, 0, os.SEEK_SET)
+            sha = hashlib.sha256()
+            for chunk in iter(lambda: os.read(fd, 64 * 1024), b''):
+                sha.update(chunk)
+            visible = os.stat(target.name, dir_fd=parent_fd, follow_symlinks=False)
+            checked = os.fstat(fd)
+            checked_directory(target.parent)
+            current_parent = target.parent.stat()
+            if (sha.hexdigest() != expected_sha or after.st_size != size or checked.st_nlink != 1
+                    or (after.st_mtime_ns, after.st_ctime_ns) != (checked.st_mtime_ns, checked.st_ctime_ns)
+                    or (after.st_dev, after.st_ino) != (visible.st_dev, visible.st_ino)
+                    or (parent.st_dev, parent.st_ino) != (current_parent.st_dev, current_parent.st_ino)):
+                raise ValueError('The exported file or directory changed during publication. Retain its journal for reconciliation.')
+        finally:
+            os.close(fd)
+        os.fsync(parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
 def export(source, destination, expected_revision, recordings=None):
     if not expected_revision:
         raise ValueError('Preview the snapshot and supply its exact revision before exporting.')
@@ -229,7 +361,9 @@ def export(source, destination, expected_revision, recordings=None):
     if destination.name in ('', '.', '..'):
         raise ValueError('Choose an exact new export directory name.')
     destination = parent / destination.name
-    source = checked_directory(source)
+    source = Path(source).absolute()
+    if source.is_dir():
+        source = checked_directory(source)
     recordings = checked_directory(recordings) if recordings is not None else None
     if destination.is_symlink() or destination.is_relative_to(source) or recordings is not None and destination.is_relative_to(recordings):
         raise ValueError('Choose a new private destination outside the original workspace.')
@@ -241,6 +375,8 @@ def export(source, destination, expected_revision, recordings=None):
         if manifest['revision'] != expected_revision:
             raise ValueError('The legacy workspace changed after its snapshot preview. Preview it again.')
         content = packed(manifest) + b'\n'
+        if len(content) > 8 * 1024 * 1024:
+            raise ValueError('The recovery manifest exceeds its bounded reader size.')
         for name in ('export-journal.json', 'manifest.json'):
             file = staging / name
             with file.open('xb') as output:
@@ -255,26 +391,34 @@ def export(source, destination, expected_revision, recordings=None):
             if destination.stat().st_mode & 0o077 or not (destination / 'export-journal.json').is_file():
                 raise ValueError('The occupied destination is not a private interrupted export.')
 
+        # Refuse unrelated occupants, including symlinks and extra directories.
+        allowed = {entry['path'] for entry in manifest['files']} | {'manifest.json', 'export-journal.json'}
+        directories = {str(Path(rel).parent) for rel in allowed} - {'.'}
+        for folder, children, names in os.walk(destination, followlinks=False):
+            base = Path(folder).relative_to(destination)
+            for name in children:
+                child = Path(folder) / name
+                checked_directory(child)
+                if str(base / name) not in directories:
+                    raise ValueError('The occupied export contains an unrelated directory. Nothing was replaced.')
+            for name in names:
+                if str(base / name) not in allowed:
+                    raise ValueError('The occupied export contains an unrelated file. Nothing was replaced.')
+                regular(Path(folder) / name)
+        completed = False
+        complete_marker = destination / 'manifest.json'
+        if complete_marker.exists():
+            regular(complete_marker)
+            descriptor = os.open(complete_marker, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(descriptor, 'rb') as existing:
+                completed = existing.read(len(content) + 1) == content
+
         def publish(relative, sha):
             target = destination / relative
             target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            checked_directory(target.parent)
-            try:
-                os.link(staging / relative, target, follow_symlinks=False)
-            except FileExistsError:
-                regular(target)
-                descriptor = os.open(target, os.O_RDONLY | os.O_NOFOLLOW)
-                with os.fdopen(descriptor, 'rb') as existing:
-                    current = hashlib.sha256()
-                    for chunk in iter(lambda: existing.read(1024 * 1024), b''):
-                        current.update(chunk)
-                if current.hexdigest() != sha:
-                    raise ValueError('An interrupted export destination contains different data. Nothing was replaced.')
-            directory_fd = os.open(target.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+            if completed and not target.exists():
+                raise ValueError('A completed snapshot lost a file. Nothing was replaced; preserve it for reconciliation.')
+            _publish_snapshot_file(staging / relative, target, sha, resume=not completed)
 
         publish('export-journal.json', digest(content))
         for entry in manifest['files']:

@@ -49,13 +49,19 @@ public final class OwnerWorkspaceTest {
     return null;
   }
   void systemClick(String text) throws Exception {
+    systemClick(text, "com.android.documentsui", "com.google.android.documentsui");
+  }
+  void permissionClick(String text) throws Exception {
+    systemClick(text, "com.android.permissioncontroller", "com.google.android.permissioncontroller");
+  }
+  void systemClick(String text, String... allowedPackages) throws Exception {
     AtomicReference<android.view.accessibility.AccessibilityNodeInfo> found = new AtomicReference<>();
     try { NotebookDeviceTest.waitFor("Android file picker: " + text, () -> {
       android.view.accessibility.AccessibilityNodeInfo root = instrumentation.getUiAutomation().getRootInActiveWindow();
       // The owner's document toolbar also has Save. Wait for the system picker
       // before locating its action, including while download chunks are arriving.
       String packageName = root == null ? "" : String.valueOf(root.getPackageName());
-      if (!java.util.Arrays.asList("com.android.documentsui", "com.google.android.documentsui").contains(packageName)) return false;
+      if (!java.util.Arrays.asList(allowedPackages).contains(packageName)) return false;
       found.set(findText(root, text)); return found.get() != null && found.get().isEnabled() && found.get().isVisibleToUser();
     }); }
     catch (AssertionError error) { System.out.println("Picker content: " + pickerContent(instrumentation.getUiAutomation().getRootInActiveWindow())); throw error; }

@@ -33,15 +33,17 @@ const context = new NotebookAgentContext({ root, resourceId: scene.resourceId, l
   sessionId: randomUUID(), selection: ['human-note'], canRead: canWrite, canWrite });
 const humanBefore = context.scene().document.objects.find(object => object.id === 'human-note');
 const events = [], calls = [], progress = [];
-let provider, timer, activeThreadId, firstUsefulMs = null, startedAt;
+let provider, timer, activeThreadId, firstUsefulMs = null, firstDrawSegmentMs = null, startedAt, providerReadyAt, threadReadyAt;
+const setupStartedAt = performance.now(); let toolWorkSumMs = 0;
 const save = (name, value) => fs.writeFileSync(path.join(output, name), JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
 try {
   provider = await createCodexProvider({ cwd: output, ...(values['codex-state'] ? { stateRoot: values['codex-state'] } : {}) });
+  providerReadyAt = performance.now();
   const model = provider.models.find(item => item.id === values.model);
   assert.ok(model?.efforts.includes('low'), 'The selected real model must support low reasoning effort');
   const thread = await provider.startThread({ model: model.id, tools: [NOTEBOOK_AGENT_TOOL], instructions:
     'You are the real Context Room notebook collaborator. The sole tool is bound to the original notebook. Read its scene. Preserve human work. Use new stable object IDs and exact expectedRevision values. Working changes are never review decisions. Object types are rect, ellipse, line, arrow, text, ink, image and connector. Rectangles use x,y,width,height; text uses x,y,text,fontSize,color; arrows use x,y,x2,y2. An edit is {kind:"put",id,expectedRevision:0,object:{id,type,...}}. Ink uses points [[x,y,pressure],...], color and strokeWidth. Use draw for a new progressive stroke. Do not claim work that the tool has not confirmed.' });
-  activeThreadId = thread.threadId;
+  threadReadyAt = performance.now(); activeThreadId = thread.threadId;
   const completion = new Promise((resolve, reject) => {
     timer = setTimeout(() => reject(new Error('The real Codex turn did not finish within 120 seconds.')), 120_000);
     context.onEvent = event => {
@@ -57,12 +59,13 @@ try {
     text: 'Dessine maintenant un petit schéma lisible de trois étapes : Idée → Dessin → Relecture. Compose toi-même sa disposition sous mon annotation existante. Conserve mon texte humain. Ajoute aussi un court trait manuscrit neuf sous le schéma, avec draw sur 600 ms, pour vérifier la pointe progressive. Fais les vrais appels aux outils, puis réponds brièvement en français.',
     onEvent: event => context.onEvent(event),
     tool: async (name, input, options) => {
+      const toolStartedAt = performance.now();
       const call = { action: input.action, callId: options.callId, atMs: Math.round(performance.now() - startedAt) }; calls.push(call);
       const result = await context.call(name, input, { ...options, onProgress: event => {
-        const atMs = Math.round(performance.now() - startedAt); firstUsefulMs ??= atMs; progress.push({ atMs, ...event });
+        const atMs = Math.round(performance.now() - startedAt); firstUsefulMs ??= atMs; if (event.reachedLength >= 1) firstDrawSegmentMs ??= atMs; progress.push({ atMs, ...event });
       } });
       if (input.action === 'edit') firstUsefulMs ??= Math.round(performance.now() - startedAt);
-      call.confirmed = true; return result;
+      call.confirmed = true; call.toolMs = performance.now() - toolStartedAt; toolWorkSumMs += call.toolMs; return result;
     },
   });
   const complete = await completion; clearTimeout(timer);
@@ -83,7 +86,11 @@ try {
     dirty: Boolean(execFileSync('git', ['status', '--porcelain'], { cwd: repo, encoding: 'utf8' }).trim()),
     provider: 'real-local-codex-stdio', model: model.id, effort: 'low', ...turn, acceptedFileUnchanged: true,
     humanObjectUnchanged: true, otherProjectUnchanged: true, agentObjects: agentObjects.length,
-    firstUsefulMs, totalMs: Math.round(performance.now() - startedAt), progressiveReceipts: progress.length, ui: 'not-tested', physicalBoox: 'not-tested' });
+    providerSetup: provider.setupTiming, providerReadyMs: providerReadyAt - setupStartedAt,
+    threadSetupMs: threadReadyAt - providerReadyAt, firstUsefulMs, firstDrawSegmentMs, toolWorkSumMs,
+    providerSetupToFirstUsefulMs: startedAt - setupStartedAt + firstUsefulMs,
+    inferenceTimeMeasured: false, displayTimeMeasured: false,
+    totalMs: Math.round(performance.now() - startedAt), progressiveReceipts: progress.length, ui: 'not-tested', physicalBoox: 'not-tested' });
   console.log('Real Codex composition confirmed; first useful result:', firstUsefulMs, 'ms');
 } catch (error) { save('failure.json', { code: error.code || 'acceptance_failed', message: error.message }); if (activeThreadId) await provider?.interrupt(activeThreadId).catch(() => {}); throw error; }
 finally { clearTimeout(timer); save('events.json', events); save('calls.json', calls); save('progress.json', progress); await provider?.close(); }

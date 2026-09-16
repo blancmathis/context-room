@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { availableParallelism, tmpdir } from "node:os";
+import { availableParallelism, tmpdir, userInfo } from "node:os";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -99,9 +99,7 @@ function runJob(job) {
     const startedAt = Date.now();
     const hubHome = fs.mkdtempSync(path.join(tmpdir(), "context-room-test-hub-"));
     const sharedHome = fs.mkdtempSync(path.join(tmpdir(), "context-room-test-shared-"));
-    const child = spawn(process.execPath, job.args, {
-      cwd: ROOT,
-      env: {
+    const environment = {
         ...process.env,
         CONTEXT_ROOM_HUB_HOME: hubHome,
         CONTEXT_ROOM_SHARED_HOME: sharedHome,
@@ -111,7 +109,22 @@ function runJob(job) {
         GIT_COMMITTER_EMAIL: TEST_GIT_EMAIL,
         GIT_TERMINAL_PROMPT: "0",
         GCM_INTERACTIVE: "Never",
-      },
+      };
+    // The cutover fixture creates all of its writers inside this process scope.
+    // Isolate this job, not the whole suite: earlier tests may have started
+    // processes whose file descriptors the runner is not allowed to inspect.
+    // Production still refuses incomplete visibility; no guard is substituted.
+    const isolated = process.platform === 'linux' && process.env.CI
+      && process.env.CONTEXT_ROOM_TEST_PID_NAMESPACE === '1' && job.label === 'test/lisiere_cutover.test.mjs';
+    const forwarded = ['PATH', 'CI', 'CONTEXT_ROOM_HUB_HOME', 'CONTEXT_ROOM_SHARED_HOME',
+      'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'GIT_TERMINAL_PROMPT', 'GCM_INTERACTIVE'];
+    const argumentsForJob = isolated ? ['-n', 'unshare', '--pid', '--fork', '--mount-proc', '--kill-child=TERM',
+      'runuser', '-u', userInfo().username, '--', 'env',
+      ...forwarded.filter(key => environment[key] !== undefined).map(key => `${key}=${environment[key]}`),
+      process.execPath, ...job.args] : job.args;
+    const child = spawn(isolated ? 'sudo' : process.execPath, argumentsForJob, {
+      cwd: ROOT,
+      env: environment,
       stdio: ["ignore", "pipe", "pipe"],
     });
     const output = [];

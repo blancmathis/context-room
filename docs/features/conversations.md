@@ -178,7 +178,9 @@ conversation; the last uncommitted fraction cannot be guaranteed after a crash.
 A storage failure stops capture and preserves the earlier committed chunks.
 Neither recovery nor dictation starts the agent automatically. Completed recordings
 also remain with the composer when transcription needs retry. Controls wait for
-the original draft and history to finish loading before permitting a new capture.
+the original draft to finish loading before permitting a new capture. The separate
+history catalogue loads independently; an error remains visible without blocking
+that recovered draft or changing its source.
 A microphone stop that cannot reach the Mac is retained with its exact controller
 identity and released on return; it cannot stop a newer audio controller.
 Earlier previews' equivalent local-root scope keys remain recoverable. This
@@ -187,3 +189,74 @@ projects or review scopes, or resurrect an explicitly cleared composer draft.
 The current browser, provider, emulator and remaining physical
 proof boundaries are in `docs/lifecycle/changes/active/android-convergence/verification.md`
 in the Context Room source repository.
+
+## Local voice dependency diagnostics
+
+The assistant capabilities and local `doctor` expose deterministic optional audio
+diagnostics. A model path alone is not configured transcription: the local Whisper
+executable and a readable, nonempty regular model must be present. The diagnostics
+never run recognition, play audio, download files or contact a paid replacement.
+Readiness for an attempt is distinct from verified model compatibility, recording
+quality or BOOX acoustics. Configuration belongs to
+[runtime profiles](../system/runtime-profiles.md).
+
+### Recovered recording attachments
+
+**Recovered recordings** keeps explicitly selected historical PCM beside its
+original source or conversation. Preview the exact target before attaching.
+Loading, pressing Play, exporting the original PCM, and sending a message are
+separate actions. Attachments never automatically become transcripts or agent
+inputs. A newer document version is labelled without moving or deleting the
+historical association. See [recording recovery](../system/lisiere-migration.md#explicit-original-pcm-associations).
+
+## First-result latency and its measurement boundary
+
+A cold request can wait for draft recovery, provider process initialization,
+effective configuration checks, model discovery, thread start/resume, source
+context, provider events, durable local changes and their client rendering.
+Those phases are not all model inference. Historical native real-agent results
+of **13.402 s** and **14.189 s** remain reference measurements; the ten-second
+objective has not been demonstrated on the later code.
+
+The application removes three avoidable waits. Draft recovery still gates send
+and microphone controls, but the independent history catalogue no longer does.
+Provider initialization retains its first already restricted stdio process only
+when the effective configuration proves there is no enabled inherited MCP server.
+When overrides are required it still replaces the probe and re-verifies the
+restricted configuration before listing models or starting a thread. Only this
+owned, idle, thread-free initialization probe gets prompt termination after one
+EOF event-loop opportunity, instead of the five-second active-session grace.
+Active session shutdown and all restrictions remain unchanged.
+
+The first nonempty provider text event is saved synchronously, without the former
+250 ms coalescing delay. Later deltas are still coalesced; completion and stop
+flush the actual received text. This does not fabricate a token, redraw a cached
+answer, pre-send a request or start another agent. Notebook progress includes
+reached points and distance only after its mutation receipt is durable.
+
+`GET /api/assistant/conversations/<id>` returns monotonic `operation.timing`
+for the original request: authorization, queue, provider ready, thread ready,
+context ready, dispatch, provider start/text/tool, first local mutation, first
+draw segment of at least one document unit, first saved text and terminal local
+status. The provider adapter separately exposes `setupTiming` for initialization,
+configuration, optional isolated restart and model listing. Timings contain no
+prompt, credential, file content or private source path. Missing milestones mean
+not observed; a restored uncertain request does not receive invented measurements.
+
+`toolWorkSumMs` is a sum and concurrent work can overlap. Provider-boundary waits
+include process/IPC/scheduling, not just inference. Do not subtract these fields
+to claim pure model latency or combine monotonic clocks from different devices.
+`inferenceTimeMeasured` and `displayTimeMeasured` remain false. First saved text,
+a first point and the first meaningful drawn segment are distinct milestones.
+Browser assistant polling (500 ms), notebook refresh (900 ms), native transport,
+painting and audio remain separate end-to-end costs, not removed by these changes.
+
+The opt-in real-account verifier `test/agent/verify-codex.mjs` records setup,
+thread and tool durations alongside its original first-useful metric and a new
+first-segment metric. It does not impose a synthetic ten-second success. Run it
+only with an authorized local provider and a new private evidence directory;
+compare cold and resident requests, normal and retained-history contexts, then
+measure actual browser/native rendering of the same request and revision. The
+exact protocol and remaining native steps are in `RELAIS-CODEX-LOCAL.md` in the
+source delivery. Deterministic transport fixtures verify waits and isolation,
+not provider speed, language quality, display latency or physical BOOX behavior.

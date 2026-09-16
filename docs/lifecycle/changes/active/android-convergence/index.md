@@ -59,16 +59,30 @@ The Hub opens their saved working text or rendered HTML; explicit submission
 and later human review pass across all four browser configurations.
 Selected Android text journals also reconstruct into Local working proposals,
 retaining exact source records and uncertain delivery without replaying requests.
-Android outbox reconciliation,
-recording-context reconciliation, handoff collection, writer cutover and release packaging
-remain to be implemented. The complete
-connected-device and physical acceptance criteria remain open.
-An explicit Android recovery build now preserves the original application
-identity and signing key. Its local ZIP export, original-data preservation,
-cancel/reopen recovery and extraction on the Mac pass on an isolated emulator.
-Direct ZIP ingestion and personal-device upgrade remain separate work.
-An optional version-2 recovery export now retains original Android PCM files
-without reading the old credentials or starting recognition.
+Exact Android/Mac ordinary queue reconciliation, explicit tablet-cache copies,
+original PCM associations, native transfer recovery and a recognized-service
+writer cutover are now implemented. Safe rollback pauses writes without restoring
+old data over recent work. The Mac installation kit is prepared without activating
+a service. Historical progressive jobs now reconcile committed frame events and
+grouped history with the saved descriptor; interrupted prefixes are retained, not
+resumed. Missing original normalized requests remain explicit evidence conflicts.
+A functional downgrade is not implemented or added as a new bidirectional-migration
+requirement. Custom legacy installation layouts are refused rather than guessed. The latest coverage and test boundaries are in the current matrix in
+[verification](verification.md).
+
+The 2026-09-16 local continuation builds and verifies the signed APK and runs
+owner, PCM recovery, native audio/pen and real-provider scenarios on a dedicated
+emulator. PCM recovery also passes in all four browser configurations. Actual
+Codex, local Whisper and continuous voice execute through the browser; generated
+microphone input and muted playback do not prove physical acoustics. The installed
+macOS LaunchAgent passes activation, restart and HTTP checks, and the installed UI
+opens the recovered notebooks and source-linked histories. Private selected
+legacy data is recovered with its originals and pending review state preserved.
+The current verification checkpoint records source identities and remaining
+installation/CI gates. Physical BOOX, device-only queues/recordings, reboot and
+retirement remain open. Measured first useful results are 12.394 seconds native,
+14.048 seconds in the browser and 21.247 seconds in the detailed agent run; the
+ten-second target is not met. No npm release is claimed.
 
 ## Gesture continuation
 

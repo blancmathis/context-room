@@ -1630,7 +1630,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .shared-skills-dialog { width: min(760px, 100%); grid-template-rows: auto minmax(0, 1fr) auto; }
     .shared-skills-wizard-body { min-height: 0; overflow-y: auto; display: grid; gap: 16px; padding: 16px 18px 20px; border-top: 1px solid var(--line); background: var(--surface-sidebar); }
     .shared-skills-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-    .shared-skills-step { display: grid; gap: 3px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); font-size: 10px; }
+    .shared-skills-step { display: grid; gap: 3px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; color: var(--text-soft); font-size: 10px; }
     .shared-skills-step strong { color: var(--text-soft); font-size: 11px; }
     .shared-skills-step.active { border-color: color-mix(in srgb, var(--accent) 52%, var(--line)); background: color-mix(in srgb, var(--accent) 9%, transparent); }
     .shared-skills-step.active strong { color: var(--text); }
@@ -13877,6 +13877,38 @@ function requestSharedProposalFileUnreview(filePath) {
   });
 }
 
+// Keep the concrete pointer/focus target while exact review metadata arrives.
+// Replacing innerHTML between pointerdown and pointerup makes a valid click land
+// on the container instead of the file (notably during initial WebKit refresh).
+function reconcileProposalReviewRows(container, markup) {
+  const template = document.createElement("template"); template.innerHTML = markup;
+  const key = node => node.nodeType === 1
+    ? node.querySelector("[data-proposal-review-path]")?.dataset.proposalReviewPath
+      || (node.hasAttribute("data-proposal-review-more") ? "@more" : "@empty") : null;
+  const existing = new Map([...container.children].map(node => [key(node), node]));
+  function patch(current, next) {
+    if (current.nodeType !== next.nodeType || current.nodeName !== next.nodeName) { current.replaceWith(next.cloneNode(true)); return; }
+    if (current.nodeType !== 1) { if (current.nodeValue !== next.nodeValue) current.nodeValue = next.nodeValue; return; }
+    for (const attribute of [...current.attributes]) if (!next.hasAttribute(attribute.name)) current.removeAttribute(attribute.name);
+    for (const attribute of [...next.attributes]) if (current.getAttribute(attribute.name) !== attribute.value) current.setAttribute(attribute.name, attribute.value);
+    const oldChildren = [...current.childNodes], newChildren = [...next.childNodes];
+    for (let index = 0; index < Math.max(oldChildren.length, newChildren.length); index++) {
+      if (!newChildren[index]) oldChildren[index].remove();
+      else if (!oldChildren[index]) current.append(newChildren[index].cloneNode(true));
+      else patch(oldChildren[index], newChildren[index]);
+    }
+  }
+  let previous = null;
+  for (const next of [...template.content.children]) {
+    const id = key(next), current = existing.get(id) || next.cloneNode(true); existing.delete(id);
+    if (current !== next) patch(current, next);
+    const expected = previous ? previous.nextElementSibling : container.firstElementChild;
+    if (expected !== current) container.insertBefore(current, expected);
+    previous = current;
+  }
+  for (const stale of existing.values()) stale.remove();
+}
+
 function renderProposalReviewPage() {
   const title = el("proposalReviewTitle");
   const description = el("proposalReviewDescription");
@@ -13950,7 +13982,7 @@ function renderProposalReviewPage() {
     notice.textContent = noticeText;
   }
   renderProposalReviewSelection(entries);
-  files.innerHTML = entries.length ? visibleEntries.map((entry) => {
+  const fileMarkup = entries.length ? visibleEntries.map((entry) => {
     const changeLabel = preview ? "Modified" : proposalReviewChangeLabel(entry);
     const stateLabel = preview
       ? openBlocked ? "Unavailable" : state.contextRoomQueuedProposalFile === entry.path ? "Opening…" : reviewStateLoading ? "Verifying…" : entry.reviewed ? "Reviewed" : "Review"
@@ -13972,6 +14004,7 @@ function renderProposalReviewPage() {
   }).join("") + (entries.length > visibleEntries.length
     ? '<button class="proposal-review-file" type="button" data-proposal-review-more><span class="proposal-review-file-copy"><strong>Load more files</strong><code>' + (entries.length - visibleEntries.length) + ' remaining</code></span><span class="proposal-review-file-state">Show 40 more</span></button>'
     : '') : '<div class="proposal-review-empty">No changed files are available in this exact proposal revision.</div>';
+  reconcileProposalReviewRows(files, fileMarkup);
   meta.querySelector("[data-proposal-context-impact]")?.addEventListener("toggle", (event) => {
     if (!event.currentTarget.open) return;
     loadProposalContextImpact({

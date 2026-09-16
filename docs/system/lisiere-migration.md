@@ -14,18 +14,22 @@ revision. Export is read-only against the source and does not require the
 Lisière executable or service. A selected canonical Mac board can then become
 an editable, unaccepted working notebook. Selected Mac text drafts can become
 Local working proposals; selected Android journals reconstruct their retained
-text into the same workflow. Tablet outbox reconciliation and installation
-cutover remain in progress.
+text into the same workflow. Exact Android/Mac queue comparison, separate tablet
+cache copies and explicit PCM associations are available through preview/apply.
+A recognized-service cutover and safe write-pause rollback are implemented; actual
+macOS shutdown and activation still require local verification.
 
 ## Defines
 
 The recovery snapshot format, source compatibility, private export, exact
-revision precondition, selected-board and text-draft import, and interrupted-operation recovery.
+revision precondition, selected-board and text-draft import, original PCM links,
+queue/cache recovery and the explicit recognized-service writer handover.
 
 ## Does not define
 
-Human acceptance, installation on a personal device, project destination
-mapping or switching the active writer. An export does not complete migration.
+Human acceptance, personal installation authorization, automatic project
+destination inference or a functional downgrade to Lisière. An export alone does
+not switch the active writer or complete migration.
 
 ## Export
 
@@ -73,7 +77,7 @@ without replaying legacy requests.
 Known pairing tokens and executable native-request grants are excluded. The
 export does not read authentication preferences, private keys or integration
 configuration. This does not remove sensitive material the user wrote in their
-own content. Android recording files are included only with `--recordings`.
+own content. Directory-based Android exports include recording files only with `--recordings`; native ZIP exports already declare and include their retained PCM files.
 Earlier project handoff directories are not part of this database export.
 
 ## Recover an existing Android installation
@@ -113,11 +117,64 @@ remain explicit reconciliation items in the preserved database. Delivery is
 never inferred. A partial preparation cannot replace a completed receipt;
 changed or linked copies are refused when reopened.
 
-This recovery ZIP is a private transfer artifact, distinct from the versioned
-Mac snapshot above. Direct ZIP ingestion and queue reconciliation remain
-implementation work. The isolated emulator verifies native export and Mac
+This native recovery ZIP is a private transfer artifact, not a snapshot-format-1
+Mac export. Context Room now converts it directly to a verified format-3 snapshot.
+Queue reconciliation and proof of delivery remain separate from this conversion. The isolated emulator verifies native export and Mac
 snapshot extraction from its checked contents. It does not establish a
 personal-device upgrade, writer cutover or automatic rollback.
+
+
+### Direct native ZIP conversion
+
+Use the existing preview/apply protocol; no manual extraction or legacy service
+is required:
+
+```sh
+context-room migrate --export-lisiere /path/to/android-recovery.zip --output /path/to/private-snapshot
+context-room migrate --export-lisiere /path/to/android-recovery.zip --output /path/to/private-snapshot --apply --revision REVISION
+context-room migrate --inspect-lisiere /path/to/private-snapshot --kind operations
+```
+
+Native container version 1, directory snapshot versions 1/2, and converted
+snapshot version 3 have distinct contracts. Versions 1/2 keep their existing
+content identity and remain readable. Version 3 retains the exact native
+`derived/outbox-args.jsonl` and `derived/android-export-manifest.json`, alongside
+exported SQLite rows and original PCM. Do not add `--recordings` to a ZIP input.
+
+The converter checks the bounded final ZIP directory before extraction; rejects
+unsafe paths, duplicate members, links, unsupported compression and incomplete
+inventories; and verifies sizes, hashes, SQLite schema and PCM declarations.
+SQLite WAL/rollback recovery runs only in an exclusive disposable copy. The
+original ZIP, including its physical database journals, is never written. The
+converted snapshot contains the committed SQLite view, not a replay of the old
+outbox. Both the native source/derived budget and converted snapshot are bounded
+to 512 MiB. SQLite JSONL envelopes are bounded to 48 MiB per row, allowing base64
+for the original 32 MiB binary-cell bound; native serialized rows also have a
+bounded JSON-escaping allowance.
+
+Every derived operation is checked against its exact sequence, ID, operation,
+original argument encoding and byte hash. Decoded arguments are compared with
+the original typed values, preserving int64 and the Float/Double distinction.
+The retained `argsJson` is never reconstructed through JavaScript numbers.
+Floating-point verification is a typed round trip, **not proof of a unique
+original wire serialization or Mac receipt**. Snapshot provenance records this
+limit and `delivery: not-inferred`. Unknown rows remain non-executable recovery
+records. No import accepts a document or acknowledges an old send.
+
+Preview and apply bind the original ZIP SHA-256, not disposable directory
+inodes. Copying the same ZIP bytes to a different ordinary file does not change
+its revision. An occupied unrelated destination is refused. Interrupted export
+journals and files can resume only an exact retained prefix, through locked
+private file descriptors; no existing byte is replaced and no hard link is left
+by a killed exporter. A changed or truncated completed snapshot is refused,
+rather than silently repaired over potentially newer work.
+
+Portable evidence is in `test/python/lisiere_android_export_test.py` and
+`test/lisiere_android_export.test.mjs`: synthetic native-format archives, WAL and
+hot rollback journals, original-byte/typed-argument tampering, bounded extraction,
+occupied destinations and actual killed-process recovery. These are not an APK
+execution or a physical BOOX test. This converter changes no Android source and
+does not extend the scope of prior emulator evidence.
 
 ## Recovery
 
@@ -197,10 +254,11 @@ not create an ordinary `.crnb` file or an accepted baseline. Use the existing
 notebook freeze/submission and human review workflow to produce and decide an
 ordinary document. The migration receipts never substitute for that decision.
 
-This command imports one canonical Mac board. Android outbox reconciliation,
-recording-context recovery, old handoff import and automatic rollback
-are separate unfinished work. It does not acknowledge an old operation, resume
-an old agent task or switch off the legacy writer.
+This command imports one canonical Mac board. Queue comparison, explicit PCM
+association, retained-transfer recovery and single-writer cutover use the separate
+commands documented below; this import does not perform them. Progressive job/frame
+evidence is reconciled by the queue comparison below, not by this single-board import. Import does not acknowledge an old
+operation, resume an old agent task or switch off the legacy writer.
 
 ## Import a retained text draft
 
@@ -298,10 +356,235 @@ delivery are never invented. This import does not switch the legacy writer.
 
 ## Completion boundary
 
-The old installation remains active and can receive later writes. This snapshot
-is a point-in-time recovery copy, not a synchronization or single-writer fence.
+Export and import alone leave the old installation active and able to receive
+later writes. A snapshot is a point-in-time recovery copy, not synchronization or
+a single-writer fence. Only the separate, explicitly authorized cutover below
+retires the recognized legacy writer; it has its own validation requirements.
 Do not retire the old installation until imports, pending work, conversation
 links, device identity and physical validation have their own receipts. The
 convergence verification record at
 `docs/lifecycle/changes/active/android-convergence/verification.md` in the
 Context Room source repository tracks those open gates.
+
+## Retained drawing-transfer sessions without a legacy runtime
+
+Inside the selected original project, inspect one exact retained session:
+
+```sh
+context-room migrate --legacy-session ORIGINAL_SESSION_ID
+context-room migrate --legacy-session ORIGINAL_SESSION_ID --session-frame board:REVISION --path docs/recovered-drawing.crnb
+context-room migrate --legacy-session ORIGINAL_SESSION_ID --session-frame board:REVISION --path docs/recovered-drawing.crnb --apply --revision PREVIEW_REVISION
+```
+
+The inventory also offers `source` and retained `preview:REVISION` frames. Those
+choices explicitly recover an embedded raster, not reconstructed editable pen
+objects. A structured `board:REVISION` import requires exact original object IDs
+and revisions; tombstones are retained and pressure samples use the normal legacy
+board converter. Flat object projections and projections with an explicit `value`
+are supported. An absent asset, unknown object format or missing revision is
+refused for structured import; the original files remain available and no raster
+fallback is silently substituted.
+
+Preview binds the original `session.json`, selected frame, source PNG, exact
+project location, configuration and destination. Apply retains those originals
+and their ID mapping in a versioned recovery journal, imports a working notebook
+through the existing native engine, and leaves accepted documentation untouched.
+Repetition reuses the original import receipt without overwriting newer gestures.
+Old task identities and uncertain sends remain historical; no provider task or
+legacy queue is resumed. Symlinks and occupied unrelated destinations are refused.
+
+This replaces the external drawing connector calls. Android/Mac queue comparison
+is a separate command below: it handles recognized creation, metadata, asset and
+ordinary mutation/undo cases, with explicit conflicts and preserved originals.
+The queue comparison also audits progressive job descriptors, grouped history and
+committed frame events. ZIP conversion and retained-transfer recovery do not
+themselves confirm delivery.
+
+Snapshot PCM inventory remains `context: unassigned`; it never guesses context
+from a filename hash. Explicit associations are now available through the CLI
+and conversation panel below, in a separate private store. Their storage/CLI/HTTP
+contracts have scoped evidence; the new browser and Android UI execution does not.
+Recording preservation alone is still not proof of a reviewed association.
+
+## Comparing the retained Android queue with Mac receipts
+
+`migrate --reconcile-lisiere ANDROID_SNAPSHOT --mac-snapshot MAC_SNAPSHOT
+--legacy-board BOARD_ID --legacy-actor ACTOR --path docs/Recovered.crnb`
+previews a new working notebook. Both inputs must be complete private exports;
+`ACTOR` is the exact original tablet identity, not inferred from an operation ID.
+Apply only its exact `--revision` together with `--apply`.
+
+The comparison uses the Mac request-digest contract with Python number semantics.
+Native typed arguments are rechecked against their original SQLite cells. A
+matching ordinary mutation requires its request digest, result, history and
+compatible canonical object revisions, not simply a matching ID. The digest
+match establishes the recorded normalized request, not a unique raw HTTP wire
+serialization. Assets prove content presence, never delivery of an upload.
+
+Compatible unsent mutations, metadata changes, creations, deletions and history
+undo are projected in order into a **separate** editable working notebook. Each
+object records original/effective preconditions and imported revision. Only the
+first successor receives a predecessor's acknowledged/projected revision, as in
+the original queue. Independent Mac work is preserved. Conflicts block import;
+unknown operations and inconsistent progressive-pen evidence remain explicit
+recovery items. No original queue entry is removed, acknowledged or sent.
+
+The chosen destination must be unused and in the existing editable project
+scope. Original selected records and revision/ID mapping are retained privately.
+The header doubles as the immutable replay receipt: an interrupted retry keeps
+later human edits. The existing Local/Shared submission and human review are
+still required to publish accepted documentation. Cache-only drawings use the
+explicit tablet-copy view below. The progressive-pen audit described next is part
+of the same queue comparison and the same working import, not a second writer.
+
+## Historical progressive jobs and committed frames
+
+The queue view audits `pen_jobs`, the `pen:<job>` grouped history, selected board
+`events` and canonical object cells. A private frame ID `pen:<job>:<number>` is
+**not** an ordinary mutation receipt. Frame events and grouped history were
+committed with object changes; the job descriptor was saved afterwards in a
+separate transaction. The recovered `penRecovery` summary separates these facts.
+
+Recognized states are `drawing`, `stopped`, `interrupted` and `completed`.
+Recovery retains only the committed prefix and current canonical scene. It also
+recognizes a descriptor one committed frame late, an initial empty descriptor
+before/after the first frame, and a failed attempt counter one beyond the actual
+frame events. A restart’s `drawing` → `interrupted` status overlay is permitted.
+No such state resumes a stroke or asks an agent to generate its missing tail.
+
+Each job requires contiguous frame numbers, distinct exact event sequences,
+increasing canonical revisions, matching actors and grouped object identity.
+Grouped `before` must retain the new-object precondition. The last frame must
+agree with the group’s latest revision. Same-revision current objects must match
+exactly; newer canonical edits and tombstones win over old descriptor contents.
+An undone group requires advanced canonical revisions. An old undo still uses
+its original per-object revision and conflicts with later work. Missing, duplicate,
+orphaned or contradictory evidence blocks the projection, without dropping it.
+
+The original grouped history does not contain every intermediate frame’s geometry,
+and the descriptor omits the future drawing plan. These absent bytes are **not
+reconstructed** from an ID, an image or a similar layout. A retained expanded
+`board.draw` request, or its bounded absolute M/L/Q/C/Z path form, can be matched
+to the job digest with Python number semantics,
+original actor, duration and retained lease. Its actually reached objects must
+also agree with the request prefix. A completed status with a mismatching or
+incomplete retained request is a conflict. Compact paths are decoded only to compare the original digest; their undrawn tail
+is never applied. Font-dependent diagram/table layouts lacking their original
+normalized operations cannot be hashed from substitute font metrics; they remain
+an explicit missing-evidence case, not authorization to re-execute the request.
+A consistent job without the original request still permits recovery of the
+canonical saved prefix, but reports `completedRequestProven: false`.
+
+`original-records.json` retains the selected original job descriptors, grouped
+history and event cells, including int64 sequences. The original snapshots remain
+untouched. The public plan contains identities/revisions, not old prompts or
+leases. `framesReplayed`, `agentStarted`, `resumed` and `accepted` stay false.
+The only apply effect is the existing separate, revision-bound working notebook;
+normal Local/Shared submission and human review are still necessary. Snapshots
+without pen evidence retain their previous preview and receipt byte schema.
+
+## Explicit original PCM associations
+
+`migrate --import-lisiere SNAPSHOT --legacy-recording ORIGINAL_NAME.pcm
+--path docs/Idea.md` previews an attachment to an existing authorized document or
+working notebook. `--conversation-id ID` selects an existing conversation instead
+of `--path`; the two are mutually exclusive. `--label` is optional. Apply with the
+exact preview `--revision` and `--apply`.
+
+The original SHA-256, sample count, selected source/version and conversation
+identity are retained in the private assistant store outside the project.
+The hashed filename is never used to guess a destination. Preview creates no
+recording store, changed source bytes invalidate a pending preview, and replay
+of a published link preserves newer source work. Files and bindings have strict
+bounds, private permissions and immutable checksums. Corrupt or replaced data
+requires explicit recovery from the original snapshot.
+
+An existing conversation also offers **Recovered recordings**. The owner chooses
+a private snapshot directory and exact PCM name, previews the association, then
+chooses **Attach this exact recording**. Source-only attachments appear only in
+conversations for that source; conversation-only attachments remain exclusive to
+that conversation. **Load audio for review** creates a lossless WAVE envelope
+and does not start playback. **Export original PCM** preserves original samples.
+None of these operations transcribes, submits, sends, invokes Codex or changes
+accepted documents. Closing/switching a conversation disposes the old audio.
+This new browser/Android owner-WebView path requires execution validation; the
+portable CLI, storage and HTTP contracts have independent synthetic tests.
+
+## Explicit single-writer cutover
+
+`migrate --cutover-lisiere` is a separate local-owner action, never part of an
+import, doctor, startup, or agent call. First export and reconcile the original
+Mac workspace. Preview is read-only. Apply requires the exact preview revision:
+
+```bash
+context-room migrate --root /path/to/project --cutover-lisiere /path/to/legacy-workspace --mac-snapshot /path/to/private-mac-snapshot --legacy-plist /path/to/original-companion.plist
+context-room migrate --root /path/to/project --cutover-lisiere /path/to/legacy-workspace --mac-snapshot /path/to/private-mac-snapshot --legacy-plist /path/to/original-companion.plist --apply --revision REVISION
+```
+
+The macOS adapter recognizes only this account's original
+`fr.lisiere.companion` LaunchAgent and default workspace. It refuses custom
+workspace overrides, unknown process state and open legacy files. Apply pauses
+Context Room mutations, durably disables and unloads that one legacy service,
+checks for a manual companion, and checks the completed snapshot against the
+closed original. It never stops Codex, Desktop, Tailscale or another service.
+
+The complete original directory is retained under a new private sibling name,
+including files that were excluded from the portable snapshot. No credentials
+are copied into a project. A no-replace directory move publishes a fence at the
+old location: `workspace.sqlite` is a directory, so a restarted old client cannot
+open a writable database there. Context Room enables its enrolled writer only
+once this fence is checked. Deleting or replacing it blocks later writes. This
+is an operational handover for the recognized service, not protection against a
+local owner deliberately modifying the retirement directory or starting an
+unmanaged writer elsewhere.
+
+Interruption at the recorded pause, retirement and fence-publication phases
+resumes from the journal. A different occupant, missing control record or
+partially prepared unrecognized fence fails closed for explicit recovery. New
+legacy bytes saved during shutdown prevent retirement; export those bytes to a
+new snapshot and preview the interrupted transition again. Do not overwrite the
+old snapshot. Existing projects, accepted versions, proposals and Hub settings
+are not reset. Other original workspaces need their own explicit handover. Shared proposal
+creation/reuse and publication also check the enrolled project writer, including
+a repository-scoped publication of a local proposal. A second check immediately
+before push preserves a prepared local commit when migration has paused writing;
+no remote publication or receipt is reported. These guards have targeted synthetic
+proof, not a recovered final full-suite result for the delivery HEAD.
+
+```bash
+context-room migrate --root /path/to/project --rollback-cutover
+context-room migrate --root /path/to/project --rollback-cutover --apply --revision REVISION
+context-room migrate --root /path/to/project --resume-cutover
+context-room migrate --root /path/to/project --resume-cutover --apply --revision REVISION
+```
+
+Rollback here means **pause all enrolled writes and retain recent work in place**.
+It does not restore an old database over new gestures, undo human acceptance,
+restart the old queue, or reactivate the old product. Resuming Context Room is a
+new explicit revision-bound action. A functional downgrade to the old Lisière
+application is not implemented. The production `launchctl`, open-file check and
+Darwin no-replace rename require local macOS verification; Linux synthetic
+contracts exercise the coordinator and actual file/database protection only.
+
+### Queue projection versus retained tablet scene
+
+When the selected Android board also has cached objects, an unspecified
+recovery view blocks application rather than silently choosing the queue over
+local-only ink. With `--reconcile-lisiere`, explicitly choose
+`--recovery-view queue` to project the verified queue, or `--recovery-view tablet`
+to import a **separate editable cache copy** into an unused ordinary notebook
+location. Both use the same preview/apply revision protocol and existing notebook
+working store. Neither changes or acknowledges the legacy queue.
+
+The tablet copy preserves the selected original cache cells and any shadowed old
+compact board, remaps cached object revisions to an explicit import revision,
+and retains the original-revision mapping. Missing cache objects are not treated
+as deletions on the Mac. Missing rasters fail closed rather than being replaced
+with placeholders. A queue projection and tablet copy have different resource
+identities and can be reviewed independently. This makes local-only free ideas
+recoverable without claiming that their cached revision proves Mac delivery.
+The original Android and Mac snapshots remain necessary for unresolved intents.
+A `board.undo` retains its exact historical precondition; it is not rebased as
+if it were a `board.mutate` successor. A progressive group uses each object’s last
+committed revision, never the latest global board revision. Inconsistent job/frame
+evidence blocks queue application, not an independently chosen cached scene.

@@ -34,7 +34,7 @@ public final class OwnerAudioDeviceTest {
         ui.visible(activity, "document.querySelector('.assistant-panel .assistant-origin')?.textContent==='docs/Guide.md'");
         ui.visible(activity, "document.querySelector('.assistant-panel')?.dataset.ready==='true'");
         ui.evaluate(activity, "[...document.querySelectorAll('.assistant-panel button')].find(n=>n.textContent==='Dictate')?.click()");
-        ui.systemClick("While using the app");
+        ui.permissionClick("While using the app");
         ui.visible(activity, "[...document.querySelectorAll('.assistant-panel button')].some(n=>n.textContent==='Finish dictation')");
         NativeAudio audio = activity.ownerWorkspace.audio;
         NotebookDeviceTest.waitFor("Native microphone did not capture frames", () -> audio.capture != null && audio.file(audio.capture.id, ".pcm").length() >= 6400);

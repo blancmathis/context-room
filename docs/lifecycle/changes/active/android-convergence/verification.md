@@ -2,11 +2,10 @@
 
 ## Summary
 
-The recovered notebook implementation and its local corrections have been
-verified on macOS with Node 22.23.0. This is evidence for a working desktop
-notebook foundation, an optional restricted TLS drawing service and a native
-Android drawing preview verified in an isolated emulator. The
-complete connected-device product is not delivered.
+This journal preserves checkpoint-specific macOS, browser, emulator and portable
+proofs. Those historical successes do not validate later commits. The final
+consolidated-delivery section is the current status and the single C/R/V matrix.
+It separates source packaging from a completed product or personal installation.
 
 ## Defines
 
@@ -1299,16 +1298,376 @@ No personal installation or migration is claimed.
 
 ## Open product gates
 
-Data migration and final removal of the
-external compatibility dependency remain implementation work. Native dictation,
-original-recording recovery and recognition have the emulator checks above.
-Real native agent
-conversation, actions, interruption and playback have the separate check above.
-The verified Android installation is an emulator preview. It does not establish
-physical Wi-Fi behavior or BOOX pen/palm latency.
+The final current coverage matrix at the end of this journal supersedes older
+pending-work statements. Historical rows retain their original input commits.
+The browser and Soak failures reported for early PR #42 checkpoints are no longer
+open at remote base `b41e8945786cd5821e7adb45695fb6b271849336`: its complete CI and
+convergence runs succeeded. Later recovery work has separate local evidence.
 
-The latest complete hosted application matrix passes at `626c4d7`; later
-changes need their own regression and hosted result. Notebook-specific checks
-do not stand in for that matrix. The original Android identity upgrade/export
-has the isolated emulator proof above. Physical BOOX testing, personal-device
-upgrade, full writer cutover and personal-data migration have not been performed.
+Physical BOOX trials, personal-device upgrades and personal migration have never
+been established by an APK compilation. The portable coordinator's synthetic
+cutover proof does not establish the macOS production service shutdown, and its
+safe rollback pause is not a functional downgrade to an old uncertain writer.
+
+## 2026-09-15 — post-merge native ZIP recovery checkpoint
+
+The current public main was rechecked at `1a2cdcec1435d60cd8d07a3762a369e066508ce1`; work is isolated on `mathis/context-room-recovery-hardening-20260915`. Native ZIP v1 now converts through `migrate --export-lisiere` to snapshot v3, preserving native derivatives, int64 cells and PCM. No queue delivery or document acceptance is inferred. The canonical format and remaining receipt boundary are described in `docs/system/lisiere-migration.md`.
+
+Targeted evidence (Node 26.3.1, Python 3.14.6, `umask 022`): 18 synthetic native-ZIP Python contracts passed, including WAL/hot rollback recovery and a real SIGKILL during publication; all 9 existing directory-snapshot Python contracts passed; the 2 new Node library/security tests passed. The old interruption fixture now interrupts `_publish_snapshot_file` rather than removed hard-link publication; its interruption, exact resumption, hashes and newer-byte preservation assertions are unchanged.
+
+The installed CLI test and full suite are not validated by this checkpoint. An interrupted dependency installation left `yaml/index.js` absent; the resulting module-load errors are not classified as product or umask failures. The separately runnable local-proposal and initial-proposal baseline had 17 passing tests under `umask 022`. Android source is unchanged; no new APK, emulator execution, real-provider timing or BOOX evidence is claimed here.
+
+## 2026-09-15 — post-merge native runtime delivery
+
+Public base: `1a2cdcec1435d60cd8d07a3762a369e066508ce1`.
+Code and test checkpoint: `98c437035970344e9b44d6e857d81bafd0dbcc2e` on
+`mathis/context-room-recovery-hardening-20260915`, PR #42. Subsequent delivery
+metadata does not retroactively change the input commit of an older proof.
+
+### Completed code and bounded proofs
+
+- Native Android ZIP ingestion: `7af7f0c1271cdc081eaa64e80e0e727ba9cec284`.
+  Eighteen Python ZIP contracts, nine existing directory-snapshot contracts,
+  the Node reader/inventory and installed ZIP CLI pass in the first checkpoint's
+  CI Node matrix. Native v1 containers produce snapshot v3; directory v1/v2
+  compatibility remains. The exact retained Android argument string is not
+  reserialized through JavaScript numbers. Typed Float/Double agreement is not
+  a unique wire-canonicalization or Mac-delivery proof.
+- Exact reviewed permissions: `21f2ed06039199e555c524600906611453969df0`.
+  Before the fix, an explicit reviewed `0644` became `0600`, and `0755` became
+  `0700`, under `umask 077`. The new descriptor is now explicitly chmod'ed to the
+  reviewed mode. Four regression contracts include two successive proposals for
+  each mode and a concurrent permission-only origin change that must still fail.
+- Native drawing and original transfer recovery:
+  `9f7452945ae41b5bd2c4186857a9cb47ccebaf6a`.
+  The compatibility connector uses actual native notebook creation, mutation,
+  frozen SVG/PNG review and explicit old-frame recovery, not a stub, replayed
+  agent or external companion. Eight module contracts cover scope/occupancy,
+  current edits, exact original source, unknown assets/revisions, deletion
+  tombstones, retained frames, interruption and bounded raster cropping.
+- Optional local audio diagnostics: the same native-runtime commit plus
+  `8b6f0e7adf785ebd6dd99b39263cb1834ed05298` for scoped CLI output.
+  Executable and readable nonempty regular model checks replace model-path-only
+  native readiness. Four diagnostics contracts and seven existing audio
+  contracts pass. Nothing is installed, downloaded, played or sent to a provider.
+- The combined seven-file targeted Node run passed **40/40** with `umask 022`,
+  Node 26.3.1 and Python 3.14.6. It does not include the newly added installed
+  CLI contracts or browser PNG-review scenario; those require the delivery CI.
+  Syntax and whitespace checks passed. Initial new-fixture errors (an assumed
+  uncropped SVG margin and a noncanonical macOS temporary path) were corrected;
+  production bounds and canonical-path requirements were not weakened.
+
+First-checkpoint CI: run **34949046038**, head `7af7f0c…`, tested PR merge commit
+`8edca1386c709f5771c330b5f93237ef44482a65`. Node 20, 22.23 and 24 passed, including
+Node 22 package checks; Chromium desktop/mobile, Firefox and WebKit passed the
+browser jobs. The Soak job **failed**: its multi-day navigation test passed, but
+`ux-endurance.spec.mjs:1142` failed at the second-window `openProjectFile` call
+(line 1219), with “Expand notes in Explorer”, expected `true`, observed `missing`.
+Artifact `playwright-soak-34949046038-1` retains the failure evidence. Its analysis
+is not complete; the test has not been removed, relaxed or classified as flaky.
+
+The historical Chromium slow-activation test passed in this first-checkpoint
+run without a browser-product change. That is not proof that the historical
+failure is fixed. The original full macOS failure set was not reproduced in a
+complete dependency installation: missing `yaml/index.js` stopped those imports.
+Only the separately runnable local proposal baseline passed 17/17 under the
+prescribed mask. No conclusion attributes every original failure to umask.
+
+## 2026-09-15 — historical consolidated delivery 56aa6c7
+
+### Exact identity and evidence boundary
+
+This section records the historical 56aa6c7 delivery. The current two-topic
+continuation and matrix follow below; these older results keep their own inputs. The one delivery HEAD is recorded in the ZIP's
+`livraison/SOURCE_COMMIT` and `livraison/DELIVERY.json`, the ZIP Git comment, and
+the bundle's single branch reference. The distribution copy of this section has
+the full HEAD in its heading. Source files are exact Git bytes, without export
+substitution; the versioned document does not embed its own commit hash.
+
+Remote baseline remains `b41e8945786cd5821e7adb45695fb6b271849336` on
+`mathis/context-room-recovery-hardening-20260915`, PR 42 open/draft, not merged.
+The last retained original local commit is
+`f6cee69d0f698f3db279ec0d7c610cbc38bae8c6`. The original local commit object
+`36e8180ea03ab640fc8ba489bcfe72259613aeef` was missing from its incremental bundle.
+Its two supplied files were recovered byte-for-byte in
+`170918d44a40517324a264477fe6c6523a05d7cd`; this is **not** a claim to have recovered
+the original commit metadata or original SHA. The closing commit changes only
+documents. No manual source-file supplement is required after bundle restoration.
+The incremental bundle requires public b41; no other refs or private Git history
+are included.
+
+### Results actually available
+
+Evidence labels are shared with `RELAIS-CODEX-LOCAL.md`:
+
+| Evidence | Source input | Terminal / limit |
+| --- | --- | --- |
+| E01 | Public b41; CI 34966764884 / convergence 34966764731 | Historical success: three Node jobs, four browsers, Soak/gate and Android build. No attribution to subsequent commits. |
+| E02 | Campaign attributed to 0b932ab by the retained relay | Preserved npm log ends at **101/102 test processes**, overall failure. Shared shard: 40/41, missing ssh-keygen before security assertions. The log itself does not embed a HEAD. |
+| E03 | Unchanged b41 prerequisite control | Preserved single-case log: **0/1**, same missing-OpenSSH error. Not skipped or simulated. |
+| E04 | Mac CLI fix 22b998d, per retained relay | Preserved focused log: **4/4**, including actual kit preview/apply/verify/repeat. Not a new full suite. |
+| E05 | Retained Shared 36e8180 file inputs | Preserved negative control **0/2** and corrected **2/2**; delivered source/test hashes match those supplied files. Not rerun during packaging. |
+| E06 | Previously launched `umask 022; CI=1 npm test` at 36e8180 | No terminal recovered. Restored environment has no active test process or corresponding final log. No restart; no inferred full total or success from intermediate observations. |
+| E07 | Prior relay's browser / Gradle attempt | Administrator block before UI; missing Gradle 8.11.1 cache and DNS failure before compilation. Raw logs not retained here; failures reported, not reproduced or bypassed. |
+| E08 | Present source consolidation | Object/file equality, Git restoration, artifact inventories/hashes and package checks are recorded in the delivery receipts. These checks are not a new business-test campaign. |
+
+E02 did not cover the later Shared guards. E04 verifies the later Mac-script
+change; E05 verifies only its two new Shared scenarios. This is composed, partial
+evidence with a known failing process and a missing later terminal, **not a green
+full suite on the delivered HEAD**. Assertions, performance goals, review
+controls and the original test runner were not reduced. No OpenSSH, browser,
+Gradle or full-suite attempt was made during consolidation.
+
+The current Shared guard checks enrolled writer authority during creation/reuse,
+notebook publication and immediately before push; repository-scoped publication
+also respects the proposal's original project. A pause keeps a prepared commit
+local, preserves later bytes and produces no remote success receipt. The
+recovered code is in `src/shared_context.mjs`; its two tests are in
+`test/shared_writer_authority.test.mjs`. No further functional change was added.
+
+### Original-scope gaps versus local checks and extra capabilities
+
+The full progressive legacy pen-job receipt reconciler is still absent (C/V14).
+The requested application-controlled true-agent latency work has not delivered
+a measured improvement over 13.402/14.189 seconds toward ten seconds (F/V17).
+Mac delivery provides a verified source-kit generator, inert plist and local
+procedure, not a demonstrated installed/activated product (E/C01/V02).
+
+Code already exists for ordinary queue reconciliation, tablet-cache choice,
+retained transfers, private PCM associations, standard-service cutover and safe
+pause/resume. The missing browser PCM, Darwin/launchctl, clean Mac installation,
+current Android instrumentation, authenticated-provider and BOOX tests are listed
+separately in the relay. **Physical BOOX validation remains original scope.**
+
+The rollback pauses enrolled writes without restoring older bytes or replaying
+old requests; it does not reactivate Lisière. A fully automatic bidirectional
+legacy downgrade, universal custom-installation support, repair of unknown or
+replaced fences, and a generic unattended updater were not explicitly required
+and are not silently added as new acceptance criteria. These boundaries do not
+prove that the specified standard migration is complete. A tablet without the
+connected Mac, separate Inbox, hosted service, Office editor and paid speech
+fallback are outside or contrary to the original request. No such expansion was
+introduced. See relay §7 for the precise separation.
+
+### Historical coverage matrix at 56aa6c7
+
+This is the archived 56-row matrix for 56aa6c7, not the current status. “Preserved” records code/invariant
+review and only the evidence attributed above. It is not current-head or physical
+validation. E08 is packaging proof; E01–E05 remain tied to their actual inputs.
+A successful subset never closes a broader criterion.
+
+#### C01–C08 — product outcome
+
+| ID | State | Evidence | Limit / remaining work |
+| --- | --- | --- | --- |
+| C01 | Partial delivery | Native connector, deterministic CLI, Mac kit generator and standard-service cutover exist. E02/E04 cover portable subsets. | Only kit/plist preparation is delivered. Installed Mac activation and clean-install behavior remain unverified; an automatic updater is not an added acceptance requirement. |
+| C02 | Implemented; scoped proof | Editable notebooks, queue projection and explicit tablet-cache copies retain working state and provenance (E02). | Full progressive legacy pen-job receipt reconciliation is absent; no new real-provider trial. |
+| C03 | Implemented; UI untested | Explicit source/conversation PCM links, exact bytes, authorization and no automatic send/playback have CLI/HTTP evidence at 0b932ab (E02). | Current browser and owner-WebView recording flow not executed (E07). |
+| C04 | Preserved | Baseline complementary mode, per-object revisions, display receipts and independent views are unchanged. | No new simultaneous physical Mac/BOOX session. |
+| C05 | Inherited plus prepared | Owner transport and human review preserved; new OwnerRecordingTest and fixture are present. | A prepared native test is not a passed test; current instrumentation has not compiled or run. |
+| C06 | Baseline build only | The b41 baseline APK was built and its eight production assets match the delivery files. | No current instrumentation build or APK execution; Gradle failure was before compilation (E07). |
+| C07 | Preserved | Recovery uses explicit ordinary project paths and the existing conversation panel. | No Inbox, alternate catalog or separate ideas application introduced. |
+| C08 | Partial | Recovery copies, private retirement, journal replay and recent-work preservation have synthetic evidence; Shared pause guard adds E05. | Full migration/replacement not established. Progressive job reconciliation is missing; physical acceptance remains in scope. |
+
+#### R01–R29 — grooming preservation
+
+| ID | State | Evidence | Limit / remaining work |
+| --- | --- | --- | --- |
+| R01 | Preserved | Local canonical service remains; no hosted or paid fallback added. | Production macOS service shutdown/activation still needs verification. |
+| R02 | Preserved; scoped evidence | b41 browser/Soak result E01; Hub/report process success in 0b932ab campaign E02. | No terminal complete campaign for the later code and no current-head browser execution. |
+| R03 | Preserved | Root identity, source revision, exact worktree/path and explicit destination remain bound. | No automatic project/worktree destination guessing. |
+| R04 | Preserved | Existing Projects/Computer and device scopes retained; migration paths use canonical files and scope predicates. | No new general remote filesystem grant. |
+| R05 | Preserved | No Hub reset, catalog or shell button; synthetic cutover asserts configuration bytes unchanged. | Not proof for every customized personal Hub. |
+| R06 | Preserved | Writer/audio doctor diagnostics are deterministic; paused doctor is read-only and remains usable. | Optional dependency status is not document acceptance or inference. |
+| R07 | Preserved | Queue/cache imports create only working headers; ordinary files and accepted corpus remain unchanged. | New browser flows require execution in an authorized browser environment. |
+| R08 | Preserved | No agent accept/reject or migration authorization tool was introduced. | Only synthetic human-review contracts were executed. |
+| R09 | Preserved | Existing exact frozen correction and independent terminal decision routes remain. | Browser drawing/review success is verified at b41, not the new UI input. |
+| R10 | Preserved | Imports reuse importNotebookDraft; later submission uses existing Local/Shared engines. | No alternative tablet proposal engine. |
+| R11 | Extended; targeted proof | Shared exact revision/terminal assertions retained; writer authority now guards create/reuse and pre-push, including original project scope (E05: 2/2). | E02 Shared security case failed for missing ssh-keygen. Later full-suite terminal is unavailable (E06). |
+| R12 | Preserved | Reconciliation/PCM working imports need no Git repository at the project destination. | Git remains necessary for Shared, not Local working scenes. |
+| R13 | Preserved | Direct-change and integrity tests retained; new imports do not overwrite ordinary files. | No new physical sleep/restart evidence. |
+| R14 | Extended | Exact undo preconditions and safe rollback pause preserve newer working files; E02/E05 are scoped evidence. | Rollback means pause/resume, not restoring the legacy writer or a bidirectional format migration. |
+| R15 | Preserved | No age-based discard or cleanup of original history/PCM was added. | Retention does not mean every unknown source is automatically interpretable. |
+| R16 | Preserved | Normal migration CLI and deterministic helpers remain harness-independent. | A real agent is still required only for explicit generative collaboration. |
+| R17 | Preserved | Accepted-search and provenance owners were not replaced; targeted recovery summaries avoid full text. | No broader search-completeness claim. |
+| R18 | Preserved | Snapshot/config/root revisions bind previews; ordinary Shared freshness assertions are unchanged. | No receipt is manufactured from an ID or similar content. |
+| R19 | Preserved | Old queues remain unchanged and unacknowledged; native offline code unchanged. | Physical Wi-Fi interruptions are not exercised by SQLite tests. |
+| R20 | Preserved | Per-project skills and original owner authority remain effective. | A synthetic attempt to reduce startupSkills scope was detected, not bypassed. |
+| R21 | Preserved | No front matter or corpus reorganization imposed; explicit .crnb recovery destinations only. | Recovery metadata remains outside ordinary documentation. |
+| R22 | Extended | Queue/tablet copies are editable; PCM can be read as exact bytes or a lossless WAV envelope. | No Office editor; missing raster assets refuse conversion. |
+| R23 | Preserved | HTML still renders without a human code editor. | No new HTML browser test result beyond the baseline. |
+| R24 | Extended | Local-only cached ink can become a separate structured working copy with explicit revision mapping. | Imported revision is not presented as an original Mac receipt. |
+| R25 | Preserved | Native connector replaces external runtime; recovery reads retained formats without launching Lisière. | Cutover helper can stop the recognized original service only on explicitly authorized apply. |
+| R26 | Preserved | No automatic researcher/subagent, paid transcription or model download; linking does not invoke inference. | Real-provider timing/acoustic quality remain unmeasured. |
+| R27 | Preserved | No hosted-hub/review/remote profile restored; personal-device service stays opt-in. | Kit LaunchAgent does not implicitly expose a device listener. |
+| R28 | Extended; partial | Original bytes, mappings, private retirement, recorded phases and Shared pre-push pause guard preserve recent work/configuration. | Standard-layout Darwin behavior still untested. Unknown/custom or replaced fences fail closed, not automatically repaired. |
+| R29 | Delivery consolidated | Same local branch, source ZIP and incremental bundle bound to one HEAD; supplied Shared files integrated byte-for-byte. | Remote PR remains at b41. Original 36e8180 object was not retained; restored code has a new commit identity. No push or merge. |
+
+#### V01–V19 — acceptance evidence
+
+| ID | State | Evidence | Limit / remaining work |
+| --- | --- | --- | --- |
+| V01 | Scoped audit | All 29 grooming rows retained and reviewed; delivery changes only documentation after exact Shared reassembly. | Static review and historical contracts are not current-head UI or native validation. |
+| V02 | Partial; preparation not installation | Kit source integrity and default CLI path E04; historical synthetic doctor statement is attributed in the relay. | Operational clean Mac install/activation/reboot and one coherent running service are not demonstrated. |
+| V03 | Inherited only | Device/owner/notebook production inputs preserved; eight baseline embedded assets match. | No new simultaneous Mac/Android drawing and rendered-receipt execution. |
+| V04 | Inherited plus unexecuted test | b41 complete drawing/review/PNG scenarios E01; PCM owner instrumentation prepared. | No new end-to-end owner PCM scenario execution. |
+| V05 | Partial synthetic proof | Snapshot publication, journalled cutover, repeated import/PCM apply and lost-response cases have earlier scoped tests E02. | Does not establish current native closure/network interruption behavior. |
+| V06 | Extended; partial | Digest/result/history mismatches, successor conflicts, stale undo, queue duplicates and explicit cache selection covered at 0b932ab. | Private progressive pen-job reconciliation absent; arbitrary unknown jobs are retained, not acknowledged. |
+| V07 | Inherited; performance work open | Prior notebook agent/undo/stop contracts retained; no replay claimed as generation. | No delivered, measured application-side fix for the true-agent first-useful-result delay in this continuation. Authenticated trials remain to perform. |
+| V08 | Scoped proof | Working imports do not write ordinary accepted files (E02); b41 frozen review excludes later gestures (E01). | New recording UI and full final source still lack a complete execution record. |
+| V09 | Extended; partial proof | Local/Shared exact assertions retained; E05 verifies pause refusal and locally retained prepared commits without push. | E02 is globally failing; E03 reproduces OpenSSH prerequisite failure at b41; E06 terminal not recovered. |
+| V10 | Extended; UI/native untested | PCM storage, CLI, HTTP, hashes and source control have E02 evidence without provider creation. | No new browser/Android PCM, real microphone/acoustic playback or provider trial. |
+| V11 | Preserved | Existing rendered formats/HTML and notebook asset-resolution tests retained. | No invented Office/PDF editing expansion. |
+| V12 | Scoped historical proof | Accepted-only corpus, reader integrity and Shared cache processes passed in E02 at 0b932ab. | Do not relabel those successes as a complete suite at the delivery HEAD; physical offline behavior not rerun. |
+| V13 | Extended; bounded | Origin/nonce/scope/path/source guards retained; writer pause/pre-push behavior has E05. | Operational enrolled-writer boundary is not protection against a local administrator deliberately starting a different writer. |
+| V14 | Partial | Synthetic queue/cache/PCM recovery, retirement, recorded-phase recovery and pause preserving newer data have E02/E05. | Progressive jobs unsupported; full standard-installation Mac migration not tested. Functional downgrade is not claimed and was not an explicit bidirectional-migration requirement. |
+| V15 | Inherited plus unexecuted instrumentation | Production identity/signature/client compatibility preserved; dedicated-emulator guard and new recording class retained. | No current instrumentation compilation or signed upgrade/interruption execution. |
+| V16 | Inherited plus untested UI | b41 layout/smoke/accessibility E01; new recording screenshot/axe scenario exists. | Administrator browser block E07; no new captures or Android ergonomic proof. |
+| V17 | Target open | b41 Soak/performance historical success; existing performance assertions retained. | 13.402/14.189-second true-agent reference exceeds ten seconds; no new measured application improvement. BOOX ink/voice/memory remain untested. |
+| V18 | Not tested — initial scope | No physical result claimed. | BOOX pressure, palm, latency, ghosting, microphone/speaker, interruption, Wi-Fi/sleep and comfort are required local tests, not out-of-scope extensions. |
+| V19 | Packaging finalized; validation partial | ZIP/bundle share one verified HEAD and exact source tree; inventory/hashes/privacy/restore in E08. E02/E04/E05 retain their distinct inputs. | Incremental bundle requires b41. No final full-suite terminal, current native instrumentation build or current-head remote CI. No release. |
+
+
+## 2026-09-15 — current progressive recovery and first-result delivery
+
+This is the current state, based on exact delivery
+`56aa6c78262dc338dfcd6b44826a9416a722617e`, without widening its two requested topics.
+The delivery HEAD/tree are in SOURCE_COMMIT / DELIVERY.json and the bundle ref;
+this versioned document does not pretend to contain its own future commit hash.
+The relay owns restoration and remaining local command details.
+
+Software commits: `cf8ca7b2eb3705b02d545ea7367c4fa5abed1b58` (progressive evidence),
+`c8c82e8267faaa7bc35480d957cee081d6dc5336` (latency), `934e8ff1420d771b2d8c1f6fd0d84556d993ef7d` (preserved synchronous
+authorization), `b936be5d7d69896aecfb2478735e1b5de7f0ca4e` (bounded compact-path comparison). Closure changes only documents after the relevant tests.
+
+| Evidence | Exact input | Terminal / scope |
+| --- | --- | --- |
+| P01 | Progressive helper and actual SQLite/export/import tests, included in F01 | 17/17 Python, 3/3 Node including that Python runner. No old provider execution. |
+| P02 | Compact paths and final progressive recovery at b936be5d7d69896aecfb2478735e1b5de7f0ca4e, included in F02 | 19/19 Python and 3/3 Node tests (including that Python runner); no legacy provider call; no reconstructed/imported tail. |
+| L01 | Provider shutdown correction, targeted transport/latency/provider tests | 24/24. Earlier immediate-termination trial 22/24 preserved; same natural-exit assertions pass after one EOF event-loop opportunity. |
+| F01 | 35-file scoped regression at c8c82e8; masks/commands/hashes in receipt | 182/183 tests, exit 1; one failure retained; recorded synchronous-scope regression, not waived. |
+| F02 | Same affected assertions and final paths at b936be5d7d69896aecfb2478735e1b5de7f0ca4e | 68/68 tests across 12 files, exit 0; no skips or weakened assertions; only affected session/source/HTTP dependencies rerun, not an unchanged general campaign. |
+| D01 | Software file hashes preserved through documentation-only closure | Syntax/package/privacy, source inventory and isolated bundle/ZIP equality recorded in delivery receipts. |
+
+E01–E07 above remain historical and keep their own inputs. In particular, green
+b41 CI does not validate these commits; old 101/102 npm result stays failing and
+36e8180's old terminal stays missing. No OpenSSH/browser/Gradle/provider retry here.
+F01/F02 form explicitly scoped evidence, not a new full npm test or remote CI.
+
+Recovered jobs are never resumed. Frame transaction evidence is distinguished from
+the separately saved descriptor, including one-frame lag and failed attempts.
+Canonical newer objects/tombstones and exact grouped undo preconditions are retained.
+Font-dependent compact layouts without original normalized plans remain missing evidence; absent
+intermediate frame geometry is not recreated. A coherent saved prefix without the
+original request can be imported as working data, not proof of full completion.
+
+The unnecessary second restricted process, inactive-probe grace, initial 250 ms
+text coalescing and history-catalogue send gate are removed under their documented
+conditions. Stage timing separates application/provider boundaries and local tool
+work; it cannot measure pure inference or client painting. No new real-provider
+latency is claimed. Clean Mac installation, operational Darwin migration, PCM UI,
+Android instrumentation and physical BOOX remain initial acceptance work. A
+bidirectional legacy downgrade and universal custom-installation repair are not
+added as new requirements. The current matrix follows; subsets do not close a row.
+
+### Local continuation checkpoint — 2026-09-16
+
+The downloaded source at `1901566439617acc0429ac6687dd74d85f3b26f1` matched
+all 370 Git blobs in the ZIP. The bundle prerequisite and CRC checks passed.
+Receipts, captures, recordings and private migration data stay outside Git.
+These local observations supersede the earlier unexecuted Mac/native statements.
+
+| Proof | Observed result | Boundary |
+| --- | --- | --- |
+| M01 | macOS archive/snapshot/cutover: 20 targeted tests passed after distinguishing open files from incomplete visibility and allowing the real `sha256` column. | Native process-visibility refusals remain enforced. Hosted Linux uses a private PID namespace as the ordinary runner user. |
+| M02 | PCM playback/export: four browser profiles and owner Android passed after appending the missing disclosure summary. | Exact PCM bytes, no autoplay/send and original files unchanged; synthetic recovery fixtures. |
+| M03 | Signed APK rebuilt, signature V2 and eight embedded assets checked. SHA-256 `934f324c1e092be6e9bb4713b9f6545ef5d651033012de4ca3dcb592faa31cf6`. Owner, drawing, import/export and review instrumentation passed. | Production APK bytes are unchanged; changed instrumentation is separate. No physical BOOX claim. |
+| M04 | Real Codex browser and native calls passed, including progressive ink, stop/redirection, human-ink preservation and source-bound document proposal. Native proof records clean `d14e64d`. | First useful result: 12,394 ms native, 14,048 ms browser, 21,247 ms detailed verifier. These are different scenarios, not a benchmark distribution. Ten-second target remains unmet. |
+| M05 | Actual local Whisper dictation returned the expected text in 2,038 ms. Real Codex answer, macOS synthesis, Web Audio receipt and continuous Voice resume/end passed. | Synthetic microphone input and muted output; no physical acoustic proof. The historical Voice verifier hardcoded `dirty: true`; it now measures Git state. |
+| M06 | Native PCM capture/playback, permission dialog, simultaneous voice/pen, original conversation retention, background stop and recording recovery passed. | Permission tests now target PermissionController explicitly while file-picker tests remain restricted to DocumentsUI. |
+| M07 | Private kit and production installation verified at `eadc14c`: activation, service restart, HTTP readback, zero-issue recovery-project doctor, retained notebooks/history and actual Codex catalogue. Independent Whisper model and TLS listener verified. | Machine reboot and physical BOOX pairing are not tested. Private installed-file digests and service receipts remain local; later source revisions require their own installation check. |
+| M08 | Selected original notebooks and conversation records recovered; a pending legacy proposal retained as an editing copy. Original bytes and historical identities preserved, no acceptance or old-task replay. | Physical device cache/outbox/recordings and final single-writer retirement remain open. No private data is published as evidence. |
+| M09 | Direct Voice panel regression fixed and original desktop/mobile checks both passed. | Full CI is required on the final PR head. Prior green browser/convergence jobs are checkpoint evidence only. |
+| M10 | WebKit caught 4.43:1 contrast in small Shared-skills step text. The stronger theme text token passes the unchanged responsive accessibility scenario in all four profiles (4/4). | Prior successes did not establish sufficient contrast margin. No accessibility rule or budget was removed. |
+
+The full local suite passed 105/105 processes; its run started before the scoped
+corrections, which have separate passing checks. Final hosted CI is a separate
+gate; consult [PR 42](https://github.com/blancmathis/context-room/pull/42) at its
+exact head, not an earlier green run. A previous Soak file-open measurement
+exceeded its unchanged two-second budget (2.843 s); the next run at `eadc14c`
+passed. This does not erase the earlier timing failure or guarantee every host.
+The CI process namespace does not change
+test assertions, time budgets, production code, user authority or process checks.
+
+### Current coverage — 56 initial criteria
+
+#### C01–C08 — product outcome
+
+| ID | State | Evidence | Limit / remaining work |
+| --- | --- | --- | --- |
+| C01 | Installed Mac checkpoint verified | M07 verifies the kit, production service and recovered-source UI. | Reboot and physical acceptance remain open; later installed versions need their own receipt. |
+| C02 | Implemented; real-provider proof | P01/P02/F01/F02 plus M04 native progressive ink, stop/redirection and human-ink preservation. | Unavailable historical tails are not regenerated; physical BOOX remains open. |
+| C03 | Browser and emulator verified | M02 checks PCM selection/playback/export in four browser profiles and Android owner. | Actual BOOX recordings and acoustics remain open. |
+| C04 | Emulator and real-provider verified | M03/M04/M06 retain independent views, source identity and native writing during Voice. | Simultaneous physical Mac/BOOX session remains open. |
+| C05 | Owner emulator verified | M02/M03 exercise actual owner UI, file picker, review and recovery. | Physical ergonomics and network/sleep require the BOOX. |
+| C06 | APK built and checked | M03 signed artifact and executed instrumentation. | Installation on the physical BOOX remains open. |
+| C07 | Preserved | Recovery uses explicit ordinary project paths and the existing conversation panel. | No Inbox, alternate catalog or separate ideas application introduced. |
+| C08 | Selected recovery performed | M08 preserves original notebooks, history and the pending proposal without acceptance. | Device-only queues/PCM and single-writer retirement remain open. |
+
+#### R01–R29 — grooming preservation
+
+| ID | State | Evidence | Limit / remaining work |
+| --- | --- | --- | --- |
+| R01 | Preserved | Local canonical service remains; no hosted or paid fallback added. | Production macOS service shutdown/activation still needs verification. |
+| R02 | Preserved; scoped evidence | b41 browser/Soak result E01; Hub/report process success in 0b932ab campaign E02. | No terminal complete campaign for the later code and no current-head browser execution. |
+| R03 | Preserved | Root identity, source revision, exact worktree/path and explicit destination remain bound. | No automatic project/worktree destination guessing. |
+| R04 | Preserved | Existing Projects/Computer and device scopes retained; migration paths use canonical files and scope predicates. | No new general remote filesystem grant. |
+| R05 | Preserved | No Hub reset, catalog or shell button; synthetic cutover asserts configuration bytes unchanged. | Not proof for every customized personal Hub. |
+| R06 | Preserved | Writer/audio doctor diagnostics are deterministic; paused doctor is read-only and remains usable. | Optional dependency status is not document acceptance or inference. |
+| R07 | Preserved; current scoped proof | Real SQLite-to-notebook import remains working only; later edits survive repeat/lost acknowledgment (P01/P02/F01/F02). | Human freeze/submission and decision remain separate; no implicit accepted file. |
+| R08 | Preserved | No old request, job or frame sent to an agent. Provider tools remain restricted; no accept/reject capability (L01/F02). | Synthetic transport evidence is not a real-account validation. |
+| R09 | Preserved | Existing exact frozen correction and independent terminal decision routes remain. | Browser drawing/review success is verified at b41, not the new UI input. |
+| R10 | Preserved | Imports reuse importNotebookDraft; later submission uses existing Local/Shared engines. | No alternative tablet proposal engine. |
+| R11 | Preserved; scoped regression | Shared exact pre-push writer guard from prior delivery included in F01; no code change to Shared. | OpenSSH configuration case remains historically blocked; no full CI claimed. |
+| R12 | Preserved | Reconciliation/PCM working imports need no Git repository at the project destination. | Git remains necessary for Shared, not Local working scenes. |
+| R13 | Preserved | Direct-change and integrity tests retained; new imports do not overwrite ordinary files. | No new physical sleep/restart evidence. |
+| R14 | Extended; scoped proof | Progressive group undo uses each last object revision; newer edits/deletions win. Undone groups need advanced revisions (P01/P02/F01/F02). | Rollback scope unchanged: pause/resume, not a functional legacy downgrade. |
+| R15 | Preserved | No age-based discard or cleanup of original history/PCM was added. | Retention does not mean every unknown source is automatically interpretable. |
+| R16 | Preserved | Normal migration CLI and deterministic helpers remain harness-independent. | A real agent is still required only for explicit generative collaboration. |
+| R17 | Preserved | Accepted-search and provenance owners were not replaced; targeted recovery summaries avoid full text. | No broader search-completeness claim. |
+| R18 | Preserved | Job descriptor, grouped history and frame events distinguished; original int64 cells retained, no ID-only delivery claim. | Absent intermediate geometry and original normalized request bytes cannot be manufactured. |
+| R19 | Preserved | Old queues remain unchanged and unacknowledged; native offline code unchanged. | Physical Wi-Fi interruptions are not exercised by SQLite tests. |
+| R20 | Preserved | Per-project skills and original owner authority remain effective. | A synthetic attempt to reduce startupSkills scope was detected, not bypassed. |
+| R21 | Preserved | No front matter or corpus reorganization imposed; explicit .crnb recovery destinations only. | Recovery metadata remains outside ordinary documentation. |
+| R22 | Extended | Queue/tablet copies are editable; PCM can be read as exact bytes or a lossless WAV envelope. | No Office editor; missing raster assets refuse conversion. |
+| R23 | Preserved | HTML still renders without a human code editor. | No new HTML browser test result beyond the baseline. |
+| R24 | Extended | Recover actual committed progressive prefix; independent canonical work and tombstones retained (P01/P02/F01/F02). | New runtime timings distinguish a point from a nonzero reached segment, not hardware display proof. |
+| R25 | Preserved | Native connector replaces external runtime; recovery reads retained formats without launching Lisière. | Cutover helper can stop the recognized original service only on explicitly authorized apply. |
+| R26 | Preserved | No background generation or new agent. Initialization reuses only an already verified restricted child (L01/F02). | Protocol timing fixtures do not launch an authenticated model. |
+| R27 | Preserved | No hosted-hub/review/remote profile restored; personal-device service stays opt-in. | Kit LaunchAgent does not implicitly expose a device listener. |
+| R28 | Extended | Crash between frame transaction and descriptor save, failed attempt counters and idempotent working import covered (P01/P02/F01/F02). | No source overwrite; malformed/orphaned evidence blocks explicit recovery. |
+| R29 | Local continuation delivered to PR | Exact source restoration and checkpoint receipts M01–M09. | Read final PR checks for publication state; no npm release or physical acceptance inferred. |
+
+#### V01–V19 — acceptance evidence
+
+| ID | State | Evidence | Limit / remaining work |
+| --- | --- | --- | --- |
+| V01 | Preservation audit | All 29 grooming requirements retained; targeted CI environment and UI corrections documented above. | Whole-product acceptance still needs the remaining device gates. |
+| V02 | Mac installation verified | M07 activation, restart, source integrity, doctor and original-source UI. | Final production receipt is private; machine reboot not tested. |
+| V03 | Native and real-provider proof | M03/M04/M06 actual emulator geometry, native pen, voice and acknowledgments. | Physical pressure, palm rejection and e-ink comfort untested. |
+| V04 | Owner PCM executed | M02/M03 actual native WebView, playback/export and file-picker checks. | No physical BOOX evidence. |
+| V05 | Extended synthetic proof | Lost import acknowledgment, delayed descriptor, failed frame attempt and repeated recovery preserve original and recent bytes (P01/P02/F01/F02). | Does not establish Android process/network behavior physically. |
+| V06 | Extended; actual file tests | Frame gaps/duplicates/orphans, digest/prefix conflicts, object revisions, exact undo and newer human deletion tests (P01/P02/F01/F02). | Missing original normalized request is explicit evidence conflict; no approximate queue replay. |
+| V07 | Real agent passed; speed target open | M04 covers real generation, progressive geometry, stop and redirection. | First useful native result 12.394 s; ten-second target unmet. |
+| V08 | Current scoped proof | Working import and ordinary acceptance remain separate; real local/shared freeze/review dependencies tested in F01. | No final-head browser/native rendering acceptance claimed. |
+| V09 | Full CI gate retained | Targeted platform checks M01 and unmodified review assertions. | Final full npm and hosted head checks must pass before merge. |
+| V10 | Browser and native audio executed | M02/M05/M06 actual recognition, Codex, synthesis, playback receipts, microphone and recovery. | Synthetic browser input and muted emulator output do not prove physical acoustics. |
+| V11 | Preserved | Existing rendered formats/HTML and notebook asset-resolution tests retained. | No invented Office/PDF editing expansion. |
+| V12 | Scoped historical proof | Accepted-only corpus, reader integrity and Shared cache processes passed in E02 at 0b932ab. | Do not relabel those successes as a complete suite at the delivery HEAD; physical offline behavior not rerun. |
+| V13 | Actual account exercised | M04/M05 verify real local Codex with existing scope restrictions and inherited-MCP isolation. | Not an adversarial local-admin security proof. |
+| V14 | Selected personal recovery complete | M08 retains original private source records and pending review state. | Device-only data and retirement remain open; missing evidence cannot be reconstructed. |
+| V15 | Current instrumentation built and run | M03/M06 signed install, native owner/PCM/audio/pen checks. | Physical-device upgrade and interruption remain open. |
+| V16 | Rendered browser/native verified | M02/M03/M09/M10 rendered UI, four-profile accessibility and direct Voice regression. | Final whole-suite browser checks remain a separate gate; BOOX ergonomics open. |
+| V17 | Measured; target open | M04: native 12.394 s; browser 14.048 s; detailed agent 21.247 s, with setup measured separately. | No sub-ten-second claim or silent model/effort downgrade. |
+| V18 | Not tested — initial scope | No physical result claimed. | BOOX pressure, palm, latency, ghosting, microphone/speaker, interruption, Wi-Fi/sleep and comfort are required local tests, not out-of-scope extensions. |
+| V19 | Exact source and signed APK | Source equality plus M01–M09 local evidence. | Final global CI, final installation and physical-device acceptance must not be inferred from package checks. |

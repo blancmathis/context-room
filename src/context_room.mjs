@@ -1,14 +1,19 @@
 #!/usr/bin/env node
+import { assertProjectWriter, inspectProjectWriter } from './writer_authority.mjs';
+import { inspectLocalAudio } from './local_audio_diagnostics.mjs';
 import { renderAppShell } from "./ui/app.mjs";
 import { handleNotebookHttp, isNotebookMutation } from "./notebook_http.mjs";
-import { AssistantRuntime, handleAssistantHttp } from "./assistant_runtime.mjs";
+import { AssistantRuntime, handleAssistantHttp, assistantStorageRoot } from "./assistant_runtime.mjs";
+import { attachLisiereRecording, recordingTargetFromResolved } from './lisiere_recording_links.mjs';
+import { AssistantSessions } from './assistant_sessions.mjs';
 import { createAssistantSourceResolver } from "./assistant_sources.mjs";
 import { notebookHash, readNotebookBytes, writeNotebookBytes, makeNotebookDirectory } from "./notebook_io.mjs";
 import { submitNotebookShared } from "./notebook_workflow.mjs";
 import { NOTEBOOK_WEB_ASSETS } from "./notebook_web_assets.mjs";
 import { NOTEBOOK_LIMITS } from "./notebook_protocol.mjs";
-import { createLisiereConnector } from "./lisiere_connector.mjs";
+import { createLisiereConnector, migrateLisiereSession as recoverLisiereSession } from "./lisiere_connector.mjs";
 import { planLisiereNotebookImport, applyLisiereNotebookImport } from "./lisiere_migration.mjs";
+import { migrateLisiereReconciliation } from './lisiere_reconcile.mjs';
 import { migrateLisiereDocument } from "./lisiere_documents.mjs";
 import { migrateLisiereConversationHistory } from "./lisiere_conversations.mjs";
 import { listNotebooks, readNotebook } from "./notebooks.mjs";
@@ -3218,6 +3223,7 @@ export function saveHumanReviewedFile(root, relPath, content, { expectedContentH
 }
 
 function writeMemoryFileWithExpectedHash(root, relPath, content, expectedContentHash, { expectedRootIdentity = null } = {}) {
+  assertProjectWriter(root);
   assertManagedProjectRootIdentity(root, expectedRootIdentity);
   if (typeof content !== "string") throw new Error("Content must be a string");
   if (Buffer.byteLength(content, "utf8") > MAX_FILE_BYTES) throw new Error("Content is too large for the local context room");
@@ -7000,6 +7006,7 @@ function activeDocReviewEvidenceLock(root = process.cwd()) {
 }
 
 function withDocReviewEvidenceLock(root, operation, { expectedRootIdentity = null } = {}) {
+  assertProjectWriter(root);
   assertManagedProjectRootIdentity(root, expectedRootIdentity);
   const lockPath = docReviewEvidenceLockPath(root);
   const active = activeDocReviewEvidenceLock(root);
@@ -7813,22 +7820,45 @@ export function createProjectAssistantSourceResolver() {
     });
 }
 
+export function migrateLisiereDrawingSession(root, options = {}) {
+  return recoverLisiereSession(root, options, { canWrite: rel => canEditLocalProposalPath(root, rel), beforeWrite: () => ensureRuntimeGitExcludes(root) });
+}
+
+export function reconcileLisiereNotebook(root, options = {}) {
+  return migrateLisiereReconciliation(root, options, { canWrite: rel => canEditLocalProposalPath(root, rel),
+    beforeWrite: () => ensureRuntimeGitExcludes(root) });
+}
+
 export function migrateLisiereNotebook(root, options = {}) {
   const authority = { canWrite: rel => canEditLocalProposalPath(root, rel), beforeWrite: () => ensureRuntimeGitExcludes(root) };
   return options.apply ? applyLisiereNotebookImport(root, options, authority) : planLisiereNotebookImport(root, options, authority);
 }
 
+function legacyRecoverySourceForPath(project, rel) {
+  if (typeof rel !== 'string' || !rel) throw sharedRequestError('Choose the document or imported notebook to link with this recovery.', 400, 'assistant_source_scope');
+  if (!rel.endsWith('.crnb')) return { kind: 'document', path: rel };
+  const matches = listNotebooks(project).filter(item => item.path === rel);
+  if (matches.length !== 1) throw sharedRequestError('Open or import this notebook before linking recovered content.', 409, 'assistant_source_missing');
+  const scene = readNotebook(project, matches[0].id);
+  return { kind: 'notebook', path: rel, resourceId: scene.resourceId, revision: scene.revision, locationRevision: scene.locator.revision, selection: [] };
+}
+
+export function migrateLisiereRecording(root, options = {}, { storageRoot = assistantStorageRoot() } = {}) {
+  const resolveSource = createProjectAssistantSourceResolver();
+  return attachLisiereRecording(root, options, { storageRoot, resolveTarget: (project, input) => {
+    if (input.conversationId) {
+      const sessions = new AssistantSessions({ root: storageRoot, resolveSource, providerFactory: () => { throw new Error('Recording recovery never starts an agent'); } });
+      try { return recordingTargetFromResolved(sessions.authorize(sessions.read(input.conversationId), project), input.conversationId); }
+      finally { void sessions.close(); }
+    }
+    return recordingTargetFromResolved(resolveSource(project, legacyRecoverySourceForPath(project, input.path), { creating: true }));
+  } });
+}
+
 export function migrateLisiereConversation(root, options = {}, { storageRoot } = {}) {
   return migrateLisiereConversationHistory(root, options, { ...(storageRoot ? { storageRoot } : {}),
     resolveSource: createProjectAssistantSourceResolver(),
-    sourceForPath: (project, rel) => {
-      if (typeof rel !== 'string' || !rel) throw sharedRequestError('Choose the document or imported notebook to link with this history.', 400, 'assistant_source_scope');
-      if (!rel.endsWith('.crnb')) return { kind: 'document', path: rel };
-      const matches = listNotebooks(project).filter(item => item.path === rel);
-      if (matches.length !== 1) throw sharedRequestError('Open or import this notebook before linking its recovered history.', 409, 'assistant_source_missing');
-      const scene = readNotebook(project, matches[0].id);
-      return { kind: 'notebook', path: rel, resourceId: scene.resourceId, revision: scene.revision, locationRevision: scene.locator.revision, selection: [] };
-    } });
+    sourceForPath: legacyRecoverySourceForPath });
 }
 
 export function migrateLisiereDraft(root, options = {}) {
@@ -11099,8 +11129,10 @@ function sortHealthIssues(issues = []) {
 }
 
 export function buildContextRoomDoctorReport(root = process.cwd(), options = {}) {
-  const readOnly = options.readOnly === true;
-  const configurationIssues = [];
+  const writerAuthority = inspectProjectWriter(root);
+  const readOnly = options.readOnly === true || !writerAuthority.writable;
+  const configurationIssues = writerAuthority.writable ? [] : [{ type: "migration_writer_paused", severity: "high",
+    message: writerAuthority.error || "Migration has paused writing. Read the cutover journal; rollback does not restart a legacy queue." }];
   let fileTransactionRecovery = { recovered: [], active: [], unresolved: [] };
   try {
     if (!readOnly) fileTransactionRecovery = recoverInterruptedFileMutationTransactions(root);
@@ -11175,6 +11207,7 @@ export function buildContextRoomDoctorReport(root = process.cwd(), options = {})
       startupContext: settings.startupContext,
       startupHooks: settings.startupHooks,
     },
+    runtimeDependencies: { audio: inspectLocalAudio(), writerAuthority },
     docqa: docqa.summary,
     graph: graph.summary,
     issues,
@@ -20327,6 +20360,10 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   assertManagedProjectRootIdentity(root, expectedRootIdentity);
   const requestRuntimeProfile = assertRuntimeProfile(runtimeProfile);
   const url = new URL(req.url, "http://context-room.invalid");
+  // Security revocation and stopping an already-running operation remain available.
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)
+    && !/^\/api\/assistant\/conversations\/[^/]+\/stop$/.test(url.pathname)
+    && !['/api/assistant/audio/cancel', '/api/devices/revoke', '/api/devices/cancel-pairing'].includes(url.pathname)) assertProjectWriter(root);
   if (url.pathname.startsWith('/api/assistant/')) {
     if (!getAssistantRuntime) throw sharedRequestError('Conversations are unavailable in this runtime.', 409, 'assistant_unavailable');
     if (req.method === 'POST') beforeManagedControlMutation?.();
@@ -23409,8 +23446,8 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     if ((!body.shared && !canReviewDocumentAsset(root, rel)) || !/\.png$/i.test(rel)) throw sharedRequestError("Select a PNG drawing in this project's review scope.", 403, "asset_scope");
     const file = body.shared ? readSharedDocumentAsset(root, rel) : body.proposal ? readLocalProposalFile(root, body.proposal, rel) : readDocumentAssetReview(root, rel);
     if (file.revision !== body.expectedRevision) throw sharedRequestError("The document revision changed.", 409, "review_revision_conflict");
-    const source = { path: rel, proposal: body.proposal || "", shared: Boolean(body.shared), revision: file.revision }, connector = createLisiereConnector();
-    const result = url.pathname.endsWith("/prepare") ? await connector.prepare(root, { source, bytes: file.afterBytes || file.after?.bytes || (file.afterBase64 ? Buffer.from(file.afterBase64, "base64") : null), title: path.basename(rel) }) : await connector.read(root, body.session, source);
+    const source = { path: rel, proposal: body.proposal || "", shared: Boolean(body.shared), revision: file.revision }, connector = createLisiereConnector({ canWrite: target => canEditLocalProposalPath(root, target), beforeWrite: () => ensureRuntimeGitExcludes(root) });
+    const result = url.pathname.endsWith("/prepare") ? await connector.prepare(root, { source, bytes: file.afterBytes || file.after?.bytes || (file.afterBase64 ? Buffer.from(file.afterBase64, "base64") : null), title: path.basename(rel), destination: body.notebookPath }) : await connector.read(root, body.session, source);
     sendJson(res, 200, result); return;
   }
   if (url.pathname === "/api/docqa/asset-decision" && req.method === "POST") {

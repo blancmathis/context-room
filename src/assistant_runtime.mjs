@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { attachLisiereRecording, listLinkedRecordings, readLinkedRecording, recordingTargetFromResolved } from './lisiere_recording_links.mjs';
 import { AssistantSessions } from './assistant_sessions.mjs';
 import { AssistantObservations, withSourceObservation } from './assistant_observations.mjs';
 import { LocalAudio, pcm16Wave } from './local_audio.mjs';
@@ -36,10 +37,24 @@ export class AssistantRuntime {
     this.audio = audio || new LocalAudio({ root, modelPath });
     this.jobs = new Map(); this.connection = { status: 'idle', models: [] }; this.closed = false;
   }
+  recordingTarget(project, conversationId) {
+    const state = this.sessions.read(conversationId);
+    return recordingTargetFromResolved(this.sessions.authorize(state, project), conversationId);
+  }
+  attachRecording(project, conversationId, input) {
+    return attachLisiereRecording(project, input, { storageRoot: this.root,
+      resolveTarget: () => this.recordingTarget(project, conversationId) });
+  }
+  linkedRecordings(project, conversationId) {
+    return listLinkedRecordings(project, { storageRoot: this.root, current: this.recordingTarget(project, conversationId) });
+  }
+  recording(project, conversationId, id, format) {
+    return readLinkedRecording(project, id, { storageRoot: this.root, current: this.recordingTarget(project, conversationId), format });
+  }
   capabilities(project) {
-    const lease = this.readLease();
+    const lease = this.readLease(), diagnostics = this.audio.diagnostics?.() || null;
     return { conversations: true, provider: 'local-codex-stdio', connection: this.connection,
-      audio: { local: true, configured: Boolean(this.audio.modelPath && fs.existsSync(this.audio.modelPath)), sampleRate: 16000, maxSeconds: 120,
+      audio: { local: true, configured: diagnostics ? diagnostics.transcriptionReadyForAttempt : Boolean(this.audio.modelPath && fs.existsSync(this.audio.modelPath)), diagnostics, sampleRate: 16000, maxSeconds: 120,
         controller: lease ? { ...(lease.project === project ? { conversationId: lease.conversationId, clientId: lease.clientId } : {}), epoch: lease.epoch, expiresAt: lease.expiresAt } : null,
         busyElsewhere: Boolean(lease && lease.project !== project) } };
   }
@@ -176,6 +191,8 @@ export async function handleAssistantHttp(req, res, { root, url, runtime, readJs
       const query = Object.fromEntries(url.searchParams);
       sendJson(res, 200, runtime.sessions.legacyHistory(root, id, query)); return;
     }
+    if (/^\/conversations\/[^/]+\/recordings$/.test(route)) { sendJson(res, 200, runtime.linkedRecordings(root, route.split('/')[2])); return; }
+    if (/^\/conversations\/[^/]+\/recordings\/[a-f0-9]{64}$/.test(route)) { sendJson(res, 200, runtime.recording(root, route.split('/')[2], route.split('/')[4], url.searchParams.get('format') || 'pcm')); return; }
     if (/^\/conversations\/[^/]+\/observation$/.test(route)) { sendJson(res, 200, runtime.observations.status(root, route.split('/')[2])); return; }
   }
   if (req.method !== 'POST') throw fault('assistant_route', 'Unknown conversation operation.', 404);
@@ -187,6 +204,7 @@ export async function handleAssistantHttp(req, res, { root, url, runtime, readJs
   else if (/^\/conversations\/[^/]+\/stop$/.test(route)) result = await runtime.sessions.stop(root, route.split('/')[2], body);
   else if (/^\/conversations\/[^/]+\/configure$/.test(route)) result = runtime.sessions.configure(root, route.split('/')[2], body);
   else if (/^\/conversations\/[^/]+\/recover$/.test(route)) { result = runtime.sessions.recover(root, route.split('/')[2]); status = 202; }
+  else if (/^\/conversations\/[^/]+\/recordings$/.test(route)) result = runtime.attachRecording(root, route.split('/')[2], body);
   else if (route === '/observation/controller') result = runtime.observations.control(root, body);
   else if (route === '/observation/frame') result = runtime.observations.publish(root, body);
   else if (route === '/audio/controller') { const lease = runtime.lease(root, body); const { project, ...publicLease } = lease; result = publicLease; }
