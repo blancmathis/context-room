@@ -70,16 +70,18 @@ A functional downgrade is not implemented or added as a new bidirectional-migrat
 requirement. Custom legacy installation layouts are refused rather than guessed. The latest coverage and test boundaries are in the current matrix in
 [verification](verification.md).
 
-Direct native ZIP ingestion is implemented and tested. The original Android
-identity recovery build retains its earlier isolated-emulator evidence; personal
-upgrade remains unauthorized here. The new PCM owner test is prepared but not
-executed, and its instrumentation APK could not be built in this environment.
-Actual macOS service control/installation, fresh browser execution of the new
-recording UI, authenticated-provider performance and physical BOOX acceptance
-remain separate verification tasks. Application-side startup, history-catalogue
-and first-text waits are reduced with deterministic contracts and monotonic
-instrumentation; no new true-agent latency target is claimed. No release has been
-published.
+The 2026-09-16 local continuation builds and verifies the signed APK and runs
+owner, PCM recovery, native audio/pen and real-provider scenarios on a dedicated
+emulator. PCM recovery also passes in all four browser configurations. Actual
+Codex, local Whisper and continuous voice execute through the browser; generated
+microphone input and muted playback do not prove physical acoustics. A temporary
+macOS LaunchAgent passes activation, restart and HTTP checks. Private selected
+legacy data is recovered with its originals and pending review state preserved.
+The current verification checkpoint records source identities and remaining
+installation/CI gates. Physical BOOX, device-only queues/recordings, reboot and
+retirement remain open. Measured first useful results are 12.394 seconds native,
+14.048 seconds in the browser and 21.247 seconds in the detailed agent run; the
+ten-second target is not met. No npm release is claimed.
 
 ## Gesture continuation
 

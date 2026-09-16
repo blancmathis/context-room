@@ -1570,20 +1570,43 @@ Android instrumentation and physical BOOX remain initial acceptance work. A
 bidirectional legacy downgrade and universal custom-installation repair are not
 added as new requirements. The current matrix follows; subsets do not close a row.
 
+### Local continuation checkpoint — 2026-09-16
+
+The downloaded source at `1901566439617acc0429ac6687dd74d85f3b26f1` matched
+all 370 Git blobs in the ZIP. The bundle prerequisite and CRC checks passed.
+Receipts, captures, recordings and private migration data stay outside Git.
+These local observations supersede the earlier unexecuted Mac/native statements.
+
+| Proof | Observed result | Boundary |
+| --- | --- | --- |
+| M01 | macOS archive/snapshot/cutover: 20 targeted tests passed after distinguishing open files from incomplete visibility and allowing the real `sha256` column. | Native process-visibility refusals remain enforced. Hosted Linux uses a private PID namespace as the ordinary runner user. |
+| M02 | PCM playback/export: four browser profiles and owner Android passed after appending the missing disclosure summary. | Exact PCM bytes, no autoplay/send and original files unchanged; synthetic recovery fixtures. |
+| M03 | Signed APK rebuilt, signature V2 and eight embedded assets checked. SHA-256 `934f324c1e092be6e9bb4713b9f6545ef5d651033012de4ca3dcb592faa31cf6`. Owner, drawing, import/export and review instrumentation passed. | Production APK bytes are unchanged; changed instrumentation is separate. No physical BOOX claim. |
+| M04 | Real Codex browser and native calls passed, including progressive ink, stop/redirection, human-ink preservation and source-bound document proposal. Native proof records clean `d14e64d`. | First useful result: 12,394 ms native, 14,048 ms browser, 21,247 ms detailed verifier. These are different scenarios, not a benchmark distribution. Ten-second target remains unmet. |
+| M05 | Actual local Whisper dictation returned the expected text in 2,038 ms. Real Codex answer, macOS synthesis, Web Audio receipt and continuous Voice resume/end passed. | Synthetic microphone input and muted output; no physical acoustic proof. The historical Voice verifier hardcoded `dirty: true`; it now measures Git state. |
+| M06 | Native PCM capture/playback, permission dialog, simultaneous voice/pen, original conversation retention, background stop and recording recovery passed. | Permission tests now target PermissionController explicitly while file-picker tests remain restricted to DocumentsUI. |
+| M07 | Private installation kit verified; temporary actual LaunchAgent activation, kickstart and HTTP readback passed. | Does not claim machine reboot or production activation; final installation receipt is local. |
+| M08 | Selected original notebooks and conversation records recovered; a pending legacy proposal retained as an editing copy. Original bytes and historical identities preserved, no acceptance or old-task replay. | Physical device cache/outbox/recordings and final single-writer retirement remain open. No private data is published as evidence. |
+| M09 | Direct Voice panel regression fixed and original desktop/mobile checks both passed. | Full CI is required on the final PR head. Prior green browser/convergence jobs are checkpoint evidence only. |
+
+The full local suite and final hosted CI are separate gates; consult the exact PR
+head checks, not an earlier green run. The CI process namespace does not change
+test assertions, time budgets, production code, user authority or process checks.
+
 ### Current coverage — 56 initial criteria
 
 #### C01–C08 — product outcome
 
 | ID | State | Evidence | Limit / remaining work |
 | --- | --- | --- | --- |
-| C01 | Partial delivery | Existing native connector, kit and standard cutover retained; new provider changes use the same local service. | Clean Mac activation/reboot and full installation remain unverified, not completed by these two lots. |
-| C02 | Implemented; scoped proof | P01/P02/F01/F02 reconcile saved progressive jobs/frames into editable working state; L01/F02 cover actual local pen receipts with synthetic transport. | No missing tail regenerated, font-dependent layouts without original normalized evidence conflict; no new true-agent trial. |
-| C03 | Implemented; UI untested | Explicit source/conversation PCM links, exact bytes, authorization and no automatic send/playback have CLI/HTTP evidence at 0b932ab (E02). | Current browser and owner-WebView recording flow not executed (E07). |
-| C04 | Preserved; server change | Notebook actor/revision/stop contracts in F01/F02; embedded Android production unchanged. | Simultaneous Mac/BOOX and new served conversation startup behavior remain untested physically. |
-| C05 | Inherited plus prepared | Owner transport and human review preserved; new OwnerRecordingTest and fixture are present. | A prepared native test is not a passed test; current instrumentation has not compiled or run. |
-| C06 | Baseline only for APK | No Android build input changed from 56aa6c7 by these lots; prior PCM instrumentation retained. | No fresh Gradle/APK run. Old native results do not validate new server/provider/UI behavior. |
+| C01 | Local validation; installation gate | M07 verifies the kit and actual temporary macOS service. | Production activation receipt and reboot are separate; physical acceptance remains open. |
+| C02 | Implemented; real-provider proof | P01/P02/F01/F02 plus M04 native progressive ink, stop/redirection and human-ink preservation. | Unavailable historical tails are not regenerated; physical BOOX remains open. |
+| C03 | Browser and emulator verified | M02 checks PCM selection/playback/export in four browser profiles and Android owner. | Actual BOOX recordings and acoustics remain open. |
+| C04 | Emulator and real-provider verified | M03/M04/M06 retain independent views, source identity and native writing during Voice. | Simultaneous physical Mac/BOOX session remains open. |
+| C05 | Owner emulator verified | M02/M03 exercise actual owner UI, file picker, review and recovery. | Physical ergonomics and network/sleep require the BOOX. |
+| C06 | APK built and checked | M03 signed artifact and executed instrumentation. | Installation on the physical BOOX remains open. |
 | C07 | Preserved | Recovery uses explicit ordinary project paths and the existing conversation panel. | No Inbox, alternate catalog or separate ideas application introduced. |
-| C08 | Extended; partial acceptance | Progressive receipt/prefix reconciliation P01/P02/F01/F02, exact undo and later human work preserved; no new review authority. | Full standard Mac migration and physical acceptance still open; unknown or contradictory evidence is retained, not guessed. |
+| C08 | Selected recovery performed | M08 preserves original notebooks, history and the pending proposal without acceptance. | Device-only queues/PCM and single-writer retirement remain open. |
 
 #### R01–R29 — grooming preservation
 
@@ -1617,28 +1640,28 @@ added as new requirements. The current matrix follows; subsets do not close a ro
 | R26 | Preserved | No background generation or new agent. Initialization reuses only an already verified restricted child (L01/F02). | Protocol timing fixtures do not launch an authenticated model. |
 | R27 | Preserved | No hosted-hub/review/remote profile restored; personal-device service stays opt-in. | Kit LaunchAgent does not implicitly expose a device listener. |
 | R28 | Extended | Crash between frame transaction and descriptor save, failed attempt counters and idempotent working import covered (P01/P02/F01/F02). | No source overwrite; malformed/orphaned evidence blocks explicit recovery. |
-| R29 | Delivered locally | One cumulative bundle and complete ZIP at the same new HEAD; original Shared fix included, no supplement. | No push, merge, release or personal installation. Remote b41 CI not attributed to this HEAD. |
+| R29 | Local continuation delivered to PR | Exact source restoration and checkpoint receipts M01–M09. | Read final PR checks for publication state; no npm release or physical acceptance inferred. |
 
 #### V01–V19 — acceptance evidence
 
 | ID | State | Evidence | Limit / remaining work |
 | --- | --- | --- | --- |
-| V01 | Scoped audit | All 29 grooming rows retained; configs, CI, proposal authority, model/effort and performance goals unchanged. | Documentation/code review and targeted tests are not whole-product/native validation. |
-| V02 | Partial; preparation not installation | Kit source integrity and default CLI path E04; historical synthetic doctor statement is attributed in the relay. | Operational clean Mac install/activation/reboot and one coherent running service are not demonstrated. |
-| V03 | Inherited plus scoped pen contracts | Current local notebook/progress tests in F01/F02; production Android unchanged. | No new native simultaneous drawing/render-receipt execution. |
-| V04 | Inherited plus unexecuted test | b41 complete drawing/review/PNG scenarios E01; PCM owner instrumentation prepared. | No new end-to-end owner PCM scenario execution. |
+| V01 | Preservation audit | All 29 grooming requirements retained; targeted CI environment and UI corrections documented above. | Whole-product acceptance still needs the remaining device gates. |
+| V02 | Kit and native service check | M07 activation, restart and HTTP readback. | Final production receipt is private; machine reboot not tested. |
+| V03 | Native and real-provider proof | M03/M04/M06 actual emulator geometry, native pen, voice and acknowledgments. | Physical pressure, palm rejection and e-ink comfort untested. |
+| V04 | Owner PCM executed | M02/M03 actual native WebView, playback/export and file-picker checks. | No physical BOOX evidence. |
 | V05 | Extended synthetic proof | Lost import acknowledgment, delayed descriptor, failed frame attempt and repeated recovery preserve original and recent bytes (P01/P02/F01/F02). | Does not establish Android process/network behavior physically. |
 | V06 | Extended; actual file tests | Frame gaps/duplicates/orphans, digest/prefix conflicts, object revisions, exact undo and newer human deletion tests (P01/P02/F01/F02). | Missing original normalized request is explicit evidence conflict; no approximate queue replay. |
-| V07 | Application changes verified; true-agent open | L01/F02 remove unnecessary startup/text/catalogue waits while retaining stop/scope and real local pen behavior. | True-provider generation, stop/redirection and ten-second objective remain unmeasured after changes. |
+| V07 | Real agent passed; speed target open | M04 covers real generation, progressive geometry, stop and redirection. | First useful native result 12.394 s; ten-second target unmet. |
 | V08 | Current scoped proof | Working import and ordinary acceptance remain separate; real local/shared freeze/review dependencies tested in F01. | No final-head browser/native rendering acceptance claimed. |
-| V09 | Current scoped proof, not complete CI | Local/Shared proposal and pre-push authority regressions included in F01; immutable assertions preserved. | Historically missing OpenSSH case not retried; no new full npm test result. |
-| V10 | Server regression; UI/native pending | F01/F02 check source-bound sessions, retained history, no replay, audio/controller and HTTP dependencies. | New catalogue readiness requires authorized browser/native verification; PCM UI and actual acoustics pending. |
+| V09 | Full CI gate retained | Targeted platform checks M01 and unmodified review assertions. | Final full npm and hosted head checks must pass before merge. |
+| V10 | Browser and native audio executed | M02/M05/M06 actual recognition, Codex, synthesis, playback receipts, microphone and recovery. | Synthetic browser input and muted emulator output do not prove physical acoustics. |
 | V11 | Preserved | Existing rendered formats/HTML and notebook asset-resolution tests retained. | No invented Office/PDF editing expansion. |
 | V12 | Scoped historical proof | Accepted-only corpus, reader integrity and Shared cache processes passed in E02 at 0b932ab. | Do not relabel those successes as a complete suite at the delivery HEAD; physical offline behavior not rerun. |
-| V13 | Current scope proof | Restrictions verified before model/thread; active inherited MCP still isolated. Synchronous scope refusal preserved by F02. | No adversarial local-admin or actual-account claim. |
-| V14 | Progressive software extended; acceptance partial | P01/P02/F01/F02 join jobs, groups, frame events and canonical cells; lost acknowledgments and later edits preserved. | Full standard-installation Mac migration not run. Unavailable historical frame geometry/normalized plans cannot be reconstructed. |
-| V15 | Inherited plus unexecuted instrumentation | Production identity/signature/client compatibility preserved; dedicated-emulator guard and new recording class retained. | No current instrumentation compilation or signed upgrade/interruption execution. |
-| V16 | New served UI; not browser-tested | Draft recovery still gates controls; independent catalogue readiness/failure tested as a contract (L01/F02). | No new browser captures/axe/native ergonomics; existing environment block not retried. |
-| V17 | Application reductions verified; target open | Avoided extra initialization, idle-probe grace and initial text buffer wait; monotonic stage instrumentation plus opt-in real verifier (L01/F02). | No new true-agent number. 13.402/14.189 s remain historical references; provider inference/display clocks not falsely inferred. |
+| V13 | Actual account exercised | M04/M05 verify real local Codex with existing scope restrictions and inherited-MCP isolation. | Not an adversarial local-admin security proof. |
+| V14 | Selected personal recovery complete | M08 retains original private source records and pending review state. | Device-only data and retirement remain open; missing evidence cannot be reconstructed. |
+| V15 | Current instrumentation built and run | M03/M06 signed install, native owner/PCM/audio/pen checks. | Physical-device upgrade and interruption remain open. |
+| V16 | Rendered browser/native verified | M02/M03/M09 rendered UI, four-profile PCM accessibility and direct Voice regression. | Final whole-suite browser checks remain a separate gate; BOOX ergonomics open. |
+| V17 | Measured; target open | M04: native 12.394 s; browser 14.048 s; detailed agent 21.247 s, with setup measured separately. | No sub-ten-second claim or silent model/effort downgrade. |
 | V18 | Not tested — initial scope | No physical result claimed. | BOOX pressure, palm, latency, ghosting, microphone/speaker, interruption, Wi-Fi/sleep and comfort are required local tests, not out-of-scope extensions. |
-| V19 | Exact packaging; scoped test result | One HEAD, cumulative bundle/ZIP equality, restore/fsck, file/hash/privacy receipts D01. F01 failure preserved with F02 correction. | No global green CI, new APK build or authenticated-provider run. Bundle requires public b41. |
+| V19 | Exact source and signed APK | Source equality plus M01–M09 local evidence. | Final global CI, final installation and physical-device acceptance must not be inferred from package checks. |

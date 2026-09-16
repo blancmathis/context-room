@@ -31,7 +31,7 @@ public final class OwnerNotebookConversationDeviceTest {
         ui.evaluate(activity, "[...document.querySelectorAll('.notebook-dialog button')].find(n=>n.textContent==='Draw with the native pen').click()");
         NotebookDeviceTest.waitFor("Native pen was not ready", () -> ui.drawing.onUi(activity, () -> activity.ink != null && activity.journal != null && activity.conversationButton != null && activity.conversationButton.isEnabled()));
         instrumentation.runOnMainSync(() -> activity.voiceButton.performClick());
-        ui.systemClick("While using the app");
+        ui.permissionClick("While using the app");
         ui.visible(activity, "document.body.classList.contains('context-room-native-conversation') && document.querySelector('.assistant-panel')?.dataset.ready==='true'");
         NotebookDeviceTest.waitFor("The native notebook binding was not confirmed", () -> ui.drawing.onUi(activity, () -> activity.nativeConversationState != null));
         assertTrue(ui.drawing.onUi(activity, () -> activity.nativeConversationState.optJSONObject("source").optString("resourceId").equals(activity.lastScene.optString("resourceId"))));

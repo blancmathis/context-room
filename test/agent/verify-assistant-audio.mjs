@@ -71,7 +71,7 @@ try {
     assert.ok(!option('--expected') || user[0].text.includes(option('--expected')), user[0].text);
     assert.equal(completed.operation.status, 'completed'); assert.deepEqual(errors, []); assert.deepEqual(fs.readFileSync(documentPath), original);
     await page.screenshot({ path: path.join(output, 'continuous-voice-original-answer.png') });
-    const proof = { sourceHead: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), dirty: true,
+    const proof = { sourceHead: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), dirty: Boolean(execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' })),
       microphoneInput: 'finite synthetic browser MediaStream, then silence', endpoint: 'actual browser capture and speech endpoint',
       transcription: user[0].text, provider: 'real local Codex', answer: completed.messages.findLast(message => message.role === 'assistant')?.text,
       synthesis: 'real local macOS speech', playback: 'actual Web Audio completion with muted output', playbackReceipts: receipts.length,

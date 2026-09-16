@@ -1,5 +1,16 @@
 ## Summary
 
+**Local continuation, 2026-09-16.** The downloaded `1901566` source tree was
+restored and checked against all 370 archive blobs. Local corrections, actual
+macOS/browser/Android execution and real Codex/Whisper checks now supersede the
+unexecuted-test statements below. See the current coverage and local checkpoint
+in [verification](docs/lifecycle/changes/active/android-convergence/verification.md).
+Private migration receipts and source data remain outside this public repository.
+The historical handoff below describes the original delivery, not current Git,
+installation or authorization state. Physical BOOX acceptance and the measured
+sub-ten-second first-result target remain open; do not retire the old installation
+before device-only work is accounted for and its replacement is confirmed.
+
 Continuation limitée aux dessins progressifs historiques et aux délais applicatifs
 avant le premier résultat utile, depuis `56aa6c78262dc338dfcd6b44826a9416a722617e`.
 ZIP et bundle représentent le même HEAD, correctif Shared antérieur inclus ; aucun
