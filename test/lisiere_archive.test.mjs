@@ -24,6 +24,8 @@ with sqlite3.connect(source/'workspace.sqlite') as db:
   db.execute('INSERT INTO projects VALUES(?,?,?)',('p','Synthetic','/synthetic/project'))
   db.execute('INSERT INTO boards VALUES(?,?,?,?)',('board','Long source','p',4))
   db.execute('INSERT INTO objects VALUES(?,?,?,?)',('board','text',4,json.dumps({'type':'text','text':'é'*40000},ensure_ascii=False)))
+  db.execute('CREATE TABLE proposal_payloads(id TEXT PRIMARY KEY,sha256 TEXT,bytes INTEGER)')
+  db.execute('INSERT INTO proposal_payloads VALUES(?,?,?)',('synthetic-proposal',hashlib.sha256(b'synthetic').hexdigest(),9))
   payload=bytes(range(251))*1000
   (source/'assets').mkdir()
   (source/'assets'/hashlib.sha256(payload).hexdigest()).write_bytes(payload)
@@ -58,6 +60,17 @@ test('Android binary cells, int64 operation order and incomplete UTF-16 text sur
   const original = [...archive.rows('board_objects')][0].value; assert.deepEqual(original, binary);
   const object = decodeLisiereObject(original);
   assert.equal(object.x, 1.5); assert.equal(object.text, 'A\ud83dB'); assert.equal(object.text.length, 3);
+});
+
+test('Mac proposal payload checksum columns survive export while invalid column identifiers remain refused', async t => {
+  const { output } = await fixture(t);
+  assert.deepEqual([...readLisiereSnapshot(output).rows('proposal_payloads')], [{
+    id: 'synthetic-proposal', sha256: notebookHash(Buffer.from('synthetic')), bytes: 9,
+  }]);
+  for (const invalid of ['256sha', 'sha256;drop', 'sha-256']) {
+    replaceManifest(output, manifest => { manifest.tables.find(table => table.name === 'proposal_payloads').columns[1] = invalid; });
+    assert.throws(() => readLisiereSnapshot(output), /Inconsistent archived table inventory/);
+  }
 });
 
 test('incomplete, altered, unlisted or linked recovery data is refused before an import', async t => {

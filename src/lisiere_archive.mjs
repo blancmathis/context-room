@@ -111,7 +111,7 @@ export function readLisiereSnapshot(directory) {
       && listed && listed.sha256 === entry.sha256 && listed.bytes === entry.bytes
       && Number.isSafeInteger(value.rows) && value.rows >= 0
       && Array.isArray(value.columns) && value.columns.length > 0 && value.columns.length <= 100
-      && value.columns.every(key => typeof key === 'string' && /^[a-z_]+$/.test(key)) && new Set(value.columns).size === value.columns.length, 'Inconsistent archived table inventory.');
+      && value.columns.every(key => typeof key === 'string' && /^[a-z_][a-z0-9_]*$/.test(key)) && new Set(value.columns).size === value.columns.length, 'Inconsistent archived table inventory.');
     tables.set(value.name, { ...entry, columns: [...value.columns], rows: value.rows });
   }
   requireValue([...files.keys()].every(rel => !rel.startsWith('tables/') || tables.has(rel.slice(7, -6))), 'An archived table is not described in the manifest.');
