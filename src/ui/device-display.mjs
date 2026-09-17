@@ -15,7 +15,7 @@ export class DeviceDisplay {
   }
   target() {
     const editor = this.editor;
-    if (!editor?.dialog.isConnected || editor.dialog.dataset.saveState !== 'confirmed') return null;
+    if (!editor?.dialog.isConnected || editor.dialog.dataset.saveState !== 'confirmed' || editor.browserDeviceId && editor.browserDeviceId !== this.session.device.id) return null;
     let fields; try { fields = JSON.parse(editor.scopeKey); } catch { return null; }
     if (!Array.isArray(fields) || fields.length !== 4 || fields[3]) return null;
     const binding = editor.binding();
@@ -114,12 +114,13 @@ export async function startDeviceDisplay({ currentEditor = () => null } = {}) {
   const sessionResponse = await fetch('/browser/session', { cache: 'no-store', credentials: 'same-origin' });
   if (!sessionResponse.ok) return false;
   const session = await sessionResponse.json();
-  if (!session.serverId || !session.device?.id || !navigator.locks) return false;
-  let release;
+  if (!session.serverId || !session.device?.id || !navigator.locks || document.hidden || globalThis.ContextRoomNativeOwner?.active === false) return false;
+  let release, reportStarted;
+  const started = new Promise(resolve => { reportStarted = resolve; });
   const lifetime = new Promise(resolve => { release = resolve; });
   window.addEventListener('pagehide', release, { once: true });
   void navigator.locks.request('context-room-display:' + session.device.id, { ifAvailable: true }, async lock => {
-    if (!lock) return;
+    if (!lock || document.hidden || globalThis.ContextRoomNativeOwner?.active === false) { reportStarted(false); return; }
     const controller = new AbortController();
     let select, status;
     const display = new DeviceDisplay({ session,
@@ -141,6 +142,7 @@ export async function startDeviceDisplay({ currentEditor = () => null } = {}) {
     });
     const attach = editor => {
       display.attach(editor); if (!editor) return;
+      editor.dialog.querySelector('.notebook-device-display')?.remove();
       const controls = document.createElement('label'); controls.className = 'notebook-device-display'; controls.textContent = 'Device view';
       select = document.createElement('select'); select.setAttribute('aria-label', 'Device view mode');
       for (const [mode, title] of [['independent', 'Independent views'], ['share', 'Share this view'], ['follow', 'Follow the connected owner']]) select.add(new Option(title, mode));
@@ -153,7 +155,10 @@ export async function startDeviceDisplay({ currentEditor = () => null } = {}) {
     for (const type of ['pointerdown', 'keydown', 'wheel']) document.addEventListener(type, () => display.interaction(), { capture: true, passive: true, signal: controller.signal });
     attach(currentEditor());
     const timer = setInterval(() => void display.tick(), 1000); void display.tick();
+    reportStarted({ stop: release });
     await lifetime; display.closed = true; clearInterval(timer); controller.abort();
-  }).catch(() => {});
-  return true;
+    display.editor?.dialog.querySelector('.notebook-device-display')?.remove();
+    window.removeEventListener('pagehide', release);
+  }).catch(() => { reportStarted(false); });
+  return started;
 }

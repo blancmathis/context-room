@@ -8,10 +8,23 @@ export const WEB_ASSETS = new Map([...NOTEBOOK_WEB_ASSETS,
   ...aliases.map(name => ['/assets/' + name + '.mjs', { file: 'ui/' + name + '.mjs', type: 'text/javascript; charset=utf-8' }]),
   ...[192, 512].map(size => ['/assets/icons/context-room-' + size + '.png', { file: 'ui/icons/context-room-' + size + '.png', type: 'image/png' }]),
 ]);
-let version;
-export function webAppVersion() {
-  return version ||= createHash('sha256').update([...new Set(['ui/app.mjs', 'web_app.mjs', 'ui/service-worker.js', ...[...WEB_ASSETS.values()].map(a => a.file)])]
-    .sort().map(file => file + '\0' + fs.readFileSync(new URL('./' + file, import.meta.url)).toString('base64')).join('\0')).digest('hex').slice(0, 24);
+/** Capture the public bytes once; an in-place update cannot relabel new bytes
+ * with the content version used by an already-running process. Restart into a
+ * new immutable checkout to publish another build. */
+export function captureWebBuild(files, read = file => fs.readFileSync(new URL('./' + file, import.meta.url))) {
+  const bytes = new Map([...new Set(files)].sort().map(file => [file, Buffer.from(read(file))]));
+  const version = createHash('sha256').update([...bytes].map(([file, body]) => file + '\0' + body.toString('base64')).join('\0')).digest('hex').slice(0, 24);
+  return { version, bytes };
+}
+let build;
+function currentWebBuild() {
+  return build ||= captureWebBuild(['ui/app.mjs', 'web_app.mjs', 'ui/service-worker.js', ...[...WEB_ASSETS.values()].map(a => a.file)]);
+}
+export function webAppVersion() { return currentWebBuild().version; }
+function publicSource(file) {
+  const bytes = currentWebBuild().bytes.get(file);
+  if (!bytes) throw new TypeError('Unknown public web asset.');
+  return bytes;
 }
 export function versionWebSource(source) {
   // Every lazy module and its transitive imports belong to the same build.
@@ -42,7 +55,7 @@ export function webAppResponse(url, bundle) {
   if (v && v !== webAppVersion() && publicWebPaths(bundle).has(url.pathname)) return { status: 409, headers, body: 'This application build is no longer on the Mac. Close old windows to update; local ink is retained.' };
   const asset = WEB_ASSETS.get(url.pathname);
   if (asset) {
-    let body = fs.readFileSync(new URL('./' + asset.file, import.meta.url));
+    let body = publicSource(asset.file);
     if (/javascript/.test(asset.type)) body = versionWebSource(body.toString('utf8'));
     return { status: 200, headers: { ...headers, 'content-type': asset.type }, body };
   }
@@ -56,7 +69,7 @@ export function webAppResponse(url, bundle) {
   if (url.pathname === '/service-worker.js') {
     const paths = [...WEB_ASSETS.keys()].map(p => /\.(?:mjs|css|js)$/.test(p) ? p + '?v=' + webAppVersion() : p);
     paths.push(bundle.cssPath + '?v=' + webAppVersion(), '/offline.html', '/manifest.webmanifest');
-    const source = fs.readFileSync(new URL('./ui/service-worker.js', import.meta.url), 'utf8');
+    const source = publicSource('ui/service-worker.js').toString('utf8');
     return { status: 200, headers: { ...headers, 'content-type': 'text/javascript; charset=utf-8', 'service-worker-allowed': '/' },
       body: 'const BUILD = ' + JSON.stringify(webAppVersion()) + ';\nconst PRECACHE = ' + JSON.stringify(paths) + ';\n' + source };
   }

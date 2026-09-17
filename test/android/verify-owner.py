@@ -87,7 +87,7 @@ try:
         with (output / 'owner-failure.png').open('wb') as image:
             run(adb + ['exec-out', 'run-as', 'app.contextroom.tablet.preview', 'cat', 'files/owner-failure.png'], stdout=image)
         raise RuntimeError('Owner UI acceptance failed: ' + str(log_path))
-    captures = ('owner-retained-history', 'owner-exported-history') if args.history else ('owner-rendered-document', 'owner-native-drawing', 'owner-retained-workspace', 'owner-imported-image', 'owner-exported-notebook', 'owner-human-file-decision', 'owner-settings', 'owner-shared-review')
+    captures = ('owner-retained-history', 'owner-exported-history') if args.history else ('owner-rendered-document', 'owner-shared-drawing', 'owner-retained-workspace', 'owner-imported-image', 'owner-exported-notebook', 'owner-human-file-decision', 'owner-settings', 'owner-shared-review')
     if args.draft:
         captures = ('owner-recovered-tablet-draft', 'owner-saved-tablet-draft')
     if args.recording:

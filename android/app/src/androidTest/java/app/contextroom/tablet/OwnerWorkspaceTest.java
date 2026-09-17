@@ -89,7 +89,33 @@ public final class OwnerWorkspaceTest {
     for (int n = 0; n < node.getChildCount() && text.length() < 4000; n++) text.append(pickerContent(node.getChild(n)));
     return text.toString();
   }
-  @Test public void ownerHubDocumentsAndNativeDrawingStayConnected() throws Exception {
+  /** This helper is exclusively for retained legacy-journal regression scenarios. */
+  void openLegacyRecoveryNotebook(MainActivity activity, JSONObject ticket) throws Exception {
+    evaluate(activity, "ContextRoomNativeOwner.openNotebook({projectId:" + JSONObject.quote(ticket.getString("testProjectId")) + ",path:'docs/Owner.crnb'})");
+  }
+  void sharedWebPen(MainActivity activity) throws Exception {
+    String bounds = evaluate(activity, "(()=>{const r=document.querySelector('canvas.notebook-canvas').getBoundingClientRect();return JSON.stringify([r.left+75,r.top+60,innerWidth])})()");
+    JSONArray point = new JSONArray(new JSONArray("[" + bounds + "]").getString(0));
+    int[] location = new int[2]; AtomicInteger pixels = new AtomicInteger();
+    instrumentation.runOnMainSync(() -> { activity.ownerWorkspace.web.getLocationOnScreen(location); pixels.set(activity.ownerWorkspace.web.getWidth()); });
+    float scale = (float)(pixels.get() / point.getDouble(2));
+    long down = SystemClock.uptimeMillis();
+    int[] actions = { MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP };
+    float[] pressures = { .25f, .75f, .5f };
+    for (int n = 0; n < actions.length; n++) {
+      MotionEvent.PointerProperties properties = new MotionEvent.PointerProperties(); properties.id = 0; properties.toolType = MotionEvent.TOOL_TYPE_STYLUS;
+      MotionEvent.PointerCoords coordinates = new MotionEvent.PointerCoords();
+      coordinates.x = location[0] + ((float)point.getDouble(0) + n * 55) * scale;
+      coordinates.y = location[1] + ((float)point.getDouble(1) + n * 18) * scale;
+      coordinates.pressure = pressures[n]; coordinates.size = .1f;
+      MotionEvent event = MotionEvent.obtain(down, SystemClock.uptimeMillis(), actions[n], 1,
+        new MotionEvent.PointerProperties[]{properties}, new MotionEvent.PointerCoords[]{coordinates},
+        0, 0, 1, 1, 0, 0, android.view.InputDevice.SOURCE_STYLUS, 0);
+      assertTrue("The common WebView must receive the stylus sample", instrumentation.getUiAutomation().injectInputEvent(event, true)); event.recycle();
+      SystemClock.sleep(40);
+    }
+  }
+  @Test public void ownerHubDocumentsAndSharedDrawingStayConnected() throws Exception {
     JSONObject ticket = drawing.fixture();
     try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
       MainActivity activity = drawing.activity(scenario);
@@ -127,22 +153,17 @@ public final class OwnerWorkspaceTest {
         assertTrue("Subframe cannot open native resources", drawing.onUi(activity, () -> activity.showingOwner && activity.ink == null));
         assertEquals("Subframe receives no privileged reply", "true", evaluate(activity, "typeof window.FRAME_ANSWERED === 'undefined'"));
         evaluate(activity, "document.querySelector('#owner-test-frame').remove()");
+        evaluate(activity, "document.addEventListener('context-room-notebook-opened',event=>window.sharedNotebook=event.detail)");
         click(activity, "[data-global-project-file='docs/Owner.crnb']");
         visible(activity, "[...document.querySelectorAll('.local-proposal-review button')].some(n=>n.textContent==='Open working notebook')");
         evaluate(activity, "[...document.querySelectorAll('.local-proposal-review button')].find(n=>n.textContent==='Open working notebook').click()");
         visible(activity, "document.querySelector('.notebook-dialog canvas')");
-        evaluate(activity, "[...document.querySelectorAll('.notebook-dialog button')].find(n=>n.textContent==='Draw with the native pen').click()");
-        NotebookDeviceTest.waitFor("Native owner notebook did not open", () -> drawing.onUi(activity, () -> activity.ink != null && activity.journal != null && activity.ink.isEnabled() && activity.lastScene != null));
-        long down = SystemClock.uptimeMillis();
-        drawing.pen(activity, MotionEvent.ACTION_DOWN, 160, 130, .5f, down);
-        drawing.pen(activity, MotionEvent.ACTION_MOVE, 280, 180, .8f, down);
-        drawing.pen(activity, MotionEvent.ACTION_UP, 330, 210, .6f, down);
-        NotebookDeviceTest.waitFor("Native owner ink was not acknowledged", () -> drawing.onUi(activity, () -> activity.pendingNative == 0 && activity.lastScene.optJSONArray("objects").length() > 0 && activity.lastScene.optInt("pending") == 0 && !activity.lastScene.optBoolean("offline")));
-        screenshot(activity, "owner-native-drawing");
-        instrumentation.runOnMainSync(activity::onBackPressed);
-        NotebookDeviceTest.waitFor("Owner workspace was not retained", () -> drawing.onUi(activity, () -> activity.showingOwner && activity.ink == null));
-        visible(activity, "document.querySelector('.notebook-dialog')");
-        visible(activity, "document.querySelector('.notebook-state [role=status]')?.textContent.includes('1 objects')");
+        assertTrue("The normal notebook must not instantiate the legacy native canvas", drawing.onUi(activity, () -> activity.ink == null && activity.showingOwner));
+        assertEquals("No parallel native tool route in the normal editor", "true", evaluate(activity, "![...document.querySelectorAll('.notebook-dialog button')].some(n=>n.textContent==='Draw with the native pen')"));
+        sharedWebPen(activity);
+        visible(activity, "window.sharedNotebook?.surface.document.objects.length===1 && document.querySelector('.notebook-dialog')?.dataset.saveState==='confirmed'");
+        assertEquals("Web pressure samples are retained", "true", evaluate(activity, "[.25,.75].every(p=>window.sharedNotebook.surface.document.objects[0].points.some(point=>point[2]===p))"));
+        screenshot(activity, "owner-shared-drawing");
         assertEquals("Owner permission stays explicit", true, activity.connection.isOwner());
         screenshot(activity, "owner-retained-workspace");
         android.content.ContentResolver resolver = activity.getContentResolver();

@@ -1,13 +1,31 @@
-let registrationPromise, registrationError, installPrompt, currentNotebook, displayStarted = false, displayStarting = false;
+let registrationPromise, registrationError, installPrompt, currentNotebook, displayController = null, displayStarting = false;
+/** Cache installation can fail. Never call that offline-ready or wait forever. */
+export function waitForApplicationCache(registration, timeoutMs = 45_000) {
+  return new Promise((resolve, reject) => {
+    const watched = new Set(); let timer, complete = false;
+    const finish = error => {
+      if (complete) return; complete = true; clearTimeout(timer);
+      registration.removeEventListener('updatefound', check);
+      for (const worker of watched) worker.removeEventListener('statechange', check);
+      error ? reject(error) : resolve(registration);
+    };
+    const check = () => {
+      if (registration.active?.state === 'activated') { finish(); return; }
+      const worker = registration.installing || registration.waiting || registration.active;
+      if (worker && !watched.has(worker)) { watched.add(worker); worker.addEventListener('statechange', check); }
+      if (worker?.state === 'redundant' || !worker && [...watched].some(item => item.state === 'redundant')) finish(new Error('Application caching failed. Stay connected and retry; local ink is retained.'));
+    };
+    registration.addEventListener('updatefound', check);
+    timer = setTimeout(() => finish(new Error('Application caching is not confirmed. Stay connected and check again before closing offline.')), timeoutMs);
+    check();
+  });
+}
 export function prepareWebApp() {
   const profile = document.documentElement.dataset.contextRoomRuntimeProfile;
   if (profile && profile !== 'local') return Promise.resolve(null);
   if (!globalThis.isSecureContext || !('serviceWorker' in navigator) || globalThis.ContextRoomNativeOwner) return Promise.resolve(null);
   return registrationPromise ||= navigator.serviceWorker.register('/service-worker.js', { scope: '/', updateViaCache: 'none' })
-    .then(async registration => {
-      await navigator.serviceWorker.ready;
-      return registration;
-    }).catch(error => { registrationError = error; registrationPromise = null; throw error; });
+    .then(registration => waitForApplicationCache(registration)).catch(error => { registrationError = error; registrationPromise = null; throw error; });
 }
 export async function showWebAppSettings() {
   if (!document.querySelector('link[data-web-app-style]')) {
@@ -21,7 +39,8 @@ export async function showWebAppSettings() {
   const install = add('button', 'Install Context Room'); install.type = 'button'; install.disabled = !installPrompt;
   install.addEventListener('click', async () => {
     if (!installPrompt) return;
-    await prepareWebApp(); await installPrompt.prompt(); await installPrompt.userChoice; installPrompt = null; install.disabled = true;
+    try { await prepareWebApp(); await installPrompt.prompt(); await installPrompt.userChoice; installPrompt = null; install.disabled = true; }
+    catch (error) { status.textContent = 'Offline application not ready: ' + error.message; }
   });
   add('p', 'The browser’s Install app / Add to Home screen menu is also available when supported.');
   const protect = add('button', 'Request persistent local storage'); protect.type = 'button';
@@ -33,7 +52,7 @@ export async function showWebAppSettings() {
   const show = registration => {
     status.textContent = registration?.waiting ? 'Update ready. Finish saving, close ALL Context Room windows on this origin, then reopen. No forced reload; local gestures are retained.'
       : registration ? 'Application cached for offline reopening. Locally saved ink and confirmation by the Mac are separate states.'
-      : 'This native workspace uses its pinned transport. Use a trusted HTTPS browser connection for PWA installation.';
+      : globalThis.ContextRoomNativeOwner ? 'This native workspace uses packaged application bytes and its pinned transport. Use a trusted HTTPS browser connection for PWA installation.' : 'Offline installation requires a supported browser and a trusted secure local-runtime connection.';
   };
   check.addEventListener('click', async () => { try { const registration = await prepareWebApp(); await registration?.update(); show(registration); } catch (error) { status.textContent = 'Offline application not ready: ' + error.message; } });
   if (globalThis.ContextRoomNativeOwner) {
@@ -58,13 +77,16 @@ export async function showWebAppSettings() {
 }
 if (typeof window !== 'undefined' && window === window.top) {
   const display = async () => {
-    if (displayStarted || displayStarting || !globalThis.ContextRoomNativeOwner?.navigation && !document.querySelector('meta[name="context-room-browser-device"]')?.content && !currentNotebook?.browserDeviceId) return;
+    if (document.hidden || globalThis.ContextRoomNativeOwner?.active === false || displayController || displayStarting || !globalThis.ContextRoomNativeOwner?.navigation && !document.querySelector('meta[name="context-room-browser-device"]')?.content && !currentNotebook?.browserDeviceId) return;
     displayStarting = true;
-    try { const { startDeviceDisplay } = await import('./device-display.mjs'); displayStarted = await startDeviceDisplay({ currentEditor: () => currentNotebook }); } catch { /* Offline ink remains independent; retry on reconnect. */ }
+    try { const { startDeviceDisplay } = await import('./device-display.mjs'); displayController = await startDeviceDisplay({ currentEditor: () => currentNotebook }); if (document.hidden || globalThis.ContextRoomNativeOwner?.active === false) { displayController?.stop?.(); displayController = null; } } catch { /* Offline ink remains independent; retry on reconnect. */ }
     finally { displayStarting = false; }
   };
   document.addEventListener('context-room-notebook-opened', event => { currentNotebook = event.detail; void display(); });
   document.addEventListener('context-room-notebook-closed', event => { if (currentNotebook?.dialog === event.detail.dialog) currentNotebook = null; });
+  const stopDisplay = () => { displayController?.stop?.(); displayController = null; };
+  window.addEventListener('context-room-native-active', event => { if (event.detail === true) void display(); else stopDisplay(); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) stopDisplay(); else void display(); });
   window.addEventListener('online', () => void display());
   void display();
   window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); installPrompt = event; });

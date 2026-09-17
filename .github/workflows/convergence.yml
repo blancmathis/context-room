@@ -36,6 +36,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24
@@ -45,7 +46,7 @@ jobs:
       - name: Notebook and existing proposal contracts
         run: |
           umask 022
-          node --test test/notebook*.test.mjs test/device*.test.mjs test/local_proposals.test.mjs test/document_assets.test.mjs
+          node --test test/notebook*.test.mjs test/device*.test.mjs test/web_app.test.mjs test/local_proposals.test.mjs test/document_assets.test.mjs
       - name: Package privacy
         run: npm run package:privacy
       - name: Export exact source tree without repository history or runtime state
@@ -57,7 +58,7 @@ jobs:
           sha256sum context-room-source.tar.gz > SHA256SUMS
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: convergence-source-${{ github.sha }}
+          name: convergence-source-${{ github.event.pull_request.head.sha || github.sha }}
           path: ${{ runner.temp }}/convergence-source/
           if-no-files-found: error
           retention-days: 7
@@ -71,6 +72,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24
@@ -99,7 +101,7 @@ jobs:
           sha256sum Context-Room-preview.apk > SHA256SUMS
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: android-preview-${{ github.sha }}
+          name: android-preview-${{ github.event.pull_request.head.sha || github.sha }}
           path: ${{ runner.temp }}/android-preview/
           if-no-files-found: error
           retention-days: 7

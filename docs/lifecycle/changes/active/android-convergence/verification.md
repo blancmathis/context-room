@@ -67,6 +67,29 @@ resynchronization, a waiting-worker replacement and separate common tablet
 layouts. Its synthetic worker replacement tests update lifecycle; the asset
 contract separately checks the content-versioned module cohort.
 
+### First PR CI checkpoint
+
+For `08fc30c62c3f5c71684ca15070c0c2c4645d1117`, convergence run
+`35248801871` completed with **122/122 contract tests**, package privacy
+(**178 package files**) and both preview/instrumentation APK builds passing.
+The preview has package `app.contextroom.tablet.preview`, signature v2, and only
+Internet and microphone permissions. This first artifact checker checked the
+eight legacy shared-engine assets; follow-up verification additionally compares
+the complete packaged common web cohort to source. No emulator ran in that job.
+
+CI run `35248801921` passed the Chromium mobile browser job and the shared
+notebook layouts in Chromium desktop and WebKit. The Chromium cold-restart test
+first inspected a progressive stroke prefix rather than waiting for the full
+Mac receipt; it was corrected to wait for the same required pressure samples.
+Firefox reported a 44-pixel target as 43.999996 pixels; the assertion now allows
+only 0.001 pixel numerical rounding. These changes do not waive pressure or
+44-pixel accessibility requirements. The initial runs remain recorded as failed.
+
+The existing WebKit layout suite also failed when the expected human-acceptance
+confirmation dialog did not appear. That failure is distinct from the passing
+shared-notebook layout; it is not labelled pre-existing without baseline proof.
+The overall regression run must not be called green until its results are known.
+
 ### Physical gates remain open
 
 No new physical BOOX result, real-agent co-drawing, physical microphone test,

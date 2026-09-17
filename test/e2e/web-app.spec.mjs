@@ -67,7 +67,8 @@ test('@pwa shared editor survives a waiting worker update and two offline browse
     await page.evaluate(() => openContextRoomNotebook('docs/Restart.crnb'));
     const id = await page.locator('.notebook-dialog').getAttribute('data-resource-id');
     await pen(page); await expect.poll(() => readNotebook(f.root, id).document.objects.length).toBe(1);
-    expect(readNotebook(f.root, id).document.objects[0].points.map(p => p[2])).toEqual(expect.arrayContaining([0.25, 0.75]));
+    await expect.poll(() => readNotebook(f.root, id).document.objects[0].points.map(p => p[2])).toEqual(expect.arrayContaining([0.25, 0.75]));
+    await expect(page.locator('.notebook-dialog')).toHaveAttribute('data-save-state', 'confirmed');
     const peer = await context.newPage(); await peer.goto(f.origin);
     await expect.poll(() => peer.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
     f.updates.generation = 1;
@@ -115,7 +116,7 @@ test('@pwa @tablet the same notebook controls remain reachable in tablet portrai
         const button = dialog.getByRole('button', { name: label, exact: true });
         await expect(button).toHaveCount(1);
         await button.scrollIntoViewIfNeeded(); await expect(button).toBeInViewport();
-        const box = await button.boundingBox(); expect(box.height).toBeGreaterThanOrEqual(44);
+        const box = await button.boundingBox(); expect(box.height + 0.001).toBeGreaterThanOrEqual(44); // Firefox reports subpixel float rounding.
       }
       await dialog.getByRole('button', { name: 'E-ink contrast', exact: true }).scrollIntoViewIfNeeded();
       if (await dialog.getByRole('button', { name: 'E-ink contrast', exact: true }).getAttribute('aria-pressed') !== 'true') await dialog.getByRole('button', { name: 'E-ink contrast', exact: true }).click();
