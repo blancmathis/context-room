@@ -36,6 +36,7 @@ android {
     }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
     sourceSets.main.assets.srcDir layout.buildDirectory.dir('generated/notebook-assets')
+    sourceSets.main.assets.srcDir layout.buildDirectory.dir('generated/shared-web-assets')
     packaging { jniLibs { pickFirsts += ['lib/*/libc++_shared.so'] } }
 }
 
@@ -44,7 +45,14 @@ def notebookAssets = tasks.register('notebookAssets', Sync) {
     from('../../src') { include 'notebook_client.mjs', 'notebook_protocol.mjs', 'notebook_gestures.mjs', 'notebook_native.mjs' }
     into(layout.buildDirectory.dir('generated/notebook-assets/core'))
 }
-tasks.named('preBuild').configure { dependsOn notebookAssets }
+def sharedWebAssets = tasks.register('sharedWebAssets', Exec) {
+    workingDir rootProject.file('..')
+    inputs.files(fileTree('../../src') { include '**/*.mjs', '**/*.js', '**/*.css', '**/*.png' })
+    inputs.file('../../scripts/prepare-android-web.mjs')
+    outputs.dir(layout.buildDirectory.dir('generated/shared-web-assets'))
+    commandLine 'node', 'scripts/prepare-android-web.mjs', layout.buildDirectory.dir('generated/shared-web-assets').get().asFile.absolutePath
+}
+tasks.named('preBuild').configure { dependsOn notebookAssets, sharedWebAssets }
 
 dependencies {
     implementation 'com.onyx.android.sdk:onyxsdk-pen:1.5.4'

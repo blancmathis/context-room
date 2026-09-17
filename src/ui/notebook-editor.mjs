@@ -16,18 +16,18 @@ const button = (label, callback, className = '') => { const node = notebookEleme
 async function metadata(storage, key, update) { for (let n = 0; n < 8; n++) { const state = await storage.read(key); try { await storage.commit(key, state.version, { metadata: update(state.metadata) }); return; } catch (error) { if (error.code !== 'notebook_cache_conflict') throw error; } } throw new Error('The local notebook cache is busy.'); }
 
 /** api and scopeKey must be captured from the exact project/location BEFORE navigation can change. */
-export async function openNotebookEditor({ api, path, resourceId, title, scopeKey, fixedSnapshot = null, reviewKey = '', onCorrection, onSubmitted = () => {}, onClosed = () => {}, onInteraction = () => {}, onConversation, initialImage } = {}) {
+export async function openNotebookEditor({ api, path, resourceId, title, scopeKey, fixedSnapshot = null, reviewKey = '', onCorrection, onSubmitted = () => {}, onClosed = () => {}, onInteraction = () => {}, onConversation, initialImage, beforePresent, offlineCapabilities = null, browserDeviceId = document.querySelector('meta[name="context-room-browser-device"]')?.content || '' } = {}) {
   notebookStyles(); if (path) notebookPath(path);
   const storage = new IndexedNotebookStorage(), browserId = await notebookBrowserIdentity(storage);
   const request = (url, options = {}) => api(url, { ...options, headers: { ...options.headers, 'x-context-room-notebook-client': browserId } });
-  const capKey = '@notebook-capabilities:' + String(scopeKey || location.origin);
+  const capKey = '@notebook-capabilities:' + String(scopeKey || location.origin) + (browserDeviceId ? ':pairing:' + browserDeviceId : '');
   let capabilities, offlineError = null;
   try {
     capabilities = await request('/api/notebooks/capabilities');
     if (capabilities.protocolVersion !== NOTEBOOK_VERSION || !capabilities.serverId) throw new Error('This server does not support the current notebook protocol.');
     await metadata(storage, capKey, () => ({ capabilities }));
   } catch (error) {
-    capabilities = (await storage.read(capKey)).metadata.capabilities; offlineError = error;
+    capabilities = offlineCapabilities || (await storage.read(capKey)).metadata.capabilities; offlineError = error;
     if (!capabilities) { await storage.close(); throw new Error('Load this exact location once while connected before using its notebook cache. ' + error.message); }
   }
   const actor = capabilities.actor || { kind: 'human', id: browserId }, transport = notebookHttpTransport(request, actor);
@@ -47,6 +47,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     if (!path || offlineError?.status && offlineError.status < 500) { await storage.close(); throw offlineError || new Error('This notebook has not been cached.'); }
     resourceId ||= crypto.randomUUID(); createOffline = true;
   } else { resourceId = snapshot.resourceId; path = snapshot.locator.path; }
+  if (beforePresent && !beforePresent(snapshot)) { await storage.close(); throw Object.assign(new Error('The display request changed before the notebook was ready.'), { code: 'device_navigation_cancelled' }); }
   const scope = { serverId: capabilities.serverId, accountId, deviceId: browserId, resourceId };
   const dialog = notebookElement('dialog', '', 'notebook-dialog'); dialog.setAttribute('aria-label', reviewKey ? 'Correct notebook: ' + path : 'Notebook: ' + path);
   const header = notebookElement('header'), heading = notebookElement('div', '', 'notebook-heading'), name = notebookElement('h2', snapshot?.document.title || title || 'Notebook');
@@ -117,12 +118,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   }));
   const exportFormat = document.createElement('select'); exportFormat.setAttribute('aria-label', 'Notebook export format'); for (const [value, label] of [['crnb', 'Editable notebook'], ['svg', 'SVG drawing'], ['png', 'PNG preview']]) { const option = document.createElement('option'); option.value = value; option.textContent = label; exportFormat.append(option); }
   actions.append(exportFormat, button('Export', () => run(exportDrawing(exportFormat.value))), button('Recover local work', () => run(exportRecovery())));
-  if (!reviewKey) actions.append(button('Connect tablet', () => run(connectTablet())));
-  if (!reviewKey && window.ContextRoomNativeOwner) actions.append(button('Draw with the native pen', () => run((async () => {
-    await surface.settle(); await client.flush();
-    const devices = await request('/api/devices');
-    await window.ContextRoomNativeOwner.openNotebook({ projectId: devices.projectId, resourceId, path, title });
-  })())));
+  if (!reviewKey && capabilities.reviewAuthority !== 'unavailable') actions.append(button('Connect tablet', () => run(connectTablet())));
   const eink = button('E-ink contrast', () => { dialog.classList.toggle('notebook-eink'); eink.setAttribute('aria-pressed', String(dialog.classList.contains('notebook-eink'))); run(client.change(state => ({ metadata: { ...state.metadata, eink: dialog.classList.contains('notebook-eink') } }))); }); eink.setAttribute('aria-pressed', 'false'); actions.append(eink);
   const fingerLabel = notebookElement('label', 'Finger draws'), finger = document.createElement('input'); finger.type = 'checkbox'; finger.addEventListener('change', () => surface.fingerInk = finger.checked); fingerLabel.prepend(finger); actions.append(fingerLabel);
   const submitScope = document.createElement('select'); submitScope.setAttribute('aria-label', 'Notebook proposal destination');
@@ -140,6 +136,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   }
   submitScope.addEventListener('change', () => run(inspectSharedDestination()));
   const submit = button(reviewKey ? 'Use this correction' : 'Submit for review', () => run(submitScene()), 'notebook-primary'); if (!reviewKey) header.append(submitScope); header.insertBefore(submit, closeButton);
+  if (capabilities.reviewAuthority === 'unavailable') { submit.hidden = true; submitScope.hidden = true; }
   const retry = button('Reconnect', () => run(sync(true))); if (!reviewKey) statusRow.append(retry);
   if (onConversation && !reviewKey) {
     const converse = async (mode, copyToDraft = false) => {
@@ -307,7 +304,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     if (reviewKey || closed || syncing || authBlocked && !explicit) return;
     syncing = true;
     try {
-      if (explicit) { const cap = await request('/api/notebooks/capabilities'); if (cap.serverId !== scope.serverId) throw new Error('A different canonical location answered. The old cache is retained.'); authBlocked = false; }
+      if (explicit) { const cap = await request('/api/notebooks/capabilities'); if (cap.serverId !== scope.serverId || !reviewKey && (cap.accountId || 'local-owner') !== scope.accountId) throw new Error('A different canonical location answered. The old cache is retained.'); authBlocked = false; }
       await client.flush(); if (explicit) errorBox.textContent = '';
     } catch (error) { if ([401, 403, 410].includes(error.status)) authBlocked = true; if (explicit || error.code && !['network'].includes(error.code)) fail(error); }
     finally { syncing = false; renderStatus(); }
@@ -376,7 +373,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     if (closed) return; await surface.settle().catch(fail);
     if ((failedLocalWork.length || surface.failedStroke) && !confirm('Some samples could not be saved. Export recovery before closing. Close without those unsaved samples?')) return;
     await viewLink.close(); if (presentation) await setPresentation(false);
-    closed = true; clearInterval(timer); clearTimeout(objectsTimer); cleanup.abort(); client.close(); surface.dispose(); dialog.close(); dialog.remove(); await onClosed();
+    closed = true; clearInterval(timer); clearTimeout(objectsTimer); cleanup.abort(); client.close(); surface.dispose(); dialog.close(); dialog.remove(); document.dispatchEvent(new CustomEvent('context-room-notebook-closed', { detail: { dialog } })); await onClosed();
     // Keep the connection alive until in-flight durable operations settle; cache contents are never deleted.
     await client.serial; await Promise.resolve(client.flushing).catch(() => {}); await storage.close();
   }
@@ -390,6 +387,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     else if (!cached || !reviewKey) await client.initialize(snapshot);
     else await client.notify();
     if (offlineError && !reviewKey) { await client.change(state => ({ metadata: { ...state.metadata, offline: true } })); authBlocked = [401, 403, 410].includes(offlineError.status); fail(offlineError); await client.notify(); }
+    if (!reviewKey) await client.change(state => ({ metadata: { ...state.metadata, reopen: { version: 1, scopeKey, browserDeviceId, capabilities, transport: capabilities.reviewAuthority === 'unavailable' ? 'drawing' : 'owner' } } }));
     const saved = await client.state(); if (saved.metadata.view) surface.view = saved.metadata.view;
     if (saved.metadata.eink) { dialog.classList.add('notebook-eink'); eink.setAttribute('aria-pressed', 'true'); }
     if (saved.metadata.textDraft) await editText(saved.metadata.textDraft);
@@ -397,7 +395,9 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     if (initialImage) await addImage(initialImage);
     timer = setInterval(() => { if (document.visibilityState === 'visible') void sync(); }, 900);
     void sync();
-    return { dialog, client, surface, scope, path, resourceId, close, busy: () => Boolean(surface.gesture || textForm || saving), binding: () => ({ resourceId, path, revision: view.revision, locationRevision: view.locator.revision, selection: [...surface.selection], working: true }) };
+    const editor = { dialog, client, surface, scope, scopeKey, browserDeviceId, path, resourceId, close, releaseView: () => viewLink.release(), busy: () => Boolean(surface.gesture || textForm || saving), binding: () => ({ resourceId, path, revision: view.revision, locationRevision: view.locator.revision, selection: [...surface.selection], working: true }) };
+    document.dispatchEvent(new CustomEvent('context-room-notebook-opened', { detail: editor }));
+    return editor;
   } catch (error) { fail(error); return { dialog, client, surface, close, error, busy: () => true }; }
 }
 

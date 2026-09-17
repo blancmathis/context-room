@@ -53,6 +53,31 @@ flowchart LR
     Server --> Local
 ```
 
+## Shared computer and tablet interface
+
+`src/ui/app.mjs` owns the Hub and document interface. The existing
+`notebook-editor.mjs`, `notebook-canvas.mjs`, `notebook-views.mjs`, assistant
+modules and styles are the single normal notebook UI for desktop, PWA and the
+Android WebView. Responsive layout, Pointer Events and e-ink contrast are
+adaptations of these components, not a separate tablet implementation.
+
+`web_app.mjs` supplies an exact versioned public-asset cohort, manifest and
+offline bootstrap. The service worker caches no authority or project response.
+`notebook-offline.mjs` binds the existing IndexedDB outbox to its original
+server, account, project and resource. Android packages these same bytes with
+`prepare-android-web.mjs`; native code handles transport, files, audio and
+lifecycle. The previous native notebook remains an explicitly labelled recovery
+path for retained journals, not the normal tool/navigation source.
+
+`device_browser.mjs` is an optional browser-trusted HTTPS edge alongside the
+unchanged native pinned listener. Both reuse `device_authority.mjs`, exact
+notebook checks and the attached owner server. Browser cookies are HttpOnly;
+origin and original-pairing headers protect writes. `device-display.mjs` reuses
+the existing exact-target navigation/view protocol and confirms only after
+the common canvas renders. None of these components can promote working ink
+to accepted documentation. Installation and trust are specified in
+[connected devices](connected-devices.md).
+
 ## Global Hub control plane
 
 The private Hub registry owns registered project locations, logical-project grouping, worktree identity, display order, Shared bindings, and recovery state.

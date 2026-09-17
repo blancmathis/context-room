@@ -116,7 +116,7 @@ export function createDeviceNavigation({ stateRoot, serverId, inspectDevice, res
     view({ deviceId, projectId, ...body }) {
       return update(deviceId, () => inspectDevice(deviceId), (state, device) => {
         if (!state.presence || state.presence.serverEpoch !== epoch || state.presence.at + PRESENCE_MS <= now()) throw deviceError('device_navigation_offline', 'Open Context Room on the tablet before sharing a view.', 409);
-        if (!device.grants.some(grant => grant.projectId === projectId)) throw deviceError('device_view_scope', 'The view belongs to another project.');
+        if (!device.grants.some(grant => grant.mode === 'owner' && grant.serverId === serverId || grant.projectId === projectId)) throw deviceError('device_view_scope', 'The view belongs to another project.');
         return views.exchange(device, state.presence.clientSessionId, 'owner', body, projectId);
       });
     },

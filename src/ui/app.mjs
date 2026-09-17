@@ -20,7 +20,10 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 <html lang="en" data-file-theme="${DEFAULT_FILE_THEME}" data-context-room-runtime-profile="${escapeHtmlServer(profile)}">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+  <meta name="theme-color" content="#101416" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <script type="module" src="/assets/ui/web-app.mjs"></script>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23101211'/%3E%3Ccircle cx='32' cy='32' r='13' fill='%2369c7d4'/%3E%3Ccircle cx='32' cy='32' r='5' fill='%23101211'/%3E%3C/svg%3E" />
   <meta name="context-room-prompt-nonce" content="${escapeHtmlServer(hosted ? "" : codexPromptMutationNonce)}" />
   <meta name="context-room-owner-nonce" content="${escapeHtmlServer(hosted ? "" : ownerMutationNonce)}" />
@@ -4378,15 +4381,16 @@ function captureNotebookApi(targetProjectId = "") {
   return { api: request, scopeKey };
 }
 
+window.contextRoomDeviceNavigationBusy = () => Boolean(state.dirty || document.querySelector(".assistant-panel:not([hidden])"));
 let contextRoomAssistantUi = null;
 async function loadContextRoomAssistantUi() {
   return contextRoomAssistantUi ||= await import("/assets/ui/assistant.mjs");
 }
 
-async function openContextRoomNotebook(filePath, { directory = "", projectId = "" } = {}) {
+async function openContextRoomNotebook(filePath, { directory = "", projectId = "", resourceId, beforePresent } = {}) {
   const captured = captureNotebookApi(projectId);
   const notebook = await import("/assets/ui/notebook-editor.mjs");
-  const options = { ...captured,
+  const options = { ...captured, resourceId, beforePresent,
     onConversation: async (source, display) => { const assistant = await loadContextRoomAssistantUi(); return assistant.openConversation({ ...captured, source, ...display }); },
     onClosed: () => contextRoomAssistantUi?.dockConversation(),
     onSubmitted: async () => { setStatus("Notebook submitted for human review. No file accepted."); if (typeof refreshDocQa === "function") await refreshDocQa(); } };
@@ -16686,7 +16690,7 @@ function renderSettingsPanel() {
       '<div class="settings-grid compact"><div class="settings-field"><label for="fileTheme">App theme</label><select id="fileTheme">' + renderFileThemeOptions(appearance.fileTheme) + '</select></div>' +
       '<div class="settings-field"><label for="colorMode">Context Room appearance</label><select id="colorMode"><option value="system" ' + ((appearance.colorMode || "system") === "system" ? "selected" : "") + '>Follow system</option><option value="light" ' + (appearance.colorMode === "light" ? "selected" : "") + '>Light</option><option value="dark" ' + (appearance.colorMode === "dark" ? "selected" : "") + '>Dark</option></select><span class="settings-field-note">This mode applies to the Context Room theme. Explicit editor themes keep their own light or dark palette.</span></div></div>' + renderSettingsThemePreview(appearance.fileTheme)
     }) +
-    renderSettingsDisclosure({ id: "connected-devices", title: "Connected devices", copy: "Use Context Room on another device while this Mac keeps your files.", scope: "All rooms", body: '<button type="button" data-owner-device-settings>Manage connected devices</button>' }) +
+    renderSettingsDisclosure({ id: "connected-devices", title: "Connected devices", copy: "Use Context Room on another device while this Mac keeps your files.", scope: "All rooms", body: '<button type="button" data-owner-device-settings>Manage connected devices</button><button type="button" data-web-app-settings>Install / offline notebooks</button>' }) +
     renderSettingsDisclosure({ id: "appearance-explorer", title: "Explorer and file behavior", copy: "Control hidden files, Git diff behavior, and the folder available through Computer mode.", status: appearance.showHiddenFiles !== false ? "Hidden files visible" : "Hidden files hidden", scope: "All rooms", trackDirty: true, body:
       '<div class="settings-grid compact"><div class="settings-field"><label class="settings-toggle" for="autoOpenGitDiff"><input id="autoOpenGitDiff" type="checkbox" ' + (appearance.autoOpenGitDiff !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Auto-open Git diff</strong><em>Turn this off to open the diff manually.</em></span></label></div>' +
       '<div class="settings-field"><label class="settings-toggle" for="showHiddenFiles"><input id="showHiddenFiles" type="checkbox" ' + (appearance.showHiddenFiles !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Show hidden files</strong><em>Display safe dotfiles and .context-room in every Explorer.</em></span></label></div>' +

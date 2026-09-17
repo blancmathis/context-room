@@ -77,6 +77,8 @@ jobs:
         run: npm ci
       - name: Install supported browser
         run: npx playwright install --with-deps ${{ matrix.browser }}
+      - name: Test shared web app and offline lifecycle
+        run: npm run test:web-app -- --project=${{ matrix.project }}
       - name: Test executable layout contract
         run: npm run test:layout -- --project=${{ matrix.project }}
       - name: Test critical UX flows

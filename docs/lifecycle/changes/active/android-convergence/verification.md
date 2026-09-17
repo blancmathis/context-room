@@ -3,8 +3,8 @@
 ## Summary
 
 This journal preserves checkpoint-specific macOS, browser, emulator and portable
-proofs. Those historical successes do not validate later commits. The final
-consolidated-delivery section is the current status and the single C/R/V matrix.
+proofs. Those historical successes do not validate later commits. The dated shared-web continuation below is the current execution boundary;
+older consolidated matrices describe their own checkpoints.
 It separates source packaging from a completed product or personal installation.
 
 ## Defines
@@ -17,6 +17,65 @@ regression results and the remaining implementation boundaries.
 Human acceptance of personal documents or personal-device installation,
 a migration of personal data, or physical
 BOOX performance. A synthetic agent operation is not a real provider call.
+
+## Shared-web continuation — 2026-09-17
+
+Base main was checked through GitHub and `git ls-remote`:
+`4560f6e056a6f673fe6d77f6f9d2914c00829c64`. Work uses a dedicated
+`mathis/shared-web-pwa-20260917` branch in a new clone, not an old archive or the
+personal installation. No historical request or real agent call is replayed.
+
+The implementation switches both Android permissions to the existing common
+web notebook, packages that same source for APK offline boot, adds the PWA
+public-asset cache and exact recovery route, and provides a separate optional
+browser HTTPS edge using the existing device authority. Legacy native journals
+and their recovery engine remain retained. R01–R29 and human acceptance
+boundaries are unchanged. See the canonical [connection contract](../../../../system/connected-devices.md)
+and [local handoff](codex-shared-web-handoff.md).
+
+### Local execution observed before CI
+
+- Dependency installation completed from the lockfile.
+- `test/devices.test.mjs` and `test/device_owner.test.mjs`: **19/19 passed**
+  after the transport authorization extraction. Later common-display additions
+  require their own checks; this is not a claim that an old run covers them.
+- Initial `test/web_app.test.mjs` and `test/device_browser.test.mjs`: **6/7
+  passed**. The remaining test supplied a deliberately wrong Host header that
+  also changed Node's TLS server name; TLS correctly refused it before the
+  intended HTTP assertion. The fixture was corrected to an alternate valid
+  certificate name so the HTTP exact-host rejection can be tested separately.
+  The failed run is not recorded as passing.
+- The initial three public-asset/version/recovery-route tests subsequently
+  passed in isolation. Later additions are not included in that count.
+- `test/device_display.test.mjs`: **6/6 passed**, covering common-canvas-only
+  receipts, pending ink, human cancellation, exact view targets, stale frames,
+  paused/review-only sources and revocation. These are software simulations of
+  display events, not physical pen measurements.
+- The ordinary Playwright setup failed on its synthetic Shared Git fetch
+  deadline before these PWA scenarios ran. The independent PWA configuration
+  then reached test discovery, but its local process exceeded the execution
+  limit without an assertion result during severe Mac load. Neither attempt
+  proves browser rendering or offline restart. They were not repeatedly
+  relaunched unchanged.
+- The first standalone APK-asset preparation exceeded its local execution
+  limit. This is not an APK build or an emulator result.
+
+Repository CI results and final checks must be read at the delivered source
+SHA; a queued job is not a pass. The browser suite contains a real persistent
+Chromium process restart, received pen-pressure checks, same-identifier
+resynchronization, a waiting-worker replacement and separate common tablet
+layouts. Its synthetic worker replacement tests update lifecycle; the asset
+contract separately checks the content-versioned module cohort.
+
+### Physical gates remain open
+
+No new physical BOOX result, real-agent co-drawing, physical microphone test,
+long session or equivalence with the BOOX application is claimed for this
+shared-web change. Earlier native physical results do not validate the web
+canvas. Browser-recognized HTTPS on the actual tablet, installation behavior,
+pen latency, palm rejection, e-ink contrast/comfort and real audio remain in the
+handoff. Any produced preview uses an isolated test key, not an assertion of
+compatibility with an installed signing identity.
 
 ## Restoration on 2026-09-14
 
