@@ -30,7 +30,7 @@ export function versionWebSource(source) {
   // Every lazy module and its transitive imports belong to the same build.
   // Old open clients can load their own cohort from the worker after a Mac update.
   return source.replace(/(["'])((?:\/assets\/|\.\.?\/)[^"'\s?]+\.(?:mjs|css|js))\1/g,
-    (match, quote, asset) => quote + asset + '?v=' + webAppVersion() + quote);
+    (match, quote, asset) => /^\/assets\/context-room\.[a-f0-9]{16}\.(?:css|js)$/.test(asset) ? match : quote + asset + '?v=' + webAppVersion() + quote);
 }
 export function webEntryHtml(bundle, { mode = 'offline', deviceId = '' } = {}) {
   if (!['offline', 'pair', 'draw'].includes(mode) || deviceId && !/^[a-f0-9-]{36}$/.test(deviceId)) throw new TypeError('Invalid browser entry.');
@@ -68,7 +68,7 @@ export function webAppResponse(url, bundle) {
     'content-security-policy': "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" }, body: webEntryHtml(bundle) };
   if (url.pathname === '/service-worker.js') {
     const paths = [...WEB_ASSETS.keys()].map(p => /\.(?:mjs|css|js)$/.test(p) ? p + '?v=' + webAppVersion() : p);
-    paths.push(bundle.cssPath + '?v=' + webAppVersion(), '/offline.html', '/manifest.webmanifest');
+    paths.push(bundle.cssPath, '/offline.html', '/manifest.webmanifest');
     const source = publicSource('ui/service-worker.js').toString('utf8');
     return { status: 200, headers: { ...headers, 'content-type': 'text/javascript; charset=utf-8', 'service-worker-allowed': '/' },
       body: 'const BUILD = ' + JSON.stringify(webAppVersion()) + ';\nconst PRECACHE = ' + JSON.stringify(paths) + ';\n' + source };

@@ -100,3 +100,11 @@ test('offline-ready status follows actual activation and fails explicitly for in
   worker.state = 'redundant'; registration.installing = null; worker.dispatchEvent(new Event('statechange')); await failed;
   await assert.rejects(waitForApplicationCache(new EventTarget(), 5), /not confirmed/);
 });
+
+test('existing content-hashed shell URLs retain their HTTP cache and diagnostic contract', () => {
+  const source = '<link href="/assets/context-room.0123456789abcdef.css"><script src="/assets/context-room.fedcba9876543210.js"></script>';
+  assert.equal(versionWebSource(source), source);
+  const bundle = contextRoomWebAssetBundle();
+  const worker = webAppResponse(new URL('/service-worker.js', 'https://room.example.test'), bundle).body;
+  assert.ok(JSON.parse(worker.match(/const PRECACHE = (.*);/)[1]).includes(bundle.cssPath));
+});

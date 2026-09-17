@@ -18,13 +18,16 @@ async function fixture() {
   fs.mkdirSync(path.join(root, 'docs'), { recursive: true }); fs.writeFileSync(path.join(root, 'docs/guide.md'), '# Synthetic guide\n');
   initializeContextRoomProject(root, { title: 'Synthetic PWA', allowedPaths: ['docs/'], watchAllow: ['docs/'] });
   writeMemoryWebappSettings(root, { startupContext: { enabled: false }, startupSkills: { enabled: false }, startupHooks: { enabled: false } });
-  const runtime = createMemoryServer({ root }), updates = { generation: 0 };
+  const runtime = createMemoryServer({ root }), updates = { generation: 0, disconnected: false, rejectedConnections: 0 };
   // Replace only the worker bytes in this synthetic runtime. The separate asset
   // contract checks versioned module cohorts; this scenario tests SW lifecycle.
   const handlers = runtime.server.listeners('request');
   if (handlers.length !== 1) throw new Error('Expected the exact isolated HTTP handler.');
   runtime.server.removeListener('request', handlers[0]);
   runtime.server.on('request', (req, res) => {
+    // CDP page offline emulation does not necessarily cover an already running
+    // worker. Reject every server connection too, including worker fetches.
+    if (updates.disconnected) { updates.rejectedConnections++; req.socket.destroy(); return; }
     if (updates.generation && req.method === 'GET' && req.url === '/service-worker.js') {
       const worker = webAppResponse(new URL(req.url, 'http://localhost'), contextRoomWebAssetBundle());
       const body = worker.body.replace('const BUILD = ' + JSON.stringify(webAppVersion()), 'const BUILD = ' + JSON.stringify(webAppVersion() + '-synthetic-update-' + updates.generation));
@@ -81,6 +84,7 @@ test('@pwa shared editor survives a waiting worker update and two offline browse
     expect(await page.evaluate(() => testNotebook.surface.document.objects.length)).toBe(1);
     await peer.close();
     expect(await page.evaluate(async () => Boolean((await navigator.serviceWorker.getRegistration()).waiting))).toBe(true);
+    f.updates.disconnected = true; f.runtime.server.closeAllConnections();
     await context.setOffline(true); await pen(page, 70);
     await expect(page.locator('.notebook-dialog')).toHaveAttribute('data-save-state', 'pending');
     const pending = await page.evaluate(async () => (await testNotebook.client.state()).operations.map(op => op.operationId)); expect(pending.length).toBeGreaterThan(0); expect(pending.every(id => typeof id === 'string' && id.length > 8)).toBe(true);
@@ -95,6 +99,7 @@ test('@pwa shared editor survives a waiting worker update and two offline browse
     await context.close();
     page = await launch(true); await page.goto(f.origin); await page.getByRole('button', { name: /docs\/Restart.crnb/ }).click();
     expect(await page.evaluate(() => testNotebook.surface.document.objects.length)).toBe(3);
+    f.updates.disconnected = false;
     await context.setOffline(false);
     await expect(page.locator('.notebook-dialog')).toHaveAttribute('data-save-state', 'confirmed', { timeout: 30_000 });
     const snapshot = readNotebook(f.root, id); expect(snapshot.document.objects.length).toBe(3);
@@ -104,6 +109,12 @@ test('@pwa shared editor survives a waiting worker update and two offline browse
     const cached = await page.evaluate(async () => { const entries = []; for (const name of await caches.keys()) for (const request of await (await caches.open(name)).keys()) entries.push(new URL(request.url).pathname); return entries; });
     expect(cached.some(p => p.startsWith('/api/') || p === '/' || p.startsWith('/reviews/'))).toBe(false);
     expect(errors).toEqual([]);
+  } catch (error) {
+    const page = context?.pages()[0];
+    await info.attach('offline-restart-diagnostic', { body: JSON.stringify({ errors, rejectedConnections: f.updates.rejectedConnections,
+      page: await page?.evaluate(async () => ({ location: location.href, entry: document.querySelector('meta[name="context-room-web-entry"]')?.content,
+        controlled: Boolean(navigator.serviceWorker.controller), caches: await caches.keys(), text: document.body.innerText.slice(0, 1800) })).catch(() => null) }, null, 2), contentType: 'application/json' });
+    throw error;
   } finally { await context?.close(); await f.close(); }
 });
 
