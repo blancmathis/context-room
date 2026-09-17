@@ -34,6 +34,14 @@ done
 "$adb" -s emulator-5554 shell settings put global transition_animation_scale 0
 "$adb" -s emulator-5554 shell settings put global animator_duration_scale 0
 "$adb" -s emulator-5554 shell input keyevent 82
+# This new, disposable AVD does not test the Google home screen. In run
+# 35255035215 its Pixel Launcher ANR dialog intercepted the owner stylus.
+# Isolate that unrelated package, not Android's ANR reporting or input checks.
+# Never run this preparation in verify-owner.py or on a personal device.
+launcher=com.google.android.apps.nexuslauncher
+"$adb" -s emulator-5554 shell pm disable-user --user 0 "$launcher"
+"$adb" -s emulator-5554 shell pm list packages -d | tr -d '\r' | grep -Fx "package:$launcher"
+"$adb" -s emulator-5554 shell am force-stop "$launcher"
 set +e
 python3 test/android/verify-owner.py --serial emulator-5554 --output "$RUNNER_TEMP/shared-web-owner-evidence"
 result=$?
@@ -41,7 +49,7 @@ set -e
 # Explicit publication allowlist: never copy tickets, fixture directories,
 # certificates, signing keys, recordings or runtime databases into artifacts.
 mkdir -m 700 "$RUNNER_TEMP/shared-web-owner-public"
-for name in proof.json artifact.json owner-shared-drawing.png owner-rendered-document.png owner-retained-workspace.png owner-imported-image.png owner-exported-notebook.png owner-human-file-decision.png owner-settings.png owner-shared-review.png owner-failure.png; do
+for name in proof.json artifact.json owner-input-proof.json owner-shared-drawing.png owner-rendered-document.png owner-retained-workspace.png owner-imported-image.png owner-exported-notebook.png owner-human-file-decision.png owner-settings.png owner-shared-review.png owner-failure.png; do
   [[ ! -f "$RUNNER_TEMP/shared-web-owner-evidence/$name" ]] || cp "$RUNNER_TEMP/shared-web-owner-evidence/$name" "$RUNNER_TEMP/shared-web-owner-public/$name"
 done
 if [[ "$result" != 0 ]]; then

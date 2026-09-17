@@ -47,7 +47,7 @@ jobs:
       - name: Notebook and existing proposal contracts
         run: |
           umask 022
-          node --test test/notebook*.test.mjs test/device*.test.mjs test/web_app.test.mjs test/local_proposals.test.mjs test/document_assets.test.mjs
+          node --test test/notebook*.test.mjs test/device*.test.mjs test/web_app.test.mjs test/agent_context_links.test.mjs test/local_proposals.test.mjs test/document_assets.test.mjs
       - name: Run repository diagnostics
         run: node bin/context-room.mjs doctor --root .
       - name: Package privacy

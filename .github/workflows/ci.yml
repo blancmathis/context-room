@@ -16,6 +16,8 @@ jobs:
     permissions:
       contents: read
     strategy:
+      # Every supported Node runtime must finish even if another one fails.
+      fail-fast: false
       # Node 22.23.1 can SIGTRAP in V8 SourceTextModule on the Linux runner while
       # the parallel test suite is active. Keep the last verified patch release,
       # and cover the Node 24 runtime used by the remote image.

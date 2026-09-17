@@ -38,10 +38,49 @@ Compare HEAD to the final delivered SHA before running anything. Check whether
 main has advanced; preserve newer commits rather than replacing them with the
 base archive. No force push or automatic merge into main is authorized.
 
+## PR 43 CI follow-up (17 September 2026)
+
+The `91cdcb828f097bc83d206aeaf74450d09aeead01` checkpoint was **not** fully
+validated: Node 24 failed the generated-document link check, Node 20/22 were
+cancelled, and Android failed before a stroke appeared. Its Android screenshot
+shows a Pixel Launcher ANR window over a rendered, Mac-confirmed scene r0 with
+zero objects. See [the bounded diagnosis and regression record](ci-followup-20260917.md).
+Do not reuse that checkpoint's APK or its CI status as final evidence.
+
+The follow-up keeps lifecycle handoff references explicitly in the source
+repository, tests fresh generation and repair of an old broken copy, and keeps
+all supported Node jobs running independently. Android input now requires owner
+window focus, an exposed rendered canvas, and observed trusted pen events before
+the unchanged one-object/confirmed/pressure assertions. The host also checks the
+one exact pressure stroke and editable export. The read-only input proof is
+published separately from private fixture state.
+
+Before local work, resolve the **final delivered SHA** and check that all Node
+20/22.23.0/24 jobs, all four Browser QA jobs, Soak, CI gate, contracts and
+android-build completed successfully for that SHA. The general CI may test its
+synthetic merge with main; the convergence source and APK use the exact PR head.
+Compare `SOURCE_COMMIT`, the archive checksums and `proof.json.sourceHead` rather
+than relying on an artifact's filename. A cancelled or pending job is not a pass.
+The final delivery/PR records the actual run IDs and results; this source handoff
+does not predict them.
+
+`owner-input-proof.json` separates native focus, received pointer phases,
+rendered ink and confirmed scene. In a failed run, inspect it and the screenshot
+before deciding whether the failure is input, rendering or synchronization.
+Never retry a stroke of uncertain delivery, manufacture a JS pen event or relax
+the canonical scene assertions.
+
+The CI script disables only the unused Google Pixel Launcher in **its newly
+created disposable Linux AVD**, because that unrelated app's ANR intercepted the
+previous test. It does not suppress Android ANR reporting or dismiss arbitrary
+dialogs. Do not copy this fixture preparation to a personal emulator or BOOX.
+The personal installation, launcher, credentials and signing key stay untouched.
+
 ## Checks and exact evidence
 
 ```bash
 npm ci
+node --test test/agent_context_links.test.mjs
 node --test test/web_app.test.mjs test/device_browser.test.mjs test/device_display.test.mjs
 npm run test:web-app -- --project=chromium-desktop
 npm run test:web-app -- --project=chromium-mobile

@@ -94,26 +94,7 @@ public final class OwnerWorkspaceTest {
     evaluate(activity, "ContextRoomNativeOwner.openNotebook({projectId:" + JSONObject.quote(ticket.getString("testProjectId")) + ",path:'docs/Owner.crnb'})");
   }
   void sharedWebPen(MainActivity activity) throws Exception {
-    String bounds = evaluate(activity, "(()=>{const r=document.querySelector('canvas.notebook-canvas').getBoundingClientRect();return JSON.stringify([r.left+75,r.top+60,innerWidth])})()");
-    JSONArray point = new JSONArray(new JSONArray("[" + bounds + "]").getString(0));
-    int[] location = new int[2]; AtomicInteger pixels = new AtomicInteger();
-    instrumentation.runOnMainSync(() -> { activity.ownerWorkspace.web.getLocationOnScreen(location); pixels.set(activity.ownerWorkspace.web.getWidth()); });
-    float scale = (float)(pixels.get() / point.getDouble(2));
-    long down = SystemClock.uptimeMillis();
-    int[] actions = { MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP };
-    float[] pressures = { .25f, .75f, .5f };
-    for (int n = 0; n < actions.length; n++) {
-      MotionEvent.PointerProperties properties = new MotionEvent.PointerProperties(); properties.id = 0; properties.toolType = MotionEvent.TOOL_TYPE_STYLUS;
-      MotionEvent.PointerCoords coordinates = new MotionEvent.PointerCoords();
-      coordinates.x = location[0] + ((float)point.getDouble(0) + n * 55) * scale;
-      coordinates.y = location[1] + ((float)point.getDouble(1) + n * 18) * scale;
-      coordinates.pressure = pressures[n]; coordinates.size = .1f;
-      MotionEvent event = MotionEvent.obtain(down, SystemClock.uptimeMillis(), actions[n], 1,
-        new MotionEvent.PointerProperties[]{properties}, new MotionEvent.PointerCoords[]{coordinates},
-        0, 0, 1, 1, 0, 0, android.view.InputDevice.SOURCE_STYLUS, 0);
-      assertTrue("The common WebView must receive the stylus sample", instrumentation.getUiAutomation().injectInputEvent(event, true)); event.recycle();
-      SystemClock.sleep(40);
-    }
+    OwnerPenProbe.draw(this, activity);
   }
   @Test public void ownerHubDocumentsAndSharedDrawingStayConnected() throws Exception {
     JSONObject ticket = drawing.fixture();
@@ -163,6 +144,7 @@ public final class OwnerWorkspaceTest {
         sharedWebPen(activity);
         visible(activity, "window.sharedNotebook?.surface.document.objects.length===1 && document.querySelector('.notebook-dialog')?.dataset.saveState==='confirmed'");
         assertEquals("Web pressure samples are retained", "true", evaluate(activity, "[.25,.75].every(p=>window.sharedNotebook.surface.document.objects[0].points.some(point=>point[2]===p))"));
+        OwnerPenProbe.confirmed(this, activity);
         screenshot(activity, "owner-shared-drawing");
         assertEquals("Owner permission stays explicit", true, activity.connection.isOwner());
         screenshot(activity, "owner-retained-workspace");
@@ -220,6 +202,7 @@ public final class OwnerWorkspaceTest {
         screenshot(activity, "owner-shared-review");
       } catch (Throwable error) {
         System.out.println("Owner acceptance failed: " + error);
+        try { OwnerPenProbe.save(this, activity, "failed"); } catch (Throwable capture) { error.addSuppressed(capture); }
         try { screenshot(activity, "owner-failure"); } catch (Throwable capture) { error.addSuppressed(capture); }
         if (activity.ownerWorkspace != null) System.out.println("Owner UI failure: " + evaluate(activity, "JSON.stringify({url:location.pathname+location.search,ready:document.body?.dataset.workspaceDiagnostics,title:document.querySelector('#workspaceTitle')?.textContent,body:document.body?.innerText?.slice(0,5000)})"));
         if (!drawing.onUi(activity, () -> activity.resumed)) instrumentation.getUiAutomation().performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK);
