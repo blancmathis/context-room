@@ -47,6 +47,8 @@ jobs:
         run: |
           umask 022
           node --test test/notebook*.test.mjs test/device*.test.mjs test/web_app.test.mjs test/local_proposals.test.mjs test/document_assets.test.mjs
+      - name: Run repository diagnostics
+        run: node bin/context-room.mjs doctor --root .
       - name: Package privacy
         run: npm run package:privacy
       - name: Export exact source tree without repository history or runtime state

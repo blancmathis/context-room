@@ -95,6 +95,42 @@ This follows Playwright's network-interception boundary; no product permission
 or human-review rule was relaxed. The corrected run, rather than this failed
 checkpoint, is the relevant regression proof.
 
+### Follow-up verification and visual inspection
+
+At `8bafbb5c48553f6246d431c8babb5cca26228253`, convergence run
+`35250475616` passed **129/129 contracts** and both APK builds. The strengthened
+artifact verifier compared **38 common web assets** and **8 shared core assets**
+byte-for-byte against the same source, and checked package/signature/permissions.
+The preview remains a separately signed test artifact, not an installed update.
+
+The first full Node 24 regression run completed **106/108 test processes**.
+The two failing processes contained three assertions about the existing hashed
+shell URLs. Redundant cohort queries on these already-content-hashed CSS/JS
+URLs broke their established HTTP/diagnostic contract. Those redundant queries
+were removed, retaining cohort queries for the other shared modules. The three
+original assertions and three related cohort checks then passed locally:
+**6/6**, without weakening the existing tests.
+
+Synthetic Chromium captures at portrait, landscape and keyboard-height sizes
+were produced by the shared-editor layout test. Portrait and reduced-height
+renderings were inspected on the Mac: header decisions, close, contrast,
+canvas, object inspector and save/reconnect footer remain separated. Long tool
+rows scroll horizontally; the test explicitly brings the important controls
+into view and checks 44-pixel targets, plus the accessibility scan. These are
+browser geometry/contrast checks, not a real Android keyboard or e-ink trial.
+
+The initial cold-restart scenario exposed that page-level offline emulation
+could still let the service worker fetch a real shell. The test now additionally
+rejects **every** synthetic server connection throughout both offline restarts,
+including worker requests, then restores the same runtime. This stronger
+outage condition is distinct from switching only `navigator.onLine`. The final
+result, not the earlier failed attempt, determines the offline proof.
+
+The local standalone doctor attempt produced no diagnostic result before its
+execution limit under heavy Mac load. It is now an explicit CI contract step.
+Package privacy already invokes the real `npm pack --dry-run --json
+--ignore-scripts`; no separate successful local dry-pack run is implied.
+
 ### Physical gates remain open
 
 No new physical BOOX result, real-agent co-drawing, physical microphone test,

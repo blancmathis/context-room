@@ -86,3 +86,18 @@ test('hidden or review-only editors cannot establish a device target or confirm 
   notebook.scopeKey = JSON.stringify(['https://room.example.test', project, '', '/reviews/frozen']); assert.equal(f.display.target(), null);
   f.pause(); await f.display.receiveCommand(f.data()); assert.equal(f.display.receipt.status, 'deferred'); assert.equal(f.opened.length, 0);
 });
+
+test('a superseded display receipt releases the protocol for the next command instead of retrying forever', async () => {
+  const f = fixture(); await f.display.receiveCommand(f.data()); f.display.editor.surface.onRendered();
+  assert.equal(f.display.receipt.status, 'applied');
+  f.display.request = async () => { throw Object.assign(new Error('Superseded'), { status: 409, code: 'device_navigation_stale' }); };
+  await f.display.tick(); assert.equal(f.display.receipt, null); assert.equal(f.display.command, null); assert.notEqual(f.display.closed, true);
+  const actions = [];
+  f.display.request = async (action, body) => { actions.push(action); return { protocolVersion: 1, serverId: session.serverId, deviceId: session.device.id, clientSessionId: f.display.id, serverTime: 100, command: null }; };
+  await f.display.tick(); assert.deepEqual(actions, ['poll']);
+  f.display.setMode('follow');
+  const frame = { sessionId: 'owner-view-session', sequence: 1, target, viewport: [0, 0, 100, 80], expiresAt: 5100 };
+  f.display.receiveView({ frame, serverTime: 100 }, f.display.viewBody()); f.display.editor.surface.onRendered();
+  assert.ok(f.display.viewReceipt);
+  f.display.receiveView({ frame: null, serverTime: 5101 }, f.display.viewBody()); assert.equal(f.display.viewReceipt, null);
+});

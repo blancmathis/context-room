@@ -61,6 +61,10 @@ export class DeviceDisplay {
       if (generation === this.generation) this.receiveView(data.view, body.view);
     } catch (error) {
       this.frame = null; this.viewReceipt = null;
+      if (error.status === 409 && error.code === 'device_navigation_stale' && receipt && this.receipt === receipt) {
+        this.receipt = null;
+        if (this.command?.operationId === receipt.operationId) { this.command = null; this.opening = false; }
+      }
       if ([401, 403, 410].includes(error.status) || error.status === 409 && error.code !== 'device_navigation_stale') { this.command = null; this.receipt = null; this.setMode('independent'); this.closed = true; }
       this.changed(this.mode, error.message + ' No display is confirmed.');
     } finally { this.running = false; }
@@ -91,7 +95,7 @@ export class DeviceDisplay {
     if (!data || sent.mode !== this.mode) return;
     if (this.mode === 'share') { this.changed(this.mode, data.receipt?.sequence === sent.sequence ? 'Current view displayed on the connected owner.' : 'View shared · display not yet confirmed.'); return; }
     const frame = data.frame, target = this.target();
-    if (this.mode !== 'follow' || !frame || !sameDisplayTarget(target, frame.target) || this.busy()) { this.frame = null; return; }
+    if (this.mode !== 'follow' || !frame || !sameDisplayTarget(target, frame.target) || this.busy()) { this.frame = null; this.viewReceipt = null; if (this.mode === 'follow') this.changed(this.mode, 'Waiting for a current shared view of this exact notebook.'); return; }
     if (this.viewReceipt?.sessionId === frame.sessionId && this.viewReceipt.sequence === frame.sequence && JSON.stringify(this.viewReceipt.viewport) === JSON.stringify(this.editor.surface.viewportBounds())) return;
     const deadline = this.clock() + Math.max(0, Math.min(5000, frame.expiresAt - data.serverTime));
     if (deadline <= this.clock()) return;
