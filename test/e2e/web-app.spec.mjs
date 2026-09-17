@@ -143,19 +143,39 @@ test('@pwa @tablet the same notebook controls remain reachable in tablet portrai
     // Actual keyboard and e-ink comfort remain separate physical checks.
     await page.evaluate(async () => {
       const source = document.querySelector('script[src*="/assets/ui/web-app.mjs"]').src;
-      const { trackKeyboardViewport } = await import(source);
-      const host = new EventTarget(), viewport = new EventTarget();
-      Object.assign(viewport, { height: 420, offsetTop: 20, scale: 1 });
-      Object.assign(host, { visualViewport: viewport, innerHeight: 1180, document });
-      window.releaseKeyboardTest = trackKeyboardViewport(host);
+      await import(source); // Ensure the single production tracker is attached.
+      const viewport = window.visualViewport;
+      const saved = new Map(['height', 'offsetTop', 'scale'].map(name => [name, Object.getOwnPropertyDescriptor(viewport, name)]));
+      // Override measurements, not the controller. A second tracker on this
+      // document races the real resize listener and can erase its keyboard state.
+      for (const [name, value] of Object.entries({ height: 420, offsetTop: 20, scale: 1 })) {
+        Object.defineProperty(viewport, name, { configurable: true, get: () => value });
+      }
+      window.releaseKeyboardTest = () => {
+        for (const [name, descriptor] of saved) {
+          if (descriptor) Object.defineProperty(viewport, name, descriptor);
+          else delete viewport[name];
+        }
+        viewport.dispatchEvent(new Event('resize'));
+      };
+      viewport.dispatchEvent(new Event('resize'));
     });
-    const keyboardBounds = await dialog.boundingBox();
-    expect(keyboardBounds.y).toBeGreaterThanOrEqual(20);
-    expect(keyboardBounds.y + keyboardBounds.height).toBeLessThanOrEqual(440.001);
+    // Late layout/visual resize events must see the same simulated measurements,
+    // not reset the keyboard state between setup and the actual geometry check.
+    for (const type of ['resize', 'scroll']) {
+      await page.evaluate(type => {
+        window.dispatchEvent(new Event('resize'));
+        window.visualViewport.dispatchEvent(new Event(type));
+      }, type);
+      const keyboardBounds = await dialog.boundingBox();
+      expect(keyboardBounds.y).toBeGreaterThanOrEqual(20);
+      expect(keyboardBounds.y + keyboardBounds.height).toBeLessThanOrEqual(440.001);
+    }
     await dialog.getByRole('button', { name: 'Close notebook', exact: true }).scrollIntoViewIfNeeded();
     await expect(dialog.getByRole('button', { name: 'Close notebook', exact: true })).toBeInViewport();
     await page.screenshot({ path: info.outputPath('shared-notebook-visual-keyboard.png') });
-    await page.evaluate(() => { releaseKeyboardTest(); delete document.documentElement.dataset.contextRoomKeyboardViewport; });
+    await page.evaluate(() => { releaseKeyboardTest(); delete window.releaseKeyboardTest; });
+    await expect(page.locator('html')).not.toHaveAttribute('data-context-room-keyboard-viewport');
     expect(await page.locator('canvas.notebook-canvas').count()).toBe(1);
   } finally { await page.goto('about:blank'); await f.close(); }
 });

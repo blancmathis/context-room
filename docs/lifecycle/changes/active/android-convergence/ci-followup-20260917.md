@@ -77,3 +77,29 @@ validation. Read this record together with the dated historical
 [local handoff](codex-shared-web-handoff.md); older checkpoints keep their own
 scope and result. Physical web-pen latency, palm rejection, e-ink, audio, trusted
 browser HTTPS and long BOOX sessions remain local checks, not emulator results.
+
+## Verification iteration: shared keyboard fixture
+
+At `047cf526f6ba0446501a101e0ffc4410fd60a865`, convergence run `35261577288`
+completed successfully: 134 contracts, repository diagnostics, package privacy,
+APK verification and the full owner emulator scenario. The downloaded input
+proof records owner focus, one trusted pen down/move/up, pressures 0.25/0.75,
+rendered ink and a confirmed one-object scene; the host confirms the exact
+editable two-object export and unchanged accepted file.
+
+CI run `35261577355` exposed a pre-existing race in the visual-only keyboard
+fixture. Its Chromium trace shows the keyboard attributes present immediately
+after the synthetic tracker is installed and removed before the bounding-box
+read. The test installed a second tracker on the same document while the real
+tracker still listened to a late layout resize. The correction overrides the
+visual viewport measurements read by the **single production tracker**, rather
+than running a competing controller. Late window/visual resize and scroll events
+are dispatched explicitly; the same strict top/bottom geometry assertions are
+retained, and restoration must clear the state through the real listener.
+Production viewport code and styles are unchanged. A standalone synthetic Node
+event contract reproduced the competing trackers and passed with a single tracker
+through late events and measurement restoration; this is not browser proof.
+A local Chromium probe could
+not navigate loopback (`ERR_BLOCKED_BY_ADMINISTRATOR`); no browser policy was
+changed and no local browser success is claimed. The corrected scenario still
+requires its actual four-browser CI execution on the final delivered SHA.
