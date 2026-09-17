@@ -20,7 +20,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 <html lang="en" data-file-theme="${DEFAULT_FILE_THEME}" data-context-room-runtime-profile="${escapeHtmlServer(profile)}">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#101416" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <script type="module" src="/assets/ui/web-app.mjs"></script>

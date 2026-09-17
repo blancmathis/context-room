@@ -370,6 +370,12 @@ permission and replacement-pairing checks. `test/device_display.test.mjs` checks
 common render receipts, pending-gesture deferral and cancellation.
 `npm run test:web-app` uses independent synthetic browser fixtures for offline
 process restarts, waiting-worker lifecycle, pressure and tablet layouts.
+The isolated Android 15 CI verifier now exercises the normal shared WebView
+owner path, including injected stylus pressure, Android import/export and frozen
+human review. See the dated verification journal for the source SHA and actual
+result. The [Codex handoff](../lifecycle/changes/active/android-convergence/codex-shared-web-handoff.md)
+also specifies an external preserved-key signing procedure; no original key
+was used or replaced by the CI preview build.
 Exact observations and the remaining
 Android/physical-device gates are recorded in `docs/lifecycle/changes/active/android-convergence/verification.md` in the source repository.
 

@@ -89,15 +89,63 @@ runtime dependencies, then run `scripts/build-android.sh`. The default output
 is a **separate preview signed with an isolated test key**, not the original
 installed key. Do not uninstall an existing preview to get around a signature
 mismatch. Inspect package/signing identities first; build locally with the
-preserved matching key only through the established installation procedure.
-Do not replace, regenerate or publish that key. The explicit legacy-recovery
+preserved matching key only after comparing its certificate to the installed
+APK. Do not replace, regenerate or publish that key. The explicit legacy-recovery
 profile remains separate and is not a normal shared-UI installation command.
+
+For the normal `app.contextroom.tablet.preview` package, leave the original
+keystore outside the checkout. Do not copy it into `.local/` and do not invoke
+the test-key generator to prepare an installed-app upgrade. A private Gradle
+initialization script outside Git can select the preserved file without
+changing the build source or creating another key:
+
+```groovy
+// Save outside the repository; the environment contains a path, not key bytes.
+allprojects {
+    afterEvaluate { project ->
+        if (project.path == ':app') {
+            if (project.findProperty('contextRoomLegacyRecovery') == 'true')
+                throw new GradleException('Do not mix normal preview and legacy recovery.')
+            def location = System.getenv('CONTEXT_ROOM_PRESERVED_PREVIEW_KEY')
+            if (!location) throw new GradleException('An existing preview key is required.')
+            def preserved = new File(location)
+            if (!preserved.isAbsolute() || !preserved.isFile())
+                throw new GradleException('Use the existing absolute key path; do not generate a replacement.')
+            project.android.signingConfigs.debug.storeFile = preserved
+        }
+    }
+}
+```
+
+After setting that environment variable locally and `PRIVATE_SIGNING_INIT` to
+the external script path, run Gradle directly (not the preview key generator):
+
+```bash
+(cd android && ./gradlew --no-daemon --console=plain \
+  --init-script "$PRIVATE_SIGNING_INIT" :app:assembleDebug :app:assembleDebugAndroidTest)
+python3 scripts/check-android-artifact.py
+"$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$INSTALLED_APK_COPY"
+"$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+Both package identity and signer fingerprint must match before an authorized
+reversible update; stop on a mismatch or a different keystore alias/password.
+The supplied configuration retains the existing preview signing convention;
+it does not discover, change or prove the real installed identity. This
+preserved-key build is a **local handoff procedure, not a build executed with
+the user's key in this delivery**. For the old `fr.lisiere.android` package,
+use only the separately documented original-key recovery profile and its
+explicit higher-version check; do not substitute a preview or uninstall it.
 
 Only use a dedicated emulator with an AVD name beginning `ContextRoom_` for
 automated installs. Do not target an already running emulator from another
-task or a physical device by default. Existing verifier scripts preserve legacy
-recovery coverage; check their selectors against the shared normal UI before
-claiming a new-route result. A build is not an emulator pass.
+task or a physical device by default. `scripts/verify-android-ci.sh` creates
+its own Linux CI-only Android 15 AVD and runs the actual shared owner UI test.
+It refuses a non-CI environment and publishes only allowlisted synthetic
+screenshots and proof, not pairing tickets or fixture databases. The other
+historical verifier scenarios retain explicit legacy recovery coverage and
+must not be relabelled as common-web performance proof. A build alone is not
+an emulator pass.
 
 ## BOOX physical protocol
 

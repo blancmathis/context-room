@@ -8,3 +8,6 @@
 .web-app-dialog li { overflow-wrap: anywhere; margin-block: 12px; }
 .web-app-dialog li button { text-align: left; width: 100%; }
 .web-entry a, .web-app-dialog a { color: var(--accent, #67c6d3); display: inline-block; }
+
+html[data-context-room-keyboard-viewport] .web-entry { height: var(--context-room-visible-height); }
+html[data-context-room-keyboard-viewport] .web-app-dialog { top: calc(var(--context-room-visible-top) + 12px); bottom: auto; margin-block: 0; max-height: calc(var(--context-room-visible-height) - 24px); }

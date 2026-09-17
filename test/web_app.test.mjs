@@ -108,3 +108,28 @@ test('existing content-hashed shell URLs retain their HTTP cache and diagnostic 
   const worker = webAppResponse(new URL('/service-worker.js', 'https://room.example.test'), bundle).body;
   assert.ok(JSON.parse(worker.match(/const PRECACHE = (.*);/)[1]).includes(bundle.cssPath));
 });
+
+test('common keyboard layout follows the visual viewport without interpreting pinch zoom as a keyboard', async () => {
+  const { keyboardViewport, trackKeyboardViewport } = await import('../src/ui/web-app.mjs');
+  assert.equal(keyboardViewport(null, 820), null);
+  assert.equal(keyboardViewport({ height: 820, offsetTop: 0, scale: 1 }, 820), null);
+  assert.equal(keyboardViewport({ height: 410, offsetTop: 0, scale: 2 }, 820), null);
+  assert.equal(keyboardViewport({ height: NaN, offsetTop: 0, scale: 1 }, 820), null);
+  assert.deepEqual(keyboardViewport({ height: 420, offsetTop: 20, scale: 1 }, 820), { height: 420, top: 20, bottom: 380 });
+  const host = new EventTarget(), viewport = new EventTarget(), properties = new Map();
+  const root = { dataset: {}, style: { setProperty: (k, v) => properties.set(k, v), removeProperty: k => properties.delete(k) } };
+  Object.assign(viewport, { height: 420, offsetTop: 20, scale: 1 });
+  Object.assign(host, { visualViewport: viewport, innerHeight: 820, document: { documentElement: root } });
+  const stop = trackKeyboardViewport(host);
+  assert.equal(root.dataset.contextRoomKeyboardViewport, '');
+  assert.equal(properties.get('--context-room-visible-height'), '420px');
+  viewport.offsetTop = 30; viewport.dispatchEvent(new Event('scroll'));
+  assert.equal(properties.get('--context-room-visible-top'), '30px');
+  viewport.scale = 2; viewport.dispatchEvent(new Event('resize'));
+  assert.equal(root.dataset.contextRoomKeyboardViewport, undefined); assert.equal(properties.size, 0);
+  stop(); viewport.scale = 1; viewport.dispatchEvent(new Event('resize')); assert.equal(properties.size, 0);
+  const bundle = contextRoomWebAssetBundle();
+  assert.equal(typeof bundle.html, 'string');
+  assert.doesNotMatch(bundle.html, /interactive-widget/);
+  assert.doesNotMatch(webAppResponse(new URL('/offline.html', 'https://room.example.test'), bundle).body, /interactive-widget/);
+});

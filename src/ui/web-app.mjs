@@ -1,4 +1,32 @@
 let registrationPromise, registrationError, installPrompt, currentNotebook, displayController = null, displayStarting = false;
+/** VisualViewport covers keyboard resizing without a browser-specific meta
+ * directive. Pinch zoom must keep its own viewport and must not resize ink. */
+export function keyboardViewport(viewport, layoutHeight) {
+  if (!viewport || !Number.isFinite(layoutHeight) || layoutHeight <= 0
+    || !Number.isFinite(viewport.height) || viewport.height <= 0
+    || !Number.isFinite(viewport.offsetTop) || viewport.offsetTop < 0
+    || !Number.isFinite(viewport.scale) || Math.abs(viewport.scale - 1) > 0.01
+    || viewport.height >= layoutHeight - 1) return null;
+  const top = Math.min(viewport.offsetTop, Math.max(0, layoutHeight - viewport.height));
+  return { height: viewport.height, top, bottom: Math.max(0, layoutHeight - top - viewport.height) };
+}
+export function trackKeyboardViewport(host = window) {
+  const viewport = host.visualViewport, root = host.document.documentElement;
+  if (!viewport) return () => {};
+  const update = () => {
+    const visible = keyboardViewport(viewport, host.innerHeight);
+    if (visible) {
+      root.dataset.contextRoomKeyboardViewport = '';
+      for (const [name, value] of Object.entries(visible)) root.style.setProperty('--context-room-visible-' + name, value + 'px');
+    } else {
+      delete root.dataset.contextRoomKeyboardViewport;
+      for (const name of ['height', 'top', 'bottom']) root.style.removeProperty('--context-room-visible-' + name);
+    }
+  };
+  viewport.addEventListener('resize', update); viewport.addEventListener('scroll', update); host.addEventListener('resize', update);
+  update();
+  return () => { viewport.removeEventListener('resize', update); viewport.removeEventListener('scroll', update); host.removeEventListener('resize', update); };
+}
 /** Cache installation can fail. Never call that offline-ready or wait forever. */
 export function waitForApplicationCache(registration, timeoutMs = 45_000) {
   return new Promise((resolve, reject) => {
@@ -76,6 +104,7 @@ export async function showWebAppSettings() {
   return dialog;
 }
 if (typeof window !== 'undefined' && window === window.top) {
+  trackKeyboardViewport();
   const display = async () => {
     if (document.hidden || globalThis.ContextRoomNativeOwner?.active === false || displayController || displayStarting || !globalThis.ContextRoomNativeOwner?.navigation && !document.querySelector('meta[name="context-room-browser-device"]')?.content && !currentNotebook?.browserDeviceId) return;
     displayStarting = true;

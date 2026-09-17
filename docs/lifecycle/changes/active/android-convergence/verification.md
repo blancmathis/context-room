@@ -141,6 +141,85 @@ attempt did not reach its offline phase: it timed out waiting for the initial
 Mac confirmation during heavy host load. No successful local cold-restart
 claim is made from that run.
 
+### Verified shared-interface checkpoint — before WebKit follow-up
+
+Executable source: `ba4ab7b31d6dc4dbb551fcb3d2db8de78f825302`.
+This checkpoint precedes the WebKit viewport follow-up; use the exact source
+SHA rather than attributing these APK bytes to a later build. Earlier failures in this journal remain
+historical and are not silently relabelled as passes.
+
+[Convergence run 35252614112](https://github.com/blancmathis/context-room/actions/runs/35252614112)
+completed successfully: **131/131 contract tests**, repository doctor
+(**Context Room OK**), package privacy including dry-pack (**179 files**),
+preview and instrumentation APK compilation, exact shared-source verification,
+and an actual Android 15 emulator owner-workspace test.
+
+The PWA step in
+[CI run 35252614046](https://github.com/blancmathis/context-room/actions/runs/35252614046)
+passed on all four profiles: Chromium desktop, Chromium mobile, Firefox and
+WebKit. There are **5 passing scenarios and 3 intentional skips**: the
+persistent Chromium process-restart scenario runs once; all four profiles run
+the same notebook's portrait, landscape and keyboard-height layout checks.
+The cold-restart scenario completed both browser process restarts with the
+synthetic Mac refusing every connection, retained original pending operation
+identities, added three strokes, restored the network and verified exactly
+three unique objects with the received pressure values. No ordinary document
+was accepted. A waiting worker update did not replace the still-open editor;
+its lifecycle proof is separate from the unit test of the exact asset cohort.
+
+The emulator was the newly created, isolated `ContextRoom_SharedWeb` AVD,
+Android 15 / API 35, 800 × 1280 at 160 dpi, not an existing Mac emulator or a
+physical tablet. Its real owner workflow completed in **45.0 seconds** (whole
+scenario duration, **not pen latency**). It opened the common Hub, Computer
+folder, project files and rendered HTML, refused document-script/iframe bridge
+escalation, injected a stylus into the common WebView canvas, preserved pressure,
+used Android image import/export and the existing frozen-file human decision,
+and opened Shared review and owner settings. The common path did not create
+`InkView`. The canonical working scene and exported scene contained the same
+stroke and image; the previously accepted notebook remained byte-identical.
+No real provider request or physical BOOX measurement was made.
+
+The downloaded APK and its identity sidecar were verified against the run's
+proof, with a clean source tree:
+
+```text
+source: ba4ab7b31d6dc4dbb551fcb3d2db8de78f825302
+package: app.contextroom.tablet.preview
+apk SHA-256: 8d9202ece1d9c5187672f5392a1fa916aab940a1150beae5f74558f4d65525bb
+common web version: 75f74a1e75d4bf2e2fb87313
+shared web files: 38; existing shared core files: 8
+permissions: INTERNET, RECORD_AUDIO; signature: APK v2
+```
+
+This is an isolated preview key, not the existing installation's signing key.
+[APK artifact](https://github.com/blancmathis/context-room/actions/runs/35252614112/artifacts/10511675385)
+and [synthetic emulator proof](https://github.com/blancmathis/context-room/actions/runs/35252614112/artifacts/10511141757)
+are retained by Actions for seven days. The source and build scripts remain in
+Git after artifact expiry. The exact common modules are byte-compared inside
+the APK; the result is not based only on similar screenshots.
+
+### WebKit follow-up
+
+The complete `35252614046` run passed Node 20, 22.23.0 and 24 (all 108 test
+processes each), the soak job and the complete Chromium desktop/mobile and
+Firefox browser jobs. WebKit passed the PWA and layout steps but its UX smoke
+step had **83 passed, 7 skipped and 11 failed**. Six failures were strict
+console guards reporting the unsupported static `interactive-widget` viewport
+key. The common interface now uses VisualViewport resize/scroll geometry
+instead, without a browser-specific UI or a pinch-zoom resize. A focused local
+run passed **9/9** web-app contracts, including viewport lifecycle and exact
+packaged assets.
+
+The remaining five failures involved one-shot post-review notifications in a
+fixture that supplies synthetic authority and flash responses using
+`page.route`. That fixture now explicitly blocks workers, just like the
+geometry-only layout fixture, so navigation cannot bypass its simulated
+responses. All assertions, original-source targets, rejection/acceptance
+challenges and one-shot flash semantics remain unchanged. Real integration,
+HTML sandbox and PWA worker scenarios still use workers. The new CI result is
+the evidence for these changes; the prior failed WebKit job is not labelled
+green or dismissed as a physical/environmental limitation.
+
 ### Physical gates remain open
 
 No new physical BOOX result, real-agent co-drawing, physical microphone test,

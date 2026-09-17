@@ -138,6 +138,24 @@ test('@pwa @tablet the same notebook controls remain reachable in tablet portrai
       await page.screenshot({ path: info.outputPath('shared-notebook-' + name + '.png') });
       const violations = await new AxeBuilder({ page }).include('.notebook-dialog').withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze(); expect(violations.violations).toEqual([]);
     }
+    await page.setViewportSize({ width: 820, height: 1180 });
+    // Simulate a visual-only keyboard resize independently of the layout viewport.
+    // Actual keyboard and e-ink comfort remain separate physical checks.
+    await page.evaluate(async () => {
+      const source = document.querySelector('script[src*="/assets/ui/web-app.mjs"]').src;
+      const { trackKeyboardViewport } = await import(source);
+      const host = new EventTarget(), viewport = new EventTarget();
+      Object.assign(viewport, { height: 420, offsetTop: 20, scale: 1 });
+      Object.assign(host, { visualViewport: viewport, innerHeight: 1180, document });
+      window.releaseKeyboardTest = trackKeyboardViewport(host);
+    });
+    const keyboardBounds = await dialog.boundingBox();
+    expect(keyboardBounds.y).toBeGreaterThanOrEqual(20);
+    expect(keyboardBounds.y + keyboardBounds.height).toBeLessThanOrEqual(440.001);
+    await dialog.getByRole('button', { name: 'Close notebook', exact: true }).scrollIntoViewIfNeeded();
+    await expect(dialog.getByRole('button', { name: 'Close notebook', exact: true })).toBeInViewport();
+    await page.screenshot({ path: info.outputPath('shared-notebook-visual-keyboard.png') });
+    await page.evaluate(() => { releaseKeyboardTest(); delete document.documentElement.dataset.contextRoomKeyboardViewport; });
     expect(await page.locator('canvas.notebook-canvas').count()).toBe(1);
   } finally { await page.goto('about:blank'); await f.close(); }
 });
