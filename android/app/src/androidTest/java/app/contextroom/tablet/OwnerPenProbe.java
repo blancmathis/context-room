@@ -18,6 +18,7 @@ import static org.junit.Assert.*;
 /** Instrumentation-only observation: never dispatches JS events or edits the scene. */
 final class OwnerPenProbe {
   private OwnerPenProbe() {}
+  private static JSONArray injections = new JSONArray();
 
   static boolean focused(OwnerWorkspaceTest ui, MainActivity activity) {
     return ui.drawing.onUi(activity, () -> activity.resumed && activity.ownerWorkspace != null
@@ -42,10 +43,10 @@ final class OwnerPenProbe {
 
   static void save(OwnerWorkspaceTest ui, MainActivity activity, String phase) throws Exception {
     // Fixed scalar fields only, even when a failure occurs before the notebook opens.
-    String encoded = ui.evaluate(activity, "JSON.stringify((()=>{const s=window.sharedNotebook?.surface,c=document.querySelector('canvas.notebook-canvas');return {objects:s?.document.objects.length??null,revision:s?.document.revision??null,saveState:document.querySelector('.notebook-dialog')?.dataset.saveState??null,events:window.__ownerPenEvents??[],canvasWidth:c?.width??0,canvasHeight:c?.height??0,renderedInk:Boolean(window.__ownerPenRendered)}})())");
+    String encoded = ui.evaluate(activity, "JSON.stringify((()=>{const s=window.sharedNotebook?.surface,c=document.querySelector('canvas.notebook-canvas');return {objects:s?.document.objects.length??null,revision:s?.document.revision??null,saveState:document.querySelector('.notebook-dialog')?.dataset.saveState??null,events:window.__ownerPenEvents??[],canvasWidth:c?.width??0,canvasHeight:c?.height??0,renderedInk:window.__ownerPenRendered??null}})())");
     JSONObject web = new JSONObject(new JSONArray("[" + encoded + "]").getString(0));
     JSONObject proof = new JSONObject().put("phase", phase).put("ownerFocused", focused(ui, activity))
-      .put("activeWindow", activeWindow(ui, activity)).put("web", web);
+      .put("activeWindow", activeWindow(ui, activity)).put("injections", injections).put("web", web);
     try (FileOutputStream output = new FileOutputStream(new File(activity.getFilesDir(), "owner-input-proof.json"))) {
       output.write(proof.toString(2).getBytes(StandardCharsets.UTF_8));
     }
@@ -54,12 +55,13 @@ final class OwnerPenProbe {
   static void draw(OwnerWorkspaceTest ui, MainActivity activity) throws Exception {
     // A successful OS injection is not proof that this app received it. An ANR
     // window can own input while the WebView still answers evaluateJavascript.
+    injections = new JSONArray();
     save(ui, activity, "before-input");
     NotebookDeviceTest.waitFor("Owner input is blocked by another native window", () ->
       focused(ui, activity) && "owner".equals(activeWindow(ui, activity)));
     ui.visible(activity, "window.sharedNotebook?.surface.document.objects.length===0 && document.querySelector('.notebook-dialog')?.dataset.saveState==='confirmed'");
     painted(ui, activity);
-    ui.evaluate(activity, "(()=>{window.__ownerPenEvents=[];window.__ownerPenRendered=false;const c=document.querySelector('canvas.notebook-canvas');for(const type of ['pointerdown','pointermove','pointerup','pointercancel'])c.addEventListener(type,event=>{if(window.__ownerPenEvents.length<64)window.__ownerPenEvents.push({type:event.type,pen:event.pointerType==='pen',trusted:event.isTrusted,pressure:event.pressure})},{capture:true,passive:true})})()");
+    ui.evaluate(activity, "(()=>{window.__ownerPenEvents=[];window.__ownerPenRendered=null;let began=null;const c=document.querySelector('canvas.notebook-canvas');for(const type of ['pointerdown','pointermove','pointerup','pointercancel'])c.addEventListener(type,event=>{if(began===null)began=event.timeStamp;if(window.__ownerPenEvents.length<64)window.__ownerPenEvents.push({type:event.type,pen:event.pointerType==='pen',trusted:event.isTrusted,pressure:event.pressure,afterDownMs:Math.round(event.timeStamp-began)})},{capture:true,passive:true})})()");
     String bounds = ui.evaluate(activity, "(()=>{const c=document.querySelector('canvas.notebook-canvas'),r=c.getBoundingClientRect(),x=r.left+75,y=r.top+60;return JSON.stringify({x,y,width:innerWidth,hit:[0,1,2].every(n=>document.elementFromPoint(x+n*55,y+n*18)===c)})})()");
     JSONObject point = new JSONObject(new JSONArray("[" + bounds + "]").getString(0));
     assertTrue("Every injected point must hit the common canvas", point.getBoolean("hit"));
@@ -78,16 +80,25 @@ final class OwnerPenProbe {
       coordinates.x = location[0] + ((float)point.getDouble("x") + n * 55) * scale;
       coordinates.y = location[1] + ((float)point.getDouble("y") + n * 18) * scale;
       coordinates.pressure = pressures[n]; coordinates.size = .1f;
-      MotionEvent event = MotionEvent.obtain(down, SystemClock.uptimeMillis(), actions[n], 1,
+      long sent = SystemClock.uptimeMillis();
+      MotionEvent event = MotionEvent.obtain(down, sent, actions[n], 1,
         new MotionEvent.PointerProperties[]{properties}, new MotionEvent.PointerCoords[]{coordinates},
         0, 0, 1, 1, 0, 0, InputDevice.SOURCE_STYLUS, 0);
       try { assertTrue("Android must accept the stylus injection", ui.instrumentation.getUiAutomation().injectInputEvent(event, true)); }
-      finally { event.recycle(); }
-      // Wait for observation, never replay an uncertain injection.
-      ui.visible(activity, "window.__ownerPenEvents.some(e=>e.type==='" + types[n] + "' && e.pen && e.trusted)");
-      save(ui, activity, "received-" + types[n]);
-      SystemClock.sleep(40);
+      finally {
+        injections.put(new JSONObject().put("type", types[n]).put("afterDownMs", sent - down)
+          .put("injectionMs", SystemClock.uptimeMillis() - sent));
+        event.recycle();
+      }
+      // Keep the physical sequence contiguous. JS polling, accessibility-tree
+      // reads and proof-file IO here can turn a short stroke into a held long press.
+      // Observe the passive event log only after UP; never replay a missing phase.
+      if (n + 1 < actions.length) SystemClock.sleep(40);
     }
+    for (String type : types) {
+      ui.visible(activity, "window.__ownerPenEvents.some(e=>e.type==='" + type + "' && e.pen && e.trusted)");
+    }
+    save(ui, activity, "received-pointerup");
     ui.visible(activity, "window.__ownerPenEvents.filter(e=>e.type==='pointerdown').length===1 && window.__ownerPenEvents.filter(e=>e.type==='pointerup').length===1 && !window.__ownerPenEvents.some(e=>e.type==='pointercancel') && [.25,.75].every(p=>window.__ownerPenEvents.some(e=>e.pen&&e.trusted&&e.pressure===p))");
   }
 

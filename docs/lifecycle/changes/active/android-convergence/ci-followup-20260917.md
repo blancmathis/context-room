@@ -103,3 +103,51 @@ A local Chromium probe could
 not navigate loopback (`ERR_BLOCKED_BY_ADMINISTRATOR`); no browser policy was
 changed and no local browser success is claimed. The corrected scenario still
 requires its actual four-browser CI execution on the final delivered SHA.
+
+
+## Verification iteration: keep observation out of a held pen sequence
+
+At `80170854016269a15c6b52437567ce6f5ba8842e`, CI run `35262499907`
+completed with Node 20, Node 22.23.0, all four Browser QA jobs and Soak successful.
+The generated-link regressions and original context-copy test passed on all
+three Node versions. Node 24 alone failed the existing 80-file HTTP review
+performance assertion: 939 ms against its unchanged 900 ms limit, with
+`transaction;dur=929.1, projection;dur=0.1, events;dur=15.0`. Its other 108 of
+109 test processes passed. This is not a recurrence of the document-link defect;
+the failed performance run remains failed, and the final SHA must pass the full
+matrix without increasing the budget.
+
+Convergence run `35262499759` passed contracts, compilation and APK verification,
+but failed its owner input test. Artifact `10514679900` now distinguishes the
+stages: the owner retained native focus; the common canvas received trusted pen
+DOWN and MOVE at pressures 0.25 and 0.75, followed by CANCEL rather than UP; the
+one-object scene was already Mac-confirmed at r2. The screenshot shows retained
+ink and Android text-selection handles on the inspector's Objects heading.
+There is no evidence of a missing synchronized prefix in this run. The pixel
+probe had not run: the old `renderedInk: false` initialization was not evidence
+that the visible ink failed to render.
+
+The instrumentation performed JS receipt polling, an accessibility-tree query
+and proof-file IO between DOWN, MOVE and UP. Those operations can hold the injected
+pen down far beyond its intended 40 ms cadence, consistent with the observed native
+text-selection cancellation. The old proof lacks timestamps, so it cannot give
+an exact long-press duration. The correction sends the same three native events
+once, at the existing short cadence, and only then reads the passive event log
+and writes the proof. Native focus and successful OS injection remain required
+for every phase; all trusted down/move/up, exact pressure, absence-of-cancel,
+canonical object/confirmation, painted-pixel, export and human-review assertions
+are retained. No product renderer, synchronization, permission or gesture code
+is changed for this instrumentation correction.
+
+The bounded proof now records actual native injection offsets/durations and
+received-event offsets, rather than inferring cadence from sleeps. These measure
+the synthetic sequence, not physical digitizer latency. An unexecuted pixel
+probe is explicitly `null`; only the existing pixel assertion can establish
+`true`. A missing or cancelled phase still fails and is never replayed.
+
+Local embedded-JavaScript syntax and diff checks are possible without Android.
+The context-generator test cannot load here because the locked npm dependencies
+are absent (`ERR_MODULE_NOT_FOUND: ajv`); do not report it as a local pass. Actual
+Android compilation and the whole unchanged owner scenario must be checked in
+the fresh CI emulator. The final delivery records their definitive result,
+exact source identity and artifacts, separately from these failed checkpoints.

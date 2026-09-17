@@ -64,11 +64,22 @@ than relying on an artifact's filename. A cancelled or pending job is not a pass
 The final delivery/PR records the actual run IDs and results; this source handoff
 does not predict them.
 
-`owner-input-proof.json` separates native focus, received pointer phases,
-rendered ink and confirmed scene. In a failed run, inspect it and the screenshot
-before deciding whether the failure is input, rendering or synchronization.
-Never retry a stroke of uncertain delivery, manufacture a JS pen event or relax
-the canonical scene assertions.
+`owner-input-proof.json` separates native focus, actual injection timing,
+received pointer phases, rendered ink and confirmed scene. The `80170854` run
+received DOWN/MOVE/CANCEL while its one-object scene was already confirmed.
+Its helper queried JavaScript and accessibility and wrote proof files while
+the pen was held down. The corrected helper reads that passive event log only
+after the native DOWN/MOVE/UP sequence; every original phase/pressure assertion
+remains required. Do not reinsert diagnostic round trips inside the stroke.
+`renderedInk: null` means the pixel probe has not executed, not a failed renderer.
+Inspect both timings and the screenshot before assigning a failure to input,
+rendering or synchronization. Never retry a stroke of uncertain delivery,
+manufacture a JS pen event or relax the canonical scene assertions.
+
+At that same checkpoint the document-link tests passed on every Node version;
+Node 24 instead missed the unchanged 900 ms HTTP review budget (939 ms).
+Do not mistake the old run for final validation or increase its threshold to
+obtain a pass. The final source must have completed all required controls.
 
 The CI script disables only the unused Google Pixel Launcher in **its newly
 created disposable Linux AVD**, because that unrelated app's ANR intercepted the
