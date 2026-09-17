@@ -80,6 +80,8 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     result.setOnClickListener(view -> { interaction(); action.run(); }); return result;
   }
   void header(String heading, String detail) {
+    if ((showingOwner || showingConversation) && navigation != null) { navigation.connect(null); navigation.connect(connection); }
+    if (navigation != null) navigation.foreground(resumed);
     showingOwner = false; showingConversation = false; conversationBusy = false; nativeConversationState = null;
     if (ownerWorkspace != null) { ownerWorkspace.leaveConversation(); ownerWorkspace.foreground(false); }
     navigationScreen = false;
@@ -97,23 +99,26 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     connection = selected; engine.connection = selected; navigation.connect(selected);
     if (engineReady && selected != null) engine.call("session", selected.session);
   }
-  void connectionHome() { if (connection.isOwner()) ownerScreen(); else engine.call("catalogue", connection.session); }
+  void connectionHome() { ownerScreen(); }
   void ownerScreen() {
     engine.call("close"); engine.call("session", connection.session);
     ink = null; currentScope = null; lastScene = null; journal = null;
-    header("Context Room", "Interface propriétaire · les fichiers et les décisions restent sur le Mac.");
+    header("Context Room", "Les données canoniques restent sur le Mac.");
+    title.setVisibility(View.GONE); status.setVisibility(View.GONE); navigation.foreground(false);
     try {
       if (ownerWorkspace == null || ownerWorkspace.closed) ownerWorkspace = new OwnerWorkspace(this, connection, this);
       screen.addView(ownerWorkspace.web, new LinearLayout.LayoutParams(-1, 0, 1));
       showingOwner = true; ownerWorkspace.foreground(resumed);
-      LinearLayout controls = new LinearLayout(this);
-      controls.addView(button("Carnets disponibles hors ligne", () -> engine.call("catalogue", connection.session)));
-      controls.addView(button("Connexions", this::pairingScreen));
-      controls.addView(button("Recharger", () -> ownerWorkspace.web.reload()));
-      HorizontalScrollView toolbar = new HorizontalScrollView(this); toolbar.addView(controls); screen.addView(toolbar);
     } catch (Exception error) { showError(error.getMessage()); screen.addView(button("Réessayer", this::ownerScreen)); screen.addView(button("Connexions", this::pairingScreen)); }
   }
-  @Override public void ownerError(String message) { if (!dead && (showingOwner || showingConversation)) showError(message); }
+  @Override public void ownerError(String message) { if (!dead && (showingOwner || showingConversation)) { if (status != null) status.setVisibility(View.VISIBLE); showError(message); } }
+  @Override public void ownerConnectionAction(String action) {
+    if (action.equals("connection.settings")) pairingScreen();
+    else if (action.equals("connection.recovery")) {
+      header("Récupération native historique", "Les anciens journaux sont conservés. Le carnet normal utilise désormais l’interface web commune.");
+      engine.call("catalogue", connection.session);
+    }
+  }
   void nativeConversation() {
     if (showingConversation) { closeNativeConversation(); return; }
     nativeConversation("text");
@@ -537,7 +542,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
       catch (Exception error) { runOnUiThread(() -> showError(error.getMessage())); } });
   }
   @Override protected void onPause() { resumed = false; if (ownerWorkspace != null) ownerWorkspace.foreground(false); views.setMode("independent"); navigation.foreground(false); if (ink != null) { ink.finishReachedInk(); ink.suspendBoox(true); viewport(); } super.onPause(); }
-  @Override protected void onResume() { super.onResume(); resumed = true; if (ownerWorkspace != null) ownerWorkspace.foreground(showingOwner || showingConversation); finishMicrophonePermission(); navigation.foreground(true); if (ink != null) ink.suspendBoox(false); if (engineReady && currentScope != null) engine.call("refresh"); }
+  @Override protected void onResume() { super.onResume(); resumed = true; if (ownerWorkspace != null) ownerWorkspace.foreground(showingOwner || showingConversation); finishMicrophonePermission(); navigation.foreground(!(showingOwner || showingConversation)); if (ink != null) ink.suspendBoox(false); if (engineReady && currentScope != null) engine.call("refresh"); }
   @Override public void onBackPressed() { interaction(); if (showingConversation) { closeNativeConversation(); return; } if (presentation) { setPresentation(false); return; } if (showingOwner && ownerWorkspace.web.canGoBack()) { ownerWorkspace.web.goBack(); return; } if (connection != null && ink != null) whenJournalIdle(() -> { engine.call("close"); connectionHome(); }); else super.onBackPressed(); }
   @Override protected void onDestroy() { if (ink != null) ink.finishReachedInk(); dead = true; if (ownerFileCallback != null) { ownerFileCallback.onReceiveValue(null); ownerFileCallback = null; } if (ownerExportCallback != null) { ownerExportCallback.onReceiveValue(false); ownerExportCallback = null; ownerExportBytes = null; } if (ownerWorkspace != null) ownerWorkspace.close(); navigation.close(); engine.close(); disk.shutdown(); super.onDestroy(); }
 }

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 import zipfile
 
 root = Path(__file__).resolve().parents[1]
@@ -53,6 +54,18 @@ with zipfile.ZipFile(args.apk) as archive:
     assert len(archive.namelist()) == len(set(archive.namelist())), 'Duplicate APK entries'
     for entry, source in assets.items():
         assert archive.read(entry) == source.read_bytes(), 'APK does not contain the current shared engine: ' + entry
+    with tempfile.TemporaryDirectory(prefix='cr-apk-common-web-') as generated:
+        command('node', str(root / 'scripts/prepare-android-web.mjs'), generated)
+        generated_root = Path(generated)
+        expected_index = (generated_root / 'web/index.json').read_bytes()
+        assert archive.read('assets/web/index.json') == expected_index, 'APK web build index differs from current source'
+        web = json.loads(expected_index)
+        paths = {item['asset'] for item in web['files'].values()}
+        for asset in paths:
+            assert archive.read('assets/' + asset) == (generated_root / asset).read_bytes(), 'APK contains a different common UI asset: ' + asset
+        assert 'web/assets/ui/notebook-editor.mjs' in paths and 'web/assets/ui/notebook-canvas.mjs' in paths
+        assert {name.removeprefix('assets/') for name in archive.namelist() if name.startswith('assets/web/') and not name.endswith('/')} == paths | {'web/index.json'}, 'Unexpected packaged web data'
+        common_web = {'exactCommonWebAssets': len(paths), 'commonWebVersion': web['version']}
     assert not any(name.endswith(('.keystore', '.jks', '.key', '.p12')) for name in archive.namelist()), 'Signing material in APK'
 print(json.dumps({'apkSha256': hashlib.sha256(args.apk.read_bytes()).hexdigest(), 'package': expected_package,
-                  'permissions': expected_permissions, 'signatureV2': True, 'exactSharedAssets': len(assets), **upgrade}))
+                  'permissions': expected_permissions, 'signatureV2': True, 'exactSharedAssets': len(assets), **common_web, **upgrade}))

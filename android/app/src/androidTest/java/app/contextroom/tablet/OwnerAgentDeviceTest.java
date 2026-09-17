@@ -55,7 +55,8 @@ public final class OwnerAgentDeviceTest {
         ui.visible(activity, "document.body.dataset.workspaceDiagnostics && JSON.parse(document.body.dataset.workspaceDiagnostics).phase==='ready'");
         ui.evaluate(activity, "window.openContextRoomNotebook('docs/Owner.crnb',{projectId:" + JSONObject.quote(ticket.getString("testProjectId")) + "}).then(n=>window.nativeAgentNotebook=n)");
         ui.visible(activity, "window.nativeAgentNotebook && document.querySelector('.notebook-dialog')?.dataset.saveState==='confirmed'");
-        ui.evaluate(activity, "[...document.querySelectorAll('.notebook-dialog button')].find(n=>n.textContent==='Draw with the native pen').click()");
+        // Preserve this historical native-recovery scenario; it is not common-web performance proof.
+        ui.openLegacyRecoveryNotebook(activity, ticket);
         NotebookDeviceTest.waitFor("Native pen unavailable", () -> ui.drawing.onUi(activity, () -> activity.conversationButton != null && activity.conversationButton.isEnabled()));
         pen(activity, 100);
         NotebookDeviceTest.waitFor("First human stroke unconfirmed", () -> ui.drawing.onUi(activity, () -> activity.lastScene.optJSONArray("objects").length() == 1 && !activity.navigationBusy()));

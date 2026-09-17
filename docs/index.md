@@ -39,7 +39,7 @@ This document does not define product behavior, technical contracts, security gu
 
 - [System architecture](system/architecture.md)
 - [Runtime profiles](system/runtime-profiles.md)
-- [Connected drawing devices](system/connected-devices.md)
+- [Shared computer/tablet interface, connected devices and PWA](system/connected-devices.md)
 - [Lisière recovery and migration](system/lisiere-migration.md)
 - [Shared resource materialization](system/shared-resource-materialization.md)
 
@@ -67,6 +67,7 @@ Active implementation and its verification record:
 
 - [Refactor: consolidated decisions, architecture, migration and verification](lifecycle/changes/active/refactor/index.md)
 - [Connected notebooks and Android convergence](lifecycle/changes/active/android-convergence/index.md)
+  - [Shared-web verification and reversible BOOX handoff](lifecycle/changes/active/android-convergence/codex-shared-web-handoff.md)
 
 Historical evidence does not define current behavior:
 

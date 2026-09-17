@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import { test, expect } from "@playwright/test";
+// This geometry fixture mocks review responses; the PWA suite tests real workers.
+test.use({ serviceWorkers: "block" });
 import { attachLayoutFailureArtifacts, collectLayoutViolations, LAYOUT_CONTRACT } from "./layout-contract.mjs";
 
 function fixture() {

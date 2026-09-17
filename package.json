@@ -40,7 +40,8 @@
     "package:privacy": "node scripts/check-package-privacy.mjs",
     "prepack": "npm run package:privacy",
     "update:rooms": "node scripts/update-context-rooms.mjs",
-    "pack:dry-run": "npm pack --dry-run"
+    "pack:dry-run": "npm pack --dry-run",
+    "test:web-app": "playwright test --config=playwright.web-app.config.mjs"
   },
   "keywords": [
     "ai-agent",

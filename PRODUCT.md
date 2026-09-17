@@ -77,3 +77,13 @@ Context Room succeeds when:
 5. Shared proposal delivery is exact, reviewable, and recoverable;
 6. local documents remain private and no hosted runtime is required;
 7. deterministic verification detects drift between code, contracts, tests, and documentation.
+
+## One interface across computer and tablet
+
+Context Room maintains one normal web interface and one set of notebook tools
+for the computer and tablet. A PWA and an optional Android hardware shell reuse
+that source. The Mac remains the canonical data and agent host; local offline
+ink has a distinct unconfirmed state. No drawing or autosave accepts a document.
+Legacy native journals retain an explicit recovery path until their replacement
+is assured. Physical BOOX performance is a verification gate, not an assumed
+property of the shared code. See [connected devices](docs/system/connected-devices.md).

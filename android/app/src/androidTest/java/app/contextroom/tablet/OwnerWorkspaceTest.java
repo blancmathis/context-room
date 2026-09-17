@@ -89,7 +89,14 @@ public final class OwnerWorkspaceTest {
     for (int n = 0; n < node.getChildCount() && text.length() < 4000; n++) text.append(pickerContent(node.getChild(n)));
     return text.toString();
   }
-  @Test public void ownerHubDocumentsAndNativeDrawingStayConnected() throws Exception {
+  /** This helper is exclusively for retained legacy-journal regression scenarios. */
+  void openLegacyRecoveryNotebook(MainActivity activity, JSONObject ticket) throws Exception {
+    evaluate(activity, "ContextRoomNativeOwner.openNotebook({projectId:" + JSONObject.quote(ticket.getString("testProjectId")) + ",path:'docs/Owner.crnb'})");
+  }
+  void sharedWebPen(MainActivity activity) throws Exception {
+    OwnerPenProbe.draw(this, activity);
+  }
+  @Test public void ownerHubDocumentsAndSharedDrawingStayConnected() throws Exception {
     JSONObject ticket = drawing.fixture();
     try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
       MainActivity activity = drawing.activity(scenario);
@@ -127,22 +134,18 @@ public final class OwnerWorkspaceTest {
         assertTrue("Subframe cannot open native resources", drawing.onUi(activity, () -> activity.showingOwner && activity.ink == null));
         assertEquals("Subframe receives no privileged reply", "true", evaluate(activity, "typeof window.FRAME_ANSWERED === 'undefined'"));
         evaluate(activity, "document.querySelector('#owner-test-frame').remove()");
+        evaluate(activity, "document.addEventListener('context-room-notebook-opened',event=>window.sharedNotebook=event.detail)");
         click(activity, "[data-global-project-file='docs/Owner.crnb']");
         visible(activity, "[...document.querySelectorAll('.local-proposal-review button')].some(n=>n.textContent==='Open working notebook')");
         evaluate(activity, "[...document.querySelectorAll('.local-proposal-review button')].find(n=>n.textContent==='Open working notebook').click()");
         visible(activity, "document.querySelector('.notebook-dialog canvas')");
-        evaluate(activity, "[...document.querySelectorAll('.notebook-dialog button')].find(n=>n.textContent==='Draw with the native pen').click()");
-        NotebookDeviceTest.waitFor("Native owner notebook did not open", () -> drawing.onUi(activity, () -> activity.ink != null && activity.journal != null && activity.ink.isEnabled() && activity.lastScene != null));
-        long down = SystemClock.uptimeMillis();
-        drawing.pen(activity, MotionEvent.ACTION_DOWN, 160, 130, .5f, down);
-        drawing.pen(activity, MotionEvent.ACTION_MOVE, 280, 180, .8f, down);
-        drawing.pen(activity, MotionEvent.ACTION_UP, 330, 210, .6f, down);
-        NotebookDeviceTest.waitFor("Native owner ink was not acknowledged", () -> drawing.onUi(activity, () -> activity.pendingNative == 0 && activity.lastScene.optJSONArray("objects").length() > 0 && activity.lastScene.optInt("pending") == 0 && !activity.lastScene.optBoolean("offline")));
-        screenshot(activity, "owner-native-drawing");
-        instrumentation.runOnMainSync(activity::onBackPressed);
-        NotebookDeviceTest.waitFor("Owner workspace was not retained", () -> drawing.onUi(activity, () -> activity.showingOwner && activity.ink == null));
-        visible(activity, "document.querySelector('.notebook-dialog')");
-        visible(activity, "document.querySelector('.notebook-state [role=status]')?.textContent.includes('1 objects')");
+        assertTrue("The normal notebook must not instantiate the legacy native canvas", drawing.onUi(activity, () -> activity.ink == null && activity.showingOwner));
+        assertEquals("No parallel native tool route in the normal editor", "true", evaluate(activity, "![...document.querySelectorAll('.notebook-dialog button')].some(n=>n.textContent==='Draw with the native pen')"));
+        sharedWebPen(activity);
+        visible(activity, "window.sharedNotebook?.surface.document.objects.length===1 && document.querySelector('.notebook-dialog')?.dataset.saveState==='confirmed'");
+        assertEquals("Web pressure samples are retained", "true", evaluate(activity, "[.25,.75].every(p=>window.sharedNotebook.surface.document.objects[0].points.some(point=>point[2]===p))"));
+        OwnerPenProbe.confirmed(this, activity);
+        screenshot(activity, "owner-shared-drawing");
         assertEquals("Owner permission stays explicit", true, activity.connection.isOwner());
         screenshot(activity, "owner-retained-workspace");
         android.content.ContentResolver resolver = activity.getContentResolver();
@@ -199,6 +202,7 @@ public final class OwnerWorkspaceTest {
         screenshot(activity, "owner-shared-review");
       } catch (Throwable error) {
         System.out.println("Owner acceptance failed: " + error);
+        try { OwnerPenProbe.save(this, activity, "failed"); } catch (Throwable capture) { error.addSuppressed(capture); }
         try { screenshot(activity, "owner-failure"); } catch (Throwable capture) { error.addSuppressed(capture); }
         if (activity.ownerWorkspace != null) System.out.println("Owner UI failure: " + evaluate(activity, "JSON.stringify({url:location.pathname+location.search,ready:document.body?.dataset.workspaceDiagnostics,title:document.querySelector('#workspaceTitle')?.textContent,body:document.body?.innerText?.slice(0,5000)})"));
         if (!drawing.onUi(activity, () -> activity.resumed)) instrumentation.getUiAutomation().performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK);

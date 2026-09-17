@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { webAppResponse, versionWebSource } from './web_app.mjs';
 import { assertProjectWriter, inspectProjectWriter } from './writer_authority.mjs';
 import { inspectLocalAudio } from './local_audio_diagnostics.mjs';
 import { renderAppShell } from "./ui/app.mjs";
@@ -18666,11 +18667,11 @@ function remoteReviewUnavailableHtml(requestUrl) {
 </html>`;
 }
 
-export function createContextRoomDeviceService({ root = process.cwd(), stateRoot } = {}) {
+export function createContextRoomDeviceService({ root = process.cwd(), stateRoot, browser = null } = {}) {
   const primaryRoot = fs.realpathSync(path.resolve(root));
   const primaryId = contextRoomProjectId(primaryRoot);
   const primaryIdentity = managedProjectRootIdentity(primaryRoot);
-  return createConnectedDeviceService({ stateRoot, resolveProject(projectId) {
+  return createConnectedDeviceService({ stateRoot, browser, getWebBundle: () => contextRoomWebAssetBundle(), resolveProject(projectId) {
     const project = projectId === primaryId
       ? { root: primaryRoot, rootIdentity: primaryIdentity, available: true }
       : registeredContextHubWorktree(projectId);
@@ -20945,6 +20946,10 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     return;
   }
 
+  if (["GET", "HEAD"].includes(req.method) && (url.pathname.startsWith('/assets/') || ['/manifest.webmanifest', '/service-worker.js', '/offline.html'].includes(url.pathname))) {
+    const asset = webAppResponse(url, contextRoomWebAssetBundle());
+    if (asset) { writeHttpResponse(res, asset.status, asset.headers, req.method === 'HEAD' ? '' : asset.body); return; }
+  }
   if (["GET", "HEAD"].includes(req.method) && url.pathname === "/") {
     const bundle = contextRoomWebAssetBundle(promptMutationNonce, ownerMutationNonce, requestRuntimeProfile);
     sendHtml(
@@ -24567,14 +24572,14 @@ export function contextRoomWebAssetBundle(codexPromptMutationNonce = "", ownerMu
     const script = source.match(/<script>([\s\S]*?)<\/script>\s*<\/body>/);
     if (!style || !script) throw new Error("Context Room web assets could not be extracted from the application shell");
     const css = style[1];
-    const js = script[1];
+    const js = versionWebSource(script[1]);
     const cssHash = createHash("sha256").update(css).digest("hex").slice(0, 16);
     const jsHash = createHash("sha256").update(js).digest("hex").slice(0, 16);
     const cssPath = `/assets/context-room.${cssHash}.css`;
     const jsPath = `/assets/context-room.${jsHash}.js`;
-    const htmlTemplate = source
+    const htmlTemplate = versionWebSource(source
       .replace(style[0], `<link rel="stylesheet" href="${cssPath}" />`)
-      .replace(script[0], `<script src="${jsPath}" defer></script>\n</body>`);
+      .replace(script[0], `<script src="${jsPath}" defer></script>\n</body>`));
     contextRoomWebAssetCache = {
       htmlTemplate,
       css,
