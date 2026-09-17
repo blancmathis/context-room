@@ -139,7 +139,7 @@ try:
         detail = {'retainedHistory': 'passed', 'agentStarted': False, 'originalThreadId': expected['originalThreadId'], 'originalExportSha256': expected['hash'], 'bytes': len(exported_bytes)}
     else:
         assert json.loads(exported_bytes) == scene['document'], 'The Android export must contain the exact acknowledged scene and image'
-        detail = {'ownerWorkspace': 'passed', 'nativeObjectsOnMac': len(scene['document']['objects']), 'editableExportSha256': hashlib.sha256(exported_bytes).hexdigest()}
+        detail = {'ownerWorkspace': 'passed', 'sharedWebObjectsOnMac': len(scene['document']['objects']), 'editableExportSha256': hashlib.sha256(exported_bytes).hexdigest()}
     assert hashlib.sha256(original.read_bytes()).hexdigest() == before, 'Autosave cannot accept the working notebook'
     (output / 'proof.json').write_text(json.dumps({
         'sourceHead': run(['git', 'rev-parse', 'HEAD'], cwd=repo, capture_output=True, text=True).stdout.strip(),
@@ -147,7 +147,7 @@ try:
         'apk': json.loads(artifact.stdout), 'emulator': avd, 'durationSeconds': round(time.monotonic() - started, 2),
         **detail, 'acceptedFileUnchanged': True, 'physicalBoox': 'not-tested'
     }, indent=2) + '\n')
-    print('Real owner recording association and exact PCM export: passed' if args.recording else 'Real Android owner draft recovery and editing: passed' if args.draft else 'Real owner UI and Android retained-history export: passed' if args.history else 'Real owner UI, rendered documents and native notebook round trip: passed', flush=True)
+    print('Real owner recording association and exact PCM export: passed' if args.recording else 'Real Android owner draft recovery and editing: passed' if args.draft else 'Real owner UI and Android retained-history export: passed' if args.history else 'Real owner UI, rendered documents and shared web notebook round trip: passed', flush=True)
 finally:
     if fixture.poll() is None:
         fixture.terminate()

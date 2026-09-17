@@ -18,6 +18,7 @@ on:
       - 'test/android/**'
       - 'scripts/build-android.sh'
       - 'scripts/check-android-artifact.py'
+      - 'scripts/verify-android-ci.sh'
       - '.github/workflows/convergence.yml'
 
 permissions: {}
@@ -106,4 +107,14 @@ jobs:
           name: android-preview-${{ github.event.pull_request.head.sha || github.sha }}
           path: ${{ runner.temp }}/android-preview/
           if-no-files-found: error
+          retention-days: 7
+      - name: Verify the common owner interface on an isolated Android 15 emulator
+        run: scripts/verify-android-ci.sh
+      - name: Preserve only synthetic emulator screenshots and proof
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: android-shared-ui-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/shared-web-owner-public/
+          if-no-files-found: ignore
           retention-days: 7

@@ -88,9 +88,10 @@ only 0.001 pixel numerical rounding. These changes do not waive pressure or
 The existing WebKit layout suite also failed when the expected human-acceptance
 confirmation dialog did not appear. Its captured state shows the real server
 refusing incomplete human review, while this geometry-only fixture intended to
-intercept that response. The default mock-based browser configuration now blocks
-service workers so `page.route` owns these synthetic requests; the independent
-PWA configuration explicitly allows workers and verifies their real lifecycle.
+intercept that response. Only the geometry-only layout fixture blocks service workers so `page.route`
+owns those synthetic requests. Other integration tests retain real workers,
+including sandboxed document previews; their isolation is not weakened. The
+independent PWA configuration explicitly tests the real worker lifecycle.
 This follows Playwright's network-interception boundary; no product permission
 or human-review rule was relaxed. The corrected run, rather than this failed
 checkpoint, is the relevant regression proof.
@@ -130,6 +131,15 @@ The local standalone doctor attempt produced no diagnostic result before its
 execution limit under heavy Mac load. It is now an explicit CI contract step.
 Package privacy already invokes the real `npm pack --dry-run --json
 --ignore-scripts`; no separate successful local dry-pack run is implied.
+
+At `e02aeb2685ff9321ce37b5905ea7722254328307`, convergence run
+`35251633792` passed **131/131 tests**, the real repository doctor
+(**Context Room OK**), package privacy (**178 files**, including the dry-pack
+inspection), and both Android APK builds. Its exact-asset checker again passed
+38 common web files and 8 existing core files. The subsequent local cold-restart
+attempt did not reach its offline phase: it timed out waiting for the initial
+Mac confirmation during heavy host load. No successful local cold-restart
+claim is made from that run.
 
 ### Physical gates remain open
 

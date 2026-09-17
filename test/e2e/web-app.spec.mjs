@@ -92,12 +92,14 @@ test('@pwa shared editor survives a waiting worker update and two offline browse
     page = await launch(true); await page.goto(f.origin);
     await expect(page.getByText('Mac unavailable · open a locally saved working notebook.', { exact: false })).toBeVisible();
     await page.getByRole('button', { name: /docs\/Restart.crnb/ }).click();
+    await page.waitForFunction(() => Boolean(window.testNotebook?.dialog.isConnected));
     await expect(page.locator('.notebook-dialog')).toHaveAttribute('data-save-state', 'pending');
     expect(await page.evaluate(async () => (await testNotebook.client.state()).operations.map(op => op.operationId))).toEqual(pending);
     expect(await page.evaluate(() => testNotebook.surface.document.objects.length)).toBe(2);
     await pen(page, 120); await page.screenshot({ path: info.outputPath('pwa-offline-portrait.png') });
     await context.close();
     page = await launch(true); await page.goto(f.origin); await page.getByRole('button', { name: /docs\/Restart.crnb/ }).click();
+    await page.waitForFunction(() => Boolean(window.testNotebook?.dialog.isConnected));
     expect(await page.evaluate(() => testNotebook.surface.document.objects.length)).toBe(3);
     f.updates.disconnected = false;
     await context.setOffline(false);

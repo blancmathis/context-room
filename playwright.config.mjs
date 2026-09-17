@@ -14,9 +14,6 @@ export default defineConfig({
     screenshot: "only-on-failure",
     video: "retain-on-failure",
     colorScheme: "dark",
-    // Mock-based UI fixtures require page.route to own their requests.
-    // Real worker/offline scenarios explicitly allow workers in the PWA config.
-    serviceWorkers: "block",
   },
   projects: [
     {
