@@ -86,9 +86,14 @@ only 0.001 pixel numerical rounding. These changes do not waive pressure or
 44-pixel accessibility requirements. The initial runs remain recorded as failed.
 
 The existing WebKit layout suite also failed when the expected human-acceptance
-confirmation dialog did not appear. That failure is distinct from the passing
-shared-notebook layout; it is not labelled pre-existing without baseline proof.
-The overall regression run must not be called green until its results are known.
+confirmation dialog did not appear. Its captured state shows the real server
+refusing incomplete human review, while this geometry-only fixture intended to
+intercept that response. The default mock-based browser configuration now blocks
+service workers so `page.route` owns these synthetic requests; the independent
+PWA configuration explicitly allows workers and verifies their real lifecycle.
+This follows Playwright's network-interception boundary; no product permission
+or human-review rule was relaxed. The corrected run, rather than this failed
+checkpoint, is the relevant regression proof.
 
 ### Physical gates remain open
 

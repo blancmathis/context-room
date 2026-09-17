@@ -8,6 +8,8 @@ import { readNotebook } from '../../src/notebooks.mjs';
 import { contextRoomWebAssetBundle } from '../../src/context_room.mjs';
 import { webAppResponse, webAppVersion } from '../../src/web_app.mjs';
 
+test.use({ serviceWorkers: 'allow' });
+
 async function fixture() {
   process.env.PLAYWRIGHT_BROWSERS_PATH ||= path.join(os.homedir(), process.platform === 'darwin' ? 'Library/Caches/ms-playwright' : '.cache/ms-playwright');
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cr-pwa-browser-'))), root = path.join(base, 'project'), previous = {};
