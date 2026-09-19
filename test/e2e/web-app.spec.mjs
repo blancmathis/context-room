@@ -6,7 +6,7 @@ import AxeBuilder from '@axe-core/playwright';
 import { createMemoryServer, initializeContextRoomProject, writeMemoryWebappSettings } from '../../src/context_room.mjs';
 import { readNotebook } from '../../src/notebooks.mjs';
 import { contextRoomWebAssetBundle } from '../../src/context_room.mjs';
-import { webAppResponse, webAppVersion } from '../../src/web_app.mjs';
+import { webAppResponse, webAppVersion, webEntryHtml } from '../../src/web_app.mjs';
 
 test.use({ serviceWorkers: 'allow' });
 
@@ -56,6 +56,26 @@ async function pen(page, offset = 0) {
   await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: x + 120, y: y + 30, button: 'left', buttons: 0, clickCount: 1, pointerType: 'pen', force: 0 });
   await page.evaluate(() => testNotebook.surface.settle()); await cdp.detach();
 }
+
+test('@pwa offline reconnect retains the original Hub route instead of opening the default project', async ({ page }) => {
+  const f = await fixture();
+  try {
+    const route = '/?hub=1&view=hub';
+    await page.route(f.origin + route, request => request.fulfill({ contentType: 'text/html', body: webEntryHtml(contextRoomWebAssetBundle()) }), { times: 1 });
+    await page.goto(f.origin + route);
+    const reconnect = page.getByRole('link', { name: 'Reconnect to Context Room', exact: true });
+    await expect(reconnect).toHaveAttribute('href', route);
+    await reconnect.click();
+    await expect(reconnect).toBeHidden();
+    // The Hub adds its newly selected workspace to the preserved route.
+    await expect(page).toHaveURL(url => url.origin === f.origin && url.searchParams.get('hub') === '1' && url.searchParams.get('view') === 'hub');
+    const openExplorer = page.getByRole('button', { name: 'Open explorer', exact: true });
+    if (await openExplorer.isVisible()) await openExplorer.click();
+    await expect(page.getByRole('button', { name: 'Projects', exact: true })).toBeVisible();
+    await page.goto(f.origin + '/offline.html');
+    await expect(page.getByRole('link', { name: 'Reconnect to Context Room', exact: true })).toHaveAttribute('href', '/');
+  } finally { await page.goto('about:blank'); await f.close(); }
+});
 
 test('@pwa shared editor survives a waiting worker update and two offline browser restarts, syncing pressure exactly once', async ({ playwright }, info) => {
   test.skip(info.project.name !== 'chromium-desktop', 'Persistent Chromium process restart is tested once; shared layout has separate profiles.');

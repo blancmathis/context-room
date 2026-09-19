@@ -12,7 +12,11 @@ async function json(path, options = {}) {
 }
 if (mode === 'offline') {
   status.textContent = 'Mac unavailable · open a locally saved working notebook. No document is accepted offline.';
-  const link = document.createElement('a'); link.href = '/'; link.textContent = 'Reconnect to Context Room'; actions.append(link);
+  const link = document.createElement('a');
+  // A navigation fallback keeps the original address (including Hub/project
+  // scope). Only the explicit offline catalogue returns to the default entry.
+  link.href = location.pathname === '/offline.html' ? '/' : location.pathname + location.search;
+  link.textContent = 'Reconnect to Context Room'; actions.append(link);
   await appendCachedNotebooks(content);
 } else if (mode === 'pair') {
   status.textContent = 'Pair this browser from the Mac. Drawing permission and the complete owner interface are separate choices.';

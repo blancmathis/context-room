@@ -248,16 +248,20 @@ Existing human objects remained unchanged after the agent's two additions;
 no document was accepted. Private installation and device evidence stays
 outside the repository.
 
-Two regressions found during this check have focused coverage: automatic
+Three regressions found during this check have focused coverage: automatic
 reconnection clears an obsolete connection alert without hiding a separate
 local error, and incremental Android builds replace their generated web
 subtree instead of retaining obsolete hashed bundles. The former is covered
 in browser tests; the latter in `test/context_room.test.mjs` and the APK's
-existing exact-asset check.
+existing exact-asset check. Offline recovery also retains the original Hub and
+project URL when reconnecting, instead of switching to the default project;
+the navigation regression passes on all four browser profiles.
 
 Native microphone capture, stopping on backgrounding and interrupted recording
 recovery were observed. A playback-to-microphone dictation attempt did not
-recognize the known phrase, so recognition quality remains unverified. Native
+recognize the known phrase. A subsequent voice session submitted spurious
+transcripts and was stopped. Recognition and voice activity need a controlled
+spoken check before voice can be considered reliable. Native
 injected stylus events are hardware execution evidence, not a measurement of
 human pressure feel, palm rejection or pen-to-ink latency. These observations
 do not establish PWA certificate trust, long-session reliability or complete
