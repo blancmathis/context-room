@@ -70,7 +70,8 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     surface?.setAgentPen(event.detail.progress); if (event.detail.progress) void sync();
   }, { signal: cleanup.signal });
   const navigationRequests = new Map();
-  const fail = error => { if (!closed) errorBox.textContent = error.message || String(error); };
+  let errorSource = '';
+  const fail = (error, source = 'local') => { if (!closed) { errorSource = source; errorBox.textContent = error.message || String(error); } };
   const run = work => Promise.resolve(work).catch(fail);
   const enqueue = async (edits, options) => {
     const retained = { edits: structuredClone(edits), options: structuredClone(options || {}) };
@@ -305,8 +306,11 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     syncing = true;
     try {
       if (explicit) { const cap = await request('/api/notebooks/capabilities'); if (cap.serverId !== scope.serverId || !reviewKey && (cap.accountId || 'local-owner') !== scope.accountId) throw new Error('A different canonical location answered. The old cache is retained.'); authBlocked = false; }
-      await client.flush(); if (explicit) errorBox.textContent = '';
-    } catch (error) { if ([401, 403, 410].includes(error.status)) authBlocked = true; if (explicit || error.code && !['network'].includes(error.code)) fail(error); }
+      await client.flush();
+      // Automatic recovery retires only the connection alert. A successful
+      // flush cannot establish that a separate local edit or export succeeded.
+      if (errorSource === 'connection') { errorBox.textContent = ''; errorSource = ''; }
+    } catch (error) { if ([401, 403, 410].includes(error.status)) authBlocked = true; if (explicit || error.code && !['network'].includes(error.code)) fail(error, 'connection'); }
     finally { syncing = false; renderStatus(); }
   }
   async function editText({ x, y, object, text = object?.text || '' }) {
@@ -386,7 +390,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     if (createOffline) await client.createOffline({ path, title: title || path.split('/').pop().replace(/\.crnb$/i, '') });
     else if (!cached || !reviewKey) await client.initialize(snapshot);
     else await client.notify();
-    if (offlineError && !reviewKey) { await client.change(state => ({ metadata: { ...state.metadata, offline: true } })); authBlocked = [401, 403, 410].includes(offlineError.status); fail(offlineError); await client.notify(); }
+    if (offlineError && !reviewKey) { await client.change(state => ({ metadata: { ...state.metadata, offline: true } })); authBlocked = [401, 403, 410].includes(offlineError.status); fail(offlineError, 'connection'); await client.notify(); }
     if (!reviewKey) await client.change(state => ({ metadata: { ...state.metadata, reopen: { version: 1, scopeKey, browserDeviceId, capabilities, transport: capabilities.reviewAuthority === 'unavailable' ? 'drawing' : 'owner' } } }));
     const saved = await client.state(); if (saved.metadata.view) surface.view = saved.metadata.view;
     if (saved.metadata.eink) { dialog.classList.add('notebook-eink'); eink.setAttribute('aria-pressed', 'true'); }
