@@ -8,6 +8,10 @@ import { WEB_ASSETS, webAppResponse, webAppVersion, webEntryHtml } from '../src/
 export function prepareAndroidWeb(output) {
   if (!output || !path.isAbsolute(output)) throw new TypeError('An explicit absolute generated-assets directory is required.');
   const bundle = contextRoomWebAssetBundle(), version = webAppVersion(), files = {};
+  // This generated subtree belongs to the common web bundle. Hashed bundle
+  // names change between builds; leaving the previous files would package an
+  // obsolete second version. Other generated asset directories are untouched.
+  fs.rmSync(path.join(output, 'web'), { recursive: true, force: true });
   const put = (url, type, body) => {
     const asset = 'web' + url;
     fs.mkdirSync(path.dirname(path.join(output, asset)), { recursive: true }); fs.writeFileSync(path.join(output, asset), body);

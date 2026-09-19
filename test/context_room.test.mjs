@@ -7,6 +7,26 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import test from "node:test";
+import { prepareAndroidWeb } from "../scripts/prepare-android-web.mjs";
+
+test("Android incremental web packaging removes obsolete bundles and retains sibling assets", () => {
+  const output = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-android-assets-"));
+  try {
+    prepareAndroidWeb(output);
+    const indexPath = path.join(output, "web/index.json");
+    const original = fs.readFileSync(indexPath);
+    fs.writeFileSync(path.join(output, "web/assets/context-room-obsolete.js"), "obsolete build");
+    fs.writeFileSync(path.join(output, "sibling.txt"), "preserve");
+    prepareAndroidWeb(output);
+    const index = JSON.parse(fs.readFileSync(indexPath));
+    const expected = new Set([...Object.values(index.files).map(item => item.asset), "web/index.json"]);
+    const actual = fs.readdirSync(path.join(output, "web"), { recursive: true })
+      .filter(name => fs.statSync(path.join(output, "web", name)).isFile()).map(name => "web/" + name);
+    assert.deepEqual(new Set(actual), expected);
+    assert.deepEqual(fs.readFileSync(indexPath), original);
+    assert.equal(fs.readFileSync(path.join(output, "sibling.txt"), "utf8"), "preserve");
+  } finally { fs.rmSync(output, { recursive: true, force: true }); }
+});
 
 import {
   connectSharedContext,

@@ -235,6 +235,37 @@ BOOX fast adapter remains disabled unless separately measured and validated.
 
 ## Rollback
 
+### Physical verification checkpoint, 19 September 2026
+
+A BOOX NoteAir5C running Android 15 exercised the normal shared-web preview
+against a Mac, in a separate synthetic project. Observed checks include Hub
+navigation, Markdown and HTML rendering, notebook creation, bidirectional
+drawing, exact undo/redo, offline ink retained across process restart, and
+reconciliation with a concurrent Mac edit. Editable export matched the Mac
+scene; SVG/PNG export, native image selection, e-ink contrast, presentation,
+real agent co-drawing and saved conversation history were also exercised.
+Existing human objects remained unchanged after the agent's two additions;
+no document was accepted. Private installation and device evidence stays
+outside the repository.
+
+Two regressions found during this check have focused coverage: automatic
+reconnection clears an obsolete connection alert without hiding a separate
+local error, and incremental Android builds replace their generated web
+subtree instead of retaining obsolete hashed bundles. The former is covered
+in browser tests; the latter in `test/context_room.test.mjs` and the APK's
+existing exact-asset check.
+
+Native microphone capture, stopping on backgrounding and interrupted recording
+recovery were observed. A playback-to-microphone dictation attempt did not
+recognize the known phrase, so recognition quality remains unverified. Native
+injected stylus events are hardware execution evidence, not a measurement of
+human pressure feel, palm rejection or pen-to-ink latency. These observations
+do not establish PWA certificate trust, long-session reliability or complete
+replacement of the original application. Record the final installed build and
+the owner's remaining physical checks separately.
+
+### Restore the previous installation
+
 Close only the isolated runtime. Keep the original installation and signing
 material untouched. Export unconfirmed PWA/new-web work before clearing anything.
 Return to the existing personal service without copying an old backup over
