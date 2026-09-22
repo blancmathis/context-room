@@ -47,6 +47,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   Button undoButton, redoButton, conversationButton, dictateButton, voiceButton;
   long lastAgentRefresh;
   Button shareViewButton, followViewButton, presentationButton;
+  Button ownerPairingButton;
   TextView viewStatus;
   View drawingTools;
   boolean presentation;
@@ -89,6 +90,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     if (views != null) views.setMode("independent");
     setPresentation(false);
     screen.removeAllViews(); title = label(heading, 24); title.setTypeface(Typeface.DEFAULT, Typeface.BOLD); screen.addView(title);
+    ownerPairingButton = null;
     status = label(detail, 15); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); screen.addView(status);
   }
   void setStatus(String text) { if (status != null && !text.contentEquals(status.getText())) status.setText(text); }
@@ -108,10 +110,19 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     try {
       if (ownerWorkspace == null || ownerWorkspace.closed) ownerWorkspace = new OwnerWorkspace(this, connection, this);
       screen.addView(ownerWorkspace.web, new LinearLayout.LayoutParams(-1, 0, 1));
+      ownerPairingButton = null;
       showingOwner = true; ownerWorkspace.foreground(resumed);
     } catch (Exception error) { showError(error.getMessage()); screen.addView(button("Réessayer", this::ownerScreen)); screen.addView(button("Connexions", this::pairingScreen)); }
   }
-  @Override public void ownerError(String message) { if (!dead && (showingOwner || showingConversation)) { if (status != null) status.setVisibility(View.VISIBLE); showError(message); } }
+  @Override public void ownerError(String message) {
+    if (dead || (!showingOwner && !showingConversation)) return;
+    if (status != null) status.setVisibility(View.VISIBLE);
+    showError(message);
+    if (showingOwner && ownerPairingButton == null) {
+      ownerPairingButton = button("Connexions", this::pairingScreen);
+      screen.addView(ownerPairingButton, new LinearLayout.LayoutParams(-1, -2));
+    }
+  }
   @Override public void ownerConnectionAction(String action) {
     if (action.equals("connection.settings")) pairingScreen();
     else if (action.equals("connection.recovery")) {

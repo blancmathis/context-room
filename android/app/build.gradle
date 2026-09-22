@@ -18,7 +18,8 @@ android {
         applicationId legacyRecovery ? 'fr.lisiere.android' : 'app.contextroom.tablet'
         minSdk 28
         targetSdk 35
-        versionCode legacyCode
+        // Increment the preview artifact for each installed functional milestone.
+        versionCode legacyRecovery ? legacyCode : 6
         versionName legacyRecovery ? '0.1.0-recovery-preview' : '0.1.0-preview'
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }

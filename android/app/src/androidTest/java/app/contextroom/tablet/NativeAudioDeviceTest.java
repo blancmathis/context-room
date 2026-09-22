@@ -34,7 +34,11 @@ public final class NativeAudioDeviceTest {
     for (int i = 0; i < 5; i++) assertNull(endpoint.push(voiced, voiced.length));
     assertFalse(endpoint.started); endpoint.push(quiet, quiet.length);
     for (int i = 0; i < 5; i++) assertNull(endpoint.push(voiced, voiced.length));
+    for (int i = 0; i < 8; i++) assertNull(endpoint.push(voiced, voiced.length));
     assertEquals("speech-start", endpoint.push(voiced, voiced.length));
+    SpeechEndpoint transientEndpoint = new SpeechEndpoint();
+    for (int i = 0; i < 13; i++) assertNull(transientEndpoint.push(voiced, voiced.length));
+    assertFalse(transientEndpoint.started);
     for (int i = 0; i < 59; i++) assertNull(endpoint.push(quiet, quiet.length));
     assertEquals("speech-end", endpoint.push(quiet, quiet.length));
     SpeechEndpoint idle = new SpeechEndpoint();

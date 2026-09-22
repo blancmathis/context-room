@@ -2,6 +2,7 @@ package app.contextroom.tablet;
 
 /** Local energy endpoint, not speech recognition. At 16 kHz, PCM16 mono. */
 final class SpeechEndpoint {
+  static final double MIN_SPEECH_MS = 280;
   double noise = 90, voiced, quiet, elapsed;
   boolean started, ended;
   String push(byte[] pcm, int length) {
@@ -12,7 +13,7 @@ final class SpeechEndpoint {
     elapsed += ms; String event = null;
     if (rms > Math.max(240, noise * 3)) {
       voiced += ms; quiet = 0;
-      if (!started && voiced >= 120) { started = true; event = "speech-start"; }
+      if (!started && voiced >= MIN_SPEECH_MS) { started = true; event = "speech-start"; }
     } else { if (!started) { noise = noise * .95 + rms * .05; voiced = 0; } quiet += ms; }
     if (started && quiet >= 1200 || !started && elapsed >= 15000 || elapsed >= 120000) { ended = true; return "speech-end"; }
     return event;
