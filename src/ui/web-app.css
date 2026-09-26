@@ -1,4 +1,4 @@
-.web-entry { box-sizing: border-box; width: min(850px, 100%); height: 100dvh; overflow: auto; margin: auto; padding: max(20px, env(safe-area-inset-top)) 20px; color: var(--text, #edf2f0); background: var(--bg, #101416); font: 16px/1.5 system-ui, sans-serif; }
+.web-entry { display: block; box-sizing: border-box; width: min(850px, 100%); height: 100dvh; overflow: auto; margin: auto; padding: max(20px, env(safe-area-inset-top)) 20px; color: var(--text, #edf2f0); background: var(--bg, #101416); font: 16px/1.5 system-ui, sans-serif; }
 .web-entry button, .web-entry input, .web-entry textarea, .web-entry a, .web-app-dialog button, .web-app-dialog a { min-height: 44px; padding: 10px 14px; margin: 4px; }
 .web-entry textarea { display: block; width: 100%; height: 140px; box-sizing: border-box; }
 .web-entry label { display: block; margin-block: 12px; }

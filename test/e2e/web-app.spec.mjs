@@ -77,6 +77,20 @@ test('@pwa offline reconnect retains the original Hub route instead of opening t
   } finally { await page.goto('about:blank'); await f.close(); }
 });
 
+test('@pwa native offline page keeps connection repair reachable', async ({ page }, info) => {
+  const f = await fixture();
+  try {
+    await page.addInitScript(() => { window.ContextRoomNativeOwner = { openConnectionSettings: async () => { window.connectionSettingsOpened = true; } }; });
+    await page.goto(f.origin + '/offline.html');
+    const bounds = await page.locator('#web-entry-status').boundingBox();
+    const reconnect = await page.getByRole('link', { name: 'Reconnect to Context Room', exact: true }).boundingBox();
+    expect(reconnect.y - bounds.y - bounds.height).toBeLessThan(80);
+    await page.screenshot({ path: info.outputPath('offline-connection-repair.png') });
+    await page.getByRole('button', { name: 'Connection settings', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => window.connectionSettingsOpened)).toBe(true);
+  } finally { await page.goto('about:blank'); await f.close(); }
+});
+
 test('@pwa shared editor survives a waiting worker update and two offline browser restarts, syncing pressure exactly once', async ({ playwright }, info) => {
   test.skip(info.project.name !== 'chromium-desktop', 'Persistent Chromium process restart is tested once; shared layout has separate profiles.');
   test.setTimeout(180_000);

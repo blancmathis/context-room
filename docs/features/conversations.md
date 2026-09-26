@@ -131,6 +131,17 @@ Recognition uses a local `whisper-cli` installation and model on the Mac;
 `CONTEXT_ROOM_WHISPER_MODEL` can point to a separately installed model file.
 Model installation remains convergence work.
 
+Continuous Voice uses local Silero speech detection through Whisper's `--vad`
+option before treating a transcript as a spoken turn. Install the compatible
+`ggml-silero-v6.2.0.bin` under the assistant's `models` directory, or set
+`CONTEXT_ROOM_VAD_MODEL` to its regular, nonempty file. No download happens in
+the runtime or diagnostics. Without that model, dictation still produces a
+reviewable draft; Voice pauses and retains both transcript and original audio
+instead of submitting unfiltered text. A failed detector stops recognition
+without retrying unfiltered. Empty or punctuation-only transcripts send nothing.
+Speech detection reduces noise-triggered transcripts; it does not certify
+recognition accuracy or the intent of background speech.
+
 **Voice** explicitly enables sending recognized phrases to this conversation.
 It requires a clear composer, keeps the transcript in the original history and
 returns to listening after the answer is played. While the agent thinks or

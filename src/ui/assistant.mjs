@@ -478,6 +478,11 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
           recordingRequest = { ...owned(), requestId: crypto.randomUUID(), pcm: retainedRecording.pcm, language: 'fr' };
           const job = await waitAudio(await post('/audio/transcribe', recordingRequest), generation);
           if (voice !== session || generation !== audioGeneration) break;
+          if (job.result.text?.trim() && job.result.speechDetected !== true) {
+            input.value = job.result.text; recordingRequest = null; await saveDraft();
+            dictate.textContent = 'Retry dictation';
+            throw new Error('Voice paused: speech detection is unavailable. Your transcript and recording are saved. Review the draft before sending.');
+          }
           const saved = retainedRecording;
           input.value = job.result.text; retainedRecording = null; recordingRequest = null; await saveDraft();
           await acknowledgeRecording({ scopeKey, conversationId: current.id }, saved); await releaseAudio();

@@ -62,7 +62,7 @@ test('@smoke @assistant unfinished microphone chunks recover after reload only i
 test('@smoke @assistant explicit Voice interrupts the original agent, speaks its answer and resumes listening until ended', async ({ page }, testInfo) => {
   let transcriptions = 0; const errors = [], receipts = [];
   const f = await assistantFixture({ audio: {
-    async transcribe() { return { text: 'Synthetic spoken phrase ' + ++transcriptions, silent: false }; },
+    async transcribe() { return { text: 'Synthetic spoken phrase ' + ++transcriptions, silent: false, speechDetected: true }; },
     async synthesize(text) { return { text, pcm: Buffer.alloc(4800).toString('base64'), sampleRate: 24000, played: false }; },
   } });
   page.on('pageerror', error => errors.push(error.message));
@@ -89,6 +89,38 @@ test('@smoke @assistant explicit Voice interrupts the original agent, speaks its
     await pane.getByRole('button', { name: 'End voice', exact: true }).click(); await expect(pane).toHaveAttribute('data-voice-state', 'off');
     const counts = await page.evaluate(() => voiceContract.captures.length); await page.waitForTimeout(650); expect(await page.evaluate(() => voiceContract.captures.length)).toBe(counts);
     expect(errors).toEqual([]); await page.screenshot({ path: testInfo.outputPath('voice-original-source.png') });
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('@smoke @assistant Voice retains an unfiltered transcript and recording without starting an agent', async ({ page }) => {
+  const f = await assistantFixture({ audio: { async transcribe() { return { text: 'Unfiltered synthetic transcript.', silent: false, speechDetected: false }; } } });
+  try {
+    let pane = await openOriginal(page, f.url); await syntheticBridge(page);
+    await pane.getByRole('button', { name: 'Voice', exact: true }).click();
+    await expect(pane).toHaveAttribute('data-voice-state', 'listening');
+    await speech(page, 'speech-start'); await speech(page, 'speech-end');
+    await expect(pane).toHaveAttribute('data-voice-state', 'off');
+    await expect(pane.getByRole('alert')).toContainText('Voice paused');
+    await expect(pane.getByRole('textbox')).toHaveValue('Unfiltered synthetic transcript.');
+    expect(await page.evaluate(() => voiceContract.acknowledgments.length)).toBe(0);
+    expect(await page.evaluate(() => voiceContract.captures.length)).toBe(1);
+    pane = await openOriginal(page, f.url);
+    await expect(pane.getByRole('textbox')).toHaveValue('Unfiltered synthetic transcript.');
+    await expect(pane.getByRole('button', { name: 'Retry dictation', exact: true })).toBeEnabled();
+    expect(f.turns).toHaveLength(0); expect(f.connections()).toBe(0);
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('@smoke @assistant Voice resumes listening after filtered noise without submitting a turn', async ({ page }) => {
+  const f = await assistantFixture({ audio: { async transcribe() { return { text: '', silent: true, speechDetected: false }; } } });
+  try {
+    const pane = await openOriginal(page, f.url); await syntheticBridge(page);
+    await pane.getByRole('button', { name: 'Voice', exact: true }).click();
+    await expect(pane).toHaveAttribute('data-voice-state', 'listening');
+    await speech(page, 'speech-start'); await speech(page, 'speech-end');
+    await page.waitForFunction(() => voiceContract.captures.length === 2);
+    expect(f.turns).toHaveLength(0); expect(f.connections()).toBe(0);
+    await pane.getByRole('button', { name: 'End voice', exact: true }).click();
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
 

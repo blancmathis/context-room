@@ -17,6 +17,7 @@ if (mode === 'offline') {
   // scope). Only the explicit offline catalogue returns to the default entry.
   link.href = location.pathname === '/offline.html' ? '/' : location.pathname + location.search;
   link.textContent = 'Reconnect to Context Room'; actions.append(link);
+  if (globalThis.ContextRoomNativeOwner?.openConnectionSettings) actions.append(button('Connection settings', () => ContextRoomNativeOwner.openConnectionSettings()));
   await appendCachedNotebooks(content);
 } else if (mode === 'pair') {
   status.textContent = 'Pair this browser from the Mac. Drawing permission and the complete owner interface are separate choices.';
