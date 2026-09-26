@@ -14729,19 +14729,26 @@ const BACKGROUND_FILE_STABILITY_TIMEOUT_MS = process.env.NODE_TEST_CONTEXT && Nu
   ? Math.max(250, Math.min(30_000, Number(process.env.CONTEXT_ROOM_TEST_BACKGROUND_FILE_STABILITY_TIMEOUT_MS)))
   : 15_000;
 
-function runContextHubProcessTask(root, payload = {}) {
+function runContextHubProcessTask(root, payload = {}, task = "context-hub") {
   const moduleUrl = new URL("./context_room.mjs", import.meta.url).href;
   const script = `
-    const [moduleUrl, root, rawPayload] = process.argv.slice(1);
-    const { contextHubUiState } = await import(moduleUrl);
+    const [moduleUrl, root, rawPayload, task] = process.argv.slice(1);
+    const { contextHubUiState, contextHubAttentionItems, documentGraphApiResult } = await import(moduleUrl);
     try {
-      const value = contextHubUiState(root, JSON.parse(rawPayload));
+      const payload = JSON.parse(rawPayload);
+      let value;
+      if (task === "context-hub") value = contextHubUiState(root, payload);
+      else if (task === "attention") value = contextHubAttentionItems(root, payload.projectId || "");
+      else if (task === "document-graph") value = await documentGraphApiResult(root, new URL(payload.url), { background: false });
+      else throw new Error("Unknown Context Hub read task");
       process.stdout.write(JSON.stringify({ ok: true, value }));
     } catch (error) {
       process.stdout.write(JSON.stringify({
         ok: false,
         error: error?.message || "Context Hub refresh failed",
         code: error?.code || "",
+        statusCode: error?.statusCode,
+        retryable: error?.retryable === true,
       }));
     }
   `;
@@ -14753,6 +14760,7 @@ function runContextHubProcessTask(root, payload = {}) {
       moduleUrl,
       path.resolve(root),
       JSON.stringify(payload),
+      task,
     ], {
       cwd: path.dirname(fileURLToPath(import.meta.url)),
       env: backgroundTaskEnvironment(),
@@ -14773,6 +14781,8 @@ function runContextHubProcessTask(root, payload = {}) {
         || "Context Hub refresh failed",
       );
       if (result?.code) taskError.code = result.code;
+      if (Number.isInteger(result?.statusCode) && result.statusCode >= 400 && result.statusCode <= 599) taskError.statusCode = result.statusCode;
+      if (result?.retryable) taskError.retryable = true;
       reject(taskError);
     });
   });
@@ -16534,7 +16544,7 @@ function contextHubProjectSelection(state, requestedId = "") {
   return resolveContextHubProjectSelection(state.projects || [], requestedId);
 }
 
-function contextHubAttentionItems(root, requestedId = "") {
+export function contextHubAttentionItems(root, requestedId = "") {
   const state = readFastContextHubState(root);
   const selection = requestedId ? contextHubProjectSelection(state, requestedId) : { project: null, worktree: null };
   if (requestedId && !selection.project) throw sharedRequestError(`Unknown project: ${requestedId}`, 404, "context_hub_project_not_found");
@@ -19883,7 +19893,7 @@ async function readCachedDocumentGraph(cacheKey, build, { refresh = false } = {}
   }
 }
 
-async function documentGraphApiResult(root, url) {
+export async function documentGraphApiResult(root, url, { background = true } = {}) {
   const scope = ["global", "project", "local"].includes(url.searchParams.get("scope")) ? url.searchParams.get("scope") : "global";
   const layers = documentGraphListParam(url, "layer", ["accepted"]);
   const types = documentGraphListParam(url, "type");
@@ -19943,6 +19953,7 @@ async function documentGraphApiResult(root, url) {
     const proposalSignature = proposals.map((proposal) => [proposal.id, proposal.head, proposal.status]);
     const cacheKey = `${path.resolve(sharedTarget.root)}\0${sharedTarget.revision || "offline"}\0${hashContent(JSON.stringify(proposalSignature))}\0${queryKey}`;
     return readCachedDocumentGraph(cacheKey, async () => {
+      if (background) return runContextHubProcessTask(root, { url: url.href }, "document-graph");
       const [{ buildContextInventory }, { buildContextGraph }] = await Promise.all([
         import("./context_inventory.mjs"),
         import("./context_engine.mjs"),
@@ -19990,6 +20001,9 @@ async function documentGraphApiResult(root, url) {
   const target = contextApiTarget(root, url);
   const cacheKey = `${path.resolve(target.root)}\0${queryKey}`;
   return readCachedDocumentGraph(cacheKey, async () => {
+    // Graph construction takes repository-specific locks. A process keeps
+    // those waits off the HTTP thread without weakening lock ownership.
+    if (background) return runContextHubProcessTask(root, { url: url.href }, "document-graph");
     const contextUrl = new URL(url);
     if (!refresh) contextUrl.searchParams.set("refresh", "0");
     contextUrl.searchParams.set("allowStale", "1");
@@ -21335,7 +21349,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     const settings = readContextHubAttention();
     sendJson(res, 200, {
       ...settings,
-      items: contextHubAttentionItems(root, url.searchParams.get("projectId") || ""),
+      items: await runContextHubProcessTask(root, { projectId: url.searchParams.get("projectId") || "" }, "attention"),
     });
     return;
   }
