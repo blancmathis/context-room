@@ -20421,7 +20421,7 @@ function sanitizedHtmlPreviewDocument(source) {
       const value = attribute.value.trim();
       if (name.startsWith("on") || name === "xlink:href" || name === "action" || name === "formaction") {
         element.removeAttribute(attribute.name);
-      } else if (name === "href" && !/^(?:#|cr:\/\/|\.{0,2}\/|[A-Za-z0-9_.-]+\/)[A-Za-z0-9_./@#~-]*$/i.test(value)) {
+      } else if (name === "href" && !/^(?:#|cr:\/\/|\.{0,2}\/|[A-Za-z0-9_.-]+)[A-Za-z0-9_./@#~-]*$/i.test(value)) {
         element.removeAttribute(attribute.name);
       } else if (name === "data-cr-document" && !/^[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?)+$/i.test(value)) {
         element.removeAttribute(attribute.name);
@@ -20435,7 +20435,7 @@ function sanitizedHtmlPreviewDocument(source) {
   });
   const policy = doc.createElement("meta");
   policy.setAttribute("http-equiv", "Content-Security-Policy");
-  policy.setAttribute("content", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; form-action 'none'; base-uri 'none'; frame-src 'none'; connect-src 'none'");
+  policy.setAttribute("content", "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; form-action 'none'; base-uri 'none'; frame-src 'none'; connect-src 'none'");
   const theme = doc.createElement("style");
   theme.setAttribute("data-context-room-visual-system", currentFileThemeId());
   theme.textContent = contextRoomVisualDocumentStyles();
@@ -20446,7 +20446,10 @@ function sanitizedHtmlPreviewDocument(source) {
 }
 
 function renderHtmlDocumentPreview(text, filePath = state.selected) {
-  return '<div class="html-preview-shell"><iframe class="html-preview-frame" sandbox="allow-same-origin" referrerpolicy="no-referrer" title="HTML preview: ' + escapeHtml(filePath || "document") + '" srcdoc="' + escapeHtml(sanitizedHtmlPreviewDocument(text)) + '"></iframe></div>';
+  // WebKit also blocks parent-installed link handlers without allow-scripts.
+  // The sanitized document's explicit script-src 'none' still forbids all
+  // author scripts; do not relax that CSP when changing this sandbox.
+  return '<div class="html-preview-shell"><iframe class="html-preview-frame" sandbox="allow-same-origin allow-scripts" referrerpolicy="no-referrer" title="HTML preview: ' + escapeHtml(filePath || "document") + '" srcdoc="' + escapeHtml(sanitizedHtmlPreviewDocument(text)) + '"></iframe></div>';
 }
 
 function normalizedDocumentLinkPath(currentPath, href) {
@@ -20465,9 +20468,10 @@ function normalizedDocumentLinkPath(currentPath, href) {
 function wireHtmlPreviewNavigation() {
   const frame = document.querySelector("iframe.html-preview-frame");
   if (!frame) return;
-  frame.addEventListener("load", () => {
+  const attachNavigation = () => {
     const frameDocument = frame.contentDocument;
-    if (!frameDocument) return;
+    if (!frameDocument || frame.__contextRoomNavigationDocument === frameDocument) return;
+    frame.__contextRoomNavigationDocument = frameDocument;
     frameDocument.addEventListener("click", (event) => {
       const anchor = event.target?.closest?.("a[href], [data-cr-document]");
       if (!anchor) return;
@@ -20487,7 +20491,9 @@ function wireHtmlPreviewNavigation() {
       };
       open().catch((error) => setStatus(error.message));
     });
-  });
+  };
+  frame.addEventListener("load", attachNavigation);
+  attachNavigation();
 }
 
 function renderDocumentView(text, filePath = state.selected) {

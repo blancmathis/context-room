@@ -7611,7 +7611,7 @@ test("HTML files open as sandboxed visual previews without source editing", () =
   assert.match(html, /function sanitizedHtmlPreviewDocument\(source\)/);
   assert.match(html, /doc\.querySelectorAll\("script, iframe, frame, object, embed, base"\)/);
   assert.match(html, /Content-Security-Policy/);
-  assert.match(html, /default-src 'none'; style-src 'unsafe-inline'/);
+  assert.match(html, /default-src 'none'; script-src 'none'; style-src 'unsafe-inline'/);
   assert.match(html, /function contextRoomVisualDocumentStyles\(\)/);
   assert.match(html, /getComputedStyle\(document\.documentElement\)/);
   assert.match(html, /\["--cr-bg", token\("--file-bg"/);
@@ -7625,7 +7625,7 @@ test("HTML files open as sandboxed visual previews without source editing", () =
   assert.match(html, /doc\.documentElement\.dataset\.contextRoomTheme = currentFileThemeId\(\)/);
   assert.match(html, /function applyFileTheme\(themeId = currentFileThemeId\(\), colorMode = currentColorModePreference\(\)\)[\s\S]*document\.querySelector\("iframe\.html-preview-frame"\)[\s\S]*renderViewer\(\);/);
   assert.match(html, /function renderHtmlDocumentPreview\(text, filePath = state\.selected\)/);
-  assert.match(html, /class="html-preview-frame" sandbox="allow-same-origin" referrerpolicy="no-referrer"/);
+  assert.match(html, /class="html-preview-frame" sandbox="allow-same-origin allow-scripts" referrerpolicy="no-referrer"/);
   assert.match(html, /isHtmlDocument\s*\? renderHtmlDocumentPreview\(text, file\.path\)/);
   assert.match(html, /externalChange[\s\S]*isHtmlDocument[\s\S]*renderHtmlDocumentPreview\(externalChange\.diskContent \|\| "", file\.path\)/);
   assert.match(html, /const visualHtmlReview = isHtmlDocumentPath\(change\.path\);/);
