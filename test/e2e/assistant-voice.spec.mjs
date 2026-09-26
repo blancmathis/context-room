@@ -93,7 +93,9 @@ test('@smoke @assistant explicit Voice interrupts the original agent, speaks its
 });
 
 test('@smoke @assistant Voice retains an unfiltered transcript and recording without starting an agent', async ({ page }) => {
-  const f = await assistantFixture({ audio: { async transcribe() { return { text: 'Unfiltered synthetic transcript.', silent: false, speechDetected: false }; } } });
+  let calls = 0, completeRetry;
+  const result = { text: 'Unfiltered synthetic transcript.', silent: false, speechDetected: false };
+  const f = await assistantFixture({ audio: { async transcribe() { if (++calls === 2) return new Promise(resolve => { completeRetry = resolve; }); return result; } } });
   try {
     let pane = await openOriginal(page, f.url); await syntheticBridge(page);
     await pane.getByRole('button', { name: 'Voice', exact: true }).click();
@@ -107,6 +109,21 @@ test('@smoke @assistant Voice retains an unfiltered transcript and recording wit
     pane = await openOriginal(page, f.url);
     await expect(pane.getByRole('textbox')).toHaveValue('Unfiltered synthetic transcript.');
     await expect(pane.getByRole('button', { name: 'Retry dictation', exact: true })).toBeEnabled();
+    await pane.getByRole('textbox').fill('Human edited draft.');
+    await pane.getByRole('button', { name: 'Retry dictation', exact: true }).click();
+    await expect(pane.getByRole('alert')).toContainText('transcript draft has been edited');
+    await expect(pane.getByRole('textbox')).toHaveValue('Human edited draft.');
+    expect(calls).toBe(1);
+    await pane.getByRole('textbox').fill('Unfiltered synthetic transcript.');
+    await pane.getByRole('button', { name: 'Retry dictation', exact: true }).click();
+    await expect.poll(() => Boolean(completeRetry)).toBe(true);
+    await pane.getByRole('textbox').fill('Human edit during recognition.'); completeRetry(result);
+    await expect(pane.getByRole('button', { name: 'Retry dictation', exact: true })).toBeEnabled();
+    await expect(pane.getByRole('textbox')).toHaveValue('Human edit during recognition.');
+    await pane.getByRole('textbox').fill('Unfiltered synthetic transcript.');
+    await pane.getByRole('button', { name: 'Retry dictation', exact: true }).click();
+    await expect(pane.getByRole('button', { name: 'Dictate', exact: true })).toBeVisible();
+    await expect(pane.getByRole('textbox')).toHaveValue('Unfiltered synthetic transcript.');
     expect(f.turns).toHaveLength(0); expect(f.connections()).toBe(0);
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });

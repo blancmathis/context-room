@@ -19,7 +19,7 @@ android {
         minSdk 28
         targetSdk 35
         // Increment the preview artifact for each installed functional milestone.
-        versionCode legacyRecovery ? legacyCode : 8
+        versionCode legacyRecovery ? legacyCode : 9
         versionName legacyRecovery ? '0.1.0-recovery-preview' : '0.1.0-preview'
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
