@@ -14749,6 +14749,8 @@ function runContextHubProcessTask(root, payload = {}, task = "context-hub") {
         code: error?.code || "",
         statusCode: error?.statusCode,
         retryable: error?.retryable === true,
+        expose: error?.expose === true,
+        details: error?.details,
       }));
     }
   `;
@@ -14783,6 +14785,8 @@ function runContextHubProcessTask(root, payload = {}, task = "context-hub") {
       if (result?.code) taskError.code = result.code;
       if (Number.isInteger(result?.statusCode) && result.statusCode >= 400 && result.statusCode <= 599) taskError.statusCode = result.statusCode;
       if (result?.retryable) taskError.retryable = true;
+      if (result?.expose === true) taskError.expose = true;
+      if (result?.details !== undefined) taskError.details = result.details;
       reject(taskError);
     });
   });
