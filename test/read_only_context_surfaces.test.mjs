@@ -78,6 +78,7 @@ test("Context Hub inspection, document graph, and document search GETs do not bo
   const routes = [
     `/api/context-hub/project-explorer?projectId=${encodeURIComponent(project.id)}&path=docs`,
     `/api/context-hub/project-settings?projectId=${encodeURIComponent(project.id)}`,
+    `/api/context-hub/attention?projectId=${encodeURIComponent(project.id)}`,
     `/api/context-hub/project-inspection?projectId=${encodeURIComponent(project.id)}`,
     `/api/context-hub/document-graph?scope=project&locationId=${encodeURIComponent(project.id)}&layout=0&allowStale=1`,
     `/api/context-hub/document-search?locationId=${encodeURIComponent(project.id)}&query=${encodeURIComponent("Read-only search marker")}`,
@@ -89,6 +90,9 @@ test("Context Hub inspection, document graph, and document search GETs do not bo
     assert.equal(response.status, 200, `${route}: ${body}`);
     assert.doesNotThrow(() => JSON.parse(body));
   }
+
+  const unknownAttention = await fetch(origin + "/api/context-hub/attention?projectId=missing-project");
+  assert.equal(unknownAttention.status, 404, "Background transport retains the original HTTP error status");
 
   assert.deepEqual(directorySnapshot(authorityRoot), before);
 });

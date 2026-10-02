@@ -1,6 +1,10 @@
 import fs from "node:fs";
 import http from "node:http";
 import { test, expect } from "@playwright/test";
+// This suite simulates terminal authority/flash responses with page.route.
+// Let Playwright own those mocked requests, including the next navigation.
+// Real API and worker interaction stays enabled in the PWA/integration suites.
+test.use({ serviceWorkers: "block" });
 
 function fixture() {
   const fixturePath = process.env.CONTEXT_ROOM_E2E_FIXTURE;

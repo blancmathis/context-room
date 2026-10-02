@@ -25,8 +25,30 @@ test('dictation returns reviewable text, never submits it, and removes temporary
     fs.writeFileSync(path.join(cwd, 'transcript.json'), JSON.stringify({ transcription: [{ text: ' Accepter le fichier ' }] }));
   });
   assert.deepEqual(await audio.transcribe(Buffer.alloc(32000)), { text: '', silent: true, submitted: false }); assert.equal(calls, 0);
-  assert.deepEqual(await audio.transcribe(audible()), { text: 'Accepter le fichier', silent: false, submitted: false }); assert.equal(calls, 1);
+  assert.deepEqual(await audio.transcribe(audible()), { text: 'Accepter le fichier', silent: false, submitted: false, speechDetected: false }); assert.equal(calls, 1);
   assert.deepEqual(fs.readdirSync(path.join(root, 'audio-jobs')), []);
+});
+test('VAD filters noise and punctuation while marked speech can reach continuous Voice', async t => {
+  let segments = [];
+  const { root, audio } = fixture(t, async (_, args, { cwd }) => {
+    assert.ok(args.includes('--vad')); assert.equal(args[args.indexOf('-vm') + 1], audio.vadModelPath);
+    fs.writeFileSync(path.join(cwd, 'transcript.json'), JSON.stringify({ transcription: segments }));
+  });
+  audio.vadModelPath = path.join(root, 'synthetic-vad'); fs.writeFileSync(audio.vadModelPath, 'Synthetic VAD fixture.');
+  for (const values of [[], [{ text: ' ... ' }], [{ text: ' ♪ ' }]]) {
+    segments = values;
+    assert.deepEqual(await audio.transcribe(audible()), { text: '', silent: true, submitted: false, speechDetected: false });
+  }
+  segments = [{ text: ' Un cercle bleu. ' }];
+  assert.deepEqual(await audio.transcribe(audible()), { text: 'Un cercle bleu.', silent: false, submitted: false, speechDetected: true });
+  assert.deepEqual(fs.readdirSync(path.join(root, 'audio-jobs')), []);
+});
+test('a failed VAD process never falls back to unfiltered recognition', async t => {
+  let calls = 0;
+  const { root, audio } = fixture(t, async () => { calls++; throw Object.assign(new Error('Broken VAD'), { code: 'audio_provider_failed' }); });
+  audio.vadModelPath = path.join(root, 'broken-vad'); fs.writeFileSync(audio.vadModelPath, 'broken');
+  await assert.rejects(audio.transcribe(audible()), { code: 'audio_provider_failed' });
+  assert.equal(calls, 1); assert.deepEqual(fs.readdirSync(path.join(root, 'audio-jobs')), []);
 });
 test('recognizer failure and cancellation retain no temporary audio or success receipt', async t => {
   const controller = new AbortController();

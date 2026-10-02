@@ -1,6 +1,7 @@
 import { journalRecording, readBrowserRecording, acknowledgeBrowserRecording } from './assistant-drafts.mjs';
 
 /** Speech endpoint only; this never recognizes words or sends an agent request. */
+const MIN_SPEECH_MS = 280;
 export function speechEndpoint(sampleRate) {
   let noise = 90 / 32768, voiced = 0, quiet = 0, elapsed = 0, started = false, ended = false;
   return { get started() { return started; }, push(samples) {
@@ -9,7 +10,7 @@ export function speechEndpoint(sampleRate) {
     const rms = Math.sqrt(energy / Math.max(1, samples.length)), ms = samples.length / sampleRate * 1000;
     elapsed += ms; let event = null;
     if (rms > Math.max(240 / 32768, noise * 3)) {
-      voiced += ms; quiet = 0; if (!started && voiced >= 120) { started = true; event = 'speech-start'; }
+      voiced += ms; quiet = 0; if (!started && voiced >= MIN_SPEECH_MS) { started = true; event = 'speech-start'; }
     } else { if (!started) { noise = noise * .95 + rms * .05; voiced = 0; } quiet += ms; }
     if (started && quiet >= 1200 || !started && elapsed >= 15000 || elapsed >= 120000) { ended = true; return 'speech-end'; }
     return event;

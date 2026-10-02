@@ -30,6 +30,10 @@ test('model presence alone does not hide missing whisper, and executable presenc
   assert.equal(report.model.inferenceVerified, false); assert.equal(report.acousticQualityVerified, false);
   assert.deepEqual(report.issues, []); assert.deepEqual(fs.readdirSync(options.root), before);
   const runtime = new LocalAudio(options); assert.equal(runtime.diagnostics().transcriptionReadyForAttempt, true);
+  assert.equal(report.voiceReadyForAttempt, false);
+  const vadModelPath = path.join(options.root, 'synthetic-vad'); fs.writeFileSync(vadModelPath, 'Synthetic VAD fixture.');
+  const withVad = inspectLocalAudio({ ...options, vadModelPath });
+  assert.equal(withVad.voiceReadyForAttempt, true); assert.equal(withVad.vad.inferenceVerified, false);
 });
 
 test('empty, linked and directory models are not accepted as readable model files', t => {

@@ -93,3 +93,14 @@ Hosted profiles do not expose local project files, local prompts, local Settings
 5. Agents do not own acceptance or rejection.
 6. Hosted operation is Shared-only.
 7. Effective context is deterministic and accepted-only.
+
+## Computer and tablet
+
+The same Hub, document, notebook, conversation and review components are used
+on the computer and tablet. The layout adapts; the tablet does not own a second
+menu or notebook implementation. Browser installation and the optional Android
+shell share the existing web notebook. The reachable Mac owns canonical data
+and the agent; already opened notebook work can remain local and unconfirmed
+offline. See [connected devices](system/connected-devices.md) for HTTPS,
+pairing, recovery and updates. Physical pen/e-ink/audio verification remains
+separate from the software contract.

@@ -28,7 +28,8 @@ public final class OwnerNotebookConversationDeviceTest {
         ui.visible(activity, "document.body.dataset.workspaceDiagnostics && JSON.parse(document.body.dataset.workspaceDiagnostics).phase==='ready'");
         ui.evaluate(activity, "window.openContextRoomNotebook('docs/Owner.crnb',{projectId:" + JSONObject.quote(ticket.getString("testProjectId")) + "}).then(n=>window.nativeConversationNotebook=n)");
         ui.visible(activity, "window.nativeConversationNotebook && document.querySelector('.notebook-dialog')?.dataset.saveState==='confirmed'");
-        ui.evaluate(activity, "[...document.querySelectorAll('.notebook-dialog button')].find(n=>n.textContent==='Draw with the native pen').click()");
+        // Preserve this historical native-recovery scenario; it is not common-web performance proof.
+        ui.openLegacyRecoveryNotebook(activity, ticket);
         NotebookDeviceTest.waitFor("Native pen was not ready", () -> ui.drawing.onUi(activity, () -> activity.ink != null && activity.journal != null && activity.conversationButton != null && activity.conversationButton.isEnabled()));
         instrumentation.runOnMainSync(() -> activity.voiceButton.performClick());
         ui.permissionClick("While using the app");

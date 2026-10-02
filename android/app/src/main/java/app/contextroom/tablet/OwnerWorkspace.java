@@ -21,12 +21,14 @@ final class OwnerWorkspace {
     void saveOwnerFile(byte[] bytes, String filename, String type, ValueCallback<Boolean> callback);
     void requestOwnerMicrophone(ValueCallback<Boolean> callback);
     void ownerConversationState(JSONObject state);
+    default void ownerConnectionAction(String action) {}
     default InkView.SourcePreview ownerObservation(JSONObject request) throws Exception { throw new IOException("Aperçu du carnet indisponible."); }
   }
   final WebView web;
   final DeviceConnection connection;
   final Host host;
   final NativeAudio audio;
+  final PackagedWeb packagedWeb;
   final String origin;
   final Handler main = new Handler(Looper.getMainLooper());
   final ThreadPoolExecutor network = new ThreadPoolExecutor(4, 4, 0, TimeUnit.SECONDS, new ArrayBlockingQueue<>(32));
@@ -36,9 +38,9 @@ final class OwnerWorkspace {
   JSONObject pendingConversation;
 
   OwnerWorkspace(Context context, DeviceConnection connection, Host host) throws Exception {
-    if (!connection.isOwner() || !connection.serverId.matches("[a-f0-9-]{36}")) throw new IOException("Une connexion propriétaire explicite est nécessaire.");
+    if (connection.session == null || !connection.serverId.matches("[a-f0-9-]{36}")) throw new IOException("Une connexion propriétaire explicite est nécessaire.");
     if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) throw new IOException("Mettez Android System WebView à jour pour utiliser l’interface complète.");
-    this.connection = connection; this.host = host;
+    this.connection = connection; this.host = host; packagedWeb = new PackagedWeb(context);
     String device = connection.session.getJSONObject("device").getString("id");
     if (!device.matches("[a-f0-9-]{36}")) throw new IOException("Identité de tablette invalide.");
     origin = "https://owner-" + connection.serverId + "." + device + ".contextroom.invalid";
@@ -65,6 +67,10 @@ final class OwnerWorkspace {
         errorReplyId = id;
         if (!foreground) { reply.postMessage(InkView.json("id", id, "error", "L’interface propriétaire est en pause.").toString()); return; }
         JSONObject value = input.getJSONObject("value");
+        if (action.equals("connection.settings") || action.equals("connection.recovery")) {
+          reply.postMessage(InkView.json("id", id, "result", InkView.json("opened", true)).toString());
+          host.ownerConnectionAction(action); return;
+        }
         if (action.equals("conversation.observation")) {
           if (value.toString().length() > 32000) throw new IOException("Source d’aperçu trop grande.");
           InkView.SourcePreview preview = host.ownerObservation(value);
@@ -153,13 +159,13 @@ final class OwnerWorkspace {
           reply.postMessage(InkView.json("id", id, "result", InkView.json("requested", true)).toString());
           host.openNotebook(value); return;
         }
-        if (!Arrays.asList("request", "events").contains(action)) throw new IOException("Opération native indisponible.");
+        if (!Arrays.asList("request", "events", "navigation").contains(action)) throw new IOException("Opération native indisponible.");
         try {
           network.execute(() -> {
             JSONObject answer;
             try {
               if (closed) throw new IOException("L’interface propriétaire est fermée.");
-              answer = InkView.json("id", id, "result", connection.owner(action, value));
+              answer = InkView.json("id", id, "result", webRequest(action, value));
             } catch (Exception error) { answer = InkView.json("id", id, "error", safeError(error)); }
             final String response = answer.toString();
             main.post(() -> { if (!closed && generation == requestedGeneration) reply.postMessage(response); });
@@ -175,6 +181,8 @@ final class OwnerWorkspace {
         if (request.isForMainFrame() && !ownerPage(request.getUrl().toString())) return NotebookEngine.denied();
         try {
           if (path.equals("/native/owner-bridge.js") && !request.isForMainFrame()) return new WebResourceResponse("text/javascript", "UTF-8", context.getAssets().open("owner-bridge.js"));
+          if (request.isForMainFrame() && path.equals("/") && !connection.isOwner()) return packagedWeb.page(true, origin);
+          if (!request.isForMainFrame()) { WebResourceResponse packaged = packagedWeb.response(request.getUrl()); if (packaged != null) return packaged; }
           JSONObject answer = connection.owner("request", InkView.json("version", 1, "method", "GET", "path", path + (query == null ? "" : "?" + query), "headers", new JSONObject(), "body", ""));
           int status = answer.getInt("status");
           if (status >= 300 && status < 400) throw new IOException("Redirection de l’interface refusée.");
@@ -195,6 +203,9 @@ final class OwnerWorkspace {
           }
           return new WebResourceResponse(type, "UTF-8", status, status >= 400 ? "Request failed" : "OK", headers, new ByteArrayInputStream(bytes));
         } catch (Exception error) {
+          if (request.isForMainFrame() && path.equals("/")) {
+            try { return packagedWeb.page(!connection.isOwner(), origin); } catch (Exception unavailable) { /* Preserve the original cache and report a broken package. */ }
+          }
           if (request.isForMainFrame()) main.post(() -> host.ownerError(safeError(error)));
           return new WebResourceResponse("text/plain", "UTF-8", 503, "Unavailable", Collections.emptyMap(), new ByteArrayInputStream("Mac indisponible. Revenez à la connexion pour réessayer ; les carnets locaux sont conservés.".getBytes(StandardCharsets.UTF_8)));
         }
@@ -223,6 +234,27 @@ final class OwnerWorkspace {
       }
     });
     web.loadUrl(origin + "/?hub=1");
+  }
+  JSONObject webRequest(String action, JSONObject value) throws Exception {
+    if (action.equals("navigation")) {
+      if (value.toString().length() > 32000) throw new IOException("Navigation trop grande.");
+      return connection.navigation(value.getString("action"), value.getJSONObject("body"));
+    }
+    String path = value.optString("path"), method = value.optString("method");
+    if (action.equals("request") && method.equals("GET") && path.equals("/browser/session")) {
+      JSONObject session = connection.request("", "/device/session", "GET", "");
+      return envelope(session);
+    }
+    if (connection.isOwner()) return connection.owner(action, value);
+    if (!action.equals("request") || value.optInt("version") != 1) throw new IOException("Opération hors de la permission de dessin.");
+    JSONObject headers = value.optJSONObject("headers");
+    String project = headers == null ? "" : headers.optString("x-context-room-device-project");
+    String body = new String(android.util.Base64.decode(value.optString("body"), android.util.Base64.NO_WRAP), StandardCharsets.UTF_8);
+    return envelope(connection.request(project, path, method, body));
+  }
+  static JSONObject envelope(JSONObject response) throws Exception {
+    return InkView.json("version", 1, "status", response.getInt("status"), "headers", InkView.json("content-type", "application/json", "cache-control", "no-store"),
+      "body", android.util.Base64.encodeToString(response.getJSONObject("body").toString().getBytes(StandardCharsets.UTF_8), android.util.Base64.NO_WRAP));
   }
   boolean sameOrigin(Uri uri) { return "https".equals(uri.getScheme()) && uri.getPort() == -1 && origin.equals("https://" + uri.getHost()) && uri.getUserInfo() == null; }
   boolean ownerPage(String value) {

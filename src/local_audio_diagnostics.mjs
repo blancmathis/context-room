@@ -2,9 +2,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-export function localAudioConfiguration({ root, modelPath, whisper, speech } = {}) {
+export function localAudioConfiguration({ root, modelPath, vadModelPath, whisper, speech } = {}) {
   root = path.resolve(root || process.env.CONTEXT_ROOM_ASSISTANT_HOME || path.join(os.homedir(), '.context-room', 'assistant'));
   return { root, modelPath: modelPath || process.env.CONTEXT_ROOM_WHISPER_MODEL || path.join(root, 'models', 'ggml-large-v3-turbo-q5_0.bin'),
+    vadModelPath: vadModelPath || process.env.CONTEXT_ROOM_VAD_MODEL || path.join(root, 'models', 'ggml-silero-v6.2.0.bin'),
     whisper: whisper || process.env.CONTEXT_ROOM_WHISPER_BIN || 'whisper-cli', speech: speech || '/usr/bin/say' };
 }
 function executable(command, searchPath) {
@@ -27,6 +28,8 @@ export function inspectLocalAudio(options = {}) {
     modelReason = !info.isFile() ? 'not-regular' : info.size === 0 ? 'empty' : 'present-not-inference-tested';
     if (info.isFile() && info.size > 0) { fs.accessSync(configuration.modelPath, fs.constants.R_OK); model = true; }
   } catch (error) { modelReason = error.code === 'ENOENT' ? 'missing' : 'unreadable'; }
+  let vad = false;
+  try { const info = fs.lstatSync(configuration.vadModelPath); if (info.isFile() && info.size > 0) { fs.accessSync(configuration.vadModelPath, fs.constants.R_OK); vad = true; } } catch {}
   const issues = [];
   if (!whisper) issues.push({ code: 'whisper-executable-missing', action: 'Install the local whisper.cpp CLI, or set CONTEXT_ROOM_WHISPER_BIN to its executable. No package is installed automatically.' });
   if (!model) issues.push({ code: 'whisper-model-unavailable', action: 'Place the chosen compatible Whisper model on this Mac and set CONTEXT_ROOM_WHISPER_MODEL to that regular readable file. No model is downloaded automatically.' });
@@ -34,5 +37,6 @@ export function inspectLocalAudio(options = {}) {
     ? 'Restore or explicitly configure the local macOS speech executable.' : 'Local speech playback generation requires macOS; no paid API is substituted.' });
   return { version: 1, localOnly: true, legacyRuntimeRequired: false, optional: true, model: { readable: model, state: modelReason, inferenceVerified: false },
     whisper: { executable: whisper }, speech: { executable: speech, platform }, transcriptionReadyForAttempt: whisper && model,
+    vad: { readable: vad, inferenceVerified: false }, voiceReadyForAttempt: whisper && model && vad,
     synthesisReadyForAttempt: speech, acousticQualityVerified: false, issues };
 }

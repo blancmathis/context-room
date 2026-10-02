@@ -81,13 +81,20 @@ try:
         test_class = 'app.contextroom.tablet.OwnerRecordingTest' if args.recording else 'app.contextroom.tablet.OwnerDraftTest' if args.draft else 'app.contextroom.tablet.OwnerHistoryTest' if args.history else 'app.contextroom.tablet.OwnerWorkspaceTest'
         result = subprocess.run(adb + ['shell', 'am', 'instrument', '-w', '-r', '-e', 'class', test_class,
             '-e', 'fixture', '/data/local/tmp/context-room-owner-ticket.json', 'app.contextroom.tablet.preview.test/androidx.test.runner.AndroidJUnitRunner'], stdout=log, stderr=subprocess.STDOUT, timeout=150)
+    # Test-owned, bounded evidence only; no DOM text, URL, credential or journal.
+    if not (args.history or args.draft or args.recording):
+        probe = subprocess.run(adb + ['exec-out', 'run-as', 'app.contextroom.tablet.preview', 'cat', 'files/owner-input-proof.json'], capture_output=True)
+        if probe.returncode == 0:
+            if len(probe.stdout) > 16384:
+                raise RuntimeError('Unexpectedly large owner input proof')
+            (output / 'owner-input-proof.json').write_bytes(probe.stdout)
     if result.returncode != 0 or 'OK (1 test)' not in log_path.read_text() or 'FAILURES!!!' in log_path.read_text():
         with (output / 'owner-diagnostic.log').open('w') as log:
             subprocess.run(adb + ['logcat', '-d', '-s', 'System.out:I', 'chromium:E', '*:S'], stdout=log, stderr=subprocess.STDOUT)
         with (output / 'owner-failure.png').open('wb') as image:
             run(adb + ['exec-out', 'run-as', 'app.contextroom.tablet.preview', 'cat', 'files/owner-failure.png'], stdout=image)
         raise RuntimeError('Owner UI acceptance failed: ' + str(log_path))
-    captures = ('owner-retained-history', 'owner-exported-history') if args.history else ('owner-rendered-document', 'owner-native-drawing', 'owner-retained-workspace', 'owner-imported-image', 'owner-exported-notebook', 'owner-human-file-decision', 'owner-settings', 'owner-shared-review')
+    captures = ('owner-retained-history', 'owner-exported-history') if args.history else ('owner-rendered-document', 'owner-shared-drawing', 'owner-retained-workspace', 'owner-imported-image', 'owner-exported-notebook', 'owner-human-file-decision', 'owner-settings', 'owner-shared-review')
     if args.draft:
         captures = ('owner-recovered-tablet-draft', 'owner-saved-tablet-draft')
     if args.recording:
@@ -101,6 +108,12 @@ try:
             state['sourceRoot']], cwd=repo, capture_output=True, text=True).stdout)
         assert len(scene['document']['objects']) == 2 and scene['accepted'] is False
         assert any(obj['type'] == 'image' for obj in scene['document']['objects'])
+        probe = json.loads((output / 'owner-input-proof.json').read_text())
+        assert probe['phase'] == 'confirmed' and probe['ownerFocused'] and probe['activeWindow'] == 'owner'
+        assert probe['web']['renderedInk'] and probe['web']['objects'] == 1 and probe['web']['saveState'] == 'confirmed'
+        ink = [obj for obj in scene['document']['objects'] if obj['type'] == 'ink']
+        assert len(ink) == 1 and all(any(point[2] == p for point in ink[0]['points']) for p in (.25, .75)), 'The canonical host must retain the one injected pressure stroke'
+
     if not args.draft:
         exported = exported_names() - exports_before
         assert len(exported) == 1, 'The system picker must create one new export'
@@ -139,7 +152,7 @@ try:
         detail = {'retainedHistory': 'passed', 'agentStarted': False, 'originalThreadId': expected['originalThreadId'], 'originalExportSha256': expected['hash'], 'bytes': len(exported_bytes)}
     else:
         assert json.loads(exported_bytes) == scene['document'], 'The Android export must contain the exact acknowledged scene and image'
-        detail = {'ownerWorkspace': 'passed', 'nativeObjectsOnMac': len(scene['document']['objects']), 'editableExportSha256': hashlib.sha256(exported_bytes).hexdigest()}
+        detail = {'ownerWorkspace': 'passed', 'sharedWebObjectsOnMac': len(scene['document']['objects']), 'editableExportSha256': hashlib.sha256(exported_bytes).hexdigest()}
     assert hashlib.sha256(original.read_bytes()).hexdigest() == before, 'Autosave cannot accept the working notebook'
     (output / 'proof.json').write_text(json.dumps({
         'sourceHead': run(['git', 'rev-parse', 'HEAD'], cwd=repo, capture_output=True, text=True).stdout.strip(),
@@ -147,7 +160,7 @@ try:
         'apk': json.loads(artifact.stdout), 'emulator': avd, 'durationSeconds': round(time.monotonic() - started, 2),
         **detail, 'acceptedFileUnchanged': True, 'physicalBoox': 'not-tested'
     }, indent=2) + '\n')
-    print('Real owner recording association and exact PCM export: passed' if args.recording else 'Real Android owner draft recovery and editing: passed' if args.draft else 'Real owner UI and Android retained-history export: passed' if args.history else 'Real owner UI, rendered documents and native notebook round trip: passed', flush=True)
+    print('Real owner recording association and exact PCM export: passed' if args.recording else 'Real Android owner draft recovery and editing: passed' if args.draft else 'Real owner UI and Android retained-history export: passed' if args.history else 'Real owner UI, rendered documents and shared web notebook round trip: passed', flush=True)
 finally:
     if fixture.poll() is None:
         fixture.terminate()

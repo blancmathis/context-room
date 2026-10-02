@@ -333,7 +333,7 @@ async function flushAndExit(code = 0) {
 
 const KNOWN_OPTIONS = new Set([
   "cutover-lisiere", "legacy-plist", "rollback-cutover", "resume-cutover", "legacy-recording", "conversation-id", "reconcile-lisiere", "recovery-view", "mac-snapshot", "legacy-actor", "export-lisiere", "import-lisiere", "inspect-lisiere", "legacy-board", "legacy-draft", "legacy-conversation", "legacy-session", "session-frame", "recordings", "output", "revision",
-  "device-host", "device-port", "device-state",
+  "device-host", "device-port", "device-state", "device-browser-origin", "device-browser-cert", "device-browser-key",
   "reader",
   "action", "actionable", "advisory", "all", "all-projects", "allow", "allow-stale", "apply", "branch", "budget", "contract", "cursor", "cwd", "depth", "description", "detail", "document", "dry-run", "enabled", "exclude", "expand", "fields", "files", "folder", "follow", "format", "fresh", "from", "goal", "h", "heading", "help", "highlight", "hook", "include",
   "assignment", "change", "collection", "collection-path", "collection-title", "destination", "id", "include", "json", "kind", "limit", "message", "mode", "name", "no-restart", "note", "operation", "path", "percent", "port", "profile", "project", "projects", "provider", "providers", "query",
@@ -1185,8 +1185,13 @@ if (command === "hub") {
       watchAllow: [],
     });
     const port = selectedPort;
+    const browserRequested = ['device-browser-origin', 'device-browser-cert', 'device-browser-key'].some(key => args[key] !== undefined);
+    if (browserRequested && (!args['device-host'] || ['device-browser-origin', 'device-browser-cert', 'device-browser-key'].some(key => !args[key]))) {
+      throw new ContextRoomCliError('device-browser-config', 'Browser access requires --device-host and all three --device-browser-origin, --device-browser-cert and --device-browser-key options.');
+    }
     const deviceService = args['device-host'] ? createContextRoomDeviceService({ root: hostRoot,
-      stateRoot: args['device-state'] ? path.resolve(String(args['device-state'])) : path.join(path.dirname(hostRoot), 'devices') }) : null;
+      stateRoot: args['device-state'] ? path.resolve(String(args['device-state'])) : path.join(path.dirname(hostRoot), 'devices'),
+      browser: browserRequested ? { origin: String(args['device-browser-origin']), certPath: path.resolve(String(args['device-browser-cert'])), keyPath: path.resolve(String(args['device-browser-key'])) } : null }) : null;
     const { server } = createMemoryServer({ root: hostRoot, port, registerInHub: false, persistentDocumentGraphLayout: true, deviceService });
     await new Promise((resolve, reject) => {
       const onError = (error) => reject(error);
@@ -1198,6 +1203,7 @@ if (command === "hub") {
       try { await deviceService.listen({ host: String(args['device-host']), port: args['device-port'] === undefined ? 4318 : Number(args['device-port']) }); }
       catch (error) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); throw error; }
       console.log(`Context Room devices: ${deviceService.describe().url}`);
+      if (deviceService.browser) console.log(`Context Room browser: ${deviceService.browser.origin}`);
     }
     writeContextHubRuntime({ port, root: hostRoot, url });
     const focus = focusedProject ? `&project=${encodeURIComponent(focusedProject.id)}` : "";

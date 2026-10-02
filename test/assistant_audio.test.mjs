@@ -15,7 +15,11 @@ test('speech endpoints reject short transients, wait for a spoken phrase and sto
   for (let i = 0; i < 5; i++) assert.equal(detector.push(frame(.1)), null);
   assert.equal(detector.started, false); detector.push(frame(0));
   for (let i = 0; i < 5; i++) assert.equal(detector.push(frame(.1)), null);
+  for (let i = 0; i < 8; i++) assert.equal(detector.push(frame(.1)), null);
   assert.equal(detector.push(frame(.1)), 'speech-start');
+  const transient = speechEndpoint(16000);
+  for (let i = 0; i < 13; i++) assert.equal(transient.push(frame(.1)), null);
+  assert.equal(transient.started, false);
   for (let i = 0; i < 59; i++) assert.equal(detector.push(frame(0)), null);
   assert.equal(detector.push(frame(0)), 'speech-end'); assert.equal(detector.push(frame(.1)), null);
   const quiet = speechEndpoint(16000);

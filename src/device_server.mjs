@@ -1,3 +1,4 @@
+import { createBrowserDeviceService } from './device_browser.mjs';
 import https from 'node:https';
 import { isIP } from 'node:net';
 import { canonicalNotebookRoot } from './notebook_io.mjs';
@@ -41,7 +42,7 @@ function bearer(req) {
 }
 
 /** Optional native listener. Drawing and explicit owner credentials stay separate. */
-export function createConnectedDeviceService({ stateRoot, resolveProject, now = Date.now } = {}) {
+export function createConnectedDeviceService({ stateRoot, resolveProject, now = Date.now, browser: browserConfig = null, getWebBundle } = {}) {
   if (typeof resolveProject !== 'function') throw new TypeError('An existing Context Room project resolver is required.');
   const identity = ensureDeviceIdentity(stateRoot);
   const authority = createDeviceAuthority({ stateRoot, serverId: identity.serverId, now });
@@ -79,6 +80,31 @@ export function createConnectedDeviceService({ stateRoot, resolveProject, now = 
       if (grant.mode !== 'owner' && !grant.paths.includes(scene.locator.path) || !project.canRead(scene.locator.path) || !project.canWrite(scene.locator.path)) throw deviceError('device_navigation_scope', 'This notebook is outside the current drawing permission.');
       return { projectId, resourceId, path: scene.locator.path, locationRevision: scene.locator.revision, sceneRevision: scene.revision };
     } });
+  async function drawing(req, res, { credential, url, body, projectId, respond = json }) {
+    if (!(req.method === 'GET' && GET_ROUTES.has(url.pathname) || req.method === 'POST' && POST_ROUTES.has(url.pathname)))
+      throw deviceError('device_operation_forbidden', 'This operation is outside the drawing permission.');
+      // Recheck revocation and expiry after any delayed body upload.
+      const device = authority.authenticate(credential);
+      const scope = scopeFor(device, projectId);
+      if (!scope) throw deviceError('device_project_scope', 'This project is outside the device permission.');
+      const project = projectFor(scope);
+      const permitted = (rel, write) => {
+        // The notebook engine invokes this again inside its mutation lock.
+        // A device revoked while waiting for that lock must not commit later.
+        const live = scopeFor(authority.authenticate(credential), projectId);
+        if (!live || live.root !== scope.root || live.rootIdentity !== scope.rootIdentity || live.mode !== 'owner' && !live.paths.includes(rel)) return false;
+        const current = projectFor(live);
+        return write ? current.canWrite(rel) : current.canRead(rel);
+      };
+      const canRead = rel => permitted(rel, false), canWrite = rel => permitted(rel, true);
+      await handleNotebookHttp(req, res, { root: project.root, url, readJsonBody: async () => body,
+        sendJson: (response, status, result) => respond(response, status, url.pathname === '/api/notebooks/capabilities'
+          ? { ...result, serverId: identity.serverId, accountId: `device:${device.id}:project:${projectId}`,
+            deviceId: device.id, projectId, reviewAuthority: 'unavailable', operations: ['open', 'read', 'mutate', 'batch', 'undo', 'asset', 'receipt', 'export'] }
+          : result),
+        canRead, canWrite, actor: { kind: 'human', id: `device-${device.id}` } });
+  }
+  const browser = browserConfig ? createBrowserDeviceService({ config: browserConfig, authority, serverId: identity.serverId, owner, drawing, navigation, getWebBundle, now }) : null;
   const server = https.createServer({ key: identity.key, cert: identity.cert, minVersion: 'TLSv1.2',
     maxHeaderSize: 8192, requestTimeout: 15_000, headersTimeout: 10_000 }, async (req, res) => {
     try {
@@ -137,31 +163,8 @@ export function createConnectedDeviceService({ stateRoot, resolveProject, now = 
         json(res, 200, url.pathname.endsWith('/poll') ? navigation.poll(initialDevice.id, authenticate, body) : navigation.receipt(initialDevice.id, authenticate, body));
         return;
       }
-      if (!(req.method === 'GET' && GET_ROUTES.has(url.pathname) || req.method === 'POST' && POST_ROUTES.has(url.pathname))) {
-        throw deviceError('device_operation_forbidden', 'This operation is outside the drawing permission.');
-      }
       const body = req.method === 'POST' ? await readBody(req, 30 * 1024 * 1024, bodyBudget) : null;
-      // Recheck revocation and expiry after any delayed body upload.
-      const device = authority.authenticate(credential);
-      const projectId = String(req.headers['x-context-room-device-project'] || '');
-      const scope = scopeFor(device, projectId);
-      if (!scope) throw deviceError('device_project_scope', 'This project is outside the device permission.');
-      const project = projectFor(scope);
-      const permitted = (rel, write) => {
-        // The notebook engine invokes this again inside its mutation lock.
-        // A device revoked while waiting for that lock must not commit later.
-        const live = scopeFor(authority.authenticate(credential), projectId);
-        if (!live || live.root !== scope.root || live.rootIdentity !== scope.rootIdentity || live.mode !== 'owner' && !live.paths.includes(rel)) return false;
-        const current = projectFor(live);
-        return write ? current.canWrite(rel) : current.canRead(rel);
-      };
-      const canRead = rel => permitted(rel, false), canWrite = rel => permitted(rel, true);
-      await handleNotebookHttp(req, res, { root: project.root, url, readJsonBody: async () => body,
-        sendJson: (response, status, result) => json(response, status, url.pathname === '/api/notebooks/capabilities'
-          ? { ...result, serverId: identity.serverId, accountId: `device:${device.id}:project:${projectId}`,
-            deviceId: device.id, projectId, reviewAuthority: 'unavailable', operations: ['open', 'read', 'mutate', 'batch', 'undo', 'asset', 'receipt', 'export'] }
-          : result),
-        canRead, canWrite, actor: { kind: 'human', id: `device-${device.id}` } });
+      await drawing(req, res, { credential, url, body, projectId: String(req.headers['x-context-room-device-project'] || '') });
     } catch (error) {
       if (res.headersSent || res.destroyed) return;
       // Internal exceptions can contain filesystem paths; return only the protocol failure.
@@ -175,6 +178,7 @@ export function createConnectedDeviceService({ stateRoot, resolveProject, now = 
   server.on('checkContinue', (req, res) => { json(res, 417, { code: 'device_expectation', error: 'Streaming expectations are unsupported.' }); });
   return {
     server,
+    browser,
     serverId: identity.serverId,
     fingerprint: identity.fingerprint,
     authority,
@@ -185,7 +189,7 @@ export function createConnectedDeviceService({ stateRoot, resolveProject, now = 
       if (!address || typeof address === 'string') throw deviceError('device_service_unavailable', 'The device listener is not running.', 503);
       const host = address.family === 'IPv6' ? `[${address.address}]` : address.address;
       return { protocolVersion: DEVICE_PROTOCOL, serverId: identity.serverId, fingerprint: identity.fingerprint,
-        url: `https://${host}:${address.port}`, certificateExpiresAt: identity.expiresAt };
+        url: `https://${host}:${address.port}`, certificateExpiresAt: identity.expiresAt, ...(browser?.server.listening ? { browserUrl: browser.origin } : {}) };
     },
     async listen({ host = '127.0.0.1', port = 0 } = {}) {
       if (!isIP(host) || ['0.0.0.0', '::'].includes(host) || !Number.isInteger(port) || port < 0 || port > 65535) {
@@ -196,9 +200,10 @@ export function createConnectedDeviceService({ stateRoot, resolveProject, now = 
         const ready = () => { server.off('error', fail); resolve(); };
         server.once('error', fail); server.once('listening', ready); server.listen(port, host);
       });
+      try { await browser?.listen(host); } catch (error) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); throw error; }
       return { host, port: server.address().port, serverId: identity.serverId, fingerprint: identity.fingerprint };
     },
-    close() { owner.close(); return new Promise((resolve, reject) => { server.closeAllConnections(); server.close(error => error ? reject(error) : resolve()); }); },
+    async close() { await browser?.close(); owner.close(); return new Promise((resolve, reject) => { server.closeAllConnections(); server.close(error => error ? reject(error) : resolve()); }); },
     createOwnerPairing({ label } = {}) {
       if (!owner.available()) throw deviceError('device_owner_unavailable', 'Start the local owner interface before pairing.', 503);
       return { ...authority.createOwnerPairing({ label }), fingerprint: identity.fingerprint };

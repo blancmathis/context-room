@@ -270,8 +270,26 @@ test('@smoke @notebook offline device cache survives reopening without a false r
     await page.evaluate(async () => { window.testNotebook = await openContextRoomNotebook('docs/Sketch.crnb'); });
     dialog = page.locator('dialog.notebook-dialog[open]'); await expect(dialog.locator('[role=status]')).toContainText('Saved locally');
     expect(await page.evaluate(async () => (await testNotebook.client.exportRecovery()).operations.map(operation => operation.operationId))).toEqual(expected);
-    await page.context().setOffline(false); await dialog.getByRole('button', { name: 'Reconnect', exact: true }).click();
+    await expect(dialog.locator('.notebook-error')).not.toBeEmpty();
+    // Coming back online must retire the old connection alert without requiring
+    // a manual reconnect click (which can race the automatic flush).
+    await page.context().setOffline(false);
     await expect(dialog).toHaveAttribute('data-save-state', 'confirmed'); expect(readNotebook(f.root, resourceId).document.objects).toHaveLength(1);
+    await expect(dialog.locator('.notebook-error')).toBeEmpty();
+    expect(f.errors).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test('@smoke @notebook successful synchronization preserves unrelated local errors', async ({ page }) => {
+  const f = await fixture(page);
+  try {
+    const dialog = await open(page);
+    await dialog.locator('input[type=file]').setInputFiles({ name: 'invalid.gif', mimeType: 'image/gif', buffer: Buffer.from('invalid') });
+    const alert = dialog.locator('.notebook-error');
+    await expect(alert).toContainText('Choose a PNG, JPEG or WebP');
+    await dialog.getByRole('button', { name: 'Reconnect', exact: true }).click();
+    await expect(dialog).toHaveAttribute('data-save-state', 'confirmed');
+    await expect(alert).toContainText('Choose a PNG, JPEG or WebP');
     expect(f.errors).toEqual([]);
   } finally { await f.close(); }
 });

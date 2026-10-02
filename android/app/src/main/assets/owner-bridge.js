@@ -103,6 +103,9 @@
   window.addEventListener('pagehide', () => { for (const stream of streams) stream.close(); });
   window.ContextRoomNativeOwner = Object.freeze({
     get active() { return active; },
+    openConnectionSettings: () => rpc('connection.settings', {}),
+    recoverLegacyNotebooks: () => rpc('connection.recovery', {}),
+    navigation: (action, body) => rpc('navigation', { action, body }),
     openNotebook: item => rpc('notebook.open', item),
     conversationState: value => rpc('conversation.state', value),
     observation: value => rpc('conversation.observation', value),

@@ -107,6 +107,7 @@ async function openProject(page, projectTitle) {
 
 async function openProjectFile(page, filePath) {
   const startedAt = performance.now();
+  const phases = [];
   const segments = filePath.split("/");
   for (let index = 1; index < segments.length; index += 1) {
     const folderPath = segments.slice(0, index).join("/");
@@ -117,13 +118,17 @@ async function openProjectFile(page, filePath) {
       if (await folder.getAttribute("aria-expanded") !== "true") await folder.click();
       return await page.locator(folderSelector).first().getAttribute("aria-expanded");
     }, { message: `Expand ${folderPath} in Explorer` }).toBe("true");
+    phases.push({ step: "expand:" + folderPath, elapsedMs: performance.now() - startedAt });
   }
   const row = page.locator(`[data-global-project-file="${filePath}"]`).first();
   await expect(row).toBeVisible();
   await row.click();
+  phases.push({ step: "click", elapsedMs: performance.now() - startedAt });
   await expect(page.locator("#workspaceTitle")).toContainText(filePath.split("/").pop());
   await expect(page.locator("#viewer")).toBeVisible();
-  return performance.now() - startedAt;
+  const elapsedMs = performance.now() - startedAt;
+  (page.__soakFilePhases ||= []).push({ filePath, elapsedMs, phases, resources: (page.__soakRequests || []).slice(-12) });
+  return elapsedMs;
 }
 
 async function openSettings(page, section = "") {
@@ -1055,6 +1060,12 @@ test("@soak repeated multi-day navigation does not accumulate workspace or brows
   const guard = attachFailureGuards(page);
   const companion = await page.context().newPage();
   const companionGuard = attachFailureGuards(companion);
+  page.__soakRequests = [];
+  page.on("requestfinished", (request) => {
+    if (!request.url().includes("/api/")) return;
+    page.__soakRequests.push({ path: new URL(request.url()).pathname, duration: request.timing().responseEnd });
+    if (page.__soakRequests.length > 64) page.__soakRequests.shift();
+  });
   const realStartedAt = Date.now();
   const simulatedStart = Date.now();
   await page.clock.install({ time: new Date(simulatedStart) });
@@ -1123,7 +1134,7 @@ test("@soak repeated multi-day navigation does not accumulate workspace or brows
   checkpoints.push(final);
   // Retain measurements even when an unchanged release budget fails below.
   await testInfo.attach("ux-soak-metrics", {
-    body: JSON.stringify({ cycles: cycle, elapsedMs: Date.now() - realStartedAt, baseline, checkpoints, final, timings }, null, 2),
+    body: JSON.stringify({ cycles: cycle, elapsedMs: Date.now() - realStartedAt, baseline, checkpoints, final, timings, filePhases: page.__soakFilePhases || [] }, null, 2),
     contentType: "application/json",
   });
   assertStableMetrics(baseline, final);

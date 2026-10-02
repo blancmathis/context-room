@@ -65,8 +65,8 @@ function runAudioProcess(executable, args, { cwd, signal, timeoutMs }) {
 
 /** Local recognition and exact-text speech. Neither operation invokes an agent or sends a message. */
 export class LocalAudio {
-  constructor({ root, modelPath, whisper = process.env.CONTEXT_ROOM_WHISPER_BIN || 'whisper-cli', speech = '/usr/bin/say', run = runAudioProcess }) {
-    canonicalNotebookRoot(root); Object.assign(this, { root, modelPath, whisper, speech, run });
+  constructor({ root, modelPath, vadModelPath = process.env.CONTEXT_ROOM_VAD_MODEL || path.join(root, 'models', 'ggml-silero-v6.2.0.bin'), whisper = process.env.CONTEXT_ROOM_WHISPER_BIN || 'whisper-cli', speech = '/usr/bin/say', run = runAudioProcess }) {
+    canonicalNotebookRoot(root); Object.assign(this, { root, modelPath, vadModelPath, whisper, speech, run });
     this.rootIdentity = canonicalNotebookRoot(root); this.transcribing = false; this.speaking = false;
   }
   job() {
@@ -74,7 +74,7 @@ export class LocalAudio {
     const directory = makeNotebookDirectory(this.root, 'audio-jobs');
     return fs.mkdtempSync(path.join(directory, 'job-'));
   }
-  diagnostics() { return inspectLocalAudio({ root: this.root, modelPath: this.modelPath, whisper: this.whisper, speech: this.speech }); }
+  diagnostics() { return inspectLocalAudio({ root: this.root, modelPath: this.modelPath, vadModelPath: this.vadModelPath, whisper: this.whisper, speech: this.speech }); }
 
   async transcribe(pcm, { language = 'fr', signal } = {}) {
     signal?.throwIfAborted(); const wave = pcm16Wave(pcm);
@@ -86,17 +86,22 @@ export class LocalAudio {
     let model;
     try { model = fs.lstatSync(this.modelPath); } catch {}
     if (!model?.isFile() || model.isSymbolicLink()) throw fault('audio_model_missing', 'Choose an installed local Whisper model before dictating.');
+    let vad;
+    try { vad = fs.lstatSync(this.vadModelPath); } catch {}
+    const speechFiltered = Boolean(vad?.isFile() && vad.size > 0);
     this.transcribing = true; let directory;
     try {
       directory = this.job(); fs.writeFileSync(path.join(directory, 'input.wav'), wave, { mode: 0o600 });
       await this.run(this.whisper, ['-m', this.modelPath, '-f', path.join(directory, 'input.wav'), '-l', language,
-        '-nt', '-np', '-oj', '-of', path.join(directory, 'transcript'), '-nf', '-bs', '1', '-bo', '1'], { cwd: directory, signal, timeoutMs: 80_000 });
+        '-nt', '-np', '-oj', '-of', path.join(directory, 'transcript'), '-nf', '-bs', '1', '-bo', '1',
+        ...(speechFiltered ? ['--vad', '-vm', this.vadModelPath] : [])], { cwd: directory, signal, timeoutMs: 80_000 });
       signal?.throwIfAborted();
       const result = readNotebookJson(directory, 'transcript.json'), items = result?.transcription;
       if (!Array.isArray(items) || items.some(item => typeof item.text !== 'string')) throw fault('audio_transcript', 'The local recognizer did not return a transcript.');
-      const text = items.map(item => item.text).join(' ').replace(/\s+/g, ' ').trim();
+      let text = items.map(item => item.text).join(' ').replace(/\s+/g, ' ').trim();
+      if (!/[\p{L}\p{N}]/u.test(text)) text = '';
       if (text.length > 32_000) throw fault('audio_transcript_limit', 'The transcript is too long to review safely.');
-      return { text, silent: !text, submitted: false };
+      return { text, silent: !text, submitted: false, speechDetected: speechFiltered && Boolean(text) };
     } finally { this.transcribing = false; if (directory) fs.rmSync(directory, { recursive: true, force: true }); }
   }
   async synthesize(text, { voice = '', signal } = {}) {

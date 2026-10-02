@@ -3,8 +3,8 @@
 ## Summary
 
 This journal preserves checkpoint-specific macOS, browser, emulator and portable
-proofs. Those historical successes do not validate later commits. The final
-consolidated-delivery section is the current status and the single C/R/V matrix.
+proofs. Those historical successes do not validate later commits. The dated shared-web continuation below is the current execution boundary;
+older consolidated matrices describe their own checkpoints.
 It separates source packaging from a completed product or personal installation.
 
 ## Defines
@@ -17,6 +17,218 @@ regression results and the remaining implementation boundaries.
 Human acceptance of personal documents or personal-device installation,
 a migration of personal data, or physical
 BOOX performance. A synthetic agent operation is not a real provider call.
+
+## Shared-web continuation — 2026-09-17
+
+Base main was checked through GitHub and `git ls-remote`:
+`4560f6e056a6f673fe6d77f6f9d2914c00829c64`. Work uses a dedicated
+`mathis/shared-web-pwa-20260917` branch in a new clone, not an old archive or the
+personal installation. No historical request or real agent call is replayed.
+
+The implementation switches both Android permissions to the existing common
+web notebook, packages that same source for APK offline boot, adds the PWA
+public-asset cache and exact recovery route, and provides a separate optional
+browser HTTPS edge using the existing device authority. Legacy native journals
+and their recovery engine remain retained. R01–R29 and human acceptance
+boundaries are unchanged. See the canonical [connection contract](../../../../system/connected-devices.md)
+and [local handoff](codex-shared-web-handoff.md).
+
+### Local execution observed before CI
+
+- Dependency installation completed from the lockfile.
+- `test/devices.test.mjs` and `test/device_owner.test.mjs`: **19/19 passed**
+  after the transport authorization extraction. Later common-display additions
+  require their own checks; this is not a claim that an old run covers them.
+- Initial `test/web_app.test.mjs` and `test/device_browser.test.mjs`: **6/7
+  passed**. The remaining test supplied a deliberately wrong Host header that
+  also changed Node's TLS server name; TLS correctly refused it before the
+  intended HTTP assertion. The fixture was corrected to an alternate valid
+  certificate name so the HTTP exact-host rejection can be tested separately.
+  The failed run is not recorded as passing.
+- The initial three public-asset/version/recovery-route tests subsequently
+  passed in isolation. Later additions are not included in that count.
+- `test/device_display.test.mjs`: **6/6 passed**, covering common-canvas-only
+  receipts, pending ink, human cancellation, exact view targets, stale frames,
+  paused/review-only sources and revocation. These are software simulations of
+  display events, not physical pen measurements.
+- The ordinary Playwright setup failed on its synthetic Shared Git fetch
+  deadline before these PWA scenarios ran. The independent PWA configuration
+  then reached test discovery, but its local process exceeded the execution
+  limit without an assertion result during severe Mac load. Neither attempt
+  proves browser rendering or offline restart. They were not repeatedly
+  relaunched unchanged.
+- The first standalone APK-asset preparation exceeded its local execution
+  limit. This is not an APK build or an emulator result.
+
+Repository CI results and final checks must be read at the delivered source
+SHA; a queued job is not a pass. The browser suite contains a real persistent
+Chromium process restart, received pen-pressure checks, same-identifier
+resynchronization, a waiting-worker replacement and separate common tablet
+layouts. Its synthetic worker replacement tests update lifecycle; the asset
+contract separately checks the content-versioned module cohort.
+
+### First PR CI checkpoint
+
+For `08fc30c62c3f5c71684ca15070c0c2c4645d1117`, convergence run
+`35248801871` completed with **122/122 contract tests**, package privacy
+(**178 package files**) and both preview/instrumentation APK builds passing.
+The preview has package `app.contextroom.tablet.preview`, signature v2, and only
+Internet and microphone permissions. This first artifact checker checked the
+eight legacy shared-engine assets; follow-up verification additionally compares
+the complete packaged common web cohort to source. No emulator ran in that job.
+
+CI run `35248801921` passed the Chromium mobile browser job and the shared
+notebook layouts in Chromium desktop and WebKit. The Chromium cold-restart test
+first inspected a progressive stroke prefix rather than waiting for the full
+Mac receipt; it was corrected to wait for the same required pressure samples.
+Firefox reported a 44-pixel target as 43.999996 pixels; the assertion now allows
+only 0.001 pixel numerical rounding. These changes do not waive pressure or
+44-pixel accessibility requirements. The initial runs remain recorded as failed.
+
+The existing WebKit layout suite also failed when the expected human-acceptance
+confirmation dialog did not appear. Its captured state shows the real server
+refusing incomplete human review, while this geometry-only fixture intended to
+intercept that response. Only the geometry-only layout fixture blocks service workers so `page.route`
+owns those synthetic requests. Other integration tests retain real workers,
+including sandboxed document previews; their isolation is not weakened. The
+independent PWA configuration explicitly tests the real worker lifecycle.
+This follows Playwright's network-interception boundary; no product permission
+or human-review rule was relaxed. The corrected run, rather than this failed
+checkpoint, is the relevant regression proof.
+
+### Follow-up verification and visual inspection
+
+At `8bafbb5c48553f6246d431c8babb5cca26228253`, convergence run
+`35250475616` passed **129/129 contracts** and both APK builds. The strengthened
+artifact verifier compared **38 common web assets** and **8 shared core assets**
+byte-for-byte against the same source, and checked package/signature/permissions.
+The preview remains a separately signed test artifact, not an installed update.
+
+The first full Node 24 regression run completed **106/108 test processes**.
+The two failing processes contained three assertions about the existing hashed
+shell URLs. Redundant cohort queries on these already-content-hashed CSS/JS
+URLs broke their established HTTP/diagnostic contract. Those redundant queries
+were removed, retaining cohort queries for the other shared modules. The three
+original assertions and three related cohort checks then passed locally:
+**6/6**, without weakening the existing tests.
+
+Synthetic Chromium captures at portrait, landscape and keyboard-height sizes
+were produced by the shared-editor layout test. Portrait and reduced-height
+renderings were inspected on the Mac: header decisions, close, contrast,
+canvas, object inspector and save/reconnect footer remain separated. Long tool
+rows scroll horizontally; the test explicitly brings the important controls
+into view and checks 44-pixel targets, plus the accessibility scan. These are
+browser geometry/contrast checks, not a real Android keyboard or e-ink trial.
+
+The initial cold-restart scenario exposed that page-level offline emulation
+could still let the service worker fetch a real shell. The test now additionally
+rejects **every** synthetic server connection throughout both offline restarts,
+including worker requests, then restores the same runtime. This stronger
+outage condition is distinct from switching only `navigator.onLine`. The final
+result, not the earlier failed attempt, determines the offline proof.
+
+The local standalone doctor attempt produced no diagnostic result before its
+execution limit under heavy Mac load. It is now an explicit CI contract step.
+Package privacy already invokes the real `npm pack --dry-run --json
+--ignore-scripts`; no separate successful local dry-pack run is implied.
+
+At `e02aeb2685ff9321ce37b5905ea7722254328307`, convergence run
+`35251633792` passed **131/131 tests**, the real repository doctor
+(**Context Room OK**), package privacy (**178 files**, including the dry-pack
+inspection), and both Android APK builds. Its exact-asset checker again passed
+38 common web files and 8 existing core files. The subsequent local cold-restart
+attempt did not reach its offline phase: it timed out waiting for the initial
+Mac confirmation during heavy host load. No successful local cold-restart
+claim is made from that run.
+
+### Verified shared-interface checkpoint — before WebKit follow-up
+
+Executable source: `ba4ab7b31d6dc4dbb551fcb3d2db8de78f825302`.
+This checkpoint precedes the WebKit viewport follow-up; use the exact source
+SHA rather than attributing these APK bytes to a later build. Earlier failures in this journal remain
+historical and are not silently relabelled as passes.
+
+[Convergence run 35252614112](https://github.com/blancmathis/context-room/actions/runs/35252614112)
+completed successfully: **131/131 contract tests**, repository doctor
+(**Context Room OK**), package privacy including dry-pack (**179 files**),
+preview and instrumentation APK compilation, exact shared-source verification,
+and an actual Android 15 emulator owner-workspace test.
+
+The PWA step in
+[CI run 35252614046](https://github.com/blancmathis/context-room/actions/runs/35252614046)
+passed on all four profiles: Chromium desktop, Chromium mobile, Firefox and
+WebKit. There are **5 passing scenarios and 3 intentional skips**: the
+persistent Chromium process-restart scenario runs once; all four profiles run
+the same notebook's portrait, landscape and keyboard-height layout checks.
+The cold-restart scenario completed both browser process restarts with the
+synthetic Mac refusing every connection, retained original pending operation
+identities, added three strokes, restored the network and verified exactly
+three unique objects with the received pressure values. No ordinary document
+was accepted. A waiting worker update did not replace the still-open editor;
+its lifecycle proof is separate from the unit test of the exact asset cohort.
+
+The emulator was the newly created, isolated `ContextRoom_SharedWeb` AVD,
+Android 15 / API 35, 800 × 1280 at 160 dpi, not an existing Mac emulator or a
+physical tablet. Its real owner workflow completed in **45.0 seconds** (whole
+scenario duration, **not pen latency**). It opened the common Hub, Computer
+folder, project files and rendered HTML, refused document-script/iframe bridge
+escalation, injected a stylus into the common WebView canvas, preserved pressure,
+used Android image import/export and the existing frozen-file human decision,
+and opened Shared review and owner settings. The common path did not create
+`InkView`. The canonical working scene and exported scene contained the same
+stroke and image; the previously accepted notebook remained byte-identical.
+No real provider request or physical BOOX measurement was made.
+
+The downloaded APK and its identity sidecar were verified against the run's
+proof, with a clean source tree:
+
+```text
+source: ba4ab7b31d6dc4dbb551fcb3d2db8de78f825302
+package: app.contextroom.tablet.preview
+apk SHA-256: 8d9202ece1d9c5187672f5392a1fa916aab940a1150beae5f74558f4d65525bb
+common web version: 75f74a1e75d4bf2e2fb87313
+shared web files: 38; existing shared core files: 8
+permissions: INTERNET, RECORD_AUDIO; signature: APK v2
+```
+
+This is an isolated preview key, not the existing installation's signing key.
+[APK artifact](https://github.com/blancmathis/context-room/actions/runs/35252614112/artifacts/10511675385)
+and [synthetic emulator proof](https://github.com/blancmathis/context-room/actions/runs/35252614112/artifacts/10511141757)
+are retained by Actions for seven days. The source and build scripts remain in
+Git after artifact expiry. The exact common modules are byte-compared inside
+the APK; the result is not based only on similar screenshots.
+
+### WebKit follow-up
+
+The complete `35252614046` run passed Node 20, 22.23.0 and 24 (all 108 test
+processes each), the soak job and the complete Chromium desktop/mobile and
+Firefox browser jobs. WebKit passed the PWA and layout steps but its UX smoke
+step had **83 passed, 7 skipped and 11 failed**. Six failures were strict
+console guards reporting the unsupported static `interactive-widget` viewport
+key. The common interface now uses VisualViewport resize/scroll geometry
+instead, without a browser-specific UI or a pinch-zoom resize. A focused local
+run passed **9/9** web-app contracts, including viewport lifecycle and exact
+packaged assets.
+
+The remaining five failures involved one-shot post-review notifications in a
+fixture that supplies synthetic authority and flash responses using
+`page.route`. That fixture now explicitly blocks workers, just like the
+geometry-only layout fixture, so navigation cannot bypass its simulated
+responses. All assertions, original-source targets, rejection/acceptance
+challenges and one-shot flash semantics remain unchanged. Real integration,
+HTML sandbox and PWA worker scenarios still use workers. The new CI result is
+the evidence for these changes; the prior failed WebKit job is not labelled
+green or dismissed as a physical/environmental limitation.
+
+### Physical gates remain open
+
+No new physical BOOX result, real-agent co-drawing, physical microphone test,
+long session or equivalence with the BOOX application is claimed for this
+shared-web change. Earlier native physical results do not validate the web
+canvas. Browser-recognized HTTPS on the actual tablet, installation behavior,
+pen latency, palm rejection, e-ink contrast/comfort and real audio remain in the
+handoff. Any produced preview uses an isolated test key, not an assertion of
+compatibility with an installed signing identity.
 
 ## Restoration on 2026-09-14
 

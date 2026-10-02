@@ -346,6 +346,11 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
       await saveAudioRelease(releaseScopeKey, pending, true);
     }
   }
+  function protectRetriedTranscript() {
+    if (retainedRecording?.transcriptDraft && input.value.trim() && input.value !== retainedRecording.transcriptDraft) {
+      throw new Error('Your transcript draft has been edited. Keep it, or clear the composer before retrying the saved recording.');
+    }
+  }
   async function toggleDictation() {
     if (initializing || audioBusy || changingConversation || voice) return; audioBusy = true; dictate.disabled = true; render(); let generation = audioGeneration;
     try {
@@ -363,13 +368,18 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
       if (closed || generation !== audioGeneration) { await capture.cancel(); return; }
       recording = capture; dictate.textContent = 'Finish dictation'; audioStatus.textContent = 'Microphone on · dictation stays in this original source.'; return;
     }
+    protectRetriedTranscript();
     if (!lease) await acquireAudio(false, generation);
     if (!recordingRequest || recordingRequest.epoch !== lease.epoch) recordingRequest = { ...owned(), requestId: crypto.randomUUID(), pcm: retainedRecording.pcm, language: 'fr' };
     const pending = await post('/audio/transcribe', recordingRequest);
     const job = await waitAudio(pending, generation);
     if (generation !== audioGeneration) return;
+    protectRetriedTranscript();
     const completedRecording = retainedRecording;
-    if (job.result.text) input.value += (input.value.trim() ? '\n' : '') + job.result.text;
+    if (job.result.text) {
+      if (completedRecording.transcriptDraft === input.value) input.value = job.result.text;
+      else input.value += (input.value.trim() ? '\n' : '') + job.result.text;
+    }
     retainedRecording = null; recordingRequest = null; await saveDraft(); dictate.textContent = 'Dictate';
     await acknowledgeRecording({ scopeKey, conversationId: current.id }, completedRecording);
     await refreshNativeRecordings();
@@ -478,6 +488,11 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
           recordingRequest = { ...owned(), requestId: crypto.randomUUID(), pcm: retainedRecording.pcm, language: 'fr' };
           const job = await waitAudio(await post('/audio/transcribe', recordingRequest), generation);
           if (voice !== session || generation !== audioGeneration) break;
+          if (job.result.text?.trim() && job.result.speechDetected !== true) {
+            input.value = job.result.text; retainedRecording.transcriptDraft = job.result.text; recordingRequest = null; await saveDraft();
+            dictate.textContent = 'Retry dictation';
+            throw new Error('Voice paused: speech detection is unavailable. Your transcript and recording are saved. Review the draft before sending.');
+          }
           const saved = retainedRecording;
           input.value = job.result.text; retainedRecording = null; recordingRequest = null; await saveDraft();
           await acknowledgeRecording({ scopeKey, conversationId: current.id }, saved); await releaseAudio();

@@ -7,6 +7,26 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import test from "node:test";
+import { prepareAndroidWeb } from "../scripts/prepare-android-web.mjs";
+
+test("Android incremental web packaging removes obsolete bundles and retains sibling assets", () => {
+  const output = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-android-assets-"));
+  try {
+    prepareAndroidWeb(output);
+    const indexPath = path.join(output, "web/index.json");
+    const original = fs.readFileSync(indexPath);
+    fs.writeFileSync(path.join(output, "web/assets/context-room-obsolete.js"), "obsolete build");
+    fs.writeFileSync(path.join(output, "sibling.txt"), "preserve");
+    prepareAndroidWeb(output);
+    const index = JSON.parse(fs.readFileSync(indexPath));
+    const expected = new Set([...Object.values(index.files).map(item => item.asset), "web/index.json"]);
+    const actual = fs.readdirSync(path.join(output, "web"), { recursive: true })
+      .filter(name => fs.statSync(path.join(output, "web", name)).isFile()).map(name => "web/" + name);
+    assert.deepEqual(new Set(actual), expected);
+    assert.deepEqual(fs.readFileSync(indexPath), original);
+    assert.equal(fs.readFileSync(path.join(output, "sibling.txt"), "utf8"), "preserve");
+  } finally { fs.rmSync(output, { recursive: true, force: true }); }
+});
 
 import {
   connectSharedContext,
@@ -7591,7 +7611,7 @@ test("HTML files open as sandboxed visual previews without source editing", () =
   assert.match(html, /function sanitizedHtmlPreviewDocument\(source\)/);
   assert.match(html, /doc\.querySelectorAll\("script, iframe, frame, object, embed, base"\)/);
   assert.match(html, /Content-Security-Policy/);
-  assert.match(html, /default-src 'none'; style-src 'unsafe-inline'/);
+  assert.match(html, /default-src 'none'; script-src 'none'; style-src 'unsafe-inline'/);
   assert.match(html, /function contextRoomVisualDocumentStyles\(\)/);
   assert.match(html, /getComputedStyle\(document\.documentElement\)/);
   assert.match(html, /\["--cr-bg", token\("--file-bg"/);
@@ -7605,7 +7625,7 @@ test("HTML files open as sandboxed visual previews without source editing", () =
   assert.match(html, /doc\.documentElement\.dataset\.contextRoomTheme = currentFileThemeId\(\)/);
   assert.match(html, /function applyFileTheme\(themeId = currentFileThemeId\(\), colorMode = currentColorModePreference\(\)\)[\s\S]*document\.querySelector\("iframe\.html-preview-frame"\)[\s\S]*renderViewer\(\);/);
   assert.match(html, /function renderHtmlDocumentPreview\(text, filePath = state\.selected\)/);
-  assert.match(html, /class="html-preview-frame" sandbox="allow-same-origin" referrerpolicy="no-referrer"/);
+  assert.match(html, /class="html-preview-frame" sandbox="allow-same-origin allow-scripts" referrerpolicy="no-referrer"/);
   assert.match(html, /isHtmlDocument\s*\? renderHtmlDocumentPreview\(text, file\.path\)/);
   assert.match(html, /externalChange[\s\S]*isHtmlDocument[\s\S]*renderHtmlDocumentPreview\(externalChange\.diskContent \|\| "", file\.path\)/);
   assert.match(html, /const visualHtmlReview = isHtmlDocumentPath\(change\.path\);/);
