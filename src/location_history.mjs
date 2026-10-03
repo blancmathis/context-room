@@ -1,79 +1,61 @@
 import fs from "node:fs";
-import path from "node:path";
+import { readNotebookBytes, safeNotebookPath } from "./notebook_io.mjs";
 
-// Records keep their project root as "rootIdentity": "dev:ino" (notebook
-// headers, local proposals, workflow state and journals, conversations).
-const STRING_IDENTITY = /"rootIdentity"\s*:\s*"(\d+):(\d+)"/g;
+const LEGACY = /^\d+:\d+$/;
 const MAX_FILES = 20_000;
-const MAX_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_FILE_BYTES = 32 * 1024 * 1024;
+const MAX_TOTAL_BYTES = 512 * 1024 * 1024;
 
-function regularFile(filePath) {
+// Names in a directory reached without links; children of another kind are ignored.
+function names(root, rel, kind) {
   try {
-    const stats = fs.lstatSync(filePath);
-    return stats.isFile() && stats.size <= MAX_FILE_BYTES;
-  } catch {
-    return false;
-  }
-}
-
-function childDirectories(directory) {
-  try {
-    return fs.readdirSync(directory, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => path.join(directory, entry.name));
+    return fs.readdirSync(safeNotebookPath(root, rel), { withFileTypes: true })
+      .filter((entry) => kind === "directory" ? entry.isDirectory() : entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => `${rel}/${entry.name}`);
   } catch {
     return [];
   }
 }
 
-function jsonFiles(directory) {
-  try {
-    return fs.readdirSync(directory, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-      .map((entry) => path.join(directory, entry.name));
-  } catch {
-    return [];
-  }
-}
+// Where each record kind keeps the project root identity it was written under.
+const fields = {
+  notebook: (value) => value?.rootIdentity,
+  proposal: (value) => value?.rootIdentity,
+  workflow: (value) => value?.rootIdentity,
+  migration: (value) => value?.plan?.rootIdentity,
+  conversation: (value, root) => value?.origin?.root === root ? value.origin.rootIdentity : undefined,
+};
 
 /**
  * Lists the dev:ino identities that this location's own records were written
- * under, restricted to the current root inode. Read-only and bounded: it never
- * follows links and ignores unreadable or oversized files. The result is only
- * a candidate list for an explicit human confirmation.
+ * under, restricted to the current root inode. Read-only and bounded: every
+ * path component is checked for links, each file is read once as a stable,
+ * independent regular file, and only the known field of each record kind
+ * counts. The result is only a candidate list for an explicit human confirmation.
  */
 export function legacyRootIdentities(root, { ino, conversationRoot = "" } = {}) {
-  const control = path.join(root, ".context-room");
-  const projectFiles = [
-    ...childDirectories(path.join(control, "notebooks", "v1", "resources")).map((directory) => path.join(directory, "header.json")),
-    ...jsonFiles(path.join(control, "local-proposals", "proposals")),
-    path.join(control, "workflow-state.json"),
-    ...childDirectories(path.join(control, "migrations")).map((directory) => path.join(directory, "journal.json")),
+  const records = [
+    ...names(root, ".context-room/notebooks/v1/resources", "directory").map((rel) => [root, `${rel}/header.json`, "notebook"]),
+    ...names(root, ".context-room/local-proposals/proposals", "file").map((rel) => [root, rel, "proposal"]),
+    [root, ".context-room/workflow-state.json", "workflow"],
+    ...names(root, ".context-room/migrations", "directory").map((rel) => [root, `${rel}/journal.json`, "migration"]),
+    ...(conversationRoot ? names(conversationRoot, "conversations", "file").map((rel) => [conversationRoot, rel, "conversation"]) : []),
   ];
-  const conversationFiles = conversationRoot ? jsonFiles(path.join(conversationRoot, "conversations")) : [];
   const found = new Set();
-  let scanned = 0;
-  for (const [filePath, conversation] of [
-    ...projectFiles.map((filePath) => [filePath, false]),
-    ...conversationFiles.map((filePath) => [filePath, true]),
-  ]) {
-    if (scanned >= MAX_FILES) break;
-    if (!regularFile(filePath)) continue;
-    scanned += 1;
-    let text;
-    try { text = fs.readFileSync(filePath, "utf8"); } catch { continue; }
-    if (conversation) {
-      try {
-        const origin = JSON.parse(text)?.origin;
-        if (origin?.root === root && /^\d+:\d+$/.test(origin.rootIdentity || "")) text = JSON.stringify({ rootIdentity: origin.rootIdentity });
-        else continue;
-      } catch {
-        continue;
-      }
+  let files = 0, bytes = 0;
+  for (const [base, rel, kind] of records) {
+    if (files >= MAX_FILES || bytes >= MAX_TOTAL_BYTES) break;
+    let value;
+    try {
+      const content = readNotebookBytes(base, rel, MAX_FILE_BYTES);
+      if (!content) continue;
+      files += 1; bytes += content.length;
+      value = JSON.parse(content.toString("utf8"));
+    } catch {
+      continue;
     }
-    for (const [, dev, matchIno] of text.matchAll(STRING_IDENTITY)) {
-      if (matchIno === String(ino)) found.add(`${dev}:${matchIno}`);
-    }
+    const identity = fields[kind](value, root);
+    if (typeof identity === "string" && LEGACY.test(identity) && identity.split(":")[1] === String(ino)) found.add(identity);
   }
   return [...found].sort();
 }

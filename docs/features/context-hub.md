@@ -119,7 +119,13 @@ outside the project, in the review authority directory.
 
 Registering an unconfirmed location again leaves the registry unchanged and reports
 `identityUnconfirmed: true`. Notebook capabilities list `serverIdAliases`, so a
-browser moves offline caches saved under an earlier identity to the current one.
+browser moves offline caches saved under an earlier identity to the current one. A
+cache that cannot move, because a newer cache holds the current identity, stays in
+the offline list and opens as itself.
+
+Confirmation reads only the root identity field of each record kind, through paths
+without links. If the attestation is lost while the registry's durable identity
+still matches, the registry's previous identity becomes a confirmed alias.
 
 ## Local review
 

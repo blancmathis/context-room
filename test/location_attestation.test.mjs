@@ -228,3 +228,12 @@ test('a root exchange during atomic publication fails before signing it into the
   assert.equal(exchanged, true);
   assert.equal(fs.readdirSync(f.home).some(name => /^location-.*\.json$/.test(name)), false);
 });
+
+
+test('caller evidence rejects a replacement before creating authority state', t => {
+  const f = fixture(t), expected = { legacy: canonicalNotebookRoot(f.root), durable: readFilesystemIdentity(f.root).identity };
+  fs.renameSync(f.root, f.root + '.old'); fs.mkdirSync(f.root);
+  assert.throws(() => attestLocation(f.root, { ...f.options, expected, replace: true, legacy: expected.legacy }),
+    { code: 'location_attestation_conflict' });
+  assert.equal(fs.existsSync(f.home), false);
+});

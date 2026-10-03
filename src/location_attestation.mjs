@@ -131,8 +131,14 @@ function writeAttestation(root, paths, observed, key, previous, aliases) {
 }
 
 /** Explicit enrollment only. Replacing durable evidence requires replace:true and abandons its aliases. */
-export function attestLocation(root, { legacy = [], replace = false, ...options } = {}) {
+export function attestLocation(root, { legacy = [], replace = false, expected = null, ...options } = {}) {
   const observed = snapshotRoot(root);
+  // Bind publication to the caller's observation, not just to this function's
+  // later snapshot. A failed caller must not leave aliases on a replacement.
+  if (expected && (observed.legacy !== expected.legacy
+    || compareFilesystemIdentity(expected.durable, observed.durable).status !== "same")) {
+    throw fault("The location changed before attestation enrollment.");
+  }
   if (!observed.durable) throw fault("The durable location identity cannot be verified.");
   const aliases = typeof legacy === "string" ? [legacy] : legacy;
   if (!validAliases(aliases)) throw fault("Invalid legacy location identities.");

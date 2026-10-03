@@ -411,6 +411,20 @@ function storedLocationEvidence(entry) {
   const rootDurable = readFilesystemIdentity(entry.root).identity;
   const sameEntryKind = !keys.length || (live.gitEntry.legacy.mode === membership.gitEntryIdentity.mode
     && live.gitEntry.legacy.kind === membership.gitEntryIdentity.kind);
+  // An incomplete record is not permission to ignore the durable evidence
+  // that is present. Contradictions win over an exact legacy dev:ino.
+  const evidence = [
+    [entry.rootDurableIdentity, rootDurable, legacy.ino],
+    ...keys.map((key) => [membership[`${key}DurableIdentity`], live[key].durable, membership[`${key}Identity`].ino]),
+  ];
+  let unverified = false;
+  for (const [saved, observed, ino] of evidence) {
+    if (!saved) continue;
+    const comparison = compareFilesystemIdentity(saved, observed);
+    if (comparison.status === "different" || saved.ino !== ino) return { status: "different" };
+    if (comparison.status !== "same") unverified = true;
+  }
+  if (unverified) return { status: "unconfirmed" };
   const durableRecorded = Boolean(normalizedDurableIdentity(entry.rootDurableIdentity))
     && keys.every((key) => normalizedDurableIdentity(membership[`${key}DurableIdentity`]));
   if (durableRecorded) {
@@ -439,7 +453,12 @@ function refreshStoredLocation(entry, { status, current, live, rootDurable }) {
     if (status === "exact" || rootMoved) {
       const observed = status === "same" ? observeLocation(entry.root) : null;
       if (observed?.status !== "same") {
-        const attestation = attestLocation(entry.root, { replace: true });
+        // A lost or stale attestation: the private registry's durable match
+        // still proves its previous identity belongs to this folder.
+        const previous = `${entry.rootIdentity.dev}:${entry.rootIdentity.ino}`;
+        const attestation = attestLocation(entry.root, { replace: true,
+          legacy: status === "same" && rootMoved ? [previous] : [],
+          expected: { legacy: `${current.dev}:${current.ino}`, durable: rootDurable } });
         if (compareFilesystemIdentity(attestation.durable, rootDurable).status !== "same") return false;
       }
     }
@@ -1902,7 +1921,7 @@ function prepareHubSharedTransactionLocked(projectRoot, operation, requestedShar
   const selected = registry.projects.find((entry) => entry.id === stableProjectId(projectRoot));
   if (!selected) throw new Error(`Context Hub project is not registered: ${projectRoot}`);
   const rootIdentity = contextHubProjectRootIdentity(projectRoot);
-  if (!selected.rootDurableIdentity || path.resolve(selected.root) !== path.resolve(projectRoot)
+  if (path.resolve(selected.root) !== path.resolve(projectRoot)
     || !persistedProjectIdentityMatches(selected)) {
     throw Object.assign(new Error("The Context Hub project root identity changed before its Shared transaction"), { code: "context_hub_shared_transaction_conflict" });
   }
@@ -2274,7 +2293,9 @@ function registerContextHubProjectInRegistry(registry, {
   // folder at this path never apply to it, so a replaced folder discards them
   // with its Shared binding. Uncertain device evidence exits above without writes.
   // Without a durable identity (no birth time), enrollment stays strict dev:ino.
-  const attestation = readFilesystemIdentity(projectRoot).identity ? attestLocation(projectRoot, { replace: true }) : null;
+  const rootDurable = readFilesystemIdentity(projectRoot).identity;
+  const attestation = rootDurable ? attestLocation(projectRoot, { replace: true,
+    expected: { legacy: `${nextRootIdentity.dev}:${nextRootIdentity.ino}`, durable: rootDurable } }) : null;
   if (!contextHubProjectRootMatchesIdentity(projectRoot, nextRootIdentity)
     || (attestation && compareFilesystemIdentity(attestation.durable, readFilesystemIdentity(projectRoot).identity).status !== "same")) {
     throw contextHubProjectControlFileError(projectRoot, "project root changed during enrollment");
@@ -2606,6 +2627,10 @@ export function confirmContextHubProjectLocation({
       throw locationConfirmationError("This location is already confirmed.", "context_hub_location_confirmed");
     }
     const current = contextHubProjectRootIdentity(entry.root);
+    const rootDurable = readFilesystemIdentity(entry.root).identity;
+    if (stored && current.ino !== stored.ino) {
+      throw locationConfirmationError("This folder changed during confirmation.", "context_hub_location_replaced");
+    }
     assertContextHubProjectControlFiles(entry.root, current);
     const live = gitWorktreeIdentity(entry.root, entry);
     if ((stored && !sameWorktreeMembershipIdentityIgnoringDevices(entry.worktreeIdentity, live.membershipIdentity))
@@ -2616,7 +2641,8 @@ export function confirmContextHubProjectLocation({
       ...(stored?.ino === current.ino ? [`${stored.dev}:${stored.ino}`] : []),
       ...legacyRootIdentities(entry.root, { ino: current.ino, conversationRoot }),
     ])].filter((identity) => identity !== `${current.dev}:${current.ino}`);
-    const attestation = attestLocation(entry.root, { legacy: confirmed, replace: true });
+    const attestation = attestLocation(entry.root, { legacy: confirmed, replace: true,
+      expected: { legacy: `${current.dev}:${current.ino}`, durable: rootDurable } });
     if (!contextHubProjectRootMatchesIdentity(entry.root, current)
       || compareFilesystemIdentity(attestation.durable, readFilesystemIdentity(entry.root).identity).status !== "same") {
       throw contextHubProjectControlFileError(entry.root, "project root changed during confirmation");

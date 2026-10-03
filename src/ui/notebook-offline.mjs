@@ -62,7 +62,7 @@ export async function openCachedNotebook(entry) {
   };
   const { openNotebookEditor } = await import('./notebook-editor.mjs');
   return openNotebookEditor({ api, scopeKey: route.scopeKey, resourceId: route.resourceId, path: entry.snapshot.locator.path,
-    title: entry.snapshot.document.title, browserDeviceId: route.browserDeviceId, offlineCapabilities: route.capabilities,
+    title: entry.snapshot.document.title, browserDeviceId: route.browserDeviceId, offlineCapabilities: route.capabilities, cacheServerId: route.serverId,
     onConversation: route.transport === 'owner' ? async (source, display) => {
       const { openConversation } = await import('./assistant.mjs');
       return openConversation({ api, scopeKey: route.scopeKey, source, ...display });

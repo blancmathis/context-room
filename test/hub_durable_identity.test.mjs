@@ -4,10 +4,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { registerContextHubProject, readContextHubRegistry, listContextHubProjects } from "../src/context_hub.mjs";
+import { registerContextHubProject, readContextHubRegistry, listContextHubProjects, confirmContextHubProjectLocation, withContextHubProjectSharedRegistration } from "../src/context_hub.mjs";
 import { readFilesystemIdentity } from "../src/filesystem_identity.mjs";
-import { rootIdentityAliases } from "../src/location_attestation.mjs";
+import { rootIdentityAliases, acceptsRootIdentity } from "../src/location_attestation.mjs";
 import { initializeContextRoomProject } from "../src/context_room.mjs";
+import { openNotebook, readNotebook } from "../src/notebooks.mjs";
 
 function fixture(t, { git = true } = {}) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-durable-")));
@@ -118,6 +119,20 @@ test("a folder outside Git stays available and follows a device change", (t) => 
   assert.equal(entry.available, true);
   assert.equal(entry.rootIdentity.dev, String(BigInt(original.rootIdentity.dev) + 77n));
   assert.ok(rootIdentityAliases(root).includes(`${original.rootIdentity.dev}:${original.rootIdentity.ino}`));
+});
+
+test("a lost attestation keeps the registry's proven identity for existing data", (t) => {
+  const { root, base } = fixture(t);
+  const saved = registerContextHubProject(root), old = `${saved.rootIdentity.dev}:${saved.rootIdentity.ino}`;
+  const scene = openNotebook(root, { path: "docs/Lost.crnb", id: "lost-attestation", canWrite: () => true });
+  for (const name of fs.readdirSync(path.join(base, "authority"))) {
+    if (name.startsWith("location-")) fs.rmSync(path.join(base, "authority", name));
+  }
+  alterStats(t, { dev: 77 }, root);
+  const [entry] = listContextHubProjects();
+  assert.equal(entry.available, true);
+  assert.equal(acceptsRootIdentity(root, old), "confirmed");
+  assert.equal(readNotebook(root, scene.resourceId).resourceId, scene.resourceId);
 });
 
 test("legacy availability is identity to confirm without writing or observing", (t) => {
@@ -297,4 +312,82 @@ test("nested projects and linked worktrees resolve relative Git paths at their a
   const changed = listContextHubProjects().find(item => item.id === entry.id);
   assert.equal(changed.available, false, "another worktree cannot inherit the saved Git capability");
   assert.equal(changed.unavailableReason, "folder identity changed");
+});
+
+
+test("a registered non-Git project remains available", (t) => {
+  const { root, registryPath } = fixture(t, { git: false });
+  registerContextHubProject(root);
+  const before = fs.readFileSync(registryPath);
+  assert.equal(listContextHubProjects({ readOnly: true })[0].available, true);
+  assert.deepEqual(fs.readFileSync(registryPath), before);
+  assert.equal(listContextHubProjects()[0].available, true);
+});
+
+for (const dev of [0, 77]) test(`incomplete Git evidence cannot erase a contradictory root birthtime (dev +${dev})`, (t) => {
+  const { root, registryPath } = fixture(t);
+  const saved = registerContextHubProject(root);
+  const raw = JSON.parse(fs.readFileSync(registryPath));
+  delete raw.projects[0].worktreeIdentity.gitEntryDurableIdentity;
+  fs.writeFileSync(registryPath, JSON.stringify(raw));
+  const before = fs.readFileSync(registryPath);
+  alterStats(t, { dev, birth: 1 }, root);
+  const [entry] = listContextHubProjects();
+  assert.equal(entry.available, false);
+  assert.equal(entry.unavailableReason, "folder identity changed");
+  assert.throws(() => confirmContextHubProjectLocation({ projectId: saved.id, expectedRoot: root,
+    expectedRootIdentity: `${saved.rootIdentity.dev}:${saved.rootIdentity.ino}` }), { code: "context_hub_location_replaced" });
+  assert.deepEqual(fs.readFileSync(registryPath), before);
+});
+
+test("a swap before attestation cannot authorize copied notebook history", (t) => {
+  const { root, base, registryPath } = fixture(t);
+  const saved = registerContextHubProject(root), old = `${saved.rootIdentity.dev}:${saved.rootIdentity.ino}`;
+  const scene = openNotebook(root, { path: "docs/Race.crnb", id: "predeploy-race", canWrite: () => true });
+  const marker = path.join(root, ".context-room/workflow-state.json");
+  fs.writeFileSync(marker, JSON.stringify({ version: 1, rootIdentity: old }));
+  const raw = JSON.parse(fs.readFileSync(registryPath)); delete raw.projects[0].rootDurableIdentity;
+  fs.writeFileSync(registryPath, JSON.stringify(raw));
+  for (const name of fs.readdirSync(path.join(base, "authority"))) {
+    if (name.startsWith("location-")) fs.rmSync(path.join(base, "authority", name));
+  }
+  const replacement = path.join(base, "replacement"); fs.cpSync(root, replacement, { recursive: true });
+  const before = fs.readFileSync(registryPath);
+  alterStats(t, { dev: 77 }, root);
+  assert.equal(listContextHubProjects()[0].unavailableReason, "identity to confirm");
+  // Exchange the folder while the confirmation reads the project's own records.
+  const open = fs.openSync; let exchanged = false;
+  fs.openSync = (file, ...args) => {
+    const descriptor = open(file, ...args);
+    if (file === marker && !exchanged) {
+      exchanged = true; fs.renameSync(root, root + ".original"); fs.renameSync(replacement, root);
+    }
+    return descriptor;
+  };
+  try {
+    assert.throws(() => confirmContextHubProjectLocation({ projectId: saved.id, expectedRoot: root,
+      expectedRootIdentity: old }));
+  } finally { fs.openSync = open; }
+  assert.equal(exchanged, true);
+  assert.notEqual(acceptsRootIdentity(root, old), "confirmed");
+  assert.throws(() => readNotebook(root, scene.resourceId), { code: "notebook_root_conflict" });
+  assert.deepEqual(fs.readFileSync(registryPath), before);
+  assert.equal(fs.readdirSync(path.join(base, "authority")).some(name => /^location-.*\.json$/.test(name)), false);
+});
+
+test("an exact no-birthtime enrollment can enter a Shared transaction", (t) => {
+  const { root, base } = fixture(t);
+  const stat = fs.lstatSync;
+  fs.lstatSync = (...args) => {
+    const value = stat(...args);
+    if (args[0] === root && args[1]?.bigint) value.birthtimeNs = 0n;
+    return value;
+  };
+  t.after(() => fs.lstatSync = stat);
+  assert.equal(registerContextHubProject(root).rootDurableIdentity, null);
+  const stop = new Error("Stop before any Shared I/O"); let called = false;
+  assert.throws(() => withContextHubProjectSharedRegistration(root,
+    { shared: { repository: path.join(base, "remote.git"), projectId: "demo" } },
+    () => { called = true; throw stop; }), error => error === stop);
+  assert.equal(called, true);
 });
