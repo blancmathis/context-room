@@ -233,6 +233,49 @@ test("installed Shared Instructions stay outside effective context when provider
   }
 });
 
+test("Shared Skills map nonempty destinations to their registered consumers", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "context-inventory-"));
+  try {
+    const otherRoot = path.join(root, "other-location");
+    const skillRoot = path.join(root, "accepted", "team-skill");
+    fs.mkdirSync(otherRoot, { recursive: true });
+    fs.mkdirSync(skillRoot, { recursive: true });
+    fs.writeFileSync(path.join(skillRoot, "SKILL.md"), "# Accepted team skill\n");
+    const revision = "e".repeat(40);
+    const repository = "https://example.test/team/docs.git";
+    const readers = fixtureReaders(root, {
+      projects: [
+        { id: "location-a", logicalProjectId: "project-a", root, available: true },
+        { id: "location-b", logicalProjectId: "project-a", root: otherRoot, available: true },
+      ],
+      connection: { repository, projectId: "project-a" },
+      sharedMain: { repository, revision, defaultBranch: "main", repositoryConfig: { projectsPath: "projects" } },
+      sharedSkills: {
+        connected: true, repository, revision,
+        collections: [{ id: "team", path: "skills/team" }],
+        destinations: [{
+          collectionId: "team", assignmentId: "team-project", provider: "codex", scope: "project", status: "ready",
+          destination: path.join(otherRoot, ".agents", "skills"), skills: ["team-skill"],
+          target: [{ skill: "team-skill", target: skillRoot }], consumers: [{ projectRoot: otherRoot }],
+        }],
+      },
+      documents: [], documentContents: {},
+    });
+    const inventory = buildContextInventory({ root, projectId: "project-a", locationId: "location-a", folder: "." }, { provider: "codex", readers, refreshShared: true });
+    const skill = inventory.resources.find((resource) => resource.kind === "skill" && resource.source === "shared-main");
+    assert.ok(skill);
+    assert.equal(skill.truthState, "accepted");
+    assert.equal(skill.version, `${revision}:${createHash("sha256").update("# Accepted team skill\n").digest("hex")}`);
+    const applications = inventory.applications.filter((application) => application.resourceId === skill.id);
+    assert.equal(applications.length, 1);
+    assert.equal(applications[0].coordinate.locationId, "location-b");
+    assert.equal(applications[0].status, "active");
+    assert.equal(applications[0].evidence.consumerSource, "accepted-assignment-consumers");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("shared freshness is explicit and registered worktrees are the only targets", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "context-inventory-"));
   try {
