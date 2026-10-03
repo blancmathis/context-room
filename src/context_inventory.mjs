@@ -354,7 +354,7 @@ function defaultListProviderHookSources(root, _folder, provider) {
 
 export function createContextInventoryReaders(overrides = {}) {
   return Object.freeze({
-    listProjects: (options) => listContextHubProjects(options),
+    listProjects: (options) => listContextHubProjects({ ...options, readOnly: true }),
     readSettings: (root) => readMemoryWebappSettings(root),
     listInstructions: (root, settings) => listStartupContextFiles(root, settings),
     listProviderInstructions: (root, folder, provider) => defaultListProviderInstructions(root, folder, provider),

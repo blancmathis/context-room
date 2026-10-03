@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import test from "node:test";
 
 import {
@@ -264,4 +264,55 @@ test("prepare cache invalidates when ignored provider or configured instructions
     assert.equal(refreshed.data.environment.instructions.some((item) => item.path.endsWith(path.basename(file))), false);
     assert.equal(buildAgentPrepareCached(target, options).freshness.cache, "warm");
   }
+});
+
+
+test("prepare computes truthful context with a read-only project and cache", (t) => {
+  const { root, hub } = fixture(t);
+  registerCliProject({ root, title: "Read-only context" });
+  const target = resolveCliTarget({ cwd: root });
+  fs.mkdirSync(path.join(hub, "cli-cache"), { recursive: true });
+  const modes = [];
+  const visit = (file) => {
+    const stats = fs.lstatSync(file);
+    if (stats.isSymbolicLink()) return;
+    modes.push([file, stats.mode & 0o777]);
+    if (stats.isDirectory()) for (const child of fs.readdirSync(file)) visit(path.join(file, child));
+  };
+  visit(root);
+  visit(hub);
+  const before = git(root, ["status", "--porcelain=v1", "--untracked-files=all"]);
+  try {
+    for (const [file] of modes) fs.chmodSync(file, fs.statSync(file).isDirectory() ? 0o555 : 0o444);
+    const result = buildAgentPrepareCached(target, { provider: "codex", task: "Guide" });
+    assert.equal(result.freshness.cache, "unavailable");
+    assert.ok(result.warnings.some((warning) => warning.includes("Context cache unavailable")));
+    assert.ok(result.data.environment.instructions.some((item) => item.path === "AGENTS.md"));
+    assert.equal(result.data.documentation.accepted.length, 0, "unreviewed documentation must remain excluded");
+    assert.ok(result.data.review.items.some((item) => item.path === "docs/guide.md"));
+    assert.deepEqual(fs.readdirSync(path.join(hub, "cli-cache")), []);
+    assert.equal(git(root, ["status", "--porcelain=v1", "--untracked-files=all"]), before);
+  } finally {
+    for (const [file, mode] of modes) fs.chmodSync(file, mode);
+  }
+});
+
+test("context bundle succeeds under a macOS sandbox denying all file writes", { skip: process.platform !== "darwin" }, (t) => {
+  const { root, parent } = fixture(t);
+  registerCliProject({ root, title: "Sandbox context" });
+  const result = spawnSync("/usr/bin/sandbox-exec", [
+    "-p", "(version 1) (allow default) (deny file-write*)",
+    process.execPath, path.resolve("bin/context-room.mjs"),
+    "context", "bundle", "--task", "Guide", "--provider", "codex", "--format", "json",
+  ], {
+    cwd: fs.realpathSync(root), encoding: "utf8", timeout: 60_000,
+    env: { ...process.env, CONTEXT_ROOM_SHARED_HOME: path.join(parent, "shared") },
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const envelope = JSON.parse(result.stdout);
+  assert.equal(envelope.ok, true);
+  assert.equal(envelope.freshness.cache, "unavailable");
+  assert.equal(envelope.data.documentation.accepted.length, 0);
+  assert.ok(envelope.data.review.items.some((item) => item.path === "docs/guide.md"));
 });

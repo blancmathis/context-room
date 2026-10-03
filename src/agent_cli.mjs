@@ -491,9 +491,9 @@ function writeCliCache(cachePath, fingerprint, result) {
   }
 }
 
-export function resolveCliTarget({ cwd = process.cwd(), project = "", location = "", folder = "", requireLocal = true } = {}) {
+export function resolveCliTarget({ cwd = process.cwd(), project = "", location = "", folder = "", requireLocal = true, readOnly = false } = {}) {
   const requested = stablePath(cwd);
-  const projects = listContextHubProjects({ refreshGit: false });
+  const projects = listContextHubProjects({ refreshGit: false, readOnly });
   let candidates = projects;
   if (location) {
     const locationPath = path.isAbsolute(String(location)) || String(location).startsWith(".") ? stablePath(location) : "";
@@ -1323,8 +1323,8 @@ function sharedFreshness(target, { fresh = false } = {}) {
 export function buildAgentPrepare(target, { task = "", sessionId = "", provider = "auto", fresh = false, budget = 1200 } = {}) {
   if (!target.root) throw new ContextRoomCliError("local-environment-unavailable", "Agent prepare requires a registered local project location.");
   const freshness = sharedFreshness(target, { fresh });
-  const report = buildDocQaReport(target.root);
-  const doctor = buildContextRoomDoctorReport(target.root, { docqa: report });
+  const report = buildDocQaReport(target.root, { readOnly: true });
+  const doctor = buildContextRoomDoctorReport(target.root, { docqa: report, readOnly: true });
   const environment = buildAgentEnvironment(target, { provider, report });
   let documentation = { query: String(task || ""), results: [], revision: null };
   if (String(task || "").trim()) {
@@ -1371,8 +1371,16 @@ export function buildAgentPrepareCached(target, options = {}) {
   const cached = readCliCache(cachePath, fingerprint);
   if (cached) return cached;
   const result = buildAgentPrepare(target, options);
-  writeCliCache(cachePath, fingerprint, result);
-  return { ...result, freshness: { ...(result.freshness || {}), cache: "cold" } };
+  try {
+    writeCliCache(cachePath, fingerprint, result);
+    return { ...result, freshness: { ...(result.freshness || {}), cache: "cold" } };
+  } catch (error) {
+    return {
+      ...result,
+      freshness: { ...(result.freshness || {}), cache: "unavailable" },
+      warnings: [...(result.warnings || []), `Context cache unavailable (${error.code || "write-failed"}); computed without caching.`],
+    };
+  }
 }
 
 export function buildSharedOnlyAgentPrepare({ repository, projectId, task = "", sessionId = "", provider = "auto", fresh = false, budget = 1200 } = {}) {

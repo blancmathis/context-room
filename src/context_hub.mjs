@@ -1235,13 +1235,16 @@ function normalizedInvalidHubSharedRecoveryIssue(raw, issueDirectory) {
   };
 }
 
-function readInvalidHubSharedRecoveryIssuesLocked() {
+function readInvalidHubSharedRecoveryIssuesLocked({ readOnly = false } = {}) {
   const directory = invalidSharedTransactionDirectory();
   if (!fs.existsSync(directory)) return [];
-  recoverInvalidHubSharedQuarantineStagingLocked();
+  if (!readOnly) recoverInvalidHubSharedQuarantineStagingLocked();
   const stats = fs.lstatSync(directory);
   if (!stats.isDirectory() || stats.isSymbolicLink()) {
     throw Object.assign(new Error("Context Hub invalid Shared transaction store is not a private directory"), { code: "context_hub_shared_transaction_store_invalid" });
+  }
+  if (readOnly && fs.readdirSync(directory).some((name) => name.startsWith(".") && name.endsWith(".tmp"))) {
+    throw Object.assign(new Error("Context Hub quarantine recovery requires a writable registry"), { code: "context_hub_shared_recovery_required" });
   }
   return fs.readdirSync(directory)
     .filter((name) => /^[0-9a-f-]{36}$/.test(name))
@@ -1277,7 +1280,7 @@ function assertNoUnknownHubSharedRecoveryLocked() {
   throw error;
 }
 
-function readHubSharedTransactionsLocked() {
+function readHubSharedTransactionsLocked({ readOnly = false } = {}) {
   const directory = sharedTransactionDirectory();
   if (!fs.existsSync(directory)) return [];
   const stats = fs.lstatSync(directory);
@@ -1294,6 +1297,7 @@ function readHubSharedTransactionsLocked() {
       }
       transactions.push(normalizedHubSharedTransaction(readJson(filePath), filePath));
     } catch (error) {
+      if (readOnly) throw error;
       quarantineInvalidHubSharedTransactionLocked(path.join(directory, name), error);
     }
   }
@@ -1912,10 +1916,11 @@ function normalizedRegistry(raw = {}, { refreshGit = false } = {}) {
   };
 }
 
-function readContextHubRegistryRaw({ refreshGit = false } = {}) {
+function readContextHubRegistryRaw({ refreshGit = false, readOnly = false } = {}) {
   const raw = readJson(registryPath(), {});
-  const migrated = migrateLegacyContextHubRegistry(raw);
-  if (Number(raw?.version) < CONTEXT_HUB_REGISTRY_VERSION) {
+  // Reading cannot attest an old location or migrate/recover its authority.
+  const migrated = readOnly ? raw : migrateLegacyContextHubRegistry(raw);
+  if (!readOnly && Number(raw?.version) < CONTEXT_HUB_REGISTRY_VERSION) {
     if (registryLockDepth <= 0) throw new Error("Context Hub registry migration requires its filesystem lock");
     writeJson(registryPath(), migrated);
   }
@@ -2340,10 +2345,10 @@ export function withContextHubProjectSharedDisconnection(root, operation) {
   }
 }
 
-export function listContextHubProjects({ refreshGit = false } = {}) {
-  return withRegistryLock(() => {
-    const registry = readContextHubRegistryRaw({ refreshGit });
-    const recoveryByLogicalProject = new Map(readHubSharedTransactionsLocked()
+export function listContextHubProjects({ refreshGit = false, readOnly = false } = {}) {
+  const readProjects = () => {
+    const registry = readContextHubRegistryRaw({ refreshGit, readOnly });
+    const recoveryByLogicalProject = new Map(readHubSharedTransactionsLocked({ readOnly })
       .filter((transaction) => transaction.recoveryRequired)
       .map((transaction) => [transaction.logicalProjectId, {
         status: "recovery-required",
@@ -2364,7 +2369,7 @@ export function listContextHubProjects({ refreshGit = false } = {}) {
         },
       }]));
     const [unknownRecovery] = [
-      ...readInvalidHubSharedRecoveryIssuesLocked(),
+      ...readInvalidHubSharedRecoveryIssuesLocked({ readOnly }),
       ...peekSharedDisconnectRecoveryIssues(),
     ];
     const globalSharedRecovery = unknownRecovery ? {
@@ -2407,7 +2412,8 @@ export function listContextHubProjects({ refreshGit = false } = {}) {
       if (left.available !== right.available) return left.available ? -1 : 1;
       return String(right.lastOpenedAt).localeCompare(String(left.lastOpenedAt));
     });
-  });
+  };
+  return readOnly ? readProjects() : withRegistryLock(readProjects);
 }
 
 export function recordContextHubProjectOpened(projectId) {
