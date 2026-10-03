@@ -2129,7 +2129,17 @@ function registerContextHubProjectInRegistry(registry, {
       ? { ...project, shared: entry.shared }
       : project
   ));
-  return entry;
+  return existing?.shared && !nextShared ? {
+    ...entry,
+    sharedNotCarriedOver: { ...existing.shared, reason: "folder identity changed" },
+  } : entry;
+}
+
+export function contextHubRegistrationWarning(registration) {
+  const lost = registration?.sharedNotCarriedOver;
+  return lost
+    ? `Shared link not carried over (${lost.reason}): repository ${JSON.stringify(lost.repository)}, project ${JSON.stringify(lost.projectId)}. Re-link it in Hub project settings.`
+    : "";
 }
 
 export function withContextHubProjectSharedRegistration(root, {
@@ -2342,17 +2352,28 @@ export function listContextHubProjects({ refreshGit = false } = {}) {
     } : null;
     return registry.projects.map((entry) => {
       let available = false;
+      let unavailableReason = "";
       try {
+        const current = contextHubProjectRootIdentity(entry.root);
         const rootIdentity = normalizedProjectRootIdentity(entry.rootIdentity);
-        available = Boolean(rootIdentity)
-          && contextHubProjectRootMatchesIdentity(entry.root, rootIdentity)
-          && assertContextHubProjectControlFiles(entry.root, rootIdentity);
-      } catch {}
+        if (!rootIdentity || current.dev !== rootIdentity.dev || current.ino !== rootIdentity.ino) {
+          unavailableReason = "folder identity changed";
+        } else {
+          unavailableReason = "project configuration unavailable";
+          available = assertContextHubProjectControlFiles(entry.root, rootIdentity);
+          if (available) unavailableReason = "";
+        }
+      } catch (error) {
+        if (["EACCES", "EPERM"].includes(error?.code)) unavailableReason = "permission denied";
+        else if (["ENOENT", "ENOTDIR"].includes(error?.code)) unavailableReason ||= "folder missing";
+        else unavailableReason ||= "folder identity changed";
+      }
       const logicalProjectId = entry.logicalProjectId || entry.id;
       const sharedRecovery = recoveryByLogicalProject.get(logicalProjectId) || globalSharedRecovery;
       return {
         ...entry,
         available,
+        unavailableReason,
         title: available ? projectTitle(entry.root) : entry.title,
         ...(sharedRecovery ? { sharedRecovery } : {}),
       };

@@ -27,6 +27,7 @@ import {
 } from "./context_room.mjs";
 import {
   contextHubRepositoryIdentity,
+  contextHubRegistrationWarning,
   listContextHubProjects,
   readContextHubRegistry,
   readContextHubRuntime,
@@ -602,6 +603,8 @@ export function listCliProjects({ query = "", recent = false } = {}) {
 export function registerCliProject({ root = process.cwd(), title = "" } = {}) {
   const projectRoot = projectConfigRoot(root) || stablePath(root);
   const registered = registerContextHubProject(projectRoot, { title });
+  const warning = contextHubRegistrationWarning(registered);
+  if (warning) console.warn(warning);
   appendContextRoomEvent("project.location-registered", {
     projectId: registered.logicalProjectId,
     locationId: registered.id,

@@ -5032,12 +5032,12 @@ function contextHubVisibleItems() {
             : "Shared project without a local folder connected on this computer."
           : "Project with local documentation.",
       files: project.localReviewFiles || [],
-      fileCount: project.localReviewCount || 0,
+      fileCount: project.localReviewCount ?? null,
       proposalCount: project.sharedProposalCount || 0,
       reviewStatus: contextHubProjectSharedRecovery(project)
         ? "recovery_required"
         : project.available
-        ? (project.localReviewCount ? "local_changes" : "clean")
+        ? (contextHubLocalReviewsConfirmed(project) ? (project.localReviewCount ? "local_changes" : "clean") : "unavailable")
         : project.mode === "shared"
           ? (project.sharedProposalCount ? "shared_proposals" : "shared_clear")
           : "unavailable",
@@ -5791,6 +5791,19 @@ function contextHubProjectSearchText(project) {
   ].filter(Boolean).join(" ").toLowerCase();
 }
 
+function contextHubLocalReviewsConfirmed(project) {
+  return project?.mode === "shared" || Boolean(
+    project?.available
+    && project.localReviewCount != null
+    && !project.localReviewError
+    && (project.worktrees || []).every((worktree) => worktree.available !== false && worktree.localReviewCount !== null && !worktree.localReviewError)
+  );
+}
+
+function contextHubProjectUnavailableReason(project) {
+  return project?.unavailableReason || (project?.mode === "shared" ? "Shared without local folder" : "folder unavailable");
+}
+
 function contextHubProjectAttentionLabel(project) {
   if (contextHubProjectSharedRecovery(project)) return "Recovery required";
   const reviewCount = Number(project?.localReviewCount || 0);
@@ -5799,6 +5812,17 @@ function contextHubProjectAttentionLabel(project) {
     reviewCount ? reviewCount + " review" + (reviewCount === 1 ? "" : "s") : "",
     proposalCount ? proposalCount + " proposal" + (proposalCount === 1 ? "" : "s") : "",
   ].filter(Boolean);
+  if (project?.mode === "shared") {
+    // A Shared-only project is an expected state, not a failure.
+    const offline = project.sharedStatus?.online === false
+      ? (project.sharedStatus?.revision ? "Offline · cached snapshot" : "Offline · cache unavailable")
+      : "";
+    return ["Shared · no local folder", offline, ...work].filter(Boolean).join(" · ");
+  }
+  if (project?.available === false) {
+    return ["Unavailable · " + contextHubProjectUnavailableReason(project), "— reviews", ...work.filter((label) => label.includes("proposal"))].join(" · ");
+  }
+  if (!contextHubLocalReviewsConfirmed(project)) return ["— reviews · not inspected", ...work.filter((label) => label.includes("proposal"))].join(" · ");
   if (project?.shared && project.sharedStatus?.online === false) {
     return [project.sharedStatus?.revision ? "Offline · cached snapshot" : "Offline · cache unavailable", ...work].join(" · ");
   }
@@ -5935,13 +5959,13 @@ function renderGlobalProjectExplorerPage(project, page, depth = 0, filter = "all
 
 function contextHubProjectWorktrees(project) {
   if (Array.isArray(project?.worktrees) && project.worktrees.length) return project.worktrees;
-  return project?.root ? [{ id: project.id, root: project.root, branch: project.worktree?.branch || "", available: project.available, current: project.current }] : [];
+  return project?.root ? [{ id: project.id, root: project.root, branch: project.worktree?.branch || "", available: project.available, unavailableReason: project.unavailableReason || "", shared: project.shared || null, current: project.current }] : [];
 }
 
 function contextHubPreferredWorktree(project, requestedId = "") {
   const worktrees = contextHubProjectWorktrees(project);
   return worktrees.find((worktree) => worktree.id === requestedId)
-    || worktrees.find((worktree) => worktree.current)
+    || worktrees.find((worktree) => worktree.current && worktree.available)
     || worktrees.find((worktree) => worktree.available)
     || worktrees[0]
     || null;
@@ -6903,7 +6927,9 @@ function renderContextHubProjectPicker() {
         const proposalCount = Number(project.sharedProposalCount || 0);
         const meta = [
           project.current ? "current" : "",
-          reviewCount ? reviewCount + " review" + (reviewCount === 1 ? "" : "s") : "",
+          !contextHubLocalReviewsConfirmed(project) || project.available === false
+            ? contextHubProjectAttentionLabel(project)
+            : reviewCount ? reviewCount + " review" + (reviewCount === 1 ? "" : "s") : "",
           proposalCount ? proposalCount + " proposal" + (proposalCount === 1 ? "" : "s") : "",
         ].filter(Boolean).join(" · ") || "no pending review";
         return '<button id="contextHubProjectPickerOption-' + index + '" class="context-hub-project-picker-option" type="button" role="option" aria-selected="' + String(selected) + '" data-active="' + String(active) + '" data-context-hub-project-picker-choice="' + escapeHtml(project.projectKey) + '" data-context-hub-project-picker-index="' + index + '"' + (state.sharedContextBusy ? ' disabled' : '') + '>'
@@ -7636,9 +7662,12 @@ function renderContextRoomGlobalReviewQueue() {
     !(state.contextHub?.repositoryErrors || []).length
     && (state.contextHub?.sharedRepositories || []).every((repository) => repository.status?.online === true)
   );
-  const localReviewCoverageConfirmed = (state.contextHub?.projects || []).every((project) => (
-    project.mode === "shared" || !project.localReviewError
-  ));
+  const localReviewCoverageConfirmed = (state.contextHub?.projects || []).every(contextHubLocalReviewsConfirmed);
+  const reviewSnapshotConfirmed = Boolean(
+    state.contextHubReviewQueueReady
+    && state.contextHub?.freshness?.fresh === true
+    && state.contextHub?.freshness?.refreshing !== true
+  );
   const reviewStateConfirmedFresh = Boolean(
     state.contextHubReviewQueueReady
     && state.contextHub?.freshness?.fresh === true
@@ -7683,14 +7712,16 @@ function renderContextRoomGlobalReviewQueue() {
   summary.innerHTML = cleanQueue
     ? '<div class="review-summary-item"><strong>All clear</strong><span>no review pending</span></div>'
     : hubReady
-      ? (IS_HOSTED_HUB ? "" : '<div class="review-summary-item"><strong>' + localReviewCount + '</strong><span>file' + (localReviewCount === 1 ? "" : "s") + '</span></div>')
-      + '<div class="review-summary-item"><strong>' + sharedReviewCount + '</strong><span>proposal' + (sharedReviewCount === 1 ? "" : "s") + '</span></div>'
+      ? (IS_HOSTED_HUB ? "" : '<div class="review-summary-item"><strong>' + (reviewSnapshotConfirmed && localReviewCoverageConfirmed ? localReviewCount : "—") + '</strong><span>file' + (localReviewCount === 1 ? "" : "s") + '</span></div>')
+      + '<div class="review-summary-item"><strong>' + (reviewSnapshotConfirmed && sharedReviewCoverageConfirmed ? sharedReviewCount : "—") + '</strong><span>proposal' + (sharedReviewCount === 1 ? "" : "s") + '</span></div>'
       : '<div class="review-summary-item"><strong>…</strong><span>loading reviews</span></div>';
   queueElement.classList.toggle("batch-open", showDeletionBatch && state.deletionBatchExpanded);
   const modeWarning = renderContextRoomModeWarning(selectedProject);
   const queueMarkup = (showDeletionBatch ? renderDeletionReviewBatch(s) : "") + visibleReviews.map(renderContextRoomReviewRow).join("");
   const unconfirmedReviewCopy = !sharedReviewCoverageConfirmed
     ? "Some Shared repositories could not be checked. The proposals shown below may be incomplete. Restore connectivity and refresh."
+    : !localReviewCoverageConfirmed
+      ? "Some local locations could not be inspected. File counts are unknown. Restore access and refresh."
     : "Review coverage is not current. The items shown below may be incomplete. Refresh before relying on this queue.";
   const unconfirmedReviewMarkup = reviewStateUnconfirmed
     ? '<div class="issue review-status-unconfirmed" role="status">' + unconfirmedReviewCopy + ' <button class="quiet-button" type="button" data-review-refresh>Refresh</button></div>'
@@ -7842,7 +7873,7 @@ function renderSharedProposalWorkspace() {
   summary.textContent = projectManagerMode
     ? (hubSummary.projects || projects.length || 0) + " projects · "
       + (hubSummary.localProjects || 0) + " local · " + (hubSummary.sharedProjects || 0) + " shared"
-    : (hubSummary.localReviews || 0) + " local files · " + (hubSummary.proposals || 0) + " shared proposals";
+    : (hubSummary.localReviews ?? "—") + " local files · " + (hubSummary.proposals || 0) + " shared proposals";
   const listStatus = el("contextHubListStatus");
   if (listStatus) {
     const errorCount = hub.repositoryErrors?.length || 0;
@@ -7985,7 +8016,7 @@ function renderContextHubOverview(item) {
     el("sharedProposalChangeSummary").textContent = "No local folder connected";
   } else {
     openButton.textContent = item.localFile ? "Review this file" : "Select this project";
-    el("sharedProposalChangeSummary").textContent = item.localFile || (fileCount ? fileCount + " file" + (fileCount === 1 ? "" : "s") + " in the local review queue" : "Local review queue clear");
+    el("sharedProposalChangeSummary").textContent = item.localFile || (!contextHubLocalReviewsConfirmed(project) ? "— files · review coverage incomplete" : fileCount ? fileCount + " file" + (fileCount === 1 ? "" : "s") + " in the local review queue" : "Local review queue clear");
   }
   contextHubHideFrames();
   empty.hidden = false;
@@ -14277,6 +14308,14 @@ function renderGlobalProjectInspection(panel = el("contextHealthPanel"), holder 
           : "Shared is offline and no accepted main snapshot is cached on this device.")
         : "This Shared-only project has no local worktree to inspect.";
     holder.innerHTML = '<div class="global-project-inspection-empty"><strong>' + escapeHtml(project.title || project.id || "Shared project") + ' is selected.</strong><span>' + escapeHtml(status) + ' Context health and agent-environment inspection are available only for a connected local worktree.</span></div>';
+    return;
+  }
+  if (worktree.available === false) {
+    state.globalInspectionView = "";
+    const warning = worktree.shared && contextHubProjectUnavailableReason(worktree) === "folder identity changed"
+      ? " Registering this folder again will not keep its Shared link. Re-link it in Hub project settings afterward."
+      : " Restore access, then refresh to inspect this location.";
+    holder.innerHTML = '<div class="global-project-inspection-empty"><strong>' + escapeHtml(project.title || project.id) + '</strong><span>Unavailable · ' + escapeHtml(contextHubProjectUnavailableReason(worktree)) + '. Reviews: —.' + escapeHtml(warning) + '</span></div>';
     return;
   }
   const location = worktree.branch || worktree.root;
