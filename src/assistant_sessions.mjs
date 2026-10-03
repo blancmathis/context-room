@@ -5,6 +5,7 @@ import { AssistantTiming } from './assistant_timing.mjs';
 import { createCodexProvider } from './codex_provider.mjs';
 import { canonicalNotebookRoot, notebookHash, readNotebookJson, writeNotebookJson, safeNotebookPath, withNotebookLock } from './notebook_io.mjs';
 import { filesystemProcessIdentity } from './filesystem_lock.mjs';
+import { acceptsRootIdentity, rootIdentityAliases } from './location_attestation.mjs';
 import { assistantLegacySummary, readAssistantLegacyArchive, readAssistantLegacyHistory, LEGACY_HISTORY_TOOL } from './assistant_legacy.mjs';
 
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -37,7 +38,7 @@ export class AssistantSessions {
     });
   }
   authorize(state, root) {
-    if (state.origin.root !== root || state.origin.rootIdentity !== canonicalNotebookRoot(root)) throw fault('assistant_scope', 'This conversation belongs to another exact project.', 403);
+    if (state.origin.root !== root || !['same', 'alias'].includes(acceptsRootIdentity(root, state.origin.rootIdentity))) throw fault('assistant_scope', 'This conversation belongs to another exact project.', 403);
     const resolved = this.resolveSource(root, state.origin.source, state.origin);
     if (!state.legacy) return resolved;
     return { ...resolved, tools: [...resolved.tools, LEGACY_HISTORY_TOOL],
@@ -66,7 +67,7 @@ export class AssistantSessions {
       if (canonicalNotebookRoot(this.root) !== this.identity) throw fault('assistant_storage', 'The original conversation store was replaced.');
       const existing = readNotebookJson(this.root, this.file(requestId));
       if (existing) {
-        if (existing.fingerprint !== fingerprint) throw fault('assistant_request_conflict', 'This recovery identity already names different history or a different source.');
+        if (!rootIdentityAliases(root).some(rootIdentity => existing.fingerprint === notebookHash({ root, rootIdentity, source, legacy }))) throw fault('assistant_request_conflict', 'This recovery identity already names different history or a different source.');
         this.authorize(existing, root); readAssistantLegacyArchive(this.root, existing.legacy); return this.public(existing);
       }
       const { original, ...input } = source;
@@ -148,6 +149,8 @@ export class AssistantSessions {
       || source.locationRevision !== undefined && (typeof source.locationRevision !== 'string' || !/^[a-f0-9]{64}$/.test(source.locationRevision)))
       || selectionHash !== null && (typeof selectionHash !== 'string' || !/^[a-f0-9]{64}$/.test(selectionHash))) throw fault('assistant_history_query', 'Choose a valid source and a history page of 1–200 conversations.', 400);
     const scope = notebookHash({ store: this.identity, root, rootIdentity: canonicalNotebookRoot(root), source, selectionHash });
+    const scopes = rootIdentityAliases(this.root).flatMap(store => rootIdentityAliases(root)
+      .map(rootIdentity => notebookHash({ store, root, rootIdentity, source, selectionHash })));
     const all = this.list(root, { source, selectionHash }), revision = notebookHash(all.map(item => [item.id, item.revision, item.updatedAt]));
     let offset = 0;
     if (cursor !== null) {
@@ -156,7 +159,7 @@ export class AssistantSessions {
         if (typeof cursor !== 'string' || cursor.length > 1024 || Buffer.from(cursor, 'base64url').toString('base64url') !== cursor) throw new Error();
         parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
       } catch { throw fault('assistant_history_cursor', 'Invalid saved-history cursor.', 400); }
-      if (parsed?.version !== 1 || parsed.scope !== scope || !Number.isSafeInteger(parsed.offset) || parsed.offset < 1) throw fault('assistant_history_cursor', 'This history page belongs to another original source.', 400);
+      if (parsed?.version !== 1 || !scopes.includes(parsed.scope) || !Number.isSafeInteger(parsed.offset) || parsed.offset < 1) throw fault('assistant_history_cursor', 'This history page belongs to another original source.', 400);
       if (parsed.revision !== revision) throw fault('assistant_history_changed', 'Saved conversations changed. Refresh history before loading older conversations.');
       offset = parsed.offset;
       if (offset >= all.length) throw fault('assistant_history_cursor', 'This history page is outside the retained conversations.', 400);
