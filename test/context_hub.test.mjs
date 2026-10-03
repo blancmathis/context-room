@@ -4007,7 +4007,7 @@ test("read-only project listing leaves legacy identity and damaged journals unto
   fs.writeFileSync(registryPath, legacy);
   const [unconfirmed] = listContextHubProjects({ readOnly: true });
   assert.equal(unconfirmed.available, false);
-  assert.equal(unconfirmed.unavailableReason, "folder identity changed");
+  assert.equal(unconfirmed.unavailableReason, "identity to confirm");
   assert.equal(fs.readFileSync(registryPath, "utf8"), legacy);
 
   fs.writeFileSync(registryPath, current);

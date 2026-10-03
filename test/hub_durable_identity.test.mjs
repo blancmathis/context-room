@@ -114,14 +114,70 @@ test("legacy availability is identity to confirm without writing or observing", 
   const raw = JSON.parse(fs.readFileSync(registryPath));
   delete raw.projects[0].rootDurableIdentity;
   fs.writeFileSync(registryPath, JSON.stringify(raw) + "\n\n");
-  fs.rmSync(path.join(root, ".git"), { recursive: true });
   const before = fs.readFileSync(registryPath);
   const authority = fs.readdirSync(path.join(base, "authority")).map(name => [name, fs.readFileSync(path.join(base, "authority", name))]);
+  alterStats(t, { dev: 77 }, root);
   const [entry] = listContextHubProjects({ refreshGit: true });
   assert.equal(entry.available, false);
   assert.equal(entry.unavailableReason, "identity to confirm");
   assert.deepEqual(fs.readFileSync(registryPath), before);
   assert.deepEqual(fs.readdirSync(path.join(base, "authority")).map(name => [name, fs.readFileSync(path.join(base, "authority", name))]), authority);
+});
+
+test("an exact legacy entry stays available and gains durable evidence without a gesture", (t) => {
+  const { root, base, registryPath } = fixture(t);
+  const original = registerContextHubProject(root, { shared: { repository: path.join(root, "remote.git"), projectId: "demo" } });
+  const raw = JSON.parse(fs.readFileSync(registryPath));
+  delete raw.projects[0].rootDurableIdentity;
+  for (const key of ["commonDir", "gitDir", "gitEntry"]) delete raw.projects[0].worktreeIdentity[`${key}DurableIdentity`];
+  fs.writeFileSync(registryPath, JSON.stringify(raw));
+  fs.rmSync(path.join(base, "authority"), { recursive: true, force: true });
+  const legacyBytes = fs.readFileSync(registryPath);
+  assert.equal(listContextHubProjects({ readOnly: true })[0].available, true);
+  assert.deepEqual(fs.readFileSync(registryPath), legacyBytes, "a read-only listing never upgrades");
+  assert.equal(fs.existsSync(path.join(base, "authority")), false);
+  const [upgraded] = listContextHubProjects();
+  assert.equal(upgraded.available, true);
+  assert.deepEqual(upgraded.rootDurableIdentity, original.rootDurableIdentity);
+  assert.deepEqual(upgraded.worktreeIdentity, original.worktreeIdentity);
+  assert.deepEqual(readContextHubRegistry().projects[0].rootDurableIdentity, original.rootDurableIdentity);
+  assert.deepEqual(rootIdentityAliases(root), [`${original.rootIdentity.dev}:${original.rootIdentity.ino}`]);
+  alterStats(t, { dev: 77 }, root);
+  const [restarted] = listContextHubProjects();
+  assert.equal(restarted.available, true);
+  assert.deepEqual(restarted.shared, original.shared);
+  assert.ok(rootIdentityAliases(root).includes(`${original.rootIdentity.dev}:${original.rootIdentity.ino}`));
+});
+
+test("Hub listing verifies stored Git paths without running Git", (t) => {
+  const { root, base } = fixture(t);
+  const original = registerContextHubProject(root);
+  const emptyPath = path.join(base, "no-git-bin");
+  fs.mkdirSync(emptyPath);
+  const previous = process.env.PATH;
+  process.env.PATH = emptyPath;
+  t.after(() => process.env.PATH = previous);
+  alterStats(t, { dev: 77 }, root);
+  const [entry] = listContextHubProjects();
+  assert.equal(entry.available, true);
+  assert.equal(entry.worktreeIdentity.kind, "git");
+  assert.equal(entry.worktreeIdentity.commonDir, original.worktreeIdentity.commonDir);
+  assert.equal(entry.worktreeIdentity.gitDirIdentity.dev, String(BigInt(original.worktreeIdentity.gitDirIdentity.dev) + 77n));
+});
+
+test("enrolling a new folder at a path with a stale attestation replaces the old aliases", (t) => {
+  const { root, registryPath } = fixture(t, { git: false });
+  const old = registerContextHubProject(root);
+  fs.writeFileSync(registryPath, JSON.stringify({ ...JSON.parse(fs.readFileSync(registryPath)), projects: [] }));
+  fs.rmSync(root, { recursive: true, force: true });
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs/a.md"), "# New\n");
+  initializeContextRoomProject(root, { title: "Replacement", allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+  const current = readFilesystemIdentity(root).identity;
+  assert.notDeepEqual(current, old.rootDurableIdentity);
+  const replacement = registerContextHubProject(root);
+  assert.deepEqual(replacement.rootDurableIdentity, current);
+  assert.deepEqual(rootIdentityAliases(root), [`${replacement.rootIdentity.dev}:${replacement.rootIdentity.ino}`]);
 });
 
 test("incomplete durable Git evidence stays unconfirmed without a registry write", (t) => {
@@ -131,6 +187,7 @@ test("incomplete durable Git evidence stays unconfirmed without a registry write
   delete raw.projects[0].worktreeIdentity.gitEntryDurableIdentity;
   fs.writeFileSync(registryPath, JSON.stringify(raw));
   const before = fs.readFileSync(registryPath);
+  alterStats(t, { dev: 77 }, root);
   const [entry] = listContextHubProjects();
   assert.equal(entry.available, false);
   assert.equal(entry.unavailableReason, "identity to confirm");

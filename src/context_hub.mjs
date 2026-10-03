@@ -347,10 +347,114 @@ function samePersistedRootIdentity(left, right) {
 function originalRootMayStillExist(entry) {
   try {
     const live = contextHubProjectRootIdentity(entry.root);
-    return ["same", "alias"].includes(acceptsRootIdentity(entry.root, `${entry.rootIdentity.dev}:${entry.rootIdentity.ino}`))
+    return ["same", "alias", "confirmed"].includes(acceptsRootIdentity(entry.root, `${entry.rootIdentity.dev}:${entry.rootIdentity.ino}`))
       || (live.ino === entry.rootIdentity.ino
         && compareFilesystemIdentity(entry.rootDurableIdentity, readFilesystemIdentity(entry.root).identity).status !== "different");
   } catch (error) { return !["ENOENT", "ENOTDIR"].includes(error?.code); }
+}
+
+const STORED_GIT_KEYS = ["commonDir", "gitDir", "gitEntry"];
+
+// Follows Git discovery for a stored worktree with small file reads: no nearer
+// .git entry, the same gitdir pointer, the same commondir.
+function storedGitDiscoveryMatches(root, membership, gitRoot) {
+  const depth = membership.relativeRoot === "." ? 0 : membership.relativeRoot.split("/").length;
+  for (let level = 0, directory = root; level < depth; level += 1, directory = path.dirname(directory)) {
+    try {
+      fs.lstatSync(path.join(directory, ".git"));
+      return false;
+    } catch (error) {
+      if (!["ENOENT", "ENOTDIR"].includes(error?.code)) throw error;
+    }
+  }
+  const entry = path.join(gitRoot, ".git");
+  let gitDir = entry;
+  if (fs.lstatSync(entry).isFile()) {
+    const pointer = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(entry, "utf8"));
+    if (!pointer) return false;
+    gitDir = path.resolve(gitRoot, pointer[1]);
+  }
+  gitDir = fs.realpathSync(gitDir);
+  let commonDir = gitDir;
+  try {
+    commonDir = fs.realpathSync(path.resolve(gitDir, fs.readFileSync(path.join(gitDir, "commondir"), "utf8").trim()));
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  return gitDir === membership.gitDir && commonDir === membership.commonDir;
+}
+
+// Compares a registry entry with the disk using lstat only: listing never
+// spawns Git. A complete durable record decides alone. Without one, only exact
+// dev:ino values keep the location; the same inodes under a new device need a
+// human confirmation.
+function storedLocationEvidence(entry) {
+  const current = contextHubProjectRootIdentity(entry.root);
+  const legacy = normalizedProjectRootIdentity(entry.rootIdentity);
+  const membership = normalizedWorktreeMembershipIdentity(entry.worktreeIdentity);
+  if (!legacy || !membership || !worktreeMembershipIdentityIsAnchored(membership)) return { status: "unconfirmed" };
+  const keys = membership.kind === "git" ? STORED_GIT_KEYS : [];
+  const gitRoot = membership.relativeRoot === "." ? entry.root
+    : path.resolve(entry.root, ...membership.relativeRoot.split("/").map(() => ".."));
+  const paths = { commonDir: membership.commonDir, gitDir: membership.gitDir, gitEntry: path.join(gitRoot, ".git") };
+  let live;
+  try {
+    if (keys.length && !storedGitDiscoveryMatches(entry.root, membership, gitRoot)) return { status: "different" };
+    live = Object.fromEntries(keys.map((key) => [key, {
+      legacy: key === "gitEntry" ? filesystemEntryIdentity(paths[key]) : contextHubProjectRootIdentity(paths[key]),
+      durable: readFilesystemIdentity(paths[key]).identity,
+    }]));
+  } catch {
+    return { status: "different" };
+  }
+  const rootDurable = readFilesystemIdentity(entry.root).identity;
+  const sameEntryKind = !keys.length || (live.gitEntry.legacy.mode === membership.gitEntryIdentity.mode
+    && live.gitEntry.legacy.kind === membership.gitEntryIdentity.kind);
+  const durableRecorded = Boolean(normalizedDurableIdentity(entry.rootDurableIdentity))
+    && keys.every((key) => normalizedDurableIdentity(membership[`${key}DurableIdentity`]));
+  if (durableRecorded) {
+    const same = sameEntryKind && legacy.ino === entry.rootDurableIdentity.ino
+      && compareFilesystemIdentity(entry.rootDurableIdentity, rootDurable).status === "same"
+      && keys.every((key) => membership[`${key}Identity`].ino === membership[`${key}DurableIdentity`].ino
+        && compareFilesystemIdentity(membership[`${key}DurableIdentity`], live[key].durable).status === "same");
+    return same ? { status: "same", current, live, rootDurable } : { status: "different" };
+  }
+  const sameInodes = sameEntryKind && current.ino === legacy.ino
+    && keys.every((key) => live[key].legacy.ino === membership[`${key}Identity`].ino);
+  if (!sameInodes) return { status: "different" };
+  const exact = current.dev === legacy.dev && keys.every((key) => live[key].legacy.dev === membership[`${key}Identity`].dev);
+  return exact ? { status: "exact", current, live, rootDurable } : { status: "unconfirmed" };
+}
+
+// Records what storedLocationEvidence verified: new device numbers after a
+// durable match, or durable evidence for an entry enrolled before it existed.
+// Returns false, leaving the entry as it was, when the attestation cannot follow.
+function refreshStoredLocation(entry, { status, current, live, rootDurable }) {
+  const rootMoved = entry.rootIdentity.dev !== current.dev;
+  const gitMoved = Object.entries(live).some(([key, value]) => entry.worktreeIdentity[`${key}Identity`].dev !== value.legacy.dev);
+  if (status === "same" && !rootMoved && !gitMoved) return false;
+  if (status === "exact" && (!rootDurable || Object.values(live).some((value) => !value.durable))) return false;
+  try {
+    if (status === "exact" || rootMoved) {
+      const observed = status === "same" ? observeLocation(entry.root) : null;
+      if (observed?.status !== "same") {
+        const attestation = attestLocation(entry.root, { replace: true });
+        if (compareFilesystemIdentity(attestation.durable, rootDurable).status !== "same") return false;
+      }
+    }
+  } catch {
+    return false;
+  }
+  entry.rootIdentity = current;
+  entry.rootDurableIdentity = rootDurable;
+  entry.worktreeIdentity = {
+    ...entry.worktreeIdentity,
+    ...Object.fromEntries(Object.entries(live).flatMap(([key, value]) => [
+      [`${key}Identity`, value.legacy],
+      [`${key}DurableIdentity`, value.durable],
+    ])),
+  };
+  return true;
 }
 
 function normalizedFilesystemEntryIdentity(value = null) {
@@ -1868,9 +1972,10 @@ function normalizedRegistry(raw = {}, { refreshGit = false } = {}) {
       const storedRootIdentity = normalizedProjectRootIdentity(entry.rootIdentity);
       let rootAvailable = false;
       try {
-        rootAvailable = Boolean(storedRootIdentity)
-          && storedRootIdentity.ino === entry.rootDurableIdentity?.ino
-          && compareFilesystemIdentity(entry.rootDurableIdentity, readFilesystemIdentity(root).identity).status === "same";
+        rootAvailable = Boolean(storedRootIdentity) && (entry.rootDurableIdentity
+          ? storedRootIdentity.ino === entry.rootDurableIdentity.ino
+            && compareFilesystemIdentity(entry.rootDurableIdentity, readFilesystemIdentity(root).identity).status === "same"
+          : contextHubProjectRootMatchesIdentity(root, storedRootIdentity));
       } catch {}
       const rootIdentity = storedRootIdentity;
       let identity = {
@@ -1881,7 +1986,9 @@ function normalizedRegistry(raw = {}, { refreshGit = false } = {}) {
       if (refreshGit && rootAvailable) {
         try {
           const live = gitWorktreeIdentity(root, entry);
-          if (sameDurableWorktreeIdentity(entry.worktreeIdentity, live.membershipIdentity)) identity = live;
+          if (entry.rootDurableIdentity
+            ? sameDurableWorktreeIdentity(entry.worktreeIdentity, live.membershipIdentity)
+            : sameWorktreeMembershipIdentity(entry.worktreeIdentity, live.membershipIdentity)) identity = live;
         } catch {} // Preserve the saved entry when Git is unavailable.
       }
       const registeredAt = String(entry.registeredAt || LEGACY_REGISTRY_TIMESTAMP);
@@ -2141,6 +2248,9 @@ function registerContextHubProjectInRegistry(registry, {
   const existingRootIdentity = normalizedProjectRootIdentity(existing?.rootIdentity);
   const durableMatches = existing && sameDurableProjectIdentity(existing, projectRoot, identity.membershipIdentity);
   if (existing && !existingRootIdentity) return { ...existing, identityUnconfirmed: true };
+  // Unreadable durable evidence is doubt, never proof of a replacement.
+  if (existing?.rootDurableIdentity && compareFilesystemIdentity(existing.rootDurableIdentity,
+    readFilesystemIdentity(projectRoot).identity).status === "unverified") return { ...existing, identityUnconfirmed: true };
   const sameRegisteredLocation = Boolean(existing)
     && path.resolve(existing.root) === projectRoot
     && existingRootIdentity?.ino === nextRootIdentity.ino
@@ -2159,12 +2269,13 @@ function registerContextHubProjectInRegistry(registry, {
     nextShared.repository = existingRepository?.repository || nextShared.repository;
     if (!existingRepository) registry.sharedRepositories.push({ repository: nextShared.repository, addedAt: new Date().toISOString() });
   }
-  // An explicit enrollment of a replaced folder discards the old aliases and
-  // Shared binding. Merely uncertain device evidence exits above without writes.
-  const replaced = existing && !sameRegisteredIdentity;
-  const attestation = attestLocation(projectRoot, replaced ? { replace: true } : {});
+  // Enrollment attests the folder present now. Aliases attested for another
+  // folder at this path never apply to it, so a replaced folder discards them
+  // with its Shared binding. Uncertain device evidence exits above without writes.
+  // Without a durable identity (no birth time), enrollment stays strict dev:ino.
+  const attestation = readFilesystemIdentity(projectRoot).identity ? attestLocation(projectRoot, { replace: true }) : null;
   if (!contextHubProjectRootMatchesIdentity(projectRoot, nextRootIdentity)
-    || compareFilesystemIdentity(attestation.durable, readFilesystemIdentity(projectRoot).identity).status !== "same") {
+    || (attestation && compareFilesystemIdentity(attestation.durable, readFilesystemIdentity(projectRoot).identity).status !== "same")) {
     throw contextHubProjectControlFileError(projectRoot, "project root changed during enrollment");
   }
   const entry = {
@@ -2172,7 +2283,7 @@ function registerContextHubProjectInRegistry(registry, {
     logicalProjectId: identity.logicalProjectId,
     root: projectRoot,
     rootIdentity: nextRootIdentity,
-    rootDurableIdentity: attestation.durable,
+    rootDurableIdentity: attestation?.durable || null,
     title: cleanTitle(title, projectTitle(projectRoot)),
     registeredAt: sameRegisteredIdentity ? existing.registeredAt : new Date().toISOString(),
     lastOpenedAt: new Date().toISOString(),
@@ -2418,27 +2529,17 @@ export function listContextHubProjects({ refreshGit = false, readOnly = false } 
       let available = false;
       let unavailableReason = "";
       try {
-        const current = contextHubProjectRootIdentity(entry.root);
-        const complete = entry.rootDurableIdentity && (entry.worktreeIdentity?.kind === "path"
-          || (entry.worktreeIdentity?.kind === "git" && ["commonDir", "gitDir", "gitEntry"]
-            .every(key => normalizedDurableIdentity(entry.worktreeIdentity[`${key}DurableIdentity`]))));
-        const membership = complete ? gitWorktreeIdentity(entry.root).membershipIdentity : null;
-        if (!complete) {
+        const evidence = storedLocationEvidence(entry);
+        if (evidence.status === "unconfirmed") {
           unavailableReason = "identity to confirm";
-        } else if (!sameDurableProjectIdentity(entry, entry.root, membership)) {
+        } else if (evidence.status === "different") {
           unavailableReason = "folder identity changed";
         } else {
           unavailableReason = "project configuration unavailable";
-          available = assertContextHubProjectControlFiles(entry.root, current);
+          available = assertContextHubProjectControlFiles(entry.root, evidence.current);
           if (available) {
-            observeLocation(entry.root);
             unavailableReason = "";
-            if (entry.rootIdentity.dev !== current.dev
-              || !sameWorktreeMembershipIdentity(entry.worktreeIdentity, membership)) {
-              entry.rootIdentity = current;
-              entry.worktreeIdentity = membership;
-              refreshed = true;
-            }
+            if (!readOnly) refreshed = refreshStoredLocation(entry, evidence) || refreshed;
           }
         }
       } catch (error) {

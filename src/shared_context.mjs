@@ -1935,7 +1935,7 @@ function sameSharedProjectCapability(left, right) {
   const expected = normalizedSharedProjectCapability(left);
   const current = normalizedSharedProjectCapability(right);
   if (!expected || !current || expected.root !== current.root
-    || !["same", "alias"].includes(acceptsRootIdentity(expected.root, `${expected.rootIdentity.dev}:${expected.rootIdentity.ino}`))
+    || !["same", "alias", "confirmed"].includes(acceptsRootIdentity(expected.root, `${expected.rootIdentity.dev}:${expected.rootIdentity.ino}`))
     || (expected.rootDurableIdentity && compareFilesystemIdentity(expected.rootDurableIdentity, current.rootDurableIdentity).status !== "same")
     || expected.worktreeIdentity.kind !== current.worktreeIdentity.kind) return false;
   if (expected.worktreeIdentity.kind === "path") return true;
@@ -5187,7 +5187,7 @@ export function removeOrphanedSharedContextBindings({
       try {
         const current = sharedProjectRootIdentity(expected.root);
         const durableStatus = compareFilesystemIdentity(expected.rootDurableIdentity, readFilesystemIdentity(expected.root).identity).status;
-        if (["same", "alias"].includes(acceptsRootIdentity(expected.root, `${expected.rootIdentity.dev}:${expected.rootIdentity.ino}`))
+        if (["same", "alias", "confirmed"].includes(acceptsRootIdentity(expected.root, `${expected.rootIdentity.dev}:${expected.rootIdentity.ino}`))
           || (current.ino === expected.rootIdentity.ino && durableStatus !== "different")
           || durableStatus === "same") {
           const error = sharedContextError("shared-orphan-root-still-present", "The original project root still exists; use the normal Shared disconnect action");
@@ -5765,7 +5765,7 @@ export function readSharedConnectionReceipt(root, {
     || !sameSharedRepository(receipt.repository, repository)
     || receipt.projectId !== String(projectId)
     || path.resolve(receipt.projectRoot || "") !== exactRoot
-    || !["same", "alias"].includes(acceptsRootIdentity(exactRoot, `${receipt.rootIdentity?.dev}:${receipt.rootIdentity?.ino}`))
+    || !["same", "alias", "confirmed"].includes(acceptsRootIdentity(exactRoot, `${receipt.rootIdentity?.dev}:${receipt.rootIdentity?.ino}`))
     || (receipt.rootDurableIdentity && compareFilesystemIdentity(receipt.rootDurableIdentity, readFilesystemIdentity(exactRoot).identity).status !== "same")
     || !receipt.revision
     || safeRelativePath(receipt.projectsPath, "Shared connection receipt projectsPath") !== receipt.projectsPath
