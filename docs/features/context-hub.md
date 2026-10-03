@@ -80,6 +80,35 @@ Registry and Shared-binding mutations use private journals and exact capability 
 
 An unavailable worktree remains identifiable as a registered location. Context Room does not reinterpret another path as that location.
 
+Project rows show `Unavailable · reason` for a missing folder, changed folder identity,
+denied access, or unavailable project configuration. Shared-only rows name the absence
+of a local folder. An available worktree represents a logical project before any
+unavailable location, including a previously selected location.
+
+An uninspected location has an unknown local review count (`—`), not zero. A group
+with an uninspected worktree also has an unknown total. The global queue keeps known
+reviews visible, names incomplete local coverage, and does not claim `All clear` or
+`0 files` until every local location is inspected and the snapshot is current.
+
+Registering a changed folder still requires an explicit new Shared connection: it
+never inherits the previous folder's binding. The registration result identifies
+the binding not carried over (repository, project ID and reason). Launch and project
+registration commands print one warning and direct the owner to re-link it in Hub
+project settings. Unavailable Shared-linked location details warn about this effect
+before re-registration. The current filesystem identity check remains in force;
+this behavior does not migrate or repair identities after a restart.
+
+When the root's device number changes, possibly together with the Git directory
+device numbers, while paths, inodes, relative root and all other worktree
+membership fields and logical project identity still match, registration leaves
+the registry unchanged. Only this no-write preflight ignores device numbers;
+normal registration keeps strict filesystem identity checks.
+Its result reports `identityUnconfirmed: true`, and launch
+and project registration commands warn that the location needs confirmation
+after restart. Any existing Shared binding is preserved but remains inactive:
+the location is still unavailable until its identity is confirmed. This does
+not establish continuity or migrate the stored identity.
+
 ## Local review
 
 The global queue also includes submitted local proposals and changed image assets. Local drafts stay out of the queue until submitted. Each proposal opens an exact before/after file review. [Document workflow](document-workflow.md) owns acceptance, correction, cleanup and recovery behavior.

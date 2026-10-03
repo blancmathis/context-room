@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -19,6 +20,7 @@ import {
   contextHubRegistryLockPath,
   contextHubRepositoryIdentity,
   contextHubRegistryRevision,
+  contextHubRegistrationWarning,
   disconnectContextHubProjectShared,
   invalidateContextHubSnapshot,
   listContextHubProjects,
@@ -1682,6 +1684,266 @@ test("Context Hub registration does not inherit Shared state after a project roo
   assert.notDeepEqual(fresh.rootIdentity, original.rootIdentity, "the filesystem capability must change");
   assert.equal(fresh.shared, null, "a replacement root must opt in to Shared explicitly");
   assert.equal(readContextHubRegistry().projects.find((entry) => entry.id === fresh.id).shared, null);
+});
+
+test("Context Hub registration reports the Shared link lost after a replacement and the CLI prints it", (t) => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-registration-warning-")));
+  const hubHome = path.join(base, "hub");
+  withHubHome(t, hubHome);
+  withSharedHome(t, path.join(base, "shared"));
+  const root = makeProject(base, "Registration warning");
+  const shared = { repository: path.join(base, "shared.git"), projectId: "demo" };
+  const original = registerContextHubProject(root, { shared });
+  const registryPath = path.join(hubHome, "registry.json");
+  fs.renameSync(root, path.join(base, "original-project"));
+  makeProject(base, "Registration warning");
+  const fresh = registerContextHubProject(root);
+  assert.equal(fresh.id, original.id);
+  assert.notEqual(fresh.rootIdentity.ino, original.rootIdentity.ino);
+  assert.equal(fresh.shared, null);
+  assert.deepEqual(fresh.sharedNotCarriedOver, { ...shared, reason: "folder identity changed" });
+  assert.equal(readContextHubRegistry().projects[0].sharedNotCarriedOver, undefined, "warnings are results, not persisted bindings");
+  const warning = contextHubRegistrationWarning(fresh);
+  assert.equal(warning, `Shared link not carried over (folder identity changed): repository ${JSON.stringify(shared.repository)}, project "demo". Re-link it in Hub project settings.`);
+  assert.equal(contextHubRegistrationWarning(registerContextHubProject(root)), "", "an unchanged registration does not repeat the warning");
+  registerContextHubProject(root, { shared });
+  fs.renameSync(root, path.join(base, "second-project"));
+  makeProject(base, "Registration warning");
+  const cli = spawnSync(process.execPath, [fileURLToPath(new URL("../bin/context-room.mjs", import.meta.url)), "project", "register", "--root", root, "--format", "json"], { encoding: "utf8", env: process.env, timeout: 30_000 });
+  assert.equal(cli.status, 0, cli.stderr);
+  assert.equal(cli.stderr.trim(), warning, "exactly one actionable warning is printed");
+  assert.deepEqual(JSON.parse(cli.stdout).data.registered.sharedNotCarriedOver, fresh.sharedNotCarriedOver);
+});
+
+test("Context Hub registration preserves an unconfirmed root and its Shared link without writing the registry", async (t) => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-registration-unconfirmed-")));
+  const hubHome = path.join(base, "hub");
+  withHubHome(t, hubHome);
+  withSharedHome(t, path.join(base, "shared"));
+  const root = makeProject(base, "Unconfirmed registration");
+  const shared = { repository: path.join(base, "shared.git"), projectId: "demo" };
+  const original = registerContextHubProject(root, { shared });
+  const registryPath = path.join(hubHome, "registry.json");
+  const registry = JSON.parse(fs.readFileSync(registryPath, "utf8"));
+  const entry = registry.projects.find((item) => item.id === original.id);
+  entry.rootIdentity.dev = String(BigInt(entry.rootIdentity.dev) + 1n);
+  // Preserve nonstandard whitespace to catch even a write of identical values.
+  fs.writeFileSync(registryPath, JSON.stringify(registry) + "\n\n");
+  const before = fs.readFileSync(registryPath);
+  const snapshotControlPath = path.join(hubHome, "snapshot-control.json");
+  const snapshotControl = fs.readFileSync(snapshotControlPath);
+  const unconfirmed = registerContextHubProject(root, {
+    title: "Do not rename",
+    shared: { repository: path.join(base, "other.git"), projectId: "other" },
+  });
+  assert.deepEqual(unconfirmed, { ...entry, identityUnconfirmed: true });
+  assert.deepEqual(fs.readFileSync(registryPath), before, "no registry bytes may change");
+  assert.deepEqual(fs.readFileSync(snapshotControlPath), snapshotControl, "registration must not invalidate the snapshot");
+  assert.deepEqual(unconfirmed.shared, shared);
+  assert.equal(unconfirmed.sharedNotCarriedOver, undefined);
+  assert.equal(readContextHubRegistry().projects[0].identityUnconfirmed, undefined, "confirmation state belongs only to the result");
+  assert.equal(listContextHubProjects().find((item) => item.id === original.id).available, false);
+  const warning = contextHubRegistrationWarning(unconfirmed);
+  assert.equal(warning, "Folder identity needs confirmation after restart; Shared link preserved and inactive. Registration was not updated.");
+
+  const hostRoot = contextHubHostRoot();
+  fs.mkdirSync(hostRoot, { recursive: true });
+  initializeContextRoomProject(hostRoot, { title: "Test Hub", allowedPaths: [], watchAllow: [] });
+  const room = createMemoryServer({ root: hostRoot, registerInHub: false });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  const port = room.server.address().port;
+  writeContextHubRuntime({ port, root: hostRoot, url: `http://127.0.0.1:${port}` });
+  t.after(async () => {
+    room.server.closeAllConnections();
+    await new Promise((resolve) => room.server.close(resolve));
+  });
+  const cliPath = fileURLToPath(new URL("../bin/context-room.mjs", import.meta.url));
+  const portProbe = net.createServer();
+  await new Promise((resolve) => portProbe.listen(0, "127.0.0.1", resolve));
+  const launchPort = String(portProbe.address().port);
+  await new Promise((resolve) => portProbe.close(resolve));
+  for (const args of [
+    ["project", "register", "--root", root, "--format", "json"],
+    ["start", "--root", root, "--port", launchPort],
+    ["hub", "--root", root, "--port", launchPort],
+  ]) {
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [cliPath, ...args], { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "", stderr = "";
+      const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
+      child.stdout.on("data", (chunk) => { stdout += chunk; });
+      child.stderr.on("data", (chunk) => { stderr += chunk; });
+      child.once("error", (error) => { clearTimeout(timer); reject(error); });
+      child.once("close", (status, signal) => { clearTimeout(timer); resolve({ stdout, stderr, status, signal }); });
+    });
+    assert.equal(result.status, 0, `${args[0]} failed: ${result.stderr} (${result.signal})`);
+    assert.equal(result.stderr.trim(), warning, "exactly one confirmation warning is printed");
+    if (args[0] === "project") {
+      assert.deepEqual(JSON.parse(result.stdout).data.registered, unconfirmed);
+    } else {
+      assert.match(result.stdout, /Context Room Hub:/);
+      assert.match(result.stdout, /Already running since:/);
+    }
+    assert.deepEqual(fs.readFileSync(registryPath), before, `${args[0]} must preserve the registry byte for byte`);
+  }
+});
+
+test("Context Hub registration preserves Shared after every Git device changes in a repository and linked worktree", (t) => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-git-reboot-")));
+  const hubHome = path.join(base, "hub");
+  withHubHome(t, hubHome);
+  withSharedHome(t, path.join(base, "shared"));
+  const root = makeProject(base, "Git reboot");
+  const worktreeRoot = path.join(base, "Linked reboot");
+  execFileSync("git", ["worktree", "add", "-b", "agent/reboot", worktreeRoot], { cwd: root, stdio: "ignore" });
+  if (!fs.existsSync(path.join(worktreeRoot, ".context-room", "config.json"))) {
+    fs.cpSync(path.join(root, ".context-room"), path.join(worktreeRoot, ".context-room"), { recursive: true });
+  }
+  const shared = { repository: path.join(base, "shared.git"), projectId: "demo" };
+  registerContextHubProject(root, { shared });
+  registerContextHubProject(worktreeRoot, { shared });
+  const registryPath = path.join(hubHome, "registry.json");
+  const registry = JSON.parse(fs.readFileSync(registryPath, "utf8"));
+  assert.equal(registry.projects.length, 2);
+  assert.deepEqual(registry.projects.map((entry) => entry.worktreeIdentity.gitEntryIdentity.kind), ["directory", "file"]);
+  for (const entry of registry.projects) {
+    assert.equal(entry.worktreeIdentity.kind, "git");
+    for (const identity of [entry.rootIdentity, entry.worktreeIdentity.commonDirIdentity,
+      entry.worktreeIdentity.gitDirIdentity, entry.worktreeIdentity.gitEntryIdentity]) {
+      identity.dev = String(BigInt(identity.dev) + 1n);
+    }
+  }
+  fs.writeFileSync(registryPath, JSON.stringify(registry) + "\n\n");
+  const before = fs.readFileSync(registryPath);
+  const controlPath = path.join(hubHome, "snapshot-control.json");
+  const controlBefore = fs.readFileSync(controlPath);
+  for (const entry of registry.projects) {
+    const registered = registerContextHubProject(entry.root, {
+      title: "Do not rename",
+      shared: { repository: path.join(base, "other.git"), projectId: "other" },
+    });
+    assert.deepEqual(registered, { ...entry, identityUnconfirmed: true });
+    assert.deepEqual(registered.shared, shared);
+    assert.deepEqual(fs.readFileSync(registryPath), before, "Git registration must preserve every registry byte");
+    assert.deepEqual(fs.readFileSync(controlPath), controlBefore, "Git registration must not invalidate the snapshot");
+    const cli = spawnSync(process.execPath, [fileURLToPath(new URL("../bin/context-room.mjs", import.meta.url)),
+      "project", "register", "--root", entry.root, "--format", "json"], { encoding: "utf8", env: process.env, timeout: 30_000 });
+    assert.equal(cli.status, 0, cli.stderr);
+    assert.equal(cli.stderr.trim(), contextHubRegistrationWarning(registered));
+    assert.deepEqual(JSON.parse(cli.stdout).data.registered, registered);
+    assert.deepEqual(fs.readFileSync(registryPath), before, "Git CLI registration must preserve every registry byte");
+  }
+  assert.ok(listContextHubProjects().every((entry) => entry.available === false));
+  assert.ok(readContextHubRegistry().projects.every((entry) => entry.identityUnconfirmed === undefined));
+});
+
+test("Context Hub registration preserves an unconfirmed non-Git location", (t) => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-path-reboot-")));
+  const hubHome = path.join(base, "hub");
+  withHubHome(t, hubHome);
+  withSharedHome(t, path.join(base, "shared"));
+  const root = path.join(base, "Non-Git project");
+  fs.mkdirSync(root);
+  initializeContextRoomProject(root, { allowedPaths: [], watchAllow: [] });
+  const shared = { repository: path.join(base, "shared.git"), projectId: "demo" };
+  const original = registerContextHubProject(root, { shared });
+  assert.deepEqual(original.worktreeIdentity, { kind: "path" });
+  const registryPath = path.join(hubHome, "registry.json");
+  const registry = JSON.parse(fs.readFileSync(registryPath, "utf8"));
+  registry.projects[0].rootIdentity.dev = String(BigInt(original.rootIdentity.dev) + 1n);
+  fs.writeFileSync(registryPath, JSON.stringify(registry) + "\n\n");
+  const before = fs.readFileSync(registryPath);
+  assert.deepEqual(registerContextHubProject(root), { ...registry.projects[0], identityUnconfirmed: true });
+  assert.deepEqual(fs.readFileSync(registryPath), before);
+});
+
+test("Context Hub registration ignores only devices in the no-write Git preflight and keeps normal registration strict", (t) => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-git-preflight-strict-")));
+  const hubHome = path.join(base, "hub");
+  withHubHome(t, hubHome);
+  withSharedHome(t, path.join(base, "shared"));
+  const root = makeProject(base, "Strict Git preflight");
+  registerContextHubProject(root, { shared: { repository: path.join(base, "shared.git"), projectId: "demo" } });
+  const registryPath = path.join(hubHome, "registry.json");
+  const original = fs.readFileSync(registryPath, "utf8");
+  const cases = [
+    ["normal registration", false, () => {}],
+    ["common directory path", true, (membership) => { membership.commonDir += "-replaced"; }],
+    ["relative root", true, (membership) => { membership.relativeRoot = "other"; }],
+    ["common directory inode", true, (membership) => { membership.commonDirIdentity.ino += "1"; }],
+    ["Git directory path", true, (membership) => { membership.gitDir += "-replaced"; }],
+    ["Git directory inode", true, (membership) => { membership.gitDirIdentity.ino += "1"; }],
+    ["Git entry inode", true, (membership) => { membership.gitEntryIdentity.ino += "1"; }],
+    ["Git entry mode", true, (membership) => { membership.gitEntryIdentity.mode = String(BigInt(membership.gitEntryIdentity.mode) ^ 1n); }],
+    ["Git entry kind", true, (membership) => { membership.gitEntryIdentity.kind = "file"; }],
+  ];
+  for (const [label, rootDeviceChanged, change] of cases) {
+    const registry = JSON.parse(original);
+    const entry = registry.projects[0];
+    if (rootDeviceChanged) entry.rootIdentity.dev = String(BigInt(entry.rootIdentity.dev) + 1n);
+    for (const identity of [entry.worktreeIdentity.commonDirIdentity, entry.worktreeIdentity.gitDirIdentity,
+      entry.worktreeIdentity.gitEntryIdentity]) identity.dev = String(BigInt(identity.dev) + 1n);
+    change(entry.worktreeIdentity);
+    fs.writeFileSync(registryPath, JSON.stringify(registry));
+    const registered = registerContextHubProject(root);
+    assert.equal(registered.identityUnconfirmed, undefined, label);
+    assert.equal(registered.shared, null, label);
+    assert.equal(registered.sharedNotCarriedOver.reason, "folder identity changed", label);
+  }
+});
+
+test("Context Hub unavailable locations expose reasons and unknown counts without choosing a missing worktree", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-unavailable-reviews-"));
+  const hubHome = path.join(base, "hub");
+  withHubHome(t, hubHome);
+  withSharedHome(t, path.join(base, "shared"));
+  const mainRoot = makeProject(base, "Unavailable main");
+  const agentRoot = path.join(base, "Available agent");
+  execFileSync("git", ["worktree", "add", "-b", "agent/available", agentRoot], { cwd: mainRoot, stdio: "ignore" });
+  if (!fs.existsSync(path.join(agentRoot, ".context-room", "config.json"))) fs.cpSync(path.join(mainRoot, ".context-room"), path.join(agentRoot, ".context-room"), { recursive: true });
+  const main = registerContextHubProject(mainRoot);
+  const agent = registerContextHubProject(agentRoot);
+  const changedRoot = makeProject(base, "Changed device");
+  const changed = registerContextHubProject(changedRoot);
+  const registryPath = path.join(hubHome, "registry.json");
+  const registry = JSON.parse(fs.readFileSync(registryPath, "utf8"));
+  registry.projects.find((entry) => entry.id === changed.id).rootIdentity.dev = String(BigInt(changed.rootIdentity.dev) + 1n);
+  fs.writeFileSync(registryPath, JSON.stringify(registry));
+  fs.renameSync(mainRoot, path.join(base, "Archived main"));
+  const listed = listContextHubProjects();
+  assert.equal(listed.find((entry) => entry.id === main.id).unavailableReason, "folder missing");
+  assert.equal(listed.find((entry) => entry.id === changed.id).unavailableReason, "folder identity changed");
+  const state = contextHubUiState(mainRoot, { refreshShared: false });
+  const group = state.projects.find((project) => project.logicalProjectId === main.logicalProjectId);
+  assert.equal(group.id, agent.id, "an absent current root must not represent an available group");
+  assert.equal(group.available, true);
+  assert.equal(group.localReviewCount, null, "an absent worktree makes the grouped total unknown");
+  assert.equal(group.worktrees.find((entry) => entry.id === main.id).localReviewCount, null);
+  const changedProject = state.projects.find((project) => project.id === changed.id);
+  assert.equal(changedProject.available, false);
+  assert.equal(changedProject.localReviewCount, null);
+  assert.equal(state.summary.localReviews, null);
+  fs.renameSync(path.join(base, "Archived main"), mainRoot);
+  fs.renameSync(agentRoot, path.join(base, "Archived agent"));
+  fs.appendFileSync(path.join(mainRoot, "docs", "README.md"), "\nKnown pending main edit.\n");
+  const partial = contextHubUiState(agentRoot, { refreshShared: false, force: true });
+  const partialGroup = partial.projects.find((project) => project.logicalProjectId === main.logicalProjectId);
+  assert.equal(partialGroup.id, main.id);
+  assert.equal(partialGroup.localReviewCount, null);
+  const partialItem = partial.items.find((item) => item.projectKey === partialGroup.projectKey && item.type === "local");
+  assert.equal(partialItem.reviewStatus, "local_changes", "known pending files remain visible when another worktree is missing");
+  assert.ok(partialItem.reviews.some((review) => review.worktreeId === main.id && review.path === "docs/README.md"));
+  const hostRoot = contextHubHostRoot();
+  fs.mkdirSync(hostRoot, { recursive: true });
+  initializeContextRoomProject(hostRoot, { allowedPaths: [], watchAllow: [] });
+  const room = createMemoryServer({ root: hostRoot });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const catalog = await (await fetch(origin + "/api/context-hub/catalog")).json();
+  const catalogChanged = catalog.projects.find((project) => project.id === changed.id);
+  assert.equal(catalogChanged.unavailableReason, "folder identity changed");
+  assert.equal(catalogChanged.localReviewCount, null, "catalog must not replace unknown with zero");
 });
 
 test("Context Hub Shared recovery CAS covers every worktree in the logical project", (t) => {

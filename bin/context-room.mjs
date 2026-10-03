@@ -97,6 +97,7 @@ import {
   readContextHubRegistry,
   readContextHubRuntime,
   registerContextHubProject,
+  contextHubRegistrationWarning,
   registerContextHubSharedRepository,
   withContextHubProjectSharedRegistration,
   writeContextHubRuntime,
@@ -630,7 +631,10 @@ function contextHubCliNavigationProject({ requested, resolution }) {
 function currentContextHubProjectForPath(candidate) {
   const projectRoot = resolveDocumentationProjectRoot(candidate);
   if (!fs.existsSync(path.join(projectRoot, ".context-room", "config.json"))) return null;
-  return registerContextHubProject(projectRoot);
+  const registered = registerContextHubProject(projectRoot);
+  const warning = contextHubRegistrationWarning(registered);
+  if (warning) console.warn(warning);
+  return registered;
 }
 
 if (command === "workspace") {
@@ -1155,6 +1159,8 @@ if (command === "hub") {
         } : {}),
       });
       focusedProject = registerContextHubProject(root, { title: args.title });
+      const warning = contextHubRegistrationWarning(focusedProject);
+      if (warning) console.warn(warning);
     } else if (!args["no-local"]) {
       focusedProject = currentContextHubProjectForPath(root);
     }

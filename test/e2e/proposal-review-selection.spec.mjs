@@ -655,6 +655,73 @@ test("@smoke review filters and stale snapshots never masquerade as an all-clear
   await expect.poll(() => refreshCalls).toBe(1);
 });
 
+test("@smoke unavailable projects show reasons and unknown review counts", async ({ page }) => {
+  const { origin } = fixture();
+  await page.goto(origin + "/?hub=1&workspace=workspace-unavailable-projects&view=hub");
+  await waitForBoot(page);
+  await expect.poll(() => page.evaluate(() => Boolean(state.contextHubReviewQueueReady && state.contextHub?.projects?.length))).toBe(true);
+  await page.evaluate(async () => {
+    stopWorkspaceRuntime();
+    await Promise.allSettled([state.contextHubReadyPromise, state.runtimeContextHubRefreshPromise].filter(Boolean));
+  });
+  await expect.poll(() => page.evaluate(() => Boolean(state.refreshInFlight || state.reportsRefreshInFlight))).toBe(false);
+  const result = await page.evaluate(() => {
+    const template = state.contextHub.projects.find((project) => project.mode !== "shared");
+    const reasons = ["folder identity changed", "folder missing", "permission denied", "Shared without local folder"];
+    state.contextHub = {
+      ...state.contextHub,
+      projects: Array.from({ length: 16 }, (_, index) => ({
+        ...template, id: "unavailable-" + index, projectKey: "local:unavailable-" + index,
+        title: "Unavailable project " + index, available: false, current: false,
+        mode: index % 4 === 3 ? "shared" : "local", root: index % 4 === 3 ? "" : template.root,
+        unavailableReason: reasons[index % 4], localReviewCount: null, localReviews: [],
+        localReviewError: "", worktrees: [], worktreeCount: 0, sharedProposalCount: 0,
+        shared: index === 0 ? { repository: "/tmp/example-shared.git", projectId: "demo" } : null,
+        sharedRecovery: null, sharedRecoveries: [],
+      })),
+      items: [], proposals: [], workingDrafts: [], sharedRepositories: [], repositoryErrors: [],
+      freshness: { generatedAt: new Date().toISOString(), ageMs: 0, fresh: true, refreshing: false },
+    };
+    state.contextHubReviewQueueReady = true;
+    state.sharedProposalProject = "";
+    state.sharedProposalSearch = "";
+    state.globalExplorerProjectKey = "";
+    state.globalExplorerMode = "projects";
+    state.globalProjectSearch = "";
+    state.activeProjectLocationId = "";
+    state.contextHubSource = "all";
+    state.docqa = { queue: [], summary: { needsReview: 0, deletedDocs: 0 } };
+    renderGlobalProjectExplorer();
+    renderContextRoomGlobalReviewQueue();
+    const rows = [...document.querySelectorAll(".global-project-row")].map((row) => row.textContent);
+    const result = {
+      rows, summary: document.querySelector("#reviewSummary").textContent,
+      queue: document.querySelector("#reviewQueue").textContent,
+      allClear: Boolean(document.querySelector(".review-all-clear")),
+    };
+    const changed = state.contextHub.projects[0];
+    state.globalExplorerProjectKey = changed.projectKey;
+    state.sharedProposalProject = changed.projectKey;
+    renderGlobalProjectInspection();
+    result.details = document.querySelector("#contextHealth").textContent;
+    return result;
+  });
+  expect(result.rows).toHaveLength(16);
+  const sharedOnlyRows = result.rows.filter((row) => row.includes("Shared · no local folder"));
+  expect(sharedOnlyRows).toHaveLength(4);
+  expect(sharedOnlyRows.some((row) => row.includes("Unavailable ·"))).toBe(false);
+  expect(result.rows.filter((row) => row.includes("Unavailable ·"))).toHaveLength(12);
+  expect(result.rows.some((row) => row.includes("Up to date"))).toBe(false);
+  for (const reason of ["folder identity changed", "folder missing", "permission denied"]) {
+    expect(result.rows.some((row) => row.includes(reason))).toBe(true);
+  }
+  expect(result.summary).toContain("—files");
+  expect(result.summary).not.toContain("0files");
+  expect(result.queue).toContain("Some local locations could not be inspected");
+  expect(result.allClear).toBe(false);
+  expect(result.details).toContain("Registering this folder again will not keep its Shared link");
+});
+
 test("@smoke a failed worktree switch restores the committed project selection", async ({ page }) => {
   const { origin, projects } = fixture();
   await page.goto(`${origin}/?hub=1&workspace=workspace-switch-rollback&project=${encodeURIComponent(projects.atlas.id)}&view=hub`);

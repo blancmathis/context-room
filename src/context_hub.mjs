@@ -175,6 +175,7 @@ function mutateContextHubRegistry(operation) {
   return withRegistryLock(() => {
     const registry = readContextHubRegistry();
     const result = operation(registry);
+    if (result?.identityUnconfirmed === true) return result;
     writeJson(registryPath(), registry);
     invalidateContextHubSnapshotLocked();
     return result;
@@ -382,6 +383,23 @@ function sameWorktreeMembershipIdentity(left, right) {
     && normalizedLeft.gitEntryIdentity.ino === normalizedRight.gitEntryIdentity.ino
     && normalizedLeft.gitEntryIdentity.mode === normalizedRight.gitEntryIdentity.mode
     && normalizedLeft.gitEntryIdentity.kind === normalizedRight.gitEntryIdentity.kind;
+}
+
+function sameWorktreeMembershipIdentityIgnoringDevices(left, right) {
+  const normalizedLeft = normalizedWorktreeMembershipIdentity(left);
+  const normalizedRight = normalizedWorktreeMembershipIdentity(right);
+  if (!normalizedLeft || !normalizedRight) return false;
+  // Align only device numbers in these copies for the no-write preflight.
+  if (normalizedLeft.kind === "git" && normalizedRight.kind === "git") {
+    normalizedRight.commonDirIdentity.dev = normalizedLeft.commonDirIdentity.dev;
+    if (normalizedLeft.gitDirIdentity && normalizedRight.gitDirIdentity) {
+      normalizedRight.gitDirIdentity.dev = normalizedLeft.gitDirIdentity.dev;
+    }
+    if (normalizedLeft.gitEntryIdentity && normalizedRight.gitEntryIdentity) {
+      normalizedRight.gitEntryIdentity.dev = normalizedLeft.gitEntryIdentity.dev;
+    }
+  }
+  return sameWorktreeMembershipIdentity(normalizedLeft, normalizedRight);
 }
 
 function gitText(root, args) {
@@ -2098,12 +2116,17 @@ function registerContextHubProjectInRegistry(registry, {
   const existing = registry.projects.find((entry) => entry.id === id);
   const nextRootIdentity = normalizedProjectRootIdentity(rootIdentity) || contextHubProjectRootIdentity(projectRoot);
   const existingRootIdentity = normalizedProjectRootIdentity(existing?.rootIdentity);
-  const sameRegisteredIdentity = Boolean(existing)
+  const sameRegisteredLocation = Boolean(existing)
     && path.resolve(existing.root) === projectRoot
-    && existingRootIdentity?.dev === nextRootIdentity.dev
     && existingRootIdentity?.ino === nextRootIdentity.ino
-    && sameWorktreeMembershipIdentity(existing.worktreeIdentity, identity.membershipIdentity)
     && (existing.logicalProjectId || existing.id) === identity.logicalProjectId;
+  if (sameRegisteredLocation && existingRootIdentity.dev !== nextRootIdentity.dev
+    && sameWorktreeMembershipIdentityIgnoringDevices(existing.worktreeIdentity, identity.membershipIdentity)) {
+    return { ...existing, identityUnconfirmed: true };
+  }
+  const sameRegisteredIdentity = sameRegisteredLocation
+    && existingRootIdentity.dev === nextRootIdentity.dev
+    && sameWorktreeMembershipIdentity(existing.worktreeIdentity, identity.membershipIdentity);
   const nextShared = requestedShared ? { ...requestedShared } : sameRegisteredIdentity ? existing.shared || null : null;
   if (nextShared) {
     const repositoryKey = repositoryIdentity(nextShared.repository);
@@ -2129,7 +2152,20 @@ function registerContextHubProjectInRegistry(registry, {
       ? { ...project, shared: entry.shared }
       : project
   ));
-  return entry;
+  return existing?.shared && !nextShared ? {
+    ...entry,
+    sharedNotCarriedOver: { ...existing.shared, reason: "folder identity changed" },
+  } : entry;
+}
+
+export function contextHubRegistrationWarning(registration) {
+  if (registration?.identityUnconfirmed === true) {
+    return `Folder identity needs confirmation after restart; ${registration.shared ? "Shared link preserved and inactive" : "registration unchanged"}. Registration was not updated.`;
+  }
+  const lost = registration?.sharedNotCarriedOver;
+  return lost
+    ? `Shared link not carried over (${lost.reason}): repository ${JSON.stringify(lost.repository)}, project ${JSON.stringify(lost.projectId)}. Re-link it in Hub project settings.`
+    : "";
 }
 
 export function withContextHubProjectSharedRegistration(root, {
@@ -2342,17 +2378,28 @@ export function listContextHubProjects({ refreshGit = false } = {}) {
     } : null;
     return registry.projects.map((entry) => {
       let available = false;
+      let unavailableReason = "";
       try {
+        const current = contextHubProjectRootIdentity(entry.root);
         const rootIdentity = normalizedProjectRootIdentity(entry.rootIdentity);
-        available = Boolean(rootIdentity)
-          && contextHubProjectRootMatchesIdentity(entry.root, rootIdentity)
-          && assertContextHubProjectControlFiles(entry.root, rootIdentity);
-      } catch {}
+        if (!rootIdentity || current.dev !== rootIdentity.dev || current.ino !== rootIdentity.ino) {
+          unavailableReason = "folder identity changed";
+        } else {
+          unavailableReason = "project configuration unavailable";
+          available = assertContextHubProjectControlFiles(entry.root, rootIdentity);
+          if (available) unavailableReason = "";
+        }
+      } catch (error) {
+        if (["EACCES", "EPERM"].includes(error?.code)) unavailableReason = "permission denied";
+        else if (["ENOENT", "ENOTDIR"].includes(error?.code)) unavailableReason ||= "folder missing";
+        else unavailableReason ||= "folder identity changed";
+      }
       const logicalProjectId = entry.logicalProjectId || entry.id;
       const sharedRecovery = recoveryByLogicalProject.get(logicalProjectId) || globalSharedRecovery;
       return {
         ...entry,
         available,
+        unavailableReason,
         title: available ? projectTitle(entry.root) : entry.title,
         ...(sharedRecovery ? { sharedRecovery } : {}),
       };

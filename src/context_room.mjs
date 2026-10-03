@@ -131,6 +131,7 @@ import {
   contextHubHostRoot,
   contextHubRegistryLockPath,
   contextHubRepositoryIdentity,
+  contextHubRegistrationWarning,
   listContextHubProjects,
   listContextHubSharedRecoveryIssues,
   readContextHubAttention,
@@ -16095,7 +16096,7 @@ function contextHubLocalProjectSummary(project, currentRoot) {
     }
   }
   const summary = {
-    localReviewCount: queue.length,
+    localReviewCount: project.available && !queueError ? queue.length : null,
     localReviewFiles: queue.map((item) => item.path),
     localReviews: queue.map((item) => ({
       path: item.path,
@@ -16154,7 +16155,7 @@ function contextHubGroupedLocalProjects(localProjects = []) {
       || Number(Boolean(right.available)) - Number(Boolean(left.available))
       || String(right.lastOpenedAt || "").localeCompare(String(left.lastOpenedAt || ""))
     ));
-    const preferred = worktrees.find((entry) => entry.current)
+    const preferred = worktrees.find((entry) => entry.current && entry.available)
       || worktrees.find((entry) => entry.available)
       || worktrees[0];
     const shared = preferred.shared || worktrees.find((entry) => entry.shared)?.shared || null;
@@ -16191,6 +16192,7 @@ function contextHubGroupedLocalProjects(localProjects = []) {
         root: entry.root,
         title: entry.title,
         available: entry.available,
+        unavailableReason: entry.unavailableReason || "",
         current: entry.current,
         registeredAt: entry.registeredAt,
         lastOpenedAt: entry.lastOpenedAt,
@@ -16198,12 +16200,13 @@ function contextHubGroupedLocalProjects(localProjects = []) {
         head: entry.worktree?.head || "",
         main: entry.worktree?.main === true,
         worktree: entry.worktree || null,
-        localReviewCount: Number(entry.localReviewCount || 0),
+        localReviewCount: entry.localReviewCount ?? null,
+        localReviewError: entry.localReviewError || "",
         shared: entry.shared || null,
         sharedRecovery: entry.sharedRecovery || null,
         hubSections: entry.hubSections || [],
       })),
-      localReviewCount: localReviews.length,
+      localReviewCount: worktrees.every((entry) => entry.available && entry.localReviewCount != null && !entry.localReviewError) ? localReviews.length : null,
       localReviewFiles: localReviews.map((review) => review.path),
       localReviews,
       localReviewError: worktrees.map((entry) => entry.localReviewError).filter(Boolean).join(" · "),
@@ -16213,24 +16216,27 @@ function contextHubGroupedLocalProjects(localProjects = []) {
 }
 
 function contextHubLocalReviewItem(project) {
-  const unavailable = !project.available || Boolean(project.localReviewError);
+  const unavailable = !project.available || project.localReviewCount == null || Boolean(project.localReviewError);
   return {
     id: project.projectKey,
     type: "local",
     projectKey: project.projectKey,
     projectId: project.id,
     title: project.title,
-    description: project.localReviewError
+    description: !project.available
+      ? `Unavailable · ${project.unavailableReason || "folder unavailable"}. Local reviews have not been inspected.`
+      : project.localReviewError || project.localReviewCount == null
       ? "The local review queue could not be confirmed. Refresh or open the project to inspect it directly."
       : project.localReviewCount
       ? `${project.localReviewCount} local file${project.localReviewCount === 1 ? "" : "s"} waiting for the normal project review.`
       : "The local project is connected and its review queue is clear.",
     files: project.localReviewFiles,
     fileCount: project.localReviewCount,
-    reviewStatus: unavailable ? "unavailable" : (project.localReviewCount ? "local_changes" : "clean"),
+    reviewStatus: project.localReviews?.length ? "local_changes" : unavailable ? "unavailable" : "clean",
     updatedAt: project.lastOpenedAt,
     current: project.current,
     available: project.available,
+    unavailableReason: project.unavailableReason || "",
     root: project.root,
     shared: project.shared,
     reviews: project.localReviews,
@@ -16438,6 +16444,7 @@ function contextHubUiStateAttempt(root, {
         root: "",
         title: sharedProject.title || sharedProject.id,
         available: false,
+        unavailableReason: "Shared without local folder",
         current: false,
         mode: "shared",
         shared: { repository: repository.repository, projectId: sharedProject.id },
@@ -16461,6 +16468,7 @@ function contextHubUiStateAttempt(root, {
       root: "",
       title: proposal.projectTitle || (proposal.projectId === "global" ? "Global skills" : proposal.projectId),
       available: false,
+      unavailableReason: "Shared without local folder",
       current: false,
       mode: "shared",
       shared: { repository: proposal.repository, projectId: proposal.projectId },
@@ -16498,7 +16506,7 @@ function contextHubUiStateAttempt(root, {
       sharedProjects: projects.filter((project) => project.mode !== "local").length,
       sharedRepositories: sharedRepositories.length,
       proposals: proposals.length,
-      localReviews: localItems.reduce((total, item) => total + item.fileCount, 0),
+      localReviews: localItems.every((item) => item.fileCount != null) ? localItems.reduce((total, item) => total + item.fileCount, 0) : null,
     },
   };
   const latestInputs = readContextHubSnapshotInputs();
@@ -16581,8 +16589,8 @@ function minimalContextHubState(root, navigation) {
   const currentRoot = path.resolve(root);
   const worktrees = navigation.projects.map((project) => ({
     ...project,
-    current: safeRealPath(project.root) === safeRealPath(currentRoot),
-    localReviewCount: 0,
+    current: project.available && safeRealPath(project.root) === safeRealPath(currentRoot),
+    localReviewCount: null,
     localReviewFiles: [],
     localReviews: [],
     localReviewError: "",
@@ -16605,7 +16613,7 @@ function minimalContextHubState(root, navigation) {
       sharedProjects: projects.filter((project) => project.mode !== "local").length,
       sharedRepositories: navigation.sharedRepositories.length,
       proposals: 0,
-      localReviews: 0,
+      localReviews: null,
     },
   };
 }
@@ -16624,7 +16632,7 @@ function contextHubStateForRoot(state, root) {
       || Number(Boolean(right.available)) - Number(Boolean(left.available))
       || String(right.lastOpenedAt || "").localeCompare(String(left.lastOpenedAt || ""))
     ));
-    const preferred = worktrees.find((worktree) => worktree.current)
+    const preferred = worktrees.find((worktree) => worktree.current && worktree.available)
       || worktrees.find((worktree) => worktree.available)
       || worktrees[0];
     const worktreeRanks = new Map(worktrees.map((worktree, index) => [worktree.id, index]));
@@ -16656,9 +16664,10 @@ function contextHubStateForRoot(state, root) {
       title: preferred.title,
       registeredAt: preferred.registeredAt,
       worktree: preferredWorktree,
+      unavailableReason: preferred.unavailableReason || "",
       current: worktrees.some((worktree) => worktree.current),
       worktrees: publicWorktrees,
-      localReviewCount: localReviews.length,
+      localReviewCount: worktrees.every((worktree) => worktree.available && worktree.localReviewCount != null && !worktree.localReviewError) ? localReviews.length : null,
       localReviewFiles: localReviews.map((review) => review.path),
       localReviews,
       hubSections: Array.isArray(preferred.hubSections) ? preferred.hubSections : [],
@@ -18762,7 +18771,8 @@ export function createMemoryServer({
   const trustedFrameAncestorPorts = normalizeFrameAncestorPorts(frameAncestorPorts);
   if (registerInHub && !process.env.NODE_TEST_CONTEXT && !fs.existsSync(path.join(path.resolve(root), SHARED_REVIEW_CONFIG))) {
     try {
-      registerContextHubProject(root);
+      const warning = contextHubRegistrationWarning(registerContextHubProject(root));
+      if (warning) console.warn(warning);
     } catch {}
   }
   const sharedReviewServers = new Set();
@@ -21778,11 +21788,13 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
         ...(hostedSharedProvider ? {} : { root: project.root }),
         current: project.current,
         available: project.available,
+        unavailableReason: project.unavailableReason || "",
         lastOpenedAt: project.lastOpenedAt,
         worktree: project.worktree,
         worktrees: project.worktrees || [],
         worktreeCount: project.worktreeCount || 0,
-        localReviewCount: project.localReviewCount || 0,
+        localReviewCount: project.localReviewCount ?? null,
+        localReviewError: project.localReviewError || "",
         sharedProposalCount: project.sharedProposalCount || 0,
         shared: project.shared || null,
         sharedStatus: project.sharedStatus || null,
@@ -24664,6 +24676,8 @@ if (process.argv[1] === __filename) {
   const requestedRoot = rootArgIndex >= 0 ? path.resolve(process.argv[rootArgIndex + 1]) : process.cwd();
   initializeContextRoomProject(requestedRoot);
   const registered = registerContextHubProject(requestedRoot);
+  const warning = contextHubRegistrationWarning(registered);
+  if (warning) console.warn(warning);
   const root = contextHubHostRoot();
   initializeContextRoomProject(root, { title: "Context Room", allowedPaths: [], watchAllow: [] });
   const { server } = createMemoryServer({ root, port, registerInHub: false, persistentDocumentGraphLayout: true });
