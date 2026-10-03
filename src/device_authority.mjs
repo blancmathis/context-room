@@ -105,11 +105,7 @@ function savedGrant(value, serverId) {
   let current;
   try { current = canonicalNotebookRoot(scope.root); }
   catch { return scope; } // Unavailable projects fail the server's strict live-root guard.
-  const continuity = acceptsRootIdentity(scope.root, scope.rootIdentity);
-  if (continuity === 'alias') scope.rootIdentity = current;
-  else if (continuity !== 'same' && current === scope.rootIdentity) {
-    throw deviceError('device_project_changed', 'The authorized project is unavailable or was replaced.', 409);
-  }
+  if (acceptsRootIdentity(scope.root, scope.rootIdentity) === 'alias') scope.rootIdentity = current;
   return scope;
 }
 const publicGrant = value => value.mode === 'owner' ? { mode: 'owner', serverId: value.serverId }

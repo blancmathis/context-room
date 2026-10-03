@@ -38,7 +38,7 @@ export class AssistantSessions {
     });
   }
   authorize(state, root) {
-    if (state.origin.root !== root || !['same', 'alias'].includes(acceptsRootIdentity(root, state.origin.rootIdentity))) throw fault('assistant_scope', 'This conversation belongs to another exact project.', 403);
+    if (state.origin.root !== root || !['same', 'alias', 'confirmed'].includes(acceptsRootIdentity(root, state.origin.rootIdentity))) throw fault('assistant_scope', 'This conversation belongs to another exact project.', 403);
     const resolved = this.resolveSource(root, state.origin.source, state.origin);
     if (!state.legacy) return resolved;
     return { ...resolved, tools: [...resolved.tools, LEGACY_HISTORY_TOOL],

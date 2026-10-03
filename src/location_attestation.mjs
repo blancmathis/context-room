@@ -1,14 +1,17 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFilesystemIdentity, compareFilesystemIdentity } from "./filesystem_identity.mjs";
 import { withFilesystemLock } from "./filesystem_lock.mjs";
+import { ensureAuthorityKey } from "./review_authority.mjs";
 
 const LEGACY = /^(?:0|[1-9]\d*):[1-9]\d*$/;
 const MAX_ALIASES = 1024;
 const MAX_BYTES = 128 * 1024;
 const fault = message => Object.assign(new Error(message), { code: "location_attestation_conflict", statusCode: 409 });
+const validAliases = aliases => Array.isArray(aliases)
+  && aliases.every(alias => typeof alias === "string" && LEGACY.test(alias));
 // Use the review authority's canonical serialization and existing private key.
 function stable(value) {
   if (value === null || typeof value !== "object") return value;
@@ -72,8 +75,9 @@ function readAttestation(root, paths) {
     if (key.length !== 32) return null;
     const record = JSON.parse(readPrivate(paths.state, MAX_BYTES).toString("utf8"));
     if (!record || record.v !== 1 || record.path !== root || typeof record.updatedAt !== "string"
-      || !Number.isFinite(Date.parse(record.updatedAt)) || !Array.isArray(record.aliases)
-      || !record.aliases.length || record.aliases.length > MAX_ALIASES || !record.aliases.every(alias => typeof alias === "string" && LEGACY.test(alias))
+      || !Number.isFinite(Date.parse(record.updatedAt))
+      || !validAliases(record.aliases?.observed) || !validAliases(record.aliases?.confirmed)
+      || !record.aliases.observed.length || record.aliases.observed.length + record.aliases.confirmed.length > MAX_ALIASES
       || compareFilesystemIdentity(record.durable, record.durable).status !== "same"
       || typeof record.signature !== "string" || !/^[a-f0-9]{64}$/.test(record.signature)) return null;
     const { signature: signed, ...payload } = record;
@@ -84,40 +88,28 @@ function syncDirectory(base) {
   const fd = fs.openSync(base, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
   try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
 }
-function publish(file, bytes, beforePublish, { exclusive = false } = {}) {
+function publish(file, bytes, beforePublish) {
   const temporary = `${file}.${randomUUID()}.tmp`;
   let fd;
   try {
     fd = fs.openSync(temporary, "wx", 0o600);
     fs.writeFileSync(fd, bytes); fs.fsyncSync(fd); fs.closeSync(fd); fd = undefined;
     beforePublish();
-    if (exclusive) {
-      try { fs.linkSync(temporary, file); } catch (error) { if (error.code !== "EEXIST") throw error; }
-      fs.unlinkSync(temporary);
-    } else fs.renameSync(temporary, file);
+    fs.renameSync(temporary, file);
     syncDirectory(path.dirname(file));
   } finally {
     if (fd !== undefined) fs.closeSync(fd);
     try { fs.unlinkSync(temporary); } catch (error) { if (error.code !== "ENOENT") throw error; }
   }
 }
-function ensureKey(paths) {
-  return withFilesystemLock(`${paths.key}.lock`, () => {
-    const directory = privateDirectory(paths.base);
-    try { return readPrivate(paths.key, 32); } catch (error) { if (error.code !== "ENOENT") throw error; }
-    publish(paths.key, randomBytes(32), () => {
-      if (privateDirectory(paths.base) !== directory) throw fault("The authority directory changed.");
-    }, { exclusive: true });
-    return readPrivate(paths.key, 32);
-  });
-}
 function writeAttestation(root, paths, observed, key, previous, aliases) {
   if (previous) {
     const { signature: signed, ...payload } = previous;
     if (signed !== signature(key, payload)) throw fault("The authority key changed during attestation lookup.");
   }
-  aliases = [...new Set(aliases)].sort();
-  if (aliases.length > MAX_ALIASES) throw fault("Too many legacy identities for this location.");
+  const seen = new Set(aliases.observed);
+  aliases = { observed: [...seen].sort(), confirmed: [...new Set(aliases.confirmed)].filter(alias => !seen.has(alias)).sort() };
+  if (aliases.observed.length + aliases.confirmed.length > MAX_ALIASES) throw fault("Too many legacy identities for this location.");
   if (previous && JSON.stringify(previous.aliases) === JSON.stringify(aliases)) return previous;
   const directory = privateDirectory(paths.base);
   const payload = { v: 1, path: root, durable: observed.durable, aliases, updatedAt: new Date().toISOString() };
@@ -129,23 +121,36 @@ function writeAttestation(root, paths, observed, key, previous, aliases) {
   return record;
 }
 
-/** Explicit enrollment only. Existing attestations are merged only for the same durable location. */
-export function attestLocation(root, { legacy = [], ...options } = {}) {
+/** Explicit enrollment only. Replacing durable evidence requires replace:true and abandons its aliases. */
+export function attestLocation(root, { legacy = [], replace = false, ...options } = {}) {
   const observed = snapshotRoot(root);
   if (!observed.durable) throw fault("The durable location identity cannot be verified.");
   const aliases = typeof legacy === "string" ? [legacy] : legacy;
-  if (!Array.isArray(aliases) || !aliases.every(alias => typeof alias === "string" && LEGACY.test(alias))) throw fault("Invalid legacy location identities.");
+  if (!validAliases(aliases)) throw fault("Invalid legacy location identities.");
   const paths = pathsFor(root, options);
   if (paths.base === root || paths.base.startsWith(root + path.sep)) throw fault("Keep location attestations outside the project.");
   fs.mkdirSync(paths.base, { recursive: true, mode: 0o700 });
   privateDirectory(paths.base);
-  const key = ensureKey(paths);
+  const key = withFilesystemLock(`${paths.key}.lock`, () => {
+    const directory = privateDirectory(paths.base);
+    // Retain the attestation reader's no-link checks before the shared helper touches an existing key.
+    try { readPrivate(paths.key, 32); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    ensureAuthorityKey(paths);
+    if (privateDirectory(paths.base) !== directory) throw fault("The authority directory changed.");
+    return readPrivate(paths.key, 32);
+  });
   if (key.length !== 32) throw fault("Invalid review authority key.");
   return withFilesystemLock(`${paths.state}.lock`, () => {
     assertRoot(root, observed);
-    const previous = readAttestation(root, paths);
-    if (previous && compareFilesystemIdentity(previous.durable, observed.durable).status !== "same") throw fault("The attested location was replaced.");
-    return writeAttestation(root, paths, observed, key, previous, [...(previous?.aliases || []), observed.legacy, ...aliases]);
+    let previous = readAttestation(root, paths);
+    if (previous && compareFilesystemIdentity(previous.durable, observed.durable).status !== "same") {
+      if (replace !== true) throw fault("The attested location was replaced.");
+      previous = null;
+    }
+    return writeAttestation(root, paths, observed, key, previous, {
+      observed: [...(previous?.aliases.observed || []), observed.legacy],
+      confirmed: [...(previous?.aliases.confirmed || []), ...aliases],
+    });
   });
 }
 
@@ -164,8 +169,10 @@ export function observeLocation(root, options = {}) {
     if (!previous) return { status: "unverified", added: false };
     const status = compareFilesystemIdentity(previous.durable, observed.durable).status;
     if (status !== "same") return { status, added: false };
-    const key = readPrivate(paths.key, 32), added = !previous.aliases.includes(observed.legacy);
-    writeAttestation(root, paths, observed, key, previous, [...previous.aliases, observed.legacy]);
+    const key = readPrivate(paths.key, 32), added = !previous.aliases.observed.includes(observed.legacy);
+    writeAttestation(root, paths, observed, key, previous, {
+      observed: [...previous.aliases.observed, observed.legacy], confirmed: previous.aliases.confirmed,
+    });
     return { status: "same", added };
   });
 }
@@ -175,21 +182,23 @@ export function rootIdentityAliases(root, options = {}) {
   try {
     const observed = snapshotRoot(root), record = readAttestation(root, pathsFor(root, options));
     assertObserved(root, observed);
-    if (record && compareFilesystemIdentity(record.durable, observed.durable).status === "different") return [];
-    return [...new Set([observed.legacy, ...(record && compareFilesystemIdentity(record.durable, observed.durable).status === "same" ? record.aliases : [])])];
+    const aliases = record && compareFilesystemIdentity(record.durable, observed.durable).status === "same"
+      ? [...record.aliases.observed, ...record.aliases.confirmed] : [];
+    return [...new Set([observed.legacy, ...aliases])];
   } catch { return []; }
 }
 
-/** same = strict current dev:ino; alias = signed continuity for this exact path. */
+/** Strict current dev:ino wins; alias requires observed continuity, confirmed is human-supplied history. */
 export function acceptsRootIdentity(root, stored, options = {}) {
   if (typeof stored !== "string" || !LEGACY.test(stored)) return "unverified";
   try {
-    const observed = snapshotRoot(root), record = readAttestation(root, pathsFor(root, options));
+    const observed = snapshotRoot(root);
+    if (stored === observed.legacy) return "same";
+    const record = readAttestation(root, pathsFor(root, options));
     assertObserved(root, observed);
     const continuity = record && compareFilesystemIdentity(record.durable, observed.durable).status;
-    if (continuity === "different") return "different";
-    if (stored === observed.legacy) return "same";
-    if (continuity === "same" && record.aliases.includes(stored)) return "alias";
+    if (continuity === "same" && record.aliases.observed.includes(stored)) return "alias";
+    if (continuity === "same" && record.aliases.confirmed.includes(stored)) return "confirmed";
     return continuity === "unverified" ? "unverified" : "different";
   } catch { return "unverified"; }
 }

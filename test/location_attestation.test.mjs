@@ -9,6 +9,7 @@ import { attestLocation, observeLocation, acceptsRootIdentity, rootIdentityAlias
 import { canonicalNotebookRoot } from '../src/notebook_io.mjs';
 import { readFilesystemIdentity } from '../src/filesystem_identity.mjs';
 import { createDeviceAuthority } from '../src/device_authority.mjs';
+import { ensureAuthorityKey } from '../src/review_authority.mjs';
 
 const worker = fileURLToPath(new URL('./fixtures/location_attestation.mjs', import.meta.url));
 function fixture(t) {
@@ -62,7 +63,8 @@ test('explicit enrollment merges only exact-path signed aliases and keeps privat
   const first = attestLocation(f.root, { ...f.options, legacy });
   assert.deepEqual(first.durable, readFilesystemIdentity(f.root).identity);
   assert.equal(first.path, f.root); assert.equal(first.v, 1);
-  assert.equal(acceptsRootIdentity(f.root, legacy, f.options), 'alias');
+  assert.equal(acceptsRootIdentity(f.root, legacy, f.options), 'confirmed');
+  assert.deepEqual(first.aliases, { observed: [identity], confirmed: [legacy] });
   const before = tree(f.home);
   assert.deepEqual(attestLocation(f.root, f.options), first);
   assert.deepEqual(observeLocation(f.root, f.options), { status: 'same', added: false });
@@ -77,7 +79,7 @@ test('explicit enrollment merges only exact-path signed aliases and keeps privat
 test('edited, unsigned, missing-key, hardlinked and symbolic attestations provide no aliases', t => {
   const f = fixture(t), record = attestLocation(f.root, { ...f.options, legacy: '0:1' });
   const file = path.join(f.home, recordPath(f.home)), bytes = fs.readFileSync(file), key = path.join(f.home, 'authority.key');
-  for (const changed of [{ ...record, aliases: [...record.aliases, '0:2'] }, { ...record, signature: '' }, { ...record, path: f.root + '/other' }]) {
+  for (const changed of [{ ...record, aliases: { ...record.aliases, confirmed: [...record.aliases.confirmed, '0:2'] } }, { ...record, signature: '' }, { ...record, path: f.root + '/other' }]) {
     fs.writeFileSync(file, JSON.stringify(changed));
     assert.equal(acceptsRootIdentity(f.root, '0:1', f.options), 'different');
     const before = tree(f.home); assert.deepEqual(observeLocation(f.root, f.options), { status: 'unverified', added: false });
@@ -107,7 +109,7 @@ test('new processes reopen notebook history, conversations, submitted proposals 
   assert.deepEqual(tree(path.join(f.base, 'devices')), devices);
   const record = path.join(f.home, fs.readdirSync(f.home).find(name => name.startsWith('location-')
     && name.endsWith('.json') && JSON.parse(fs.readFileSync(path.join(f.home, name))).path === f.root));
-  const bytes = fs.readFileSync(record), edited = JSON.parse(bytes); edited.aliases.push('0:1');
+  const bytes = fs.readFileSync(record), edited = JSON.parse(bytes); edited.aliases.confirmed.push('0:1');
   fs.writeFileSync(record, JSON.stringify(edited)); f.run('blocked', { dev: 2 }); fs.writeFileSync(record, bytes);
   f.run('recover-workflow', { dev: 2 });
   assert.deepEqual(fs.readFileSync(path.join(f.root, '.context-room/workflow-state.json')), project['.context-room/workflow-state.json']);
@@ -119,6 +121,53 @@ test('inode, birthtime and unavailable durable identity block old aliases in ano
   assert.deepEqual(tree(f.home), before);
 });
 
+test('new data in a replacement root remains readable under its strict identity', t => {
+  const f = fixture(t); f.run('create'); f.run('attest');
+  fs.renameSync(f.root, f.root + '.old'); fs.mkdirSync(f.root, { mode: 0o700 });
+  const authority = tree(f.home);
+  f.run('create');
+  const project = tree(f.root), conversations = tree(path.join(f.base, 'conversations')), devices = tree(path.join(f.base, 'devices'));
+  f.run('read');
+  assert.deepEqual(tree(f.root), project); assert.deepEqual(tree(path.join(f.base, 'conversations')), conversations);
+  assert.deepEqual(tree(path.join(f.base, 'devices')), devices); assert.deepEqual(tree(f.home), authority);
+});
+
+test('replacing an enrollment is explicit and abandons both kinds of old aliases', t => {
+  const f = fixture(t), originalIdentity = canonicalNotebookRoot(f.root);
+  attestLocation(f.root, { ...f.options, legacy: '0:1' });
+  const before = tree(f.home);
+  fs.renameSync(f.root, f.root + '.old'); fs.mkdirSync(f.root);
+  assert.throws(() => attestLocation(f.root, f.options), /was replaced/); assert.deepEqual(tree(f.home), before);
+  const identity = canonicalNotebookRoot(f.root), record = attestLocation(f.root, { ...f.options, replace: true, legacy: '0:2' });
+  assert.deepEqual(record.durable, readFilesystemIdentity(f.root).identity);
+  assert.deepEqual(record.aliases, { observed: [identity], confirmed: ['0:2'] });
+  assert.equal(acceptsRootIdentity(f.root, originalIdentity, f.options), 'different');
+  assert.equal(acceptsRootIdentity(f.root, '0:1', f.options), 'different');
+  assert.equal(acceptsRootIdentity(f.root, identity, f.options), 'same');
+  assert.equal(acceptsRootIdentity(f.root, '0:2', f.options), 'confirmed');
+});
+
+test('confirmed history reopens all data readers but does not reactivate drawing grants', t => {
+  const f = fixture(t); f.run('create');
+  f.run('confirm', { dev: 2 });
+  const project = tree(f.root), conversations = tree(path.join(f.base, 'conversations')), devices = tree(path.join(f.base, 'devices')), authority = tree(f.home);
+  f.run('read-confirmed', { dev: 2 });
+  assert.deepEqual(tree(f.root), project); assert.deepEqual(tree(path.join(f.base, 'conversations')), conversations);
+  assert.deepEqual(tree(path.join(f.base, 'devices')), devices); assert.deepEqual(tree(f.home), authority);
+  f.run('recover-workflow', { dev: 2 });
+  assert.deepEqual(fs.readFileSync(path.join(f.root, '.context-room/workflow-state.json')), project['.context-room/workflow-state.json']);
+});
+
+test('enrollment reuses the review authority key without creating or replacing another key', t => {
+  const f = fixture(t), paths = { base: f.home, key: path.join(f.home, 'authority.key') };
+  const key = ensureAuthorityKey(paths);
+  assert.equal(key.length, 32);
+  attestLocation(f.root, f.options);
+  assert.deepEqual(fs.readFileSync(paths.key), key);
+  assert.deepEqual(ensureAuthorityKey(paths), key);
+  assert.equal(fs.readdirSync(f.home).filter(name => name.endsWith('.key')).length, 1);
+});
+
 test('copies, replacement roots, other paths and symlinks do not inherit enrolled aliases', t => {
   const f = fixture(t), identity = canonicalNotebookRoot(f.root);
   const record = attestLocation(f.root, { ...f.options, legacy: '0:1' });
@@ -126,8 +175,8 @@ test('copies, replacement roots, other paths and symlinks do not inherit enrolle
   assert.equal(acceptsRootIdentity(copy, identity, f.options), 'different');
   fs.renameSync(f.root, f.root + '.old'); fs.mkdirSync(f.root);
   assert.equal(acceptsRootIdentity(f.root, '0:1', f.options), 'different');
-  assert.equal(acceptsRootIdentity(f.root, canonicalNotebookRoot(f.root), f.options), 'different');
-  assert.deepEqual(rootIdentityAliases(f.root, f.options), []);
+  assert.equal(acceptsRootIdentity(f.root, canonicalNotebookRoot(f.root), f.options), 'same');
+  assert.deepEqual(rootIdentityAliases(f.root, f.options), [canonicalNotebookRoot(f.root)]);
   assert.deepEqual(observeLocation(f.root, f.options), { status: 'different', added: false });
   assert.throws(() => attestLocation(f.root, f.options), /was replaced/);
   fs.rmdirSync(f.root); fs.symlinkSync(f.root + '.old', f.root);
@@ -135,7 +184,7 @@ test('copies, replacement roots, other paths and symlinks do not inherit enrolle
   assert.equal(record.path, f.root);
 });
 
-test('a contradictory birthtime blocks a saved drawing grant even if strict dev:ino matches', t => {
+test('a strict drawing grant wins over a contradictory durable attestation', t => {
   const f = fixture(t), variable = 'CONTEXT_ROOM_REVIEW_AUTHORITY_HOME', previousHome = process.env[variable];
   process.env[variable] = f.home;
   t.after(() => { if (previousHome === undefined) delete process.env[variable]; else process.env[variable] = previousHome; });
@@ -146,7 +195,7 @@ test('a contradictory birthtime blocks a saved drawing grant even if strict dev:
   const paired = authority.pair({ ...ticket, protocolVersion: 1 });
   const stat = fs.lstatSync;
   fs.lstatSync = (...args) => { const value = stat(...args); if (args[0] === f.root && args[1]?.bigint) value.birthtimeNs += 1n; return value; };
-  try { assert.throws(() => authority.authenticate(paired.token), { code: 'device_project_changed' }); }
+  try { assert.equal(authority.authenticate(paired.token).grants[0].rootIdentity, canonicalNotebookRoot(f.root)); }
   finally { fs.lstatSync = stat; }
 });
 
@@ -161,8 +210,8 @@ test('concurrent processes merge attestation aliases under a filesystem lock', a
     child.once('error', reject); child.once('exit', code => code === 0 ? resolve() : reject(new Error(stderr || `child exit ${code}`)));
   });
   await Promise.all([run('0:1'), run('0:2')]);
-  assert.equal(acceptsRootIdentity(f.root, '0:1', f.options), 'alias');
-  assert.equal(acceptsRootIdentity(f.root, '0:2', f.options), 'alias');
+  assert.equal(acceptsRootIdentity(f.root, '0:1', f.options), 'confirmed');
+  assert.equal(acceptsRootIdentity(f.root, '0:2', f.options), 'confirmed');
 });
 
 test('a root exchange during atomic publication fails before signing it into the location', t => {

@@ -75,15 +75,19 @@ if (action === 'create') {
     rootIdentity: canonicalNotebookRoot(root), paths: ['docs/Scene.crnb'] }], label: 'Fixture tablet' });
   const device = deviceAuthority.pair({ ...ticket, protocolVersion: 1 });
   fs.writeFileSync(manifestPath, JSON.stringify({ scene, importedNotebook, first: first.id, imported: imported.id, cursor,
-    proposal: proposal.id, submittedRevision: submitted.submittedRevision, device, legacyIdentity: canonicalNotebookRoot(root) }));
+    proposal: proposal.id, submittedRevision: submitted.submittedRevision, device, legacyIdentity: canonicalNotebookRoot(root), storeIdentity: canonicalNotebookRoot(store) }));
 } else if (action === 'attest') {
   const record = attestLocation(root);
   attestLocation(store); // History cursors also include the private store identity.
-  assert.equal(record.aliases.length, 1);
+  assert.equal(record.aliases.observed.length, 1); assert.deepEqual(record.aliases.confirmed, []);
+} else if (action === 'confirm') {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath));
+  attestLocation(root, { legacy: manifest.legacyIdentity });
+  attestLocation(store, { legacy: manifest.storeIdentity });
 } else if (action === 'observe') {
   assert.deepEqual(observeLocation(root), { status: 'same', added: true });
   assert.deepEqual(observeLocation(store), { status: 'same', added: true });
-} else if (action === 'read' || action === 'blocked') {
+} else if (action === 'read' || action === 'read-confirmed' || action === 'blocked') {
   const manifest = JSON.parse(fs.readFileSync(manifestPath));
   const readers = [
     () => readNotebook(root, manifest.scene.resourceId),
@@ -117,9 +121,9 @@ if (action === 'create') {
       source: { ...source, path: 'docs/other.md' }, legacy, archiveBytes }), { code: 'assistant_request_conflict' });
     assert.equal(proposal.submittedRevision, manifest.submittedRevision); assert.equal(migration.migrated, true);
     const granted = authority().authenticate(manifest.device.token);
-    assert.equal(granted.grants[0].rootIdentity, canonicalNotebookRoot(root));
+    assert.equal(granted.grants[0].rootIdentity, action === 'read-confirmed' ? manifest.legacyIdentity : canonicalNotebookRoot(root));
     assert.deepEqual(granted.grants[0].paths, ['docs/Scene.crnb']); assert.equal(granted.expiresAt, manifest.device.device.expiresAt);
-    assert.equal(acceptsRootIdentity(root, manifest.legacyIdentity), altered.dev ? 'alias' : 'same');
+    assert.equal(acceptsRootIdentity(root, manifest.legacyIdentity), action === 'read-confirmed' ? 'confirmed' : altered.dev ? 'alias' : 'same');
     assert.ok(rootIdentityAliases(root).includes(manifest.legacyIdentity));
   }
 } else if (action === 'recover-workflow') {

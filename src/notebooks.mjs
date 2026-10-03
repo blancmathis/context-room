@@ -70,7 +70,7 @@ function applyFrame(state, frame, file) {
 function readState(root, id) {
   const rootIdentity = canonicalNotebookRoot(root), folder = resourcePath(id), header = readNotebookJson(root, `${folder}/header.json`);
   if (!header || header.schemaVersion !== 1 || header.document.id !== id) failNotebook('notebook_missing', 'Notebook working scene not found.');
-  if (!['same', 'alias'].includes(acceptsRootIdentity(root, header.rootIdentity))) failNotebook('notebook_root_conflict', 'This working scene belongs to another exact filesystem location.');
+  if (!['same', 'alias', 'confirmed'].includes(acceptsRootIdentity(root, header.rootIdentity))) failNotebook('notebook_root_conflict', 'This working scene belongs to another exact filesystem location.');
   const state = { document: decodeNotebook(Buffer.from(JSON.stringify(header.document))), locator: header.locator, rootIdentity, sequence: 0,
     chain: notebookHash(header), tombstones: initialTombstones(header.document, header.tombstones), origins: Object.fromEntries(header.document.objects.map(o => [o.id, o.createdBy])), receipts: new Map(), frozen: new Map(), submissions: new Map(), knownSources: new Set([header.locator.sourceHash]), history: [] };
   const directory = safeNotebookPath(root, `${folder}/events`);
@@ -148,7 +148,7 @@ export function importNotebookDraft(root, { path, document, tombstones = {}, req
       const expectedLocator = { ...locator, revision: notebookHash({ rootIdentity: previousRoot, path, id, sourceHash: null }) };
       const expected = { ...identity, rootIdentity: previousRoot, locator: expectedLocator };
       const expectedImport = { requestId, sourceRevision, fingerprint: notebookHash({ ...expected, requestId, sourceRevision }) };
-      if (!['same', 'alias'].includes(acceptsRootIdentity(root, previousRoot)) || !receipt
+      if (!['same', 'alias', 'confirmed'].includes(acceptsRootIdentity(root, previousRoot)) || !receipt
         || notebookHash(receipt) !== notebookHash(expectedImport) || notebookHash(initial) !== notebookHash(expected)) failNotebook('notebook_location_conflict', 'This notebook identity already belongs to different working data. Nothing was replaced.');
       const state = readState(root, id); requireWrite(state, canWrite); assertLocation(root, state, state.locator.revision);
       return { ...publicState(state), imported: cloneNotebook(receipt), replayed: true, preview };
