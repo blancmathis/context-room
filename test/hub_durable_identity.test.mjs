@@ -177,3 +177,39 @@ test("disconnect and Hub journals recover across a device change without orphan 
   run("read", { dev: 77 });
   assert.deepEqual(notebookBytes(root), bytes);
 });
+
+test("nested projects and linked worktrees resolve relative Git paths at their actual cwd", (t) => {
+  const { root, base } = fixture(t);
+  const git = (cwd, args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  git(root, ["add", "."]);
+  git(root, ["-c", "user.email=durable@example.test", "-c", "user.name=Durable", "commit", "-m", "Initial"]);
+  const nested = path.join(root, "docs/subproject");
+  fs.mkdirSync(nested);
+  initializeContextRoomProject(nested, { title: "Nested", allowedPaths: [], watchAllow: [] });
+  const main = registerContextHubProject(nested);
+  assert.equal(main.worktreeIdentity.commonDir, path.join(root, ".git"));
+  assert.equal(main.worktreeIdentity.gitDir, path.join(root, ".git"));
+  assert.equal(main.worktreeIdentity.relativeRoot, "docs/subproject");
+
+  const linked = path.join(base, "linked"), other = path.join(base, "other");
+  git(root, ["worktree", "add", "-b", "linked", linked]);
+  git(root, ["worktree", "add", "-b", "other", other]);
+  const gitDir = path.resolve(linked, git(linked, ["rev-parse", "--git-dir"]));
+  const pointer = path.join(linked, ".git");
+  fs.writeFileSync(pointer, `gitdir: ${path.relative(linked, gitDir)}\n`);
+  const linkedNested = path.join(linked, "docs/subproject");
+  fs.mkdirSync(linkedNested);
+  initializeContextRoomProject(linkedNested, { title: "Linked nested", allowedPaths: [], watchAllow: [] });
+  const entry = registerContextHubProject(linkedNested);
+  assert.equal(entry.worktreeIdentity.commonDir, main.worktreeIdentity.commonDir);
+  assert.equal(entry.worktreeIdentity.gitDir, gitDir);
+  assert.equal(entry.worktreeIdentity.gitEntryIdentity.kind, "file");
+  assert.deepEqual(entry.worktreeIdentity.gitEntryDurableIdentity, readFilesystemIdentity(pointer).identity);
+  assert.equal(listContextHubProjects().find(item => item.id === entry.id).available, true);
+
+  const otherGitDir = path.resolve(other, git(other, ["rev-parse", "--git-dir"]));
+  fs.writeFileSync(pointer, `gitdir: ${path.relative(linked, otherGitDir)}\n`);
+  const changed = listContextHubProjects().find(item => item.id === entry.id);
+  assert.equal(changed.available, false, "another worktree cannot inherit the saved Git capability");
+  assert.equal(changed.unavailableReason, "folder identity changed");
+});

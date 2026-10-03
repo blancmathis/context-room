@@ -482,8 +482,10 @@ function gitWorktreeIdentity(root, previous = null) {
     };
   }
   const gitRoot = stableRoot(gitRootValue);
-  const commonDir = stableRoot(path.resolve(gitRoot, commonDirValue));
-  const gitDir = stableRoot(path.resolve(gitRoot, gitDirValue));
+  // rev-parse reports relative paths against its cwd. Git itself resolves a
+  // linked worktree's relative gitdir pointer against the .git file directory.
+  const commonDir = stableRoot(path.resolve(projectRoot, commonDirValue));
+  const gitDir = stableRoot(path.resolve(projectRoot, gitDirValue));
   const gitEntry = path.join(gitRoot, ".git");
   const relativeRoot = path.relative(gitRoot, projectRoot).replaceAll(path.sep, "/") || ".";
   const branch = gitText(projectRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
