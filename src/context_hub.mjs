@@ -385,6 +385,23 @@ function sameWorktreeMembershipIdentity(left, right) {
     && normalizedLeft.gitEntryIdentity.kind === normalizedRight.gitEntryIdentity.kind;
 }
 
+function sameWorktreeMembershipIdentityIgnoringDevices(left, right) {
+  const normalizedLeft = normalizedWorktreeMembershipIdentity(left);
+  const normalizedRight = normalizedWorktreeMembershipIdentity(right);
+  if (!normalizedLeft || !normalizedRight) return false;
+  // Align only device numbers in these copies for the no-write preflight.
+  if (normalizedLeft.kind === "git" && normalizedRight.kind === "git") {
+    normalizedRight.commonDirIdentity.dev = normalizedLeft.commonDirIdentity.dev;
+    if (normalizedLeft.gitDirIdentity && normalizedRight.gitDirIdentity) {
+      normalizedRight.gitDirIdentity.dev = normalizedLeft.gitDirIdentity.dev;
+    }
+    if (normalizedLeft.gitEntryIdentity && normalizedRight.gitEntryIdentity) {
+      normalizedRight.gitEntryIdentity.dev = normalizedLeft.gitEntryIdentity.dev;
+    }
+  }
+  return sameWorktreeMembershipIdentity(normalizedLeft, normalizedRight);
+}
+
 function gitText(root, args) {
   try {
     return execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
@@ -2102,13 +2119,14 @@ function registerContextHubProjectInRegistry(registry, {
   const sameRegisteredLocation = Boolean(existing)
     && path.resolve(existing.root) === projectRoot
     && existingRootIdentity?.ino === nextRootIdentity.ino
-    && sameWorktreeMembershipIdentity(existing.worktreeIdentity, identity.membershipIdentity)
     && (existing.logicalProjectId || existing.id) === identity.logicalProjectId;
-  if (sameRegisteredLocation && existingRootIdentity.dev !== nextRootIdentity.dev) {
+  if (sameRegisteredLocation && existingRootIdentity.dev !== nextRootIdentity.dev
+    && sameWorktreeMembershipIdentityIgnoringDevices(existing.worktreeIdentity, identity.membershipIdentity)) {
     return { ...existing, identityUnconfirmed: true };
   }
   const sameRegisteredIdentity = sameRegisteredLocation
-    && existingRootIdentity.dev === nextRootIdentity.dev;
+    && existingRootIdentity.dev === nextRootIdentity.dev
+    && sameWorktreeMembershipIdentity(existing.worktreeIdentity, identity.membershipIdentity);
   const nextShared = requestedShared ? { ...requestedShared } : sameRegisteredIdentity ? existing.shared || null : null;
   if (nextShared) {
     const repositoryKey = repositoryIdentity(nextShared.repository);
