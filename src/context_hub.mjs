@@ -8,6 +8,7 @@ import { isMainThread, threadId } from "node:worker_threads";
 import { withFilesystemLock } from "./filesystem_lock.mjs";
 import { readFilesystemIdentity, compareFilesystemIdentity } from "./filesystem_identity.mjs";
 import { attestLocation, observeLocation, acceptsRootIdentity } from "./location_attestation.mjs";
+import { legacyRootIdentities } from "./location_history.mjs";
 import {
   abandonInvalidSharedDisconnectTransaction,
   listSharedDisconnectRecoveryIssues,
@@ -2549,10 +2550,13 @@ export function listContextHubProjects({ refreshGit = false, readOnly = false } 
       }
       const logicalProjectId = entry.logicalProjectId || entry.id;
       const sharedRecovery = recoveryByLogicalProject.get(logicalProjectId) || globalSharedRecovery;
+      const stored = normalizedProjectRootIdentity(entry.rootIdentity);
       return {
         ...entry,
         available,
         unavailableReason,
+        // The exact identity a human confirmation must name for this location.
+        ...(unavailableReason === "identity to confirm" ? { confirmRootIdentity: stored ? `${stored.dev}:${stored.ino}` : "" } : {}),
         title: available ? projectTitle(entry.root) : entry.title,
         ...(sharedRecovery ? { sharedRecovery } : {}),
       };
@@ -2567,6 +2571,65 @@ export function listContextHubProjects({ refreshGit = false, readOnly = false } 
     return projects;
   };
   return readOnly ? readProjects() : withRegistryLock(readProjects);
+}
+
+function locationConfirmationError(message, code) {
+  return Object.assign(new Error(message), { code, statusCode: 409 });
+}
+
+/**
+ * Human gesture only: the folder now at this exact path is the registered
+ * project. Allowed only when every stored inode still matches and only device
+ * numbers changed. Old identities become confirmed aliases: notebooks,
+ * conversations, proposals and Shared resume; drawing permissions do not.
+ */
+export function confirmContextHubProjectLocation({
+  projectId,
+  expectedRoot,
+  expectedRootIdentity = "",
+  conversationRoot = "",
+} = {}) {
+  return withRegistryLock(() => {
+    assertNoUnknownHubSharedRecoveryLocked();
+    const registry = readContextHubRegistryRaw();
+    const entry = registry.projects.find((item) => item.id === projectId);
+    const stored = normalizedProjectRootIdentity(entry?.rootIdentity);
+    if (!entry || entry.root !== expectedRoot || (stored ? `${stored.dev}:${stored.ino}` : "") !== expectedRootIdentity) {
+      throw locationConfirmationError("This location changed. Refresh Context Room before confirming it.", "context_hub_location_changed");
+    }
+    assertNoPendingHubSharedTransactionLocked((transaction) => transaction.logicalProjectId === (entry.logicalProjectId || entry.id));
+    const evidence = storedLocationEvidence(entry);
+    if (evidence.status === "different") {
+      throw locationConfirmationError("This folder was replaced. Register it again as a new location instead.", "context_hub_location_replaced");
+    }
+    if (evidence.status !== "unconfirmed") {
+      throw locationConfirmationError("This location is already confirmed.", "context_hub_location_confirmed");
+    }
+    const current = contextHubProjectRootIdentity(entry.root);
+    assertContextHubProjectControlFiles(entry.root, current);
+    const live = gitWorktreeIdentity(entry.root, entry);
+    if ((stored && !sameWorktreeMembershipIdentityIgnoringDevices(entry.worktreeIdentity, live.membershipIdentity))
+      || (stored && (entry.logicalProjectId || entry.id) !== live.logicalProjectId)) {
+      throw locationConfirmationError("This folder's Git worktree changed. Register it again as a new location instead.", "context_hub_location_replaced");
+    }
+    const confirmed = [...new Set([
+      ...(stored?.ino === current.ino ? [`${stored.dev}:${stored.ino}`] : []),
+      ...legacyRootIdentities(entry.root, { ino: current.ino, conversationRoot }),
+    ])].filter((identity) => identity !== `${current.dev}:${current.ino}`);
+    const attestation = attestLocation(entry.root, { legacy: confirmed, replace: true });
+    if (!contextHubProjectRootMatchesIdentity(entry.root, current)
+      || compareFilesystemIdentity(attestation.durable, readFilesystemIdentity(entry.root).identity).status !== "same") {
+      throw contextHubProjectControlFileError(entry.root, "project root changed during confirmation");
+    }
+    entry.logicalProjectId = live.logicalProjectId;
+    entry.rootIdentity = current;
+    entry.rootDurableIdentity = attestation.durable;
+    entry.worktree = live.worktree;
+    entry.worktreeIdentity = live.membershipIdentity;
+    writeJson(registryPath(), registry);
+    invalidateContextHubSnapshotLocked();
+    return { project: { ...entry }, confirmedIdentities: confirmed };
+  });
 }
 
 export function recordContextHubProjectOpened(projectId) {

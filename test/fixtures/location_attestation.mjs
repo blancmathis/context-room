@@ -10,6 +10,7 @@ import { AssistantSessions } from '../../src/assistant_sessions.mjs';
 import { beginLocalProposal, submitLocalProposal, inspectLocalProposal } from '../../src/local_proposals.mjs';
 import { planStateMigration, applyStateMigration } from '../../src/state_migration.mjs';
 import { createDeviceAuthority } from '../../src/device_authority.mjs';
+import { handleNotebookHttp } from '../../src/notebook_http.mjs';
 
 const [action, base, change = '{}'] = process.argv.slice(2);
 const root = path.join(base, 'project'), store = path.join(base, 'conversations'), stateRoot = path.join(base, 'devices');
@@ -31,6 +32,12 @@ for (const method of ['lstatSync', 'statSync', 'fstatSync']) {
   };
 }
 const manifestPath = path.join(base, 'manifest.json');
+async function capabilities() {
+  let body;
+  await handleNotebookHttp({ method: 'GET' }, {}, { root, url: new URL('http://local/api/notebooks/capabilities'), sendJson: (_res, _status, value) => { body = value; } });
+  return body;
+}
+const serverIdFor = identity => notebookHash(['context-room-notebook-location-v1', root, identity]);
 const sessions = new AssistantSessions({ root: store,
   resolveSource: (_root, source) => ({ source, title: 'Retained source', tools: [], context: {} }),
   providerFactory: () => { throw new Error('A reader must never start Codex.'); } });
@@ -101,6 +108,7 @@ if (action === 'create') {
     assert.equal(authority().authenticate(manifest.device.token).grants[0].rootIdentity, manifest.legacyIdentity);
     assert.notEqual(canonicalNotebookRoot(root), manifest.legacyIdentity);
     assert.notEqual(acceptsRootIdentity(root, manifest.legacyIdentity), 'alias');
+    assert.deepEqual((await capabilities()).serverIdAliases.filter(id => id === serverIdFor(manifest.legacyIdentity)), []);
   } else {
     const [scene, conversation, proposal, migration] = readers.map(read => read());
     assert.equal(scene.sequence, 3); assert.equal(scene.document.objects.length, 3);
@@ -125,6 +133,10 @@ if (action === 'create') {
     assert.deepEqual(granted.grants[0].paths, ['docs/Scene.crnb']); assert.equal(granted.expiresAt, manifest.device.device.expiresAt);
     assert.equal(acceptsRootIdentity(root, manifest.legacyIdentity), action === 'read-confirmed' ? 'confirmed' : altered.dev ? 'alias' : 'same');
     assert.ok(rootIdentityAliases(root).includes(manifest.legacyIdentity));
+    const cap = await capabilities();
+    assert.equal(cap.serverId, serverIdFor(canonicalNotebookRoot(root)));
+    assert.equal(cap.serverIdAliases.includes(serverIdFor(manifest.legacyIdentity)), altered.dev ? true : false);
+    assert.equal(cap.serverIdAliases.includes(cap.serverId), false);
   }
 } else if (action === 'recover-workflow') {
   assert.equal(applyStateMigration(root).idempotent, true);

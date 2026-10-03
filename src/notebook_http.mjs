@@ -3,6 +3,7 @@ import { canonicalNotebookRoot, notebookHash } from './notebook_io.mjs';
 import { NOTEBOOK_VERSION, NOTEBOOK_LIMITS, notebookId, failNotebook } from './notebook_protocol.mjs';
 import { openNotebook, readNotebook, listNotebooks, mutateNotebook, undoNotebook, addNotebookAsset, freezeNotebook, readFrozenNotebook, notebookReceipt, relocateNotebook, encodeNotebook } from './notebooks.mjs';
 import { submitNotebookLocal } from './notebook_workflow.mjs';
+import { rootIdentityAliases } from './location_attestation.mjs';
 import { notebookSvg } from './notebook_render.mjs';
 
 export const NOTEBOOK_HTTP_PREFIX = '/api/notebooks';
@@ -13,7 +14,9 @@ export async function handleNotebookHttp(req, res, { root, url, readJsonBody, se
   if (!url.pathname.startsWith(NOTEBOOK_HTTP_PREFIX + '/') && url.pathname !== NOTEBOOK_HTTP_PREFIX) return false;
   const route = url.pathname.slice(NOTEBOOK_HTTP_PREFIX.length);
   if (req.method === 'GET' && route === '/capabilities') {
-    sendJson(res, 200, { protocolVersion: NOTEBOOK_VERSION, serverId: notebookHash(['context-room-notebook-location-v1', root, canonicalNotebookRoot(root)]), accountId: 'local-owner', actor, format: '.crnb', limits: NOTEBOOK_LIMITS, sourceAuthority: 'mac-working-scene', reviewAuthority: 'existing-human-file-review',
+    // Earlier mount identities of this attested location keep their offline caches reachable.
+    const current = canonicalNotebookRoot(root), serverIdFor = identity => notebookHash(['context-room-notebook-location-v1', root, identity]);
+    sendJson(res, 200, { protocolVersion: NOTEBOOK_VERSION, serverId: serverIdFor(current), serverIdAliases: rootIdentityAliases(root).filter(identity => identity !== current).map(serverIdFor), accountId: 'local-owner', actor, format: '.crnb', limits: NOTEBOOK_LIMITS, sourceAuthority: 'mac-working-scene', reviewAuthority: 'existing-human-file-review',
       operations: ['open', 'read', 'mutate', 'batch', 'undo', 'asset', 'freeze', 'submit', 'receipt', 'relocate', 'export'], sharedSubmission: typeof submitShared === 'function' }); return true;
   }
   if (req.method === 'GET' && route === '') {

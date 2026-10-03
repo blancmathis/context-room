@@ -3,7 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { initializeContextRoomProject } from "../../src/context_room.mjs";
-import { registerContextHubProject, listContextHubProjects, readContextHubRegistry, withContextHubProjectSharedRegistration, withContextHubProjectSharedDisconnection } from "../../src/context_hub.mjs";
+import { registerContextHubProject, listContextHubProjects, readContextHubRegistry, withContextHubProjectSharedRegistration, withContextHubProjectSharedDisconnection, confirmContextHubProjectLocation } from "../../src/context_hub.mjs";
+import { acceptsRootIdentity } from "../../src/location_attestation.mjs";
 import { initializeSharedRepository, connectSharedContext, disconnectSharedContext, listRegisteredSharedBindings, readSharedProjectConnection, readSharedConnectionReceipt, removeOrphanedSharedContextBindings } from "../../src/shared_context.mjs";
 import { openNotebook, mutateNotebook, readNotebook } from "../../src/notebooks.mjs";
 
@@ -70,6 +71,24 @@ if (action === "create") {
       { projectRoots: pending.sharedProjectRoots, projectCapabilities: pending.sharedProjectCapabilities }));
     throw new Error("The process must stop after publishing its disconnect journal");
   }
+  if (action === "forget-durable") {
+    // Rewrite this enrollment as Context Room wrote it before durable identities.
+    const strip = (value) => Array.isArray(value) ? value.map(strip) : value && typeof value === "object"
+      ? Object.fromEntries(Object.entries(value).filter(([key]) => !key.endsWith("DurableIdentity")).map(([key, item]) => [key, strip(item)]))
+      : value;
+    const files = [path.join(base, "hub/registry.json"), path.join(base, "shared/registry.json"),
+      ...fs.readdirSync(path.join(base, "shared"), { recursive: true }).map(name => path.join(base, "shared", name))
+        .filter(file => file.includes(`${path.sep}connection-receipts${path.sep}`) && file.endsWith(".json"))];
+    for (const file of files) {
+      const mode = fs.statSync(file).mode;
+      fs.chmodSync(file, 0o600);
+      fs.writeFileSync(file, JSON.stringify(strip(JSON.parse(fs.readFileSync(file, "utf8"))), null, 2) + "\n");
+      fs.chmodSync(file, mode & 0o777);
+    }
+    for (const name of fs.readdirSync(path.join(base, "authority"))) if (name.startsWith("location-")) fs.rmSync(path.join(base, "authority", name));
+    fs.writeFileSync(manifestPath, JSON.stringify({ ...manifest, entry: strip(manifest.entry), bindings: listRegisteredSharedBindings(remote) }));
+    process.exit(0);
+  }
   const registryBefore = fs.readFileSync(path.join(base, "hub/registry.json"));
   const [entry] = listContextHubProjects();
   if (action === "blocked") {
@@ -87,5 +106,23 @@ if (action === "create") {
     assert.deepEqual(listRegisteredSharedBindings(remote), manifest.bindings);
     assert.throws(() => removeOrphanedSharedContextBindings({ repository: remote, projectId: "demo", projectRoots: [manifest.entry] }), { code: "shared-orphan-root-still-present" });
     assert.deepEqual(listRegisteredSharedBindings(remote), manifest.bindings);
+  } else if (action === "confirm") {
+    const old = `${manifest.entry.rootIdentity.dev}:${manifest.entry.rootIdentity.ino}`;
+    assert.equal(entry.available, false);
+    assert.equal(entry.unavailableReason, "identity to confirm");
+    assert.equal(entry.confirmRootIdentity, old);
+    assert.deepEqual(fs.readFileSync(path.join(base, "hub/registry.json")), registryBefore);
+    assert.equal(readSharedProjectConnection(root), null);
+    assert.throws(() => readNotebook(root, manifest.scene.resourceId), { code: "notebook_root_conflict" });
+    assert.throws(() => confirmContextHubProjectLocation({ projectId: entry.id, expectedRoot: root, expectedRootIdentity: "1:1" }), { code: "context_hub_location_changed" });
+    const confirmed = confirmContextHubProjectLocation({ projectId: entry.id, expectedRoot: root, expectedRootIdentity: old });
+    assert.deepEqual(confirmed.confirmedIdentities, [old]);
+    assert.equal(acceptsRootIdentity(root, old), "confirmed");
+    const [after] = listContextHubProjects();
+    assert.equal(after.available, true);
+    assert.equal("confirmRootIdentity" in after, false);
+    assert.deepEqual(after.shared, manifest.entry.shared);
+    assert.throws(() => confirmContextHubProjectLocation({ projectId: after.id, expectedRoot: root,
+      expectedRootIdentity: `${after.rootIdentity.dev}:${after.rootIdentity.ino}` }), { code: "context_hub_location_confirmed" });
   } else throw new Error(`Unknown action: ${action}`);
 }

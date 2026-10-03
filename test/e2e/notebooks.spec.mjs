@@ -280,6 +280,41 @@ test('@smoke @notebook offline device cache survives reopening without a false r
   } finally { await f.close(); }
 });
 
+test('@notebook an offline cache saved under an earlier mount id moves to the current id and replays once', async ({ page }) => {
+  const f = await fixture(page);
+  const cacheServers = () => page.evaluate(async () => {
+    const { IndexedNotebookStorage } = await import('/assets/notebook_client.mjs'), storage = new IndexedNotebookStorage();
+    try { return (await storage.list()).map(entry => JSON.parse(entry.key)[0]); } finally { await storage.close(); }
+  });
+  try {
+    let dialog = await open(page); const resourceId = await dialog.getAttribute('data-resource-id');
+    await page.context().setOffline(true); await draw(page); await expect(dialog.locator('[role=status]')).toContainText('Saved locally');
+    const expected = await page.evaluate(async () => (await testNotebook.client.exportRecovery()).operations.map(operation => operation.operationId));
+    await dialog.getByRole('button', { name: 'Close notebook', exact: true }).click();
+    await page.context().setOffline(false);
+    // The cache was written before the volume's device number changed.
+    await page.evaluate(async resourceId => {
+      const { IndexedNotebookStorage } = await import('/assets/notebook_client.mjs'), storage = new IndexedNotebookStorage();
+      try {
+        const entry = (await storage.list()).find(item => JSON.parse(item.key)[3] === resourceId), key = JSON.parse(entry.key);
+        await storage.rekey(entry.key, JSON.stringify(['earlier-mount', ...key.slice(1)]), metadata => ({ ...metadata,
+          reopen: { ...metadata.reopen, capabilities: { ...metadata.reopen.capabilities, serverId: 'earlier-mount' } } }));
+      } finally { await storage.close(); }
+    }, resourceId);
+    expect(await cacheServers()).toContain('earlier-mount');
+    await page.route('**/api/notebooks/capabilities', async route => {
+      const response = await route.fetch(), body = await response.json();
+      await route.fulfill({ response, json: { ...body, serverIdAliases: [...body.serverIdAliases, 'earlier-mount'] } });
+    });
+    dialog = await open(page);
+    expect(readNotebook(f.root, resourceId).document.objects).toHaveLength(1);
+    expect(await page.evaluate(async () => (await testNotebook.client.exportRecovery()).operations)).toEqual([]);
+    expect(expected.length).toBeGreaterThan(0);
+    expect(await cacheServers()).not.toContain('earlier-mount');
+    expect(f.errors).toEqual([]);
+  } finally { await f.close(); }
+});
+
 test('@smoke @notebook successful synchronization preserves unrelated local errors', async ({ page }) => {
   const f = await fixture(page);
   try {

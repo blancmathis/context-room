@@ -220,6 +220,22 @@ test("two processes keep Hub, Shared, receipts and notebook bytes after every de
   assert.deepEqual(notebookBytes(root), bytes);
 });
 
+test("a location enrolled before durable identities gets notebooks and Shared back after one confirmation", (t) => {
+  const { root, base } = fixture(t);
+  fs.rmSync(root, { recursive: true, force: true });
+  const run = (action, changes = {}) => {
+    const result = spawnSync(process.execPath, ["test/fixtures/hub_durable_identity.mjs", action, base, JSON.stringify(changes)], { encoding: "utf8", timeout: 180_000 });
+    assert.equal(result.error, undefined, result.error?.message);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  };
+  run("create");
+  run("forget-durable");
+  const bytes = notebookBytes(root);
+  run("confirm", { dev: 77 });
+  run("read", { dev: 77 });
+  assert.deepEqual(notebookBytes(root), bytes);
+});
+
 test("disconnect and Hub journals recover across a device change without orphan cleanup", (t) => {
   const { root, base } = fixture(t);
   fs.rmSync(root, { recursive: true, force: true });

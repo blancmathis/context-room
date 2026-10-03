@@ -38,7 +38,7 @@ export async function openCachedNotebook(entry) {
   }
   async function validate() {
     const cap = await raw('/api/notebooks/capabilities');
-    if (cap.serverId !== route.serverId || (cap.accountId || 'local-owner') !== route.accountId) {
+    if (cap.serverId !== route.serverId && !cap.serverIdAliases?.includes(route.serverId) || (cap.accountId || 'local-owner') !== route.accountId) {
       throw Object.assign(new Error('A different Mac or pairing answered. The original cache is retained, not sent to this connection.'), { status: 403, code: 'notebook_response_scope' });
     }
     validatedAt = Date.now(); return cap;

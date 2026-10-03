@@ -126,6 +126,7 @@ import {
 import {
   abandonInvalidContextHubSharedTransaction,
   abandonContextHubSharedTransaction,
+  confirmContextHubProjectLocation,
   beginContextHubSnapshotRefresh,
   commitContextHubSnapshot,
   contextHubHostRoot,
@@ -487,6 +488,7 @@ const BACKGROUND_REPORT_INVALIDATING_PATHS = new Set([
   "/api/context-hub/project-settings",
   "/api/context-hub/projects",
   "/api/context-hub/shared-recovery/abandon",
+  "/api/context-hub/confirm-location",
   "/api/context-hub/shared-projects",
   "/api/context-hub/shared-documents",
   "/api/context-hub/project-explorer/action",
@@ -16193,6 +16195,7 @@ function contextHubGroupedLocalProjects(localProjects = []) {
         title: entry.title,
         available: entry.available,
         unavailableReason: entry.unavailableReason || "",
+        ...(typeof entry.confirmRootIdentity === "string" ? { confirmRootIdentity: entry.confirmRootIdentity } : {}),
         current: entry.current,
         registeredAt: entry.registeredAt,
         lastOpenedAt: entry.lastOpenedAt,
@@ -17097,6 +17100,7 @@ function isOwnerReviewAuthorityMutation(pathname = "", method = "GET") {
     "POST /api/context-hub/project-settings",
     "POST /api/context-hub/project-explorer/action",
     "POST /api/context-hub/shared-recovery/abandon",
+    "POST /api/context-hub/confirm-location",
     "POST /api/watch-rule",
     "DELETE /api/watch-rule",
     "POST /api/review-gate",
@@ -18718,6 +18722,7 @@ export function createMemoryServer({
   contextHubProjectSync = runContextHubProjectSyncProcessTask,
   contextHubAbandonSharedRecovery = abandonContextHubSharedTransaction,
   contextHubAbandonInvalidSharedRecovery = abandonInvalidContextHubSharedTransaction,
+  contextHubConfirmLocation = confirmContextHubProjectLocation,
   contextHubAcceptRefreshTimeoutMs = CONTEXT_HUB_ACCEPT_REFRESH_TIMEOUT_MS,
   port = DEFAULT_PORT,
   globalPreferencesPath = null,
@@ -19398,6 +19403,7 @@ export function createMemoryServer({
         expectedRootIdentity: requestExpectedRootIdentity,
         beforeManagedControlMutation,
         contextHubAbandonSharedRecovery,
+        contextHubConfirmLocation,
         contextHubAbandonInvalidSharedRecovery,
         contextHubRoot: resolvedContextHubRoot,
         contextHubAcceptRefreshTimeoutMs,
@@ -20357,6 +20363,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   beforeManagedControlMutation = null,
   contextHubAbandonSharedRecovery = abandonContextHubSharedTransaction,
   contextHubAbandonInvalidSharedRecovery = abandonInvalidContextHubSharedTransaction,
+  contextHubConfirmLocation = confirmContextHubProjectLocation,
   contextHubRoot = root,
   contextHubAcceptRefreshTimeoutMs = CONTEXT_HUB_ACCEPT_REFRESH_TIMEOUT_MS,
   terminalDecisionChallenges = null,
@@ -21633,6 +21640,51 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
         revision: String(abandoned?.revision || request.expectedRevision),
         ...(abandoned?.durabilityWarning ? { durabilityPending: true } : {}),
       },
+      ...(catalog ? { catalog } : {}),
+      refreshPending,
+    });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/context-hub/confirm-location") {
+    if (requestRuntimeProfile !== "local" || hostedSharedProvider) {
+      throw sharedRequestError("This operation is unavailable on hosted Context Room.", 404, "remote_operation_unavailable");
+    }
+    const body = await readJsonBody(req);
+    const fields = ["expectedRoot", "expectedRootIdentity", "projectId"];
+    const received = body && typeof body === "object" && !Array.isArray(body) ? Object.keys(body).sort() : [];
+    if (received.length !== fields.length || received.some((field, index) => field !== fields[index])
+      || typeof body.projectId !== "string" || !body.projectId.trim()
+      || typeof body.expectedRoot !== "string" || !body.expectedRoot
+      || typeof body.expectedRootIdentity !== "string") {
+      throw sharedRequestError("Use exact projectId, expectedRoot and expectedRootIdentity fields.", 400, "context_hub_location_identity_required");
+    }
+    const confirmed = await Promise.resolve(contextHubConfirmLocation({
+      projectId: body.projectId.trim(),
+      expectedRoot: body.expectedRoot,
+      expectedRootIdentity: body.expectedRootIdentity,
+      conversationRoot: assistantStorageRoot(),
+    }));
+    contextHubStateCache.clear();
+    contextHubProjectSummaryCache.clear();
+    let catalog = null;
+    let refreshPending = false;
+    try {
+      catalog = await (scheduleContextHubSnapshotRefresh
+        ? scheduleContextHubSnapshotRefresh(contextHubRoot, { refreshShared: false, force: true })
+        : refreshContextHubSnapshot(contextHubRoot, { refreshShared: false, force: true }));
+    } catch {
+      refreshPending = true;
+    }
+    try {
+      appendContextRoomEvent("settings.changed", {
+        projectId: confirmed.project.logicalProjectId || confirmed.project.id,
+        locationId: confirmed.project.id,
+        resource: { scope: "device", key: "hub.location" },
+        data: { action: "confirmed", aliases: confirmed.confirmedIdentities.length },
+      });
+    } catch {}
+    sendJson(res, 200, {
+      location: { status: "confirmed", projectId: confirmed.project.id, confirmedIdentities: confirmed.confirmedIdentities.length },
       ...(catalog ? { catalog } : {}),
       refreshPending,
     });

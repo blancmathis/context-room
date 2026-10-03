@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { NotebookClient, MemoryNotebookStorage, notebookCacheKey } from '../src/notebook_client.mjs';
+import { NotebookClient, MemoryNotebookStorage, adoptNotebookCacheAliases, notebookCacheKey } from '../src/notebook_client.mjs';
 import { openNotebook, readNotebook, mutateNotebook, notebookReceipt } from '../src/notebooks.mjs';
 const actor = { kind: 'human', id: 'tablet-test' };
 function fixture(t) {
@@ -72,6 +72,37 @@ test('two local clients cannot overwrite one another outbox; namespaces isolate 
   assert.equal(readNotebook(f.root, 'board-test').document.objects.length, 2);
   assert.equal((await a.state()).operations.length, 0);
   assert.notEqual(notebookCacheKey(a.scope), notebookCacheKey({ ...a.scope, serverId: 'another-mac' }));
+});
+
+test('a proven earlier location id moves only this device cache, with its queued ink, and never over another cache', async t => {
+  const f = fixture(t), storage = f.storage;
+  const client = (serverId, resourceId = f.scene.resourceId, accountId = 'owner-test') => new NotebookClient({ storage, transport: f.transport,
+    scope: { serverId, accountId, deviceId: 'tablet-test', resourceId }, actor, operationId: () => `${serverId}-${resourceId}-${accountId}` });
+  const old = client('old-mount'); await old.initialize(f.scene);
+  f.setOnline(false); await old.enqueue([put('kept')]);
+  await old.change(state => ({ metadata: { ...state.metadata, reopen: { version: 1, capabilities: { protocolVersion: 1, serverId: 'old-mount' } } } }));
+  const before = await old.state(); old.close();
+  const other = client('old-mount', f.scene.resourceId, 'another-account'); await other.initialize(f.scene); other.close();
+  const unrelated = client('another-mac'); await unrelated.initialize(f.scene); unrelated.close();
+  const second = openNotebook(f.root, { id: 'board-second', path: 'docs/second.crnb', canWrite: () => true });
+  const occupiedOld = client('old-mount', second.resourceId); await occupiedOld.initialize(second); occupiedOld.close();
+  const occupiedNew = client('new-mount', second.resourceId); await occupiedNew.initialize(second); occupiedNew.close();
+
+  const capabilities = { protocolVersion: 1, serverId: 'new-mount', serverIdAliases: ['old-mount'] };
+  assert.equal(await adoptNotebookCacheAliases(storage, { capabilities, accountId: 'owner-test', deviceId: 'tablet-test' }), 1);
+  const scope = { accountId: 'owner-test', deviceId: 'tablet-test', resourceId: f.scene.resourceId };
+  assert.equal((await storage.read(notebookCacheKey({ ...scope, serverId: 'old-mount' }))).snapshot, null);
+  const moved = await storage.read(notebookCacheKey({ ...scope, serverId: 'new-mount' }));
+  assert.deepEqual(moved.operations, before.operations); assert.deepEqual(moved.snapshot, before.snapshot);
+  assert.equal(moved.metadata.reopen.capabilities.serverId, 'new-mount');
+  const keys = (await storage.list()).map(entry => JSON.parse(entry.key).slice(0, 2).join('|')).sort();
+  assert.deepEqual(keys, ['another-mac|owner-test', 'new-mount|owner-test', 'new-mount|owner-test', 'old-mount|another-account', 'old-mount|owner-test']);
+  assert.equal(await adoptNotebookCacheAliases(storage, { capabilities, accountId: 'owner-test', deviceId: 'tablet-test' }), 0);
+  await assert.rejects(storage.rekey(notebookCacheKey({ ...scope, serverId: 'another-mac' }), notebookCacheKey({ ...scope, serverId: 'new-mount' })), { code: 'notebook_cache_conflict' });
+
+  const resumed = client('new-mount'); f.setOnline(true); await resumed.flush();
+  assert.equal((await resumed.state()).operations.length, 0);
+  assert.deepEqual(readNotebook(f.root, f.scene.resourceId).document.objects.map(object => object.id), ['kept']);
 });
 
 test('offline creation binds exact path and id; occupied destination never overwrites ink', async t => {

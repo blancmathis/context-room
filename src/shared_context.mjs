@@ -1934,15 +1934,20 @@ export function attestSharedProjectCapability(root) {
 function sameSharedProjectCapability(left, right) {
   const expected = normalizedSharedProjectCapability(left);
   const current = normalizedSharedProjectCapability(right);
-  if (!expected || !current || expected.root !== current.root
-    || !["same", "alias", "confirmed"].includes(acceptsRootIdentity(expected.root, `${expected.rootIdentity.dev}:${expected.rootIdentity.ino}`))
+  const rootAcceptance = expected && current && expected.root === current.root
+    ? acceptsRootIdentity(expected.root, `${expected.rootIdentity.dev}:${expected.rootIdentity.ino}`) : "";
+  if (!["same", "alias", "confirmed"].includes(rootAcceptance)
     || (expected.rootDurableIdentity && compareFilesystemIdentity(expected.rootDurableIdentity, current.rootDurableIdentity).status !== "same")
     || expected.worktreeIdentity.kind !== current.worktreeIdentity.kind) return false;
   if (expected.worktreeIdentity.kind === "path") return true;
+  // Without durable evidence, a Git path may follow the root to a new device
+  // number only when the root itself was accepted and both moved together.
+  const movedWithRoot = (saved, live) => rootAcceptance !== "same"
+    && saved.dev === expected.rootIdentity.dev && live.dev === current.rootIdentity.dev;
   const sameEntry = (key) => {
     const saved = expected.worktreeIdentity[`${key}Identity`], live = current.worktreeIdentity[`${key}Identity`];
     const durable = expected.worktreeIdentity[`${key}DurableIdentity`];
-    return saved.ino === live.ino && (!durable ? saved.dev === live.dev
+    return saved.ino === live.ino && (!durable ? saved.dev === live.dev || movedWithRoot(saved, live)
       : durable.ino === saved.ino && compareFilesystemIdentity(durable, current.worktreeIdentity[`${key}DurableIdentity`]).status === "same");
   };
   return expected.worktreeIdentity.commonDir === current.worktreeIdentity.commonDir

@@ -722,6 +722,56 @@ test("@smoke unavailable projects show reasons and unknown review counts", async
   expect(result.details).toContain("Registering this folder again will not keep its Shared link");
 });
 
+test("@smoke a location to confirm asks for an explicit same-folder confirmation", async ({ page }) => {
+  const { origin } = fixture();
+  await page.goto(origin + "/?hub=1&workspace=workspace-location-confirmation&view=hub");
+  await waitForBoot(page);
+  await expect.poll(() => page.evaluate(() => Boolean(state.contextHubReviewQueueReady && state.contextHub?.projects?.length))).toBe(true);
+  await page.evaluate(async () => {
+    stopWorkspaceRuntime();
+    await Promise.allSettled([state.contextHubReadyPromise, state.runtimeContextHubRefreshPromise].filter(Boolean));
+  });
+  const requests = [];
+  await page.route("**/api/context-hub/confirm-location", async (route) => {
+    requests.push({ body: route.request().postDataJSON(), nonce: route.request().headers()["x-context-room-owner-nonce"] || "" });
+    const catalog = await page.evaluate(() => ({ ...state.contextHub, projects: state.contextHub.projects.map((project) => project.id === "moved-volume"
+      ? { ...project, available: true, unavailableReason: "", worktrees: project.worktrees.map(({ confirmRootIdentity, ...worktree }) => ({ ...worktree, available: true, unavailableReason: "" })) }
+      : project) }));
+    await route.fulfill({ json: { location: { status: "confirmed", projectId: "moved-volume", confirmedIdentities: 1 }, catalog, refreshPending: false } });
+  });
+  const panel = await page.evaluate(() => {
+    const template = state.contextHub.projects.find((project) => project.mode !== "shared");
+    const worktree = { id: "moved-volume", root: template.root, branch: "", available: false, unavailableReason: "identity to confirm", confirmRootIdentity: "16777229:42", current: false, shared: null };
+    state.contextHub = {
+      ...state.contextHub,
+      projects: [{ ...template, id: "moved-volume", projectKey: "local:moved-volume", title: "Moved volume", available: false, current: false, mode: "local",
+        unavailableReason: "identity to confirm", localReviewCount: null, localReviews: [], localReviewError: "", worktrees: [worktree], worktreeCount: 1,
+        sharedProposalCount: 0, shared: null, sharedRecovery: null, sharedRecoveries: [] }],
+      items: [], proposals: [], workingDrafts: [], sharedRepositories: [], repositoryErrors: [],
+    };
+    state.globalExplorerProjectKey = "local:moved-volume";
+    state.sharedProposalProject = "local:moved-volume";
+    renderGlobalProjectInspection();
+    return { text: document.querySelector("#contextHealth").textContent, root: template.root };
+  });
+  expect(panel.text).toContain("Is this still the folder you registered?");
+  expect(panel.text).toContain("Pair drawing tablets again afterward.");
+  await page.locator("#contextHealth [data-context-hub-confirm-location]").click();
+  const dialog = page.getByRole("dialog", { name: "Confirm the location of Moved volume?" });
+  await expect(dialog).toBeVisible();
+  const accept = dialog.locator("[data-confirm-accept]");
+  await expect(accept).toBeDisabled();
+  expect(requests).toHaveLength(0);
+  await dialog.getByLabel("This is the same folder, not a copy or a replacement.").check();
+  await accept.click();
+  await expect(dialog).toBeHidden();
+  expect(requests).toHaveLength(1);
+  expect(requests[0].body).toEqual({ projectId: "moved-volume", expectedRoot: panel.root, expectedRootIdentity: "16777229:42" });
+  expect(requests[0].nonce).not.toBe("");
+  await expect.poll(() => page.evaluate(() => state.contextHub.projects.find((project) => project.id === "moved-volume")?.available)).toBe(true);
+  await expect(page.locator("[data-context-hub-confirm-location]")).toHaveCount(0);
+});
+
 test("@smoke a failed worktree switch restores the committed project selection", async ({ page }) => {
   const { origin, projects } = fixture();
   await page.goto(`${origin}/?hub=1&workspace=workspace-switch-rollback&project=${encodeURIComponent(projects.atlas.id)}&view=hub`);

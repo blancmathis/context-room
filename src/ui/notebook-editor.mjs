@@ -1,4 +1,4 @@
-import { NotebookClient, IndexedNotebookStorage, notebookBrowserIdentity, notebookHttpTransport } from '../notebook_client.mjs';
+import { NotebookClient, IndexedNotebookStorage, adoptNotebookCacheAliases, notebookBrowserIdentity, notebookHttpTransport } from '../notebook_client.mjs';
 import { normalizeNotebookDocument, notebookPath, NOTEBOOK_VERSION } from '../notebook_protocol.mjs';
 import { notebookSvg, notebookBounds } from '../notebook_render.mjs';
 import { notebookSceneBounds } from '../notebook_geometry.mjs';
@@ -32,6 +32,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   }
   const actor = capabilities.actor || { kind: 'human', id: browserId }, transport = notebookHttpTransport(request, actor);
   const accountId = reviewKey ? 'review:' + reviewKey : capabilities.accountId || 'local-owner';
+  await adoptNotebookCacheAliases(storage, { capabilities, accountId, deviceId: browserId });
   const matches = (await storage.list()).filter(entry => { try { const [server, account, device] = JSON.parse(entry.key); return server === capabilities.serverId && account === accountId && device === browserId; } catch { return false; } });
   const cached = matches.find(entry => resourceId ? entry.snapshot.resourceId === resourceId : entry.snapshot.locator.path === path);
   let snapshot = fixedSnapshot, createOffline = false;
@@ -305,7 +306,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     if (reviewKey || closed || syncing || authBlocked && !explicit) return;
     syncing = true;
     try {
-      if (explicit) { const cap = await request('/api/notebooks/capabilities'); if (cap.serverId !== scope.serverId || !reviewKey && (cap.accountId || 'local-owner') !== scope.accountId) throw new Error('A different canonical location answered. The old cache is retained.'); authBlocked = false; }
+      if (explicit) { const cap = await request('/api/notebooks/capabilities'); if (cap.serverId !== scope.serverId && !cap.serverIdAliases?.includes(scope.serverId) || !reviewKey && (cap.accountId || 'local-owner') !== scope.accountId) throw new Error('A different canonical location answered. The old cache is retained.'); authBlocked = false; }
       await client.flush();
       // Automatic recovery retires only the connection alert. A successful
       // flush cannot establish that a separate local edit or export succeeded.
