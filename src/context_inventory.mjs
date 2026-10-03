@@ -354,7 +354,7 @@ function defaultListProviderHookSources(root, _folder, provider) {
 
 export function createContextInventoryReaders(overrides = {}) {
   return Object.freeze({
-    listProjects: (options) => listContextHubProjects(options),
+    listProjects: (options) => listContextHubProjects({ ...options, readOnly: true }),
     readSettings: (root) => readMemoryWebappSettings(root),
     listInstructions: (root, settings) => listStartupContextFiles(root, settings),
     listProviderInstructions: (root, folder, provider) => defaultListProviderInstructions(root, folder, provider),
@@ -717,8 +717,8 @@ function addSharedSkills(inventory, projection, coordinate, acceptedRevision, ta
     const collection = collections.get(destination.collectionId) || {};
     for (const skill of destination.skills || []) {
       const gitPath = `${collection.path || destination.collectionId}/${skill}/SKILL.md`;
-      const target = (destination.target || []).find((item) => item.skill === skill)?.target || "";
-      const skillFile = target && fs.existsSync(target) && fs.statSync(target).isDirectory() ? path.join(target, "SKILL.md") : target;
+      const skillTarget = (destination.target || []).find((item) => item.skill === skill)?.target || "";
+      const skillFile = skillTarget && fs.existsSync(skillTarget) && fs.statSync(skillTarget).isDirectory() ? path.join(skillTarget, "SKILL.md") : skillTarget;
       const blob = skillFile && fs.existsSync(skillFile) && fs.statSync(skillFile).isFile() ? localFileVersion(skillFile) : "unknown";
       const providers = destination.provider === "custom" ? ["all"] : [destination.provider];
       const status = destination.status === "ready" ? "active"

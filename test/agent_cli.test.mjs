@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import test from "node:test";
 
 import {
@@ -11,6 +11,7 @@ import {
   agentInstructions,
   buildAgentEnvironment,
   buildAgentPrepare,
+  buildAgentPrepareCached,
   classifyAgentChanges,
   listCliProjects,
   listCliReviews,
@@ -32,6 +33,13 @@ function fixture(t) {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-agent-cli-"));
   const root = path.join(parent, "project");
   const hub = path.join(parent, "hub");
+  const previous = process.env.CONTEXT_ROOM_HUB_HOME;
+  process.env.CONTEXT_ROOM_HUB_HOME = hub;
+  t.after(() => {
+    if (previous === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
+    else process.env.CONTEXT_ROOM_HUB_HOME = previous;
+    fs.rmSync(parent, { recursive: true, force: true });
+  });
   fs.mkdirSync(path.join(root, "docs", "feature"), { recursive: true });
   fs.writeFileSync(path.join(root, "AGENTS.md"), "# Project instructions\n");
   fs.writeFileSync(path.join(root, "docs", "feature", "AGENTS.md"), "# Folder instructions\n");
@@ -47,13 +55,6 @@ function fixture(t) {
   assert.equal(settings.startupContext.enabled, true);
   git(root, ["add", "."]);
   git(root, ["commit", "-m", "initial"]);
-  const previous = process.env.CONTEXT_ROOM_HUB_HOME;
-  process.env.CONTEXT_ROOM_HUB_HOME = hub;
-  t.after(() => {
-    if (previous === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
-    else process.env.CONTEXT_ROOM_HUB_HOME = previous;
-    fs.rmSync(parent, { recursive: true, force: true });
-  });
   return { parent, root, hub };
 }
 
@@ -232,4 +233,86 @@ test("worktrees stay undiscovered until explicitly registered and then group und
   const target = resolveCliTarget({ cwd: path.join(worktree, "docs") });
   assert.equal(target.root, fs.realpathSync(worktree));
   assert.equal(target.location.branch, "agent-cli-worktree");
+});
+
+
+test("prepare cache invalidates when ignored provider or configured instructions disappear", (t) => {
+  const { root } = fixture(t);
+  const folder = path.join(root, "docs", "feature");
+  const override = path.join(folder, "AGENTS.override.md");
+  const configured = path.join(folder, "TEAM.md");
+  fs.writeFileSync(override, "# Override instruction\n");
+  fs.writeFileSync(configured, "# Configured instruction\n");
+  fs.appendFileSync(path.join(root, ".git", "info", "exclude"), "\nAGENTS.override.md\nTEAM.md\n");
+  const settings = JSON.parse(fs.readFileSync(path.join(root, ".context-room", "config.json"), "utf8"));
+  writeMemoryWebappSettings(root, { ...settings, startupContext: { ...settings.startupContext, fileNames: ["AGENTS.md", "TEAM.md"] } });
+  registerCliProject({ root, title: "Cached instructions" });
+  const target = resolveCliTarget({ cwd: folder });
+  const options = { provider: "codex", task: "Guide" };
+  const first = buildAgentPrepareCached(target, options);
+  assert.equal(first.freshness.cache, "cold");
+  for (const name of ["AGENTS.override.md", "TEAM.md"]) {
+    assert.ok(first.data.environment.instructions.some((item) => item.path.endsWith(name)));
+  }
+  assert.equal(buildAgentPrepareCached(target, options).freshness.cache, "warm");
+  for (const file of [override, configured]) {
+    const before = git(root, ["status", "--porcelain=v1", "--untracked-files=all"]);
+    fs.unlinkSync(file);
+    assert.equal(git(root, ["status", "--porcelain=v1", "--untracked-files=all"]), before, "Git status cannot detect these ignored instructions");
+    const refreshed = buildAgentPrepareCached(target, options);
+    assert.equal(refreshed.freshness.cache, "cold");
+    assert.equal(refreshed.data.environment.instructions.some((item) => item.path.endsWith(path.basename(file))), false);
+    assert.equal(buildAgentPrepareCached(target, options).freshness.cache, "warm");
+  }
+});
+
+
+test("prepare computes truthful context with a read-only project and cache", (t) => {
+  const { root, hub } = fixture(t);
+  registerCliProject({ root, title: "Read-only context" });
+  const target = resolveCliTarget({ cwd: root });
+  fs.mkdirSync(path.join(hub, "cli-cache"), { recursive: true });
+  const modes = [];
+  const visit = (file) => {
+    const stats = fs.lstatSync(file);
+    if (stats.isSymbolicLink()) return;
+    modes.push([file, stats.mode & 0o777]);
+    if (stats.isDirectory()) for (const child of fs.readdirSync(file)) visit(path.join(file, child));
+  };
+  visit(root);
+  visit(hub);
+  const before = git(root, ["status", "--porcelain=v1", "--untracked-files=all"]);
+  try {
+    for (const [file] of modes) fs.chmodSync(file, fs.statSync(file).isDirectory() ? 0o555 : 0o444);
+    const result = buildAgentPrepareCached(target, { provider: "codex", task: "Guide" });
+    assert.equal(result.freshness.cache, "unavailable");
+    assert.ok(result.warnings.some((warning) => warning.includes("Context cache unavailable")));
+    assert.ok(result.data.environment.instructions.some((item) => item.path === "AGENTS.md"));
+    assert.equal(result.data.documentation.accepted.length, 0, "unreviewed documentation must remain excluded");
+    assert.ok(result.data.review.items.some((item) => item.path === "docs/guide.md"));
+    assert.deepEqual(fs.readdirSync(path.join(hub, "cli-cache")), []);
+    assert.equal(git(root, ["status", "--porcelain=v1", "--untracked-files=all"]), before);
+  } finally {
+    for (const [file, mode] of modes) fs.chmodSync(file, mode);
+  }
+});
+
+test("context bundle succeeds under a macOS sandbox denying all file writes", { skip: process.platform !== "darwin" }, (t) => {
+  const { root, parent } = fixture(t);
+  registerCliProject({ root, title: "Sandbox context" });
+  const result = spawnSync("/usr/bin/sandbox-exec", [
+    "-p", "(version 1) (allow default) (deny file-write*)",
+    process.execPath, path.resolve("bin/context-room.mjs"),
+    "context", "bundle", "--task", "Guide", "--provider", "codex", "--format", "json",
+  ], {
+    cwd: fs.realpathSync(root), encoding: "utf8", timeout: 60_000,
+    env: { ...process.env, CONTEXT_ROOM_SHARED_HOME: path.join(parent, "shared") },
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const envelope = JSON.parse(result.stdout);
+  assert.equal(envelope.ok, true);
+  assert.equal(envelope.freshness.cache, "unavailable");
+  assert.equal(envelope.data.documentation.accepted.length, 0);
+  assert.ok(envelope.data.review.items.some((item) => item.path === "docs/guide.md"));
 });

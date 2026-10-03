@@ -3983,3 +3983,40 @@ test("Context Room keeps a 150-project registry complete in the live picker whil
   assert.match(bundle.js, /choices: needle \? projects : \[null, \.\.\.projects\]/);
   assert.match(bundle.js, /contextHubProjectPickerQuery = event\.target\.value/);
 });
+
+
+test("read-only project listing leaves legacy identity and damaged journals untouched", (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-read-only-"));
+  const hubHome = path.join(base, "hub");
+  withHubHome(t, hubHome);
+  const root = fs.realpathSync(makeProject(base, "Read-only listing"));
+  registerContextHubProject(root);
+  const registryPath = path.join(hubHome, "registry.json");
+  const current = fs.readFileSync(registryPath, "utf8");
+  assert.equal(listContextHubProjects({ readOnly: true })[0].available, true);
+  assert.equal(fs.readFileSync(registryPath, "utf8"), current);
+
+  const legacy = JSON.stringify({ version: 2, projects: [{ root, title: "Old location" }], sharedRepositories: [] }) + "\n";
+  fs.writeFileSync(registryPath, legacy);
+  const [unconfirmed] = listContextHubProjects({ readOnly: true });
+  assert.equal(unconfirmed.available, false);
+  assert.equal(unconfirmed.unavailableReason, "folder identity changed");
+  assert.equal(fs.readFileSync(registryPath, "utf8"), legacy);
+
+  fs.writeFileSync(registryPath, current);
+  const transactionDirectory = path.join(hubHome, "shared-transactions");
+  fs.mkdirSync(transactionDirectory, { recursive: true });
+  const journal = path.join(transactionDirectory, "unreadable.json");
+  fs.writeFileSync(journal, "{not-json\n");
+  assert.throws(() => listContextHubProjects({ readOnly: true }));
+  assert.equal(fs.readFileSync(journal, "utf8"), "{not-json\n");
+  assert.deepEqual(fs.readdirSync(transactionDirectory), ["unreadable.json"]);
+  fs.unlinkSync(journal);
+
+  const staging = path.join(transactionDirectory, "invalid", ".00000000-0000-0000-0000-000000000000.tmp");
+  fs.mkdirSync(staging, { recursive: true });
+  assert.throws(() => listContextHubProjects({ readOnly: true }), (error) => error.code === "context_hub_shared_recovery_required");
+  assert.equal(fs.lstatSync(staging).isDirectory(), true);
+  assert.equal(fs.readFileSync(registryPath, "utf8"), current);
+  fs.rmSync(base, { recursive: true, force: true });
+});

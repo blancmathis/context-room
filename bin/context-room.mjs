@@ -802,6 +802,7 @@ if (agentFirstTargetCommand) {
       location: args.location && args.location !== true ? String(args.location) : "",
       folder: args.folder && args.folder !== true ? String(args.folder) : "",
       requireLocal: true,
+      readOnly: contextBundleCommand || agentPrepareCommand,
     };
     try {
       agentFirstTarget = resolveCliTarget(targetOptions);

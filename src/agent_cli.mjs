@@ -131,7 +131,7 @@ import {
 } from "./cli_contract.mjs";
 import { appendContextRoomEvent } from "./event_journal.mjs";
 import { HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY } from "./review_authority.mjs";
-import { buildContextInventory } from "./context_inventory.mjs";
+import { buildContextInventory, createContextInventoryReaders } from "./context_inventory.mjs";
 import {
   buildContextGraph,
   impactContext,
@@ -436,10 +436,19 @@ function statFingerprint(filePath) {
 function agentPrepareFingerprint(target, options) {
   const status = gitText(target.root, ["status", "--porcelain=v1", "--untracked-files=all"]);
   const changedContent = gitText(target.root, ["diff", "--binary", "HEAD", "--"]);
+  const settings = readMemoryWebappSettings(target.root);
+  const readers = createContextInventoryReaders();
+  // Rediscover the complete instruction manifest: removed ignored/global files
+  // do not necessarily change Git status or the remaining files' timestamps.
+  const instructionFiles = [
+    ...readers.listInstructions(target.root, settings),
+    ...readers.listProviderInstructions(target.root, target.folderAbsolute, normalizedProvider(options.provider || "auto")),
+  ].map((item) => item.startupContext.absolutePath);
   const stateFiles = [
     path.join(target.root, CONFIG_FILE),
     path.join(target.root, ".context-room", "review-state.json"),
     path.join(target.root, ".context-room", "review-ledger.json"),
+    ...new Set(instructionFiles.sort()),
     ...folderChain(target.root, target.folderAbsolute).flatMap((directory) => ["AGENTS.md", "CLAUDE.md", "OPENCODE.md"].map((name) => path.join(directory, name))),
   ];
   const untrackedStats = status.split("\n")
@@ -482,9 +491,9 @@ function writeCliCache(cachePath, fingerprint, result) {
   }
 }
 
-export function resolveCliTarget({ cwd = process.cwd(), project = "", location = "", folder = "", requireLocal = true } = {}) {
+export function resolveCliTarget({ cwd = process.cwd(), project = "", location = "", folder = "", requireLocal = true, readOnly = false } = {}) {
   const requested = stablePath(cwd);
-  const projects = listContextHubProjects({ refreshGit: false });
+  const projects = listContextHubProjects({ refreshGit: false, readOnly });
   let candidates = projects;
   if (location) {
     const locationPath = path.isAbsolute(String(location)) || String(location).startsWith(".") ? stablePath(location) : "";
@@ -1314,8 +1323,8 @@ function sharedFreshness(target, { fresh = false } = {}) {
 export function buildAgentPrepare(target, { task = "", sessionId = "", provider = "auto", fresh = false, budget = 1200 } = {}) {
   if (!target.root) throw new ContextRoomCliError("local-environment-unavailable", "Agent prepare requires a registered local project location.");
   const freshness = sharedFreshness(target, { fresh });
-  const report = buildDocQaReport(target.root);
-  const doctor = buildContextRoomDoctorReport(target.root, { docqa: report });
+  const report = buildDocQaReport(target.root, { readOnly: true });
+  const doctor = buildContextRoomDoctorReport(target.root, { docqa: report, readOnly: true });
   const environment = buildAgentEnvironment(target, { provider, report });
   let documentation = { query: String(task || ""), results: [], revision: null };
   if (String(task || "").trim()) {
@@ -1362,8 +1371,16 @@ export function buildAgentPrepareCached(target, options = {}) {
   const cached = readCliCache(cachePath, fingerprint);
   if (cached) return cached;
   const result = buildAgentPrepare(target, options);
-  writeCliCache(cachePath, fingerprint, result);
-  return { ...result, freshness: { ...(result.freshness || {}), cache: "cold" } };
+  try {
+    writeCliCache(cachePath, fingerprint, result);
+    return { ...result, freshness: { ...(result.freshness || {}), cache: "cold" } };
+  } catch (error) {
+    return {
+      ...result,
+      freshness: { ...(result.freshness || {}), cache: "unavailable" },
+      warnings: [...(result.warnings || []), `Context cache unavailable (${error.code || "write-failed"}); computed without caching.`],
+    };
+  }
 }
 
 export function buildSharedOnlyAgentPrepare({ repository, projectId, task = "", sessionId = "", provider = "auto", fresh = false, budget = 1200 } = {}) {
