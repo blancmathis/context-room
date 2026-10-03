@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
@@ -1685,7 +1686,7 @@ test("Context Hub registration does not inherit Shared state after a project roo
   assert.equal(readContextHubRegistry().projects.find((entry) => entry.id === fresh.id).shared, null);
 });
 
-test("Context Hub registration reports the Shared link lost after a simulated reboot and the CLI prints it", (t) => {
+test("Context Hub registration reports the Shared link lost after a replacement and the CLI prints it", (t) => {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-registration-warning-")));
   const hubHome = path.join(base, "hub");
   withHubHome(t, hubHome);
@@ -1694,28 +1695,97 @@ test("Context Hub registration reports the Shared link lost after a simulated re
   const shared = { repository: path.join(base, "shared.git"), projectId: "demo" };
   const original = registerContextHubProject(root, { shared });
   const registryPath = path.join(hubHome, "registry.json");
-  const simulateReboot = () => {
-    const registry = JSON.parse(fs.readFileSync(registryPath, "utf8"));
-    const entry = registry.projects.find((item) => item.id === original.id);
-    entry.rootIdentity.dev = String(BigInt(entry.rootIdentity.dev) + 1n);
-    entry.shared = shared;
-    fs.writeFileSync(registryPath, JSON.stringify(registry));
-  };
-  simulateReboot();
+  fs.renameSync(root, path.join(base, "original-project"));
+  makeProject(base, "Registration warning");
   const fresh = registerContextHubProject(root);
   assert.equal(fresh.id, original.id);
-  assert.equal(fresh.rootIdentity.ino, original.rootIdentity.ino);
+  assert.notEqual(fresh.rootIdentity.ino, original.rootIdentity.ino);
   assert.equal(fresh.shared, null);
   assert.deepEqual(fresh.sharedNotCarriedOver, { ...shared, reason: "folder identity changed" });
   assert.equal(readContextHubRegistry().projects[0].sharedNotCarriedOver, undefined, "warnings are results, not persisted bindings");
   const warning = contextHubRegistrationWarning(fresh);
   assert.equal(warning, `Shared link not carried over (folder identity changed): repository ${JSON.stringify(shared.repository)}, project "demo". Re-link it in Hub project settings.`);
   assert.equal(contextHubRegistrationWarning(registerContextHubProject(root)), "", "an unchanged registration does not repeat the warning");
-  simulateReboot();
+  registerContextHubProject(root, { shared });
+  fs.renameSync(root, path.join(base, "second-project"));
+  makeProject(base, "Registration warning");
   const cli = spawnSync(process.execPath, [fileURLToPath(new URL("../bin/context-room.mjs", import.meta.url)), "project", "register", "--root", root, "--format", "json"], { encoding: "utf8", env: process.env, timeout: 30_000 });
   assert.equal(cli.status, 0, cli.stderr);
   assert.equal(cli.stderr.trim(), warning, "exactly one actionable warning is printed");
   assert.deepEqual(JSON.parse(cli.stdout).data.registered.sharedNotCarriedOver, fresh.sharedNotCarriedOver);
+});
+
+test("Context Hub registration preserves an unconfirmed root and its Shared link without writing the registry", async (t) => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-registration-unconfirmed-")));
+  const hubHome = path.join(base, "hub");
+  withHubHome(t, hubHome);
+  withSharedHome(t, path.join(base, "shared"));
+  const root = makeProject(base, "Unconfirmed registration");
+  const shared = { repository: path.join(base, "shared.git"), projectId: "demo" };
+  const original = registerContextHubProject(root, { shared });
+  const registryPath = path.join(hubHome, "registry.json");
+  const registry = JSON.parse(fs.readFileSync(registryPath, "utf8"));
+  const entry = registry.projects.find((item) => item.id === original.id);
+  entry.rootIdentity.dev = String(BigInt(entry.rootIdentity.dev) + 1n);
+  // Preserve nonstandard whitespace to catch even a write of identical values.
+  fs.writeFileSync(registryPath, JSON.stringify(registry) + "\n\n");
+  const before = fs.readFileSync(registryPath);
+  const snapshotControlPath = path.join(hubHome, "snapshot-control.json");
+  const snapshotControl = fs.readFileSync(snapshotControlPath);
+  const unconfirmed = registerContextHubProject(root, {
+    title: "Do not rename",
+    shared: { repository: path.join(base, "other.git"), projectId: "other" },
+  });
+  assert.deepEqual(unconfirmed, { ...entry, identityUnconfirmed: true });
+  assert.deepEqual(fs.readFileSync(registryPath), before, "no registry bytes may change");
+  assert.deepEqual(fs.readFileSync(snapshotControlPath), snapshotControl, "registration must not invalidate the snapshot");
+  assert.deepEqual(unconfirmed.shared, shared);
+  assert.equal(unconfirmed.sharedNotCarriedOver, undefined);
+  assert.equal(readContextHubRegistry().projects[0].identityUnconfirmed, undefined, "confirmation state belongs only to the result");
+  assert.equal(listContextHubProjects().find((item) => item.id === original.id).available, false);
+  const warning = contextHubRegistrationWarning(unconfirmed);
+  assert.equal(warning, "Folder identity needs confirmation after restart; Shared link preserved and inactive. Registration was not updated.");
+
+  const hostRoot = contextHubHostRoot();
+  fs.mkdirSync(hostRoot, { recursive: true });
+  initializeContextRoomProject(hostRoot, { title: "Test Hub", allowedPaths: [], watchAllow: [] });
+  const room = createMemoryServer({ root: hostRoot, registerInHub: false });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  const port = room.server.address().port;
+  writeContextHubRuntime({ port, root: hostRoot, url: `http://127.0.0.1:${port}` });
+  t.after(async () => {
+    room.server.closeAllConnections();
+    await new Promise((resolve) => room.server.close(resolve));
+  });
+  const cliPath = fileURLToPath(new URL("../bin/context-room.mjs", import.meta.url));
+  const portProbe = net.createServer();
+  await new Promise((resolve) => portProbe.listen(0, "127.0.0.1", resolve));
+  const launchPort = String(portProbe.address().port);
+  await new Promise((resolve) => portProbe.close(resolve));
+  for (const args of [
+    ["project", "register", "--root", root, "--format", "json"],
+    ["start", "--root", root, "--port", launchPort],
+    ["hub", "--root", root, "--port", launchPort],
+  ]) {
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [cliPath, ...args], { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "", stderr = "";
+      const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
+      child.stdout.on("data", (chunk) => { stdout += chunk; });
+      child.stderr.on("data", (chunk) => { stderr += chunk; });
+      child.once("error", (error) => { clearTimeout(timer); reject(error); });
+      child.once("close", (status, signal) => { clearTimeout(timer); resolve({ stdout, stderr, status, signal }); });
+    });
+    assert.equal(result.status, 0, `${args[0]} failed: ${result.stderr} (${result.signal})`);
+    assert.equal(result.stderr.trim(), warning, "exactly one confirmation warning is printed");
+    if (args[0] === "project") {
+      assert.deepEqual(JSON.parse(result.stdout).data.registered, unconfirmed);
+    } else {
+      assert.match(result.stdout, /Context Room Hub:/);
+      assert.match(result.stdout, /Already running since:/);
+    }
+    assert.deepEqual(fs.readFileSync(registryPath), before, `${args[0]} must preserve the registry byte for byte`);
+  }
 });
 
 test("Context Hub unavailable locations expose reasons and unknown counts without choosing a missing worktree", async (t) => {

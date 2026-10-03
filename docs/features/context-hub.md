@@ -98,6 +98,14 @@ project settings. Unavailable Shared-linked location details warn about this eff
 before re-registration. The current filesystem identity check remains in force;
 this behavior does not migrate or repair identities after a restart.
 
+When only the root's device number changes, while its path, inode, worktree
+membership and logical project identity still match, registration leaves the
+registry unchanged. Its result reports `identityUnconfirmed: true`, and launch
+and project registration commands warn that the location needs confirmation
+after restart. Any existing Shared binding is preserved but remains inactive:
+the location is still unavailable until its identity is confirmed. This does
+not establish continuity or migrate the stored identity.
+
 ## Local review
 
 The global queue also includes submitted local proposals and changed image assets. Local drafts stay out of the queue until submitted. Each proposal opens an exact before/after file review. [Document workflow](document-workflow.md) owns acceptance, correction, cleanup and recovery behavior.

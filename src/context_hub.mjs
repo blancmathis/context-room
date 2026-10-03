@@ -175,6 +175,7 @@ function mutateContextHubRegistry(operation) {
   return withRegistryLock(() => {
     const registry = readContextHubRegistry();
     const result = operation(registry);
+    if (result?.identityUnconfirmed === true) return result;
     writeJson(registryPath(), registry);
     invalidateContextHubSnapshotLocked();
     return result;
@@ -2098,12 +2099,16 @@ function registerContextHubProjectInRegistry(registry, {
   const existing = registry.projects.find((entry) => entry.id === id);
   const nextRootIdentity = normalizedProjectRootIdentity(rootIdentity) || contextHubProjectRootIdentity(projectRoot);
   const existingRootIdentity = normalizedProjectRootIdentity(existing?.rootIdentity);
-  const sameRegisteredIdentity = Boolean(existing)
+  const sameRegisteredLocation = Boolean(existing)
     && path.resolve(existing.root) === projectRoot
-    && existingRootIdentity?.dev === nextRootIdentity.dev
     && existingRootIdentity?.ino === nextRootIdentity.ino
     && sameWorktreeMembershipIdentity(existing.worktreeIdentity, identity.membershipIdentity)
     && (existing.logicalProjectId || existing.id) === identity.logicalProjectId;
+  if (sameRegisteredLocation && existingRootIdentity.dev !== nextRootIdentity.dev) {
+    return { ...existing, identityUnconfirmed: true };
+  }
+  const sameRegisteredIdentity = sameRegisteredLocation
+    && existingRootIdentity.dev === nextRootIdentity.dev;
   const nextShared = requestedShared ? { ...requestedShared } : sameRegisteredIdentity ? existing.shared || null : null;
   if (nextShared) {
     const repositoryKey = repositoryIdentity(nextShared.repository);
@@ -2136,6 +2141,9 @@ function registerContextHubProjectInRegistry(registry, {
 }
 
 export function contextHubRegistrationWarning(registration) {
+  if (registration?.identityUnconfirmed === true) {
+    return `Folder identity needs confirmation after restart; ${registration.shared ? "Shared link preserved and inactive" : "registration unchanged"}. Registration was not updated.`;
+  }
   const lost = registration?.sharedNotCarriedOver;
   return lost
     ? `Shared link not carried over (${lost.reason}): repository ${JSON.stringify(lost.repository)}, project ${JSON.stringify(lost.projectId)}. Re-link it in Hub project settings.`
