@@ -326,6 +326,33 @@ function sameDurableProjectIdentity(expected, root, membership = gitWorktreeIden
     && sameDurableWorktreeIdentity(expected.worktreeIdentity, membership);
 }
 
+function persistedProjectIdentityMatches(entry, membership = null) {
+  try {
+    const live = membership || gitWorktreeIdentity(entry.root).membershipIdentity;
+    const legacy = normalizedProjectRootIdentity(entry.rootIdentity);
+    if (!legacy || !["same", "alias"].includes(acceptsRootIdentity(entry.root, `${legacy.dev}:${legacy.ino}`))) return false;
+    return entry.rootDurableIdentity ? sameDurableProjectIdentity(entry, entry.root, live)
+      : contextHubProjectRootMatchesIdentity(entry.root, legacy) && sameWorktreeMembershipIdentity(entry.worktreeIdentity, live);
+  } catch { return false; }
+}
+
+function samePersistedRootIdentity(left, right) {
+  return left.rootIdentity?.ino === right.rootIdentity?.ino && (
+    left.rootDurableIdentity && right.rootDurableIdentity
+      ? compareFilesystemIdentity(left.rootDurableIdentity, right.rootDurableIdentity).status === "same"
+      : left.rootIdentity?.dev === right.rootIdentity?.dev
+  );
+}
+
+function originalRootMayStillExist(entry) {
+  try {
+    const live = contextHubProjectRootIdentity(entry.root);
+    return ["same", "alias"].includes(acceptsRootIdentity(entry.root, `${entry.rootIdentity.dev}:${entry.rootIdentity.ino}`))
+      || (live.ino === entry.rootIdentity.ino
+        && compareFilesystemIdentity(entry.rootDurableIdentity, readFilesystemIdentity(entry.root).identity).status !== "different");
+  } catch (error) { return !["ENOENT", "ENOTDIR"].includes(error?.code); }
+}
+
 function normalizedFilesystemEntryIdentity(value = null) {
   const dev = String(value?.dev || "");
   const ino = String(value?.ino || "");
@@ -989,7 +1016,7 @@ function normalizedHubSharedTransaction(raw, filePath) {
       && entryRootIdentity
       && (version < 4 || worktreeIdentity)
       && (version < 5 || worktreeMembershipIdentityIsAnchored(worktreeIdentity))
-      ? [{ id, root, rootIdentity: entryRootIdentity, worktreeIdentity }]
+      ? [{ id, root, rootIdentity: entryRootIdentity, rootDurableIdentity: normalizedDurableIdentity(entry?.rootDurableIdentity), worktreeIdentity }]
       : [];
   }) : [];
   const projectIds = new Set(projectGroup.map((entry) => entry.id));
@@ -1041,6 +1068,7 @@ function normalizedHubSharedTransaction(raw, filePath) {
     createdAt: String(raw.createdAt || ""),
     projectRoot,
     rootIdentity,
+    rootDurableIdentity: normalizedDurableIdentity(raw.rootDurableIdentity),
     projectId,
     logicalProjectId,
     projectGroup: projectGroup.sort((left, right) => left.id.localeCompare(right.id)),
@@ -1068,12 +1096,14 @@ function hubSharedTransactionPayload(transaction, overrides = {}) {
     createdAt: transaction.createdAt,
     projectRoot: transaction.projectRoot,
     rootIdentity: transaction.rootIdentity,
+    rootDurableIdentity: transaction.rootDurableIdentity,
     projectId: transaction.projectId,
     logicalProjectId: transaction.logicalProjectId,
     projectGroup: transaction.projectGroup.map((entry) => ({
       id: entry.id,
       root: entry.root,
       rootIdentity: entry.rootIdentity,
+      rootDurableIdentity: entry.rootDurableIdentity,
       worktreeIdentity: entry.worktreeIdentity,
     })),
     beforeShared: transaction.beforeShared ? {
@@ -1359,16 +1389,14 @@ function assertTransactionHubCas(registry, transaction) {
   const identitiesMatch = group.length === transaction.projectGroup.length
     && transaction.projectGroup.every((expected) => {
       const current = currentById.get(expected.id);
-      const currentRootIdentity = normalizedProjectRootIdentity(current?.rootIdentity);
       const currentWorktreeIdentity = current ? gitWorktreeIdentity(current.root) : null;
       const membershipMatches = expected.worktreeIdentity
-        ? sameWorktreeMembershipIdentity(currentWorktreeIdentity?.membershipIdentity, expected.worktreeIdentity)
-        : currentWorktreeIdentity?.membershipIdentity?.kind === "path";
+        ? persistedProjectIdentityMatches(expected, currentWorktreeIdentity?.membershipIdentity)
+        : contextHubProjectRootMatchesIdentity(expected.root, expected.rootIdentity)
+          && currentWorktreeIdentity?.membershipIdentity?.kind === "path";
       return Boolean(current)
         && path.resolve(current.root) === expected.root
-        && currentRootIdentity?.dev === expected.rootIdentity.dev
-        && currentRootIdentity?.ino === expected.rootIdentity.ino
-        && contextHubProjectRootMatchesIdentity(current.root, expected.rootIdentity)
+        && samePersistedRootIdentity(current, expected)
         && currentWorktreeIdentity?.logicalProjectId === transaction.logicalProjectId
         && membershipMatches
         && (current.logicalProjectId || current.id) === transaction.logicalProjectId;
@@ -1489,11 +1517,9 @@ function assertTransactionAbandonmentCasLocked(registry, transaction) {
   const exactRegistryIdentity = currentGroup.length === transaction.projectGroup.length
     && transaction.projectGroup.every((expected) => {
       const current = currentGroup.find((entry) => entry.id === expected.id);
-      const currentRootIdentity = normalizedProjectRootIdentity(current?.rootIdentity);
       return Boolean(current)
         && path.resolve(current.root) === expected.root
-        && currentRootIdentity?.dev === expected.rootIdentity.dev
-        && currentRootIdentity?.ino === expected.rootIdentity.ino
+        && samePersistedRootIdentity(current, expected)
         && (current.logicalProjectId || current.id) === transaction.logicalProjectId;
     });
   if (!exactRegistryIdentity) {
@@ -1621,7 +1647,7 @@ export function abandonContextHubSharedTransaction({
     assertTransactionAbandonmentCasLocked(registry, transaction);
     let orphanCleanup = null;
     const originalRootsUnavailable = transaction.projectGroup.every((entry) => (
-      !contextHubProjectRootMatchesIdentity(entry.root, entry.rootIdentity)
+      !originalRootMayStillExist(entry)
     ));
     const canResolveToDisconnected = transaction.operation === "disconnect" || !transaction.beforeShared;
     if (originalRootsUnavailable && canResolveToDisconnected) {
@@ -1631,6 +1657,7 @@ export function abandonContextHubSharedTransaction({
         projectRoots: transaction.projectGroup.map((entry) => ({
           root: entry.root,
           rootIdentity: entry.rootIdentity,
+          rootDurableIdentity: entry.rootDurableIdentity,
           worktreeIdentity: entry.worktreeIdentity,
         })),
       });
@@ -1767,9 +1794,9 @@ function prepareHubSharedTransactionLocked(projectRoot, operation, requestedShar
   const registry = readContextHubRegistryRaw();
   const selected = registry.projects.find((entry) => entry.id === stableProjectId(projectRoot));
   if (!selected) throw new Error(`Context Hub project is not registered: ${projectRoot}`);
-  const rootIdentity = normalizedProjectRootIdentity(selected.rootIdentity);
-  if (!rootIdentity || path.resolve(selected.root) !== path.resolve(projectRoot)
-    || !contextHubProjectRootMatchesIdentity(selected.root, rootIdentity)) {
+  const rootIdentity = contextHubProjectRootIdentity(projectRoot);
+  if (!selected.rootDurableIdentity || path.resolve(selected.root) !== path.resolve(projectRoot)
+    || !persistedProjectIdentityMatches(selected)) {
     throw Object.assign(new Error("The Context Hub project root identity changed before its Shared transaction"), { code: "context_hub_shared_transaction_conflict" });
   }
   const logicalProjectId = selected.logicalProjectId || selected.id;
@@ -1779,12 +1806,12 @@ function prepareHubSharedTransactionLocked(projectRoot, operation, requestedShar
   }
   const projectGroup = group.map((entry) => {
     const groupRoot = path.resolve(entry.root);
-    const groupRootIdentity = normalizedProjectRootIdentity(entry.rootIdentity);
+    const groupRootIdentity = contextHubProjectRootIdentity(groupRoot);
     const worktreeIdentity = gitWorktreeIdentity(groupRoot);
     if (
       entry.id !== stableStoredProjectId(groupRoot)
       || !groupRootIdentity
-      || !contextHubProjectRootMatchesIdentity(groupRoot, groupRootIdentity)
+      || !persistedProjectIdentityMatches(entry, worktreeIdentity.membershipIdentity)
       || worktreeIdentity.logicalProjectId !== logicalProjectId
     ) {
       throw Object.assign(new Error("A Context Hub worktree identity changed before its Shared transaction"), { code: "context_hub_shared_transaction_conflict" });
@@ -1793,6 +1820,7 @@ function prepareHubSharedTransactionLocked(projectRoot, operation, requestedShar
       id: entry.id,
       root: groupRoot,
       rootIdentity: groupRootIdentity,
+      rootDurableIdentity: entry.rootDurableIdentity,
       worktreeIdentity: worktreeIdentity.membershipIdentity,
     };
   }).sort((left, right) => left.id.localeCompare(right.id));
@@ -1819,6 +1847,7 @@ function prepareHubSharedTransactionLocked(projectRoot, operation, requestedShar
     createdAt: new Date().toISOString(),
     projectRoot,
     rootIdentity,
+    rootDurableIdentity: selected.rootDurableIdentity,
     projectId: selected.id,
     logicalProjectId,
     projectGroup,
@@ -2205,6 +2234,7 @@ export function withContextHubProjectSharedRegistration(root, {
       sharedProjectCapabilities: transaction.projectGroup.map((entry) => ({
         root: entry.root,
         rootIdentity: entry.rootIdentity,
+        rootDurableIdentity: entry.rootDurableIdentity,
         worktreeIdentity: entry.worktreeIdentity,
       })),
     };
@@ -2263,6 +2293,7 @@ function disconnectContextHubProjectSharedInRegistry(registry, projectRoot) {
     .map((entry) => ({
       root: entry.root,
       rootIdentity: entry.rootIdentity,
+      rootDurableIdentity: entry.rootDurableIdentity,
       worktreeIdentity: entry.worktreeIdentity,
     }));
   let changed = 0;
@@ -2310,6 +2341,7 @@ export function withContextHubProjectSharedDisconnection(root, operation) {
     sharedProjectCapabilities: transaction.projectGroup.map((entry) => ({
       root: entry.root,
       rootIdentity: entry.rootIdentity,
+      rootDurableIdentity: entry.rootDurableIdentity,
       worktreeIdentity: entry.worktreeIdentity,
     })),
     disconnectedLocations: before.projects.filter((entry) => (

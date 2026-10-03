@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -11,12 +11,20 @@ import { initializeContextRoomProject } from "../src/context_room.mjs";
 
 function fixture(t, { git = true } = {}) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-durable-")));
-  for (const [key, leaf] of Object.entries({ CONTEXT_ROOM_HUB_HOME: "hub", CONTEXT_ROOM_SHARED_HOME: "shared", CONTEXT_ROOM_REVIEW_AUTHORITY_HOME: "authority", HOME: "home" })) {
+  for (const [key, leaf] of Object.entries({ CONTEXT_ROOM_HUB_HOME: "hub", CONTEXT_ROOM_SHARED_HOME: "shared", CONTEXT_ROOM_REVIEW_AUTHORITY_HOME: "authority", HOME: "" })) {
     const previous = process.env[key];
     process.env[key] = path.join(base, leaf);
     t.after(() => previous === undefined ? delete process.env[key] : process.env[key] = previous);
   }
-  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  t.after(() => {
+    // Shared snapshots are deliberately read-only; restore owner permissions
+    // only inside this disposable fixture before removing it.
+    for (const name of fs.readdirSync(base, { recursive: true })) {
+      const file = path.join(base, name), stats = fs.lstatSync(file);
+      if (!stats.isSymbolicLink()) fs.chmodSync(file, stats.isDirectory() ? 0o700 : 0o600);
+    }
+    fs.rmSync(base, { recursive: true, force: true });
+  });
   const root = path.join(base, "project");
   fs.mkdirSync(path.join(root, "docs"), { recursive: true });
   fs.writeFileSync(path.join(root, "docs/a.md"), "# A\n");
@@ -37,6 +45,13 @@ function alterStats(t, changes, root) {
     };
     t.after(() => fs[name] = original);
   }
+}
+
+function notebookBytes(root) {
+  const directory = path.join(root, ".context-room/notebooks");
+  return fs.readdirSync(directory, { recursive: true }).sort()
+    .filter(name => fs.lstatSync(path.join(directory, name)).isFile())
+    .map(name => [name, fs.readFileSync(path.join(directory, name))]);
 }
 
 test("Hub enrollment records root and every Git durable identity, preserving rollback fields", (t) => {
@@ -131,4 +146,34 @@ test("matching legacy inode cannot override a different durable birthtime", (t) 
   assert.equal(entry.available, false);
   assert.equal(entry.unavailableReason, "folder identity changed");
   assert.deepEqual(fs.readFileSync(registryPath), before);
+});
+
+test("two processes keep Hub, Shared, receipts and notebook bytes after every device changes", (t) => {
+  const { root, base } = fixture(t);
+  fs.rmSync(root, { recursive: true, force: true });
+  const run = (action, changes = {}, status = 0) => {
+    const result = spawnSync(process.execPath, ["test/fixtures/hub_durable_identity.mjs", action, base, JSON.stringify(changes)], { encoding: "utf8", timeout: 180_000 });
+    assert.equal(result.error, undefined, result.error?.message);
+    assert.equal(result.status, status, result.stdout + result.stderr);
+  };
+  run("create");
+  const bytes = notebookBytes(root);
+  for (const changes of [{ dev: 77, ino: 1 }, { dev: 77, birth: 1 }, { dev: 77, git: true, ino: 1 }, { dev: 77, git: true, birth: 1 }]) run("blocked", changes);
+  run("read", { dev: 77 });
+  assert.deepEqual(notebookBytes(root), bytes);
+});
+
+test("disconnect and Hub journals recover across a device change without orphan cleanup", (t) => {
+  const { root, base } = fixture(t);
+  fs.rmSync(root, { recursive: true, force: true });
+  const run = (action, changes = {}, status = 0) => {
+    const result = spawnSync(process.execPath, ["test/fixtures/hub_durable_identity.mjs", action, base, JSON.stringify(changes)], { encoding: "utf8", timeout: 180_000 });
+    assert.equal(result.error, undefined, result.error?.message);
+    assert.equal(result.status, status, result.stdout + result.stderr);
+  };
+  run("create");
+  const bytes = notebookBytes(root);
+  run("crash-disconnect", {}, 23);
+  run("read", { dev: 77 });
+  assert.deepEqual(notebookBytes(root), bytes);
 });

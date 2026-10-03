@@ -18,6 +18,8 @@ import { parseDocMetadata } from "./doc_metadata.mjs";
 import { contextProviderProfile } from "./provider_profiles.mjs";
 import { inspectOwnerProposalDecisions, inspectOwnerTrustedState, recordOwnerProposalDecision } from "./review_authority.mjs";
 import { contextHubRepositoryIdentity } from "./context_hub.mjs";
+import { readFilesystemIdentity, compareFilesystemIdentity } from "./filesystem_identity.mjs";
+import { acceptsRootIdentity } from "./location_attestation.mjs";
 
 export const SHARED_REPOSITORY_CONFIG = ".context-room/shared-repository.json";
 export const SHARED_REVIEW_CONFIG = ".context-room/shared-review.json";
@@ -1852,7 +1854,15 @@ function normalizedSharedWorktreeIdentity(value = null) {
     || !gitDirIdentity || !/^\d+$/.test(gitDirIdentity.dev) || !/^\d+$/.test(gitDirIdentity.ino)
     || !gitEntryIdentity
   ) return null;
-  return { kind: "git", commonDir, commonDirIdentity, relativeRoot, gitDir, gitDirIdentity, gitEntryIdentity };
+  return { kind: "git", commonDir, commonDirIdentity, relativeRoot, gitDir, gitDirIdentity, gitEntryIdentity,
+    ...Object.fromEntries(["commonDir", "gitDir", "gitEntry"].map(key => [
+      `${key}DurableIdentity`, normalizedSharedDurableIdentity(value?.[`${key}DurableIdentity`]),
+    ])),
+  };
+}
+
+function normalizedSharedDurableIdentity(value) {
+  return compareFilesystemIdentity(value, value).status === "same" ? { ...value } : null;
 }
 
 function normalizedSharedProjectCapability(value = null) {
@@ -1865,7 +1875,7 @@ function normalizedSharedProjectCapability(value = null) {
   if (root === path.parse(root).root
     || !rootIdentity || !/^\d+$/.test(rootIdentity.dev) || !/^\d+$/.test(rootIdentity.ino)
     || !worktreeIdentity) return null;
-  return { root, rootIdentity, worktreeIdentity };
+  return { root, rootIdentity, rootDurableIdentity: normalizedSharedDurableIdentity(value?.rootDurableIdentity), worktreeIdentity };
 }
 
 function currentSharedProjectCapability(root) {
@@ -1875,6 +1885,7 @@ function currentSharedProjectCapability(root) {
     throw new Error(`Shared project root identity changed: ${projectRoot}`);
   }
   const rootIdentity = { dev: rootStats.dev.toString(), ino: rootStats.ino.toString() };
+  const rootDurableIdentity = readFilesystemIdentity(projectRoot).identity;
   // Ask Git for the same three live values in one process. Do not cache this
   // attestation: replacing the root, .git entry or worktree must still revoke it.
   const gitPaths = tryGit(projectRoot, ["rev-parse", "--show-toplevel", "--git-common-dir", "--git-dir"]);
@@ -1887,7 +1898,7 @@ function currentSharedProjectCapability(root) {
     gitDirValue = tryGit(projectRoot, ["rev-parse", "--git-dir"]);
   }
   if (!gitRootValue || !commonDirValue || !gitDirValue) {
-    return { root: projectRoot, rootIdentity, worktreeIdentity: { kind: "path" } };
+    return { root: projectRoot, rootIdentity, rootDurableIdentity, worktreeIdentity: { kind: "path" } };
   }
   const gitRoot = stableRoot(gitRootValue);
   // Git reports these paths relative to the command cwd, which can be a
@@ -1900,6 +1911,7 @@ function currentSharedProjectCapability(root) {
   return {
     root: projectRoot,
     rootIdentity,
+    rootDurableIdentity,
     worktreeIdentity: {
       kind: "git",
       commonDir,
@@ -1908,6 +1920,9 @@ function currentSharedProjectCapability(root) {
       gitDir,
       gitDirIdentity,
       gitEntryIdentity: sharedFilesystemEntryIdentity(path.join(gitRoot, ".git")),
+      commonDirDurableIdentity: readFilesystemIdentity(commonDir).identity,
+      gitDirDurableIdentity: readFilesystemIdentity(gitDir).identity,
+      gitEntryDurableIdentity: readFilesystemIdentity(path.join(gitRoot, ".git")).identity,
     },
   };
 }
@@ -1919,21 +1934,21 @@ export function attestSharedProjectCapability(root) {
 function sameSharedProjectCapability(left, right) {
   const expected = normalizedSharedProjectCapability(left);
   const current = normalizedSharedProjectCapability(right);
-  if (!expected || !current
-    || expected.root !== current.root
-    || expected.rootIdentity.dev !== current.rootIdentity.dev
-    || expected.rootIdentity.ino !== current.rootIdentity.ino
+  if (!expected || !current || expected.root !== current.root
+    || !["same", "alias"].includes(acceptsRootIdentity(expected.root, `${expected.rootIdentity.dev}:${expected.rootIdentity.ino}`))
+    || (expected.rootDurableIdentity && compareFilesystemIdentity(expected.rootDurableIdentity, current.rootDurableIdentity).status !== "same")
     || expected.worktreeIdentity.kind !== current.worktreeIdentity.kind) return false;
   if (expected.worktreeIdentity.kind === "path") return true;
+  const sameEntry = (key) => {
+    const saved = expected.worktreeIdentity[`${key}Identity`], live = current.worktreeIdentity[`${key}Identity`];
+    const durable = expected.worktreeIdentity[`${key}DurableIdentity`];
+    return saved.ino === live.ino && (!durable ? saved.dev === live.dev
+      : durable.ino === saved.ino && compareFilesystemIdentity(durable, current.worktreeIdentity[`${key}DurableIdentity`]).status === "same");
+  };
   return expected.worktreeIdentity.commonDir === current.worktreeIdentity.commonDir
-    && expected.worktreeIdentity.commonDirIdentity.dev === current.worktreeIdentity.commonDirIdentity.dev
-    && expected.worktreeIdentity.commonDirIdentity.ino === current.worktreeIdentity.commonDirIdentity.ino
     && expected.worktreeIdentity.relativeRoot === current.worktreeIdentity.relativeRoot
     && expected.worktreeIdentity.gitDir === current.worktreeIdentity.gitDir
-    && expected.worktreeIdentity.gitDirIdentity.dev === current.worktreeIdentity.gitDirIdentity.dev
-    && expected.worktreeIdentity.gitDirIdentity.ino === current.worktreeIdentity.gitDirIdentity.ino
-    && expected.worktreeIdentity.gitEntryIdentity.dev === current.worktreeIdentity.gitEntryIdentity.dev
-    && expected.worktreeIdentity.gitEntryIdentity.ino === current.worktreeIdentity.gitEntryIdentity.ino
+    && ["commonDir", "gitDir", "gitEntry"].every(sameEntry)
     && expected.worktreeIdentity.gitEntryIdentity.mode === current.worktreeIdentity.gitEntryIdentity.mode
     && expected.worktreeIdentity.gitEntryIdentity.kind === current.worktreeIdentity.gitEntryIdentity.kind;
 }
@@ -1964,6 +1979,7 @@ function writeSharedConnectionReceipt(projectRoot, connection, revision, receipt
     projectId: connection.projectId,
     projectRoot: exactRoot,
     rootIdentity: sharedProjectRootIdentity(exactRoot),
+    rootDurableIdentity: readFilesystemIdentity(exactRoot).identity,
     revision: safeRevision(revision, "Shared connection receipt revision"),
     projectsPath: safeRelativePath(repositoryConfig?.projectsPath, "Shared connection receipt projectsPath"),
     completedAt: new Date().toISOString(),
@@ -5158,7 +5174,7 @@ export function removeOrphanedSharedContextBindings({
     if (entry?.worktreeIdentity && !worktreeIdentity) {
       throw sharedContextError("shared-orphan-identity-required", "Lost project worktree identities must be exact and anchored");
     }
-    return { root, rootIdentity: { dev, ino }, ...(worktreeIdentity ? { worktreeIdentity } : {}) };
+    return { root, rootIdentity: { dev, ino }, rootDurableIdentity: normalizedSharedDurableIdentity(entry?.rootDurableIdentity), ...(worktreeIdentity ? { worktreeIdentity } : {}) };
   }) : [];
   if (!expectedRoots.length || expectedRoots.length > 1_024) {
     throw sharedContextError("shared-orphan-identity-required", "One bounded project root group is required to remove an orphaned Shared binding");
@@ -5170,13 +5186,17 @@ export function removeOrphanedSharedContextBindings({
     for (const expected of expectedRoots) {
       try {
         const current = sharedProjectRootIdentity(expected.root);
-        if (current.dev === expected.rootIdentity.dev && current.ino === expected.rootIdentity.ino) {
+        const durableStatus = compareFilesystemIdentity(expected.rootDurableIdentity, readFilesystemIdentity(expected.root).identity).status;
+        if (["same", "alias"].includes(acceptsRootIdentity(expected.root, `${expected.rootIdentity.dev}:${expected.rootIdentity.ino}`))
+          || (current.ino === expected.rootIdentity.ino && durableStatus !== "different")
+          || durableStatus === "same") {
           const error = sharedContextError("shared-orphan-root-still-present", "The original project root still exists; use the normal Shared disconnect action");
           error.statusCode = 409;
           throw error;
         }
       } catch (error) {
         if (error?.code === "shared-orphan-root-still-present") throw error;
+        if (!["ENOENT", "ENOTDIR"].includes(error?.code)) throw sharedContextError("shared-orphan-root-unverified", "The original project root cannot be verified; its Shared binding is retained");
       }
     }
     const registry = readJson(registryPath(), { version: 1, bindings: [] });
@@ -5262,15 +5282,17 @@ export function removeOrphanedSharedContextBindings({
           const stored = selectedBindings
             .map((binding) => bindingProjectCapability(binding, projectRoot))
             .find(Boolean);
-          if (stored && (
-            stored.rootIdentity.dev !== expected.rootIdentity.dev
-            || stored.rootIdentity.ino !== expected.rootIdentity.ino
-          )) {
+          if (stored && (stored.rootIdentity.ino !== expected.rootIdentity.ino
+            || (stored.rootIdentity.dev !== expected.rootIdentity.dev
+              && compareFilesystemIdentity(stored.rootDurableIdentity, expected.rootDurableIdentity).status !== "same")
+            || (stored.rootDurableIdentity && expected.rootDurableIdentity
+              && compareFilesystemIdentity(stored.rootDurableIdentity, expected.rootDurableIdentity).status !== "same"))) {
             throw sharedContextError("shared-orphan-binding-scope-conflict", "The orphaned Shared binding capability does not match the exact lost root identity");
           }
           return stored || {
             root: projectRoot,
             rootIdentity: expected.rootIdentity,
+            rootDurableIdentity: expected.rootDurableIdentity,
             worktreeIdentity: expected.worktreeIdentity || { kind: "path" },
           };
         }),
@@ -5736,15 +5758,15 @@ export function readSharedConnectionReceipt(root, {
   if (!repository || !projectId || !exactReceiptId) return null;
   const receipt = readJson(sharedConnectionReceiptPath(repository, exactRoot), null);
   if (!receipt || Number(receipt.version) !== 1) return null;
-  const currentRootIdentity = sharedProjectRootIdentity(exactRoot);
+  sharedProjectRootIdentity(exactRoot);
   if (
     receipt.receiptId !== exactReceiptId
     || receipt.repositoryIdentity !== sharedRepositoryIdentity(repository)
     || !sameSharedRepository(receipt.repository, repository)
     || receipt.projectId !== String(projectId)
     || path.resolve(receipt.projectRoot || "") !== exactRoot
-    || String(receipt.rootIdentity?.dev || "") !== currentRootIdentity.dev
-    || String(receipt.rootIdentity?.ino || "") !== currentRootIdentity.ino
+    || !["same", "alias"].includes(acceptsRootIdentity(exactRoot, `${receipt.rootIdentity?.dev}:${receipt.rootIdentity?.ino}`))
+    || (receipt.rootDurableIdentity && compareFilesystemIdentity(receipt.rootDurableIdentity, readFilesystemIdentity(exactRoot).identity).status !== "same")
     || !receipt.revision
     || safeRelativePath(receipt.projectsPath, "Shared connection receipt projectsPath") !== receipt.projectsPath
     || !Number.isFinite(Date.parse(receipt.completedAt || ""))
