@@ -315,11 +315,13 @@ function sameDurableWorktreeIdentity(left, right) {
     && expected.gitEntryIdentity?.mode === current.gitEntryIdentity?.mode
     && expected.gitEntryIdentity?.kind === current.gitEntryIdentity?.kind
     && ["commonDir", "gitDir", "gitEntry"].every((key) =>
-      compareFilesystemIdentity(expected[`${key}DurableIdentity`], current[`${key}DurableIdentity`]).status === "same");
+      expected[`${key}Identity`]?.ino === expected[`${key}DurableIdentity`]?.ino
+      && compareFilesystemIdentity(expected[`${key}DurableIdentity`], current[`${key}DurableIdentity`]).status === "same");
 }
 
 function sameDurableProjectIdentity(expected, root, membership = gitWorktreeIdentity(root).membershipIdentity) {
   return path.resolve(expected.root) === path.resolve(root)
+    && expected.rootIdentity?.ino === expected.rootDurableIdentity?.ino
     && compareFilesystemIdentity(expected.rootDurableIdentity, readFilesystemIdentity(root).identity).status === "same"
     && sameDurableWorktreeIdentity(expected.worktreeIdentity, membership);
 }
@@ -1833,14 +1835,24 @@ function normalizedRegistry(raw = {}, { refreshGit = false } = {}) {
     try {
       const root = path.resolve(String(entry.root || ""));
       const storedRootIdentity = normalizedProjectRootIdentity(entry.rootIdentity);
-      const rootAvailable = Boolean(storedRootIdentity)
-        && contextHubProjectRootMatchesIdentity(root, storedRootIdentity);
+      let rootAvailable = false;
+      try {
+        rootAvailable = Boolean(storedRootIdentity)
+          && storedRootIdentity.ino === entry.rootDurableIdentity?.ino
+          && compareFilesystemIdentity(entry.rootDurableIdentity, readFilesystemIdentity(root).identity).status === "same";
+      } catch {}
       const rootIdentity = storedRootIdentity;
-      const identity = refreshGit && rootAvailable ? gitWorktreeIdentity(root, entry) : {
+      let identity = {
         logicalProjectId: String(entry.logicalProjectId || stableStoredProjectId(root)),
         worktree: entry.worktree && typeof entry.worktree === "object" ? entry.worktree : null,
         membershipIdentity: normalizedWorktreeMembershipIdentity(entry.worktreeIdentity),
       };
+      if (refreshGit && rootAvailable) {
+        try {
+          const live = gitWorktreeIdentity(root, entry);
+          if (sameDurableWorktreeIdentity(entry.worktreeIdentity, live.membershipIdentity)) identity = live;
+        } catch {} // Preserve the saved entry when Git is unavailable.
+      }
       const registeredAt = String(entry.registeredAt || LEGACY_REGISTRY_TIMESTAMP);
       return [{
         id: stableStoredProjectId(root),
@@ -2106,7 +2118,7 @@ function registerContextHubProjectInRegistry(registry, {
     && sameWorktreeMembershipIdentityIgnoringDevices(existing.worktreeIdentity, identity.membershipIdentity)) {
     return { ...existing, identityUnconfirmed: true };
   }
-  const sameRegisteredIdentity = durableMatches || (sameRegisteredLocation
+  const sameRegisteredIdentity = durableMatches || (!existing?.rootDurableIdentity && sameRegisteredLocation
     && existingRootIdentity.dev === nextRootIdentity.dev
     && sameWorktreeMembershipIdentity(existing.worktreeIdentity, identity.membershipIdentity));
   const nextShared = requestedShared ? { ...requestedShared } : sameRegisteredIdentity ? existing.shared || null : null;
@@ -2367,18 +2379,33 @@ export function listContextHubProjects({ refreshGit = false, readOnly = false } 
       message: unknownRecovery.message,
       revision: unknownRecovery.revision,
     } : null;
-    return registry.projects.map((entry) => {
+    let refreshed = false;
+    const projects = registry.projects.map((entry) => {
       let available = false;
       let unavailableReason = "";
       try {
         const current = contextHubProjectRootIdentity(entry.root);
-        const rootIdentity = normalizedProjectRootIdentity(entry.rootIdentity);
-        if (!rootIdentity || current.dev !== rootIdentity.dev || current.ino !== rootIdentity.ino) {
+        const complete = entry.rootDurableIdentity && (entry.worktreeIdentity?.kind === "path"
+          || (entry.worktreeIdentity?.kind === "git" && ["commonDir", "gitDir", "gitEntry"]
+            .every(key => normalizedDurableIdentity(entry.worktreeIdentity[`${key}DurableIdentity`]))));
+        const membership = complete ? gitWorktreeIdentity(entry.root).membershipIdentity : null;
+        if (!complete) {
+          unavailableReason = "identity to confirm";
+        } else if (!sameDurableProjectIdentity(entry, entry.root, membership)) {
           unavailableReason = "folder identity changed";
         } else {
           unavailableReason = "project configuration unavailable";
-          available = assertContextHubProjectControlFiles(entry.root, rootIdentity);
-          if (available) unavailableReason = "";
+          available = assertContextHubProjectControlFiles(entry.root, current);
+          if (available) {
+            observeLocation(entry.root);
+            unavailableReason = "";
+            if (entry.rootIdentity.dev !== current.dev
+              || !sameWorktreeMembershipIdentity(entry.worktreeIdentity, membership)) {
+              entry.rootIdentity = current;
+              entry.worktreeIdentity = membership;
+              refreshed = true;
+            }
+          }
         }
       } catch (error) {
         if (["EACCES", "EPERM"].includes(error?.code)) unavailableReason = "permission denied";
@@ -2398,6 +2425,11 @@ export function listContextHubProjects({ refreshGit = false, readOnly = false } 
       if (left.available !== right.available) return left.available ? -1 : 1;
       return String(right.lastOpenedAt).localeCompare(String(left.lastOpenedAt));
     });
+    if (refreshed && !readOnly) {
+      writeJson(registryPath(), registry);
+      invalidateContextHubSnapshotLocked();
+    }
+    return projects;
   };
   return readOnly ? readProjects() : withRegistryLock(readProjects);
 }

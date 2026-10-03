@@ -79,3 +79,56 @@ test("legacy registry reads never enroll the directory currently at its path", (
   assert.deepEqual(fs.readFileSync(registryPath), bytes);
   assert.equal(fs.existsSync(path.join(base, "authority")), false);
 });
+
+test("matching durable enrollment remains available and observes a changed device", (t) => {
+  const { root } = fixture(t);
+  const original = registerContextHubProject(root, { shared: { repository: path.join(root, "remote.git"), projectId: "demo" } });
+  alterStats(t, { dev: 77 }, root);
+  const [entry] = listContextHubProjects();
+  assert.equal(entry.available, true);
+  assert.deepEqual(entry.shared, original.shared);
+  assert.equal(entry.rootIdentity.dev, String(BigInt(original.rootIdentity.dev) + 77n));
+  assert.deepEqual(entry.rootDurableIdentity, original.rootDurableIdentity);
+  assert.ok(rootIdentityAliases(root).includes(`${original.rootIdentity.dev}:${original.rootIdentity.ino}`));
+  assert.deepEqual(readContextHubRegistry().projects[0], (({ available, unavailableReason, ...stored }) => stored)(entry));
+});
+
+test("legacy availability is identity to confirm without writing or observing", (t) => {
+  const { root, base, registryPath } = fixture(t);
+  registerContextHubProject(root);
+  const raw = JSON.parse(fs.readFileSync(registryPath));
+  delete raw.projects[0].rootDurableIdentity;
+  fs.writeFileSync(registryPath, JSON.stringify(raw) + "\n\n");
+  fs.rmSync(path.join(root, ".git"), { recursive: true });
+  const before = fs.readFileSync(registryPath);
+  const authority = fs.readdirSync(path.join(base, "authority")).map(name => [name, fs.readFileSync(path.join(base, "authority", name))]);
+  const [entry] = listContextHubProjects({ refreshGit: true });
+  assert.equal(entry.available, false);
+  assert.equal(entry.unavailableReason, "identity to confirm");
+  assert.deepEqual(fs.readFileSync(registryPath), before);
+  assert.deepEqual(fs.readdirSync(path.join(base, "authority")).map(name => [name, fs.readFileSync(path.join(base, "authority", name))]), authority);
+});
+
+test("incomplete durable Git evidence stays unconfirmed without a registry write", (t) => {
+  const { root, registryPath } = fixture(t);
+  registerContextHubProject(root);
+  const raw = JSON.parse(fs.readFileSync(registryPath));
+  delete raw.projects[0].worktreeIdentity.gitEntryDurableIdentity;
+  fs.writeFileSync(registryPath, JSON.stringify(raw));
+  const before = fs.readFileSync(registryPath);
+  const [entry] = listContextHubProjects();
+  assert.equal(entry.available, false);
+  assert.equal(entry.unavailableReason, "identity to confirm");
+  assert.deepEqual(fs.readFileSync(registryPath), before);
+});
+
+test("matching legacy inode cannot override a different durable birthtime", (t) => {
+  const { root, registryPath } = fixture(t);
+  registerContextHubProject(root);
+  const before = fs.readFileSync(registryPath);
+  alterStats(t, { birth: 1 }, root);
+  const [entry] = listContextHubProjects();
+  assert.equal(entry.available, false);
+  assert.equal(entry.unavailableReason, "folder identity changed");
+  assert.deepEqual(fs.readFileSync(registryPath), before);
+});

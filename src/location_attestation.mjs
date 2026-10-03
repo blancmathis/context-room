@@ -20,9 +20,18 @@ function stable(value) {
 }
 const signature = (key, payload) => createHmac("sha256", key).update(JSON.stringify(stable(payload))).digest("hex");
 function pathsFor(root, { authorityHome } = {}) {
-  const base = path.resolve(authorityHome || process.env.CONTEXT_ROOM_REVIEW_AUTHORITY_HOME
+  const configured = path.resolve(authorityHome || process.env.CONTEXT_ROOM_REVIEW_AUTHORITY_HOME
     || (process.env.CONTEXT_ROOM_HUB_HOME && path.join(process.env.CONTEXT_ROOM_HUB_HOME, "review-authority"))
     || path.join(os.homedir(), ".context-room", "hub", "review-authority"));
+  // Canonicalize existing parents (macOS /var, for example), while leaving the
+  // authority directory itself subject to the private, non-link check below.
+  let parent = path.dirname(configured);
+  const missing = [path.basename(configured)];
+  while (!fs.existsSync(parent) && parent !== path.dirname(parent)) {
+    missing.unshift(path.basename(parent));
+    parent = path.dirname(parent);
+  }
+  const base = path.join(fs.realpathSync(parent), ...missing);
   const id = createHash("sha256").update(root).digest("hex");
   return { base, key: path.join(base, "authority.key"), state: path.join(base, `location-${id}.json`) };
 }
