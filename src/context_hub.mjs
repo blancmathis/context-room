@@ -6,6 +6,8 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isMainThread, threadId } from "node:worker_threads";
 import { withFilesystemLock } from "./filesystem_lock.mjs";
+import { readFilesystemIdentity, compareFilesystemIdentity } from "./filesystem_identity.mjs";
+import { attestLocation, observeLocation, acceptsRootIdentity } from "./location_attestation.mjs";
 import {
   abandonInvalidSharedDisconnectTransaction,
   listSharedDisconnectRecoveryIssues,
@@ -299,6 +301,29 @@ function normalizedProjectRootIdentity(value = null) {
   return dev && ino ? { dev, ino } : null;
 }
 
+function normalizedDurableIdentity(value) {
+  return compareFilesystemIdentity(value, value).status === "same" ? { ...value } : null;
+}
+
+function sameDurableWorktreeIdentity(left, right) {
+  const expected = normalizedWorktreeMembershipIdentity(left);
+  const current = normalizedWorktreeMembershipIdentity(right);
+  if (!expected || !current || expected.kind !== current.kind) return false;
+  if (expected.kind === "path") return true;
+  return expected.commonDir === current.commonDir && expected.gitDir === current.gitDir
+    && expected.relativeRoot === current.relativeRoot
+    && expected.gitEntryIdentity?.mode === current.gitEntryIdentity?.mode
+    && expected.gitEntryIdentity?.kind === current.gitEntryIdentity?.kind
+    && ["commonDir", "gitDir", "gitEntry"].every((key) =>
+      compareFilesystemIdentity(expected[`${key}DurableIdentity`], current[`${key}DurableIdentity`]).status === "same");
+}
+
+function sameDurableProjectIdentity(expected, root, membership = gitWorktreeIdentity(root).membershipIdentity) {
+  return path.resolve(expected.root) === path.resolve(root)
+    && compareFilesystemIdentity(expected.rootDurableIdentity, readFilesystemIdentity(root).identity).status === "same"
+    && sameDurableWorktreeIdentity(expected.worktreeIdentity, membership);
+}
+
 function normalizedFilesystemEntryIdentity(value = null) {
   const dev = String(value?.dev || "");
   const ino = String(value?.ino || "");
@@ -352,8 +377,13 @@ function normalizedWorktreeMembershipIdentity(value = null) {
     kind: "git",
     commonDir,
     commonDirIdentity,
+    commonDirDurableIdentity: normalizedDurableIdentity(value?.commonDirDurableIdentity),
     relativeRoot,
-    ...(anchored ? { gitDir, gitDirIdentity, gitEntryIdentity } : {}),
+    ...(anchored ? {
+      gitDir, gitDirIdentity, gitEntryIdentity,
+      gitDirDurableIdentity: normalizedDurableIdentity(value?.gitDirDurableIdentity),
+      gitEntryDurableIdentity: normalizedDurableIdentity(value?.gitEntryDurableIdentity),
+    } : {}),
   };
 }
 
@@ -443,10 +473,13 @@ function gitWorktreeIdentity(root, previous = null) {
       kind: "git",
       commonDir,
       commonDirIdentity,
+      commonDirDurableIdentity: readFilesystemIdentity(commonDir).identity,
       relativeRoot,
       gitDir,
       gitDirIdentity,
       gitEntryIdentity,
+      gitDirDurableIdentity: readFilesystemIdentity(gitDir).identity,
+      gitEntryDurableIdentity: readFilesystemIdentity(gitEntry).identity,
     },
     worktree: {
       branch: branch || (head ? `detached@${head}` : "detached"),
@@ -1795,61 +1828,6 @@ function prepareHubSharedTransactionLocked(projectRoot, operation, requestedShar
   return transaction;
 }
 
-function migrateLegacyContextHubRegistry(raw = {}) {
-  if (Number(raw.version) >= CONTEXT_HUB_REGISTRY_VERSION) return raw;
-  const candidates = (Array.isArray(raw.projects) ? raw.projects : []).map((entry) => {
-    const root = path.resolve(String(entry?.root || ""));
-    let rootIdentity = null;
-    try {
-      assertContextHubProjectControlFiles(root);
-      rootIdentity = contextHubProjectRootIdentity(root);
-    } catch {}
-    let worktreeIdentity = null;
-    let logicalProjectId = String(entry?.logicalProjectId || "");
-    let worktree = entry?.worktree && typeof entry.worktree === "object" ? entry.worktree : null;
-    if (rootIdentity) {
-      try {
-        const current = gitWorktreeIdentity(root, entry);
-        if (!logicalProjectId) logicalProjectId = current.logicalProjectId;
-        if (current.logicalProjectId === logicalProjectId) {
-          worktreeIdentity = current.membershipIdentity;
-          worktree = current.worktree;
-        }
-      } catch {}
-    }
-    return { entry, root, rootIdentity, logicalProjectId, worktree, worktreeIdentity };
-  });
-  const rootCounts = new Map();
-  const identityCounts = new Map();
-  for (const candidate of candidates) {
-    const rootKey = stableStoredProjectId(candidate.root);
-    rootCounts.set(rootKey, (rootCounts.get(rootKey) || 0) + 1);
-    if (candidate.rootIdentity) {
-      const identityKey = `${candidate.rootIdentity.dev}:${candidate.rootIdentity.ino}`;
-      identityCounts.set(identityKey, (identityCounts.get(identityKey) || 0) + 1);
-    }
-  }
-  return {
-    ...raw,
-    version: CONTEXT_HUB_REGISTRY_VERSION,
-    projects: candidates.map(({ entry, root, rootIdentity, logicalProjectId, worktree, worktreeIdentity }) => {
-      const rootKey = stableStoredProjectId(root);
-      const identityKey = rootIdentity ? `${rootIdentity.dev}:${rootIdentity.ino}` : "";
-      const unambiguous = rootIdentity
-        && rootCounts.get(rootKey) === 1
-        && identityCounts.get(identityKey) === 1;
-      return {
-        ...entry,
-        root,
-        rootIdentity: unambiguous ? rootIdentity : null,
-        logicalProjectId: unambiguous ? logicalProjectId : entry.logicalProjectId,
-        worktree: unambiguous ? worktree : entry.worktree,
-        worktreeIdentity: unambiguous ? worktreeIdentity : null,
-      };
-    }),
-  };
-}
-
 function normalizedRegistry(raw = {}, { refreshGit = false } = {}) {
   const projects = Array.isArray(raw.projects) ? raw.projects.flatMap((entry) => {
     try {
@@ -1869,6 +1847,7 @@ function normalizedRegistry(raw = {}, { refreshGit = false } = {}) {
         logicalProjectId: identity.logicalProjectId,
         root,
         rootIdentity,
+        rootDurableIdentity: normalizedDurableIdentity(entry.rootDurableIdentity),
         title: cleanTitle(entry.title, "")
           || (rootAvailable && contextHubProjectControlFilesAreSafe(root) ? projectTitle(root) : path.basename(root) || "Local project"),
         registeredAt,
@@ -1916,15 +1895,11 @@ function normalizedRegistry(raw = {}, { refreshGit = false } = {}) {
   };
 }
 
-function readContextHubRegistryRaw({ refreshGit = false, readOnly = false } = {}) {
+function readContextHubRegistryRaw({ refreshGit = false } = {}) {
   const raw = readJson(registryPath(), {});
-  // Reading cannot attest an old location or migrate/recover its authority.
-  const migrated = readOnly ? raw : migrateLegacyContextHubRegistry(raw);
-  if (!readOnly && Number(raw?.version) < CONTEXT_HUB_REGISTRY_VERSION) {
-    if (registryLockDepth <= 0) throw new Error("Context Hub registry migration requires its filesystem lock");
-    writeJson(registryPath(), migrated);
-  }
-  return normalizedRegistry(migrated, { refreshGit });
+  // Reading old bytes cannot establish continuity with the directory now here.
+  // Enrollment alone records durable evidence; do not use the legacy migration.
+  return normalizedRegistry(raw, { refreshGit });
 }
 
 export function readContextHubRegistry({ refreshGit = false } = {}) {
@@ -2121,17 +2096,19 @@ function registerContextHubProjectInRegistry(registry, {
   const existing = registry.projects.find((entry) => entry.id === id);
   const nextRootIdentity = normalizedProjectRootIdentity(rootIdentity) || contextHubProjectRootIdentity(projectRoot);
   const existingRootIdentity = normalizedProjectRootIdentity(existing?.rootIdentity);
+  const durableMatches = existing && sameDurableProjectIdentity(existing, projectRoot, identity.membershipIdentity);
+  if (existing && !existingRootIdentity) return { ...existing, identityUnconfirmed: true };
   const sameRegisteredLocation = Boolean(existing)
     && path.resolve(existing.root) === projectRoot
     && existingRootIdentity?.ino === nextRootIdentity.ino
     && (existing.logicalProjectId || existing.id) === identity.logicalProjectId;
-  if (sameRegisteredLocation && existingRootIdentity.dev !== nextRootIdentity.dev
+  if (!durableMatches && sameRegisteredLocation && existingRootIdentity.dev !== nextRootIdentity.dev
     && sameWorktreeMembershipIdentityIgnoringDevices(existing.worktreeIdentity, identity.membershipIdentity)) {
     return { ...existing, identityUnconfirmed: true };
   }
-  const sameRegisteredIdentity = sameRegisteredLocation
+  const sameRegisteredIdentity = durableMatches || (sameRegisteredLocation
     && existingRootIdentity.dev === nextRootIdentity.dev
-    && sameWorktreeMembershipIdentity(existing.worktreeIdentity, identity.membershipIdentity);
+    && sameWorktreeMembershipIdentity(existing.worktreeIdentity, identity.membershipIdentity));
   const nextShared = requestedShared ? { ...requestedShared } : sameRegisteredIdentity ? existing.shared || null : null;
   if (nextShared) {
     const repositoryKey = repositoryIdentity(nextShared.repository);
@@ -2139,11 +2116,20 @@ function registerContextHubProjectInRegistry(registry, {
     nextShared.repository = existingRepository?.repository || nextShared.repository;
     if (!existingRepository) registry.sharedRepositories.push({ repository: nextShared.repository, addedAt: new Date().toISOString() });
   }
+  // An explicit enrollment of a replaced folder discards the old aliases and
+  // Shared binding. Merely uncertain device evidence exits above without writes.
+  const replaced = existing && !sameRegisteredIdentity;
+  const attestation = attestLocation(projectRoot, replaced ? { replace: true } : {});
+  if (!contextHubProjectRootMatchesIdentity(projectRoot, nextRootIdentity)
+    || compareFilesystemIdentity(attestation.durable, readFilesystemIdentity(projectRoot).identity).status !== "same") {
+    throw contextHubProjectControlFileError(projectRoot, "project root changed during enrollment");
+  }
   const entry = {
     id,
     logicalProjectId: identity.logicalProjectId,
     root: projectRoot,
     rootIdentity: nextRootIdentity,
+    rootDurableIdentity: attestation.durable,
     title: cleanTitle(title, projectTitle(projectRoot)),
     registeredAt: sameRegisteredIdentity ? existing.registeredAt : new Date().toISOString(),
     lastOpenedAt: new Date().toISOString(),
