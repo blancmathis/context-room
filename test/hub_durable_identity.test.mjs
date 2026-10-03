@@ -108,6 +108,18 @@ test("matching durable enrollment remains available and observes a changed devic
   assert.deepEqual(readContextHubRegistry().projects[0], (({ available, unavailableReason, ...stored }) => stored)(entry));
 });
 
+test("a folder outside Git stays available and follows a device change", (t) => {
+  const { root } = fixture(t, { git: false });
+  const original = registerContextHubProject(root);
+  assert.equal(original.worktreeIdentity.kind, "path");
+  assert.equal(listContextHubProjects()[0].available, true);
+  alterStats(t, { dev: 77 }, root);
+  const [entry] = listContextHubProjects();
+  assert.equal(entry.available, true);
+  assert.equal(entry.rootIdentity.dev, String(BigInt(original.rootIdentity.dev) + 77n));
+  assert.ok(rootIdentityAliases(root).includes(`${original.rootIdentity.dev}:${original.rootIdentity.ino}`));
+});
+
 test("legacy availability is identity to confirm without writing or observing", (t) => {
   const { root, base, registryPath } = fixture(t);
   registerContextHubProject(root);

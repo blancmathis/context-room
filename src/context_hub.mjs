@@ -395,7 +395,7 @@ function storedLocationEvidence(entry) {
   const membership = normalizedWorktreeMembershipIdentity(entry.worktreeIdentity);
   if (!legacy || !membership || !worktreeMembershipIdentityIsAnchored(membership)) return { status: "unconfirmed" };
   const keys = membership.kind === "git" ? STORED_GIT_KEYS : [];
-  const gitRoot = membership.relativeRoot === "." ? entry.root
+  const gitRoot = !keys.length || membership.relativeRoot === "." ? entry.root
     : path.resolve(entry.root, ...membership.relativeRoot.split("/").map(() => ".."));
   const paths = { commonDir: membership.commonDir, gitDir: membership.gitDir, gitEntry: path.join(gitRoot, ".git") };
   let live;
