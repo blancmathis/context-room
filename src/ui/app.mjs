@@ -7663,11 +7663,8 @@ function renderContextRoomGlobalReviewQueue() {
     && (state.contextHub?.sharedRepositories || []).every((repository) => repository.status?.online === true)
   );
   const localReviewCoverageConfirmed = (state.contextHub?.projects || []).every(contextHubLocalReviewsConfirmed);
-  const reviewSnapshotConfirmed = Boolean(
-    state.contextHubReviewQueueReady
-    && state.contextHub?.freshness?.fresh === true
-    && state.contextHub?.freshness?.refreshing !== true
-  );
+  // Counts depend on coverage, not freshness: a refresh or cached snapshot keeps known counts.
+  const reviewSnapshotConfirmed = Boolean(state.contextHubReviewQueueReady);
   const reviewStateConfirmedFresh = Boolean(
     state.contextHubReviewQueueReady
     && state.contextHub?.freshness?.fresh === true
