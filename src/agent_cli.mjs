@@ -936,6 +936,7 @@ export function buildAgentEnvironment(target, options = {}) {
       ...effective.skills,
       ...effective.hooks,
       ...effective.providerConfigs,
+      ...effective.mcpServers,
       ...effective.inactive,
     ];
     const settings = readMemoryWebappSettings(target.root);
@@ -953,6 +954,7 @@ export function buildAgentEnvironment(target, options = {}) {
     const skills = byKind("skill");
     const hooks = byKind("hook");
     const providerConfigs = byKind("provider-config");
+    const mcpServers = byKind("mcp-server");
     return {
       schemaVersion: "context-room.agent-environment/2",
       selectedProvider,
@@ -963,6 +965,8 @@ export function buildAgentEnvironment(target, options = {}) {
       skills,
       hooks,
       providerConfigs,
+      mcpServers,
+      unknown: effective.unknown,
       documents: effective.documents.map(environmentItem),
       proposals: effective.proposals,
       healthIssues: effective.healthIssues,
@@ -971,6 +975,7 @@ export function buildAgentEnvironment(target, options = {}) {
         skills: skills.filter((item) => item.status === "active").length,
         hooks: hooks.filter((item) => item.status === "active").length,
         providerConfigs: providerConfigs.filter((item) => item.status === "active").length,
+        mcpServers: mcpServers.filter((item) => item.status === "active").length,
         inactive: entries.filter((entry) => entry.application.status !== "active").length,
       },
     };

@@ -9,6 +9,7 @@ import {
   resolveEffectiveContext,
   traceContext,
 } from "../src/context_engine.mjs";
+import { claudeInstructionMode } from "../src/provider_profiles.mjs";
 
 const target = { projectId: "hicharlie", locationId: "wt-main", folder: "apps/calls", provider: "codex" };
 
@@ -38,7 +39,7 @@ test("provider profiles describe Codex, Claude Code, and OpenCode with primary e
   assert.deepEqual(codex.skills.global, ["~/.agents/skills"]);
   assert.deepEqual(codex.skills.admin, ["/etc/codex/skills"]);
   assert.equal(codex.hooks.activation, "active-config-layers-and-feature-gate");
-  assert.match(codex.evidence[0], /^https:\/\/developers\.openai\.com\//);
+  assert.match(codex.evidence[0], /^https:\/\/learn\.chatgpt\.com\//);
 
   const claude = contextProviderProfile("claude-code");
   assert.deepEqual(claude.skills.project, [".claude/skills"]);
@@ -46,7 +47,14 @@ test("provider profiles describe Codex, Claude Code, and OpenCode with primary e
   assert.equal(claude.instructions.nativeTargets.includes(".claude/rules/**/*.md"), true);
   assert.deepEqual(claude.instructions.concatenates, ["CLAUDE.md", "CLAUDE.local.md"]);
   assert.match(claude.instructions.precedence, /uncertain/);
-  assert.match(claude.evidence[0], /^https:\/\/docs\.anthropic\.com\//);
+  assert.match(claude.evidence[0], /^https:\/\/code\.claude\.com\//);
+  assert.deepEqual(claude.instructions.agentsFallback.files, ["AGENTS.md", ".claude/AGENTS.md"]);
+  assert.equal(claude.instructions.agentsFallback.since, "2.1.277");
+  assert.equal(claude.verified.through, "2.1.289");
+  assert.equal(claudeInstructionMode({}), "claude-md-or-agents-md");
+  assert.equal(claudeInstructionMode({ projectInstructions: "both" }), "claude-md-and-agents-md", "legacy option is honoured while instructionFiles keeps its default");
+  assert.equal(claudeInstructionMode({ instructionFiles: "claude-md", projectInstructions: "both" }), "claude-md");
+  assert.equal(claudeInstructionMode({ instructionFiles: "nonsense" }), "claude-md-or-agents-md");
 
   const opencode = contextProviderProfile("opencode");
   assert.deepEqual(opencode.skills.global, ["~/.config/opencode/skills", "~/.claude/skills", "~/.agents/skills"]);

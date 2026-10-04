@@ -210,7 +210,7 @@ function contextResourceNode(resource = {}) {
   const filePath = unixPath(resource.metadata?.relativePath || resource.locator || resource.id);
   return {
     id: `context:${resource.id}`,
-    kind: resource.kind === "provider-config" ? "configuration" : resource.kind,
+    kind: ["provider-config", "mcp-server"].includes(resource.kind) ? "configuration" : resource.kind,
     path: filePath,
     label: resource.metadata?.label || path.posix.basename(filePath) || resource.id,
     summary: resource.metadata?.description || resource.metadata?.reason || "",
