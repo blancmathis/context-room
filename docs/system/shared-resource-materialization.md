@@ -62,6 +62,14 @@ Hook output (`SessionStart`, `UserPromptSubmit`) and MCP tool definitions reach 
 - `missing_command`: an `npm`, `pnpm`, `yarn`, or `bun` script cited in a project instruction is absent from `package.json`.
 - `skill_description`: a skill without a description, or one over the 1,024 characters of the Agent Skills specification. No provider truncation limit is claimed.
 
+They also carry `cost`: what the agent sees, in three parts (`src/context_cost.mjs`):
+
+- **At startup**: active instructions (whole file) and each skill's name and description. Claude Code `@path` imports are not counted, and the row says so.
+- **On demand**: skill bodies (read when the skill is used) and accepted documents.
+- **Unknown**: hook output, MCP tools, and Claude Code auto memory. Shown as `—`, never guessed.
+
+Tokens are estimates: characters ÷ 4, no tokenizer. An unreadable file counts as not measured, never as zero. Gauges compare against hard limits only: the Codex project instruction bytes, and skill descriptions from 80 % of 1,024 characters. The project Context view has an Agent choice (Codex, Claude Code, OpenCode); the browser remembers it.
+
 A resource can therefore be:
 
 - accepted but not installed;

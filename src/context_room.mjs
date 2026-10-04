@@ -19948,7 +19948,11 @@ async function contextApiResult(root, url, operation) {
   const graph = await contextApiGraph(root, url);
   const engine = await import("./context_engine.mjs");
   if (operation === "graph") return graph;
-  if (operation === "effective") return engine.resolveEffectiveContext(graph);
+  if (operation === "effective") {
+    const effective = engine.resolveEffectiveContext(graph);
+    const { contextCost } = await import("./context_cost.mjs");
+    return { ...effective, cost: contextCost(effective, { root: contextApiTarget(root, url).root }) };
+  }
   const selector = String(url.searchParams.get("selector") || "").trim();
   if (!selector) throw sharedRequestError("selector is required", 400, "context_selector_required");
   if (operation === "trace") return engine.traceContext(graph, selector);

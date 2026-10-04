@@ -1,4 +1,5 @@
 import { analyzeContextLosses } from "./context_losses.mjs";
+import { contextCost } from "./context_cost.mjs";
 import "./test_homes.mjs";
 import fs from "node:fs";
 import os from "node:os";
@@ -851,7 +852,7 @@ export function buildCliContextGraph(target, options = {}) {
 export function buildCliContextEffective(target, options = {}) {
   try {
     const resolved = resolveEffectiveContext(buildCliContextGraph(target, options));
-    const effective = { ...resolved, losses: analyzeContextLosses(resolved, { root: target.root }) };
+    const effective = { ...resolved, losses: analyzeContextLosses(resolved, { root: target.root }), cost: contextCost(resolved, { root: target.root }) };
     if (options.includeGraph) return effective;
     const { graph: _graph, ...compact } = effective;
     return compact;
