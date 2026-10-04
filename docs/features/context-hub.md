@@ -95,19 +95,37 @@ never inherits the previous folder's binding. The registration result identifies
 the binding not carried over (repository, project ID and reason). Launch and project
 registration commands print one warning and direct the owner to re-link it in Hub
 project settings. Unavailable Shared-linked location details warn about this effect
-before re-registration. The current filesystem identity check remains in force;
-this behavior does not migrate or repair identities after a restart.
+before re-registration.
 
-When the root's device number changes, possibly together with the Git directory
-device numbers, while paths, inodes, relative root and all other worktree
-membership fields and logical project identity still match, registration leaves
-the registry unchanged. Only this no-write preflight ignores device numbers;
-normal registration keeps strict filesystem identity checks.
-Its result reports `identityUnconfirmed: true`, and launch
-and project registration commands warn that the location needs confirmation
-after restart. Any existing Shared binding is preserved but remains inactive:
-the location is still unavailable until its identity is confirmed. This does
-not establish continuity or migrate the stored identity.
+### Location continuity after a restart
+
+macOS can give a disk a new device number after a restart. Each registered location
+keeps a durable identity (inode and birth time) and a signed attestation stored
+outside the project, in the review authority directory.
+
+- **Same durable identity:** the location stays available. Context Room records the
+  new device number as an observed alias. Notebooks, conversations, local proposals,
+  workflow state and Shared accept it without a gesture.
+- **Registered before durable identities:** a changed device number shows
+  `Unavailable · identity to confirm`. The owner checks the folder and uses
+  **Confirm location** once (owner-only `POST /api/context-hub/confirm-location`
+  with the exact project ID, root and stored identity). Context Room adds the earlier
+  identities found in the project's own records, at the same inode, as confirmed
+  aliases. No project file is rewritten. Drawing grants accept only observed
+  continuity: pair drawing tablets again.
+- **Replaced folder:** a different inode, birth time or Git worktree membership
+  shows `folder identity changed`. Confirmation refuses it; register the folder as a
+  new location.
+
+Registering an unconfirmed location again leaves the registry unchanged and reports
+`identityUnconfirmed: true`. Notebook capabilities list `serverIdAliases`, so a
+browser moves offline caches saved under an earlier identity to the current one. A
+cache that cannot move, because a newer cache holds the current identity, stays in
+the offline list and opens as itself.
+
+Confirmation reads only the root identity field of each record kind, through paths
+without links. If the attestation is lost while the registry's durable identity
+still matches, the registry's previous identity becomes a confirmed alias.
 
 ## Local review
 
@@ -116,6 +134,7 @@ The global queue also includes submitted local proposals and changed image asset
 ## Action-changing errors
 
 - **Location unavailable:** restore or explicitly remove the registered location.
+- **Location to confirm:** check that it is the same folder, then confirm it once.
 - **Registry recovery required:** resolve recorded recovery before another group mutation.
 - **Shared repository unavailable:** mutations fail closed; permitted read surfaces may use exact verified cached state.
 - **Stale selection:** select the current projection again.

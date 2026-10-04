@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createHash, randomBytes, randomUUID, timingSafeEqual, X509Certificate } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { canonicalNotebookRoot, readNotebookJson, writeNotebookJson, withNotebookLock } from './notebook_io.mjs';
+import { acceptsRootIdentity } from './location_attestation.mjs';
 
 export const DEVICE_PROTOCOL = 1;
 const STATE = 'devices.json';
@@ -98,7 +99,14 @@ function savedGrant(value, serverId) {
     if (value.serverId !== serverId) throw deviceError('device_scope_invalid', 'The owner permission belongs to another Mac.', 409);
     return { mode: 'owner', serverId };
   }
-  return grant(value);
+  const scope = grant(value);
+  // Materialize continuity for the server's strict live-root guard. Saved grants,
+  // tokens, expiry, project and notebook scope remain untouched.
+  let current;
+  try { current = canonicalNotebookRoot(scope.root); }
+  catch { return scope; } // Unavailable projects fail the server's strict live-root guard.
+  if (acceptsRootIdentity(scope.root, scope.rootIdentity) === 'alias') scope.rootIdentity = current;
+  return scope;
 }
 const publicGrant = value => value.mode === 'owner' ? { mode: 'owner', serverId: value.serverId }
   : { mode: value.mode, projectId: value.projectId, paths: value.paths };

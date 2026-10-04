@@ -1923,6 +1923,10 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .context-hub-recovery-copy code { overflow-wrap: anywhere; }
     .context-hub-recovery-copy .context-hub-recovery-effect { color: var(--danger-fg); }
     .context-hub-recovery-panel > button { flex: 0 0 auto; min-height: 32px; }
+    .context-hub-location-panel { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); background: color-mix(in srgb, var(--accent) 6%, var(--panel)); }
+    .context-hub-location-panel .context-hub-recovery-badge { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent-fg); }
+    .context-hub-location-panel .context-hub-recovery-copy .context-hub-recovery-effect { color: var(--text-soft); }
+    .context-hub-location-panel > button { min-height: 40px; padding-inline: 16px; }
     .shared-proposal-overview-actions { display: flex; align-items: center; gap: 10px; margin-top: 13px; }
     .shared-proposal-overview-actions .primary { min-height: 36px; }
     .creation-dialog { width: min(520px, 100%); }
@@ -5959,7 +5963,29 @@ function renderGlobalProjectExplorerPage(project, page, depth = 0, filter = "all
 
 function contextHubProjectWorktrees(project) {
   if (Array.isArray(project?.worktrees) && project.worktrees.length) return project.worktrees;
-  return project?.root ? [{ id: project.id, root: project.root, branch: project.worktree?.branch || "", available: project.available, unavailableReason: project.unavailableReason || "", shared: project.shared || null, current: project.current }] : [];
+  return project?.root ? [{ id: project.id, root: project.root, branch: project.worktree?.branch || "", available: project.available, unavailableReason: project.unavailableReason || "", ...(typeof project.confirmRootIdentity === "string" ? { confirmRootIdentity: project.confirmRootIdentity } : {}), shared: project.shared || null, current: project.current }] : [];
+}
+
+function contextHubLocationsToConfirm(project) {
+  if (IS_HOSTED_CONTEXT_ROOM) return [];
+  return contextHubProjectWorktrees(project).filter((worktree) => worktree.available === false
+    && worktree.unavailableReason === "identity to confirm"
+    && typeof worktree.confirmRootIdentity === "string"
+    && worktree.id && worktree.root);
+}
+
+function renderContextHubLocationNotice(project, worktrees = contextHubLocationsToConfirm(project)) {
+  return worktrees.map((worktree) => {
+    const busy = state.contextHubLocationBusy === worktree.id;
+    return '<section class="context-hub-recovery-panel context-hub-location-panel" role="status" aria-label="Location to confirm">'
+      + '<div class="context-hub-recovery-copy"><span class="context-hub-recovery-badge">Location to confirm</span>'
+      + '<strong>Is this still the folder you registered?</strong>'
+      + '<p>After a restart, this disk got a new device number. Context Room cannot prove alone that it is the same folder.</p>'
+      + '<dl><div><dt>Folder</dt><dd><code title="' + escapeHtml(worktree.root) + '">' + escapeHtml(worktree.root) + '</code></dd></div></dl>'
+      + '<p class="context-hub-recovery-effect">Confirming reconnects its notebooks, conversations, local proposals and Shared link. Files stay unchanged. Pair drawing tablets again afterward.</p></div>'
+      + '<button class="file-action primary" type="button" data-context-hub-confirm-location data-context-hub-project-key="' + escapeHtml(project?.projectKey || "") + '" data-worktree-id="' + escapeHtml(worktree.id) + '" data-expected-root="' + escapeHtml(worktree.root) + '" data-expected-root-identity="' + escapeHtml(worktree.confirmRootIdentity) + '"' + (busy ? ' disabled aria-busy="true"' : '') + '>' + (busy ? "Confirming…" : "Confirm location") + '</button>'
+      + '</section>';
+  }).join("");
 }
 
 function contextHubPreferredWorktree(project, requestedId = "") {
@@ -7962,7 +7988,7 @@ function renderContextHubOverview(item) {
     : '<span>Local files use the project review queue directly; no proposal branch is created.</span>'
       + (project?.mode === "hybrid" ? '<span>Shared changes for this project appear separately as proposals.</span>' : '');
   const sharedRecovery = el("contextHubSharedRecovery");
-  const sharedRecoveryMarkup = item.type === "project" ? renderContextHubSharedRecoveryNotice(project) : "";
+  const sharedRecoveryMarkup = item.type === "project" ? renderContextHubLocationNotice(project) + renderContextHubSharedRecoveryNotice(project) : "";
   if (sharedRecovery) {
     sharedRecovery.innerHTML = sharedRecoveryMarkup;
     sharedRecovery.hidden = !sharedRecoveryMarkup;
@@ -14307,6 +14333,12 @@ function renderGlobalProjectInspection(panel = el("contextHealthPanel"), holder 
     holder.innerHTML = '<div class="global-project-inspection-empty"><strong>' + escapeHtml(project.title || project.id || "Shared project") + ' is selected.</strong><span>' + escapeHtml(status) + ' Context health and agent-environment inspection are available only for a connected local worktree.</span></div>';
     return;
   }
+  if (worktree.available === false && contextHubLocationsToConfirm(project).includes(worktree)) {
+    state.globalInspectionView = "";
+    holder.innerHTML = '<div class="global-project-inspection-empty"><strong>' + escapeHtml(project.title || project.id) + '</strong><span>Unavailable · identity to confirm. Reviews: —.</span></div>'
+      + renderContextHubLocationNotice(project, [worktree]);
+    return;
+  }
   if (worktree.available === false) {
     state.globalInspectionView = "";
     const warning = worktree.shared && contextHubProjectUnavailableReason(worktree) === "folder identity changed"
@@ -16425,6 +16457,66 @@ async function abandonContextHubSharedRecovery(project, recovery) {
     renderContextRoomGlobalReviewQueue();
     renderSharedProposalWorkspace();
     if (state.page === "settings") renderSettingsPanel();
+  }
+}
+
+function contextHubLocationAction(button) {
+  const project = (state.contextHub?.projects || []).find((candidate) => candidate.projectKey === button?.dataset.contextHubProjectKey);
+  const worktree = contextHubLocationsToConfirm(project).find((candidate) => candidate.id === button?.dataset.worktreeId);
+  if (!worktree
+    || worktree.root !== button.dataset.expectedRoot
+    || worktree.confirmRootIdentity !== button.dataset.expectedRootIdentity) {
+    throw new Error("This location changed. Refresh Context Room before confirming it.");
+  }
+  return { project, worktree };
+}
+
+function showContextHubConfirmLocationDialog(button) {
+  let action;
+  try {
+    action = contextHubLocationAction(button);
+  } catch (error) {
+    setStatus(error.message);
+    return;
+  }
+  showConfirmDialog({
+    title: "Confirm the location of " + (action.project.title || action.project.id || "this project") + "?",
+    body: "Context Room will treat " + action.worktree.root + " as the folder you registered. Files stay unchanged. Drawing tablets must be paired again.",
+    checkboxLabel: "This is the same folder, not a copy or a replacement.",
+    checkboxRequired: true,
+    confirmLabel: "Confirm location",
+    confirmPendingLabel: "Confirming…",
+    confirmVariant: "primary",
+    onConfirm: () => confirmContextHubLocation(action.project, action.worktree),
+  });
+}
+
+async function confirmContextHubLocation(project, worktree) {
+  if (IS_HOSTED_CONTEXT_ROOM) throw new Error("Location confirmation is available only in local Context Room.");
+  if (state.contextHubLocationBusy) return;
+  state.contextHubLocationBusy = worktree.id;
+  renderSharedProposalWorkspace();
+  renderContextHealth();
+  try {
+    const result = await api("/api/context-hub/confirm-location", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId: worktree.id, expectedRoot: worktree.root, expectedRootIdentity: worktree.confirmRootIdentity }),
+    });
+    if (result.catalog) applyContextHubMutationCatalog(sanitizeHostedHubCatalog(result.catalog));
+    state.globalProjectExplorerDetails.clear();
+    state.globalProjectExplorerErrors.clear();
+    workspaceUpdate("catalog-refreshed");
+    const refreshPending = result.refreshPending === true || !result.catalog;
+    const status = (project.title || project.id) + " location confirmed" + (refreshPending ? " · Hub refresh pending" : "");
+    setStatus(status);
+    if (refreshPending) void refreshContextHubUi().catch(() => setStatus(status + " · retry refresh when ready"));
+  } finally {
+    state.contextHubLocationBusy = "";
+    renderGlobalProjectExplorer();
+    renderContextRoomGlobalReviewQueue();
+    renderSharedProposalWorkspace();
+    renderContextHealth();
   }
 }
 
@@ -23898,6 +23990,11 @@ document.addEventListener("click", (event) => {
   const trigger = event.target.closest("[data-context-hub-project-picker-trigger]");
   if (!trigger) return;
   openContextHubProjectPicker(trigger);
+});
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-context-hub-confirm-location]");
+  if (!button || IS_HOSTED_CONTEXT_ROOM || state.contextHubLocationBusy) return;
+  showContextHubConfirmLocationDialog(button);
 });
 document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-context-hub-abandon-recovery]");

@@ -1,4 +1,4 @@
-import { NotebookClient, IndexedNotebookStorage, notebookBrowserIdentity, notebookHttpTransport } from '../notebook_client.mjs';
+import { NotebookClient, IndexedNotebookStorage, adoptNotebookCacheAliases, notebookBrowserIdentity, notebookHttpTransport } from '../notebook_client.mjs';
 import { normalizeNotebookDocument, notebookPath, NOTEBOOK_VERSION } from '../notebook_protocol.mjs';
 import { notebookSvg, notebookBounds } from '../notebook_render.mjs';
 import { notebookSceneBounds } from '../notebook_geometry.mjs';
@@ -16,7 +16,7 @@ const button = (label, callback, className = '') => { const node = notebookEleme
 async function metadata(storage, key, update) { for (let n = 0; n < 8; n++) { const state = await storage.read(key); try { await storage.commit(key, state.version, { metadata: update(state.metadata) }); return; } catch (error) { if (error.code !== 'notebook_cache_conflict') throw error; } } throw new Error('The local notebook cache is busy.'); }
 
 /** api and scopeKey must be captured from the exact project/location BEFORE navigation can change. */
-export async function openNotebookEditor({ api, path, resourceId, title, scopeKey, fixedSnapshot = null, reviewKey = '', onCorrection, onSubmitted = () => {}, onClosed = () => {}, onInteraction = () => {}, onConversation, initialImage, beforePresent, offlineCapabilities = null, browserDeviceId = document.querySelector('meta[name="context-room-browser-device"]')?.content || '' } = {}) {
+export async function openNotebookEditor({ api, path, resourceId, title, scopeKey, fixedSnapshot = null, reviewKey = '', onCorrection, onSubmitted = () => {}, onClosed = () => {}, onInteraction = () => {}, onConversation, initialImage, beforePresent, offlineCapabilities = null, cacheServerId = '', browserDeviceId = document.querySelector('meta[name="context-room-browser-device"]')?.content || '' } = {}) {
   notebookStyles(); if (path) notebookPath(path);
   const storage = new IndexedNotebookStorage(), browserId = await notebookBrowserIdentity(storage);
   const request = (url, options = {}) => api(url, { ...options, headers: { ...options.headers, 'x-context-room-notebook-client': browserId } });
@@ -32,8 +32,15 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   }
   const actor = capabilities.actor || { kind: 'human', id: browserId }, transport = notebookHttpTransport(request, actor);
   const accountId = reviewKey ? 'review:' + reviewKey : capabilities.accountId || 'local-owner';
-  const matches = (await storage.list()).filter(entry => { try { const [server, account, device] = JSON.parse(entry.key); return server === capabilities.serverId && account === accountId && device === browserId; } catch { return false; } });
-  const cached = matches.find(entry => resourceId ? entry.snapshot.resourceId === resourceId : entry.snapshot.locator.path === path);
+  await adoptNotebookCacheAliases(storage, { capabilities, accountId, deviceId: browserId });
+  const entries = await storage.list();
+  const owned = (entry, serverId) => { try { const [server, account, device] = JSON.parse(entry.key); return server === serverId && account === accountId && device === browserId; } catch { return false; } };
+  const sameResource = entry => resourceId ? entry.snapshot.resourceId === resourceId : entry.snapshot.locator.path === path;
+  // A chosen recovery cache that could not move (a newer cache holds the current key) opens as itself.
+  const serverId = cacheServerId && cacheServerId !== capabilities.serverId && (capabilities.serverIdAliases || []).includes(cacheServerId)
+    && entries.some(entry => owned(entry, cacheServerId) && sameResource(entry)) ? cacheServerId : capabilities.serverId;
+  const matches = entries.filter(entry => owned(entry, serverId));
+  const cached = matches.find(sameResource);
   let snapshot = fixedSnapshot, createOffline = false;
   if (fixedSnapshot) {
     const document = normalizeNotebookDocument(fixedSnapshot);
@@ -48,7 +55,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     resourceId ||= crypto.randomUUID(); createOffline = true;
   } else { resourceId = snapshot.resourceId; path = snapshot.locator.path; }
   if (beforePresent && !beforePresent(snapshot)) { await storage.close(); throw Object.assign(new Error('The display request changed before the notebook was ready.'), { code: 'device_navigation_cancelled' }); }
-  const scope = { serverId: capabilities.serverId, accountId, deviceId: browserId, resourceId };
+  const scope = { serverId, accountId, deviceId: browserId, resourceId };
   const dialog = notebookElement('dialog', '', 'notebook-dialog'); dialog.setAttribute('aria-label', reviewKey ? 'Correct notebook: ' + path : 'Notebook: ' + path);
   const header = notebookElement('header'), heading = notebookElement('div', '', 'notebook-heading'), name = notebookElement('h2', snapshot?.document.title || title || 'Notebook');
   const pathLabel = notebookElement('p', path, 'notebook-path'); heading.append(name, pathLabel); header.append(heading);
@@ -305,7 +312,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     if (reviewKey || closed || syncing || authBlocked && !explicit) return;
     syncing = true;
     try {
-      if (explicit) { const cap = await request('/api/notebooks/capabilities'); if (cap.serverId !== scope.serverId || !reviewKey && (cap.accountId || 'local-owner') !== scope.accountId) throw new Error('A different canonical location answered. The old cache is retained.'); authBlocked = false; }
+      if (explicit) { const cap = await request('/api/notebooks/capabilities'); if (cap.serverId !== scope.serverId && !cap.serverIdAliases?.includes(scope.serverId) || !reviewKey && (cap.accountId || 'local-owner') !== scope.accountId) throw new Error('A different canonical location answered. The old cache is retained.'); authBlocked = false; }
       await client.flush();
       // Automatic recovery retires only the connection alert. A successful
       // flush cannot establish that a separate local edit or export succeeded.
@@ -391,7 +398,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     else if (!cached || !reviewKey) await client.initialize(snapshot);
     else await client.notify();
     if (offlineError && !reviewKey) { await client.change(state => ({ metadata: { ...state.metadata, offline: true } })); authBlocked = [401, 403, 410].includes(offlineError.status); fail(offlineError, 'connection'); await client.notify(); }
-    if (!reviewKey) await client.change(state => ({ metadata: { ...state.metadata, reopen: { version: 1, scopeKey, browserDeviceId, capabilities, transport: capabilities.reviewAuthority === 'unavailable' ? 'drawing' : 'owner' } } }));
+    if (!reviewKey) await client.change(state => ({ metadata: { ...state.metadata, reopen: { version: 1, scopeKey, browserDeviceId, capabilities: serverId === capabilities.serverId ? capabilities : { ...capabilities, serverId }, transport: capabilities.reviewAuthority === 'unavailable' ? 'drawing' : 'owner' } } }));
     const saved = await client.state(); if (saved.metadata.view) surface.view = saved.metadata.view;
     if (saved.metadata.eink) { dialog.classList.add('notebook-eink'); eink.setAttribute('aria-pressed', 'true'); }
     if (saved.metadata.textDraft) await editText(saved.metadata.textDraft);

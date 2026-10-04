@@ -38,7 +38,7 @@ export async function openCachedNotebook(entry) {
   }
   async function validate() {
     const cap = await raw('/api/notebooks/capabilities');
-    if (cap.serverId !== route.serverId || (cap.accountId || 'local-owner') !== route.accountId) {
+    if (cap.serverId !== route.serverId && !cap.serverIdAliases?.includes(route.serverId) || (cap.accountId || 'local-owner') !== route.accountId) {
       throw Object.assign(new Error('A different Mac or pairing answered. The original cache is retained, not sent to this connection.'), { status: 403, code: 'notebook_response_scope' });
     }
     validatedAt = Date.now(); return cap;
@@ -62,7 +62,7 @@ export async function openCachedNotebook(entry) {
   };
   const { openNotebookEditor } = await import('./notebook-editor.mjs');
   return openNotebookEditor({ api, scopeKey: route.scopeKey, resourceId: route.resourceId, path: entry.snapshot.locator.path,
-    title: entry.snapshot.document.title, browserDeviceId: route.browserDeviceId, offlineCapabilities: route.capabilities,
+    title: entry.snapshot.document.title, browserDeviceId: route.browserDeviceId, offlineCapabilities: route.capabilities, cacheServerId: route.serverId,
     onConversation: route.transport === 'owner' ? async (source, display) => {
       const { openConversation } = await import('./assistant.mjs');
       return openConversation({ api, scopeKey: route.scopeKey, source, ...display });

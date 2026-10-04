@@ -576,7 +576,7 @@ function trustedStatePaths(root, kind, options = {}) {
   };
 }
 
-function ensureAuthorityKey(paths) {
+export function ensureAuthorityKey(paths) {
   fs.mkdirSync(paths.base, { recursive: true, mode: 0o700 });
   fs.chmodSync(paths.base, 0o700);
   if (!fs.existsSync(paths.key)) {

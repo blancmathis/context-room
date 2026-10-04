@@ -1726,6 +1726,7 @@ test("Context Hub registration preserves an unconfirmed root and its Shared link
   const registryPath = path.join(hubHome, "registry.json");
   const registry = JSON.parse(fs.readFileSync(registryPath, "utf8"));
   const entry = registry.projects.find((item) => item.id === original.id);
+  entry.rootDurableIdentity = null;
   entry.rootIdentity.dev = String(BigInt(entry.rootIdentity.dev) + 1n);
   // Preserve nonstandard whitespace to catch even a write of identical values.
   fs.writeFileSync(registryPath, JSON.stringify(registry) + "\n\n");
@@ -1808,6 +1809,7 @@ test("Context Hub registration preserves Shared after every Git device changes i
   assert.deepEqual(registry.projects.map((entry) => entry.worktreeIdentity.gitEntryIdentity.kind), ["directory", "file"]);
   for (const entry of registry.projects) {
     assert.equal(entry.worktreeIdentity.kind, "git");
+    entry.rootDurableIdentity = null;
     for (const identity of [entry.rootIdentity, entry.worktreeIdentity.commonDirIdentity,
       entry.worktreeIdentity.gitDirIdentity, entry.worktreeIdentity.gitEntryIdentity]) {
       identity.dev = String(BigInt(identity.dev) + 1n);
@@ -1850,6 +1852,7 @@ test("Context Hub registration preserves an unconfirmed non-Git location", (t) =
   assert.deepEqual(original.worktreeIdentity, { kind: "path" });
   const registryPath = path.join(hubHome, "registry.json");
   const registry = JSON.parse(fs.readFileSync(registryPath, "utf8"));
+  registry.projects[0].rootDurableIdentity = null;
   registry.projects[0].rootIdentity.dev = String(BigInt(original.rootIdentity.dev) + 1n);
   fs.writeFileSync(registryPath, JSON.stringify(registry) + "\n\n");
   const before = fs.readFileSync(registryPath);
@@ -1880,6 +1883,7 @@ test("Context Hub registration ignores only devices in the no-write Git prefligh
   for (const [label, rootDeviceChanged, change] of cases) {
     const registry = JSON.parse(original);
     const entry = registry.projects[0];
+    entry.rootDurableIdentity = null;
     if (rootDeviceChanged) entry.rootIdentity.dev = String(BigInt(entry.rootIdentity.dev) + 1n);
     for (const identity of [entry.worktreeIdentity.commonDirIdentity, entry.worktreeIdentity.gitDirIdentity,
       entry.worktreeIdentity.gitEntryIdentity]) identity.dev = String(BigInt(identity.dev) + 1n);
@@ -1898,6 +1902,8 @@ test("Context Hub unavailable locations expose reasons and unknown counts withou
   withHubHome(t, hubHome);
   withSharedHome(t, path.join(base, "shared"));
   const mainRoot = makeProject(base, "Unavailable main");
+  // Keep Git metadata available when the main working directory disappears.
+  execFileSync("git", ["init", "--separate-git-dir", path.join(base, "common.git")], { cwd: mainRoot, stdio: "ignore" });
   const agentRoot = path.join(base, "Available agent");
   execFileSync("git", ["worktree", "add", "-b", "agent/available", agentRoot], { cwd: mainRoot, stdio: "ignore" });
   if (!fs.existsSync(path.join(agentRoot, ".context-room", "config.json"))) fs.cpSync(path.join(mainRoot, ".context-room"), path.join(agentRoot, ".context-room"), { recursive: true });
@@ -1907,12 +1913,13 @@ test("Context Hub unavailable locations expose reasons and unknown counts withou
   const changed = registerContextHubProject(changedRoot);
   const registryPath = path.join(hubHome, "registry.json");
   const registry = JSON.parse(fs.readFileSync(registryPath, "utf8"));
+  registry.projects.find((entry) => entry.id === changed.id).rootDurableIdentity = null;
   registry.projects.find((entry) => entry.id === changed.id).rootIdentity.dev = String(BigInt(changed.rootIdentity.dev) + 1n);
   fs.writeFileSync(registryPath, JSON.stringify(registry));
   fs.renameSync(mainRoot, path.join(base, "Archived main"));
   const listed = listContextHubProjects();
   assert.equal(listed.find((entry) => entry.id === main.id).unavailableReason, "folder missing");
-  assert.equal(listed.find((entry) => entry.id === changed.id).unavailableReason, "folder identity changed");
+  assert.equal(listed.find((entry) => entry.id === changed.id).unavailableReason, "identity to confirm");
   const state = contextHubUiState(mainRoot, { refreshShared: false });
   const group = state.projects.find((project) => project.logicalProjectId === main.logicalProjectId);
   assert.equal(group.id, agent.id, "an absent current root must not represent an available group");
@@ -1942,7 +1949,7 @@ test("Context Hub unavailable locations expose reasons and unknown counts withou
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   const catalog = await (await fetch(origin + "/api/context-hub/catalog")).json();
   const catalogChanged = catalog.projects.find((project) => project.id === changed.id);
-  assert.equal(catalogChanged.unavailableReason, "folder identity changed");
+  assert.equal(catalogChanged.unavailableReason, "identity to confirm");
   assert.equal(catalogChanged.localReviewCount, null, "catalog must not replace unknown with zero");
 });
 
@@ -3831,7 +3838,7 @@ test("a registered project root cannot be retargeted through a replacement symli
   assert.deepEqual(fs.readFileSync(victimConfig), victimBytes);
 });
 
-test("legacy project root identities migrate once and reject a later physical replacement", async (t) => {
+test("legacy project roots stay unconfirmed without adopting a later physical replacement", async (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-root-identity-migration-"));
   const hubHome = path.join(base, "hub");
   withHubHome(t, hubHome);
@@ -3845,12 +3852,12 @@ test("legacy project root identities migrate once and reject a later physical re
   }, null, 2) + "\n");
 
   const [migrated] = listContextHubProjects();
-  assert.equal(migrated.available, true);
+  assert.equal(migrated.available, false);
+  assert.equal(migrated.unavailableReason, "identity to confirm");
   const persisted = JSON.parse(fs.readFileSync(path.join(hubHome, "registry.json"), "utf8"));
-  assert.equal(persisted.version, CONTEXT_HUB_REGISTRY_VERSION);
-  assert.match(String(persisted.projects[0].rootIdentity?.dev || ""), /^\d+$/);
-  assert.match(String(persisted.projects[0].rootIdentity?.ino || ""), /^\d+$/);
-  assert.equal(persisted.projects[0].worktreeIdentity?.kind, "git");
+  assert.equal(persisted.version, 2);
+  assert.equal(persisted.projects[0].rootIdentity, undefined);
+  assert.equal(persisted.projects[0].worktreeIdentity, undefined);
 
   const retiredRoot = `${canonicalRoot}-retired`;
   fs.renameSync(canonicalRoot, retiredRoot);
@@ -4000,7 +4007,7 @@ test("read-only project listing leaves legacy identity and damaged journals unto
   fs.writeFileSync(registryPath, legacy);
   const [unconfirmed] = listContextHubProjects({ readOnly: true });
   assert.equal(unconfirmed.available, false);
-  assert.equal(unconfirmed.unavailableReason, "folder identity changed");
+  assert.equal(unconfirmed.unavailableReason, "identity to confirm");
   assert.equal(fs.readFileSync(registryPath, "utf8"), legacy);
 
   fs.writeFileSync(registryPath, current);

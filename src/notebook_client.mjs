@@ -40,6 +40,13 @@ export class MemoryNotebookStorage {
     this.records.set(key, { version: version + 1, metadata: changes.metadata === undefined ? state.metadata : copy(changes.metadata), snapshot: changes.snapshot === undefined ? state.snapshot : copy(changes.snapshot), operations: [...operations.values()] });
     return version + 1;
   }
+  async rekey(fromKey, toKey, metadata = value => value) {
+    const state = this.records.get(fromKey);
+    if (!state?.snapshot) throw fault('notebook_cache_missing', 'The earlier local cache is no longer present.');
+    if (this.records.has(toKey)) throw fault('notebook_cache_conflict', 'Another local cache already uses this location. Both are retained.');
+    this.records.set(toKey, { ...copy(state), version: state.version + 1, metadata: copy(metadata(copy(state.metadata))) });
+    this.records.delete(fromKey);
+  }
 }
 
 /** Separate snapshots and operation rows: writing a point does not rewrite prior ink. */
@@ -98,6 +105,32 @@ export class IndexedNotebookStorage {
       tx.onerror = tx.onabort = () => reject(error || tx.error || fault('notebook_storage_write', 'Local storage failed. The gesture is not saved.'));
     });
   }
+  /** Moves one resource cache to another key in one transaction; never replaces an existing cache. */
+  async rekey(fromKey, toKey, metadata = value => value) {
+    const db = await this.ready;
+    return new Promise((resolve, reject) => {
+      let tx;
+      try { tx = db.transaction(['metadata', 'snapshots', 'operations'], 'readwrite', { durability: 'strict' }); }
+      catch { tx = db.transaction(['metadata', 'snapshots', 'operations'], 'readwrite'); }
+      let error;
+      const store = name => tx.objectStore(name), stop = value => { error = value; tx.abort(); };
+      const meta = store('metadata').get(fromKey), snapshot = store('snapshots').get(fromKey), operations = store('operations').index('scope').getAll(fromKey);
+      const taken = [store('metadata').count(toKey), store('snapshots').count(toKey), store('operations').index('scope').count(toKey)];
+      // Requests in one transaction complete in order: every result above is ready here.
+      taken[2].onsuccess = () => {
+        if (!snapshot.result) return stop(fault('notebook_cache_missing', 'The earlier local cache is no longer present.'));
+        if (taken.some(request => request.result)) return stop(fault('notebook_cache_conflict', 'Another local cache already uses this location. Both are retained.'));
+        let value;
+        try { value = metadata(meta.result?.value || {}); } catch (failure) { return stop(failure); }
+        store('metadata').put({ version: (meta.result?.version || 0) + 1, value }, toKey);
+        store('snapshots').put(snapshot.result, toKey);
+        for (const { scope, ...op } of operations.result || []) { store('operations').delete([scope, op.operationId]); store('operations').put({ ...op, scope: toKey }); }
+        store('metadata').delete(fromKey); store('snapshots').delete(fromKey);
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = tx.onabort = () => reject(error || tx.error || fault('notebook_storage_write', 'The local cache could not be moved. It is retained.'));
+    });
+  }
   async close() { (await this.ready).close(); }
 }
 
@@ -120,6 +153,27 @@ function visible(state, actor) {
   return { ...copy(state.snapshot), document, tombstones, conflicts, pending: state.operations.length, accepted: false, cacheVersion: state.version,
     status: conflicts.length ? 'conflict' : state.operations.length || state.metadata.pendingCreate ? 'pending' : state.metadata.offline ? 'cached' : 'confirmed',
     offline: Boolean(state.metadata.offline), locallySaved: true, pendingCreate: Boolean(state.metadata.pendingCreate) };
+}
+
+/** After a proven mount change of the same location, moves this account and device's
+ * caches from the earlier server ids to the current one. An occupied key keeps both. */
+export async function adoptNotebookCacheAliases(storage, { capabilities, accountId, deviceId }) {
+  const aliases = new Set(capabilities?.serverIdAliases || []);
+  if (!aliases.size) return 0;
+  const entries = await storage.list(), keys = new Set(entries.map(entry => entry.key));
+  let moved = 0;
+  for (const entry of entries) {
+    let server, account, device, resource;
+    try { [server, account, device, resource] = JSON.parse(entry.key); } catch { continue; }
+    if (!aliases.has(server) || account !== accountId || device !== deviceId) continue;
+    const key = notebookCacheKey({ serverId: capabilities.serverId, accountId, deviceId, resourceId: resource });
+    if (keys.has(key)) continue;
+    try {
+      await storage.rekey(entry.key, key, metadata => metadata.reopen?.capabilities ? { ...metadata, reopen: { ...metadata.reopen, capabilities } } : metadata);
+      keys.add(key); moved += 1;
+    } catch (error) { if (!['notebook_cache_conflict', 'notebook_cache_missing'].includes(error.code)) throw error; }
+  }
+  return moved;
 }
 
 export class NotebookClient {

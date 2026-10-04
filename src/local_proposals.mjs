@@ -4,6 +4,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { withFilesystemLock } from "./filesystem_lock.mjs";
 import { writeNotebookBytes, makeNotebookDirectory, syncNotebookDirectory } from "./notebook_io.mjs";
+import { acceptsRootIdentity } from "./location_attestation.mjs";
 
 const STORE = ".context-room/local-proposals";
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -130,7 +131,7 @@ function proposalPath(id) {
 function readProposal(ctx, id) {
   const proposal = readJson(ctx.root, proposalPath(id));
   if (!proposal || proposal.schemaVersion !== 1 || proposal.id !== id) fail("local_proposal_missing", "Local proposal not found.");
-  if (proposal.rootIdentity !== ctx.rootIdentity) fail("local_proposal_conflict", "The original project directory was replaced.");
+  if (!["same", "alias", "confirmed"].includes(acceptsRootIdentity(ctx.root, proposal.rootIdentity))) fail("local_proposal_conflict", "The original project directory was replaced.");
   if (proposal.baseRevision !== manifestRevision(proposal.base)
     || (proposal.submitted && proposal.submittedRevision !== submissionRevision(proposal, proposal.submitted))) {
     fail("local_proposal_corrupt", "The proposal manifest no longer matches its recorded revision.");

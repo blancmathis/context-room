@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { withFilesystemLock } from "./filesystem_lock.mjs";
+import { acceptsRootIdentity } from "./location_attestation.mjs";
 
 export const DOCUMENT_WORKFLOW_VERSION = 1;
 const digest = (value) => createHash("sha256").update(value).digest("hex");
@@ -35,7 +36,7 @@ export function planStateMigration(root) {
   const existing = read(root, ".context-room/workflow-state.json");
   if (existing) {
     const state = JSON.parse(existing.toString());
-    if (state.version !== DOCUMENT_WORKFLOW_VERSION || state.rootIdentity !== rootIdentity) conflict("Unsupported workflow state or replaced project root.");
+    if (state.version !== DOCUMENT_WORKFLOW_VERSION || !["same", "alias", "confirmed"].includes(acceptsRootIdentity(root, state.rootIdentity))) conflict("Unsupported workflow state or replaced project root.");
     return { version: DOCUMENT_WORKFLOW_VERSION, root, rootIdentity, migrated: true, revision: digest(existing), files: [], warnings: [] };
   }
   const files = CONTROL_FILES.flatMap((name) => {
@@ -62,7 +63,7 @@ export function applyStateMigration(root, { expectedRevision } = {}) {
     if (!journalBytes) conflict("Migration completion has no recoverable journal.");
     const journal = JSON.parse(journalBytes.toString());
     if (journal.status !== "complete") {
-      if (journal.plan?.rootIdentity !== current.rootIdentity) conflict("Migration journal belongs to a different project root.");
+      if (!["same", "alias", "confirmed"].includes(acceptsRootIdentity(current.root, journal.plan?.rootIdentity))) conflict("Migration journal belongs to a different project root.");
       for (const file of journal.plan.files) {
         const backup = read(root, `${base}/objects/${file.hash}`);
         if (!backup || digest(backup) !== file.hash) conflict("Migration recovery backup is damaged.");

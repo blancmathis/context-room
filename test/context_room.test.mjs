@@ -718,6 +718,52 @@ test("review decisions emitted by the UI API use registered Hub identities", asy
   assert.notEqual(event.locationId, path.resolve(root));
 });
 
+test("location confirmation is owner-protected and accepts only exact identities", async (t) => {
+  const root = makeRoot();
+  initializeContextRoomProject(root);
+  const calls = [];
+  const catalog = { enabled: true, generatedAt: "2026-10-03T10:00:00.000Z", projects: [], sharedRepositories: [], proposals: [], items: [], repositoryErrors: [], summary: {} };
+  const room = createMemoryServer({
+    root,
+    contextHubConfirmLocation(request) {
+      calls.push(request);
+      if (request.expectedRootIdentity === "1:2") throw Object.assign(new Error("This location changed."), { code: "context_hub_location_changed", statusCode: 409 });
+      return { project: { id: request.projectId, logicalProjectId: "logical" }, confirmedIdentities: ["16777229:42"] };
+    },
+    contextHubSnapshotRefresh: () => catalog,
+  });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve, reject) => room.server.close((error) => error ? reject(error) : resolve())));
+  const endpoint = `http://127.0.0.1:${room.server.address().port}/api/context-hub/confirm-location`;
+  const exact = { projectId: "location-1", expectedRoot: "/Users/me/project", expectedRootIdentity: "16777229:42" };
+  const post = (body, owner = true) => fetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(owner ? { "x-context-room-owner-nonce": room.ownerMutationNonce } : {}) },
+    body: JSON.stringify(body),
+  });
+
+  const denied = await post(exact, false);
+  assert.equal(denied.status, 403);
+  assert.equal((await denied.json()).code, "review_authority_nonce_required");
+  const malformed = await post({ ...exact, aliases: ["1:1"] });
+  assert.equal(malformed.status, 400);
+  assert.equal((await malformed.json()).code, "context_hub_location_identity_required");
+  assert.equal(calls.length, 0);
+
+  const changed = await post({ ...exact, expectedRootIdentity: "1:2" });
+  assert.equal(changed.status, 409);
+  assert.equal((await changed.json()).code, "context_hub_location_changed");
+
+  const response = await post(exact);
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.deepEqual(result.location, { status: "confirmed", projectId: "location-1", confirmedIdentities: 1 });
+  assert.equal(result.refreshPending, false);
+  assert.equal(calls.at(-1).projectId, "location-1");
+  assert.equal(calls.at(-1).expectedRoot, "/Users/me/project");
+  assert.ok(calls.at(-1).conversationRoot);
+});
+
 test("local Shared recovery abandonment is owner-protected and accepts only exact identities", async (t) => {
   const root = makeRoot();
   initializeContextRoomProject(root);
