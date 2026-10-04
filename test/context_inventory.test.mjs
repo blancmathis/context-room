@@ -480,3 +480,28 @@ test("hook output and MCP tools are reported as unknown context", () => {
     fs.rmSync(base, { recursive: true, force: true });
   }
 });
+
+test("local skills and provider configuration are accepted only with a current human review", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "context-skill-authority-")));
+  try {
+    for (const name of ["reviewed", "unreviewed"]) {
+      fs.mkdirSync(path.join(root, "skills", name), { recursive: true });
+      fs.writeFileSync(path.join(root, "skills", name, "SKILL.md"), `# ${name}\n`);
+    }
+    fs.mkdirSync(path.join(root, ".codex"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".codex", "config.toml"), "model = \"x\"\n");
+    const reviewedHash = createHash("sha256").update("# reviewed\n").digest("hex");
+    const readers = fixtureReaders(root, {
+      skillFolders: [{ absolutePath: path.join(root, "skills"), displayPath: "skills", skills: ["reviewed", "unreviewed"] }],
+      reviewState: { reviews: { "skills/reviewed/SKILL.md": { status: "verified", contentHash: reviewedHash, reviewedAt: "2026-10-04T00:00:00Z" } } },
+      documents: [], documentContents: {},
+    });
+    const inventory = buildContextInventory({ root, projectId: "project-a", locationId: "location-a", folder: "." }, { provider: "codex", readers });
+    const byLocator = (suffix) => inventory.resources.find((item) => item.locator.endsWith(suffix));
+    assert.equal(byLocator("skills/reviewed/SKILL.md").truthState, "accepted");
+    assert.equal(byLocator("skills/unreviewed/SKILL.md").truthState, "discovered");
+    assert.equal(byLocator(".codex/config.toml").truthState, "discovered");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
