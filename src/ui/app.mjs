@@ -24981,10 +24981,10 @@ if (CONTEXT_ROOM_INITIAL_FLASH_TOKEN) {
   restoreContextRoomToast();
 }
 void consumeContextRoomTerminalFlash(CONTEXT_ROOM_INITIAL_FLASH_TOKEN);
-setMode("view");
 document.addEventListener("selectionchange", () => {
   if (state.page === "file" && state.mode === "view" && el("docReader")) scheduleCodexReferenceActionUpdate();
 });
+setMode("view");
 initializeWorkspaceDiagnostics();
 establishWorkspaceIdentity().then(() => {
   const pairingRequest = registerInitialWorkspaceRuntime();
