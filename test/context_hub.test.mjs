@@ -3709,6 +3709,8 @@ test("global Explorer context actions stay scoped to the selected local project"
   assert.ok(Array.isArray(inspection.startupContext));
   assert.ok(Array.isArray(inspection.startupSkills));
   assert.ok(Array.isArray(inspection.startupHooks));
+  assert.equal(inspection.effectiveContextError, "");
+  assert.equal(inspection.effectiveContext.cost.schemaVersion, "context-room.context-cost/1");
 });
 
 test("Context Hub rejects hard-linked project control files before registration", (t) => {

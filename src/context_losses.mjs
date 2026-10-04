@@ -87,7 +87,7 @@ function resolveCited(reference, { fileDirectory, root, home }) {
   return { candidates: [path.resolve(fileDirectory, clean), ...(root ? [path.resolve(root, clean)] : [])] };
 }
 
-function frontmatterField(text, field) {
+export function frontmatterField(text, field) {
   const block = String(text || "").match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!block) return null;
   const lines = block[1].split(/\r?\n/);

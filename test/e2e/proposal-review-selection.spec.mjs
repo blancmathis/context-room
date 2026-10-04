@@ -457,6 +457,23 @@ test("@smoke the home lists projects in a stable order and Cmd+K goes to a proje
   await expect(page.locator("#reviewQueue")).not.toContainText("Beacon");
 });
 
+test("@smoke the Context destination shows what the agent sees, by agent", async ({ page }) => {
+  const { origin } = fixture();
+  await page.goto(origin + "/?hub=1&workspace=workspace-agent-context&view=hub");
+  await waitForBoot(page);
+  await page.locator("#contextHubHomeProjectList .context-hub-home-project", { hasText: "Atlas" }).getByRole("button", { name: /^Context/ }).click();
+  const cost = page.locator(".context-cost");
+  // A Shared-linked project verifies its Shared snapshot several times on the first inspection.
+  await expect(cost).toBeVisible({ timeout: 30_000 });
+  await expect(cost.locator(".context-cost-part")).toHaveText([/^At startup/, /^On demand/, /^Unknown/]);
+  await expect(cost.locator(".context-cost-agent strong")).toHaveText("Codex");
+  await expect(cost.locator(".context-cost-method")).toHaveText("Estimate: characters ÷ 4, no tokenizer.");
+
+  await page.locator("[data-global-inspection-provider]").selectOption("claude-code");
+  await expect(cost.locator(".context-cost-agent strong")).toHaveText("Claude Code");
+  await expect(cost.locator(".context-cost-part").nth(2)).toContainText("memory");
+});
+
 test("@smoke a failed Explorer project refresh restores the project and Review Queue selection", async ({ page }) => {
   const { origin, projects } = fixture();
   let releaseProjectRefresh;
