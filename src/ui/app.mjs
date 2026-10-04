@@ -702,6 +702,21 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 	    .context-engine-summary { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 10px; border-bottom: 1px solid var(--line); }
 	    .context-engine-summary span { padding: 4px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 9px; }
 	    .context-engine-summary [data-state="fresh"] { border-color: color-mix(in srgb, var(--good) 34%, var(--line)); color: var(--good-fg); }
+	    .context-cost { display: grid; gap: 10px; padding: 0 0 12px; border-bottom: 1px solid var(--line); }
+	    .context-cost-agent { margin: 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+	    .context-cost-agent strong { color: var(--text); }
+	    .context-cost-parts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+	    .context-cost-part { display: grid; gap: 2px; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+	    .context-cost-part span, .context-cost-part small, .context-cost-method { color: var(--muted); font-size: 10px; }
+	    .context-cost-part strong { font-size: 15px; }
+	    .context-cost-part small { overflow-wrap: anywhere; }
+	    .context-cost-limits { display: grid; gap: 6px; }
+	    .context-cost-limit { display: grid; grid-template-columns: minmax(0, 1fr) minmax(80px, 160px) auto; align-items: center; gap: 8px; font-size: 10px; }
+	    .context-cost-limit span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	    .context-cost-limit meter { width: 100%; }
+	    .context-cost-method { margin: 0; }
+	    .context-cost-entry { color: var(--text-soft); font-size: 10px; }
+	    @media (max-width: 639px) { .context-cost-parts { grid-template-columns: 1fr; } }
 	    .context-engine-resource-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 2px; }
 	    .context-engine-resource-actions button { min-height: 27px; padding: 4px 7px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--text-soft); cursor: pointer; font-size: 9px; }
 	    .context-engine-resource-actions button:hover { border-color: color-mix(in srgb, var(--accent) 38%, var(--line)); background: var(--surface-card-hover); color: var(--text); }
@@ -1144,6 +1159,30 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .markdown-line.quote { color: var(--file-quote); border-left: 2px solid var(--file-quote); padding-left: 0.8em; opacity: 0.9; }
     .markdown-line.code, .markdown-line.fence { color: var(--file-code); background: color-mix(in srgb, var(--file-code) 10%, transparent); }
     .markdown-line.frontmatter, .markdown-line.hr { color: var(--file-marker); }
+    #docReader :is(p, li, blockquote, h1, h2, h3, h4, h5, h6).markdown-line, #docReader .markdown-frontmatter, #docReader .doc-backlinks { max-width: 72ch; }
+    #docReader [data-heading-id] { scroll-margin-top: 12px; }
+    #docReader [data-heading-id]:focus { outline: none; }
+    .doc-toc { margin: 0 0 var(--space-4); font-size: 13px; line-height: 1.45; }
+    .doc-toc summary, .markdown-frontmatter > summary, .doc-backlinks > summary { min-height: 32px; display: flex; align-items: center; gap: 6px; color: var(--file-muted); font-size: 12px; font-weight: 700; cursor: pointer; }
+    .doc-toc summary, .markdown-frontmatter > summary, .doc-backlinks > summary { list-style: none; }
+    .doc-toc summary::-webkit-details-marker, .markdown-frontmatter > summary::-webkit-details-marker, .doc-backlinks > summary::-webkit-details-marker { display: none; }
+    .doc-toc summary::before, .markdown-frontmatter > summary::before, .doc-backlinks > summary::before { content: "▸"; width: 1em; color: var(--file-marker); }
+    .doc-toc details[open] > summary::before, .markdown-frontmatter[open] > summary::before, .doc-backlinks[open] > summary::before { content: "▾"; }
+    .doc-toc summary span, .markdown-frontmatter > summary span, .doc-backlinks > summary span { font-weight: 500; font-variant-numeric: tabular-nums; }
+    .doc-toc ol, .doc-backlinks ul { display: grid; gap: 1px; margin: 2px 0 0; padding: 0; list-style: none; }
+    .doc-toc a, .doc-backlinks a { display: block; padding: 6px 8px; border-radius: 6px; color: var(--file-fg); text-decoration: none; }
+    .doc-toc a:hover, .doc-toc a:focus-visible, .doc-backlinks a:hover, .doc-backlinks a:focus-visible { background: color-mix(in srgb, var(--file-h2) 10%, transparent); color: var(--file-h2); }
+    .doc-toc .doc-toc-l3 a { padding-left: 20px; color: var(--file-muted); }
+    .markdown-frontmatter { margin: 0 0 var(--space-3); }
+    .doc-backlinks { margin: var(--space-6) 0 0; padding-top: var(--space-3); border-top: 1px solid var(--file-hr); }
+    .doc-backlinks code { color: var(--file-muted); font-size: 11px; }
+    .doc-backlinks-empty { margin: 4px 0; color: var(--file-muted); font-size: 12px; }
+    .markdown-section { content-visibility: auto; contain-intrinsic-size: auto 900px; margin-left: -36px; padding-left: 36px; }
+    @media (min-width: 1280px) {
+      .doc-reader-layout.has-toc { display: grid; grid-template-columns: minmax(0, 1fr) minmax(150px, 220px); gap: var(--space-6); align-items: start; }
+      .doc-reader-layout.has-toc > .doc-reader-body { grid-column: 1; grid-row: 1; min-width: 0; }
+      .doc-reader-layout.has-toc > .doc-toc { grid-column: 2; grid-row: 1; position: sticky; top: 0; max-height: calc(100vh - 220px); overflow: auto; margin: 0; }
+    }
     .mermaid-document { margin: var(--space-5) 0; border: 1px solid var(--file-line); border-radius: 10px; overflow: hidden; background: var(--file-panel-bg); }
     .mermaid-render { min-height: 120px; padding: var(--space-5); overflow: auto; color: var(--file-fg); text-align: center; }
     .mermaid-render svg { display: block; max-width: 100%; height: auto; margin: auto; }
@@ -3956,6 +3995,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 		state.globalInspectionData = new Map();
 		state.globalInspectionLoading = new Set();
 		state.globalInspectionErrors = new Map();
+		state.globalInspectionRetries = new Map();
 		state.globalInspectionController = null;
 		state.contextAttentionItems = [];
 		state.contextAttentionProjectKey = "";
@@ -14479,7 +14519,11 @@ function renderGlobalInspectionDisclosure(view, title, description, project, dat
     else if (error && !data) body = '<div class="global-project-inspection-error">' + escapeHtml(error) + '</div>';
     else if (data) body = view === "health" ? renderGlobalInspectionHealth(data) : renderGlobalInspectionStartup(data);
     body = '<div class="global-project-inspection-disclosure-body">'
-      + '<div class="global-project-inspection-detail-actions"><button class="global-project-inspection-refresh" type="button" data-global-inspection-refresh>Refresh</button></div>'
+      + '<div class="global-project-inspection-detail-actions">'
+        + (view === "startup" ? '<label class="context-engine-provider">Agent <select data-global-inspection-provider aria-label="Agent whose context is shown">'
+          + Object.entries(AGENT_PROVIDER_LABELS).map(([id, label]) => '<option value="' + id + '"' + (id === agentContextProvider() ? ' selected' : '') + '>' + label + '</option>').join("")
+          + '</select></label>' : '')
+        + '<button class="global-project-inspection-refresh" type="button" data-global-inspection-refresh>Refresh</button></div>'
       + body
       + '</div>';
   }
@@ -14595,14 +14639,71 @@ function pathIsAbsoluteUi(value = "") {
   return String(value).startsWith("/") || /^[A-Za-z]:[\\/]/.test(String(value));
 }
 
-function contextEngineResourceRow(entry, { actions = true } = {}) {
+const AGENT_PROVIDER_LABELS = Object.freeze({ codex: "Codex", "claude-code": "Claude Code", opencode: "OpenCode" });
+const AGENT_PROVIDER_STORAGE_KEY = "context-room:agent-provider";
+const CONTEXT_UNKNOWN_LABELS = Object.freeze({ "hook-output": "hook output", "mcp-tools": "MCP tools", memory: "memory" });
+
+function agentContextProvider() {
+  try {
+    const stored = window.localStorage?.getItem(AGENT_PROVIDER_STORAGE_KEY) || "";
+    return Object.hasOwn(AGENT_PROVIDER_LABELS, stored) ? stored : "codex";
+  } catch {
+    return "codex";
+  }
+}
+
+function setAgentContextProvider(provider) {
+  if (!Object.hasOwn(AGENT_PROVIDER_LABELS, provider)) return;
+  try { window.localStorage?.setItem(AGENT_PROVIDER_STORAGE_KEY, provider); } catch {}
+}
+
+function formatTokenEstimate(value) {
+  if (value == null) return "—";
+  return "≈ " + (value >= 1000 ? (Math.round(value / 100) / 10) + "k" : String(value));
+}
+
+function contextCostEntryLabel(cost) {
+  if (cost?.mode === "startup") return "At startup " + formatTokenEstimate(cost.startupTokens) + " tokens" + (cost.note ? " · " + cost.note : "");
+  if (cost?.mode === "description") return "Description " + formatTokenEstimate(cost.startupTokens) + " tokens at startup · body " + formatTokenEstimate(cost.onDemandTokens) + " when used";
+  if (cost?.mode === "on-demand") return "On demand " + formatTokenEstimate(cost.onDemandTokens) + " tokens";
+  if (cost?.mode === "unknown") return "Adds context of unknown size";
+  return "";
+}
+
+// What the agent sees: three parts, then gauges against hard limits only.
+function renderContextCost(effective) {
+  const cost = effective?.cost;
+  if (!cost) return "";
+  const coordinate = effective.coordinate || {};
+  const provider = AGENT_PROVIDER_LABELS[coordinate.provider] || coordinate.provider || "Agent";
+  const part = (label, value, detail) => '<div class="context-cost-part"><span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(value) + '</strong><small>' + escapeHtml(detail) + '</small></div>';
+  const counted = (count, noun) => count + " " + noun + (count === 1 ? "" : "s");
+  const unmeasured = (count) => count ? " · " + count + " not readable" : "";
+  const unknownKinds = [...new Set((cost.unknown || []).map((item) => CONTEXT_UNKNOWN_LABELS[item.kind] || item.kind))];
+  const parts = part("At startup", cost.startup.resources ? formatTokenEstimate(cost.startup.tokens) + " tokens" : "0", counted(cost.startup.resources, "resource") + unmeasured(cost.startup.unmeasured))
+    + part("On demand", String(cost.onDemand.resources), cost.onDemand.resources ? formatTokenEstimate(cost.onDemand.tokens) + " tokens if all are read" + unmeasured(cost.onDemand.unmeasured) : "Nothing loaded on demand")
+    + part("Unknown", unknownKinds.length ? "—" : "0", unknownKinds.length ? unknownKinds.join(" · ") + ": not measured" : "Nothing unknown");
+  const limits = (cost.limits || []).map((limit) => '<div class="context-cost-limit" title="' + escapeHtml(limit.locator || limit.label) + '"><span>' + escapeHtml(limit.label) + '</span>'
+    + '<meter min="0" max="' + limit.max + '" low="' + Math.round(limit.max * 0.8) + '" high="' + limit.max + '" optimum="0" value="' + Math.min(limit.used, limit.max) + '"></meter>'
+    + '<small>' + limit.used.toLocaleString("en-US") + " / " + limit.max.toLocaleString("en-US") + " " + escapeHtml(limit.unit) + '</small></div>').join("");
+  return '<section class="context-cost" aria-label="What the agent sees">'
+    + '<p class="context-cost-agent"><strong>' + escapeHtml(provider) + '</strong> · folder <code>' + escapeHtml(coordinate.folder || ".") + '</code> · coverage ' + escapeHtml(effective.coverage?.state || "unknown") + '</p>'
+    + '<div class="context-cost-parts">' + parts + '</div>'
+    + (limits ? '<div class="context-cost-limits" aria-label="Hard limits">' + limits + '</div>' : '')
+    + '<p class="context-cost-method">' + escapeHtml(cost.method || "") + '</p>'
+    + '</section>';
+}
+
+function contextEngineResourceRow(entry, { actions = true, cost = null } = {}) {
   const resource = entry.resource || {};
   const application = entry.application || {};
   const status = application.status || "inactive";
   const canOpen = contextEngineEntryCanOpen(entry);
+  const costLabel = status === "active" ? contextCostEntryLabel(cost?.[resource.id]) : "";
   return '<div class="global-project-inspection-row" data-context-resource="' + escapeHtml(resource.id || "") + '">'
     + '<div class="global-project-inspection-row-head"><strong>' + escapeHtml(resource.metadata?.name || resource.locator || resource.id || "Context resource") + '</strong><span class="context-engine-status" data-status="' + escapeHtml(status) + '">' + escapeHtml(status) + '</span></div>'
     + '<span>' + escapeHtml([resource.kind, application.scope, resource.source].filter(Boolean).join(" · ")) + '</span>'
+    + (costLabel ? '<span class="context-cost-entry">' + escapeHtml(costLabel) + '</span>' : '')
     + (application.reason ? '<p>' + escapeHtml(application.reason) + '</p>' : '')
     + (resource.locator ? '<code>' + escapeHtml(resource.locator) + '</code>' : '')
     + (actions
@@ -14623,7 +14724,7 @@ function renderEffectiveContextGroup(title, entries = [], emptyCopy = "", option
 }
 
 function renderEffectiveContextBody(effective, { embedded = false } = {}) {
-  const activeCount = ["instructions", "skills", "hooks", "providerConfigs", "documents"].reduce((sum, key) => sum + Number(effective?.[key]?.length || 0), 0);
+  const activeCount = ["instructions", "skills", "hooks", "providerConfigs", "mcpServers", "documents"].reduce((sum, key) => sum + Number(effective?.[key]?.length || 0), 0);
   const inactive = effective?.inactive || [];
   const inactiveCounts = inactive.reduce((counts, entry) => {
     const status = entry.application?.status || "inactive";
@@ -14638,15 +14739,17 @@ function renderEffectiveContextBody(effective, { embedded = false } = {}) {
     + '<span>' + Number(effective?.proposals?.length || 0) + ' proposal metadata</span>'
     + '<span>' + Number(effective?.healthIssues?.length || 0) + ' health issues</span>'
     + '</div>';
+  const options = { actions: !embedded, cost: effective?.cost?.entries || null };
   const groups = '<div class="global-project-inspection-groups">'
-    + renderEffectiveContextGroup("Agent instructions", effective?.instructions || [], "No proven instruction applies to this folder.", { actions: !embedded })
-    + renderEffectiveContextGroup("Skills", effective?.skills || [], "No proven local or accepted shared skill applies.", { actions: !embedded })
-    + renderEffectiveContextGroup("Hooks and automation", effective?.hooks || [], "No proven hook applies. Uncertain discoveries appear below.", { actions: !embedded })
-    + renderEffectiveContextGroup("Provider configuration", effective?.providerConfigs || [], "No recognized provider configuration applies.", { actions: !embedded })
-    + renderEffectiveContextGroup("Accepted documents", effective?.documents || [], "No accepted current document is linked to this coordinate.", { actions: !embedded })
-    + renderEffectiveContextGroup(inactiveSummary ? "Inactive resources · " + inactiveSummary : "Inactive resources", inactive, "No inactive resources were discovered.", { actions: !embedded, open: false })
+    + renderEffectiveContextGroup("Agent instructions", effective?.instructions || [], "No proven instruction applies to this folder.", options)
+    + renderEffectiveContextGroup("Skills", effective?.skills || [], "No proven local or accepted shared skill applies.", options)
+    + renderEffectiveContextGroup("Hooks and automation", effective?.hooks || [], "No proven hook applies. Uncertain discoveries appear below.", options)
+    + renderEffectiveContextGroup("Provider configuration", effective?.providerConfigs || [], "No recognized provider configuration applies.", options)
+    + (effective?.mcpServers?.length ? renderEffectiveContextGroup("MCP servers", effective.mcpServers, "", options) : "")
+    + renderEffectiveContextGroup("Accepted documents", effective?.documents || [], "No accepted current document is linked to this coordinate.", options)
+    + renderEffectiveContextGroup(inactiveSummary ? "Inactive resources · " + inactiveSummary : "Inactive resources", inactive, "No inactive resources were discovered.", { ...options, open: false })
     + '</div>';
-  return summary + groups + (embedded ? "" : '<div id="contextEngineDetail" class="context-engine-detail"></div>');
+  return renderContextCost(effective) + summary + groups + (embedded ? "" : '<div id="contextEngineDetail" class="context-engine-detail"></div>');
 }
 
 function renderContextEngineInspection() {
@@ -14759,7 +14862,7 @@ async function openContextEngineInspection(target = {}) {
     projectId: target.projectId || selectedWorktree?.id || "",
     locationId: target.locationId || selectedWorktree?.id || "",
     folder: normalizeUiPath(target.folder || ".") || ".",
-    provider: target.provider || "codex",
+    provider: target.provider || agentContextProvider(),
     title: target.title || selectedProject?.title || "Current project",
     root: target.root || selectedWorktree?.root || state.root || "",
   };
@@ -14800,6 +14903,10 @@ function wireGlobalProjectInspection(project) {
     openGlobalProjectInspection(view, project);
   }));
   holder?.querySelector("[data-global-inspection-refresh]")?.addEventListener("click", () => loadGlobalProjectInspection(project, { force: true }).catch((error) => setStatus(error.message)));
+  holder?.querySelector("[data-global-inspection-provider]")?.addEventListener("change", (event) => {
+    setAgentContextProvider(event.target.value);
+    loadGlobalProjectInspection(project).catch((error) => setStatus(error.message));
+  });
   holder?.querySelectorAll("[data-health-filter]").forEach((select) => select.addEventListener("change", () => {
     const field = select.dataset.healthFilter;
     if (field === "status") state.globalInspectionHealthStatus = select.value;
@@ -14871,14 +14978,23 @@ async function loadGlobalProjectInspection(project, { force = false } = {}) {
   const worktree = globalProjectSelectedWorktree(project);
   if (!worktree?.id || !worktree.root) return null;
   const cacheKey = globalProjectExplorerCacheKey(project);
-  if (!force && state.globalInspectionData.has(cacheKey)) return state.globalInspectionData.get(cacheKey);
+  const provider = agentContextProvider();
+  if (!force && state.globalInspectionData.get(cacheKey)?.agentProvider === provider) return state.globalInspectionData.get(cacheKey);
   if (state.globalInspectionLoading.has(cacheKey)) return null;
   state.globalInspectionLoading.add(cacheKey);
   state.globalInspectionErrors.delete(cacheKey);
   renderContextHealth();
   try {
-    const suffix = force ? "&fresh=1" : "";
-    const data = await api("/api/context-hub/project-inspection?projectId=" + encodeURIComponent(worktree.id) + suffix, { signal: state.globalInspectionController?.signal });
+    const suffix = (force ? "&fresh=1" : "") + "&provider=" + encodeURIComponent(provider);
+    const data = { ...await api("/api/context-hub/project-inspection?projectId=" + encodeURIComponent(worktree.id) + suffix, { signal: state.globalInspectionController?.signal }), agentProvider: provider };
+    if (data.refreshDeferred) {
+      const attempts = (state.globalInspectionRetries.get(cacheKey) || 0) + 1;
+      state.globalInspectionRetries.set(cacheKey, attempts);
+      if (attempts > 10) throw new Error("Project checks are still busy. Try Refresh in a moment.");
+      window.setTimeout(() => loadGlobalProjectInspection(project, { force }).catch((error) => setStatus(error.message)), data.refreshDeferred.retryAfterMs || 1_000);
+      return null;
+    }
+    state.globalInspectionRetries.delete(cacheKey);
     state.globalInspectionData.set(cacheKey, data);
     return data;
   } catch (error) {
@@ -20127,14 +20243,141 @@ function updateMarkdownEditorVisualSelection() {
 }
 
 function renderMarkdownLineView(text, options = {}) {
+  const value = String(text || "");
+  const outline = markdownOutline(value);
+  const renderOptions = { renderMermaid: true, semantic: true, interactiveLinks: true, reader: true, headingSlugs: new Map(outline.map((heading) => [heading.index, heading.slug])) };
+  const toc = renderMarkdownToc(outline);
   return '<div id="docReader" class="doc-editor markdown-view" role="document" tabindex="0" aria-label="' + (options.readOnly ? "Read-only document" : "Document preview") + '">' +
-    renderMarkdownLines(text, { renderMermaid: true, semantic: true, interactiveLinks: true }) +
+    '<div class="doc-reader-layout' + (toc ? ' has-toc' : '') + '">' + toc +
+      '<div class="doc-reader-body">' + (options.sectioned ? renderMarkdownSections(value, outline, renderOptions) : renderMarkdownLines(value, renderOptions)) + renderDocumentBacklinks(options.filePath) + '</div>' +
+    '</div>' +
   '</div>';
 }
 
 function usePlainTextSurface(filePath, text) {
   const value = String(text || "");
   return !String(filePath || "").toLowerCase().endsWith(".md") || value.length > 120_000 || value.split("\n", 2_501).length > 2_500;
+}
+
+// Large Markdown stays rendered for reading, one section per H1/H2; the browser skips off-screen sections.
+function useSectionedMarkdownView(filePath, text) {
+  const value = String(text || "");
+  return String(filePath || "").toLowerCase().endsWith(".md") && value.length <= 2_000_000 && value.split("\n", 40_001).length <= 40_000;
+}
+
+function markdownHeadingPlainText(text) {
+  return String(text || "").replace(/\x60([^\x60]*)\x60/g, "$1").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[*_~]/g, "").trim();
+}
+
+// GitHub-style anchor: lowercase, punctuation dropped, spaces become hyphens.
+function markdownHeadingSlug(text) {
+  return markdownHeadingPlainText(text).toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, "").replace(/\s/g, "-");
+}
+
+function markdownFrontmatterEnd(lines) {
+  if (lines[0]?.trim() !== "---") return -1;
+  for (let index = 1; index < Math.min(lines.length, 200); index += 1) {
+    const trimmed = lines[index].trim();
+    if (trimmed === "---" || trimmed === "...") return lines.slice(1, index).some((line) => /^[A-Za-z0-9_-]+\s*:/.test(line)) ? index : -1;
+  }
+  return -1;
+}
+
+// Headings outside front matter and code fences, with anchors made unique in document order.
+function markdownOutline(text) {
+  const lines = String(text || "").split("\n");
+  const used = new Map();
+  const headings = [];
+  let inFence = false;
+  for (let index = markdownFrontmatterEnd(lines) + 1; index < lines.length; index += 1) {
+    if (/^\s*(\x60{3}|~~~)/.test(lines[index])) {
+      inFence = !inFence;
+      continue;
+    }
+    const heading = !inFence && lines[index].match(/^(\s{0,3})(#{1,6})\s+(.+?)\s*#*\s*$/);
+    if (!heading) continue;
+    const base = markdownHeadingSlug(heading[3]) || "section";
+    const count = used.get(base) || 0;
+    used.set(base, count + 1);
+    headings.push({ index, level: heading[2].length, text: markdownHeadingPlainText(heading[3]), slug: count ? base + "-" + count : base });
+  }
+  return headings;
+}
+
+function renderMarkdownToc(outline) {
+  const titles = outline.filter((heading) => heading.level === 1);
+  const entries = outline.filter((heading) => heading.level <= 3 && (heading.level > 1 || titles.length > 1));
+  if (entries.length < 2) return "";
+  const open = window.matchMedia?.("(min-width: 1280px)").matches ? " open" : "";
+  return '<nav class="doc-toc" aria-label="Contents"><details' + open + '><summary>Contents <span>' + entries.length + '</span></summary><ol>'
+    + entries.map((heading) => '<li class="doc-toc-l' + heading.level + '"><a href="#' + escapeHtml(heading.slug) + '" data-doc-anchor="' + escapeHtml(heading.slug) + '">' + escapeHtml(heading.text) + '</a></li>').join("")
+    + '</ol></details></nav>';
+}
+
+function renderMarkdownSections(text, outline, options) {
+  const lines = text.split("\n");
+  const starts = [0, ...outline.filter((heading) => heading.level <= 2 && heading.index > 0).map((heading) => heading.index)];
+  return starts.map((start, position) => '<section class="markdown-section">'
+    + renderMarkdownBlocks(lines.slice(start, starts[position + 1] ?? lines.length).join("\n"), { ...options, lineOffset: start })
+    + '</section>').join("");
+}
+
+function scrollToMarkdownAnchor(anchor) {
+  const reader = el("docReader");
+  let wanted = String(anchor || "").replace(/^#/, "");
+  if (!reader || !wanted) return false;
+  try { wanted = decodeURIComponent(wanted); } catch {}
+  const target = reader.querySelector('[data-heading-id="' + cssEscape(wanted) + '"]') || reader.querySelector('[data-heading-id="' + cssEscape(markdownHeadingSlug(wanted)) + '"]');
+  if (!target) {
+    setStatus("Section not found: #" + wanted);
+    return false;
+  }
+  target.setAttribute("tabindex", "-1");
+  target.scrollIntoView({ block: "start" });
+  target.focus({ preventScroll: true });
+  return true;
+}
+
+// Incoming links come from the cached document graph, loaded only when the reader opens this list.
+function renderDocumentBacklinks(filePath) {
+  const project = IS_GLOBAL_CONTEXT_ROOM && filePath ? workspaceSelectedProject() : null;
+  const key = project ? explorerRelatedGraphKey(project, normalizeUiPath(filePath)) : "";
+  if (!key) return "";
+  const graph = state.explorerRelatedGraphs.get(key);
+  const items = graph ? documentBacklinkItems(graph, filePath) : null;
+  return '<details class="doc-backlinks" data-doc-backlinks><summary>Referenced by' + (items ? ' <span>' + items.length + '</span>' : '') + '</summary><div data-doc-backlinks-body>' + (items ? renderDocumentBacklinkList(items) : '') + '</div></details>';
+}
+
+function documentBacklinkItems(graph, filePath) {
+  const projection = explorerRelatedProjection(graph, normalizeUiPath(filePath));
+  return [...projection.referencedBy, ...projection.dependedOnBy].filter((item) => item.node.path);
+}
+
+function renderDocumentBacklinkList(items) {
+  if (!items.length) return '<p class="doc-backlinks-empty">No document links here.</p>';
+  return '<ul>' + items.map((item) => '<li><a href="#" data-doc-backlink="' + escapeHtml(item.node.path) + '"><strong>' + escapeHtml(item.node.label || item.node.path) + '</strong> <code>' + escapeHtml(item.node.path) + '</code></a></li>').join("") + '</ul>';
+}
+
+async function loadDocumentBacklinks(details) {
+  const body = details.querySelector("[data-doc-backlinks-body]");
+  const filePath = state.selected;
+  const project = workspaceSelectedProject();
+  const key = project ? explorerRelatedGraphKey(project, normalizeUiPath(filePath)) : "";
+  if (!body || !key || body.childElementCount) return;
+  body.innerHTML = '<p class="doc-backlinks-empty">Loading…</p>';
+  let graph = state.explorerRelatedGraphs.get(key) || await loadExplorerRelatedGraph(project);
+  for (let wait = 0; !graph && state.explorerRelatedLoading.has(key) && wait < 50; wait += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    graph = state.explorerRelatedGraphs.get(key);
+  }
+  if (!details.isConnected || state.selected !== filePath) return;
+  if (!graph) {
+    body.innerHTML = '<p class="doc-backlinks-empty">' + escapeHtml(state.explorerRelatedErrors.get(key) || "Links unavailable.") + '</p>';
+    return;
+  }
+  const items = documentBacklinkItems(graph, filePath);
+  details.querySelector("summary").innerHTML = 'Referenced by <span>' + items.length + '</span>';
+  body.innerHTML = renderDocumentBacklinkList(items);
 }
 
 function isHtmlDocumentPath(filePath) {
@@ -20782,7 +21025,8 @@ function wireHtmlPreviewNavigation() {
 
 function renderDocumentView(text, filePath = state.selected) {
   if (/\.(?:mmd|mermaid)$/i.test(String(filePath || ""))) return renderStandaloneMermaidDocument(text);
-  if (!usePlainTextSurface(filePath, text)) return renderMarkdownLineView(text);
+  if (!usePlainTextSurface(filePath, text)) return renderMarkdownLineView(text, { filePath });
+  if (useSectionedMarkdownView(filePath, text)) return renderMarkdownLineView(text, { filePath, sectioned: true });
   return '<pre id="docReader" class="doc-editor plain-text-view" role="document" tabindex="0" aria-label="Text file">' + escapeHtml(text) + '</pre>';
 }
 
@@ -20829,8 +21073,20 @@ function renderMarkdownLines(text, options = {}) {
 function renderMarkdownBlocks(text, options = {}) {
   const lines = String(text || "").split("\n");
   const output = [];
+  const offset = options.lineOffset || 0;
   let inFence = false;
-  for (let index = 0; index < lines.length;) {
+  let index = 0;
+  const frontmatterEnd = options.reader && !offset ? markdownFrontmatterEnd(lines) : -1;
+  if (frontmatterEnd > 0) {
+    const fields = lines.slice(1, frontmatterEnd).filter((line) => /^[A-Za-z0-9_-]+\s*:/.test(line)).length;
+    output.push('<details class="markdown-frontmatter"><summary>Front matter <span>' + fields + (fields === 1 ? ' field' : ' fields') + '</span></summary>'
+      + lines.slice(0, frontmatterEnd + 1).map((line, at) => at === 0 || at === frontmatterEnd
+        ? '<div class="markdown-line frontmatter" data-line-index="' + at + '" data-line-number="' + (at + 1) + '">' + escapeHtml(line) + '</div>'
+        : renderMarkdownLine(line, at, { ...options, inFence: true })).join("")
+      + '</details>');
+    index = frontmatterEnd + 1;
+  }
+  for (; index < lines.length;) {
     const mermaidStart = !inFence ? lines[index].match(/^\s*(\x60{3}|~~~)\s*mermaid\s*$/i) : null;
     if (mermaidStart) {
       const fence = mermaidStart[1];
@@ -20855,7 +21111,7 @@ function renderMarkdownBlocks(text, options = {}) {
         while (end < lines.length) {
           const listItem = lines[end].match(/^(\s*(?:[-*+]|\d+[.)])\s+)(.*)$/);
           if (!listItem || /\d/.test(listItem[1]) !== ordered) break;
-          items.push(renderMarkdownLine(lines[end], end, { ...options, semanticListItem: true }));
+          items.push(renderMarkdownLine(lines[end], end + offset, { ...options, semanticListItem: true }));
           end += 1;
         }
         output.push('<' + tag + ' class="markdown-list-group" role="list">' + items.join("") + '</' + tag + '>');
@@ -20864,7 +21120,7 @@ function renderMarkdownBlocks(text, options = {}) {
       }
     }
     const startsFence = /^\s*(\x60{3}|~~~)/.test(lines[index]);
-    output.push(renderMarkdownLine(lines[index], index, { ...options, inFence: inFence || startsFence }));
+    output.push(renderMarkdownLine(lines[index], index + offset, { ...options, inFence: inFence || startsFence }));
     if (startsFence) inFence = !inFence;
     index += 1;
   }
@@ -20939,7 +21195,8 @@ function renderMarkdownLine(line, index, options = {}) {
     const prefix = semanticHeading?.[1] || heading[1] + heading[2] + " ";
     const content = semanticHeading?.[2] || text;
     const suffix = semanticHeading?.[3] || "";
-    return '<' + tag + ' class="markdown-line h' + level + '"' + attrs + ' data-heading-marker="' + escapeHtml(heading[2]) + '" data-heading-text="' + escapeHtml(text) + '"><span class="markdown-marker" aria-hidden="true">' + escapeHtml(prefix) + '</span>' + renderMarkdownInline(content, options) + (suffix ? '<span class="markdown-marker" aria-hidden="true">' + escapeHtml(suffix) + '</span>' : '') + '</' + tag + '>';
+    const headingId = options.headingSlugs?.get(index);
+    return '<' + tag + ' class="markdown-line h' + level + '"' + attrs + (headingId ? ' data-heading-id="' + escapeHtml(headingId) + '"' : '') + ' data-heading-marker="' + escapeHtml(heading[2]) + '" data-heading-text="' + escapeHtml(text) + '"><span class="markdown-marker" aria-hidden="true">' + escapeHtml(prefix) + '</span>' + renderMarkdownInline(content, options) + (suffix ? '<span class="markdown-marker" aria-hidden="true">' + escapeHtml(suffix) + '</span>' : '') + '</' + tag + '>';
   }
   if (options.inFence) return '<div class="markdown-line ' + (/^\s*(\`\`\`|~~~)/.test(raw) ? "fence" : "code") + '"' + attrs + '>' + escapeHtml(raw || " ") + '</div>';
   if (/^\s*[-*_]{3,}\s*$/.test(raw)) return '<div class="markdown-line hr"' + attrs + (options.semantic ? ' role="separator" aria-label="Thematic break"' : '') + '>' + escapeHtml(raw) + '</div>';
@@ -20978,6 +21235,9 @@ function isMarkdownPathToken(value) {
 function renderMarkdownPlainInline(value, options = {}) {
   return String(value || "").split(/(\[[^\]\n]+\]\([^) \n]+\))/g).map((part) => {
     const link = part.match(/^\[([^\]\n]+)\]\(([^) \n]+)\)$/);
+    if (link && options.reader && /^#[^#\s]+$/.test(link[2])) {
+      return '<a href="' + escapeHtml(link[2]) + '" class="markdown-doc-link markdown-anchor-link" data-doc-anchor="' + escapeHtml(link[2].slice(1)) + '">' + renderMarkdownPlainInline(link[1], { ...options, interactiveLinks: false }) + '</a>';
+    }
     if (link) {
       const docLinkAttrs = markdownDocLinkAttributes(link[2], { ...options, interactiveLinks: !options.sourceFaithful });
       if (options.sourceFaithful && docLinkAttrs) {
@@ -21010,7 +21270,8 @@ function markdownDocLinkAttributes(rawTarget, options = {}) {
   const resolved = resolveDocLinkPath(rawTarget);
   if (!resolved) return "";
   const title = options.interactiveLinks ? "Open " : "Ctrl/Cmd-click to open ";
-  return ' data-doc-link-path="' + escapeHtml(rawTarget) + '" data-doc-link-resolved="' + escapeHtml(resolved) + '" title="' + title + escapeHtml(resolved) + '"';
+  const anchor = String(rawTarget || "").match(/#([^#\s]+)$/)?.[1] || "";
+  return ' data-doc-link-path="' + escapeHtml(rawTarget) + '" data-doc-link-resolved="' + escapeHtml(resolved) + '"' + (anchor ? ' data-doc-link-anchor="' + escapeHtml(anchor) + '"' : '') + ' title="' + title + escapeHtml(resolved + (anchor ? "#" + anchor : "")) + '"';
 }
 
 function isMarkdownDocLinkTarget(value) {
@@ -21077,8 +21338,23 @@ function wireMarkdownDocLinks(root = document) {
     if (!keyboardAccessibleLink && !isDocLinkModifierEventActive(event)) return;
     event.preventDefault();
     event.stopPropagation();
-    openMarkdownDocLink(element.dataset.docLinkResolved || element.dataset.docLinkPath).catch((error) => setStatus(error.message));
+    openMarkdownDocLink(element.dataset.docLinkResolved || element.dataset.docLinkPath, { anchor: element.dataset.docLinkAnchor || "" }).catch((error) => setStatus(error.message));
   }));
+  root.querySelectorAll("[data-doc-anchor]").forEach((element) => element.addEventListener("click", (event) => {
+    event.preventDefault();
+    scrollToMarkdownAnchor(element.dataset.docAnchor);
+  }));
+  root.querySelectorAll("[data-doc-backlinks]").forEach((details) => {
+    details.addEventListener("toggle", () => {
+      if (details.open) loadDocumentBacklinks(details).catch((error) => setStatus(error.message));
+    });
+    details.addEventListener("click", (event) => {
+      const link = event.target.closest("[data-doc-backlink]");
+      if (!link) return;
+      event.preventDefault();
+      selectFile(link.dataset.docBacklink, { revealInExplorer: true }).catch((error) => setStatus(error.message));
+    });
+  });
 }
 
 function wireMarkdownEditorDocLinks(editor) {
@@ -21142,7 +21418,7 @@ function clearMarkdownEditorDocLinkHover(editor = el("docEditor")) {
   editor?.classList?.remove("doc-link-hover");
 }
 
-async function openMarkdownDocLink(rawTarget) {
+async function openMarkdownDocLink(rawTarget, { anchor = "" } = {}) {
   if (/^cr:\/\//i.test(String(rawTarget || "").trim())) {
     await openContextRoomDocumentUri(String(rawTarget).trim());
     return;
@@ -21153,10 +21429,11 @@ async function openMarkdownDocLink(rawTarget) {
     return;
   }
   if (state.selected === resolved) {
-    setStatus("already open");
+    if (!anchor || !scrollToMarkdownAnchor(anchor)) setStatus("already open");
     return;
   }
   await selectFile(resolved, { revealInExplorer: true });
+  if (anchor && state.selected === resolved) scrollToMarkdownAnchor(anchor);
 }
 
 function markdownDocLinkAtOffset(text, offset) {
@@ -21818,7 +22095,7 @@ function finalizeExternalReviewPanelInPlace(viewState) {
   const text = el("editor").value || state.saved || "";
   const visualAnchor = captureMarkdownVisualAnchor(doc);
   const restoreState = inlineReviewRestoreViewState(viewState);
-  doc.outerHTML = state.mode === "edit" ? renderMarkdownEditor(text) : renderMarkdownLineView(text);
+  doc.outerHTML = state.mode === "edit" ? renderMarkdownEditor(text) : renderMarkdownLineView(text, { filePath: state.selected });
   replaceExternalReviewActionsInPlace(text);
   wireMarkdownDocLinks();
   wireRenderedMarkdownEditor();
