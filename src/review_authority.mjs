@@ -1,3 +1,4 @@
+import "./test_homes.mjs";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
