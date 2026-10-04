@@ -4955,9 +4955,7 @@ function contextHubReviewItems() {
       fileCount: 1,
       localFile: review.path,
       localReview: review,
-      revisionToken: review.resourceState && review.currentHash
-        ? "local:" + review.resourceState + ":" + (review.resourceVersion || "-") + ":" + review.currentHash + ":" + (review.resourceMode || "-")
-        : "",
+      revisionToken: review.revisionToken || "",
     }));
   });
 }

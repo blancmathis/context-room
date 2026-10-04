@@ -16505,7 +16505,8 @@ function contextHubLocalReviewItem(project) {
     unavailableReason: project.unavailableReason || "",
     root: project.root,
     shared: project.shared,
-    reviews: project.localReviews,
+    // The UI sends this token back on accept; only the server computes it, so both sides always agree.
+    reviews: project.localReviews && project.localReviews.map((review) => ({ ...review, revisionToken: contextHubReviewRevisionToken({ type: "local", localReview: review }) })),
   };
 }
 
@@ -17098,6 +17099,7 @@ function compactContextHubReviewQueueItem(item = {}) {
       "reviewReason",
       "resourceVersion",
       "currentHash",
+      "revisionToken",
       "reviewStatus",
       "startupContext",
       "worktreeId",
