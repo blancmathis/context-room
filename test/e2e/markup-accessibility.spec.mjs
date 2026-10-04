@@ -65,3 +65,27 @@ test("@a11y Markdown reader exposes document structure and opens links from the 
   await page.keyboard.press("Enter");
   await expect.poll(() => page.evaluate(() => globalThis.__openedMarkdownTarget)).toBe(targetPath);
 });
+
+test("the reader lists the documents that link to the open document", async ({ page }) => {
+  const data = fixture();
+  await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=file&file=${encodeURIComponent("docs/README.md")}`);
+  await waitForBoot(page);
+  const backlinks = page.locator("#docReader details.doc-backlinks");
+  await backlinks.locator("summary").click();
+  await expect(backlinks.locator("summary")).toHaveText("Referenced by 0");
+  await expect(backlinks).toContainText("No document links here.");
+
+  const listed = await page.evaluate(() => {
+    const graph = { centerId: "readme", nodes: [
+      { id: "readme", path: "docs/README.md", truthState: "accepted" },
+      { id: "ops", path: "docs/operations.md", label: "Operations", truthState: "accepted" },
+      { id: "plan", path: "docs/plan.md", label: "Plan", truthState: "accepted" },
+    ], edges: [
+      { from: "ops", to: "readme", type: "references" },
+      { from: "plan", to: "readme", type: "depends-on" },
+      { from: "readme", to: "plan", type: "references" },
+    ] };
+    return documentBacklinkItems(graph, "docs/README.md").map((item) => item.node.path);
+  });
+  expect(listed).toEqual(["docs/operations.md", "docs/plan.md"]);
+});
