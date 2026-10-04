@@ -976,7 +976,34 @@ function recordedRootMatchesCanonical(recordedRoot, canonicalRoot) {
   }
 }
 
-function legacyRootStateCandidates(canonicalRoot, paths, {
+// Remembers "no legacy state" per root while the authority directory is unchanged.
+// Signed writes always rename into the directory, so any new or replaced state
+// changes the directory stamp and forces a new scan.
+const emptyLegacyDiscoveries = new Map();
+const MAX_EMPTY_LEGACY_DISCOVERIES = 1024;
+
+function authorityDirectoryStamp(base) {
+  try {
+    const stats = fs.lstatSync(base, { bigint: true });
+    return stats.isDirectory() ? `${stats.dev}:${stats.ino}:${stats.mtimeNs}:${stats.ctimeNs}` : "";
+  } catch {
+    return "";
+  }
+}
+
+function legacyRootStateCandidates(canonicalRoot, paths, options = {}) {
+  const cacheKey = [paths.base, paths.key, paths.state, canonicalRoot, options.rootField, options.kind || "", String(options.fileNamePattern)].join("\0");
+  const stamp = authorityDirectoryStamp(paths.base);
+  if (stamp && emptyLegacyDiscoveries.get(cacheKey) === stamp) return { candidates: [], overflow: false };
+  const discovery = scanLegacyRootStateCandidates(canonicalRoot, paths, options);
+  if (stamp && !discovery.overflow && !discovery.candidates.length && authorityDirectoryStamp(paths.base) === stamp) {
+    if (emptyLegacyDiscoveries.size >= MAX_EMPTY_LEGACY_DISCOVERIES) emptyLegacyDiscoveries.clear();
+    emptyLegacyDiscoveries.set(cacheKey, stamp);
+  }
+  return discovery;
+}
+
+function scanLegacyRootStateCandidates(canonicalRoot, paths, {
   rootField,
   kind = "",
   fileNamePattern,
