@@ -1273,6 +1273,10 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .diff-raw-meta summary::-webkit-details-marker { display: none; }
     .diff-raw-meta pre { margin: 6px 0 0; padding: 8px 10px; border-radius: 10px; background: rgba(255,255,255,0.025); white-space: pre-wrap; }
     .diff-empty { padding: var(--space-5); color: var(--muted); font: 14px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
+    .review-risk-notice { margin: var(--space-4); padding: var(--space-3) var(--space-4); border: 2px solid var(--text); border-radius: 12px; color: var(--text); font: 13px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
+    .review-risk-notice summary { min-height: 32px; cursor: pointer; }
+    .review-risk-notice ul { margin: var(--space-2) 0 0; padding-left: var(--space-5); }
+    .review-risk-notice code { overflow-wrap: anywhere; }
     .initial-review-notice { margin: var(--space-4); padding: var(--space-3) var(--space-4); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 12px; background: color-mix(in srgb, var(--accent) 9%, transparent); color: var(--text); font: 13px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
     .conflict-panel { position: sticky; top: 0; z-index: 8; margin: var(--space-4); border: 1px solid color-mix(in srgb, var(--warning) 54%, var(--line)); border-radius: 16px; background: color-mix(in srgb, var(--warning) 12%, var(--panel)); box-shadow: 0 14px 44px rgba(0,0,0,0.24); padding: var(--space-4); display: grid; gap: var(--space-3); font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: var(--text); }
     .external-review-actions { align-items: center; flex-wrap: wrap; justify-content: flex-end; }
@@ -19775,9 +19779,12 @@ function renderViewer() {
           : renderDocumentView(text, file.path);
   const annotationMarkup = !isStartupFile && !isImageDocument && !conflict ? renderAgentAnnotations(state.selected) : "";
   const initialReviewNotice = initialReviewNoticeForSelectedFile();
+  const riskNotice = externalChange && !conflict && !loadError && !openingFile && !isImageDocument
+    ? reviewRiskNoticeMarkup(externalReviewBaseContent(externalChange), externalChange.diskContent || "")
+    : "";
   el("viewer").innerHTML = '<div class="review-workspace ' + (!hasDiff || state.diffCollapsed ? 'no-diff' : '') + '">' +
     (state.diffCollapsed ? "" : diffMarkup) +
-    '<section class="file-panel"><header><div class="file-header-copy"><h1 class="file-title">' + escapeHtml(file.label || "Document") + '</h1>' + (isStartupFile ? '<span class="muted">' + escapeHtml(file.path) + '</span>' : '') + '</div>' + actionsMarkup + '</header>' + conflictMarkup + initialReviewNotice + annotationMarkup + editorMarkup + '</section></div>';
+    '<section class="file-panel"><header><div class="file-header-copy"><h1 class="file-title">' + escapeHtml(file.label || "Document") + '</h1>' + (isStartupFile ? '<span class="muted">' + escapeHtml(file.path) + '</span>' : '') + '</div>' + actionsMarkup + '</header>' + conflictMarkup + initialReviewNotice + riskNotice + annotationMarkup + editorMarkup + '</section></div>';
   updateActionBanner();
   document.querySelector("[data-hide-diff]")?.addEventListener("click", (event) => {
     event.preventDefault();
@@ -21566,6 +21573,82 @@ function externalReviewFileActionOptions() {
     deletable: !Boolean(state.selectedStartupContext),
     savable: !isHtmlDocumentPath(state.selected),
   };
+}
+
+const REVIEW_INVISIBLE_NAMES = { "00AD": "soft hyphen", "180E": "Mongolian vowel separator", "200B": "zero-width space", "200C": "zero-width non-joiner", "200D": "zero-width joiner", "200E": "left-to-right mark", "200F": "right-to-left mark", "2060": "word joiner", "FEFF": "zero-width no-break space" };
+const REVIEW_SHELL_FENCE = /^\s*(?:\x60{3,}|~{3,})\s*(?:bash|sh|zsh|fish|shell|console|terminal|powershell|pwsh|ps1|cmd|bat)\b/i;
+const REVIEW_FENCE = /^\s*(?:\x60{3,}|~{3,})/;
+
+function reviewRiskItems(text) {
+  const items = [];
+  let shellFence = false;
+  let fence = false;
+  String(text || "").split("\n").forEach((line, index) => {
+    const lineNumber = index + 1;
+    for (const match of line.matchAll(/[\u00AD\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]|[\u{E0000}-\u{E007F}]/gu)) {
+      if (index === 0 && match.index === 0 && match[0] === "\uFEFF") continue;
+      const code = match[0].codePointAt(0).toString(16).toUpperCase().padStart(4, "0");
+      const name = REVIEW_INVISIBLE_NAMES[code] || (code.startsWith("E00") ? "tag character" : "bidirectional control");
+      items.push({ kind: "invisible", key: "U+" + code, label: "U+" + code + " (" + name + ")", line: lineNumber });
+    }
+    for (const match of line.matchAll(/\b(?:https?|ftp|wss?):\/\/[^\s<>"'\x60)\]]+/gi)) {
+      const url = match[0].replace(/[.,;:!?]+$/, "");
+      items.push({ kind: "url", key: url, label: url, line: lineNumber });
+    }
+    for (const match of line.matchAll(/\$\{?([A-Z][A-Z0-9_]+)\b|process\.env\.([A-Za-z_][A-Za-z0-9_]*)|process\.env\[["']([^"']+)["']\]|%([A-Z][A-Z0-9_]+)%|\bexport\s+([A-Za-z_][A-Za-z0-9_]*)=|\$env:([A-Za-z_][A-Za-z0-9_]*)/g)) {
+      const name = match.slice(1).find(Boolean);
+      items.push({ kind: "env", key: name, label: name, line: lineNumber });
+    }
+    if (REVIEW_FENCE.test(line)) {
+      if (fence) { fence = false; shellFence = false; }
+      else { fence = true; shellFence = REVIEW_SHELL_FENCE.test(line); }
+      return;
+    }
+    const command = shellFence
+      ? line.trim().replace(/^\$\s+/, "")
+      : (line.match(/^\s*\$\s+(\S.*)$/) || line.match(/"command"\s*:\s*"((?:[^"\\]|\\.)+)"/) || line.match(/^\s*-?\s*(?:run|command):\s*(\S.*)$/) || [])[1] || "";
+    if (command && !command.startsWith("#")) items.push({ kind: "command", key: command.trim(), label: command.trim(), line: lineNumber });
+  });
+  return items;
+}
+
+// Deterministic, model-free signals for content a reviewer cannot easily see:
+// items present in the proposed text more often than in the accepted text.
+function reviewRiskSignals(beforeText, afterText) {
+  const counts = new Map();
+  for (const item of reviewRiskItems(beforeText)) counts.set(item.kind + "\n" + item.key, (counts.get(item.kind + "\n" + item.key) || 0) + 1);
+  const added = [];
+  const reported = new Map();
+  for (const item of reviewRiskItems(afterText)) {
+    const id = item.kind + "\n" + item.key;
+    const left = counts.get(id) || 0;
+    if (left > 0) { counts.set(id, left - 1); continue; }
+    const existing = reported.get(id);
+    if (existing) { existing.count += 1; if (!existing.lines.includes(item.line)) existing.lines.push(item.line); continue; }
+    const signal = { kind: item.kind, key: item.key, label: item.label, count: 1, lines: [item.line] };
+    reported.set(id, signal);
+    added.push(signal);
+  }
+  const order = ["invisible", "command", "env", "url"];
+  return added.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
+}
+
+function reviewRiskNoticeMarkup(beforeText, afterText) {
+  const cache = state.reviewRiskCache;
+  const signals = cache && cache.before === beforeText && cache.after === afterText
+    ? cache.signals
+    : reviewRiskSignals(beforeText, afterText);
+  state.reviewRiskCache = { before: beforeText, after: afterText, signals };
+  if (!signals.length) return "";
+  const nouns = { invisible: ["invisible character", "invisible characters"], command: ["new shell command", "new shell commands"], env: ["new environment variable", "new environment variables"], url: ["new URL", "new URLs"] };
+  const titles = { invisible: "Invisible character", command: "Shell command", env: "Environment variable", url: "URL" };
+  const summary = Object.keys(nouns).map((kind) => {
+    const count = signals.filter((signal) => signal.kind === kind).length;
+    return count ? count + " " + nouns[kind][count === 1 ? 0 : 1] : "";
+  }).filter(Boolean).join(" · ");
+  const shown = signals.slice(0, 8).map((signal) => '<li data-review-risk-kind="' + escapeHtml(signal.kind) + '"><span>' + escapeHtml(titles[signal.kind]) + '</span> <code>' + escapeHtml(signal.label.length > 120 ? signal.label.slice(0, 119) + "…" : signal.label) + '</code> <span class="muted">line ' + escapeHtml(signal.lines.slice(0, 3).join(", ") + (signal.lines.length > 3 ? "…" : "")) + '</span></li>').join("");
+  const more = signals.length > 8 ? '<li class="muted">' + escapeHtml(String(signals.length - 8)) + ' more</li>' : "";
+  return '<details class="issue review-risk-notice" data-review-risk><summary><strong>Check before accepting</strong> <span>' + escapeHtml(summary) + '</span></summary><ul>' + shown + more + '</ul></details>';
 }
 
 function renderExternalReviewDocument(beforeText, afterText) {
