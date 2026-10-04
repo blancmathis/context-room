@@ -32,6 +32,7 @@ import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:zlib";
 import { appendContextRoomEvent, appendContextRoomEvents } from "./event_journal.mjs";
+import { documentsLinkingTo, planDocumentMove } from "./doc_move.mjs";
 import { beginLocalProposal, listLocalProposals, submitLocalProposal, decideLocalProposalFile, readLocalProposalFile, readLocalProposalResource, readLocalProposalDraft, writeLocalProposalDraft } from "./local_proposals.mjs";
 import {
   cleanupFilesystemLockWorkerOwner,
@@ -7902,29 +7903,102 @@ export function reviewProjectDocumentAsset(root, rel, options) {
   }));
 }
 
+function acceptedLocalProposalFiles(root, settings) {
+  const acceptedReviews = readDocReviewState(root, { readOnly: true }).reviews;
+  const candidates = new Set([
+    ...listMemoryFiles(root, { readOnly: true }).map((file) => file.path),
+    ...Object.keys(readDocReviewState(root, { readOnly: true }).reviews),
+  ]);
+  const files = [];
+  for (const rel of candidates) {
+    if (!canEditLocalProposalPath(root, rel, settings)) continue;
+    const entry = acceptedReviews[rel];
+    if (entry?.status !== "verified" && entry?.acceptedVersion?.status !== "verified") continue;
+    const base = readReviewBaseFile(root, rel, { readOnly: true });
+    if (!base.available || base.changeKind === "added") continue;
+    files.push({ path: rel, content: base.baseContent,
+      mode: base.baselineMode ? Number.parseInt(base.baselineMode, 8) & 0o777 : fs.existsSync(path.join(root, rel)) ? fs.statSync(path.join(root, rel)).mode & 0o777 : 0o644 });
+  }
+  for (const asset of readProjectDocumentAssets(root, { acceptedOnly: true })) {
+    if (asset.before) files.push({ path: asset.path, content: asset.before.bytes, mode: asset.before.mode });
+  }
+  return files;
+}
+
 export function createLocalDocumentationProposal(root, options = {}) {
   return withDocReviewEvidenceLock(root, () => {
     const settings = readMemoryWebappSettings(root);
-    const acceptedReviews = readDocReviewState(root, { readOnly: true }).reviews;
-    const candidates = new Set([
-      ...listMemoryFiles(root, { readOnly: true }).map((file) => file.path),
-      ...Object.keys(readDocReviewState(root, { readOnly: true }).reviews),
-    ]);
-    const files = [];
-    for (const rel of candidates) {
-      if (!canEditLocalProposalPath(root, rel, settings)) continue;
-      const entry = acceptedReviews[rel];
-      if (entry?.status !== "verified" && entry?.acceptedVersion?.status !== "verified") continue;
-      const base = readReviewBaseFile(root, rel, { readOnly: true });
-      if (!base.available || base.changeKind === "added") continue;
-      files.push({ path: rel, content: base.baseContent,
-        mode: base.baselineMode ? Number.parseInt(base.baselineMode, 8) & 0o777 : fs.existsSync(path.join(root, rel)) ? fs.statSync(path.join(root, rel)).mode & 0o777 : 0o644 });
-    }
-    for (const asset of readProjectDocumentAssets(root, { acceptedOnly: true })) {
-      if (asset.before) files.push({ path: asset.path, content: asset.before.bytes, mode: asset.before.mode });
-    }
-    return beginLocalProposal(root, { ...options, files, allowedPaths: settings.allowedPaths });
+    return beginLocalProposal(root, { ...options, files: acceptedLocalProposalFiles(root, settings), allowedPaths: settings.allowedPaths });
   });
+}
+
+// Move one accepted document and rewrite every accepted inbound link in one
+// submitted local proposal. Nothing is accepted: each file stays human-reviewed.
+export function proposeDocumentMove(root, { from = "", to = "", dryRun = false } = {}) {
+  const source = normalizeRelPath(String(from || ""));
+  const destination = normalizeRelPath(String(to || ""));
+  const invalid = (value) => !value || value.startsWith("~") || path.isAbsolute(value) || value.split("/").some((part) => !part || part === "." || part === "..");
+  if (invalid(source) || invalid(destination) || source === destination) throw sharedRequestError("docs move needs two different relative paths inside the project.", 400, "docs_move_path");
+  if (!/\.(?:md|markdown|html?)$/i.test(source) || path.extname(source).toLowerCase() !== path.extname(destination).toLowerCase()) {
+    throw sharedRequestError("docs move handles Markdown and HTML documents and keeps the file extension.", 400, "docs_move_kind");
+  }
+  const settings = readMemoryWebappSettings(root);
+  if (!canEditLocalProposalPath(root, source, settings) || !canEditLocalProposalPath(root, destination, settings)) {
+    throw sharedRequestError("Both paths must be editable documentation paths for local proposals.", 403, "docs_move_scope");
+  }
+  if (fs.existsSync(path.join(root, destination))) throw sharedRequestError(`The destination already exists: ${destination}.`, 409, "docs_move_exists");
+  const accepted = acceptedLocalProposalFiles(root, settings);
+  const acceptedPaths = new Set(accepted.map((file) => file.path));
+  if (!acceptedPaths.has(source)) throw sharedRequestError(`Only an accepted document can be moved. Review ${source} first.`, 409, "docs_move_unaccepted");
+  const textDocs = accepted
+    .filter((file) => /\.(?:md|markdown|html?)$/i.test(file.path))
+    .map((file) => ({ path: file.path, content: Buffer.isBuffer(file.content) ? file.content.toString("utf8") : String(file.content) }));
+  const plan = planDocumentMove({ docs: textDocs, from: source, to: destination });
+  const outside = listMemoryFiles(root, { settings, readOnly: true })
+    .filter((file) => file.exists && /\.(?:md|markdown)$/i.test(file.path) && !acceptedPaths.has(file.path))
+    .map((file) => {
+      try {
+        return { path: file.path, content: fs.readFileSync(path.join(root, file.path), "utf8") };
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+  const summary = {
+    from: source,
+    to: destination,
+    links: plan.edits.reduce((total, edit) => total + edit.links, 0),
+    rewritten: plan.edits.map((edit) => ({ path: edit.path, links: edit.links })),
+    movedDocumentLinks: plan.moved?.links || 0,
+    // Not accepted yet: these documents are outside the proposal and keep their old links.
+    notRewritten: documentsLinkingTo(outside, source),
+  };
+  if (dryRun) return { dryRun: true, ...summary };
+  const proposal = createLocalDocumentationProposal(root, {
+    title: `Move ${source} to ${destination}`,
+    description: `Moves one document and rewrites ${summary.links} link${summary.links === 1 ? "" : "s"} in ${plan.edits.length} document${plan.edits.length === 1 ? "" : "s"}. Accept every file together: a partial decision leaves dead links, and doctor reports them.`,
+  });
+  const write = (rel, content) => {
+    const parent = path.posix.dirname(rel);
+    if (parent !== ".") makeNotebookDirectory(proposal.editRoot, parent);
+    const previous = readNotebookBytes(proposal.editRoot, rel, MAX_FILE_BYTES);
+    writeNotebookBytes(proposal.editRoot, rel, Buffer.from(content), { expectedHash: previous ? notebookHash(previous) : null, mode: 0o644 });
+  };
+  // Rewrite the proposal's own base copies, so an acceptance in between is never overwritten.
+  const workspaceDocs = textDocs
+    .map((doc) => ({ path: doc.path, bytes: readNotebookBytes(proposal.editRoot, doc.path, MAX_FILE_BYTES) }))
+    .filter((doc) => doc.bytes)
+    .map((doc) => ({ path: doc.path, content: doc.bytes.toString("utf8") }));
+  const applied = planDocumentMove({ docs: workspaceDocs, from: source, to: destination });
+  if (!applied.moved) throw sharedRequestError(`The proposal base no longer contains ${source}.`, 409, "docs_move_unaccepted");
+  for (const edit of applied.edits) write(edit.path, edit.content);
+  write(destination, applied.moved.content);
+  fs.unlinkSync(path.join(proposal.editRoot, source));
+  const submitted = submitLocalDocumentationProposal(root, proposal.id);
+  return { dryRun: false, proposalId: submitted.id, status: submitted.status, scope: "local", accepted: false, ...summary,
+    links: applied.edits.reduce((total, edit) => total + edit.links, 0),
+    rewritten: applied.edits.map((edit) => ({ path: edit.path, links: edit.links })),
+    movedDocumentLinks: applied.moved.links };
 }
 
 export function submitLocalDocumentationProposal(root, id, { expectedDraftRevision } = {}) {

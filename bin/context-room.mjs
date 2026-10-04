@@ -8,7 +8,7 @@ import { planLisiereCutover, applyLisiereCutover, changeCutoverMode } from '../s
 import { planStateMigration, applyStateMigration } from "../src/state_migration.mjs";
 import { exportLisiereSnapshot } from "../src/lisiere_snapshot.mjs";
 import { inspectLisiereSnapshot } from "../src/lisiere_inventory.mjs";
-import { migrateLisiereNotebook, migrateLisiereDraft, migrateLisiereConversation, migrateLisiereDrawingSession, reconcileLisiereNotebook, migrateLisiereRecording } from "../src/context_room.mjs";
+import { migrateLisiereNotebook, migrateLisiereDraft, migrateLisiereConversation, migrateLisiereDrawingSession, reconcileLisiereNotebook, migrateLisiereRecording, proposeDocumentMove } from "../src/context_room.mjs";
 import {
   applyCliReviewAnnotation,
   applyAgentHandoff,
@@ -1813,6 +1813,15 @@ if (command === "docs") {
         });
       }
       emitAgentFirstResult(primaryEditCommand ? "edit" : "docs.edit", { target: agentFirstTarget, data }, { format: agentFirstFormat });
+      process.exit(0);
+    }
+    if (action === "move") {
+      const data = proposeDocumentMove(agentFirstTarget?.root || root, {
+        from: String(args._[2] || ""),
+        to: String(args._[3] || ""),
+        dryRun: args["dry-run"] === true,
+      });
+      emitAgentFirstResult("docs.move", { target: agentFirstTarget, data }, { format: agentFirstFormat });
       process.exit(0);
     }
     if (action === "publish") {

@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { initializeContextRoomProject, writeMemoryWebappSettings, readMemoryWebappSettings, writeDocReviewBaseline, writeDocReviewDecision, readMemoryFile, readFileDiff,
   revertMemoryFile, saveHumanReviewedFile, buildDocQaReport, createLocalDocumentationProposal,
   submitLocalDocumentationProposal, reviewLocalDocumentationProposal, contextHubUiState, runAuthorizedReviewCleanup,
-  createMemoryServer, listStartupContextFiles, readStartupContextFile, readStartupSkillFile, rejectDirectDocumentationChange } from "../src/context_room.mjs";
+  createMemoryServer, listStartupContextFiles, readStartupContextFile, readStartupSkillFile, rejectDirectDocumentationChange, proposeDocumentMove } from "../src/context_room.mjs";
 import { writeReviewCleanupPolicy, recentReviewCleanupReceipts } from "../src/review_cleanup.mjs";
 import { registerContextHubProject } from "../src/context_hub.mjs";
 import { inspectLocalProposal } from "../src/local_proposals.mjs";
@@ -145,6 +145,36 @@ test("a staged Git disagreement blocks local proposal application before changin
   assert.throws(() => reviewLocalDocumentationProposal(root, draft.id, { path: "docs/a.md", decision: "accepted", expectedRevision: submitted.submittedRevision }), /staged Git content/);
   assert.equal(fs.readFileSync(path.join(root, "docs/a.md"), "utf8"), original);
   assert.equal(git(["show", ":docs/a.md"]), "Different staged content");
+});
+
+test("docs move proposes the moved document and every accepted inbound link fix together", (t) => {
+  const root = fixture(t);
+  fs.writeFileSync(path.join(root, "docs/a.md"), "# a\n\nSee [b](b.md#b), [ref][b] and `b.md`.\n\n[b]: ./b.md\n");
+  fs.writeFileSync(path.join(root, "docs/b.md"), "# b\n\nBack to [a](a.md).\n");
+  for (const name of ["a", "b"]) writeDocReviewDecision(root, `docs/${name}.md`, { status: "verified" });
+  fs.writeFileSync(path.join(root, "docs/c.md"), "# c\n\nPending link to [b](b.md).\n");
+
+  const preview = proposeDocumentMove(root, { from: "docs/b.md", to: "docs/guides/b.md", dryRun: true });
+  assert.deepEqual(preview, { dryRun: true, from: "docs/b.md", to: "docs/guides/b.md", links: 2,
+    rewritten: [{ path: "docs/a.md", links: 2 }], movedDocumentLinks: 1, notRewritten: ["docs/c.md"] });
+  assert.equal(fs.existsSync(path.join(root, ".context-room/local-proposals/proposals")), false);
+  assert.throws(() => proposeDocumentMove(root, { from: "docs/c.md", to: "docs/d.md" }), /Only an accepted document/);
+  assert.throws(() => proposeDocumentMove(root, { from: "docs/b.md", to: "docs/a.md" }), /already exists/);
+
+  const moved = proposeDocumentMove(root, { from: "docs/b.md", to: "docs/guides/b.md" });
+  assert.equal(moved.status, "submitted");
+  assert.equal(moved.accepted, false);
+  assert.equal(fs.readFileSync(path.join(root, "docs/b.md"), "utf8"), "# b\n\nBack to [a](a.md).\n");
+  const proposal = inspectLocalProposal(root, moved.proposalId);
+  assert.deepEqual(proposal.changes.map((change) => [change.path, change.kind]).sort(), [
+    ["docs/a.md", "modified"], ["docs/b.md", "deleted"], ["docs/guides/b.md", "added"],
+  ]);
+  for (const change of proposal.changes) {
+    reviewLocalDocumentationProposal(root, moved.proposalId, { path: change.path, decision: "accepted", expectedRevision: proposal.submittedRevision });
+  }
+  assert.equal(fs.existsSync(path.join(root, "docs/b.md")), false);
+  assert.equal(fs.readFileSync(path.join(root, "docs/guides/b.md"), "utf8"), "# b\n\nBack to [a](../a.md).\n");
+  assert.equal(fs.readFileSync(path.join(root, "docs/a.md"), "utf8"), "# a\n\nSee [b](guides/b.md#b), [ref][b] and `b.md`.\n\n[b]: ./guides/b.md\n");
 });
 
 test("partial settings keep the Hub and unknown legacy configuration fields", (t) => {
