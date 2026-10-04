@@ -8421,7 +8421,7 @@ test("disk changes stay pending for review instead of silently reloading the ope
   assert.match(html, /function finalizeExternalReviewPanelInPlace\(viewState\)/);
   assert.match(html, /const visualAnchor = captureMarkdownVisualAnchor\(doc\);/);
   assert.match(html, /const restoreState = inlineReviewRestoreViewState\(viewState\);/);
-  assert.match(html, /doc\.outerHTML = state\.mode === "edit" \? renderMarkdownEditor\(text\) : renderMarkdownLineView\(text\);/);
+  assert.match(html, /doc\.outerHTML = state\.mode === "edit" \? renderMarkdownEditor\(text\) : renderMarkdownLineView\(text, \{ filePath: state\.selected \}\);/);
   assert.match(html, /restoreFinalReviewViewport\(visualAnchor, restoreState\);/);
   assert.match(html, /function restoreFinalReviewViewport\(visualAnchor, restoreState\)/);
   assert.match(html, /window\.requestAnimationFrame\(\(\) => \{[\s\S]*window\.requestAnimationFrame\(apply\)/);
