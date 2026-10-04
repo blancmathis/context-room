@@ -154,10 +154,12 @@ still matches, the registry's previous identity becomes a confirmed alias.
 
 The global queue also includes submitted local proposals and changed image assets. Local drafts stay out of the queue until submitted. Each proposal opens an exact before/after file review. [Document workflow](document-workflow.md) owns acceptance, correction, cleanup and recovery behavior.
 
+A selection keeps the exact version that was checked: its content, mode and accepted dependencies. If a refresh brings a newer version, the row shows "Changed since selected" and the selection actions skip it until it is selected again. Accepting a selection is all-or-nothing before the first write: if any selected file changed, nothing is accepted and the changed files are listed. Once writes start, accepted files stay accepted and each file that fails is listed with its reason. A failure to record the review event after a decision is saved is a warning, not a failed decision.
+
 ## Action-changing errors
 
 - **Location unavailable:** restore or explicitly remove the registered location.
 - **Location to confirm:** check that it is the same folder, then confirm it once.
 - **Registry recovery required:** resolve recorded recovery before another group mutation.
 - **Shared repository unavailable:** mutations fail closed; permitted read surfaces may use exact verified cached state.
-- **Stale selection:** select the current projection again.
+- **Stale selection:** the selection keeps the checked version; select the item again to act on the newer one.

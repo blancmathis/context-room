@@ -3336,24 +3336,40 @@ test("Context Hub accepts selected local file versions as one verified batch", a
   const hub = await hubResponse.json();
   const project = hub.projects.find((item) => item.id === registered.id);
   assert.deepEqual(project.localReviews.map((review) => review.path).sort(), ["docs/README.md", "docs/SECOND.md"]);
+  assert.ok(project.localReviews.every((review) => review.resourceMode === "100644"));
+  const dependencyDigest = (review) => {
+    const entries = Object.entries(review.dependencyVersions || {}).map(([key, value]) => [key, String(value)]).sort(([left], [right]) => left.localeCompare(right, "en"));
+    return entries.length ? createHash("sha256").update(JSON.stringify(Object.fromEntries(entries)), "utf8").digest("hex").slice(0, 16) : "-";
+  };
   const items = project.localReviews.map((review) => ({
     id: `local:${review.worktreeId || registered.id}:file:${review.path}`,
-    revisionToken: `local:${review.resourceState}:${review.resourceVersion || "-"}:${review.currentHash}:${review.resourceMode || "-"}`,
+    revisionToken: `local:${review.resourceState}:${review.resourceVersion || "-"}:${review.currentHash}:${review.resourceMode}:${dependencyDigest(review)}`,
   }));
-
-  const staleResponse = await fetch(origin + "/api/context-hub/accept", {
+  const accept = (body) => fetch(origin + "/api/context-hub/accept", {
     method: "POST",
     headers: { "content-type": "application/json", "x-context-room-project": room.projectId, "x-context-room-owner-nonce": room.ownerMutationNonce },
-    body: JSON.stringify({ items: items.map((item, index) => index ? item : { ...item, revisionToken: item.revisionToken + ":stale" }) }),
+    body: JSON.stringify(body),
   });
+
+  const staleResponse = await accept({ items: items.map((item, index) => index ? item : { ...item, revisionToken: item.revisionToken + ":stale" }) });
   assert.equal(staleResponse.status, 409);
-  assert.equal((await staleResponse.json()).code, "context_hub_accept_stale");
+  const stale = await staleResponse.json();
+  assert.equal(stale.code, "context_hub_accept_stale");
+  assert.deepEqual(stale.details.stale.map((item) => item.id), [items[0].id]);
+  assert.deepEqual(stale.details.notAttempted, [items[1].id]);
 
-  const acceptedResponse = await fetch(origin + "/api/context-hub/accept", {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-context-room-project": room.projectId, "x-context-room-owner-nonce": room.ownerMutationNonce },
-    body: JSON.stringify({ items }),
-  });
+  const duplicateResponse = await accept({ items: [items[0], { ...items[0], revisionToken: items[0].revisionToken + ":other" }] });
+  assert.equal(duplicateResponse.status, 400);
+  assert.equal((await duplicateResponse.json()).code, "context_hub_accept_duplicate");
+
+  // A mode change after selection is a different version: nothing is accepted.
+  fs.chmodSync(path.join(root, "docs", "SECOND.md"), 0o755);
+  const modeResponse = await accept({ items });
+  assert.equal(modeResponse.status, 409);
+  assert.deepEqual((await modeResponse.json()).details.stale.map((item) => item.path), ["docs/SECOND.md"]);
+  fs.chmodSync(path.join(root, "docs", "SECOND.md"), 0o644);
+
+  const acceptedResponse = await accept({ items });
   assert.equal(acceptedResponse.status, 200);
   const accepted = await acceptedResponse.json();
   assert.equal(accepted.summary.localReviews, 2);

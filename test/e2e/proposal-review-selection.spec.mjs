@@ -1678,13 +1678,26 @@ test("@smoke Select visible excludes non-openable proposals", async ({ page }) =
     { id: ids.recovery, branch: "proposal/demo/select-recovery", head: "f".repeat(40), title: "Recovery proposal", reviewStatus: "acceptance_recovery_required", authorityViolation: { kind: "acceptance_recovery_required" } },
   ]);
   await page.evaluate((readyId) => {
-    state.contextRoomSelectedReviews = new Set([readyId]);
+    state.contextRoomSelectedReviews = new Map([[readyId, contextHubReviewItems().find((item) => item.id === readyId)]]);
     renderContextRoomGlobalReviewQueue();
   }, ids.ready);
 
   await page.getByRole("button", { name: "Select visible", exact: true }).click();
-  await expect.poll(() => page.evaluate(() => [...state.contextRoomSelectedReviews].sort())).toEqual([ids.ready, ids.secondReady].sort());
+  await expect.poll(() => page.evaluate(() => [...state.contextRoomSelectedReviews.keys()].sort())).toEqual([ids.ready, ids.secondReady].sort());
   await expect(page.locator('[data-context-room-review-entry="' + ids.recovery + '"]')).toHaveCount(0);
+
+  // A refresh that brings a newer version keeps the checked version and blocks the decision on it.
+  await replaceHubProposals(page, [
+    { id: ids.ready, branch: "proposal/demo/select-ready", head: "2".repeat(40), title: "Ready proposal", reviewStatus: "ready" },
+    { id: ids.secondReady, branch: "proposal/demo/select-ready-two", head: "1".repeat(40), title: "Second ready proposal", reviewStatus: "ready" },
+  ]);
+  await page.evaluate(() => renderContextRoomGlobalReviewQueue());
+  const readyEntry = page.locator('[data-context-room-review-entry="' + ids.ready + '"]');
+  await expect(readyEntry.locator("[data-selection-stale]")).toHaveText("Changed since selected");
+  await expect(page.locator('[data-context-room-review-entry="' + ids.secondReady + '"] [data-selection-stale]')).toHaveCount(0);
+  await expect(page.locator("#contextRoomReviewSelection")).toContainText("1 changed since selected");
+  expect(await page.evaluate((readyId) => contextRoomSelectedReviewItems().find((item) => item.id === readyId).head, ids.ready)).toBe("e".repeat(40));
+  await expect(page.locator("[data-context-room-reject-selected]")).toHaveText("Reject 1");
 });
 
 test("@smoke verified terminal rejection refreshes and returns to the Hub", async ({ page }) => {

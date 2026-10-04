@@ -7658,6 +7658,7 @@ function writeDocReviewDecisionUnderLock(root, relPath, {
   expectedResourceState = null,
   expectedResourceVersion = null,
   expectedContentHash = null,
+  expectedResourceMode = null,
   expectedDependencyVersions = null,
   providedDependencyVersions = null,
   structuralReceipt = null,
@@ -7689,6 +7690,13 @@ function writeDocReviewDecisionUnderLock(root, relPath, {
     error.statusCode = 409;
     error.code = "review_revision_conflict";
     error.details = { path: normalized, expectedResourceVersion, currentResourceVersion: resourceVersion, resourceState };
+    throw error;
+  }
+  if (expectedResourceMode && resourceMode !== expectedResourceMode) {
+    const error = new Error(`Review target mode changed before the decision was saved: ${normalized}`);
+    error.statusCode = 409;
+    error.code = "review_revision_conflict";
+    error.details = { path: normalized, expectedResourceMode, currentResourceMode: resourceMode, resourceState, resourceVersion };
     throw error;
   }
   const currentContentHash = hashContent(file.content);
@@ -7787,7 +7795,14 @@ function writeDocReviewDecisionUnderLock(root, relPath, {
   const result = batchControl
     ? applyDecision()
     : withDocReviewControlRollback(root, controlFiles, "context-room-review-decision-rollback", applyDecision);
-  if (!suppressEvent) appendContextRoomEvent("review.decision", { ...contextRoomEventIdentity(root), resource: { path: normalized }, data: { status, resourceState, resourceVersion } });
+  // The decision is already saved: a journal failure is a warning, never a failed decision.
+  if (!suppressEvent) {
+    try {
+      appendContextRoomEvent("review.decision", { ...contextRoomEventIdentity(root), resource: { path: normalized }, data: { status, resourceState, resourceVersion } });
+    } catch (error) {
+      return { ...result, eventWarning: error?.message || "The review event could not be recorded." };
+    }
+  }
   return result;
 }
 
@@ -9793,6 +9808,7 @@ export function buildAgentReviewQueue(root = process.cwd(), { readOnly = false }
       reviewReason: item.reviewReason || "",
       resourceState: item.resourceState || "",
       resourceVersion: item.resourceVersion || "",
+      resourceMode: item.resourceMode || "",
       currentHash: item.currentHash || "",
       dependencyVersions: item.dependencyVersions || {},
       dependencyChanges: item.dependencyChanges || [],
@@ -16132,7 +16148,9 @@ function contextHubReviewRevisionToken(item = {}) {
   if (item.type === "shared") return item.head ? `shared:${item.head}` : "";
   const review = item.localReview || item;
   if (!review.resourceState || !review.currentHash) return "";
-  return `local:${review.resourceState}:${review.resourceVersion || "-"}:${review.currentHash}:${review.resourceMode || "-"}`;
+  const dependencies = stableStringMap(review.dependencyVersions);
+  const dependencyDigest = Object.keys(dependencies).length ? hashContent(JSON.stringify(dependencies)).slice(0, 16) : "-";
+  return `local:${review.resourceState}:${review.resourceVersion || "-"}:${review.currentHash}:${review.resourceMode || "-"}:${dependencyDigest}`;
 }
 
 function contextHubSharedProposalBelongsInQueue(item = {}) {
@@ -16355,6 +16373,7 @@ function contextHubLocalProjectSummary(project, currentRoot) {
       reviewReason: item.reviewReason || "",
       resourceState: item.resourceState || "",
       resourceVersion: item.resourceVersion || "",
+      resourceMode: item.resourceMode || "",
       currentHash: item.currentHash || "",
       dependencyVersions: item.dependencyVersions || {},
       dependencyChanges: item.dependencyChanges || [],
@@ -22669,21 +22688,34 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     contextHubStateCache.clear();
     const hub = contextHubUiState(root);
     const candidates = contextHubLocalReviewCandidates(hub);
-    const normalized = [...new Map(requested.map((item) => {
-      const id = String(item?.id || "").trim();
-      return [id, {
-        id,
-        revisionToken: String(item?.revisionToken || "").trim(),
-      }];
-    })).values()];
+    const byId = new Map();
+    for (const entry of requested) {
+      const item = { id: String(entry?.id || "").trim(), revisionToken: String(entry?.revisionToken || "").trim() };
+      const previous = byId.get(item.id);
+      if (previous && previous.revisionToken !== item.revisionToken) {
+        throw sharedRequestError(`The same review was sent twice with different versions: ${item.id}`, 400, "context_hub_accept_duplicate");
+      }
+      byId.set(item.id, item);
+    }
+    const normalized = [...byId.values()];
+    // Accept only the exact versions the person selected: one changed item stops the whole batch before any write.
+    const stale = [];
     for (const item of normalized) {
       const candidate = candidates.get(item.id);
       if (!item.id || !candidate) {
-        throw sharedRequestError(`Local review item is no longer available: ${item.id || "unknown"}`, 409, "context_hub_accept_stale");
+        stale.push({ id: item.id, code: "context_hub_accept_unavailable", message: "This review is no longer in the queue." });
+      } else if (item.revisionToken !== contextHubReviewRevisionToken({ type: "local", localReview: candidate.review })) {
+        stale.push({ id: item.id, path: candidate.review.path, code: "context_hub_accept_stale", message: "This file changed after you selected it." });
       }
-      if (item.revisionToken !== contextHubReviewRevisionToken({ type: "local", localReview: candidate.review })) {
-        throw sharedRequestError("A selected local review changed; refresh before accepting it", 409, "context_hub_accept_stale");
-      }
+    }
+    if (stale.length) {
+      const staleIds = new Set(stale.map((item) => item.id));
+      throw sharedRequestError(
+        stale.length === 1 ? "A selected review changed; nothing was accepted. Select it again to accept the new version." : `${stale.length} selected reviews changed; nothing was accepted. Select them again to accept the new versions.`,
+        409,
+        "context_hub_accept_stale",
+        { stale, notAttempted: normalized.filter((item) => !staleIds.has(item.id)).map((item) => item.id) },
+      );
     }
 
     const accepted = [];
@@ -22697,16 +22729,18 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
           expectedResourceState: candidate.review.resourceState,
           expectedResourceVersion: candidate.review.resourceVersion,
           expectedContentHash: candidate.review.currentHash,
+          expectedResourceMode: candidate.review.resourceMode || null,
           expectedDependencyVersions: candidate.review.dependencyVersions || null,
           expectedRootIdentity: candidate.project.rootIdentity || managedProjectRootIdentity(candidate.project.root),
         });
         accepted.push({ id: item.id, kind: "local", projectId: candidate.project.id, ...result });
       } catch (error) {
+        const failure = { id: item.id, kind: "local", projectId: candidate.project.id, path: candidate.review.path };
         if (error?.code === "review_revision_conflict") {
-          errors.push({ id: item.id, kind: "local", code: "context_hub_accept_stale", message: "This local review changed before it could be accepted. Refresh and try again." });
+          errors.push({ ...failure, code: "context_hub_accept_stale", message: "This file changed before it could be accepted. Select it again to accept the new version." });
           continue;
         }
-        errors.push({ id: item.id, kind: "local", message: error.message });
+        errors.push({ ...failure, code: error?.code || "context_hub_accept_failed", message: error.message });
       }
     }
     contextHubProjectSummaryCache.clear();
