@@ -76,7 +76,9 @@ files, acceptance, rejection and publication are not exposed through this adapte
 
 Notebook edits appear as working objects with provenance and checked revisions.
 Progressive strokes save only their reached geometry. Document edits use the
-existing isolated local proposal workflow. **Stop agent** stops the original
+existing isolated local proposal workflow. The proposal replaces the accepted
+version and keeps its file mode; it is refused while the document has
+unreviewed changes, so they never travel inside it. **Stop agent** stops the original
 turn and preserves already recorded ink. An uncertain send is not replayed:
 **Inspect original task** verifies its exact turn and input before recovering
 an answer when the provider can supply that evidence.
@@ -116,6 +118,26 @@ history; stopping sharing prevents new reads and does not erase prior context.
 Android owner conversations capture only the visible native drawing area.
 Compression runs outside the UI thread. A document frame or restricted drawing
 connection cannot use the owner preview bridge.
+
+## Annotating a passage
+
+In the read view of a Markdown document, **Annotate** adds a pen layer. A pen or
+the mouse draws; a finger scrolls. The drawing picks one run of whole source
+lines, highlighted, and the bar says which lines. The draft stays in this browser
+until it is sent, and only for the same file version.
+
+**Discuss this annotation** starts a new conversation with:
+
+- the exact anchor, fixed by the Mac: path, file hash, UTF-8 byte range, exact
+  text and section path;
+- a snapshot: the passage words redrawn with the strokes on top.
+
+The snapshot is stored privately with conversations, never in the project. Codex
+sees it with the document tool's `annotation` action. `replace_annotation` takes
+the annotation id and new text. The Mac replaces only that byte range, keeps
+every other byte and the file mode, and creates a proposal from the accepted
+version for human review. Any change to the file since the annotation refuses
+it: there is no fuzzy re-anchoring. A forged anchor or an unknown id is refused.
 
 ## Dictation and playback
 
