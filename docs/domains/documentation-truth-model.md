@@ -118,6 +118,21 @@ A diagram answers a specific relationship, state, branch, actor, or sequence que
 
 An HTML exploration coordinates several owners and links to them. It does not become a visually richer copy of their normative prose.
 
+## Tidiness checks
+
+`doctor` and Context health run six deterministic checks on Markdown documents (`src/doc_tidy.mjs`). No model is called. Each finding names its rule, the exact source (path, line, and evidence), and one action.
+
+| Finding | Rule |
+| --- | --- |
+| `doc_too_large` | Over 100,000 characters (≈ 25,000 tokens): an agent cannot read it in one pass. |
+| `doc_not_in_map` | A document under `docs/` is not listed in `docs/index.md`, directly or through a listed index. Checked only when `docs/index.md` exists. |
+| `dead_link` | A relative Markdown link points to a missing file, or its `#section` matches no heading. |
+| `duplicate_block` | A block of 280 or more characters also lives in another document. |
+| `log_in_state_doc` | A state document of 32 KiB or more only grows: over its last 50 commits (at least 10), deleted lines stay under 1/8 of added lines. Paths named journal, log, history, archive, or changelog are exempt. Without git, the result is unknown (`—`). |
+| `missing_summary` | A document over 3,000 characters does not open with prose, after its title and at most one heading. |
+
+State is rewritten and a log is appended: they belong in different files.
+
 ## Migration rule
 
 Correct semantics before moving files. Preserve paths, stable IDs, inbound links, and legacy metadata until a reviewed migration can update all consumers together.

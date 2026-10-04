@@ -108,6 +108,7 @@ import {
   resolveSharedDocumentationTarget,
 } from "./shared_context.mjs";
 import { bearerToken, createReplayStore, signRemoteIdentity, verifyRemoteIdentity } from "./remote_identity.mjs";
+import { analyzeDocumentTidiness } from "./doc_tidy.mjs";
 import {
   assertFreshGitHubAppCredential,
   createGitHubInstallationToken,
@@ -11196,7 +11197,8 @@ export function buildContextRoomDoctorReport(root = process.cwd(), options = {})
     acknowledgements = readContextHealthAcknowledgements(root);
   } catch {}
   const stagingIssues = invalidConfig ? [] : orphanedFileMutationStagingIssues(root, settings);
-  const issues = [...configurationIssues, ...graph.healthIssues, ...stagingIssues].map((issue) => publicHealthIssue(issue, acknowledgements));
+  const tidy = invalidConfig ? { findings: [], summary: null } : documentationTidiness(root, graph);
+  const issues = [...configurationIssues, ...graph.healthIssues, ...stagingIssues, ...tidy.findings].map((issue) => publicHealthIssue(issue, acknowledgements));
   return {
     generatedAt: new Date().toISOString(),
     root: path.resolve(root),
@@ -11214,9 +11216,24 @@ export function buildContextRoomDoctorReport(root = process.cwd(), options = {})
     runtimeDependencies: { audio: inspectLocalAudio(), writerAuthority },
     docqa: docqa.summary,
     graph: graph.summary,
+    tidy: tidy.summary,
     issues,
     acknowledgedIssues: issues.filter((issue) => issue.acknowledged).length,
   };
+}
+
+function documentationTidiness(root, graph) {
+  const docs = [];
+  for (const node of graph.nodes || []) {
+    if (node.type !== "doc" || !/\.md$/i.test(node.path || "") || resolveExternalPath(node.path)) continue;
+    try {
+      const absolutePath = path.join(root, node.path);
+      const stats = fs.statSync(absolutePath);
+      if (!stats.isFile() || stats.size > MAX_FILE_BYTES) continue;
+      docs.push({ path: node.path, content: fs.readFileSync(absolutePath, "utf8"), metadataPresent: Boolean(node.metadata?.present) });
+    } catch {}
+  }
+  return analyzeDocumentTidiness({ root, docs });
 }
 
 function closedDiagnosticSettings() {
