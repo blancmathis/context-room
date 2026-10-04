@@ -298,3 +298,15 @@ test("the removed researcher directs agents to deterministic commands without in
   assert.match(JSON.parse(result.stderr).error.message, /docs search/);
   assert.equal(fs.existsSync(path.join(root, ".context-room", "doc-agent")), false);
 });
+
+test("an empty default search says how many matching documents it excluded", (t) => {
+  const root = documentationRoot(t);
+  fs.writeFileSync(path.join(root, "docs", "pending.md"), "# Pending\n\nThe zephyr rollout plan waits for review.\n");
+  const search = searchDocumentation(root, "zephyr");
+  assert.equal(search.results.length, 0);
+  assert.equal(search.excluded.unreviewed, 1);
+  assert.match(search.message, /1 matching document is not reviewed yet/);
+  const unverified = searchDocumentation(root, "zephyr", { status: "unverified", acceptedOnly: false });
+  assert.equal(unverified.results[0].reviewStatus, "unverified");
+  assert.equal(readDocumentation(root, "docs/sessions.md").reviewStatus, "accepted");
+});

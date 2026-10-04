@@ -204,3 +204,27 @@ test("injectable engine uses the same graph for effective, trace, and impact", (
   assert.equal(engine.impact(target, "root").status, "ok");
   assert.equal(calls, 3);
 });
+
+test("an empty or unavailable target is never reported fresh, and coverage is separate", () => {
+  const empty = resolveEffectiveContext(buildContextGraph({ coordinate: target, freshness: { state: "fresh", verified: true, source: "local" }, localEnvironment: "available" }));
+  assert.equal(empty.coverage.state, "empty");
+  assert.equal(empty.freshness.state, "unknown");
+  assert.equal(empty.freshness.verified, false);
+
+  const unavailable = resolveEffectiveContext(buildContextGraph({ coordinate: { ...target, locationId: "" }, freshness: { state: "fresh", verified: true } }));
+  assert.equal(unavailable.coverage.state, "unavailable");
+  assert.equal(unavailable.freshness.state, "unknown");
+
+  const partial = resolveEffectiveContext(buildContextGraph({
+    coordinate: target,
+    freshness: { state: "fresh", verified: true, source: "local" },
+    resources: [resource("root", "instruction", "AGENTS.md"), resource("hook", "hook", ".codex/hooks.json")],
+    applications: [application("root"), application("hook", { status: "uncertain", evidence: null })],
+  }));
+  assert.equal(partial.coverage.state, "partial");
+  assert.equal(partial.coverage.uncertain, 1);
+  assert.equal(partial.freshness.state, "fresh");
+
+  const complete = resolveEffectiveContext(buildContextGraph({ coordinate: target, freshness: { state: "fresh" }, resources: [resource("root", "instruction", "AGENTS.md")], applications: [application("root")] }));
+  assert.equal(complete.coverage.state, "complete");
+});

@@ -361,9 +361,17 @@ export function buildDocumentationCorpus(root = process.cwd(), options = {}) {
   if (connectedTarget) shared.revision = connectedTarget.revision;
   const localRevision = sharedTarget ? "" : gitOutput(projectRoot, ["rev-parse", "HEAD"]);
   const documents = sharedTarget ? sharedAcceptedDocuments(sharedTarget) : [];
+  // Paths an accepted-only corpus leaves out, so a search can say what it did not serve.
+  const excludedPaths = new Set();
   if (!sharedTarget) {
     const readOnlySnapshot = acceptedOnly || readOnly ? buildReadOnlyDocumentationReviewSnapshot(projectRoot) : null;
     const files = (acceptedOnly ? readOnlySnapshot?.acceptedFiles : readOnlySnapshot?.files) || listMemoryFiles(projectRoot);
+    if (acceptedOnly && readOnlySnapshot?.files) {
+      const accepted = new Set(files.map((file) => file.path));
+      for (const file of readOnlySnapshot.files) {
+        if (file.exists && !accepted.has(file.path) && documentationFileKind(file.path)) excludedPaths.add(file.path);
+      }
+    }
     const graph = readOnlySnapshot
       ? buildDocumentationGraph(projectRoot, {
           settings: readOnlySnapshot.settings,
@@ -442,6 +450,7 @@ export function buildDocumentationCorpus(root = process.cwd(), options = {}) {
     for (let index = documents.length - 1; index >= 0; index -= 1) {
       const document = documents[index];
       if (document.reviewStatus !== "accepted" || document.source === "session-proposal") {
+        if (document.source !== "session-proposal" && !sharedTarget) excludedPaths.add(document.path);
         documents.splice(index, 1);
       }
     }
@@ -494,6 +503,7 @@ export function buildDocumentationCorpus(root = process.cwd(), options = {}) {
       proposals: proposalOverlay.proposals || [],
     } : null,
     documents: documents.sort((left, right) => left.path.localeCompare(right.path, "en")),
+    excludedUnreviewed: [...excludedPaths].sort().map((relativePath) => ({ path: relativePath, absolutePath: documentationAbsolutePath(projectRoot, relativePath) })),
   };
 }
 
@@ -684,8 +694,26 @@ export function searchDocumentation(root = process.cwd(), query = "", options = 
   const kind = String(options.kind || "").trim();
   const terms = searchTerms(structured.text);
   const candidates = [];
+  const excluded = { unreviewed: 0, notCurrent: 0 };
+  const matchesQuery = (document) => structured.filters.every((filter) => structuredSearchMatch(document, filter, corpus))
+    && (!kind || document.kind === kind)
+    && document.sections.some((section) => !structured.text || searchScore(document, section, structured.text, terms) > 0);
+  if (!status && structured.text && !structured.filters.length) {
+    for (const item of corpus.excludedUnreviewed || []) {
+      let content = "";
+      try {
+        if (fs.statSync(item.absolutePath).size > MAX_DOC_BYTES) continue;
+        content = normalizedSearchText(fs.readFileSync(item.absolutePath, "utf8"));
+      } catch { continue; }
+      if (terms.length && terms.every((term) => content.includes(term))) excluded.unreviewed += 1;
+    }
+  }
   for (const document of corpus.documents) {
-    if (!status && (document.truthState !== "current" || document.reviewStatus !== "accepted")) continue;
+    if (!status && (document.truthState !== "current" || document.reviewStatus !== "accepted")) {
+      // The default search serves accepted current docs only; count what it hid so an empty answer is explained.
+      if (document.source !== "session-proposal" && matchesQuery(document)) excluded[document.reviewStatus !== "accepted" ? "unreviewed" : "notCurrent"] += 1;
+      continue;
+    }
     if (status === "unverified" ? document.reviewStatus !== "unverified" : status && document.truthState !== status) continue;
     if (kind && document.kind !== kind) continue;
     if (!structured.filters.every((filter) => structuredSearchMatch(document, filter, corpus))) continue;
@@ -714,6 +742,7 @@ export function searchDocumentation(root = process.cwd(), query = "", options = 
       lineStart: candidate.section.lineStart,
       lineEnd: candidate.section.lineEnd,
       truthState: candidate.document.truthState,
+      reviewStatus: candidate.document.reviewStatus,
       kind: candidate.document.kind,
       source: candidate.document.source,
       revision: candidate.document.revision,
@@ -735,6 +764,13 @@ export function searchDocumentation(root = process.cwd(), query = "", options = 
     revision: corpus.revision,
     results,
     groups: grouped.groups,
+    ...(status ? {} : { excluded }),
+    ...(!results.length && !status && (excluded.unreviewed || excluded.notCurrent) ? {
+      message: [
+        excluded.unreviewed ? `${excluded.unreviewed} matching document${excluded.unreviewed === 1 ? " is" : "s are"} not reviewed yet; search serves them after human review.` : "",
+        excluded.notCurrent ? `${excluded.notCurrent} matching document${excluded.notCurrent === 1 ? " is" : "s are"} not current (use --status with its state).` : "",
+      ].filter(Boolean).join(" "),
+    } : {}),
   };
 }
 
@@ -805,6 +841,7 @@ export function readDocumentation(root = process.cwd(), selector = "", options =
     lineStart: section?.lineStart || 1,
     lineEnd: section?.lineEnd || document.content.split(/\r?\n/).length,
     truthState: document.truthState,
+    reviewStatus: document.reviewStatus,
     kind: document.kind,
     source: document.source,
     revision: document.revision,

@@ -191,12 +191,22 @@ export function resolveEffectiveContext(input = {}) {
       reason: "MCP tool definitions come from the running server; their size is unknown.",
     })),
   ];
+  // Availability, coverage and freshness are separate answers. An empty or
+  // unavailable target proves nothing, so it is never reported as fresh.
+  const uncertain = effectiveApplications.filter((item) => item.status === "uncertain").length;
+  const coverage = graph.localEnvironment !== "available" && !effectiveApplications.length ? "unavailable"
+    : !effectiveApplications.length ? "empty"
+      : uncertain || unknown.length ? "partial" : "complete";
+  const freshness = ["empty", "unavailable"].includes(coverage)
+    ? { ...graph.freshness, state: "unknown", verified: false, reason: coverage === "empty" ? "No context applies to this target." : "The local location is unavailable." }
+    : graph.freshness;
   return {
     schemaVersion: "context-room.context-effective/1",
     coordinate: graph.coordinate,
     resolverVersion: graph.resolverVersion,
     providerProfileVersion: graph.providerProfileVersion,
-    freshness: graph.freshness,
+    freshness,
+    coverage: { state: coverage, applications: effectiveApplications.length, uncertain, unknown: unknown.length },
     localEnvironment: graph.localEnvironment,
     ...grouped,
     unknown,

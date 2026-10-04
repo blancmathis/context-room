@@ -6066,7 +6066,7 @@ function explorerRelatedProjection(graph, filePath) {
   const center = nodes.find((node) => node.id === graph?.centerId) || nodes.find((node) => normalizeUiPath(node.path) === normalizeUiPath(filePath));
   if (!center) return { center: null, dependsOn: [], dependedOnBy: [], references: [], referencedBy: [], appearsInDiagrams: [], unresolved: [] };
   const byId = new Map(nodes.map((node) => [node.id, node]));
-  const usableNeighbor = (node) => node && (node.truthState === "accepted" || node.missing);
+  const usableNeighbor = (node) => node && (node.truthState === "accepted" || node.truthState === "discovered" || node.missing);
   const dependsOn = [];
   const dependedOnBy = [];
   const references = [];
@@ -6105,7 +6105,7 @@ function explorerRelationLabel(edge) {
 function renderExplorerRelatedRow(item, project, { missing = false } = {}) {
   const node = item.node;
   const worktree = globalProjectSelectedWorktree(project);
-  const stateLabel = missing ? "Missing" : node.truthState === "accepted" ? "Accepted" : node.truthState;
+  const stateLabel = missing ? "Missing" : node.truthState === "accepted" ? "Accepted" : node.truthState === "discovered" ? "Not reviewed" : node.truthState;
   const content = '<span class="explorer-related-icon" aria-hidden="true">' + (missing ? "!" : "◇") + '</span>'
     + '<span class="explorer-related-copy"><strong>' + escapeHtml(node.label || node.path) + '</strong><code title="' + escapeHtml(node.path || "") + '">' + escapeHtml(node.path || "") + '</code></span>'
     + '<span class="explorer-related-meta"><small>' + escapeHtml(explorerRelationLabel(item.edge)) + '</small><span>' + escapeHtml(stateLabel) + '</span></span>';

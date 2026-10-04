@@ -214,7 +214,7 @@ function contextResourceNode(resource = {}) {
     path: filePath,
     label: resource.metadata?.label || path.posix.basename(filePath) || resource.id,
     summary: resource.metadata?.description || resource.metadata?.reason || "",
-    truthState: resource.truthState === "proposal" ? "proposal" : resource.truthState === "unverified" ? "unverified" : "accepted",
+    truthState: ["proposal", "unverified", "discovered"].includes(resource.truthState) ? resource.truthState : "accepted",
     source: resource.source || "local",
     managed: resource.metadata?.managed !== false,
     missing: false,

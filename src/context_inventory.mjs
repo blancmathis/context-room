@@ -641,7 +641,7 @@ function addLocalInstructions(inventory, target, coordinate, settings, queue, re
   });
 }
 
-function addLocalSkills(inventory, target, coordinate, settings, queue, readers) {
+function addLocalSkills(inventory, target, coordinate, settings, queue, reviewState, globalLedger, readers) {
   let order = 1000;
   const legacy = (readers.listSkillFolders(target.root, settings) || []).map((folder) => ({
     ...folder,
@@ -659,7 +659,9 @@ function addLocalSkills(inventory, target, coordinate, settings, queue, readers)
       const version = localFileVersion(absolutePath);
       const relPath = isWithin(target.root, absolutePath) ? unixPath(path.relative(target.root, absolutePath)) : displayPath(absolutePath);
       const pending = queue.get(relPath) || queue.get(displayPath(absolutePath)) || queue.get(absolutePath) || null;
-      const review = pending ? { required: true, status: pending.review?.status || "unverified", reason: pending.reviewReason || "unverified-current" } : null;
+      const verified = currentVerifiedReview({ root: target.root, relPath, absolutePath, contentHash: version, reviewState, globalLedger });
+      const review = verified ? { required: false, status: "verified", reviewedAt: verified.reviewedAt || null }
+        : pending ? { required: true, status: pending.review?.status || "unverified", reason: pending.reviewReason || "unverified-current" } : null;
       addResource(inventory, {
         id: resourceIdForFile(absolutePath),
         kind: "skill",
@@ -667,7 +669,8 @@ function addLocalSkills(inventory, target, coordinate, settings, queue, readers)
         locator: displayPath(absolutePath),
         providers,
         version,
-        truthState: review?.required ? "unverified" : "accepted",
+        // Only a current human review makes a local skill accepted; an unwatched one is merely discovered.
+        truthState: verified ? "accepted" : review?.required ? "unverified" : "discovered",
         review,
         metadata: { name: skillName, absolutePath: stablePath(absolutePath), folder: folder.displayPath, readOnly: Boolean(folder.readOnly) },
       }, {
@@ -730,7 +733,7 @@ function addProviderConfigs(inventory, target, coordinate) {
       locator: displayPath(absolutePath),
       providers: [coordinate.provider],
       version: localFileVersion(absolutePath),
-      truthState: "accepted",
+      truthState: "discovered",
       metadata: { name: path.basename(absolutePath), absolutePath: stablePath(absolutePath) },
     }, {
       coordinate,
@@ -1123,7 +1126,7 @@ export function buildContextInventory(targetInput, options = {}) {
     const reviewState = readers.readReviewState(target.root) || { reviews: {} };
     const globalLedger = readers.readGlobalReviewLedger(target.root) || { reviews: {} };
     addLocalInstructions(inventory, target, coordinate, settings, queue, reviewState, globalLedger, readers);
-    addLocalSkills(inventory, target, coordinate, settings, queue, readers);
+    addLocalSkills(inventory, target, coordinate, settings, queue, reviewState, globalLedger, readers);
     addHooks(inventory, target, coordinate, settings, readers);
     addProviderConfigs(inventory, target, coordinate);
     addMcpServers(inventory, target, coordinate, readers);
