@@ -384,7 +384,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .context-hub-home-projects { list-style: none; margin: 0; padding: 6px; display: grid; gap: 2px; max-height: 360px; overflow-y: auto; }
     .context-hub-home-project { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 8px 10px; border: 1px solid transparent; border-radius: 10px; }
     .context-hub-home-project:hover { background: var(--surface-card-hover); }
-    .context-hub-home-project[aria-current="true"] { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); background: color-mix(in srgb, var(--accent) 9%, var(--surface-card)); }
+    .context-hub-home-project[aria-current="true"] { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); box-shadow: inset 3px 0 0 var(--accent); }
     .context-hub-home-project-main { min-width: 0; display: grid; gap: 3px; }
     .context-hub-home-project-attention { max-width: 260px; overflow: hidden; padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
     .context-hub-home-project-attention[data-attention="work"] { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); color: var(--text); font-weight: 700; }
