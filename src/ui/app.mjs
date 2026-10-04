@@ -380,6 +380,20 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .global-project-row-side { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; justify-items: start; gap: 8px; color: var(--muted); font-size: 9px; white-space: nowrap; }
     .global-project-row-side > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     .global-project-row-action { justify-self: end; color: var(--accent-fg); font-weight: 780; }
+    .context-hub-projects-panel header kbd { margin-left: 4px; font-size: 10px; color: var(--muted); }
+    .context-hub-home-projects { list-style: none; margin: 0; padding: 6px; display: grid; gap: 2px; max-height: 360px; overflow-y: auto; }
+    .context-hub-home-project { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 8px 10px; border: 1px solid transparent; border-radius: 10px; }
+    .context-hub-home-project:hover { background: var(--surface-card-hover); }
+    .context-hub-home-project[aria-current="true"] { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); background: color-mix(in srgb, var(--accent) 9%, var(--surface-card)); }
+    .context-hub-home-project-main { min-width: 0; display: grid; gap: 3px; }
+    .context-hub-home-project-attention { max-width: 260px; overflow: hidden; padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+    .context-hub-home-project-attention[data-attention="work"] { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); color: var(--text); font-weight: 700; }
+    .context-hub-home-project-attention[data-attention="blocked"] { border-color: color-mix(in srgb, var(--danger) 55%, var(--line)); color: var(--danger-fg); font-weight: 700; }
+    .context-hub-home-project-destinations { display: flex; gap: 4px; }
+    .context-hub-home-project-destination { min-height: 32px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--text); cursor: pointer; font-size: 11px; font-weight: 650; }
+    .context-hub-home-project-destination:hover { background: var(--surface-card-hover); }
+    .context-hub-home-project-destination:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 1px; }
+    @media (max-width: 760px) { .context-hub-home-project { grid-template-columns: minmax(0, 1fr); } .context-hub-home-project-attention { justify-self: start; } }
     .global-project-folder-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     .explorer-document-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; margin: 0 0 8px; padding: 2px; border-radius: 7px; background: var(--surface-card); }
     .explorer-document-tab { min-height: 28px; padding: 4px 8px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; font-size: 10px; font-weight: 650; }
@@ -3135,6 +3149,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       }
       .clear-search { min-width: 40px; }
       .tree button, .global-project-row, .global-project-tree-entry { min-height: 44px; }
+      .context-hub-home-project-destination { min-height: 44px; }
       .search-row .search, #contextRoomReviewSearch { min-height: 44px; font-size: 13px; }
       .explorer-open, .sidebar-toggle, .graph-open, .selection-action, .global-explorer-back { width: 40px; min-width: 40px; height: 40px; }
       .explorer-open { top: 4px; left: 4px; }
@@ -3493,6 +3508,16 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       <section class="editor-shell">
         <div id="home" class="docqa-home workspace-page" hidden>
           <div class="docqa-grid">
+            <section id="contextHubProjectsPanel" class="docqa-panel context-hub-projects-panel" aria-labelledby="contextHubProjectsHeading" hidden>
+              <header>
+                <div>
+                  <h2 id="contextHubProjectsHeading">Projects</h2>
+                  <div id="contextHubProjectCoverage" class="muted"></div>
+                </div>
+                <button class="quiet-button" type="button" data-context-hub-project-goto title="Go to project (⌘K)">Go to… <kbd>⌘K</kbd></button>
+              </header>
+              <ul id="contextHubHomeProjectList" class="context-hub-home-projects" aria-label="Projects"></ul>
+            </section>
             <section id="reviewQueuePanel" class="docqa-panel">
               <header>
                 <div>
@@ -3889,6 +3914,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 		state.contextHubProjectPickerQuery = "";
 		state.contextHubProjectPickerIndex = 0;
 		state.contextHubProjectPickerReturnFocus = "";
+		state.contextHubProjectPickerPurpose = "filter";
 		state.contextHubProjectPickerIsolationRelease = null;
 		state.activeModalClose = null;
 		state.contextHubCreationGeneration = 0;
@@ -5896,15 +5922,9 @@ function contextHubPrioritizedProjects(projects = []) {
     const rightRanked = Number.isInteger(right?.priorityRank);
     if (leftRanked !== rightRanked) return leftRanked ? -1 : 1;
     if (leftRanked && left.priorityRank !== right.priorityRank) return left.priorityRank - right.priorityRank;
-    const currentRank = Number(Boolean(right?.current)) - Number(Boolean(left?.current));
-    if (currentRank) return currentRank;
-    const leftAttention = Number(left?.localReviewCount || 0) + Number(left?.sharedProposalCount || 0);
-    const rightAttention = Number(right?.localReviewCount || 0) + Number(right?.sharedProposalCount || 0);
-    const attentionRank = Number(rightAttention > 0) - Number(leftAttention > 0);
-    if (attentionRank) return attentionRank;
-    const recentRank = String(right?.lastOpenedAt || "").localeCompare(String(left?.lastOpenedAt || ""));
-    if (recentRank) return recentRank;
-    return String(left?.title || left?.id || "").localeCompare(String(right?.title || right?.id || ""), "en");
+    // Attention, opening and refreshes never reorder: only the manual order and the title do.
+    return String(left?.title || left?.id || "").localeCompare(String(right?.title || right?.id || ""), "en")
+      || String(left?.projectKey || "").localeCompare(String(right?.projectKey || ""), "en");
   });
 }
 
@@ -6786,7 +6806,76 @@ function updateGlobalExplorerMarkup(node, markup) {
   node.__contextRoomMarkup = markup;
 }
 
+function contextHubLocalCoverage(projects = state.contextHub?.projects || []) {
+  const local = projects.filter((project) => project.mode !== "shared");
+  return { inspected: local.filter(contextHubLocalReviewsConfirmed).length, total: local.length };
+}
+
+function contextHubProjectAttentionKind(project) {
+  if (contextHubProjectSharedRecovery(project)) return "blocked";
+  if (Number(project?.localReviewCount || 0) + Number(project?.sharedProposalCount || 0) > 0) return "work";
+  if (project?.mode !== "shared" && !contextHubLocalReviewsConfirmed(project)) return "unknown";
+  return "quiet";
+}
+
+function renderContextHubHomeProjects() {
+  const panel = el("contextHubProjectsPanel");
+  const list = el("contextHubHomeProjectList");
+  const coverage = el("contextHubProjectCoverage");
+  if (!panel || !list || !coverage) return;
+  panel.hidden = !IS_GLOBAL_CONTEXT_ROOM || IS_HOSTED_HUB;
+  if (panel.hidden) return;
+  if (!state.contextHub) {
+    coverage.textContent = "Loading…";
+    list.innerHTML = '<div class="global-project-explorer-empty">Loading projects…</div>';
+    return;
+  }
+  const projects = contextHubPrioritizedProjects(state.contextHub.projects || []);
+  const { inspected, total } = contextHubLocalCoverage(projects);
+  coverage.textContent = projects.length + " project" + (projects.length === 1 ? "" : "s")
+    + (total ? " · " + inspected + "/" + total + " local inspected" : "");
+  if (!projects.length) {
+    list.innerHTML = '<div class="global-project-explorer-empty">No project registered yet. Add a folder from Manage projects.</div>';
+    return;
+  }
+  list.innerHTML = projects.map((project) => {
+    const selected = project.projectKey === state.globalExplorerProjectKey;
+    const key = escapeHtml(project.projectKey);
+    const title = escapeHtml(project.title || project.id);
+    const destination = (id, label) => '<button class="context-hub-home-project-destination" type="button" data-context-hub-project-destination="' + id + '" data-project-key="' + key + '" aria-label="' + escapeHtml(label + " · " + (project.title || project.id)) + '">' + escapeHtml(label) + '</button>';
+    return '<li class="context-hub-home-project" aria-current="' + String(selected) + '">'
+      + '<span class="context-hub-home-project-main"><span class="global-project-row-title"><strong>' + title + '</strong>' + contextHubProjectSourceBadges(project) + '</span>'
+      + '<span class="global-project-row-location" title="' + escapeHtml(contextHubProjectPickerLocation(project)) + '">' + escapeHtml(contextHubProjectPickerLocation(project)) + '</span></span>'
+      + '<span class="context-hub-home-project-attention" data-attention="' + contextHubProjectAttentionKind(project) + '">' + escapeHtml(contextHubProjectAttentionLabel(project)) + '</span>'
+      + '<span class="context-hub-home-project-destinations">' + destination("context", "Context") + destination("review", "To review") + destination("documents", "Documents") + '</span>'
+      + '</li>';
+  }).join("");
+}
+
+async function openContextHubProjectDestination(projectKey, destination) {
+  const project = (state.contextHub?.projects || []).find((item) => item.projectKey === projectKey);
+  if (!project) return;
+  const worktree = globalProjectSelectedWorktree(project);
+  await openContextHubProject(worktree?.id || project.id, { pushHistory: true });
+  if (state.globalExplorerProjectKey !== projectKey) return;
+  if (destination === "review") {
+    const heading = el("reviewQueueHeading");
+    heading?.scrollIntoView({ block: "start", behavior: "smooth" });
+    heading?.focus({ preventScroll: true });
+    return;
+  }
+  if (destination === "context") {
+    const selectedWorktree = globalProjectSelectedWorktree(project);
+    if (project.mode !== "shared" && selectedWorktree?.root && selectedWorktree.available !== false) openGlobalProjectInspection("startup", project);
+    else el("contextHealthPanel")?.scrollIntoView({ block: "start", behavior: "smooth" });
+    return;
+  }
+  if (isExplorerCollapsed()) setExplorerCollapsedFromUser(false);
+  window.requestAnimationFrame(() => el("globalProjectList")?.querySelector("a, button")?.focus());
+}
+
 function renderGlobalProjectExplorer() {
+  renderContextHubHomeProjects();
   const explorer = el("globalProjectExplorer");
   const scope = el("globalExplorerScope");
   const listLabel = el("globalExplorerListLabel");
@@ -6915,7 +7004,7 @@ function contextHubProjectPickerChoices() {
     .filter((project) => !needle || contextHubProjectSearchText(project).includes(needle));
   return {
     projects,
-    choices: needle ? projects : [null, ...projects],
+    choices: needle || state.contextHubProjectPickerPurpose === "open" ? projects : [null, ...projects],
   };
 }
 
@@ -6998,15 +7087,21 @@ function isolateContextRoomModalBackground(activeModal = null) {
   };
 }
 
-function openContextHubProjectPicker(trigger) {
+function openContextHubProjectPicker(trigger, { purpose = "filter" } = {}) {
   if (state.sharedContextBusy) return;
   state.contextHubProjectPickerOpen = true;
+  state.contextHubProjectPickerPurpose = purpose === "open" ? "open" : "filter";
+  const pickerTitle = el("contextHubProjectPickerTitle");
+  if (pickerTitle) pickerTitle.textContent = purpose === "open" ? "Go to project" : "Choose a project";
+  const pickerHint = pickerTitle?.nextElementSibling;
+  if (pickerHint) pickerHint.textContent = purpose === "open" ? "Open a project. Its files, reviews and agent context follow." : "Filter the whole Context Room without leaving your current view.";
   state.contextHubProjectPickerQuery = "";
   state.contextHubProjectPickerReturnFocus = trigger?.dataset.contextHubProjectPickerTrigger || "";
   document.querySelectorAll("[data-context-hub-project-picker-trigger]").forEach((button) => button.setAttribute("aria-expanded", String(button === trigger)));
   const projects = contextHubPrioritizedProjects(state.contextHub?.projects || []);
   const selectedIndex = projects.findIndex((project) => project.projectKey === state.sharedProposalProject);
-  state.contextHubProjectPickerIndex = selectedIndex >= 0 ? selectedIndex + 1 : 0;
+  const offset = state.contextHubProjectPickerPurpose === "open" ? 0 : 1;
+  state.contextHubProjectPickerIndex = selectedIndex >= 0 ? selectedIndex + offset : 0;
   renderContextHubProjectPicker();
   state.contextHubProjectPickerIsolationRelease?.();
   state.contextHubProjectPickerIsolationRelease = isolateContextRoomModalBackground(el("contextHubProjectPicker"));
@@ -7035,7 +7130,12 @@ function closeContextHubProjectPicker({ restoreFocus = true } = {}) {
 function selectContextHubProjectPickerChoice(projectKey = "") {
   if (state.sharedContextBusy) return;
   const returnFocus = state.contextHubProjectPickerReturnFocus;
+  const purpose = state.contextHubProjectPickerPurpose;
   closeContextHubProjectPicker({ restoreFocus: false });
+  if (purpose === "open") {
+    if (projectKey) openContextHubProjectDestination(projectKey, "documents").catch((error) => setStatus(error.message));
+    return;
+  }
   state.sharedProposalProject = projectKey;
   state.contextHubSource = "all";
   state.contextHubSelection = "";
@@ -7735,7 +7835,7 @@ function renderContextRoomGlobalReviewQueue() {
   summary.innerHTML = cleanQueue
     ? '<div class="review-summary-item"><strong>All clear</strong><span>no review pending</span></div>'
     : hubReady
-      ? (IS_HOSTED_HUB ? "" : '<div class="review-summary-item"><strong>' + (reviewSnapshotConfirmed && localReviewCoverageConfirmed ? localReviewCount : "—") + '</strong><span>file' + (localReviewCount === 1 ? "" : "s") + '</span></div>')
+      ? (IS_HOSTED_HUB ? "" : '<div class="review-summary-item"><strong>' + (reviewSnapshotConfirmed && localReviewCoverageConfirmed ? localReviewCount : "—") + '</strong><span>file' + (localReviewCount === 1 ? "" : "s") + (localReviewCoverageConfirmed ? "" : " · " + contextHubLocalCoverage().inspected + "/" + contextHubLocalCoverage().total + " inspected") + '</span></div>')
       + '<div class="review-summary-item"><strong>' + (reviewSnapshotConfirmed && sharedReviewCoverageConfirmed ? sharedReviewCount : "—") + '</strong><span>proposal' + (sharedReviewCount === 1 ? "" : "s") + '</span></div>'
       : '<div class="review-summary-item"><strong>…</strong><span>loading reviews</span></div>';
   queueElement.classList.toggle("batch-open", showDeletionBatch && state.deletionBatchExpanded);
@@ -14279,7 +14379,10 @@ function renderContextHealth() {
     const checkedAt = state.doctor?.generatedAt && !Number.isNaN(Date.parse(state.doctor.generatedAt))
       ? new Date(state.doctor.generatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
       : "just now";
-    holder.innerHTML = '<div class="context-health-clear" role="status"><strong>Context is healthy</strong><span>No configuration, documentation, hook, or review-safety issues found. Last checked ' + escapeHtml(checkedAt) + '.</span></div>';
+    const checkedDocs = Number(state.doctor?.docqa?.totalDocs || 0);
+    holder.innerHTML = checkedDocs
+      ? '<div class="context-health-clear" role="status"><strong>No issue found</strong><span>Checked ' + checkedDocs + ' document' + (checkedDocs === 1 ? "" : "s") + ', configuration, hooks and review safety. Last checked ' + escapeHtml(checkedAt) + '.</span></div>'
+      : '<div class="context-health-empty" role="status"><strong>Nothing to check yet</strong><span>This folder has no tracked document. Configuration and hooks show no issue. Last checked ' + escapeHtml(checkedAt) + '.</span></div>';
     return;
   }
   const counts = issues.reduce((acc, issue) => {
@@ -23677,6 +23780,11 @@ document.addEventListener("keydown", (event) => {
   setDocLinkModifierActive(isDocLinkModifierEventActive(event));
   if (handleCodexReferenceShortcut(event)) return;
   if (handleSaveShortcut(event)) return;
+  if (IS_GLOBAL_CONTEXT_ROOM && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "k" && !state.contextHubProjectPickerOpen) {
+    event.preventDefault();
+    openContextHubProjectPicker(null, { purpose: "open" });
+    return;
+  }
   if (event.key === "Escape") {
     if (state.sharedProposalWorkspaceOpen) {
       closeContextRoomSecondaryView();
@@ -24000,6 +24108,15 @@ document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-context-hub-abandon-recovery]");
   if (!button || IS_HOSTED_CONTEXT_ROOM || state.sharedRecoveryBusy) return;
   showContextHubAbandonRecoveryDialog(button);
+});
+el("contextHubProjectsPanel")?.addEventListener("click", (event) => {
+  if (event.target.closest("[data-context-hub-project-goto]")) {
+    openContextHubProjectPicker(null, { purpose: "open" });
+    return;
+  }
+  const button = event.target.closest("[data-context-hub-project-destination]");
+  if (!button) return;
+  openContextHubProjectDestination(button.dataset.projectKey, button.dataset.contextHubProjectDestination).catch((error) => setStatus(error.message));
 });
 el("contextHubProjectPicker")?.addEventListener("click", (event) => {
   const closeButton = event.target.closest("[data-context-hub-project-picker-close]");
@@ -24549,7 +24666,7 @@ document.addEventListener("keydown", (event) => {
     el("sharedProposalSearch")?.focus();
     return;
   }
-  if (!["j", "k"].includes(event.key) || ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return;
+  if (!["j", "k"].includes(event.key) || event.metaKey || event.ctrlKey || ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return;
   const promptMode = state.contextHubView === "codex-prompts";
   const buttons = [...document.querySelectorAll(promptMode ? "[data-codex-prompt-target]" : "[data-context-hub-item]")];
   if (!buttons.length) return;
