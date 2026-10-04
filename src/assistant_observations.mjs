@@ -89,7 +89,7 @@ export class AssistantObservations {
       image = frame.image; metadata = { kind: 'notebook', resourceId: frame.resourceId, locationRevision: frame.locationRevision, revision: frame.revision,
         viewport: [...frame.viewport], selection: [...frame.selection], image: previewImage(image) };
     } else {
-      keys(frame, ['baseHash', 'text', 'offset', 'totalLength', 'selection']);
+      keys(frame, ['baseHash', 'text', 'offset', 'totalLength', 'selection', 'sketch']);
       if (frame.baseHash !== current.currentHash) throw fault('assistant_observation_source', 'The saved original document changed. Refresh before sharing its draft.');
       if (typeof frame.text !== 'string' || frame.text.length > 20000 || !Number.isSafeInteger(frame.offset) || frame.offset < 0
         || !Number.isSafeInteger(frame.totalLength) || frame.totalLength < frame.offset + frame.text.length || frame.totalLength > 2_000_000)
@@ -99,7 +99,10 @@ export class AssistantObservations {
         if (!Number.isSafeInteger(frame.selection.start) || !Number.isSafeInteger(frame.selection.end) || frame.selection.start < 0 || frame.selection.end < frame.selection.start || frame.selection.end > frame.totalLength)
           throw fault('assistant_observation_frame', 'Use an exact original draft selection.', 400);
       }
-      metadata = { kind: 'document', ...structuredClone(frame) };
+      // A sketch sheet is a read-only picture for the conversation: never a file, never a write target.
+      const { sketch, ...excerpt } = frame;
+      if (sketch !== undefined) image = sketch;
+      metadata = { kind: 'document', ...structuredClone(excerpt), ...(sketch !== undefined ? { sketch: previewImage(sketch) } : {}) };
     }
     stream.sequence = input.sequence; stream.expiresAt = this.now() + OBSERVATION_LEASE_MS;
     stream.frame = { metadata, image, receivedAt: this.now() }; return this.public(stream);

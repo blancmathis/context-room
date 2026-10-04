@@ -99,6 +99,13 @@ preview; closing the notebook, leaving the foreground, closing the conversation
 or switching to direct dictation stops this surface's sharing. Reload does not
 restart it.
 
+A document conversation also has **Sketch sheet**: a blank drawing area in the
+panel. While the sheet is open, has ink and the source is shared, the preview
+carries its image, and the status says **Sketch sheet included.** Codex can, for
+example, turn a drawn flow into a Mermaid block in a proposal. The sheet is
+read-only context: it is never saved, never a file and never a write target.
+Closing it stops sending it; **Clear sheet** erases it. Notebooks do not show it.
+
 The Mac holds at most eight active previews in memory. They expire after five
 seconds without renewal. Images are limited to 1024 pixels per side and one MiB;
 document excerpts to 20,000 characters. Each frame rechecks the original project,

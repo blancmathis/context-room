@@ -88,3 +88,36 @@ export function documentDraftPreview(text, baseHash, selection = null) {
   const offset = Math.max(0, Math.min(text.length - 20000, (selection?.start || 0) - 10000));
   return { text: text.slice(offset, offset + 20000), baseHash, offset, totalLength: text.length, selection };
 }
+
+/** A read-only drawing sheet for a document conversation. It is never a file and never a write target. */
+export function createSketchSheet({ onChange = () => {} } = {}) {
+  const make = (tag, text = '', className = '') => { const node = document.createElement(tag); node.textContent = text; node.className = className; return node; };
+  const section = make('section', '', 'assistant-sheet'); section.hidden = true; section.setAttribute('aria-label', 'Sketch sheet');
+  const canvas = make('canvas'); canvas.width = 960; canvas.height = 640;
+  canvas.setAttribute('role', 'img'); canvas.setAttribute('aria-label', 'Sketch sheet drawing area');
+  const context = canvas.getContext('2d'), status = make('p', '', 'assistant-sheet-status'); status.setAttribute('role', 'status');
+  const sheet = { section, canvas, status, inked: false, cached: null, get open() { return !section.hidden; } };
+  const blank = () => { context.fillStyle = '#fff'; context.fillRect(0, 0, canvas.width, canvas.height); };
+  const point = event => { const box = canvas.getBoundingClientRect(); return { x: (event.clientX - box.left) * canvas.width / box.width, y: (event.clientY - box.top) * canvas.height / box.height }; };
+  let last = null;
+  function stroke(from, to) {
+    Object.assign(context, { strokeStyle: '#111', lineWidth: 4, lineCap: 'round', lineJoin: 'round' });
+    context.beginPath(); context.moveTo(from.x, from.y); context.lineTo(to.x + (from === to ? .01 : 0), to.y); context.stroke();
+    const first = !sheet.inked; sheet.inked = true; sheet.cached = null; if (first) onChange();
+  }
+  canvas.addEventListener('pointerdown', event => { if (event.button > 0) return; event.preventDefault(); canvas.setPointerCapture?.(event.pointerId); last = point(event); stroke(last, last); });
+  canvas.addEventListener('pointermove', event => { if (!last) return; event.preventDefault(); const next = point(event); stroke(last, next); last = next; });
+  for (const name of ['pointerup', 'pointercancel']) canvas.addEventListener(name, () => { last = null; });
+  const action = (text, run) => { const node = make('button', text); node.type = 'button'; node.addEventListener('click', run); return node; };
+  const controls = make('div', '', 'assistant-controls');
+  controls.append(action('Clear sheet', () => { blank(); sheet.inked = false; sheet.cached = null; onChange(); }), action('Close sheet', () => sheet.toggle(false)));
+  section.append(canvas, status, controls); blank();
+  sheet.toggle = (open = !sheet.open) => { section.hidden = !open; if (!open) last = null; onChange(); };
+  /** The image Codex may see: only while the sheet is open and has ink. */
+  sheet.sketch = () => {
+    if (!sheet.open || !sheet.inked) return undefined;
+    if (!sheet.cached) { sheet.cached = canvas.toDataURL('image/png'); if (sheet.cached.length > 1_398_130) sheet.cached = canvas.toDataURL('image/jpeg', .8); }
+    return sheet.cached;
+  };
+  return sheet;
+}

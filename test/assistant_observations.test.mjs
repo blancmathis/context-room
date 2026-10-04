@@ -94,3 +94,18 @@ test('the number of live preview streams stays bounded and expiry frees capacity
   at += OBSERVATION_LEASE_MS; o.control('original', other); assert.equal(o.streams.size, 1);
   o.close(); assert.equal(o.streams.size, 0);
 });
+
+test('a document preview can carry a bounded read-only sketch sheet that reaches Codex as an image', () => {
+  const f = fixture('document'), o = f.observation, owned = f.begin();
+  o.publish('original', { ...owned, sequence: 1, frame: { ...f.frame, sketch: png } });
+  const read = o.read('original', f.conversationId);
+  assert.equal(read.text, f.frame.text); assert.equal(read.sketch.mimeType, 'image/png'); assert.equal(read.sketch.width, 1); assert.equal(read.accepted, false);
+  const content = codexToolContent(withSourceObservation({ path: 'docs/Original.md', accepted: false }, read));
+  assert.deepEqual(content[1], { type: 'inputImage', imageUrl: png });
+  assert.equal(JSON.stringify(content[0]).includes(png), false);
+  o.publish('original', { ...owned, sequence: 2, frame: f.frame });
+  assert.equal(o.read('original', f.conversationId).sketch, undefined, 'Closing the sheet stops sharing it');
+  assert.equal(codexToolContent(withSourceObservation({ accepted: false }, o.read('original', f.conversationId))).length, 1);
+  assert.throws(() => o.publish('original', { ...owned, sequence: 3, frame: { ...f.frame, sketch: 'data:image/gif;base64,R0lGOD' } }), { code: 'assistant_observation_image' });
+  assert.throws(() => o.publish('original', { ...owned, sequence: 4, frame: { ...f.frame, sketch: png, extra: true } }), { code: 'assistant_observation_input' });
+});
