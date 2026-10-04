@@ -9,6 +9,7 @@ import { buildDocQaReport, buildDocumentationGraph, buildReadOnlyDocumentationRe
 import { collectInlinePathReferences, collectMermaidDocumentLinks, parseContextRoomUri, parseDocMetadata } from "./doc_metadata.mjs";
 import { inspectDocumentMetadata, loadMetadataProfiles, valueAtPath } from "./document_metadata_engine.mjs";
 import { buildContextCoverage, groupDocumentSearchResults } from "./product_compression.mjs";
+import { DOCUMENTATION_MAP_END, DOCUMENTATION_MAP_START } from "./doc_map_block.mjs";
 import {
   readSharedDocumentationProposalDocuments,
   readAcceptedSharedMetadataProfiles,
@@ -771,6 +772,72 @@ export function searchDocumentation(root = process.cwd(), query = "", options = 
         excluded.notCurrent ? `${excluded.notCurrent} matching document${excluded.notCurrent === 1 ? " is" : "s are"} not current (use --status with its state).` : "",
       ].filter(Boolean).join(" "),
     } : {}),
+  };
+}
+
+const DOCUMENTATION_MAP_ROLES = [["current", "Reference"], ["target", "Plans"], ["other", "History"]];
+const MAP_SUMMARY_MAX_CHARS = 140;
+
+function mapDocumentTitle(document) {
+  const heading = document.sections.find((section) => section.level === 1)?.heading
+    || document.sections.find((section) => section.level > 0)?.heading;
+  const declared = documentMetadataRaw(document).title;
+  return String((typeof declared === "string" && declared) || heading || path.basename(document.path)).replace(/\s+/g, " ").trim();
+}
+
+function mapDocumentSummary(document) {
+  const raw = documentMetadataRaw(document);
+  const declared = raw.summary || raw.description;
+  let text = typeof declared === "string" ? declared : "";
+  if (!text) {
+    // The first prose paragraph; headings, lists, tables, code and HTML are not a summary.
+    const body = String(document.content || "").replace(/```[\s\S]*?```/g, "");
+    text = body.split(/\n[ \t]*\n/).map((part) => part.trim())
+      .find((part) => part && !/^(#{1,6}\s|[-*+]\s|\d+[.)]\s|\||<|>|---|===)/.test(part)) || "";
+  }
+  text = text.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[`*_]/g, "").replace(/\s+/g, " ").trim();
+  const sentence = text.match(/^.+?[.!?](?=\s|$)/)?.[0] || text;
+  return sentence.length > MAP_SUMMARY_MAX_CHARS ? sentence.slice(0, MAP_SUMMARY_MAX_CHARS - 1).trimEnd() + "…" : sentence;
+}
+
+// One deterministic line per accepted document, grouped by role, in a block an
+// AGENTS.md can hold. The map never lists an unreviewed document.
+export function buildDocumentationMap(root = process.cwd(), options = {}) {
+  const corpus = options.corpus || buildDocumentationCorpus(root, { ...options, acceptedOnly: true, readOnly: true });
+  const documents = corpus.documents.filter((document) => ["markdown", "html"].includes(document.format)
+    && document.reviewStatus === "accepted"
+    && document.source !== "session-proposal"
+    && document.kind !== "agents"
+    && !document.path.startsWith("_shared/"));
+  const groups = DOCUMENTATION_MAP_ROLES.map(([truthState, role]) => ({
+    role,
+    entries: documents
+      .filter((document) => truthState === "other" ? !["current", "target"].includes(document.truthState) : document.truthState === truthState)
+      .sort((left, right) => left.path.localeCompare(right.path, "en"))
+      .map((document) => ({ path: document.path, title: mapDocumentTitle(document), summary: mapDocumentSummary(document) })),
+  })).filter((group) => group.entries.length);
+  const excludedUnreviewed = (corpus.excludedUnreviewed || []).length;
+  const lines = [
+    DOCUMENTATION_MAP_START,
+    "## Documentation map",
+    "",
+    "Accepted documents, one line each. Read one with `context-room docs read <path>`.",
+  ];
+  for (const group of groups) {
+    lines.push("", `### ${group.role}`, "");
+    for (const entry of group.entries) lines.push(`- [${entry.title.replace(/[[\]]/g, "")}](${encodeURI(entry.path)})${entry.summary ? `: ${entry.summary}` : ""}`);
+  }
+  if (!groups.length) lines.push("", "No accepted document yet.");
+  lines.push(DOCUMENTATION_MAP_END);
+  const markdown = lines.join("\n") + "\n";
+  return {
+    schemaVersion: "context-room.docs-map/1",
+    revision: corpus.revision,
+    documents: documents.length,
+    groups,
+    excluded: { unreviewed: excludedUnreviewed },
+    estimatedTokens: estimateTokens(markdown),
+    markdown,
   };
 }
 

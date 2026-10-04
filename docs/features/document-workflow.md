@@ -57,6 +57,12 @@ Application checks the project identity, scope, exact base, file mode, paths and
 
 Each file still gets its own human decision. Accept every file of the move together: a partial decision leaves dead links, and `doctor` reports them. Pending documents are outside the proposal and keep their old links; the result lists them in `notRewritten`.
 
+### Documentation map
+
+`docs map` prints one line per accepted Markdown or HTML document: title, path, and the declared summary or first sentence. Lines are grouped as Reference, Plans, and History by the truth model. Unreviewed documents are counted, never listed. The output is deterministic.
+
+`docs map --propose` writes the map between the `context-room:docs-map` markers of `AGENTS.md` (or `--file`), as one submitted local proposal built on the accepted version. Text outside the markers is unchanged. When the block is already current, no proposal is created.
+
 ## Direct changes
 
 Existing workflows may still edit original files outside a proposal. Context Room detects changed watched files and keeps their accepted baseline separately. Human rejection restores that baseline, removes a newly added file, or restores a deletion/rename as appropriate, while preserving rejected content for recovery. It blocks a stale decision or incompatible staged Git state before changing bytes.

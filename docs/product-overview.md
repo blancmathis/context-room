@@ -67,6 +67,8 @@ Local Settings controls project configuration, device preferences, Shared connec
 
 `context-room docs`, Context Engine commands, doctor, guard, brief, settings plans, and the CLI registry are deterministic. `docs search`, `docs read`, and `docs inspect` read accepted documentation directly. The integrated researcher has been removed. Agent commands do not accept or reject reviews.
 
+`--budget` on `docs search`, `brief`, and `context bundle` bounds the whole printed output, envelope included. Indented JSON becomes compact JSON when needed; then the least useful items are left out, and `outputBudget` says which ones. A budget too small for the envelope fails with the minimum to use. `brief [task]` prints startup context, accepted documents to read first, pending reviews, and high health issues; it lists only accepted documents and counts the others.
+
 ## Runtime profiles
 
 | Profile | Data scope | Main purpose |

@@ -10,6 +10,7 @@ import { attachLisiereRecording, recordingTargetFromResolved } from './lisiere_r
 import { AssistantSessions } from './assistant_sessions.mjs';
 import { createAssistantSourceResolver } from "./assistant_sources.mjs";
 import { notebookHash, readNotebookBytes, writeNotebookBytes, makeNotebookDirectory } from "./notebook_io.mjs";
+import { withDocumentationMapBlock } from "./doc_map_block.mjs";
 import { submitNotebookShared } from "./notebook_workflow.mjs";
 import { NOTEBOOK_WEB_ASSETS } from "./notebook_web_assets.mjs";
 import { NOTEBOOK_LIMITS } from "./notebook_protocol.mjs";
@@ -8002,6 +8003,37 @@ export function proposeDocumentMove(root, { from = "", to = "", dryRun = false }
     movedDocumentLinks: applied.moved.links };
 }
 
+// Write a documentation map (from buildDocumentationMap) into its marked block of an
+// instruction file, as one submitted local proposal built on the accepted version.
+export function proposeDocumentationMap(root, { map, target = "AGENTS.md", dryRun = false } = {}) {
+  const rel = normalizeRelPath(String(target || ""));
+  if (!rel || rel.startsWith("~") || path.isAbsolute(rel) || rel.split("/").some((part) => !part || part === "." || part === "..") || !/\.md$/i.test(rel)) {
+    throw sharedRequestError("docs map --propose needs a relative Markdown path inside the project.", 400, "docs_map_path");
+  }
+  if (!map?.markdown) throw sharedRequestError("docs map --propose needs a built map.", 400, "docs_map_missing");
+  const settings = readMemoryWebappSettings(root);
+  if (!canEditLocalProposalPath(root, rel, settings)) throw sharedRequestError(`${rel} must be an editable path for local proposals.`, 403, "docs_map_scope");
+  const accepted = acceptedLocalProposalFiles(root, settings).find((file) => file.path === rel);
+  if (!accepted && fs.existsSync(path.join(root, rel))) throw sharedRequestError(`Only an accepted ${rel} can receive the map. Review it first.`, 409, "docs_map_unaccepted");
+  const before = accepted ? (Buffer.isBuffer(accepted.content) ? accepted.content.toString("utf8") : String(accepted.content)) : "";
+  const summary = { target: rel, documents: map.documents, estimatedTokens: map.estimatedTokens, changed: withDocumentationMapBlock(before, map.markdown) !== before };
+  if (dryRun || !summary.changed) return { dryRun, ...summary };
+  const proposal = createLocalDocumentationProposal(root, {
+    title: `Update the documentation map in ${rel}`,
+    description: `Writes the map of ${map.documents} accepted document${map.documents === 1 ? "" : "s"} between the context-room:docs-map markers. Text outside the markers is unchanged.`,
+  });
+  // Rebuild on the proposal's own base copy, so an acceptance in between is never overwritten.
+  const previous = readNotebookBytes(proposal.editRoot, rel, MAX_FILE_BYTES);
+  let mode = 0o644;
+  try { mode = fs.statSync(path.join(proposal.editRoot, rel)).mode & 0o777; } catch {}
+  const next = withDocumentationMapBlock(previous ? previous.toString("utf8") : "", map.markdown);
+  const parent = path.posix.dirname(rel);
+  if (parent !== ".") makeNotebookDirectory(proposal.editRoot, parent);
+  writeNotebookBytes(proposal.editRoot, rel, Buffer.from(next), { expectedHash: previous ? notebookHash(previous) : null, mode });
+  const submitted = submitLocalDocumentationProposal(root, proposal.id);
+  return { dryRun: false, proposalId: submitted.id, status: submitted.status, scope: "local", accepted: false, ...summary };
+}
+
 export function submitLocalDocumentationProposal(root, id, { expectedDraftRevision } = {}) {
   const settings = readMemoryWebappSettings(root);
   return submitLocalProposal(root, id, { expectedDraftRevision, canWrite: (rel) => canEditLocalProposalPath(root, rel, settings) });
@@ -11392,50 +11424,80 @@ export function buildContextRoomReports(root = process.cwd(), { readOnly = false
   };
 }
 
-export function buildAgentBrief(root = process.cwd(), { task = "", limit = 12, readOnly = false } = {}) {
+export function buildAgentBrief(root = process.cwd(), options = {}) {
+  return renderAgentBrief(buildAgentBriefSections(root, options));
+}
+
+// acceptedOnly lists only human-accepted documents under Read First and counts the rest.
+export function buildAgentBriefSections(root = process.cwd(), { task = "", limit = 12, readOnly = false, acceptedOnly = false } = {}) {
   const graph = buildDocumentationGraph(root, { readOnly });
   const docqa = buildDocQaReport(root, { readOnly });
   const terms = tokenizeBriefTask(task);
-  const scored = graph.nodes
+  let scored = graph.nodes
     .map((node) => ({ node, score: scoreBriefNode(node, terms) }))
     .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score || a.node.path.localeCompare(b.node.path, "fr"))
-    .slice(0, Math.max(1, Number(limit) || 12));
+    .sort((a, b) => b.score - a.score || a.node.path.localeCompare(b.node.path, "fr"));
+  let excluded = 0;
+  if (acceptedOnly) {
+    const accepted = new Set((buildReadOnlyDocumentationReviewSnapshot(root)?.acceptedFiles || []).map((file) => file.path));
+    excluded = scored.filter((item) => !accepted.has(item.node.path)).length;
+    scored = scored.filter((item) => accepted.has(item.node.path));
+  }
+  scored = scored.slice(0, Math.max(1, Number(limit) || 12));
+  return {
+    task: String(task || ""),
+    acceptedOnly: Boolean(acceptedOnly),
+    startup: (graph.startupContext || []).map((file) => `${file.startupContext.order}. ${file.startupContext.fileName}: ${file.startupContext.displayPath}`),
+    readFirst: scored.map(({ node }) => {
+      const meta = node.metadata;
+      const status = ["target", "record"].includes(meta.truthState) ? meta.truthState : meta.present && meta.statusValid ? meta.status : "unclassified";
+      return `${node.path} (${meta.kind}, ${status}, scope: ${meta.scope})${node.summary ? ` - ${node.summary}` : ""}`;
+    }),
+    excluded,
+    reviewPending: docqa.queue.length,
+    reviewWarnings: docqa.queue.slice(0, 8).map((item) => `${item.gitStatus.trim() || "changed"} ${item.path}`),
+    healthIssues: graph.healthIssues.filter((issue) => ["critical", "high"].includes(issue.severity)).slice(0, 8)
+      .map((issue) => `[${issue.severity}] ${issue.path ? `${issue.path}: ` : ""}${issue.message}`),
+  };
+}
+
+// budget: the report from fitToTokenBudget, so the brief says what it left out.
+export function renderAgentBrief(sections, { budget = null } = {}) {
   const lines = [];
   lines.push(`# Context Room Brief`);
-  if (task) lines.push(`Task: ${task}`);
+  if (sections.task) lines.push(`Task: ${sections.task}`);
   lines.push("");
   lines.push("## Startup Context");
-  const startup = graph.startupContext || [];
-  if (startup.length) {
-    for (const file of startup) lines.push(`- ${file.startupContext.order}. ${file.startupContext.fileName}: ${file.startupContext.displayPath}`);
+  if (sections.startup.length) {
+    for (const line of sections.startup) lines.push(`- ${line}`);
   } else {
     lines.push("- No startup context files detected or scanner disabled.");
   }
   lines.push("");
   lines.push("## Read First");
-  if (scored.length) {
-    for (const { node } of scored) {
-      const meta = node.metadata;
-      const status = ["target", "record"].includes(meta.truthState) ? meta.truthState : meta.present && meta.statusValid ? meta.status : "unclassified";
-      lines.push(`- ${node.path} (${meta.kind}, ${status}, scope: ${meta.scope})${node.summary ? ` - ${node.summary}` : ""}`);
-    }
+  if (sections.readFirst.length) {
+    for (const line of sections.readFirst) lines.push(`- ${line}`);
   } else {
-    lines.push("- No matching docs. Start from the hub/index docs.");
+    lines.push(sections.acceptedOnly ? "- No matching accepted docs. Start from the hub/index docs." : "- No matching docs. Start from the hub/index docs.");
   }
+  if (sections.excluded) lines.push(`- ${sections.excluded} matching document${sections.excluded === 1 ? " is" : "s are"} not reviewed yet and left out.`);
   lines.push("");
   lines.push("## Review Warnings");
-  if (docqa.queue.length) {
-    lines.push(`- ${docqa.queue.length} watched changed file(s) still need review.`);
-    for (const item of docqa.queue.slice(0, 8)) lines.push(`- ${item.gitStatus.trim() || "changed"} ${item.path}`);
+  if (sections.reviewPending) {
+    lines.push(`- ${sections.reviewPending} watched changed file(s) still need review.`);
+    for (const line of sections.reviewWarnings) lines.push(`- ${line}`);
   } else {
     lines.push("- No watched documentation changes are pending review.");
   }
-  const highIssues = graph.healthIssues.filter((issue) => ["critical", "high"].includes(issue.severity)).slice(0, 8);
-  if (highIssues.length) {
+  if (sections.healthIssues.length) {
     lines.push("");
     lines.push("## Health Issues");
-    for (const issue of highIssues) lines.push(`- [${issue.severity}] ${issue.path ? `${issue.path}: ` : ""}${issue.message}`);
+    for (const line of sections.healthIssues) lines.push(`- ${line}`);
+  }
+  const leftOut = Object.entries(budget?.trimmed || {}).filter(([, count]) => count);
+  if (leftOut.length) {
+    lines.push("");
+    lines.push(`Left out to fit ${budget.requested} tokens: ${leftOut.map(([name, count]) => `${count} ${name}`).join(", ")}. Raise --budget to see them.`);
   }
   return `${lines.join("\n")}\n`;
 }

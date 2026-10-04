@@ -23,7 +23,9 @@ import {
 } from "../src/agent_cli.mjs";
 import { cliCapabilities, cliEnvelope, cliErrorEnvelope, ContextRoomCliError, projectCliData } from "../src/cli_contract.mjs";
 import { appendContextRoomEvent, contextRoomEventJournalPath, readContextRoomEvents } from "../src/event_journal.mjs";
-import { initializeContextRoomProject, writeMemoryWebappSettings } from "../src/context_room.mjs";
+import { initializeContextRoomProject, writeDocReviewDecision, writeMemoryWebappSettings } from "../src/context_room.mjs";
+import { fitToTokenBudget } from "../src/agent_budget.mjs";
+import { estimateTokens } from "../src/documentation.mjs";
 
 function git(root, args) {
   return execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -315,4 +317,54 @@ test("context bundle succeeds under a macOS sandbox denying all file writes", { 
   assert.equal(envelope.freshness.cache, "unavailable");
   assert.equal(envelope.data.documentation.accepted.length, 0);
   assert.ok(envelope.data.review.items.some((item) => item.path === "docs/guide.md"));
+});
+
+test("fitToTokenBudget drops the least useful items first and reports what it left out", () => {
+  const value = { data: { minor: Array.from({ length: 30 }, (_, index) => `minor-${index}`), major: ["keep-a", "keep-b"] } };
+  const render = (current, report) => JSON.stringify({ ...current, report });
+  const { output, report } = fitToTokenBudget(value, { budget: 60, render, trimmers: ["data.minor", "data.major"] });
+  assert.ok(estimateTokens(output) <= 60);
+  assert.equal(report.fits, true);
+  assert.ok(report.trimmed["data.minor"] > 0);
+  assert.equal(report.trimmed["data.major"], undefined);
+  assert.deepEqual(JSON.parse(output).report, report);
+  assert.deepEqual(JSON.parse(output).data.major, ["keep-a", "keep-b"]);
+});
+
+test("context bundle, docs search and brief keep the whole printed output within --budget", (t) => {
+  const { root, parent } = fixture(t);
+  registerCliProject({ root, title: "Budget" });
+  writeDocReviewDecision(root, "docs/guide.md", { status: "verified" });
+  fs.writeFileSync(path.join(root, "docs", "guide-draft.md"), "# Guide draft\n\nNot reviewed yet.\n");
+  const run = (...args) => spawnSync(process.execPath, [path.resolve("bin/context-room.mjs"), ...args], {
+    cwd: fs.realpathSync(root), encoding: "utf8", timeout: 120_000,
+    env: { ...process.env, CONTEXT_ROOM_SHARED_HOME: path.join(parent, "shared") },
+  });
+  const within = (output, budget) => assert.ok(estimateTokens(output) <= budget, `${estimateTokens(output)} tokens over ${budget}`);
+
+  const bundle = run("context", "bundle", "--task", "Guide", "--budget", "1200", "--format", "json");
+  assert.equal(bundle.status, 0, bundle.stderr || bundle.stdout);
+  within(bundle.stdout, 1200);
+  assert.deepEqual([JSON.parse(bundle.stdout).data.outputBudget.requested, JSON.parse(bundle.stdout).data.outputBudget.fits], [1200, true]);
+
+  const tight = run("context", "bundle", "--task", "Guide", "--budget", "256", "--format", "json");
+  if (tight.status === 0) within(tight.stdout, 256);
+  else {
+    assert.equal(tight.status, 2);
+    assert.match(tight.stderr + tight.stdout, /budget-too-small/);
+    assert.match(tight.stderr + tight.stdout, /Use --budget \d+ or more/);
+  }
+
+  const search = run("docs", "search", "Guide", "--budget", "256");
+  assert.equal(search.status, 0, search.stderr || search.stdout);
+  within(search.stdout, 256);
+  assert.equal(JSON.parse(search.stdout).outputBudget.fits, true);
+
+  const brief = run("brief", "guide", "--budget", "256");
+  assert.equal(brief.status, 0, brief.stderr || brief.stdout);
+  within(brief.stdout, 256);
+  assert.match(brief.stdout, /^# Context Room Brief/);
+  assert.match(brief.stdout, /- docs\/guide\.md /);
+  assert.doesNotMatch(brief.stdout.split("## Review Warnings")[0], /guide-draft/, "Read First lists accepted documents only");
+  assert.match(brief.stdout, /not reviewed yet and left out/);
 });
