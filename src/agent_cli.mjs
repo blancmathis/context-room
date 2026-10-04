@@ -2768,6 +2768,9 @@ export function renderAgentCliHuman(command, payload) {
     return (data.projects || []).map((project) => `${project.title} · ${project.locations.length} location${project.locations.length === 1 ? "" : "s"}\n${project.locations.map((item) => `  ${item.branch || "no branch"} · ${item.root}`).join("\n")}`).join("\n\n") + "\n";
   }
   if (command === "agent.instructions") return String(data.prompt || "") + "\n";
+  if (command === "docs.map") return data.proposal
+    ? `${data.proposal.changed ? data.proposal.dryRun ? "Would update" : `Proposed ${data.proposal.proposalId} for` : "Already current:"} ${data.proposal.target} (${data.documents} documents, ≈${data.estimatedTokens} tokens)\n`
+    : String(data.markdown || "");
   if (command === "review.list") return `${data.queue.length} file review${data.queue.length === 1 ? "" : "s"} awaiting a human decision\n` + data.queue.map((item) => `- ${item.reason} ${item.path}`).join("\n") + `\n\n${HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction}\n`;
   if (command === "events") return (data.events || []).map((event) => `${event.occurredAt} ${event.type} ${event.resource?.path || event.resource?.proposal || ""}`.trim()).join("\n") + "\n";
   return JSON.stringify(data, null, 2) + "\n";

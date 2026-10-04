@@ -7,11 +7,11 @@ import { execFileSync } from "node:child_process";
 import { initializeContextRoomProject, writeMemoryWebappSettings, readMemoryWebappSettings, writeDocReviewBaseline, writeDocReviewDecision, readMemoryFile, readFileDiff,
   revertMemoryFile, saveHumanReviewedFile, buildDocQaReport, createLocalDocumentationProposal,
   submitLocalDocumentationProposal, reviewLocalDocumentationProposal, contextHubUiState, runAuthorizedReviewCleanup,
-  createMemoryServer, listStartupContextFiles, readStartupContextFile, readStartupSkillFile, rejectDirectDocumentationChange, proposeDocumentMove } from "../src/context_room.mjs";
+  createMemoryServer, listStartupContextFiles, readStartupContextFile, readStartupSkillFile, rejectDirectDocumentationChange, proposeDocumentMove, proposeDocumentationMap } from "../src/context_room.mjs";
 import { writeReviewCleanupPolicy, recentReviewCleanupReceipts } from "../src/review_cleanup.mjs";
 import { registerContextHubProject } from "../src/context_hub.mjs";
 import { inspectLocalProposal } from "../src/local_proposals.mjs";
-import { buildDocumentationCorpus } from "../src/documentation.mjs";
+import { buildDocumentationCorpus, buildDocumentationMap } from "../src/documentation.mjs";
 
 function fixture(t) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "cr-document-workflow-")), root = path.join(base, "project");
@@ -226,4 +226,43 @@ test("an authorized automatic cleanup really rejects old local proposals and kee
   assert.equal(inspectLocalProposal(root, draft.id).changes[0].decision.status, "rejected");
   assert.match(fs.readFileSync(path.join(root, "docs/a.md"), "utf8"), /Accepted a/);
   assert.equal(recentReviewCleanupReceipts(root)[0].applied, 1);
+});
+
+test("docs map lists each accepted document once and proposes it as a reviewed AGENTS.md block", (t) => {
+  const root = fixture(t);
+  fs.writeFileSync(path.join(root, "AGENTS.md"), "# Agents\n\nKeep this rule.\n");
+  writeMemoryWebappSettings(root, { allowedPaths: ["docs/", "AGENTS.md"], watchAllow: ["docs/", "AGENTS.md"] });
+  writeDocReviewDecision(root, "AGENTS.md", { status: "verified" });
+  fs.mkdirSync(path.join(root, "docs/lifecycle/changes/active"), { recursive: true });
+  fs.mkdirSync(path.join(root, "docs/decisions"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs/lifecycle/changes/active/next.md"), "# Next steps\n\nShip the map. Then measure it.\n");
+  fs.writeFileSync(path.join(root, "docs/decisions/map.md"), "---\ntitle: Keep one map\nsummary: The map lives in AGENTS.md.\n---\n\n# Decision\n");
+  for (const rel of ["docs/lifecycle/changes/active/next.md", "docs/decisions/map.md"]) writeDocReviewDecision(root, rel, { status: "verified" });
+  fs.writeFileSync(path.join(root, "docs/c.md"), "# c\n\nPending.\n");
+
+  const map = buildDocumentationMap(root);
+  assert.equal(map.documents, 4);
+  assert.deepEqual(map.groups.map((group) => [group.role, group.entries.map((entry) => entry.path)]), [
+    ["Reference", ["docs/a.md", "docs/b.md"]], ["Plans", ["docs/lifecycle/changes/active/next.md"]], ["History", ["docs/decisions/map.md"]],
+  ]);
+  assert.deepEqual(map.groups[1].entries[0], { path: "docs/lifecycle/changes/active/next.md", title: "Next steps", summary: "Ship the map." });
+  assert.deepEqual(map.groups[2].entries[0], { path: "docs/decisions/map.md", title: "Keep one map", summary: "The map lives in AGENTS.md." });
+  assert.equal(map.excluded.unreviewed, 1);
+  assert.doesNotMatch(map.markdown, /docs\/c\.md/);
+  assert.match(map.markdown, /^<!-- context-room:docs-map -->\n## Documentation map\n/);
+  assert.deepEqual(buildDocumentationMap(root).markdown, map.markdown, "the map is deterministic");
+
+  assert.deepEqual(proposeDocumentationMap(root, { map, dryRun: true }), { dryRun: true, target: "AGENTS.md", documents: 4, estimatedTokens: map.estimatedTokens, changed: true });
+  const proposed = proposeDocumentationMap(root, { map });
+  assert.equal(proposed.status, "submitted");
+  assert.equal(proposed.accepted, false);
+  assert.equal(fs.readFileSync(path.join(root, "AGENTS.md"), "utf8"), "# Agents\n\nKeep this rule.\n");
+  const proposal = inspectLocalProposal(root, proposed.proposalId);
+  assert.deepEqual(proposal.changes.map((change) => [change.path, change.kind]), [["AGENTS.md", "modified"]]);
+  reviewLocalDocumentationProposal(root, proposed.proposalId, { path: "AGENTS.md", decision: "accepted", expectedRevision: proposal.submittedRevision });
+  assert.equal(fs.readFileSync(path.join(root, "AGENTS.md"), "utf8"), "# Agents\n\nKeep this rule.\n\n" + map.markdown);
+  assert.equal(proposeDocumentationMap(root, { map: buildDocumentationMap(root) }).changed, false);
+  fs.writeFileSync(path.join(root, "AGENTS.md"), "# Pending edit\n");
+  assert.equal(proposeDocumentationMap(root, { map: buildDocumentationMap(root) }).changed, false, "the map builds on the accepted version");
+  assert.throws(() => proposeDocumentationMap(root, { map, target: "docs/c.md" }), /Only an accepted docs\/c\.md/);
 });

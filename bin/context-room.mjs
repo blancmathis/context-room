@@ -8,7 +8,7 @@ import { planLisiereCutover, applyLisiereCutover, changeCutoverMode } from '../s
 import { planStateMigration, applyStateMigration } from "../src/state_migration.mjs";
 import { exportLisiereSnapshot } from "../src/lisiere_snapshot.mjs";
 import { inspectLisiereSnapshot } from "../src/lisiere_inventory.mjs";
-import { migrateLisiereNotebook, migrateLisiereDraft, migrateLisiereConversation, migrateLisiereDrawingSession, reconcileLisiereNotebook, migrateLisiereRecording, proposeDocumentMove } from "../src/context_room.mjs";
+import { migrateLisiereNotebook, migrateLisiereDraft, migrateLisiereConversation, migrateLisiereDrawingSession, reconcileLisiereNotebook, migrateLisiereRecording, proposeDocumentMove, proposeDocumentationMap, buildAgentBriefSections, renderAgentBrief } from "../src/context_room.mjs";
 import {
   applyCliReviewAnnotation,
   applyAgentHandoff,
@@ -105,11 +105,13 @@ import {
 import {
   backlinksDocumentation,
   buildDocumentationCorpus,
+  buildDocumentationMap,
   dependenciesDocumentation,
   diagramsDocumentation,
   inspectDocumentation,
   linksDocumentation,
   metadataDocumentation,
+  normalizeContextBudget,
   readDocumentation,
   relatedDocumentation,
   resolveDocumentationProjectRoot,
@@ -118,6 +120,7 @@ import {
   validateDocumentation,
 } from "../src/documentation.mjs";
 import { recordDocumentationRead } from "../src/documentation_readers.mjs";
+import { COMPACT_SEARCH_RESULT, CONTEXT_BUNDLE_TRIMMERS, fitToTokenBudget } from "../src/agent_budget.mjs";
 import {
   appendAgentAnnotation,
   buildContextRoomDoctorReport,
@@ -335,7 +338,7 @@ async function flushAndExit(code = 0) {
 const KNOWN_OPTIONS = new Set([
   "cutover-lisiere", "legacy-plist", "rollback-cutover", "resume-cutover", "legacy-recording", "conversation-id", "reconcile-lisiere", "recovery-view", "mac-snapshot", "legacy-actor", "export-lisiere", "import-lisiere", "inspect-lisiere", "legacy-board", "legacy-draft", "legacy-conversation", "legacy-session", "session-frame", "recordings", "output", "revision",
   "device-host", "device-port", "device-state", "device-browser-origin", "device-browser-cert", "device-browser-key",
-  "reader",
+  "reader", "propose",
   "action", "actionable", "advisory", "all", "all-projects", "allow", "allow-stale", "apply", "branch", "budget", "contract", "cursor", "cwd", "depth", "description", "detail", "document", "dry-run", "enabled", "exclude", "expand", "fields", "files", "folder", "follow", "format", "fresh", "from", "goal", "h", "heading", "help", "highlight", "hook", "include",
   "assignment", "change", "collection", "collection-path", "collection-title", "destination", "id", "include", "json", "kind", "limit", "message", "mode", "name", "no-restart", "note", "operation", "path", "percent", "port", "profile", "project", "projects", "provider", "providers", "query",
   "expected-revision", "file", "filter", "idempotency-key", "label", "location", "no-color", "no-local", "non-interactive", "only", "plan", "profile", "project", "projects-file", "proposal", "quiet", "reason", "recent", "repository", "resource", "root", "scope", "search", "section", "selector", "session", "set", "settings", "severity", "shared", "shared-project", "shell", "since", "skills", "source", "status", "strict", "summary", "target", "task", "text", "title", "to", "types", "verbose", "version", "view", "watch", "workspace",
@@ -345,7 +348,7 @@ function packageVersion() {
   return JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 }
 
-function emitAgentFirstResult(commandName, result, { format = "json", compactJson = false } = {}) {
+function renderAgentFirstOutput(commandName, result, { format = "json", compactJson = false } = {}) {
   const normalized = normalizeCliFormat(format, "json");
   const contract = args.contract && args.contract !== true ? String(args.contract).toLowerCase() : "v1";
   if (!["v1", "v2", "context-room.cli/1", "context-room.cli/2"].includes(contract)) throw new ContextRoomCliError("invalid-contract", "--contract must be v1 or v2.", { exitCode: 2 });
@@ -368,8 +371,32 @@ function emitAgentFirstResult(commandName, result, { format = "json", compactJso
   const output = normalized === "human"
     ? renderAgentCliHuman(commandName, envelope)
     : JSON.stringify(machinePayload, null, normalized === "json" && !compactJson ? 2 : 0) + "\n";
+  return { output, machinePayload };
+}
+
+function emitAgentFirstResult(commandName, result, options = {}) {
+  const { output, machinePayload } = renderAgentFirstOutput(commandName, result, options);
   fs.writeSync(1, output);
   return machinePayload;
+}
+
+// The whole printed output, envelope included, stays within the budget. Indented
+// first; compact JSON when trimming is needed; an error when even that cannot fit.
+// The report lands in data.outputBudget and says what was left out.
+function emitBudgetedAgentResult(commandName, result, { format, budget, trimmers, render = null }) {
+  const attempt = (compactJson) => fitToTokenBudget(structuredClone(result), {
+    budget,
+    trimmers,
+    render: render
+      ? (value, report) => render(value, report, compactJson)
+      : (value, report) => renderAgentFirstOutput(commandName, { ...value, data: { ...value.data, outputBudget: report } }, { format, compactJson }).output,
+  });
+  let fitted = attempt(false);
+  if (!fitted.report.fits || Object.keys(fitted.report.trimmed).length) fitted = attempt(true);
+  if (!fitted.report.fits) {
+    throw new ContextRoomCliError("budget-too-small", `${commandName} needs at least about ${fitted.report.estimatedTokens} tokens here. Use --budget ${fitted.report.estimatedTokens} or more.`, { exitCode: 2 });
+  }
+  fs.writeSync(1, fitted.output);
 }
 
 function machineContractRequested() {
@@ -694,6 +721,7 @@ const localReadOnlyDocumentationAction = documentationAction === "ask" || new Se
   "dependencies",
   "diagrams",
   "validate",
+  "map",
 ]).has(documentationAction);
 const agentPrepareCommand = command === "agent" && args._[1] === "prepare";
 const contextBundleCommand = command === "context" && args._[1] === "bundle";
@@ -1665,7 +1693,13 @@ if (command === "context") {
         const result = sharedOnlyContextBundle
           ? buildSharedOnlyAgentPrepare({ repository: explicitSharedRepository, projectId: explicitSharedProject, task, provider, fresh: Boolean(args.fresh), budget: args.budget })
           : buildAgentPrepareCached(agentFirstTarget, { task, provider, fresh: Boolean(args.fresh), budget: args.budget });
-        emitAgentFirstResult("context.bundle", result, { format: agentFirstFormat });
+        if (args.budget === undefined) emitAgentFirstResult("context.bundle", result, { format: agentFirstFormat });
+        else {
+          // Under a budget the review rule keeps its instruction, not the whole policy object.
+          const policy = result.data?.review?.humanDecisionPolicy;
+          if (policy?.instruction) result.data.review.humanDecisionPolicy = { instruction: policy.instruction };
+          emitBudgetedAgentResult("context.bundle", result, { format: agentFirstFormat, budget: normalizeContextBudget(args.budget), trimmers: CONTEXT_BUNDLE_TRIMMERS });
+        }
         process.exit(0);
       } else if (action === "effective") data = buildCliContextEffective(agentFirstTarget, common);
       else if (action === "explain") {
@@ -1824,6 +1858,14 @@ if (command === "docs") {
       emitAgentFirstResult("docs.move", { target: agentFirstTarget, data }, { format: agentFirstFormat });
       process.exit(0);
     }
+    if (action === "map") {
+      const mapRoot = agentFirstTarget?.root || root;
+      const map = buildDocumentationMap(mapRoot, documentationTargetOptions);
+      const file = typeof args.propose === "string" ? args.propose : args.file && args.file !== true ? String(args.file) : "AGENTS.md";
+      const data = args.propose ? { ...map, proposal: proposeDocumentationMap(mapRoot, { map, target: file, dryRun: args["dry-run"] === true }) } : map;
+      emitAgentFirstResult("docs.map", { target: agentFirstTarget, data }, { format: agentFirstFormat });
+      process.exit(0);
+    }
     if (action === "publish") {
       const changeId = args.change && args.change !== true ? String(args.change) : args._[2] || "";
       const data = publishDocumentationChange(changeId, {
@@ -1850,8 +1892,16 @@ if (command === "docs") {
         budget: args.budget,
         sessionId,
       }));
-      if (machineContractRequested()) emitAgentFirstResult("docs.search", { data }, { format: agentFirstFormat });
-      else writeStdout(JSON.stringify(data, null, 2));
+      // Groups repeat the results, so a tight budget drops them before any result.
+      const withGroups = (value, report) => ({ ...value.data, outputBudget: report });
+      emitBudgetedAgentResult("docs.search", { data }, {
+        format: agentFirstFormat,
+        budget: data.budget,
+        trimmers: ["data.groups", COMPACT_SEARCH_RESULT, "data.results"],
+        render: machineContractRequested()
+          ? (value, report, compactJson) => renderAgentFirstOutput("docs.search", { data: withGroups(value, report) }, { format: agentFirstFormat, compactJson }).output
+          : (value, report, compactJson) => JSON.stringify(withGroups(value, report), null, compactJson ? 0 : 2) + "\n",
+      });
       process.exit(0);
     }
     if (action === "read") {
@@ -1963,6 +2013,27 @@ if (command === "settings") {
     process.exit(0);
   } catch (error) {
     failAgentFirstCommand(`settings.${action}`, error, { format: agentFirstFormat, target: agentFirstTarget });
+  }
+}
+
+if (command === "brief") {
+  const briefFormat = args.format && args.format !== true ? String(args.format) : "human";
+  try {
+    const task = args.task && args.task !== true ? String(args.task) : args._.slice(1).join(" ").trim();
+    const sections = buildAgentBriefSections(root, { task, limit: args.limit, readOnly: true, acceptedOnly: true });
+    const human = normalizeCliFormat(briefFormat, "human") === "human";
+    emitBudgetedAgentResult("brief", { data: sections }, {
+      format: briefFormat,
+      budget: normalizeContextBudget(args.budget),
+      trimmers: ["data.healthIssues", "data.reviewWarnings", "data.readFirst", "data.startup"],
+      render: (value, report, compactJson) => {
+        const markdown = renderAgentBrief(value.data, { budget: report });
+        return human ? markdown : renderAgentFirstOutput("brief", { data: { task, markdown, outputBudget: report } }, { format: briefFormat, compactJson }).output;
+      },
+    });
+    process.exit(0);
+  } catch (error) {
+    failAgentFirstCommand("brief", error, { format: briefFormat });
   }
 }
 

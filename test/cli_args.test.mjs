@@ -110,7 +110,6 @@ test("redundant discovery and compatibility commands are not executable", () => 
     ["agent", "review-queue"],
     ["agent", "help"],
     ["agent", "instructions"],
-    ["brief"],
     ["hub", "start"],
     ["agent", "navigate"],
     ["shared", "list"],
