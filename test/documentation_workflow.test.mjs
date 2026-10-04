@@ -11,7 +11,7 @@ import { initializeContextRoomProject, writeMemoryWebappSettings, readMemoryWeba
 import { writeReviewCleanupPolicy, recentReviewCleanupReceipts } from "../src/review_cleanup.mjs";
 import { registerContextHubProject } from "../src/context_hub.mjs";
 import { inspectLocalProposal } from "../src/local_proposals.mjs";
-import { buildDocumentationCorpus, buildDocumentationMap } from "../src/documentation.mjs";
+import { buildDocumentationCorpus, buildDocumentationMap, buildDocumentationNavigation } from "../src/documentation.mjs";
 
 function fixture(t) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "cr-document-workflow-")), root = path.join(base, "project");
@@ -265,4 +265,29 @@ test("docs map lists each accepted document once and proposes it as a reviewed A
   fs.writeFileSync(path.join(root, "AGENTS.md"), "# Pending edit\n");
   assert.equal(proposeDocumentationMap(root, { map: buildDocumentationMap(root) }).changed, false, "the map builds on the accepted version");
   assert.throws(() => proposeDocumentationMap(root, { map, target: "docs/c.md" }), /Only an accepted docs\/c\.md/);
+});
+
+test("the documentation navigation follows the accepted index and keeps other documents Unfiled", (t) => {
+  const root = fixture(t);
+  fs.mkdirSync(path.join(root, "docs/decisions"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs/decisions/map.md"), "---\ntitle: Keep one map\n---\n\n# Decision\n");
+  const index = "# Docs\n\n1. [B](b.md#start)\n2. [Decision](decisions/map.md \"why\")\n\nNot navigation: `[A](a.md)`.\n\n```\n[A](a.md)\n```\n";
+  fs.writeFileSync(path.join(root, "docs/index.md"), index);
+  for (const rel of ["docs/decisions/map.md", "docs/index.md"]) writeDocReviewDecision(root, rel, { status: "verified" });
+
+  const navigation = buildDocumentationNavigation(root);
+  assert.equal(navigation.index, "docs/index.md");
+  assert.deepEqual(navigation.sequence.map((entry) => entry.path), ["docs/index.md", "docs/b.md", "docs/decisions/map.md"]);
+  assert.deepEqual(navigation.groups.map((group) => [group.role, group.entries.map((entry) => entry.path)]), [
+    ["Reference", ["docs/index.md", "docs/b.md"]], ["History", ["docs/decisions/map.md"]],
+  ]);
+  assert.deepEqual(navigation.unfiled.map((entry) => entry.path), ["docs/a.md"], "links in code do not file a document");
+
+  fs.writeFileSync(path.join(root, "docs/index.md"), index + "\n[A](a.md)\n");
+  assert.deepEqual(buildDocumentationNavigation(root).unfiled.map((entry) => entry.path), ["docs/a.md"], "an unreviewed index change does not file it");
+  writeDocReviewDecision(root, "docs/index.md", { status: "verified" });
+  const filed = buildDocumentationNavigation(root);
+  assert.deepEqual(filed.unfiled, []);
+  assert.equal(filed.sequence.at(-1).path, "docs/a.md");
+  assert.ok(fs.existsSync(path.join(root, "docs/a.md")), "filing never moves the file");
 });

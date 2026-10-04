@@ -804,11 +804,7 @@ function mapDocumentSummary(document) {
 // AGENTS.md can hold. The map never lists an unreviewed document.
 export function buildDocumentationMap(root = process.cwd(), options = {}) {
   const corpus = options.corpus || buildDocumentationCorpus(root, { ...options, acceptedOnly: true, readOnly: true });
-  const documents = corpus.documents.filter((document) => ["markdown", "html"].includes(document.format)
-    && document.reviewStatus === "accepted"
-    && document.source !== "session-proposal"
-    && document.kind !== "agents"
-    && !document.path.startsWith("_shared/"));
+  const documents = acceptedMapDocuments(corpus);
   const groups = DOCUMENTATION_MAP_ROLES.map(([truthState, role]) => ({
     role,
     entries: documents
@@ -838,6 +834,58 @@ export function buildDocumentationMap(root = process.cwd(), options = {}) {
     excluded: { unreviewed: excludedUnreviewed },
     estimatedTokens: estimateTokens(markdown),
     markdown,
+  };
+}
+
+const NAVIGATION_INDEX_PATHS = ["docs/index.md", "docs/README.md", "README.md"];
+
+// Markdown links in reading order; code is not navigation.
+function orderedMarkdownLinks(content) {
+  const text = String(content || "");
+  return [...text.replace(/^(```|~~~)[\s\S]*?^\1/gm, "").replace(/`[^`\n]*`/g, "").matchAll(/\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g)].map((match) => match[1]);
+}
+
+function acceptedMapDocuments(corpus) {
+  return corpus.documents.filter((document) => ["markdown", "html"].includes(document.format)
+    && document.reviewStatus === "accepted"
+    && document.source !== "session-proposal"
+    && document.kind !== "agents"
+    && !document.path.startsWith("_shared/"));
+}
+
+// The human map of a project: the accepted index orders the documents it links,
+// grouped by role. Accepted documents it does not link are Unfiled; linking one
+// files it without moving the file.
+export function buildDocumentationNavigation(root = process.cwd(), options = {}) {
+  const corpus = options.corpus || buildDocumentationCorpus(root, { ...options, acceptedOnly: true, readOnly: true });
+  const documents = acceptedMapDocuments(corpus);
+  const byPath = new Map(documents.map((document) => [document.path, document]));
+  const index = NAVIGATION_INDEX_PATHS.map((candidate) => byPath.get(candidate)).find(Boolean) || null;
+  const sequence = [];
+  if (index) {
+    sequence.push(index.path);
+    for (const link of orderedMarkdownLinks(index.content)) {
+      const target = referencePath(index.path, link);
+      if (byPath.has(target) && !sequence.includes(target)) sequence.push(target);
+    }
+  }
+  const entry = (document) => ({ path: document.path, title: mapDocumentTitle(document), summary: mapDocumentSummary(document) });
+  const filed = sequence.map((filePath) => byPath.get(filePath));
+  const groups = DOCUMENTATION_MAP_ROLES.map(([truthState, role]) => ({
+    role,
+    entries: filed.filter((document) => truthState === "other" ? !["current", "target"].includes(document.truthState) : document.truthState === truthState).map(entry),
+  })).filter((group) => group.entries.length);
+  const unfiled = documents.filter((document) => !sequence.includes(document.path))
+    .sort((left, right) => left.path.localeCompare(right.path, "en"))
+    .map(entry);
+  return {
+    schemaVersion: "context-room.docs-navigation/1",
+    revision: corpus.revision,
+    index: index ? index.path : "",
+    sequence: filed.map(entry),
+    groups,
+    unfiled,
+    excluded: { unreviewed: (corpus.excludedUnreviewed || []).length },
   };
 }
 

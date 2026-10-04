@@ -23488,6 +23488,11 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     sendJson(res, 200, (await readBackgroundReports(root, { expectedRootIdentity })).docqa);
     return;
   }
+  if (req.method === "GET" && url.pathname === "/api/docs/navigation") {
+    const { buildDocumentationNavigation } = await import("./documentation.mjs");
+    sendJson(res, 200, buildDocumentationNavigation(root, { readOnly: true }));
+    return;
+  }
   if (req.method === "GET" && url.pathname === "/api/graph") {
     sendJson(res, 200, buildDocumentationGraph(root, { readOnly: true }));
     return;

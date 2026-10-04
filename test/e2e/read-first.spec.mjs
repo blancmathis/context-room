@@ -73,3 +73,31 @@ test('@smoke the reader reaches any section in one click and never writes the do
     expect(writes).toEqual([]);
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
+
+test('@smoke the Documents map follows the accepted index and pages through it', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    const { writeDocReviewDecision } = await import('../../src/context_room.mjs');
+    fs.writeFileSync(path.join(f.root, 'docs/index.md'), '# Docs\n\n1. [Original](Original.md)\n2. [Other](Other.md#other-document)\n');
+    fs.writeFileSync(path.join(f.root, 'docs/Notes.md'), '# Loose notes\n\nNot linked from the index.\n');
+    for (const rel of ['docs/index.md', 'docs/Notes.md', 'docs/Original.md', 'docs/Other.md']) writeDocReviewDecision(f.root, rel, { status: 'verified' });
+
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    const map = page.locator('#documentsMapPanel');
+    await expect(map).toBeVisible();
+    await expect(page.locator('#documentsMapSource')).toHaveText('In the order of docs/index.md');
+    await expect(map.locator('[data-docs-map-role="Reference"] [data-docs-map-path]')).toHaveText([/Docs/, /Original document/, /Other document/]);
+    await expect(map.locator('[data-docs-map-role="Unfiled"] [data-docs-map-path]')).toHaveText([/Loose notes/]);
+
+    await map.locator('[data-docs-map-path="docs/Other.md"]').click();
+    await expect.poll(() => page.evaluate(() => state.selected)).toBe('docs/Other.md');
+    const pager = page.locator('#docReader nav.doc-pager');
+    await expect(pager.locator('.doc-pager-link')).toHaveText([/Previous\s*Original document/]);
+    await pager.getByRole('button', { name: /Previous/ }).click();
+    await expect.poll(() => page.evaluate(() => state.selected)).toBe('docs/Original.md');
+    await expect(page.locator('#docReader nav.doc-pager .doc-pager-link')).toHaveText([/Previous\s*Docs/, /Next\s*Other document/]);
+
+    await page.evaluate(() => selectFile('docs/Notes.md'));
+    await expect(page.locator('#docReader nav.doc-pager')).toHaveText('Unfiled: docs/index.md does not link this document.');
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});

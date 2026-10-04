@@ -393,6 +393,20 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .context-hub-home-project-destination { min-height: 32px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--text); cursor: pointer; font-size: 11px; font-weight: 650; }
     .context-hub-home-project-destination:hover { background: var(--surface-card-hover); }
     .context-hub-home-project-destination:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 1px; }
+    .documents-map { display: grid; gap: 2px; padding: 6px; }
+    .docs-map-group > summary { min-height: 40px; display: flex; align-items: center; gap: 8px; padding: 4px 10px; list-style: none; color: var(--muted); cursor: pointer; font-size: 12px; font-weight: 700; }
+    .docs-map-group > summary::-webkit-details-marker { display: none; }
+    .docs-map-group > summary::before { content: "▸"; width: 1em; }
+    .docs-map-group[open] > summary::before { content: "▾"; }
+    .docs-map-group > summary span { font-weight: 500; font-variant-numeric: tabular-nums; }
+    .docs-map-group ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+    .docs-map-group li { display: grid; gap: 2px; padding: 0 0 6px; }
+    .docs-map-link { min-height: 40px; display: flex; align-items: baseline; gap: 10px; padding: 8px 10px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: var(--text); text-align: left; font: inherit; cursor: pointer; }
+    .docs-map-link:hover { background: var(--surface-card-hover); }
+    .docs-map-link:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 1px; }
+    .docs-map-link code { min-width: 0; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .docs-map-summary, .docs-map-note { margin: 0; padding: 0 10px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .docs-map-note { padding: 4px 10px 8px; }
     @media (max-width: 639px) { .context-hub-home-project { grid-template-columns: minmax(0, 1fr); } .context-hub-home-project-attention { justify-self: start; } }
     .global-project-folder-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     .explorer-document-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; margin: 0 0 8px; padding: 2px; border-radius: 7px; background: var(--surface-card); }
@@ -1162,6 +1176,13 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .doc-backlinks { margin: var(--space-6) 0 0; padding-top: var(--space-3); border-top: 1px solid var(--file-hr); }
     .doc-backlinks code { color: var(--file-muted); font-size: 11px; }
     .doc-backlinks-empty { margin: 4px 0; color: var(--file-muted); font-size: 12px; }
+    .doc-pager { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); max-width: 72ch; margin: var(--space-4) 0 0; }
+    .doc-pager:empty { display: none; }
+    .doc-pager .docs-map-note { grid-column: 1 / -1; }
+    .doc-pager-link { display: grid; gap: 2px; min-height: 44px; padding: 8px 12px; border: 1px solid var(--file-hr); border-radius: 8px; background: none; color: var(--file-fg); text-align: left; font: inherit; cursor: pointer; }
+    .doc-pager-link.next { grid-column: 2; text-align: right; }
+    .doc-pager-link span { color: var(--file-muted); font-size: 12px; }
+    .doc-pager-link:hover, .doc-pager-link:focus-visible { border-color: var(--file-h2); color: var(--file-h2); }
     .markdown-section { content-visibility: auto; contain-intrinsic-size: auto 900px; margin-left: -36px; padding-left: 36px; }
     @media (min-width: 1280px) {
       .doc-reader-layout.has-toc { display: grid; grid-template-columns: minmax(0, 1fr) minmax(150px, 220px); gap: var(--space-6); align-items: start; }
@@ -3607,6 +3628,15 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
               </header>
               <div id="contextHealth" class="markdown-tools"><div class="issue">Analyzing project context...</div></div>
             </section>
+            <section id="documentsMapPanel" class="docqa-panel documents-map-panel" aria-labelledby="documentsMapHeading" hidden>
+              <header>
+                <div>
+                  <h2 id="documentsMapHeading" tabindex="-1">Documents</h2>
+                  <div id="documentsMapSource" class="muted"></div>
+                </div>
+              </header>
+              <div id="documentsMap" class="documents-map"></div>
+            </section>
           </div>
           <div id="hubFolders" class="hub-folders"></div>
         </div>
@@ -3966,6 +3996,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 		state.globalProjectWatchFilters = new Map();
 		state.explorerDocumentView = "location";
 		state.explorerRelatedGraphs = new Map();
+		state.docNavigation = { key: "", value: null, loading: false, error: "", request: 0 };
 		state.explorerRelatedLoading = new Set();
 		state.explorerRelatedErrors = new Map();
 		state.explorerRelatedRequest = 0;
@@ -6902,6 +6933,7 @@ async function openContextHubProjectDestination(projectKey, destination) {
     return;
   }
   if (isExplorerCollapsed()) setExplorerCollapsedFromUser(false);
+  if (isExplorerDesktopViewport()) el("documentsMapPanel")?.scrollIntoView({ block: "start", behavior: "smooth" });
   window.requestAnimationFrame(() => el("globalProjectList")?.querySelector("a, button")?.focus());
 }
 
@@ -13876,6 +13908,7 @@ function showHome() {
 function renderDocQaDashboard() {
   renderSharedContextControls();
   renderContextRoomGlobalReviewQueue();
+  renderDocumentsMap();
   // Shared Hub controls also exist before a local document report is loaded.
   // In particular, cancelling an opening must clear their disabled state.
   if (!state.docqa) return;
@@ -20157,7 +20190,7 @@ function renderMarkdownLineView(text, options = {}) {
   const toc = renderMarkdownToc(outline);
   return '<div id="docReader" class="doc-editor markdown-view" role="document" tabindex="0" aria-label="' + (options.readOnly ? "Read-only document" : "Document preview") + '">' +
     '<div class="doc-reader-layout' + (toc ? ' has-toc' : '') + '">' + toc +
-      '<div class="doc-reader-body">' + (options.sectioned ? renderMarkdownSections(value, outline, renderOptions) : renderMarkdownLines(value, renderOptions)) + renderDocumentBacklinks(options.filePath) + '</div>' +
+      '<div class="doc-reader-body">' + (options.sectioned ? renderMarkdownSections(value, outline, renderOptions) : renderMarkdownLines(value, renderOptions)) + renderDocumentBacklinks(options.filePath) + renderDocumentPager(options.filePath) + '</div>' +
     '</div>' +
   '</div>';
 }
@@ -20247,6 +20280,101 @@ function scrollToMarkdownAnchor(anchor) {
 }
 
 // Incoming links come from the cached document graph, loaded only when the reader opens this list.
+// The documentation map of the open project: the accepted index orders documents by role; the rest is Unfiled.
+function docNavigationAvailable() {
+  return IS_LOCAL && (!IS_GLOBAL_CONTEXT_ROOM || Boolean(workspaceSelectedProject()));
+}
+
+function docNavigationProjectKey() {
+  return state.activeProjectLocationId || state.projectId || "";
+}
+
+async function loadDocNavigation({ force = false } = {}) {
+  if (!docNavigationAvailable()) return null;
+  const navigation = state.docNavigation;
+  const key = docNavigationProjectKey() + "|" + (state.docqa?.generatedAt || "");
+  if (!force && navigation.key === key && (navigation.value || navigation.loading || navigation.error)) return navigation.value;
+  if (navigation.key.split("|")[0] !== docNavigationProjectKey()) navigation.value = null;
+  const request = ++navigation.request;
+  navigation.key = key;
+  navigation.loading = true;
+  navigation.error = "";
+  try {
+    const value = await api("/api/docs/navigation");
+    if (request !== navigation.request) return null;
+    navigation.value = value;
+  } catch (error) {
+    if (request !== navigation.request) return null;
+    navigation.error = error.message || "The documentation map is unavailable.";
+  } finally {
+    if (request === navigation.request) navigation.loading = false;
+  }
+  renderDocumentsMap();
+  document.querySelectorAll("[data-doc-pager]").forEach((nav) => { nav.innerHTML = docPagerMarkup(nav.dataset.docPager); });
+  return navigation.value;
+}
+
+function scheduleDocNavigationLoad() {
+  const navigation = state.docNavigation;
+  if (navigation.loading || navigation.key === docNavigationProjectKey() + "|" + (state.docqa?.generatedAt || "")) return;
+  window.setTimeout(() => loadDocNavigation().catch((error) => setStatus(error.message)), 0);
+}
+
+function renderDocumentsMap() {
+  const panel = el("documentsMapPanel");
+  const body = el("documentsMap");
+  const source = el("documentsMapSource");
+  if (!panel || !body) return;
+  panel.hidden = !docNavigationAvailable();
+  if (panel.hidden) return;
+  scheduleDocNavigationLoad();
+  const navigation = state.docNavigation;
+  const value = navigation.value;
+  if (source) source.textContent = value ? (value.index ? "In the order of " + value.index : "No index yet") : "";
+  if (!value) {
+    body.innerHTML = '<div class="issue">' + escapeHtml(navigation.error || "Loading the documentation map…") + '</div>';
+    return;
+  }
+  const wasOpen = new Map([...body.querySelectorAll("details[data-docs-map-role]")].map((details) => [details.dataset.docsMapRole, details.open]));
+  const item = (entry) => '<li><button class="docs-map-link" type="button" data-docs-map-path="' + escapeHtml(entry.path) + '"><strong>' + escapeHtml(entry.title || entry.path) + '</strong><code>' + escapeHtml(entry.path) + '</code></button>'
+    + (entry.summary ? '<span class="docs-map-summary">' + escapeHtml(entry.summary) + '</span>' : '') + '</li>';
+  const group = (role, entries, { open = true, note = "" } = {}) => '<details class="docs-map-group" data-docs-map-role="' + escapeHtml(role) + '"' + ((wasOpen.has(role) ? wasOpen.get(role) : open) ? ' open' : '') + '>'
+    + '<summary>' + escapeHtml(role) + ' <span>' + entries.length + '</span></summary>'
+    + (note ? '<p class="docs-map-note">' + escapeHtml(note) + '</p>' : '')
+    + '<ul>' + entries.map(item).join("") + '</ul></details>';
+  const parts = (value.groups || []).map((entry) => group(entry.role, entry.entries, { open: entry.role !== "History" }));
+  if ((value.unfiled || []).length) parts.push(group("Unfiled", value.unfiled, {
+    note: value.index
+      ? value.index + " does not link these accepted documents. Link one there to file it; the file does not move."
+      : "Add docs/index.md with links to your documents to order them here.",
+  }));
+  if (!parts.length) parts.push('<div class="issue">No accepted document yet.</div>');
+  const waiting = Number(value.excluded?.unreviewed || 0);
+  if (waiting) parts.push('<p class="docs-map-note">' + waiting + (waiting === 1 ? ' document waits' : ' documents wait') + ' for review and ' + (waiting === 1 ? 'is' : 'are') + ' not listed.</p>');
+  body.innerHTML = parts.join("");
+}
+
+function renderDocumentPager(filePath) {
+  if (!filePath || !docNavigationAvailable()) return "";
+  scheduleDocNavigationLoad();
+  return '<nav class="doc-pager" data-doc-pager="' + escapeHtml(filePath) + '" aria-label="Documentation map">' + docPagerMarkup(filePath) + '</nav>';
+}
+
+function docPagerMarkup(filePath) {
+  const value = state.docNavigation.value;
+  if (!value) return "";
+  const sequence = value.sequence || [];
+  const position = sequence.findIndex((entry) => entry.path === filePath);
+  if (position === -1) {
+    if (!(value.unfiled || []).some((entry) => entry.path === filePath)) return "";
+    return '<p class="docs-map-note">' + escapeHtml(value.index ? "Unfiled: " + value.index + " does not link this document." : "Unfiled: this project has no docs/index.md yet.") + '</p>';
+  }
+  const link = (entry, label, side) => entry
+    ? '<button type="button" class="doc-pager-link ' + side + '" data-doc-pager-path="' + escapeHtml(entry.path) + '"><span>' + label + '</span><strong>' + escapeHtml(entry.title || entry.path) + '</strong></button>'
+    : '<span></span>';
+  return link(sequence[position - 1], "Previous", "previous") + link(sequence[position + 1], "Next", "next");
+}
+
 function renderDocumentBacklinks(filePath) {
   const project = IS_GLOBAL_CONTEXT_ROOM && filePath ? workspaceSelectedProject() : null;
   const key = project ? explorerRelatedGraphKey(project, normalizeUiPath(filePath)) : "";
@@ -21263,6 +21391,12 @@ function wireMarkdownDocLinks(root = document) {
       selectFile(link.dataset.docBacklink, { revealInExplorer: true }).catch((error) => setStatus(error.message));
     });
   });
+  root.querySelectorAll("[data-doc-pager]").forEach((nav) => nav.addEventListener("click", (event) => {
+    const link = event.target.closest("[data-doc-pager-path]");
+    if (!link) return;
+    event.preventDefault();
+    selectFile(link.dataset.docPagerPath, { revealInExplorer: true }).catch((error) => setStatus(error.message));
+  }));
 }
 
 function wireMarkdownEditorDocLinks(editor) {
@@ -24322,6 +24456,10 @@ el("globalProjectList")?.addEventListener("pointerout", (event) => {
   clearTimeout(state.globalProjectSettingsPrefetchTimer);
 });
 el("refreshDocQa")?.addEventListener("click", () => loadFiles({ waitForBackground: true }).catch((error) => setStatus(error.message)));
+el("documentsMap")?.addEventListener("click", (event) => {
+  const link = event.target.closest("[data-docs-map-path]");
+  if (link) selectFile(link.dataset.docsMapPath, { revealInExplorer: true }).catch((error) => setStatus(error.message));
+});
 el("refreshContextHealth")?.addEventListener("click", () => refreshContextHealthAnalysis().catch((error) => setStatus(error.message)));
 el("sendContextHealthToCodex")?.addEventListener("click", () => sendContextHealthIssuesToCodex().catch((error) => setStatus(error.message)));
 el("sharedContextRefresh")?.addEventListener("click", () => refreshSharedContextUi().catch((error) => setStatus(error.message)));

@@ -83,6 +83,8 @@ Keeping the UI closed does not authorize those edits. They are detected on the n
 
 A Markdown document opens for reading. Reading never writes the file. Prose keeps a column of about 72 characters. A document with two or more sections shows Contents: open beside the text on wide screens, folded above it on narrow ones. Each heading has a GitHub-style anchor (`#second-part`, then `#setup-1` for a repeated heading). Links to `#anchor` and `doc.md#anchor` go to that section. Front matter stays folded. In the Hub, "Referenced by" lists the documents that link to this one. It loads only when opened. Markdown above 120,000 characters or 2,500 lines is still rendered, one section per H1/H2; editing such a file uses plain text.
 
+The project page shows the Documents map. It follows the links of the accepted `docs/index.md` (or `docs/README.md`, then `README.md`) in order, grouped as Reference, Plans, and History; History stays folded. An accepted document the index does not link is Unfiled. Linking it from the index files it; the file does not move. At the end of a mapped document, Previous and Next follow the index order. Default `docs search` already leaves plans and history out and counts them in `excluded.notCurrent`; a `--status` filter (`target`, `record`, `historical`) brings them back.
+
 Drawing is bounded to 16 million pixels; assets to 20 MiB. Larger or unsupported resources return an explicit limit, not a silent conversion. Supported binary changes use the same exact file decisions in Shared, followed by the separate proposal acceptance.
 
 HTML resources are intentionally local and non-executable. Nested CSS resource URLs and arbitrary interactive HTML applications are not supported by the proposal preview. Missing resources are identified.

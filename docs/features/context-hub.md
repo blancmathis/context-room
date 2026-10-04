@@ -78,7 +78,7 @@ If that snapshot becomes stale, terminal, unavailable, or recovery-required duri
 
 The Hub home starts with the project list. Each row shows the project, its location,
 an attention pill, and three destinations: Context (agent environment), To review
-(Review Queue filtered to the project), and Documents (project files in Explorer).
+(Review Queue filtered to the project), and Documents (the project's documentation map, with its files in Explorer).
 
 The order is the manual project order, then the title. Attention, opening a project,
 and refreshes never reorder the list. The header shows local coverage, for example
