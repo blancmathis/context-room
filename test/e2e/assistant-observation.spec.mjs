@@ -11,7 +11,7 @@ async function documentConversation(page, f) {
   await expect(paneFor(page)).toHaveAttribute('data-ready', 'true');
 }
 async function setDraft(page, text) {
-  await page.evaluate(text => { const editor = document.getElementById('docEditor'); editor.value = text; editor.dispatchEvent(new Event('input', { bubbles: true })); }, text);
+  await page.evaluate(text => { if (!document.getElementById('docEditor')) setMode('edit'); const editor = document.getElementById('docEditor'); editor.value = text; editor.dispatchEvent(new Event('input', { bubbles: true })); }, text);
 }
 
 test('@smoke @assistant live draft sharing is opt-in, stays in its original document and stops on reload', async ({ page }, testInfo) => {
