@@ -109,6 +109,10 @@ test("@smoke local proposal review accepts a correction and rejects rendered HTM
     const dialog = page.getByRole("dialog", { name: proposal.title });
     const editor = dialog.getByRole("textbox", { name: "Proposed content: docs/guide.md" });
     await expect(editor).toHaveValue(/Proposed guidance/);
+    const blocks = dialog.getByRole("region", { name: "Block check" });
+    await expect(blocks.getByRole("heading", { name: "This file: 1 removed · 1 new or rewritten · 1 identical" })).toBeVisible();
+    await expect(blocks.locator('[data-block-group="removed"] pre')).toHaveText("Accepted guidance.");
+    await expect(blocks.locator('[data-block-group="added"] pre')).toHaveText("Proposed guidance.");
     await editor.fill("# Project guide\n\nHuman clarified guidance.\n");
     await checkDialogAccessibility(page);
     await page.screenshot({ path: testInfo.outputPath("local-review-correction.png"), fullPage: true });
@@ -116,6 +120,7 @@ test("@smoke local proposal review accepts a correction and rejects rendered HTM
     await expect.poll(() => fs.readFileSync(path.join(root, "docs/guide.md"), "utf8")).toContain("Human clarified guidance");
     await expect(dialog.locator("iframe")).toHaveCount(2);
     await expect(dialog.locator("textarea")).toHaveCount(0);
+    await expect(dialog.getByRole("region", { name: "Block check" })).toBeHidden();
     await expect(dialog.frameLocator('iframe[title="Proposed: docs/overview.html"]').getByRole("heading", { name: "Proposed overview" })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("local-review-html.png"), fullPage: true });
     await dialog.getByRole("button", { name: "Reject file" }).click();

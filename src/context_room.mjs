@@ -37,7 +37,7 @@ import { appendContextRoomEvent, appendContextRoomEvents } from "./event_journal
 import { documentsLinkingTo, planDocumentMove } from "./doc_move.mjs";
 import { documentationDrift } from "./doc_drift.mjs";
 import { claudeCodeUsage } from "./agent_usage.mjs";
-import { beginLocalProposal, listLocalProposals, submitLocalProposal, decideLocalProposalFile, readLocalProposalFile, readLocalProposalResource, readLocalProposalDraft, writeLocalProposalDraft } from "./local_proposals.mjs";
+import { beginLocalProposal, listLocalProposals, submitLocalProposal, decideLocalProposalFile, readLocalProposalFile, readLocalProposalResource, readLocalProposalDraft, writeLocalProposalDraft, readLocalProposalBlockMap } from "./local_proposals.mjs";
 import {
   cleanupFilesystemLockWorkerOwner,
   createFilesystemLockWorkerOwner,
@@ -23789,6 +23789,10 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     const file = readLocalProposalFile(root, url.searchParams.get("proposal"), url.searchParams.get("path"));
     const { beforeBytes, afterBytes, ...metadata } = file;
     sendJson(res, 200, { ...metadata, beforeBase64: beforeBytes?.toString("base64") ?? null, afterBase64: afterBytes?.toString("base64") ?? null });
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/docqa/local-proposal-blocks") {
+    sendJson(res, 200, readLocalProposalBlockMap(root, url.searchParams.get("proposal")));
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/docqa/local-proposal-resource") {

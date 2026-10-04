@@ -10,8 +10,9 @@ import { initializeContextRoomProject, writeMemoryWebappSettings, readMemoryWeba
   createMemoryServer, listStartupContextFiles, readStartupContextFile, readStartupSkillFile, rejectDirectDocumentationChange, proposeDocumentMove, proposeDocumentationMap, documentationDriftReport } from "../src/context_room.mjs";
 import { writeReviewCleanupPolicy, recentReviewCleanupReceipts } from "../src/review_cleanup.mjs";
 import { registerContextHubProject } from "../src/context_hub.mjs";
-import { inspectLocalProposal } from "../src/local_proposals.mjs";
+import { inspectLocalProposal, readLocalProposalBlockMap } from "../src/local_proposals.mjs";
 import { buildDocumentationCorpus, buildDocumentationMap } from "../src/documentation.mjs";
+import { markdownBlocks, proposalBlockMap } from "../src/block_map.mjs";
 
 function fixture(t) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "cr-document-workflow-")), root = path.join(base, "project");
@@ -217,6 +218,37 @@ test("docs drift counts commits to cited code since acceptance, and says unknown
 
   const cli = JSON.parse(execFileSync(process.execPath, [path.resolve("bin/context-room.mjs"), "docs", "drift", "docs/a.md", "--root", root, "--format=json"], { encoding: "utf8" }));
   assert.deepEqual(cli.data.documents.map((item) => [item.path, item.commits]), [["docs/a.md", 2]]);
+});
+
+test("block map shows only removed and rewritten blocks when a status file is split", (t) => {
+  assert.deepEqual(markdownBlocks("# T\nintro\n\n```js\na\n\nb\n```\n- x\n- y\n").map((block) => [block.line, block.text]),
+    [[1, "# T"], [2, "intro"], [4, "```js\na\n\nb\n```"], [9, "- x\n- y"]]);
+  const status = "# Status\n\n## Alpha\n\nAlpha shipped.\n\n## Beta\n\nBeta notes.  \n\n## Log\n\nOld entry.\n";
+  const map = proposalBlockMap([
+    { path: "STATUS.md", kind: "modified", before: status, after: "# Status\n\nSee alpha.md and beta.md.\n" },
+    { path: "alpha.md", kind: "added", before: null, after: "## Alpha\n\nAlpha shipped.\n" },
+    { path: "beta.md", kind: "added", before: null, after: "## Beta\n\nBeta notes.\n\nBeta is late.\n" },
+    { path: "logo.png", kind: "added", before: null, after: "\0png" },
+  ]);
+  assert.deepEqual(map.summary, { unchanged: 1, moved: 4, added: 2, removed: 2 });
+  assert.deepEqual(map.notCompared, ["logo.png"]);
+  const [statusFile, alpha, beta] = map.files;
+  assert.deepEqual(statusFile.removed.map((block) => block.text), ["## Log", "Old entry."]);
+  assert.deepEqual(statusFile.added.map((block) => block.text), ["See alpha.md and beta.md."]);
+  assert.deepEqual(alpha, { path: "alpha.md", kind: "added", unchanged: 0, added: [], removed: [], moved: [{ from: "STATUS.md", blocks: 2 }] });
+  assert.deepEqual(beta.added.map((block) => block.text), ["Beta is late."]);
+  assert.deepEqual(beta.moved, [{ from: "STATUS.md", blocks: 2 }]);
+
+  const root = fixture(t);
+  fs.writeFileSync(path.join(root, "docs/b.md"), "# b\n\nBack to [a](a.md).\n\nStays as is.\n");
+  writeDocReviewDecision(root, "docs/b.md", { status: "verified" });
+  const moved = proposeDocumentMove(root, { from: "docs/b.md", to: "docs/guides/b.md" });
+  const blocks = readLocalProposalBlockMap(root, moved.proposalId);
+  assert.equal(blocks.revision, inspectLocalProposal(root, moved.proposalId).submittedRevision);
+  assert.deepEqual(blocks.summary, { unchanged: 0, moved: 2, added: 1, removed: 1 });
+  const guide = blocks.files.find((file) => file.path === "docs/guides/b.md");
+  assert.deepEqual(guide.added.map((block) => block.text), ["Back to [a](../a.md)."]);
+  assert.deepEqual(guide.moved, [{ from: "docs/b.md", blocks: 2 }]);
 });
 
 test("partial settings keep the Hub and unknown legacy configuration fields", (t) => {
