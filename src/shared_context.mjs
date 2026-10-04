@@ -3179,18 +3179,24 @@ function materializeSnapshot(checkout, revision, destination) {
   return destination;
 }
 
+// A chmod is a filesystem event even when the mode is unchanged; the Hub watches
+// these snapshots, so only a real change may touch a file.
+function chmodIfDifferent(target, mode, current = fs.statSync(target).mode) {
+  if ((current & 0o7777) !== mode) fs.chmodSync(target, mode);
+}
+
 function makeTreeReadOnly(root) {
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
     const target = path.join(root, entry.name);
     if (entry.isDirectory()) {
       makeTreeReadOnly(target);
-      fs.chmodSync(target, 0o555);
+      chmodIfDifferent(target, 0o555);
     } else if (entry.isFile()) {
-      const executable = Boolean(fs.statSync(target).mode & 0o111);
-      fs.chmodSync(target, executable ? 0o555 : 0o444);
+      const mode = fs.statSync(target).mode;
+      chmodIfDifferent(target, mode & 0o111 ? 0o555 : 0o444, mode);
     }
   }
-  fs.chmodSync(root, 0o555);
+  chmodIfDifferent(root, 0o555);
 }
 
 function makeTreeWritable(root) {

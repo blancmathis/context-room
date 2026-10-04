@@ -463,7 +463,8 @@ test("@smoke the Context destination shows what the agent sees, by agent", async
   await waitForBoot(page);
   await page.locator("#contextHubHomeProjectList .context-hub-home-project", { hasText: "Atlas" }).getByRole("button", { name: /^Context/ }).click();
   const cost = page.locator(".context-cost");
-  await expect(cost).toBeVisible();
+  // A Shared-linked project verifies its Shared snapshot several times on the first inspection.
+  await expect(cost).toBeVisible({ timeout: 30_000 });
   await expect(cost.locator(".context-cost-part")).toHaveText([/^At startup/, /^On demand/, /^Unknown/]);
   await expect(cost.locator(".context-cost-agent strong")).toHaveText("Codex");
   await expect(cost.locator(".context-cost-method")).toHaveText("Estimate: characters ÷ 4, no tokenizer.");

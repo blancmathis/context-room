@@ -3971,6 +3971,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 		state.globalInspectionData = new Map();
 		state.globalInspectionLoading = new Set();
 		state.globalInspectionErrors = new Map();
+		state.globalInspectionRetries = new Map();
 		state.globalInspectionController = null;
 		state.contextAttentionItems = [];
 		state.contextAttentionProjectKey = "";
@@ -14962,6 +14963,14 @@ async function loadGlobalProjectInspection(project, { force = false } = {}) {
   try {
     const suffix = (force ? "&fresh=1" : "") + "&provider=" + encodeURIComponent(provider);
     const data = { ...await api("/api/context-hub/project-inspection?projectId=" + encodeURIComponent(worktree.id) + suffix, { signal: state.globalInspectionController?.signal }), agentProvider: provider };
+    if (data.refreshDeferred) {
+      const attempts = (state.globalInspectionRetries.get(cacheKey) || 0) + 1;
+      state.globalInspectionRetries.set(cacheKey, attempts);
+      if (attempts > 10) throw new Error("Project checks are still busy. Try Refresh in a moment.");
+      window.setTimeout(() => loadGlobalProjectInspection(project, { force }).catch((error) => setStatus(error.message)), data.refreshDeferred.retryAfterMs || 1_000);
+      return null;
+    }
+    state.globalInspectionRetries.delete(cacheKey);
     state.globalInspectionData.set(cacheKey, data);
     return data;
   } catch (error) {

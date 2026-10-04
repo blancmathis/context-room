@@ -527,6 +527,7 @@ const BACKGROUND_WATCH_IGNORED_PATHS = new Set([
 ]);
 const gitTopLevelCache = new Map();
 const backgroundReportCache = new Map();
+const backgroundSharedProfilesCache = new Map();
 const documentGraphCache = new Map();
 const backgroundReportGenerations = new Map();
 const backgroundFileTaskCache = new Map();
@@ -11422,7 +11423,7 @@ function buildDocQaReportFromSnapshot(root, snapshot = null, { readOnly = false 
   return buildDocQaReport(root, { settings, files, gitStatuses: gitEntries, gitHeadContents, reviewState, globalReviewLedger, startupFiles, readOnly });
 }
 
-export function buildContextRoomReports(root = process.cwd(), { readOnly = false } = {}) {
+export function buildContextRoomReports(root = process.cwd(), { readOnly = false, sharedProfiles } = {}) {
   let snapshot;
   try {
     snapshot = readDocQaSnapshot(root, { readOnly });
@@ -11444,7 +11445,7 @@ export function buildContextRoomReports(root = process.cwd(), { readOnly = false
   const startupHooks = listStartupHookFiles(root, settings);
   const startupSkills = listStartupSkillFolders(root, settings);
   const docqa = buildDocQaReportFromSnapshot(root, snapshot, { readOnly });
-  const graph = buildDocumentationGraph(root, { settings, files, gitStatuses, startupFiles, startupHooks, readOnly });
+  const graph = buildDocumentationGraph(root, { settings, files, gitStatuses, startupFiles, startupHooks, sharedProfiles, readOnly });
   const doctor = buildContextRoomDoctorReport(root, { settings, graph, docqa, readOnly });
   return {
     generatedAt: new Date().toISOString(),
@@ -15506,6 +15507,17 @@ function watchBackgroundInputs(root, { onInvalidate = null } = {}) {
   };
 }
 
+// The reports worker may not take the Shared repository lock, so the accepted Shared
+// profiles are read here. Reading them verifies the whole snapshot, so a value is kept
+// as long as a report.
+function cachedAcceptedSharedProfiles(key, { force = false } = {}) {
+  const cached = backgroundSharedProfilesCache.get(key);
+  if (!force && cached && cached.expiresAt > Date.now()) return cached.value;
+  const value = readAcceptedSharedMetadataProfiles(key);
+  backgroundSharedProfilesCache.set(key, { value, expiresAt: Date.now() + REPORT_CACHE_TTL_MS });
+  return value;
+}
+
 async function readBackgroundReports(root, { force = false, expectedRootIdentity = null } = {}) {
   const key = path.resolve(root);
   assertManagedProjectRootIdentity(key, expectedRootIdentity);
@@ -15522,7 +15534,7 @@ async function readBackgroundReports(root, { force = false, expectedRootIdentity
     });
   }
   const generation = backgroundReportGenerations.get(key) || 0;
-  const promise = runBackgroundTask("reports", key);
+  const promise = Promise.resolve().then(() => runBackgroundTask("reports", key, { sharedProfiles: cachedAcceptedSharedProfiles(key, { force }) }));
   backgroundReportCache.set(key, { promise, value: cached?.value || null, expiresAt: cached?.expiresAt || 0 });
   try {
     const value = await promise;
@@ -22142,15 +22154,28 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     }
     if (!project.available) throw sharedRequestError(`Local project is unavailable: ${project.root}`, 409, "context_hub_project_unavailable");
     const settings = effectiveMemoryWebappSettings(project.root, { readOnly: true, expectedRootIdentity: project.rootIdentity });
-    const reports = await readBackgroundReports(project.root, {
-      force: url.searchParams.get("fresh") === "1",
-      expectedRootIdentity: project.rootIdentity,
-    });
+    let reports;
+    try {
+      reports = await readBackgroundReports(project.root, {
+        force: url.searchParams.get("fresh") === "1",
+        expectedRootIdentity: project.rootIdentity,
+      });
+    } catch (error) {
+      if (error?.code !== "filesystem_lock_worker_unsupervised") throw error;
+      // Same as /api/reports: a project update holds the lock; the client retries shortly.
+      sendJson(res, 202, { refreshDeferred: { code: error.code, retryAfterMs: 1_000 } });
+      return;
+    }
     const enriched = withSharedSkillDiagnostics(project.root, reports, { refresh: false });
     let effectiveContext = null;
     let effectiveContextError = "";
     try {
-      effectiveContext = await contextApiResult(root, url, "effective");
+      // The Hub syncs Shared on its own; unless the person asks for fresh checks, the inspection
+      // reads the cached revision and reports its freshness. Staleness never hides what the agent sees.
+      const contextUrl = new URL(url);
+      if (url.searchParams.get("fresh") !== "1") contextUrl.searchParams.set("refresh", "0");
+      contextUrl.searchParams.set("allowStale", "1");
+      effectiveContext = await contextApiResult(root, contextUrl, "effective");
     } catch (error) {
       effectiveContextError = error.message || "Could not resolve the effective context.";
     }
