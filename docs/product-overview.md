@@ -69,6 +69,8 @@ Local Settings controls project configuration, device preferences, Shared connec
 
 `--budget` on `docs search`, `brief`, and `context bundle` bounds the whole printed output, envelope included. Indented JSON becomes compact JSON when needed; then the least useful items are left out, and `outputBudget` says which ones. A budget too small for the envelope fails with the minimum to use. `brief [task]` prints startup context, accepted documents to read first, pending reviews, and high health issues; it lists only accepted documents and counts the others.
 
+`context usage [--days 30]` compares the planned context with real use. It reads Claude Code sessions for this project (`~/.claude/projects`, or `CLAUDE_CONFIG_DIR`), read-only. It counts invoked skills and accepted documents read through the Read tool or named in a shell command. A use is a session; a call copied into a forked session counts once. Startup files are listed apart. Coverage is complete only with sessions in the window, retention (`cleanupPeriodDays`, default 30) at least as long as the window, and no unreadable session data. Only then does the answer list what was not used. Codex and other agents are not counted. Counts stay on the machine.
+
 ## Runtime profiles
 
 | Profile | Data scope | Main purpose |
