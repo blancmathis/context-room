@@ -51,6 +51,12 @@ Accepting applies only the selected exact file delta. Saving a correction applie
 
 Application checks the project identity, scope, exact base, file mode, paths and staged Git state where relevant. The exact reviewed mode is explicitly applied to the new file descriptor, independently of the process umask; a concurrent permission-only origin change still blocks application. A conflicting external edit blocks application. A journal precedes the filesystem change; replaced bytes remain recoverable. Publication does not overwrite a file created concurrently at the destination. An interrupted application either resumes idempotently or reports recovery required.
 
+### Moving a document
+
+`docs move <from> <to>` moves one accepted Markdown or HTML document inside one submitted local proposal. It adds `to`, deletes `from`, rewrites every accepted inbound relative link (inline and reference links, with their `#section`), and rebases the moved document's own relative links. Code spans and code blocks stay unchanged. No model is called. `--dry-run` reports the same plan without creating a proposal.
+
+Each file still gets its own human decision. Accept every file of the move together: a partial decision leaves dead links, and `doctor` reports them. Pending documents are outside the proposal and keep their old links; the result lists them in `notRewritten`.
+
 ## Direct changes
 
 Existing workflows may still edit original files outside a proposal. Context Room detects changed watched files and keeps their accepted baseline separately. Human rejection restores that baseline, removes a newly added file, or restores a deletion/rename as appropriate, while preserving rejected content for recovery. It blocks a stale decision or incompatible staged Git state before changing bytes.
