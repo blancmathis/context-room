@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { initializeContextRoomProject, writeMemoryWebappSettings, readMemoryWebappSettings, writeDocReviewBaseline, writeDocReviewDecision, readMemoryFile, readFileDiff,
   revertMemoryFile, saveHumanReviewedFile, buildDocQaReport, createLocalDocumentationProposal,
   submitLocalDocumentationProposal, reviewLocalDocumentationProposal, contextHubUiState, runAuthorizedReviewCleanup,
-  createMemoryServer, listStartupContextFiles, readStartupContextFile, readStartupSkillFile, rejectDirectDocumentationChange, proposeDocumentMove, proposeDocumentationMap } from "../src/context_room.mjs";
+  createMemoryServer, listStartupContextFiles, readStartupContextFile, readStartupSkillFile, rejectDirectDocumentationChange, proposeDocumentMove, proposeDocumentationMap, documentationDriftReport } from "../src/context_room.mjs";
 import { writeReviewCleanupPolicy, recentReviewCleanupReceipts } from "../src/review_cleanup.mjs";
 import { registerContextHubProject } from "../src/context_hub.mjs";
 import { inspectLocalProposal } from "../src/local_proposals.mjs";
@@ -175,6 +175,48 @@ test("docs move proposes the moved document and every accepted inbound link fix 
   assert.equal(fs.existsSync(path.join(root, "docs/b.md")), false);
   assert.equal(fs.readFileSync(path.join(root, "docs/guides/b.md"), "utf8"), "# b\n\nBack to [a](../a.md).\n");
   assert.equal(fs.readFileSync(path.join(root, "docs/a.md"), "utf8"), "# a\n\nSee [b](guides/b.md#b), [ref][b] and `b.md`.\n\n[b]: ./guides/b.md\n");
+});
+
+test("docs drift counts commits to cited code since acceptance, and says unknown without git", (t) => {
+  const root = fixture(t);
+  for (const [file, text] of [["src/engine.mjs", "v1\n"], ["src/ui/view.mjs", "v1\n"], ["src/ui/notes.md", "v1\n"], ["scripts/x.sh", "v1\n"], ["other.txt", "v1\n"]]) {
+    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+    fs.writeFileSync(path.join(root, file), text);
+  }
+  fs.writeFileSync(path.join(root, "docs/a.md"), "# a\n\nSee `src/engine.mjs:12`, [view](../src/ui/), `scripts/x.sh`, [b](b.md) and `docs/`.\n");
+  writeDocReviewDecision(root, "docs/a.md", { status: "verified" });
+  const before = documentationDriftReport(root);
+  assert.deepEqual(before.documents.map((item) => [item.path, item.status]), [["docs/a.md", "unknown"], ["docs/b.md", "no-cited-code"]]);
+  assert.deepEqual(before.documents[0].cited, ["docs", "scripts/x.sh", "src/engine.mjs", "src/ui"]);
+
+  const commit = (date, files) => {
+    const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com", GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date };
+    for (const file of files) fs.appendFileSync(path.join(root, file), "change\n");
+    execFileSync("git", ["add", "src", "scripts", "docs", "other.txt"], { cwd: root, env });
+    execFileSync("git", ["commit", "-q", "-m", date], { cwd: root, env });
+  };
+  execFileSync("git", ["init", "-q"], { cwd: root });
+  // The acceptance is stamped now: one commit before it, three after it.
+  const day = (offset) => new Date(Date.now() + offset * 86400000).toISOString();
+  commit(day(-2), []);
+  commit(day(1), ["src/engine.mjs"]);
+  commit(day(2), ["src/engine.mjs", "src/ui/view.mjs"]);
+  commit(day(3), ["other.txt", "src/ui/notes.md", "docs/b.md"]);
+  fs.appendFileSync(path.join(root, "scripts/x.sh"), "uncommitted\n");
+
+  const report = documentationDriftReport(root);
+  const [drift] = report.documents;
+  assert.equal(drift.path, "docs/a.md");
+  assert.equal(drift.status, "changed");
+  assert.equal(drift.commits, 2);
+  assert.deepEqual(drift.changedPaths, [{ path: "src/engine.mjs", commits: 2 }, { path: "src/ui", commits: 1 }]);
+  assert.deepEqual(drift.uncommitted, ["scripts/x.sh"]);
+  assert.equal(drift.message, "The cited code changed 2 times since you accepted this document. 1 cited path has uncommitted changes.");
+  assert.deepEqual(report.summary, { documents: 2, changed: 1, unchanged: 0, unknown: 0, noCitedCode: 1 });
+  assert.throws(() => documentationDriftReport(root, { path: "docs/missing.md" }), /not an accepted document/);
+
+  const cli = JSON.parse(execFileSync(process.execPath, [path.resolve("bin/context-room.mjs"), "docs", "drift", "docs/a.md", "--root", root, "--format=json"], { encoding: "utf8" }));
+  assert.deepEqual(cli.data.documents.map((item) => [item.path, item.commits]), [["docs/a.md", 2]]);
 });
 
 test("partial settings keep the Hub and unknown legacy configuration fields", (t) => {
