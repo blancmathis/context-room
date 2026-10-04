@@ -110,6 +110,7 @@ import {
   resolveSharedDocumentationTarget,
 } from "./shared_context.mjs";
 import { bearerToken, createReplayStore, signRemoteIdentity, verifyRemoteIdentity } from "./remote_identity.mjs";
+import { analyzeDocumentTidiness, readGitDocumentHistory } from "./doc_tidy.mjs";
 import {
   assertFreshGitHubAppCredential,
   createGitHubInstallationToken,
@@ -11271,7 +11272,8 @@ export function buildContextRoomDoctorReport(root = process.cwd(), options = {})
     acknowledgements = readContextHealthAcknowledgements(root);
   } catch {}
   const stagingIssues = invalidConfig ? [] : orphanedFileMutationStagingIssues(root, settings);
-  const issues = [...configurationIssues, ...graph.healthIssues, ...stagingIssues].map((issue) => publicHealthIssue(issue, acknowledgements));
+  const tidy = invalidConfig ? { findings: [], summary: null } : documentationTidiness(root, graph);
+  const issues = [...configurationIssues, ...graph.healthIssues, ...stagingIssues, ...tidy.findings].map((issue) => publicHealthIssue(issue, acknowledgements));
   return {
     generatedAt: new Date().toISOString(),
     root: path.resolve(root),
@@ -11289,9 +11291,40 @@ export function buildContextRoomDoctorReport(root = process.cwd(), options = {})
     runtimeDependencies: { audio: inspectLocalAudio(), writerAuthority },
     docqa: docqa.summary,
     graph: graph.summary,
+    tidy: tidy.summary,
     issues,
     acknowledgedIssues: issues.filter((issue) => issue.acknowledged).length,
   };
+}
+
+// git log is synchronous: reuse each document's history while the file is unchanged, for at most ten minutes.
+const DOC_TIDY_HISTORY_TTL_MS = 10 * 60 * 1000;
+const docTidyHistoryCache = new Map();
+
+function cachedDocumentHistory(root, relPath, stamp) {
+  const key = root + "\0" + relPath;
+  const hit = docTidyHistoryCache.get(key);
+  if (hit && hit.stamp === stamp && Date.now() - hit.at < DOC_TIDY_HISTORY_TTL_MS) return hit.value;
+  const value = readGitDocumentHistory(root, relPath);
+  if (docTidyHistoryCache.size >= 2000) docTidyHistoryCache.clear();
+  docTidyHistoryCache.set(key, { stamp, at: Date.now(), value });
+  return value;
+}
+
+function documentationTidiness(root, graph) {
+  const docs = [];
+  const stamps = new Map();
+  for (const node of graph.nodes || []) {
+    if (node.type !== "doc" || !/\.md$/i.test(node.path || "") || resolveExternalPath(node.path)) continue;
+    try {
+      const absolutePath = path.join(root, node.path);
+      const stats = fs.statSync(absolutePath);
+      if (!stats.isFile() || stats.size > MAX_FILE_BYTES) continue;
+      docs.push({ path: node.path, content: fs.readFileSync(absolutePath, "utf8"), metadataPresent: Boolean(node.metadata?.present) });
+      stamps.set(node.path, stats.mtimeMs + ":" + stats.size);
+    } catch {}
+  }
+  return analyzeDocumentTidiness({ root, docs, history: (relPath) => cachedDocumentHistory(root, relPath, stamps.get(relPath) || "") });
 }
 
 function closedDiagnosticSettings() {
