@@ -10,7 +10,7 @@ const plain = value => value !== null && typeof value === 'object' && !Array.isA
 function keys(value, allowed) {
   if (!plain(value) || Object.keys(value).some(key => !allowed.includes(key))) throw fault('assistant_observation_input', 'Use a bounded original-source observation.', 400);
 }
-function previewImage(url) {
+export function previewImage(url) {
   if (typeof url !== 'string' || url.length > Math.ceil(OBSERVATION_IMAGE_BYTES / 3) * 4 + 100) throw fault('assistant_observation_image', 'Use a preview of at most one MiB.', 413);
   const match = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]*={0,2})$/.exec(url);
   if (!match) throw fault('assistant_observation_image', 'Use a PNG, JPEG or WebP preview.', 400);
@@ -122,6 +122,12 @@ export function withSourceObservation(result, observation) {
   const { imageUrl, ...metadata } = observation;
   const output = { ...result, observation: metadata };
   if (imageUrl) Object.defineProperty(output, imageContent, { value: imageUrl });
+  return output;
+}
+/** A server-held source image, such as an annotation snapshot, reaches Codex the same way. */
+export function withSourceImage(result, imageUrl) {
+  const output = { ...result };
+  Object.defineProperty(output, imageContent, { value: imageUrl });
   return output;
 }
 export function codexToolContent(result) {

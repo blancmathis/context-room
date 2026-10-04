@@ -112,6 +112,26 @@ Android owner conversations capture only the visible native drawing area.
 Compression runs outside the UI thread. A document frame or restricted drawing
 connection cannot use the owner preview bridge.
 
+## Annotating a passage
+
+In the read view of a Markdown document, **Annotate** adds a pen layer. A pen or
+the mouse draws; a finger scrolls. The drawing picks one run of whole source
+lines, highlighted, and the bar says which lines. The draft stays in this browser
+until it is sent, and only for the same file version.
+
+**Discuss this annotation** starts a new conversation with:
+
+- the exact anchor, fixed by the Mac: path, file hash, UTF-8 byte range, exact
+  text and section path;
+- a snapshot: the passage words redrawn with the strokes on top.
+
+The snapshot is stored privately with conversations, never in the project. Codex
+sees it with the document tool's `annotation` action. `replace_annotation` takes
+the annotation id and new text. The Mac replaces only that byte range, keeps
+every other byte and the file mode, and creates a proposal from the accepted
+version for human review. Any change to the file since the annotation refuses
+it: there is no fuzzy re-anchoring. A forged anchor or an unknown id is refused.
+
 ## Dictation and playback
 
 Choose the source's **Dictate** control to start capture directly in a compact
