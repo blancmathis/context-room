@@ -8,7 +8,7 @@ import { planLisiereCutover, applyLisiereCutover, changeCutoverMode } from '../s
 import { planStateMigration, applyStateMigration } from "../src/state_migration.mjs";
 import { exportLisiereSnapshot } from "../src/lisiere_snapshot.mjs";
 import { inspectLisiereSnapshot } from "../src/lisiere_inventory.mjs";
-import { migrateLisiereNotebook, migrateLisiereDraft, migrateLisiereConversation, migrateLisiereDrawingSession, reconcileLisiereNotebook, migrateLisiereRecording, proposeDocumentMove, proposeDocumentationMap, buildAgentBriefSections, renderAgentBrief, documentationDriftReport } from "../src/context_room.mjs";
+import { migrateLisiereNotebook, migrateLisiereDraft, migrateLisiereConversation, migrateLisiereDrawingSession, reconcileLisiereNotebook, migrateLisiereRecording, proposeDocumentMove, proposeDocumentationMap, buildAgentBriefSections, renderAgentBrief, documentationDriftReport, agentUsageReport } from "../src/context_room.mjs";
 import {
   applyCliReviewAnnotation,
   applyAgentHandoff,
@@ -339,7 +339,7 @@ const KNOWN_OPTIONS = new Set([
   "cutover-lisiere", "legacy-plist", "rollback-cutover", "resume-cutover", "legacy-recording", "conversation-id", "reconcile-lisiere", "recovery-view", "mac-snapshot", "legacy-actor", "export-lisiere", "import-lisiere", "inspect-lisiere", "legacy-board", "legacy-draft", "legacy-conversation", "legacy-session", "session-frame", "recordings", "output", "revision",
   "device-host", "device-port", "device-state", "device-browser-origin", "device-browser-cert", "device-browser-key",
   "reader", "propose",
-  "action", "actionable", "advisory", "all", "all-projects", "allow", "allow-stale", "apply", "branch", "budget", "contract", "cursor", "cwd", "depth", "description", "detail", "document", "dry-run", "enabled", "exclude", "expand", "fields", "files", "folder", "follow", "format", "fresh", "from", "goal", "h", "heading", "help", "highlight", "hook", "include",
+  "action", "actionable", "advisory", "all", "all-projects", "allow", "allow-stale", "apply", "branch", "budget", "contract", "cursor", "cwd", "days", "depth", "description", "detail", "document", "dry-run", "enabled", "exclude", "expand", "fields", "files", "folder", "follow", "format", "fresh", "from", "goal", "h", "heading", "help", "highlight", "hook", "include",
   "assignment", "change", "collection", "collection-path", "collection-title", "destination", "id", "include", "json", "kind", "limit", "message", "mode", "name", "no-restart", "note", "operation", "path", "percent", "port", "profile", "project", "projects", "provider", "providers", "query",
   "expected-revision", "file", "filter", "idempotency-key", "label", "location", "no-color", "no-local", "non-interactive", "only", "plan", "profile", "project", "projects-file", "proposal", "quiet", "reason", "recent", "repository", "resource", "root", "scope", "search", "section", "selector", "session", "set", "settings", "severity", "shared", "shared-project", "shell", "since", "skills", "source", "status", "strict", "summary", "target", "task", "text", "title", "to", "types", "verbose", "version", "view", "watch", "workspace",
 ]);
@@ -791,7 +791,7 @@ const localUiOpenCommand = command === "ui" && (args._[1] || "list") === "open" 
 const contextAgentFirstTargetCommand = command === "context" && (
   (args._[1] || "") === "bundle"
     ? !sharedOnlyContextBundle
-    : ["effective", "explain", "graph", "trace", "impact", "snapshot"].includes(args._[1] || "")
+    : ["effective", "explain", "graph", "trace", "impact", "snapshot", "usage"].includes(args._[1] || "")
       || ((args._[1] || "") === "diff" && !args.to)
 );
 const agentFirstTargetCommand = (
@@ -1674,6 +1674,15 @@ if (command === "shared") {
 
 if (command === "context") {
   const action = args._[1] || "ask";
+  if (action === "usage") {
+    try {
+      const data = agentUsageReport(agentFirstTarget?.root || root, { days: args.days === undefined ? 30 : Number(args.days) });
+      emitAgentFirstResult("context.usage", { target: agentFirstTarget, data }, { format: agentFirstFormat });
+      process.exit(0);
+    } catch (error) {
+      failAgentFirstCommand("context.usage", error, { format: agentFirstFormat, target: agentFirstTarget });
+    }
+  }
   if (["bundle", "effective", "explain", "graph", "trace", "impact", "snapshot", "diff"].includes(action)) {
     try {
       const provider = args.provider && args.provider !== true ? String(args.provider) : "codex";

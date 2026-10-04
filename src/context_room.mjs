@@ -36,6 +36,7 @@ import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:z
 import { appendContextRoomEvent, appendContextRoomEvents } from "./event_journal.mjs";
 import { documentsLinkingTo, planDocumentMove } from "./doc_move.mjs";
 import { documentationDrift } from "./doc_drift.mjs";
+import { claudeCodeUsage } from "./agent_usage.mjs";
 import { beginLocalProposal, listLocalProposals, submitLocalProposal, decideLocalProposalFile, readLocalProposalFile, readLocalProposalResource, readLocalProposalDraft, writeLocalProposalDraft } from "./local_proposals.mjs";
 import {
   cleanupFilesystemLockWorkerOwner,
@@ -7957,6 +7958,29 @@ export function documentationDriftReport(root, { path: selector = "" } = {}) {
 
 // Move one accepted document and rewrite every accepted inbound link in one
 // submitted local proposal. Nothing is accepted: each file stays human-reviewed.
+// Skills and accepted documents Claude Code used in this project. Read-only, counts only.
+export function agentUsageReport(root, { days = 30, now = Date.now() } = {}) {
+  const window = Number(days);
+  if (!Number.isInteger(window) || window < 1 || window > 365) throw Object.assign(new Error("--days must be a whole number from 1 to 365."), { code: "invalid_days" });
+  const projectRoot = path.resolve(root);
+  const documents = buildReadOnlyDocumentationReviewSnapshot(projectRoot).acceptedFiles
+    .filter((file) => /\.(?:md|mdx|markdown|html?)$/i.test(file.path) && !resolveExternalPath(file.path))
+    .map((file) => normalizeRelPath(file.path));
+  let skills = [];
+  try {
+    skills = fs.readdirSync(path.join(projectRoot, ".claude/skills"), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && fs.existsSync(path.join(projectRoot, ".claude/skills", entry.name, "SKILL.md")))
+      .map((entry) => entry.name);
+  } catch {}
+  const startupNames = new Set(["AGENTS.md", "AGENTS.override.md", "CLAUDE.md", "CLAUDE.local.md"]);
+  const startup = new Set(documents.filter((relPath) => startupNames.has(path.posix.basename(relPath))));
+  for (const file of listStartupContextFiles(projectRoot)) {
+    const relPath = path.relative(projectRoot, file.startupContext?.absolutePath || "/");
+    if (relPath && !relPath.startsWith("..") && !path.isAbsolute(relPath)) startup.add(relPath.split(path.sep).join("/"));
+  }
+  return claudeCodeUsage(projectRoot, { days: window, now, documents: [...new Set(documents)], startup: [...startup], skills });
+}
+
 export function proposeDocumentMove(root, { from = "", to = "", dryRun = false } = {}) {
   const source = normalizeRelPath(String(from || ""));
   const destination = normalizeRelPath(String(to || ""));
