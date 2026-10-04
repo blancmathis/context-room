@@ -55,3 +55,23 @@ test('the scoped document tool creates an existing-engine proposal without chang
   assert.deepEqual(fs.readFileSync(path.join(f.root, 'docs/Original.md')), original); assert.deepEqual(fs.readFileSync(path.join(f.root, 'docs/Other.md')), other);
   f.finish('Synthetic proposal is ready for human review.');
 });
+
+test('a conversation proposal keeps the accepted mode and refuses unreviewed edits', async t => {
+  const f = await assistantFixture(); t.after(() => f.close());
+  const file = path.join(f.root, 'docs/Original.md');
+  fs.chmodSync(file, 0o755);
+  writeDocReviewDecision(f.root, 'docs/Original.md', { status: 'verified' });
+  const created = await f.post('/api/assistant/conversations', { source: { kind: 'document', path: 'docs/Original.md' } }); assert.equal(created.status, 201);
+  await f.post('/api/assistant/conversations/' + created.body.id + '/send', { requestId: randomUUID(), text: 'Propose twice' });
+  await until(() => f.turns.length === 1); const turn = f.turns[0], options = { callId: 'read', turnId: turn.turnId, signal: new AbortController().signal };
+  const accepted = await turn.tool('context_room_document', { action: 'read' }, options);
+  const result = await turn.tool('context_room_document', { action: 'propose', expectedHash: accepted.hash, content: '# Kept mode\n' }, { ...options, callId: 'propose-mode' });
+  const change = readLocalProposalFile(f.root, result.proposalId, 'docs/Original.md');
+  assert.equal(change.after.mode & 0o777, 0o755);
+
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8') + '\nUnreviewed human edit.\n');
+  const unreviewed = await turn.tool('context_room_document', { action: 'read' }, { ...options, callId: 'read-2' });
+  await assert.rejects(turn.tool('context_room_document', { action: 'propose', expectedHash: unreviewed.hash, content: '# Laundered\n' }, { ...options, callId: 'propose-unreviewed' }), (error) => /not reviewed/.test(error.message));
+  assert.equal(listLocalProposals(f.root).length, 1);
+  f.finish('done');
+});

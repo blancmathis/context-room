@@ -76,7 +76,9 @@ files, acceptance, rejection and publication are not exposed through this adapte
 
 Notebook edits appear as working objects with provenance and checked revisions.
 Progressive strokes save only their reached geometry. Document edits use the
-existing isolated local proposal workflow. **Stop agent** stops the original
+existing isolated local proposal workflow. The proposal replaces the accepted
+version and keeps its file mode; it is refused while the document has
+unreviewed changes, so they never travel inside it. **Stop agent** stops the original
 turn and preserves already recorded ink. An uncertain send is not replayed:
 **Inspect original task** verifies its exact turn and input before recovering
 an answer when the provider can supply that evidence.
