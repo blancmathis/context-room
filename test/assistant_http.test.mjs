@@ -7,6 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { assistantFixture } from './fixtures/assistant.mjs';
 import { listLocalProposals, readLocalProposalFile } from '../src/local_proposals.mjs';
 import { writeDocReviewDecision } from '../src/context_room.mjs';
+import { codexToolContent } from '../src/assistant_observations.mjs';
 
 async function until(check) { for (let n = 0; n < 150; n++) { if (check()) return; await delay(20); } throw new Error('Synthetic provider did not start'); }
 
@@ -54,4 +55,51 @@ test('the scoped document tool creates an existing-engine proposal without chang
   assert.match(readLocalProposalFile(f.root, result.proposalId, 'docs/Original.md').afterBytes.toString('utf8'), /Review this change/);
   assert.deepEqual(fs.readFileSync(path.join(f.root, 'docs/Original.md')), original); assert.deepEqual(fs.readFileSync(path.join(f.root, 'docs/Other.md')), other);
   f.finish('Synthetic proposal is ready for human review.');
+});
+
+test('a conversation proposal keeps the accepted mode and refuses unreviewed edits', async t => {
+  const f = await assistantFixture(); t.after(() => f.close());
+  const file = path.join(f.root, 'docs/Original.md');
+  fs.chmodSync(file, 0o755);
+  writeDocReviewDecision(f.root, 'docs/Original.md', { status: 'verified' });
+  const created = await f.post('/api/assistant/conversations', { source: { kind: 'document', path: 'docs/Original.md' } }); assert.equal(created.status, 201);
+  await f.post('/api/assistant/conversations/' + created.body.id + '/send', { requestId: randomUUID(), text: 'Propose twice' });
+  await until(() => f.turns.length === 1); const turn = f.turns[0], options = { callId: 'read', turnId: turn.turnId, signal: new AbortController().signal };
+  const accepted = await turn.tool('context_room_document', { action: 'read' }, options);
+  const result = await turn.tool('context_room_document', { action: 'propose', expectedHash: accepted.hash, content: '# Kept mode\n' }, { ...options, callId: 'propose-mode' });
+  const change = readLocalProposalFile(f.root, result.proposalId, 'docs/Original.md');
+  assert.equal(change.after.mode & 0o777, 0o755);
+
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8') + '\nUnreviewed human edit.\n');
+  const unreviewed = await turn.tool('context_room_document', { action: 'read' }, { ...options, callId: 'read-2' });
+  await assert.rejects(turn.tool('context_room_document', { action: 'propose', expectedHash: unreviewed.hash, content: '# Laundered\n' }, { ...options, callId: 'propose-unreviewed' }), (error) => /not reviewed/.test(error.message));
+  assert.equal(listLocalProposals(f.root).length, 1);
+  f.finish('done');
+});
+
+test('an annotation conversation replaces only its exact passage and refuses forged or stale anchors', async t => {
+  const f = await assistantFixture(); t.after(() => f.close());
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK1kAAAAASUVORK5CYII=';
+  const file = path.join(f.root, 'docs/Original.md'), text = '# Été\n\nSame paragraph.\n\nSame paragraph.\n\nLast — line.\n';
+  fs.writeFileSync(file, text); fs.chmodSync(file, 0o755);
+  writeDocReviewDecision(f.root, 'docs/Original.md', { status: 'verified' });
+  const start = text.lastIndexOf('Same paragraph.'), selection = { start, end: start + 'Same paragraph.'.length, text: 'Same paragraph.' };
+  const create = source => f.post('/api/assistant/conversations', { source: { kind: 'document', path: 'docs/Original.md', ...source } });
+  assert.equal((await create({ selection: { ...selection, start: start - 1, end: start - 1 + 15 }, annotation: { image: png } })).status, 409, 'A forged anchor is refused');
+  assert.equal((await create({ selection, annotation: { image: { sha256: 'a'.repeat(64) } } })).status, 400, 'Only the runtime stores a snapshot');
+  const created = await create({ selection, annotation: { image: png, section: 'Été' } }); assert.equal(created.status, 201);
+  assert.equal(created.body.source.annotation.byteStart, Buffer.byteLength(text.slice(0, start)));
+  await f.post('/api/assistant/conversations/' + created.body.id + '/send', { requestId: randomUUID(), text: 'Simplify this' });
+  await until(() => f.turns.length === 1); const turn = f.turns[0], options = { callId: 'see', turnId: turn.turnId, signal: new AbortController().signal };
+  const seen = await turn.tool('context_room_document', { action: 'annotation' }, options);
+  assert.equal(seen.valid, true); assert.equal(seen.text, 'Same paragraph.'); assert.deepEqual(codexToolContent(seen)[1], { type: 'inputImage', imageUrl: png });
+  await assert.rejects(turn.tool('context_room_document', { action: 'replace_annotation', annotationId: 'annotation-other', replacement: 'X' }, { ...options, callId: 'wrong' }), /id of this conversation/);
+  const result = await turn.tool('context_room_document', { action: 'replace_annotation', annotationId: seen.annotationId, replacement: 'One clear line.' }, { ...options, callId: 'replace' });
+  const change = readLocalProposalFile(f.root, result.proposalId, 'docs/Original.md');
+  assert.deepEqual(change.afterBytes, Buffer.from(text.slice(0, start) + 'One clear line.' + text.slice(selection.end)));
+  assert.equal(change.after.mode & 0o777, 0o755);
+  fs.writeFileSync(file, text.replace('Last', 'Final')); writeDocReviewDecision(f.root, 'docs/Original.md', { status: 'verified' });
+  await assert.rejects(turn.tool('context_room_document', { action: 'replace_annotation', annotationId: seen.annotationId, replacement: 'Y' }, { ...options, callId: 'stale' }), /changed since this annotation/);
+  assert.equal(listLocalProposals(f.root).length, 1);
+  f.finish('done');
 });

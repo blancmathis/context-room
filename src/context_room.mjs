@@ -7820,11 +7820,20 @@ export function createProjectAssistantSourceResolver() {
         if (!canEditLocalProposalPath(project, input.path)) throw sharedRequestError('The original document is no longer editable.', 403, 'assistant_proposal_scope');
         const current = readNotebookBytes(project, input.path, 1024 * 1024);
         if (!current || notebookHash(current) !== input.expectedHash) throw sharedRequestError('The original document changed before proposal preparation.', 409, 'assistant_document_conflict');
+        // The agent read the original file. A proposal replaces the accepted version, so the two must be
+        // the same bytes; otherwise unreviewed edits would travel inside the agent's proposal.
+        const review = readDocReviewState(project, { readOnly: true }).reviews[input.path];
+        const base = review?.status === 'verified' || review?.acceptedVersion?.status === 'verified' ? readReviewBaseFile(project, input.path, { readOnly: true }) : null;
+        if (!base?.available || base.changeKind === 'added' || !Buffer.from(base.baseContent || '').equals(current)) {
+          throw sharedRequestError('This document has changes that are not reviewed. Review them before proposing an edit from the conversation.', 409, 'assistant_document_unreviewed');
+        }
         const proposal = createLocalDocumentationProposal(project, { requestId: input.requestId, title: input.title || 'Conversation edit', description: 'Proposed from the original document conversation. Human review is required.' });
         if (proposal.status === 'editing') {
           const parent = path.posix.dirname(input.path); if (parent !== '.') makeNotebookDirectory(proposal.editRoot, parent);
           const previous = readNotebookBytes(proposal.editRoot, input.path, 1024 * 1024);
-          writeNotebookBytes(proposal.editRoot, input.path, Buffer.from(input.content), { expectedHash: previous ? notebookHash(previous) : null, mode: 0o644 });
+          if (!previous || notebookHash(previous) !== input.expectedHash) throw sharedRequestError('The accepted document changed before proposal preparation.', 409, 'assistant_document_conflict');
+          const mode = fs.statSync(path.join(proposal.editRoot, input.path)).mode & 0o777;
+          writeNotebookBytes(proposal.editRoot, input.path, Buffer.from(input.content), { expectedHash: notebookHash(previous), mode });
         }
         const submitted = submitLocalDocumentationProposal(project, proposal.id);
         return { proposalId: submitted.id, scope: 'local', status: submitted.status, submittedRevision: submitted.submittedRevision, path: input.path, accepted: false };

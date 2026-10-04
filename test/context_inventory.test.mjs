@@ -505,3 +505,39 @@ test("local skills and provider configuration are accepted only with a current h
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("inventory classifies local origins by install location only", () => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "context-origin-")));
+  const previousCodexHome = process.env.CODEX_HOME;
+  try {
+    const root = path.join(base, "project");
+    const codexHome = path.join(base, "codex-home");
+    const write = (file, content = "x") => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, content); return file; };
+    write(path.join(root, "AGENTS.md"), "root");
+    write(path.join(codexHome, "skills", "mine", "SKILL.md"));
+    write(path.join(codexHome, "skills", ".system", "builtin", "SKILL.md"));
+    write(path.join(codexHome, "plugins", "cache", "tool", "skills", "plugged", "SKILL.md"));
+    const outsideHook = write(path.join(base, "elsewhere", "hook.sh"));
+    process.env.CODEX_HOME = codexHome;
+    const readers = fixtureReaders(root, {
+      instructions: [{ startupContext: { absolutePath: path.join(root, "AGENTS.md"), displayPath: "AGENTS.md", source: "project" } }],
+      skillFolders: [
+        { absolutePath: path.join(codexHome, "skills"), skills: ["mine"] },
+        { absolutePath: path.join(codexHome, "skills", ".system"), skills: ["builtin"], readOnly: true },
+        { absolutePath: path.join(codexHome, "plugins", "cache", "tool", "skills"), skills: ["plugged"] },
+      ],
+      hooks: [{ startupHook: { absolutePath: outsideHook, source: "custom", executable: true } }],
+      documents: [], documentContents: {},
+    });
+    const inventory = buildContextInventory({ root, projectId: "project-a", locationId: "location-a" }, { provider: "codex", readers });
+    const origin = (suffix) => inventory.resources.find((resource) => resource.metadata?.absolutePath?.endsWith(suffix))?.origin?.class;
+    assert.equal(origin("project/AGENTS.md"), "yours");
+    assert.equal(origin("skills/mine/SKILL.md"), "yours");
+    assert.equal(origin(".system/builtin/SKILL.md"), "provider");
+    assert.equal(origin("plugged/SKILL.md"), "unconfirmed");
+    assert.equal(origin("elsewhere/hook.sh"), "unconfirmed");
+  } finally {
+    if (previousCodexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previousCodexHome;
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});

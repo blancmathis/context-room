@@ -95,6 +95,8 @@ A Markdown document opens for reading. Reading never writes the file. Prose keep
 
 The project page shows the Documents map. It follows the links of the accepted `docs/index.md` (or `docs/README.md`, then `README.md`) in order, grouped as Reference, Plans, and History; History stays folded. An accepted document the index does not link is Unfiled. Linking it from the index files it; the file does not move. At the end of a mapped document, Previous and Next follow the index order. Default `docs search` already leaves plans and history out and counts them in `excluded.notCurrent`; a `--status` filter (`target`, `record`, `historical`) brings them back.
 
+A text review shows **Check before accepting** when the proposed version adds something hard to see: an invisible or bidirectional character, a shell command (shell code block, `$ ` line, hook `command`), a URL, or an environment variable. Each item gives its line. The signals compare the accepted and proposed text without a model. They never block, accept, reject or change watch rules.
+
 Drawing is bounded to 16 million pixels; assets to 20 MiB. Larger or unsupported resources return an explicit limit, not a silent conversion. Supported binary changes use the same exact file decisions in Shared, followed by the separate proposal acceptance.
 
 HTML resources are intentionally local and non-executable. Nested CSS resource URLs and arbitrary interactive HTML applications are not supported by the proposal preview. Missing resources are identified.

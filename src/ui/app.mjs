@@ -713,6 +713,9 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 	    .context-engine-target code { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
 	    .context-engine-provider { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 10px; }
 	    .context-engine-provider select { min-height: 32px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-card); color: var(--text); padding: 5px 28px 5px 8px; font-size: 11px; }
+	    .context-origin-provided { border-top: 1px solid var(--line); }
+	    .context-origin-provided summary { min-height: 36px; padding: 8px 10px; cursor: pointer; color: var(--muted); font-size: 12px; }
+	    .global-project-inspection-row .context-origin-note { color: var(--text); font-weight: 600; }
 	    .context-engine-summary { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 10px; border-bottom: 1px solid var(--line); }
 	    .context-engine-summary span { padding: 4px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 9px; }
 	    .context-engine-summary [data-state="fresh"] { border-color: color-mix(in srgb, var(--good) 34%, var(--line)); color: var(--good-fg); }
@@ -1175,6 +1178,14 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .markdown-line.frontmatter, .markdown-line.hr { color: var(--file-marker); }
     #docReader :is(p, li, blockquote, h1, h2, h3, h4, h5, h6).markdown-line, #docReader .markdown-frontmatter, #docReader .doc-backlinks { max-width: 72ch; }
     #docReader [data-heading-id] { scroll-margin-top: 12px; }
+    .doc-reader-body.hand-annotating { position: relative; }
+    .hand-annotation-layer { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 5; overflow: visible; touch-action: none; cursor: crosshair; }
+    .hand-annotation-layer path { fill: none; stroke: var(--text); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+    #docReader .hand-annotation-line { background: rgba(148,163,184,0.16); box-shadow: inset 3px 0 0 var(--accent); }
+    .hand-annotation-bar { position: fixed; z-index: 30; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); width: max-content; max-width: calc(100vw - 32px); box-sizing: border-box; padding: var(--space-3); border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: 0 8px 24px rgba(0,0,0,0.3); }
+    .hand-annotation-bar p { flex-basis: 100%; margin: 0; color: var(--text); font-size: 14px; }
+    .hand-annotation-bar .file-action { min-height: 44px; }
+    .file-action[aria-pressed="true"] { border-color: var(--accent); background: rgba(139,211,255,0.16); }
     #docReader [data-heading-id]:focus { outline: none; }
     .doc-toc { margin: 0 0 var(--space-4); font-size: 13px; line-height: 1.45; }
     .doc-toc summary, .markdown-frontmatter > summary, .doc-backlinks > summary { min-height: 32px; display: flex; align-items: center; gap: 6px; color: var(--file-muted); font-size: 12px; font-weight: 700; cursor: pointer; }
@@ -1294,6 +1305,10 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .diff-raw-meta summary::-webkit-details-marker { display: none; }
     .diff-raw-meta pre { margin: 6px 0 0; padding: 8px 10px; border-radius: 10px; background: rgba(255,255,255,0.025); white-space: pre-wrap; }
     .diff-empty { padding: var(--space-5); color: var(--muted); font: 14px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
+    .review-risk-notice { margin: var(--space-4); padding: var(--space-3) var(--space-4); border: 2px solid var(--text); border-radius: 12px; color: var(--text); font: 13px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
+    .review-risk-notice summary { min-height: 32px; cursor: pointer; }
+    .review-risk-notice ul { margin: var(--space-2) 0 0; padding-left: var(--space-5); }
+    .review-risk-notice code { overflow-wrap: anywhere; }
     .initial-review-notice { margin: var(--space-4); padding: var(--space-3) var(--space-4); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 12px; background: color-mix(in srgb, var(--accent) 9%, transparent); color: var(--text); font: 13px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
     .conflict-panel { position: sticky; top: 0; z-index: 8; margin: var(--space-4); border: 1px solid color-mix(in srgb, var(--warning) 54%, var(--line)); border-radius: 16px; background: color-mix(in srgb, var(--warning) 12%, var(--panel)); box-shadow: 0 14px 44px rgba(0,0,0,0.24); padding: var(--space-4); display: grid; gap: var(--space-3); font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: var(--text); }
     .external-review-actions { align-items: center; flex-wrap: wrap; justify-content: flex-end; }
@@ -4500,7 +4515,7 @@ async function openContextRoomNotebook(filePath, { directory = "", projectId = "
   return notebook.chooseNotebook({ ...options, directory });
 }
 
-async function openOriginalDocumentConversation(mode = "text") {
+async function openOriginalDocumentConversation(mode = "text", annotation = null) {
   if (!state.selected || state.selectedStartupContext || state.dirty && mode !== "dictate" || state.savedHash == null || state.fileLoadError
     || activeFileConflict() || activeExternalChange() && activeExternalChange().source !== "review"
     || state.openingFilePath === state.selected && state.fileContentReadyPath !== state.selected) throw new Error("Save the original document before starting its conversation.");
@@ -4515,6 +4530,7 @@ async function openOriginalDocumentConversation(mode = "text") {
   const editor = el("docEditor");
   if (!state.dirty && editor && editor.selectionEnd > editor.selectionStart) source.selection = { start: editor.selectionStart, end: editor.selectionEnd, text: editor.value.slice(editor.selectionStart, editor.selectionEnd) };
   else if (readerSelection) source.selection = readerSelection;
+  if (annotation) { source.selection = annotation.selection; source.annotation = { image: annotation.image, ...(annotation.section ? { section: annotation.section } : {}) }; }
   let dictationTarget = null;
   if (mode === "dictate" && editor && !editor.readOnly && /\.(md|markdown|txt)$/i.test(source.path)) {
     const originalText = editor.value, start = editor.selectionEnd > editor.selectionStart ? editor.selectionStart : originalText.length, end = editor.selectionEnd > editor.selectionStart ? editor.selectionEnd : originalText.length;
@@ -4543,9 +4559,215 @@ async function openOriginalDocumentConversation(mode = "text") {
       const selection = textEditor && textEditor.selectionEnd > textEditor.selectionStart ? { start: textEditor.selectionStart, end: textEditor.selectionEnd } : null;
       return assistant.documentDraftPreview(text, state.savedHash, selection);
     };
-    return await assistant.openConversation({ ...captured, source, mode, dictationTarget, voiceActivation, captureSource });
+    return await assistant.openConversation({ ...captured, source, mode, dictationTarget, voiceActivation, captureSource, ...(annotation ? { fresh: true } : {}) });
   }
   catch (error) { if (voiceActivation?.context.state !== 'closed') await voiceActivation?.context.close(); throw error; }
+}
+
+// Hand annotation: a pen layer over the read view. It picks one contiguous run of source lines;
+// the server fixes the exact anchor when the conversation starts. The draft stays in this browser until it is sent.
+let handAnnotation = null;
+const HAND_ANNOTATION_LIMIT = 12000;
+function handAnnotationKey(path) { return "context-room-hand-annotation:" + (state.projectId || "") + ":" + path; }
+function handAnnotationBody() { return el("docReader")?.querySelector(".doc-reader-body") || null; }
+function handAnnotationScroller(node) {
+  for (let current = node?.parentElement; current; current = current.parentElement) {
+    const overflow = getComputedStyle(current).overflowY;
+    if ((overflow === "auto" || overflow === "scroll") && current.scrollHeight > current.clientHeight) return current;
+  }
+  return document.scrollingElement;
+}
+
+function toggleHandAnnotation() {
+  if (handAnnotation) { stopHandAnnotation(); return; }
+  if (state.mode !== "view" || state.dirty || !state.selected || state.savedHash == null || !handAnnotationBody()) throw new Error("Open the saved document in read view before annotating it.");
+  let strokes = [];
+  try {
+    const saved = JSON.parse(localStorage.getItem(handAnnotationKey(state.selected)) || "null");
+    if (saved?.hash === state.savedHash && Array.isArray(saved.strokes)) strokes = saved.strokes.filter(stroke => Array.isArray(stroke?.points)).slice(0, 200);
+  } catch {}
+  handAnnotation = { path: state.selected, hash: state.savedHash, strokes, range: null };
+  syncHandAnnotation();
+}
+
+function stopHandAnnotation() {
+  handAnnotation = null;
+  const body = handAnnotationBody();
+  body?.classList.remove("hand-annotating");
+  body?.querySelectorAll(".hand-annotation-layer").forEach(node => node.remove());
+  body?.querySelectorAll(".hand-annotation-line").forEach(node => node.classList.remove("hand-annotation-line"));
+  document.querySelectorAll(".hand-annotation-bar").forEach(node => node.remove());
+  document.querySelector("[data-file-annotate]")?.setAttribute("aria-pressed", "false");
+}
+
+function saveHandAnnotationDraft() {
+  if (!handAnnotation) return;
+  try {
+    if (handAnnotation.strokes.length) localStorage.setItem(handAnnotationKey(handAnnotation.path), JSON.stringify({ hash: handAnnotation.hash, strokes: handAnnotation.strokes }));
+    else localStorage.removeItem(handAnnotationKey(handAnnotation.path));
+  } catch {}
+}
+
+function handAnnotationPath(points) {
+  if (!points.length) return "";
+  const [x, y] = points[0];
+  return "M" + x + " " + y + (points.length === 1 ? "l0.01 0" : points.slice(1).map(point => "L" + point[0] + " " + point[1]).join(""));
+}
+
+// Re-attached after every viewer render; leaving the document or read view ends annotation.
+function syncHandAnnotation() {
+  if (!handAnnotation) return;
+  const body = handAnnotationBody(), reader = el("docReader");
+  if (!body || handAnnotation.path !== state.selected || state.mode !== "view") { stopHandAnnotation(); return; }
+  document.querySelector("[data-file-annotate]")?.setAttribute("aria-pressed", "true");
+  body.classList.add("hand-annotating");
+  let layer = body.querySelector(".hand-annotation-layer");
+  if (!layer) {
+    layer = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    layer.setAttribute("class", "hand-annotation-layer"); layer.setAttribute("role", "img"); layer.setAttribute("aria-label", "Annotation layer. Pen or mouse draws; a finger scrolls.");
+    body.append(layer);
+    let drawing = null, pan = null;
+    const point = event => { const origin = body.getBoundingClientRect(); return [Math.round((event.clientX - origin.left) * 10) / 10, Math.round((event.clientY - origin.top) * 10) / 10]; };
+    layer.addEventListener("pointerdown", event => {
+      if (!handAnnotation) return;
+      layer.setPointerCapture?.(event.pointerId);
+      if (event.pointerType === "touch") { pan = { x: event.clientX, y: event.clientY, scroller: handAnnotationScroller(body) }; return; }
+      if (event.button > 0 || handAnnotation.strokes.length >= 200) return;
+      event.preventDefault();
+      drawing = { points: [point(event)] }; handAnnotation.strokes.push(drawing);
+      drawing.node = document.createElementNS("http://www.w3.org/2000/svg", "path"); layer.append(drawing.node);
+      drawing.node.setAttribute("d", handAnnotationPath(drawing.points));
+    });
+    layer.addEventListener("pointermove", event => {
+      if (pan) { pan.scroller.scrollBy(pan.x - event.clientX, pan.y - event.clientY); pan.x = event.clientX; pan.y = event.clientY; return; }
+      if (!drawing) return;
+      event.preventDefault();
+      const next = point(event), last = drawing.points.at(-1);
+      if (Math.hypot(next[0] - last[0], next[1] - last[1]) < 1.5 || drawing.points.length >= 2000) return;
+      drawing.points.push(next); drawing.node.setAttribute("d", handAnnotationPath(drawing.points));
+    });
+    const end = () => {
+      pan = null;
+      if (!drawing) return;
+      delete drawing.node; drawing = null;
+      saveHandAnnotationDraft(); updateHandAnnotationRange();
+    };
+    layer.addEventListener("pointerup", end); layer.addEventListener("pointercancel", end);
+    for (const stroke of handAnnotation.strokes) {
+      const node = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      node.setAttribute("d", handAnnotationPath(stroke.points)); layer.append(node);
+    }
+  }
+  if (reader && !reader.querySelector(".hand-annotation-bar")) {
+    const bar = document.createElement("div");
+    bar.className = "hand-annotation-bar"; bar.setAttribute("role", "toolbar"); bar.setAttribute("aria-label", "Annotation");
+    bar.innerHTML = '<p role="status" data-hand-annotation-status></p>'
+      + '<button class="file-action" type="button" data-hand-annotation-discuss>Discuss this annotation</button>'
+      + '<button class="file-action" type="button" data-hand-annotation-clear>Clear</button>'
+      + '<button class="file-action" type="button" data-hand-annotation-stop>Stop annotating</button>';
+    bar.querySelector("[data-hand-annotation-discuss]").addEventListener("click", () => discussHandAnnotation().catch(error => setStatus(error.message)));
+    bar.querySelector("[data-hand-annotation-clear]").addEventListener("click", () => {
+      if (!handAnnotation) return;
+      handAnnotation.strokes = []; layer.replaceChildren(); saveHandAnnotationDraft(); updateHandAnnotationRange();
+    });
+    bar.querySelector("[data-hand-annotation-stop]").addEventListener("click", () => stopHandAnnotation());
+    reader.append(bar);
+  }
+  updateHandAnnotationRange();
+}
+
+function updateHandAnnotationRange() {
+  const body = handAnnotationBody(), bar = el("docReader")?.querySelector(".hand-annotation-bar");
+  if (!handAnnotation || !body || !bar) return;
+  body.querySelectorAll(".hand-annotation-line").forEach(node => node.classList.remove("hand-annotation-line"));
+  handAnnotation.range = null;
+  const changed = handAnnotation.hash !== state.savedHash;
+  let top = Infinity, bottom = -Infinity;
+  for (const stroke of handAnnotation.strokes) for (const [, y] of stroke.points) { top = Math.min(top, y); bottom = Math.max(bottom, y); }
+  let first = Infinity, last = -1;
+  const origin = body.getBoundingClientRect(), lines = [...body.querySelectorAll(".markdown-line[data-line-index]")];
+  if (!changed && handAnnotation.strokes.length) for (const line of lines) {
+    const rect = line.getBoundingClientRect(), index = Number(line.dataset.lineIndex);
+    if (!rect.height || !Number.isInteger(index) || rect.bottom - origin.top < top || rect.top - origin.top > bottom) continue;
+    first = Math.min(first, index); last = Math.max(last, index);
+  }
+  const text = String(state.saved || ""), source = text.split("\n");
+  while (last >= 0 && first < last && !source[first]?.trim()) first += 1;
+  while (last >= 0 && last > first && !source[last]?.trim()) last -= 1;
+  let message = "Draw over a passage with the pen or mouse. A finger scrolls.";
+  if (changed) message = "The document changed since this annotation. Clear it and annotate again.";
+  else if (handAnnotation.strokes.length && (last < 0 || !source[first]?.trim())) message = "Draw over lines of text.";
+  else if (last >= 0) {
+    const start = source.slice(0, first).reduce((total, line) => total + line.length + 1, 0), end = start + source.slice(first, last + 1).join("\n").length;
+    if (end - start > HAND_ANNOTATION_LIMIT) message = "Choose a shorter passage: at most 12,000 characters.";
+    else {
+      handAnnotation.range = { first, last, start, end, text: text.slice(start, end) };
+      lines.forEach(line => { const index = Number(line.dataset.lineIndex); if (index >= first && index <= last) line.classList.add("hand-annotation-line"); });
+      message = (first === last ? "Line " + (first + 1) : "Lines " + (first + 1) + "–" + (last + 1)) + " selected. Discuss this annotation to ask the agent about them.";
+    }
+  }
+  bar.querySelector("[data-hand-annotation-status]").textContent = message;
+  bar.querySelector("[data-hand-annotation-discuss]").disabled = !handAnnotation.range;
+}
+
+function handAnnotationSection(lineIndex) {
+  const stack = [];
+  for (const heading of markdownOutline(state.saved)) {
+    if (heading.index > lineIndex) break;
+    while (stack.length && stack.at(-1).level >= heading.level) stack.pop();
+    stack.push(heading);
+  }
+  return stack.map(heading => heading.text).join(" › ").slice(0, 400);
+}
+
+// The snapshot redraws the passage words at their on-screen places, then the strokes on top.
+function handAnnotationSnapshot(body, range) {
+  const origin = body.getBoundingClientRect();
+  let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+  const include = (l, t, r, b) => { left = Math.min(left, l); top = Math.min(top, t); right = Math.max(right, r); bottom = Math.max(bottom, b); };
+  for (const line of body.querySelectorAll(".hand-annotation-line")) {
+    const rect = line.getBoundingClientRect();
+    include(rect.left - origin.left, rect.top - origin.top, rect.right - origin.left, rect.bottom - origin.top);
+  }
+  for (const stroke of handAnnotation.strokes) for (const [x, y] of stroke.points) include(x - 4, y - 4, x + 4, y + 4);
+  left = Math.max(0, left - 12); top = Math.max(0, top - 12); right = Math.min(body.scrollWidth, right + 12); bottom = Math.min(body.scrollHeight, bottom + 12);
+  const width = Math.max(1, right - left), height = Math.max(1, bottom - top), scale = Math.min(2, 1024 / width, 1024 / height);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.floor(width * scale)); canvas.height = Math.max(1, Math.floor(height * scale));
+  const context = canvas.getContext("2d");
+  context.fillStyle = "#fff"; context.fillRect(0, 0, canvas.width, canvas.height);
+  context.scale(scale, scale); context.translate(-left, -top);
+  context.fillStyle = "#111"; context.textBaseline = "middle";
+  const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT), words = document.createRange();
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const parent = node.parentElement;
+    if (!parent || parent.closest(".hand-annotation-layer")) continue;
+    const box = parent.getBoundingClientRect();
+    if (!box.height || box.bottom - origin.top < top || box.top - origin.top > bottom) continue;
+    const style = getComputedStyle(parent);
+    context.font = style.fontStyle + " " + style.fontWeight + " " + style.fontSize + " " + style.fontFamily;
+    for (const match of node.data.matchAll(/\S+/g)) {
+      words.setStart(node, match.index); words.setEnd(node, match.index + match[0].length);
+      const rect = words.getClientRects()[0];
+      if (rect && rect.bottom - origin.top >= top && rect.top - origin.top <= bottom) context.fillText(match[0], rect.left - origin.left, rect.top - origin.top + rect.height / 2);
+    }
+  }
+  context.strokeStyle = "#d1242f"; context.lineWidth = 3; context.lineCap = "round"; context.lineJoin = "round";
+  for (const stroke of handAnnotation.strokes) { context.stroke(new Path2D(handAnnotationPath(stroke.points))); }
+  let image = canvas.toDataURL("image/png");
+  if (image.length > 1_398_130) image = canvas.toDataURL("image/jpeg", 0.85);
+  return image;
+}
+
+async function discussHandAnnotation() {
+  const body = handAnnotationBody(), range = handAnnotation?.range;
+  if (!body || !range) throw new Error("Draw over the passage you want to discuss.");
+  if (handAnnotation.hash !== state.savedHash) throw new Error("The document changed since this annotation. Clear it and annotate again.");
+  const path = handAnnotation.path, image = handAnnotationSnapshot(body, range), section = handAnnotationSection(range.first);
+  await openOriginalDocumentConversation("text", { selection: { start: range.start, end: range.end, text: range.text }, image, ...(section ? { section } : {}) });
+  try { localStorage.removeItem(handAnnotationKey(path)); } catch {}
+  stopHandAnnotation();
+  setStatus("Annotation sent to the conversation. Any proposed change still needs your review.");
 }
 
 // The native canvas shares this retained conversation UI and captured API.
@@ -14857,7 +15079,8 @@ function contextEngineResourceRow(entry, { actions = true, cost = null } = {}) {
   const costLabel = status === "active" ? contextCostEntryLabel(cost?.[resource.id]) : "";
   return '<div class="global-project-inspection-row" data-context-resource="' + escapeHtml(resource.id || "") + '">'
     + '<div class="global-project-inspection-row-head"><strong>' + escapeHtml(resource.metadata?.name || resource.locator || resource.id || "Context resource") + '</strong><span class="context-engine-status" data-status="' + escapeHtml(status) + '">' + escapeHtml(status) + '</span></div>'
-    + '<span>' + escapeHtml([resource.kind, application.scope, resource.source].filter(Boolean).join(" · ")) + '</span>'
+    + '<span>' + escapeHtml([resource.kind, application.scope, resource.source, CONTEXT_ORIGIN_LABELS[resource.origin?.class]?.[0]].filter(Boolean).join(" · ")) + '</span>'
+    + (resource.origin?.class === "unconfirmed" ? '<span class="context-origin-note" data-context-origin="unconfirmed">' + escapeHtml(resource.origin.reason || "") + '</span>' : '')
     + (costLabel ? '<span class="context-cost-entry">' + escapeHtml(costLabel) + '</span>' : '')
     + (application.reason ? '<p>' + escapeHtml(application.reason) + '</p>' : '')
     + (resource.locator ? '<code>' + escapeHtml(resource.locator) + '</code>' : '')
@@ -14871,11 +15094,28 @@ function contextEngineResourceRow(entry, { actions = true, cost = null } = {}) {
     + '</div>';
 }
 
+const CONTEXT_ORIGIN_LABELS = { yours: ["Your file", "Your files"], provider: ["Provided by the agent", "Provided by the agent"], unconfirmed: ["Origin not confirmed", "Origin not confirmed"] };
+
+// Files the agent installs itself stay counted, folded at the end of their group.
 function renderEffectiveContextGroup(title, entries = [], emptyCopy = "", options = {}) {
-  const rows = entries.map((entry) => contextEngineResourceRow(entry, options)).join("");
+  const provided = entries.filter((entry) => entry.resource?.origin?.class === "provider");
+  const own = entries.filter((entry) => entry.resource?.origin?.class !== "provider");
+  const rows = own.map((entry) => contextEngineResourceRow(entry, options)).join("")
+    + (provided.length ? '<details class="context-origin-provided" data-context-origin-group="provider"><summary>Provided by the agent · ' + provided.length + '</summary>' + provided.map((entry) => contextEngineResourceRow(entry, options)).join("") + '</details>' : '');
   return '<details class="global-project-inspection-group"' + (options.open === false ? '' : ' open') + '><summary><strong>' + escapeHtml(title) + '</strong><span>' + entries.length + '</span></summary><div class="global-project-inspection-list">'
     + (rows || '<div class="global-project-inspection-row empty"><strong>Nothing effective</strong><span>' + escapeHtml(emptyCopy) + '</span></div>')
     + '</div></details>';
+}
+
+function contextOriginSummary(effective) {
+  const resources = new Map();
+  for (const key of ["instructions", "skills", "hooks", "inactive"]) {
+    for (const entry of effective?.[key] || []) if (entry.resource?.origin?.class) resources.set(entry.resource.id, entry.resource.origin.class);
+  }
+  if (!resources.size) return "";
+  const counts = [...resources.values()].reduce((all, origin) => ({ ...all, [origin]: (all[origin] || 0) + 1 }), {});
+  return '<div class="context-engine-summary context-origin-summary" aria-label="Where these files come from">' + ["yours", "provider", "unconfirmed"]
+    .map((origin) => '<span data-context-origin-count="' + origin + '">' + escapeHtml(CONTEXT_ORIGIN_LABELS[origin][(counts[origin] || 0) === 1 ? 0 : 1]) + ' ' + (counts[origin] || 0) + '</span>').join("") + '</div>';
 }
 
 function renderEffectiveContextBody(effective, { embedded = false } = {}) {
@@ -14893,7 +15133,7 @@ function renderEffectiveContextBody(effective, { embedded = false } = {}) {
     + '<span>' + inactive.length + ' inactive or blocked</span>'
     + '<span>' + Number(effective?.proposals?.length || 0) + ' proposal metadata</span>'
     + '<span>' + Number(effective?.healthIssues?.length || 0) + ' health issues</span>'
-    + '</div>';
+    + '</div>' + contextOriginSummary(effective);
   const options = { actions: !embedded, cost: effective?.cost?.entries || null };
   const groups = '<div class="global-project-inspection-groups">'
     + renderEffectiveContextGroup("Agent instructions", effective?.instructions || [], "No proven instruction applies to this folder.", options)
@@ -15677,7 +15917,8 @@ function renderFileActionButtons(options = {}) {
 
 function renderFileActionItems({ modeToggle = null, reviewAction = null, secondaryReviewAction = null, nextReviewAction = null, dirty = false, templateState = null, blockedByConflict = false, conversationBlocked = blockedByConflict, readOnly = false, deletable = true, savable = true } = {}) {
   return '' +
-    (IS_LOCAL && state.selected && !state.selectedStartupContext && !readOnly && /\.(md|markdown|txt|html?)$/i.test(state.selected) ? '<button class="file-action" type="button" data-file-conversation' + (dirty || conversationBlocked ? ' disabled title="Save or resolve the original document first"' : '') + '>Discuss</button><button class="file-action" type="button" data-file-dictate' + (conversationBlocked ? ' disabled' : '') + '>Dictate</button><button class="file-action" type="button" data-file-voice' + (dirty || conversationBlocked ? ' disabled' : '') + '>Voice</button>' : '') +
+    (IS_LOCAL && state.selected && !state.selectedStartupContext && !readOnly && /\.(md|markdown|txt|html?)$/i.test(state.selected) ? '<button class="file-action" type="button" data-file-conversation' + (dirty || conversationBlocked ? ' disabled title="Save or resolve the original document first"' : '') + '>Discuss</button><button class="file-action" type="button" data-file-dictate' + (conversationBlocked ? ' disabled' : '') + '>Dictate</button><button class="file-action" type="button" data-file-voice' + (dirty || conversationBlocked ? ' disabled' : '') + '>Voice</button>'
+      + (state.mode === "view" && /\.(md|markdown)$/i.test(state.selected) && !usePlainTextSurface(state.selected, state.saved) ? '<button class="file-action" type="button" data-file-annotate aria-pressed="' + (handAnnotation ? "true" : "false") + '"' + (dirty || conversationBlocked ? ' disabled' : '') + '>Annotate</button>' : '') : '') +
     (templateState ? '<div class="empty-template-actions"><select class="file-template-select" data-empty-template-select aria-label="Template">' + renderFileTemplateOptions(templateState.selectedId) + '</select></div>' : '') +
     (reviewAction ? '<button class="file-action" type="button" data-file-review-decision="' + escapeHtml(reviewAction.status) + '">' + escapeHtml(reviewAction.label) + '</button>' : '') +
     (secondaryReviewAction ? '<button class="file-action" type="button" data-file-review-decision="' + escapeHtml(secondaryReviewAction.status) + '">' + escapeHtml(secondaryReviewAction.label) + '</button>' : '') +
@@ -19930,9 +20171,12 @@ function renderViewer() {
           : renderDocumentView(text, file.path);
   const annotationMarkup = !isStartupFile && !isImageDocument && !conflict ? renderAgentAnnotations(state.selected) : "";
   const initialReviewNotice = initialReviewNoticeForSelectedFile();
+  const riskNotice = externalChange && !conflict && !loadError && !openingFile && !isImageDocument
+    ? reviewRiskNoticeMarkup(externalReviewBaseContent(externalChange), externalChange.diskContent || "")
+    : "";
   el("viewer").innerHTML = '<div class="review-workspace ' + (!hasDiff || state.diffCollapsed ? 'no-diff' : '') + '">' +
     (state.diffCollapsed ? "" : diffMarkup) +
-    '<section class="file-panel"><header><div class="file-header-copy"><h1 class="file-title">' + escapeHtml(file.label || "Document") + '</h1>' + (isStartupFile ? '<span class="muted">' + escapeHtml(file.path) + '</span>' : '') + '</div>' + actionsMarkup + '</header>' + conflictMarkup + initialReviewNotice + annotationMarkup + editorMarkup + '</section></div>';
+    '<section class="file-panel"><header><div class="file-header-copy"><h1 class="file-title">' + escapeHtml(file.label || "Document") + '</h1>' + (isStartupFile ? '<span class="muted">' + escapeHtml(file.path) + '</span>' : '') + '</div>' + actionsMarkup + '</header>' + conflictMarkup + initialReviewNotice + riskNotice + annotationMarkup + editorMarkup + '</section></div>';
   updateActionBanner();
   document.querySelector("[data-hide-diff]")?.addEventListener("click", (event) => {
     event.preventDefault();
@@ -19950,6 +20194,7 @@ function renderViewer() {
   wireMermaidDocuments();
   wireHtmlPreviewNavigation();
   wireMarkdownDocLinks();
+  syncHandAnnotation();
   document.querySelector("[data-conflict-compare]")?.addEventListener("click", () => toggleConflictCompare());
   document.querySelector("[data-conflict-reload]")?.addEventListener("click", () => promptReloadConflictFromDisk());
   document.querySelector("[data-conflict-keep]")?.addEventListener("click", () => promptKeepConflictEdits());
@@ -21715,6 +21960,7 @@ function wireFileActionButtons(root = document) {
   root.querySelector("[data-file-conversation]")?.addEventListener("click", () => openOriginalDocumentConversation().catch(error => setStatus(error.message)));
   root.querySelector("[data-file-dictate]")?.addEventListener("click", () => openOriginalDocumentConversation("dictate").catch(error => setStatus(error.message)));
   root.querySelector("[data-file-voice]")?.addEventListener("click", () => openOriginalDocumentConversation("voice").catch(error => setStatus(error.message)));
+  root.querySelector("[data-file-annotate]")?.addEventListener("click", () => { try { toggleHandAnnotation(); } catch (error) { setStatus(error.message); } });
   root.querySelectorAll("[data-file-review-decision]").forEach((button) => button.addEventListener("click", (event) => requestReviewDecision(state.selected, event.currentTarget.dataset.fileReviewDecision).catch((error) => setStatus(error.message))));
   root.querySelector("[data-next-review]")?.addEventListener("click", () => openNextReviewManually().catch((error) => setStatus(error.message)));
   root.querySelector("[data-file-save]")?.addEventListener("click", () => saveCurrent().catch((error) => setStatus(error.message)));
@@ -21822,6 +22068,82 @@ function externalReviewFileActionOptions() {
     deletable: !Boolean(state.selectedStartupContext),
     savable: !isHtmlDocumentPath(state.selected),
   };
+}
+
+const REVIEW_INVISIBLE_NAMES = { "00AD": "soft hyphen", "180E": "Mongolian vowel separator", "200B": "zero-width space", "200C": "zero-width non-joiner", "200D": "zero-width joiner", "200E": "left-to-right mark", "200F": "right-to-left mark", "2060": "word joiner", "FEFF": "zero-width no-break space" };
+const REVIEW_SHELL_FENCE = /^\s*(?:\x60{3,}|~{3,})\s*(?:bash|sh|zsh|fish|shell|console|terminal|powershell|pwsh|ps1|cmd|bat)\b/i;
+const REVIEW_FENCE = /^\s*(?:\x60{3,}|~{3,})/;
+
+function reviewRiskItems(text) {
+  const items = [];
+  let shellFence = false;
+  let fence = false;
+  String(text || "").split("\n").forEach((line, index) => {
+    const lineNumber = index + 1;
+    for (const match of line.matchAll(/[\u00AD\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]|[\u{E0000}-\u{E007F}]/gu)) {
+      if (index === 0 && match.index === 0 && match[0] === "\uFEFF") continue;
+      const code = match[0].codePointAt(0).toString(16).toUpperCase().padStart(4, "0");
+      const name = REVIEW_INVISIBLE_NAMES[code] || (code.startsWith("E00") ? "tag character" : "bidirectional control");
+      items.push({ kind: "invisible", key: "U+" + code, label: "U+" + code + " (" + name + ")", line: lineNumber });
+    }
+    for (const match of line.matchAll(/\b(?:https?|ftp|wss?):\/\/[^\s<>"'\x60)\]]+/gi)) {
+      const url = match[0].replace(/[.,;:!?]+$/, "");
+      items.push({ kind: "url", key: url, label: url, line: lineNumber });
+    }
+    for (const match of line.matchAll(/\$\{?([A-Z][A-Z0-9_]+)\b|process\.env\.([A-Za-z_][A-Za-z0-9_]*)|process\.env\[["']([^"']+)["']\]|%([A-Z][A-Z0-9_]+)%|\bexport\s+([A-Za-z_][A-Za-z0-9_]*)=|\$env:([A-Za-z_][A-Za-z0-9_]*)/g)) {
+      const name = match.slice(1).find(Boolean);
+      items.push({ kind: "env", key: name, label: name, line: lineNumber });
+    }
+    if (REVIEW_FENCE.test(line)) {
+      if (fence) { fence = false; shellFence = false; }
+      else { fence = true; shellFence = REVIEW_SHELL_FENCE.test(line); }
+      return;
+    }
+    const command = shellFence
+      ? line.trim().replace(/^\$\s+/, "")
+      : (line.match(/^\s*\$\s+(\S.*)$/) || line.match(/"command"\s*:\s*"((?:[^"\\]|\\.)+)"/) || line.match(/^\s*-?\s*(?:run|command):\s*(\S.*)$/) || [])[1] || "";
+    if (command && !command.startsWith("#")) items.push({ kind: "command", key: command.trim(), label: command.trim(), line: lineNumber });
+  });
+  return items;
+}
+
+// Deterministic, model-free signals for content a reviewer cannot easily see:
+// items present in the proposed text more often than in the accepted text.
+function reviewRiskSignals(beforeText, afterText) {
+  const counts = new Map();
+  for (const item of reviewRiskItems(beforeText)) counts.set(item.kind + "\n" + item.key, (counts.get(item.kind + "\n" + item.key) || 0) + 1);
+  const added = [];
+  const reported = new Map();
+  for (const item of reviewRiskItems(afterText)) {
+    const id = item.kind + "\n" + item.key;
+    const left = counts.get(id) || 0;
+    if (left > 0) { counts.set(id, left - 1); continue; }
+    const existing = reported.get(id);
+    if (existing) { existing.count += 1; if (!existing.lines.includes(item.line)) existing.lines.push(item.line); continue; }
+    const signal = { kind: item.kind, key: item.key, label: item.label, count: 1, lines: [item.line] };
+    reported.set(id, signal);
+    added.push(signal);
+  }
+  const order = ["invisible", "command", "env", "url"];
+  return added.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
+}
+
+function reviewRiskNoticeMarkup(beforeText, afterText) {
+  const cache = state.reviewRiskCache;
+  const signals = cache && cache.before === beforeText && cache.after === afterText
+    ? cache.signals
+    : reviewRiskSignals(beforeText, afterText);
+  state.reviewRiskCache = { before: beforeText, after: afterText, signals };
+  if (!signals.length) return "";
+  const nouns = { invisible: ["invisible character", "invisible characters"], command: ["new shell command", "new shell commands"], env: ["new environment variable", "new environment variables"], url: ["new URL", "new URLs"] };
+  const titles = { invisible: "Invisible character", command: "Shell command", env: "Environment variable", url: "URL" };
+  const summary = Object.keys(nouns).map((kind) => {
+    const count = signals.filter((signal) => signal.kind === kind).length;
+    return count ? count + " " + nouns[kind][count === 1 ? 0 : 1] : "";
+  }).filter(Boolean).join(" · ");
+  const shown = signals.slice(0, 8).map((signal) => '<li data-review-risk-kind="' + escapeHtml(signal.kind) + '"><span>' + escapeHtml(titles[signal.kind]) + '</span> <code>' + escapeHtml(signal.label.length > 120 ? signal.label.slice(0, 119) + "…" : signal.label) + '</code> <span class="muted">line ' + escapeHtml(signal.lines.slice(0, 3).join(", ") + (signal.lines.length > 3 ? "…" : "")) + '</span></li>').join("");
+  const more = signals.length > 8 ? '<li class="muted">' + escapeHtml(String(signals.length - 8)) + ' more</li>' : "";
+  return '<details class="issue review-risk-notice" data-review-risk><summary><strong>Check before accepting</strong> <span>' + escapeHtml(summary) + '</span></summary><ul>' + shown + more + '</ul></details>';
 }
 
 function renderExternalReviewDocument(beforeText, afterText) {
