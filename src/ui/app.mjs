@@ -6858,10 +6858,12 @@ async function openContextHubProjectDestination(projectKey, destination) {
   const worktree = globalProjectSelectedWorktree(project);
   await openContextHubProject(worktree?.id || project.id, { pushHistory: true });
   if (state.globalExplorerProjectKey !== projectKey) return;
+  // On drawer viewports, opening a project shows the Explorer over the page; close it for page destinations.
+  if (destination !== "documents" && !isExplorerDesktopViewport() && !isExplorerCollapsed()) setExplorerCollapsedFromUser(true);
   if (destination === "review") {
     const heading = el("reviewQueueHeading");
     heading?.scrollIntoView({ block: "start", behavior: "smooth" });
-    heading?.focus({ preventScroll: true });
+    window.requestAnimationFrame(() => heading?.focus({ preventScroll: true }));
     return;
   }
   if (destination === "context") {
