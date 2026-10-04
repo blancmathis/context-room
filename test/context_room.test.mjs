@@ -7188,9 +7188,9 @@ test("Settings search matches aliases, technical names, scopes, and advanced gro
 test("normal and startup files open directly editable while review mode owns verification", () => {
   const html = renderAppHtml();
 
-  assert.match(html, /async function selectFile\(path, options = \{\}\)[\s\S]*state\.dirty = false;\s*state\.mode = "edit";/);
-  assert.match(html, /async function selectStartupContextFile\(order, options = \{\}\)[\s\S]*state\.dirty = false;\s*state\.mode = "edit";/);
-  assert.match(html, /async function selectStartupSkillFile\(folderOrder, skillName, options = \{\}\)[\s\S]*state\.dirty = false;\s*state\.mode = "edit";/);
+  assert.match(html, /async function selectFile\(path, options = \{\}\)[\s\S]*state\.dirty = false;\s*state\.mode = "view";/);
+  assert.match(html, /async function selectStartupContextFile\(order, options = \{\}\)[\s\S]*state\.dirty = false;\s*state\.mode = "view";/);
+  assert.match(html, /async function selectStartupSkillFile\(folderOrder, skillName, options = \{\}\)[\s\S]*state\.dirty = false;\s*state\.mode = "view";/);
   assert.match(html, /state\.mode === "edit"\s*\?\s*renderMarkdownEditor\(text\)/);
   assert.match(html, /writeSelectedDiskFile\(content\)/);
   assert.match(html, /api\("\/api\/startup-context\/file", \{/);

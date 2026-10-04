@@ -4437,12 +4437,17 @@ async function openOriginalDocumentConversation(mode = "text") {
     const context = new (window.AudioContext || window.webkitAudioContext)(), resumed = context.resume(); resumed.catch(() => {}); voiceActivation = { context, resumed };
   }
   const captured = captureNotebookApi(), source = { kind: "document", path: state.selected, hash: state.savedHash };
+  const readerSelection = mode !== "dictate" && state.mode === "view" ? readerSelectionOffsets() : null;
+  // Dictation inserts into the draft, so it needs the editor.
+  if (mode === "dictate" && state.mode === "view" && !state.selectedReadOnly) setMode("edit");
   const editor = el("docEditor");
   if (!state.dirty && editor && editor.selectionEnd > editor.selectionStart) source.selection = { start: editor.selectionStart, end: editor.selectionEnd, text: editor.value.slice(editor.selectionStart, editor.selectionEnd) };
+  else if (readerSelection) source.selection = readerSelection;
   let dictationTarget = null;
   if (mode === "dictate" && editor && !editor.readOnly && /\.(md|markdown|txt)$/i.test(source.path)) {
     const originalText = editor.value, start = editor.selectionEnd > editor.selectionStart ? editor.selectionStart : originalText.length, end = editor.selectionEnd > editor.selectionStart ? editor.selectionEnd : originalText.length;
     dictationTarget = { label: end > start ? "Replace original selection in draft" : "Append to document draft", apply: async text => {
+      if (state.selected === source.path && state.mode === "view" && !state.selectedReadOnly) setMode("edit");
       const currentEditor = el("docEditor");
       if (state.selected !== source.path || captureNotebookApi().scopeKey !== captured.scopeKey || state.savedHash !== source.hash || !currentEditor || currentEditor.readOnly
         || currentEditor.value !== originalText || activeFileConflict() || activeExternalChange() && activeExternalChange().source !== "review")
@@ -13209,7 +13214,7 @@ async function selectFile(path, options = {}) {
   state.saved = "";
   state.savedHash = null;
   state.dirty = false;
-  state.mode = isImageDocumentPath(path) ? "view" : "edit";
+  state.mode = "view";
   state.filePanel = false;
   state.diffCollapsed = !autoOpenGitDiffEnabled();
   if (options.revealInExplorer) {
@@ -13260,7 +13265,8 @@ async function selectFile(path, options = {}) {
     state.savedHash = data.contentHash;
     state.selectedReadOnly = Boolean(data.readOnly);
     state.selectedVisualAsset = data.binary ? data : null;
-    state.mode = data.binary ? "view" : state.mode;
+    // Read first. An empty editable file has nothing to read and opens in the editor.
+    state.mode = !data.binary && !data.readOnly && !String(data.content || "").trim() ? "edit" : "view";
     state.fileLoadError = null;
     el("editor").value = data.content || "";
     state.fileContentReadyPath = path;
@@ -13361,7 +13367,7 @@ async function selectStartupContextFile(order, options = {}) {
   state.saved = "";
   state.savedHash = null;
   state.dirty = false;
-  state.mode = "edit";
+  state.mode = "view";
   state.page = "file";
   state.settingsOpen = false;
   state.pendingMarkdown = null;
@@ -13452,7 +13458,7 @@ async function selectStartupSkillFile(folderOrder, skillName, options = {}) {
   state.saved = "";
   state.savedHash = null;
   state.dirty = false;
-  state.mode = "edit";
+  state.mode = "view";
   state.page = "file";
   state.settingsOpen = false;
   state.pendingMarkdown = null;
@@ -13545,7 +13551,7 @@ async function selectStartupHookFile(order, options = {}) {
   state.saved = "";
   state.savedHash = null;
   state.dirty = false;
-  state.mode = "edit";
+  state.mode = "view";
   state.page = "file";
   state.settingsOpen = false;
   state.pendingMarkdown = null;
@@ -15398,7 +15404,7 @@ function renderFileActionButtons(options = {}) {
   return '<div class="file-actions">' + renderFileActionItems(options) + '</div>';
 }
 
-function renderFileActionItems({ reviewAction = null, secondaryReviewAction = null, nextReviewAction = null, dirty = false, templateState = null, blockedByConflict = false, conversationBlocked = blockedByConflict, readOnly = false, deletable = true, savable = true } = {}) {
+function renderFileActionItems({ modeToggle = null, reviewAction = null, secondaryReviewAction = null, nextReviewAction = null, dirty = false, templateState = null, blockedByConflict = false, conversationBlocked = blockedByConflict, readOnly = false, deletable = true, savable = true } = {}) {
   return '' +
     (IS_LOCAL && state.selected && !state.selectedStartupContext && !readOnly && /\.(md|markdown|txt|html?)$/i.test(state.selected) ? '<button class="file-action" type="button" data-file-conversation' + (dirty || conversationBlocked ? ' disabled title="Save or resolve the original document first"' : '') + '>Discuss</button><button class="file-action" type="button" data-file-dictate' + (conversationBlocked ? ' disabled' : '') + '>Dictate</button><button class="file-action" type="button" data-file-voice' + (dirty || conversationBlocked ? ' disabled' : '') + '>Voice</button>' : '') +
     (templateState ? '<div class="empty-template-actions"><select class="file-template-select" data-empty-template-select aria-label="Template">' + renderFileTemplateOptions(templateState.selectedId) + '</select></div>' : '') +
@@ -15406,6 +15412,8 @@ function renderFileActionItems({ reviewAction = null, secondaryReviewAction = nu
     (secondaryReviewAction ? '<button class="file-action" type="button" data-file-review-decision="' + escapeHtml(secondaryReviewAction.status) + '">' + escapeHtml(secondaryReviewAction.label) + '</button>' : '') +
     (nextReviewAction ? '<button class="file-action" type="button" data-next-review>' + escapeHtml(nextReviewAction.label) + '</button>' : '') +
     (deletable ? '<button class="file-action danger-action" type="button" data-file-delete>Delete</button>' : '') +
+    (modeToggle === "edit" ? '<button class="file-action primary" type="button" data-file-mode="edit">Edit</button>' : '') +
+    (modeToggle === "view" ? '<button class="file-action" type="button" data-file-mode="view"' + (dirty ? ' disabled title="Save your changes first"' : '') + '>Done</button>' : '') +
     (savable ? '<button class="file-action primary" type="button" data-file-save ' + (!dirty || blockedByConflict || readOnly ? 'disabled' : '') + (readOnly ? ' title="This file is read-only in Context Room"' : blockedByConflict ? ' title="Resolve the disk change before saving"' : '') + '>Save</button>' : '');
 }
 
@@ -15960,9 +15968,46 @@ function currentCodexReferencePath() {
   return state.selectedStartupContext?.displayPath || state.selected || "";
 }
 
+// In read mode, a selection maps to the source lines it covers; the reference holds those source lines.
+function readerSelectionRange() {
+  const reader = el("docReader");
+  const selection = window.getSelection?.();
+  if (!reader || !selection || selection.isCollapsed || !selection.rangeCount) return null;
+  if (!reader.contains(selection.anchorNode) || !reader.contains(selection.focusNode)) return null;
+  const lineOf = (node) => {
+    const element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+    const value = Number(element?.closest?.("[data-line-index]")?.dataset.lineIndex);
+    return Number.isInteger(value) ? value : null;
+  };
+  const anchor = lineOf(selection.anchorNode);
+  const focus = lineOf(selection.focusNode);
+  if (anchor === null || focus === null) return null;
+  return { range: selection.getRangeAt(0), startLine: Math.min(anchor, focus) + 1, endLine: Math.max(anchor, focus) + 1 };
+}
+
+// The whole source lines under a reader selection, as character offsets in the document.
+function readerSelectionOffsets() {
+  const selected = readerSelectionRange();
+  if (!selected) return null;
+  const text = String(el("editor").value || "");
+  const lines = text.split("\n");
+  const start = lines.slice(0, selected.startLine - 1).reduce((total, line) => total + line.length + 1, 0);
+  const end = Math.min(text.length, lines.slice(0, selected.endLine).reduce((total, line) => total + line.length + 1, 0) - 1);
+  return end > start ? { start, end, text: text.slice(start, end) } : null;
+}
+
+function readerCodexReferenceSelection() {
+  const selected = readerSelectionRange();
+  if (!selected) return null;
+  const text = String(el("editor").value || "").split("\n").slice(selected.startLine - 1, selected.endLine).join("\n");
+  if (!text.trim()) return null;
+  return { path: currentCodexReferencePath(), text, dirty: false, startLine: selected.startLine, endLine: selected.endLine };
+}
+
 function editorCodexReferenceSelection() {
   if (state.page !== "file") return null;
   const editor = el("docEditor");
+  if (!editor && state.mode === "view") return readerCodexReferenceSelection();
   if (!editor || typeof editor.selectionStart !== "number" || editor.selectionStart === editor.selectionEnd) return null;
   const lineRange = codexReferenceLineRange(editor.value, editor.selectionStart, editor.selectionEnd);
   const text = editor.value.slice(editor.selectionStart, editor.selectionEnd);
@@ -16065,7 +16110,7 @@ function plainTextReferenceSelectionRect(editor) {
 
 function codexReferenceSelectionRect() {
   const editor = el("docEditor");
-  if (!editor) return null;
+  if (!editor) return readerSelectionRange()?.range.getBoundingClientRect() || null;
   return el("docHighlighter") ? markdownReferenceSelectionRect(editor) : plainTextReferenceSelectionRect(editor);
 }
 
@@ -16082,7 +16127,7 @@ function positionCodexReferenceAction() {
   const width = action.offsetWidth;
   const height = action.offsetHeight;
   const center = rect.left + Math.max(1, rect.width) / 2;
-  const editorRect = el("docEditor")?.getBoundingClientRect();
+  const editorRect = (el("docEditor") || el("docReader"))?.getBoundingClientRect();
   const minimumLeft = Math.max(margin, (editorRect?.left || 0) + 8);
   const maximumLeft = Math.min(window.innerWidth - width - margin, (editorRect?.right || window.innerWidth) - width - 8);
   action.style.left = Math.max(minimumLeft, Math.min(maximumLeft, center - width / 2)) + "px";
@@ -19436,6 +19481,12 @@ function updateHeader() {
   el("save").disabled = blockedByDiskChange || readOnlySelected || !state.dirty || !state.selected;
   const headerSave = document.querySelector("[data-file-save]");
   if (headerSave) headerSave.disabled = blockedByDiskChange || readOnlySelected || !state.dirty || !state.selected;
+  const done = document.querySelector('[data-file-mode="view"]');
+  if (done) {
+    done.disabled = state.dirty;
+    if (state.dirty) done.title = "Save your changes first";
+    else done.removeAttribute("title");
+  }
   updateActionBanner();
 }
 
@@ -19589,7 +19640,7 @@ function renderViewer() {
       ? renderFileActionsLoading()
       : externalChange && !conflict
       ? renderExternalReviewActions(externalChange, { fileActionOptions: externalReviewFileActionOptions() })
-      : renderFileActionButtons({ reviewAction: reviewActionForSelectedFile(), secondaryReviewAction: secondaryReviewActionForSelectedFile(), nextReviewAction: nextReviewActionForSelectedFile(), dirty: state.dirty, templateState, blockedByConflict: Boolean(conflict || externalChange), readOnly: Boolean(state.selectedStartupContext?.readOnly || state.selectedReadOnly), deletable: !isStartupFile && !state.selectedReadOnly, savable: !isHtmlDocument && !isImageDocument });
+      : renderFileActionButtons({ reviewAction: reviewActionForSelectedFile(), secondaryReviewAction: secondaryReviewActionForSelectedFile(), nextReviewAction: nextReviewActionForSelectedFile(), dirty: state.dirty, templateState, blockedByConflict: Boolean(conflict || externalChange), readOnly: Boolean(state.selectedStartupContext?.readOnly || state.selectedReadOnly), deletable: !isStartupFile && !state.selectedReadOnly, savable: !isHtmlDocument && !isImageDocument && state.mode === "edit", modeToggle: !isHtmlDocument && !isImageDocument && !(state.selectedStartupContext?.readOnly || state.selectedReadOnly) ? state.mode === "edit" ? "view" : "edit" : null });
   const conflictMarkup = conflict ? renderConflictPanel(conflict, text) : "";
   const editorMarkup = loadError
     ? renderFileLoadError(loadError)
@@ -21134,6 +21185,13 @@ function wireFileActionButtons(root = document) {
   root.querySelectorAll("[data-file-review-decision]").forEach((button) => button.addEventListener("click", (event) => requestReviewDecision(state.selected, event.currentTarget.dataset.fileReviewDecision).catch((error) => setStatus(error.message))));
   root.querySelector("[data-next-review]")?.addEventListener("click", () => openNextReviewManually().catch((error) => setStatus(error.message)));
   root.querySelector("[data-file-save]")?.addEventListener("click", () => saveCurrent().catch((error) => setStatus(error.message)));
+  root.querySelector("[data-file-mode]")?.addEventListener("click", (event) => {
+    const mode = event.currentTarget.dataset.fileMode;
+    if (mode === "view" && state.dirty) return;
+    setMode(mode);
+    const target = mode === "edit" ? el("docEditor") : el("docReader");
+    target?.focus({ preventScroll: true });
+  });
   root.querySelector("[data-file-delete]")?.addEventListener("click", () => deletePaths([state.selected]).catch((error) => setStatus(error.message)));
   root.querySelector("[data-empty-template-select]")?.addEventListener("change", (event) => applySelectedTemplateToEditor(event.currentTarget.value));
 }
@@ -24924,6 +24982,9 @@ if (CONTEXT_ROOM_INITIAL_FLASH_TOKEN) {
 }
 void consumeContextRoomTerminalFlash(CONTEXT_ROOM_INITIAL_FLASH_TOKEN);
 setMode("view");
+document.addEventListener("selectionchange", () => {
+  if (state.page === "file" && state.mode === "view" && el("docReader")) scheduleCodexReferenceActionUpdate();
+});
 initializeWorkspaceDiagnostics();
 establishWorkspaceIdentity().then(() => {
   const pairingRequest = registerInitialWorkspaceRuntime();

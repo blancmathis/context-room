@@ -1215,6 +1215,7 @@ test("@soak time-dependent reviews, drafts, and shared reconnect safely", async 
   await openHome(page);
   await openProject(page, "Beacon");
   await openProjectFile(page, "notes/scratch.md");
+  await page.locator('[data-file-mode="edit"]').click();
   const editor = page.locator("#docEditor");
   const saved = await editor.inputValue();
   const draft = saved + "\nUnsaved workspace draft.\n";
@@ -1228,6 +1229,7 @@ test("@soak time-dependent reviews, drafts, and shared reconnect safely", async 
   await waitForReady(writer);
   await ensureExplorerOpen(writer);
   await openProjectFile(writer, "notes/scratch.md");
+  await writer.locator('[data-file-mode="edit"]').click();
   await writer.locator("#docEditor").fill(saved + "\nExternal workspace update.\n");
   await writer.locator("[data-file-save]").click();
   await expect(writer.locator("[data-file-save]")).toBeDisabled();

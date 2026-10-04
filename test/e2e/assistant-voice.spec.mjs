@@ -263,7 +263,7 @@ test('@smoke @assistant direct dictation starts once and retains its original so
     await page.screenshot({ path: testInfo.outputPath('direct-original-dictation.png') });
     await pane.getByRole('button', { name: 'Append to document draft', exact: true }).click();
     await expect(pane.getByRole('alert')).toContainText('Return to the unchanged original document draft');
-    expect(await page.locator('#docEditor').inputValue()).toBe(other);
+    expect(await page.evaluate(() => activeEditor().value)).toBe(other);
     await page.evaluate(() => selectFile('docs/Original.md'));
     await pane.getByRole('button', { name: 'Append to document draft', exact: true }).click();
     await expect(page.locator('#docEditor')).toHaveValue(original + 'Review this original spoken draft.');
