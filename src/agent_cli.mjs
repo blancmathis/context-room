@@ -1,3 +1,4 @@
+import { analyzeContextLosses } from "./context_losses.mjs";
 import "./test_homes.mjs";
 import fs from "node:fs";
 import os from "node:os";
@@ -849,7 +850,8 @@ export function buildCliContextGraph(target, options = {}) {
 /** Resolve only context that is valid for the exact coordinate. */
 export function buildCliContextEffective(target, options = {}) {
   try {
-    const effective = resolveEffectiveContext(buildCliContextGraph(target, options));
+    const resolved = resolveEffectiveContext(buildCliContextGraph(target, options));
+    const effective = { ...resolved, losses: analyzeContextLosses(resolved, { root: target.root }) };
     if (options.includeGraph) return effective;
     const { graph: _graph, ...compact } = effective;
     return compact;
@@ -968,6 +970,7 @@ export function buildAgentEnvironment(target, options = {}) {
       providerConfigs,
       mcpServers,
       unknown: effective.unknown,
+      losses: analyzeContextLosses(effective, { root: target.root }),
       documents: effective.documents.map(environmentItem),
       proposals: effective.proposals,
       healthIssues: effective.healthIssues,

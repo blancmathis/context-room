@@ -54,6 +54,14 @@ Claude Code rules:
 
 Hook output (`SessionStart`, `UserPromptSubmit`) and MCP tool definitions reach the agent at runtime. Context Room lists them as unknown context and does not guess their size.
 
+`context effective` and the agent environment also list `losses`: context an agent drops or receives twice. The checks are deterministic (`src/context_losses.mjs`) and each cites its rule, file, and evidence:
+
+- `instruction_limit`: Codex joins project `AGENTS.md` files up to `project_doc_max_bytes` (32 KiB by default, read from `~/.codex/config.toml` and the project's `.codex/config.toml`) and drops the rest. Reported when exceeded, and from 80 %.
+- `duplicate_context`: two active instructions or skills with the same content.
+- `dead_path`: a cited path with a folder that exists nowhere (file folder, project, home). Global instructions are checked only for their `~/` paths. A cited path that exists is not a finding.
+- `missing_command`: an `npm`, `pnpm`, `yarn`, or `bun` script cited in a project instruction is absent from `package.json`.
+- `skill_description`: a skill without a description, or one over the 1,024 characters of the Agent Skills specification. No provider truncation limit is claimed.
+
 A resource can therefore be:
 
 - accepted but not installed;
