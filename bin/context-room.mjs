@@ -8,7 +8,7 @@ import { planLisiereCutover, applyLisiereCutover, changeCutoverMode } from '../s
 import { planStateMigration, applyStateMigration } from "../src/state_migration.mjs";
 import { exportLisiereSnapshot } from "../src/lisiere_snapshot.mjs";
 import { inspectLisiereSnapshot } from "../src/lisiere_inventory.mjs";
-import { migrateLisiereNotebook, migrateLisiereDraft, migrateLisiereConversation, migrateLisiereDrawingSession, reconcileLisiereNotebook, migrateLisiereRecording, proposeDocumentMove, proposeDocumentationMap, buildAgentBriefSections, renderAgentBrief } from "../src/context_room.mjs";
+import { migrateLisiereNotebook, migrateLisiereDraft, migrateLisiereConversation, migrateLisiereDrawingSession, reconcileLisiereNotebook, migrateLisiereRecording, proposeDocumentMove, proposeDocumentationMap, buildAgentBriefSections, renderAgentBrief, documentationDriftReport } from "../src/context_room.mjs";
 import {
   applyCliReviewAnnotation,
   applyAgentHandoff,
@@ -1864,6 +1864,11 @@ if (command === "docs") {
       const file = typeof args.propose === "string" ? args.propose : args.file && args.file !== true ? String(args.file) : "AGENTS.md";
       const data = args.propose ? { ...map, proposal: proposeDocumentationMap(mapRoot, { map, target: file, dryRun: args["dry-run"] === true }) } : map;
       emitAgentFirstResult("docs.map", { target: agentFirstTarget, data }, { format: agentFirstFormat });
+      process.exit(0);
+    }
+    if (action === "drift") {
+      const data = documentationDriftReport(agentFirstTarget?.root || root, { path: String(args._[2] || "") });
+      emitAgentFirstResult("docs.drift", { target: agentFirstTarget, data }, { format: agentFirstFormat });
       process.exit(0);
     }
     if (action === "publish") {

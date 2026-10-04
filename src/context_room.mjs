@@ -35,6 +35,7 @@ import { Worker } from "node:worker_threads";
 import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:zlib";
 import { appendContextRoomEvent, appendContextRoomEvents } from "./event_journal.mjs";
 import { documentsLinkingTo, planDocumentMove } from "./doc_move.mjs";
+import { documentationDrift } from "./doc_drift.mjs";
 import { beginLocalProposal, listLocalProposals, submitLocalProposal, decideLocalProposalFile, readLocalProposalFile, readLocalProposalResource, readLocalProposalDraft, writeLocalProposalDraft } from "./local_proposals.mjs";
 import {
   cleanupFilesystemLockWorkerOwner,
@@ -7935,6 +7936,24 @@ export function createLocalDocumentationProposal(root, options = {}) {
   });
 }
 
+// How much the code cited by accepted documents changed since each was accepted. Read-only.
+export function documentationDriftReport(root, { path: selector = "" } = {}) {
+  const wanted = selector ? normalizeRelPath(selector) : "";
+  const documents = buildReadOnlyDocumentationReviewSnapshot(root).acceptedFiles
+    .filter((file) => /\.(?:md|mdx|markdown|html?)$/i.test(file.path) && !resolveExternalPath(file.path) && (!wanted || normalizeRelPath(file.path) === wanted))
+    .map((file) => ({ path: normalizeRelPath(file.path), content: String(file.content || ""), acceptedAt: file.acceptedAt || "" }));
+  if (wanted && !documents.length) throw Object.assign(new Error(`${wanted} is not an accepted document.`), { code: "docs_drift_unaccepted" });
+  const order = { changed: 0, unknown: 1, unchanged: 2, "no-cited-code": 3 };
+  const results = documentationDrift(root, documents)
+    .sort((left, right) => order[left.status] - order[right.status] || (right.commits || 0) - (left.commits || 0) || left.path.localeCompare(right.path));
+  const count = (status) => results.filter((result) => result.status === status).length;
+  return {
+    schemaVersion: "context-room.docs-drift/1",
+    summary: { documents: results.length, changed: count("changed"), unchanged: count("unchanged"), unknown: count("unknown"), noCitedCode: count("no-cited-code") },
+    documents: results,
+  };
+}
+
 // Move one accepted document and rewrite every accepted inbound link in one
 // submitted local proposal. Nothing is accepted: each file stays human-reviewed.
 export function proposeDocumentMove(root, { from = "", to = "", dryRun = false } = {}) {
@@ -10010,13 +10029,13 @@ export function buildReadOnlyDocumentationReviewSnapshot(root = process.cwd(), o
       const baseline = readDocReviewBaseline(root, rel, review);
       if (baseline) {
         acceptedFiles.push({ ...file, exists: true, content: baseline.content, acceptedSnapshot: true,
-          bytes: Buffer.byteLength(baseline.content), updatedAt: review.reviewedAt || review.baselineAt });
+          bytes: Buffer.byteLength(baseline.content), updatedAt: review.reviewedAt || review.baselineAt, acceptedAt: review.reviewedAt || "" });
         continue;
       }
     }
     if (file.exists && !reviewByPath.has(rel)) {
       const current = currentReviewFor(root, reviewState.reviews || {}, rel, file.content || "", "present", null, globalReviewLedger, { persist: false });
-      if (current?.status === "verified" && current.current === true) acceptedFiles.push(file);
+      if (current?.status === "verified" && current.current === true) acceptedFiles.push({ ...file, acceptedAt: current.reviewedAt || entry?.reviewedAt || "" });
     }
   }
   return {

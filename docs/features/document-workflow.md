@@ -31,6 +31,10 @@ The CLI returns a generic reader token. Pass it through `--reader` to receive bo
 
 Context Room cannot hide physical files from programs reading the project directly. Its accepted-only guarantee applies to Context Room's normal documentation commands and projections.
 
+### Drift from code
+
+`docs drift [path]` checks each accepted Markdown or HTML document against the code it cites: links and `code` paths that exist in the project, documents excluded. The reference is the last first-parent commit at or before the acceptance. The answer counts the commits after it that touched a cited path, per path, and lists cited paths with uncommitted changes: "The cited code changed 14 times since you accepted this document." Without git or an acceptance date the status is `unknown`, never unchanged. It judges no text and calls no model.
+
 ## Local proposals
 
 `changes begin` creates a full directory tree of accepted, editable, watched documentation and returns its path and change handle. It excludes unknown pending content and read-only resources. The agent edits normally inside that directory. Content-addressed base objects are shared across proposals. On filesystems that support it, independent copy-on-write files avoid copying unchanged disk blocks; there is an ordinary copy fallback. Drafts never share writable hard links with originals.
