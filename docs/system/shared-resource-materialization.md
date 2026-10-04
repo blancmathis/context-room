@@ -70,6 +70,8 @@ They also carry `cost`: what the agent sees, in three parts (`src/context_cost.m
 
 Tokens are estimates: characters ÷ 4, no tokenizer. An unreadable file counts as not measured, never as zero. Gauges compare against hard limits only: the Codex project instruction bytes, and skill descriptions from 80 % of 1,024 characters. The project Context view has an Agent choice (Codex, Claude Code, OpenCode); the browser remembers it.
 
+Each local instruction, skill and hook has an origin, from its install location only: **Your files** (inside the project or an agent settings folder such as `~/.codex` or `~/.claude`), **Provided by the agent** (a folder the agent manages, such as `~/.codex/skills/.system`), or **Origin not confirmed** (a plugin, or anywhere else). Files provided by the agent are folded at the end of their group and stay counted. The origin changes no configuration, watch rule or decision.
+
 A resource can therefore be:
 
 - accepted but not installed;

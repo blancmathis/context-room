@@ -699,6 +699,9 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 	    .context-engine-target code { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
 	    .context-engine-provider { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 10px; }
 	    .context-engine-provider select { min-height: 32px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-card); color: var(--text); padding: 5px 28px 5px 8px; font-size: 11px; }
+	    .context-origin-provided { border-top: 1px solid var(--line); }
+	    .context-origin-provided summary { min-height: 36px; padding: 8px 10px; cursor: pointer; color: var(--muted); font-size: 12px; }
+	    .global-project-inspection-row .context-origin-note { color: var(--text); font-weight: 600; }
 	    .context-engine-summary { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 10px; border-bottom: 1px solid var(--line); }
 	    .context-engine-summary span { padding: 4px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 9px; }
 	    .context-engine-summary [data-state="fresh"] { border-color: color-mix(in srgb, var(--good) 34%, var(--line)); color: var(--good-fg); }
@@ -14706,7 +14709,8 @@ function contextEngineResourceRow(entry, { actions = true, cost = null } = {}) {
   const costLabel = status === "active" ? contextCostEntryLabel(cost?.[resource.id]) : "";
   return '<div class="global-project-inspection-row" data-context-resource="' + escapeHtml(resource.id || "") + '">'
     + '<div class="global-project-inspection-row-head"><strong>' + escapeHtml(resource.metadata?.name || resource.locator || resource.id || "Context resource") + '</strong><span class="context-engine-status" data-status="' + escapeHtml(status) + '">' + escapeHtml(status) + '</span></div>'
-    + '<span>' + escapeHtml([resource.kind, application.scope, resource.source].filter(Boolean).join(" · ")) + '</span>'
+    + '<span>' + escapeHtml([resource.kind, application.scope, resource.source, CONTEXT_ORIGIN_LABELS[resource.origin?.class]?.[0]].filter(Boolean).join(" · ")) + '</span>'
+    + (resource.origin?.class === "unconfirmed" ? '<span class="context-origin-note" data-context-origin="unconfirmed">' + escapeHtml(resource.origin.reason || "") + '</span>' : '')
     + (costLabel ? '<span class="context-cost-entry">' + escapeHtml(costLabel) + '</span>' : '')
     + (application.reason ? '<p>' + escapeHtml(application.reason) + '</p>' : '')
     + (resource.locator ? '<code>' + escapeHtml(resource.locator) + '</code>' : '')
@@ -14720,11 +14724,28 @@ function contextEngineResourceRow(entry, { actions = true, cost = null } = {}) {
     + '</div>';
 }
 
+const CONTEXT_ORIGIN_LABELS = { yours: ["Your file", "Your files"], provider: ["Provided by the agent", "Provided by the agent"], unconfirmed: ["Origin not confirmed", "Origin not confirmed"] };
+
+// Files the agent installs itself stay counted, folded at the end of their group.
 function renderEffectiveContextGroup(title, entries = [], emptyCopy = "", options = {}) {
-  const rows = entries.map((entry) => contextEngineResourceRow(entry, options)).join("");
+  const provided = entries.filter((entry) => entry.resource?.origin?.class === "provider");
+  const own = entries.filter((entry) => entry.resource?.origin?.class !== "provider");
+  const rows = own.map((entry) => contextEngineResourceRow(entry, options)).join("")
+    + (provided.length ? '<details class="context-origin-provided" data-context-origin-group="provider"><summary>Provided by the agent · ' + provided.length + '</summary>' + provided.map((entry) => contextEngineResourceRow(entry, options)).join("") + '</details>' : '');
   return '<details class="global-project-inspection-group"' + (options.open === false ? '' : ' open') + '><summary><strong>' + escapeHtml(title) + '</strong><span>' + entries.length + '</span></summary><div class="global-project-inspection-list">'
     + (rows || '<div class="global-project-inspection-row empty"><strong>Nothing effective</strong><span>' + escapeHtml(emptyCopy) + '</span></div>')
     + '</div></details>';
+}
+
+function contextOriginSummary(effective) {
+  const resources = new Map();
+  for (const key of ["instructions", "skills", "hooks", "inactive"]) {
+    for (const entry of effective?.[key] || []) if (entry.resource?.origin?.class) resources.set(entry.resource.id, entry.resource.origin.class);
+  }
+  if (!resources.size) return "";
+  const counts = [...resources.values()].reduce((all, origin) => ({ ...all, [origin]: (all[origin] || 0) + 1 }), {});
+  return '<div class="context-engine-summary context-origin-summary" aria-label="Where these files come from">' + ["yours", "provider", "unconfirmed"]
+    .map((origin) => '<span data-context-origin-count="' + origin + '">' + escapeHtml(CONTEXT_ORIGIN_LABELS[origin][(counts[origin] || 0) === 1 ? 0 : 1]) + ' ' + (counts[origin] || 0) + '</span>').join("") + '</div>';
 }
 
 function renderEffectiveContextBody(effective, { embedded = false } = {}) {
@@ -14742,7 +14763,7 @@ function renderEffectiveContextBody(effective, { embedded = false } = {}) {
     + '<span>' + inactive.length + ' inactive or blocked</span>'
     + '<span>' + Number(effective?.proposals?.length || 0) + ' proposal metadata</span>'
     + '<span>' + Number(effective?.healthIssues?.length || 0) + ' health issues</span>'
-    + '</div>';
+    + '</div>' + contextOriginSummary(effective);
   const options = { actions: !embedded, cost: effective?.cost?.entries || null };
   const groups = '<div class="global-project-inspection-groups">'
     + renderEffectiveContextGroup("Agent instructions", effective?.instructions || [], "No proven instruction applies to this folder.", options)

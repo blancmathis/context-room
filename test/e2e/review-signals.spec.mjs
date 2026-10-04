@@ -46,3 +46,33 @@ test('@smoke review signals list what a reviewer cannot easily see, without chan
     expect(fs.readFileSync(path.join(f.root, '.context-room/review-state.json'), 'utf8')).toBe(decisionsBefore);
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
+
+test('@smoke agent-installed files stay counted but fold away, and unconfirmed origins are named', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    const result = await page.evaluate(() => {
+      const entry = (id, kind, origin, reason = '') => ({ resource: { id, kind, locator: id, origin: { class: origin, reason } }, application: { status: 'active', scope: 'device' } });
+      const host = document.createElement('div');
+      host.innerHTML = renderEffectiveContextBody({
+        instructions: [entry('AGENTS.md', 'instruction', 'yours')],
+        skills: [entry('~/.codex/skills/.system/a/SKILL.md', 'skill', 'provider'), entry('~/.codex/skills/.system/b/SKILL.md', 'skill', 'provider'), entry('~/tools/c/SKILL.md', 'skill', 'unconfirmed', 'Outside this project and your agent settings folders.')],
+        hooks: [], providerConfigs: [], documents: [], inactive: [],
+      }, { embedded: true });
+      const skills = [...host.querySelectorAll('.global-project-inspection-group')].find((group) => group.querySelector('summary strong').textContent === 'Skills');
+      return {
+        summary: [...host.querySelectorAll('[data-context-origin-count]')].map((node) => node.textContent),
+        skillCount: skills.querySelector('summary span').textContent,
+        folded: skills.querySelector('[data-context-origin-group="provider"]').open,
+        foldedRows: skills.querySelectorAll('[data-context-origin-group="provider"] [data-context-resource]').length,
+        foldedLabel: skills.querySelector('[data-context-origin-group="provider"] summary').textContent,
+        note: skills.querySelector('[data-context-origin="unconfirmed"]').textContent,
+      };
+    });
+    expect(result).toEqual({
+      summary: ['Your file 1', 'Provided by the agent 2', 'Origin not confirmed 1'],
+      skillCount: '3', folded: false, foldedRows: 2, foldedLabel: 'Provided by the agent · 2',
+      note: 'Outside this project and your agent settings folders.',
+    });
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
