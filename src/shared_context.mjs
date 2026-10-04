@@ -1,3 +1,4 @@
+import "./test_homes.mjs";
 import { assertProjectWriter } from './writer_authority.mjs';
 import { isDocumentAssetPath } from "./document_assets.mjs";
 import { decodeNotebook } from "./notebooks.mjs";

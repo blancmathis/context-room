@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "./test_homes.mjs";
 import { webAppResponse, versionWebSource } from './web_app.mjs';
 import { assertProjectWriter, inspectProjectWriter } from './writer_authority.mjs';
 import { inspectLocalAudio } from './local_audio_diagnostics.mjs';
