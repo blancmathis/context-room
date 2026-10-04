@@ -81,6 +81,8 @@ Keeping the UI closed does not authorize those edits. They are detected on the n
 | GIF, SVG and other recognized image assets | Before/after image where the browser decoder supports it | Review existing bytes; no animation or vector editing claim |
 | PDF, DOCX, XLSX, PPTX | Changed binary resource and size; no integrated renderer promised | Accept/reject exact bytes; office content editing is not implemented |
 
+A Markdown document opens for reading. Reading never writes the file. Prose keeps a column of about 72 characters. A document with two or more sections shows Contents: open beside the text on wide screens, folded above it on narrow ones. Each heading has a GitHub-style anchor (`#second-part`, then `#setup-1` for a repeated heading). Links to `#anchor` and `doc.md#anchor` go to that section. Front matter stays folded. In the Hub, "Referenced by" lists the documents that link to this one. It loads only when opened. Markdown above 120,000 characters or 2,500 lines is still rendered, one section per H1/H2; editing such a file uses plain text.
+
 Drawing is bounded to 16 million pixels; assets to 20 MiB. Larger or unsupported resources return an explicit limit, not a silent conversion. Supported binary changes use the same exact file decisions in Shared, followed by the separate proposal acceptance.
 
 HTML resources are intentionally local and non-executable. Nested CSS resource URLs and arbitrary interactive HTML applications are not supported by the proposal preview. Missing resources are identified.
