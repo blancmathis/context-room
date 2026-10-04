@@ -519,12 +519,15 @@ function normalizeTarget(target, readers) {
 function registeredTargetsFor(target, provider) {
   const selected = target.projects.find((item) => item.id === target.locationId);
   const registeredLogicalProjectId = selected?.logicalProjectId || target.projectId;
-  return target.projects.map((item) => ({
+  const targets = target.projects.map((item) => ({
     projectId: item.logicalProjectId === registeredLogicalProjectId ? target.projectId : (item.logicalProjectId || item.id),
     locationId: item.id,
     folder: ".",
     provider,
   }));
+  // An unregistered root is still the inspected target: its own applications stay in scope.
+  if (target.locationId && !selected) targets.push({ projectId: target.projectId, locationId: target.locationId, folder: ".", provider });
+  return targets;
 }
 
 function addResource(inventory, resource, application = null) {

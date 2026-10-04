@@ -85,7 +85,7 @@ test("browser markup keeps Markdown structure, line identity, and document links
       this.click = handler;
     },
   }));
-  wireMarkdownDocLinks({ querySelectorAll: () => controls });
+  wireMarkdownDocLinks({ querySelectorAll: (selector) => selector === "[data-doc-link-path]" ? controls : [] });
   const event = (modifier = false) => ({
     metaKey: modifier,
     ctrlKey: false,

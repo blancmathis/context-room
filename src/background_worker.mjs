@@ -8,7 +8,7 @@ import {
 } from "./context_room.mjs";
 
 function runTask(task, root, payload = {}) {
-  if (task === "reports") return buildContextRoomReports(root, { readOnly: true });
+  if (task === "reports") return buildContextRoomReports(root, { readOnly: true, sharedProfiles: payload.sharedProfiles });
   if (task === "context-hub") return contextHubUiState(root, {
     refreshShared: payload.refreshShared !== false,
     refreshGit: payload.refreshGit === true,
