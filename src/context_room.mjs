@@ -114,6 +114,7 @@ import {
 } from "./shared_context.mjs";
 import { bearerToken, createReplayStore, signRemoteIdentity, verifyRemoteIdentity } from "./remote_identity.mjs";
 import { analyzeDocumentTidiness, readGitDocumentHistory } from "./doc_tidy.mjs";
+import { TIDY_SKILLS, tidyOrder } from "./doc_tidy_orders.mjs";
 import {
   assertFreshGitHubAppCredential,
   createGitHubInstallationToken,
@@ -11385,6 +11386,24 @@ function cachedDocumentHistory(root, relPath, stamp) {
   if (docTidyHistoryCache.size >= 2000) docTidyHistoryCache.clear();
   docTidyHistoryCache.set(key, { stamp, at: Date.now(), value });
   return value;
+}
+
+// Documentation findings with one deterministic tidy order each, for the user's agent. Read-only.
+export function documentationTidyReport(root, { path: selector = "", order = "", skill = "" } = {}) {
+  if (skill) {
+    if (!Object.hasOwn(TIDY_SKILLS, skill)) throw Object.assign(new Error(`Unknown tidy skill: ${skill}. Use ${Object.keys(TIDY_SKILLS).join(", ")}.`), { code: "docs_tidy_skill" });
+    return { schemaVersion: "context-room.docs-tidy-skill/1", skill, markdown: TIDY_SKILLS[skill] };
+  }
+  const tidy = documentationTidiness(root, buildDocumentationGraph(root, { readOnly: true }));
+  const wanted = selector ? normalizeRelPath(selector) : "";
+  const findings = tidy.findings.filter((finding) => !wanted || finding.path === wanted)
+    .map((finding) => ({ ...finding, order: tidyOrder(finding) })).filter((finding) => finding.order);
+  if (order) {
+    const match = findings.find((finding) => finding.order.id === order);
+    if (!match) throw Object.assign(new Error(`No current finding has the order ${order}. Run docs tidy again.`), { code: "docs_tidy_order" });
+    return { schemaVersion: "context-room.docs-tidy-order/1", ...match.order, finding: { ...match, order: undefined } };
+  }
+  return { schemaVersion: "context-room.docs-tidy/1", summary: tidy.summary, findings };
 }
 
 function documentationTidiness(root, graph) {
