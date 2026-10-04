@@ -1,4 +1,5 @@
 import { analyzeContextLosses } from "./context_losses.mjs";
+import { renderVisualGuide } from "./visual_guide.mjs";
 import "./test_homes.mjs";
 import fs from "node:fs";
 import os from "node:os";
@@ -2786,6 +2787,7 @@ export function renderAgentCliHuman(command, payload) {
     if (data.text) return data.text + "\n";
     return data.findings.length ? data.findings.map((finding) => finding.order.text).join("\n\n") + "\n" : "No documentation finding.\n";
   }
+  if (command === "docs.visual-guide") return renderVisualGuide(data);
   if (command === "events") return (data.events || []).map((event) => `${event.occurredAt} ${event.type} ${event.resource?.path || event.resource?.proposal || ""}`.trim()).join("\n") + "\n";
   return JSON.stringify(data, null, 2) + "\n";
 }

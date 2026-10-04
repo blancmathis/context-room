@@ -47,6 +47,7 @@ This document does not define product behavior, technical contracts, security gu
 
 - [Document workflow, formats and optional tablet](features/document-workflow.md)
 - [Original-source conversations and dictation](features/conversations.md)
+- [Visual HTML documents](features/visual-documents.md)
 
 - [Global Context Hub](features/context-hub.md)
 - [Shared Context](features/shared-context.md)
