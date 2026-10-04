@@ -398,7 +398,7 @@ test("@smoke an exact project settings deep link remains on Settings while proje
   expect(url.searchParams.get("settings")).toBe("review-trust");
 });
 
-test("@smoke one Explorer click selects the project and its Review Queue filter before refresh finishes", async ({ page }) => {
+test("@smoke one Explorer click selects the project before refresh finishes and leaves the Review Queue filter alone", async ({ page }) => {
   const { origin, projects } = fixture();
   let releaseProjectRefresh;
   let markProjectRequest;
@@ -420,14 +420,14 @@ test("@smoke one Explorer click selects the project and its Review Queue filter 
   try {
     expect([projects.atlas.id, projects.atlas.worktreeId]).toContain(posted.projectId);
     await expect(page.locator("#globalExplorerScope strong")).toHaveText("Atlas");
-    await expect(page.locator("#contextRoomReviewProjectFilter .context-hub-project-trigger-label")).toHaveText("Atlas");
+    await expect(page.locator("#contextRoomReviewProjectFilter .context-hub-project-trigger-label")).toHaveText("All projects");
     await expect(page).toHaveURL((url) => (
       [projects.atlas.id, projects.atlas.worktreeId].includes(url.searchParams.get("project"))
       && url.searchParams.get("view") === "hub"
     ));
     const reviewQueue = page.locator("#reviewQueue");
     await expect(reviewQueue).toContainText("Atlas");
-    await expect(reviewQueue).not.toContainText("Beacon");
+    await expect(reviewQueue).toContainText("Beacon");
   } finally {
     releaseProjectRefresh();
   }
@@ -455,6 +455,47 @@ test("@smoke the home lists projects in a stable order and Cmd+K goes to a proje
   await rows.filter({ hasText: "Atlas" }).getByRole("button", { name: /^To review/ }).click();
   await expect(page.locator("#reviewQueueHeading")).toBeFocused();
   await expect(page.locator("#reviewQueue")).not.toContainText("Beacon");
+
+  // Going to another project keeps the review filter; a reload restores it.
+  const filterLabel = page.locator("#contextRoomReviewProjectFilter .context-hub-project-trigger-label");
+  await page.keyboard.press("ControlOrMeta+k");
+  await page.locator("#contextHubProjectPickerSearch").fill("Beacon");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#globalExplorerScope strong")).toHaveText("Beacon");
+  await expect(filterLabel).toHaveText("Atlas");
+  await page.reload();
+  await waitForBoot(page);
+  await expect(page.locator("#globalExplorerScope strong")).toHaveText("Beacon");
+  await expect(filterLabel).toHaveText("Atlas");
+});
+
+test("@smoke the home says what changed in reviews since the last visit", async ({ page }) => {
+  const { origin } = fixture();
+  // The line compares only projects whose reviews are fully known; a full refresh confirms them.
+  const bootWithFullReviews = async () => {
+    await waitForBoot(page);
+    await page.evaluate(async () => {
+      while (state.contextHubBusy || state.sharedContextBusy) await new Promise((resolve) => window.setTimeout(resolve, 25));
+      await refreshContextHubUi();
+    });
+  };
+  await page.goto(origin + "/?hub=1&workspace=workspace-last-visit&view=hub");
+  await bootWithFullReviews();
+  const since = page.locator("#contextHubSinceLastVisit");
+  await expect(page.locator("#contextHubHomeProjectList .context-hub-home-project").first()).toBeVisible();
+  await expect(since).toBeHidden();
+
+  await page.reload();
+  await bootWithFullReviews();
+  await expect(since).toHaveText("Since your last visit: nothing new to review.");
+
+  // Pretend the last visit saw one review fewer and one review that is now gone.
+  const visit = await page.evaluate(() => JSON.parse(localStorage.getItem("context-room:last-visit:v2")));
+  visit.reviews = visit.reviews.slice(1).concat([["gone-review", "", visit.reviews[0][2]]]);
+  await page.addInitScript((stored) => localStorage.setItem("context-room:last-visit:v2", stored), JSON.stringify(visit));
+  await page.goto(origin + "/?hub=1&workspace=workspace-last-visit&view=hub");
+  await bootWithFullReviews();
+  await expect(since).toHaveText(/^Since your last visit: 1 new review · 1 no longer pending \([^)]+ 1\)\.$/);
 });
 
 test("@smoke a failed Explorer project refresh restores the project and Review Queue selection", async ({ page }) => {
@@ -481,7 +522,7 @@ test("@smoke a failed Explorer project refresh restores the project and Review Q
   await page.locator(".global-project-row", { hasText: "Atlas" }).click();
   await projectRequest;
   await expect(page.locator("#globalExplorerScope strong")).toHaveText("Atlas");
-  await expect(page.locator("#contextRoomReviewProjectFilter .context-hub-project-trigger-label")).toHaveText("Atlas");
+  await expect(page.locator("#contextRoomReviewProjectFilter .context-hub-project-trigger-label")).toHaveText("All projects");
   await expect(page).toHaveURL((url) => [projects.atlas.id, projects.atlas.worktreeId].includes(url.searchParams.get("project")));
 
   releaseProjectRefresh();
