@@ -496,6 +496,22 @@ test("project links keep the Explorer hierarchy quiet instead of looking like we
   assert.match(html, /\.global-project-tree-entry \{[^}]*text-decoration: none;/);
 });
 
+test("the global home lists projects in a stable order with three destinations and Cmd+K", () => {
+  const html = renderAppHtml();
+  const script = extractInlineAppScript(html);
+  const orderSource = script.slice(script.indexOf("function contextHubPrioritizedProjects"), script.indexOf("function globalProjectExplorerPageKey"));
+  assert.match(html, /id="contextHubProjectsPanel"[\s\S]*id="contextHubHomeProjectList"[\s\S]*id="reviewQueuePanel"/);
+  assert.doesNotMatch(orderSource, /localReviewCount|sharedProposalCount|lastOpenedAt|\.current/);
+  assert.match(orderSource, /priorityRank[\s\S]*title/);
+  assert.match(script, /function renderContextHubHomeProjects\(\)[\s\S]*local inspected[\s\S]*data-context-hub-project-destination="' \+ id/);
+  assert.match(script, /destination\("context", "Context"\) \+ destination\("review", "To review"\) \+ destination\("documents", "Documents"\)/);
+  assert.match(script, /\(event\.metaKey \|\| event\.ctrlKey\)[\s\S]{0,80}event\.key\.toLowerCase\(\) === "k"[\s\S]{0,120}openContextHubProjectPicker\(null, \{ purpose: "open" \}\)/);
+  assert.match(script, /function selectContextHubProjectPickerChoice[\s\S]*purpose === "open"[\s\S]*openContextHubProjectDestination\(projectKey, "documents"\)/);
+  assert.match(script, /\(localReviewCoverageConfirmed \? "" : " · " \+ contextHubLocalCoverage\(\)\.inspected/);
+  assert.match(script, /Nothing to check yet/);
+  assert.doesNotMatch(script, /Context is healthy/);
+});
+
 test("the global Context Room keeps project targeting inside one workspace", () => {
   const html = renderAppHtml();
   const script = extractInlineAppScript(html);

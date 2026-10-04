@@ -435,6 +435,28 @@ test("@smoke one Explorer click selects the project and its Review Queue filter 
   await expect(page.locator("#status")).toContainText("Shared snapshot synced");
 });
 
+test("@smoke the home lists projects in a stable order and Cmd+K goes to a project", async ({ page }) => {
+  const { origin } = fixture();
+  await page.goto(origin + "/?hub=1&workspace=workspace-home-projects&view=hub");
+  await waitForBoot(page);
+  const rows = page.locator("#contextHubHomeProjectList .context-hub-home-project");
+  const titles = () => rows.locator(".global-project-row-title strong").allTextContents();
+  await expect(rows.filter({ hasText: "Atlas" })).toHaveCount(1);
+  const before = await titles();
+
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect(page.locator("#contextHubProjectPickerTitle")).toHaveText("Go to project");
+  await page.locator("#contextHubProjectPickerSearch").fill("Atlas");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#contextHubProjectPicker")).toBeHidden();
+  await expect(page.locator("#globalExplorerScope strong")).toHaveText("Atlas");
+  await expect.poll(titles).toEqual(before);
+
+  await rows.filter({ hasText: "Atlas" }).getByRole("button", { name: /^To review/ }).click();
+  await expect(page.locator("#reviewQueueHeading")).toBeFocused();
+  await expect(page.locator("#reviewQueue")).not.toContainText("Beacon");
+});
+
 test("@smoke a failed Explorer project refresh restores the project and Review Queue selection", async ({ page }) => {
   const { origin, projects } = fixture();
   let releaseProjectRefresh;

@@ -74,6 +74,18 @@ Opening stays in the current browser document. A stable proposal shell appears i
 
 If that snapshot becomes stale, terminal, unavailable, or recovery-required during opening, the proposal surface transitions inline and offers an explicit refresh, recovery, retry, or return action. An opening result or failure never silently clears selection or sends the user back to the Hub.
 
+## Home
+
+The Hub home starts with the project list. Each row shows the project, its location,
+an attention pill, and three destinations: Context (agent environment), To review
+(Review Queue filtered to the project), and Documents (project files in Explorer).
+
+The order is the manual project order, then the title. Attention, opening a project,
+and refreshes never reorder the list. The header shows local coverage, for example
+`1/7 local inspected`.
+
+⌘K (Ctrl+K) opens the project picker to go to a project: type, then press Enter.
+
 ## Recovery and unavailable state
 
 Registry and Shared-binding mutations use private journals and exact capability checks. If recovery is ambiguous, Context Room blocks further mutation and surfaces recovery-required rather than guessing.
