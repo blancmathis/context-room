@@ -69,6 +69,10 @@ Each file still gets its own human decision. Accept every file of the move toget
 
 `docs map --propose` writes the map between the `context-room:docs-map` markers of `AGENTS.md` (or `--file`), as one submitted local proposal built on the accepted version. Text outside the markers is unchanged. When the block is already current, no proposal is created.
 
+### Tidy orders
+
+`docs tidy [path]` lists the documentation findings that `doctor` reports (too large, outside the map, dead link, duplicated block, log in a state document, no summary). Each finding carries one deterministic order of at most 15 lines: the finding, its rule, the files, the steps and the expected result. The steps always go through `changes begin` and `changes submit`, so the result arrives in the Review Queue; the agent never decides a review. `--order <id>` prints one order. `--skill split|merge|archive` prints a gardening method in skill format; a log moves to `docs/records/journal/YYYY-MM.md`, which is history. Context Room calls no model: the user's own agent does the work.
+
 ## Direct changes
 
 Existing workflows may still edit original files outside a proposal. Context Room detects changed watched files and keeps their accepted baseline separately. Human rejection restores that baseline, removes a newly added file, or restores a deletion/rename as appropriate, while preserving rejected content for recovery. It blocks a stale decision or incompatible staged Git state before changing bytes.

@@ -7,12 +7,14 @@ import { execFileSync } from "node:child_process";
 import { initializeContextRoomProject, writeMemoryWebappSettings, readMemoryWebappSettings, writeDocReviewBaseline, writeDocReviewDecision, readMemoryFile, readFileDiff,
   revertMemoryFile, saveHumanReviewedFile, buildDocQaReport, createLocalDocumentationProposal,
   submitLocalDocumentationProposal, reviewLocalDocumentationProposal, contextHubUiState, runAuthorizedReviewCleanup,
-  createMemoryServer, listStartupContextFiles, readStartupContextFile, readStartupSkillFile, rejectDirectDocumentationChange, proposeDocumentMove, proposeDocumentationMap, documentationDriftReport } from "../src/context_room.mjs";
+  createMemoryServer, listStartupContextFiles, readStartupContextFile, readStartupSkillFile, rejectDirectDocumentationChange, proposeDocumentMove, proposeDocumentationMap, documentationDriftReport, documentationTidyReport } from "../src/context_room.mjs";
 import { writeReviewCleanupPolicy, recentReviewCleanupReceipts } from "../src/review_cleanup.mjs";
 import { registerContextHubProject } from "../src/context_hub.mjs";
 import { inspectLocalProposal, readLocalProposalBlockMap } from "../src/local_proposals.mjs";
 import { buildDocumentationCorpus, buildDocumentationMap } from "../src/documentation.mjs";
 import { markdownBlocks, proposalBlockMap } from "../src/block_map.mjs";
+import { DOC_TIDY_RULES } from "../src/doc_tidy.mjs";
+import { TIDY_SKILLS, tidyOrder } from "../src/doc_tidy_orders.mjs";
 
 function fixture(t) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "cr-document-workflow-")), root = path.join(base, "project");
@@ -249,6 +251,35 @@ test("block map shows only removed and rewritten blocks when a status file is sp
   const guide = blocks.files.find((file) => file.path === "docs/guides/b.md");
   assert.deepEqual(guide.added.map((block) => block.text), ["Back to [a](../a.md)."]);
   assert.deepEqual(guide.moved, [{ from: "docs/b.md", blocks: 2 }]);
+});
+
+test("docs tidy turns each finding into a short deterministic order for the user's agent", (t) => {
+  const evidence = { doc_too_large: "120000 characters", doc_not_in_map: "docs/index.md", dead_link: "gone.md", duplicate_block: "docs/owner.md:7", log_in_state_doc: "git", missing_summary: "first block" };
+  for (const type of Object.keys(DOC_TIDY_RULES)) {
+    const order = tidyOrder({ type, path: "docs/state.md", line: 3, rule: DOC_TIDY_RULES[type], evidence: evidence[type], message: `${type} message` });
+    const lines = order.text.split("\n");
+    assert.ok(lines.length <= 15, `${type}: ${lines.length} lines`);
+    assert.equal(order.id, `${type}:docs/state.md:3`);
+    assert.match(order.text, /changes begin/);
+    assert.match(order.text, /Do not accept or reject anything/);
+    assert.equal(lines.at(-1), `Expected: ${order.expected}`);
+    if (order.skill) assert.ok(TIDY_SKILLS[order.skill].startsWith("---\nname: doc-"));
+  }
+  assert.deepEqual(tidyOrder({ type: "duplicate_block", path: "docs/b.md", line: 4, evidence: "docs/owner.md:7", message: "m", rule: "r" }).files, ["docs/b.md", "docs/owner.md"]);
+
+  const root = fixture(t);
+  fs.writeFileSync(path.join(root, "docs/index.md"), "# Docs\n\n- [a](a.md): first.\n");
+  fs.writeFileSync(path.join(root, "docs/a.md"), "# a\n\nSee [gone](gone.md).\n");
+  const report = documentationTidyReport(root);
+  assert.deepEqual(report.findings.map((finding) => finding.order.id), ["dead_link:docs/a.md:3", "doc_not_in_map:docs/b.md:1"]);
+  const order = documentationTidyReport(root, { order: "dead_link:docs/a.md:3" });
+  assert.match(order.text, /In docs\/a\.md line 3, point gone\.md to the existing file or heading/);
+  assert.deepEqual(documentationTidyReport(root, { path: "docs/b.md" }).findings.map((finding) => finding.type), ["doc_not_in_map"]);
+  assert.throws(() => documentationTidyReport(root, { order: "dead_link:docs/a.md:9" }), /Run docs tidy again/);
+  assert.equal(documentationTidyReport(root, { skill: "merge" }).markdown, TIDY_SKILLS.merge);
+  assert.throws(() => documentationTidyReport(root, { skill: "rewrite" }), /Unknown tidy skill/);
+  const cli = execFileSync(process.execPath, [path.resolve("bin/context-room.mjs"), "docs", "tidy", "--root", root, "--order", "dead_link:docs/a.md:3", "--format=human"], { encoding: "utf8" });
+  assert.equal(cli, order.text + "\n");
 });
 
 test("partial settings keep the Hub and unknown legacy configuration fields", (t) => {

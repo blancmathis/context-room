@@ -2781,6 +2781,11 @@ export function renderAgentCliHuman(command, payload) {
     if (data.notUsed) lines.push("Not used", ...[...data.notUsed.skills, ...data.notUsed.documents].map((name) => `  ${name}`));
     return lines.join("\n") + "\n";
   }
+  if (command === "docs.tidy") {
+    if (data.markdown) return data.markdown;
+    if (data.text) return data.text + "\n";
+    return data.findings.length ? data.findings.map((finding) => finding.order.text).join("\n\n") + "\n" : "No documentation finding.\n";
+  }
   if (command === "events") return (data.events || []).map((event) => `${event.occurredAt} ${event.type} ${event.resource?.path || event.resource?.proposal || ""}`.trim()).join("\n") + "\n";
   return JSON.stringify(data, null, 2) + "\n";
 }
