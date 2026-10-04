@@ -393,7 +393,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .context-hub-home-project-destination { min-height: 32px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--text); cursor: pointer; font-size: 11px; font-weight: 650; }
     .context-hub-home-project-destination:hover { background: var(--surface-card-hover); }
     .context-hub-home-project-destination:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 1px; }
-    @media (max-width: 760px) { .context-hub-home-project { grid-template-columns: minmax(0, 1fr); } .context-hub-home-project-attention { justify-self: start; } }
+    @media (max-width: 639px) { .context-hub-home-project { grid-template-columns: minmax(0, 1fr); } .context-hub-home-project-attention { justify-self: start; } }
     .global-project-folder-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     .explorer-document-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; margin: 0 0 8px; padding: 2px; border-radius: 7px; background: var(--surface-card); }
     .explorer-document-tab { min-height: 28px; padding: 4px 8px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; font-size: 10px; font-weight: 650; }
