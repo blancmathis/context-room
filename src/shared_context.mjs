@@ -4202,6 +4202,15 @@ function providerInstructionActivation(providerId, relativeTarget, scope, projec
     return { status: "configured", reason: `Discovered through explicit ${profile.label} configuration`, source: profile.instructions.configuredTargets };
   }
   if (scope === "device" && providerId === "claude-code" && basename === "CLAUDE.md") return { status: "active", reason: "Discovered as Claude Code user memory", source: "provider-profile" };
+  const agentsFallback = profile.instructions.agentsFallback;
+  if (scope !== "device" && agentsFallback?.files.includes(target)) {
+    const destinationRoot = providerInstructionRoot(providerId, scope, projectRoot);
+    const planned = new Set(plannedTargets.map(normalizedInstructionRelativeTarget));
+    const blocker = agentsFallback.blockedBy.find((candidate) => planned.has(candidate) || (destinationRoot && fs.existsSync(path.resolve(destinationRoot, ...candidate.split("/")))));
+    return blocker
+      ? { status: "inactive", reason: `Claude Code skips ${target} because ${blocker} exists`, source: "agents-md-fallback" }
+      : { status: "configured", reason: `Claude Code loads ${target} when no CLAUDE.md exists (default since ${agentsFallback.since})`, source: "agents-md-fallback" };
+  }
   return { status: "inactive", reason: `Installed target ${target} is not discovered by ${profile.label}`, source: "provider-profile" };
 }
 

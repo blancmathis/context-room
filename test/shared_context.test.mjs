@@ -2859,6 +2859,35 @@ test("accepted Shared Instructions project arbitrary Markdown instruction files 
   assert.equal(fs.readFileSync(path.join(fixture.project, "AGENTS.md"), "utf8"), "# Local owner file\n");
 });
 
+test("Shared AGENTS.md reaches Claude Code only while no CLAUDE.md is planned or present", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  writeFile(fixture.seed, "instructions/team/AGENTS.md", "# Shared instructions\n");
+  const publish = (files) => {
+    writeFile(fixture.seed, "instruction-locations.json", JSON.stringify({
+      version: 1,
+      collections: [{ id: "team", title: "Team instructions", path: "instructions/team" }],
+      assignments: [{ id: "team-project", collectionId: "team", scope: "project", projectIds: ["demo"], files }],
+    }, null, 2) + "\n");
+    git(fixture.seed, ["add", "."]);
+    git(fixture.seed, ["commit", "-m", "Update shared instructions"]);
+    git(fixture.seed, ["push", "origin", "main"]);
+  };
+  publish([{ source: "AGENTS.md", target: "AGENTS.md", providers: ["codex", "claude-code"] }]);
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const claudeLink = () => sharedInstructionLocationsStatus(fixture.project, { refresh: false }).links.find((item) => item.provider === "claude-code" && item.relativeTarget === "AGENTS.md");
+  assert.equal(claudeLink().activationStatus, "configured");
+
+  writeFile(fixture.seed, "instructions/team/CLAUDE.md", "# Shared Claude instructions\n");
+  publish([
+    { source: "AGENTS.md", target: "AGENTS.md", providers: ["codex", "claude-code"] },
+    { source: "CLAUDE.md", target: "CLAUDE.md", providers: ["claude-code"] },
+  ]);
+  reconcileSharedInstructionLocations(fixture.project);
+  assert.equal(claudeLink().activationStatus, "inactive");
+  assert.match(claudeLink().activationReason, /CLAUDE\.md exists/);
+});
+
 test("Shared Instructions distinguish installed links from provider activation and obey local provider preferences", (t) => {
   const fixture = makeFixture();
   withSharedHome(t, fixture);

@@ -7,7 +7,7 @@ import {
   listContextProviderProfiles,
 } from "./provider_profiles.mjs";
 
-const RESOURCE_KINDS = new Set(["instruction", "skill", "hook", "provider-config", "document", "proposal"]);
+const RESOURCE_KINDS = new Set(["instruction", "skill", "hook", "provider-config", "mcp-server", "document", "proposal"]);
 const APPLICATION_STATUSES = new Set(["active", "inactive", "disabled", "shadowed", "uncertain", "blocked", "unverified"]);
 
 function unixPath(value = "") {
@@ -166,8 +166,8 @@ export function resolveEffectiveContext(input = {}) {
     .filter((item) => sameTarget(item, graph.coordinate))
     .map((application) => ({ ...application, status: effectiveStatus(resources.get(application.resourceId), application) }))
     .sort((left, right) => left.order - right.order || left.resourceId.localeCompare(right.resourceId));
-  const grouped = { instructions: [], skills: [], hooks: [], providerConfigs: [], documents: [], inactive: [] };
-  const keyForKind = { instruction: "instructions", skill: "skills", hook: "hooks", "provider-config": "providerConfigs", document: "documents" };
+  const grouped = { instructions: [], skills: [], hooks: [], providerConfigs: [], mcpServers: [], documents: [], inactive: [] };
+  const keyForKind = { instruction: "instructions", skill: "skills", hook: "hooks", "provider-config": "providerConfigs", "mcp-server": "mcpServers", document: "documents" };
   for (const application of effectiveApplications) {
     const resource = resources.get(application.resourceId);
     const entry = { resource, application };
@@ -175,6 +175,22 @@ export function resolveEffectiveContext(input = {}) {
     if (application.status === "active" && key) grouped[key].push(entry);
     else grouped.inactive.push(entry);
   }
+  // Context Room cannot measure what these sources add at runtime: say so instead of guessing.
+  const unknown = [
+    ...grouped.hooks.filter(({ resource }) => resource.metadata?.injectsContext?.length).map(({ resource }) => ({
+      kind: "hook-output",
+      resourceId: resource.id,
+      locator: resource.locator,
+      events: resource.metadata.injectsContext,
+      reason: "Hook output is added to the agent context; its size is unknown.",
+    })),
+    ...grouped.mcpServers.map(({ resource }) => ({
+      kind: "mcp-tools",
+      resourceId: resource.id,
+      locator: resource.locator,
+      reason: "MCP tool definitions come from the running server; their size is unknown.",
+    })),
+  ];
   return {
     schemaVersion: "context-room.context-effective/1",
     coordinate: graph.coordinate,
@@ -183,6 +199,7 @@ export function resolveEffectiveContext(input = {}) {
     freshness: graph.freshness,
     localEnvironment: graph.localEnvironment,
     ...grouped,
+    unknown,
     proposals: graph.proposals,
     healthIssues: graph.healthIssues.filter((issue) => !issue.resourceId || resources.has(issue.resourceId)),
     graph,

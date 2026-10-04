@@ -18,7 +18,7 @@ import {
   readMemoryFile,
   readMemoryWebappSettings,
 } from "./context_room.mjs";
-import { contextProviderProfile } from "./provider_profiles.mjs";
+import { claudeInstructionMode, compareProviderVersions, contextProviderProfile } from "./provider_profiles.mjs";
 import {
   listSharedProposals,
   readSharedMainRevision,
@@ -185,7 +185,89 @@ function directSkillNames(folder) {
   }).sort((left, right) => left.localeCompare(right, "en"));
 }
 
-function defaultListProviderInstructions(root, folder, provider) {
+function readJsonFile(absolutePath) {
+  try { return { exists: true, value: JSON.parse(fs.readFileSync(absolutePath, "utf8")) }; } catch (error) {
+    return { exists: error?.code !== "ENOENT", value: null };
+  }
+}
+
+function claudeCodeVersion() {
+  const directories = [...String(process.env.PATH || "").split(path.delimiter), expandHome("~/.local/bin"), expandHome("~/.claude/local")];
+  for (const directory of [...new Set(directories.filter(Boolean))]) {
+    let real;
+    try {
+      const candidate = path.join(directory, "claude");
+      if (!fs.statSync(candidate).isFile()) continue;
+      real = fs.realpathSync(candidate);
+    } catch { continue; }
+    if (/^\d+\.\d+\.\d+$/.test(path.basename(real))) return { version: path.basename(real), source: displayPath(real) };
+    let current = path.dirname(real);
+    for (let depth = 0; depth < 4; depth++, current = path.dirname(current)) {
+      const manifest = readJsonFile(path.join(current, "package.json")).value;
+      if (manifest?.name === "@anthropic-ai/claude-code" && manifest.version) return { version: String(manifest.version), source: displayPath(path.join(current, "package.json")) };
+    }
+    return { version: "", source: displayPath(real) };
+  }
+  return { version: "", source: "" };
+}
+
+/** Claude Code settings layers, lowest to highest precedence. */
+function claudeSettingsFiles(root) {
+  const managed = process.platform === "darwin" ? "/Library/Application Support/ClaudeCode/managed-settings.json" : "/etc/claude-code/managed-settings.json";
+  return [expandHome("~/.claude/settings.json"), path.join(root, ".claude", "settings.json"), path.join(root, ".claude", "settings.local.json"), managed];
+}
+
+function claudeInstructionRuntime(root) {
+  const options = {};
+  const sources = [];
+  for (const file of claudeSettingsFiles(root)) {
+    const parsed = readJsonFile(file);
+    if (!parsed.exists) continue;
+    if (!parsed.value) return { mode: "", modeSource: displayPath(file), ...claudeCodeVersion() };
+    const configured = parsed.value.pluginConfigs?.["agents-md@builtin"]?.options;
+    for (const key of ["instructionFiles", "projectInstructions"]) {
+      if (configured && configured[key] !== undefined) {
+        options[key] = configured[key];
+        sources.push(displayPath(file));
+      }
+    }
+  }
+  return { mode: claudeInstructionMode(options), modeSource: sources.at(-1) || "default", ...claudeCodeVersion() };
+}
+
+function defaultReadProviderRuntime(provider, root) {
+  return provider === "claude-code" ? claudeInstructionRuntime(root) : {};
+}
+
+function hasConditionalPaths(absolutePath) {
+  try {
+    const head = fs.readFileSync(absolutePath, "utf8").slice(0, 4096);
+    const frontmatter = head.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    return Boolean(frontmatter && /^paths\s*:/m.test(frontmatter[1]));
+  } catch { return false; }
+}
+
+function markdownFilesBelow(directory) {
+  let entries = [];
+  try { entries = fs.readdirSync(directory, { withFileTypes: true }); } catch { return []; }
+  return entries.filter((entry) => !entry.name.startsWith(".")).sort((left, right) => left.name.localeCompare(right.name, "en")).flatMap((entry) => {
+    const absolutePath = path.join(directory, entry.name);
+    if (entry.isDirectory()) return markdownFilesBelow(absolutePath);
+    return entry.name.toLowerCase().endsWith(".md") ? [absolutePath] : [];
+  });
+}
+
+/** Directories above the location root that Claude Code also walks, home excluded (its .claude folder is user scope). */
+function ancestorsAboveRoot(root) {
+  const home = stablePath(os.homedir());
+  const directories = [];
+  for (let current = path.dirname(stablePath(root)); current !== path.dirname(current); current = path.dirname(current)) {
+    if (current !== home) directories.push(current);
+  }
+  return directories;
+}
+
+function defaultListProviderInstructions(root, folder, provider, runtime = {}) {
   if (provider === "all") return [];
   const profile = contextProviderProfile(provider);
   const chain = folderChain(root, folder);
@@ -195,7 +277,7 @@ function defaultListProviderInstructions(root, folder, provider) {
       ? expandHome("~/.claude")
       : expandHome("~/.config/opencode");
   const discovered = [];
-  const add = (absolutePath, source, order, evidence) => {
+  const add = (absolutePath, source, order, evidence, extra = {}) => {
     try { if (!fs.statSync(absolutePath).isFile()) return false; } catch { return false; }
     discovered.push({
       label: path.basename(absolutePath),
@@ -207,6 +289,7 @@ function defaultListProviderInstructions(root, folder, provider) {
         profileOrder: order,
         activationProven: true,
         evidence,
+        ...extra,
       },
     });
     return true;
@@ -215,10 +298,36 @@ function defaultListProviderInstructions(root, folder, provider) {
     if (add(path.join(globalRoot, fileName), "global", index, { profile: provider, discovery: "provider-global-instructions" }) && profile.instructions?.onePerDirectory) break;
   }
   let order = discovered.length;
+  const managedOnly = provider === "claude-code" && runtime.mode === "managed-only";
   for (const directory of chain) {
     for (const fileName of profile.instructions?.projectFiles || []) {
-      if (add(path.join(directory, fileName), "provider-profile", order++, { profile: provider, discovery: "exact-instruction-chain", directory: stablePath(directory) }) && profile.instructions?.onePerDirectory) break;
+      const extra = managedOnly ? { inactiveReason: `Claude Code instructionFiles is managed-only (${runtime.modeSource}); project instructions are dropped.` } : {};
+      if (add(path.join(directory, fileName), "provider-profile", order++, { profile: provider, discovery: "exact-instruction-chain", directory: stablePath(directory) }, extra) && profile.instructions?.onePerDirectory) break;
     }
+  }
+  if (provider !== "claude-code") return discovered;
+  const rules = profile.instructions.rules;
+  for (const [owner, source] of [[expandHome("~"), "global"], ...chain.map((item) => [item, "provider-profile"])]) {
+    for (const absolutePath of markdownFilesBelow(path.join(owner, source === "global" ? rules.global.slice(2) : rules.project))) {
+      const conditional = hasConditionalPaths(absolutePath);
+      add(absolutePath, source, order++, { profile: provider, discovery: "claude-rules", directory: stablePath(owner) }, conditional
+        ? { activationProven: false, uncertainReason: "Rule has paths frontmatter: Claude Code loads it only when matching files are read." }
+        : managedOnly && source !== "global" ? { inactiveReason: `Claude Code instructionFiles is managed-only (${runtime.modeSource}); project rules are dropped.` } : {});
+    }
+  }
+  const fallback = profile.instructions.agentsFallback;
+  const blocker = [...ancestorsAboveRoot(root).reverse(), ...chain].flatMap((directory) => fallback.blockedBy.map((fileName) => path.join(directory, fileName)))
+    .find((candidate) => { try { return fs.statSync(candidate).isFile(); } catch { return false; } });
+  const versionCheck = compareProviderVersions(runtime.version, fallback.since);
+  const evidence = { profile: provider, discovery: "claude-agents-md-fallback", mode: runtime.mode || "unknown", modeSource: runtime.modeSource || "", version: runtime.version || "unknown", versionSource: runtime.source || "" };
+  const state = !runtime.mode ? { activationProven: false, uncertainReason: `Claude Code settings could not be read (${runtime.modeSource}); AGENTS.md loading is unknown.` }
+    : ["claude-md", "managed-only"].includes(runtime.mode) ? { inactiveReason: `Claude Code instructionFiles is ${runtime.mode} (${runtime.modeSource}); AGENTS.md is not loaded.` }
+      : runtime.mode === "claude-md-or-agents-md" && blocker ? { inactiveReason: `Claude Code skips AGENTS.md because ${displayPath(blocker)} exists.` }
+        : versionCheck === null ? { activationProven: false, uncertainReason: `Claude Code version is unknown; AGENTS.md loads only from ${fallback.since}.` }
+          : versionCheck < 0 ? { inactiveReason: `Claude Code ${runtime.version} predates AGENTS.md loading (${fallback.since}).` }
+            : {};
+  for (const directory of chain) {
+    for (const fileName of fallback.files) add(path.join(directory, fileName), "provider-profile", order++, { ...evidence, directory: stablePath(directory) }, state);
   }
   return discovered;
 }
@@ -357,11 +466,13 @@ export function createContextInventoryReaders(overrides = {}) {
     listProjects: (options) => listContextHubProjects({ ...options, readOnly: true }),
     readSettings: (root) => readMemoryWebappSettings(root),
     listInstructions: (root, settings) => listStartupContextFiles(root, settings),
-    listProviderInstructions: (root, folder, provider) => defaultListProviderInstructions(root, folder, provider),
+    readProviderRuntime: (provider, root) => defaultReadProviderRuntime(provider, root),
+    listProviderInstructions: (root, folder, provider, runtime) => defaultListProviderInstructions(root, folder, provider, runtime),
     listSkillFolders: (root, settings) => listStartupSkillFolders(root, settings),
     listProviderSkillFolders: (root, folder, provider) => defaultListProviderSkillFolders(root, folder, provider),
     listHooks: (root, settings) => listStartupHookFiles(root, settings),
     listProviderHookSources: (root, folder, provider) => defaultListProviderHookSources(root, folder, provider),
+    listProviderMcpServers: (root, provider) => defaultListProviderMcpServers(root, provider),
     listDocuments: (root) => listMemoryFiles(root, { readOnly: true }),
     readDocument: (root, relPath) => readMemoryFile(root, relPath, { readOnly: true }),
     readReviewState: (root) => readDocReviewState(root, { readOnly: true }),
@@ -466,12 +577,14 @@ function applicationStatus({ providers, provider, enabled = true, review = null,
 
 function addLocalInstructions(inventory, target, coordinate, settings, queue, reviewState, globalLedger, readers) {
   const chain = new Set(folderChain(target.root, target.folderAbsolute));
-  const exact = readers.listProviderInstructions(target.root, target.folderAbsolute, coordinate.provider) || [];
+  const runtime = coordinate.provider === "all" ? {} : readers.readProviderRuntime(coordinate.provider, target.root) || {};
+  const exact = readers.listProviderInstructions(target.root, target.folderAbsolute, coordinate.provider, runtime) || [];
   const legacy = readers.listInstructions(target.root, settings) || [];
   const seen = new Set();
+  const ownerDirectory = (item) => stablePath(item.startupContext?.evidence?.directory || path.dirname(item.startupContext.absolutePath));
   const accepted = [...exact, ...legacy].filter((item) => {
     const absolutePath = item.startupContext?.absolutePath;
-    if (!absolutePath || (item.startupContext?.source !== "global" && !chain.has(stablePath(path.dirname(absolutePath))))) return false;
+    if (!absolutePath || (item.startupContext?.source !== "global" && !chain.has(ownerDirectory(item)))) return false;
     const identity = stablePath(absolutePath);
     if (seen.has(identity)) return false;
     seen.add(identity);
@@ -481,12 +594,17 @@ function addLocalInstructions(inventory, target, coordinate, settings, queue, re
     const rightPath = right.startupContext?.absolutePath || "";
     const leftGlobal = left.startupContext?.source === "global" ? 0 : 1;
     const rightGlobal = right.startupContext?.source === "global" ? 0 : 1;
-    return leftGlobal - rightGlobal || leftPath.split(path.sep).length - rightPath.split(path.sep).length || leftPath.localeCompare(rightPath);
+    const leftDepth = leftGlobal ? ownerDirectory(left).split(path.sep).length : 0;
+    const rightDepth = rightGlobal ? ownerDirectory(right).split(path.sep).length : 0;
+    const leftOrder = Number.isFinite(left.startupContext?.profileOrder) ? left.startupContext.profileOrder : Infinity;
+    const rightOrder = Number.isFinite(right.startupContext?.profileOrder) ? right.startupContext.profileOrder : Infinity;
+    return leftGlobal - rightGlobal || leftDepth - rightDepth || (leftOrder === rightOrder ? 0 : leftOrder < rightOrder ? -1 : 1) || leftPath.localeCompare(rightPath);
   });
   let previous = null;
   accepted.forEach((item, index) => {
     const details = item.startupContext || {};
     const absolutePath = stablePath(details.absolutePath);
+    const owner = ownerDirectory(item);
     const relPath = isWithin(target.root, absolutePath) ? unixPath(path.relative(target.root, absolutePath)) : displayPath(absolutePath);
     const providers = providersForFile(path.basename(absolutePath), details.provider || "");
     const version = localFileVersion(absolutePath);
@@ -506,13 +624,16 @@ function addLocalInstructions(inventory, target, coordinate, settings, queue, re
       review,
       metadata: { name: path.basename(absolutePath), absolutePath, relativePath: relPath },
     };
+    const status = details.inactiveReason ? "inactive" : applicationStatus({ providers, provider: coordinate.provider, enabled: settings.startupContext?.enabled !== false, uncertain: details.activationProven === false });
     addResource(inventory, resource, {
       coordinate,
-      status: applicationStatus({ providers, provider: coordinate.provider, enabled: settings.startupContext?.enabled !== false }),
-      scope: details.source === "global" ? "device" : path.dirname(absolutePath) === target.root ? "project" : "subtree",
-      subtree: details.source === "global" ? "." : (unixPath(path.relative(target.root, path.dirname(absolutePath))) || "."),
+      status,
+      scope: details.source === "global" ? "device" : owner === stablePath(target.root) ? "project" : "subtree",
+      subtree: details.source === "global" ? "." : (unixPath(path.relative(target.root, owner)) || "."),
       order: index,
-      reason: details.source === "global" ? "Configured global instruction applies before project instructions." : "Instruction is in the selected folder ancestor chain.",
+      reason: details.inactiveReason || details.uncertainReason
+        || (status === "inactive" ? `${path.basename(absolutePath)} is not read by ${coordinate.provider}.`
+          : details.source === "global" ? "Configured global instruction applies before project instructions." : "Instruction is in the selected folder ancestor chain."),
       evidence: details.evidence || { scanner: "startup-context", source: details.source || "ancestor" },
     });
     if (previous) inventory.relations.push({ from: previous.id, to: resource.id, type: /override/i.test(path.basename(absolutePath)) ? "overridden-by" : "precedes", evidence: { order: index } });
@@ -564,6 +685,7 @@ function addLocalSkills(inventory, target, coordinate, settings, queue, readers)
 
 function addHooks(inventory, target, coordinate, settings, readers) {
   let order = 2000;
+  const contextEvents = coordinate.provider === "all" ? [] : contextProviderProfile(coordinate.provider).hooks?.contextEvents || [];
   const legacy = readers.listHooks(target.root, settings) || [];
   const exact = readers.listProviderHookSources(target.root, target.folderAbsolute, coordinate.provider) || [];
   for (const item of [...exact, ...legacy]) {
@@ -573,6 +695,7 @@ function addHooks(inventory, target, coordinate, settings, readers) {
     const providers = providersForFile(path.basename(absolutePath), hook.provider || "");
     const proven = hook.activationProven === true
       || (["git-hooks", "core-hooks-path"].includes(hook.source) && hook.executable === true);
+    const injectsContext = String(hook.event || "").split(/,\s*/).filter((event) => contextEvents.includes(event));
     addResource(inventory, {
       id: resourceIdForFile(absolutePath),
       kind: "hook",
@@ -581,7 +704,7 @@ function addHooks(inventory, target, coordinate, settings, readers) {
       providers,
       version: localFileVersion(absolutePath),
       truthState: "discovered",
-      metadata: { name: hook.label || path.basename(absolutePath), absolutePath, event: hook.event || "", executable: Boolean(hook.executable), tracked: Boolean(hook.tracked) },
+      metadata: { name: hook.label || path.basename(absolutePath), absolutePath, event: hook.event || "", executable: Boolean(hook.executable), tracked: Boolean(hook.tracked), injectsContext },
     }, {
       coordinate,
       status: applicationStatus({ providers, provider: coordinate.provider, enabled: settings.startupHooks?.enabled !== false, uncertain: !proven }),
@@ -616,6 +739,96 @@ function addProviderConfigs(inventory, target, coordinate) {
       order: order++,
       reason: `Recognized ${profile.label} configuration location.`,
       evidence: { profile: profile.id, profileVersion: profile.version, source: configuredPath },
+    });
+  }
+}
+
+function tomlTableNames(content, key) {
+  const names = new Set();
+  const pattern = new RegExp(`^\\s*\\[${key}\\.(?:"([^"]+)"|([A-Za-z0-9_-]+))\\]\\s*$`, "gm");
+  for (const match of String(content || "").matchAll(pattern)) names.add(match[1] || match[2]);
+  return [...names];
+}
+
+function tomlTableDisabled(content, key, name) {
+  const lines = String(content || "").split(/\r?\n/);
+  const start = lines.findIndex((line) => line.trim() === `[${key}.${name}]` || line.trim() === `[${key}."${name}"]`);
+  if (start < 0) return false;
+  for (const line of lines.slice(start + 1)) {
+    if (/^\s*\[/.test(line)) break;
+    if (/^\s*enabled\s*=\s*false\b/.test(line)) return true;
+  }
+  return false;
+}
+
+function claudeProjectMcpApproval(root) {
+  const approval = { all: false, enabled: new Set(), disabled: new Set() };
+  for (const file of claudeSettingsFiles(root)) {
+    const value = readJsonFile(file).value;
+    if (!value) continue;
+    if (typeof value.enableAllProjectMcpServers === "boolean") approval.all = value.enableAllProjectMcpServers;
+    for (const name of Array.isArray(value.enabledMcpjsonServers) ? value.enabledMcpjsonServers : []) approval.enabled.add(String(name));
+    for (const name of Array.isArray(value.disabledMcpjsonServers) ? value.disabledMcpjsonServers : []) approval.disabled.add(String(name));
+  }
+  return approval;
+}
+
+/** MCP servers are listed by name only; their tool definitions reach the agent at runtime and their size stays unknown. */
+function defaultListProviderMcpServers(root, provider) {
+  if (provider === "all") return [];
+  const profile = contextProviderProfile(provider);
+  const servers = [];
+  for (const source of profile.mcp || []) {
+    const absolutePath = source.path.startsWith("~") ? expandHome(source.path) : path.join(root, source.path);
+    const scope = source.path.startsWith("~") ? "device" : "project";
+    if (source.format === "toml") {
+      let content = "";
+      try { content = fs.readFileSync(absolutePath, "utf8"); } catch { continue; }
+      for (const name of tomlTableNames(content, source.key)) servers.push({ name, absolutePath, scope, disabled: tomlTableDisabled(content, source.key, name), approvalRequired: false });
+      continue;
+    }
+    const value = readJsonFile(absolutePath).value;
+    if (!value) continue;
+    const add = (entries, entryScope) => {
+      for (const [name, config] of Object.entries(entries && typeof entries === "object" && !Array.isArray(entries) ? entries : {})) {
+        servers.push({ name, absolutePath, scope: entryScope, disabled: config?.enabled === false || config?.disabled === true, approvalRequired: false, fingerprint: sha256(JSON.stringify(config ?? null)) });
+      }
+    };
+    add(value[source.key], scope);
+    if (source.projectKey) add(value[source.projectKey]?.[stablePath(root)]?.[source.key] || value[source.projectKey]?.[root]?.[source.key], "project");
+    if (provider === "claude-code" && source.path === ".mcp.json") {
+      const approval = claudeProjectMcpApproval(root);
+      for (const server of servers.filter((item) => item.absolutePath === absolutePath)) {
+        server.disabled = server.disabled || approval.disabled.has(server.name);
+        server.approvalRequired = !approval.all && !approval.enabled.has(server.name);
+      }
+    }
+  }
+  return servers;
+}
+
+function addMcpServers(inventory, target, coordinate, readers) {
+  let order = 3500;
+  for (const server of readers.listProviderMcpServers(target.root, coordinate.provider) || []) {
+    const absolutePath = stablePath(server.absolutePath);
+    addResource(inventory, {
+      id: `mcp:${absolutePath}#${server.name}`,
+      kind: "mcp-server",
+      source: server.scope === "device" ? "device" : "local",
+      locator: `${displayPath(absolutePath)}#${server.name}`,
+      providers: [coordinate.provider],
+      version: server.fingerprint || localFileVersion(absolutePath),
+      truthState: "discovered",
+      metadata: { name: server.name, absolutePath },
+    }, {
+      coordinate,
+      status: server.disabled ? "disabled" : server.approvalRequired ? "uncertain" : "active",
+      scope: server.scope,
+      order: order++,
+      reason: server.disabled ? "MCP server is disabled in its configuration."
+        : server.approvalRequired ? "Project MCP server needs approval in Claude Code before it loads."
+          : "MCP server is configured; its tool definitions add context of unknown size.",
+      evidence: server.disabled || server.approvalRequired ? null : { profile: coordinate.provider, source: displayPath(absolutePath), discovery: "provider-mcp-configuration" },
     });
   }
 }
@@ -913,6 +1126,7 @@ export function buildContextInventory(targetInput, options = {}) {
     addLocalSkills(inventory, target, coordinate, settings, queue, readers);
     addHooks(inventory, target, coordinate, settings, readers);
     addProviderConfigs(inventory, target, coordinate);
+    addMcpServers(inventory, target, coordinate, readers);
     addAcceptedLocalDocuments(inventory, target, coordinate, readers, queue);
     const doctor = readers.readDoctor(target.root) || { issues: [] };
     inventory.healthIssues.push(...(doctor.issues || []));

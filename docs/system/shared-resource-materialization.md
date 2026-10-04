@@ -42,7 +42,17 @@ The resulting local receipt records the accepted revision used.
 
 A versioned provider profile defines native discovery locations, ordering, and evidence for Codex, Claude Code, and OpenCode.
 
+Each profile states how it was checked and up to which provider version. The Claude Code profile is checked against Claude Code 2.1.289.
+
 Context Room does not infer provider activation from a destination name alone.
+
+Claude Code rules:
+
+- It reads `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md`, and `.claude/rules/**/*.md` in the folder chain. A rule with `paths` frontmatter loads only when matching files are read, so it stays uncertain.
+- From 2.1.277, it also reads `AGENTS.md` and `.claude/AGENTS.md` when no `CLAUDE.md`-family file exists in the folder or above. `pluginConfigs["agents-md@builtin"].options.instructionFiles` changes this: `claude-md`, `claude-md-or-agents-md` (default), `claude-md-and-agents-md`, or `managed-only`.
+- An unknown Claude Code version or unreadable settings make `AGENTS.md` uncertain, never active.
+
+Hook output (`SessionStart`, `UserPromptSubmit`) and MCP tool definitions reach the agent at runtime. Context Room lists them as unknown context and does not guess their size.
 
 A resource can therefore be:
 

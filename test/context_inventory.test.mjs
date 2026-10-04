@@ -389,3 +389,94 @@ test("inventory impact expands a proven global resource to every registered cons
     fs.rmSync(base, { recursive: true, force: true });
   }
 });
+
+function withHome(home, callback) {
+  const previous = process.env.HOME;
+  process.env.HOME = home;
+  try { return callback(); } finally { process.env.HOME = previous; }
+}
+
+function claudeEffective(root, runtime) {
+  const readers = fixtureReaders(root, { instructions: [], documents: [], documentContents: {} });
+  readers.readProviderRuntime = () => runtime;
+  const inventory = buildContextInventory({ root, projectId: "project-a", locationId: "location-a", folder: "." }, { provider: "claude-code", readers });
+  const effective = resolveEffectiveContext(buildContextGraph(inventory));
+  const byName = (name) => [...effective.instructions, ...effective.inactive].find((entry) => entry.resource.locator.endsWith(name));
+  return { effective, byName };
+}
+
+test("Claude Code loads AGENTS.md only without a CLAUDE.md-family file, from version 2.1.277", () => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "context-claude-agents-")));
+  const root = path.join(base, "project");
+  fs.mkdirSync(path.join(base, "home"), { recursive: true });
+  fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(path.join(root, "AGENTS.md"), "# Agents\n");
+  try {
+    withHome(path.join(base, "home"), () => {
+      const current = { mode: "claude-md-or-agents-md", modeSource: "default", version: "2.1.289", source: "test" };
+      assert.equal(claudeEffective(root, current).byName("AGENTS.md").application.status, "active");
+      assert.equal(claudeEffective(root, { ...current, version: "2.1.276" }).byName("AGENTS.md").application.status, "inactive");
+      assert.equal(claudeEffective(root, { ...current, version: "" }).byName("AGENTS.md").application.status, "uncertain", "an unknown Claude Code version is not proof");
+      assert.equal(claudeEffective(root, { ...current, mode: "claude-md" }).byName("AGENTS.md").application.status, "inactive");
+      assert.equal(claudeEffective(root, { ...current, mode: "" }).byName("AGENTS.md").application.status, "uncertain");
+
+      fs.mkdirSync(path.join(root, ".claude"), { recursive: true });
+      fs.writeFileSync(path.join(root, ".claude", "CLAUDE.md"), "# Claude\n");
+      const blocked = claudeEffective(root, current);
+      const claude = blocked.byName(".claude/CLAUDE.md");
+      assert.equal(claude.application.status, "active", ".claude/CLAUDE.md belongs to the project root chain");
+      assert.equal(claude.application.scope, "project");
+      assert.equal(blocked.byName("AGENTS.md").application.status, "inactive");
+      assert.match(blocked.byName("AGENTS.md").application.reason, /CLAUDE\.md exists/);
+      assert.equal(claudeEffective(root, { ...current, mode: "claude-md-and-agents-md" }).byName("AGENTS.md").application.status, "active");
+    });
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("Claude Code rules load from .claude/rules and path-scoped rules stay uncertain", () => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "context-claude-rules-")));
+  const root = path.join(base, "project");
+  fs.mkdirSync(path.join(base, "home"), { recursive: true });
+  fs.mkdirSync(path.join(root, ".claude", "rules", "api"), { recursive: true });
+  fs.writeFileSync(path.join(root, "CLAUDE.md"), "# Claude\n");
+  fs.writeFileSync(path.join(root, ".claude", "rules", "style.md"), "# Style\n");
+  fs.writeFileSync(path.join(root, ".claude", "rules", "api", "routes.md"), "---\npaths:\n  - src/api/**\n---\n\n# Routes\n");
+  try {
+    withHome(path.join(base, "home"), () => {
+      const { byName } = claudeEffective(root, { mode: "claude-md-or-agents-md", modeSource: "default", version: "2.1.289" });
+      assert.equal(byName(".claude/rules/style.md").application.status, "active");
+      assert.equal(byName(".claude/rules/style.md").application.scope, "project");
+      assert.equal(byName(".claude/rules/api/routes.md").application.status, "uncertain");
+    });
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("hook output and MCP tools are reported as unknown context", () => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "context-claude-unknown-")));
+  const home = path.join(base, "home");
+  const root = path.join(base, "project");
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
+  fs.mkdirSync(path.join(root, ".claude"), { recursive: true });
+  fs.writeFileSync(path.join(home, ".claude", "settings.json"), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: "echo context" }] }], PreToolUse: [] } }));
+  fs.writeFileSync(path.join(home, ".claude.json"), JSON.stringify({ mcpServers: { docs: { command: "docs-mcp", env: { TOKEN: "secret" } } } }));
+  fs.writeFileSync(path.join(root, ".mcp.json"), JSON.stringify({ mcpServers: { approved: { command: "a" }, pending: { command: "b" } } }));
+  fs.writeFileSync(path.join(root, ".claude", "settings.local.json"), JSON.stringify({ enabledMcpjsonServers: ["approved"] }));
+  try {
+    withHome(home, () => {
+      const { effective } = claudeEffective(root, { mode: "claude-md-or-agents-md", modeSource: "default", version: "2.1.289" });
+      assert.deepEqual(effective.mcpServers.map((entry) => entry.resource.metadata.name).sort(), ["approved", "docs"]);
+      const pending = effective.inactive.find((entry) => entry.resource.metadata?.name === "pending");
+      assert.equal(pending.application.status, "uncertain", "a project MCP server is not loaded before approval");
+      assert.equal(JSON.stringify(effective.mcpServers).includes("secret"), false, "MCP configuration values never enter the inventory");
+      const hook = effective.unknown.find((item) => item.kind === "hook-output");
+      assert.deepEqual(hook.events, ["SessionStart"]);
+      assert.deepEqual(effective.unknown.filter((item) => item.kind === "mcp-tools").length, 2);
+    });
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
