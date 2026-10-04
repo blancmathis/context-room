@@ -51,6 +51,8 @@ undoing those unsaved edits. The connected owner tablet uses the same interface.
 The integrated editor bounds a proposal to 256 working files and 64 MiB and an
 opened text file to 16 MiB. Larger workspaces remain available to the CLI.
 
+The review of a local proposal starts with a block check for Markdown and text files. Each block (a heading, a fenced code block, or text between blank lines) gets a fingerprint before and after, across every file of the proposal. A block found again unchanged, in the same file or another, stays folded. The reviewer reads only removed blocks and new or rewritten blocks; nothing is lost silently. A matching fingerprint explains a move; it accepts nothing. Other formats are reviewed as whole versions.
+
 Accepting applies only the selected exact file delta. Saving a correction applies and accepts those corrected bytes. Rejecting an isolated file leaves its original unchanged. The remaining files retain their own pending decisions. The local proposal completes when all its files have decisions; it does not have an additional remote delivery step.
 
 Application checks the project identity, scope, exact base, file mode, paths and staged Git state where relevant. The exact reviewed mode is explicitly applied to the new file descriptor, independently of the process umask; a concurrent permission-only origin change still blocks application. A conflicting external edit blocks application. A journal precedes the filesystem change; replaced bytes remain recoverable. Publication does not overwrite a file created concurrently at the destination. An interrupted application either resumes idempotently or reports recovery required.

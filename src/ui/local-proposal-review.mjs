@@ -45,6 +45,11 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
     .local-proposal-review .local-proposal-diagram svg { display: block; width: 100%; height: auto; max-width: 100%; }
     .local-proposal-review footer { justify-content: flex-end; margin-top: 20px; }
     .local-proposal-review [role=status] { min-height: 24px; margin-top: 12px; color: var(--muted, #9a9a9a); }
+    .local-proposal-review .local-proposal-blocks { margin-bottom: 20px; }
+    .local-proposal-review .local-proposal-blocks p { margin: 0 0 8px; color: var(--muted, #9a9a9a); }
+    .local-proposal-review .local-proposal-blocks h4 { margin: 12px 0 8px; font-size: 14px; }
+    .local-proposal-review .local-proposal-blocks pre { min-height: 0; max-height: 30dvh; margin-bottom: 8px; border-left: 4px solid var(--muted, #9a9a9a); }
+    .local-proposal-review [data-block-group=removed] pre { border-left-style: dashed; }
   `;
   dialog.append(styles);
   const header = element("header");
@@ -53,11 +58,14 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
   header.append(element("h2", item.title), close);
   const nav = element("nav");
   nav.setAttribute("aria-label", "Changed files");
+  const blocksPanel = element("section", "", "local-proposal-blocks");
+  blocksPanel.setAttribute("aria-label", "Block check");
+  blocksPanel.hidden = true;
   const versions = element("div", "", "local-proposal-versions");
   const status = element("div");
   status.setAttribute("role", "status");
   const footer = element("footer");
-  dialog.append(header, nav, versions, status, footer);
+  dialog.append(header, nav, blocksPanel, versions, status, footer);
   document.body.append(dialog);
   let objectUrls = [];
   let activePath = "";
@@ -193,6 +201,36 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
     return section;
   }
 
+  // Identical blocks stay folded; only removed and new or rewritten blocks need reading.
+  const blockMap = item.type === "local-proposal" && item.proposalId
+    ? request(`/api/docqa/local-proposal-blocks?proposal=${encodeURIComponent(item.proposalId)}`).catch(() => null)
+    : Promise.resolve(null);
+  function renderBlocks(map, file) {
+    const entry = map?.revision === file.revision ? map.files.find((candidate) => candidate.path === file.path) : null;
+    blocksPanel.replaceChildren();
+    blocksPanel.hidden = !entry;
+    if (!entry) return;
+    const moved = entry.moved.reduce((total, source) => total + source.blocks, 0);
+    const { summary } = map;
+    const identical = summary.unchanged + summary.moved;
+    blocksPanel.append(element("p", `Whole proposal: ${identical} identical block${identical === 1 ? "" : "s"}, ${summary.removed} removed, ${summary.added} new or rewritten. An identical block explains a move; it accepts nothing.`));
+    const parts = [entry.removed.length && `${entry.removed.length} removed`, entry.added.length && `${entry.added.length} new or rewritten`, entry.unchanged + moved && `${entry.unchanged + moved} identical`].filter(Boolean);
+    blocksPanel.append(element("h3", `This file: ${parts.join(" · ") || "no text blocks"}`));
+    if (moved) {
+      const details = element("details");
+      details.append(element("summary", `${moved} moved here unchanged`), ...entry.moved.map((source) => element("p", `${source.blocks} from ${source.from}`)));
+      blocksPanel.append(details);
+    }
+    for (const [group, label, list] of [["removed", "Removed", entry.removed], ["added", "New or rewritten", entry.added]]) {
+      if (!list.length) continue;
+      const holder = element("div");
+      holder.dataset.blockGroup = group;
+      holder.append(element("h4", `${label} (${list.length})`));
+      for (const block of list) holder.append(element("pre", block.text));
+      blocksPanel.append(holder);
+    }
+  }
+
   function renderNavigation() {
     nav.replaceChildren();
     for (const file of files) {
@@ -224,6 +262,9 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
       if (serial !== requestId || !dialog.isConnected) return;
       cleanupUrls();
       versions.replaceChildren(renderVersion("Accepted", bytesOf(file.beforeBase64), file, false), renderVersion("Proposed", bytesOf(file.afterBase64), file, true));
+      const map = await blockMap;
+      if (serial !== requestId || !dialog.isConnected) return;
+      renderBlocks(map, file);
       const accept = element("button", "Accept file", "file-action primary");
       const reject = element("button", "Reject file", "file-action danger-action");
       const undo = element("button", "Undo correction", "quiet-button");

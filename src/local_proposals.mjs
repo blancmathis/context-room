@@ -5,6 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { withFilesystemLock } from "./filesystem_lock.mjs";
 import { writeNotebookBytes, makeNotebookDirectory, syncNotebookDirectory } from "./notebook_io.mjs";
 import { acceptsRootIdentity } from "./location_attestation.mjs";
+import { proposalBlockMap } from "./block_map.mjs";
 
 const STORE = ".context-room/local-proposals";
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -372,6 +373,14 @@ export function readLocalProposalFile(projectRoot, id, rel) {
   return { ...change, proposalId: id, revision: proposal.submittedRevision,
     beforeBytes: change.before ? readBlob(ctx, change.before.hash) : null,
     afterBytes: change.after ? readBlob(ctx, change.after.hash) : null };
+}
+
+/** Block fingerprints of every submitted text change, compared across files. Read-only. */
+export function readLocalProposalBlockMap(projectRoot, id) {
+  const ctx = context(projectRoot), proposal = readProposal(ctx, id);
+  const text = (side) => side ? readBlob(ctx, side.hash).toString("utf8") : null;
+  return { proposalId: id, revision: proposal.submittedRevision,
+    ...proposalBlockMap(changesFor(proposal).map((change) => ({ path: change.path, kind: change.kind, before: text(change.before), after: text(change.after) }))) };
 }
 
 export function readLocalProposalResource(projectRoot, id, rel, { side = "after", expectedRevision } = {}) {
