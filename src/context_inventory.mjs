@@ -547,6 +547,25 @@ function addResource(inventory, resource, application = null) {
   return existing || resource;
 }
 
+/** Origin by install location only: the project and agent settings folders are the user's, provider-managed folders are the agent's. */
+function classifyResourceOrigins(inventory, target) {
+  const homes = [process.env.CODEX_HOME || "~/.codex", "~/.claude", "~/.agents", "~/.config/opencode"].map((home) => stablePath(expandHome(home)));
+  for (const resource of inventory.resources) {
+    if (!["instruction", "skill", "hook"].includes(resource.kind) || String(resource.source || "").startsWith("shared")) continue;
+    const absolutePath = resource.metadata?.absolutePath ? stablePath(resource.metadata.absolutePath) : "";
+    if (!absolutePath) continue;
+    const home = homes.find((directory) => isWithin(directory, absolutePath));
+    const inProject = Boolean(target.root) && isWithin(target.root, absolutePath);
+    resource.origin = resource.source === "local-managed" || (home && unixPath(path.relative(home, absolutePath)).split("/").includes(".system"))
+      ? { class: "provider", reason: "Installed in a folder the agent manages." }
+      : home && unixPath(path.relative(home, absolutePath)).startsWith("plugins/")
+        ? { class: "unconfirmed", reason: "Installed by a plugin." }
+        : inProject ? { class: "yours", reason: "Inside this project." }
+          : home ? { class: "yours", reason: "In your agent settings folder." }
+            : { class: "unconfirmed", reason: "Outside this project and your agent settings folders." };
+  }
+}
+
 function expandProvenDeviceApplications(inventory) {
   const resources = new Map(inventory.resources.map((resource) => [resource.id, resource]));
   const originals = [...inventory.applications];
@@ -1157,6 +1176,7 @@ export function buildContextInventory(targetInput, options = {}) {
   for (const issue of inventory.healthIssues) {
     if (issue.resourceId) inventory.relations.push({ from: issue.resourceId, to: `health:${issue.key || issue.type || sha256(JSON.stringify(issue)).slice(0, 12)}`, type: "has-health-issue", evidence: { severity: issue.severity || "", type: issue.type || "" } });
   }
+  classifyResourceOrigins(inventory, target);
   expandProvenDeviceApplications(inventory);
   delete inventory.resourceIds;
   delete inventory.applicationIds;

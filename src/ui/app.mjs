@@ -699,6 +699,9 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 	    .context-engine-target code { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
 	    .context-engine-provider { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 10px; }
 	    .context-engine-provider select { min-height: 32px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-card); color: var(--text); padding: 5px 28px 5px 8px; font-size: 11px; }
+	    .context-origin-provided { border-top: 1px solid var(--line); }
+	    .context-origin-provided summary { min-height: 36px; padding: 8px 10px; cursor: pointer; color: var(--muted); font-size: 12px; }
+	    .global-project-inspection-row .context-origin-note { color: var(--text); font-weight: 600; }
 	    .context-engine-summary { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 10px; border-bottom: 1px solid var(--line); }
 	    .context-engine-summary span { padding: 4px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 9px; }
 	    .context-engine-summary [data-state="fresh"] { border-color: color-mix(in srgb, var(--good) 34%, var(--line)); color: var(--good-fg); }
@@ -1281,6 +1284,10 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .diff-raw-meta summary::-webkit-details-marker { display: none; }
     .diff-raw-meta pre { margin: 6px 0 0; padding: 8px 10px; border-radius: 10px; background: rgba(255,255,255,0.025); white-space: pre-wrap; }
     .diff-empty { padding: var(--space-5); color: var(--muted); font: 14px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
+    .review-risk-notice { margin: var(--space-4); padding: var(--space-3) var(--space-4); border: 2px solid var(--text); border-radius: 12px; color: var(--text); font: 13px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
+    .review-risk-notice summary { min-height: 32px; cursor: pointer; }
+    .review-risk-notice ul { margin: var(--space-2) 0 0; padding-left: var(--space-5); }
+    .review-risk-notice code { overflow-wrap: anywhere; }
     .initial-review-notice { margin: var(--space-4); padding: var(--space-3) var(--space-4); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 12px; background: color-mix(in srgb, var(--accent) 9%, transparent); color: var(--text); font: 13px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
     .conflict-panel { position: sticky; top: 0; z-index: 8; margin: var(--space-4); border: 1px solid color-mix(in srgb, var(--warning) 54%, var(--line)); border-radius: 16px; background: color-mix(in srgb, var(--warning) 12%, var(--panel)); box-shadow: 0 14px 44px rgba(0,0,0,0.24); padding: var(--space-4); display: grid; gap: var(--space-3); font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: var(--text); }
     .external-review-actions { align-items: center; flex-wrap: wrap; justify-content: flex-end; }
@@ -15039,7 +15046,8 @@ function contextEngineResourceRow(entry, { actions = true, cost = null } = {}) {
   const costLabel = status === "active" ? contextCostEntryLabel(cost?.[resource.id]) : "";
   return '<div class="global-project-inspection-row" data-context-resource="' + escapeHtml(resource.id || "") + '">'
     + '<div class="global-project-inspection-row-head"><strong>' + escapeHtml(resource.metadata?.name || resource.locator || resource.id || "Context resource") + '</strong><span class="context-engine-status" data-status="' + escapeHtml(status) + '">' + escapeHtml(status) + '</span></div>'
-    + '<span>' + escapeHtml([resource.kind, application.scope, resource.source].filter(Boolean).join(" · ")) + '</span>'
+    + '<span>' + escapeHtml([resource.kind, application.scope, resource.source, CONTEXT_ORIGIN_LABELS[resource.origin?.class]?.[0]].filter(Boolean).join(" · ")) + '</span>'
+    + (resource.origin?.class === "unconfirmed" ? '<span class="context-origin-note" data-context-origin="unconfirmed">' + escapeHtml(resource.origin.reason || "") + '</span>' : '')
     + (costLabel ? '<span class="context-cost-entry">' + escapeHtml(costLabel) + '</span>' : '')
     + (application.reason ? '<p>' + escapeHtml(application.reason) + '</p>' : '')
     + (resource.locator ? '<code>' + escapeHtml(resource.locator) + '</code>' : '')
@@ -15053,11 +15061,28 @@ function contextEngineResourceRow(entry, { actions = true, cost = null } = {}) {
     + '</div>';
 }
 
+const CONTEXT_ORIGIN_LABELS = { yours: ["Your file", "Your files"], provider: ["Provided by the agent", "Provided by the agent"], unconfirmed: ["Origin not confirmed", "Origin not confirmed"] };
+
+// Files the agent installs itself stay counted, folded at the end of their group.
 function renderEffectiveContextGroup(title, entries = [], emptyCopy = "", options = {}) {
-  const rows = entries.map((entry) => contextEngineResourceRow(entry, options)).join("");
+  const provided = entries.filter((entry) => entry.resource?.origin?.class === "provider");
+  const own = entries.filter((entry) => entry.resource?.origin?.class !== "provider");
+  const rows = own.map((entry) => contextEngineResourceRow(entry, options)).join("")
+    + (provided.length ? '<details class="context-origin-provided" data-context-origin-group="provider"><summary>Provided by the agent · ' + provided.length + '</summary>' + provided.map((entry) => contextEngineResourceRow(entry, options)).join("") + '</details>' : '');
   return '<details class="global-project-inspection-group"' + (options.open === false ? '' : ' open') + '><summary><strong>' + escapeHtml(title) + '</strong><span>' + entries.length + '</span></summary><div class="global-project-inspection-list">'
     + (rows || '<div class="global-project-inspection-row empty"><strong>Nothing effective</strong><span>' + escapeHtml(emptyCopy) + '</span></div>')
     + '</div></details>';
+}
+
+function contextOriginSummary(effective) {
+  const resources = new Map();
+  for (const key of ["instructions", "skills", "hooks", "inactive"]) {
+    for (const entry of effective?.[key] || []) if (entry.resource?.origin?.class) resources.set(entry.resource.id, entry.resource.origin.class);
+  }
+  if (!resources.size) return "";
+  const counts = [...resources.values()].reduce((all, origin) => ({ ...all, [origin]: (all[origin] || 0) + 1 }), {});
+  return '<div class="context-engine-summary context-origin-summary" aria-label="Where these files come from">' + ["yours", "provider", "unconfirmed"]
+    .map((origin) => '<span data-context-origin-count="' + origin + '">' + escapeHtml(CONTEXT_ORIGIN_LABELS[origin][(counts[origin] || 0) === 1 ? 0 : 1]) + ' ' + (counts[origin] || 0) + '</span>').join("") + '</div>';
 }
 
 function renderEffectiveContextBody(effective, { embedded = false } = {}) {
@@ -15075,7 +15100,7 @@ function renderEffectiveContextBody(effective, { embedded = false } = {}) {
     + '<span>' + inactive.length + ' inactive or blocked</span>'
     + '<span>' + Number(effective?.proposals?.length || 0) + ' proposal metadata</span>'
     + '<span>' + Number(effective?.healthIssues?.length || 0) + ' health issues</span>'
-    + '</div>';
+    + '</div>' + contextOriginSummary(effective);
   const options = { actions: !embedded, cost: effective?.cost?.entries || null };
   const groups = '<div class="global-project-inspection-groups">'
     + renderEffectiveContextGroup("Agent instructions", effective?.instructions || [], "No proven instruction applies to this folder.", options)
@@ -20113,9 +20138,12 @@ function renderViewer() {
           : renderDocumentView(text, file.path);
   const annotationMarkup = !isStartupFile && !isImageDocument && !conflict ? renderAgentAnnotations(state.selected) : "";
   const initialReviewNotice = initialReviewNoticeForSelectedFile();
+  const riskNotice = externalChange && !conflict && !loadError && !openingFile && !isImageDocument
+    ? reviewRiskNoticeMarkup(externalReviewBaseContent(externalChange), externalChange.diskContent || "")
+    : "";
   el("viewer").innerHTML = '<div class="review-workspace ' + (!hasDiff || state.diffCollapsed ? 'no-diff' : '') + '">' +
     (state.diffCollapsed ? "" : diffMarkup) +
-    '<section class="file-panel"><header><div class="file-header-copy"><h1 class="file-title">' + escapeHtml(file.label || "Document") + '</h1>' + (isStartupFile ? '<span class="muted">' + escapeHtml(file.path) + '</span>' : '') + '</div>' + actionsMarkup + '</header>' + conflictMarkup + initialReviewNotice + annotationMarkup + editorMarkup + '</section></div>';
+    '<section class="file-panel"><header><div class="file-header-copy"><h1 class="file-title">' + escapeHtml(file.label || "Document") + '</h1>' + (isStartupFile ? '<span class="muted">' + escapeHtml(file.path) + '</span>' : '') + '</div>' + actionsMarkup + '</header>' + conflictMarkup + initialReviewNotice + riskNotice + annotationMarkup + editorMarkup + '</section></div>';
   updateActionBanner();
   document.querySelector("[data-hide-diff]")?.addEventListener("click", (event) => {
     event.preventDefault();
@@ -21906,6 +21934,82 @@ function externalReviewFileActionOptions() {
     deletable: !Boolean(state.selectedStartupContext),
     savable: !isHtmlDocumentPath(state.selected),
   };
+}
+
+const REVIEW_INVISIBLE_NAMES = { "00AD": "soft hyphen", "180E": "Mongolian vowel separator", "200B": "zero-width space", "200C": "zero-width non-joiner", "200D": "zero-width joiner", "200E": "left-to-right mark", "200F": "right-to-left mark", "2060": "word joiner", "FEFF": "zero-width no-break space" };
+const REVIEW_SHELL_FENCE = /^\s*(?:\x60{3,}|~{3,})\s*(?:bash|sh|zsh|fish|shell|console|terminal|powershell|pwsh|ps1|cmd|bat)\b/i;
+const REVIEW_FENCE = /^\s*(?:\x60{3,}|~{3,})/;
+
+function reviewRiskItems(text) {
+  const items = [];
+  let shellFence = false;
+  let fence = false;
+  String(text || "").split("\n").forEach((line, index) => {
+    const lineNumber = index + 1;
+    for (const match of line.matchAll(/[\u00AD\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]|[\u{E0000}-\u{E007F}]/gu)) {
+      if (index === 0 && match.index === 0 && match[0] === "\uFEFF") continue;
+      const code = match[0].codePointAt(0).toString(16).toUpperCase().padStart(4, "0");
+      const name = REVIEW_INVISIBLE_NAMES[code] || (code.startsWith("E00") ? "tag character" : "bidirectional control");
+      items.push({ kind: "invisible", key: "U+" + code, label: "U+" + code + " (" + name + ")", line: lineNumber });
+    }
+    for (const match of line.matchAll(/\b(?:https?|ftp|wss?):\/\/[^\s<>"'\x60)\]]+/gi)) {
+      const url = match[0].replace(/[.,;:!?]+$/, "");
+      items.push({ kind: "url", key: url, label: url, line: lineNumber });
+    }
+    for (const match of line.matchAll(/\$\{?([A-Z][A-Z0-9_]+)\b|process\.env\.([A-Za-z_][A-Za-z0-9_]*)|process\.env\[["']([^"']+)["']\]|%([A-Z][A-Z0-9_]+)%|\bexport\s+([A-Za-z_][A-Za-z0-9_]*)=|\$env:([A-Za-z_][A-Za-z0-9_]*)/g)) {
+      const name = match.slice(1).find(Boolean);
+      items.push({ kind: "env", key: name, label: name, line: lineNumber });
+    }
+    if (REVIEW_FENCE.test(line)) {
+      if (fence) { fence = false; shellFence = false; }
+      else { fence = true; shellFence = REVIEW_SHELL_FENCE.test(line); }
+      return;
+    }
+    const command = shellFence
+      ? line.trim().replace(/^\$\s+/, "")
+      : (line.match(/^\s*\$\s+(\S.*)$/) || line.match(/"command"\s*:\s*"((?:[^"\\]|\\.)+)"/) || line.match(/^\s*-?\s*(?:run|command):\s*(\S.*)$/) || [])[1] || "";
+    if (command && !command.startsWith("#")) items.push({ kind: "command", key: command.trim(), label: command.trim(), line: lineNumber });
+  });
+  return items;
+}
+
+// Deterministic, model-free signals for content a reviewer cannot easily see:
+// items present in the proposed text more often than in the accepted text.
+function reviewRiskSignals(beforeText, afterText) {
+  const counts = new Map();
+  for (const item of reviewRiskItems(beforeText)) counts.set(item.kind + "\n" + item.key, (counts.get(item.kind + "\n" + item.key) || 0) + 1);
+  const added = [];
+  const reported = new Map();
+  for (const item of reviewRiskItems(afterText)) {
+    const id = item.kind + "\n" + item.key;
+    const left = counts.get(id) || 0;
+    if (left > 0) { counts.set(id, left - 1); continue; }
+    const existing = reported.get(id);
+    if (existing) { existing.count += 1; if (!existing.lines.includes(item.line)) existing.lines.push(item.line); continue; }
+    const signal = { kind: item.kind, key: item.key, label: item.label, count: 1, lines: [item.line] };
+    reported.set(id, signal);
+    added.push(signal);
+  }
+  const order = ["invisible", "command", "env", "url"];
+  return added.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
+}
+
+function reviewRiskNoticeMarkup(beforeText, afterText) {
+  const cache = state.reviewRiskCache;
+  const signals = cache && cache.before === beforeText && cache.after === afterText
+    ? cache.signals
+    : reviewRiskSignals(beforeText, afterText);
+  state.reviewRiskCache = { before: beforeText, after: afterText, signals };
+  if (!signals.length) return "";
+  const nouns = { invisible: ["invisible character", "invisible characters"], command: ["new shell command", "new shell commands"], env: ["new environment variable", "new environment variables"], url: ["new URL", "new URLs"] };
+  const titles = { invisible: "Invisible character", command: "Shell command", env: "Environment variable", url: "URL" };
+  const summary = Object.keys(nouns).map((kind) => {
+    const count = signals.filter((signal) => signal.kind === kind).length;
+    return count ? count + " " + nouns[kind][count === 1 ? 0 : 1] : "";
+  }).filter(Boolean).join(" · ");
+  const shown = signals.slice(0, 8).map((signal) => '<li data-review-risk-kind="' + escapeHtml(signal.kind) + '"><span>' + escapeHtml(titles[signal.kind]) + '</span> <code>' + escapeHtml(signal.label.length > 120 ? signal.label.slice(0, 119) + "…" : signal.label) + '</code> <span class="muted">line ' + escapeHtml(signal.lines.slice(0, 3).join(", ") + (signal.lines.length > 3 ? "…" : "")) + '</span></li>').join("");
+  const more = signals.length > 8 ? '<li class="muted">' + escapeHtml(String(signals.length - 8)) + ' more</li>' : "";
+  return '<details class="issue review-risk-notice" data-review-risk><summary><strong>Check before accepting</strong> <span>' + escapeHtml(summary) + '</span></summary><ul>' + shown + more + '</ul></details>';
 }
 
 function renderExternalReviewDocument(beforeText, afterText) {
