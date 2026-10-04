@@ -7,11 +7,14 @@ import { execFileSync } from "node:child_process";
 import { initializeContextRoomProject, writeMemoryWebappSettings, readMemoryWebappSettings, writeDocReviewBaseline, writeDocReviewDecision, readMemoryFile, readFileDiff,
   revertMemoryFile, saveHumanReviewedFile, buildDocQaReport, createLocalDocumentationProposal,
   submitLocalDocumentationProposal, reviewLocalDocumentationProposal, contextHubUiState, runAuthorizedReviewCleanup,
-  createMemoryServer, listStartupContextFiles, readStartupContextFile, readStartupSkillFile, rejectDirectDocumentationChange, proposeDocumentMove, proposeDocumentationMap } from "../src/context_room.mjs";
+  createMemoryServer, listStartupContextFiles, readStartupContextFile, readStartupSkillFile, rejectDirectDocumentationChange, proposeDocumentMove, proposeDocumentationMap, documentationDriftReport, documentationTidyReport } from "../src/context_room.mjs";
 import { writeReviewCleanupPolicy, recentReviewCleanupReceipts } from "../src/review_cleanup.mjs";
 import { registerContextHubProject } from "../src/context_hub.mjs";
-import { inspectLocalProposal } from "../src/local_proposals.mjs";
+import { inspectLocalProposal, readLocalProposalBlockMap } from "../src/local_proposals.mjs";
 import { buildDocumentationCorpus, buildDocumentationMap, buildDocumentationNavigation } from "../src/documentation.mjs";
+import { markdownBlocks, proposalBlockMap } from "../src/block_map.mjs";
+import { DOC_TIDY_RULES } from "../src/doc_tidy.mjs";
+import { TIDY_SKILLS, tidyOrder } from "../src/doc_tidy_orders.mjs";
 
 function fixture(t) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "cr-document-workflow-")), root = path.join(base, "project");
@@ -175,6 +178,108 @@ test("docs move proposes the moved document and every accepted inbound link fix 
   assert.equal(fs.existsSync(path.join(root, "docs/b.md")), false);
   assert.equal(fs.readFileSync(path.join(root, "docs/guides/b.md"), "utf8"), "# b\n\nBack to [a](../a.md).\n");
   assert.equal(fs.readFileSync(path.join(root, "docs/a.md"), "utf8"), "# a\n\nSee [b](guides/b.md#b), [ref][b] and `b.md`.\n\n[b]: ./guides/b.md\n");
+});
+
+test("docs drift counts commits to cited code since acceptance, and says unknown without git", (t) => {
+  const root = fixture(t);
+  for (const [file, text] of [["src/engine.mjs", "v1\n"], ["src/ui/view.mjs", "v1\n"], ["src/ui/notes.md", "v1\n"], ["scripts/x.sh", "v1\n"], ["other.txt", "v1\n"]]) {
+    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+    fs.writeFileSync(path.join(root, file), text);
+  }
+  fs.writeFileSync(path.join(root, "docs/a.md"), "# a\n\nSee `src/engine.mjs:12`, [view](../src/ui/), `scripts/x.sh`, [b](b.md) and `docs/`.\n");
+  writeDocReviewDecision(root, "docs/a.md", { status: "verified" });
+  const before = documentationDriftReport(root);
+  assert.deepEqual(before.documents.map((item) => [item.path, item.status]), [["docs/a.md", "unknown"], ["docs/b.md", "no-cited-code"]]);
+  assert.deepEqual(before.documents[0].cited, ["docs", "scripts/x.sh", "src/engine.mjs", "src/ui"]);
+
+  const commit = (date, files) => {
+    const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com", GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date };
+    for (const file of files) fs.appendFileSync(path.join(root, file), "change\n");
+    execFileSync("git", ["add", "src", "scripts", "docs", "other.txt"], { cwd: root, env });
+    execFileSync("git", ["commit", "-q", "-m", date], { cwd: root, env });
+  };
+  execFileSync("git", ["init", "-q"], { cwd: root });
+  // The acceptance is stamped now: one commit before it, three after it.
+  const day = (offset) => new Date(Date.now() + offset * 86400000).toISOString();
+  commit(day(-2), []);
+  commit(day(1), ["src/engine.mjs"]);
+  commit(day(2), ["src/engine.mjs", "src/ui/view.mjs"]);
+  commit(day(3), ["other.txt", "src/ui/notes.md", "docs/b.md"]);
+  fs.appendFileSync(path.join(root, "scripts/x.sh"), "uncommitted\n");
+
+  const report = documentationDriftReport(root);
+  const [drift] = report.documents;
+  assert.equal(drift.path, "docs/a.md");
+  assert.equal(drift.status, "changed");
+  assert.equal(drift.commits, 2);
+  assert.deepEqual(drift.changedPaths, [{ path: "src/engine.mjs", commits: 2 }, { path: "src/ui", commits: 1 }]);
+  assert.deepEqual(drift.uncommitted, ["scripts/x.sh"]);
+  assert.equal(drift.message, "The cited code changed 2 times since you accepted this document. 1 cited path has uncommitted changes.");
+  assert.deepEqual(report.summary, { documents: 2, changed: 1, unchanged: 0, unknown: 0, noCitedCode: 1 });
+  assert.throws(() => documentationDriftReport(root, { path: "docs/missing.md" }), /not an accepted document/);
+
+  const cli = JSON.parse(execFileSync(process.execPath, [path.resolve("bin/context-room.mjs"), "docs", "drift", "docs/a.md", "--root", root, "--format=json"], { encoding: "utf8" }));
+  assert.deepEqual(cli.data.documents.map((item) => [item.path, item.commits]), [["docs/a.md", 2]]);
+});
+
+test("block map shows only removed and rewritten blocks when a status file is split", (t) => {
+  assert.deepEqual(markdownBlocks("# T\nintro\n\n```js\na\n\nb\n```\n- x\n- y\n").map((block) => [block.line, block.text]),
+    [[1, "# T"], [2, "intro"], [4, "```js\na\n\nb\n```"], [9, "- x\n- y"]]);
+  const status = "# Status\n\n## Alpha\n\nAlpha shipped.\n\n## Beta\n\nBeta notes.  \n\n## Log\n\nOld entry.\n";
+  const map = proposalBlockMap([
+    { path: "STATUS.md", kind: "modified", before: status, after: "# Status\n\nSee alpha.md and beta.md.\n" },
+    { path: "alpha.md", kind: "added", before: null, after: "## Alpha\n\nAlpha shipped.\n" },
+    { path: "beta.md", kind: "added", before: null, after: "## Beta\n\nBeta notes.\n\nBeta is late.\n" },
+    { path: "logo.png", kind: "added", before: null, after: "\0png" },
+  ]);
+  assert.deepEqual(map.summary, { unchanged: 1, moved: 4, added: 2, removed: 2 });
+  assert.deepEqual(map.notCompared, ["logo.png"]);
+  const [statusFile, alpha, beta] = map.files;
+  assert.deepEqual(statusFile.removed.map((block) => block.text), ["## Log", "Old entry."]);
+  assert.deepEqual(statusFile.added.map((block) => block.text), ["See alpha.md and beta.md."]);
+  assert.deepEqual(alpha, { path: "alpha.md", kind: "added", unchanged: 0, added: [], removed: [], moved: [{ from: "STATUS.md", blocks: 2 }] });
+  assert.deepEqual(beta.added.map((block) => block.text), ["Beta is late."]);
+  assert.deepEqual(beta.moved, [{ from: "STATUS.md", blocks: 2 }]);
+
+  const root = fixture(t);
+  fs.writeFileSync(path.join(root, "docs/b.md"), "# b\n\nBack to [a](a.md).\n\nStays as is.\n");
+  writeDocReviewDecision(root, "docs/b.md", { status: "verified" });
+  const moved = proposeDocumentMove(root, { from: "docs/b.md", to: "docs/guides/b.md" });
+  const blocks = readLocalProposalBlockMap(root, moved.proposalId);
+  assert.equal(blocks.revision, inspectLocalProposal(root, moved.proposalId).submittedRevision);
+  assert.deepEqual(blocks.summary, { unchanged: 0, moved: 2, added: 1, removed: 1 });
+  const guide = blocks.files.find((file) => file.path === "docs/guides/b.md");
+  assert.deepEqual(guide.added.map((block) => block.text), ["Back to [a](../a.md)."]);
+  assert.deepEqual(guide.moved, [{ from: "docs/b.md", blocks: 2 }]);
+});
+
+test("docs tidy turns each finding into a short deterministic order for the user's agent", (t) => {
+  const evidence = { doc_too_large: "120000 characters", doc_not_in_map: "docs/index.md", dead_link: "gone.md", duplicate_block: "docs/owner.md:7", log_in_state_doc: "git", missing_summary: "first block" };
+  for (const type of Object.keys(DOC_TIDY_RULES)) {
+    const order = tidyOrder({ type, path: "docs/state.md", line: 3, rule: DOC_TIDY_RULES[type], evidence: evidence[type], message: `${type} message` });
+    const lines = order.text.split("\n");
+    assert.ok(lines.length <= 15, `${type}: ${lines.length} lines`);
+    assert.equal(order.id, `${type}:docs/state.md:3`);
+    assert.match(order.text, /changes begin/);
+    assert.match(order.text, /Do not accept or reject anything/);
+    assert.equal(lines.at(-1), `Expected: ${order.expected}`);
+    if (order.skill) assert.ok(TIDY_SKILLS[order.skill].startsWith("---\nname: doc-"));
+  }
+  assert.deepEqual(tidyOrder({ type: "duplicate_block", path: "docs/b.md", line: 4, evidence: "docs/owner.md:7", message: "m", rule: "r" }).files, ["docs/b.md", "docs/owner.md"]);
+
+  const root = fixture(t);
+  fs.writeFileSync(path.join(root, "docs/index.md"), "# Docs\n\n- [a](a.md): first.\n");
+  fs.writeFileSync(path.join(root, "docs/a.md"), "# a\n\nSee [gone](gone.md).\n");
+  const report = documentationTidyReport(root);
+  assert.deepEqual(report.findings.map((finding) => finding.order.id), ["dead_link:docs/a.md:3", "doc_not_in_map:docs/b.md:1"]);
+  const order = documentationTidyReport(root, { order: "dead_link:docs/a.md:3" });
+  assert.match(order.text, /In docs\/a\.md line 3, point gone\.md to the existing file or heading/);
+  assert.deepEqual(documentationTidyReport(root, { path: "docs/b.md" }).findings.map((finding) => finding.type), ["doc_not_in_map"]);
+  assert.throws(() => documentationTidyReport(root, { order: "dead_link:docs/a.md:9" }), /Run docs tidy again/);
+  assert.equal(documentationTidyReport(root, { skill: "merge" }).markdown, TIDY_SKILLS.merge);
+  assert.throws(() => documentationTidyReport(root, { skill: "rewrite" }), /Unknown tidy skill/);
+  const cli = execFileSync(process.execPath, [path.resolve("bin/context-room.mjs"), "docs", "tidy", "--root", root, "--order", "dead_link:docs/a.md:3", "--format=human"], { encoding: "utf8" });
+  assert.equal(cli, order.text + "\n");
 });
 
 test("partial settings keep the Hub and unknown legacy configuration fields", (t) => {

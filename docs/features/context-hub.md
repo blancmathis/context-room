@@ -52,7 +52,7 @@ Several Shared repositories can coexist. Repository identity remains part of pro
 
 ## Selection
 
-Selecting a local location immediately changes project-specific Explorer, the Review Queue project filter, Settings, Startup environment, effective-context queries, and actions. Background refresh cannot delay the visible selection; if the exact project cannot be opened, Context Room restores the previous selection and URL.
+Selecting a local location immediately changes project-specific Explorer, Settings, Startup environment, effective-context queries, and actions. Background refresh cannot delay the visible selection; if the exact project cannot be opened, Context Room restores the previous selection and URL.
 
 Selecting a Shared-only project exposes accepted Shared content but no local project Settings.
 
@@ -85,6 +85,17 @@ and refreshes never reorder the list. The header shows local coverage, for examp
 `1/7 local inspected`.
 
 ⌘K (Ctrl+K) opens the project picker to go to a project: type, then press Enter.
+
+The active project and the Review Queue filter are separate scopes. Opening a
+project, in Explorer, with ⌘K or with Back and Forward, does not change the
+filter. Only To review, the queue's Project filter, and opening a review set it.
+A link that names a project (`?project=`) filters the queue to that project once;
+a reload keeps the filter the tab had.
+
+When the reviews of a project are fully known, the header also says what changed
+since this browser last left Context Room: new, updated, and no longer pending
+reviews, by project. Local reviews have no date, so the comparison uses each
+review's identity and revision, stored in the browser only.
 
 ## Recovery and unavailable state
 

@@ -716,6 +716,21 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 	    .context-engine-summary { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 10px; border-bottom: 1px solid var(--line); }
 	    .context-engine-summary span { padding: 4px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 9px; }
 	    .context-engine-summary [data-state="fresh"] { border-color: color-mix(in srgb, var(--good) 34%, var(--line)); color: var(--good-fg); }
+	    .context-cost { display: grid; gap: 10px; padding: 0 0 12px; border-bottom: 1px solid var(--line); }
+	    .context-cost-agent { margin: 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+	    .context-cost-agent strong { color: var(--text); }
+	    .context-cost-parts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+	    .context-cost-part { display: grid; gap: 2px; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+	    .context-cost-part span, .context-cost-part small, .context-cost-method { color: var(--muted); font-size: 10px; }
+	    .context-cost-part strong { font-size: 15px; }
+	    .context-cost-part small { overflow-wrap: anywhere; }
+	    .context-cost-limits { display: grid; gap: 6px; }
+	    .context-cost-limit { display: grid; grid-template-columns: minmax(0, 1fr) minmax(80px, 160px) auto; align-items: center; gap: 8px; font-size: 10px; }
+	    .context-cost-limit span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	    .context-cost-limit meter { width: 100%; }
+	    .context-cost-method { margin: 0; }
+	    .context-cost-entry { color: var(--text-soft); font-size: 10px; }
+	    @media (max-width: 639px) { .context-cost-parts { grid-template-columns: 1fr; } }
 	    .context-engine-resource-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 2px; }
 	    .context-engine-resource-actions button { min-height: 27px; padding: 4px 7px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--text-soft); cursor: pointer; font-size: 9px; }
 	    .context-engine-resource-actions button:hover { border-color: color-mix(in srgb, var(--accent) 38%, var(--line)); background: var(--surface-card-hover); color: var(--text); }
@@ -3558,6 +3573,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
                 <div>
                   <h2 id="contextHubProjectsHeading">Projects</h2>
                   <div id="contextHubProjectCoverage" class="muted"></div>
+                  <div id="contextHubSinceLastVisit" class="muted" hidden></div>
                 </div>
                 <button class="quiet-button" type="button" data-context-hub-project-goto title="Go to project (⌘K)">Go to… <kbd>⌘K</kbd></button>
               </header>
@@ -4011,6 +4027,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 		state.globalInspectionData = new Map();
 		state.globalInspectionLoading = new Set();
 		state.globalInspectionErrors = new Map();
+		state.globalInspectionRetries = new Map();
 		state.globalInspectionController = null;
 		state.contextAttentionItems = [];
 		state.contextAttentionProjectKey = "";
@@ -6344,8 +6361,7 @@ async function openGlobalProjectExplorer(project) {
   state.projectSwitchMetrics = { projectKey: project.projectKey, startedAt: performance.now() };
   state.globalExplorerProjectKey = project.projectKey;
   state.activeProjectLocationId = nextLocationId;
-  state.sharedProposalProject = project.projectKey;
-  state.contextHubSource = "all";
+  // The review filter is its own scope: opening a project does not narrow the queue.
   state.contextHubSelection = "";
   if (switchingSelection) {
     state.globalProjectSearch = "";
@@ -6894,6 +6910,11 @@ function renderContextHubHomeProjects() {
   const { inspected, total } = contextHubLocalCoverage(projects);
   coverage.textContent = projects.length + " project" + (projects.length === 1 ? "" : "s")
     + (total ? " · " + inspected + "/" + total + " local inspected" : "");
+  const sinceLastVisit = el("contextHubSinceLastVisit");
+  if (sinceLastVisit) {
+    sinceLastVisit.textContent = contextHubSinceLastVisitText();
+    sinceLastVisit.hidden = !sinceLastVisit.textContent;
+  }
   if (!projects.length) {
     list.innerHTML = '<div class="global-project-explorer-empty">No project registered yet. Add a folder from Manage projects.</div>';
     return;
@@ -6912,6 +6933,86 @@ function renderContextHubHomeProjects() {
   }).join("");
 }
 
+// Since your last visit: compare pending review identities with the ones stored when
+// this browser last left Context Room. Local reviews carry no date, so identity and
+// revision decide what is new, updated or no longer pending. Only projects whose
+// reviews are fully known, then and now, are compared.
+const CONTEXT_HUB_LAST_VISIT_KEY = "context-room:last-visit:v2";
+const CONTEXT_HUB_LAST_VISIT_LIMIT = 5000;
+let contextHubLastVisit;
+
+function contextHubReviewsCoveredProjects() {
+  if (!state.contextHub || !state.contextHubReviewQueueReady) return new Set();
+  const sharedCovered = !(state.contextHub.repositoryErrors || []).length
+    && (state.contextHub.sharedRepositories || []).every((repository) => repository.status?.online === true);
+  return new Set((state.contextHub.projects || [])
+    .filter((project) => contextHubLocalReviewsConfirmed(project) && (sharedCovered || (!project.shared && project.mode !== "shared")))
+    .map((project) => project.projectKey));
+}
+
+function contextHubPendingReviewIdentities(covered) {
+  return contextHubHomeReviewItems("", "all", { ignoreUserFilters: true })
+    .map((item) => [item.id, item.revisionToken || item.head || "", contextHubProjectForItem(item)?.projectKey || ""])
+    .filter(([, , projectKey]) => covered.has(projectKey));
+}
+
+function readContextHubLastVisit() {
+  if (contextHubLastVisit !== undefined) return contextHubLastVisit;
+  contextHubLastVisit = null;
+  try {
+    const raw = JSON.parse(window.localStorage?.getItem(CONTEXT_HUB_LAST_VISIT_KEY) || "null");
+    if (raw && Number.isFinite(Date.parse(raw.at)) && Array.isArray(raw.reviews) && Array.isArray(raw.covered)) {
+      contextHubLastVisit = { at: raw.at, covered: new Set(raw.covered.map(String)), reviews: raw.reviews.filter(Array.isArray).map(([id, revision, projectKey]) => [String(id), String(revision || ""), String(projectKey || "")]) };
+    }
+  } catch {}
+  return contextHubLastVisit;
+}
+
+function saveContextHubLastVisit() {
+  if (!IS_GLOBAL_CONTEXT_ROOM || IS_HOSTED_HUB) return;
+  const covered = contextHubReviewsCoveredProjects();
+  if (!covered.size) return;
+  // A project not fully known now keeps what the previous visit saw.
+  const previous = readContextHubLastVisit();
+  const kept = previous ? [...previous.covered].filter((projectKey) => !covered.has(projectKey)) : [];
+  const reviews = contextHubPendingReviewIdentities(covered)
+    .concat(previous ? previous.reviews.filter(([, , projectKey]) => kept.includes(projectKey)) : []);
+  if (reviews.length > CONTEXT_HUB_LAST_VISIT_LIMIT) return;
+  try {
+    window.localStorage?.setItem(CONTEXT_HUB_LAST_VISIT_KEY, JSON.stringify({ at: new Date().toISOString(), covered: [...covered, ...kept], reviews }));
+  } catch {}
+}
+
+function contextHubSinceLastVisitText() {
+  const visit = readContextHubLastVisit();
+  if (!visit) return "";
+  const now = contextHubReviewsCoveredProjects();
+  const covered = new Set([...now].filter((projectKey) => visit.covered.has(projectKey)));
+  if (!covered.size) return "";
+  const before = new Map(visit.reviews.filter(([, , projectKey]) => covered.has(projectKey)).map(([id, revision]) => [id, revision]));
+  const current = contextHubPendingReviewIdentities(covered);
+  const currentIds = new Set(current.map(([id]) => id));
+  const titles = new Map((state.contextHub?.projects || []).map((project) => [project.projectKey, project.title || project.id]));
+  const changed = new Map();
+  let added = 0, updated = 0;
+  for (const [id, revision, projectKey] of current) {
+    if (!before.has(id)) added += 1;
+    else if (before.get(id) !== revision) updated += 1;
+    else continue;
+    const title = titles.get(projectKey) || projectKey;
+    changed.set(title, (changed.get(title) || 0) + 1);
+  }
+  const settled = [...before.keys()].filter((id) => !currentIds.has(id)).length;
+  if (!added && !updated && !settled) return "Since your last visit: nothing new to review.";
+  const parts = [];
+  if (added) parts.push(added + " new review" + (added === 1 ? "" : "s"));
+  if (updated) parts.push(updated + " updated");
+  if (settled) parts.push(settled + " no longer pending");
+  const where = [...changed].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, 3).map(([title, count]) => title + " " + count).join(", ");
+  return "Since your last visit: " + parts.join(" · ") + (where ? " (" + where + (changed.size > 3 ? ", …" : "") + ")" : "") + ".";
+}
+
 async function openContextHubProjectDestination(projectKey, destination) {
   const project = (state.contextHub?.projects || []).find((item) => item.projectKey === projectKey);
   if (!project) return;
@@ -6921,6 +7022,9 @@ async function openContextHubProjectDestination(projectKey, destination) {
   // On drawer viewports, opening a project shows the Explorer over the page; close it for page destinations.
   if (destination !== "documents" && !isExplorerDesktopViewport() && !isExplorerCollapsed()) setExplorerCollapsedFromUser(true);
   if (destination === "review") {
+    state.sharedProposalProject = projectKey;
+    state.contextHubSource = "all";
+    renderContextRoomGlobalReviewQueue();
     const heading = el("reviewQueueHeading");
     heading?.scrollIntoView({ block: "start", behavior: "smooth" });
     window.requestAnimationFrame(() => heading?.focus({ preventScroll: true }));
@@ -9792,7 +9896,6 @@ async function applyWorkspaceUrlState({ reason = "history", force = false } = {}
     const requestedLocationId = (requestedProject?.worktrees || []).find((worktree) => worktree.id === target.projectId)?.id
       || requestedProject?.id
       || target.projectId;
-    if (IS_GLOBAL_CONTEXT_ROOM) state.sharedProposalProject = requestedProject?.projectKey || "";
     const projectChanged = IS_GLOBAL_CONTEXT_ROOM && requestedLocationId !== state.activeProjectLocationId;
     state.explorerDocumentView = target.explorerDocumentView;
     if (projectChanged) {
@@ -12350,6 +12453,39 @@ function configureHostedSharedDocumentAction() {
   if (projectButton.parentElement !== header) header.appendChild(projectButton);
 }
 
+// The Review Queue filter is its own scope. An entry link (?project=) shows that
+// project's reviews once; a reload restores the filter this tab left; in-app
+// navigation never changes it.
+const CONTEXT_HUB_REVIEW_SCOPE_KEY = "context-room:review-scope:";
+let contextHubEntryReviewScopeApplied = false;
+
+function saveContextHubReviewScope() {
+  if (!IS_GLOBAL_CONTEXT_ROOM || IS_HOSTED_HUB) return;
+  try {
+    window.sessionStorage?.setItem(CONTEXT_HUB_REVIEW_SCOPE_KEY + state.workspaceId, JSON.stringify({ project: state.sharedProposalProject, source: state.contextHubSource }));
+  } catch {}
+}
+
+function applyContextHubEntryReviewScope(contextHub, requestedProject, requestedProjectId) {
+  if (contextHubEntryReviewScopeApplied || !IS_GLOBAL_CONTEXT_ROOM || IS_HOSTED_HUB) return;
+  let reloaded = false;
+  try { reloaded = performance.getEntriesByType("navigation")[0]?.type === "reload"; } catch {}
+  let saved = null;
+  if (reloaded) {
+    try { saved = JSON.parse(window.sessionStorage?.getItem(CONTEXT_HUB_REVIEW_SCOPE_KEY + state.workspaceId) || "null"); } catch {}
+  }
+  if (saved && typeof saved.project === "string") {
+    contextHubEntryReviewScopeApplied = true;
+    const known = !saved.project || (contextHub?.projects || []).some((project) => project.projectKey === saved.project);
+    state.sharedProposalProject = known ? saved.project : "";
+    if (["all", "local", "shared"].includes(saved.source)) state.contextHubSource = saved.source;
+    return;
+  }
+  if (requestedProjectId && !requestedProject) return;
+  contextHubEntryReviewScopeApplied = true;
+  if (requestedProject) state.sharedProposalProject = requestedProject.projectKey;
+}
+
 function applyContextHubRequestedProject(contextHub) {
   const roomQuery = new URLSearchParams(window.location.search);
   const requestedProjectId = roomQuery.get("project") || "";
@@ -12374,10 +12510,10 @@ function applyContextHubRequestedProject(contextHub) {
     setStatus(state.contextHubRequestedProjectNotice);
     return null;
   }
+  applyContextHubEntryReviewScope(contextHub, requestedProject, requestedProjectId);
   if (!requestedProject) return null;
   const requestedLocationId = (requestedProject.worktrees || []).find((worktree) => worktree.id === requestedProjectId)?.id || requestedProject.id;
   state.activeProjectLocationId = requestedLocationId;
-  state.sharedProposalProject = requestedProject.projectKey;
   state.globalExplorerProjectKey = requestedProject.projectKey;
   state.globalExplorerMode = "project";
   state.globalProjectWorktreeIds.set(requestedProject.projectKey, requestedLocationId);
@@ -12996,6 +13132,8 @@ function syncWorkspaceBeforeUnloadGuard() {
 
 function handleWorkspacePageHide(event) {
   persistNavigationState({ syncUrl: false });
+  saveContextHubLastVisit();
+  saveContextHubReviewScope();
   stopWorkspaceRuntime({ suspended: event?.persisted === true });
 }
 
@@ -14536,7 +14674,11 @@ function renderGlobalInspectionDisclosure(view, title, description, project, dat
     else if (error && !data) body = '<div class="global-project-inspection-error">' + escapeHtml(error) + '</div>';
     else if (data) body = view === "health" ? renderGlobalInspectionHealth(data) : renderGlobalInspectionStartup(data);
     body = '<div class="global-project-inspection-disclosure-body">'
-      + '<div class="global-project-inspection-detail-actions"><button class="global-project-inspection-refresh" type="button" data-global-inspection-refresh>Refresh</button></div>'
+      + '<div class="global-project-inspection-detail-actions">'
+        + (view === "startup" ? '<label class="context-engine-provider">Agent <select data-global-inspection-provider aria-label="Agent whose context is shown">'
+          + Object.entries(AGENT_PROVIDER_LABELS).map(([id, label]) => '<option value="' + id + '"' + (id === agentContextProvider() ? ' selected' : '') + '>' + label + '</option>').join("")
+          + '</select></label>' : '')
+        + '<button class="global-project-inspection-refresh" type="button" data-global-inspection-refresh>Refresh</button></div>'
       + body
       + '</div>';
   }
@@ -14652,14 +14794,71 @@ function pathIsAbsoluteUi(value = "") {
   return String(value).startsWith("/") || /^[A-Za-z]:[\\/]/.test(String(value));
 }
 
-function contextEngineResourceRow(entry, { actions = true } = {}) {
+const AGENT_PROVIDER_LABELS = Object.freeze({ codex: "Codex", "claude-code": "Claude Code", opencode: "OpenCode" });
+const AGENT_PROVIDER_STORAGE_KEY = "context-room:agent-provider";
+const CONTEXT_UNKNOWN_LABELS = Object.freeze({ "hook-output": "hook output", "mcp-tools": "MCP tools", memory: "memory" });
+
+function agentContextProvider() {
+  try {
+    const stored = window.localStorage?.getItem(AGENT_PROVIDER_STORAGE_KEY) || "";
+    return Object.hasOwn(AGENT_PROVIDER_LABELS, stored) ? stored : "codex";
+  } catch {
+    return "codex";
+  }
+}
+
+function setAgentContextProvider(provider) {
+  if (!Object.hasOwn(AGENT_PROVIDER_LABELS, provider)) return;
+  try { window.localStorage?.setItem(AGENT_PROVIDER_STORAGE_KEY, provider); } catch {}
+}
+
+function formatTokenEstimate(value) {
+  if (value == null) return "—";
+  return "≈ " + (value >= 1000 ? (Math.round(value / 100) / 10) + "k" : String(value));
+}
+
+function contextCostEntryLabel(cost) {
+  if (cost?.mode === "startup") return "At startup " + formatTokenEstimate(cost.startupTokens) + " tokens" + (cost.note ? " · " + cost.note : "");
+  if (cost?.mode === "description") return "Description " + formatTokenEstimate(cost.startupTokens) + " tokens at startup · body " + formatTokenEstimate(cost.onDemandTokens) + " when used";
+  if (cost?.mode === "on-demand") return "On demand " + formatTokenEstimate(cost.onDemandTokens) + " tokens";
+  if (cost?.mode === "unknown") return "Adds context of unknown size";
+  return "";
+}
+
+// What the agent sees: three parts, then gauges against hard limits only.
+function renderContextCost(effective) {
+  const cost = effective?.cost;
+  if (!cost) return "";
+  const coordinate = effective.coordinate || {};
+  const provider = AGENT_PROVIDER_LABELS[coordinate.provider] || coordinate.provider || "Agent";
+  const part = (label, value, detail) => '<div class="context-cost-part"><span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(value) + '</strong><small>' + escapeHtml(detail) + '</small></div>';
+  const counted = (count, noun) => count + " " + noun + (count === 1 ? "" : "s");
+  const unmeasured = (count) => count ? " · " + count + " not readable" : "";
+  const unknownKinds = [...new Set((cost.unknown || []).map((item) => CONTEXT_UNKNOWN_LABELS[item.kind] || item.kind))];
+  const parts = part("At startup", cost.startup.resources ? formatTokenEstimate(cost.startup.tokens) + " tokens" : "0", counted(cost.startup.resources, "resource") + unmeasured(cost.startup.unmeasured))
+    + part("On demand", String(cost.onDemand.resources), cost.onDemand.resources ? formatTokenEstimate(cost.onDemand.tokens) + " tokens if all are read" + unmeasured(cost.onDemand.unmeasured) : "Nothing loaded on demand")
+    + part("Unknown", unknownKinds.length ? "—" : "0", unknownKinds.length ? unknownKinds.join(" · ") + ": not measured" : "Nothing unknown");
+  const limits = (cost.limits || []).map((limit) => '<div class="context-cost-limit" title="' + escapeHtml(limit.locator || limit.label) + '"><span>' + escapeHtml(limit.label) + '</span>'
+    + '<meter min="0" max="' + limit.max + '" low="' + Math.round(limit.max * 0.8) + '" high="' + limit.max + '" optimum="0" value="' + Math.min(limit.used, limit.max) + '"></meter>'
+    + '<small>' + limit.used.toLocaleString("en-US") + " / " + limit.max.toLocaleString("en-US") + " " + escapeHtml(limit.unit) + '</small></div>').join("");
+  return '<section class="context-cost" aria-label="What the agent sees">'
+    + '<p class="context-cost-agent"><strong>' + escapeHtml(provider) + '</strong> · folder <code>' + escapeHtml(coordinate.folder || ".") + '</code> · coverage ' + escapeHtml(effective.coverage?.state || "unknown") + '</p>'
+    + '<div class="context-cost-parts">' + parts + '</div>'
+    + (limits ? '<div class="context-cost-limits" aria-label="Hard limits">' + limits + '</div>' : '')
+    + '<p class="context-cost-method">' + escapeHtml(cost.method || "") + '</p>'
+    + '</section>';
+}
+
+function contextEngineResourceRow(entry, { actions = true, cost = null } = {}) {
   const resource = entry.resource || {};
   const application = entry.application || {};
   const status = application.status || "inactive";
   const canOpen = contextEngineEntryCanOpen(entry);
+  const costLabel = status === "active" ? contextCostEntryLabel(cost?.[resource.id]) : "";
   return '<div class="global-project-inspection-row" data-context-resource="' + escapeHtml(resource.id || "") + '">'
     + '<div class="global-project-inspection-row-head"><strong>' + escapeHtml(resource.metadata?.name || resource.locator || resource.id || "Context resource") + '</strong><span class="context-engine-status" data-status="' + escapeHtml(status) + '">' + escapeHtml(status) + '</span></div>'
     + '<span>' + escapeHtml([resource.kind, application.scope, resource.source].filter(Boolean).join(" · ")) + '</span>'
+    + (costLabel ? '<span class="context-cost-entry">' + escapeHtml(costLabel) + '</span>' : '')
     + (application.reason ? '<p>' + escapeHtml(application.reason) + '</p>' : '')
     + (resource.locator ? '<code>' + escapeHtml(resource.locator) + '</code>' : '')
     + (actions
@@ -14680,7 +14879,7 @@ function renderEffectiveContextGroup(title, entries = [], emptyCopy = "", option
 }
 
 function renderEffectiveContextBody(effective, { embedded = false } = {}) {
-  const activeCount = ["instructions", "skills", "hooks", "providerConfigs", "documents"].reduce((sum, key) => sum + Number(effective?.[key]?.length || 0), 0);
+  const activeCount = ["instructions", "skills", "hooks", "providerConfigs", "mcpServers", "documents"].reduce((sum, key) => sum + Number(effective?.[key]?.length || 0), 0);
   const inactive = effective?.inactive || [];
   const inactiveCounts = inactive.reduce((counts, entry) => {
     const status = entry.application?.status || "inactive";
@@ -14695,15 +14894,17 @@ function renderEffectiveContextBody(effective, { embedded = false } = {}) {
     + '<span>' + Number(effective?.proposals?.length || 0) + ' proposal metadata</span>'
     + '<span>' + Number(effective?.healthIssues?.length || 0) + ' health issues</span>'
     + '</div>';
+  const options = { actions: !embedded, cost: effective?.cost?.entries || null };
   const groups = '<div class="global-project-inspection-groups">'
-    + renderEffectiveContextGroup("Agent instructions", effective?.instructions || [], "No proven instruction applies to this folder.", { actions: !embedded })
-    + renderEffectiveContextGroup("Skills", effective?.skills || [], "No proven local or accepted shared skill applies.", { actions: !embedded })
-    + renderEffectiveContextGroup("Hooks and automation", effective?.hooks || [], "No proven hook applies. Uncertain discoveries appear below.", { actions: !embedded })
-    + renderEffectiveContextGroup("Provider configuration", effective?.providerConfigs || [], "No recognized provider configuration applies.", { actions: !embedded })
-    + renderEffectiveContextGroup("Accepted documents", effective?.documents || [], "No accepted current document is linked to this coordinate.", { actions: !embedded })
-    + renderEffectiveContextGroup(inactiveSummary ? "Inactive resources · " + inactiveSummary : "Inactive resources", inactive, "No inactive resources were discovered.", { actions: !embedded, open: false })
+    + renderEffectiveContextGroup("Agent instructions", effective?.instructions || [], "No proven instruction applies to this folder.", options)
+    + renderEffectiveContextGroup("Skills", effective?.skills || [], "No proven local or accepted shared skill applies.", options)
+    + renderEffectiveContextGroup("Hooks and automation", effective?.hooks || [], "No proven hook applies. Uncertain discoveries appear below.", options)
+    + renderEffectiveContextGroup("Provider configuration", effective?.providerConfigs || [], "No recognized provider configuration applies.", options)
+    + (effective?.mcpServers?.length ? renderEffectiveContextGroup("MCP servers", effective.mcpServers, "", options) : "")
+    + renderEffectiveContextGroup("Accepted documents", effective?.documents || [], "No accepted current document is linked to this coordinate.", options)
+    + renderEffectiveContextGroup(inactiveSummary ? "Inactive resources · " + inactiveSummary : "Inactive resources", inactive, "No inactive resources were discovered.", { ...options, open: false })
     + '</div>';
-  return summary + groups + (embedded ? "" : '<div id="contextEngineDetail" class="context-engine-detail"></div>');
+  return renderContextCost(effective) + summary + groups + (embedded ? "" : '<div id="contextEngineDetail" class="context-engine-detail"></div>');
 }
 
 function renderContextEngineInspection() {
@@ -14816,7 +15017,7 @@ async function openContextEngineInspection(target = {}) {
     projectId: target.projectId || selectedWorktree?.id || "",
     locationId: target.locationId || selectedWorktree?.id || "",
     folder: normalizeUiPath(target.folder || ".") || ".",
-    provider: target.provider || "codex",
+    provider: target.provider || agentContextProvider(),
     title: target.title || selectedProject?.title || "Current project",
     root: target.root || selectedWorktree?.root || state.root || "",
   };
@@ -14857,6 +15058,10 @@ function wireGlobalProjectInspection(project) {
     openGlobalProjectInspection(view, project);
   }));
   holder?.querySelector("[data-global-inspection-refresh]")?.addEventListener("click", () => loadGlobalProjectInspection(project, { force: true }).catch((error) => setStatus(error.message)));
+  holder?.querySelector("[data-global-inspection-provider]")?.addEventListener("change", (event) => {
+    setAgentContextProvider(event.target.value);
+    loadGlobalProjectInspection(project).catch((error) => setStatus(error.message));
+  });
   holder?.querySelectorAll("[data-health-filter]").forEach((select) => select.addEventListener("change", () => {
     const field = select.dataset.healthFilter;
     if (field === "status") state.globalInspectionHealthStatus = select.value;
@@ -14928,14 +15133,23 @@ async function loadGlobalProjectInspection(project, { force = false } = {}) {
   const worktree = globalProjectSelectedWorktree(project);
   if (!worktree?.id || !worktree.root) return null;
   const cacheKey = globalProjectExplorerCacheKey(project);
-  if (!force && state.globalInspectionData.has(cacheKey)) return state.globalInspectionData.get(cacheKey);
+  const provider = agentContextProvider();
+  if (!force && state.globalInspectionData.get(cacheKey)?.agentProvider === provider) return state.globalInspectionData.get(cacheKey);
   if (state.globalInspectionLoading.has(cacheKey)) return null;
   state.globalInspectionLoading.add(cacheKey);
   state.globalInspectionErrors.delete(cacheKey);
   renderContextHealth();
   try {
-    const suffix = force ? "&fresh=1" : "";
-    const data = await api("/api/context-hub/project-inspection?projectId=" + encodeURIComponent(worktree.id) + suffix, { signal: state.globalInspectionController?.signal });
+    const suffix = (force ? "&fresh=1" : "") + "&provider=" + encodeURIComponent(provider);
+    const data = { ...await api("/api/context-hub/project-inspection?projectId=" + encodeURIComponent(worktree.id) + suffix, { signal: state.globalInspectionController?.signal }), agentProvider: provider };
+    if (data.refreshDeferred) {
+      const attempts = (state.globalInspectionRetries.get(cacheKey) || 0) + 1;
+      state.globalInspectionRetries.set(cacheKey, attempts);
+      if (attempts > 10) throw new Error("Project checks are still busy. Try Refresh in a moment.");
+      window.setTimeout(() => loadGlobalProjectInspection(project, { force }).catch((error) => setStatus(error.message)), data.refreshDeferred.retryAfterMs || 1_000);
+      return null;
+    }
+    state.globalInspectionRetries.delete(cacheKey);
     state.globalInspectionData.set(cacheKey, data);
     return data;
   } catch (error) {
@@ -25252,6 +25466,7 @@ document.addEventListener("visibilitychange", () => {
   window.clearTimeout(state.workspaceVisibilityTimer);
   state.workspaceVisibilityTimer = null;
   if (document.visibilityState !== "visible") {
+    saveContextHubLastVisit();
     if (state.workspaceRuntimeStopped || state.workspaceUnloadPending) return;
     state.workspaceVisibilityTimer = window.setTimeout(() => {
       state.workspaceVisibilityTimer = null;

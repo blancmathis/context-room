@@ -1,4 +1,5 @@
 import { analyzeContextLosses } from "./context_losses.mjs";
+import { contextCost } from "./context_cost.mjs";
 import "./test_homes.mjs";
 import fs from "node:fs";
 import os from "node:os";
@@ -851,7 +852,7 @@ export function buildCliContextGraph(target, options = {}) {
 export function buildCliContextEffective(target, options = {}) {
   try {
     const resolved = resolveEffectiveContext(buildCliContextGraph(target, options));
-    const effective = { ...resolved, losses: analyzeContextLosses(resolved, { root: target.root }) };
+    const effective = { ...resolved, losses: analyzeContextLosses(resolved, { root: target.root }), cost: contextCost(resolved, { root: target.root }) };
     if (options.includeGraph) return effective;
     const { graph: _graph, ...compact } = effective;
     return compact;
@@ -2772,6 +2773,20 @@ export function renderAgentCliHuman(command, payload) {
     ? `${data.proposal.changed ? data.proposal.dryRun ? "Would update" : `Proposed ${data.proposal.proposalId} for` : "Already current:"} ${data.proposal.target} (${data.documents} documents, ≈${data.estimatedTokens} tokens)\n`
     : String(data.markdown || "");
   if (command === "review.list") return `${data.queue.length} file review${data.queue.length === 1 ? "" : "s"} awaiting a human decision\n` + data.queue.map((item) => `- ${item.reason} ${item.path}`).join("\n") + `\n\n${HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction}\n`;
+  if (command === "docs.drift") return (data.documents || []).map((item) => `${item.status === "unknown" ? "—" : item.status === "changed" ? "changed" : "ok"}  ${item.path}: ${item.message}`).join("\n") + "\n";
+  if (command === "context.usage") {
+    const row = (item) => `  ${item.uses}× ${item.name || item.path}`;
+    const lines = [`Claude Code, last ${data.window.days} days · coverage ${data.coverage.complete ? "complete" : `partial (${data.coverage.reasons.join(", ")})`}`,
+      "Skills", ...(data.skills.length ? data.skills.map(row) : ["  —"]), "Documents", ...(data.documents.length ? data.documents.map(row) : ["  —"]),
+      ...(data.loadedAtStartup.length ? ["Loaded at startup", ...data.loadedAtStartup.map((name) => `  ${name}`)] : [])];
+    if (data.notUsed) lines.push("Not used", ...[...data.notUsed.skills, ...data.notUsed.documents].map((name) => `  ${name}`));
+    return lines.join("\n") + "\n";
+  }
+  if (command === "docs.tidy") {
+    if (data.markdown) return data.markdown;
+    if (data.text) return data.text + "\n";
+    return data.findings.length ? data.findings.map((finding) => finding.order.text).join("\n\n") + "\n" : "No documentation finding.\n";
+  }
   if (command === "events") return (data.events || []).map((event) => `${event.occurredAt} ${event.type} ${event.resource?.path || event.resource?.proposal || ""}`.trim()).join("\n") + "\n";
   return JSON.stringify(data, null, 2) + "\n";
 }

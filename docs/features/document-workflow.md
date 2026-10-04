@@ -31,6 +31,10 @@ The CLI returns a generic reader token. Pass it through `--reader` to receive bo
 
 Context Room cannot hide physical files from programs reading the project directly. Its accepted-only guarantee applies to Context Room's normal documentation commands and projections.
 
+### Drift from code
+
+`docs drift [path]` checks each accepted Markdown or HTML document against the code it cites: links and `code` paths that exist in the project, documents excluded. The reference is the last first-parent commit at or before the acceptance. The answer counts the commits after it that touched a cited path, per path, and lists cited paths with uncommitted changes: "The cited code changed 14 times since you accepted this document." Without git or an acceptance date the status is `unknown`, never unchanged. It judges no text and calls no model.
+
 ## Local proposals
 
 `changes begin` creates a full directory tree of accepted, editable, watched documentation and returns its path and change handle. It excludes unknown pending content and read-only resources. The agent edits normally inside that directory. Content-addressed base objects are shared across proposals. On filesystems that support it, independent copy-on-write files avoid copying unchanged disk blocks; there is an ordinary copy fallback. Drafts never share writable hard links with originals.
@@ -47,6 +51,8 @@ undoing those unsaved edits. The connected owner tablet uses the same interface.
 The integrated editor bounds a proposal to 256 working files and 64 MiB and an
 opened text file to 16 MiB. Larger workspaces remain available to the CLI.
 
+The review of a local proposal starts with a block check for Markdown and text files. Each block (a heading, a fenced code block, or text between blank lines) gets a fingerprint before and after, across every file of the proposal. A block found again unchanged, in the same file or another, stays folded. The reviewer reads only removed blocks and new or rewritten blocks; nothing is lost silently. A matching fingerprint explains a move; it accepts nothing. Other formats are reviewed as whole versions.
+
 Accepting applies only the selected exact file delta. Saving a correction applies and accepts those corrected bytes. Rejecting an isolated file leaves its original unchanged. The remaining files retain their own pending decisions. The local proposal completes when all its files have decisions; it does not have an additional remote delivery step.
 
 Application checks the project identity, scope, exact base, file mode, paths and staged Git state where relevant. The exact reviewed mode is explicitly applied to the new file descriptor, independently of the process umask; a concurrent permission-only origin change still blocks application. A conflicting external edit blocks application. A journal precedes the filesystem change; replaced bytes remain recoverable. Publication does not overwrite a file created concurrently at the destination. An interrupted application either resumes idempotently or reports recovery required.
@@ -62,6 +68,10 @@ Each file still gets its own human decision. Accept every file of the move toget
 `docs map` prints one line per accepted Markdown or HTML document: title, path, and the declared summary or first sentence. Lines are grouped as Reference, Plans, and History by the truth model. Unreviewed documents are counted, never listed. The output is deterministic.
 
 `docs map --propose` writes the map between the `context-room:docs-map` markers of `AGENTS.md` (or `--file`), as one submitted local proposal built on the accepted version. Text outside the markers is unchanged. When the block is already current, no proposal is created.
+
+### Tidy orders
+
+`docs tidy [path]` lists the documentation findings that `doctor` reports (too large, outside the map, dead link, duplicated block, log in a state document, no summary). Each finding carries one deterministic order of at most 15 lines: the finding, its rule, the files, the steps and the expected result. The steps always go through `changes begin` and `changes submit`, so the result arrives in the Review Queue; the agent never decides a review. `--order <id>` prints one order. `--skill split|merge|archive` prints a gardening method in skill format; a log moves to `docs/records/journal/YYYY-MM.md`, which is history. Context Room calls no model: the user's own agent does the work.
 
 ## Direct changes
 
