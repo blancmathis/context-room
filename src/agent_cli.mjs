@@ -24,6 +24,7 @@ import {
   readGlobalContextRoomPreferences,
   writeGlobalContextRoomPreferences,
   submitLocalDocumentationProposal,
+  localProposalDocumentChecks,
   watchStateForPath,
   writeAgentCommand,
   writeMemoryWebappSettings,
@@ -2250,6 +2251,7 @@ export function publishDocumentationChange(changeId, { summary = "", description
       proposalId: submitted.id,
       revision: submitted.submittedRevision,
       localReviews: submitted.changes.map((item) => ({ path: item.path, status: item.kind })),
+      documentation: { findings: localProposalDocumentChecks(handle.sourceRoot, submitted.id) },
       humanOwned: humanReviewOwnershipText("Each resulting file review remains pending until a human accepts or rejects it."),
       humanDecisionPolicy: HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY,
     };

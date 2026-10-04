@@ -122,6 +122,7 @@ import {
 } from "../src/documentation.mjs";
 import { recordDocumentationRead } from "../src/documentation_readers.mjs";
 import { COMPACT_SEARCH_RESULT, CONTEXT_BUNDLE_TRIMMERS, fitToTokenBudget } from "../src/agent_budget.mjs";
+import { preReviewDocumentChecks } from "../src/doc_tidy.mjs";
 import {
   appendAgentAnnotation,
   buildContextRoomDoctorReport,
@@ -2176,6 +2177,13 @@ if (command === "guard") {
       ? `Context Room guard blocked this ${operationLabel}: watched documentation changes need human review:`
       : "Context Room guard found watched documentation changes that need human review:");
     for (const item of report.queue) write(`- ${item.gitStatus.trim() || "changed"} ${item.path}`);
+  }
+  const documentChecks = preReviewDocumentChecks({ root, docs: report.queue
+    .filter((item) => /\.md$/i.test(item.path) && fs.existsSync(path.join(root, item.path)))
+    .map((item) => ({ path: item.path, content: fs.readFileSync(path.join(root, item.path), "utf8") })) });
+  if (documentChecks.length) {
+    console.log("Documentation checks before review:");
+    for (const finding of documentChecks) console.log(`- ${finding.path}:${finding.line} ${finding.message}`);
   }
   if (blockingHealth.length) {
     console.error("High-impact Context Room health issues:");

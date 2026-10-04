@@ -269,3 +269,14 @@ export function analyzeDocumentTidiness({
     },
   };
 }
+
+export const PRE_REVIEW_CHECKS = Object.freeze(["doc_not_in_map", "dead_link", "doc_too_large"]);
+
+// Before review, only for the documents a change touches: outside the map, dead link,
+// over the size budget. Advisory: it never blocks or decides a review.
+export function preReviewDocumentChecks(options = {}) {
+  const changed = new Set((options.docs || []).map((doc) => normalizeRel(doc.path)));
+  if (!changed.size) return [];
+  const { findings } = analyzeDocumentTidiness({ ...options, history: () => null });
+  return findings.filter((finding) => PRE_REVIEW_CHECKS.includes(finding.type) && changed.has(finding.path));
+}

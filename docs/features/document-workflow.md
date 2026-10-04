@@ -73,6 +73,12 @@ Each file still gets its own human decision. Accept every file of the move toget
 
 `docs tidy [path]` lists the documentation findings that `doctor` reports (too large, outside the map, dead link, duplicated block, log in a state document, no summary). Each finding carries one deterministic order of at most 15 lines: the finding, its rule, the files, the steps and the expected result. The steps always go through `changes begin` and `changes submit`, so the result arrives in the Review Queue; the agent never decides a review. `--order <id>` prints one order. `--skill split|merge|archive` prints a gardening method in skill format; a log moves to `docs/records/journal/YYYY-MM.md`, which is history. Context Room calls no model: the user's own agent does the work.
 
+The block starts with six default rules for agents: read the map first; rewrite state and append logs to a monthly journal; one decision per file; list each new document in `docs/index.md`, under 100,000 characters, with a summary; Markdown by default, visual HTML through `docs visual-guide`; change documents only through `changes begin` / `changes submit`, and never decide a review. The project owner edits them like any other text in the proposal.
+
+### Checks before review
+
+`changes submit` returns `documentation.findings` for the Markdown files it changes: a document missing from `docs/index.md`, a dead relative link, a document over 100,000 characters. `guard` prints the same checks for pending direct changes. These checks are advisory: they never block submission or review, and they decide nothing.
+
 ## Direct changes
 
 Existing workflows may still edit original files outside a proposal. Context Room detects changed watched files and keeps their accepted baseline separately. Human rejection restores that baseline, removes a newly added file, or restores a deletion/rename as appropriate, while preserving rejected content for recovery. It blocks a stale decision or incompatible staged Git state before changing bytes.
