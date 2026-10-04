@@ -3552,6 +3552,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
                 <div>
                   <h2 id="contextHubProjectsHeading">Projects</h2>
                   <div id="contextHubProjectCoverage" class="muted"></div>
+                  <div id="contextHubSinceLastVisit" class="muted" hidden></div>
                 </div>
                 <button class="quiet-button" type="button" data-context-hub-project-goto title="Go to project (⌘K)">Go to… <kbd>⌘K</kbd></button>
               </header>
@@ -6329,8 +6330,7 @@ async function openGlobalProjectExplorer(project) {
   state.projectSwitchMetrics = { projectKey: project.projectKey, startedAt: performance.now() };
   state.globalExplorerProjectKey = project.projectKey;
   state.activeProjectLocationId = nextLocationId;
-  state.sharedProposalProject = project.projectKey;
-  state.contextHubSource = "all";
+  // The review filter is its own scope: opening a project does not narrow the queue.
   state.contextHubSelection = "";
   if (switchingSelection) {
     state.globalProjectSearch = "";
@@ -6879,6 +6879,11 @@ function renderContextHubHomeProjects() {
   const { inspected, total } = contextHubLocalCoverage(projects);
   coverage.textContent = projects.length + " project" + (projects.length === 1 ? "" : "s")
     + (total ? " · " + inspected + "/" + total + " local inspected" : "");
+  const sinceLastVisit = el("contextHubSinceLastVisit");
+  if (sinceLastVisit) {
+    sinceLastVisit.textContent = contextHubSinceLastVisitText();
+    sinceLastVisit.hidden = !sinceLastVisit.textContent;
+  }
   if (!projects.length) {
     list.innerHTML = '<div class="global-project-explorer-empty">No project registered yet. Add a folder from Manage projects.</div>';
     return;
@@ -6897,6 +6902,86 @@ function renderContextHubHomeProjects() {
   }).join("");
 }
 
+// Since your last visit: compare pending review identities with the ones stored when
+// this browser last left Context Room. Local reviews carry no date, so identity and
+// revision decide what is new, updated or no longer pending. Only projects whose
+// reviews are fully known, then and now, are compared.
+const CONTEXT_HUB_LAST_VISIT_KEY = "context-room:last-visit:v2";
+const CONTEXT_HUB_LAST_VISIT_LIMIT = 5000;
+let contextHubLastVisit;
+
+function contextHubReviewsCoveredProjects() {
+  if (!state.contextHub || !state.contextHubReviewQueueReady) return new Set();
+  const sharedCovered = !(state.contextHub.repositoryErrors || []).length
+    && (state.contextHub.sharedRepositories || []).every((repository) => repository.status?.online === true);
+  return new Set((state.contextHub.projects || [])
+    .filter((project) => contextHubLocalReviewsConfirmed(project) && (sharedCovered || (!project.shared && project.mode !== "shared")))
+    .map((project) => project.projectKey));
+}
+
+function contextHubPendingReviewIdentities(covered) {
+  return contextHubHomeReviewItems("", "all", { ignoreUserFilters: true })
+    .map((item) => [item.id, item.revisionToken || item.head || "", contextHubProjectForItem(item)?.projectKey || ""])
+    .filter(([, , projectKey]) => covered.has(projectKey));
+}
+
+function readContextHubLastVisit() {
+  if (contextHubLastVisit !== undefined) return contextHubLastVisit;
+  contextHubLastVisit = null;
+  try {
+    const raw = JSON.parse(window.localStorage?.getItem(CONTEXT_HUB_LAST_VISIT_KEY) || "null");
+    if (raw && Number.isFinite(Date.parse(raw.at)) && Array.isArray(raw.reviews) && Array.isArray(raw.covered)) {
+      contextHubLastVisit = { at: raw.at, covered: new Set(raw.covered.map(String)), reviews: raw.reviews.filter(Array.isArray).map(([id, revision, projectKey]) => [String(id), String(revision || ""), String(projectKey || "")]) };
+    }
+  } catch {}
+  return contextHubLastVisit;
+}
+
+function saveContextHubLastVisit() {
+  if (!IS_GLOBAL_CONTEXT_ROOM || IS_HOSTED_HUB) return;
+  const covered = contextHubReviewsCoveredProjects();
+  if (!covered.size) return;
+  // A project not fully known now keeps what the previous visit saw.
+  const previous = readContextHubLastVisit();
+  const kept = previous ? [...previous.covered].filter((projectKey) => !covered.has(projectKey)) : [];
+  const reviews = contextHubPendingReviewIdentities(covered)
+    .concat(previous ? previous.reviews.filter(([, , projectKey]) => kept.includes(projectKey)) : []);
+  if (reviews.length > CONTEXT_HUB_LAST_VISIT_LIMIT) return;
+  try {
+    window.localStorage?.setItem(CONTEXT_HUB_LAST_VISIT_KEY, JSON.stringify({ at: new Date().toISOString(), covered: [...covered, ...kept], reviews }));
+  } catch {}
+}
+
+function contextHubSinceLastVisitText() {
+  const visit = readContextHubLastVisit();
+  if (!visit) return "";
+  const now = contextHubReviewsCoveredProjects();
+  const covered = new Set([...now].filter((projectKey) => visit.covered.has(projectKey)));
+  if (!covered.size) return "";
+  const before = new Map(visit.reviews.filter(([, , projectKey]) => covered.has(projectKey)).map(([id, revision]) => [id, revision]));
+  const current = contextHubPendingReviewIdentities(covered);
+  const currentIds = new Set(current.map(([id]) => id));
+  const titles = new Map((state.contextHub?.projects || []).map((project) => [project.projectKey, project.title || project.id]));
+  const changed = new Map();
+  let added = 0, updated = 0;
+  for (const [id, revision, projectKey] of current) {
+    if (!before.has(id)) added += 1;
+    else if (before.get(id) !== revision) updated += 1;
+    else continue;
+    const title = titles.get(projectKey) || projectKey;
+    changed.set(title, (changed.get(title) || 0) + 1);
+  }
+  const settled = [...before.keys()].filter((id) => !currentIds.has(id)).length;
+  if (!added && !updated && !settled) return "Since your last visit: nothing new to review.";
+  const parts = [];
+  if (added) parts.push(added + " new review" + (added === 1 ? "" : "s"));
+  if (updated) parts.push(updated + " updated");
+  if (settled) parts.push(settled + " no longer pending");
+  const where = [...changed].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, 3).map(([title, count]) => title + " " + count).join(", ");
+  return "Since your last visit: " + parts.join(" · ") + (where ? " (" + where + (changed.size > 3 ? ", …" : "") + ")" : "") + ".";
+}
+
 async function openContextHubProjectDestination(projectKey, destination) {
   const project = (state.contextHub?.projects || []).find((item) => item.projectKey === projectKey);
   if (!project) return;
@@ -6906,6 +6991,9 @@ async function openContextHubProjectDestination(projectKey, destination) {
   // On drawer viewports, opening a project shows the Explorer over the page; close it for page destinations.
   if (destination !== "documents" && !isExplorerDesktopViewport() && !isExplorerCollapsed()) setExplorerCollapsedFromUser(true);
   if (destination === "review") {
+    state.sharedProposalProject = projectKey;
+    state.contextHubSource = "all";
+    renderContextRoomGlobalReviewQueue();
     const heading = el("reviewQueueHeading");
     heading?.scrollIntoView({ block: "start", behavior: "smooth" });
     window.requestAnimationFrame(() => heading?.focus({ preventScroll: true }));
@@ -9776,7 +9864,6 @@ async function applyWorkspaceUrlState({ reason = "history", force = false } = {}
     const requestedLocationId = (requestedProject?.worktrees || []).find((worktree) => worktree.id === target.projectId)?.id
       || requestedProject?.id
       || target.projectId;
-    if (IS_GLOBAL_CONTEXT_ROOM) state.sharedProposalProject = requestedProject?.projectKey || "";
     const projectChanged = IS_GLOBAL_CONTEXT_ROOM && requestedLocationId !== state.activeProjectLocationId;
     state.explorerDocumentView = target.explorerDocumentView;
     if (projectChanged) {
@@ -12334,6 +12421,39 @@ function configureHostedSharedDocumentAction() {
   if (projectButton.parentElement !== header) header.appendChild(projectButton);
 }
 
+// The Review Queue filter is its own scope. An entry link (?project=) shows that
+// project's reviews once; a reload restores the filter this tab left; in-app
+// navigation never changes it.
+const CONTEXT_HUB_REVIEW_SCOPE_KEY = "context-room:review-scope:";
+let contextHubEntryReviewScopeApplied = false;
+
+function saveContextHubReviewScope() {
+  if (!IS_GLOBAL_CONTEXT_ROOM || IS_HOSTED_HUB) return;
+  try {
+    window.sessionStorage?.setItem(CONTEXT_HUB_REVIEW_SCOPE_KEY + state.workspaceId, JSON.stringify({ project: state.sharedProposalProject, source: state.contextHubSource }));
+  } catch {}
+}
+
+function applyContextHubEntryReviewScope(contextHub, requestedProject, requestedProjectId) {
+  if (contextHubEntryReviewScopeApplied || !IS_GLOBAL_CONTEXT_ROOM || IS_HOSTED_HUB) return;
+  let reloaded = false;
+  try { reloaded = performance.getEntriesByType("navigation")[0]?.type === "reload"; } catch {}
+  let saved = null;
+  if (reloaded) {
+    try { saved = JSON.parse(window.sessionStorage?.getItem(CONTEXT_HUB_REVIEW_SCOPE_KEY + state.workspaceId) || "null"); } catch {}
+  }
+  if (saved && typeof saved.project === "string") {
+    contextHubEntryReviewScopeApplied = true;
+    const known = !saved.project || (contextHub?.projects || []).some((project) => project.projectKey === saved.project);
+    state.sharedProposalProject = known ? saved.project : "";
+    if (["all", "local", "shared"].includes(saved.source)) state.contextHubSource = saved.source;
+    return;
+  }
+  if (requestedProjectId && !requestedProject) return;
+  contextHubEntryReviewScopeApplied = true;
+  if (requestedProject) state.sharedProposalProject = requestedProject.projectKey;
+}
+
 function applyContextHubRequestedProject(contextHub) {
   const roomQuery = new URLSearchParams(window.location.search);
   const requestedProjectId = roomQuery.get("project") || "";
@@ -12358,10 +12478,10 @@ function applyContextHubRequestedProject(contextHub) {
     setStatus(state.contextHubRequestedProjectNotice);
     return null;
   }
+  applyContextHubEntryReviewScope(contextHub, requestedProject, requestedProjectId);
   if (!requestedProject) return null;
   const requestedLocationId = (requestedProject.worktrees || []).find((worktree) => worktree.id === requestedProjectId)?.id || requestedProject.id;
   state.activeProjectLocationId = requestedLocationId;
-  state.sharedProposalProject = requestedProject.projectKey;
   state.globalExplorerProjectKey = requestedProject.projectKey;
   state.globalExplorerMode = "project";
   state.globalProjectWorktreeIds.set(requestedProject.projectKey, requestedLocationId);
@@ -12980,6 +13100,8 @@ function syncWorkspaceBeforeUnloadGuard() {
 
 function handleWorkspacePageHide(event) {
   persistNavigationState({ syncUrl: false });
+  saveContextHubLastVisit();
+  saveContextHubReviewScope();
   stopWorkspaceRuntime({ suspended: event?.persisted === true });
 }
 
@@ -25206,6 +25328,7 @@ document.addEventListener("visibilitychange", () => {
   window.clearTimeout(state.workspaceVisibilityTimer);
   state.workspaceVisibilityTimer = null;
   if (document.visibilityState !== "visible") {
+    saveContextHubLastVisit();
     if (state.workspaceRuntimeStopped || state.workspaceUnloadPending) return;
     state.workspaceVisibilityTimer = window.setTimeout(() => {
       state.workspaceVisibilityTimer = null;

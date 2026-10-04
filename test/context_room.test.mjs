@@ -537,7 +537,7 @@ test("the global Context Room keeps project targeting inside one workspace", () 
   assert.match(script, /function contextHubHomeReviewItems\(needle = "", visibility = "active", \{ ignoreUserFilters = false \} = \{\}\)[\s\S]*IS_GLOBAL_CONTEXT_ROOM[\s\S]*ignoreUserFilters \|\| !state\.sharedProposalProject \|\| contextHubItemMatchesProject\(item, \{ projectKey: state\.sharedProposalProject \}\)[\s\S]*currentProject && contextHubItemMatchesProject\(item, currentProject\)/);
   assert.match(script, /function renderGlobalProjectExplorer\(\)[\s\S]*contextHubPrioritizedProjects[\s\S]*data-global-project-key/);
   assert.match(script, /async function openGlobalProjectExplorer\(project\)[\s\S]*state\.globalExplorerMode = "project"[\s\S]*loadGlobalProjectExplorerPage\(project\)/);
-  assert.match(globalProjectOpenSource, /state\.sharedProposalProject = project\.projectKey;[\s\S]*renderContextRoomGlobalReviewQueue\(\)/);
+  assert.doesNotMatch(globalProjectOpenSource, /state\.sharedProposalProject =|state\.contextHubSource =/, "opening a project leaves the Review Queue filter alone");
   assert.ok(contextHubProjectOpenSource.indexOf("window.history.pushState") < contextHubProjectOpenSource.indexOf('api("/api/context-hub/project"'));
   assert.match(script, /function renderGlobalProjectInspection\([\s\S]*const project = workspaceSelectedProject\(\)/);
   assert.match(script, /function selectedGlobalSettingsProject\(\)[\s\S]*return workspaceSelectedProject\(\)/);
