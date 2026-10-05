@@ -42,6 +42,29 @@ test('@smoke @assistant live draft sharing is opt-in, stays in its original docu
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
 
+test('@smoke @assistant a sketch sheet reaches Codex as a read-only image only while it is open', async ({ page }, testInfo) => {
+  const f = await assistantFixture(), original = fs.readFileSync(path.join(f.root, 'docs/Original.md'), 'utf8'), files = fs.readdirSync(path.join(f.root, 'docs')).sort();
+  const frames = []; page.on('request', request => { if (request.url().endsWith('/observation/frame')) frames.push(request.postDataJSON()); });
+  const read = () => f.turns[0].tool('context_room_document', { action: 'read' }, { signal: new AbortController().signal });
+  try {
+    await documentConversation(page, f); const pane = paneFor(page);
+    await pane.getByRole('button', { name: 'Sketch sheet', exact: true }).click();
+    const sheet = pane.getByRole('region', { name: 'Sketch sheet' }), box = await sheet.getByRole('img', { name: 'Sketch sheet drawing area' }).boundingBox();
+    await page.mouse.move(box.x + 24, box.y + 24); await page.mouse.down(); await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 8 }); await page.mouse.up();
+    await expect(pane).toHaveAttribute('data-sheet', 'inked'); await expect(sheet).toContainText('Choose Share live source'); expect(frames).toHaveLength(0);
+    await pane.getByRole('button', { name: 'Share live source', exact: true }).click();
+    await expect.poll(() => frames.at(-1)?.frame.sketch?.slice(0, 22)).toBe('data:image/png;base64,');
+    await expect(pane.locator('.assistant-observation')).toContainText('Sketch sheet included.');
+    await pane.getByRole('textbox').fill('Turn my drawing into a Mermaid flow.'); await pane.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect.poll(() => f.turns.length).toBe(1);
+    const seen = await read(); expect(seen.content).toBe(original); expect(seen.observation.sketch.mimeType).toBe('image/png'); expect(seen.observation.accepted).toBe(false);
+    await page.screenshot({ path: testInfo.outputPath('sketch-sheet.png') });
+    await sheet.getByRole('button', { name: 'Close sheet', exact: true }).click(); await expect(pane).toHaveAttribute('data-sheet', 'closed');
+    await expect.poll(async () => (await read()).observation.sketch).toBeUndefined();
+    expect(fs.readFileSync(path.join(f.root, 'docs/Original.md'), 'utf8')).toBe(original); expect(fs.readdirSync(path.join(f.root, 'docs')).sort()).toEqual(files);
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
 test('@smoke @assistant notebook observation includes the unfinished visible shape without committing it', async ({ page }, testInfo) => {
   const f = await assistantFixture(); const frames = [];
   page.on('request', request => { if (request.url().endsWith('/observation/frame')) frames.push(request.postDataJSON()); });

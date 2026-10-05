@@ -1,6 +1,6 @@
 import { readDraft, writeDraft, browserRecordings, pendingAudioReleases, saveAudioRelease, conversationScopeAliases } from './assistant-drafts.mjs';
 import { captureMicrophone, recoverBrowserRecording, acknowledgeRecording } from './assistant-audio.mjs';
-import { LiveSourcePreview } from './assistant-observation.mjs';
+import { LiveSourcePreview, createSketchSheet } from './assistant-observation.mjs';
 import { createLinkedRecordings } from './assistant-recordings.mjs';
 import { createRetainedHistory } from './assistant-legacy.mjs';
 export { documentDraftPreview } from './assistant-observation.mjs';
@@ -67,7 +67,10 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   const observationStatus = element('p', 'Live preview off.'); observationStatus.setAttribute('role', 'status');
   const observationButton = button('Share live source', () => run(preview.stream ? preview.stop() : preview.start(Boolean(preview.remote?.active))));
   observationButton.title = 'Share only this source, including unfinished work. Codex receives its current preview when it reads the source.';
-  observationRow.append(observationButton, observationStatus); heading.append(observationRow);
+  const sheet = createSketchSheet({ onChange: () => renderSheet() });
+  const sheetButton = button('Sketch sheet', () => { sheet.toggle(); if (sheet.open) panel.scrollTop = Math.max(0, sheet.section.offsetTop - heading.offsetHeight - 8); }); sheetButton.hidden = conversation.source.kind === 'notebook';
+  sheetButton.title = 'Draw for this conversation. Codex sees the sheet only with the live preview. It is never saved and never edits the document.';
+  observationRow.append(observationButton, sheetButton, observationStatus); heading.append(observationRow);
   const messages = element('div', '', 'assistant-messages'); messages.tabIndex = 0; messages.setAttribute('role', 'log'); messages.setAttribute('aria-label', 'Conversation messages');
   const form = element('form', '', 'assistant-composer'), input = element('textarea'); input.rows = 3; input.maxLength = 32000; input.setAttribute('aria-label', 'Message to the original document agent');
   const status = element('p', '', 'assistant-status'); status.setAttribute('role', 'status');
@@ -95,7 +98,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   const connect = button('Load available models', () => run((async () => { await post('/connect', {}); modelPending = true; await poll(); })()));
   modelRow.append(modelTitle, models, efforts, connect);
   const retainedHistory = createRetainedHistory({ api }), linkedRecordings = createLinkedRecordings({ api });
-  panel.append(heading, original, audioStatus, boundary, historyRow, retainedHistory.section, linkedRecordings.section, messages, modelRow, form, status, infoBox, errorBox); parent.append(panel);
+  panel.append(heading, original, audioStatus, boundary, ...(conversation.source.kind === 'notebook' ? [] : [sheet.section]), historyRow, retainedHistory.section, linkedRecordings.section, messages, modelRow, form, status, infoBox, errorBox); parent.append(panel);
   const clientId = crypto.randomUUID();
   let closed = false, current = conversation, pollBusy = false, lease = null, renewTimer = null, recording = null, speaker = null,
     audioContext = null, audioGeneration = 0, modelPending = false, rendered = '', sendRequest = null, retainedRecording = null, recordingRequest = null, audioBusy = false, audioReading = false, changingConversation = false, draftWrites = Promise.resolve(), nativeRecordings = [], voice = null, voiceClosing = false, initializing = true, historyCursor = null, historyLoading = false;
@@ -147,6 +150,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     observationRow.hidden = !self.captureSource || mode === 'dictate' || mode === 'voice' && !preview.stream;
     const direct = mode === 'dictate' || mode === 'voice';
     linkedRecordings.section.hidden = direct;
+    if (direct && sheet.open) sheet.toggle(false);
     panel.classList.toggle('assistant-direct', direct); panel.classList.toggle('assistant-direct-dictation', mode === 'dictate');
     panel.classList.remove('assistant-minimized'); panel.dataset.mode = mode;
     title.textContent = mode === 'dictate' ? 'Dictation' : mode === 'voice' ? 'Voice' : 'Conversation';
@@ -165,7 +169,10 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     if (closed) return; await preview.dispose().catch(fail); await endVoice(); await saveDraft(); await releaseAudio(); closed = true; linkedRecordings.dispose(); self.notifyState(); clearInterval(timer); panel.remove(); if (active === self) active = null;
   } }; active = self;
   const preview = new LiveSourcePreview({ api, identity: () => ({ conversationId: current.id, clientId }),
-    capture: () => self.captureSource?.(current.source), visible: () => !closed && panel.isConnected && !panel.hidden && document.visibilityState === 'visible', onError: fail,
+    capture: async () => {
+      const frame = await self.captureSource?.(current.source), sketch = current.source.kind === 'notebook' ? undefined : sheet.sketch();
+      return frame && sketch ? { ...frame, sketch } : frame;
+    }, visible: () => !closed && panel.isConnected && !panel.hidden && document.visibilityState === 'visible', onError: fail,
     onState: value => {
       observationRow.hidden = !self.captureSource || panel.dataset.mode === 'dictate' || panel.dataset.mode === 'voice' && !value.active;
       observationButton.textContent = value.active ? 'Stop sharing source' : value.elsewhere ? 'Take over source sharing' : 'Share live source';
@@ -175,8 +182,15 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
       observationStatus.textContent = value.active ? value.paused ? 'Sharing paused · return to the original source.'
         : value.lastObservedAt ? 'Sharing this source · last read by Codex at ' + new Date(value.lastObservedAt).toLocaleTimeString() + '.'
           : 'Sharing this source · waiting for Codex to read it.' : value.elsewhere ? 'Another surface is sharing this source.' : 'Live preview off.';
+      if (value.active && sheet.sketch()) observationStatus.textContent += ' Sketch sheet included.';
+      renderSheet(value.active);
     } });
   run(preview.refresh());
+  function renderSheet(live = Boolean(preview?.stream)) {
+    sheetButton.setAttribute('aria-pressed', String(sheet.open)); panel.dataset.sheet = sheet.open ? sheet.inked ? 'inked' : 'open' : 'closed';
+    sheet.status.textContent = !sheet.inked ? 'Draw here. The sheet is read-only context: never saved, never a file.'
+      : live ? 'Codex sees this sheet with the live preview. Ask it to turn the drawing into the document.' : 'Choose Share live source to show this sheet to Codex.';
+  }
   function render() {
     self.conversation = current; const busy = activeStatuses.has(current.operation?.status), uncertain = current.operation?.status === 'uncertain';
     retainedHistory.set(current); linkedRecordings.set(current);
