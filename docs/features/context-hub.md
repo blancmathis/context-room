@@ -156,6 +156,8 @@ The global queue also includes submitted local proposals and changed image asset
 
 A selection keeps the exact version that was checked: its content, mode and accepted dependencies. If a refresh brings a newer version, the row shows "Changed since selected" and the selection actions skip it until it is selected again. Accepting a selection is all-or-nothing before the first write: if any selected file changed, nothing is accepted and the changed files are listed. Once writes start, accepted files stay accepted and each file that fails is listed with its reason. A failure to record the review event after a decision is saved is a warning, not a failed decision.
 
+"Review one after another" opens the pending local files of every project in a fixed order: instructions and hooks, then memory, then docs, then provider files. A bar shows the position, why the file matters and what accepting does. Accept (A), Request changes (R) and Later (L) decide the open file and move to the next one; a held key makes one decision only. Each decision is the same human decision as in the file view. The order is frozen at the start; a file that changes meanwhile is marked and decided on the version shown. The end summary counts accepted, changes requested, later and not reached files. Shared and local proposals stay a separate step.
+
 ## Action-changing errors
 
 - **Location unavailable:** restore or explicitly remove the registered location.

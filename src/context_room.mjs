@@ -11903,7 +11903,8 @@ function buildDocQaReportUnderLock(root = process.cwd(), options = {}) {
     },
     pendingPaths: queue.map((item) => item.path),
     reviewedPaths,
-    queue: queue.slice(0, 80),
+    // The whole queue: a review flow must reach every pending file, not the first 80.
+    queue,
   };
 }
 

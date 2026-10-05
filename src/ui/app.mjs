@@ -1784,6 +1784,17 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .shared-skills-choice span { display: grid; gap: 2px; min-width: 0; }
     .shared-skills-choice strong, .shared-skills-choice em { overflow-wrap: anywhere; }
     .shared-skills-choice em { color: var(--muted); font-size: 10px; font-style: normal; font-weight: 500; }
+    .review-flow-panel { display: grid; gap: 6px; margin: 8px 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; }
+    .review-flow-panel p { margin: 0; color: var(--muted); }
+    .review-flow-bar { position: fixed; left: 50%; bottom: 16px; z-index: 40; transform: translateX(-50%); display: grid; gap: 6px; width: min(720px, calc(100vw - 24px)); padding: 12px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel, var(--bg)); box-shadow: 0 6px 24px rgba(0, 0, 0, .12); }
+    .review-flow-bar[hidden], .review-flow-panel[hidden] { display: none; }
+    .review-flow-where { font-size: 13px; }
+    .review-flow-why, .review-flow-note { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .review-flow-note { color: var(--text); }
+    .review-flow-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .review-flow-actions button { min-height: 40px; padding: 0 14px; }
+    .review-flow-actions kbd { margin-left: 6px; font-size: 11px; color: var(--muted); }
+    .review-flow-busy { color: var(--muted); font-size: 12px; }
     .context-hub-list-limit { padding: 9px 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; line-height: 1.4; }
     .context-hub-review-list.review-list { max-height: min(36vh, 340px); }
     .review-item.context-hub-review-row { width: 100%; min-width: 0; }
@@ -3624,6 +3635,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
                 <input id="contextRoomReviewSearch" class="context-room-review-search" type="search" placeholder="Search reviews or projects…" aria-label="Search reviews and projects" />
               </div>
               <button type="button" class="quiet-button" data-review-cleanup>Clean up older changes</button>
+              <div id="reviewFlowPanel" class="review-flow-panel" role="status" hidden></div>
               <div id="contextRoomWorkingDrafts" class="context-room-other-attention" hidden></div>
               <div id="contextRoomReviewSelection" class="context-room-review-selection" hidden></div>
               <div id="reviewQueue" class="review-list"></div>
@@ -7237,6 +7249,261 @@ function contextHubSinceLastVisitText() {
   return "Since your last visit: " + parts.join(" · ") + (where ? " (" + where + (changed.size > 3 ? ", …" : "") + ")" : "") + ".";
 }
 
+// Review in flow: one frozen list of local files across projects, decided one after another.
+// Identity = project location + file + version, so the same path in two projects never collides.
+const REVIEW_FLOW_KEY = "context-room:review-flow:v1";
+const REVIEW_FLOW_LEVERS = {
+  instructions: { order: 0, label: "Instructions and hooks", why: "Agents load this when a session starts.", effect: "Accepting marks this version as the instructions you approved." },
+  memory: { order: 1, label: "Memory", why: "Agents may recall this in later sessions.", effect: "Accepting marks this memory as checked." },
+  docs: { order: 2, label: "Docs", why: "Agents read this doc when a task needs it.", effect: "Accepting lets Context Room serve this version to agents." },
+  provider: { order: 3, label: "Provider", why: "This file sets how the agent runs.", effect: "Accepting marks this configuration as reviewed." },
+};
+let reviewFlow;
+
+function reviewFlowLever(review = {}) {
+  const filePath = String(review.path || "").toLowerCase();
+  if (/(^|\/)(\.claude\/settings[^/]*\.json|\.codex\/config\.toml|\.mcp\.json|opencode\.jsonc?|\.cursor\/mcp\.json)$/.test(filePath)) return "provider";
+  if (/(^|\/)(memory\.md|claude\.local\.md)$|(^|\/)memory\//.test(filePath)) return "memory";
+  if (review.startupContext?.kind || /(^|\/)(agents|claude|gemini)\.md$|(^|\/)skills\/|(^|\/)\.claude\/(rules|hooks|commands|agents)\//.test(filePath)) return "instructions";
+  return "docs";
+}
+
+function currentReviewFlow() {
+  if (reviewFlow !== undefined) return reviewFlow;
+  reviewFlow = null;
+  try {
+    const raw = JSON.parse(window.sessionStorage?.getItem(REVIEW_FLOW_KEY) || "null");
+    if (raw && Array.isArray(raw.items) && Number.isInteger(raw.index)) reviewFlow = { ...raw, results: raw.results || {}, busy: false };
+  } catch {}
+  return reviewFlow;
+}
+
+function saveReviewFlow() {
+  try {
+    if (reviewFlow) window.sessionStorage?.setItem(REVIEW_FLOW_KEY, JSON.stringify({ ...reviewFlow, busy: false }));
+    else window.sessionStorage?.removeItem(REVIEW_FLOW_KEY);
+  } catch {}
+}
+
+function reviewFlowCandidates() {
+  return contextHubHomeReviewItems(state.sharedProposalSearch.trim().toLowerCase(), "active")
+    .filter((item) => item.type === "local" && item.localReview?.path && !isDeletedReviewQueueItem(item.localReview));
+}
+
+function reviewFlowSeparateCount() {
+  return contextHubHomeReviewItems("", "active", { ignoreUserFilters: true })
+    .filter((item) => item.type === "shared" || item.type === "local-proposal" || item.type === "local-asset").length;
+}
+
+function startReviewFlow() {
+  const items = reviewFlowCandidates().map((item, order) => {
+    const review = item.localReview;
+    return {
+      id: item.id,
+      projectId: item.projectId,
+      projectTitle: contextHubProjectForItem(item)?.title || item.title || "",
+      path: review.path,
+      review: { path: review.path, label: review.label || "", startupContext: review.startupContext || null, reviewReason: review.reviewReason || "", worktreeId: review.worktreeId || "" },
+      currentHash: review.currentHash || "",
+      lever: reviewFlowLever(review),
+      order,
+    };
+  }).sort((left, right) => REVIEW_FLOW_LEVERS[left.lever].order - REVIEW_FLOW_LEVERS[right.lever].order || left.order - right.order);
+  if (!items.length) return;
+  reviewFlow = { startedAt: new Date().toISOString(), items, index: 0, results: {}, done: false, busy: false };
+  saveReviewFlow();
+  openReviewFlowItem().catch((error) => setStatus(error.message));
+}
+
+async function openReviewFlowItem() {
+  const flow = currentReviewFlow();
+  if (!flow || flow.done) return;
+  const item = flow.items[flow.index];
+  if (!item) {
+    finishReviewFlow();
+    return;
+  }
+  saveReviewFlow();
+  renderReviewFlowBar();
+  setStatus("review " + (flow.index + 1) + " of " + flow.items.length);
+  if (item.projectId === state.activeProjectLocationId) {
+    await openContextHubLocalReview(item.review);
+    return;
+  }
+  await openContextHubProject(item.projectId, item.review.startupContext ? { reviewTarget: item.review } : { filePath: item.path });
+}
+
+function reviewFlowShownItem() {
+  const flow = currentReviewFlow();
+  const item = flow && !flow.done ? flow.items[flow.index] : null;
+  if (!item || state.page === "hub" || !state.reviewModePath || state.reviewModePath !== item.path) return null;
+  if (state.activeProjectLocationId && state.activeProjectLocationId !== item.projectId) return null;
+  return item;
+}
+
+function reviewFlowAcceptAvailable() {
+  const change = activeExternalChange();
+  if (change && change.path === state.selected) return true;
+  return Boolean(reviewActionForSelectedFile());
+}
+
+async function acceptReviewFlowItem() {
+  const change = activeExternalChange();
+  if (change && change.path === state.selected) {
+    const blocks = buildExternalReviewBlocks(externalReviewBaseContent(change), change.diskContent || "", change.reviewDecisions || {});
+    if (blocks.some((block) => block.kind === "change" && !block.decision)) await chooseAllExternalReviewBlocks("accept");
+    return;
+  }
+  const action = reviewActionForSelectedFile();
+  if (!action) throw new Error("Nothing to accept here · press L to move on");
+  await requestReviewDecision(state.selected, action.status);
+}
+
+async function decideReviewFlow(action) {
+  const flow = currentReviewFlow();
+  const item = reviewFlowShownItem();
+  if (!flow || flow.busy || !item) return;
+  if (action === "stop") {
+    finishReviewFlow({ stopped: true });
+    return;
+  }
+  if (action === "later") {
+    flow.results[item.id] = "later";
+    flow.index += 1;
+    await openReviewFlowItem();
+    return;
+  }
+  if (state.dirty) {
+    setStatus("save or discard your edits before deciding");
+    return;
+  }
+  if (action === "changes" && !secondaryReviewActionForSelectedFile()) return;
+  flow.busy = true;
+  renderReviewFlowBar();
+  try {
+    if (action === "accept") await acceptReviewFlowItem();
+    else await requestReviewDecision(state.selected, "needs_changes");
+  } finally {
+    flow.busy = false;
+    renderReviewFlowBar();
+  }
+}
+
+// Every decision path ends in applyReviewDecision; the flow moves on once the caller has finished.
+function noteReviewFlowDecision(path, status) {
+  const flow = currentReviewFlow();
+  const item = flow && !flow.done ? flow.items[flow.index] : null;
+  if (!item || item.path !== path || (status !== "verified" && status !== "needs_changes")) return;
+  if (state.activeProjectLocationId && state.activeProjectLocationId !== item.projectId) return;
+  flow.results[item.id] = status === "verified" ? "accepted" : "changes";
+  flow.index += 1;
+  saveReviewFlow();
+  window.setTimeout(() => {
+    waitForReviewFinalizationBeforeNavigation().then(openReviewFlowItem).catch((error) => setStatus(error.message));
+  }, 0);
+}
+
+function finishReviewFlow({ stopped = false } = {}) {
+  const flow = currentReviewFlow();
+  if (!flow) return;
+  flow.done = true;
+  flow.stopped = stopped;
+  flow.busy = false;
+  saveReviewFlow();
+  renderReviewFlowBar();
+  if (state.page !== "hub") goHub();
+  renderReviewFlowPanel();
+  setStatus(stopped ? "review stopped" : "review finished");
+}
+
+function closeReviewFlow() {
+  reviewFlow = null;
+  saveReviewFlow();
+  renderReviewFlowBar();
+  renderReviewFlowPanel();
+}
+
+function reviewFlowCounts(flow) {
+  const counts = { accepted: 0, changes: 0, later: 0 };
+  for (const result of Object.values(flow.results || {})) if (result in counts) counts[result] += 1;
+  return { ...counts, open: Math.max(0, flow.items.length - flow.index) };
+}
+
+function renderReviewFlowBar() {
+  let bar = el("reviewFlowBar");
+  const item = reviewFlowShownItem();
+  if (!item) {
+    if (bar) bar.hidden = true;
+    return;
+  }
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "reviewFlowBar";
+    bar.className = "review-flow-bar";
+    bar.setAttribute("role", "region");
+    bar.setAttribute("aria-label", "Review in flow");
+    bar.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-review-flow]");
+      if (button) decideReviewFlow(button.dataset.reviewFlow).catch((error) => setStatus(error.message));
+    });
+    document.body.append(bar);
+  }
+  const flow = currentReviewFlow();
+  const lever = REVIEW_FLOW_LEVERS[item.lever] || REVIEW_FLOW_LEVERS.docs;
+  const why = item.review.reviewReason === "dependency-changed" ? "A document it depends on changed."
+    : item.review.startupContext?.kind === "startup-hook" ? "This hook runs when a session starts."
+    : lever.why;
+  const live = state.docqa?.queue?.find((entry) => entry.path === item.path);
+  const changed = Boolean(item.currentHash && live?.currentHash && live.currentHash !== item.currentHash);
+  const disabled = flow.busy ? " disabled" : "";
+  const accept = reviewFlowAcceptAvailable()
+    ? '<button type="button" class="primary" data-review-flow="accept"' + disabled + '>Accept <kbd>A</kbd></button>' : "";
+  const changes = secondaryReviewActionForSelectedFile()
+    ? '<button type="button" data-review-flow="changes"' + disabled + '>Request changes <kbd>R</kbd></button>' : "";
+  bar.innerHTML = '<div class="review-flow-where"><strong>' + (flow.index + 1) + ' of ' + flow.items.length + '</strong> · '
+      + escapeHtml(item.projectTitle || "Project") + ' · ' + escapeHtml(lever.label) + '</div>'
+    + '<p class="review-flow-why"><strong>Why</strong> ' + escapeHtml(why) + ' <strong>Effect</strong> ' + escapeHtml(lever.effect) + '</p>'
+    + (changed ? '<p class="review-flow-note">Changed since this review started. You decide on the version shown.</p>' : "")
+    + '<div class="review-flow-actions">' + accept + changes
+    + '<button type="button" data-review-flow="later"' + disabled + '>Later <kbd>L</kbd></button>'
+    + '<button type="button" class="quiet-button" data-review-flow="stop"' + disabled + '>Stop</button>'
+    + (flow.busy ? '<span class="review-flow-busy" role="status">Saving…</span>' : "")
+    + '</div>';
+  bar.hidden = false;
+}
+
+function renderReviewFlowPanel() {
+  const panel = el("reviewFlowPanel");
+  if (!panel) return;
+  const flow = currentReviewFlow();
+  if (flow && flow.done) {
+    const counts = reviewFlowCounts(flow);
+    const separate = reviewFlowSeparateCount();
+    const parts = [counts.accepted + " accepted", counts.changes + " changes requested", counts.later + " later"];
+    if (counts.open) parts.push(counts.open + " not reached");
+    panel.innerHTML = '<strong>' + (flow.stopped ? "Review stopped" : "Review finished") + '</strong>'
+      + '<p>' + escapeHtml(parts.join(" · ")) + '.</p>'
+      + (separate ? '<p>Shared and local proposals stay a separate step: ' + separate + ' waiting.</p>' : "")
+      + '<div class="review-flow-actions">'
+      + (separate ? '<button type="button" data-review-flow-panel="proposals">Show proposals</button>' : "")
+      + '<button type="button" class="quiet-button" data-review-flow-panel="close">Close</button></div>';
+    panel.hidden = false;
+    return;
+  }
+  if (flow) {
+    panel.innerHTML = '<strong>Review in progress</strong><p>' + (flow.index + 1) + ' of ' + flow.items.length + '.</p>'
+      + '<div class="review-flow-actions"><button type="button" class="primary" data-review-flow-panel="continue">Continue</button>'
+      + '<button type="button" class="quiet-button" data-review-flow-panel="stop">Stop</button></div>';
+    panel.hidden = false;
+    return;
+  }
+  const count = state.contextHubReviewQueueReady ? reviewFlowCandidates().length : 0;
+  panel.innerHTML = count > 1
+    ? '<button type="button" class="primary" data-review-flow-panel="start">Review one after another · ' + count + ' files</button>'
+    : "";
+  panel.hidden = count <= 1;
+}
+
 async function openContextHubProjectDestination(projectKey, destination) {
   const project = (state.contextHub?.projects || []).find((item) => item.projectKey === projectKey);
   if (!project) return;
@@ -8172,6 +8439,8 @@ function renderContextRoomGlobalReviewQueue() {
   const sourceFilter = el("contextRoomReviewSourceFilter");
   const search = el("contextRoomReviewSearch");
   if (!queueElement || !summary || !limit || !projectFilter || !sourceFilter || !search) return;
+  renderReviewFlowPanel();
+  renderReviewFlowBar();
   const hub = state.contextHub || { projects: [] };
   const hubReady = Boolean(state.contextHub);
   const needle = state.sharedProposalSearch.trim().toLowerCase();
@@ -19777,6 +20046,7 @@ async function applyReviewDecision(path, status, options = {}) {
   const reviewQueueCleared = reviewCompleted && previousQueue.length > 0 && nextQueue.length === 0;
   state.docqa = docqa;
   workspaceUpdate("review-decided", { path });
+  noteReviewFlowDecision(path, normalizedStatus);
   if (state.reviewModePath === path) state.reviewModeStatus = normalizedStatus === "verified" ? "verified" : null;
   state.selectedReview = docqa.queue.find((item) => item.path === path)?.path || nextReviewItemAfter(previousQueue, path, docqa.queue || [])?.path || docqa.queue[0]?.path || null;
   if (state.selected === path) {
@@ -20020,6 +20290,7 @@ function returnFromProposalToHub() {
 }
 
 function updateHeader() {
+  queueMicrotask(renderReviewFlowBar);
   const isStartupFile = Boolean(state.selectedStartupContext);
   const file = isStartupFile
     ? { label: state.selectedStartupContext.fileName, path: state.selectedStartupContext.displayPath }
@@ -25380,6 +25651,29 @@ el("reviewQueue")?.addEventListener("click", (event) => {
   openContextHubProject(item.projectId, {
     reviewTarget: item.localReview || (item.localFile ? { path: item.localFile } : null),
   }).catch((error) => setStatus(error.message));
+});
+el("reviewFlowPanel")?.addEventListener("click", (event) => {
+  const action = event.target.closest("[data-review-flow-panel]")?.dataset.reviewFlowPanel;
+  if (action === "start") startReviewFlow();
+  else if (action === "continue") openReviewFlowItem().catch((error) => setStatus(error.message));
+  else if (action === "stop") finishReviewFlow({ stopped: true });
+  else if (action === "close") closeReviewFlow();
+  else if (action === "proposals") {
+    closeReviewFlow();
+    state.contextHubSource = "shared";
+    renderContextRoomGlobalReviewQueue();
+  }
+});
+// A, R and L decide the open file of a review flow. A held key makes one decision only.
+document.addEventListener("keydown", (event) => {
+  if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
+  const action = { a: "accept", r: "changes", l: "later" }[String(event.key || "").toLowerCase()];
+  const bar = el("reviewFlowBar");
+  if (!action || !bar || bar.hidden) return;
+  if (event.target.closest?.("input, textarea, select, [contenteditable=''], [contenteditable='true'], .cm-editor")) return;
+  event.preventDefault();
+  if (event.repeat) return;
+  decideReviewFlow(action).catch((error) => setStatus(error.message));
 });
 document.addEventListener("click", (event) => {
   if (!event.target.closest("[data-review-cleanup]")) return;
