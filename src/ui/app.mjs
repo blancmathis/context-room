@@ -1794,6 +1794,9 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .review-item.context-hub-review-row .review-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .context-room-review-selection { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; border-bottom: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line)); background: color-mix(in srgb, var(--accent) 7%, var(--panel)); }
     .context-room-review-selection[hidden] { display: none !important; }
+    .context-room-review-selection { flex-wrap: wrap; }
+    .context-room-review-result { flex-basis: 100%; margin: 0; padding: 6px 0 0 16px; color: var(--text); font-size: 11px; line-height: 1.45; }
+    .context-room-review-result code { overflow-wrap: anywhere; }
     .context-room-review-selection-copy { min-width: 0; display: flex; align-items: baseline; gap: 7px; color: var(--muted); font-size: 10px; }
     .context-room-review-selection-copy strong { color: var(--text); font-size: 12px; }
     .context-room-review-selection-actions { display: flex; align-items: center; gap: 6px; }
@@ -4090,8 +4093,9 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 		state.contextRoomProposalController = null;
 		state.contextRoomProposalStartTimer = null;
 		state.contextRoomProposalStartResolve = null;
-		state.contextRoomSelectedReviews = new Set();
+		state.contextRoomSelectedReviews = new Map();
 		state.contextRoomBulkBusy = false;
+		state.contextRoomBulkResult = null;
 		state.contextHubModePromptBusy = "";
 		state.workspaceNavigationGeneration = 0;
 		state.workspaceApplyingHistory = false;
@@ -5204,9 +5208,7 @@ function contextHubReviewItems() {
       fileCount: 1,
       localFile: review.path,
       localReview: review,
-      revisionToken: review.resourceState && review.currentHash
-        ? "local:" + review.resourceState + ":" + (review.resourceVersion || "-") + ":" + review.currentHash + ":" + (review.resourceMode || "-")
-        : "",
+      revisionToken: review.revisionToken || "",
     }));
   });
 }
@@ -7576,6 +7578,7 @@ function renderContextRoomReviewRow(item) {
   const snoozeBadge = snooze
     ? '<span class="context-room-snooze-badge" aria-label="Snoozed until ' + escapeHtml(new Date(snooze.until).toLocaleString()) + '" title="Returns ' + escapeHtml(new Date(snooze.until).toLocaleString()) + '">Snoozed · ' + escapeHtml(formatContextRoomSnoozeTime(snooze.until)) + '</span>'
     : "";
+  const staleBadge = selected && contextRoomSelectionStale(item) ? '<span class="chip" data-selection-stale>Changed since selected</span>' : "";
   const entryStart = '<div class="context-room-review-entry" data-selected="' + String(selected) + '" data-context-room-review-entry="' + escapeHtml(item.id) + '">';
   if (item.type === "shared") {
     const expanded = state.contextHubExpandedProposalDescriptions.has(item.id);
@@ -7609,7 +7612,7 @@ function renderContextRoomReviewRow(item) {
       + '<span class="context-room-proposal-description-row"><span id="' + escapeHtml(descriptionId) + '" class="context-room-proposal-description" data-context-room-proposal-description="' + escapeHtml(item.id) + '" data-expanded="' + String(expanded) + '">' + escapeHtml(description) + '</span>'
       + '<button class="context-room-proposal-description-toggle" type="button" data-context-room-proposal-description-toggle="' + escapeHtml(item.id) + '" aria-expanded="' + String(expanded) + '" aria-controls="' + escapeHtml(descriptionId) + '" aria-label="' + (expanded ? "Collapse proposal description" : "Show full proposal description") + '" title="' + (expanded ? "Collapse description" : "Show full description") + '"' + (expanded ? "" : " hidden") + '>' + (expanded ? "−" : "+") + '</button></span>'
       + '<span class="context-room-proposal-preview-files">' + (previewFiles || '<span class="context-room-proposal-more">No changed files reported.</span>') + moreFiles + '</span></span>'
-      + '<span class="context-room-proposal-state" data-state="' + escapeHtml(preparing ? "preparing" : reviewState.key) + '">' + snoozeBadge + '<span>' + escapeHtml(opening ? "Opening review…" : preparing ? "Preparing…" : reviewState.label) + '</span>' + (opening || preparing ? '<span class="context-room-proposal-opening-indicator" aria-hidden="true"></span>' : blocked ? '<span class="context-room-proposal-arrow" aria-hidden="true">!</span>' : '<span class="context-room-proposal-arrow" aria-hidden="true">→</span>') + '</span>'
+      + '<span class="context-room-proposal-state" data-state="' + escapeHtml(preparing ? "preparing" : reviewState.key) + '">' + staleBadge + snoozeBadge + '<span>' + escapeHtml(opening ? "Opening review…" : preparing ? "Preparing…" : reviewState.label) + '</span>' + (opening || preparing ? '<span class="context-room-proposal-opening-indicator" aria-hidden="true"></span>' : blocked ? '<span class="context-room-proposal-arrow" aria-hidden="true">!</span>' : '<span class="context-room-proposal-arrow" aria-hidden="true">→</span>') + '</span>'
       + '</div>'
       + '</article></div>';
   }
@@ -7621,15 +7624,32 @@ function renderContextRoomReviewRow(item) {
     ? ' aria-pressed="' + String(selected) + '" aria-label="' + escapeHtml(selected ? "Remove " + reviewTitle + " from selection" : "Add " + reviewTitle + " to selection") + '"'
     : '';
   return entryStart + '<button class="review-item context-hub-review-row' + active + '" type="button" data-context-room-review="' + escapeHtml(item.id) + '"' + localSelectionAttributes + (state.sharedContextBusy ? " disabled" : "") + '>'
-    + '<div class="review-top"><span class="context-hub-review-source"><span class="context-hub-source" data-source="local">Local</span><span class="context-hub-review-project">' + escapeHtml(projectLabel) + '</span>' + (worktreeLabel ? '<span class="context-hub-worktree-label">' + escapeHtml(worktreeLabel) + '</span>' : '') + '</span><span class="context-room-review-row-state">' + snoozeBadge + '<span class="chip high">' + (localNeedsChanges ? "Needs changes" : "Review") + '</span></span></div>'
+    + '<div class="review-top"><span class="context-hub-review-source"><span class="context-hub-source" data-source="local">Local</span><span class="context-hub-review-project">' + escapeHtml(projectLabel) + '</span>' + (worktreeLabel ? '<span class="context-hub-worktree-label">' + escapeHtml(worktreeLabel) + '</span>' : '') + '</span><span class="context-room-review-row-state">' + staleBadge + snoozeBadge + '<span class="chip high">' + (localNeedsChanges ? "Needs changes" : "Review") + '</span></span></div>'
     + '<div class="review-title">' + escapeHtml(reviewTitle) + '</div>'
     + '<div class="review-path" title="' + escapeHtml(reviewDescription) + '">' + escapeHtml(reviewDescription) + '</div>'
     + '</button></div>';
 }
 
-function contextRoomSelectedReviewItems(ids = state.contextRoomSelectedReviews) {
+// A selection keeps the exact version the person checked. A refresh may mark it
+// changed, but never swaps in the newer version behind their back.
+function contextRoomSelectionStale(item) {
+  const frozen = item && state.contextRoomSelectedReviews.get(item.id);
+  if (!frozen) return false;
+  return (frozen.revisionToken || "") !== (item.revisionToken || "") || (frozen.head || "") !== (item.head || "");
+}
+
+function contextRoomSelectedReviewItems(ids = state.contextRoomSelectedReviews.keys()) {
   const index = new Map(contextHubReviewItems().map((item) => [item.id, item]));
-  return [...ids].map((id) => index.get(id)).filter(Boolean);
+  return [...ids].map((id) => {
+    const live = index.get(id);
+    const frozen = state.contextRoomSelectedReviews.get(id);
+    if (!live || !frozen) return live;
+    return { ...live, revisionToken: frozen.revisionToken, head: frozen.head, selectionStale: contextRoomSelectionStale(live) };
+  }).filter(Boolean);
+}
+
+function contextRoomSelectReview(item) {
+  if (!state.contextRoomSelectedReviews.has(item.id)) state.contextRoomSelectedReviews.set(item.id, item);
 }
 
 function contextRoomVisibleSelectableReviews() {
@@ -7641,7 +7661,7 @@ function contextRoomVisibleSelectableReviews() {
 function toggleContextRoomReviewSelection(item) {
   if (!contextRoomReviewIsSelectable(item) || state.sharedContextBusy) return false;
   if (state.contextRoomSelectedReviews.has(item.id)) state.contextRoomSelectedReviews.delete(item.id);
-  else state.contextRoomSelectedReviews.add(item.id);
+  else contextRoomSelectReview(item);
   renderContextRoomGlobalReviewQueue();
   return true;
 }
@@ -7851,7 +7871,7 @@ function renderContextRoomReviewSelection(visibleReviews) {
   const available = new Map(contextHubReviewItems()
     .filter(contextRoomReviewIsSelectable)
     .map((item) => [item.id, item]));
-  for (const id of state.contextRoomSelectedReviews) {
+  for (const id of [...state.contextRoomSelectedReviews.keys()]) {
     if (!available.has(id)) state.contextRoomSelectedReviews.delete(id);
   }
   const selected = contextRoomSelectedReviewItems();
@@ -7866,13 +7886,15 @@ function renderContextRoomReviewSelection(visibleReviews) {
   const allVisibleSelected = visibleSelectable.length > 0
     && visibleSelectable.every((item) => state.contextRoomSelectedReviews.has(item.id));
   const disabled = state.contextRoomBulkBusy || state.sharedContextBusy ? " disabled" : "";
-  const acceptable = selected.filter(contextRoomReviewCanAccept);
-  const rejectable = selected.filter(contextRoomReviewCanReject);
+  const changed = selected.filter((item) => item.selectionStale).length;
+  const acceptable = selected.filter((item) => contextRoomReviewCanAccept(item) && !item.selectionStale);
+  const rejectable = selected.filter((item) => contextRoomReviewCanReject(item) && !item.selectionStale);
   toolbar.hidden = false;
   toolbar.innerHTML = '<div class="context-room-review-selection-copy" role="status" aria-live="polite" aria-atomic="true"><strong>' + selected.length + ' selected</strong><span>'
     + [
       proposals ? proposals + " proposal" + (proposals === 1 ? "" : "s") : "",
       localReviews ? localReviews + " local file" + (localReviews === 1 ? "" : "s") : "",
+      changed ? changed + " changed since selected" : "",
     ].filter(Boolean).join(" · ")
     + '</span></div><div class="context-room-review-selection-actions">'
     + '<button type="button" data-context-room-select-visible="' + (allVisibleSelected ? "clear" : "select") + '"' + disabled + '>' + (allVisibleSelected ? "Unselect visible" : "Select visible") + '</button>'
@@ -7880,12 +7902,20 @@ function renderContextRoomReviewSelection(visibleReviews) {
     + '<button type="button" data-context-room-snooze-selected' + disabled + '>' + (state.contextRoomBulkBusy ? "Snoozing…" : "Snooze…") + '</button>'
     + (acceptable.length ? '<button class="primary" type="button" data-context-room-accept-selected' + disabled + '>' + (state.contextRoomBulkBusy ? "Accepting…" : "Accept " + acceptable.length) + '</button>' : "")
     + (rejectable.length ? '<button class="danger-action" type="button" data-context-room-reject-selected' + disabled + '>' + (state.contextRoomBulkBusy ? "Rejecting…" : "Reject " + rejectable.length) + '</button>' : "")
-    + '</div>';
+    + '</div>' + contextRoomReviewResultMarkup();
+}
+
+function contextRoomReviewResultMarkup() {
+  const failures = state.contextRoomBulkResult?.failures || [];
+  if (!failures.length) return "";
+  return '<ul class="context-room-review-result" data-context-room-review-result aria-label="Items not accepted">'
+    + failures.map((failure) => '<li data-code="' + escapeHtml(failure.code || "") + '"><code>' + escapeHtml(failure.path || failure.id || "") + '</code> · ' + escapeHtml(failure.message || "Not accepted.") + '</li>').join("")
+    + '</ul>';
 }
 
 function requestContextRoomReviewAcceptance(ids) {
   const requestedIds = new Set(ids);
-  const items = contextRoomSelectedReviewItems(requestedIds).filter(contextRoomReviewCanAccept);
+  const items = contextRoomSelectedReviewItems(requestedIds).filter((item) => contextRoomReviewCanAccept(item) && !item.selectionStale);
   if (!items.length || state.contextRoomBulkBusy) return;
   if (items.length === 1) {
     acceptContextRoomReviews(items).catch((error) => setStatus(error.message));
@@ -7903,20 +7933,31 @@ function requestContextRoomReviewAcceptance(ids) {
 async function acceptContextRoomReviews(items) {
   if (!items.length || state.contextRoomBulkBusy) return;
   state.contextRoomBulkBusy = true;
+  state.contextRoomBulkResult = null;
   renderContextRoomGlobalReviewQueue();
   setStatus("accepting " + items.length + " local review" + (items.length === 1 ? "" : "s") + "…");
   try {
-    const result = await api("/api/context-hub/accept", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        items: items.map((item) => ({ id: item.id, revisionToken: item.revisionToken })),
-      }),
-    });
+    let result;
+    try {
+      result = await api("/api/context-hub/accept", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          items: items.map((item) => ({ id: item.id, revisionToken: item.revisionToken })),
+        }),
+      });
+    } catch (error) {
+      if (error?.code === "context_hub_accept_stale") {
+        state.contextRoomBulkResult = { failures: error.details?.stale || [] };
+        await refreshContextHubUi();
+      }
+      throw error;
+    }
     for (const accepted of result.accepted || []) {
       state.contextRoomSelectedReviews.delete(accepted.id);
       if (state.contextHubSelection === accepted.id) state.contextHubSelection = "";
     }
+    state.contextRoomBulkResult = (result.errors || []).length ? { failures: result.errors } : null;
     await refreshContextHubUi();
     const summary = result.summary || {};
     const completed = summary.localReviews
@@ -7939,7 +7980,7 @@ function contextRoomRejectionRequestItems(items) {
 
 async function requestContextRoomReviewRejection(ids) {
   const requestedIds = new Set(ids);
-  const items = contextRoomSelectedReviewItems(requestedIds).filter(contextRoomReviewCanReject);
+  const items = contextRoomSelectedReviewItems(requestedIds).filter((item) => contextRoomReviewCanReject(item) && !item.selectionStale);
   if (!items.length || state.contextRoomBulkBusy) return;
   const proposals = items.filter((item) => item.type === "shared").length;
   const localReviews = items.length - proposals;
@@ -25168,22 +25209,23 @@ el("contextRoomReviewSelection")?.addEventListener("click", (event) => {
     if (visibleAction.dataset.contextRoomSelectVisible === "clear") {
       for (const item of visible) state.contextRoomSelectedReviews.delete(item.id);
     } else {
-      for (const item of visible) state.contextRoomSelectedReviews.add(item.id);
+      for (const item of visible) contextRoomSelectReview(item);
     }
     renderContextRoomGlobalReviewQueue();
     return;
   }
   if (event.target.closest("[data-context-room-clear-selection]")) {
     state.contextRoomSelectedReviews.clear();
+    state.contextRoomBulkResult = null;
     renderContextRoomGlobalReviewQueue();
     return;
   }
   if (event.target.closest("[data-context-room-accept-selected]")) {
-    requestContextRoomReviewAcceptance(state.contextRoomSelectedReviews);
+    requestContextRoomReviewAcceptance([...state.contextRoomSelectedReviews.keys()]);
     return;
   }
   if (event.target.closest("[data-context-room-reject-selected]")) {
-    requestContextRoomReviewRejection(state.contextRoomSelectedReviews);
+    requestContextRoomReviewRejection([...state.contextRoomSelectedReviews.keys()]);
     return;
   }
   const snooze = event.target.closest("[data-context-room-snooze-selected]");
@@ -25266,7 +25308,7 @@ el("contextRoomReviewContextMenu")?.addEventListener("click", (event) => {
     if (visibleAction.dataset.contextRoomSelectionVisible === "clear") {
       for (const item of visible) state.contextRoomSelectedReviews.delete(item.id);
     } else {
-      for (const item of visible) state.contextRoomSelectedReviews.add(item.id);
+      for (const item of visible) contextRoomSelectReview(item);
     }
     hideContextRoomReviewContextMenu();
     renderContextRoomGlobalReviewQueue();

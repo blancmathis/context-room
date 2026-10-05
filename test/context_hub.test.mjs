@@ -3336,24 +3336,40 @@ test("Context Hub accepts selected local file versions as one verified batch", a
   const hub = await hubResponse.json();
   const project = hub.projects.find((item) => item.id === registered.id);
   assert.deepEqual(project.localReviews.map((review) => review.path).sort(), ["docs/README.md", "docs/SECOND.md"]);
-  const items = project.localReviews.map((review) => ({
-    id: `local:${review.worktreeId || registered.id}:file:${review.path}`,
-    revisionToken: `local:${review.resourceState}:${review.resourceVersion || "-"}:${review.currentHash}:${review.resourceMode || "-"}`,
-  }));
-
-  const staleResponse = await fetch(origin + "/api/context-hub/accept", {
+  assert.ok(project.localReviews.every((review) => review.resourceMode === "100644"));
+  const dependencyDigest = (review) => {
+    const entries = Object.entries(review.dependencyVersions || {}).map(([key, value]) => [key, String(value)]).sort(([left], [right]) => left.localeCompare(right, "en"));
+    return entries.length ? createHash("sha256").update(JSON.stringify(Object.fromEntries(entries)), "utf8").digest("hex").slice(0, 16) : "-";
+  };
+  // The browser sends back the token the server serves with each review; it must cover mode and dependencies.
+  const served = hub.items.find((item) => item.type === "local" && item.projectId === registered.id).reviews;
+  const items = served.map((review) => ({ id: `local:${review.worktreeId || registered.id}:file:${review.path}`, revisionToken: review.revisionToken }));
+  assert.deepEqual(items.map((item) => item.revisionToken), served.map((review) => `local:${review.resourceState}:${review.resourceVersion || "-"}:${review.currentHash}:${review.resourceMode}:${dependencyDigest(review)}`));
+  const accept = (body) => fetch(origin + "/api/context-hub/accept", {
     method: "POST",
     headers: { "content-type": "application/json", "x-context-room-project": room.projectId, "x-context-room-owner-nonce": room.ownerMutationNonce },
-    body: JSON.stringify({ items: items.map((item, index) => index ? item : { ...item, revisionToken: item.revisionToken + ":stale" }) }),
+    body: JSON.stringify(body),
   });
+
+  const staleResponse = await accept({ items: items.map((item, index) => index ? item : { ...item, revisionToken: item.revisionToken + ":stale" }) });
   assert.equal(staleResponse.status, 409);
-  assert.equal((await staleResponse.json()).code, "context_hub_accept_stale");
+  const stale = await staleResponse.json();
+  assert.equal(stale.code, "context_hub_accept_stale");
+  assert.deepEqual(stale.details.stale.map((item) => item.id), [items[0].id]);
+  assert.deepEqual(stale.details.notAttempted, [items[1].id]);
 
-  const acceptedResponse = await fetch(origin + "/api/context-hub/accept", {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-context-room-project": room.projectId, "x-context-room-owner-nonce": room.ownerMutationNonce },
-    body: JSON.stringify({ items }),
-  });
+  const duplicateResponse = await accept({ items: [items[0], { ...items[0], revisionToken: items[0].revisionToken + ":other" }] });
+  assert.equal(duplicateResponse.status, 400);
+  assert.equal((await duplicateResponse.json()).code, "context_hub_accept_duplicate");
+
+  // A mode change after selection is a different version: nothing is accepted.
+  fs.chmodSync(path.join(root, "docs", "SECOND.md"), 0o755);
+  const modeResponse = await accept({ items });
+  assert.equal(modeResponse.status, 409);
+  assert.deepEqual((await modeResponse.json()).details.stale.map((item) => item.path), ["docs/SECOND.md"]);
+  fs.chmodSync(path.join(root, "docs", "SECOND.md"), 0o644);
+
+  const acceptedResponse = await accept({ items });
   assert.equal(acceptedResponse.status, 200);
   const accepted = await acceptedResponse.json();
   assert.equal(accepted.summary.localReviews, 2);
@@ -3497,7 +3513,8 @@ test("Context Room Home combines global review queues without nesting another Ho
   assert.deepEqual(secondLocalItem.reviews.map((review) => review.path).sort(), ["docs/README.md", "docs/SECOND.md"]);
   const snoozeReview = secondLocalItem.reviews.find((review) => review.path === "docs/SECOND.md");
   const snoozeId = `${secondLocalItem.id}:worktree:${snoozeReview.worktreeId || secondLocalItem.projectId}:file:${snoozeReview.path}`;
-  const snoozeToken = `local:${snoozeReview.resourceState}:${snoozeReview.resourceVersion || "-"}:${snoozeReview.currentHash}:${snoozeReview.resourceMode || "-"}`;
+  const snoozeToken = snoozeReview.revisionToken;
+  assert.match(snoozeToken, /^local:present:/);
   const snoozeResponse = await fetch(origin + "/api/context-hub/reviews/snooze", {
     method: "POST",
     headers: { "content-type": "application/json", "x-context-room-project": room.projectId },
@@ -3562,13 +3579,10 @@ test("Context Room Home combines global review queues without nesting another Ho
     body: "{}",
   })).json();
   assert.equal(refreshedHub.items.find((item) => item.type === "local" && item.projectId === secondEntry.id).fileCount, 3);
-  const refreshedSecondProject = refreshedHub.projects.find((project) => project.id === secondEntry.id);
+  const refreshedSecondReviews = refreshedHub.items.find((item) => item.type === "local" && item.projectId === secondEntry.id).reviews;
   const batchItems = ["docs/README.md", "docs/THIRD.md"].map((reviewPath) => {
-    const review = refreshedSecondProject.localReviews.find((item) => item.path === reviewPath);
-    return {
-      id: `local:${secondEntry.id}:file:${review.path}`,
-      revisionToken: `local:${review.resourceState}:${review.resourceVersion || "-"}:${review.currentHash}:${review.resourceMode || "-"}`,
-    };
+    const review = refreshedSecondReviews.find((item) => item.path === reviewPath);
+    return { id: `local:${secondEntry.id}:file:${review.path}`, revisionToken: review.revisionToken };
   });
   const unconfirmedBatch = await fetch(origin + "/api/context-hub/reject", {
     method: "POST",
@@ -3592,8 +3606,8 @@ test("Context Room Home combines global review queues without nesting another Ho
   });
   assert.equal(rejectedBatch.status, 200, await rejectedBatch.text());
 
-  const secondReview = refreshedSecondProject.localReviews.find((review) => review.path === "docs/SECOND.md");
-  const secondRevisionToken = `local:${secondReview.resourceState}:${secondReview.resourceVersion || "-"}:${secondReview.currentHash}:${secondReview.resourceMode || "-"}`;
+  const secondReview = refreshedSecondReviews.find((review) => review.path === "docs/SECOND.md");
+  const secondRevisionToken = secondReview.revisionToken;
 
   const rejectedLocal = await fetch(origin + "/api/context-hub/reject", {
     method: "POST",
