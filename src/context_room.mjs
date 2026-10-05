@@ -8714,12 +8714,14 @@ export function readDocReviewHistory(root = process.cwd(), { path: filterPath = 
   const store = docReviewReceiptStore(resolvedRoot);
   let index;
   try { index = readDocReviewReceiptIndex(store); } catch { return { receipts: [], integrity: "invalid" }; }
+  const entries = index.receipts.filter((entry) => entry.projectRoot === resolvedRoot && (!filterPath || entry.path === filterPath));
+  // Most projects have no receipt: skip the signed state and ledger reads entirely.
+  if (!entries.length) return { receipts: [] };
   const state = readDocReviewState(resolvedRoot, { readOnly: true });
   const ledger = readGlobalReviewLedger(resolvedRoot, { readOnly: true });
   const receipts = [];
-  for (const entry of [...index.receipts].reverse()) {
+  for (const entry of entries.reverse()) {
     if (receipts.length >= Math.max(1, Math.min(200, Number(limit) || 50))) break;
-    if (entry.projectRoot !== resolvedRoot || (filterPath && entry.path !== filterPath)) continue;
     let receipt;
     try { receipt = loadDocReviewReceipt(store, index, entry.id); } catch { receipt = null; }
     if (!receipt) continue;
@@ -15437,15 +15439,22 @@ function ensureBackgroundWorker(root, group) {
       request.reject(error);
     }
   });
-  worker.once("error", fail);
+  worker.once("error", (error) => fail(backgroundWorkerStoppedError(error?.message || "Background worker failed")));
   worker.once("exit", (code) => {
     cleanupWorkerLocks();
-    if (entry.pending.size) fail(new Error(`Background worker stopped with code ${code}`));
+    if (entry.pending.size) fail(backgroundWorkerStoppedError(`Background worker stopped with code ${code}`));
     else if (backgroundWorkerPools.get(key) === entry) backgroundWorkerPools.delete(key);
   });
   worker.unref();
   backgroundWorkerPools.set(key, entry);
   return entry;
+}
+
+// A stopped worker is transient: report it as retryable instead of an internal error.
+function backgroundWorkerStoppedError(message) {
+  const error = sharedRequestError(message + ". Retry the request.", 503, "background_worker_stopped");
+  error.retryable = true;
+  return error;
 }
 
 function closeBackgroundWorkers(root) {
@@ -15462,7 +15471,7 @@ function closeBackgroundWorkerByKey(key, reason = "Background worker closed") {
   const entry = backgroundWorkerPools.get(key);
   if (!entry) return Promise.resolve(false);
   backgroundWorkerPools.delete(key);
-  const error = reason instanceof Error ? reason : new Error(reason);
+  const error = reason instanceof Error ? reason : backgroundWorkerStoppedError(reason);
   for (const request of entry.pending.values()) request.reject(error);
   entry.pending.clear();
   return entry.worker.terminate().then(() => {
@@ -17650,6 +17659,8 @@ function safeRequestErrorResponse(error) {
     ? requestedStatus
     : 500;
   if (status >= 500 && error?.expose !== true) {
+    // The client only sees a generic message, so keep the cause in the server log.
+    process.stderr.write("Context Room internal error: " + String(error?.stack || error).slice(0, 2000) + "\n");
     return {
       status,
       payload: {
@@ -23196,7 +23207,9 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   if (req.method === "GET" && url.pathname === "/api/context-hub/review-history") {
     const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit")) || 20));
     const receipts = [];
-    for (const location of contextHubLocalLocations(root)) {
+    // The registry alone is enough here; the full Hub state is far too costly to build per poll.
+    const locations = listContextHubProjects({ readOnly: true }).filter((project) => project.mode !== "shared" && project.available !== false && project.root);
+    for (const location of locations) {
       try {
         for (const receipt of readDocReviewHistory(location.root, { limit }).receipts) {
           receipts.push({ ...receipt, projectId: location.id, projectTitle: location.title || location.name || "" });
