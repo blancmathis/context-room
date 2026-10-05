@@ -2038,6 +2038,12 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .context-hub-location-panel { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); background: color-mix(in srgb, var(--accent) 6%, var(--panel)); }
     .context-hub-location-panel .context-hub-recovery-badge { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent-fg); }
     .context-hub-location-panel .context-hub-recovery-copy .context-hub-recovery-effect { color: var(--text-soft); }
+    .context-hub-location-list { margin: 0 0 8px; }
+    .context-hub-location-list .context-hub-recovery-copy { flex: 1 1 100%; }
+    .context-hub-location-list ul { margin: 10px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+    .context-hub-location-list li { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 6px; border-top: 1px solid var(--line); }
+    .context-hub-location-list li > span { min-width: 0; display: grid; gap: 2px; }
+    .context-hub-location-list li code { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
     .context-hub-location-panel > button { min-height: 40px; padding-inline: 16px; }
     .shared-proposal-overview-actions { display: flex; align-items: center; gap: 10px; margin-top: 13px; }
     .shared-proposal-overview-actions .primary { min-height: 36px; }
@@ -6331,6 +6337,21 @@ function renderContextHubLocationNotice(project, worktrees = contextHubLocations
   }).join("");
 }
 
+// Hub-wide list of locations waiting for the one-time human confirmation.
+function renderContextHubLocationsToConfirm() {
+  const pending = (state.contextHub?.projects || []).flatMap((project) => contextHubLocationsToConfirm(project).map((worktree) => ({ project, worktree })));
+  if (!pending.length) return "";
+  return '<section class="context-hub-recovery-panel context-hub-location-panel context-hub-location-list" role="status" aria-label="Locations to confirm">'
+    + '<div class="context-hub-recovery-copy"><span class="context-hub-recovery-badge">' + pending.length + ' location' + (pending.length === 1 ? '' : 's') + ' to confirm</span>'
+    + '<strong>After a restart, check that each folder is still the one you registered.</strong>'
+    + '<p>Until then, their files are not inspected. Confirming changes no file.</p>'
+    + '<ul>' + pending.map(({ project, worktree }) => {
+      const busy = state.contextHubLocationBusy === worktree.id;
+      return '<li><span><strong>' + escapeHtml(project.title || project.id) + '</strong><code title="' + escapeHtml(worktree.root) + '">' + escapeHtml(worktree.root) + '</code></span>'
+        + '<button class="file-action" type="button" data-context-hub-confirm-location data-context-hub-project-key="' + escapeHtml(project.projectKey || "") + '" data-worktree-id="' + escapeHtml(worktree.id) + '" data-expected-root="' + escapeHtml(worktree.root) + '" data-expected-root-identity="' + escapeHtml(worktree.confirmRootIdentity) + '"' + (busy ? ' disabled aria-busy="true"' : '') + '>' + (busy ? "Confirming…" : "Confirm location") + '</button></li>';
+    }).join("") + '</ul></div></section>';
+}
+
 function contextHubPreferredWorktree(project, requestedId = "") {
   const worktrees = contextHubProjectWorktrees(project);
   return worktrees.find((worktree) => worktree.id === requestedId)
@@ -8660,8 +8681,11 @@ function renderContextRoomGlobalReviewQueue() {
     : !localReviewCoverageConfirmed
       ? "Some local locations could not be inspected. File counts are unknown. Restore access and refresh."
     : "Review coverage is not current. The items shown below may be incomplete. Refresh before relying on this queue.";
-  const unconfirmedReviewMarkup = reviewStateUnconfirmed
-    ? '<div class="issue review-status-unconfirmed" role="status">' + unconfirmedReviewCopy + ' <button class="quiet-button" type="button" data-review-refresh>Refresh</button></div>'
+  const locationsToConfirmMarkup = IS_GLOBAL_CONTEXT_ROOM && !IS_HOSTED_CONTEXT_ROOM ? renderContextHubLocationsToConfirm() : "";
+  const unconfirmedReviewMarkup = locationsToConfirmMarkup && sharedReviewCoverageConfirmed
+    ? locationsToConfirmMarkup
+    : reviewStateUnconfirmed
+    ? locationsToConfirmMarkup + '<div class="issue review-status-unconfirmed" role="status">' + unconfirmedReviewCopy + ' <button class="quiet-button" type="button" data-review-refresh>Refresh</button></div>'
     : "";
   const emptyQueueCopy = noPendingReviews
       ? (IS_GLOBAL_CONTEXT_ROOM
@@ -15259,8 +15283,7 @@ function renderContextHealth() {
 
 function renderGlobalProjectInspection(panel = el("contextHealthPanel"), holder = el("contextHealth")) {
   if (!panel || !holder) return;
-  panel.hidden = !state.reviewHistory;
-  if (!state.reviewHistory) return;
+  panel.hidden = false;
   const headerActions = panel.querySelector(".context-health-header-actions");
   if (headerActions) headerActions.hidden = true;
   holder.classList.add("global-project-inspection");

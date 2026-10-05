@@ -831,9 +831,12 @@ test("@smoke a location to confirm asks for an explicit same-folder confirmation
     };
     state.globalExplorerProjectKey = "local:moved-volume";
     state.sharedProposalProject = "local:moved-volume";
+    renderContextRoomGlobalReviewQueue();
     renderGlobalProjectInspection();
-    return { text: document.querySelector("#contextHealth").textContent, root: template.root };
+    return { text: document.querySelector("#contextHealth").textContent, hubList: document.querySelector(".context-hub-location-list")?.textContent || "", root: template.root };
   });
+  expect(panel.hubList).toContain("1 location to confirm");
+  expect(panel.hubList).toContain("Moved volume");
   expect(panel.text).toContain("Is this still the folder you registered?");
   expect(panel.text).toContain("Pair drawing tablets again afterward.");
   await page.locator("#contextHealth [data-context-hub-confirm-location]").click();
