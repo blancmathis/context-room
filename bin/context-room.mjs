@@ -9,6 +9,7 @@ import { planStateMigration, applyStateMigration } from "../src/state_migration.
 import { exportLisiereSnapshot } from "../src/lisiere_snapshot.mjs";
 import { inspectLisiereSnapshot } from "../src/lisiere_inventory.mjs";
 import { migrateLisiereNotebook, migrateLisiereDraft, migrateLisiereConversation, migrateLisiereDrawingSession, reconcileLisiereNotebook, migrateLisiereRecording, proposeDocumentMove, proposeDocumentationMap, buildAgentBriefSections, renderAgentBrief, documentationDriftReport, agentUsageReport, documentationTidyReport } from "../src/context_room.mjs";
+import { visualGuide } from "../src/visual_guide.mjs";
 import {
   applyCliReviewAnnotation,
   applyAgentHandoff,
@@ -340,7 +341,7 @@ const KNOWN_OPTIONS = new Set([
   "device-host", "device-port", "device-state", "device-browser-origin", "device-browser-cert", "device-browser-key",
   "reader", "propose",
   "action", "actionable", "advisory", "all", "all-projects", "allow", "allow-stale", "apply", "branch", "budget", "contract", "cursor", "cwd", "days", "depth", "description", "detail", "document", "dry-run", "enabled", "exclude", "expand", "fields", "files", "folder", "follow", "format", "fresh", "from", "goal", "h", "heading", "help", "highlight", "hook", "include",
-  "assignment", "change", "collection", "collection-path", "collection-title", "destination", "id", "include", "json", "kind", "limit", "message", "mode", "name", "no-restart", "note", "operation", "order", "path", "percent", "port", "profile", "project", "projects", "provider", "providers", "query", "skill",
+  "assignment", "change", "collection", "collection-path", "collection-title", "destination", "id", "include", "json", "kind", "limit", "message", "mode", "name", "no-restart", "note", "operation", "order", "path", "pattern", "percent", "port", "profile", "project", "projects", "provider", "providers", "query", "skill",
   "expected-revision", "file", "filter", "idempotency-key", "label", "location", "no-color", "no-local", "non-interactive", "only", "plan", "profile", "project", "projects-file", "proposal", "quiet", "reason", "recent", "repository", "resource", "root", "scope", "search", "section", "selector", "session", "set", "settings", "severity", "shared", "shared-project", "shell", "since", "skills", "source", "status", "strict", "summary", "target", "task", "text", "title", "to", "types", "verbose", "version", "view", "watch", "workspace",
 ]);
 
@@ -1884,6 +1885,11 @@ if (command === "docs") {
       const data = documentationTidyReport(agentFirstTarget?.root || root, { path: String(args._[2] || ""),
         order: args.order && args.order !== true ? String(args.order) : "", skill: args.skill && args.skill !== true ? String(args.skill) : "" });
       emitAgentFirstResult("docs.tidy", { target: agentFirstTarget, data }, { format: agentFirstFormat });
+      process.exit(0);
+    }
+    if (action === "visual-guide") {
+      const data = visualGuide({ pattern: args.pattern && args.pattern !== true ? String(args.pattern) : "" });
+      emitAgentFirstResult("docs.visual-guide", { data }, { format: agentFirstFormat });
       process.exit(0);
     }
     if (action === "publish") {

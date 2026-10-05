@@ -11,10 +11,11 @@ import { initializeContextRoomProject, writeMemoryWebappSettings, readMemoryWeba
 import { writeReviewCleanupPolicy, recentReviewCleanupReceipts } from "../src/review_cleanup.mjs";
 import { registerContextHubProject } from "../src/context_hub.mjs";
 import { inspectLocalProposal, readLocalProposalBlockMap } from "../src/local_proposals.mjs";
-import { buildDocumentationCorpus, buildDocumentationMap, buildDocumentationNavigation } from "../src/documentation.mjs";
+import { buildDocumentationCorpus, buildDocumentationMap, buildDocumentationNavigation, readDocumentation, estimateTokens } from "../src/documentation.mjs";
 import { markdownBlocks, proposalBlockMap } from "../src/block_map.mjs";
 import { DOC_TIDY_RULES } from "../src/doc_tidy.mjs";
 import { TIDY_SKILLS, tidyOrder } from "../src/doc_tidy_orders.mjs";
+import { visualGuide } from "../src/visual_guide.mjs";
 
 function fixture(t) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "cr-document-workflow-")), root = path.join(base, "project");
@@ -280,6 +281,31 @@ test("docs tidy turns each finding into a short deterministic order for the user
   assert.throws(() => documentationTidyReport(root, { skill: "rewrite" }), /Unknown tidy skill/);
   const cli = execFileSync(process.execPath, [path.resolve("bin/context-room.mjs"), "docs", "tidy", "--root", root, "--order", "dead_link:docs/a.md:3", "--format=human"], { encoding: "utf8" });
   assert.equal(cli, order.text + "\n");
+});
+
+test("docs visual-guide gives exact examples that use only styled cr-* classes, and an HTML read costs its text", (t) => {
+  const styled = new Set(fs.readFileSync(path.resolve("src/ui/app.mjs"), "utf8").match(/\.cr-[a-z0-9-]+/g).map((name) => name.slice(1)));
+  const guide = visualGuide();
+  assert.equal(guide.patterns.length, 45);
+  for (const entry of guide.patterns) {
+    const { example } = visualGuide({ pattern: entry.id });
+    assert.ok(example.html.includes(`class="${entry.className}`) || example.html.includes(` ${entry.className}"`), entry.id);
+    assert.doesNotMatch(example.html, /<script|<style|<link|\son[a-z]+=/i, entry.id);
+    for (const name of example.html.match(/\bcr-[a-z0-9-]+/g)) assert.ok(styled.has(name), `${entry.id} uses unstyled ${name}`);
+    if (entry.group === "diagram") assert.match(example.html, /^<div class="cr-diagram-scroll" tabindex="0">/);
+  }
+  assert.equal(visualGuide({ pattern: "cr-pros-cons" }).example.id, "data-pros-cons");
+  assert.throws(() => visualGuide({ pattern: "cr-carousel" }), /Unknown visual pattern/);
+
+  const root = fixture(t);
+  const html = guide.page.replace("<!-- one cr-* pattern: context-room docs visual-guide --pattern <id> -->", visualGuide({ pattern: "data-pros-cons" }).example.html);
+  fs.writeFileSync(path.join(root, "docs/visual.html"), html);
+  writeDocReviewDecision(root, "docs/visual.html", { status: "verified" });
+  const read = readDocumentation(root, "docs/visual.html");
+  assert.doesNotMatch(read.content, /[<>]/);
+  assert.match(read.content, /Benefits/);
+  assert.equal(read.estimatedTokens, estimateTokens(read.content));
+  assert.ok(read.estimatedTokens < estimateTokens(html) / 2);
 });
 
 test("partial settings keep the Hub and unknown legacy configuration fields", (t) => {
