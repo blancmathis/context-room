@@ -378,7 +378,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .global-project-row-title strong { min-width: 0; overflow: hidden; font-size: 12px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
     .global-project-row-location { min-width: 0; overflow: hidden; color: var(--muted); font: 9px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
     .global-project-row-side { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; justify-items: start; gap: 8px; color: var(--muted); font-size: 9px; white-space: nowrap; }
-    .global-project-row-side > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .global-project-row-side > span:first-child { min-width: 0; justify-self: stretch; overflow: hidden; text-overflow: ellipsis; }
     .global-project-row-action { justify-self: end; color: var(--accent-fg); font-weight: 780; }
     .context-hub-projects-panel header kbd { margin-left: 4px; font-size: 10px; color: var(--muted); }
     .context-hub-home-projects { list-style: none; margin: 0; padding: 6px; display: grid; gap: 2px; max-height: 360px; overflow-y: auto; }
@@ -6173,9 +6173,9 @@ function contextHubProjectAttentionLabel(project) {
     return ["Shared · no local folder", offline, ...work].filter(Boolean).join(" · ");
   }
   if (project?.available === false) {
-    return ["Unavailable · " + contextHubProjectUnavailableReason(project), "— reviews", ...work.filter((label) => label.includes("proposal"))].join(" · ");
+    return ["Unavailable · " + contextHubProjectUnavailableReason(project), ...work.filter((label) => label.includes("proposal"))].join(" · ");
   }
-  if (!contextHubLocalReviewsConfirmed(project)) return ["— reviews · not inspected", ...work.filter((label) => label.includes("proposal"))].join(" · ");
+  if (!contextHubLocalReviewsConfirmed(project)) return ["Not inspected yet", ...work.filter((label) => label.includes("proposal"))].join(" · ");
   if (project?.shared && project.sharedStatus?.online === false) {
     return [project.sharedStatus?.revision ? "Offline · cached snapshot" : "Offline · cache unavailable", ...work].join(" · ");
   }
@@ -7561,8 +7561,8 @@ function renderReviewHistoryPanel() {
   if (IS_HOSTED_CONTEXT_ROOM) { panel.hidden = true; return; }
   if (!state.reviewHistory || state.reviewHistoryStale || Date.now() - (state.reviewHistoryAt || 0) > 15000) queueMicrotask(loadReviewHistory);
   const receipts = state.reviewHistory || [];
-  panel.hidden = !receipts.length;
-  if (!receipts.length) { panel.innerHTML = ""; return; }
+  panel.hidden = !state.reviewHistory;
+  if (!state.reviewHistory) return;
   if (!panel.dataset.wired) {
     panel.dataset.wired = "1";
     panel.addEventListener("toggle", () => { state.reviewHistoryOpen = panel.open; });
@@ -7574,6 +7574,7 @@ function renderReviewHistoryPanel() {
   panel.open = Boolean(state.reviewHistoryOpen);
   panel.innerHTML = '<summary>Recent decisions · ' + receipts.length + '</summary>'
     + '<p class="review-history-hint">Undo removes an acceptance. The file stays as it is and goes back to review.</p>'
+    + (receipts.length ? "" : '<p class="review-history-hint">No decisions yet. Files you accept or send back appear here.</p>')
     + '<ul class="review-history-list">' + receipts.map((receipt) => {
       const reason = receipt.action === "accept" && receipt.status === "verified" && !receipt.undo?.available ? REVIEW_HISTORY_REASONS[receipt.undo?.reason] || "" : "";
       return '<li><div class="review-history-what"><strong>' + escapeHtml(receipt.path) + '</strong>'
@@ -15258,7 +15259,8 @@ function renderContextHealth() {
 
 function renderGlobalProjectInspection(panel = el("contextHealthPanel"), holder = el("contextHealth")) {
   if (!panel || !holder) return;
-  panel.hidden = false;
+  panel.hidden = !state.reviewHistory;
+  if (!state.reviewHistory) return;
   const headerActions = panel.querySelector(".context-health-header-actions");
   if (headerActions) headerActions.hidden = true;
   holder.classList.add("global-project-inspection");
