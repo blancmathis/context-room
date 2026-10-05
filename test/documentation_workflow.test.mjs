@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { initializeContextRoomProject, writeMemoryWebappSettings, readMemoryWebappSettings, writeDocReviewBaseline, writeDocReviewDecision, readMemoryFile, readFileDiff,
   revertMemoryFile, saveHumanReviewedFile, buildDocQaReport, createLocalDocumentationProposal,
   submitLocalDocumentationProposal, reviewLocalDocumentationProposal, contextHubUiState, runAuthorizedReviewCleanup,
-  createMemoryServer, listStartupContextFiles, readStartupContextFile, readStartupSkillFile, rejectDirectDocumentationChange, proposeDocumentMove, proposeDocumentationMap, documentationDriftReport, documentationTidyReport } from "../src/context_room.mjs";
+  createMemoryServer, listStartupContextFiles, readStartupContextFile, readStartupSkillFile, rejectDirectDocumentationChange, proposeDocumentMove, proposeDocumentationMap, documentationDriftReport, documentationTidyReport, localProposalDocumentChecks } from "../src/context_room.mjs";
 import { writeReviewCleanupPolicy, recentReviewCleanupReceipts } from "../src/review_cleanup.mjs";
 import { registerContextHubProject } from "../src/context_hub.mjs";
 import { inspectLocalProposal, readLocalProposalBlockMap } from "../src/local_proposals.mjs";
@@ -308,6 +308,25 @@ test("docs visual-guide gives exact examples that use only styled cr-* classes, 
   assert.ok(read.estimatedTokens < estimateTokens(html) / 2);
 });
 
+test("a document created outside the map is flagged before review by changes submit and guard", (t) => {
+  const root = fixture(t);
+  fs.writeFileSync(path.join(root, "docs/index.md"), "# Docs\n\n- [a](a.md): first.\n- [b](b.md): second.\n");
+  writeDocReviewDecision(root, "docs/index.md", { status: "verified" });
+  fs.mkdirSync(path.join(root, "src"), { recursive: true });
+  fs.writeFileSync(path.join(root, "src/real.mjs"), "export {};\n");
+  const proposal = createLocalDocumentationProposal(root, { title: "Add a guide" });
+  fs.writeFileSync(path.join(proposal.editRoot, "docs/guide.md"), "# Guide\n\nSee [code](../src/real.mjs) and [old](gone.md).\n");
+  fs.writeFileSync(path.join(proposal.editRoot, "docs/a.md"), "# a\n\nStill [b](b.md).\n");
+  submitLocalDocumentationProposal(root, proposal.id);
+  assert.deepEqual(localProposalDocumentChecks(root, proposal.id).map((finding) => [finding.type, finding.path, finding.evidence]),
+    [["doc_not_in_map", "docs/guide.md", "docs/index.md"], ["dead_link", "docs/guide.md", "gone.md"]]);
+
+  fs.writeFileSync(path.join(root, "docs/notes.md"), "# Notes\n\nLoose notes.\n");
+  const guard = spawnSync(process.execPath, [path.resolve("bin/context-room.mjs"), "guard", "--root", root], { encoding: "utf8" });
+  assert.equal(guard.status, 0, guard.stderr);
+  assert.match(guard.stdout, /Documentation checks before review:\n- docs\/notes\.md:1 Not listed in docs\/index\.md/);
+});
+
 test("partial settings keep the Hub and unknown legacy configuration fields", (t) => {
   const root = fixture(t), file = path.join(root, ".context-room/config.json");
   const before = readMemoryWebappSettings(root);
@@ -380,7 +399,8 @@ test("docs map lists each accepted document once and proposes it as a reviewed A
   assert.deepEqual(map.groups[2].entries[0], { path: "docs/decisions/map.md", title: "Keep one map", summary: "The map lives in AGENTS.md." });
   assert.equal(map.excluded.unreviewed, 1);
   assert.doesNotMatch(map.markdown, /docs\/c\.md/);
-  assert.match(map.markdown, /^<!-- context-room:docs-map -->\n## Documentation map\n/);
+  assert.match(map.markdown, /^<!-- context-room:docs-map -->\n## Documentation\n\n- Read this map first/);
+  assert.match(map.markdown, /never decide a review\.\n\nAccepted documents, one line each/);
   assert.deepEqual(buildDocumentationMap(root).markdown, map.markdown, "the map is deterministic");
 
   assert.deepEqual(proposeDocumentationMap(root, { map, dryRun: true }), { dryRun: true, target: "AGENTS.md", documents: 4, estimatedTokens: map.estimatedTokens, changed: true });

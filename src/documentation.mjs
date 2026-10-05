@@ -802,6 +802,16 @@ function mapDocumentSummary(document) {
 
 // One deterministic line per accepted document, grouped by role, in a block an
 // AGENTS.md can hold. The map never lists an unreviewed document.
+// The default documentation shape, proposed with the map and never imposed.
+export const DOCUMENTATION_RULES = Object.freeze([
+  "Read this map first, then only the documents the task needs.",
+  "State is rewritten, a log is appended: keep the current state in reference documents and dated progress in `docs/records/journal/YYYY-MM.md`.",
+  "One decision per file under `docs/decisions/`, dated, never edited afterwards.",
+  "List each new document in `docs/index.md` with one line. Keep each document under 100,000 characters, with a short summary at the top.",
+  "Write Markdown by default. For a visual document, follow `context-room docs visual-guide`.",
+  "Change documentation in a change (`context-room changes begin`, then `changes submit`). A human accepts or rejects it; never decide a review.",
+]);
+
 export function buildDocumentationMap(root = process.cwd(), options = {}) {
   const corpus = options.corpus || buildDocumentationCorpus(root, { ...options, acceptedOnly: true, readOnly: true });
   const documents = acceptedMapDocuments(corpus);
@@ -815,7 +825,9 @@ export function buildDocumentationMap(root = process.cwd(), options = {}) {
   const excludedUnreviewed = (corpus.excludedUnreviewed || []).length;
   const lines = [
     DOCUMENTATION_MAP_START,
-    "## Documentation map",
+    "## Documentation",
+    "",
+    ...DOCUMENTATION_RULES.map((rule) => `- ${rule}`),
     "",
     "Accepted documents, one line each. Read one with `context-room docs read <path>`.",
   ];

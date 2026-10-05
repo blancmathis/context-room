@@ -37,7 +37,7 @@ import { appendContextRoomEvent, appendContextRoomEvents } from "./event_journal
 import { documentsLinkingTo, planDocumentMove } from "./doc_move.mjs";
 import { documentationDrift } from "./doc_drift.mjs";
 import { claudeCodeUsage } from "./agent_usage.mjs";
-import { beginLocalProposal, listLocalProposals, submitLocalProposal, decideLocalProposalFile, readLocalProposalFile, readLocalProposalResource, readLocalProposalDraft, writeLocalProposalDraft, readLocalProposalBlockMap } from "./local_proposals.mjs";
+import { beginLocalProposal, listLocalProposals, submitLocalProposal, decideLocalProposalFile, readLocalProposalFile, readLocalProposalResource, readLocalProposalDraft, writeLocalProposalDraft, readLocalProposalBlockMap, inspectLocalProposal } from "./local_proposals.mjs";
 import {
   cleanupFilesystemLockWorkerOwner,
   createFilesystemLockWorkerOwner,
@@ -113,7 +113,7 @@ import {
   resolveSharedDocumentationTarget,
 } from "./shared_context.mjs";
 import { bearerToken, createReplayStore, signRemoteIdentity, verifyRemoteIdentity } from "./remote_identity.mjs";
-import { analyzeDocumentTidiness, readGitDocumentHistory } from "./doc_tidy.mjs";
+import { analyzeDocumentTidiness, readGitDocumentHistory, preReviewDocumentChecks } from "./doc_tidy.mjs";
 import { TIDY_SKILLS, tidyOrder } from "./doc_tidy_orders.mjs";
 import {
   assertFreshGitHubAppCredential,
@@ -8087,6 +8087,20 @@ export function proposeDocumentationMap(root, { map, target = "AGENTS.md", dryRu
   writeNotebookBytes(proposal.editRoot, rel, Buffer.from(next), { expectedHash: previous ? notebookHash(previous) : null, mode });
   const submitted = submitLocalDocumentationProposal(root, proposal.id);
   return { dryRun: false, proposalId: submitted.id, status: submitted.status, scope: "local", accepted: false, ...summary };
+}
+
+// Pre-review documentation checks on a submitted local proposal: its own content first,
+// then the project for files it does not change (code a document links to).
+export function localProposalDocumentChecks(root, id) {
+  const proposal = inspectLocalProposal(root, id);
+  const kinds = new Map(proposal.changes.map((change) => [change.path, change.kind]));
+  const inProposal = (rel) => path.join(proposal.editRoot, rel);
+  const source = (rel) => fs.existsSync(inProposal(rel)) ? inProposal(rel) : path.join(root, rel);
+  const docs = proposal.changes.filter((change) => change.kind !== "deleted" && /\.md$/i.test(change.path))
+    .map((change) => ({ path: change.path, content: readLocalProposalFile(root, id, change.path).afterBytes.toString("utf8") }));
+  return preReviewDocumentChecks({ root, docs,
+    exists: (rel) => kinds.get(rel) !== "deleted" && (fs.existsSync(inProposal(rel)) || fs.existsSync(path.join(root, rel))),
+    readText: (rel) => fs.readFileSync(source(rel), "utf8") });
 }
 
 export function submitLocalDocumentationProposal(root, id, { expectedDraftRevision } = {}) {
