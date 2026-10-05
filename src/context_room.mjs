@@ -29,7 +29,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { execFile, execFileSync } from "node:child_process";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:zlib";
@@ -172,6 +172,7 @@ import {
   authorizeOwnerReviewScope,
   createTerminalDecisionChallengeStore,
   createVerifiedAcceptanceFlashStore,
+  createReviewReceiptStore,
   effectiveOwnerReviewScope,
   inspectOwnerTrustedState,
   inspectOwnerReviewScope,
@@ -7048,6 +7049,7 @@ function withDocReviewEvidenceLock(root, operation, { expectedRootIdentity = nul
     assertManagedProjectRootIdentity(context.projectRoot, context.expectedRootIdentity);
     activeDocReviewEvidenceLocks.push(context);
     try {
+      recoverDocReviewJournalUnderLock(context.projectRoot);
       return operation(context);
     } finally {
       const released = activeDocReviewEvidenceLocks.pop();
@@ -7156,6 +7158,8 @@ function atomicWriteReviewControlFile(root, relPath, content) {
 export function readDocReviewState(root = process.cwd(), { readOnly = false } = {}) {
   const statePath = path.join(root, DOCQA_REVIEW_STATE);
   assertManagedProjectPath(root, statePath, DOCQA_REVIEW_STATE);
+  const pending = pendingDocReviewJournalState(root, statePath, "review-state");
+  if (pending) return pending;
   let state = { version: 2, reviews: {} };
   try {
     if (fs.existsSync(statePath)) {
@@ -7193,6 +7197,8 @@ export function readGlobalReviewLedger(root = process.cwd(), { readOnly = false 
   const ledgerRoot = globalReviewLedgerRoot(root);
   const ledgerPath = globalReviewLedgerPath(root);
   assertManagedProjectPath(ledgerRoot, ledgerPath, DOCQA_GLOBAL_REVIEW_LEDGER);
+  const pending = pendingDocReviewJournalState(root, ledgerPath, "review-ledger");
+  if (pending) return pending;
   let ledger = { version: 2, reviews: {} };
   try {
     if (fs.existsSync(ledgerPath)) {
@@ -7553,8 +7559,15 @@ function readDocReviewBaseline(root, relPath, review = null) {
   if (!baselinePath || !baselinePath.startsWith(DOCQA_REVIEW_BASELINES + "/")) return null;
   const abs = path.join(root, baselinePath);
   assertManagedProjectPath(root, abs, baselinePath);
-  if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return null;
-  let content = fs.readFileSync(abs, "utf8");
+  const pending = pendingDocReviewJournalSnapshot(root, abs);
+  let content;
+  if (pending) {
+    if (!pending.snapshot?.exists) return null;
+    content = Buffer.from(pending.snapshot.content).toString("utf8");
+  } else {
+    if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return null;
+    content = fs.readFileSync(abs, "utf8");
+  }
   const baselineBundleKey = normalizeRelPath(review?.baselineBundleKey || "");
   if (baselineBundleKey) {
     try {
@@ -7663,10 +7676,24 @@ function writeDocReviewDecisionUnderLock(root, relPath, {
   providedDependencyVersions = null,
   structuralReceipt = null,
   suppressEvent = false,
+  receiptSource = null,
+  requestId = null,
 } = {}, trustedReviewFile = null, batchControl = null) {
   assertDocReviewEvidenceLockHeld(root);
   const file = trustedReviewFile || readReviewTrackedFile(root, relPath);
   const normalized = file.path;
+  if (requestId && !batchControl) {
+    const store = docReviewReceiptStore(root);
+    const index = readDocReviewReceiptIndex(store);
+    const prior = index.receipts.find((entry) => entry.requestId === requestId);
+    if (prior) {
+      const replayed = loadDocReviewReceipt(store, index, prior.id);
+      if (!replayed || replayed.action !== "accept" || replayed.target.path !== normalized || replayed.status !== status) {
+        throw sharedRequestError("This request was already used for another decision.", 409, "review_request_reused");
+      }
+      return { path: normalized, ...replayed.after.entry, receipt: publicDocReviewReceipt(replayed, docReviewReceiptAvailability(index, replayed, { state: readDocReviewState(root), ledger: readGlobalReviewLedger(root) })), replayed: true };
+    }
+  }
   if (trustedReviewFile && normalized !== normalizeRelPath(relPath)) {
     throw new Error(`Trusted review resource path mismatch: ${relPath}`);
   }
@@ -7754,6 +7781,7 @@ function writeDocReviewDecisionUnderLock(root, relPath, {
       }
       return { path: normalized, status: "unverified", note: "", reviewedAt: new Date().toISOString(), contentHash: hashContent(file.content), reviewHash: reviewContentHash(file.content), resourceState, resourceMode, resourceVersion, gitIndexVersion };
     }
+    const receiptBefore = batchControl ? null : captureDocReviewReceiptBefore(root, normalized, existing, state);
     let acceptedVersion = existing?.status === "verified" ? existing : existing?.acceptedVersion;
     if (status !== "verified" && acceptedVersion) {
       const accepted = readDocReviewBaseline(root, normalized, acceptedVersion);
@@ -7790,7 +7818,22 @@ function writeDocReviewDecisionUnderLock(root, relPath, {
       writeDocReviewState(root, state);
       writeGlobalReviewDecisionUnderLock(root, normalized, file, decision);
     }
-    return { path: normalized, ...decision };
+    if (!receiptBefore) return { path: normalized, ...decision };
+    const ineligible = docReviewUndoIneligibility(root, normalized, { status, source: receiptSource, before: receiptBefore });
+    const committed = commitDocReviewReceiptUnderLock(root, {
+      id: randomUUID(),
+      requestId: requestId || null,
+      action: "accept",
+      status,
+      source: receiptSource || "internal",
+      target: { projectRoot: safeRealPath(path.resolve(root)), rootIdentity: managedProjectRootIdentity(root), path: normalized, ledgerKey: receiptBefore.ledgerKey },
+      revision: { resourceState, resourceMode, resourceVersion, contentHash: decision.contentHash, gitIndexVersion, dependencyVersions },
+      before: { entry: receiptBefore.entry, ledger: receiptBefore.ledger, baseline: { path: receiptBefore.baseline.path, exists: receiptBefore.baseline.exists, hash: receiptBefore.baseline.hash } },
+      after: { entry: decision, ledger: readGlobalReviewLedger(root).reviews[receiptBefore.ledgerKey] ?? null },
+      undo: { eligible: !ineligible, reason: ineligible },
+      ...(receiptBefore.baseline.bytes && !ineligible ? { blob: { hash: receiptBefore.baseline.hash, bytes: receiptBefore.baseline.bytes } } : {}),
+    });
+    return { path: normalized, ...decision, receipt: publicDocReviewReceipt(committed, { available: !ineligible, reason: ineligible }) };
   };
   const result = batchControl
     ? applyDecision()
@@ -8332,11 +8375,14 @@ function restoreDocReviewControlSnapshots(root, snapshots, actor = "context-room
 }
 
 function withDocReviewControlRollback(root, filePaths, actor, operation) {
-  assertDocReviewEvidenceLockHeld(root);
+  const active = assertDocReviewEvidenceLockHeld(root);
   const snapshots = new Map([...new Set(filePaths.map((filePath) => path.resolve(filePath)))]
     .map((filePath) => [filePath, snapshotRegularFile(filePath, { managedRoot: reviewRollbackManagedRoot(root, filePath) })]));
+  // The outermost call owns the durable journal: a crash before it ends is undone on the next lock.
+  const opened = openDocReviewJournal(active, root, snapshots);
+  let result;
   try {
-    return operation();
+    result = operation();
   } catch (error) {
     let failures;
     try {
@@ -8344,6 +8390,7 @@ function withDocReviewControlRollback(root, filePaths, actor, operation) {
     } catch (rollbackError) {
       failures = [rollbackError];
     }
+    if (opened) closeDocReviewJournal(active, { keep: failures.length > 0 });
     if (failures.length) {
       const recoveryError = sharedRequestError(
         "Documentation review transaction requires filesystem recovery",
@@ -8356,6 +8403,441 @@ function withDocReviewControlRollback(root, filePaths, actor, operation) {
     }
     throw error;
   }
+  if (opened) closeDocReviewJournal(active, { keep: false });
+  return result;
+}
+
+// Durable review transactions, receipts and undo.
+//
+// The journal holds the exact control files (state, ledger, baseline) as they were before
+// a decision. It is signed and private. While it exists, readers outside the lock see that
+// "before" state, and the next writer restores it, unless the receipt index already records
+// the transaction as committed. Writing the receipt index is the commit point.
+const REVIEW_JOURNAL_FILE = "journal.json";
+const REVIEW_RECEIPT_INDEX_FILE = "index.json";
+const REVIEW_UNDO_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const REVIEW_HISTORY_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
+const REVIEW_HISTORY_LIMIT = 1000;
+const REVIEW_UNDO_SOURCES = new Set(["file-review", "hub-queue"]);
+const reviewJournalReadCache = new Map();
+
+function docReviewReceiptStore(root) {
+  return createReviewReceiptStore(docReviewEvidenceLockPath(root));
+}
+
+function serializeDocReviewSnapshot(root, filePath, snapshot) {
+  const resolvedRoot = path.resolve(root);
+  let trusted = null;
+  if (filePath === path.join(resolvedRoot, DOCQA_REVIEW_STATE)) {
+    trusted = reviewSnapshotTrusted(inspectOwnerTrustedState(resolvedRoot, "review-state", reviewControlStateFromSnapshot(snapshot), { readOnly: true }));
+  } else if (filePath === globalReviewLedgerPath(resolvedRoot)) {
+    trusted = reviewSnapshotTrusted(inspectOwnerTrustedState(globalReviewLedgerRoot(resolvedRoot), "review-ledger", reviewControlStateFromSnapshot(snapshot), { readOnly: true }));
+  }
+  return {
+    root: resolvedRoot,
+    path: filePath,
+    exists: Boolean(snapshot.exists),
+    content: snapshot.exists ? Buffer.from(snapshot.content || "").toString("base64") : null,
+    mode: snapshot.mode ?? null,
+    managedRoot: snapshot.managedRoot,
+    parentRealPath: snapshot.parentRealPath || null,
+    parentDev: snapshot.parentDev || null,
+    parentIno: snapshot.parentIno || null,
+    trusted,
+  };
+}
+
+// Same rule as the readers: a state that never had an authority yet is trusted on first use.
+function reviewSnapshotTrusted(authority) {
+  return authority.trusted || (!authority.configured && authority.integrity === "missing");
+}
+
+function deserializeDocReviewSnapshot(entry) {
+  return {
+    exists: Boolean(entry.exists),
+    content: entry.exists ? Buffer.from(String(entry.content || ""), "base64") : null,
+    mode: entry.mode ?? null,
+    managedRoot: entry.managedRoot,
+    ...(entry.parentRealPath ? { parentRealPath: entry.parentRealPath, parentDev: entry.parentDev, parentIno: entry.parentIno } : {}),
+  };
+}
+
+function openDocReviewJournal(active, root, snapshots) {
+  const opened = !active.reviewJournal;
+  if (opened) {
+    active.reviewJournal = { id: randomUUID(), startedAt: new Date().toISOString(), files: new Map(), store: docReviewReceiptStore(root), written: false };
+  }
+  const journal = active.reviewJournal;
+  let added = false;
+  for (const [filePath, snapshot] of snapshots) {
+    if (journal.files.has(filePath)) continue;
+    journal.files.set(filePath, serializeDocReviewSnapshot(root, filePath, snapshot));
+    added = true;
+  }
+  if (added) {
+    try {
+      journal.store.writeJson(REVIEW_JOURNAL_FILE, journal.store.sign({
+        version: 1,
+        transactionId: journal.id,
+        startedAt: journal.startedAt,
+        pid: process.pid,
+        files: [...journal.files.values()],
+      }));
+      journal.written = true;
+    } catch (error) {
+      if (opened) active.reviewJournal = null;
+      throw error;
+    }
+  }
+  return opened;
+}
+
+function closeDocReviewJournal(active, { keep }) {
+  const journal = active.reviewJournal;
+  active.reviewJournal = null;
+  if (!journal?.written || keep) return;
+  journal.store.remove(REVIEW_JOURNAL_FILE);
+}
+
+function readDocReviewReceiptIndex(store) {
+  const index = store.readJson(REVIEW_RECEIPT_INDEX_FILE);
+  if (!index) return { version: 1, heads: {}, receipts: [] };
+  if (index.version !== 1 || !store.verify(index) || !index.heads || !Array.isArray(index.receipts)) {
+    throw sharedRequestError("Review receipts were changed outside Context Room.", 409, "review_receipt_integrity_invalid");
+  }
+  return index;
+}
+
+function readDocReviewJournal(store) {
+  const modified = store.mtimeMs(REVIEW_JOURNAL_FILE);
+  if (!modified) return null;
+  const cacheKey = store.base;
+  const cached = reviewJournalReadCache.get(cacheKey);
+  if (cached?.modified === modified) return cached.value;
+  let value;
+  try {
+    const journal = store.readJson(REVIEW_JOURNAL_FILE);
+    if (!journal) value = null;
+    else if (journal.version !== 1 || !Array.isArray(journal.files) || !store.verify(journal)) value = { invalid: true };
+    else {
+      let committed = false;
+      try { committed = readDocReviewReceiptIndex(store).receipts.some((entry) => entry.transactionId === journal.transactionId); } catch {}
+      value = { journal, committed };
+    }
+  } catch {
+    value = { invalid: true };
+  }
+  reviewJournalReadCache.set(cacheKey, { modified, value });
+  return value;
+}
+
+function recoverDocReviewJournalUnderLock(root) {
+  const active = assertDocReviewEvidenceLockHeld(root);
+  if (active.reviewJournal) return;
+  const store = docReviewReceiptStore(root);
+  if (!store.exists(REVIEW_JOURNAL_FILE)) return;
+  reviewJournalReadCache.delete(store.base);
+  const read = readDocReviewJournal(store);
+  reviewJournalReadCache.delete(store.base);
+  if (!read) return;
+  if (read.invalid) {
+    throw sharedRequestError("An interrupted review transaction cannot be verified. Review decisions stay closed until it is repaired.", 500, "filesystem_recovery_required", { journal: store.pathFor(REVIEW_JOURNAL_FILE) });
+  }
+  if (!read.committed) {
+    const byRoot = new Map();
+    for (const entry of read.journal.files) {
+      if (!byRoot.has(entry.root)) byRoot.set(entry.root, new Map());
+      byRoot.get(entry.root).set(entry.path, deserializeDocReviewSnapshot(entry));
+    }
+    const failures = [];
+    for (const [entryRoot, snapshots] of byRoot) {
+      try {
+        failures.push(...restoreDocReviewControlSnapshots(entryRoot, snapshots, "context-room-review-recovery"));
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length) {
+      throw sharedRequestError("An interrupted review transaction could not be undone. Review decisions stay closed until it is repaired.", 500, "filesystem_recovery_required", { failures: failures.length });
+    }
+    try {
+      appendContextRoomEvent("review.recovered", { ...contextRoomEventIdentity(root), data: { transactionId: read.journal.transactionId } });
+    } catch {}
+  }
+  store.remove(REVIEW_JOURNAL_FILE);
+}
+
+// Readers outside the lock never see half a decision: they read the journal's "before" copy.
+function pendingDocReviewJournalSnapshot(root, filePath) {
+  if (activeDocReviewEvidenceLock(root)) return null;
+  let store;
+  try { store = docReviewReceiptStore(root); } catch { return null; }
+  const read = readDocReviewJournal(store);
+  if (!read || read.committed) return null;
+  if (read.invalid) return { invalid: true };
+  const entry = read.journal.files.find((item) => item.path === path.resolve(filePath));
+  return entry ? { snapshot: deserializeDocReviewSnapshot(entry), trusted: entry.trusted } : null;
+}
+
+function pendingDocReviewJournalState(root, filePath, kind) {
+  const pending = pendingDocReviewJournalSnapshot(root, filePath);
+  if (!pending) return null;
+  if (pending.invalid || pending.trusted !== true) {
+    return { version: 2, reviews: {}, authorityViolation: { kind, configured: true, trusted: false, integrity: pending.invalid ? "transaction-unverifiable" : "untrusted-before-transaction" } };
+  }
+  return reviewControlStateFromSnapshot(pending.snapshot);
+}
+
+function captureDocReviewReceiptBefore(root, relPath, existing, state) {
+  const ledger = readGlobalReviewLedger(root);
+  const ledgerKey = globalReviewKeyFor(root, relPath);
+  const baselinePath = reviewBaselinePathFor(relPath);
+  let baseline = { path: baselinePath, exists: false, hash: null, bytes: null };
+  try {
+    const bytes = fs.readFileSync(path.join(path.resolve(root), baselinePath));
+    baseline = bytes.length <= MAX_FILE_BYTES * 4
+      ? { path: baselinePath, exists: true, hash: createHash("sha256").update(bytes).digest("hex"), bytes }
+      : { path: baselinePath, exists: true, hash: null, bytes: null, unavailable: true };
+  } catch (error) {
+    if (error?.code !== "ENOENT") baseline = { path: baselinePath, exists: true, hash: null, bytes: null, unavailable: true };
+  }
+  return {
+    entry: existing ? JSON.parse(JSON.stringify(existing)) : null,
+    ledgerKey,
+    ledger: ledger.reviews[ledgerKey] ? JSON.parse(JSON.stringify(ledger.reviews[ledgerKey])) : null,
+    baseline,
+    trusted: !state.authorityViolation && !ledger.authorityViolation,
+  };
+}
+
+function docReviewUndoIneligibility(root, relPath, { status, source, before }) {
+  if (status !== "verified") return "not_an_acceptance";
+  if (!REVIEW_UNDO_SOURCES.has(source)) return "source_not_undoable";
+  if (relPath.startsWith("~") || resolveExternalPath(relPath)) return "outside_project";
+  if (!before?.trusted) return "prior_evidence_untrusted";
+  if (before.baseline?.unavailable) return "prior_baseline_unavailable";
+  return "";
+}
+
+// Writes the receipt, then the signed index that makes it (and its transaction) committed.
+function commitDocReviewReceiptUnderLock(root, receipt) {
+  const active = assertDocReviewEvidenceLockHeld(root);
+  const store = docReviewReceiptStore(root);
+  const index = readDocReviewReceiptIndex(store);
+  const committedAt = new Date().toISOString();
+  const record = { version: 1, ...receipt, transactionId: active.reviewJournal?.id || null, committedAt };
+  if (receipt.blob) store.writeBytes(`b-${receipt.blob.hash}.bin`, receipt.blob.bytes);
+  delete record.blob;
+  if (receipt.blob) record.before = { ...record.before, baseline: { ...record.before.baseline, blob: `b-${receipt.blob.hash}.bin` } };
+  store.writeJson(`r-${record.id}.json`, store.sign(record));
+  const summary = {
+    id: record.id,
+    transactionId: record.transactionId,
+    requestId: record.requestId || null,
+    action: record.action,
+    path: record.target.path,
+    projectRoot: record.target.projectRoot,
+    committedAt,
+    undoOf: record.undoOf || null,
+    blob: record.before?.baseline?.blob || null,
+  };
+  const cutoff = Date.now() - REVIEW_HISTORY_WINDOW_MS;
+  const all = [...index.receipts, summary];
+  const kept = all.filter((entry) => Date.parse(entry.committedAt) >= cutoff).slice(-REVIEW_HISTORY_LIMIT);
+  const keptIds = new Set(kept.map((entry) => entry.id));
+  store.writeJson(REVIEW_RECEIPT_INDEX_FILE, store.sign({
+    version: 1,
+    heads: { ...index.heads, [record.target.ledgerKey]: record.id },
+    receipts: kept,
+  }));
+  // Committed. Pruning old receipts is best effort: a crash leaves orphans, never a live receipt.
+  try {
+    const liveBlobs = new Set(kept.map((entry) => entry.blob).filter(Boolean));
+    for (const entry of all) {
+      if (keptIds.has(entry.id)) continue;
+      store.remove(`r-${entry.id}.json`);
+      if (entry.blob && !liveBlobs.has(entry.blob)) store.remove(entry.blob);
+    }
+  } catch {}
+  return record;
+}
+
+function loadDocReviewReceipt(store, index, receiptId) {
+  const id = String(receiptId || "");
+  if (!/^[a-f0-9-]{36}$/.test(id) || !index.receipts.some((entry) => entry.id === id)) return null;
+  const receipt = store.readJson(`r-${id}.json`);
+  if (!receipt || !store.verify(receipt) || receipt.id !== id) {
+    throw sharedRequestError("This review receipt was changed outside Context Room.", 409, "review_receipt_integrity_invalid");
+  }
+  return receipt;
+}
+
+function docReviewReceiptAvailability(index, receipt, { state, ledger, file = null } = {}) {
+  if (receipt.action !== "accept") return { available: false, reason: receipt.action === "undo" ? "is_undo" : "not_an_acceptance" };
+  if (!receipt.undo?.eligible) return { available: false, reason: receipt.undo?.reason || "not_undoable" };
+  if (Date.now() - Date.parse(receipt.committedAt) > REVIEW_UNDO_WINDOW_MS) return { available: false, reason: "expired" };
+  if (index.heads[receipt.target.ledgerKey] !== receipt.id) return { available: false, reason: "superseded" };
+  if (JSON.stringify(state?.reviews?.[receipt.target.path] ?? null) !== JSON.stringify(receipt.after.entry ?? null)) return { available: false, reason: "superseded" };
+  if (JSON.stringify(ledger?.reviews?.[receipt.target.ledgerKey] ?? null) !== JSON.stringify(receipt.after.ledger ?? null)) return { available: false, reason: "superseded" };
+  if (file && (resourceStateForReviewFile(file) !== receipt.revision.resourceState || hashContent(file.content) !== receipt.revision.contentHash)) {
+    return { available: false, reason: "file_changed" };
+  }
+  return { available: true, reason: "" };
+}
+
+function publicDocReviewReceipt(receipt, availability) {
+  return {
+    id: receipt.id,
+    action: receipt.action,
+    status: receipt.action === "undo" ? (receipt.after.entry?.status || "unverified") : receipt.status,
+    source: receipt.source || "",
+    path: receipt.target.path,
+    committedAt: receipt.committedAt,
+    undoOf: receipt.undoOf || null,
+    contentHash: receipt.revision?.contentHash || null,
+    undo: availability,
+  };
+}
+
+function docReviewUndoConflict(reason) {
+  const codes = {
+    superseded: ["A newer decision replaced this acceptance. Undo is no longer possible.", "review_decision_superseded"],
+    expired: ["This acceptance is older than 30 days. Undo is no longer possible.", "review_receipt_expired"],
+    file_changed: ["The file changed since this acceptance. Review the current version instead.", "review_revision_conflict"],
+  };
+  const [message, code] = codes[reason] || ["This decision cannot be undone.", "review_undo_unsupported"];
+  return sharedRequestError(message, 409, code, { reason });
+}
+
+export function readDocReviewHistory(root = process.cwd(), { path: filterPath = "", limit = 50 } = {}) {
+  const resolvedRoot = safeRealPath(path.resolve(root));
+  const store = docReviewReceiptStore(resolvedRoot);
+  let index;
+  try { index = readDocReviewReceiptIndex(store); } catch { return { receipts: [], integrity: "invalid" }; }
+  const state = readDocReviewState(resolvedRoot, { readOnly: true });
+  const ledger = readGlobalReviewLedger(resolvedRoot, { readOnly: true });
+  const receipts = [];
+  for (const entry of [...index.receipts].reverse()) {
+    if (receipts.length >= Math.max(1, Math.min(200, Number(limit) || 50))) break;
+    if (entry.projectRoot !== resolvedRoot || (filterPath && entry.path !== filterPath)) continue;
+    let receipt;
+    try { receipt = loadDocReviewReceipt(store, index, entry.id); } catch { receipt = null; }
+    if (!receipt) continue;
+    let availability = docReviewReceiptAvailability(index, receipt, { state, ledger });
+    if (availability.available) {
+      try {
+        availability = docReviewReceiptAvailability(index, receipt, { state, ledger, file: readReviewTrackedFile(resolvedRoot, receipt.target.path) });
+      } catch {
+        availability = { available: false, reason: "file_changed" };
+      }
+    }
+    receipts.push(publicDocReviewReceipt(receipt, availability));
+  }
+  return { receipts };
+}
+
+function removeDocReviewControlFile(root, relPath) {
+  assertDocReviewEvidenceLockHeld(root);
+  const absolute = path.join(path.resolve(root), relPath);
+  assertManagedProjectPath(root, absolute, relPath);
+  try {
+    const current = fs.lstatSync(absolute);
+    if (current.isSymbolicLink() || !current.isFile()) throw new Error(`Managed Context Room path must be a regular file: ${relPath}`);
+    fs.unlinkSync(absolute);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+}
+
+// Undo restores the evidence that existed before one acceptance. The file and the Git index
+// stay as they are: the file simply goes back to review against the previous accepted version.
+export function undoDocReviewAcceptance(root, { receiptId, requestId = null, expectedRootIdentity = null } = {}) {
+  return withDocReviewEvidenceLock(root, () => {
+    const resolvedRoot = safeRealPath(path.resolve(root));
+    const store = docReviewReceiptStore(resolvedRoot);
+    const index = readDocReviewReceiptIndex(store);
+    if (requestId) {
+      const prior = index.receipts.find((entry) => entry.requestId === requestId);
+      if (prior) {
+        if (prior.action !== "undo" || prior.undoOf !== receiptId) throw sharedRequestError("This request was already used for another decision.", 409, "review_request_reused");
+        const replayed = loadDocReviewReceipt(store, index, prior.id);
+        return { path: replayed.target.path, undoOf: replayed.undoOf, status: replayed.after.entry?.status || "unverified", receipt: publicDocReviewReceipt(replayed, { available: false, reason: "is_undo" }), replayed: true };
+      }
+    }
+    const receipt = loadDocReviewReceipt(store, index, receiptId);
+    if (!receipt) throw sharedRequestError("This review receipt is unknown or expired.", 404, "review_receipt_unknown");
+    if (receipt.target.projectRoot !== resolvedRoot) throw sharedRequestError("This receipt belongs to another project location.", 409, "review_receipt_target_mismatch");
+    const relPath = receipt.target.path;
+    const state = readDocReviewState(resolvedRoot);
+    const ledger = readGlobalReviewLedger(resolvedRoot);
+    if (state.authorityViolation || ledger.authorityViolation) {
+      throw sharedRequestError("Review evidence is not trusted. Undo is closed.", 409, "review_receipt_integrity_invalid");
+    }
+    const file = readReviewTrackedFile(resolvedRoot, relPath);
+    const availability = docReviewReceiptAvailability(index, receipt, { state, ledger, file });
+    if (!availability.available) throw docReviewUndoConflict(availability.reason);
+    const revision = receipt.revision;
+    const gitIndexVersion = gitIndexStateForReviewPath(resolvedRoot, relPath)?.version || null;
+    if (resourceModeForReviewFile(resolvedRoot, relPath, file) !== revision.resourceMode
+      || resourceVersionForReviewFile(resolvedRoot, relPath, file, state.reviews[relPath]) !== revision.resourceVersion
+      || gitIndexVersion !== revision.gitIndexVersion) {
+      throw docReviewUndoConflict("file_changed");
+    }
+    const dependencyState = buildAcceptedDependencyState(resolvedRoot, listMemoryFiles(resolvedRoot), state);
+    const dependencyVersions = directDependencyVersions(parseDocMetadata(file.content || "", relPath), dependencyState.byId);
+    if (JSON.stringify(dependencyVersions) !== JSON.stringify(revision.dependencyVersions || {})) {
+      throw sharedRequestError("A document this file depends on changed since the acceptance. Undo is no longer possible.", 409, "review_dependencies_changed");
+    }
+    const before = receipt.before;
+    let baselineBytes = null;
+    if (before.baseline.exists) {
+      baselineBytes = before.baseline.blob ? store.readBytes(before.baseline.blob) : null;
+      if (!baselineBytes || createHash("sha256").update(baselineBytes).digest("hex") !== before.baseline.hash) {
+        throw sharedRequestError("The earlier accepted version is missing. Undo is closed.", 409, "review_receipt_integrity_invalid");
+      }
+    }
+    for (const reference of [before.entry, before.entry?.acceptedVersion]) {
+      if (!reference?.baselinePath || reference.baselinePath === before.baseline.path) continue;
+      if (!readDocReviewBaseline(resolvedRoot, relPath, reference)) {
+        throw sharedRequestError("The earlier accepted version is missing. Undo is closed.", 409, "review_receipt_integrity_invalid");
+      }
+    }
+    const controlFiles = [
+      path.join(resolvedRoot, DOCQA_REVIEW_STATE),
+      globalReviewLedgerPath(resolvedRoot),
+      path.join(resolvedRoot, before.baseline.path),
+    ];
+    const result = withDocReviewControlRollback(resolvedRoot, controlFiles, "context-room-review-undo-rollback", () => {
+      if (before.baseline.exists) atomicWriteReviewControlFile(resolvedRoot, before.baseline.path, baselineBytes.toString("utf8"));
+      else removeDocReviewControlFile(resolvedRoot, before.baseline.path);
+      const reviews = { ...state.reviews };
+      if (before.entry) reviews[relPath] = before.entry;
+      else delete reviews[relPath];
+      writeDocReviewState(resolvedRoot, { version: 2, reviews });
+      const ledgerReviews = { ...ledger.reviews };
+      if (before.ledger) ledgerReviews[receipt.target.ledgerKey] = before.ledger;
+      else delete ledgerReviews[receipt.target.ledgerKey];
+      writeGlobalReviewLedger(resolvedRoot, { version: 2, reviews: ledgerReviews });
+      const committed = commitDocReviewReceiptUnderLock(resolvedRoot, {
+        id: randomUUID(),
+        requestId: requestId || null,
+        action: "undo",
+        undoOf: receipt.id,
+        status: before.entry?.status || "unverified",
+        source: "undo",
+        target: receipt.target,
+        revision,
+        before: { entry: receipt.after.entry, ledger: receipt.after.ledger, baseline: { path: before.baseline.path, exists: true, hash: null } },
+        after: { entry: before.entry, ledger: before.ledger },
+        undo: { eligible: false, reason: "is_undo" },
+      });
+      return { path: relPath, undoOf: receipt.id, status: before.entry?.status || "unverified", receipt: publicDocReviewReceipt(committed, { available: false, reason: "is_undo" }) };
+    });
+    try {
+      appendContextRoomEvent("review.undo", { ...contextRoomEventIdentity(resolvedRoot), resource: { path: relPath }, data: { undoOf: receipt.id } });
+    } catch {}
+    return result;
+  }, { expectedRootIdentity });
 }
 
 function gitFileAtRevision(root, revision, relPath) {
@@ -16275,6 +16757,14 @@ function contextHubStateWithAttention(state = {}) {
   };
 }
 
+function contextHubLocalLocations(root) {
+  const hub = contextHubUiState(root);
+  return (hub.projects || [])
+    .filter((project) => project.available && project.mode !== "shared")
+    .flatMap((project) => (project.worktrees?.length ? project.worktrees : [project]).map((location) => ({ ...location, title: project.title || location.title })))
+    .filter((location) => location.root && location.available !== false);
+}
+
 function reviewCleanupCandidates(root) {
   contextHubStateCache.clear();
   const hub = contextHubStateWithAttention(contextHubUiState(root));
@@ -17394,6 +17884,7 @@ function isOwnerReviewAuthorityMutation(pathname = "", method = "GET") {
     "DELETE /api/watch-rule",
     "POST /api/review-gate",
     "POST /api/docqa/review",
+    "POST /api/context-hub/review-undo",
     "POST /api/docqa/local-proposal-decision",
     "POST /api/docqa/local-draft",
     "POST /api/docqa/local-draft-submit",
@@ -22702,6 +23193,37 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     }
     return;
   }
+  if (req.method === "GET" && url.pathname === "/api/context-hub/review-history") {
+    const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit")) || 20));
+    const receipts = [];
+    for (const location of contextHubLocalLocations(root)) {
+      try {
+        for (const receipt of readDocReviewHistory(location.root, { limit }).receipts) {
+          receipts.push({ ...receipt, projectId: location.id, projectTitle: location.title || location.name || "" });
+        }
+      } catch {}
+    }
+    receipts.sort((left, right) => String(right.committedAt).localeCompare(String(left.committedAt)));
+    sendJson(res, 200, { receipts: receipts.slice(0, limit) });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/context-hub/review-undo") {
+    if (hostedSharedProvider) throw sharedRequestError("Undo is available only for local file reviews", 400, "review_undo_local_only");
+    const body = await readJsonBody(req, { maxBytes: 4_000 });
+    assertExactObjectKeys(body, ["projectId", "receiptId", "requestId"], "Review undo");
+    const location = contextHubLocalLocations(root).find((entry) => entry.id === String(body.projectId || ""));
+    if (!location) throw sharedRequestError("This project location is not available.", 404, "review_undo_project_unavailable");
+    const result = undoDocReviewAcceptance(location.root, {
+      receiptId: String(body.receiptId || ""),
+      requestId: typeof body.requestId === "string" && body.requestId ? body.requestId.slice(0, 100) : null,
+      expectedRootIdentity: location.rootIdentity || managedProjectRootIdentity(location.root),
+    });
+    contextHubProjectSummaryCache.clear();
+    contextHubStateCache.clear();
+    markContextHubSnapshotStale();
+    sendJson(res, 200, { ...result, projectId: location.id });
+    return;
+  }
   if (req.method === "POST" && url.pathname === "/api/context-hub/accept") {
     if (hostedSharedProvider) {
       throw sharedRequestError("Bulk acceptance from the Hub is available only for local file reviews", 400, "context_hub_accept_local_only");
@@ -22758,6 +23280,8 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
           expectedResourceMode: candidate.review.resourceMode || null,
           expectedDependencyVersions: candidate.review.dependencyVersions || null,
           expectedRootIdentity: candidate.project.rootIdentity || managedProjectRootIdentity(candidate.project.root),
+          receiptSource: "hub-queue",
+          requestId: typeof body.requestId === "string" && body.requestId ? `${body.requestId.slice(0, 100)}:${item.id}` : null,
         });
         accepted.push({ id: item.id, kind: "local", projectId: candidate.project.id, ...result });
       } catch (error) {
@@ -23795,6 +24319,9 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   if (req.method === "POST" && url.pathname === "/api/docqa/review") {
     const body = await readJsonBody(req);
     if (typeof body.expectedContentHash !== "string") throw sharedRequestError("expectedContentHash is required", 400, "review_revision_required");
+    if (body.status === "unverified") {
+      throw sharedRequestError("Use \u201cUndo this acceptance\u201d to withdraw a local acceptance.", 400, "review_unverify_requires_receipt");
+    }
     if (body.status === "needs_changes" && !fs.existsSync(path.join(root, SHARED_REVIEW_CONFIG))) {
       sendJson(res, 200, rejectDirectDocumentationChange(root, body.path, { expectedContentHash: body.expectedContentHash, expectedResourceVersion: body.expectedResourceVersion, expectedResourceMode: body.expectedResourceMode, expectedRootIdentity }));
       return;
@@ -23807,6 +24334,8 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       expectedContentHash: body.expectedContentHash,
       expectedDependencyVersions: body.expectedDependencyVersions || null,
       expectedRootIdentity,
+      receiptSource: "file-review",
+      requestId: typeof body.requestId === "string" && body.requestId ? body.requestId.slice(0, 100) : null,
     });
     sendJson(res, 200, { ...decision, proposalFinalization: null });
     return;

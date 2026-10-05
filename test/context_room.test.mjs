@@ -5462,7 +5462,7 @@ test("batch deletion review records absent resources and revalidates every selec
   assert.equal(deletedAgain.queue.some((item) => item.path === "docs/alpha.md"), true, "a later deletion at the same path must receive a new review");
 });
 
-test("deleted review batch exposes the full set beyond the eighty-item queue cap", () => {
+test("the review queue and the deleted review batch both carry more than eighty files", () => {
   const root = makeRoot();
   fs.mkdirSync(path.join(root, "docs"));
   execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
@@ -5480,7 +5480,7 @@ test("deleted review batch exposes the full set beyond the eighty-item queue cap
   const batch = buildDeletedReviewBatch(root);
 
   assert.equal(report.summary.deletedDocs, 85);
-  assert.equal(report.queue.length, 80);
+  assert.equal(report.queue.length, 85);
   assert.equal(report.pendingPaths.length, 85);
   assert.equal(batch.count, 85);
   assert.equal(batch.items.length, 85);

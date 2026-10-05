@@ -1795,6 +1795,15 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .review-flow-actions button { min-height: 40px; padding: 0 14px; }
     .review-flow-actions kbd { margin-left: 6px; font-size: 11px; color: var(--muted); }
     .review-flow-busy { color: var(--muted); font-size: 12px; }
+    .review-history-panel { margin: 8px 0; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; }
+    .review-history-panel[hidden] { display: none; }
+    .review-history-panel summary { cursor: pointer; min-height: 32px; display: flex; align-items: center; font-weight: 600; }
+    .review-history-hint { margin: 4px 0 8px; color: var(--muted); font-size: 12px; }
+    .review-history-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+    .review-history-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 0; border-top: 1px solid var(--line); }
+    .review-history-what { display: grid; gap: 2px; min-width: 0; }
+    .review-history-what strong { overflow-wrap: anywhere; font-size: 13px; }
+    .review-history-what span { color: var(--muted); font-size: 12px; }
     .context-hub-list-limit { padding: 9px 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; line-height: 1.4; }
     .context-hub-review-list.review-list { max-height: min(36vh, 340px); }
     .review-item.context-hub-review-row { width: 100%; min-width: 0; }
@@ -3636,6 +3645,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
               </div>
               <button type="button" class="quiet-button" data-review-cleanup>Clean up older changes</button>
               <div id="reviewFlowPanel" class="review-flow-panel" role="status" hidden></div>
+              <details id="reviewHistoryPanel" class="review-history-panel" hidden></details>
               <div id="contextRoomWorkingDrafts" class="context-room-other-attention" hidden></div>
               <div id="contextRoomReviewSelection" class="context-room-review-selection" hidden></div>
               <div id="reviewQueue" class="review-list"></div>
@@ -7504,6 +7514,108 @@ function renderReviewFlowPanel() {
   panel.hidden = count <= 1;
 }
 
+// Recent decisions: local review receipts across projects, with "Undo this acceptance".
+const REVIEW_HISTORY_REASONS = {
+  superseded: "A newer decision replaced it.",
+  expired: "Older than 30 days.",
+  file_changed: "The file changed since.",
+  source_not_undoable: "Not undoable from here.",
+  prior_evidence_untrusted: "The earlier review could not be verified.",
+  prior_baseline_unavailable: "The earlier accepted version was not kept.",
+};
+
+function reviewHistoryWhen(iso) {
+  const minutes = Math.round((Date.now() - Date.parse(iso)) / 60000);
+  if (!Number.isFinite(minutes)) return "";
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return minutes + " min ago";
+  if (minutes < 48 * 60) return Math.round(minutes / 60) + " h ago";
+  return new Date(iso).toLocaleDateString();
+}
+
+function reviewHistoryLabel(receipt) {
+  if (receipt.action === "undo") return "Acceptance undone";
+  return receipt.status === "verified" ? "Accepted" : receipt.status === "snoozed" ? "Later" : "Changes requested";
+}
+
+async function loadReviewHistory() {
+  if (state.reviewHistoryLoading) return;
+  state.reviewHistoryLoading = true;
+  try {
+    const result = await api("/api/context-hub/review-history?limit=20");
+    state.reviewHistory = Array.isArray(result.receipts) ? result.receipts : [];
+    state.reviewHistoryAt = Date.now();
+    state.reviewHistoryStale = false;
+  } catch {
+    state.reviewHistory = state.reviewHistory || [];
+    state.reviewHistoryAt = Date.now();
+  } finally {
+    state.reviewHistoryLoading = false;
+  }
+  renderReviewHistoryPanel();
+}
+
+function renderReviewHistoryPanel() {
+  const panel = el("reviewHistoryPanel");
+  if (!panel) return;
+  if (IS_HOSTED_CONTEXT_ROOM) { panel.hidden = true; return; }
+  if (!state.reviewHistory || state.reviewHistoryStale || Date.now() - (state.reviewHistoryAt || 0) > 15000) queueMicrotask(loadReviewHistory);
+  const receipts = state.reviewHistory || [];
+  panel.hidden = !receipts.length;
+  if (!receipts.length) { panel.innerHTML = ""; return; }
+  if (!panel.dataset.wired) {
+    panel.dataset.wired = "1";
+    panel.addEventListener("toggle", () => { state.reviewHistoryOpen = panel.open; });
+    panel.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-review-undo]");
+      if (button) confirmReviewUndo(button.dataset.reviewUndo);
+    });
+  }
+  panel.open = Boolean(state.reviewHistoryOpen);
+  panel.innerHTML = '<summary>Recent decisions · ' + receipts.length + '</summary>'
+    + '<p class="review-history-hint">Undo removes an acceptance. The file stays as it is and goes back to review.</p>'
+    + '<ul class="review-history-list">' + receipts.map((receipt) => {
+      const reason = receipt.action === "accept" && receipt.status === "verified" && !receipt.undo?.available ? REVIEW_HISTORY_REASONS[receipt.undo?.reason] || "" : "";
+      return '<li><div class="review-history-what"><strong>' + escapeHtml(receipt.path) + '</strong>'
+        + '<span>' + escapeHtml([receipt.projectTitle, reviewHistoryLabel(receipt), reviewHistoryWhen(receipt.committedAt)].filter(Boolean).join(" · ")) + '</span>'
+        + (reason ? '<span>' + escapeHtml(reason) + '</span>' : "") + '</div>'
+        + (receipt.undo?.available ? '<button type="button" class="file-action" data-review-undo="' + escapeHtml(receipt.id) + '">Undo this acceptance</button>' : "")
+        + '</li>';
+    }).join("") + '</ul>';
+}
+
+function confirmReviewUndo(receiptId) {
+  const receipt = (state.reviewHistory || []).find((entry) => entry.id === receiptId);
+  if (!receipt) return;
+  const requestId = crypto.randomUUID();
+  showConfirmDialog({
+    title: "Undo this acceptance?",
+    body: "The acceptance of " + receipt.path + (receipt.projectTitle ? " in " + receipt.projectTitle : "") + " is removed. The file is not restored: it goes back to review against the previous accepted version.",
+    confirmLabel: "Undo acceptance",
+    confirmPendingLabel: "Undoing…",
+    confirmVariant: "primary",
+    onConfirm: async () => {
+      await api("/api/context-hub/review-undo", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectId: receipt.projectId, receiptId, requestId }),
+      });
+      state.reviewHistoryStale = true;
+      setStatus("Acceptance undone · " + receipt.path + " is back in review");
+      await refreshContextHubReviewQueueAfterUndo();
+    },
+  });
+}
+
+async function refreshContextHubReviewQueueAfterUndo() {
+  try {
+    const ticket = beginContextHubSnapshotRequest();
+    const catalog = await api("/api/context-hub/refresh", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    if (applyContextHubSnapshot(catalog, ticket)) state.contextHubReviewQueueReady = true;
+  } catch {}
+  renderContextRoomGlobalReviewQueue();
+}
+
 async function openContextHubProjectDestination(projectKey, destination) {
   const project = (state.contextHub?.projects || []).find((item) => item.projectKey === projectKey);
   if (!project) return;
@@ -8206,6 +8318,7 @@ async function acceptContextRoomReviews(items) {
   try {
     let result;
     try {
+      state.reviewHistoryStale = true;
       result = await api("/api/context-hub/accept", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -8441,6 +8554,7 @@ function renderContextRoomGlobalReviewQueue() {
   if (!queueElement || !summary || !limit || !projectFilter || !sourceFilter || !search) return;
   renderReviewFlowPanel();
   renderReviewFlowBar();
+  renderReviewHistoryPanel();
   const hub = state.contextHub || { projects: [] };
   const hubReady = Boolean(state.contextHub);
   const needle = state.sharedProposalSearch.trim().toLowerCase();
@@ -20029,6 +20143,7 @@ async function applyReviewDecision(path, status, options = {}) {
         expectedResourceState: reviewItem?.resourceState || null,
         expectedResourceVersion: reviewItem?.resourceVersion || null,
         expectedDependencyVersions: reviewItem?.dependencyVersions || {},
+        requestId: crypto.randomUUID(),
       }),
     });
   } catch (error) {
@@ -20046,6 +20161,7 @@ async function applyReviewDecision(path, status, options = {}) {
   const reviewQueueCleared = reviewCompleted && previousQueue.length > 0 && nextQueue.length === 0;
   state.docqa = docqa;
   workspaceUpdate("review-decided", { path });
+  state.reviewHistoryStale = true;
   noteReviewFlowDecision(path, normalizedStatus);
   if (state.reviewModePath === path) state.reviewModeStatus = normalizedStatus === "verified" ? "verified" : null;
   state.selectedReview = docqa.queue.find((item) => item.path === path)?.path || nextReviewItemAfter(previousQueue, path, docqa.queue || [])?.path || docqa.queue[0]?.path || null;

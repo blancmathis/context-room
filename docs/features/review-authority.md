@@ -59,6 +59,14 @@ Trusted evidence binds to exact resource state, including canonical path, conten
 
 A changed hash, restored deletion, changed mode or changed proposal head invalidates the old decision. Dependency links provide navigation; unchanged dependent documents are not added to review.
 
+## Receipts and undo
+
+Each local file decision writes a signed receipt in the private review authority, outside the project. The receipt holds the exact version decided and the evidence it replaced. Writing the receipt index commits the decision. A decision interrupted before that point is undone by the next review writer. Until then, readers see the evidence from before the interrupted decision. A journal that cannot be verified closes review writes until it is repaired.
+
+"Undo this acceptance" restores the evidence from before one local acceptance: the previous review entry, its baseline and the global ledger key, or their absence. It never changes the file or the Git index. The file goes back to review against the previous accepted version.
+
+Undo is offered only for the latest decision on that file, within 30 days, for acceptances made in the file review or the Hub queue. It is refused when a newer decision exists, when the file, its mode, its Git index entry or its dependencies changed, or when a receipt or a kept baseline is missing or altered. Rejections, corrections, proposals, assets, Shared decisions and decisions made before receipts existed are not undoable. A bare "unverified" request to the local review route is refused. Retrying a request with the same request id returns its first result.
+
 ## Terminal request binding
 
 The terminal UI requests a short-lived, one-use challenge bound to principal, review authority, action, repository, proposal branch, and exact head. The challenge is consumed before mutable terminal work begins. A retry requires a new challenge.

@@ -1177,6 +1177,70 @@ function stateDigest(value) {
   return createHash("sha256").update(JSON.stringify(stableValue(value))).digest("hex");
 }
 
+// Private signed records of local review decisions: receipts, their index and the
+// transaction journal. They live beside the other review authorities, never in a project.
+export function createReviewReceiptStore(domainKey, options = {}) {
+  const authorityRoot = authorityBase(options);
+  const base = path.join(authorityRoot, "review-receipts", createHash("sha256").update(String(domainKey)).digest("hex").slice(0, 24));
+  const keyPaths = { base: authorityRoot, key: path.join(authorityRoot, "authority.key") };
+  let cachedKey = null;
+  const key = ({ create = true } = {}) => {
+    if (cachedKey) return cachedKey;
+    if (!create && !fs.existsSync(keyPaths.key)) return null;
+    cachedKey = ensureAuthorityKey(keyPaths);
+    return cachedKey;
+  };
+  const safeName = (name) => {
+    const value = String(name || "");
+    if (!/^[a-z0-9][a-z0-9._-]{0,180}$/i.test(value) || value.includes("..")) throw new Error(`Unsafe review receipt name: ${value}`);
+    return path.join(base, value);
+  };
+  return {
+    base,
+    pathFor: safeName,
+    sign(payload) {
+      return { ...payload, signature: authoritySignature(key(), payload) };
+    },
+    verify(record) {
+      const current = key({ create: false });
+      return Boolean(current) && signedStateIsVerified(record, current);
+    },
+    readJson(name) {
+      const filePath = safeName(name);
+      let stats;
+      try { stats = fs.lstatSync(filePath); } catch (error) { if (error?.code === "ENOENT") return null; throw error; }
+      if (!stats.isFile() || stats.size > SIGNED_STATE_MAX_BYTES) throw new Error(`Review receipt file is unsafe: ${filePath}`);
+      return JSON.parse(fs.readFileSync(filePath, "utf8"));
+    },
+    readBytes(name) {
+      const filePath = safeName(name);
+      try {
+        const stats = fs.lstatSync(filePath);
+        if (!stats.isFile() || stats.size > SIGNED_STATE_MAX_BYTES) return null;
+        return fs.readFileSync(filePath);
+      } catch (error) {
+        if (error?.code === "ENOENT") return null;
+        throw error;
+      }
+    },
+    writeJson(name, record) {
+      writePrivateFileAtomic(safeName(name), signedStateBytes(record));
+    },
+    writeBytes(name, bytes) {
+      writePrivateFileAtomic(safeName(name), Buffer.from(bytes));
+    },
+    exists(name) {
+      return fs.existsSync(safeName(name));
+    },
+    mtimeMs(name) {
+      return fs.statSync(safeName(name), { throwIfNoEntry: false })?.mtimeMs || 0;
+    },
+    remove(name) {
+      try { fs.unlinkSync(safeName(name)); } catch (error) { if (error?.code !== "ENOENT") throw error; }
+    },
+  };
+}
+
 export function authorizeOwnerTrustedState(root, kind, value, options = {}) {
   const canonicalRoot = canonicalAuthorityRoot(root);
   return writeSignedState(trustedStatePaths(canonicalRoot, kind, options), {
