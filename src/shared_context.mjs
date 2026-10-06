@@ -5829,12 +5829,13 @@ export function readSharedConnectionReceipt(root, {
   return receipt;
 }
 
-export function readAcceptedSharedMetadataProfiles(root) {
+export function readAcceptedSharedMetadataProfiles(root, { timeoutMs } = {}) {
   const connection = readSharedProjectConnection(root);
   if (!connection) return [];
   const synced = cachedSharedRepositoryState(connection.repository, {
     projectId: connection.projectId,
     projectRoot: connection.projectRoot || path.resolve(root),
+    timeoutMs,
   });
   const snapshot = synced.snapshot;
   const directory = path.join(snapshot, ".context-room", "profiles");
@@ -8630,6 +8631,8 @@ export function resolveSharedDocumentationTarget(repository, {
   sessionId = process.env.CODEX_THREAD_ID || "",
   allowOffline = true,
   acceptedRevision = process.env.CONTEXT_ROOM_DOC_ACCEPTED_REVISION || "",
+  // Read paths use the last synced state: a sync may fetch over the network.
+  cachedOnly = false,
 } = {}) {
   const frozenRevision = acceptedRevision ? safeRevision(acceptedRevision, "accepted shared revision") : "";
   let synced;
@@ -8659,7 +8662,8 @@ export function resolveSharedDocumentationTarget(repository, {
         snapshot,
       };
     });
-  } else synced = syncSharedRepositoryState(repository, { allowOffline });
+  } else if (cachedOnly) synced = cachedSharedRepositoryState(repository);
+  else synced = syncSharedRepositoryState(repository, { allowOffline });
   const normalizedProject = safeId(projectId, "projectId");
   const project = normalizedProject === "global"
     ? { id: "global", title: "Global skills" }

@@ -48,7 +48,21 @@ function linuxProcessIdentity(pid) {
   }
 }
 
+// A lock wait checks its owner every few milliseconds; `ps` is too slow for that pace.
+// A pid keeps its start time while it lives, and liveness is still checked by signal.
+const DARWIN_IDENTITY_REUSE_MS = 1_000;
+const darwinIdentityCache = new Map();
+
 function darwinProcessIdentity(pid) {
+  const cached = darwinIdentityCache.get(pid);
+  if (cached && performance.now() - cached.at < DARWIN_IDENTITY_REUSE_MS) return cached.identity;
+  const identity = readDarwinProcessIdentity(pid);
+  if (darwinIdentityCache.size >= 64) darwinIdentityCache.clear();
+  darwinIdentityCache.set(pid, { identity, at: performance.now() });
+  return identity;
+}
+
+function readDarwinProcessIdentity(pid) {
   try {
     const startedAt = execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
       encoding: "utf8",

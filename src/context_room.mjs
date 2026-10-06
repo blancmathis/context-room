@@ -16102,11 +16102,21 @@ function watchBackgroundInputs(root, { onInvalidate = null } = {}) {
 
 // The reports worker may not take the Shared repository lock, so the accepted Shared
 // profiles are read here. Reading them verifies the whole snapshot, so a value is kept
-// as long as a report.
+// as long as a report. This runs on the main thread: when a Shared sync holds the clone
+// lock, the last accepted profiles are reused rather than blocking every request.
+const SHARED_PROFILES_BUSY_WAIT_MS = 250;
+
 function cachedAcceptedSharedProfiles(key, { force = false } = {}) {
   const cached = backgroundSharedProfilesCache.get(key);
   if (!force && cached && cached.expiresAt > Date.now()) return cached.value;
-  const value = readAcceptedSharedMetadataProfiles(key);
+  let value;
+  try {
+    value = readAcceptedSharedMetadataProfiles(key, cached ? { timeoutMs: SHARED_PROFILES_BUSY_WAIT_MS } : {});
+  } catch (error) {
+    if (!cached || error?.code !== "shared_repository_clone_busy") throw error;
+    backgroundSharedProfilesCache.set(key, { value: cached.value, expiresAt: Date.now() + 5_000 });
+    return cached.value;
+  }
   backgroundSharedProfilesCache.set(key, { value, expiresAt: Date.now() + REPORT_CACHE_TTL_MS });
   return value;
 }
@@ -17058,8 +17068,10 @@ function contextHubLocalWorktree(projects = [], requestedId = "") {
   return null;
 }
 
+// A per-request lookup: read the atomically written registry without the registry lock,
+// which a background refresh may hold for seconds while the event loop waits.
 function registeredContextHubWorktree(requestedId = "") {
-  const project = listContextHubProjects().find((entry) => entry.id === requestedId);
+  const project = listContextHubProjects({ readOnly: true }).find((entry) => entry.id === requestedId);
   if (!project) return null;
   return {
     ...project,
@@ -20754,6 +20766,7 @@ export async function documentGraphApiResult(root, url, { background = true } = 
     const sharedTarget = resolveSharedDocumentationTarget(selectedHubProject.shared.repository, {
       projectId: selectedHubProject.shared.projectId,
       allowOffline: true,
+      cachedOnly: true,
     });
     const provider = String(url.searchParams.get("provider") || "codex").trim().toLowerCase();
     const folder = normalizeRelPath(String(url.searchParams.get("folder") || ".").trim() || ".");

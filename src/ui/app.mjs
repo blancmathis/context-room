@@ -4042,6 +4042,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 		state.globalProjectExplorerDetails = new Map();
 		state.globalProjectExplorerLoading = new Map();
 		state.globalProjectExplorerErrors = new Map();
+		state.globalProjectExplorerAutoLoads = new Set();
 		state.globalProjectExplorerController = null;
 		state.globalProjectSearchTimer = null;
 		state.globalProjectSettings = new Map();
@@ -6601,7 +6602,10 @@ function renderGlobalProjectFolder(project) {
   const error = state.globalProjectExplorerErrors.get(cacheKey);
   if (error) return withDocumentTabs('<div class="global-project-folder-state">' + escapeHtml(error) + '</div>');
   const details = state.globalProjectExplorerDetails.get(cacheKey);
-  if (!details) return withDocumentTabs('<div class="global-project-folder-state">Loading project folder…</div>');
+  if (!details) {
+    reloadMissingGlobalProjectExplorerPage(project, cacheKey, needle);
+    return withDocumentTabs('<div class="global-project-folder-state">Loading project folder…</div>');
+  }
   const filter = state.globalProjectWatchFilters.get(project.projectKey) || "all";
   const markup = renderGlobalProjectExplorerPage(project, details, 0, filter);
   const visibleCount = (details.entries || []).filter((entry) => globalProjectExplorerEntryMatchesFilter(entry, filter)).length;
@@ -6614,6 +6618,18 @@ function renderGlobalProjectFolder(project) {
     + '</div><span class="global-project-tree-meta">' + visibleCount + (needle ? " results" : " at root") + '</span></div>'
     + '<div class="global-project-folder-tree">' + (markup || '<div class="global-project-folder-state">No files match this view.</div>') + '</div>';
   return withDocumentTabs(locationContent);
+}
+
+// An aborted or superseded load leaves no page, error, or loading mark behind.
+// Start one load per selection so the folder never waits on nothing.
+function reloadMissingGlobalProjectExplorerPage(project, cacheKey, query) {
+  const attempt = cacheKey + "@" + state.globalProjectSelectionGeneration;
+  if (state.globalProjectExplorerAutoLoads.has(attempt)) return;
+  if (state.globalProjectExplorerController?.signal.aborted) return;
+  state.globalProjectExplorerAutoLoads.add(attempt);
+  queueMicrotask(() => {
+    loadGlobalProjectExplorerPage(project, { query }).catch((error) => setStatus(error.message));
+  });
 }
 
 async function openGlobalProjectExplorer(project) {

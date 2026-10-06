@@ -353,11 +353,12 @@ export function buildDocumentationCorpus(root = process.cwd(), options = {}) {
     sessionId,
     acceptedRevision: options.acceptedRevision,
     allowOffline: options.allowOffline !== false,
+    cachedOnly: readOnly,
   })) : null;
   const projectRoot = sharedTarget?.root || resolveDocumentationProjectRoot(root);
   const shared = sharedTarget ? { connected: true, revision: sharedTarget.revision } : sharedContextStatus(projectRoot);
   const connectedTarget = !sharedTarget && shared.connected ? resolveSharedDocumentationTarget(shared.connection.repository, {
-    projectId: shared.connection.projectId, sessionId: "", allowOffline: options.allowOffline !== false,
+    projectId: shared.connection.projectId, sessionId: "", allowOffline: options.allowOffline !== false, cachedOnly: readOnly,
   }) : null;
   if (connectedTarget) shared.revision = connectedTarget.revision;
   const localRevision = sharedTarget ? "" : gitOutput(projectRoot, ["rev-parse", "HEAD"]);
