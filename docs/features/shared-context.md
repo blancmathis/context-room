@@ -62,7 +62,7 @@ Accepted resources include documents, skills and optional metadata profiles. AGE
 
 ## Offline behavior
 
-Read-only consumption may use the last verified immutable accepted snapshot when the operation explicitly permits it. Creating, publishing, accepting, rejecting, or delivering a mutation requires online verification and fails closed when exact remote state cannot be proved.
+Read-only consumption may use the last verified immutable accepted snapshot when the operation explicitly permits it. A full content check of a cached snapshot is reused for up to 30 seconds while every file keeps the same inode, size, mode, mtime, and ctime; any write or mode change forces a new full check. Creating, publishing, accepting, rejecting, or delivering a mutation requires online verification and fails closed when exact remote state cannot be proved.
 
 ## Human authority
 

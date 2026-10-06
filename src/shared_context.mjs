@@ -3128,6 +3128,35 @@ function quarantineSharedSnapshot(cacheRoot, destination, revision, reason) {
   return quarantined;
 }
 
+// A full content check of a snapshot hashes every file. Within a short window it is
+// reused while every entry keeps the same inode, size, mode, mtime and ctime: any
+// write or chmod moves ctime, which user code cannot set back.
+const SNAPSHOT_VERIFICATION_REUSE_MS = 30_000;
+const verifiedSnapshots = new Map();
+
+function snapshotStatFingerprint(root) {
+  const hash = createHash("sha256");
+  const visit = (target, relativePath) => {
+    const stats = lstatIfPresent(target, { bigint: true });
+    if (!stats) throw sharedSnapshotIntegrityError("Shared snapshot entry disappeared", { path: relativePath });
+    hash.update(`${relativePath}\0${stats.dev}:${stats.ino}:${stats.mode}:${stats.nlink}:${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}\n`);
+    if (!stats.isDirectory()) return;
+    for (const name of fs.readdirSync(target).sort()) visit(path.join(target, name), relativePath ? `${relativePath}/${name}` : name);
+  };
+  visit(root, "");
+  return hash.digest("hex");
+}
+
+function rememberVerifiedSnapshot(destination, revision) {
+  verifiedSnapshots.set(destination, { revision, fingerprint: snapshotStatFingerprint(destination), at: Date.now() });
+}
+
+function snapshotStillVerified(destination, revision) {
+  const known = verifiedSnapshots.get(destination);
+  if (!known || known.revision !== revision || Date.now() - known.at > SNAPSHOT_VERIFICATION_REUSE_MS) return false;
+  try { return snapshotStatFingerprint(destination) === known.fingerprint; } catch { return false; }
+}
+
 function materializeSnapshot(checkout, revision, destination) {
   const acceptedRevision = safeRevision(revision, "shared snapshot revision");
   const cacheRoot = path.dirname(path.dirname(destination));
@@ -3135,14 +3164,19 @@ function materializeSnapshot(checkout, revision, destination) {
   assertSharedCacheDirectoryNoFollow(cacheRoot, "Shared repository cache");
   fs.mkdirSync(snapshotsRoot, { recursive: true });
   assertSharedCacheDirectoryNoFollow(snapshotsRoot, "Shared snapshot directory");
-  const expected = expectedSnapshotTree(checkout, acceptedRevision);
   const existing = lstatIfPresent(destination);
   if (existing) {
     assertSharedCacheDirectoryNoFollow(destination, "Shared snapshot root");
+    if (snapshotStillVerified(destination, acceptedRevision)) return destination;
+  }
+  verifiedSnapshots.delete(destination);
+  const expected = expectedSnapshotTree(checkout, acceptedRevision);
+  if (existing) {
     try {
       assertSnapshotMatchesRevision(checkout, acceptedRevision, destination, expected);
       makeTreeReadOnly(destination);
       assertSnapshotMatchesRevision(checkout, acceptedRevision, destination, expected);
+      rememberVerifiedSnapshot(destination, acceptedRevision);
       return destination;
     } catch (error) {
       if (error?.code !== "shared-snapshot-integrity") throw error;
