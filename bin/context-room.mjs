@@ -143,6 +143,8 @@ import {
   WATCH_RULE_MODES,
 } from "../src/context_room.mjs";
 
+const CONTEXT_BUNDLE_DEFAULT_BUDGET = 6000;
+
 function normalizedWatchPath(value) {
   return String(value || "").trim().replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+$/, "") + "/";
 }
@@ -1704,13 +1706,11 @@ if (command === "context") {
         const result = sharedOnlyContextBundle
           ? buildSharedOnlyAgentPrepare({ repository: explicitSharedRepository, projectId: explicitSharedProject, task, provider, fresh: Boolean(args.fresh), budget: args.budget })
           : buildAgentPrepareCached(agentFirstTarget, { task, provider, fresh: Boolean(args.fresh), budget: args.budget });
-        if (args.budget === undefined) emitAgentFirstResult("context.bundle", result, { format: agentFirstFormat });
-        else {
-          // Under a budget the review rule keeps its instruction, not the whole policy object.
-          const policy = result.data?.review?.humanDecisionPolicy;
-          if (policy?.instruction) result.data.review.humanDecisionPolicy = { instruction: policy.instruction };
-          emitBudgetedAgentResult("context.bundle", result, { format: agentFirstFormat, budget: normalizeContextBudget(args.budget), trimmers: CONTEXT_BUNDLE_TRIMMERS });
-        }
+        // A bundle is compact by default; `context effective` gives the complete context.
+        // Under a budget the review rule keeps its instruction, not the whole policy object.
+        const policy = result.data?.review?.humanDecisionPolicy;
+        if (policy?.instruction) result.data.review.humanDecisionPolicy = { instruction: policy.instruction };
+        emitBudgetedAgentResult("context.bundle", result, { format: agentFirstFormat, budget: normalizeContextBudget(args.budget, CONTEXT_BUNDLE_DEFAULT_BUDGET), trimmers: CONTEXT_BUNDLE_TRIMMERS });
         process.exit(0);
       } else if (action === "effective") data = buildCliContextEffective(agentFirstTarget, common);
       else if (action === "explain") {
