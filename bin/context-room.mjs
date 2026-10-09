@@ -1248,11 +1248,19 @@ if (command === "hub") {
     const focus = focusedProject ? `&project=${encodeURIComponent(focusedProject.id)}` : "";
     console.log(`Context Room Hub: ${url}/?hub=1${focus}`);
     console.log(`Projects: ${listContextHubProjects().length}`);
-    const close = () => server.close(async () => {
-      if (deviceService?.server.listening) await deviceService.close();
+    // Open event streams never end alone: drop them, and never outlive a stop
+    // signal, or the next start finds the device port still taken.
+    let closing = false;
+    const close = async () => {
+      if (closing) return;
+      closing = true;
+      setTimeout(() => process.exit(0), 5000).unref();
+      server.close();
+      server.closeAllConnections();
+      try { if (deviceService?.server.listening) await deviceService.close(); } catch {}
       clearContextHubRuntime(process.pid);
       process.exit(0);
-    });
+    };
     process.on("SIGINT", close);
     process.on("SIGTERM", close);
     await new Promise(() => {});
@@ -1658,8 +1666,9 @@ if (command === "shared") {
       console.log(`Proposal: ${args.proposal}`);
       console.log(`Proposal head: ${result.metadata.proposalHead}`);
       console.log(`Review root: ${result.reviewRoot}`);
-      process.on("SIGINT", () => server.close(() => process.exit(0)));
-      process.on("SIGTERM", () => server.close(() => process.exit(0)));
+      const close = () => { server.close(() => process.exit(0)); server.closeAllConnections(); };
+      process.on("SIGINT", close);
+      process.on("SIGTERM", close);
       await new Promise(() => {});
     }
     throw new Error(`Unknown shared command: ${action}`);

@@ -4043,3 +4043,28 @@ test("read-only project listing leaves legacy identity and damaged journals unto
   assert.equal(fs.readFileSync(registryPath, "utf8"), current);
   fs.rmSync(base, { recursive: true, force: true });
 });
+
+test("the Hub stops on SIGTERM while a browser event stream stays open", async (t) => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-stop-")));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const portProbe = net.createServer();
+  await new Promise((resolve) => portProbe.listen(0, "127.0.0.1", resolve));
+  const port = portProbe.address().port;
+  await new Promise((resolve) => portProbe.close(resolve));
+  const env = { ...process.env, CONTEXT_ROOM_HUB_HOME: path.join(base, "hub"), CONTEXT_ROOM_SHARED_HOME: path.join(base, "shared"), CONTEXT_ROOM_REVIEW_AUTHORITY_HOME: path.join(base, "authority") };
+  const cliPath = fileURLToPath(new URL("../bin/context-room.mjs", import.meta.url));
+  const child = spawn(process.execPath, [cliPath, "hub", "--no-local", "--port", String(port)], { env, stdio: ["ignore", "pipe", "pipe"] });
+  t.after(() => child.exitCode === null && child.kill("SIGKILL"));
+  const closed = new Promise((resolve) => child.once("close", (status, signal) => resolve({ status, signal })));
+  await new Promise((resolve, reject) => {
+    let stdout = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; if (stdout.includes("Context Room Hub:")) resolve(); });
+    closed.then(() => reject(new Error("Hub exited before it started")));
+  });
+  const stream = await fetch(`http://127.0.0.1:${port}/api/runtime-events`);
+  assert.equal(stream.status, 200);
+  stream.body.getReader().read().catch(() => {});
+  child.kill("SIGTERM");
+  const result = await Promise.race([closed, new Promise((resolve) => setTimeout(() => resolve("timeout"), 10_000))]);
+  assert.deepEqual(result, { status: 0, signal: null });
+});
