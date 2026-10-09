@@ -340,6 +340,27 @@ for (const dev of [0, 77]) test(`incomplete Git evidence cannot erase a contradi
   assert.deepEqual(fs.readFileSync(registryPath), before);
 });
 
+test("a legacy entry without Git evidence confirms its moved device and keeps Shared", (t) => {
+  const { root, base, registryPath } = fixture(t);
+  const saved = registerContextHubProject(root), old = `${saved.rootIdentity.dev}:${saved.rootIdentity.ino}`;
+  const raw = JSON.parse(fs.readFileSync(registryPath));
+  const shared = { repository: path.join(base, "remote.git"), projectId: "legacy" };
+  Object.assign(raw.projects[0], { logicalProjectId: saved.id, rootDurableIdentity: null, worktree: null, worktreeIdentity: null, shared });
+  fs.writeFileSync(registryPath, JSON.stringify(raw));
+  for (const name of fs.readdirSync(path.join(base, "authority"))) {
+    if (name.startsWith("location-")) fs.rmSync(path.join(base, "authority", name));
+  }
+  alterStats(t, { dev: 77 }, root);
+  assert.equal(listContextHubProjects()[0].unavailableReason, "identity to confirm");
+  const { project } = confirmContextHubProjectLocation({ projectId: saved.id, expectedRoot: root, expectedRootIdentity: old });
+  assert.equal(project.logicalProjectId, saved.logicalProjectId);
+  assert.equal(project.worktreeIdentity.kind, "git");
+  assert.equal(project.shared.projectId, "legacy");
+  const [entry] = listContextHubProjects();
+  assert.equal(entry.available, true);
+  assert.equal(entry.shared.projectId, "legacy");
+});
+
 test("a swap before attestation cannot authorize copied notebook history", (t) => {
   const { root, base, registryPath } = fixture(t);
   const saved = registerContextHubProject(root), old = `${saved.rootIdentity.dev}:${saved.rootIdentity.ino}`;

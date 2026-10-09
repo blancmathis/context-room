@@ -2634,8 +2634,11 @@ export function confirmContextHubProjectLocation({
     }
     assertContextHubProjectControlFiles(entry.root, current);
     const live = gitWorktreeIdentity(entry.root, entry);
-    if ((stored && !sameWorktreeMembershipIdentityIgnoringDevices(entry.worktreeIdentity, live.membershipIdentity))
-      || (stored && (entry.logicalProjectId || entry.id) !== live.logicalProjectId)) {
+    // Entries saved before worktree identities have no Git evidence to compare.
+    // The unchanged root inode is the proof; they adopt the live Git identity.
+    const legacyEntry = !entry.worktreeIdentity;
+    if ((stored && !legacyEntry && !sameWorktreeMembershipIdentityIgnoringDevices(entry.worktreeIdentity, live.membershipIdentity))
+      || (stored && !legacyEntry && (entry.logicalProjectId || entry.id) !== live.logicalProjectId)) {
       throw locationConfirmationError("This folder's Git worktree changed. Register it again as a new location instead.", "context_hub_location_replaced");
     }
     const confirmed = [...new Set([
