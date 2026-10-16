@@ -202,7 +202,7 @@ Estimations pour un agent Sonnet, tests compris. Ordre conseillé.
 |---|---|---|---|
 | L1 Essai synthétique de l'adaptateur | `mac_legacy_quiescence.py` + `exclusive_rename.py` sur un faux LaunchAgent `fr.lisiere.companion` dans un HOME de test (ou VM/compte de test) | 0,5 j | **oui** |
 | L2 Export tablette | Essai réel APK recovery → ZIP → reconcile ; doc pas à pas | 0,5 j + BOOX | **oui** |
-| L3 Mémos libres | Carnets sans projet choisi : dossier « Carnets » par défaut dans le Hub, bouton « Nouveau mémo », déplacement vers un projet | 1–1,5 j | non |
+| L3 Espace « Carnets » libre (**décidé par Mathis le 2026-10-16**) | Voir § Décision ci-dessous | 1–1,5 j | **oui** (usage attendu) |
 | L4 Lecteur PDF / image | Rendu PDF paginé (pdf.js local), zoom, « image entière » mémorisée, annotation en carnet | 2 j | non |
 | L5 Projets et tâches Codex | Import du catalogue Codex Desktop dans le registre (aperçu + oui) ; liste en lecture seule des sessions Codex du Mac | 1,5 j | non |
 | L6 Réseau tablette | mDNS/Bonjour pour retrouver le Mac ; diagnostic réseau (LAN/Tailscale) dans `doctor` | 1 j | non |
@@ -210,5 +210,34 @@ Estimations pour un agent Sonnet, tests compris. Ordre conseillé.
 | L8 Sauvegarde | `context-room backup/restore` des carnets, conversations et reçus | 1 j | non |
 | L9 Confort lecture/édition | Sommaire paginé, Aa, chercher/remplacer, Fast, « Suivre l'agent », QR d'appairage, export PNG/PDF d'un carnet | 2 j | non |
 
-Total : ~11 j. Minimum pour couper Lisière sans perte : **L1 + L2** (~1 j +
-BOOX). Pour que Mathis ne perde aucun usage : L3 à L5 en plus.
+Total : ~11 j. Minimum pour couper Lisière : **L1 + L2 + L3** (~2,5 j +
+BOOX). Pour que Mathis ne perde aucun usage : L4 et L5 en plus.
+
+### Décision 2026-10-16 : espace « Carnets » libre (L3)
+
+Mathis veut un espace « Carnets » libre, hors de tout projet, comme les mémos
+libres de Lisière. Proposition de conception (à valider au début de L3) :
+
+- Un dossier dédié, par défaut `~/Documents/Context Room/Carnets`, enregistré
+  une fois dans le Hub comme espace spécial (pas un projet de code : pas de
+  Git, pas de contexte d'agent, pas de Shared).
+- Le Hub et la tablette montrent « Carnets » en tête de la navigation, avant
+  les projets. Bouton **Nouveau carnet** toujours visible, sans choisir de
+  projet.
+- Action **Déplacer vers un projet** (copie vérifiée, puis retrait de
+  l'original), et l'inverse.
+- Le format reste `.crnb` : l'éditeur, le cache hors ligne et la dictée
+  marchent sans changement.
+- Migration : les 4 mémos du projet « Recuperation Lisiere » passent dans
+  « Carnets » (aperçu puis oui). Les futurs imports `--import-lisiere` de
+  mémos sans projet visent « Carnets » par défaut.
+- Tests : unitaire (création, déplacement aller-retour, refus d'écraser) et
+  e2e (nouveau carnet sans projet, retrouvé après redémarrage du Hub).
+
+```
+ Hub ─┬─ Carnets (libre)  ── lalala, test, rrgh, Mémo du 11 sept., + nouveaux
+      ├─ Projet A         ── docs, carnets du projet
+      └─ Projet B
+            ▲   Déplacer vers un projet / vers Carnets   │
+            └────────────────────────────────────────────┘
+```
