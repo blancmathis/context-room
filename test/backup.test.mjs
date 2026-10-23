@@ -291,3 +291,76 @@ test('backup and restore run through the CLI with preview then --apply --revisio
   const replaced = run(b, ['restore', output, '--replace']).json.data;
   assert.equal(run(b, ['restore', output, '--apply', '--replace', '--revision', replaced.revision]).json.data.replaced, 1);
 });
+
+test('restore refuses when a file changes between the preview and the undo copy, and writes nothing', t => {
+  const lab = laboratory(t), w = lab.world('a'), root = lab.project('one'); lab.populate(w, root);
+  const { output } = writeBackup({ output: path.join(lab.base, 'b1') });
+  fs.writeFileSync(conversationFile(w), 'edited\n');
+  const preview = previewRestore(output, { replace: true }), file = conversationFile(w);
+  assert.throws(() => applyRestore(output, { replace: true, expectedRevision: preview.revision }, { checkpoint(name) { if (name === 'objects-written') fs.writeFileSync(file, 'edited again\n'); } }), error => error.code === 'restore_stale' && /nothing was restored/.test(error.message));
+  assert.equal(fs.readFileSync(file, 'utf8'), 'edited again\n');
+  assert.deepEqual(fs.existsSync(path.join(path.dirname(w.hub), 'backups')) ? fs.readdirSync(path.join(path.dirname(w.hub), 'backups')) : [], []);
+});
+
+test('a file changed after the undo copy stops the restore; the message names the undo folder', t => {
+  const lab = laboratory(t), w = lab.world('a'), root = lab.project('one'); lab.populate(w, root);
+  const { output } = writeBackup({ output: path.join(lab.base, 'b1') });
+  fs.writeFileSync(conversationFile(w), 'edited\n'); fs.rmSync(path.join(w.review, 'authority.key'));
+  const preview = previewRestore(output, { replace: true }), file = conversationFile(w), key = path.join(w.review, 'authority.key');
+  let reported;
+  assert.throws(() => applyRestore(output, { replace: true, expectedRevision: preview.revision }, { checkpoint(name, index) {
+    if (name === 'before-write' && index === 1) fs.writeFileSync(key, 'late key');
+  } }), error => { reported = error.message; return /put back|could not be put back/.test(error.message) && /before-restore-/.test(error.message); });
+  assert.match(reported, new RegExp(path.join(path.dirname(w.hub), 'backups').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.equal(fs.readFileSync(key, 'utf8'), 'late key', 'a concurrent creation is never overwritten');
+  assert.equal(fs.readFileSync(file, 'utf8'), 'edited\n', 'the file already written is put back');
+});
+
+test('a linked project store or a hard-linked file is skipped with a warning, not a failure', t => {
+  const lab = laboratory(t), w = lab.world('a'), one = lab.project('one'), linked = lab.project('linked'); lab.populate(w, one); lab.register(w, one, linked);
+  const elsewhere = path.join(lab.base, 'archive'); fs.mkdirSync(path.join(elsewhere, 'notebooks'), { recursive: true });
+  fs.symlinkSync(elsewhere, path.join(linked, '.context-room'));
+  const hard = path.join(w.assistant, 'conversations', 'hard.json'); fs.writeFileSync(hard, '{}\n'); fs.linkSync(hard, path.join(lab.base, 'hard-twin'));
+  const plan = planBackup();
+  assert.ok(plan.files > 0); assert.ok(plan.skipped >= 1);
+  assert.ok(plan.warnings.some(item => /Skipped the notebook store/.test(item)) && plan.warnings.some(item => /hard-linked|link/.test(item) && item.includes('hard.json')));
+  const result = writeBackup({ output: path.join(lab.base, 'b1') }), manifest = JSON.parse(fs.readFileSync(path.join(result.output, 'manifest.json'), 'utf8'));
+  assert.ok(manifest.skipped.some(item => item.path === 'conversations/hard.json')); assert.equal(result.skipped, manifest.skipped.length);
+  assert.ok(manifest.entries.some(entry => entry.path.startsWith('conversations/1')) || manifest.entries.some(entry => entry.section === 'conversations'));
+});
+
+test('a file over the size limit is skipped with a warning; the rest of the section is saved', t => {
+  const lab = laboratory(t), w = lab.world('a'), root = lab.project('one'); lab.populate(w, root);
+  fs.mkdirSync(path.join(w.assistant, 'legacy-recordings'), { recursive: true });
+  const small = path.join(w.assistant, 'legacy-recordings', 'small.wav'), big = path.join(w.assistant, 'legacy-recordings', 'long.wav');
+  fs.writeFileSync(small, 'tiny'); fs.writeFileSync(big, ''); fs.truncateSync(big, 257 * 1024 ** 2);
+  const result = writeBackup({ output: path.join(lab.base, 'b1') });
+  assert.equal(result.sections.recordings.files, 1); assert.equal(result.skipped, 1);
+  assert.ok(result.warnings.some(item => item.includes('long.wav') && /256 MiB/.test(item)));
+  assert.ok(JSON.parse(fs.readFileSync(path.join(result.output, 'manifest.json'), 'utf8')).skipped.some(item => item.path.endsWith('long.wav')));
+});
+
+test('restore blocks notebook entries for a project that is not registered', t => {
+  const lab = laboratory(t), a = lab.world('a'), b = lab.world('b'), root = lab.project('one'); lab.populate(a, root);
+  const { output } = writeBackup({ output: path.join(lab.base, 'b1') });
+  b.enter(); lab.register(b);
+  assert.equal(previewRestore(output, { only: 'notebooks' }).blocked > 0, true);
+  const full = previewRestore(output); assert.equal(full.sections.notebooks.blocked, 0);
+});
+
+test('backup refuses an output inside the Shared home and warns inside a Git tree', t => {
+  const lab = laboratory(t), w = lab.world('a'), root = lab.project('one'); lab.populate(w, root);
+  throwsCode(() => writeBackup({ output: path.join(w.shared, 'b') }), 'backup_output_inside_source');
+  const repo = path.join(lab.base, 'repo'); fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+  const result = writeBackup({ output: path.join(repo, 'b1') });
+  assert.ok(result.warnings.some(item => /Git work tree/.test(item)));
+});
+
+test('a restore preview made in one set of homes does not apply in another', t => {
+  const lab = laboratory(t), a = lab.world('a'), b = lab.world('b'), root = lab.project('one'); lab.populate(a, root);
+  const { output } = writeBackup({ output: path.join(lab.base, 'b1') });
+  const preview = previewRestore(output, { only: 'conversations' });
+  b.enter(); fs.mkdirSync(b.assistant, { recursive: true });
+  assert.notEqual(previewRestore(output, { only: 'conversations' }).revision, preview.revision);
+  throwsCode(() => applyRestore(output, { only: 'conversations', expectedRevision: preview.revision }), 'restore_stale');
+});

@@ -140,6 +140,8 @@ The review `authority.key` is in the backup. Keep the folder private. To archive
 - The revision still matches the current state.
 - There are no conflicts, or you pass `--replace` (in the preview and in the apply).
 
-Before it replaces a file, restore saves the existing files in `<parent of the Hub home>/backups/before-restore-<date>` (same format). To undo, run `restore <that folder> --replace` and then `--apply --revision R`. Restore never deletes files that are not in the backup, and it puts written files back if a write fails.
+Before it replaces a file, restore saves the existing files in `<parent of the Hub home>/backups/before-restore-<date>` (same format). To undo, run `restore <that folder> --replace` and then `--apply --revision R`. Restore never deletes files that are not in the backup, and it puts written files back if a write fails. The undo folder covers only the files that restore replaces. Files that restore creates stay after an undo. If a file changes after the preview, the restore stops (`restore_stale`) and writes nothing; if it changes during the writes, the file is never overwritten, and the error names the undo folder. Notebook files are restored only for projects in the registry (the current one or the one saved in the backup).
+
+A file that cannot be saved is skipped, not fatal: a link or hard link (for example a project whose `.context-room` is a link), or a file over 256 MiB (a long recording). The report and `manifest.json` (`skipped`) list each one. Back such files up by hand. The backup folder must not sit in the Shared home. A warning appears when it sits in a Git work tree.
 
 Limits: project identity (`rootIdentity`, `authorityId`, `serverId`) depends on the path and on `dev:ino`. After a restore to another disk or path, confirm the projects with the confirmation gesture. Never register them again.

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { notebookHash, readNotebookBytes, writeNotebookBytes } from './notebook_io.mjs';
 import { listNotebooks, NOTEBOOK_STORE } from './notebooks.mjs';
@@ -48,6 +49,9 @@ export function backupNotebookRoots() {
   let registry;
   try { registry = JSON.parse(readNotebookBytes(homeDirectory('@hub'), 'registry.json', MAX_FILE_BYTES)?.toString('utf8') || 'null'); }
   catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+  return registryRoots(registry);
+}
+function registryRoots(registry) {
   const roots = new Set();
   for (const project of Array.isArray(registry?.projects) ? registry.projects : []) {
     for (const candidate of [project?.root, ...(Array.isArray(project?.projectGroup) ? project.projectGroup.map(item => item?.root) : [])]) {
@@ -57,6 +61,16 @@ export function backupNotebookRoots() {
   return [...roots].sort();
 }
 
+function storeIsPlain(root) {
+  let current = root;
+  for (const part of NOTEBOOK_STORE.split('/')) {
+    current = path.join(current, part);
+    const stats = fs.lstatSync(current, { throwIfNoEntry: false });
+    if (!stats) return true;
+    if (!stats.isDirectory()) return false;
+  }
+  return true;
+}
 function walk(root, rel, files, warnings) {
   const directory = rel ? path.join(root, rel) : root;
   let names;
@@ -94,7 +108,8 @@ function enumerate(sections, { notebookRoots = backupNotebookRoots(), warnings =
       try {
         for (const notebook of listNotebooks(root)) if (fs.lstatSync(path.join(root, notebook.path), { throwIfNoEntry: false })?.isFile()) files.push(notebook.path);
       } catch (error) { warnings.push(`Could not list the notebooks of ${root}: ${error.message}`); }
-      walk(root, NOTEBOOK_STORE, files, warnings);
+      if (storeIsPlain(root)) walk(root, NOTEBOOK_STORE, files, warnings);
+      else warnings.push(`Skipped the notebook store of ${root}: .context-room is a link or not a plain folder.`);
       for (const file of new Set(files)) refs.push({ section: 'notebooks', root, path: file });
     }
   }
@@ -110,17 +125,27 @@ function readRef(ref) {
   return bytes;
 }
 /** Read and hash every file once; keep objects only when a destination is given. */
+const SKIPPABLE = { notebook_path_scope: 'a symbolic link or hard link', notebook_size: `larger than ${MAX_FILE_BYTES / 1024 ** 2} MiB or hard-linked`, ELOOP: 'a symbolic link' };
 function collect(refs, objects) {
-  const entries = []; let total = 0;
+  const entries = [], skipped = []; let total = 0;
   for (const ref of refs) {
-    const bytes = readRef(ref), hash = sha256(bytes);
+    let bytes;
+    try { bytes = readRef(ref); }
+    catch (error) {
+      if (!(error.code in SKIPPABLE)) throw error;
+      skipped.push({ section: ref.section, root: ref.root, path: ref.path, reason: SKIPPABLE[error.code] });
+      continue;
+    }
+    const hash = sha256(bytes);
     total += bytes.length;
     if (total > MAX_TOTAL_BYTES) fail('backup_too_large', 'The data exceeds the 2 GiB backup limit. Choose fewer sections with --only.');
     if (objects) { try { fs.writeFileSync(path.join(objects, hash), bytes, { flag: 'wx', mode: 0o600 }); } catch (error) { if (error.code !== 'EEXIST') throw error; } }
     entries.push({ section: ref.section, root: ref.root, path: ref.path, sha256: hash, bytes: bytes.length });
   }
-  return entries;
+  return { entries, skipped };
 }
+const skippedWarnings = skipped => [...skipped.slice(0, LIST_LIMIT).map(item => `Not saved (${item.reason}): ${item.root}/${item.path}`),
+  ...(skipped.length > LIST_LIMIT ? [`…and ${skipped.length - LIST_LIMIT} more files not saved (see "skipped" in manifest.json).`] : [])];
 const summarize = (entries, sections) => Object.fromEntries(sections.map(name => {
   const own = entries.filter(entry => entry.section === name);
   return [name, { files: own.length, bytes: own.reduce((sum, entry) => sum + entry.bytes, 0) }];
@@ -129,13 +154,15 @@ const summarize = (entries, sections) => Object.fromEntries(sections.map(name =>
 /** Counts and sizes of what a backup would save. Writes nothing. */
 export function planBackup({ only } = {}) {
   const sections = selectSections(only), warnings = [];
-  const entries = collect(enumerate(sections, { warnings }));
+  const { entries, skipped } = collect(enumerate(sections, { warnings }));
   return { applied: false, sections: summarize(entries, sections), files: entries.length, bytes: entries.reduce((sum, entry) => sum + entry.bytes, 0),
-    contentRevision: notebookHash(entries), containsSecrets: secretsOf(entries), warnings };
+    contentRevision: notebookHash(entries), containsSecrets: secretsOf(entries), skipped: skipped.length, warnings: [...new Set([...warnings, ...skippedWarnings(skipped)])] };
 }
 
+const sharedHomePath = () => (process.env.CONTEXT_ROOM_SHARED_HOME ? path.resolve(process.env.CONTEXT_ROOM_SHARED_HOME) : path.join(process.env.HOME || os.homedir(), '.context-room', 'shared'));
 function sourceDirectories() {
   const directories = ['@hub', '@review', '@assistant'].map(homeDirectory);
+  directories.push(realOrSelf(sharedHomePath()));
   for (const root of backupNotebookRoots()) directories.push(path.join(root, '.context-room'));
   return directories;
 }
@@ -146,18 +173,18 @@ function buildBackup(output, enumerateRefs, sections, { checkpoint = () => {}, n
   fs.mkdirSync(staging, { mode: 0o700 });
   fs.mkdirSync(path.join(staging, 'objects'), { mode: 0o700 });
   try {
-    let entries = null;
+    let entries = null, skipped = [];
     for (let attempt = 1; attempt <= ATTEMPTS && !entries; attempt += 1) {
       const first = collect(enumerateRefs(), path.join(staging, 'objects'));
       checkpoint('objects-written', attempt);
       const second = collect(enumerateRefs());
-      if (JSON.stringify(first) === JSON.stringify(second)) entries = first;
+      if (JSON.stringify(first) === JSON.stringify(second)) ({ entries, skipped } = first);
     }
     if (!entries) fail('backup_changed', 'Data changed while the backup was running. Try again.');
     const used = new Set(entries.map(entry => entry.sha256));
     for (const name of fs.readdirSync(path.join(staging, 'objects'))) if (!used.has(name)) fs.unlinkSync(path.join(staging, 'objects', name));
     const manifest = { version: BACKUP_VERSION, mediaType: BACKUP_MEDIA_TYPE, createdAt: now().toISOString(), contentRevision: notebookHash(entries),
-      sections, containsSecrets: secretsOf(entries), entries };
+      sections, containsSecrets: secretsOf(entries), skipped, entries };
     fs.writeFileSync(path.join(staging, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
     fs.renameSync(staging, output);
     return manifest;
@@ -173,8 +200,10 @@ export function writeBackup({ output, only } = {}, options = {}) {
   if (sourceDirectories().some(source => inside(source, real) || inside(source, output))) fail('backup_output_inside_source', 'The backup folder must be outside the Context Room data it saves.');
   const sections = selectSections(only), warnings = [];
   const manifest = buildBackup(output, () => enumerate(sections, { warnings }), sections, options);
+  const gitTree = (() => { for (let dir = path.dirname(real); ; dir = path.dirname(dir)) { if (fs.existsSync(path.join(dir, '.git'))) return true; if (dir === path.dirname(dir)) return false; } })();
+  if (gitTree && manifest.containsSecrets.length) warnings.push('The backup folder sits inside a Git work tree and holds the review signing key: do not commit or push it.');
   return { applied: true, output, createdAt: manifest.createdAt, sections: summarize(manifest.entries, sections), files: manifest.entries.length,
-    bytes: manifest.entries.reduce((sum, entry) => sum + entry.bytes, 0), contentRevision: manifest.contentRevision, containsSecrets: manifest.containsSecrets, warnings };
+    bytes: manifest.entries.reduce((sum, entry) => sum + entry.bytes, 0), contentRevision: manifest.contentRevision, containsSecrets: manifest.containsSecrets, skipped: manifest.skipped.length, warnings: [...new Set([...warnings, ...skippedWarnings(manifest.skipped)])] };
 }
 
 const SAFE_PART = /^[^\x00-\x1f\\]+$/;
@@ -236,7 +265,8 @@ function projectRootUsable(root, cache) {
   }
   return cache.get(root);
 }
-function classify(entry, cache) {
+function classify(entry, cache, allowed) {
+  if (!(entry.root in HOMES) && !allowed.has(entry.root)) return { state: 'blocked', reason: 'project folder is not in the registry' };
   if (!(entry.root in HOMES) && !projectRootUsable(entry.root, cache)) return { state: 'blocked', reason: 'project folder missing or replaced' };
   const base = entry.root in HOMES ? homeDirectory(entry.root) : entry.root;
   if (entry.root in HOMES && !fs.existsSync(base)) return { state: 'create' };
@@ -252,7 +282,10 @@ export function planRestore(directory, { only, replace = false } = {}) {
   const sections = selectSections(only === undefined ? manifest.sections : only);
   for (const name of sections) if (!manifest.sections.includes(name)) fail('backup_sections', `This backup has no "${name}" section.`);
   const entries = manifest.entries.filter(entry => sections.includes(entry.section)), cache = new Map();
-  const actions = entries.map(entry => ({ entry, ...classify(entry, cache) }));
+  const allowed = new Set(); try { for (const item of backupNotebookRoots()) allowed.add(item); } catch {}
+  const saved = sections.includes('registry') && manifest.entries.find(entry => entry.section === 'registry');
+  if (saved) { try { for (const item of registryRoots(JSON.parse(readNotebookBytes(root, `objects/${saved.sha256}`, MAX_FILE_BYTES).toString('utf8')))) allowed.add(item); } catch {} }
+  const actions = entries.map(entry => ({ entry, ...classify(entry, cache, allowed) }));
   const known = new Set(entries.map(refKey)), warnings = [];
   const kept = enumerate(sections, { notebookRoots: [...new Set(entries.filter(entry => entry.section === 'notebooks').map(entry => entry.root))].filter(item => projectRootUsable(item, cache)), warnings })
     .filter(ref => !known.has(refKey(ref))).length;
@@ -260,7 +293,7 @@ export function planRestore(directory, { only, replace = false } = {}) {
   for (const action of actions) counts[action.entry.section][action.state] += 1;
   const total = state => actions.filter(action => action.state === state).length;
   const list = state => actions.filter(action => action.state === state).slice(0, LIST_LIMIT).map(action => ({ section: action.entry.section, root: action.entry.root, path: action.entry.path, ...(action.reason ? { reason: action.reason } : {}) }));
-  const revision = notebookHash({ backup: manifest.contentRevision, sections, replace: Boolean(replace),
+  const revision = notebookHash({ backup: manifest.contentRevision, sections, replace: Boolean(replace), homes: ['@hub', '@review', '@assistant'].map(homeDirectory),
     actions: actions.map(action => [action.entry.section, action.entry.root, action.entry.path, action.entry.sha256, action.state, action.currentSha256 || null]) });
   return { applied: false, backup: root, createdAt: manifest.createdAt, sections: counts, create: total('create'), same: total('same'), conflict: total('conflict'), blocked: total('blocked'), kept,
     conflicts: list('conflict'), blockedFiles: list('blocked'), replace: Boolean(replace), containsSecrets: manifest.containsSecrets, revision, _actions: actions, _root: root, _selected: sections };
@@ -269,10 +302,10 @@ const publicPlan = ({ _actions, _root, _selected, ...plan }) => plan;
 export const previewRestore = (directory, options) => publicPlan(planRestore(directory, options));
 
 const fileMode = entry => (entry.section === 'notebooks' && !entry.path.startsWith('.context-room/') ? 0o644 : 0o600);
-function writeEntry(entry, bytes) {
+function writeEntry(entry, bytes, expectedHash) {
   const base = entry.root in HOMES ? homeDirectory(entry.root) : entry.root;
   if (entry.root in HOMES) fs.mkdirSync(base, { recursive: true, mode: 0o700 });
-  writeNotebookBytes(base, entry.path, bytes, { mode: fileMode(entry) });
+  writeNotebookBytes(base, entry.path, bytes, { mode: fileMode(entry), ...(expectedHash === undefined ? {} : { expectedHash }) });
 }
 function removeCreated(entry) {
   const base = entry.root in HOMES ? homeDirectory(entry.root) : entry.root;
@@ -298,7 +331,13 @@ export function applyRestore(directory, { only, replace = false, expectedRevisio
   let undo = null;
   if (conflicts.length) {
     undo = undoDirectory();
-    buildBackup(undo, () => conflicts.map(action => ({ section: action.entry.section, root: action.entry.root, path: action.entry.path })).sort(compareRefs), BACKUP_SECTIONS.filter(name => conflicts.some(action => action.entry.section === name)), { checkpoint });
+    const saved = buildBackup(undo, () => conflicts.map(action => ({ section: action.entry.section, root: action.entry.root, path: action.entry.path })).sort(compareRefs), BACKUP_SECTIONS.filter(name => conflicts.some(action => action.entry.section === name)), { checkpoint });
+    const savedSha = new Map(saved.entries.map(entry => [refKey(entry), entry.sha256]));
+    const moved = conflicts.filter(action => savedSha.get(refKey(action.entry)) !== action.currentSha256);
+    if (moved.length) {
+      fs.rmSync(undo, { recursive: true, force: true });
+      fail('restore_stale', `${moved.length} file${moved.length === 1 ? '' : 's'} changed after the preview (${moved[0].entry.path}). Preview again; nothing was restored.`);
+    }
   }
   const written = [];
   try {
@@ -306,15 +345,25 @@ export function applyRestore(directory, { only, replace = false, expectedRevisio
       checkpoint('before-write', written.length);
       const bytes = readNotebookBytes(plan._root, `objects/${action.entry.sha256}`, MAX_FILE_BYTES);
       if (!bytes || sha256(bytes) !== action.entry.sha256) fail('restore_damaged', `A backup object changed during the restore (${action.entry.path}).`);
-      writeEntry(action.entry, bytes);
+      writeEntry(action.entry, bytes, action.state === 'create' ? null : action.currentSha256);
       written.push(action);
     }
   } catch (error) {
+    const stuck = [];
     for (const action of written.reverse()) {
-      if (action.state === 'create') removeCreated(action.entry);
-      else writeEntry(action.entry, readNotebookBytes(undo, `objects/${action.currentSha256}`, MAX_FILE_BYTES));
+      try {
+        if (action.state === 'create') removeCreated(action.entry);
+        else {
+          const before = readNotebookBytes(undo, `objects/${action.currentSha256}`, MAX_FILE_BYTES);
+          if (!before) throw new Error('the saved copy is missing');
+          writeEntry(action.entry, before);
+        }
+      } catch (rollbackError) { stuck.push(`${action.entry.path} (${rollbackError.message})`); }
     }
-    throw Object.assign(new Error(`The restore stopped (${error.message}). Files already written were put back.`), { code: error.code || 'restore_failed' });
+    const saved = undo ? ` The files it replaced are saved in ${undo}.` : '';
+    throw Object.assign(new Error(stuck.length
+      ? `The restore stopped (${error.message}). These files could not be put back: ${stuck.join('; ')}.${saved}`
+      : `The restore stopped (${error.message}). Files already written were put back.${saved}`), { code: error.code || 'restore_failed' });
   }
   return { ...publicPlan(plan), applied: true, written: written.length, created: written.filter(action => action.state === 'create').length, replaced: conflicts.length, undoBackup: undo };
 }
