@@ -32,6 +32,8 @@ function hubHome() {
     : path.join(process.env.HOME || os.homedir(), ".context-room", "hub");
 }
 
+export const contextHubHome = hubHome;
+
 export function contextHubHostRoot() {
   return path.join(hubHome(), "host");
 }
@@ -2683,6 +2685,12 @@ export function readContextHubRuntime() {
     url: `http://127.0.0.1:${port}`,
     startedAt: String(runtime.startedAt || ""),
   };
+}
+
+/** True while a Hub process recorded in runtime.json is still running. */
+export function contextHubRuntimeAlive() {
+  const runtime = readContextHubRuntime();
+  return Boolean(runtime?.pid) && processIsAlive(runtime.pid);
 }
 
 export function writeContextHubRuntime({ pid = process.pid, port, root, url } = {}) {

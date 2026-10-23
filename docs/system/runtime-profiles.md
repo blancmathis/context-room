@@ -125,3 +125,21 @@ Service installation/activation, local dependency availability and reboot
 behavior have not been tested by kit preparation. Use a synthetic account/project
 for the first local verification. No older service is stopped automatically by
 this installation procedure; legacy retirement is the separate migration action.
+
+## Backup and restore
+
+`context-room backup --output DIR` copies the user data of one Context Room installation into a new private folder (mode 0700): `manifest.json` plus content-addressed files in `objects/<sha256>`. `--plan` shows the counts and writes nothing. `--only registry,review,conversations,recordings,notebooks` limits the sections. The folder must not exist and must not sit inside a source home.
+
+Included: the project registry, the review authority (`authority.key` and signed receipts), assistant conversations, recordings, and the notebooks of every registered root (including the free Carnets space). Excluded: paired devices, models, audio jobs, `runtime.json`, locks and temporary files, the Shared home, and ordinary project files.
+
+The review `authority.key` is in the backup. Keep the folder private. To archive it, use `tar czf` on the folder and store it somewhere private. The tablet keystore is not part of this backup.
+
+`context-room restore DIR` shows a preview: each file is `create`, `same`, `conflict` or `blocked`, with a `revision`. Nothing is written. Then run `restore DIR --apply --revision R`. The apply step needs these conditions:
+
+- The Hub is stopped (`launchctl bootout gui/$(id -u)/app.contextroom.local`).
+- The revision still matches the current state.
+- There are no conflicts, or you pass `--replace` (in the preview and in the apply).
+
+Before it replaces a file, restore saves the existing files in `<parent of the Hub home>/backups/before-restore-<date>` (same format). To undo, run `restore <that folder> --replace` and then `--apply --revision R`. Restore never deletes files that are not in the backup, and it puts written files back if a write fails.
+
+Limits: project identity (`rootIdentity`, `authorityId`, `serverId`) depends on the path and on `dev:ino`. After a restore to another disk or path, confirm the projects with the confirmation gesture. Never register them again.

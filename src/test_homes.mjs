@@ -8,7 +8,7 @@ import path from "node:path";
 // without explicit homes, use temporary ones too.
 if (process.env.NODE_TEST_CONTEXT) {
   const created = [];
-  for (const [key, prefix] of [["CONTEXT_ROOM_HUB_HOME", "context-room-test-hub-"], ["CONTEXT_ROOM_SHARED_HOME", "context-room-test-shared-"]]) {
+  for (const [key, prefix] of [["CONTEXT_ROOM_HUB_HOME", "context-room-test-hub-"], ["CONTEXT_ROOM_SHARED_HOME", "context-room-test-shared-"], ["CONTEXT_ROOM_ASSISTANT_HOME", "context-room-test-assistant-"]]) {
     if (process.env[key]) continue;
     process.env[key] = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
     created.push(process.env[key]);

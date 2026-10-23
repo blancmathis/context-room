@@ -342,7 +342,7 @@ async function flushAndExit(code = 0) {
 const KNOWN_OPTIONS = new Set([
   "cutover-lisiere", "legacy-plist", "rollback-cutover", "resume-cutover", "legacy-recording", "conversation-id", "reconcile-lisiere", "recovery-view", "mac-snapshot", "legacy-actor", "export-lisiere", "import-lisiere", "inspect-lisiere", "legacy-board", "legacy-draft", "legacy-conversation", "legacy-session", "session-frame", "recordings", "output", "revision",
   "device-host", "device-port", "device-state", "device-browser-origin", "device-browser-cert", "device-browser-key",
-  "reader", "propose",
+  "reader", "propose", "replace",
   "action", "actionable", "advisory", "all", "all-projects", "allow", "allow-stale", "apply", "branch", "budget", "contract", "cursor", "cwd", "days", "depth", "description", "detail", "document", "dry-run", "enabled", "exclude", "expand", "fields", "files", "folder", "follow", "format", "fresh", "from", "goal", "h", "heading", "help", "highlight", "hook", "include",
   "assignment", "change", "collection", "collection-path", "collection-title", "destination", "id", "include", "json", "kind", "limit", "message", "mode", "name", "no-restart", "note", "operation", "order", "path", "pattern", "percent", "port", "profile", "project", "projects", "provider", "providers", "query", "skill",
   "expected-revision", "file", "filter", "idempotency-key", "label", "location", "no-color", "no-local", "non-interactive", "only", "plan", "profile", "project", "projects-file", "proposal", "quiet", "reason", "recent", "repository", "resource", "root", "scope", "search", "section", "selector", "session", "set", "settings", "severity", "shared", "shared-project", "shell", "since", "skills", "source", "status", "strict", "summary", "target", "task", "text", "title", "to", "types", "verbose", "version", "view", "watch", "workspace",
@@ -884,6 +884,8 @@ if (!rootStats?.isDirectory()) {
 
 const nativePlanCommand = (
   command === "migrate"
+  || command === "backup"
+  || command === "restore"
   || (command === "agent" && args._[1] === "handoff")
   || (command === "agent" && ["watch", "unwatch", "open", "navigate", "scroll", "highlight", "annotate"].includes(args._[1]))
   || (command === "review" && args._[1] === "annotate")
@@ -897,6 +899,7 @@ const nativePlanCommand = (
 );
 const nativeApplyCommand = (
   command === "migrate"
+  || command === "restore"
   || (command === "agent" && args._[1] === "handoff")
   || (command === "review" && args._[1] === "annotate")
   || (command === "shared" && args._[1] === "skills")
@@ -1807,6 +1810,35 @@ if (command === "migrate") {
     emitAgentFirstResult("migrate", { target: agentFirstTarget, data }, { format: agentFirstFormat });
     process.exit(0);
   } catch (error) { failAgentFirstCommand("migrate", error, { format: agentFirstFormat, target: agentFirstTarget }); }
+}
+
+if (command === "backup" || command === "restore") {
+  try {
+    const { writeBackup, planBackup, previewRestore, applyRestore } = await import("../src/backup.mjs");
+    const usage = (message) => new ContextRoomCliError("invalid-arguments", message, { exitCode: 2 });
+    const text = (value) => (value && value !== true ? String(value) : "");
+    let data;
+    try {
+      if (command === "backup") {
+        if (args._[1]) throw usage("backup takes --output, not a positional argument.");
+        if (args.apply || args.revision || args.replace) throw usage("backup writes a new folder directly; it takes --output, --plan and --only.");
+        if (args.plan) data = planBackup({ only: args.only });
+        else if (!text(args.output)) throw usage("backup requires --output <new folder>.");
+        else data = writeBackup({ output: text(args.output), only: args.only });
+      } else {
+        if (!text(args._[1]) || args._[2]) throw usage("restore takes one backup folder: restore <folder> [--apply --revision <revision>] [--replace] [--only a,b].");
+        if (args.output) throw usage("restore does not take --output.");
+        if (args.plan && args.apply) throw usage("Choose a restore preview or --apply, not both.");
+        const options = { only: args.only, replace: Boolean(args.replace) };
+        data = args.apply ? applyRestore(args._[1], { ...options, expectedRevision: text(args.revision) }) : previewRestore(args._[1], options);
+      }
+    } catch (error) {
+      if (error instanceof ContextRoomCliError || !/^(backup|restore)_/.test(String(error?.code))) throw error;
+      throw new ContextRoomCliError(error.code.replaceAll("_", "-"), error.message, { exitCode: ["backup_sections", "backup_output"].includes(error.code) ? 2 : 1 });
+    }
+    emitAgentFirstResult(command, { target: null, data }, { format: agentFirstFormat });
+    process.exit(0);
+  } catch (error) { failAgentFirstCommand(command, error, { format: agentFirstFormat }); }
 }
 
 if (command === "changes") {
