@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { notebookImageSize } from './notebook_images.mjs';
 import { randomUUID } from 'node:crypto';
 import { NOTEBOOK_VERSION, NOTEBOOK_LIMITS, notebookId, notebookPath, notebookActor, failNotebook, emptyNotebook, normalizeNotebookDocument, applyNotebookEdits, cloneNotebook } from './notebook_protocol.mjs';
@@ -14,6 +15,43 @@ export const notebookServerId = (root, identity = canonicalNotebookRoot(root)) =
 function assertNotMoved(root, id) {
   const moved = readNotebookJson(root, movedPath(id));
   if (moved) failNotebook('notebook_moved', 'This notebook moved to another place. Open it there; nothing was lost.', { destination: cloneNotebook(moved.to) });
+}
+// A moving copy waits here, invisible, until its source carries the moved marker of that exact move.
+const incomingPath = (id, operationId) => `${NOTEBOOK_STORE}/incoming/${notebookId(id)}-${notebookId(operationId)}`;
+/** The source marker is the single commit point of a move: before it the source is the
+ * active copy, after it the staged copy is. Activation only finishes what was committed. */
+function completeArrival(root, id, operationId) {
+  const staged = safeNotebookPath(root, incomingPath(id, operationId)), stagedHeader = safeNotebookPath(root, `${incomingPath(id, operationId)}/header.json`);
+  if (!fs.existsSync(staged)) return;
+  if (fs.existsSync(stagedHeader)) {
+    // A lock may have left the folder itself; only an existing header means another active copy.
+    const active = makeNotebookDirectory(root, resourcePath(id)), activeHeader = safeNotebookPath(root, `${resourcePath(id)}/header.json`);
+    if (fs.existsSync(activeHeader)) failNotebook('notebook_recovery_conflict', 'A moved notebook arrived where another copy is active. Both are kept; compare them.');
+    // An earlier departure from this root no longer applies once the notebook is back.
+    fs.rmSync(safeNotebookPath(root, movedPath(id)), { force: true });
+    try { fs.renameSync(stagedHeader, activeHeader); } catch (error) { if (error.code !== 'ENOENT' || !fs.existsSync(activeHeader)) throw error; }
+    syncNotebookDirectory(active);
+  }
+  fs.rmSync(staged, { recursive: true, force: true }); syncNotebookDirectory(path.dirname(staged));
+}
+function committedArrival(root, name) {
+  try {
+    const staged = readNotebookJson(root, `${NOTEBOOK_STORE}/incoming/${name}/header.json`), transfer = staged?.transferred, from = transfer?.from;
+    if (!transfer || name !== `${staged.document?.id}-${transfer.operationId}` || typeof from?.root !== 'string') return null;
+    if (canonicalNotebookRoot(from.root) !== from.rootIdentity || readNotebookJson(from.root, movedPath(staged.document.id))?.operationId !== transfer.operationId) return null;
+    return { id: staged.document.id, operationId: transfer.operationId };
+  } catch { return null; } // A source that is unreadable or elsewhere commits nothing; the staged copy waits.
+}
+function activateArrivals(root, id) {
+  const directory = safeNotebookPath(root, `${NOTEBOOK_STORE}/incoming`);
+  if (!fs.existsSync(directory)) return;
+  for (const name of fs.readdirSync(directory).sort()) {
+    if (id ? !name.startsWith(`${id}-`) : name.startsWith('.')) continue;
+    const arrival = committedArrival(root, name);
+    if (!arrival) continue;
+    if (id) completeArrival(root, arrival.id, arrival.operationId);
+    else try { completeArrival(root, arrival.id, arrival.operationId); } catch { /* reported when that notebook is read */ }
+  }
 }
 const eventPattern = /^(\d{16})-([a-f0-9]{64})\.json$/;
 const maxFrameBytes = 64 * 1024 * 1024;
@@ -77,7 +115,7 @@ function applyFrame(state, frame, file) {
 }
 function readState(root, id) {
   const rootIdentity = canonicalNotebookRoot(root), folder = resourcePath(id);
-  assertNotMoved(root, id);
+  activateArrivals(root, id); assertNotMoved(root, id);
   const header = readNotebookJson(root, `${folder}/header.json`);
   if (!header || header.schemaVersion !== 1 || header.document.id !== id) failNotebook('notebook_missing', 'Notebook working scene not found.');
   if (!['same', 'alias', 'confirmed'].includes(acceptsRootIdentity(root, header.rootIdentity))) failNotebook('notebook_root_conflict', 'This working scene belongs to another exact filesystem location.');
@@ -177,7 +215,8 @@ export function importNotebookDraft(root, { path, document, tombstones = {}, req
   return preview ? execute() : withNotebookLock(root, `${NOTEBOOK_STORE}/registry.lock`, execute);
 }
 export function listNotebooks(root) {
-  canonicalNotebookRoot(root); const directory = safeNotebookPath(root, `${NOTEBOOK_STORE}/resources`);
+  canonicalNotebookRoot(root); activateArrivals(root);
+  const directory = safeNotebookPath(root, `${NOTEBOOK_STORE}/resources`);
   if (!fs.existsSync(directory)) return [];
   return fs.readdirSync(directory).sort().filter(id => /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/.test(id)).flatMap(id => {
     if (!readNotebookJson(root, `${resourcePath(id)}/header.json`) || readNotebookJson(root, movedPath(id))) return [];
@@ -297,10 +336,44 @@ function withTransferLocks(sourceRoot, targetRoot, operation) {
   return withNotebookLock(first, `${NOTEBOOK_STORE}/registry.lock`, () => withNotebookLock(second, `${NOTEBOOK_STORE}/registry.lock`, operation));
 }
 const liveTombstones = (document, tombstones) => { const live = new Set(document.objects.map(o => o.id)); return Object.fromEntries(Object.entries(tombstones).filter(([id]) => !live.has(id)).sort()); };
-/** Move one working notebook to another root: exclusive copy, verification, then
- * retirement of the source (kept under retired/, never deleted). A published or
- * submitted notebook does not move. The same operationId resumes at the step reached.
- * Undo history stays with the retired source. */
+/** Paths that working notebooks of `root` hold. A notebook that cannot be read keeps the
+ * path of its header, so one damaged notebook never blocks a move to another path. */
+function occupiedNotebookPaths(root, arrivingId) {
+  const paths = new Set(), store = name => safeNotebookPath(root, `${NOTEBOOK_STORE}/${name}`);
+  const headerPath = rel => { try { const header = readNotebookJson(root, `${rel}/header.json`); if (typeof header?.locator?.path === 'string') paths.add(header.locator.path); } catch { /* no known path */ } };
+  if (fs.existsSync(store('resources'))) for (const id of fs.readdirSync(store('resources')).sort()) {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/.test(id)) continue;
+    try { if (readNotebookJson(root, movedPath(id))) continue; paths.add(readState(root, id).locator.path); }
+    catch (error) { if (error.code !== 'notebook_moved') headerPath(resourcePath(id)); }
+  }
+  // Copies staged for another notebook may be committed already: their path is taken too.
+  if (fs.existsSync(store('incoming'))) for (const name of fs.readdirSync(store('incoming')).sort()) if (!name.startsWith('.') && !name.startsWith(`${arrivingId}-`)) headerPath(`${NOTEBOOK_STORE}/incoming/${name}`);
+  return paths;
+}
+/** One move identifier per notebook incarnation and destination: a re-run after a crash
+ * finds its own journal, and a notebook that came back gets a new identifier. */
+export function notebookTransferOperationId(sourceRoot, targetRoot, resourceId, prefix = 'move') {
+  const header = readNotebookJson(sourceRoot, `${resourcePath(resourceId)}/header.json`);
+  if (!header) failNotebook('notebook_missing', 'Notebook working scene not found.');
+  return notebookId(`${prefix}-${notebookHash({ resourceId, target: canonicalNotebookRoot(targetRoot), header: notebookHash(header) }).slice(0, 40)}`);
+}
+/** Moves from `sourceRoot` to `targetRoot` that passed their commit point but stopped before the source was retired. */
+export function interruptedNotebookTransfers(sourceRoot, targetRoot) {
+  const targetIdentity = canonicalNotebookRoot(targetRoot), directory = safeNotebookPath(sourceRoot, `${NOTEBOOK_STORE}/transfers`);
+  if (!fs.existsSync(directory)) return [];
+  return fs.readdirSync(directory).sort().flatMap(name => {
+    const match = /^([a-zA-Z0-9][a-zA-Z0-9_-]{0,95})\.json$/.exec(name), journal = match && readNotebookJson(sourceRoot, `${NOTEBOOK_STORE}/transfers/${name}`);
+    if (!journal || journal.operationId !== match[1] || journal.target !== targetIdentity) return [];
+    if (readNotebookJson(sourceRoot, movedPath(journal.resourceId))?.operationId !== journal.operationId) return [];
+    return fs.existsSync(safeNotebookPath(sourceRoot, `${NOTEBOOK_STORE}/retired/${journal.resourceId}-${journal.operationId}`)) ? [] : [cloneNotebook(journal)];
+  });
+}
+/** Move one working notebook to another root. Steps: journal (source), staged copy
+ * (target incoming/, invisible), moved marker (source, the commit point), activation of the
+ * copy, retirement of the source (kept under retired/, never deleted). A crash at any step
+ * leaves exactly one active copy. The same operationId resumes a committed move; a move
+ * that stopped before its commit is cancelled when the source changed since its preview.
+ * A published or submitted notebook does not move. Undo history stays with the retired source. */
 export function transferNotebook(sourceRoot, targetRoot, request = {}, { canWriteSource = () => false, canWriteTarget = () => false, preview = false, destination = {} } = {}) {
   const id = notebookId(request.resourceId), path = notebookPath(request.path);
   const sourceIdentity = canonicalNotebookRoot(sourceRoot), targetIdentity = canonicalNotebookRoot(targetRoot);
@@ -316,7 +389,7 @@ export function transferNotebook(sourceRoot, targetRoot, request = {}, { canWrit
     return { state, revision };
   };
   const assertFree = () => {
-    if (readNotebookJson(targetRoot, `${resourcePath(id)}/header.json`) || listNotebooks(targetRoot).some(entry => entry.path === path)
+    if (readNotebookJson(targetRoot, `${resourcePath(id)}/header.json`) || occupiedNotebookPaths(targetRoot, id).has(path)
       || readNotebookBytes(targetRoot, path, NOTEBOOK_LIMITS.bytes) !== null) failNotebook('notebook_location_conflict', 'The destination already holds this notebook or this path. Nothing was overwritten.');
   };
   if (preview) {
@@ -325,13 +398,19 @@ export function transferNotebook(sourceRoot, targetRoot, request = {}, { canWrit
       from: { ...from, path: state.locator.path }, to, overwrites: false, accepted: false };
   }
   const operationId = notebookId(request.operationId), journalRel = `${NOTEBOOK_STORE}/transfers/${operationId}.json`;
-  const retiredRel = `${NOTEBOOK_STORE}/retired/${id}-${operationId}`;
+  const retiredRel = `${NOTEBOOK_STORE}/retired/${id}-${operationId}`, stagedRel = incomingPath(id, operationId);
   const retire = () => {
     const current = safeNotebookPath(sourceRoot, resourcePath(id)), retired = safeNotebookPath(sourceRoot, retiredRel);
     if (fs.existsSync(current) && !fs.existsSync(retired)) {
       makeNotebookDirectory(sourceRoot, `${NOTEBOOK_STORE}/retired`);
       fs.renameSync(current, retired); syncNotebookDirectory(safeNotebookPath(sourceRoot, `${NOTEBOOK_STORE}/retired`));
     }
+  };
+  // Nothing was committed: the staged copy is only a copy and the source stays active.
+  const cancel = operation => {
+    fs.rmSync(safeNotebookPath(targetRoot, incomingPath(id, operation)), { recursive: true, force: true });
+    const journal = safeNotebookPath(sourceRoot, `${NOTEBOOK_STORE}/transfers/${operation}.json`);
+    if (fs.existsSync(journal)) { fs.renameSync(journal, safeNotebookPath(sourceRoot, `${NOTEBOOK_STORE}/transfers/${operation}.cancelled.json`)); syncNotebookDirectory(safeNotebookPath(sourceRoot, `${NOTEBOOK_STORE}/transfers`)); }
   };
   const result = (journal, replayed) => {
     const scene = readNotebook(targetRoot, id, { includeDocument: false });
@@ -340,37 +419,45 @@ export function transferNotebook(sourceRoot, targetRoot, request = {}, { canWrit
   };
   return withTransferLocks(sourceRoot, targetRoot, () => {
     let journal = readNotebookJson(sourceRoot, journalRel);
-    if (journal && (journal.resourceId !== id || journal.target !== targetIdentity || journal.to.path !== path || journal.revision !== request.expectedRevision)) failNotebook('notebook_replay_conflict', 'This move identifier was used for another move.');
-    const marker = readNotebookJson(sourceRoot, movedPath(id));
-    if (marker?.operationId === operationId && journal) { retire(); return result(journal, true); }
-    const replayed = Boolean(journal);
+    if (journal && (journal.resourceId !== id || journal.target !== targetIdentity || journal.to.path !== path)) failNotebook('notebook_replay_conflict', 'This move identifier was used for another move.');
+    if (journal && readNotebookJson(sourceRoot, movedPath(id))?.operationId === operationId) { completeArrival(targetRoot, id, operationId); retire(); return result(journal, true); }
+    if (fs.existsSync(safeNotebookPath(sourceRoot, retiredRel))) failNotebook('notebook_replay_conflict', 'This move already finished and the notebook came back. Preview the move again.');
+    let replayed = Boolean(journal);
     withNotebookLock(sourceRoot, `${resourcePath(id)}/mutation.lock`, () => {
       const { state, revision } = plan();
+      if (journal && journal.revision !== revision) { cancel(operationId); journal = null; replayed = false; }
+      if (request.expectedRevision !== revision) failNotebook('notebook_location_stale', 'The notebook changed after the preview. Preview the move again.');
       const tombstones = liveTombstones(state.document, state.tombstones), documentHash = notebookHash(encodeNotebook(state.document));
-      const arrived = readNotebookJson(targetRoot, `${resourcePath(id)}/header.json`);
       if (!journal) {
-        if (request.expectedRevision !== revision) failNotebook('notebook_location_stale', 'The notebook changed after the preview. Preview the move again.');
         assertFree();
+        // Older interrupted moves of this notebook from this source never reached their commit point.
+        const incoming = safeNotebookPath(targetRoot, `${NOTEBOOK_STORE}/incoming`);
+        if (fs.existsSync(incoming)) for (const name of fs.readdirSync(incoming)) {
+          const operation = name.startsWith(`${id}-`) && name.slice(id.length + 1);
+          if (operation && operation !== operationId && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/.test(operation) && readNotebookJson(targetRoot, `${NOTEBOOK_STORE}/incoming/${name}/header.json`)?.transferred?.from?.rootIdentity === sourceIdentity) cancel(operation);
+        }
         journal = { schemaVersion: 1, operationId, resourceId: id, revision, target: targetIdentity, from: { ...from, path: state.locator.path, locationRevision: state.locator.revision },
           to, documentHash, tombstonesHash: notebookHash(tombstones), at: new Date().toISOString() };
         writeNotebookJson(sourceRoot, journalRel, journal, { exclusive: true });
-      } else if (journal.documentHash !== documentHash || journal.tombstonesHash !== notebookHash(tombstones)) {
-        failNotebook('notebook_recovery_conflict', 'The notebook changed during an interrupted move. Both copies are kept; compare them before retrying.');
       }
-      if (!arrived) {
+      if (!readNotebookJson(targetRoot, `${stagedRel}/header.json`)) {
         assertFree();
         const locator = { path, sourceHash: null, revision: notebookHash({ rootIdentity: targetIdentity, path, id, sourceHash: null, transfer: operationId }) };
-        writeNotebookJson(targetRoot, `${resourcePath(id)}/header.json`, { schemaVersion: 1, rootIdentity: targetIdentity, locator, document: state.document, tombstones,
-          transferred: { operationId, sequence: state.sequence + 1, from: { serverId: from.serverId, path: state.locator.path, revision: state.locator.revision } } }, { exclusive: true });
-      } else if (arrived.transferred?.operationId !== operationId) failNotebook('notebook_location_conflict', 'The destination already holds this notebook. Nothing was overwritten.');
-      // An earlier departure from the destination no longer applies once the notebook is back.
-      fs.rmSync(safeNotebookPath(targetRoot, movedPath(id)), { force: true });
-      const copy = readNotebook(targetRoot, id);
-      if (notebookHash(encodeNotebook(copy.document)) !== documentHash || notebookHash(liveTombstones(copy.document, copy.tombstones)) !== journal.tombstonesHash) {
-        failNotebook('notebook_recovery_conflict', 'The copied notebook does not match its source. The source is unchanged.');
+        writeNotebookJson(targetRoot, `${stagedRel}/header.json`, { schemaVersion: 1, rootIdentity: targetIdentity, locator, document: state.document, tombstones,
+          transferred: { operationId, sequence: state.sequence + 1, from: { serverId: from.serverId, path: state.locator.path, revision: state.locator.revision, root: sourceRoot, rootIdentity: sourceIdentity } } }, { exclusive: true });
       }
+      const staged = readNotebookJson(targetRoot, `${stagedRel}/header.json`);
+      let copy;
+      try { copy = decodeNotebook(Buffer.from(JSON.stringify(staged.document))); initialTombstones(copy, staged.tombstones); } catch { copy = null; }
+      if (!copy || staged.rootIdentity !== targetIdentity || staged.transferred?.operationId !== operationId || staged.locator?.path !== path
+        || notebookHash(encodeNotebook(copy)) !== journal.documentHash || notebookHash(liveTombstones(copy, staged.tombstones)) !== journal.tombstonesHash) {
+        failNotebook('notebook_recovery_conflict', 'The copied notebook does not match its source. The source is unchanged and still active.');
+      }
+      // The destination may have been taken while an interrupted move waited.
+      assertFree();
       writeNotebookJson(sourceRoot, movedPath(id), { schemaVersion: 1, operationId, resourceId: id, to: journal.to, at: new Date().toISOString() });
     });
+    completeArrival(targetRoot, id, operationId);
     // The mutation lock lives inside the folder being retired: rename after its release.
     // Writers that waited for it now read the moved marker and receive notebook_moved.
     retire();

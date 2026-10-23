@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { openNotebook, readNotebook, mutateNotebook, undoNotebook, freezeNotebook, readFrozenNotebook, recordNotebookSubmission, notebookReceipt, relocateNotebook, transferNotebook, listNotebooks, NOTEBOOK_STORE, encodeNotebook, decodeNotebook, addNotebookAsset } from '../src/notebooks.mjs';
+import { openNotebook, readNotebook, mutateNotebook, undoNotebook, freezeNotebook, readFrozenNotebook, recordNotebookSubmission, notebookReceipt, relocateNotebook, transferNotebook, notebookTransferOperationId, listNotebooks, NOTEBOOK_STORE, encodeNotebook, decodeNotebook, addNotebookAsset } from '../src/notebooks.mjs';
 import { notebookHash, withNotebookLock, readNotebookBytes } from '../src/notebook_io.mjs';
 const human = {kind:'human',id:'human-fixture'}, agent = {kind:'agent',id:'agent-fixture'};
 const canWrite = value => value.startsWith('docs/') && value.endsWith('.crnb');
@@ -233,4 +233,68 @@ test('createOnly refuses a path used by a notebook or an ordinary file', t=>{
   assert.throws(()=>openNotebook(root,{path:'docs/Plain.crnb',canWrite,createOnly:true}),{code:'notebook_location_conflict'});
   assert.equal(fs.readFileSync(path.join(root,'docs/Plain.crnb'),'utf8'),'Existing original bytes');
   assert.equal(openNotebook(root,{path:'docs/New.crnb',canWrite,createOnly:true}).locator.path,'docs/New.crnb');
+});
+
+// A simulated crash stops the exact write of one move step; everything before it is on disk.
+function crashAt(match, operation) {
+  const link = fs.linkSync, rename = fs.renameSync;
+  const guard = original => (from, to) => { if (match(String(from), String(to))) throw Object.assign(new Error('simulated crash'), { code: 'EIO' }); return original(from, to); };
+  fs.linkSync = guard(link); fs.renameSync = guard(rename);
+  try { assert.throws(operation, /simulated crash/); } finally { fs.linkSync = link; fs.renameSync = rename; }
+}
+const activeCopies = (roots, id) => roots.filter(root => listNotebooks(root).some(entry => entry.id === id)).length;
+const moveSteps = [
+  ['journal', (from, to) => to.includes('/transfers/'), false],
+  ['staged copy', (from, to) => to.includes('/incoming/'), false],
+  ['moved marker', (from, to) => to.includes('/moved/'), false],
+  ['activation', (from, to) => from.includes('/incoming/') && to.includes('/resources/'), true],
+  ['retirement', (from, to) => to.includes('/retired/'), true],
+];
+for (const [step, match, committed] of moveSteps) test(`a crash at the move ${step} leaves exactly one active notebook and the re-run finishes the move`, t => {
+  const { root, scene, request } = fixture(t), space = secondRoot(t), options = { canWriteSource: canWrite, canWriteTarget: spaceWrite };
+  mutateNotebook(root, request('ink', [put('stroke', 'ink')]), { actor: human, canWrite });
+  const preview = transferNotebook(root, space, { resourceId: scene.resourceId, path: 'Carnets/Sketch.crnb' }, { ...options, preview: true });
+  const run = () => transferNotebook(root, space, { resourceId: scene.resourceId, path: 'Carnets/Sketch.crnb', operationId: 'crash', expectedRevision: preview.revision }, options);
+  crashAt(match, run);
+  assert.equal(activeCopies([root, space], scene.resourceId), 1);
+  assert.deepEqual(listNotebooks(committed ? space : root).map(entry => entry.id), [scene.resourceId]);
+  assert.equal(run().moved, true);
+  assert.deepEqual(listNotebooks(root), []); assert.deepEqual(listNotebooks(space).map(entry => entry.id), [scene.resourceId]);
+  assert.equal(readNotebook(space, scene.resourceId).document.objects.length, 1);
+  assert.ok(fs.existsSync(path.join(root, NOTEBOOK_STORE, 'retired', `${scene.resourceId}-crash`, 'header.json')));
+  assert.deepEqual(fs.readdirSync(path.join(space, NOTEBOOK_STORE, 'incoming')), []);
+});
+test('a move stopped before its commit is cancelled by the re-run once the source changed', t => {
+  const { root, scene, request } = fixture(t), space = secondRoot(t), options = { canWriteSource: canWrite, canWriteTarget: spaceWrite };
+  const target = { resourceId: scene.resourceId, path: 'Carnets/Sketch.crnb' };
+  const first = transferNotebook(root, space, target, { ...options, preview: true });
+  crashAt((from, to) => to.includes('/moved/'), () => transferNotebook(root, space, { ...target, operationId: 'crash', expectedRevision: first.revision }, options));
+  mutateNotebook(root, request('later', [put('later')]), { actor: human, canWrite });
+  assert.throws(() => transferNotebook(root, space, { ...target, operationId: 'crash', expectedRevision: first.revision }, options), { code: 'notebook_location_stale' });
+  assert.deepEqual(fs.readdirSync(path.join(space, NOTEBOOK_STORE, 'incoming')), [], 'the staged copy is dropped');
+  assert.ok(fs.existsSync(path.join(root, NOTEBOOK_STORE, 'transfers', 'crash.cancelled.json')));
+  assert.equal(activeCopies([root, space], scene.resourceId), 1); assert.equal(readNotebook(root, scene.resourceId).document.objects.length, 1);
+  const second = transferNotebook(root, space, target, { ...options, preview: true });
+  assert.equal(transferNotebook(root, space, { ...target, operationId: 'crash', expectedRevision: second.revision }, options).replayed, false);
+  assert.deepEqual(readNotebook(space, scene.resourceId).document.objects.map(o => o.id), ['later']);
+});
+test('an old move identifier never moves a notebook that came back', t => {
+  const { root, scene } = fixture(t), space = secondRoot(t), options = { canWriteSource: canWrite, canWriteTarget: spaceWrite };
+  const before = notebookTransferOperationId(root, space, scene.resourceId);
+  const out = move(root, space, scene.resourceId, 'Carnets/Sketch.crnb', 'out');
+  move(space, root, scene.resourceId, 'docs/Sketch.crnb', 'back', [spaceWrite, canWrite]);
+  assert.throws(() => transferNotebook(root, space, { resourceId: scene.resourceId, path: 'Carnets/Sketch.crnb', operationId: 'out', expectedRevision: out.revision }, options), { code: 'notebook_replay_conflict' });
+  assert.equal(readNotebook(root, scene.resourceId).resourceId, scene.resourceId); assert.deepEqual(listNotebooks(space), []);
+  assert.notEqual(notebookTransferOperationId(root, space, scene.resourceId), before, 'the notebook that came back gets a new identifier');
+  assert.equal(move(root, space, scene.resourceId, 'Carnets/Sketch.crnb', 'out-again').moved, true);
+});
+test('one damaged notebook in the destination does not block a move to another path', t => {
+  const { root, scene } = fixture(t), space = secondRoot(t);
+  openNotebook(space, { path: 'Carnets/Broken.crnb', id: 'broken-notebook', canWrite: spaceWrite });
+  const events = path.join(space, NOTEBOOK_STORE, 'resources', 'broken-notebook', 'events');
+  fs.mkdirSync(events, { recursive: true }); fs.writeFileSync(path.join(events, 'unknown.json'), '{}');
+  assert.throws(() => readNotebook(space, 'broken-notebook'), { code: 'notebook_recovery_conflict' });
+  assert.throws(() => transferNotebook(root, space, { resourceId: scene.resourceId, path: 'Carnets/Broken.crnb' }, { canWriteSource: canWrite, canWriteTarget: spaceWrite, preview: true }), { code: 'notebook_location_conflict' });
+  assert.equal(move(root, space, scene.resourceId, 'Carnets/Sketch.crnb', 'past-damage').moved, true);
+  assert.equal(readNotebook(space, scene.resourceId).locator.path, 'Carnets/Sketch.crnb');
 });
