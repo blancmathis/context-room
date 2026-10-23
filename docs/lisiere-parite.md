@@ -59,7 +59,7 @@ physique) n'est pas encore passée.
 | Lecteur HTML (ressources locales, liens externes) | Docs rendues + `src/document_assets.mjs` | prouvé |
 | « Lire le texte » paginé, Sommaire > 300 sections, recherche sans accents, Aa | Mode focus (`src/ui/app.mjs`), recherche docs. Pas de sommaire paginé dédié ni réglage Aa vérifiés sur encre. | partiel |
 | Modifier HTML/MD → diff → « Appliquer sur le Mac » | Brouillon + proposition locale + revue humaine (`src/local_proposals.mjs`, `docs/features/document-workflow.md`) | prouvé |
-| Gros éditeur (annuler/rétablir, chercher/remplacer, 20 Mio) | Éditeur de documents ; pas de chercher/remplacer dans l'UI trouvé | partiel |
+| Gros éditeur (annuler/rétablir, chercher/remplacer, 20 Mio) | Éditeur de documents ; pas de chercher/remplacer dans l'UI trouvé ; limite de 16 Mio au lieu de 20 | partiel ; limite 16 Mio : écart accepté (Mathis, 2026-10-23) |
 | Lecteur PDF et image (pages, zoom, « Image entière », Annoter) | Lecteur PDF/image fusionné (L4, 7f178e6) : pdf.js 6.4.299 copié dans le paquet (`src/ui/document-viewer.mjs`), route `/vendor/pdfjs/` sans `'wasm-unsafe-eval'`. Preuves : `test/document_viewer.test.mjs` 27/27, route pdf.js 1/1 (`test/context_room.test.mjs`) ; annotation PNG de revue (`test/e2e/notebooks.spec.mjs:499`). Limites : aucun essai BOOX ; chemin tablette (proxy propriétaire) sans e2e ; pas de PDF JPX en test ; course `openPdf` → L9a. | partiel (essai BOOX à faire) |
 | Carnets stylet/doigt, zoom 2 doigts, gomme, sélection, formes | `.crnb` (`src/notebook_*.mjs`, `src/ui/notebook-*.mjs`, `android/.../InkView.java`, `BooxInk.java`) ; `test/notebook*.test.mjs`, `test/e2e/notebooks.spec.mjs:216,372,484` | prouvé (navigateur) ; partiel (BOOX réelle) |
 | Mémos libres hors projet (`~/Documents/Lisière/Carnets`) | Espace Notebooks (`~/Documents/Context Room/Carnets`), New notebook, déplacement vérifié vers un projet et retour (`test/notebooks.test.mjs` transfer, `test/hub_durable_identity.test.mjs` space, e2e « Notebooks space »). Les 4 mémos passent par `migrate --notebooks-to-space` à la bascule. | prouvé (navigateur) ; partiel (BOOX réelle) |
@@ -219,12 +219,13 @@ mention, Claude lance les commandes ; les gestes sur la BOOX sont ceux du guide.
 **Migration réelle des 4 carnets.** Les 4 mémos sont dans le projet
 « Recuperation Lisiere ». Ils passent dans l'espace Notebooks avec
 `migrate --notebooks-to-space`, **sans `--legacy-board`**. Cette action écrit
-dans `~/.context-room` : **elle attend le oui de Mathis**. Ordre : (1) arrêter
-le Hub : `launchctl bootout gui/$U/app.contextroom.local` (un `kill` le
-relancerait, `KeepAlive`) ; (2) `context-room backup --output <dossier neuf>`
+dans `~/.context-room` : **Mathis a dit oui le 2026-10-23** pour ces quatre
+gestes, à la séance BOOX, pas avant le déploiement. Ordre : (1) noter le plist
+(`launchctl print`), puis arrêter le Hub : `launchctl bootout gui/$U/app.contextroom.local`
+(un `kill` le relancerait, `KeepAlive`) ; (2) `context-room backup --output <dossier neuf>`
 (`--plan` d'abord pour compter) ; (3) déployer la nouvelle version
 (`deploy-main.sh`) ; (4) `migrate --root <projet> --notebooks-to-space`
-(aperçu), puis `--apply --revision <R>`. Après un crash : attendre 30 s (verrou),
+(aperçu), puis `--apply --revision <R>`. Ensuite : relancer le Hub (`launchctl bootstrap`) et vérifier les 4 carnets. Après un crash : attendre 30 s (verrou),
 puis relancer ; si la réponse dit « Preview again », refaire l'aperçu.
 
 **Retour arrière.**
