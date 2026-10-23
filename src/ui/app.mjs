@@ -4981,10 +4981,10 @@ function sharedProposalLabel(item) {
 }
 
 function sharedProposalSearchText(item) {
-  return [item.type, item.projectId, item.projectTitle, item.title, item.description, item.branch, item.repositoryName, item.repositoryId, item.repository, item.author?.name, item.author?.email, item.sessionId, item.head, item.root, ...(item.files || [])]
+  return searchFold([item.type, item.projectId, item.projectTitle, item.title, item.description, item.branch, item.repositoryName, item.repositoryId, item.repository, item.author?.name, item.author?.email, item.sessionId, item.head, item.root, ...(item.files || [])]
     .filter(Boolean)
     .join(" ")
-    .toLowerCase();
+    );
 }
 
 function contextHubSharedProposalBelongsInQueue(item = {}) {
@@ -6143,7 +6143,7 @@ function contextHubCardSearchText(card) {
 }
 
 function contextHubProjectSearchText(project) {
-  return [
+  return searchFold([
     project?.id,
     project?.projectKey,
     project?.title,
@@ -6161,7 +6161,7 @@ function contextHubProjectSearchText(project) {
       section.description,
       ...(section.cards || []).map(contextHubCardSearchText),
     ]),
-  ].filter(Boolean).join(" ").toLowerCase();
+  ].filter(Boolean).join(" "));
 }
 
 function contextHubLocalReviewsConfirmed(project) {
@@ -6507,8 +6507,8 @@ function renderExplorerRelated(project, filePath) {
   if (!graph) return '<div class="global-project-folder-state">Loading related files…</div>';
   const projection = explorerRelatedProjection(graph, filePath);
   if (!projection.center) return '<div class="global-project-folder-state">This document has no graph entry in the selected truth layers.</div>';
-  const needle = state.globalProjectSearch.trim().toLowerCase();
-  const matches = (item) => !needle || [item.node.label, item.node.path, item.edge.type].filter(Boolean).join(" ").toLowerCase().includes(needle);
+  const needle = searchFold(state.globalProjectSearch.trim());
+  const matches = (item) => !needle || searchFold([item.node.label, item.node.path, item.edge.type].filter(Boolean).join(" ")).includes(needle);
   const dependsOn = projection.dependsOn.filter(matches);
   const dependedOnBy = projection.dependedOnBy.filter(matches);
   const references = projection.references.filter(matches);
@@ -6781,7 +6781,7 @@ function renderComputerExplorerNode(snapshot, depth = 0, needle = "") {
       const expanded = state.computerExplorerExpandedFolders.has(entry.path);
       const child = state.computerExplorerFolders.get(entry.path);
       const childTree = expanded && child ? renderComputerExplorerNode(child, depth + 1, needle) : { markup: "", visibleCount: 0 };
-      const selfMatches = !needle || entry.name.toLowerCase().includes(needle);
+      const selfMatches = !needle || searchFold(entry.name).includes(needle);
       if (needle && !selfMatches && !childTree.visibleCount) return "";
       visibleCount += 1 + childTree.visibleCount;
       const loading = state.computerExplorerLoadingFolders.has(entry.path);
@@ -6792,7 +6792,7 @@ function renderComputerExplorerNode(snapshot, depth = 0, needle = "") {
         + (error ? '<div class="computer-explorer-loading" style="padding-left:' + (28 + depth * 12) + 'px">' + escapeHtml(error) + '</div>' : '')
         + (expanded ? childTree.markup : "");
     }
-    if (needle && !entry.name.toLowerCase().includes(needle)) return "";
+    if (needle && !searchFold(entry.name).includes(needle)) return "";
     visibleCount += 1;
     return '<div class="global-project-tree-entry" data-kind="file" data-computer-explorer-file="' + escapeHtml(entry.path) + '" title="Files outside a project are browse-only" style="padding-left:' + (25 + depth * 12) + 'px"><span aria-hidden="true">◇</span><span class="global-project-tree-name">' + escapeHtml(entry.name) + '</span><span class="global-project-tree-meta">' + escapeHtml(formatExplorerBytes(entry.bytes || 0)) + '</span></div>';
   }).join("");
@@ -6806,7 +6806,7 @@ function renderComputerExplorer() {
     if (error) return '<div class="global-project-folder-state">' + escapeHtml(error) + '</div>';
     return '<div class="global-project-folder-state">Loading computer folders…</div>';
   }
-  const needle = state.globalProjectSearch.trim().toLowerCase();
+  const needle = searchFold(state.globalProjectSearch.trim());
   const tree = renderComputerExplorerNode(snapshot, 0, needle);
   return '<div class="computer-explorer-tree">' + (tree.markup || '<div class="global-project-folder-state">No loaded items match this search.</div>') + '</div>';
 }
@@ -7762,7 +7762,7 @@ function renderGlobalProjectExplorer() {
   updateGlobalExplorerMarkup(scope, "");
   listLabel.textContent = "Projects";
   const allProjects = contextHubPrioritizedProjects(state.contextHub?.projects || []);
-  const needle = state.globalProjectSearch.trim().toLowerCase();
+  const needle = searchFold(state.globalProjectSearch.trim());
   const projects = allProjects.filter((project) => !needle || contextHubProjectSearchText(project).includes(needle));
   count.textContent = state.contextHub
     ? projects.length + (needle ? " of " + allProjects.length : "")
@@ -7820,7 +7820,7 @@ async function returnToGlobalContextHubHome() {
 }
 
 function contextHubProjectPickerChoices() {
-  const needle = state.contextHubProjectPickerQuery.trim().toLowerCase();
+  const needle = searchFold(state.contextHubProjectPickerQuery.trim());
   const projects = contextHubPrioritizedProjects(state.contextHub?.projects || [])
     .filter((project) => !needle || contextHubProjectSearchText(project).includes(needle));
   return {
@@ -8608,7 +8608,7 @@ function renderContextRoomGlobalReviewQueue() {
   renderReviewHistoryPanel();
   const hub = state.contextHub || { projects: [] };
   const hubReady = Boolean(state.contextHub);
-  const needle = state.sharedProposalSearch.trim().toLowerCase();
+  const needle = searchFold(state.sharedProposalSearch.trim());
   const reviews = contextHubHomeReviewItems(needle, "active");
   const activeReviews = contextHubHomeReviewItems(needle, "active");
   const snoozedReviews = contextHubHomeReviewItems(needle, "snoozed");
@@ -8845,7 +8845,7 @@ function renderSharedProposalWorkspace() {
     return;
   }
   if (search.value !== state.sharedProposalSearch) search.value = state.sharedProposalSearch;
-  const needle = state.sharedProposalSearch.trim().toLowerCase();
+  const needle = searchFold(state.sharedProposalSearch.trim());
   const visible = contextHubVisibleItems().filter((item) => {
     const project = item.project || contextHubProjectForItem(item);
     const sourceMatches = item.type === "project"
@@ -11965,14 +11965,14 @@ function buildTree(files, directories = []) {
 }
 
 function visibleFiles() {
-  const q = el("search").value.toLowerCase().trim();
+  const q = searchFold(el("search").value).trim();
   const filters = state.pathFilters || [];
-  const generatedFilterQuery = folderFilterSearchQuery(filters).toLowerCase().trim();
+  const generatedFilterQuery = searchFold(folderFilterSearchQuery(filters)).trim();
   return state.files.filter((file) => {
     if (file.startupContext) return false;
     const inScope = !filters.length || filters.some((filter) => pathMatchesFilter(file.path, filter));
     const matchesWatchFilter = explorerWatchFilterMatches(file.path, state.explorerWatchFilter, state.settings || {});
-    const haystack = (file.path + " " + file.label + " " + file.category).toLowerCase();
+    const haystack = searchFold(file.path + " " + file.label + " " + file.category);
     const normalizedQuery = q.replace(/\/$/, "");
     const matchesQuery = !q
       || (filters.length && q === generatedFilterQuery)
@@ -11983,7 +11983,7 @@ function visibleFiles() {
 }
 
 function visibleExplorerDirectories(files = []) {
-  const q = el("search").value.toLowerCase().trim();
+  const q = searchFold(el("search").value).trim();
   const normalizedQuery = q.replace(/\/$/, "");
   const filters = state.pathFilters || [];
   return (state.directories || []).filter((directory) => {
@@ -11995,7 +11995,7 @@ function visibleExplorerDirectories(files = []) {
     });
     const watchMatch = explorerWatchFilterMatches(clean + "/", state.explorerWatchFilter, state.settings || {});
     const hasVisibleChild = files.some((file) => file.path.startsWith(clean + "/"));
-    const matchesQuery = !q || clean.toLowerCase().includes(q) || clean.toLowerCase().includes(normalizedQuery) || hasVisibleChild;
+    const matchesQuery = !q || searchFold(clean).includes(q) || searchFold(clean).includes(normalizedQuery) || hasVisibleChild;
     return inScope && watchMatch && matchesQuery;
   });
 }
@@ -17738,7 +17738,7 @@ function renderSnoozedReviewSettings() {
     const title = item.title || item.localFile?.split("/").pop() || item.branch || "Review";
     const detail = item.localFile || item.description || (item.type === "shared" ? "Shared proposal" : "Local review");
     const snooze = contextRoomReviewSnooze(item);
-    const search = [projectLabel, title, detail, item.type].filter(Boolean).join(" ").toLowerCase();
+    const search = searchFold([projectLabel, title, detail, item.type].filter(Boolean).join(" "));
     const returns = snooze?.until ? new Date(snooze.until).toLocaleString() : "Later";
     return '<div class="settings-snoozed-row" data-settings-snoozed-row data-settings-snoozed-search="' + escapeHtml(search) + '">'
       + '<div class="settings-snoozed-copy"><div class="settings-snoozed-topline"><span class="context-hub-source" data-source="' + (item.type === "shared" ? "shared" : "local") + '">' + (item.type === "shared" ? "Proposal" : "Local") + '</span><strong>' + escapeHtml(title) + '</strong></div>'
@@ -17752,7 +17752,7 @@ function renderSnoozedReviewSettings() {
 function wireSnoozedReviewSettings(root) {
   const search = root.querySelector("#settingsSnoozedReviewSearch");
   const filter = () => {
-    const query = (search?.value || "").trim().toLowerCase();
+    const query = searchFold((search?.value || "").trim());
     state.settingsSnoozedReviewQuery = search?.value || "";
     let visible = 0;
     root.querySelectorAll("[data-settings-snoozed-row]").forEach((row) => {
@@ -19598,7 +19598,7 @@ function renderMetadataTreeValue(value, key = "metadata", depth = 0, parentPath 
     return '<details ' + (depth < 1 ? 'open' : '') + ' data-metadata-branch="' + escapeHtml(valuePath) + '"><summary>' + safeKey + ' <span class="muted">' + entries.length + '</span></summary>' + entries.map(([childKey, childValue]) => renderMetadataTreeValue(childValue, childKey, depth + 1, valuePath)).join("") + '</details>';
   }
   const display = value == null ? "null" : typeof value === "string" ? value : JSON.stringify(value);
-  return '<div class="metadata-tree-value" data-metadata-search-text="' + escapeHtml((valuePath + " " + display).toLowerCase()) + '"><span><span class="metadata-tree-key">' + safeKey + '</span><code>' + escapeHtml(display) + '</code></span><button class="metadata-copy-path" type="button" data-metadata-copy-path="' + escapeHtml(valuePath) + '" title="Copy metadata path">Copy path</button></div>';
+  return '<div class="metadata-tree-value" data-metadata-search-text="' + escapeHtml(searchFold(valuePath + " " + display)) + '"><span><span class="metadata-tree-key">' + safeKey + '</span><code>' + escapeHtml(display) + '</code></span><button class="metadata-copy-path" type="button" data-metadata-copy-path="' + escapeHtml(valuePath) + '" title="Copy metadata path">Copy path</button></div>';
 }
 
 function renderDocumentContextPanel() {
@@ -19681,7 +19681,7 @@ function renderDocumentContextPanel() {
     next?.click();
   });
   holder.querySelector("[data-metadata-search]")?.addEventListener("input", (event) => {
-    const query = String(event.currentTarget.value || "").trim().toLowerCase();
+    const query = searchFold(String(event.currentTarget.value || "").trim());
     holder.querySelectorAll("[data-metadata-search-text]").forEach((row) => {
       row.dataset.filtered = query && !row.dataset.metadataSearchText.includes(query) ? "true" : "false";
     });
@@ -25109,6 +25109,8 @@ function scrollEditorToTextAnchor(editor, snapshot) {
   }
   return true;
 }
+// Search ignores case and accents, like the CLI (src/documentation.mjs) and the Lisière app.
+function searchFold(value) { return String(value ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase(); }
 function escapeHtml(value) { return String(value).replace(/[&<>"]/g, (ch) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[ch])); }
 function escapeRegExp(value) { return String(value).replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&"); }
 function cssEscape(value) { return window.CSS && CSS.escape ? CSS.escape(value) : String(value).replace(/(["\\])/g, "\\$1"); }

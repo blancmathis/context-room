@@ -118,6 +118,8 @@ async function openPdf(asset) {
   entry.promise = (async () => {
     const pdfjs = await loadPdfjs();
     entry.task = pdfjs.getDocument({ data: decodeDataUrl(asset.dataUrl), isEvalSupported: false, enableXfa: false, standardFontDataUrl: PDFJS_BASE + 'standard_fonts/', cMapUrl: PDFJS_BASE + 'cmaps/', cMapPacked: true, wasmUrl: PDFJS_BASE + 'wasm/', maxImageSize: MAX_CANVAS_PIXELS, canvasMaxAreaInBytes: MAX_CANVAS_PIXELS * 4 });
+    // Another PDF may have been asked for while pdf.js loaded: nobody will destroy this task later, so do it now.
+    if (lastPdf !== entry) entry.task.destroy().catch(() => {});
     return entry.task.promise;
   })();
   lastPdf = entry;
