@@ -413,7 +413,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
 }
 
 /** A folder-scoped create/open chooser, not a separate notes library or project catalogue. */
-export async function chooseNotebook({ api, directory = '', scopeKey, ...options }) {
+export async function chooseNotebook({ api, directory = '', scopeKey, onMove, ...options }) {
   notebookStyles(); const dialog = notebookElement('dialog', '', 'notebook-chooser'); dialog.setAttribute('aria-label', 'Notebook in this folder');
   const heading = notebookElement('h2', 'Notebook in this folder'), explanation = notebookElement('p', 'Use an ordinary .crnb file. Working ink stays separate from accepted documentation.');
   const form = document.createElement('form'), label = notebookElement('label', 'Notebook path'), input = document.createElement('input'); input.value = (directory ? directory.replace(/\/$/, '') + '/' : '') + 'Sketch.crnb'; input.required = true; input.setAttribute('aria-label', 'Notebook path'); label.append(input);
@@ -424,6 +424,8 @@ export async function chooseNotebook({ api, directory = '', scopeKey, ...options
   form.addEventListener('submit', event => { event.preventDefault(); open.disabled = true; openNotebookEditor({ api, path: input.value.trim(), scopeKey, ...options }).then(() => dialog.close()).catch(error => { status.textContent = error.message; open.disabled = false; }); });
   try {
     const data = await api('/api/notebooks');
-    for (const item of data.notebooks.filter(item => item.path.split('/').slice(0, -1).join('/') === directory.replace(/\/$/, ''))) { const row = notebookElement('li'); row.append(button(item.path + ' · working scene', () => { input.value = item.path; form.requestSubmit(); })); drafts.append(row); }
+    for (const item of data.notebooks.filter(item => item.path.split('/').slice(0, -1).join('/') === directory.replace(/\/$/, ''))) { const row = notebookElement('li'); row.append(button(item.path + ' · working scene', () => { input.value = item.path; form.requestSubmit(); }));
+      if (onMove) row.append(button('Move to Notebooks', () => onMove(item).then(moved => { if (moved) dialog.close(); }).catch(error => { status.textContent = error.message; })));
+      drafts.append(row); }
   } catch { status.textContent = 'The Mac is unavailable. Previously loaded notebook caches can still be opened by their exact path.'; }
 }
