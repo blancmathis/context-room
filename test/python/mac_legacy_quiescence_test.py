@@ -25,6 +25,34 @@ class QuiescenceContracts(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'incomplete process visibility'):
                     no_open_files(base, command(code, out, err))
 
+    def test_linux_scan_skips_a_process_only_when_every_thread_has_exited(self):
+        # The kernel makes an exited process's fd table root-owned. Its main thread can exit while another thread keeps files open.
+        if os.getuid() == 0:
+            self.skipTest('root reads a directory without permissions')
+        pid = str(os.getpid() + 1)
+        with tempfile.TemporaryDirectory() as base, patch('mac_legacy_quiescence.sys.platform', 'linux'):
+            data = Path(base, 'data'); data.mkdir()
+            def scan(name, states, open_file=False):
+                proc = Path(base, name)
+                for tid, state in enumerate(states, int(pid)):
+                    stat = proc / pid / 'task' / str(tid) / 'stat'
+                    stat.parent.mkdir(parents=True)
+                    stat.write_bytes(f'{tid} (odd) name) {state} 1 1'.encode())
+                fd = proc / pid / 'fd'; fd.mkdir()
+                if open_file:
+                    (fd / '3').symlink_to(data.resolve() / 'legacy.sqlite3')
+                else:
+                    fd.chmod(0)
+                try:
+                    return no_open_files(data, proc=proc)
+                finally:
+                    fd.chmod(0o700)
+            self.assertTrue(scan('exited', 'Z')['closedFilesVerified'])
+            with self.assertRaisesRegex(ValueError, f'Cannot inspect PID {pid}'):
+                scan('main-thread-exited', 'ZS')
+            with self.assertRaisesRegex(ValueError, 'file is open'):
+                scan('running', 'S', open_file=True)
+
     def test_only_original_owned_plist_is_accepted(self):
         with tempfile.TemporaryDirectory() as base:
             home = Path(base).resolve(); source = home / '.local/share/lisiere/workspace'
@@ -76,6 +104,7 @@ class QuiescenceContracts(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'unknown'):
             stop_agent(identity, 'a' * 64, unknown)
 
+    @unittest.skipUnless(sys.platform == 'darwin', 'the synthetic agent needs a macOS HOME under /private/tmp')
     def test_synthetic_profile_requires_private_tmp_home_and_strict_nonce(self):
         account = Path('/synthetic/account').resolve()
         with patch('mac_legacy_quiescence.account_home', return_value=account):
@@ -103,6 +132,7 @@ class QuiescenceContracts(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'temporary HOME'):
                 profile(Path(base), {'CONTEXT_ROOM_SYNTHETIC_LEGACY_AGENT': 'abc123def456'})
 
+    @unittest.skipUnless(sys.platform == 'darwin', 'the synthetic agent needs a macOS HOME under /private/tmp')
     def test_synthetic_profile_never_targets_the_original_label(self):
         with tempfile.TemporaryDirectory(dir='/private/tmp') as base:
             home = Path(base).resolve(); source = home / '.local/share/lisiere/workspace'

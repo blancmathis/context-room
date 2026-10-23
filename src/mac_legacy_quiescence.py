@@ -138,7 +138,7 @@ def verify_agent(identity, command=run, sleep=time.sleep, attempts=20):
     raise ValueError('A manual or still-stopping companion remains. No data was retired.')
 
 
-def no_open_files(directory, command=run):
+def no_open_files(directory, command=run, proc=Path('/proc')):
     """Require closed files, not merely the absence of an active SQL transaction."""
     directory = str(Path(directory).resolve(strict=True))
     if sys.platform == 'darwin':
@@ -148,11 +148,16 @@ def no_open_files(directory, command=run):
         if result.returncode not in (0, 1) or result.stdout.strip() or result.stderr.strip():
             raise ValueError('Open legacy files or incomplete process visibility prevent retirement.')
     elif sys.platform == 'linux':
-        for process in Path('/proc').iterdir():
+        for process in proc.iterdir():
             if not process.name.isdigit() or int(process.name) == os.getpid():
                 continue
             try:
                 if process.stat().st_uid != os.getuid():
+                    continue
+                # Once every thread has exited, the files are closed and the kernel makes the fd table root-owned.
+                # The main thread can be a zombie while another thread still holds files: check every thread.
+                if all((thread / 'stat').read_bytes().rpartition(b')')[2].split()[:1] in ([b'Z'], [b'X'])
+                       for thread in (process / 'task').iterdir()):
                     continue
                 for descriptor in (process / 'fd').iterdir():
                     try:
@@ -161,7 +166,7 @@ def no_open_files(directory, command=run):
                         continue
                     if target == directory or target.startswith(directory + '/'):
                         raise ValueError('An original file is open. Stop its writer before retiring the workspace.')
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
                 continue
             except PermissionError as error:
                 raise ValueError('Process visibility is incomplete; retirement is refused. '
