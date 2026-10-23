@@ -69,6 +69,26 @@ before sending the code or device credential. Pairing returns a new random
 credential valid for 30 days. Revocation is checked on every authenticated
 request and again after a body upload, before applying its changes.
 
+### Pairing code, QR code and pairing file
+
+"Create pairing code" (in a notebook, or in Connected devices for the complete
+owner interface) makes one ticket that expires after two minutes and works once.
+The sheet gives it in three forms. All three carry the same ticket.
+
+- **Code**: copy the text and paste it in the app or in the browser page.
+- **QR code**: a phone or tablet camera opens `<browser address>/#pair=<ticket>`.
+  The ticket is in the URL fragment, which a browser never sends to a server. The
+  browser pairing page fills the code field, removes the fragment from the address,
+  and waits for you to press "Pair this browser". Without a browser address, the QR
+  holds the raw ticket. A ticket too long for a QR code (version 25) shows
+  "Too long for a QR code. Save the pairing file or copy the code." instead.
+  `src/qr_code.mjs` makes the QR code on the Mac, with no dependency.
+- **Pairing file**: "Save pairing file" writes `context-room-pairing.json`. On a
+  tablet without a camera (the BOOX Note Air5 C), move the file with BOOXDrop, then
+  choose "Importer le fichier d’appairage" on the connection screen. The file is
+  limited to 8192 bytes, like the pasted code. The app has no QR scanner and does not
+  ask for the camera permission.
+
 ## Operate Context Room from the tablet
 
 On the Mac, open **Settings → Preferences → Connected devices**. Choose the
@@ -385,6 +405,12 @@ verify a mismatched certificate pin is refused, exercise simultaneous Mac and
 device edits, and restart the service before replaying a lost receipt. They
 also check revocation during upload, expired credentials, replaced directories,
 route and scope refusal, and the actual CLI launch.
+
+QR tests (`test/qr_code.test.mjs`) compare the encoder with matrices made once by
+`qrcode` 8.2 (`test/fixtures/qr/`, script `generate.py`) for versions 1, 5, 10, 17
+and 25 and for forced masks, and check the format and version bits.
+`test/devices.test.mjs` checks that the QR address holds the ticket only in its
+fragment. `android/.../PairingFileTest.java` checks the pairing-file bound and format.
 
 Browser tests (`test/e2e/notebooks.spec.mjs`) exercise owner pairing, the separate
 request/deferral/display states and revocation in Chromium, Firefox and WebKit.

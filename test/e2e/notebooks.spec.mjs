@@ -164,6 +164,28 @@ test('@smoke @notebook an owner sees the Shared destination and submits one exac
   } finally { await f.close(); }
 });
 
+test('@notebook pairing sheet shows a QR code and saves a pairing file', async ({ page }) => {
+  const f = await fixture(page, { devices: true });
+  try {
+    const notebook = await open(page);
+    await notebook.getByRole('button', { name: 'Connect tablet', exact: true }).click();
+    const pairing = page.getByRole('dialog', { name: 'Connect tablet', exact: true });
+    await pairing.getByRole('button', { name: 'Create pairing code', exact: true }).click();
+    const code = pairing.getByRole('textbox', { name: 'One-use tablet pairing code', exact: true });
+    const ticket = JSON.parse(await code.inputValue());
+    const qr = pairing.getByRole('img', { name: 'QR code for this tablet' });
+    await expect(qr).toBeVisible();
+    expect(await qr.locator('path').getAttribute('d')).toMatch(/^M\d+ \d+h1v1h-1z/);
+    const downloaded = page.waitForEvent('download');
+    await pairing.getByRole('button', { name: 'Save pairing file', exact: true }).click();
+    const download = await downloaded;
+    expect(download.suggestedFilename()).toBe('context-room-pairing.json');
+    expect(JSON.parse(fs.readFileSync(await download.path(), 'utf8'))).toEqual(ticket);
+    f.deviceService.authority.cancelPairing(ticket.pairingId);
+    expect(f.errors).toEqual([]);
+  } finally { await f.close(); }
+});
+
 test('@smoke @notebook owner pairs, requests an exact display receipt and revokes a device', async ({ page }, testInfo) => {
   const f = await fixture(page, { devices: true });
   try {
