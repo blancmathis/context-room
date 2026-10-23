@@ -1260,6 +1260,27 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .plain-text-editor, .plain-text-view { margin: 0; white-space: pre; overflow: auto; tab-size: 2; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
     .plain-text-editor { display: block; width: 100%; min-height: 100%; resize: none; border: 0; outline: none; background: var(--file-bg); color: var(--file-fg); padding: 18px 22px; }
     .html-preview-shell { width: 100%; min-height: calc(100vh - 162px); max-height: calc(100vh - 162px); overflow: hidden; background: var(--file-bg); }
+    html[data-reading-size] #docReader.doc-editor { font-size: var(--reader-size, 15px); }
+    .doc-toc-search { width: 100%; min-height: 36px; margin: 4px 0; padding: 4px 8px; border: 1px solid var(--file-line); border-radius: 6px; background: var(--file-bg); color: var(--file-fg); font: inherit; }
+    .doc-toc-pager { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
+    .doc-toc-pager button, .reading-dialog button, .contents-dialog button, .reader-page-bar button, .find-bar button { min-height: 44px; min-width: 44px; padding: 4px 12px; border: 1px solid var(--file-line); border-radius: 6px; background: var(--file-panel-bg); color: var(--file-fg); font: inherit; cursor: pointer; }
+    .doc-toc-pager button:disabled, .find-bar button:disabled { opacity: 0.45; cursor: default; }
+    .reading-dialog, .contents-dialog { max-width: min(520px, 92vw); max-height: 80vh; overflow: auto; border: 1px solid var(--file-line); border-radius: 10px; background: var(--file-panel-bg); color: var(--file-fg); }
+    .reading-dialog h2, .contents-dialog h2 { margin: 0 0 8px; font-size: 16px; }
+    .reading-sizes { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+    .reading-sizes button[aria-pressed="true"] { border-width: 2px; font-weight: 700; }
+    .reading-page-option { display: flex; align-items: center; gap: 8px; min-height: 44px; }
+    .reading-note { margin: 6px 0; color: var(--file-muted); font-size: 12px; }
+    .contents-dialog ol { display: grid; gap: 1px; margin: 4px 0 0; padding: 0; list-style: none; }
+    .contents-dialog a { display: block; padding: 8px; color: var(--file-fg); text-decoration: none; }
+    .contents-dialog .doc-toc-l2 a { padding-left: 20px; } .contents-dialog .doc-toc-l3 a, .contents-dialog .doc-toc-l4 a, .contents-dialog .doc-toc-l5 a, .contents-dialog .doc-toc-l6 a { padding-left: 32px; color: var(--file-muted); }
+    .reader-page-bar { position: sticky; bottom: 0; display: flex; justify-content: space-between; gap: 8px; padding: 6px 12px; background: var(--file-panel-bg); border-top: 1px solid var(--file-line); }
+    .reader-page-bar button { flex: 1; min-height: 56px; font-size: 16px; }
+    .find-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--file-line); background: var(--file-panel-bg); }
+    .find-bar[hidden] { display: none; }
+    .find-bar input[type="search"], .find-bar input[type="text"] { min-height: 44px; min-width: 140px; flex: 1; padding: 4px 8px; border: 1px solid var(--file-line); border-radius: 6px; background: var(--file-bg); color: var(--file-fg); font: inherit; }
+    .find-bar .find-exact { display: flex; align-items: center; gap: 4px; min-height: 44px; font-size: 12px; }
+    .find-bar .find-count { color: var(--file-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
     .html-preview-frame { display: block; width: 100%; height: calc(100vh - 162px); min-height: 420px; border: 0; background: var(--file-bg); }
     .doc-viewer { height: calc(100vh - 162px); min-height: 360px; display: flex; flex-direction: column; background: var(--file-bg); color: var(--file-fg); }
     .dv-root { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; outline-offset: -2px; }
@@ -5014,10 +5035,10 @@ function sharedProposalLabel(item) {
 }
 
 function sharedProposalSearchText(item) {
-  return [item.type, item.projectId, item.projectTitle, item.title, item.description, item.branch, item.repositoryName, item.repositoryId, item.repository, item.author?.name, item.author?.email, item.sessionId, item.head, item.root, ...(item.files || [])]
+  return searchFold([item.type, item.projectId, item.projectTitle, item.title, item.description, item.branch, item.repositoryName, item.repositoryId, item.repository, item.author?.name, item.author?.email, item.sessionId, item.head, item.root, ...(item.files || [])]
     .filter(Boolean)
     .join(" ")
-    .toLowerCase();
+    );
 }
 
 function contextHubSharedProposalBelongsInQueue(item = {}) {
@@ -6177,7 +6198,7 @@ function contextHubCardSearchText(card) {
 }
 
 function contextHubProjectSearchText(project) {
-  return [
+  return searchFold([
     project?.id,
     project?.projectKey,
     project?.title,
@@ -6195,7 +6216,7 @@ function contextHubProjectSearchText(project) {
       section.description,
       ...(section.cards || []).map(contextHubCardSearchText),
     ]),
-  ].filter(Boolean).join(" ").toLowerCase();
+  ].filter(Boolean).join(" "));
 }
 
 function contextHubLocalReviewsConfirmed(project) {
@@ -6543,8 +6564,8 @@ function renderExplorerRelated(project, filePath) {
   if (!graph) return '<div class="global-project-folder-state">Loading related files…</div>';
   const projection = explorerRelatedProjection(graph, filePath);
   if (!projection.center) return '<div class="global-project-folder-state">This document has no graph entry in the selected truth layers.</div>';
-  const needle = state.globalProjectSearch.trim().toLowerCase();
-  const matches = (item) => !needle || [item.node.label, item.node.path, item.edge.type].filter(Boolean).join(" ").toLowerCase().includes(needle);
+  const needle = searchFold(state.globalProjectSearch.trim());
+  const matches = (item) => !needle || searchFold([item.node.label, item.node.path, item.edge.type].filter(Boolean).join(" ")).includes(needle);
   const dependsOn = projection.dependsOn.filter(matches);
   const dependedOnBy = projection.dependedOnBy.filter(matches);
   const references = projection.references.filter(matches);
@@ -6817,7 +6838,7 @@ function renderComputerExplorerNode(snapshot, depth = 0, needle = "") {
       const expanded = state.computerExplorerExpandedFolders.has(entry.path);
       const child = state.computerExplorerFolders.get(entry.path);
       const childTree = expanded && child ? renderComputerExplorerNode(child, depth + 1, needle) : { markup: "", visibleCount: 0 };
-      const selfMatches = !needle || entry.name.toLowerCase().includes(needle);
+      const selfMatches = !needle || searchFold(entry.name).includes(needle);
       if (needle && !selfMatches && !childTree.visibleCount) return "";
       visibleCount += 1 + childTree.visibleCount;
       const loading = state.computerExplorerLoadingFolders.has(entry.path);
@@ -6828,7 +6849,7 @@ function renderComputerExplorerNode(snapshot, depth = 0, needle = "") {
         + (error ? '<div class="computer-explorer-loading" style="padding-left:' + (28 + depth * 12) + 'px">' + escapeHtml(error) + '</div>' : '')
         + (expanded ? childTree.markup : "");
     }
-    if (needle && !entry.name.toLowerCase().includes(needle)) return "";
+    if (needle && !searchFold(entry.name).includes(needle)) return "";
     visibleCount += 1;
     return '<div class="global-project-tree-entry" data-kind="file" data-computer-explorer-file="' + escapeHtml(entry.path) + '" title="Files outside a project are browse-only" style="padding-left:' + (25 + depth * 12) + 'px"><span aria-hidden="true">◇</span><span class="global-project-tree-name">' + escapeHtml(entry.name) + '</span><span class="global-project-tree-meta">' + escapeHtml(formatExplorerBytes(entry.bytes || 0)) + '</span></div>';
   }).join("");
@@ -6842,7 +6863,7 @@ function renderComputerExplorer() {
     if (error) return '<div class="global-project-folder-state">' + escapeHtml(error) + '</div>';
     return '<div class="global-project-folder-state">Loading computer folders…</div>';
   }
-  const needle = state.globalProjectSearch.trim().toLowerCase();
+  const needle = searchFold(state.globalProjectSearch.trim());
   const tree = renderComputerExplorerNode(snapshot, 0, needle);
   return '<div class="computer-explorer-tree">' + (tree.markup || '<div class="global-project-folder-state">No loaded items match this search.</div>') + '</div>';
 }
@@ -7899,7 +7920,7 @@ function renderGlobalProjectExplorer() {
   updateGlobalExplorerMarkup(scope, "");
   listLabel.textContent = "Projects";
   const allProjects = contextHubPrioritizedProjects(state.contextHub?.projects || []);
-  const needle = state.globalProjectSearch.trim().toLowerCase();
+  const needle = searchFold(state.globalProjectSearch.trim());
   const projects = allProjects.filter((project) => !needle || contextHubProjectSearchText(project).includes(needle));
   count.textContent = state.contextHub
     ? projects.length + (needle ? " of " + allProjects.length : "")
@@ -7957,7 +7978,7 @@ async function returnToGlobalContextHubHome() {
 }
 
 function contextHubProjectPickerChoices() {
-  const needle = state.contextHubProjectPickerQuery.trim().toLowerCase();
+  const needle = searchFold(state.contextHubProjectPickerQuery.trim());
   const projects = contextHubPrioritizedProjects(state.contextHub?.projects || [])
     .filter((project) => !needle || contextHubProjectSearchText(project).includes(needle));
   return {
@@ -8745,7 +8766,7 @@ function renderContextRoomGlobalReviewQueue() {
   renderReviewHistoryPanel();
   const hub = state.contextHub || { projects: [] };
   const hubReady = Boolean(state.contextHub);
-  const needle = state.sharedProposalSearch.trim().toLowerCase();
+  const needle = searchFold(state.sharedProposalSearch.trim());
   const reviews = contextHubHomeReviewItems(needle, "active");
   const activeReviews = contextHubHomeReviewItems(needle, "active");
   const snoozedReviews = contextHubHomeReviewItems(needle, "snoozed");
@@ -8987,7 +9008,7 @@ function renderSharedProposalWorkspace() {
     return;
   }
   if (search.value !== state.sharedProposalSearch) search.value = state.sharedProposalSearch;
-  const needle = state.sharedProposalSearch.trim().toLowerCase();
+  const needle = searchFold(state.sharedProposalSearch.trim());
   const visible = contextHubVisibleItems().filter((item) => {
     const project = item.project || contextHubProjectForItem(item);
     const sourceMatches = item.type === "project"
@@ -12107,14 +12128,14 @@ function buildTree(files, directories = []) {
 }
 
 function visibleFiles() {
-  const q = el("search").value.toLowerCase().trim();
+  const q = searchFold(el("search").value).trim();
   const filters = state.pathFilters || [];
-  const generatedFilterQuery = folderFilterSearchQuery(filters).toLowerCase().trim();
+  const generatedFilterQuery = searchFold(folderFilterSearchQuery(filters)).trim();
   return state.files.filter((file) => {
     if (file.startupContext) return false;
     const inScope = !filters.length || filters.some((filter) => pathMatchesFilter(file.path, filter));
     const matchesWatchFilter = explorerWatchFilterMatches(file.path, state.explorerWatchFilter, state.settings || {});
-    const haystack = (file.path + " " + file.label + " " + file.category).toLowerCase();
+    const haystack = searchFold(file.path + " " + file.label + " " + file.category);
     const normalizedQuery = q.replace(/\/$/, "");
     const matchesQuery = !q
       || (filters.length && q === generatedFilterQuery)
@@ -12125,7 +12146,7 @@ function visibleFiles() {
 }
 
 function visibleExplorerDirectories(files = []) {
-  const q = el("search").value.toLowerCase().trim();
+  const q = searchFold(el("search").value).trim();
   const normalizedQuery = q.replace(/\/$/, "");
   const filters = state.pathFilters || [];
   return (state.directories || []).filter((directory) => {
@@ -12137,7 +12158,7 @@ function visibleExplorerDirectories(files = []) {
     });
     const watchMatch = explorerWatchFilterMatches(clean + "/", state.explorerWatchFilter, state.settings || {});
     const hasVisibleChild = files.some((file) => file.path.startsWith(clean + "/"));
-    const matchesQuery = !q || clean.toLowerCase().includes(q) || clean.toLowerCase().includes(normalizedQuery) || hasVisibleChild;
+    const matchesQuery = !q || searchFold(clean).includes(q) || searchFold(clean).includes(normalizedQuery) || hasVisibleChild;
     return inScope && watchMatch && matchesQuery;
   });
 }
@@ -16542,6 +16563,8 @@ function renderFileActionItems({ modeToggle = null, reviewAction = null, seconda
     (reviewAction ? '<button class="file-action" type="button" data-file-review-decision="' + escapeHtml(reviewAction.status) + '">' + escapeHtml(reviewAction.label) + '</button>' : '') +
     (secondaryReviewAction ? '<button class="file-action" type="button" data-file-review-decision="' + escapeHtml(secondaryReviewAction.status) + '">' + escapeHtml(secondaryReviewAction.label) + '</button>' : '') +
     (nextReviewAction ? '<button class="file-action" type="button" data-next-review>' + escapeHtml(nextReviewAction.label) + '</button>' : '') +
+    (modeToggle === "view" ? '<button class="file-action" type="button" data-editor-undo>Undo</button><button class="file-action" type="button" data-editor-redo>Redo</button><button class="file-action" type="button" data-editor-find>Find</button>' : '') +
+    (state.selected && !state.selectedStartupContext && state.mode === "view" && !isImageDocumentPath(state.selected) && (modeToggle === "edit" || isHtmlDocumentPath(state.selected)) ? (isHtmlDocumentPath(state.selected) ? '<button class="file-action" type="button" data-html-contents>Contents</button>' : '') + '<button class="file-action" type="button" data-reading-settings aria-label="Text size">Aa</button>' : '') +
     (deletable ? '<button class="file-action danger-action" type="button" data-file-delete>Delete</button>' : '') +
     (modeToggle === "edit" ? '<button class="file-action primary" type="button" data-file-mode="edit">Edit</button>' : '') +
     (modeToggle === "view" ? '<button class="file-action" type="button" data-file-mode="view"' + (dirty ? ' disabled title="Save your changes first"' : '') + '>Done</button>' : '') +
@@ -17880,7 +17903,7 @@ function renderSnoozedReviewSettings() {
     const title = item.title || item.localFile?.split("/").pop() || item.branch || "Review";
     const detail = item.localFile || item.description || (item.type === "shared" ? "Shared proposal" : "Local review");
     const snooze = contextRoomReviewSnooze(item);
-    const search = [projectLabel, title, detail, item.type].filter(Boolean).join(" ").toLowerCase();
+    const search = searchFold([projectLabel, title, detail, item.type].filter(Boolean).join(" "));
     const returns = snooze?.until ? new Date(snooze.until).toLocaleString() : "Later";
     return '<div class="settings-snoozed-row" data-settings-snoozed-row data-settings-snoozed-search="' + escapeHtml(search) + '">'
       + '<div class="settings-snoozed-copy"><div class="settings-snoozed-topline"><span class="context-hub-source" data-source="' + (item.type === "shared" ? "shared" : "local") + '">' + (item.type === "shared" ? "Proposal" : "Local") + '</span><strong>' + escapeHtml(title) + '</strong></div>'
@@ -17894,7 +17917,7 @@ function renderSnoozedReviewSettings() {
 function wireSnoozedReviewSettings(root) {
   const search = root.querySelector("#settingsSnoozedReviewSearch");
   const filter = () => {
-    const query = (search?.value || "").trim().toLowerCase();
+    const query = searchFold((search?.value || "").trim());
     state.settingsSnoozedReviewQuery = search?.value || "";
     let visible = 0;
     root.querySelectorAll("[data-settings-snoozed-row]").forEach((row) => {
@@ -19740,7 +19763,7 @@ function renderMetadataTreeValue(value, key = "metadata", depth = 0, parentPath 
     return '<details ' + (depth < 1 ? 'open' : '') + ' data-metadata-branch="' + escapeHtml(valuePath) + '"><summary>' + safeKey + ' <span class="muted">' + entries.length + '</span></summary>' + entries.map(([childKey, childValue]) => renderMetadataTreeValue(childValue, childKey, depth + 1, valuePath)).join("") + '</details>';
   }
   const display = value == null ? "null" : typeof value === "string" ? value : JSON.stringify(value);
-  return '<div class="metadata-tree-value" data-metadata-search-text="' + escapeHtml((valuePath + " " + display).toLowerCase()) + '"><span><span class="metadata-tree-key">' + safeKey + '</span><code>' + escapeHtml(display) + '</code></span><button class="metadata-copy-path" type="button" data-metadata-copy-path="' + escapeHtml(valuePath) + '" title="Copy metadata path">Copy path</button></div>';
+  return '<div class="metadata-tree-value" data-metadata-search-text="' + escapeHtml(searchFold(valuePath + " " + display)) + '"><span><span class="metadata-tree-key">' + safeKey + '</span><code>' + escapeHtml(display) + '</code></span><button class="metadata-copy-path" type="button" data-metadata-copy-path="' + escapeHtml(valuePath) + '" title="Copy metadata path">Copy path</button></div>';
 }
 
 function renderDocumentContextPanel() {
@@ -19823,7 +19846,7 @@ function renderDocumentContextPanel() {
     next?.click();
   });
   holder.querySelector("[data-metadata-search]")?.addEventListener("input", (event) => {
-    const query = String(event.currentTarget.value || "").trim().toLowerCase();
+    const query = searchFold(String(event.currentTarget.value || "").trim());
     holder.querySelectorAll("[data-metadata-search-text]").forEach((row) => {
       row.dataset.filtered = query && !row.dataset.metadataSearchText.includes(query) ? "true" : "false";
     });
@@ -20817,6 +20840,9 @@ function renderViewer() {
   wireMermaidDocuments();
   wireHtmlPreviewNavigation();
   wireMarkdownDocLinks();
+  wireMarkdownToc();
+  applyReadingSize();
+  wirePageButtons();
   syncHandAnnotation();
   document.querySelector("[data-conflict-compare]")?.addEventListener("click", () => toggleConflictCompare());
   document.querySelector("[data-conflict-reload]")?.addEventListener("click", () => promptReloadConflictFromDisk());
@@ -20876,6 +20902,7 @@ function wireRenderedMarkdownEditor() {
   if (!docEditor) return;
   prepareMarkdownEditorHistory(docEditor);
   state.markdownHighlightLastText = docEditor.value;
+  wireEditorFind(docEditor);
   syncMarkdownEditorScroll();
   docEditor.addEventListener("beforeinput", (event) => captureMarkdownEditorHistory(docEditor, event));
   docEditor.addEventListener("input", (event) => {
@@ -20888,6 +20915,11 @@ function wireRenderedMarkdownEditor() {
     scheduleCodexReferenceActionUpdate();
   });
   docEditor.addEventListener("keydown", (event) => {
+    if ((isMacPlatform() ? event.metaKey : event.ctrlKey) && !event.altKey && !event.shiftKey && String(event.key || "").toLowerCase() === "f") {
+      event.preventDefault();
+      openEditorFind();
+      return;
+    }
     if (handleMarkdownEditorHistoryShortcut(event, docEditor)) return;
     if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) resetMarkdownEditorHistoryGroup();
     window.requestAnimationFrame(updateMarkdownEditorVisualSelection);
@@ -21327,15 +21359,342 @@ function markdownOutline(text) {
   return headings;
 }
 
+// ---- Reading comfort (T-021 L9a): paged Contents, text size (Aa), page buttons, find and replace.
+// The size and the page buttons belong to the device: the Mac and the tablet are read differently.
+const READING_SIZE_KEY = "context-room:reading-size";
+const PAGE_BUTTONS_KEY = "context-room:page-buttons";
+const READING_SIZES = [15, 18, 20, 22, 24, 26];
+const CONTENTS_PAGE_SIZE = 40;
+let textToolsPromise = null;
+
+function loadTextTools() {
+  if (!textToolsPromise) textToolsPromise = import("/assets/ui/text-tools.mjs").catch((error) => { textToolsPromise = null; throw error; });
+  return textToolsPromise;
+}
+
+function readingSize() {
+  try {
+    const size = Number(window.localStorage?.getItem(READING_SIZE_KEY));
+    return READING_SIZES.includes(size) ? size : 15;
+  } catch { return 15; }
+}
+
+function pageButtonsEnabled() {
+  try {
+    const stored = window.localStorage?.getItem(PAGE_BUTTONS_KEY);
+    if (stored === "1" || stored === "0") return stored === "1";
+  } catch {}
+  return Boolean(window.matchMedia?.("(pointer: coarse)").matches);
+}
+
+function applyReadingSize() {
+  const size = readingSize();
+  const root = document.documentElement;
+  if (size === 15) {
+    root.removeAttribute("data-reading-size");
+    root.style.removeProperty("--reader-size");
+  } else {
+    root.dataset.readingSize = String(size);
+    root.style.setProperty("--reader-size", size + "px");
+  }
+  applyHtmlPreviewZoom(size);
+}
+
+// An HTML document keeps its own styles: the whole page is zoomed, like setTextZoom in the Android app.
+function applyHtmlPreviewZoom(size = readingSize()) {
+  const root = document.querySelector("iframe.html-preview-frame")?.contentDocument?.documentElement;
+  if (!root) return;
+  const factor = size / 15;
+  root.style.removeProperty("zoom");
+  root.style.removeProperty("font-size");
+  if (factor === 1) return;
+  if ("zoom" in root.style) root.style.zoom = String(factor);
+  else root.style.fontSize = Math.round(factor * 100) + "%";
+}
+
+// The first heading on screen and where it sits, or the scroll ratio when the text has no headings.
+// Top edge of the visible reading area: 0 when the page itself scrolls, whose bounding box moves with the scroll.
+function readingAreaTop(scroller) {
+  return !scroller || scroller === document.scrollingElement || !isScrollableY(scroller) ? 0 : scroller.getBoundingClientRect().top;
+}
+
+function captureReadingPlace() {
+  const frame = document.querySelector("iframe.html-preview-frame");
+  if (frame?.contentDocument?.scrollingElement) {
+    const scroller = frame.contentDocument.scrollingElement;
+    return { frame, ratio: scroller.scrollTop / Math.max(1, scroller.scrollHeight) };
+  }
+  const reader = el("docReader") || el("docEditor");
+  if (!reader) return null;
+  const scroller = activeDocumentScrollTarget();
+  const limit = readingAreaTop(scroller) + 1;
+  const lines = reader.querySelectorAll("[data-line-index]");
+  if (lines.length) {
+    let low = 0;
+    let high = lines.length - 1;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (lines[middle].getBoundingClientRect().bottom > limit) high = middle; else low = middle + 1;
+    }
+    return { line: lines[low].dataset.lineIndex, offset: lines[low].getBoundingClientRect().top - limit };
+  }
+  return { ratio: (scroller?.scrollTop || 0) / Math.max(1, scroller?.scrollHeight || 1) };
+}
+
+function restoreReadingPlace(place) {
+  if (!place) return;
+  if (place.frame) {
+    const scroller = document.querySelector("iframe.html-preview-frame")?.contentDocument?.scrollingElement;
+    if (scroller) scroller.scrollTop = place.ratio * scroller.scrollHeight;
+    return;
+  }
+  const reader = el("docReader") || el("docEditor");
+  const scroller = activeDocumentScrollTarget();
+  if (!reader || !scroller) return;
+  if (place.line !== undefined) {
+    const line = reader.querySelector('[data-line-index="' + cssEscape(place.line) + '"]');
+    if (line) scroller.scrollTop += line.getBoundingClientRect().top - (readingAreaTop(scroller) + 1) - place.offset;
+  } else scroller.scrollTop = place.ratio * scroller.scrollHeight;
+}
+
+function setReadingSize(size) {
+  if (!READING_SIZES.includes(size)) return;
+  const place = captureReadingPlace();
+  try { window.localStorage?.setItem(READING_SIZE_KEY, String(size)); } catch {}
+  applyReadingSize();
+  window.requestAnimationFrame(() => restoreReadingPlace(place));
+}
+
+function openReadingSettings() {
+  document.querySelector("dialog.reading-dialog")?.remove();
+  const dialog = document.createElement("dialog");
+  dialog.className = "reading-dialog";
+  dialog.setAttribute("aria-label", "Text size");
+  const sizeButtons = () => READING_SIZES.map((size) => '<button type="button" data-reading-size-value="' + size + '" aria-pressed="' + String(size === readingSize()) + '">' + size + (size === 15 ? " Standard" : "") + '</button>').join("");
+  dialog.innerHTML = '<h2>Text size</h2><div class="reading-sizes" role="group" aria-label="Text size">' + sizeButtons() + '</div>'
+    + '<label class="reading-page-option"><input type="checkbox" data-reading-page-buttons' + (pageButtonsEnabled() ? " checked" : "") + '> Page buttons</label>'
+    + '<p class="reading-note">Kept on this device only.</p><button type="button" data-reading-close>Close</button>';
+  dialog.addEventListener("click", (event) => {
+    const choice = event.target.closest?.("[data-reading-size-value]");
+    if (choice) {
+      setReadingSize(Number(choice.dataset.readingSizeValue));
+      dialog.querySelectorAll("[data-reading-size-value]").forEach((button) => button.setAttribute("aria-pressed", String(Number(button.dataset.readingSizeValue) === readingSize())));
+    } else if (event.target.closest?.("[data-reading-close]")) dialog.close();
+  });
+  dialog.addEventListener("change", (event) => {
+    if (!event.target.matches?.("[data-reading-page-buttons]")) return;
+    try { window.localStorage?.setItem(PAGE_BUTTONS_KEY, event.target.checked ? "1" : "0"); } catch {}
+    wirePageButtons();
+  });
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  document.body.append(dialog);
+  dialog.showModal();
+  dialog.querySelector("[data-reading-size-value][aria-pressed=true]")?.focus();
+}
+
+// One screen minus two lines, with no smooth scrolling: e-ink shows trails behind an animation.
+function movePage(direction) {
+  const frame = document.querySelector("iframe.html-preview-frame");
+  if (frame?.contentWindow) {
+    frame.contentWindow.scrollBy({ top: direction * Math.max(40, frame.clientHeight - 48), behavior: "instant" });
+    return;
+  }
+  const reader = el("docReader");
+  const scroller = activeDocumentScrollTarget();
+  if (!reader || !scroller) return;
+  const lineHeight = parseFloat(window.getComputedStyle(reader).lineHeight) || 24;
+  const height = scroller === document.scrollingElement ? window.innerHeight : scroller.clientHeight;
+  scroller.scrollBy({ top: direction * Math.max(40, height - 2 * lineHeight), behavior: "instant" });
+}
+
+function wirePageButtons() {
+  document.querySelector(".reader-page-bar")?.remove();
+  const panel = document.querySelector(".file-panel");
+  const readable = el("docReader") || document.querySelector("iframe.html-preview-frame");
+  if (!panel || !readable || state.mode === "edit" || !pageButtonsEnabled()) return;
+  const bar = document.createElement("div");
+  bar.className = "reader-page-bar";
+  bar.setAttribute("role", "group");
+  bar.setAttribute("aria-label", "Page buttons");
+  bar.innerHTML = '<button type="button" data-page-move="-1" aria-label="Previous page">‹ Page</button><button type="button" data-page-move="1" aria-label="Next page">Page ›</button>';
+  bar.addEventListener("click", (event) => {
+    const button = event.target.closest?.("[data-page-move]");
+    if (button) movePage(Number(button.dataset.pageMove));
+  });
+  panel.append(bar);
+}
+
+// Paged Contents: more than one page of headings gets a search box and pages of 40.
+function contentsPanelMarkup(page, toc) {
+  const active = toc.active;
+  const items = page.items.map((heading) => '<li class="doc-toc-l' + heading.level + '"><a href="#' + escapeHtml(heading.slug) + '" data-toc-slug="' + escapeHtml(heading.slug) + '"' + (heading.index === active ? ' aria-current="location"' : "") + '>' + escapeHtml(heading.text) + '</a></li>').join("");
+  const count = page.total ? (page.start + 1).toLocaleString("en-US") + "–" + page.end.toLocaleString("en-US") + " of " + page.total.toLocaleString("en-US") : "No heading matches";
+  return '<ol data-toc-list>' + items + '</ol>'
+    + '<div class="doc-toc-pager"><button type="button" data-toc-page="-1"' + (page.hasPrevious ? "" : " disabled") + '>Previous</button>'
+    + '<span data-toc-count role="status" aria-live="polite">' + count + '</span>'
+    + '<button type="button" data-toc-page="1"' + (page.hasNext ? "" : " disabled") + '>Next</button></div>';
+}
+
+function contentsSearchMarkup(query) {
+  return '<input class="doc-toc-search" type="search" data-toc-query aria-label="Search headings" placeholder="Search headings" maxlength="200" value="' + escapeHtml(query) + '" autocomplete="off">';
+}
+
+// Index of the last heading that starts above the reading line, found with a binary search on positions.
+function currentHeadingIndex(entries, root, limit) {
+  let low = 0;
+  let high = entries.length - 1;
+  let found = -1;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    const heading = root.querySelector('[data-heading-id="' + cssEscape(entries[middle].slug) + '"]');
+    if (heading && heading.getBoundingClientRect().top <= limit) { found = middle; low = middle + 1; } else high = middle - 1;
+  }
+  return found;
+}
+
+async function drawContentsPanel(panel, toc, { toActive = false, root = el("docReader"), limit = null } = {}) {
+  const tools = await loadTextTools();
+  if (!panel.isConnected) return;
+  if (toActive && root) {
+    const edge = limit ?? (readingAreaTop(activeDocumentScrollTarget()) + 24);
+    toc.active = currentHeadingIndex(toc.entries, root, edge);
+  }
+  const page = tools.contentsPage(toc.entries, { query: toc.query, start: toActive ? null : toc.start, active: toActive ? toc.active : -1, pageSize: CONTENTS_PAGE_SIZE });
+  toc.start = page.start;
+  panel.querySelector("[data-toc-body]").innerHTML = contentsPanelMarkup(page, toc);
+}
+
+// Search box, pages and links of one Contents panel. onPick(slug) goes to a heading.
+function wireContentsPanel(panel, toc, { details = null, root = el("docReader"), track = true, onPick }) {
+  let timer = 0;
+  const redraw = (options) => drawContentsPanel(panel, toc, { root, ...options }).catch((error) => setStatus(error.message));
+  panel.addEventListener("input", (event) => {
+    if (!event.target.matches?.("[data-toc-query]")) return;
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      toc.query = event.target.value.slice(0, 200);
+      toc.start = 0;
+      redraw({ toActive: false });
+    }, 180);
+  });
+  panel.addEventListener("click", (event) => {
+    const page = event.target.closest?.("[data-toc-page]");
+    if (page) {
+      toc.start = Math.max(0, toc.start + Number(page.dataset.tocPage) * CONTENTS_PAGE_SIZE);
+      redraw({ toActive: false });
+      return;
+    }
+    const link = event.target.closest?.("[data-toc-slug]");
+    if (!link) return;
+    event.preventDefault();
+    onPick(link.dataset.tocSlug);
+  });
+  if (details) details.addEventListener("toggle", () => { if (details.open) redraw({ toActive: track }); });
+  if (!details || details.open) redraw({ toActive: track });
+  else if (toc.query) redraw({ toActive: false });
+}
+
 function renderMarkdownToc(outline) {
   const titles = outline.filter((heading) => heading.level === 1);
   const entries = outline.filter((heading) => heading.level <= 3 && (heading.level > 1 || titles.length > 1));
   if (entries.length < 2) return "";
   const open = window.matchMedia?.("(min-width: 1280px)").matches ? " open" : "";
+  if (entries.length > CONTENTS_PAGE_SIZE) {
+    const same = state.docToc?.path === state.selected && state.docToc.entries.length === entries.length;
+    state.docToc = { path: state.selected, entries: entries.map((heading) => ({ text: heading.text, slug: heading.slug, level: heading.level })), query: same ? state.docToc.query : "", start: same ? state.docToc.start : 0, active: -1 };
+    const first = entries.slice(0, CONTENTS_PAGE_SIZE).map((heading) => '<li class="doc-toc-l' + heading.level + '"><a href="#' + escapeHtml(heading.slug) + '" data-toc-slug="' + escapeHtml(heading.slug) + '">' + escapeHtml(heading.text) + '</a></li>').join("");
+    return '<nav class="doc-toc doc-toc-paged" aria-label="Contents" data-toc-paged><details' + open + '><summary>Contents <span>' + entries.length.toLocaleString("en-US") + '</span></summary>'
+      + contentsSearchMarkup(state.docToc.query) + '<div data-toc-body><ol data-toc-list>' + first + '</ol><div class="doc-toc-pager"><button type="button" data-toc-page="-1" disabled>Previous</button><span data-toc-count role="status" aria-live="polite">1–' + CONTENTS_PAGE_SIZE + ' of ' + entries.length.toLocaleString("en-US") + '</span><button type="button" data-toc-page="1">Next</button></div></div>'
+      + '</details></nav>';
+  }
   return '<nav class="doc-toc" aria-label="Contents"><details' + open + '><summary>Contents <span>' + entries.length + '</span></summary><ol>'
     + entries.map((heading) => '<li class="doc-toc-l' + heading.level + '"><a href="#' + escapeHtml(heading.slug) + '" data-doc-anchor="' + escapeHtml(heading.slug) + '">' + escapeHtml(heading.text) + '</a></li>').join("")
     + '</ol></details></nav>';
 }
+
+function wireMarkdownToc() {
+  const nav = document.querySelector("[data-toc-paged]");
+  const toc = state.docToc;
+  if (!nav || !toc || toc.path !== state.selected) return;
+  wireContentsPanel(nav, toc, { details: nav.querySelector("details"), onPick: (slug) => scrollToMarkdownAnchor(slug) });
+}
+
+// HTML documents: the headings come from the sandbox frame (same origin), in a dialog because the page is not ours to change.
+function htmlPreviewHeadings() {
+  const frameDocument = document.querySelector("iframe.html-preview-frame")?.contentDocument;
+  if (!frameDocument) return [];
+  return [...frameDocument.querySelectorAll("h1, h2, h3, h4, h5, h6")]
+    .map((heading, index) => ({ text: (heading.textContent || "").replace(/\s+/g, " ").trim(), level: Number(heading.tagName.slice(1)), slug: String(index), node: heading }))
+    .filter((heading) => heading.text);
+}
+
+function openHtmlContents() {
+  const frame = document.querySelector("iframe.html-preview-frame");
+  const headings = htmlPreviewHeadings();
+  document.querySelector("dialog.contents-dialog")?.remove();
+  const dialog = document.createElement("dialog");
+  dialog.className = "contents-dialog";
+  dialog.setAttribute("aria-label", "Contents");
+  dialog.innerHTML = '<h2>Contents <span>' + headings.length.toLocaleString("en-US") + '</span></h2>' + (headings.length ? contentsSearchMarkup("") : "") + '<div data-toc-body>' + (headings.length ? "" : '<p class="reading-note">This page has no headings.</p>') + '</div><button type="button" data-reading-close>Close</button>';
+  const toc = { entries: headings, query: "", start: 0, active: -1 };
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  dialog.querySelector("[data-reading-close]").addEventListener("click", () => dialog.close());
+  if (headings.length) {
+    wireContentsPanel(dialog, toc, {
+      track: false,
+      onPick: (slug) => {
+        dialog.close();
+        headings[Number(slug)]?.node.scrollIntoView({ behavior: "instant", block: "start" });
+      },
+    });
+  }
+  document.body.append(dialog);
+  dialog.showModal();
+}
+
+// ---- Find and replace in the editor, on top of the editor's own undo history.
+function wireEditorFind(editor) {
+  const previous = state.editorFind;
+  const wasOpen = Boolean(previous?.isOpen);
+  if (previous) state.editorFindValues = previous.values;
+  state.editorFind = null;
+  loadTextTools().then((tools) => {
+    if (!editor.isConnected) return;
+    const apply = (value, selection) => {
+      const history = prepareMarkdownEditorHistory(editor);
+      history.past.push(markdownEditorHistorySnapshot(editor));
+      history.future.length = 0;
+      editor.value = value;
+      editor.setSelectionRange(selection.start, selection.end);
+      history.pending = null;
+      history.current = markdownEditorHistorySnapshot(editor);
+      resetMarkdownEditorHistoryGroup();
+      syncMarkdownEditorValue(editor);
+    };
+    const select = (start, end) => {
+      editor.setSelectionRange(start, end);
+      tools.revealTextareaOffset(editor, start);
+      updateMarkdownEditorVisualSelection();
+    };
+    const bar = tools.createFindBar({ getText: () => editor.value, select, apply, onClose: () => { state.editorFindValues = bar.values; try { editor.focus({ preventScroll: true }); } catch {} } });
+    bar.values = state.editorFindValues || {};
+    (editor.closest(".markdown-editor-shell") || editor).before(bar.element);
+    state.editorFind = bar;
+    if (wasOpen || state.editorFindWanted) {
+      state.editorFindWanted = false;
+      bar.open({ caret: editor.selectionStart, keepQuery: wasOpen });
+    }
+  }).catch((error) => setStatus(error.message));
+}
+
+function openEditorFind() {
+  const editor = el("docEditor");
+  if (!editor) return;
+  const bar = state.editorFind;
+  if (!bar || !bar.element.isConnected) { state.editorFindWanted = true; return; }
+  bar.open({ caret: editor.selectionStart, selectedText: editor.value.slice(editor.selectionStart, editor.selectionEnd) });
+}
+
 
 function renderMarkdownSections(text, outline, options) {
   const lines = text.split("\n");
@@ -22111,6 +22470,7 @@ function wireHtmlPreviewNavigation() {
     const frameDocument = frame.contentDocument;
     if (!frameDocument || frame.__contextRoomNavigationDocument === frameDocument) return;
     frame.__contextRoomNavigationDocument = frameDocument;
+    applyHtmlPreviewZoom();
     frameDocument.addEventListener("click", (event) => {
       const anchor = event.target?.closest?.("a[href], [data-cr-document]");
       if (!anchor) return;
@@ -22589,6 +22949,11 @@ function wireFileActionButtons(root = document) {
     target?.focus({ preventScroll: true });
   });
   root.querySelector("[data-file-delete]")?.addEventListener("click", () => deletePaths([state.selected]).catch((error) => setStatus(error.message)));
+  root.querySelector("[data-reading-settings]")?.addEventListener("click", openReadingSettings);
+  root.querySelector("[data-html-contents]")?.addEventListener("click", openHtmlContents);
+  root.querySelector("[data-editor-undo]")?.addEventListener("click", () => { const editor = el("docEditor"); if (editor) { applyMarkdownEditorHistory(editor, "undo"); editor.focus({ preventScroll: true }); } });
+  root.querySelector("[data-editor-redo]")?.addEventListener("click", () => { const editor = el("docEditor"); if (editor) { applyMarkdownEditorHistory(editor, "redo"); editor.focus({ preventScroll: true }); } });
+  root.querySelector("[data-editor-find]")?.addEventListener("click", openEditorFind);
   root.querySelector("[data-empty-template-select]")?.addEventListener("change", (event) => applySelectedTemplateToEditor(event.currentTarget.value));
 }
 
@@ -23293,6 +23658,7 @@ function finalizeExternalReviewPanelInPlace(viewState) {
   doc.outerHTML = state.mode === "edit" ? renderMarkdownEditor(text) : renderMarkdownLineView(text, { filePath: state.selected });
   replaceExternalReviewActionsInPlace(text);
   wireMarkdownDocLinks();
+  wireMarkdownToc();
   wireRenderedMarkdownEditor();
   syncWorkspaceScroll();
   restoreFinalReviewViewport(visualAnchor, restoreState);
@@ -25312,6 +25678,8 @@ function scrollEditorToTextAnchor(editor, snapshot) {
   }
   return true;
 }
+// Search ignores case and accents, like the CLI (src/documentation.mjs) and the Lisière app.
+function searchFold(value) { return String(value ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase(); }
 function escapeHtml(value) { return String(value).replace(/[&<>"]/g, (ch) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[ch])); }
 function escapeRegExp(value) { return String(value).replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&"); }
 function cssEscape(value) { return window.CSS && CSS.escape ? CSS.escape(value) : String(value).replace(/(["\\])/g, "\\$1"); }

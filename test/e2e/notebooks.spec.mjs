@@ -669,6 +669,12 @@ test.describe('Notebooks space', () => {
       const { id, ink } = await newNotebookWithInk(page, f);
       await panel.locator(`[data-notebook-id="${id}"]`).getByRole('button', { name: /^Move to project · / }).click();
       const toProject = page.getByRole('dialog', { name: 'Move to project', exact: true });
+      // The place search ignores case and accents, like every search in the interface.
+      await toProject.getByLabel('Search projects').fill('SYNTHÉTIC');
+      await expect(toProject.getByRole('button', { name: 'Synthetic project', exact: true })).toBeVisible();
+      await toProject.getByLabel('Search projects').fill('synthetiq');
+      await expect(toProject.getByRole('button', { name: 'Synthetic project', exact: true })).toHaveCount(0);
+      await toProject.getByLabel('Search projects').fill('');
       await toProject.getByRole('button', { name: 'Synthetic project', exact: true }).click();
       await expect(toProject.getByLabel('File in the destination')).toHaveValue(/^docs\/.+\.crnb$/);
       await toProject.getByLabel('File in the destination').fill('docs/Moved idea.crnb');

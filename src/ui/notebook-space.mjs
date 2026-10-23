@@ -1,5 +1,6 @@
 import { IndexedNotebookStorage } from '../notebook_client.mjs';
 import { notebookElement, notebookStyles } from './notebook-editor.mjs';
+import { foldForSearch } from './text-tools.mjs';
 
 /** The Notebooks space keeps its notebooks under one folder; the folder name is not shown. */
 export const NOTEBOOK_SPACE_FOLDER = 'Carnets/';
@@ -70,8 +71,8 @@ export async function openNotebookMoveDialog({ notebook, from, places, move, sco
   const invalidate = () => { preview = null; moveButton.disabled = true; summary.textContent = ''; };
   const defaultPath = place => place.space ? NOTEBOOK_SPACE_FOLDER + notebook.id + '.crnb' : 'docs/' + fileNameFor(notebook.title);
   const renderPlaces = () => {
-    const query = search.value.trim().toLowerCase();
-    list.replaceChildren(...places.filter(place => !query || String(place.title).toLowerCase().includes(query)).map(place => {
+    const query = foldForSearch(search.value.trim());
+    list.replaceChildren(...places.filter(place => !query || foldForSearch(place.title).includes(query)).map(place => {
       const row = notebookElement('li'), choose = notebookElement('button', place.title, 'notebook-move-place'); choose.type = 'button';
       choose.setAttribute('aria-pressed', String(target?.id === place.id));
       choose.addEventListener('click', () => { target = place; pathInput.value = defaultPath(place); invalidate(); renderPlaces(); });
