@@ -393,7 +393,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .context-hub-home-project-destination { min-height: 32px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--text); cursor: pointer; font-size: 11px; font-weight: 650; }
     .context-hub-home-project-destination:hover { background: var(--surface-card-hover); }
     .context-hub-home-project-destination:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 1px; }
-    .notebook-space-new { min-height: 48px; padding: 8px 18px; border: 1px solid var(--accent); border-radius: 10px; background: var(--accent); color: var(--accent-contrast, #fff); cursor: pointer; font-size: 14px; font-weight: 750; }
+    .notebook-space-new { min-height: 48px; padding: 8px 18px; border: 1px solid var(--accent); border-radius: 10px; background: var(--accent); color: var(--on-accent, var(--bg)); cursor: pointer; font-size: 14px; font-weight: 750; }
     .notebook-space-list { list-style: none; margin: 0; padding: 6px; display: grid; gap: 2px; max-height: 320px; overflow-y: auto; }
     .notebook-space-item { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 10px; }
     .notebook-space-item:hover { background: var(--surface-card-hover); }
