@@ -412,3 +412,21 @@ test("an exact no-birthtime enrollment can enter a Shared transaction", (t) => {
     () => { called = true; throw stop; }), error => error === stop);
   assert.equal(called, true);
 });
+
+test("the Notebooks space mark survives re-registration and a device confirmation, and stays unique", (t) => {
+  const { root, base } = fixture(t);
+  const other = path.join(base, "other");
+  fs.mkdirSync(path.join(other, "docs"), { recursive: true });
+  initializeContextRoomProject(other, { title: "Other", allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+  const saved = registerContextHubProject(root, { title: "Notebooks", space: "notebooks" });
+  assert.equal(saved.space, "notebooks");
+  assert.equal(registerContextHubProject(root).space, "notebooks");
+  alterStats(t, { dev: 77 }, root);
+  assert.equal(listContextHubProjects()[0].space, "notebooks");
+  const old = `${saved.rootIdentity.dev}:${saved.rootIdentity.ino}`;
+  try { confirmContextHubProjectLocation({ projectId: saved.id, expectedRoot: root, expectedRootIdentity: old }); } catch {}
+  assert.equal(readContextHubRegistry().projects[0].space, "notebooks");
+  assert.throws(() => registerContextHubProject(other, { space: "notebooks" }), { code: "context_hub_notebook_space_exists" });
+  assert.equal(registerContextHubProject(other).space, undefined);
+  assert.throws(() => registerContextHubProject(other, { space: "boards" }), /Unknown Context Hub space/);
+});

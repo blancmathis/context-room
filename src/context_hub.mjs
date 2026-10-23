@@ -2029,6 +2029,7 @@ function normalizedRegistry(raw = {}, { refreshGit = false } = {}) {
           repository: canonicalRepositoryForStorage(entry.shared.repository),
           projectId: String(entry.shared.projectId).trim(),
         } : null,
+        ...(entry.space === CONTEXT_HUB_NOTEBOOK_SPACE ? { space: CONTEXT_HUB_NOTEBOOK_SPACE } : {}),
       }];
     } catch {
       return [];
@@ -2233,7 +2234,10 @@ export function unregisterContextHubSharedRepository(repository) {
   });
 }
 
-export function registerContextHubProject(root, { title = "", shared = null } = {}) {
+// The free notebook space is an ordinary registered root with this mark (at most one).
+export const CONTEXT_HUB_NOTEBOOK_SPACE = "notebooks";
+
+export function registerContextHubProject(root, { title = "", shared = null, space = "" } = {}) {
   const projectRoot = stableRoot(root);
   if (!fs.existsSync(projectRoot) || !fs.statSync(projectRoot).isDirectory()) throw new Error(`Context Hub project root does not exist: ${projectRoot}`);
   assertContextHubProjectControlFiles(projectRoot);
@@ -2251,6 +2255,7 @@ export function registerContextHubProject(root, { title = "", shared = null } = 
     rootIdentity,
     title,
     requestedShared,
+    space,
   }));
 }
 
@@ -2261,8 +2266,13 @@ function registerContextHubProjectInRegistry(registry, {
   rootIdentity,
   title = "",
   requestedShared = null,
+  space = "",
 } = {}) {
   assertNoUnknownHubSharedRecoveryLocked();
+  if (space && space !== CONTEXT_HUB_NOTEBOOK_SPACE) throw new Error(`Unknown Context Hub space: ${space}`);
+  if (space && registry.projects.some((entry) => entry.space === CONTEXT_HUB_NOTEBOOK_SPACE && entry.id !== id)) {
+    throw Object.assign(new Error("A Notebooks space is already registered."), { code: "context_hub_notebook_space_exists", statusCode: 409 });
+  }
   assertNoPendingHubSharedTransactionLocked((transaction) => transaction.logicalProjectId === identity.logicalProjectId);
   const existing = registry.projects.find((entry) => entry.id === id);
   const nextRootIdentity = normalizedProjectRootIdentity(rootIdentity) || contextHubProjectRootIdentity(projectRoot);
@@ -2313,6 +2323,7 @@ function registerContextHubProjectInRegistry(registry, {
     worktree: identity.worktree,
     worktreeIdentity: identity.membershipIdentity,
     shared: nextShared,
+    ...(space || existing?.space ? { space: CONTEXT_HUB_NOTEBOOK_SPACE } : {}),
   };
   const logicalProjectId = entry.logicalProjectId || entry.id;
   registry.projects = [...registry.projects.filter((project) => project.id !== id), entry].map((project) => (
