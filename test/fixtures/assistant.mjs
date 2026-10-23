@@ -17,7 +17,7 @@ export async function assistantFixture({ audio, uuidThreads = false, platform, o
   writeMemoryWebappSettings(root, { startupContext: { enabled: false }, startupSkills: { enabled: false }, startupHooks: { enabled: false } });
   const turns = [], starts = [], resumes = [], opened = [], macLists = [], macReads = []; let connections = 0;
   const provider = {
-    models: [{ id: 'gpt-6-astra', name: 'Synthetic model contract', efforts: ['low', 'high'] }],
+    models: [{ id: 'gpt-6-astra', name: 'Synthetic model contract', efforts: ['low', 'high'], fast: true }, { id: 'synthetic-plain', name: 'Synthetic plain model', efforts: ['low'], fast: false }],
     async startThread(input) { starts.push(input); return { threadId: uuidThreads ? '0199bbbb-cccc-7ddd-8eee-' + String(starts.length).padStart(12, '0') : 'synthetic-owned-task-' + starts.length }; },
     async resumeOwnedThread(input) { resumes.push(input); return { threadId: input.threadId }; },
     async startTurn(input) { const turn = { ...input, turnId: 'synthetic-turn-' + (turns.length + 1) }; turns.push(turn); input.onEvent({ type: 'started', turnId: turn.turnId }); return { threadId: input.threadId, turnId: turn.turnId }; },

@@ -87,9 +87,13 @@ test('@smoke @notebook explicit view following stops on human input and presenta
     const original = await page.evaluate(() => testNotebook.surface.viewportBounds());
     await expect(notebook).toHaveAttribute('data-view-mode', 'independent');
     expect(await page.evaluate(() => testNotebook.surface.viewportBounds())).toEqual(original);
-    await notebook.getByRole('button', { name: 'Connect tablet', exact: true }).click();
+    // Following a device takes the camera: it stops Follow agent, whose button is then unavailable. (dispatchEvent: no pointer input, so only the device choice can stop it.)
+    const followAgent = notebook.getByRole('button', { name: 'Follow agent', exact: true });
+    await followAgent.dispatchEvent('click'); await expect(followAgent).toHaveAttribute('aria-pressed', 'true');
+    await notebook.getByRole('button', { name: 'Connect tablet', exact: true }).dispatchEvent('click');
     await page.getByRole('button', { name: 'Follow View tablet', exact: true }).click();
     await expect(notebook.locator('.notebook-view-state')).toContainText('Following View tablet.');
+    await expect(followAgent).toHaveAttribute('aria-pressed', 'false'); await expect(followAgent).toBeDisabled(); await expect(notebook).toContainText('You took back the view.');
     await expect.poll(() => latest.receipt?.sequence).toBe(1);
     expect(await page.evaluate(() => testNotebook.surface.viewportBounds())).not.toEqual(original);
     const held = new Promise(resolve => { release = resolve; }); let observed;
@@ -701,4 +705,17 @@ test.describe('Notebooks space', () => {
       expect(f.errors).toEqual([]);
     } finally { await f.close(); }
   });
+});
+
+test('@notebook export offers PNG and PDF downloads', async ({ page }) => {
+  const f = await fixture(page);
+  try {
+    const notebook = await open(page); await draw(page);
+    const format = notebook.getByRole('combobox', { name: 'Notebook export format' });
+    const exported = async value => { await format.selectOption(value); const pending = page.waitForEvent('download'); await notebook.getByRole('button', { name: 'Export', exact: true }).click(); const download = await pending; return { name: download.suggestedFilename(), bytes: fs.readFileSync(await download.path()) }; };
+    const png = await exported('png'); expect(png.name).toBe('Sketch.png'); expect(png.bytes.subarray(0, 4)).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const pdf = await exported('pdf'); expect(pdf.name).toBe('Sketch.pdf'); expect(pdf.bytes.subarray(0, 8).toString('latin1')).toBe('%PDF-1.4');
+    const text = pdf.bytes.toString('latin1'); expect(text).toContain('/Filter /DCTDecode'); expect(text.trimEnd().endsWith('%%EOF')).toBe(true);
+    expect(f.errors).toEqual([]);
+  } finally { await f.close(); }
 });

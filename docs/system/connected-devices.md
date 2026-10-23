@@ -87,7 +87,9 @@ The sheet gives it in three forms. All three carry the same ticket.
   tablet without a camera (the BOOX Note Air5 C), move the file with BOOXDrop, then
   choose "Importer le fichier d’appairage" on the connection screen. The file is
   limited to 8192 bytes, like the pasted code. The app has no QR scanner and does not
-  ask for the camera permission.
+  ask for the camera permission. After pairing, delete `context-room-pairing.json` on
+  the Mac and on the tablet. The ticket works once and for 2 minutes. The browser
+  history can keep the scan address; it holds only that spent ticket.
 
 ## Operate Context Room from the tablet
 
@@ -180,6 +182,19 @@ session or a new following action cannot reuse an earlier receipt. Sharing
 expires after five seconds without a heartbeat. These ephemeral camera states
 are discarded when the service restarts and never enter notebook operation
 history, documentary review or accepted content.
+
+**Follow agent** (off by default, never remembered, absent in a frozen review)
+keeps the view on what the agent writes. When a render shows objects the agent
+created, changed or removed, the canvas moves only if that area is not already
+fully visible: a pan at the current scale if it fits with a 10 % margin,
+otherwise just enough zoom-out. It never zooms in and never opens another
+notebook. A pen or finger gesture, a tool or zoom action, **Fit drawing** or a
+key press stops it ("You took back the view."). It is unavailable while the
+view is shared or followed with a device, so one source moves the camera. If the
+tablet follows the agent and shares its view, the Mac follows with no extra step.
+Choosing **Follow [tablet]** stops Follow agent, and its button stays off while the
+Mac follows a device. **Ask about selection** and **Dictate about notebook** do not
+stop it: they do not move the view.
 
 A pen or finger contact, a tool or keyboard action immediately stops following
 on that surface. A late network response cannot resume it or move the current
@@ -420,6 +435,9 @@ delayed responses against real HTTP/TLS handlers.
 `test/device_browser.test.mjs` adds strict certificate-chain, cookie, origin,
 permission and replacement-pairing checks. `test/device_display.test.mjs` checks
 common render receipts, pending-gesture deferral and cancellation.
+`test/notebook_geometry.test.mjs` covers the Follow agent change and framing rules;
+`test/e2e/assistant.spec.mjs` checks the framing and the human stop in the browser;
+`test/e2e/notebooks.spec.mjs` checks the PNG and PDF downloads.
 `npm run test:web-app` uses independent synthetic browser fixtures for offline
 process restarts, waiting-worker lifecycle, pressure and tablet layouts.
 The isolated Android 15 CI verifier now exercises the normal shared WebView

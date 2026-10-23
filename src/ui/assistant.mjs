@@ -94,16 +94,17 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   for (const control of [dictate, audioStop, recoverAudio, discardAudio, useDictation]) control.dataset.dictationControl = '';
   const recover = button('Inspect original task', () => run((async () => { current = await post('/conversations/' + current.id + '/recover', {}); render(); })())); recover.hidden = true;
   controls.append(send, dictate, voiceButton, interruptVoiceButton, speak, audioStop, recoverAudio, discardAudio, useDictation, recover); form.append(input, controls);
-  const modelRow = element('details', '', 'assistant-model'), modelTitle = element('summary', 'Codex model'), models = element('select'), efforts = element('select');
+  const modelRow = element('details', '', 'assistant-model'), modelTitle = element('summary', 'Codex model'), models = element('select'), efforts = element('select'), fastLabel = element('label', '', 'assistant-fast'), fast = element('input'), fastNote = element('span', '', 'assistant-fast-note');
   models.setAttribute('aria-label', 'Conversation Codex model'); efforts.setAttribute('aria-label', 'Conversation reasoning effort');
   const connect = button('Load available models', () => run((async () => { await post('/connect', {}); modelPending = true; await poll(); })()));
-  modelRow.append(modelTitle, models, efforts, connect);
+  fast.type = 'checkbox'; fast.setAttribute('aria-label', 'Conversation Fast mode'); fastLabel.append(fast, document.createTextNode(' Fast')); fastNote.setAttribute('role', 'note');
+  modelRow.append(modelTitle, models, efforts, fastLabel, fastNote, connect);
   const retainedHistory = createRetainedHistory({ api }), linkedRecordings = createLinkedRecordings({ api }), macTasks = createMacTasks({ api });
   historyRow.append(macTasks.toggle); heading.insertBefore(macTasks.showCurrent, minimize);
   panel.append(heading, original, audioStatus, boundary, ...(conversation.source.kind === 'notebook' ? [] : [sheet.section]), historyRow, macTasks.section, retainedHistory.section, linkedRecordings.section, messages, modelRow, form, status, infoBox, errorBox); parent.append(panel);
   const clientId = crypto.randomUUID();
   let closed = false, current = conversation, pollBusy = false, lease = null, renewTimer = null, recording = null, speaker = null,
-    audioContext = null, audioGeneration = 0, modelPending = false, rendered = '', sendRequest = null, retainedRecording = null, recordingRequest = null, audioBusy = false, audioReading = false, changingConversation = false, draftWrites = Promise.resolve(), nativeRecordings = [], voice = null, voiceClosing = false, initializing = true, historyCursor = null, historyLoading = false;
+    audioContext = null, audioGeneration = 0, modelPending = false, catalogLoaded = false, fastDropped = false, rendered = '', sendRequest = null, retainedRecording = null, recordingRequest = null, audioBusy = false, audioReading = false, changingConversation = false, draftWrites = Promise.resolve(), nativeRecordings = [], voice = null, voiceClosing = false, initializing = true, historyCursor = null, historyLoading = false;
   const fail = error => { if (!closed && error.name !== 'AbortError') { infoBox.textContent = ''; errorBox.textContent = error.message || String(error); } };
   function inform(text) { errorBox.textContent = ''; infoBox.textContent = text; }
   const run = promise => Promise.resolve(promise).catch(fail);
@@ -199,7 +200,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     panel.dataset.ready = String(!initializing); panel.setAttribute('aria-busy', String(initializing));
     panel.dataset.capturing = String(Boolean(recording));
     panel.classList.toggle('assistant-voice-enabled', Boolean(voice));
-    send.disabled = initializing || busy || uncertain || Boolean(voice); stop.disabled = !busy; stop.hidden = !busy; models.disabled = initializing || busy || uncertain || Boolean(voice); efforts.disabled = models.disabled;
+    send.disabled = initializing || busy || uncertain || Boolean(voice); stop.disabled = !busy; stop.hidden = !busy; models.disabled = initializing || busy || uncertain || Boolean(voice); efforts.disabled = models.disabled; fast.disabled = models.disabled || fast.dataset.offered !== 'true';
     history.disabled = initializing || busy || uncertain || Boolean(recording) || audioBusy || audioReading || changingConversation || Boolean(voice) || voiceClosing || historyLoading;
     newConversation.disabled = history.disabled;
     olderHistory.disabled = reloadHistory.disabled = history.disabled;
@@ -236,19 +237,24 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     } catch (error) { fail(error); } finally { pollBusy = false; }
   }
   function showModels(catalog = []) {
-    models.replaceChildren();
+    models.replaceChildren(); catalogLoaded = catalog.length > 0;
     const choices = catalog.length ? catalog : [{ id: current.model, name: current.model }];
-    for (const model of choices) { const option = element('option', model.name || model.id); option.value = model.id; option.dataset.efforts = JSON.stringify(model.efforts || []); models.append(option); }
+    for (const model of choices) { const option = element('option', model.name || model.id); option.value = model.id; option.dataset.efforts = JSON.stringify(model.efforts || []); option.dataset.fast = String(model.fast === true); models.append(option); }
     if (!choices.some(model => model.id === current.model)) { const option = element('option', current.model); option.value = current.model; models.append(option); }
     models.value = current.model; showEfforts();
+    if (catalogLoaded && current.fast === true && fast.dataset.offered !== 'true') run(configure());
   }
   function showEfforts() {
     const listed = JSON.parse(models.selectedOptions[0]?.dataset.efforts || '[]');
     efforts.replaceChildren(...(listed.length ? listed.map(item => typeof item === 'string' ? item : item.reasoningEffort) : ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).map(value => { const option = element('option', value); option.value = value; return option; }));
     efforts.value = [...efforts.options].some(option => option.value === current.effort) ? current.effort : efforts.options[0]?.value;
+    const offered = models.selectedOptions[0]?.dataset.fast === 'true'; fast.dataset.offered = String(offered); fast.checked = (offered || !catalogLoaded) && current.fast === true;
+    if (offered) fastDropped = false; else if (catalogLoaded && current.fast === true) fastDropped = true;
+    fast.disabled = models.disabled || !offered;
+    fastNote.textContent = offered ? '' : !catalogLoaded ? 'Load available models to change Fast.' : fastDropped ? 'Fast was on but is not offered for this model now. Turns run without it.' : 'Fast is not offered for this model.';
   }
-  async function configure() { current = await post('/conversations/' + current.id + '/configure', { model: models.value, effort: efforts.value }); render(); }
-  models.addEventListener('change', () => { showEfforts(); run(configure()); }); efforts.addEventListener('change', () => run(configure()));
+  async function configure() { current = await post('/conversations/' + current.id + '/configure', { model: models.value, effort: efforts.value, fast: fast.checked }); render(); }
+  models.addEventListener('change', () => { showEfforts(); run(configure()); }); efforts.addEventListener('change', () => run(configure())); fast.addEventListener('change', () => run(configure()));
   async function refreshHistory({ append = false } = {}) {
     if (historyLoading || append && !historyCursor) return;
     historyLoading = true; render();

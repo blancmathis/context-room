@@ -362,6 +362,7 @@ test('pairing QR URL keeps the ticket in the fragment only', () => {
   assert.ok(url.hash.startsWith('#pair='));
   assert.equal(text.split('#')[0].includes('secret-token'), false);
   assert.deepEqual(JSON.parse(pairingTicketFromFragment(url.hash)), ticket);
-  assert.equal(pairingQrText({ ...ticket, browserUrl: undefined }), JSON.stringify({ ...ticket, browserUrl: undefined }));
+  const raw = pairingQrText({ ...ticket, browserUrl: undefined });
+  assert.match(raw, /^[\x20-\x7e]*$/); const { browserUrl, ...bare } = ticket; assert.deepEqual(JSON.parse(raw), bare);
   for (const bad of ['', '#', '#pair=', '#pair=***', '#pair=bm90LWpzb24', '#pair=' + Buffer.from('"text"').toString('base64url'), '#other=abc']) assert.equal(pairingTicketFromFragment(bad), null, bad);
 });
