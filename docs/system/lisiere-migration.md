@@ -352,6 +352,12 @@ context-room migrate --root /path/to/project --notebooks-to-space
 context-room migrate --root /path/to/project --notebooks-to-space --apply --revision REVISION
 ```
 
+If the apply stops (a crash or a killed process), run it again. Wait 30 s
+first: a lock left by the stopped process is released after 30 s, and before
+that the command answers that the resource is busy. If the answer says
+« Preview again », run a new preview, then apply its new revision. Notebooks
+that already moved are not moved twice; each one stays active in exactly one place.
+
 Import creates private working state, with explicit import provenance. It does
 not create an ordinary `.crnb` file or an accepted baseline. Use the existing
 notebook freeze/submission and human review workflow to produce and decide an

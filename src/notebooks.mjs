@@ -26,20 +26,32 @@ function completeArrival(root, id, operationId) {
   if (fs.existsSync(stagedHeader)) {
     // A lock may have left the folder itself; only an existing header means another active copy.
     const active = makeNotebookDirectory(root, resourcePath(id)), activeHeader = safeNotebookPath(root, `${resourcePath(id)}/header.json`);
-    if (fs.existsSync(activeHeader)) failNotebook('notebook_recovery_conflict', 'A moved notebook arrived where another copy is active. Both are kept; compare them.');
-    // An earlier departure from this root no longer applies once the notebook is back.
-    fs.rmSync(safeNotebookPath(root, movedPath(id)), { force: true });
-    try { fs.renameSync(stagedHeader, activeHeader); } catch (error) { if (error.code !== 'ENOENT' || !fs.existsSync(activeHeader)) throw error; }
-    syncNotebookDirectory(active);
+    if (!fs.existsSync(activeHeader)) {
+      // An earlier departure from this root no longer applies once the notebook is back.
+      fs.rmSync(safeNotebookPath(root, movedPath(id)), { force: true });
+      try { fs.renameSync(stagedHeader, activeHeader); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      syncNotebookDirectory(active);
+    }
+    // Two readers, or a reader and the mover, may finish the same arrival: only another copy conflicts.
+    if (readNotebookJson(root, `${resourcePath(id)}/header.json`)?.transferred?.operationId !== operationId) failNotebook('notebook_recovery_conflict', 'A moved notebook arrived where another copy is active. Both are kept; compare them.');
   }
   fs.rmSync(staged, { recursive: true, force: true }); syncNotebookDirectory(path.dirname(staged));
 }
-function committedArrival(root, name) {
+/** A staged copy is named exactly `${id}-${operationId}` by its own header. Ids may share a
+ * prefix ("note", "note-2"), so a folder name alone never says which notebook it holds. */
+function stagedArrival(root, name) {
   try {
-    const staged = readNotebookJson(root, `${NOTEBOOK_STORE}/incoming/${name}/header.json`), transfer = staged?.transferred, from = transfer?.from;
-    if (!transfer || name !== `${staged.document?.id}-${transfer.operationId}` || typeof from?.root !== 'string') return null;
-    if (canonicalNotebookRoot(from.root) !== from.rootIdentity || readNotebookJson(from.root, movedPath(staged.document.id))?.operationId !== transfer.operationId) return null;
-    return { id: staged.document.id, operationId: transfer.operationId };
+    const staged = readNotebookJson(root, `${NOTEBOOK_STORE}/incoming/${name}/header.json`), operationId = staged?.transferred?.operationId;
+    if (typeof operationId !== 'string' || name !== `${notebookId(staged.document?.id)}-${notebookId(operationId)}`) return null;
+    return { id: staged.document.id, operationId, from: staged.transferred.from };
+  } catch { return null; }
+}
+function committedArrival(root, name) {
+  const arrival = stagedArrival(root, name), from = arrival?.from;
+  if (typeof from?.root !== 'string') return null;
+  try {
+    if (canonicalNotebookRoot(from.root) !== from.rootIdentity || readNotebookJson(from.root, movedPath(arrival.id))?.operationId !== arrival.operationId) return null;
+    return arrival;
   } catch { return null; } // A source that is unreadable or elsewhere commits nothing; the staged copy waits.
 }
 function activateArrivals(root, id) {
@@ -48,7 +60,7 @@ function activateArrivals(root, id) {
   for (const name of fs.readdirSync(directory).sort()) {
     if (id ? !name.startsWith(`${id}-`) : name.startsWith('.')) continue;
     const arrival = committedArrival(root, name);
-    if (!arrival) continue;
+    if (!arrival || id && arrival.id !== id) continue;
     if (id) completeArrival(root, arrival.id, arrival.operationId);
     else try { completeArrival(root, arrival.id, arrival.operationId); } catch { /* reported when that notebook is read */ }
   }
@@ -347,7 +359,7 @@ function occupiedNotebookPaths(root, arrivingId) {
     catch (error) { if (error.code !== 'notebook_moved') headerPath(resourcePath(id)); }
   }
   // Copies staged for another notebook may be committed already: their path is taken too.
-  if (fs.existsSync(store('incoming'))) for (const name of fs.readdirSync(store('incoming')).sort()) if (!name.startsWith('.') && !name.startsWith(`${arrivingId}-`)) headerPath(`${NOTEBOOK_STORE}/incoming/${name}`);
+  if (fs.existsSync(store('incoming'))) for (const name of fs.readdirSync(store('incoming')).sort()) if (!name.startsWith('.') && stagedArrival(root, name)?.id !== arrivingId) headerPath(`${NOTEBOOK_STORE}/incoming/${name}`);
   return paths;
 }
 /** One move identifier per notebook incarnation and destination: a re-run after a crash
@@ -433,8 +445,8 @@ export function transferNotebook(sourceRoot, targetRoot, request = {}, { canWrit
         // Older interrupted moves of this notebook from this source never reached their commit point.
         const incoming = safeNotebookPath(targetRoot, `${NOTEBOOK_STORE}/incoming`);
         if (fs.existsSync(incoming)) for (const name of fs.readdirSync(incoming)) {
-          const operation = name.startsWith(`${id}-`) && name.slice(id.length + 1);
-          if (operation && operation !== operationId && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/.test(operation) && readNotebookJson(targetRoot, `${NOTEBOOK_STORE}/incoming/${name}/header.json`)?.transferred?.from?.rootIdentity === sourceIdentity) cancel(operation);
+          const staged = stagedArrival(targetRoot, name);
+          if (staged?.id === id && staged.operationId !== operationId && staged.from?.rootIdentity === sourceIdentity) cancel(staged.operationId);
         }
         journal = { schemaVersion: 1, operationId, resourceId: id, revision, target: targetIdentity, from: { ...from, path: state.locator.path, locationRevision: state.locator.revision },
           to, documentHash, tombstonesHash: notebookHash(tombstones), at: new Date().toISOString() };
