@@ -20,7 +20,7 @@ import { planLisiereNotebookImport, applyLisiereNotebookImport, listLisiereNoteb
 import { migrateLisiereReconciliation } from './lisiere_reconcile.mjs';
 import { migrateLisiereDocument } from "./lisiere_documents.mjs";
 import { migrateLisiereConversationHistory } from "./lisiere_conversations.mjs";
-import { listNotebooks, readNotebook, transferNotebook } from "./notebooks.mjs";
+import { listNotebooks, readNotebook, transferNotebook, notebookTransferOperationId, interruptedNotebookTransfers } from "./notebooks.mjs";
 import { isDocumentAssetPath, listDocumentAssets, readDocumentAssetReview, recordAcceptedDocumentAsset, decideDocumentAsset } from "./document_assets.mjs";
 import { readReviewCleanupPolicy, writeReviewCleanupPolicy, previewReviewCleanup, applyReviewCleanup, recentReviewCleanupReceipts } from "./review_cleanup.mjs";
 import fs from "node:fs";
@@ -7929,7 +7929,9 @@ export function requireContextHubNotebookSpace() {
 
 /**
  * Moves the working notebooks that a Lisière import created in `root` to the Notebooks space.
- * Preview lists them with one revision; apply moves each one with a verified copy.
+ * Preview lists the accepted ones and each refused one with its reason, under one revision;
+ * apply moves only the accepted ones with a verified copy. Each notebook keeps one move
+ * identifier per destination, so a re-run after a crash resumes its own journal.
  * The path stays when the space allows it, otherwise the file keeps its name under Carnets/.
  */
 export function migrateNotebooksToSpace(root, { boardId, apply = false, expectedRevision } = {}) {
@@ -7940,22 +7942,33 @@ export function migrateNotebooksToSpace(root, { boardId, apply = false, expected
   };
   const destinationPath = (rel) => rel.startsWith(CONTEXT_HUB_NOTEBOOK_FOLDER) ? rel : CONTEXT_HUB_NOTEBOOK_FOLDER + path.posix.basename(rel);
   const plan = () => {
-    const notebooks = listLisiereNotebookImports(sourceRoot, { boardId }).map((entry) => {
-      const preview = transferNotebook(sourceRoot, spaceRoot, { resourceId: entry.id, path: destinationPath(entry.path) }, { ...authority, preview: true });
-      return { resourceId: entry.id, title: entry.title, boardId: entry.boardId, from: entry.path, to: preview.to.path, revision: preview.revision };
-    });
-    return { notebooks, revision: notebookHash({ kind: "notebooks-to-space", spaceRoot, notebooks }) };
+    // Moves committed before a crash: the source is already closed, only the finish remains.
+    const notebooks = interruptedNotebookTransfers(sourceRoot, spaceRoot)
+      .filter((journal) => journal.operationId.startsWith("space-") && (!boardId || journal.to.migration?.boardId === boardId))
+      .map((journal) => ({ resourceId: journal.resourceId, title: journal.to.migration?.title ?? null, boardId: journal.to.migration?.boardId ?? null,
+        from: journal.from.path, to: journal.to.path, revision: journal.revision, operationId: journal.operationId, resume: true }));
+    const refused = [];
+    for (const entry of listLisiereNotebookImports(sourceRoot, { boardId })) {
+      const item = { resourceId: entry.id, title: entry.title, boardId: entry.boardId, from: entry.path, to: destinationPath(entry.path) };
+      try {
+        const preview = transferNotebook(sourceRoot, spaceRoot, { resourceId: entry.id, path: item.to }, { ...authority, preview: true });
+        notebooks.push({ ...item, to: preview.to.path, revision: preview.revision, operationId: notebookTransferOperationId(sourceRoot, spaceRoot, entry.id, "space"), resume: false });
+      } catch (error) {
+        if (!String(error?.code || "").startsWith("notebook_")) throw error;
+        refused.push({ ...item, code: error.code, reason: error.message });
+      }
+    }
+    return { notebooks, refused, revision: notebookHash({ kind: "notebooks-to-space", spaceRoot, notebooks, refused }) };
   };
   const planned = plan();
-  const summary = { kind: "notebooks-to-space", root: sourceRoot, spaceRoot, revision: planned.revision, notebooks: planned.notebooks, overwrites: false };
+  const summary = { kind: "notebooks-to-space", root: sourceRoot, spaceRoot, revision: planned.revision, notebooks: planned.notebooks, refused: planned.refused, overwrites: false };
   if (!apply) return { ...summary, applied: false };
   if (expectedRevision !== planned.revision) throw sharedRequestError("The notebooks changed after the preview. Preview again.", 409, "notebook_location_stale");
   const moved = planned.notebooks.map((item) => transferNotebook(sourceRoot, spaceRoot, {
-    resourceId: item.resourceId, path: item.to, expectedRevision: item.revision,
-    operationId: `space-${notebookHash({ revision: planned.revision, resourceId: item.resourceId }).slice(0, 40)}`,
-  }, authority));
+    resourceId: item.resourceId, path: item.to, expectedRevision: item.revision, operationId: item.operationId,
+  }, { ...authority, destination: { migration: { kind: "notebooks-to-space", boardId: item.boardId, title: item.title } } }));
   if (moved.length) markContextHubSnapshotStale();
-  return { ...summary, applied: true, moved: moved.map((item) => ({ resourceId: item.resourceId, to: item.to.path, retired: item.retired })) };
+  return { ...summary, applied: true, moved: moved.map((item) => ({ resourceId: item.resourceId, to: item.to.path, retired: item.retired, replayed: item.replayed })) };
 }
 
 function legacyRecoverySourceForPath(project, rel) {

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { exportLisiereSnapshot } from '../src/lisiere_snapshot.mjs';
 import { planLisiereNotebookImport, applyLisiereNotebookImport } from '../src/lisiere_migration.mjs';
 import { readNotebook, mutateNotebook, openNotebook, listNotebooks, NOTEBOOK_STORE } from '../src/notebooks.mjs';
-import { initializeContextRoomProject, ensureContextHubNotebookSpace } from '../src/context_room.mjs';
+import { initializeContextRoomProject, ensureContextHubNotebookSpace, migrateNotebooksToSpace } from '../src/context_room.mjs';
 import { inspectLisiereSnapshot } from '../src/lisiere_inventory.mjs';
 
 const authority = { canWrite: rel => rel.startsWith('docs/') && rel.endsWith('.crnb') };
@@ -216,4 +216,50 @@ test('D10: every TARGET option (--root, --project, --location, --folder) keeps a
   const plan = run(['--folder', 'docs', '--path', 'docs/Ideas.crnb', '--plan']); assert.equal(plan.status, 0, plan.stdout + plan.stderr);
   const applied = run(['--folder', 'docs', '--path', 'docs/Ideas.crnb', '--apply', '--revision', JSON.parse(plan.stdout).data.revision]); assert.equal(applied.status, 0, applied.stdout + applied.stderr);
   assert.deepEqual(listNotebooks(f.root).map(entry => entry.path), ['docs/Ideas.crnb']); assert.deepEqual(listNotebooks(space), []);
+});
+
+test('notebooks-to-space preview writes nothing, lists refused notebooks and resumes after a crash before and after its commit', async t => {
+  const f = await fixture(t);
+  execFileSync('git', ['init', '--quiet', f.root], { stdio: 'pipe' });
+  initializeContextRoomProject(f.root, { title: 'Recovery fixture', allowedPaths: ['docs/'], watchAllow: ['docs/'] });
+  f.apply(f.plan().revision);
+  const other = { snapshot: f.snapshot, boardId: 'other-board', path: 'docs/Other.crnb' };
+  applyLisiereNotebookImport(f.root, { ...other, expectedRevision: planLisiereNotebookImport(f.root, other, authority).revision }, authority);
+  const homes = { CONTEXT_ROOM_HUB_HOME: path.join(f.base, 'hub'), CONTEXT_ROOM_SHARED_HOME: path.join(f.base, 'shared'), CONTEXT_ROOM_NOTEBOOK_SPACE_HOME: path.join(f.base, 'Carnets space') };
+  const saved = Object.fromEntries(Object.keys(homes).map(key => [key, process.env[key]]));
+  t.after(() => { for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value; });
+  Object.assign(process.env, homes);
+  const space = ensureContextHubNotebookSpace().projectRoot;
+  openNotebook(space, { path: 'Carnets/Ideas.crnb', id: 'space-taken', canWrite: rel => rel.startsWith('Carnets/') });
+  const tree = () => [f.root, space].flatMap(root => fs.readdirSync(root, { recursive: true }).filter(rel => !String(rel).startsWith('.git/')).sort()
+    .map(rel => { const stats = fs.lstatSync(path.join(root, rel)); return [root, rel, stats.size, stats.mtimeMs]; }));
+  const before = tree(), preview = migrateNotebooksToSpace(f.root);
+  assert.deepEqual(tree(), before, 'the preview writes nothing');
+  assert.deepEqual(preview.notebooks.map(item => [item.resourceId, item.to, item.resume]), [['other-board', 'Carnets/Other.crnb', false]]);
+  assert.deepEqual(preview.refused.map(item => [item.resourceId, item.to, item.code]), [['board', 'Carnets/Ideas.crnb', 'notebook_location_conflict']]);
+  assert.match(preview.refused[0].reason, /Nothing was overwritten/);
+  const crash = (match, operation) => {
+    const link = fs.linkSync, rename = fs.renameSync;
+    const guard = original => (from, to) => { if (match(String(to))) throw Object.assign(new Error('simulated crash'), { code: 'EIO' }); return original(from, to); };
+    fs.linkSync = guard(link); fs.renameSync = guard(rename);
+    try { assert.throws(operation, /simulated crash/); } finally { fs.linkSync = link; fs.renameSync = rename; }
+  };
+  const apply = revision => migrateNotebooksToSpace(f.root, { apply: true, expectedRevision: revision });
+  const where = () => [listNotebooks(f.root).map(entry => entry.id).sort(), listNotebooks(space).map(entry => entry.id).sort()];
+  // Before the commit point the source stays active, and the same preview still applies.
+  crash(to => to.includes('/moved/'), () => apply(preview.revision));
+  assert.deepEqual(where(), [['board', 'other-board'], ['space-taken']]);
+  assert.equal(migrateNotebooksToSpace(f.root).revision, preview.revision);
+  // After the commit point the space holds the notebook; a new preview lists the finish to do.
+  crash(to => to.includes('/retired/'), () => apply(preview.revision));
+  assert.deepEqual(where(), [['board'], ['other-board', 'space-taken']]);
+  const resume = migrateNotebooksToSpace(f.root);
+  assert.deepEqual(resume.notebooks.map(item => [item.resourceId, item.resume, item.boardId]), [['other-board', true, 'other-board']]);
+  assert.deepEqual(resume.refused.map(item => item.resourceId), ['board']);
+  assert.deepEqual(apply(resume.revision).moved.map(item => [item.resourceId, item.replayed]), [['other-board', true]]);
+  assert.deepEqual(where(), [['board'], ['other-board', 'space-taken']]);
+  assert.equal(readNotebook(space, 'other-board').document.title, 'Unrelated title');
+  assert.ok(fs.readdirSync(path.join(f.root, NOTEBOOK_STORE, 'retired')).some(name => name.startsWith('other-board-space-')));
+  const after = migrateNotebooksToSpace(f.root);
+  assert.deepEqual([after.notebooks, after.refused.map(item => item.resourceId)], [[], ['board']]);
 });

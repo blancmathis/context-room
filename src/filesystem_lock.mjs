@@ -148,6 +148,9 @@ function scanDirectory(directory, deadline, options, visitor) {
   }
 }
 
+/** The temporary name of a lock record: it is linked to the lock for a moment at publication. */
+export const isFilesystemLockRecordTemp = name => name.startsWith(LOCK_RECORD_TEMP_PREFIX) && name.endsWith(LOCK_RECORD_TEMP_SUFFIX);
+
 function lockPaths(lockPath) {
   const resolved = path.resolve(lockPath);
   return {

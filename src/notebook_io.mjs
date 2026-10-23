@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import { withFilesystemLock } from './filesystem_lock.mjs';
+import { withFilesystemLock, isFilesystemLockRecordTemp } from './filesystem_lock.mjs';
 import { failNotebook } from './notebook_protocol.mjs';
 
 export function stableNotebookJson(value) {
@@ -20,10 +20,29 @@ function notebookPathStat(target) {
     const stat = fs.lstatSync(target);
     // Exclusive publication briefly links a completed temporary record before unlinking it.
     // Never read a linked file: recheck that transition, then reject persistent links as before.
-    if (!stat.isFile() || stat.nlink === 1 || performance.now() >= deadline) return stat;
+    if (!stat.isFile() || stat.nlink === 1) return stat;
+    if (performance.now() >= deadline) return repairInterruptedPublication(target) ? fs.lstatSync(target) : stat;
     Atomics.wait(publicationWait, 0, 0, 5);
   }
 }
+const uuidTemp = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/;
+/** A writer stopped between the link and the unlink of an exclusive publication: the published
+ * file is complete. Drop only its own temporary name (same folder, same file); other links stay refused. */
+function repairInterruptedPublication(target) {
+  const stat = fs.lstatSync(target, { bigint: true }), directory = path.dirname(target), prefix = `.${path.basename(target)}.`;
+  if (!stat.isFile() || stat.nlink !== 2n) return false;
+  for (const name of fs.readdirSync(directory)) {
+    if (!(name.startsWith(prefix) && uuidTemp.test(name.slice(prefix.length))) && !isFilesystemLockRecordTemp(name)) continue;
+    const temp = path.join(directory, name);
+    let other; try { other = fs.lstatSync(temp, { bigint: true }); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    if (!other.isFile() || other.dev !== stat.dev || other.ino !== stat.ino) continue;
+    try { fs.unlinkSync(temp); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    syncNotebookDirectory(directory);
+    return true;
+  }
+  return false;
+}
+const unlinkOwnTemp = temp => { try { fs.unlinkSync(temp); } catch (error) { if (error.code !== 'ENOENT') throw error; } };
 export function canonicalNotebookRoot(root) {
   if (typeof root !== 'string' || path.resolve(root) !== root) failNotebook('notebook_root_scope', 'Use the exact absolute filesystem location.');
   const stats = fs.lstatSync(root);
@@ -85,10 +104,11 @@ export function writeNotebookBytes(root, rel, bytes, { exclusive = false, mode =
     if (canonicalNotebookRoot(root) !== rootIdentity || notebookFileIdentity(fs.lstatSync(directory)) !== parentIdentity) failNotebook('notebook_root_conflict', 'The storage directory changed before publication.');
     safeNotebookPath(root, rel);
     if (expectedHash !== undefined) { const current = readNotebookBytes(root, rel); if ((current ? notebookHash(current) : null) !== expectedHash) failNotebook('notebook_write_conflict', 'The destination changed before publication.'); }
-    if (exclusive) { fs.linkSync(temp, target); fs.unlinkSync(temp); }
+    // A reader may already have repaired an interrupted publication by removing this name.
+    if (exclusive) { fs.linkSync(temp, target); unlinkOwnTemp(temp); }
     else fs.renameSync(temp, target);
     syncNotebookDirectory(directory);
-  } finally { if (fs.existsSync(temp)) fs.unlinkSync(temp); }
+  } finally { if (fs.existsSync(temp)) unlinkOwnTemp(temp); }
 }
 export const readNotebookJson = (root, rel, fallback = null) => { const bytes = readNotebookBytes(root, rel); return bytes === null ? fallback : JSON.parse(bytes.toString('utf8')); };
 export const writeNotebookJson = (root, rel, value, options) => writeNotebookBytes(root, rel, stableNotebookJson(value) + '\n', options);
