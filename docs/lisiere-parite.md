@@ -167,8 +167,8 @@ mention, Claude lance les commandes ; les gestes sur la BOOX sont ceux du guide.
    `--apply --revision`) et `--reconcile-lisiere` **en aperçu seulement**
    (il exige `--mac-snapshot`, `--legacy-board`, `--legacy-actor`). Contrôle :
    comptes cache / outbox / PCM notés ; le nombre d'enregistrements égale celui
-   des `recordings/*.pcm` du ZIP. **Besoin d'un oui de Mathis** (installation sur
-   sa BOOX). Le fichier d'appairage (L9b-2) doit exister avant l'étape E.
+   des `recordings/*.pcm` du ZIP. **À la séance BOOX, avec Mathis** (installation
+   sur sa BOOX). Le fichier d'appairage (L9b-2) doit exister avant l'étape E.
 3. **Export Mac** : `migrate --export-lisiere ~/.local/share/lisiere/workspace --output $B/snapshots/mac`
    (aperçu), puis `--apply --revision <R>`. Le snapshot est lié au journal de
    bascule : jamais dans `/private/tmp` (vidé au redémarrage). Contrôle : mêmes
@@ -223,9 +223,17 @@ dans `~/.context-room` : **Mathis a dit oui le 2026-10-23** pour ces quatre
 gestes, à la séance BOOX, pas avant le déploiement. Ordre : (1) noter le plist
 (`launchctl print`), puis arrêter le Hub : `launchctl bootout gui/$U/app.contextroom.local`
 (un `kill` le relancerait, `KeepAlive`) ; (2) `context-room backup --output <dossier neuf>`
-(`--plan` d'abord pour compter) ; (3) déployer la nouvelle version
-(`deploy-main.sh`) ; (4) `migrate --root <projet> --notebooks-to-space`
-(aperçu), puis `--apply --revision <R>`. Ensuite : relancer le Hub (`launchctl bootstrap`) et vérifier les 4 carnets. Après un crash : attendre 30 s (verrou),
+(`--plan` d'abord pour compter) ; (3) installer la nouvelle release, Hub
+toujours arrêté : `scripts/prepare-mac-install.mjs --output <release>` (aperçu,
+puis `--apply --revision <R>` ; voir `docs/system/runtime-profiles.md`),
+copier `node_modules` de la release précédente (`package-lock.json` inchangé
+depuis `bbfef3d`), puis changer `RUNTIME` dans
+`~/.local/share/context-room/launch-installed.py` (garder la copie
+`launch-installed.before-<sha>.py`). Pas `deploy-main.sh` : il relance le Hub
+et part d'un autre dossier ; (4) avec la CLI de la nouvelle release,
+`migrate --root <projet> --notebooks-to-space` (aperçu), puis
+`--apply --revision <R>`. Ensuite : relancer le Hub (`launchctl bootstrap`) et
+vérifier les 4 carnets. Après un crash : attendre 30 s (verrou),
 puis relancer ; si la réponse dit « Preview again », refaire l'aperçu.
 
 **Retour arrière.**
@@ -284,4 +292,56 @@ Avec `CONTEXT_ROOM_HUB_HOME`, `CONTEXT_ROOM_SHARED_HOME` et
 - Note : la date du dossier `workspace/` avance seule (le service vivant y
   touche) ; ce n'est pas l'essai.
 
-@@D@@
+## (d) Manques à coder
+
+État au 2026-10-23, branche `mathis/t021-lisiere-parite`. Minimum pour couper
+Lisière : **L1 + L2 + L3**. Pour que Mathis ne perde aucun usage : L4 et L5 en
+plus.
+
+| Lot | Contenu | État | Bloque la bascule ? |
+|---|---|---|---|
+| L1 Essai synthétique de l'adaptateur | `mac_legacy_quiescence.py` + `exclusive_rename.py` sur un faux LaunchAgent `fr.lisiere.companion` dans un HOME de test (ou VM/compte de test) | **fusionné** (ab443b4, 284df00) ; jamais appliqué au vrai service | **oui** |
+| L2 Export tablette | Essai réel APK recovery → ZIP → reconcile ; doc pas à pas | **à faire** à la séance BOOX, avec Mathis ; chaîne APK prête (L2L7, 82d62fc) | **oui** |
+| L3 Espace « Carnets » libre (**décidé par Mathis le 2026-10-16**) | Voir § Décision ci-dessous | **fusionné** (2fcc861, f88ab76, 11e38aa) ; reste l'essai BOOX et la migration des 4 carnets (séance BOOX) | **oui** (usage attendu) |
+| L4 Lecteur PDF / image | Rendu PDF paginé (pdf.js local), zoom, « image entière » mémorisée, annotation en carnet | **fusionné** (7f178e6) ; essai BOOX à faire | non |
+| L5 Projets et tâches Codex | Import du catalogue Codex Desktop dans le registre (aperçu + oui) ; liste en lecture seule des sessions Codex du Mac | **fusionné** (bfe4211, f78968d) | non |
+| L6 Réseau tablette | mDNS/Bonjour pour retrouver le Mac ; diagnostic réseau (LAN/Tailscale) dans `doctor` | **fusionné** (f74c994, f88ab76, c597d6b) ; redécouverte à essayer sur la BOOX | non |
+| L7 Mise à jour APK | Distribution d'APK signée par le Hub + vérification + installation depuis l'app | chaîne APK **fusionnée** (L2L7, 82d62fc) ; pas d'installateur dans l'app : écart accepté (Mathis, 2026-10-23) | non (PWA suffit) |
+| L8 Sauvegarde | `context-room backup/restore` des carnets, conversations et reçus | **fusionné** (219c815, 91d3995) | non |
+| L9a Confort de lecture | Sommaire paginé, Aa, recherche sans accents, chercher/remplacer, annuler/rétablir | **en cours** (livré, en revue) | non |
+| L9b Confort de travail | Fast, « Suivre l'agent », QR et fichier d'appairage, export PNG/PDF d'un carnet | **fusionné** (c597d6b, 3c88c15, c03b208) ; aucun vrai tour Fast avant le 2026-11-17 | non |
+
+### Décision 2026-10-16 : espace « Carnets » libre (L3)
+
+Statut : **fait** (L3, 2026-10-23), sauf l'essai sur la BOOX et la migration
+réelle des 4 mémos (oui de Mathis le 2026-10-23, à la séance BOOX : voir § (c),
+« Migration réelle des 4 carnets »). Écarts avec la proposition : l'espace est
+une entrée marquée du registre ; ses carnets sont sous `Carnets/` ; libellés
+en anglais (Notebooks, New notebook, Move to project…).
+
+Mathis veut un espace « Carnets » libre, hors de tout projet, comme les mémos
+libres de Lisière. Proposition de conception (validée au début de L3) :
+
+- Un dossier dédié, par défaut `~/Documents/Context Room/Carnets`, enregistré
+  une fois dans le Hub comme espace spécial (pas un projet de code : pas de
+  Git, pas de contexte d'agent, pas de Shared).
+- Le Hub et la tablette montrent « Carnets » en tête de la navigation, avant
+  les projets. Bouton **Nouveau carnet** toujours visible, sans choisir de
+  projet.
+- Action **Déplacer vers un projet** (copie vérifiée, puis retrait de
+  l'original), et l'inverse.
+- Le format reste `.crnb` : l'éditeur, le cache hors ligne et la dictée
+  marchent sans changement.
+- Migration : les 4 mémos du projet « Recuperation Lisiere » passent dans
+  « Carnets » (aperçu puis oui). Les futurs imports `--import-lisiere` de
+  mémos sans projet visent « Carnets » par défaut.
+- Tests : unitaire (création, déplacement aller-retour, refus d'écraser) et
+  e2e (nouveau carnet sans projet, retrouvé après redémarrage du Hub).
+
+```
+ Hub ─┬─ Carnets (libre)  ── lalala, test, rrgh, Mémo du 11 sept., + nouveaux
+      ├─ Projet A         ── docs, carnets du projet
+      └─ Projet B
+            ▲   Déplacer vers un projet / vers Carnets   │
+            └────────────────────────────────────────────┘
+```
