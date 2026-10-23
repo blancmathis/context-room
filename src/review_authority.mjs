@@ -379,6 +379,8 @@ function authorityBase(options = {}) {
   return path.join(os.homedir(), ".context-room", "hub", "review-authority");
 }
 
+export const reviewAuthorityHome = (options) => authorityBase(options);
+
 function canonicalAuthorityRoot(root) {
   return fs.realpathSync(path.resolve(root));
 }
