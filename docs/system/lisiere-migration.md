@@ -562,9 +562,17 @@ Rollback here means **pause all enrolled writes and retain recent work in place*
 It does not restore an old database over new gestures, undo human acceptance,
 restart the old queue, or reactivate the old product. Resuming Context Room is a
 new explicit revision-bound action. A functional downgrade to the old Lisière
-application is not implemented. The production `launchctl`, open-file check and
-Darwin no-replace rename require local macOS verification; Linux synthetic
-contracts exercise the coordinator and actual file/database protection only.
+application is not implemented. Resuming after a pause first checks that the
+legacy agent is still stopped, its files closed and the fence intact; if the
+retained workspace holds newer work than the last known revision, resume needs
+`--mac-snapshot` with an exact export of that work, recorded as acknowledged.
+The stop check reads `launchctl print-disabled` (macOS 26 prints
+`"label" => disabled`) and waits up to 10 s for the process to exit. The opt-in
+test `CONTEXT_ROOM_LAUNCHD_ESSAY=1 node --test --test-concurrency=1
+test/lisiere_cutover_launchd.test.mjs` runs the whole cutover against a real
+`gui/<uid>` agent. It uses a synthetic profile: `CONTEXT_ROOM_SYNTHETIC_LEGACY_AGENT=<nonce>`
+targets only `test.contextroom.synthetic-<nonce>` and needs a temporary HOME.
+Each run leaves one `enabled` override per label in `print-disabled`; removing it needs root.
 
 ### Queue projection versus retained tablet scene
 
