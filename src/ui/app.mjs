@@ -21273,7 +21273,7 @@ function applyHtmlPreviewZoom(size = readingSize()) {
 // The first heading on screen and where it sits, or the scroll ratio when the text has no headings.
 // Top edge of the visible reading area: 0 when the page itself scrolls, whose bounding box moves with the scroll.
 function readingAreaTop(scroller) {
-  return !scroller || scroller === document.scrollingElement ? 0 : scroller.getBoundingClientRect().top;
+  return !scroller || scroller === document.scrollingElement || !isScrollableY(scroller) ? 0 : scroller.getBoundingClientRect().top;
 }
 
 function captureReadingPlace() {

@@ -124,8 +124,12 @@ test('@smoke a 20001-heading document pages its Contents and finds headings with
     await expect(toc.locator('[data-toc-count]')).toHaveText('1–40 of 20,001');
 
     await page.evaluate(() => scrollToMarkdownAnchor('résumé-19999'));
-    await toc.locator('summary').click();
-    await toc.locator('summary').click();
+    await expect(page.locator('#docReader [data-heading-id="résumé-19999"]')).toBeInViewport();
+    await toc.locator('details').evaluate(async (details) => {
+      details.open = false;
+      await new Promise((resolve) => details.addEventListener('toggle', resolve, { once: true }));
+      details.open = true;
+    });
     await expect(toc.locator('[data-toc-count]')).toHaveText('19,961–20,000 of 20,001');
 
     await toc.getByRole('searchbox', { name: 'Search headings' }).fill('resume 19999');
