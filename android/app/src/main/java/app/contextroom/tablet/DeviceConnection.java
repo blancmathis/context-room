@@ -14,7 +14,11 @@ final class DeviceConnection {
   static final int MAX_BYTES = 30 * 1024 * 1024;
   static final Set<String> READS = new HashSet<>(Arrays.asList("/device/session", "/api/notebooks", "/api/notebooks/capabilities", "/api/notebooks/scene", "/api/notebooks/receipt", "/api/notebooks/export"));
   static final Set<String> WRITES = new HashSet<>(Arrays.asList("/api/notebooks/open", "/api/notebooks/mutate", "/api/notebooks/batch", "/api/notebooks/undo", "/api/notebooks/asset"));
-  final URI endpoint;
+  volatile URI endpoint;
+  /** Set by the activity; called off the main thread when the Mac cannot be reached at all. */
+  volatile Runnable unreachable;
+  volatile boolean lastFailed;
+  int connectTimeout = 5000;
   final String fingerprint, serverId, credential;
   final JSONObject session;
   final SSLSocketFactory sockets;
@@ -39,6 +43,16 @@ final class DeviceConnection {
       }
     }}, new SecureRandom());
     sockets = context.getSocketFactory();
+  }
+
+  /** The pin never depends on the host, so a rediscovered address keeps the same trust. */
+  void adopt(String url) throws Exception { endpoint = endpoint(url); lastFailed = false; }
+
+  /** True only when the pinned certificate answers as the same Mac, with the saved credential. */
+  boolean sameMac() throws Exception {
+    JSONObject answer = exchange("/device/session", "GET", "", "", true);
+    JSONObject body = answer.getJSONObject("body");
+    return answer.getInt("status") == 200 && body.optInt("protocolVersion") == 1 && serverId.equals(body.optString("serverId"));
   }
 
   static URI endpoint(String value) throws Exception {
@@ -102,13 +116,14 @@ final class DeviceConnection {
     byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
     if (bytes.length > maximum) throw new IOException("La requête dépasse la taille autorisée. Le journal est conservé.");
     HttpsURLConnection connection = (HttpsURLConnection) endpoint.resolve(path).toURL().openConnection();
+    boolean reached = false;
     connection.setSSLSocketFactory(sockets);
     // The exact leaf certificate, transferred by the local owner, is the authority.
     connection.setHostnameVerifier((host, tls) -> {
       try { return fingerprint.equals(sha256(tls.getPeerCertificates()[0].getEncoded())); } catch (Exception error) { return false; }
     });
     connection.setInstanceFollowRedirects(false);
-    connection.setConnectTimeout(5000); connection.setReadTimeout(10000);
+    connection.setConnectTimeout(connectTimeout); connection.setReadTimeout(10000);
     connection.setRequestMethod(method);
     connection.setRequestProperty("Accept", "application/json");
     if (authenticated) {
@@ -123,6 +138,7 @@ final class DeviceConnection {
         try (OutputStream output = connection.getOutputStream()) { output.write(bytes); }
       }
       int status = connection.getResponseCode();
+      reached = true; lastFailed = false;
       if (status >= 300 && status < 400) throw new IOException("La connexion a demandé une redirection. Elle a été refusée.");
       if (connection.getContentLengthLong() > maximum) throw new IOException("Réponse trop grande.");
       InputStream stream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
@@ -134,6 +150,10 @@ final class DeviceConnection {
       }
       JSONObject result = new JSONObject(data.toString(StandardCharsets.UTF_8.name()));
       return InkView.json("status", status, "body", result);
+    } catch (IOException error) {
+      // A certificate mismatch is not a moved Mac: only plain network failures start a search.
+      if (!(error instanceof SSLException) && !reached) { lastFailed = true; Runnable hook = unreachable; if (hook != null) hook.run(); }
+      throw error;
     } finally { connection.disconnect(); }
   }
 

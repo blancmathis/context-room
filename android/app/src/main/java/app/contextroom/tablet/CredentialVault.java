@@ -47,6 +47,27 @@ final class CredentialVault {
     for (int n = 0; n < connections.length(); n++) if (connectionKey(connections.getJSONObject(n)).equals(id)) { connections.put(n, value); replaced = true; break; }
     if (!replaced) { if (connections.length() >= 32) throw new IOException("32 connexions sont déjà conservées. Exportez les anciens carnets avant d’en ajouter."); connections.put(value); }
     record.put("active", id);
+    write(record);
+  }
+  /** Moves one saved connection to a rediscovered address, only if nothing else about it changed. The pin and token stay. */
+  synchronized JSONObject adoptAddress(String serverId, String fingerprint, String token, String deviceId, String expectedUrl, String url) throws Exception {
+    JSONObject record = readRecord(); if (record == null) return null;
+    JSONArray connections = record.getJSONArray("connections");
+    for (int n = 0; n < connections.length(); n++) {
+      JSONObject item = connections.getJSONObject(n);
+      if (!serverId.equals(item.optString("serverId")) || !deviceId.equals(item.getJSONObject("device").optString("id"))) continue;
+      if (!fingerprint.equals(item.optString("fingerprint").replace(":", "").toLowerCase(java.util.Locale.ROOT)) || !token.equals(item.optString("token")) || !expectedUrl.equals(item.optString("url"))) return null;
+      if (!item.has("pairedUrl")) item.put("pairedUrl", expectedUrl);
+      JSONArray previous = new JSONArray(); previous.put(expectedUrl);
+      JSONArray old = item.optJSONArray("previousUrls");
+      for (int k = 0; old != null && k < old.length() && previous.length() < 16; k++) { String value = old.optString(k); boolean seen = false; for (int j = 0; j < previous.length(); j++) if (previous.optString(j).equals(value)) seen = true; if (!seen && !value.equals(url)) previous.put(value); }
+      item.put("previousUrls", previous).put("url", url);
+      write(record);
+      return item;
+    }
+    return null;
+  }
+  private void write(JSONObject record) throws Exception {
     Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding"); cipher.init(Cipher.ENCRYPT_MODE, key());
     cipher.updateAAD(ALIAS.getBytes(StandardCharsets.UTF_8));
     byte[] encrypted = cipher.doFinal(record.toString().getBytes(StandardCharsets.UTF_8));

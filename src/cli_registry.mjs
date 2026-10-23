@@ -116,6 +116,7 @@ const TARGET = [
 ];
 const PAGE = [option("--cursor"), option("--limit", { value: "integer" }), option("--query")];
 const DEVICE_START = [option('--device-host', { description: 'Enable native drawing devices on this explicit local IP; owner pairing is separate.' }),
+  option('--no-device-discovery', { value: 'boolean', description: 'Do not announce the device listener on the local network (Bonjour).' }),
   option('--device-port', { value: 'integer', description: 'TLS device port, default 4318.' }),
   option('--device-state', { description: 'Private device identity directory; keep outside project repositories.' }),
   option('--device-browser-origin', { description: 'Opt-in trusted HTTPS browser origin; requires device host, certificate and key.' }),

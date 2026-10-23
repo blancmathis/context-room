@@ -101,7 +101,7 @@ the dependency lock and run `npm ci --omit=dev --ignore-scripts --no-audit --no-
 only with authorization for dependency downloads (or add `--offline` for an
 already populated cache). This downloads the pinned JavaScript dependencies,
 not a speech model. `node bin/context-room.mjs doctor --root /path/to/synthetic-project`
-and `node bin/context-room.mjs hub status --format json` provide local diagnostics.
+and `node bin/context-room.mjs hub status --format json` provide local diagnostics. `doctor` also reports the tablet network (optional, never critical).
 The kit verifier intentionally rejects a runtime directory with unlisted files,
 including newly installed dependencies; its verification receipt applies to the
 prepared source, not to a later expanded `node_modules` tree.

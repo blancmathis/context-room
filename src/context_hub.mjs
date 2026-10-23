@@ -2684,6 +2684,17 @@ export function recordContextHubProjectOpened(projectId) {
   });
 }
 
+const DEVICE_DISCOVERY_STATES = new Set(["announced", "off", "unsupported", "failed"]);
+function cleanRuntimeDevices(value) {
+  try {
+    const url = new URL(String(value?.url));
+    if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash) return null;
+    let browserUrl = "";
+    if (value.browserUrl) { const browser = new URL(String(value.browserUrl)); if (browser.protocol === "https:" && !browser.username && !browser.password) browserUrl = browser.origin; }
+    return { url: url.origin, ...(browserUrl ? { browserUrl } : {}), discovery: DEVICE_DISCOVERY_STATES.has(value.discovery) ? value.discovery : "off" };
+  } catch { return null; }
+}
+
 export function readContextHubRuntime() {
   const runtime = readJson(runtimePath(), null);
   if (!runtime || !Number.isInteger(Number(runtime.port)) || !runtime.url) return null;
@@ -2695,6 +2706,7 @@ export function readContextHubRuntime() {
     root: runtime.root ? stableRoot(runtime.root) : "",
     url: `http://127.0.0.1:${port}`,
     startedAt: String(runtime.startedAt || ""),
+    devices: cleanRuntimeDevices(runtime.devices),
   };
 }
 
@@ -2704,7 +2716,7 @@ export function contextHubRuntimeAlive() {
   return Boolean(runtime?.pid) && processIsAlive(runtime.pid);
 }
 
-export function writeContextHubRuntime({ pid = process.pid, port, root, url } = {}) {
+export function writeContextHubRuntime({ pid = process.pid, port, root, url, devices } = {}) {
   const runtime = {
     version: 1,
     pid: Number(pid),
@@ -2712,6 +2724,7 @@ export function writeContextHubRuntime({ pid = process.pid, port, root, url } = 
     root: stableRoot(root),
     url: String(url),
     startedAt: new Date().toISOString(),
+    ...(cleanRuntimeDevices(devices) ? { devices: cleanRuntimeDevices(devices) } : {}),
   };
   return withRegistryLock(() => writeJson(runtimePath(), runtime));
 }
