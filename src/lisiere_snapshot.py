@@ -81,7 +81,8 @@ def open_read_only(database):
     """(connection, check) without writing beside the original.
 
     A WAL database closed cleanly (no -wal, no -shm, as the companion leaves it
-    with SQLite 3.54) cannot be opened with mode=ro. Without -wal the main file
+    with SQLite 3.54) is unsafe with mode=ro: Apple's SQLite refuses it, a stock
+    SQLite 3.54 opens it but leaves -wal/-shm beside it. Without -wal the main file
     holds every commit, so immutable=1 reads it exactly; check() then refuses if
     the file was replaced or rewritten, or a -wal appeared, during the read."""
     database = Path(database)

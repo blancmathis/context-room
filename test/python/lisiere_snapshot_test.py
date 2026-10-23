@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import tempfile
 import unittest
@@ -84,10 +85,23 @@ class SnapshotContracts(unittest.TestCase):
         self.assertEqual(self.database.read_bytes()[18:20], b'\x02\x02')
 
     def test_wal_closed_cleanly_exports_immutably_without_files_beside_it(self):
-        # The companion's SQLite 3.54 removes -wal/-shm on close; mode=ro alone then fails.
+        # The companion's SQLite 3.54 removes -wal/-shm on close. mode=ro alone is then unsafe:
+        # Apple's SQLite refuses the file; a stock SQLite 3.54 opens it but leaves -wal/-shm beside it.
         self.closed_wal()
-        with self.assertRaisesRegex(sqlite3.OperationalError, 'unable to open'):
-            sqlite3.connect(self.database.as_uri() + '?mode=ro', uri=True).execute('SELECT 1 FROM boards')
+        probe = self.base / 'probe'
+        probe.mkdir()
+        copy = probe / self.database.name
+        shutil.copyfile(self.database, copy)
+        try:
+            connection = sqlite3.connect(copy.as_uri() + '?mode=ro', uri=True)
+            try:
+                connection.execute('SELECT 1 FROM boards').fetchall()
+            finally:
+                connection.close()
+        except sqlite3.OperationalError as error:
+            self.assertIn('unable to open', str(error))
+        else:
+            self.assertNotEqual(sorted(path.name for path in probe.iterdir()), [copy.name])
         listing, original = sorted(self.source.iterdir()), self.database.read_bytes()
         plan = snapshot.snapshot(self.source)
         output = self.base / 'export'
