@@ -2078,7 +2078,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .creation-dialog-checks { display: grid; gap: 4px; max-height: 40vh; overflow: auto; }
     .creation-dialog-check { display: flex; align-items: flex-start; gap: 10px; min-height: 44px; padding: 6px 4px; color: var(--text); }
     .creation-dialog-check input { width: 24px; height: 24px; flex: none; }
-    .creation-dialog-check small { display: block; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+    .creation-dialog-check small { display: block; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
     .creation-dialog-check.is-off { color: var(--muted); }
     .creation-dialog-note { color: var(--muted); font-size: 10px; line-height: 1.45; }
     .creation-dialog-status { min-height: 16px; color: var(--danger-fg); font-size: 11px; }
@@ -24107,7 +24107,7 @@ function showContextHubCreationDialog({ title, body, submitLabel, fields = [], o
   backdrop.className = "confirm-backdrop";
   const fieldMarkup = fields.map((field) => {
     const input = field.type === "checks"
-      ? '<span class="creation-dialog-checks" role="group" aria-label="' + escapeHtml(field.label) + '">' + (field.options || []).map((option) => '<label class="creation-dialog-check' + (option.disabled ? ' is-off' : '') + '"><input type="checkbox" name="' + escapeHtml(field.name) + '" value="' + escapeHtml(option.value) + '"' + (option.checked ? ' checked' : '') + (option.disabled ? ' disabled' : '') + ' /><span><strong>' + escapeHtml(option.label) + '</strong>' + (option.note ? '<small>' + escapeHtml(option.note) + '</small>' : '') + '</span></label>').join("") + '</span>'
+      ? '<span class="creation-dialog-checks" role="group" aria-label="' + escapeHtml(field.label) + '">' + (field.options || []).map((option) => '<label class="creation-dialog-check' + (option.disabled ? ' is-off' : '') + '"><input type="checkbox" name="' + escapeHtml(field.name) + '" value="' + escapeHtml(option.value) + '"' + (option.checked ? ' checked' : '') + (option.disabled ? ' disabled' : '') + ' /><span><strong>' + escapeHtml(option.label) + '</strong>' + (option.note ? '<small>' + escapeHtml(option.note) + '</small>' : '') + '</span></label>' + (option.link ? '<button class="file-action" type="button" data-creation-open-project="' + escapeHtml(option.link.projectId) + '">' + escapeHtml(option.link.label) + '</button>' : '')).join("") + '</span>'
       : field.type === "select"
       ? '<select name="' + escapeHtml(field.name) + '"' + (field.required ? ' required' : '') + '>'
         + (field.options || []).map((option) => '<option value="' + escapeHtml(option.value) + '"' + (option.disabled ? ' disabled' : '') + '>' + escapeHtml(option.label) + '</option>').join("")
@@ -24177,6 +24177,13 @@ function showContextHubCreationDialog({ title, body, submitLabel, fields = [], o
   };
   backdrop.addEventListener("click", (event) => { if (event.target === backdrop) close(); });
   backdrop.querySelector("[data-creation-cancel]")?.addEventListener("click", () => close());
+  for (const link of backdrop.querySelectorAll("[data-creation-open-project]")) {
+    link.addEventListener("click", () => {
+      const projectId = link.dataset.creationOpenProject;
+      close({ restoreFocus: false });
+      openContextHubProject(projectId, { pushHistory: true }).catch((error) => setStatus(error.message || "The project cannot be opened."));
+    });
+  }
   form?.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (requestController || !isCurrent()) return;
@@ -24240,15 +24247,18 @@ async function showContextHubImportCodexDialog() {
     label: row.name,
     checked: row.status === "ready",
     disabled: row.status !== "ready" && row.status !== "needs-init",
+    ...(row.needsConfirmation && row.projectId ? { link: { projectId: row.projectId, label: "Open to confirm the location" } } : {}),
     note: row.root + " \u00b7 " + (row.status === "ready" ? "Ready" : row.status === "needs-init" ? "Will create .context-room/" : (labels[row.status] || row.status) + (row.reason ? " \u2014 " + row.reason : "")),
   }));
   showContextHubCreationDialog({
     title: "Import from Codex",
-    body: preview.found && rows.length
+    body: preview.found && rows.length && !importable.length
+      ? "Nothing to import: every project Codex Desktop knows is already in Context Room, missing, or not offered. Projects marked \u201cidentity to confirm\u201d or moved keep their place; confirm them from the project."
+      : preview.found && rows.length
       ? "Projects Codex Desktop already knows. Nothing changes until you confirm. Folders marked \u201cWill create .context-room/\u201d are not ticked yet."
       : "Codex Desktop has no project list on this Mac.",
     submitLabel: "Import selected projects",
-    fields: importable.length ? [{ name: "roots", label: "Codex projects", type: "checks", options }] : [],
+    fields: rows.length ? [{ name: "roots", label: "Codex projects", type: "checks", options }] : [],
     onSubmit: async (values) => {
       const roots = values.roots || [];
       if (!roots.length) throw new Error("Choose at least one project to import.");
