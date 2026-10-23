@@ -1773,7 +1773,7 @@ if (command === "migrate") {
     if (!args["export-lisiere"] && args.recordings) throw new ContextRoomCliError("invalid-arguments", "--recordings requires --export-lisiere.", { exitCode: 2 });
     if (args["session-frame"] && !args["legacy-session"]) throw new ContextRoomCliError("invalid-arguments", "--session-frame requires --legacy-session.", { exitCode: 2 });
     if (args["legacy-session"] && (args["legacy-board"] || args["legacy-draft"] || args["legacy-conversation"] || args["legacy-recording"])) throw new ContextRoomCliError("invalid-arguments", "Select a transfer session or a snapshot record, not both.", { exitCode: 2 });
-    if ((args["mac-snapshot"] || args["legacy-actor"]) && !args["reconcile-lisiere"] && !args["cutover-lisiere"]) throw new ContextRoomCliError("invalid-arguments", "--mac-snapshot and --legacy-actor require --reconcile-lisiere.", { exitCode: 2 });
+    if (args["mac-snapshot"] && !args["reconcile-lisiere"] && !args["cutover-lisiere"] && !args["resume-cutover"]) throw new ContextRoomCliError("invalid-arguments", "--mac-snapshot requires --reconcile-lisiere, --cutover-lisiere or --resume-cutover.", { exitCode: 2 });
     if (args["reconcile-lisiere"] && (args["legacy-draft"] || args["legacy-conversation"] || args["legacy-recording"])) throw new ContextRoomCliError("invalid-arguments", "Reconciliation selects an exact board, not a draft or conversation.", { exitCode: 2 });
     if (args["conversation-id"] && !args["legacy-recording"]) throw new ContextRoomCliError("invalid-arguments", "--conversation-id requires --legacy-recording.", { exitCode: 2 });
     if (args["legacy-recording"] && Boolean(args.path) === Boolean(args["conversation-id"])) throw new ContextRoomCliError("invalid-arguments", "Select exactly one original --path or --conversation-id for the recording.", { exitCode: 2 });
@@ -1784,7 +1784,7 @@ if (command === "migrate") {
     const data = args["cutover-lisiere"]
       ? await (args.apply ? applyLisiereCutover(agentFirstTarget.root, cutoverOptions) : planLisiereCutover(agentFirstTarget.root, cutoverOptions))
       : args["rollback-cutover"] || args["resume-cutover"]
-      ? changeCutoverMode(agentFirstTarget.root, { resume: Boolean(args["resume-cutover"]), apply: Boolean(args.apply), expectedRevision: args.revision })
+      ? await changeCutoverMode(agentFirstTarget.root, { resume: Boolean(args["resume-cutover"]), apply: Boolean(args.apply), expectedRevision: args.revision, macSnapshot: args["mac-snapshot"] })
       : args["reconcile-lisiere"]
       ? reconcileLisiereNotebook(agentFirstTarget.root, { androidSnapshot: args["reconcile-lisiere"], macSnapshot: args["mac-snapshot"], boardId: args["legacy-board"], actor: args["legacy-actor"], recoveryView: args["recovery-view"], path: args.path, apply: Boolean(args.apply), expectedRevision: args.revision })
       : args["legacy-session"]
