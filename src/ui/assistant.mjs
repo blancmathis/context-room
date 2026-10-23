@@ -104,7 +104,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   panel.append(heading, original, audioStatus, boundary, ...(conversation.source.kind === 'notebook' ? [] : [sheet.section]), historyRow, macTasks.section, retainedHistory.section, linkedRecordings.section, messages, modelRow, form, status, infoBox, errorBox); parent.append(panel);
   const clientId = crypto.randomUUID();
   let closed = false, current = conversation, pollBusy = false, lease = null, renewTimer = null, recording = null, speaker = null,
-    audioContext = null, audioGeneration = 0, modelPending = false, rendered = '', sendRequest = null, retainedRecording = null, recordingRequest = null, audioBusy = false, audioReading = false, changingConversation = false, draftWrites = Promise.resolve(), nativeRecordings = [], voice = null, voiceClosing = false, initializing = true, historyCursor = null, historyLoading = false;
+    audioContext = null, audioGeneration = 0, modelPending = false, catalogLoaded = false, fastDropped = false, rendered = '', sendRequest = null, retainedRecording = null, recordingRequest = null, audioBusy = false, audioReading = false, changingConversation = false, draftWrites = Promise.resolve(), nativeRecordings = [], voice = null, voiceClosing = false, initializing = true, historyCursor = null, historyLoading = false;
   const fail = error => { if (!closed && error.name !== 'AbortError') { infoBox.textContent = ''; errorBox.textContent = error.message || String(error); } };
   function inform(text) { errorBox.textContent = ''; infoBox.textContent = text; }
   const run = promise => Promise.resolve(promise).catch(fail);
@@ -237,18 +237,21 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     } catch (error) { fail(error); } finally { pollBusy = false; }
   }
   function showModels(catalog = []) {
-    models.replaceChildren();
+    models.replaceChildren(); catalogLoaded = catalog.length > 0;
     const choices = catalog.length ? catalog : [{ id: current.model, name: current.model }];
     for (const model of choices) { const option = element('option', model.name || model.id); option.value = model.id; option.dataset.efforts = JSON.stringify(model.efforts || []); option.dataset.fast = String(model.fast === true); models.append(option); }
     if (!choices.some(model => model.id === current.model)) { const option = element('option', current.model); option.value = current.model; models.append(option); }
     models.value = current.model; showEfforts();
+    if (catalogLoaded && current.fast === true && fast.dataset.offered !== 'true') run(configure());
   }
   function showEfforts() {
     const listed = JSON.parse(models.selectedOptions[0]?.dataset.efforts || '[]');
     efforts.replaceChildren(...(listed.length ? listed.map(item => typeof item === 'string' ? item : item.reasoningEffort) : ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).map(value => { const option = element('option', value); option.value = value; return option; }));
     efforts.value = [...efforts.options].some(option => option.value === current.effort) ? current.effort : efforts.options[0]?.value;
-    const offered = models.selectedOptions[0]?.dataset.fast === 'true'; fast.dataset.offered = String(offered); fast.checked = offered && current.fast === true;
-    fast.disabled = models.disabled || !offered; fastNote.textContent = offered ? '' : 'Fast is not offered for this model.';
+    const offered = models.selectedOptions[0]?.dataset.fast === 'true'; fast.dataset.offered = String(offered); fast.checked = (offered || !catalogLoaded) && current.fast === true;
+    if (offered) fastDropped = false; else if (catalogLoaded && current.fast === true) fastDropped = true;
+    fast.disabled = models.disabled || !offered;
+    fastNote.textContent = offered ? '' : !catalogLoaded ? 'Load available models to change Fast.' : fastDropped ? 'Fast was on but is not offered for this model now. Turns run without it.' : 'Fast is not offered for this model.';
   }
   async function configure() { current = await post('/conversations/' + current.id + '/configure', { model: models.value, effort: efforts.value, fast: fast.checked }); render(); }
   models.addEventListener('change', () => { showEfforts(); run(configure()); }); efforts.addEventListener('change', () => run(configure())); fast.addEventListener('change', () => run(configure()));

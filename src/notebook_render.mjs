@@ -43,7 +43,8 @@ export function notebookPdf({ jpeg, width, height, title = '' }) {
   const k = Math.min(.75, 14400 / Math.max(width, height)), pageWidth = +(width * k).toFixed(2), pageHeight = +(height * k).toFixed(2);
   const latin1 = text => Uint8Array.from(text, c => c.charCodeAt(0) & 255);
   let hexTitle = '';
-  for (let i = 0; i < title.length && i < 200; i++) hexTitle += title.charCodeAt(i).toString(16).padStart(4, '0');
+  let units = 0;
+  for (const point of title) { const codeUnits = point.length; if (units + codeUnits > 200) break; for (let i = 0; i < codeUnits; i++) hexTitle += point.charCodeAt(i).toString(16).padStart(4, '0'); units += codeUnits; }
   const content = `q ${pageWidth} 0 0 ${pageHeight} 0 0 cm /Im0 Do Q`;
   const bodies = [
     '<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',

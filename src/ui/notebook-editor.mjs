@@ -99,7 +99,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   viewLink = new NotebookViewLink({ request, surface,
     target: projectId => view && !view.offline && !authBlocked ? { projectId, resourceId, path: view.locator.path, locationRevision: view.locator.revision } : null,
     busy: () => Boolean(surface.gesture || textForm || saving || !view || view.offline || view.pending),
-    changed: state => { if (followButton) followButton.disabled = state.mode !== 'independent'; viewState.textContent = state.text; viewState.hidden = !state.text; stopView.hidden = state.mode === 'independent'; dialog.dataset.viewMode = state.mode; } });
+    changed: state => { if (state.mode === 'follow') stopFollowing(); if (followButton) followButton.disabled = state.mode === 'follow'; viewState.textContent = state.text; viewState.hidden = !state.text; stopView.hidden = state.mode === 'independent'; dialog.dataset.viewMode = state.mode; } });
   for (const node of [header, tools, actions, inspector]) {
     node.addEventListener('pointerdown', interact, { signal: cleanup.signal }); node.addEventListener('keydown', interact, { signal: cleanup.signal });
   }
@@ -176,7 +176,9 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
       });
       } catch (error) { if (voiceActivation?.context.state !== 'closed') await voiceActivation?.context.close(); throw error; }
     };
-    actions.append(button('Ask about selection', () => run(converse('text'))), button('Dictate about notebook', () => run(converse('dictate'))),
+    const ask = button('Ask about selection', () => run(converse('text'))), dictateNotebook = button('Dictate about notebook', () => run(converse('dictate')));
+    ask.dataset.followAgent = dictateNotebook.dataset.followAgent = '';
+    actions.append(ask, dictateNotebook,
       button('Dictate text', () => run(converse('dictate', true))), button('Voice', () => run(converse('voice'))));
   }
   const objectTitle = notebookElement('h3', 'Objects'), filter = document.createElement('input'); filter.type = 'search'; filter.placeholder = 'Filter objects'; filter.setAttribute('aria-label', 'Filter notebook objects');
@@ -309,9 +311,9 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   async function render(next) {
     if (!next || closed) return; view = next; surface.setDocument(next.document); name.textContent = next.document.title;
     if (followButton?.getAttribute('aria-pressed') === 'true') {
-      const changed = notebookAgentChanges(followPrevious, next.document), rect = canvas.getBoundingClientRect();
-      const target = changed && notebookFollowViewport({ ...surface.view, width: rect.width, height: rect.height }, changed);
-      if (target) surface.frameViewport([-target.x / target.scale, -target.y / target.scale, rect.width / target.scale, rect.height / target.scale]);
+      const changed = notebookAgentChanges(followPrevious, next.document), width = canvas.clientWidth, height = canvas.clientHeight;
+      const target = changed && width >= 1 && height >= 1 && notebookFollowViewport({ ...surface.view, width, height }, changed);
+      if (target) surface.frameViewport([-target.x / target.scale, -target.y / target.scale, width / target.scale, height / target.scale]);
     }
     followPrevious = next.document;
     renderStatus(); scheduleObjects(); const state = await client.state();

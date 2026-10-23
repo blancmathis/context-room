@@ -87,7 +87,9 @@ The sheet gives it in three forms. All three carry the same ticket.
   tablet without a camera (the BOOX Note Air5 C), move the file with BOOXDrop, then
   choose "Importer le fichier d’appairage" on the connection screen. The file is
   limited to 8192 bytes, like the pasted code. The app has no QR scanner and does not
-  ask for the camera permission.
+  ask for the camera permission. After pairing, delete `context-room-pairing.json` on
+  the Mac and on the tablet. The ticket works once and for 2 minutes. The browser
+  history can keep the scan address; it holds only that spent ticket.
 
 ## Operate Context Room from the tablet
 
@@ -190,6 +192,9 @@ notebook. A pen or finger gesture, a tool or zoom action, **Fit drawing** or a
 key press stops it ("You took back the view."). It is unavailable while the
 view is shared or followed with a device, so one source moves the camera. If the
 tablet follows the agent and shares its view, the Mac follows with no extra step.
+Choosing **Follow [tablet]** stops Follow agent, and its button stays off while the
+Mac follows a device. **Ask about selection** and **Dictate about notebook** do not
+stop it: they do not move the view.
 
 A pen or finger contact, a tool or keyboard action immediately stops following
 on that surface. A late network response cannot resume it or move the current

@@ -7,7 +7,8 @@ const toBase64Url = text => btoa(String.fromCharCode(...new TextEncoder().encode
 /** QR text: a browser link whose fragment carries the ticket (a fragment never reaches a server), or the raw ticket. */
 export function pairingQrText(ticket) {
   const json = JSON.stringify(ticket);
-  return ticket.browserUrl ? String(ticket.browserUrl).replace(/\/+$/, '') + '/#pair=' + toBase64Url(json) : json;
+  // Raw fallback: ASCII only (non-ASCII as \uXXXX), so a reader never needs an ECI segment.
+  return ticket.browserUrl ? String(ticket.browserUrl).replace(/\/+$/, '') + '/#pair=' + toBase64Url(json) : json.replace(/[\u0080-\uffff]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
 }
 /** Ticket JSON text from a `#pair=` fragment, or null when the fragment carries none or is malformed. */
 export function pairingTicketFromFragment(hash) {

@@ -87,9 +87,13 @@ test('@smoke @notebook explicit view following stops on human input and presenta
     const original = await page.evaluate(() => testNotebook.surface.viewportBounds());
     await expect(notebook).toHaveAttribute('data-view-mode', 'independent');
     expect(await page.evaluate(() => testNotebook.surface.viewportBounds())).toEqual(original);
-    await notebook.getByRole('button', { name: 'Connect tablet', exact: true }).click();
+    // Following a device takes the camera: it stops Follow agent, whose button is then unavailable. (dispatchEvent: no pointer input, so only the device choice can stop it.)
+    const followAgent = notebook.getByRole('button', { name: 'Follow agent', exact: true });
+    await followAgent.dispatchEvent('click'); await expect(followAgent).toHaveAttribute('aria-pressed', 'true');
+    await notebook.getByRole('button', { name: 'Connect tablet', exact: true }).dispatchEvent('click');
     await page.getByRole('button', { name: 'Follow View tablet', exact: true }).click();
     await expect(notebook.locator('.notebook-view-state')).toContainText('Following View tablet.');
+    await expect(followAgent).toHaveAttribute('aria-pressed', 'false'); await expect(followAgent).toBeDisabled(); await expect(notebook).toContainText('You took back the view.');
     await expect.poll(() => latest.receipt?.sequence).toBe(1);
     expect(await page.evaluate(() => testNotebook.surface.viewportBounds())).not.toEqual(original);
     const held = new Promise(resolve => { release = resolve; }); let observed;

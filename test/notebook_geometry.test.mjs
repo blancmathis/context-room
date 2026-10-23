@@ -38,6 +38,7 @@ test('follow viewport pans at the current scale, zooms out only when needed, nev
  assert.equal(out.scale,800*.9/2000); assert.ok(out.scale<2);
  assert.equal(notebookFollowViewport({...view,scale:.1},{x:50000,y:0,width:10,height:10}).scale,.1);
  assert.equal(notebookFollowViewport(view,{x:5000,y:0,width:1e9,height:1}).scale,.05);
+ assert.equal(notebookFollowViewport({...view,scale:20},{x:5000,y:100,width:1,height:1}).scale,20);
 });
 test('no reframe when the change is visible',()=>{
  assert.equal(notebookFollowViewport({x:0,y:0,scale:1,width:800,height:600},{x:10,y:10,width:100,height:100}),null);

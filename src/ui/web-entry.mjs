@@ -3,6 +3,9 @@ import { appendCachedNotebooks } from './notebook-offline.mjs';
 import { openNotebookEditor } from './notebook-editor.mjs';
 import { pairingTicketFromFragment } from './pairing-share.mjs';
 const mode = document.querySelector('meta[name="context-room-web-entry"]').content;
+// A scanned QR code opens `/#pair=…`. Read the ticket once, then clear it from the address bar in every mode.
+const fragment = location.hash;
+if (fragment.startsWith('#pair=')) history.replaceState(null, '', location.pathname + location.search);
 const status = document.getElementById('web-entry-status'), content = document.getElementById('web-entry-content'), actions = document.getElementById('web-entry-actions');
 function button(label, action) { const node = document.createElement('button'); node.type = 'button'; node.textContent = label; node.addEventListener('click', () => Promise.resolve().then(action).catch(error => { status.textContent = error.message; })); return node; }
 async function json(path, options = {}) {
@@ -25,9 +28,8 @@ if (mode === 'offline') {
   const form = document.createElement('form'), label = document.createElement('label'), input = document.createElement('textarea');
   label.textContent = 'One-use pairing code'; input.required = true; input.setAttribute('aria-label', 'One-use pairing code'); label.append(input);
   const submit = document.createElement('button'); submit.type = 'submit'; submit.textContent = 'Pair this browser'; form.append(label, submit); content.append(form);
-  // A scanned QR code opens `/#pair=…`: prefill the code, then remove it from the address. The human still presses the button.
-  const scanned = pairingTicketFromFragment(location.hash);
-  if (location.hash.startsWith('#pair=')) history.replaceState(null, '', location.pathname + location.search);
+  // Prefill the scanned code. The human still presses the button.
+  const scanned = pairingTicketFromFragment(fragment);
   if (scanned) { input.value = scanned; status.textContent = 'Pairing code received. Check the Mac, then pair this browser.'; }
   form.addEventListener('submit', async event => {
     event.preventDefault(); submit.disabled = true;

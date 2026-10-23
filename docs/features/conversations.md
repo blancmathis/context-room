@@ -72,7 +72,7 @@ The model catalog is loaded only after an explicit connection action. **Fast**
 is offered, per conversation and off by default, only for models whose catalog
 entry lists the `priority` service tier. A Fast turn sends `serviceTier:
 "priority"`; every other turn sends an explicit `null` so a turn never inherits
-the previous one. Fast on a model without the tier is refused. Reading,
+the previous one. Fast on a model without the tier is refused. The panel keeps the stored choice while the catalog is not loaded; if the loaded catalog no longer offers the tier, it turns Fast off and says so, so no turn fails silently. Reading,
 drawing, `doctor`, `guard` and `brief` do not require an agent. The adapter starts
 its own local stdio Codex process; it never restarts Desktop. Model tools remain
 bound to the original file or notebook. Arbitrary shell, network, other project

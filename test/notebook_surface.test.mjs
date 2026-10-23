@@ -139,6 +139,9 @@ test('PDF export is deterministic, one page, DCT image and valid xref offsets', 
   assert.ok(text.startsWith('%PDF-1.4\n')); assert.ok(text.endsWith('%%EOF\n'));
   assert.equal((text.match(/\/Type \/Page /g) || []).length, 1); assert.match(text, /\/MediaBox \[0 0 600 300\]/); assert.match(text, /\/Filter \/DCTDecode/);
   assert.match(text, /\/Title <FEFF0050006c0061006e002000e9>/);
+  const long = Buffer.from(notebookPdf({ jpeg, width: 800, height: 400, title: 'a'.repeat(199) + '😀' })).toString('latin1');
+  assert.match(long, /\/Title <FEFF(0061){199}>/); // a surrogate pair is cut whole, never in half
+  assert.match(Buffer.from(notebookPdf({ jpeg, width: 800, height: 400, title: '😀' })).toString('latin1'), /<FEFFd83dde00>/);
   assert.ok(Buffer.from(one).includes(Buffer.from(jpeg)));
   const start = Number(/startxref\n(\d+)\n/.exec(text)[1]); assert.equal(text.slice(start, start + 4), 'xref');
   const entries = [...text.slice(start).matchAll(/^(\d{10}) 00000 n $/gm)].map(match => Number(match[1]));
