@@ -215,7 +215,7 @@ test('@assistant Fast checkbox follows the model catalogue and reaches turn/star
     const fast = pane.getByLabel('Conversation Fast mode'), models = pane.getByLabel('Conversation Codex model');
     await expect(models).toContainText('Synthetic plain model'); await expect(fast).toBeEnabled(); await expect(fast).not.toBeChecked();
     await fast.check(); await expect(fast).toBeChecked();
-    await models.selectOption('synthetic-plain'); await expect(fast).toBeDisabled(); await expect(fast).not.toBeChecked(); await expect(pane).toContainText('Fast is not offered for this model.');
+    await models.selectOption('synthetic-plain'); await expect(fast).toBeDisabled(); await expect(fast).not.toBeChecked(); await expect(pane).toContainText('Fast was on but is not offered for this model now.');
     await models.selectOption('gpt-6-astra'); await expect(fast).toBeEnabled(); await fast.check(); await expect(fast).toBeChecked();
     await pane.getByRole('textbox').fill('Answer quickly.'); await pane.getByRole('button', { name: 'Send', exact: true }).click();
     await expect.poll(() => f.turns.length).toBe(1); expect(f.turns[0].fast).toBe(true); f.finish();

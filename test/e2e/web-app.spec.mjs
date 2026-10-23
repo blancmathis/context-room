@@ -85,8 +85,8 @@ test('@web pairing fragment prefills the code and is removed from the address', 
     await page.goto(f.origin + '/#pair=' + Buffer.from(ticket).toString('base64url'));
     await expect(page.getByLabel('One-use pairing code')).toHaveValue(ticket);
     expect(new URL(page.url()).hash).toBe('');
-    await page.goBack(); expect(page.url()).not.toContain('#pair=');
     await expect(page.getByRole('button', { name: 'Pair this browser', exact: true })).toBeEnabled();
+    await page.goBack(); expect(page.url()).not.toContain('#pair=');
   } finally { await page.goto('about:blank'); await f.close(); }
 });
 
