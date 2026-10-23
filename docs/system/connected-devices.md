@@ -299,20 +299,33 @@ device and resource. Saved viewports remain local to the device. Conflicts and
 unacknowledged work remain exportable; local saving and confirmation by the
 Mac have different visible states.
 
-Build from the source repository with JDK 17 and Android SDK/build-tools 35:
+Build with JDK 17 and Android SDK/build-tools 35. Two routes exist:
 
-```bash
-scripts/build-android.sh
-```
+- **Development preview.** `scripts/build-android.sh` writes
+  `android/app/build/outputs/apk/debug/app-debug.apk` with the separate
+  application ID `app.contextroom.tablet.preview` and an isolated key in
+  ignored local build state. It never reuses an installed application's identity.
+- **Owner release, `app.contextroom.tablet`.** `./gradlew :app:assembleRelease
+  -PcontextRoomVersionCode=N -PcontextRoomVersionName=X` (heavy builds run on
+  `ci`, which holds no key) writes an unsigned APK. `scripts/sign-android-apk.sh`
+  on the owner's Mac aligns it and signs it with the stable key
+  `~/.local/share/context-room/signing/tablet.keystore` (mode 0600, created once with
+  `keytool`, never in Git, never on `ci`, copied with its SHA-256 to the backup folder),
+  then runs `check-android-artifact.py --package app.contextroom.tablet`. The
+  application identity has no `.preview` suffix, so later updates install over
+  the earlier one without uninstalling. Without that key, an update would
+  require removal and lose the tablet cache.
 
-The output is `android/app/build/outputs/apk/debug/app-debug.apk`, with the
-separate application ID `app.contextroom.tablet.preview`. The script generates
-an isolated development key in ignored local build state; it does not reuse
-an installed application's signing identity. Dependency provenance is recorded
-in `android/NOTICE.md`. The explicit [Lisière recovery build](lisiere-migration.md#recover-an-existing-android-installation)
-retains an original installation's signing identity and data; it has a separate
-output and emulator upgrade/export checks. Release packaging, personal-device
-installation and physical BOOX validation remain separate gates.
+Update rule: the interface comes from the connected Mac (a Hub deployment is
+enough). Only native code changes the APK, and it changes rarely: install the
+new, higher version code over the old one through the guided procedure (a
+temporary server on the Mac for 3 hours, download on the tablet, Android's
+**Update**). The app does not install APKs itself. Dependency provenance is
+recorded in `android/NOTICE.md`. The explicit [Lisière recovery
+build](lisiere-migration.md#recover-an-existing-android-installation) retains
+an original installation's signing identity and data; it has a separate output
+and emulator upgrade/export checks. Personal-device installation and physical
+BOOX validation remain separate gates.
 
 For repeatable synthetic verification on a separately created emulator whose
 AVD name starts with `ContextRoom_`:
