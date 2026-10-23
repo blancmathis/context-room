@@ -116,8 +116,10 @@ def fixture(base, mode='wal', large=False):
     if mode == 'hot':
         connection.close()
         script = '''import os,sqlite3,sys
-c=sqlite3.connect(sys.argv[1]); c.execute('PRAGMA journal_mode=PERSIST'); c.execute('PRAGMA cache_size=2')
-c.execute('BEGIN IMMEDIATE'); c.execute('UPDATE cache SET value=?', ('uncommitted dirty data'*50000,)); os._exit(0)
+c=sqlite3.connect(sys.argv[1],isolation_level=None); c.execute('PRAGMA journal_mode=PERSIST')
+# synchronous=OFF makes SQLite write the journal magic when it creates the header; with FULL/NORMAL it
+# writes 8 zero bytes and the signature only at the later sync, so a crash before it leaves no hot journal.
+c.execute('PRAGMA synchronous=OFF'); c.execute('BEGIN IMMEDIATE'); c.execute('UPDATE cache SET value=?', ('uncommitted dirty data'*50000,)); os._exit(0)
 '''
         subprocess.run([sys.executable, '-B', '-c', script, str(database)], check=True, timeout=20)
     contents = {'workspace/workspace.sqlite': database.read_bytes()}
