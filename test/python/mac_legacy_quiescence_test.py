@@ -90,6 +90,14 @@ class QuiescenceContracts(unittest.TestCase):
             for home in [account, Path('/private/tmp'), Path('/Users/synthetic-elsewhere')]:
                 with self.assertRaisesRegex(ValueError, 'temporary HOME'):
                     profile(home, {'CONTEXT_ROOM_SYNTHETIC_LEGACY_AGENT': 'abc123def456'})
+        with patch.dict(os.environ, {'TMPDIR': '/synthetic/chosen-tmp'}), \
+                patch('mac_legacy_quiescence.account_home', return_value=account):
+            # $TMPDIR is chosen by the caller: it never widens the accepted roots.
+            with self.assertRaisesRegex(ValueError, 'temporary HOME'):
+                profile(Path('/synthetic/chosen-tmp/run/home'), {'CONTEXT_ROOM_SYNTHETIC_LEGACY_AGENT': 'abc123def456'})
+            darwin = Path(os.confstr(65537)).resolve() if sys.platform == 'darwin' else None
+            if darwin:
+                self.assertTrue(profile(darwin / 'run/home', {'CONTEXT_ROOM_SYNTHETIC_LEGACY_AGENT': 'abc123def456'})['synthetic'])
         with tempfile.TemporaryDirectory(dir='/private/tmp') as base, \
                 patch('mac_legacy_quiescence.account_home', return_value=Path(base).resolve()):
             with self.assertRaisesRegex(ValueError, 'temporary HOME'):

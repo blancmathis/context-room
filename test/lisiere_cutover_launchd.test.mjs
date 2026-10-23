@@ -1,5 +1,6 @@
 // Opt-in essay on the REAL launchd user domain (gui/<uid>) with a throwaway
-// test.contextroom.synthetic-<nonce> agent. Never run by `npm test` or Linux CI:
+// test.contextroom.synthetic-crlaunchdessay agent (one fixed label: launchd keeps
+// an `enabled` override per label, only root removes it). Never run by `npm test` or Linux CI:
 //   CONTEXT_ROOM_LAUNCHD_ESSAY=1 node --test --test-concurrency=1 test/lisiere_cutover_launchd.test.mjs
 // Optional CONTEXT_ROOM_LAUNCHD_ESSAY_LOG=<file> appends one JSON line per step.
 import test from 'node:test';
@@ -7,7 +8,6 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { randomBytes } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -17,6 +17,7 @@ import { projectWriterAuthority } from '../src/writer_authority.mjs';
 const enabled = process.platform === 'darwin' && process.env.CONTEXT_ROOM_LAUNCHD_ESSAY === '1';
 const skip = enabled ? false : 'macOS launchd essay: set CONTEXT_ROOM_LAUNCHD_ESSAY=1 on a Mac';
 const PREFIX = '/private/tmp/cr-launchd-essay-';
+const NONCE = 'crlaunchdessay', LABEL = 'test.contextroom.synthetic-' + NONCE;
 const REAL_SERVICES = ['app.contextroom.local', 'fr.lisiere.companion', 'fr.lisiere.updates'];
 const cli = fileURLToPath(new URL('../bin/context-room.mjs', import.meta.url));
 const helper = fileURLToPath(new URL('../src/mac_legacy_quiescence.py', import.meta.url));
@@ -38,8 +39,11 @@ function launchdList() {
 const realPids = () => Object.fromEntries(REAL_SERVICES.map(label => [label, launchdList().find(fields => fields[2] === label)?.[0] ?? null]));
 
 async function essay(t) {
-  const nonce = randomBytes(6).toString('hex'), label = 'test.contextroom.synthetic-' + nonce;
-  assert.match(label, /^test\.contextroom\.synthetic-[a-f0-9]{12}$/);
+  const nonce = NONCE, label = LABEL;
+  // A previous interrupted run may have left the label loaded: unload only this label.
+  const leftover = launchctl('print', `${domain}/${label}`);
+  if (leftover.status !== 113) log(t, 'E0-cleanup', { print: leftover.status, bootout: launchctl('bootout', `${domain}/${label}`).status });
+  assert.equal(launchctl('print', `${domain}/${label}`).status, 113);
   const base = fs.mkdtempSync(PREFIX); fs.chmodSync(base, 0o700);
   assert.ok(base.startsWith(PREFIX) && fs.realpathSync(base) === base);
   const home = path.join(base, 'home'), source = path.join(home, '.local/share/lisiere/workspace');
@@ -105,7 +109,14 @@ def stop(signum, frame):
     if os.path.exists(os.path.join(AGENT, 'write-on-term')):
         connection.execute("INSERT INTO boards VALUES(?,?,NULL,NULL,1,'')", ('written-while-stopping-' + str(time.time_ns()), 'Saved during shutdown'))
         connection.commit()
+    # Like the companion's SQLite 3.54: checkpoint, close, no -wal/-shm left behind.
+    connection.execute('PRAGMA wal_checkpoint(TRUNCATE)')
     connection.close()
+    for suffix in ('-wal', '-shm'):
+        try:
+            os.unlink(DB + suffix)
+        except FileNotFoundError:
+            pass
     sys.exit(0)
 signal.signal(signal.SIGTERM, stop)
 with open(os.path.join(AGENT, 'pid.tmp'), 'w') as handle:
@@ -147,8 +158,10 @@ function assertStopped(e, pid) {
   return disabled;
 }
 
-const rows = (database, table = 'boards') => Number(execFileSync('python3', ['-B', '-c', `import sqlite3,sys
-print(sqlite3.connect('file:' + sys.argv[1] + '?mode=ro', uri=True).execute('SELECT count(*) FROM ' + sys.argv[2]).fetchone()[0])`, database, table], { encoding: 'utf8' }));
+const snapshotModule = fileURLToPath(new URL('../src', import.meta.url));
+const rows = (database, table = 'boards') => Number(execFileSync('python3', ['-B', '-c', `import sys
+sys.path.insert(0, sys.argv[3]); from lisiere_snapshot import open_read_only
+connection, unchanged = open_read_only(sys.argv[1]); print(connection.execute('SELECT count(*) FROM ' + sys.argv[2]).fetchone()[0]); unchanged()`, database, table, snapshotModule], { encoding: 'utf8' }));
 
 test('launchd synthetic cutover, rollback and resume leave real services untouched', { skip, timeout: 300000 }, async t => {
   const e = await essay(t), { r0 } = await prepare(t, e);
@@ -175,6 +188,8 @@ test('launchd synthetic cutover, rollback and resume leave real services untouch
   assert.equal(applied.completed, true); assert.equal(applied.mode, 'context-room');
   const disabledLine = assertStopped(e, pid);
   assert.equal(rows(path.join(applied.backup, 'workspace.sqlite')), 1);
+  const sidecars = dir => fs.readdirSync(dir).filter(name => /-(?:wal|shm)$/.test(name));
+  assert.deepEqual(sidecars(applied.backup), [], 'the real case: a WAL database closed cleanly');
   assert.equal(fs.lstatSync(path.join(e.source, 'workspace.sqlite')).isDirectory(), true);
   assert.equal(projectWriterAuthority(e.project).mode, 'context-room');
   const retainedRevision = await exportSnapshot(e, applied.backup, path.join(e.base, 'retained-check'));
@@ -216,6 +231,7 @@ test('launchd synthetic cutover supersedes after a write during shutdown', { ski
   const refused = e.cli([...args, '--apply', '--revision', plan.revision], { ok: false });
   assert.match(refused.message, /saved newer work while stopping/);
   assert.equal(fs.statSync(path.join(e.source, 'workspace.sqlite')).isFile(), true);
+  assert.deepEqual(fs.readdirSync(e.source).filter(name => /-(?:wal|shm)$/.test(name)), []);
   assert.equal(rows(path.join(e.source, 'workspace.sqlite')), 2);
   assert.equal(projectWriterAuthority(e.project).mode, 'transition');
   assertStopped(e, pid);

@@ -5,9 +5,10 @@ import { exportLisiereSnapshot } from '../../src/lisiere_snapshot.mjs';
 
 /** Real, wholly synthetic SQLite exports with a lost response and two successors.
  * An explicit macSource (for example a synthetic HOME's standard Lisière path)
- * is created there in WAL mode, like the original companion database. */
-export async function reconciliationFixture(base, { macSource = path.join(base, 'old-mac') } = {}) {
-  const wal = macSource !== path.join(base, 'old-mac'), androidSource = path.join(base, 'old-tablet');
+ * is created there in WAL mode, like the original companion database;
+ * walClosed also leaves it without -wal/-shm. */
+export async function reconciliationFixture(base, { macSource = path.join(base, 'old-mac'), walClosed = false } = {}) {
+  const wal = walClosed || macSource !== path.join(base, 'old-mac'), androidSource = path.join(base, 'old-tablet');
   fs.mkdirSync(macSource, { recursive: true }); fs.mkdirSync(androidSource);
   execFileSync('python3', ['-B', '-c', `import sqlite3,json,hashlib,sys
 packed=lambda v:json.dumps(v,ensure_ascii=False,sort_keys=True,separators=(',',':'))
@@ -28,6 +29,12 @@ with sqlite3.connect(sys.argv[2]) as db:
   changed=json.loads(packed(ops));changed[0]['value']['x']=n*40
   db.execute('INSERT INTO outbox VALUES(?,?,?,?,?)',(9007199254740993+n,identity,'board.mutate',packed({'board':'original-board','operationId':identity,'operations':changed}),None))
 `, path.join(macSource, 'workspace.sqlite'), path.join(androidSource, 'workspace.sqlite'), wal ? 'wal' : 'delete'], { stdio: 'pipe' });
+  // walClosed: checkpointed, closed, no -wal/-shm left, as the companion's SQLite 3.54 leaves it.
+  if (walClosed) {
+    execFileSync('python3', ['-B', '-c', `import sqlite3,sys
+db=sqlite3.connect(sys.argv[1]); db.execute('PRAGMA wal_checkpoint(TRUNCATE)'); db.close()`, path.join(macSource, 'workspace.sqlite')], { stdio: 'pipe' });
+    for (const suffix of ['-wal', '-shm']) fs.rmSync(path.join(macSource, 'workspace.sqlite' + suffix), { force: true });
+  }
   const snapshots = [];
   for (const [source, name] of [[macSource, 'mac'], [androidSource, 'android']]) {
     const output = path.join(base, name + '-snapshot'), plan = await exportLisiereSnapshot({ source, output });

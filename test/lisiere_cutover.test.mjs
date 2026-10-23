@@ -12,10 +12,10 @@ import { exportLisiereSnapshot } from '../src/lisiere_snapshot.mjs';
 import { assertProjectWriter, projectWriterAuthority } from '../src/writer_authority.mjs';
 import { openNotebook, mutateNotebook, readNotebook } from '../src/notebooks.mjs';
 
-async function fixture(t) {
+async function fixture(t, fixtureOptions = {}) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cr-writer-cutover-')));
   t.after(() => fs.rmSync(base, { recursive: true, force: true }));
-  const f = await reconciliationFixture(base); fs.chmodSync(f.macSource, 0o700);
+  const f = await reconciliationFixture(base, fixtureOptions); fs.chmodSync(f.macSource, 0o700);
   const root = path.join(base, 'project'); fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
   fs.mkdirSync(path.join(root, '.context-room'), { recursive: true });
   fs.writeFileSync(path.join(root, '.context-room/config.json'), '{"customHub":{"title":"Keep custom sections"}}');
@@ -107,6 +107,24 @@ with sqlite3.connect(sys.argv[1]) as db: db.execute("INSERT INTO boards VALUES('
   assert.deepEqual(journal.acknowledged, [{ snapshot: newer, revision: exported.revision }]);
   const again = await changeCutoverMode(f.root); await changeCutoverMode(f.root, { apply: true, expectedRevision: again.revision });
   const plain = await changeCutoverMode(f.root, { resume: true }, adapters); assert.equal(plain.acknowledged, undefined);
+});
+
+test('a WAL database closed cleanly (no -wal/-shm) exports, cuts over and resumes without new files beside it', async t => {
+  const f = await fixture(t, { walClosed: true }), database = path.join(f.macSource, 'workspace.sqlite'), listing = () => fs.readdirSync(f.macSource).sort();
+  assert.deepEqual([...fs.readFileSync(database).subarray(18, 20)], [2, 2]);
+  const before = listing(); assert.equal(before.some(name => /-(?:wal|shm)$/.test(name)), false);
+  const output = path.join(f.base, 'closed-wal-export'), preview = await exportLisiereSnapshot({ source: f.macSource, output });
+  await exportLisiereSnapshot({ source: f.macSource, output, apply: true, expectedRevision: preview.revision });
+  assert.deepEqual(listing(), before);
+  const options = { ...f.options, macSnapshot: output }, plan = await planLisiereCutover(f.root, options, f.adapters);
+  const applied = await applyLisiereCutover(f.root, { ...options, expectedRevision: plan.revision }, f.adapters);
+  assert.equal(applied.mode, 'context-room');
+  assert.equal(fs.readdirSync(applied.backup).some(name => /-(?:wal|shm)$/.test(name)), false);
+  const rollback = await changeCutoverMode(f.root); await changeCutoverMode(f.root, { apply: true, expectedRevision: rollback.revision });
+  const adapters = { verifyLegacy: () => ({ stopped: true, disabled: true }) };
+  const resume = await changeCutoverMode(f.root, { resume: true }, adapters);
+  assert.equal((await changeCutoverMode(f.root, { resume: true, apply: true, expectedRevision: resume.revision }, adapters)).mode, 'context-room');
+  assert.equal(fs.readdirSync(applied.backup).some(name => /-(?:wal|shm)$/.test(name)), false);
 });
 
 for (const phase of ['writers-paused', 'source-retired', 'fence-published']) test(`cutover resumes an interruption at ${phase}, with no unfenced Context Room writes`, async t => {

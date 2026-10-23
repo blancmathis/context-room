@@ -48,6 +48,10 @@ destination is refused; existing content is never overwritten. Keep exports
 outside public repositories: they contain original documents and user history.
 
 The helper reads a consistent SQLite transaction, including committed WAL data.
+It never writes beside the original. A WAL database closed cleanly (no `-wal`,
+no `-shm`, as the companion's SQLite 3.54 leaves it) cannot be opened with
+`mode=ro`; the helper then reads it with `immutable=1` and refuses the export
+if the file changes or a `-wal` appears before the read ends (retry).
 It accepts the recognized Mac and Android schemas at database version 0 or 1.
 Unknown tables, columns and later versions are refused for explicit inspection.
 The snapshot is bounded to 512 MiB, including Mac content-addressed assets.
@@ -608,6 +612,23 @@ context-room migrate --root /path/to/project --cutover-lisiere /path/to/legacy-w
 context-room migrate --root /path/to/project --cutover-lisiere /path/to/legacy-workspace --mac-snapshot /path/to/private-mac-snapshot --legacy-plist /path/to/original-companion.plist --apply --revision REVISION
 ```
 
+Before the cutover, back up the whole original installation (step 1; it creates
+the `$B` folder used by the BOOX guide):
+
+```bash
+python3 -B scripts/lisiere-backup.py --output ~/Backups/lisiere-2026-10
+```
+
+It writes only inside the new `--output` folder (refused if it exists): row
+counts, an online SQLite copy (same read path as the export), a `.tgz` of
+`~/.local/share/lisiere` without `models/`, `~/Documents/Lisière`, both plists,
+the `~/.local/bin/lisiere` link and its target, `SHA256SUMS` and a separate
+`development.keystore`. The archive is extracted to a temporary folder and
+checked. **Only `manifest.json`, written last, proves a complete backup**; a
+failed run leaves a partial folder without it: start again in a new folder.
+After the cutover (step 7 bis), `--source-retained <retained workspace>` backs up
+the retained copy and compares it in full.
+
 The macOS adapter recognizes only this account's original
 `fr.lisiere.companion` LaunchAgent and default workspace. It refuses custom
 workspace overrides, unknown process state and open legacy files. Apply pauses
@@ -658,8 +679,12 @@ The stop check reads `launchctl print-disabled` (macOS 26 prints
 test `CONTEXT_ROOM_LAUNCHD_ESSAY=1 node --test --test-concurrency=1
 test/lisiere_cutover_launchd.test.mjs` runs the whole cutover against a real
 `gui/<uid>` agent. It uses a synthetic profile: `CONTEXT_ROOM_SYNTHETIC_LEGACY_AGENT=<nonce>`
-targets only `test.contextroom.synthetic-<nonce>` and needs a temporary HOME.
-Each run leaves one `enabled` override per label in `print-disabled`; removing it needs root.
+targets only `test.contextroom.synthetic-<nonce>` and needs a temporary HOME
+under `/private/tmp` or the Darwin user temporary folder (never `$TMPDIR`). The
+essay always uses the fixed label `test.contextroom.synthetic-crlaunchdessay`
+and its synthetic agent removes `-wal`/`-shm` on exit, like the companion. It
+unloads a leftover of that label first, then unloads and re-enables it at the
+end: `print-disabled` keeps one `enabled` override for it (removing it needs root).
 
 ### Queue projection versus retained tablet scene
 

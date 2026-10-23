@@ -10,7 +10,9 @@ Writes ONLY inside a new --output directory (mode 0700); reads everything else.
   - development.keystore: separate copy, same sha256
 The archive is extracted into a temporary directory and checked against
 SHA256SUMS. Live files (logs, the running workspace database) are listed as
-volatile; the online copy covers the database. With --source-retained (the
+volatile; the online copy covers the database. Only manifest.json, written
+last, proves a complete verified backup: a failed run leaves a partial
+directory without it. With --source-retained (the
 companion stopped, step 7 bis) the retained workspace is compared in full.
 """
 import argparse
@@ -26,6 +28,9 @@ import sys
 import tarfile
 import tempfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'src'))
+from lisiere_snapshot import open_read_only  # noqa: E402
+
 TABLES = ('boards', 'objects', 'conversations', 'messages', 'projects', 'proposals', 'drafts', 'recordings', 'devices')
 LABELS = ('fr.lisiere.companion', 'fr.lisiere.updates')
 VOLATILE_NAMES = {'service.log', 'updates-service.log'}
@@ -40,55 +45,15 @@ def sha256(file):
     return digest.hexdigest()
 
 
-def open_source(database):
-    uri = Path(database).resolve().as_uri()
-    try:
-        connection = sqlite3.connect(uri + '?mode=ro', uri=True, timeout=10)
-        connection.execute('SELECT count(*) FROM sqlite_master').fetchone()
-        return connection
-    except sqlite3.OperationalError:
-        if Path(database).parent.name != '.source':
-            raise
-        return sqlite3.connect(database, timeout=10)
-
-
-def readable_source(database, output):
-    """A WAL database without its -shm file (the companion between connections)
-    cannot be opened with mode=ro, and a normal connection would leave -wal/-shm
-    in the Lisière folder. Without a -wal file the main file holds every commit,
-    so a copy taken while size, mtime and the absent -wal stay unchanged is exact."""
-    try:
-        open_source(database).close()
-        return database
-    except sqlite3.OperationalError:
-        pass
-    wal = Path(str(database) + '-wal')
-    stamp = lambda: (database.stat().st_size, database.stat().st_mtime_ns, wal.exists())
-    first = stamp()
-    if first[2]:
-        raise ValueError('The Lisière database cannot be opened read-only. Retry the backup into a new directory.')
-    os.mkdir(output / '.source', 0o700)
-    copy = output / '.source' / DATABASE
-    shutil.copyfile(database, copy)
-    if stamp() != first:
-        raise ValueError('The live database changed during the copy. Retry the backup into a new directory.')
-    return copy
-
-
-def counts(database, documents):
-    connection = open_source(database)
-    try:
-        present = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        tables = {name: connection.execute('SELECT count(*) FROM "' + name + '"').fetchone()[0] for name in TABLES if name in present}
-    finally:
-        connection.close()
+def counts(connection, documents):
+    present = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    tables = {name: connection.execute('SELECT count(*) FROM "' + name + '"').fetchone()[0] for name in TABLES if name in present}
     carnets = documents / 'Carnets'
     notebooks = sorted(entry.name for entry in carnets.iterdir() if entry.is_dir() and entry.name.endswith('.lisiere')) if carnets.is_dir() else []
     return {'tables': tables, 'missingTables': [name for name in TABLES if name not in present], 'carnets': len(notebooks)}
 
 
-def online_copy(database, destination):
-    source = open_source(database)
+def online_copy(source, destination):
     target = sqlite3.connect(destination)
     try:
         source.backup(target)
@@ -96,8 +61,6 @@ def online_copy(database, destination):
             raise ValueError('The online database copy failed its integrity check.')
     finally:
         target.close()
-        source.close()
-    os.chmod(destination, 0o600)
 
 
 def members(home, data, documents, workspace, retained):
@@ -171,13 +134,22 @@ def main():
     if free < 2 * expected + (64 << 20):
         raise ValueError(f'Not enough free space: about {2 * expected >> 20} MiB needed, {free >> 20} MiB free.')
 
-    source = readable_source(database, output)
-    before = counts(source, documents)
-    (output / 'counts-before.json').write_text(json.dumps(before, indent=2, sort_keys=True) + '\n')
-    online = output / 'workspace-online.sqlite'
-    online_copy(source, online)
-    shutil.rmtree(output / '.source', ignore_errors=True)
-    copied = counts(online, documents)
+    # Same read path as the cutover export: mode=ro, or immutable=1 for a WAL
+    # database closed cleanly, refused if it changes before the copy ends.
+    source, unchanged = open_read_only(database)
+    try:
+        before = counts(source, documents)
+        (output / 'counts-before.json').write_text(json.dumps(before, indent=2, sort_keys=True) + '\n')
+        online = output / 'workspace-online.sqlite'
+        online_copy(source, online)
+        unchanged()
+    finally:
+        source.close()
+    copy, _ = open_read_only(online)
+    try:
+        copied = counts(copy, documents)
+    finally:
+        copy.close()
     if copied['tables'] != before['tables']:
         raise ValueError('The live database changed during the online copy. Retry the backup into a new directory.')
 
@@ -207,7 +179,9 @@ def main():
             for member in tar.getmembers():
                 if member.name.startswith('/') or '..' in Path(member.name).parts:
                     raise ValueError('Unsafe archive member: ' + member.name)
-            tar.extractall(verify)
+            # Python 3.14 defaults to the 'data' filter, which refuses the absolute
+            # ~/.local/bin/lisiere link target; members are checked above.
+            tar.extractall(verify, **({'filter': 'tar'} if hasattr(tarfile, 'tar_filter') else {}))
         mismatched = [name for digest, name in sums if name not in volatile and sha256(verify / name) != digest]
         if mismatched:
             raise ValueError('Files changed during the backup: ' + ', '.join(mismatched[:10]))
@@ -221,7 +195,7 @@ def main():
         os.chmod(file, 0o600)
     result = {'version': 1, 'createdAt': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
               'output': str(output), 'workspace': str(workspace), 'retained': bool(args.source_retained),
-              'counts': before, 'sourceCopied': source != database, 'onlineCopyCounts': copied['tables'],
+              'counts': before, 'onlineCopyCounts': copied['tables'],
               'archive': {'members': len(entries), 'files': len(sums), 'bytes': archive.stat().st_size, 'sha256': sha256(archive)},
               'volatile': volatile, 'modelsExcluded': len(models), 'keystoreSha256': key_sha,
               'plists': [label for label in LABELS if (home / 'Library/LaunchAgents' / (label + '.plist')).is_file()],

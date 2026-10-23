@@ -17,7 +17,6 @@ import pwd
 import re
 import subprocess
 import sys
-import tempfile
 import time
 
 LABEL = 'fr.lisiere.companion'
@@ -39,7 +38,16 @@ def profile(home=None, environ=None):
         return {'label': LABEL, 'module': MODULE, 'synthetic': False}
     if not re.fullmatch(r'[a-z0-9]{8,32}', nonce):
         raise ValueError('The synthetic legacy agent nonce must be 8 to 32 lowercase letters or digits.')
-    temporary = {Path('/private/tmp').resolve(), Path(tempfile.gettempdir()).resolve()}
+    # Never $TMPDIR (tempfile.gettempdir follows it): only /private/tmp and the
+    # per-user Darwin temporary directory from confstr (_CS_DARWIN_USER_TEMP_DIR
+    # = 65537 in <unistd.h>; Python has no name for it).
+    temporary = {Path('/private/tmp').resolve()}
+    try:
+        darwin_temp = os.confstr(os.confstr_names.get('CS_DARWIN_USER_TEMP_DIR', 65537)) if sys.platform == 'darwin' else None
+    except (ValueError, OSError):
+        darwin_temp = None
+    if darwin_temp:
+        temporary.add(Path(darwin_temp).resolve())
     if home == account_home() or not any(home != base and home.is_relative_to(base) for base in temporary):
         raise ValueError('A synthetic legacy agent needs a temporary HOME, never the account home directory.')
     return {'label': 'test.contextroom.synthetic-' + nonce, 'module': 'contextroom_synthetic_' + nonce, 'synthetic': True}
