@@ -95,3 +95,24 @@ export function notebookSceneBounds(document) {
   const x = Math.min(...all.map(b => b.x)) - 24, y = Math.min(...all.map(b => b.y)) - 24;
   return { x, y, width: Math.max(64, Math.max(...all.map(b => b.x + b.width)) - x + 24), height: Math.max(64, Math.max(...all.map(b => b.y + b.height)) - y + 24) };
 }
+// Follow agent: the union of the objects an agent created, changed or removed between two renders.
+export function notebookAgentChanges(previous, document) {
+  if (!previous) return null;
+  const before = new Map(previous.objects.map(object => [object.id, object])), after = new Map(document.objects.map(object => [object.id, object]));
+  const boxes = [];
+  for (const object of document.objects) {
+    const old = before.get(object.id);
+    if (object.updatedBy?.kind === 'agent' && (!old || old.revision !== object.revision)) boxes.push(notebookObjectBounds(object, after));
+  }
+  for (const old of previous.objects) if (!after.has(old.id) && old.updatedBy?.kind === 'agent') boxes.push(notebookObjectBounds(old, before));
+  if (!boxes.length) return null;
+  const x = Math.min(...boxes.map(b => b.x)), y = Math.min(...boxes.map(b => b.y));
+  return { x, y, width: Math.max(...boxes.map(b => b.x + b.width)) - x, height: Math.max(...boxes.map(b => b.y + b.height)) - y };
+}
+// The view that shows `bounds` with the least movement: nothing when visible, a pan at the same scale when it fits
+// with a 10 % margin, otherwise only as much zoom-out as needed. Never zooms in. `viewport` = { x, y, scale, width, height }.
+export function notebookFollowViewport({ x, y, scale, width, height }, bounds) {
+  if (bounds.x >= -x / scale && bounds.y >= -y / scale && bounds.x + bounds.width <= (width - x) / scale && bounds.y + bounds.height <= (height - y) / scale) return null;
+  const next = Math.max(.05, Math.min(scale, width * .9 / Math.max(bounds.width, 1e-6), height * .9 / Math.max(bounds.height, 1e-6)));
+  return { x: width / 2 - (bounds.x + bounds.width / 2) * next, y: height / 2 - (bounds.y + bounds.height / 2) * next, scale: next };
+}

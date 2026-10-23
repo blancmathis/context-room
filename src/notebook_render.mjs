@@ -37,3 +37,31 @@ export function notebookSvg(input, { showOrigins = false, bounds: viewport = nul
   }).join('');
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${bounds.x} ${bounds.y} ${bounds.width} ${bounds.height}" role="img" aria-label="${xml(document.title)}"><rect x="${bounds.x}" y="${bounds.y}" width="${bounds.width}" height="${bounds.height}" fill="white"/>${items}</svg>`;
 }
+/** One-page PDF 1.4 around a JPEG of the drawing. No date, so the same input gives the same bytes. Page = pixels x 0.75 pt, at most 14 400 pt. */
+export function notebookPdf({ jpeg, width, height, title = '' }) {
+  if (!(jpeg instanceof Uint8Array) || !Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) throw new Error('Give a JPEG and its pixel size.');
+  const k = Math.min(.75, 14400 / Math.max(width, height)), pageWidth = +(width * k).toFixed(2), pageHeight = +(height * k).toFixed(2);
+  const latin1 = text => Uint8Array.from(text, c => c.charCodeAt(0) & 255);
+  let hexTitle = '';
+  for (let i = 0; i < title.length && i < 200; i++) hexTitle += title.charCodeAt(i).toString(16).padStart(4, '0');
+  const content = `q ${pageWidth} 0 0 ${pageHeight} 0 0 cm /Im0 Do Q`;
+  const bodies = [
+    '<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>`,
+    { dict: `<< /Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpeg.length} >>`, stream: jpeg },
+    { dict: `<< /Length ${content.length} >>`, stream: latin1(content) },
+    `<< /Title <FEFF${hexTitle}> /Producer (Context Room) >>`,
+  ];
+  const parts = [latin1('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n')], offsets = []; let length = parts[0].length;
+  const push = chunk => { parts.push(chunk); length += chunk.length; };
+  bodies.forEach((body, index) => {
+    offsets.push(length);
+    if (typeof body === 'string') push(latin1(`${index + 1} 0 obj\n${body}\nendobj\n`));
+    else { push(latin1(`${index + 1} 0 obj\n${body.dict}\nstream\n`)); push(body.stream); push(latin1('\nendstream\nendobj\n')); }
+  });
+  const xref = length;
+  push(latin1(`xref\n0 ${bodies.length + 1}\n0000000000 65535 f \n${offsets.map(offset => String(offset).padStart(10, '0') + ' 00000 n \n').join('')}trailer\n<< /Size ${bodies.length + 1} /Root 1 0 R /Info 6 0 R >>\nstartxref\n${xref}\n%%EOF\n`));
+  const output = new Uint8Array(length); let at = 0;
+  for (const chunk of parts) { output.set(chunk, at); at += chunk.length; }
+  return output;
+}

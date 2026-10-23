@@ -1,7 +1,7 @@
 import { NotebookClient, IndexedNotebookStorage, adoptNotebookCacheAliases, notebookBrowserIdentity, notebookHttpTransport } from '../notebook_client.mjs';
 import { normalizeNotebookDocument, notebookPath, NOTEBOOK_VERSION } from '../notebook_protocol.mjs';
-import { notebookSvg, notebookBounds } from '../notebook_render.mjs';
-import { notebookSceneBounds } from '../notebook_geometry.mjs';
+import { notebookSvg, notebookBounds, notebookPdf } from '../notebook_render.mjs';
+import { notebookSceneBounds, notebookAgentChanges, notebookFollowViewport } from '../notebook_geometry.mjs';
 import { NotebookCanvas } from './notebook-canvas.mjs';
 import { NotebookViewLink } from './notebook-views.mjs';
 import { prepareVoiceAudio } from './assistant.mjs';
@@ -87,7 +87,9 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     catch (error) { failedLocalWork.push({ ...retained, error: error.message }); throw error; }
   };
   client = new NotebookClient({ storage, transport, scope, actor, onChange: render });
-  const interact = () => { viewLink?.interaction(); onInteraction({ resourceId, path }); };
+  let followButton = null, followNote = null, followPrevious = null;
+  const stopFollowing = () => { if (followButton?.getAttribute('aria-pressed') !== 'true') return; followButton.setAttribute('aria-pressed', 'false'); followNote.textContent = 'You took back the view.'; };
+  const interact = event => { if (!event?.target?.closest?.('[data-follow-agent]')) stopFollowing(); viewLink?.interaction(); onInteraction({ resourceId, path }); };
   surface = new NotebookCanvas(canvas, { enqueue, onSelection: () => scheduleObjects(), onText: at => run(editText(at)), onInteraction: interact, onRendered: () => viewLink?.rendered(),
     onView: viewport => { zoomLabel.textContent = Math.round(viewport.scale * 100) + '%'; run(client.saveView(viewport)); }, onError: fail,
     onSaving: count => { saving = count; renderStatus(); } });
@@ -97,7 +99,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   viewLink = new NotebookViewLink({ request, surface,
     target: projectId => view && !view.offline && !authBlocked ? { projectId, resourceId, path: view.locator.path, locationRevision: view.locator.revision } : null,
     busy: () => Boolean(surface.gesture || textForm || saving || !view || view.offline || view.pending),
-    changed: state => { viewState.textContent = state.text; viewState.hidden = !state.text; stopView.hidden = state.mode === 'independent'; dialog.dataset.viewMode = state.mode; } });
+    changed: state => { if (followButton) followButton.disabled = state.mode !== 'independent'; viewState.textContent = state.text; viewState.hidden = !state.text; stopView.hidden = state.mode === 'independent'; dialog.dataset.viewMode = state.mode; } });
   for (const node of [header, tools, actions, inspector]) {
     node.addEventListener('pointerdown', interact, { signal: cleanup.signal }); node.addEventListener('keydown', interact, { signal: cleanup.signal });
   }
@@ -125,8 +127,13 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     if (globalThis.ContextRoomNativeOwner) run((async () => { const [file] = await ContextRoomNativeOwner.chooseImages(); if (file) await addImage(file); })());
     else imageInput.click();
   }));
-  const exportFormat = document.createElement('select'); exportFormat.setAttribute('aria-label', 'Notebook export format'); for (const [value, label] of [['crnb', 'Editable notebook'], ['svg', 'SVG drawing'], ['png', 'PNG preview']]) { const option = document.createElement('option'); option.value = value; option.textContent = label; exportFormat.append(option); }
+  const exportFormat = document.createElement('select'); exportFormat.setAttribute('aria-label', 'Notebook export format'); for (const [value, label] of [['crnb', 'Editable notebook'], ['svg', 'SVG drawing'], ['png', 'PNG preview'], ['pdf', 'PDF drawing']]) { const option = document.createElement('option'); option.value = value; option.textContent = label; exportFormat.append(option); }
   actions.append(exportFormat, button('Export', () => run(exportDrawing(exportFormat.value))), button('Recover local work', () => run(exportRecovery())));
+  if (!reviewKey) {
+    followButton = button('Follow agent', () => { const on = followButton.getAttribute('aria-pressed') !== 'true'; followButton.setAttribute('aria-pressed', String(on)); followNote.textContent = on ? 'Following the agent.' : ''; });
+    followButton.setAttribute('aria-pressed', 'false'); followButton.dataset.followAgent = ''; followButton.disabled = viewLink.mode !== 'independent';
+    followNote = notebookElement('p', '', 'notebook-follow-state'); followNote.setAttribute('aria-live', 'polite'); statusRow.append(followNote); actions.append(followButton);
+  }
   if (!reviewKey && capabilities.reviewAuthority !== 'unavailable') actions.append(button('Connect tablet', () => run(connectTablet())));
   const eink = button('E-ink contrast', () => { dialog.classList.toggle('notebook-eink'); eink.setAttribute('aria-pressed', String(dialog.classList.contains('notebook-eink'))); run(client.change(state => ({ metadata: { ...state.metadata, eink: dialog.classList.contains('notebook-eink') } }))); }); eink.setAttribute('aria-pressed', 'false'); actions.append(eink);
   const fingerLabel = notebookElement('label', 'Finger draws'), finger = document.createElement('input'); finger.type = 'checkbox'; finger.addEventListener('change', () => surface.fingerInk = finger.checked); fingerLabel.prepend(finger); actions.append(fingerLabel);
@@ -301,6 +308,12 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   }
   async function render(next) {
     if (!next || closed) return; view = next; surface.setDocument(next.document); name.textContent = next.document.title;
+    if (followButton?.getAttribute('aria-pressed') === 'true') {
+      const changed = notebookAgentChanges(followPrevious, next.document), rect = canvas.getBoundingClientRect();
+      const target = changed && notebookFollowViewport({ ...surface.view, width: rect.width, height: rect.height }, changed);
+      if (target) surface.frameViewport([-target.x / target.scale, -target.y / target.scale, rect.width / target.scale, rect.height / target.scale]);
+    }
+    followPrevious = next.document;
     renderStatus(); scheduleObjects(); const state = await client.state();
     undo.disabled = !state.metadata.gestureHistory?.undo.length || Boolean(surface.gesture); redo.disabled = !state.metadata.gestureHistory?.redo.length || Boolean(surface.gesture);
     const key = (next.conflicts || []).map(op => op.operationId + ':' + op.error?.code).join('|');
@@ -361,7 +374,15 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     const svg = notebookSvg(current);
     if (format === 'svg') return notebookDownload(svg, base + '.svg', 'image/svg+xml');
     const image = new Image(), url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
-    try { image.src = url; await image.decode(); const b = notebookBounds(current), scale = Math.min(1, 16384 / b.width, 16384 / b.height, Math.sqrt(16_000_000 / (b.width * b.height))); const output = document.createElement('canvas'); output.width = Math.max(1, Math.ceil(b.width * scale)); output.height = Math.max(1, Math.ceil(b.height * scale)); output.getContext('2d').drawImage(image, 0, 0, output.width, output.height); const blob = await new Promise(resolve => output.toBlob(resolve, 'image/png')); if (!blob) throw new Error('PNG export failed; editable source remains available.'); await notebookDownload(await blob.arrayBuffer(), base + '.png', 'image/png'); }
+    try {
+      image.src = url; await image.decode(); const b = notebookBounds(current), scale = Math.min(1, 16384 / b.width, 16384 / b.height, Math.sqrt(16_000_000 / (b.width * b.height)));
+      const output = document.createElement('canvas'); output.width = Math.max(1, Math.ceil(b.width * scale)); output.height = Math.max(1, Math.ceil(b.height * scale)); output.getContext('2d').drawImage(image, 0, 0, output.width, output.height);
+      const pdf = format === 'pdf', blob = await new Promise(resolve => pdf ? output.toBlob(resolve, 'image/jpeg', .92) : output.toBlob(resolve, 'image/png'));
+      if (!blob) throw new Error((pdf ? 'PDF' : 'PNG') + ' export failed; editable source remains available.');
+      const bytes = await blob.arrayBuffer();
+      if (!pdf) await notebookDownload(bytes, base + '.png', 'image/png');
+      else await notebookDownload(notebookPdf({ jpeg: new Uint8Array(bytes), width: output.width, height: output.height, title: current.title || base }).buffer, base + '.pdf', 'application/pdf');
+    }
     finally { URL.revokeObjectURL(url); }
   }
   async function submitScene() {

@@ -123,7 +123,10 @@ undo history does not follow; a device with pending ink sees the notebook as
 moved and keeps that ink as a conflict copy. Drawing, autosave and synchronization do not accept documentation.
 Objects retain stable identity, revision and authorship; selective gesture
 undo preserves independent edits. The original editable file and embedded
-images remain exportable.
+images remain exportable. The notebook menu exports the editable `.crnb`, an
+SVG, a PNG and a one-page PDF of the drawing (a JPEG at the page size, so the
+same drawing gives the same bytes). Nothing is written next to the notebook
+automatically.
 
 Connectors can retain explicit attachment sides and a routed return; text can
 retain explicit line spacing. These properties survive editable-file export,

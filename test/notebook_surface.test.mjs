@@ -130,3 +130,21 @@ test('image headers are bounded before native/browser decode; truncated or overs
   assert.throws(()=>notebookImageSize(png,'image/jpeg'),{code:'notebook_asset'});
   assert.match(notebookSvg(emptyNotebook('synthetic-board')),new RegExp('viewBox="0 0 '+notebookBounds(emptyNotebook('synthetic-board')).width+' '));
 });
+import { notebookPdf } from '../src/notebook_render.mjs';
+test('PDF export is deterministic, one page, DCT image and valid xref offsets', () => {
+  const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 0xff, 0xd9]);
+  const one = notebookPdf({ jpeg, width: 800, height: 400, title: 'Plan é' }), two = notebookPdf({ jpeg, width: 800, height: 400, title: 'Plan é' });
+  assert.deepEqual(one, two);
+  const text = Buffer.from(one).toString('latin1');
+  assert.ok(text.startsWith('%PDF-1.4\n')); assert.ok(text.endsWith('%%EOF\n'));
+  assert.equal((text.match(/\/Type \/Page /g) || []).length, 1); assert.match(text, /\/MediaBox \[0 0 600 300\]/); assert.match(text, /\/Filter \/DCTDecode/);
+  assert.match(text, /\/Title <FEFF0050006c0061006e002000e9>/);
+  assert.ok(Buffer.from(one).includes(Buffer.from(jpeg)));
+  const start = Number(/startxref\n(\d+)\n/.exec(text)[1]); assert.equal(text.slice(start, start + 4), 'xref');
+  const entries = [...text.slice(start).matchAll(/^(\d{10}) 00000 n $/gm)].map(match => Number(match[1]));
+  assert.equal(entries.length, 6);
+  entries.forEach((offset, index) => assert.equal(text.slice(offset, offset + String(index + 1).length + 6), `${index + 1} 0 obj`));
+  assert.match(text, /\/Length 9 /);
+  assert.match(notebookPdf({ jpeg, width: 40000, height: 100 }) && Buffer.from(notebookPdf({ jpeg, width: 40000, height: 100 })).toString('latin1'), /\/MediaBox \[0 0 14400 36\]/);
+  assert.throws(() => notebookPdf({ jpeg: [1], width: 1, height: 1 }));
+});
