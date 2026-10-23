@@ -7,7 +7,11 @@ const check = (ok, message) => { if (!ok) throw Object.assign(new Error(message)
 const encode = value => Buffer.from(stableNotebookJson(value) + '\n');
 const xml = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c]);
 const safeRelative = value => typeof value === 'string' && value && !path.isAbsolute(value) && !value.includes('\\') && !/[\x00-\x1f]/.test(value) && value.split('/').every(part => part && part !== '.' && part !== '..');
-const blocked = /(?:^|\/)(?:node_modules|\.git|\.local|__pycache__)(?:\/|$)|\.(?:pem|key|keystore|jks|p12|ttf|otf|woff2?)$/i;
+// Fonts stay out of kits: a stray copy may carry a licence that forbids redistribution. Only the pdf.js
+// standard fonts (Liberation, GPLv2 with font exception) that scripts/update-pdfjs.mjs vendors, at their exact location, pass.
+const vendoredFont = /^src\/vendor\/pdfjs\/standard_fonts\/[A-Za-z0-9._-]+\.ttf$/;
+const blockedPath = /(?:^|\/)(?:node_modules|\.git|\.local|__pycache__)(?:\/|$)|\.(?:pem|key|keystore|jks|p12)$/i;
+const isBlocked = relative => blockedPath.test(relative) || /\.(?:ttf|otf|woff2?)$/i.test(relative) && !vendoredFont.test(relative);
 
 function packageEntries(source) {
   const pkg = readNotebookJson(source, 'package.json');
@@ -16,7 +20,7 @@ function packageEntries(source) {
   function visit(relative) {
     const target = path.join(source, relative), stat = fs.lstatSync(target, { throwIfNoEntry: false });
     if (!stat) return;
-    check(safeRelative(relative) && !blocked.test(relative) && !stat.isSymbolicLink(), 'An installation source contains a linked, generated or credential entry.');
+    check(safeRelative(relative) && !isBlocked(relative) && !stat.isSymbolicLink(), 'An installation source contains a linked, generated or credential entry.');
     if (stat.isDirectory()) for (const name of fs.readdirSync(target).sort()) visit(relative + '/' + name);
     else { check(stat.isFile() && stat.nlink === 1, 'Only independent regular package files may be staged.'); paths.add(relative); }
   }
@@ -76,7 +80,7 @@ export function verifyMacInstallation(kit, expectedRevision) {
     && manifest.label === 'app.contextroom.local' && Array.isArray(manifest.files) && manifest.files.length <= 5000, 'The exact installation manifest is invalid.');
   const allowed = new Set();
   for (const entry of manifest.files) {
-    check(safeRelative(entry.path) && !blocked.test(entry.path) && !allowed.has(entry.path) && Number.isSafeInteger(entry.bytes)
+    check(safeRelative(entry.path) && !isBlocked(entry.path) && !allowed.has(entry.path) && Number.isSafeInteger(entry.bytes)
       && entry.bytes >= 0 && entry.bytes <= 32 * 1024 * 1024 && Number.isInteger(entry.mode) && entry.mode >= 0 && entry.mode <= 0o777, 'An installation entry is invalid.');
     allowed.add(entry.path);
     const bytes = readNotebookBytes(kit, 'runtime/' + entry.path, entry.bytes);
