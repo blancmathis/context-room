@@ -2790,6 +2790,15 @@ export function renderAgentCliHuman(command, payload) {
   if (command === "project.list" || command === "project.search" || command === "project.recent") {
     return (data.projects || []).map((project) => `${project.title} · ${project.locations.length} location${project.locations.length === 1 ? "" : "s"}\n${project.locations.map((item) => `  ${item.branch || "no branch"} · ${item.root}`).join("\n")}`).join("\n\n") + "\n";
   }
+  if (command === "project.import-codex") {
+    if (data.applied) return [`Imported ${data.imported} of ${data.results.length} folder${data.results.length === 1 ? "" : "s"}`,
+      ...data.results.map((item) => `  ${item.outcome.padEnd(8)} ${item.root}${item.reason ? ` (${item.reason})` : item.initialized ? " (created .context-room/)" : ""}`)].join("\n") + "\n";
+    const counts = Object.entries(data.counts || {}).filter(([, count]) => count).map(([status, count]) => `${count} ${status}`).join(", ");
+    return [data.found ? `Codex Desktop projects: ${counts || "none"}` : "Codex Desktop has no project list on this Mac.",
+      ...(data.projects || []).map((item) => `  ${item.status.padEnd(10)} ${item.root}${item.reason ? ` (${item.reason})` : ""}`),
+      ...(data.projects || []).some((item) => item.status === "ready" || item.status === "needs-init")
+        ? ["", "needs-init folders get a .context-room/ folder when imported.", `Import: context-room project import-codex --apply --expected-revision ${data.revision} <folder>...`] : []].join("\n") + "\n";
+  }
   if (command === "agent.instructions") return String(data.prompt || "") + "\n";
   if (command === "docs.map") return data.proposal
     ? `${data.proposal.changed ? data.proposal.dryRun ? "Would update" : `Proposed ${data.proposal.proposalId} for` : "Already current:"} ${data.proposal.target} (${data.documents} documents, ≈${data.estimatedTokens} tokens)\n`

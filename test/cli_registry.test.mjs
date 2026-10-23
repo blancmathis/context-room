@@ -28,7 +28,7 @@ test("registry exposes deterministic primary commands without exposing human rev
   assert.deepEqual(Object.fromEntries(Object.entries(CLI_PROFILE_COMMANDS).map(([profile, commands]) => [profile, commands.length])), {
     worker: 3,
     editing: 4,
-    admin: 24,
+    admin: 25,
     expert: 10,
   });
   assert.deepEqual(listCliCommands({ installedOnly: true, include: "canonical" }).map((entry) => entry.path).sort(), [...new Set([...CLI_PRIMARY_COMMANDS, ...Object.values(CLI_PROFILE_COMMANDS).flat()])].sort());
@@ -92,7 +92,7 @@ test("capabilities expose the advanced catalog without choosing an operation", (
 
   const admin = cliCapabilitiesFromRegistry({ version: "test", profile: "admin" });
   const expert = cliCapabilitiesFromRegistry({ version: "test", profile: "expert" });
-  assert.equal(admin.commands.length, 24);
+  assert.equal(admin.commands.length, 25);
   assert.equal(expert.commands.length, 10);
 
   const standard = cliCapabilitiesFromRegistry({ version: "test", profile: "admin", detail: "standard" });
@@ -174,6 +174,7 @@ test("canonical effects use direct, dry-run, or same-path protected apply", () =
     ["docs search", "none"],
     ["ui open", "ephemeral"],
     ["project register", "reversible-local"],
+    ["project import-codex", "reversible-local"],
     ["changes begin", "proposal-only"],
     ["watch set", "reversible-local"],
     ["settings set", "protected"],

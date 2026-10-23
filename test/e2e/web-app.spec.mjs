@@ -213,3 +213,31 @@ test('@pwa @tablet the same notebook controls remain reachable in tablet portrai
     expect(await page.locator('canvas.notebook-canvas').count()).toBe(1);
   } finally { await page.goto('about:blank'); await f.close(); }
 });
+
+test('@pwa imports a chosen Codex project after the second confirmation', async ({ page }) => {
+  const f = await fixture(), codexHome = path.join(f.base, 'codex'), previous = process.env.CODEX_HOME;
+  const ready = path.join(f.base, 'ready'), fresh = path.join(f.base, 'fresh'), untouched = path.join(f.base, 'untouched');
+  for (const dir of [ready, fresh, untouched]) fs.mkdirSync(dir, { recursive: true });
+  initializeContextRoomProject(ready, { title: 'Ready' });
+  fs.mkdirSync(codexHome); process.env.CODEX_HOME = codexHome;
+  const entry = (id, name, root) => [id, { id, name, rootPaths: [root] }];
+  fs.writeFileSync(path.join(codexHome, '.codex-global-state.json'), JSON.stringify({ 'local-projects': Object.fromEntries([entry('r', 'Ready one', ready), entry('f', 'Fresh one', fresh), entry('u', 'Untouched one', untouched)]), 'project-order': ['r', 'f', 'u'] }));
+  try {
+    await page.goto(f.origin + '/?hub=1&view=hub'); await expect(page.locator('#home')).toBeVisible();
+    await page.locator('#contextRoomReviewProjectFilter').click();
+    await page.locator('#contextHubProjectPicker').getByRole('button', { name: 'Manage projects\u2026', exact: true }).click();
+    await expect(page.locator('#sharedProposalWorkspaceHeading')).toHaveText('Manage projects');
+    await page.locator('#contextHubImportCodex').click();
+    const dialog = page.getByRole('dialog', { name: 'Import from Codex' });
+    await expect(dialog.getByLabel(/Ready one/)).toBeChecked(); await expect(dialog.getByLabel(/Fresh one/)).not.toBeChecked();
+    await dialog.getByLabel(/Fresh one/).check(); await dialog.getByRole('button', { name: 'Import selected projects', exact: true }).click();
+    const confirm = page.getByRole('dialog', { name: 'Import 2 projects' });
+    await expect(confirm).toContainText('registers 2 folders and creates .context-room/ in 1 of them');
+    expect(fs.existsSync(path.join(fresh, '.context-room'))).toBe(false); // nothing is written before the second step
+    await confirm.getByRole('button', { name: 'Confirm import', exact: true }).click();
+    await expect.poll(() => fs.existsSync(path.join(fresh, '.context-room/config.json'))).toBe(true);
+    expect(fs.existsSync(path.join(untouched, '.context-room'))).toBe(false);
+    const hub = JSON.parse(fs.readFileSync(path.join(process.env.CONTEXT_ROOM_HUB_HOME, 'registry.json'), 'utf8').toString());
+    const roots = JSON.stringify(hub); expect(roots).toContain(fresh); expect(roots).toContain(ready); expect(roots).not.toContain(untouched);
+  } finally { if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous; await f.close(); }
+});

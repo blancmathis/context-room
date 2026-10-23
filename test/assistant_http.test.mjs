@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { assistantFixture } from './fixtures/assistant.mjs';
+import { assistantFixture, MAC_TASK_ID, MAC_TASK_OTHER } from './fixtures/assistant.mjs';
 import { listLocalProposals, readLocalProposalFile } from '../src/local_proposals.mjs';
 import { writeDocReviewDecision } from '../src/context_room.mjs';
 import { codexToolContent } from '../src/assistant_observations.mjs';
@@ -102,4 +102,36 @@ test('an annotation conversation replaces only its exact passage and refuses for
   await assert.rejects(turn.tool('context_room_document', { action: 'replace_annotation', annotationId: seen.annotationId, replacement: 'Y' }, { ...options, callId: 'stale' }), /changed since this annotation/);
   assert.equal(listLocalProposals(f.root).length, 1);
   f.finish('done');
+});
+
+test('Mac tasks list and read in place, and an outside task is refused', async t => {
+  const f = await assistantFixture(); t.after(() => f.close());
+  const list = await (await fetch(f.url + '/api/assistant/mac-tasks?search=Plan&archived=1')).json();
+  assert.equal(list.readOnly, true); assert.equal(f.macLists.at(-1).archived, true); assert.equal(f.macLists.at(-1).search, 'Plan');
+  const task = await (await fetch(f.url + '/api/assistant/mac-tasks/' + MAC_TASK_ID)).json(); assert.equal(task.turns[0].user, 'Import my projects');
+  assert.equal((await fetch(f.url + '/api/assistant/mac-tasks/' + MAC_TASK_OTHER)).status, 403);
+  assert.equal((await fetch(f.url + '/api/assistant/mac-tasks/not-a-uuid')).status, 400);
+  assert.equal(f.turns.length, 0); assert.equal(f.starts.length, 0);
+});
+
+test('open-on-mac requires a canonical uuid, the exact project and a local darwin profile', async t => {
+  const f = await assistantFixture({ platform: 'darwin' }); t.after(() => f.close());
+  assert.equal((await f.post('/api/assistant/mac-tasks/not-a-uuid/open', {})).status, 400);
+  assert.equal((await f.post('/api/assistant/mac-tasks/' + MAC_TASK_OTHER + '/open', {})).status, 403);
+  assert.equal((await f.post('/api/assistant/mac-tasks/' + MAC_TASK_ID + '/open', {}, { 'x-context-room-owner-nonce': '' })).status, 403);
+  assert.deepEqual(f.opened, []);
+  const ok = await f.post('/api/assistant/mac-tasks/' + MAC_TASK_ID + '/open', {}); assert.equal(ok.status, 200);
+  assert.deepEqual(f.opened, ['codex://threads/' + MAC_TASK_ID]);
+  const linux = await assistantFixture({ platform: 'linux' }); t.after(() => linux.close());
+  const refused = await linux.post('/api/assistant/mac-tasks/' + MAC_TASK_ID + '/open', {}); assert.equal(refused.status, 409); assert.equal(refused.body.code ?? refused.body.error?.code, 'mac_open_unavailable'); assert.deepEqual(linux.opened, []);
+});
+
+test('a conversation opens its own Codex task on the Mac only once it has one', async t => {
+  const f = await assistantFixture({ platform: 'darwin', uuidThreads: true }); t.after(() => f.close());
+  const created = await f.post('/api/assistant/conversations', { source: { kind: 'document', path: 'docs/Original.md' } });
+  assert.equal((await f.post('/api/assistant/conversations/' + created.body.id + '/open-on-mac', {})).status, 409);
+  assert.equal((await f.post('/api/assistant/conversations/' + created.body.id + '/send', { requestId: randomUUID(), text: 'Hello' })).status, 202);
+  await until(() => f.turns.length === 1); f.finish();
+  const opened = await f.post('/api/assistant/conversations/' + created.body.id + '/open-on-mac', {}); assert.equal(opened.status, 200);
+  assert.match(f.opened[0], /^codex:\/\/threads\/0199bbbb-cccc-7ddd-8eee-/);
 });

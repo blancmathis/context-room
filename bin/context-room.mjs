@@ -124,6 +124,7 @@ import {
   validateDocumentation,
 } from "../src/documentation.mjs";
 import { recordDocumentationRead } from "../src/documentation_readers.mjs";
+import { previewCodexProjectImport, applyCodexProjectImport } from "../src/codex_catalog.mjs";
 import { COMPACT_SEARCH_RESULT, CONTEXT_BUNDLE_TRIMMERS, fitToTokenBudget } from "../src/agent_budget.mjs";
 import { preReviewDocumentChecks } from "../src/doc_tidy.mjs";
 import {
@@ -901,7 +902,8 @@ const nativePlanCommand = (
   || (command === "shared" && ["local", "security"].includes(args._[1]))
 );
 const nativeApplyCommand = (
-  command === "migrate"
+  (command === "project" && args._[1] === "import-codex")
+  || command === "migrate"
   || command === "restore"
   || (command === "agent" && args._[1] === "handoff")
   || (command === "review" && args._[1] === "annotate")
@@ -949,6 +951,18 @@ if (command === "project") {
       const registered = registerCliProject({ root, title });
       emitAgentFirstResult("project.register", { data: { effect: "reversible-local", registered } }, { format: agentFirstFormat });
       process.exit(0);
+    }
+    if (action === "import-codex") {
+      const folders = args._.slice(2).map(String);
+      if (!args.apply) {
+        emitAgentFirstResult("project.import-codex", { data: { effect: "reversible-local", ...previewCodexProjectImport() } }, { format: agentFirstFormat });
+        process.exit(0);
+      }
+      const expectedRevision = args["expected-revision"] && args["expected-revision"] !== true ? String(args["expected-revision"]) : "";
+      if (!folders.length || !expectedRevision) throw new ContextRoomCliError("codex-import-arguments", "Run project import-codex first, then add --apply --expected-revision <revision> and the folders to import.", { exitCode: 2 });
+      const applied = await applyCodexProjectImport({ roots: folders, expectedRevision });
+      emitAgentFirstResult("project.import-codex", { data: { effect: "reversible-local", applied: true, ...applied } }, { format: agentFirstFormat });
+      process.exit(applied.results.some((item) => item.outcome === "failed") ? 1 : 0);
     }
     if (action === "open") {
       emitAgentFirstResult("project.open", { target: agentFirstTarget, data: openCliProject(agentFirstTarget) }, { format: agentFirstFormat });

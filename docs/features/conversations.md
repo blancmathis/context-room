@@ -83,6 +83,18 @@ turn and preserves already recorded ink. An uncertain send is not replayed:
 **Inspect original task** verifies its exact turn and input before recovering
 an answer when the provider can supply that evidence.
 
+## Codex tasks on this Mac
+
+**Codex tasks on this Mac** (history row) lists the tasks Codex Desktop keeps for this project's folder, newest first, 30 at a time (**Next tasks**, **Previous tasks**). Search matches titles with exact case. **Archived tasks** lists archived ones. A failed read shows **Retry**.
+
+- Read only. A task opens as a summary (**Summary · read only**): five exchanges at a time (**Older exchanges**), long text clipped. There is no way to continue, send to, or change a task from Context Room.
+- Scope. The folder must match exactly, plus live worktrees of the same repository when the project folder is the top of that repository. A subfolder never shows its parent repository's tasks. Tasks of Context Room's own conversations are not listed. The list is cached 10 seconds.
+- Routes: `GET /api/assistant/mac-tasks[?cursor&search&archived=1]`, `GET /api/assistant/mac-tasks/<uuid>[?cursor]`.
+
+## Show on Mac
+
+**Show on Mac** opens Codex Desktop at one task (`codex://threads/<uuid>`). It appears on a task summary, and in a conversation's header once the conversation has its own Codex task. Nothing is sent to Codex. It works only when Context Room runs on the Mac itself (`local` profile on macOS). Elsewhere, for example from a tablet, the route answers 409 `mac_open_unavailable` and the button is not shown. The task id must be a canonical UUID, and for a Mac task it must belong to the project. A failed launch answers 502 `mac_open_failed`.
+
 ## Sharing the current source with Codex
 
 In the expanded conversation, **Share live source** explicitly shares the original document draft or the
