@@ -115,12 +115,15 @@ function publicState(state, { since = 0, includeDocument = true } = {}) {
     nextSequence: state.history.filter(e => e.sequence > since).slice(0, 200).at(-1)?.sequence || since,
     submissions: cloneNotebook([...state.submissions.values()].slice(-50)), status: 'confirmed', accepted: false };
 }
-export function openNotebook(root, { path, title = 'Notebook', id = randomUUID(), canWrite = () => false } = {}) {
+/** `createOnly` refuses an occupied path (a known notebook or an ordinary file) instead of opening it. */
+export function openNotebook(root, { path, title = 'Notebook', id = randomUUID(), canWrite = () => false, createOnly = false } = {}) {
   canonicalNotebookRoot(root); path = notebookPath(path); notebookId(id);
   if (!canWrite(path)) failNotebook('notebook_path_scope', 'This folder has not been authorized for notebooks.');
   return withNotebookLock(root, `${NOTEBOOK_STORE}/registry.lock`, () => {
-    for (const entry of listNotebooks(root)) if (entry.path === path) return readNotebook(root, entry.id);
-    const source = readNotebookBytes(root, path, NOTEBOOK_LIMITS.bytes), document = source ? decodeNotebook(source) : emptyNotebook(id, title);
+    for (const entry of listNotebooks(root)) if (entry.path === path) { if (createOnly) failNotebook('notebook_location_conflict', 'A notebook already uses this path. Choose another; nothing was opened.'); return readNotebook(root, entry.id); }
+    const source = readNotebookBytes(root, path, NOTEBOOK_LIMITS.bytes);
+    if (createOnly && source) failNotebook('notebook_location_conflict', 'A file already uses this path. Choose another; nothing was opened.');
+    const document = source ? decodeNotebook(source) : emptyNotebook(id, title);
     if (readNotebookJson(root, `${resourcePath(document.id)}/header.json`)) failNotebook('notebook_location_conflict', 'This notebook identity is attached elsewhere. Relocate it explicitly or import a separate copy.');
     const rootIdentity = canonicalNotebookRoot(root), sourceHash = source ? notebookHash(source) : null;
     const locator = { path, sourceHash, revision: notebookHash({ rootIdentity, path, id: document.id, sourceHash }) };

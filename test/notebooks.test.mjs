@@ -141,3 +141,13 @@ test('a reader waits for an immutable frame to finish its exclusive publication'
     assert.equal(fs.lstatSync(target).nlink, 1);
   } finally { child.stdin.end(); await exited; }
 });
+
+test('createOnly refuses a path used by a notebook or an ordinary file', t=>{
+  const {root}=fixture(t);
+  assert.throws(()=>openNotebook(root,{path:'docs/Sketch.crnb',canWrite,createOnly:true}),{code:'notebook_location_conflict'});
+  assert.equal(openNotebook(root,{path:'docs/Sketch.crnb',canWrite}).locator.path,'docs/Sketch.crnb');
+  fs.mkdirSync(path.join(root,'docs'),{recursive:true}); fs.writeFileSync(path.join(root,'docs/Plain.crnb'),'Existing original bytes');
+  assert.throws(()=>openNotebook(root,{path:'docs/Plain.crnb',canWrite,createOnly:true}),{code:'notebook_location_conflict'});
+  assert.equal(fs.readFileSync(path.join(root,'docs/Plain.crnb'),'utf8'),'Existing original bytes');
+  assert.equal(openNotebook(root,{path:'docs/New.crnb',canWrite,createOnly:true}).locator.path,'docs/New.crnb');
+});

@@ -25,6 +25,21 @@ function makePdf(pages = 3) {
   return Buffer.from(out, 'latin1');
 }
 
+// A 32 x 32 JPEG 2000 image (left half red, right half blue, synthetic, made with opj_compress) inside a one-page PDF.
+const JPX_BASE64 = 'AAAADGpQICANCocKAAAAFGZ0eXBqcDIgAAAAAGpwMiAAAAAtanAyaAAAABZpaGRyAAAAIAAAACAAAwcHAAAAAAAPY29scgEAAAAAABAAAAEOanAyY/9P/1EALwAAAAAAIAAAACAAAAAAAAAAAAAAACAAAAAgAAAAAAAAAAAAAwcBAQcBAQcBAf9SAAwAAAABAQUEBAAB/1wAE0BASEhQSEhQSEhQSEhQSEhQ/2QAJQABQ3JlYXRlZCBieSBPcGVuSlBFRyB2ZXJzaW9uIDIuNS40/5AACgAAAAAAhwAB/5PPtAgHX8fUBAG/34AQAcOAz8AIAXfPwAgIJ4DH2goACBWtDW/H2goAAV2ZDKOAz8AgFyxzgmCwStvPwCQX2HWCVezl/3+Az8BAIW4NGL56SErnAQ9wudocP8/AKCIaDxi+ZC1mAT+Ax9oKADXyP6q9z8AYNp5B442f/9k=';
+function makeJpxPdf() {
+  const image = Buffer.from(JPX_BASE64, 'base64').toString('latin1'), content = 'q 400 0 0 400 100 200 cm /Im0 Do Q';
+  const objects = [null, '<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /XObject << /Im0 5 0 R >> >> /Contents 4 0 R >>',
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+    `<< /Type /XObject /Subtype /Image /Width 32 /Height 32 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /JPXDecode /Length ${image.length} >>\nstream\n${image}\nendstream`];
+  let out = '%PDF-1.5\n'; const offsets = [];
+  for (let i = 1; i < objects.length; i++) { offsets[i] = out.length; out += `${i} 0 obj\n${objects[i]}\nendobj\n`; }
+  const xref = out.length;
+  out += `xref\n0 ${objects.length}\n0000000000 65535 f \n${offsets.slice(1).map(offset => String(offset).padStart(10, '0') + ' 00000 n \n').join('')}trailer\n<< /Size ${objects.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(out, 'latin1');
+}
+
 function makePng(width, height, [r, g, b]) {
   const crcTable = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
   const crc = buffer => { let c = 0xffffffff; for (const byte of buffer) c = crcTable[(c ^ byte) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
@@ -42,6 +57,8 @@ async function fixture(page) {
   fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
   fs.writeFileSync(path.join(root, 'docs/guide.md'), '# Synthetic guide\n');
   fs.writeFileSync(path.join(root, 'docs/brief.pdf'), makePdf(3));
+  fs.writeFileSync(path.join(root, 'docs/second.pdf'), makePdf(2));
+  fs.writeFileSync(path.join(root, 'docs/jpx.pdf'), makeJpxPdf());
   fs.writeFileSync(path.join(root, 'docs/broken.pdf'), 'this is not a pdf');
   fs.writeFileSync(path.join(root, 'docs/photo.png'), makePng(400, 200, [10, 20, 30]));
   fs.writeFileSync(path.join(root, 'docs/other.png'), makePng(300, 300, [90, 60, 30]));
@@ -181,5 +198,42 @@ test('broken PDF shows a readable error and Retry, no page error', async ({ page
     await error.getByRole('button', { name: 'Retry' }).click(); await expect(page.locator('.dv-error')).toBeVisible();
     await openFile(page, 'docs/brief.pdf'); await pdfReady(page, 'Page 1 of 3');
     expect(f.errors).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test('opening several PDFs keeps one pdf.js worker alive, not one per document', async ({ page }) => {
+  const f = await fixture(page);
+  try {
+    await openFile(page, 'docs/brief.pdf'); await pdfReady(page, 'Page 1 of 3');
+    expect(page.workers().length).toBe(1);
+    await page.evaluate(() => selectFile('docs/second.pdf')); await expect(page.locator('canvas.dv-canvas')).toHaveAttribute('aria-label', 'Page 1 of 2'); await pdfReady(page);
+    await page.evaluate(() => selectFile('docs/brief.pdf')); await expect(page.locator('canvas.dv-canvas')).toHaveAttribute('aria-label', 'Page 1 of 3'); await pdfReady(page);
+    await expect.poll(() => page.workers().length).toBe(1);
+    expect(f.errors).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test('a PDF with a JPEG 2000 image shows the image through the wasm decoder', async ({ page }) => {
+  const f = await fixture(page);
+  try {
+    await openFile(page, 'docs/jpx.pdf');
+    const canvas = page.locator('canvas.dv-canvas'); await expect(canvas).toBeVisible();
+    await expect.poll(() => canvas.evaluate(node => { const data = node.getContext('2d').getImageData(0, 0, node.width, node.height).data; let red = 0, blue = 0; for (let i = 0; i < data.length; i += 4) { if (data[i] > 200 && data[i + 1] < 60 && data[i + 2] < 60) red++; if (data[i + 2] > 200 && data[i] < 60 && data[i + 1] < 60) blue++; } return red > 100 && blue > 100; })).toBe(true);
+    expect(f.errors).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test('@notebook Annotate never opens an existing notebook or file, even one the file list does not show', async ({ page }) => {
+  const f = await fixture(page);
+  try {
+    await openFile(page, 'docs/brief.pdf'); await pdfReady(page, 'Page 1 of 3');
+    fs.writeFileSync(path.join(f.root, 'docs/taken.crnb'), 'Existing owner file');
+    await page.getByRole('button', { name: 'Annotate' }).click();
+    await page.getByLabel('Notebook path').fill('docs/taken.crnb');
+    await page.getByRole('button', { name: 'Create notebook' }).click();
+    await expect(page.locator('.dv-annotate-status')).toContainText(/already uses this path/);
+    expect(fs.readFileSync(path.join(f.root, 'docs/taken.crnb'), 'utf8')).toBe('Existing owner file');
+    expect(listNotebooks(f.root).length).toBe(0);
+    await expect(page.locator('dialog.notebook-dialog[open]')).toHaveCount(0);
   } finally { await f.close(); }
 });

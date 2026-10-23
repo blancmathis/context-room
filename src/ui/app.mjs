@@ -4550,10 +4550,10 @@ async function loadContextRoomAssistantUi() {
   return contextRoomAssistantUi ||= await import("/assets/ui/assistant.mjs");
 }
 
-async function openContextRoomNotebook(filePath, { directory = "", projectId = "", resourceId, beforePresent, title, initialImage, initialImageBackground } = {}) {
+async function openContextRoomNotebook(filePath, { directory = "", projectId = "", resourceId, beforePresent, title, initialImage, initialImageBackground, createOnly } = {}) {
   const captured = captureNotebookApi(projectId);
   const notebook = await import("/assets/ui/notebook-editor.mjs");
-  const options = { ...captured, resourceId, beforePresent, title, initialImage, initialImageBackground,
+  const options = { ...captured, resourceId, beforePresent, title, initialImage, initialImageBackground, createOnly,
     onConversation: async (source, display) => { const assistant = await loadContextRoomAssistantUi(); return assistant.openConversation({ ...captured, source, ...display }); },
     onClosed: () => contextRoomAssistantUi?.dockConversation(),
     onSubmitted: async () => { setStatus("Notebook submitted for human review. No file accepted."); if (typeof refreshDocQa === "function") await refreshDocQa(); } };
@@ -21377,15 +21377,15 @@ function wireImageDocumentPreview() {
   const asset = state.selectedVisualAsset;
   const path = state.selected;
   if (!host || !asset?.dataUrl) return;
-  const mount = () => import("/assets/ui/document-viewer.mjs").then((viewer) => {
+  const mount = () => { documentViewer?.destroy(); documentViewer = null; return import("/assets/ui/document-viewer.mjs").then((viewer) => {
     if (!host.isConnected || state.selected !== path) return;
     documentViewer = viewer.mountDocumentViewer(host, {
       asset, path, projectId: state.projectId || "",
       existingPaths: () => new Set((state.files || []).map((item) => item.path)),
-      annotate: ({ path: notebookPath, title, file }) => openContextRoomNotebook(notebookPath, { title, initialImage: file, initialImageBackground: true }),
+      annotate: ({ path: notebookPath, title, file }) => openContextRoomNotebook(notebookPath, { title, initialImage: file, initialImageBackground: true, createOnly: true }),
       retry: mount,
     });
-  }).catch(() => { if (host.isConnected) host.innerHTML = '<div class="file-load-state error"><div class="file-load-state-inner"><strong>Preview unavailable</strong><span>The viewer could not be loaded.</span></div></div>'; });
+  }).catch(() => { if (host.isConnected) host.innerHTML = '<div class="file-load-state error"><div class="file-load-state-inner"><strong>Preview unavailable</strong><span>The viewer could not be loaded.</span></div></div>'; }); };
   mount();
 }
 

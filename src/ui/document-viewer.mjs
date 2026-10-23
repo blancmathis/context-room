@@ -112,13 +112,17 @@ let lastPdf = null;
 async function openPdf(asset) {
   const key = asset.contentHash || asset.path;
   if (lastPdf?.key === key) return lastPdf.promise;
-  const promise = (async () => {
+  // The previous document owns a worker thread and its bytes: release them before a new one is opened.
+  lastPdf?.task?.destroy().catch(() => {});
+  const entry = { key, task: null, promise: null };
+  entry.promise = (async () => {
     const pdfjs = await loadPdfjs();
-    return pdfjs.getDocument({ data: decodeDataUrl(asset.dataUrl), isEvalSupported: false, enableXfa: false, standardFontDataUrl: PDFJS_BASE + 'standard_fonts/', cMapUrl: PDFJS_BASE + 'cmaps/', cMapPacked: true, wasmUrl: PDFJS_BASE + 'wasm/' }).promise;
+    entry.task = pdfjs.getDocument({ data: decodeDataUrl(asset.dataUrl), isEvalSupported: false, enableXfa: false, standardFontDataUrl: PDFJS_BASE + 'standard_fonts/', cMapUrl: PDFJS_BASE + 'cmaps/', cMapPacked: true, wasmUrl: PDFJS_BASE + 'wasm/', maxImageSize: MAX_CANVAS_PIXELS, canvasMaxAreaInBytes: MAX_CANVAS_PIXELS * 4 });
+    return entry.task.promise;
   })();
-  lastPdf = { key, promise };
-  promise.catch(() => { if (lastPdf?.promise === promise) lastPdf = null; });
-  return promise;
+  lastPdf = entry;
+  entry.promise.catch(() => { if (lastPdf === entry) lastPdf = null; entry.task?.destroy().catch(() => {}); });
+  return entry.promise;
 }
 
 /**
@@ -132,7 +136,7 @@ export function mountDocumentViewer(host, { asset, path, projectId = '', storage
   const toolbar = el('div', 'dv-toolbar'), info = el('span', 'dv-info', (isPdf ? 'PDF' : (asset.mimeType || 'image').replace('image/', '').replace('+xml', '').replace('jpeg', 'jpg').toUpperCase()) + ' · ' + formatBytes(asset.bytes || 0));
   const stage = el('div', 'dv-stage'), content = el('div', 'dv-content'); stage.append(content);
   const form = el('form', 'dv-annotate'); form.hidden = true;
-  const state = { zoom: ZOOM_MIN, mode: 'fit', page: 1, pages: 1, natural: null, destroyed: false, renderToken: 0, persistTimer: 0, renderTimer: 0, pdf: null, pdfPage: null, view: null, pointers: new Map(), pinch: null };
+  const state = { zoom: ZOOM_MIN, mode: 'fit', page: 1, pages: 1, natural: null, destroyed: false, renderToken: 0, persistTimer: 0, renderTimer: 0, pdf: null, pdfPage: null, renderTask: null, view: null, pointers: new Map(), pinch: null };
   let target = null; // <img> or <canvas>
   const wholeButton = button('Whole ' + noun, () => whole()), out = button('−', () => zoomBy(1 / 1.5), { aria: 'Zoom out' }), level = el('span', 'dv-level', '100 %'), zin = button('+', () => zoomBy(1.5), { aria: 'Zoom in' });
   level.setAttribute('aria-live', 'polite');
@@ -189,15 +193,19 @@ export function mountDocumentViewer(host, { asset, path, projectId = '', storage
 
   async function renderPdfPage() {
     if (!state.pdfPage) return;
-    const token = ++state.renderToken, view = viewSize(), size = contentSize();
+    state.renderTask?.cancel();
+    const token = ++state.renderToken, size = contentSize();
     const base = state.pdfPage.getViewport({ scale: 1 }), budget = canvasBudget(size.width, size.height, globalThis.devicePixelRatio || 1);
     const canvas = document.createElement('canvas'); canvas.width = budget.width; canvas.height = budget.height; canvas.className = 'dv-canvas'; canvas.setAttribute('role', 'img'); canvas.setAttribute('aria-label', 'Page ' + state.page + ' of ' + state.pages);
     const viewport = state.pdfPage.getViewport({ scale: budget.width / base.width });
-    const task = state.pdfPage.render({ canvas, viewport, background: '#ffffff', annotationMode: 0 });
-    try { await task.promise; } catch (error) { if (error?.name === 'RenderingCancelledException' || token !== state.renderToken) return; throw error; }
-    if (state.destroyed || token !== state.renderToken) return;
-    if (target?.isConnected) target.replaceWith(canvas); else content.append(canvas);
-    target = canvas; void view;
+    const task = state.renderTask = state.pdfPage.render({ canvas, viewport, background: '#ffffff', annotationMode: 0 });
+    try { await task.promise; } catch (error) { canvas.width = 0; if (error?.name === 'RenderingCancelledException' || token !== state.renderToken) return; throw error; }
+    if (state.renderTask === task) state.renderTask = null;
+    if (state.destroyed || token !== state.renderToken) { canvas.width = 0; return; }
+    const previous = target;
+    if (previous?.isConnected) previous.replaceWith(canvas); else content.append(canvas);
+    if (previous instanceof HTMLCanvasElement) previous.width = 0; // free the old backing store at once
+    target = canvas;
   }
   function scheduleRender() { if (!isPdf) return; clearTimeout(state.renderTimer); state.renderTimer = setTimeout(() => renderPdfPage().catch(showRenderError), 250); }
   function showRenderError(error) { showError({ title: 'This page could not be displayed.', detail: String(error?.message || error).slice(0, 160) }); }
@@ -223,7 +231,9 @@ export function mountDocumentViewer(host, { asset, path, projectId = '', storage
     try { storage.setItem(pdfPageKey(projectId, path), String(number)); } catch { /* not remembered */ }
     const saved = restore ? readViewport(storage, key()) : null;
     state.mode = saved?.mode === 'manual' ? 'manual' : 'fit'; state.saved = saved?.mode === 'manual' ? saved : null;
+    state.renderTask?.cancel(); const previousPage = state.pdfPage;
     state.pdfPage = await state.pdf.getPage(number); if (state.destroyed || state.page !== number) return;
+    if (previousPage && previousPage !== state.pdfPage) previousPage.cleanup();
     const natural = state.pdfPage.getViewport({ scale: 1 }); state.natural = { width: natural.width, height: natural.height };
     applyFrame(); await renderPdfPage();
     if (state.destroyed || state.page !== number) return;
@@ -343,6 +353,11 @@ export function mountDocumentViewer(host, { asset, path, projectId = '', storage
   return {
     ready: started,
     focus: () => root.focus(),
-    destroy() { state.destroyed = true; state.renderToken++; clearTimeout(state.persistTimer); clearTimeout(state.renderTimer); observer?.disconnect(); },
+    destroy() {
+      state.destroyed = true; state.renderToken++; clearTimeout(state.persistTimer); clearTimeout(state.renderTimer); observer?.disconnect();
+      state.renderTask?.cancel(); state.renderTask = null;
+      try { state.pdfPage?.cleanup(); } catch { /* the document may already be released */ }
+      if (target instanceof HTMLCanvasElement) target.width = 0;
+    },
   };
 }

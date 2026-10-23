@@ -7765,7 +7765,11 @@ test("pdfjs vendor route serves only the fixed allowlist with an ETag", async (t
   const wasm = await fetch(base + "/vendor/pdfjs/wasm/qcms_bg.wasm");
   assert.equal(wasm.headers.get("content-type"), "application/wasm");
   await wasm.arrayBuffer();
-  for (const denied of ["/vendor/pdfjs/../package.json", "/vendor/pdfjs/..%2fpackage.json", "/vendor/pdfjs/%2e%2e/%2e%2e/package.json", "/vendor/pdfjs/legacy/build/pdf.mjs", "/vendor/pdfjs/pdf.min.mjs.map", "/vendor/pdfjs/package.json", "/vendor/pdfjs/cmaps/", "/vendor/pdfjs/"]) {
+  const fallback = await fetch(base + "/vendor/pdfjs/wasm/openjpeg_nowasm_fallback.js");
+  assert.equal(fallback.status, 200);
+  assert.match(fallback.headers.get("content-type"), /javascript/);
+  await fallback.arrayBuffer();
+  for (const denied of ["/vendor/pdfjs/wasm/quickjs-eval.js", "/vendor/pdfjs/wasm/quickjs-eval.wasm", "/vendor/pdfjs/LICENSE", "/vendor/pdfjs/VERSION", "/vendor/pdfjs/../package.json", "/vendor/pdfjs/..%2fpackage.json", "/vendor/pdfjs/%2e%2e/%2e%2e/package.json", "/vendor/pdfjs/legacy/build/pdf.mjs", "/vendor/pdfjs/pdf.min.mjs.map", "/vendor/pdfjs/package.json", "/vendor/pdfjs/cmaps/", "/vendor/pdfjs/"]) {
     assert.notEqual(await raw(denied), 200, denied);
   }
   assert.equal(await raw("/vendor/pdfjs/../package.json"), 404);

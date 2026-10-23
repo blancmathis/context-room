@@ -26,7 +26,7 @@ export async function handleNotebookHttp(req, res, { root, url, readJsonBody, se
   const body = req.method === 'POST' ? await readJsonBody(req, { maxBytes: 30 * 1024 * 1024 }) : {};
   if (req.method === 'POST' && route === '/open') {
     if (body.protocolVersion !== NOTEBOOK_VERSION) failNotebook('notebook_version', 'The notebook client protocol is incompatible.');
-    sendJson(res, 200, openNotebook(root, { path: body.path, title: body.title, id: body.id || randomUUID(), canWrite })); return true;
+    sendJson(res, 200, openNotebook(root, { path: body.path, title: body.title, id: body.id || randomUUID(), canWrite, createOnly: body.createOnly === true })); return true;
   }
   const id = notebookId(body.resourceId || url.searchParams.get('resourceId'));
   const scene = readNotebook(root, id, { includeDocument: false });

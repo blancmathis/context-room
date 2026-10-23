@@ -25534,16 +25534,16 @@ function mermaidWebAssetBundle() {
   return mermaidWebAssetCache;
 }
 
-// pdf.js (legacy build, for older WebViews) is served from a fixed allowlist; the browser never reaches the package tree.
-const PDFJS_ASSET_TYPES = new Map([[".mjs", "text/javascript; charset=utf-8"], [".bcmap", "application/octet-stream"], [".pfb", "application/octet-stream"], [".ttf", "font/ttf"], [".wasm", "application/wasm"]]);
+// pdf.js 6.4.299 (legacy build, for older WebViews) is copied into src/vendor/pdfjs/ by scripts/update-pdfjs.mjs and served from a fixed allowlist.
+const PDFJS_ASSET_TYPES = new Map([[".mjs", "text/javascript; charset=utf-8"], [".js", "text/javascript; charset=utf-8"], [".bcmap", "application/octet-stream"], [".pfb", "application/octet-stream"], [".ttf", "font/ttf"], [".wasm", "application/wasm"]]);
 let pdfjsAssetIndex = null;
 const pdfjsAssetCache = new Map();
 
 function pdfjsAssetFiles() {
   if (pdfjsAssetIndex) return pdfjsAssetIndex;
-  const base = fileURLToPath(new URL("../node_modules/pdfjs-dist/", import.meta.url));
-  const files = new Map([["pdf.min.mjs", "legacy/build/pdf.min.mjs"], ["pdf.worker.min.mjs", "legacy/build/pdf.worker.min.mjs"]]);
-  for (const [dir, extensions] of [["standard_fonts", [".pfb", ".ttf"]], ["cmaps", [".bcmap"]], ["wasm", [".wasm"]]]) {
+  const base = fileURLToPath(new URL("./vendor/pdfjs/", import.meta.url));
+  const files = new Map([["pdf.min.mjs", "pdf.min.mjs"], ["pdf.worker.min.mjs", "pdf.worker.min.mjs"]]);
+  for (const [dir, extensions] of [["standard_fonts", [".pfb", ".ttf"]], ["cmaps", [".bcmap"]], ["wasm", [".wasm", ".js"]]]) {
     let names = [];
     try { names = fs.readdirSync(path.join(base, dir)); } catch { /* package without this directory */ }
     for (const name of names) if (extensions.includes(path.extname(name)) && /^[A-Za-z0-9._-]+$/.test(name)) files.set(`${dir}/${name}`, `${dir}/${name}`);
