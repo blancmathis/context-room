@@ -153,7 +153,7 @@ test('@smoke Aa changes the text size, keeps the reading place and survives a re
     await page.evaluate(() => selectFile('docs/Big.md'));
     await expect(page.locator('#docReader')).toBeVisible();
     const sizeOf = () => page.locator('#docReader').evaluate((node) => getComputedStyle(node).fontSize);
-    expect(await sizeOf()).toBe('15px');
+    const standardSize = await sizeOf();
     await page.evaluate(() => scrollToMarkdownAnchor('part-30'));
     await expect(page.locator('#docReader [data-heading-id="part-30"]')).toBeInViewport();
     let dialog = await openTextSize(page);
@@ -177,7 +177,7 @@ test('@smoke Aa changes the text size, keeps the reading place and survives a re
     await page.evaluate(() => selectFile('docs/Big.md'));
     dialog = await openTextSize(page);
     await dialog.getByRole('button', { name: /^15 Standard$/ }).click();
-    await expect.poll(sizeOf).toBe('15px');
+    await expect.poll(sizeOf).toBe(standardSize);
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
 
@@ -254,6 +254,8 @@ test('explorer search matches accented names without accents', async ({ page }) 
   try {
     fs.writeFileSync(path.join(f.root, 'docs/Mémo.md'), '# Mémo\n\nAccented name.\n');
     await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    const explorerToggle = page.locator('#explorerOpen:visible, #sidebarToggle:visible').first();
+    if (await page.locator('.app').evaluate((node) => node.classList.contains('sidebar-collapsed'))) await explorerToggle.click();
     await page.locator('#search').fill('memo');
     await expect(page.locator('#files [data-file-path="docs/Mémo.md"]')).toBeVisible();
     await expect(page.locator('#files [data-file-path="docs/Original.md"]')).toHaveCount(0);

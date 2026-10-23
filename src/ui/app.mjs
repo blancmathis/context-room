@@ -21271,6 +21271,11 @@ function applyHtmlPreviewZoom(size = readingSize()) {
 }
 
 // The first heading on screen and where it sits, or the scroll ratio when the text has no headings.
+// Top edge of the visible reading area: 0 when the page itself scrolls, whose bounding box moves with the scroll.
+function readingAreaTop(scroller) {
+  return !scroller || scroller === document.scrollingElement ? 0 : scroller.getBoundingClientRect().top;
+}
+
 function captureReadingPlace() {
   const frame = document.querySelector("iframe.html-preview-frame");
   if (frame?.contentDocument?.scrollingElement) {
@@ -21280,7 +21285,7 @@ function captureReadingPlace() {
   const reader = el("docReader") || el("docEditor");
   if (!reader) return null;
   const scroller = activeDocumentScrollTarget();
-  const limit = (scroller?.getBoundingClientRect?.().top ?? 0) + 1;
+  const limit = readingAreaTop(scroller) + 1;
   const lines = reader.querySelectorAll("[data-line-index]");
   if (lines.length) {
     let low = 0;
@@ -21306,7 +21311,7 @@ function restoreReadingPlace(place) {
   if (!reader || !scroller) return;
   if (place.line !== undefined) {
     const line = reader.querySelector('[data-line-index="' + cssEscape(place.line) + '"]');
-    if (line) scroller.scrollTop += line.getBoundingClientRect().top - ((scroller.getBoundingClientRect?.().top ?? 0) + 1) - place.offset;
+    if (line) scroller.scrollTop += line.getBoundingClientRect().top - (readingAreaTop(scroller) + 1) - place.offset;
   } else scroller.scrollTop = place.ratio * scroller.scrollHeight;
 }
 
@@ -21381,7 +21386,7 @@ function wirePageButtons() {
 function contentsPanelMarkup(page, toc) {
   const active = toc.active;
   const items = page.items.map((heading) => '<li class="doc-toc-l' + heading.level + '"><a href="#' + escapeHtml(heading.slug) + '" data-toc-slug="' + escapeHtml(heading.slug) + '"' + (heading.index === active ? ' aria-current="location"' : "") + '>' + escapeHtml(heading.text) + '</a></li>').join("");
-  const count = page.total ? (page.start + 1) + "–" + page.end + " of " + page.total.toLocaleString("en-US") : "No heading matches";
+  const count = page.total ? (page.start + 1).toLocaleString("en-US") + "–" + page.end.toLocaleString("en-US") + " of " + page.total.toLocaleString("en-US") : "No heading matches";
   return '<ol data-toc-list>' + items + '</ol>'
     + '<div class="doc-toc-pager"><button type="button" data-toc-page="-1"' + (page.hasPrevious ? "" : " disabled") + '>Previous</button>'
     + '<span data-toc-count role="status" aria-live="polite">' + count + '</span>'
@@ -21409,7 +21414,7 @@ async function drawContentsPanel(panel, toc, { toActive = false, root = el("docR
   const tools = await loadTextTools();
   if (!panel.isConnected) return;
   if (toActive && root) {
-    const edge = limit ?? ((activeDocumentScrollTarget()?.getBoundingClientRect?.().top ?? 0) + 24);
+    const edge = limit ?? (readingAreaTop(activeDocumentScrollTarget()) + 24);
     toc.active = currentHeadingIndex(toc.entries, root, edge);
   }
   const page = tools.contentsPage(toc.entries, { query: toc.query, start: toActive ? null : toc.start, active: toActive ? toc.active : -1, pageSize: CONTENTS_PAGE_SIZE });
