@@ -1,17 +1,25 @@
 # Parité Lisière → Context Room (T-021, lot 1)
 
-Date : 2026-10-15. Base : `bbfef3d` (release déployée `bbfef3d-p4319`).
-Auteur : Claude (T-021). Rien n'a été arrêté, supprimé ni écrit dans les
-données Lisière ou dans `~/.context-room`.
+Date : 2026-10-23. Base : HEAD intégré `c03b208` (branche
+`mathis/t021-lisiere-parite`). Release déployée sur le Mac : `bbfef3d-p4319`
+(sans les lots L1 à L9b ci-dessous).
+Auteur : Claude (T-021). Les mesures du § (b) datent du 2026-10-15. Aucun
+service Lisière n'a été arrêté, aucune donnée Lisière ni `~/.context-room`
+n'a été écrite par cette doc.
 
 ## En bref
 
 - La v2 reprend le cœur de Lisière : carnets, conversations par source, dictée,
   voix, appairage, vues partagées, présentation, cache hors ligne, migration.
-- Elle **ne reprend pas** tout. Manques nets : lecteur PDF/image, catalogue des
-  projets Codex Desktop, liste des anciennes tâches Codex du Mac, découverte
-  Bonjour, service de mise à jour APK, mémos libres hors projet, sauvegarde
-  simple, export `.lisiere` (aperçu PNG / PDF).
+- Lots fusionnés dans `c03b208` : L1 (bascule), L2L7 (chaîne APK), L3 (espace
+  Carnets), L4 (lecteur PDF/image), L5 (Codex du Mac), L6 (découverte), L8
+  (sauvegarde), L9b (Fast, Follow agent, export PNG/PDF, appairage QR/fichier).
+  L2 (export de la BOOX) attend la tablette. L9a (lecteur : sommaire, recherche)
+  est en cours.
+- Huit écarts de parité sont **acceptés par Mathis** (2026-10-23) : § (a) et
+  `DECISIONS.md`. Les autres manques sont marqués « absent » ou « partiel ».
+- Aucun essai sur la BOOX réelle n'a eu lieu : la porte V18 reste fermée. La
+  séance BOOX unique essaie tout d'un coup.
 - Les données Mac sont petites (4 carnets, 3 conversations, 2 021 messages).
   Elles sont **déjà importées** le 2026-09-16, aux révisions actuelles.
 - Les données de la tablette (cache, file d'envoi, enregistrements PCM) sont
@@ -37,24 +45,27 @@ données Lisière ou dans `~/.context-room`.
 
 Statuts : **prouvé** = présent avec un test automatique ; **partiel** = présent
 mais incomplet ou jamais essayé sur la BOOX réelle ; **absent** = rien dans le
-code. « BOOX réelle » : la porte V18 (essai physique) n'est pas encore passée.
+code ; **écart accepté** = Mathis a choisi de ne pas copier le comportement
+Lisière (2026-10-23, huit points). « BOOX réelle » : la porte V18 (essai
+physique) n'est pas encore passée.
 
 ### Tablette, lecture et édition
 
 | Fonction Lisière | Équivalent Context Room | Statut |
 |---|---|---|
-| Appairage QR / code 10 min, page HTML `lisiere pair --output` | Code 2 min, identifiant 30 j, épingle du certificat (`src/device_authority.mjs`, `src/device_owner.mjs`) ; `test/devices.test.mjs`, `test/device_owner.test.mjs`, `test/e2e/notebooks.spec.mjs:41,166`. Pas de QR, pas de page HTML hors ligne. | partiel |
+| Appairage QR / code 10 min, page HTML `lisiere pair --output` | Billet de 2 min à usage unique, identifiant 30 j, épingle du certificat (`src/device_authority.mjs`, `src/device_owner.mjs`) ; QR affiché dans la feuille d'appairage et fichier `context-room-pairing.json` importé par l'APK (L9b-2, 5f9e999). Pas de scanner QR dans l'APK : la BOOX n'a pas de caméra, le fichier le remplace. Tests : `test/devices.test.mjs`, `test/device_owner.test.mjs`, `test/e2e/notebooks.spec.mjs:41,166,171` (« pairing sheet shows a QR code and saves a pairing file »). Limites : `PairingFileTest` (androidTest) compile mais n'a pas tourné ; QR, fichier et import jamais essayés sur la BOOX ; pas de page HTML hors ligne. | partiel |
 | Rôles propriétaire / dessin seul, révocation | `src/device_owner.mjs` ; `test/e2e/notebooks.spec.mjs:166` | prouvé |
 | Parcourir : Projets / Fichiers / Carnets / Récents | Navigation Hub + documents (`src/ui/app.mjs`, `src/device_navigation.mjs`) ; e2e Hub | prouvé |
 | Lecteur HTML (ressources locales, liens externes) | Docs rendues + `src/document_assets.mjs` | prouvé |
 | « Lire le texte » paginé, Sommaire > 300 sections, recherche sans accents, Aa | Mode focus (`src/ui/app.mjs`), recherche docs. Pas de sommaire paginé dédié ni réglage Aa vérifiés sur encre. | partiel |
 | Modifier HTML/MD → diff → « Appliquer sur le Mac » | Brouillon + proposition locale + revue humaine (`src/local_proposals.mjs`, `docs/features/document-workflow.md`) | prouvé |
-| Gros éditeur (annuler/rétablir, chercher/remplacer, 20 Mio) | Éditeur de documents ; pas de chercher/remplacer dans l'UI trouvé | partiel |
-| Lecteur PDF et image (pages, zoom, « Image entière », Annoter) | PDF servi en octets seulement (`src/document_assets.mjs:13`, « no integrated renderer promised ») ; annotation PNG de revue (`test/e2e/notebooks.spec.mjs:499`) | **absent** (PDF) / partiel (image) |
+| Gros éditeur (annuler/rétablir, chercher/remplacer, 20 Mio) | Éditeur de documents ; pas de chercher/remplacer dans l'UI trouvé ; limite de 16 Mio au lieu de 20 | partiel ; limite 16 Mio : écart accepté (Mathis, 2026-10-23) |
+| Lecteur PDF et image (pages, zoom, « Image entière », Annoter) | Lecteur PDF/image fusionné (L4, 7f178e6) : pdf.js 6.4.299 copié dans le paquet (`src/ui/document-viewer.mjs`), route `/vendor/pdfjs/` sans `'wasm-unsafe-eval'`. Preuves : `test/document_viewer.test.mjs` 27/27, route pdf.js 1/1 (`test/context_room.test.mjs`) ; annotation PNG de revue (`test/e2e/notebooks.spec.mjs:499`). Limites : aucun essai BOOX ; chemin tablette (proxy propriétaire) sans e2e ; pas de PDF JPX en test ; course `openPdf` → L9a. | partiel (essai BOOX à faire) |
 | Carnets stylet/doigt, zoom 2 doigts, gomme, sélection, formes | `.crnb` (`src/notebook_*.mjs`, `src/ui/notebook-*.mjs`, `android/.../InkView.java`, `BooxInk.java`) ; `test/notebook*.test.mjs`, `test/e2e/notebooks.spec.mjs:216,372,484` | prouvé (navigateur) ; partiel (BOOX réelle) |
 | Mémos libres hors projet (`~/Documents/Lisière/Carnets`) | Espace Notebooks (`~/Documents/Context Room/Carnets`), New notebook, déplacement vérifié vers un projet et retour (`test/notebooks.test.mjs` transfer, `test/hub_durable_identity.test.mjs` space, e2e « Notebooks space »). Les 4 mémos passent par `migrate --notebooks-to-space` à la bascule. | prouvé (navigateur) ; partiel (BOOX réelle) |
 | Accueil « reprendre / Nouveau mémo » | Section Notebooks en tête de l'accueil du Hub : New notebook, Resume sur le plus récent, retrouvé après redémarrage du Hub (e2e « Notebooks space ») | prouvé (navigateur) ; partiel (BOOX réelle) |
 | Cache hors ligne + file d'opérations à ID stables, conflit → copie | `test/e2e/notebooks.spec.mjs:261,283,318,358` | prouvé |
+| Créer un carnet hors ligne | Non repris en v1 ; la conception reste extensible (`DECISIONS.md`, écart 7) | écart accepté (Mathis, 2026-10-23) |
 | Persistance des décisions Appliquer/Refuser, reprise | Reçus signés + annulation (`docs/features/review-authority.md`) | prouvé |
 
 ### Agent, conversations, voix
@@ -63,16 +74,16 @@ code. « BOOX réelle » : la porte V18 (essai physique) n'est pas encore passé
 |---|---|---|
 | Discussions par projet, historique | Conversations par source (`src/assistant_*.mjs`, `docs/features/conversations.md`) ; `test/assistant_*.test.mjs`, `test/e2e/assistant.spec.mjs` | prouvé |
 | Codex limité à la sélection, modes « Sélection seule / et ajouts » | Outils liés au fichier ou carnet d'origine (`src/codex_provider.mjs`), « Annotate passage » | prouvé |
-| Choix du modèle, raisonnement, Fast | Catalogue après connexion explicite ; `reasoningEffort` (`src/ui/assistant.mjs:245`). Fast non trouvé. | partiel |
+| Choix du modèle, raisonnement, Fast | Catalogue après connexion explicite ; `reasoningEffort` (`src/ui/assistant.mjs:245`) ; case Fast (L9b-1, 26061bb, r2 8905bba) : un modèle sans `priority` désactive Fast et une note le dit ; `serviceTier: null` à chaque tour sinon (voulu). Preuve : `test/e2e/assistant.spec.mjs:208` (faux fournisseur, e2e ci 8/8). Limites : aucun vrai tour Fast (limite Codex jusqu'au 2026-11-17) ; l'état « avant le chargement du catalogue » n'a pas de test ; case à essayer au doigt sur la BOOX. | partiel |
 | Dicter (Whisper local) | `src/local_audio*.mjs`, whisper-cli ; `test/e2e/assistant-voice.spec.mjs` | prouvé |
 | Voix temps réel (WebRTC) | Voice avec VAD Silero (local, pas WebRTC) ; `test/e2e/assistant-voice.spec.mjs` | prouvé (autre technique) |
 | `voice.say` (lecture de réponse) | « Read answer » via `/usr/bin/say` (`src/local_audio.mjs:68`) | prouvé |
-| Dessin à la voix avec vue en direct, « Suivre Codex » | Suivi de vue / partage de vue (`docs/system/connected-devices.md:112`) ; pas de vue guidée par l'agent | partiel |
+| Dessin à la voix avec vue en direct, « Suivre Codex » | Suivi de vue / partage de vue (`docs/system/connected-devices.md`) et bouton **Follow agent** (L9b-1) : la vue suit les outils de l'agent ; choisir « Follow <appareil> » l'arrête ; Ask about selection, Dictate about notebook et Voice ne l'arrêtent pas (Dictate text, oui) ; permis aussi en vue partagée (c03b208). Preuves : `test/e2e/notebooks.spec.mjs:90`, `test/e2e/assistant.spec.mjs:190`. Limite : le clignotement sur encre n'est vu qu'à la BOOX. | prouvé (navigateur) ; partiel (BOOX réelle) |
 | Micro Android du propriétaire, dictée récupérée | `NativeAudio.java`, « Recover dictation », `test/e2e/recovery-recordings.spec.mjs` | partiel (BOOX réelle) |
-| « Afficher cette discussion sur le Mac » (`agent.open`) | « Open on device » (sens inverse) ; tâche d'origine reste dans Codex | partiel |
-| Tâches du Mac : lire les sessions Codex (`agent.sessions`) | Rien | **absent** |
-| Catalogue des projets Codex Desktop (`integrations.json codexProjects`) | Registre Hub manuel (`project register`) | **absent** |
-| Dictée via tâche Codex éphémère | Remplacée par Whisper local (décision v2 : aucun appel de modèle par CR) | non repris (voulu) |
+| « Afficher cette discussion sur le Mac » (`agent.open`) | **Show on Mac** (L5, bfe4211) ouvre Codex Desktop sur une tâche (`docs/features/conversations.md` § Show on Mac) ; « Open on device » pour le sens inverse. « Continuer cette tâche » n'existe pas. Preuve : tests avec `openUrl` factice. Reste : essai de bout en bout depuis la BOOX. | prouvé (tests) ; « Continuer » : écart accepté (Mathis, 2026-10-23) |
+| Tâches du Mac : lire les sessions Codex (`agent.sessions`) | Liste et lecture seules (`thread/list`, `thread/read`, `thread/turns/list`) : `test/codex_provider.test.mjs`, `test/assistant_http.test.mjs`, `test/e2e/assistant.spec.mjs:159`. Limite : l'essai réel sur le 1er projet du catalogue a rendu 0 tâche ; aucun `thread/read` réel. | prouvé (faux fournisseur) ; essai réel à faire |
+| Catalogue des projets Codex Desktop (`integrations.json codexProjects`) | Aperçu du catalogue puis import choisi dans le registre (`src/codex_catalog.mjs`) : `test/codex_catalog.test.mjs`, `test/e2e/web-app.spec.mjs:239` ; aperçu réel : 14 projets (4 `ready`, 8 `needs-init`, 1 `missing`, 1 `refused`). Correctif r2 (f78968d) : un projet inscrit puis déplacé sort `registered`. Limites : un projet déplacé reste indisponible jusqu'au geste de confirmation ; le lien de confirmation n'a pas d'e2e ; aucun vrai import d'un projet `ready` (geste de Mathis). | prouvé (tests, aperçu réel) ; import réel à faire |
+| Dictée via tâche Codex éphémère | Remplacée par Whisper local (décision v2 : aucun appel de modèle par CR) | écart accepté (Mathis, 2026-10-23) |
 
 ### Mac, présentation, réseau, mise à jour
 
@@ -80,14 +91,15 @@ code. « BOOX réelle » : la porte V18 (essai physique) n'est pas encore passé
 |---|---|---|
 | « Présenter sur le Mac » (`lisiere present`, ≤ 4 i/s) | Presentation dans l'éditeur commun + partage de vue (`src/device_views.mjs`, `test/device_display.test.mjs`, `test/e2e/notebooks.spec.mjs:72`) | prouvé |
 | `lisiere open`, `doctor`, `capabilities` | `context-room open`, `doctor` (CLI `bin/context-room.mjs`) | prouvé |
-| `lisiere network` (état Tailscale), `lisiere desktop UUID` | Rien | **absent** |
-| Redécouverte Bonjour `_lisiere._tcp` | Adresse LAN fixe + `--device-browser-origin https://macbook-pro.local:4320` ; pas de mDNS | **absent** |
-| Service APK `fr.lisiere.updates` (8765) + mise à jour dans l'app | PWA mise à jour par service worker (`docs/system/connected-devices.md`) ; APK construit par `scripts/build-android*.sh`, sans distribution ni installation dans l'app | partiel |
-| Clé de signature `development.keystore` | Reprise par `scripts/build-android-recovery.sh` (identité `fr.lisiere.android`) | prouvé (M07, `eadc14c`) |
-| `lisiere backup` / `restore` (tar.gz) | Rien de dédié pour les carnets/conversations ; Git du projet | **absent** |
-| Stockage `Titre--id.lisiere` (tableau.json, apercu.png, dessin.pdf, README) | `.crnb` dans le projet ; pas d'aperçu PNG ni de PDF exporté | partiel |
+| `lisiere network` (état Tailscale) | `doctor` : diagnostic réseau en lecture seule (LAN, Tailscale `status --json`, bornes 5 s / 1 s ; L6, f74c994) ; `test/local_network_diagnostics.test.mjs` | prouvé |
+| `lisiere desktop UUID` | **Show on Mac** (voir « Afficher cette discussion sur le Mac ») ; l'UUID n'est plus saisi | écart accepté (Mathis, 2026-10-23) |
+| Redécouverte Bonjour `_lisiere._tcp` | Le Hub annonce `_contextroom` avec `dns-sd` ; l'APK retrouve le Mac par la même empreinte TLS (`DeviceConnection.java`, `MacDiscovery.java`) ; `test/device_discovery.test.mjs` (10/10 avec le diagnostic), essai réel `dns-sd` sur un Hub de test. Pas de `--device-host auto`. Corrigés ensuite : état de l'annonce et orphelin `dns-sd` (f88ab76), dédoublonnage des sondes (L9b-2, sans test). Limites : `MacDiscoveryTest` jamais lancé (pas d'émulateur) ; 32 fausses annonces locales peuvent épuiser le budget de recherche (accepté, noté dans `connected-devices.md`) ; la redécouverte après un changement d'adresse se vérifie à la séance BOOX. | partiel |
+| Service APK `fr.lisiere.updates` (8765) + mise à jour dans l'app | PWA mise à jour par service worker (`docs/system/connected-devices.md`). Chaîne APK fusionnée (L2L7, 82d62fc) : build sur `ci` sans clé, signature sur le Mac (`scripts/sign-android-apk.sh`, v2 + v3), contrôle `check-android-artifact.py`, clé stable `tablet.keystore`. Pas d'installateur dans l'app ; un serveur temporaire (port 8796, 3 h) sert l'APK à la séance BOOX. | écart accepté (Mathis, 2026-10-23) |
+| Clé de signature `development.keystore` | Reprise par `scripts/build-android-recovery.sh` (identité `fr.lisiere.android`) ; copie séparée par `scripts/lisiere-backup.py` (sha256 égal). L'app Context Room (`app.contextroom.tablet`) a sa propre clé `tablet.keystore`. | prouvé (M07, `eadc14c`) |
+| `lisiere backup` / `restore` (tar.gz) | `context-room backup` / `restore` (L8, 219c815 + 91d3995) : registre, reçus de revue, conversations, enregistrements, carnets ; aperçu puis révision exacte, copie « before-restore », jamais de suppression. `test/backup.test.mjs` 26/26 après r2. Limites : l'annulation ne retire pas les fichiers créés ; Hub à arrêter pour restaurer ; un enregistrement de plus de 256 Mo fait échouer la section ; aucune restauration réelle essayée. Les données Lisière ont leur propre script (étape 1 du § (c)). | partiel |
+| Stockage `Titre--id.lisiere` (tableau.json, apercu.png, dessin.pdf, README) | `.crnb` dans le projet. Export PNG / PDF **à la demande** depuis l'éditeur (bouton Export, L9b-1) : `test/e2e/notebooks.spec.mjs:715` ; titre PDF coupé par point de code. Pas d'aperçu PNG ni de PDF automatique. Reste : ouvrir un PDF et un PNG exportés sur la BOOX. | écart accepté (Mathis, 2026-10-23) ; export à la demande prouvé |
 | `lisiere projects add/list`, `rpc …` | `project register`, API Hub | prouvé |
-| Désinstallation qui garde les données (`uninstall-companion.sh`) | `--cutover-lisiere` garde tout dans une rétention privée | partiel (jamais appliqué au vrai service) |
+| Désinstallation qui garde les données (`uninstall-companion.sh`) | `--cutover-lisiere` garde tout dans une rétention privée. Essai synthétique macOS (L1, ab443b4 + 284df00) : vrai `launchctl`, `lsof`, `renamex_np` sur un agent `test.contextroom.synthetic-*` ; `test/lisiere_cutover.test.mjs`, `test/lisiere_backup.test.mjs`, test opt-in `test/lisiere_cutover_launchd.test.mjs` (`CONTEXT_ROOM_LAUNCHD_ESSAY=1`) ; 81 tests OK, 2 sautés (launchd). | prouvé (synthétique, macOS) ; jamais appliqué au vrai service |
 
 ## (b) Inventaire des données (lecture seule, 2026-10-15)
 
@@ -125,56 +137,134 @@ copie de travail), 3 historiques dans `~/.context-room/assistant/legacy-history`
 ## (c) Plan de bascule
 
 Ordre strict. Chaque étape a un contrôle. On ne passe pas à la suivante sans lui.
+Corrigé le 2026-10-23 d'après L1 (essai synthétique) et la revue L2L7. Sauf
+mention, Claude lance les commandes ; les gestes sur la BOOX sont ceux du guide.
+`B=~/Backups/lisiere-2026-10` est le dossier durable de la bascule ; `U=$(id -u)`.
 
 ```
  1 sauvegarde ─▶ 2 export BOOX ─▶ 3 export Mac ─▶ 4 import + comptes
-      ─▶ 5 aperçu cutover ─▶ 6 --apply ─▶ 7 contrôles après ─▶ 8 arrêt updates
-      ─▶ 9 usage 1 semaine ─▶ 10 désinstallation
+      ─▶ 5 aperçu cutover ─▶ 6 --apply ─▶ 7 contrôles (+ 7 bis) ─▶ 8 arrêt updates
+      ─▶ 9 usage 1 semaine ─▶ 10 retrait des exécutables (+ guide F)
 ```
 
-1. **Sauvegarde** (hors des dossiers d'origine, ex. `~/Backups/lisiere-2026-10-xx/`) :
-   `tar czf` de `~/.local/share/lisiere` et de `~/Documents/Lisière`, plus une
-   copie séparée de `signing/development.keystore`. Contrôle : `tar tzf | wc -l`
-   et `shasum` du keystore.
-2. **Export tablette** : installer l'APK de récupération (`scripts/build-android-recovery.sh`,
-   même identité et même clé, mise à jour sans perte), exporter le ZIP natif
-   (cache, outbox, PCM), puis `migrate --export-lisiere <zip>` et
-   `--reconcile-lisiere`. Contrôle : comptes cache/outbox/PCM notés. **Besoin
-   d'un oui de Mathis** (installation sur sa BOOX).
-3. **Export Mac** : `migrate --export-lisiere ~/.local/share/lisiere/workspace --output <snap>`
-   (aperçu), puis `--apply --revision <R>`. Contrôle : mêmes comptes que (b).
+1. **Sauvegarde** : `python3 -B scripts/lisiere-backup.py --output <dossier neuf>`.
+   Le script refuse un dossier qui existe déjà et n'écrit que là (mode 0700).
+   Il fait : comptes en lecture seule, copie SQLite cohérente (le tar d'une base
+   WAL vivante ne l'est pas), `.tgz` de `~/.local/share/lisiere` (sans `models/`,
+   547 Mo : nom, taille et sha256 notés) et de `~/Documents/Lisière`, les deux
+   plists, le lien `~/.local/bin/lisiere` et sa cible, `SHA256SUMS`, copie
+   séparée de `development.keystore`. Il extrait l'archive dans un dossier
+   temporaire et compare les sommes. Contrôle : **seul `manifest.json`, écrit en
+   dernier, prouve une sauvegarde complète** ; un échec laisse un dossier partiel
+   sans lui : recommencer dans un nouveau dossier. Les plists et le lien servent
+   au retour arrière après l'étape 10. Mettre une 2ᵉ copie hors du disque du Mac.
+2. **Export tablette** : suivre le guide A-F de
+   [`docs/system/lisiere-migration.md`](system/lisiere-migration.md)
+   (§ « BOOX session guide »). Le guide donne la chaîne de livraison
+   (`scripts/build-android-recovery.sh` sur `ci`, signature sur le Mac, serveur
+   temporaire 8796), l'export du ZIP natif (B-D), puis, après le contrôle de
+   deux copies, `migrate --export-lisiere <zip> --output <snap>` (aperçu, puis
+   `--apply --revision`) et `--reconcile-lisiere` **en aperçu seulement**
+   (il exige `--mac-snapshot`, `--legacy-board`, `--legacy-actor`). Contrôle :
+   comptes cache / outbox / PCM notés ; le nombre d'enregistrements égale celui
+   des `recordings/*.pcm` du ZIP. **Besoin d'un oui de Mathis** (installation sur
+   sa BOOX). Le fichier d'appairage (L9b-2) doit exister avant l'étape E.
+3. **Export Mac** : `migrate --export-lisiere ~/.local/share/lisiere/workspace --output $B/snapshots/mac`
+   (aperçu), puis `--apply --revision <R>`. Le snapshot est lié au journal de
+   bascule : jamais dans `/private/tmp` (vidé au redémarrage). Contrôle : mêmes
+   comptes que (b).
 4. **Import / contrôle** : `--inspect-lisiere <snap> --kind all` ; comparer aux
    imports du 2026-09-16 (révisions 6, 7, 2, 26). Importer seulement ce qui est
    nouveau (`--import-lisiere`, `--legacy-conversation`, `--legacy-recording`).
-5. **Aperçu de bascule** : depuis le projet cible,
+5. **Aperçu de bascule** : le projet de `--root` doit être enregistré dans le
+   Hub réel (`project list`). Refaire l'export juste avant si
+   `workspace.sqlite` a changé. Puis :
    `migrate --root <projet> --cutover-lisiere ~/.local/share/lisiere/workspace --mac-snapshot <snap> --legacy-plist ~/Library/LaunchAgents/fr.lisiere.companion.plist`.
    Il refuse si la source a changé depuis l'export.
 6. **Application** : même commande avec `--apply --revision <révision de l'aperçu>`.
-   Effet : pause des écritures CR, `launchctl disable` + `bootout` du compagnon,
-   contrôle `lsof` (aucun fichier ouvert), déplacement atomique du dossier
-   `workspace` vers une rétention privée voisine, barrière à la place de
-   `workspace.sqlite`.
+   Effet : pause des écritures CR, `launchctl disable` + `bootout` du compagnon
+   (attente jusqu'à 10 s que le processus sorte), contrôle `lsof` (aucun
+   fichier ouvert), déplacement atomique du dossier `workspace` vers la
+   rétention `~/.local/share/lisiere/workspace.context-room-retired-<16 hex de R>`,
+   barrière à la place de `workspace.sqlite`. Si le service écrit pendant
+   l'arrêt, l'apply refuse et garde la source : refaire l'export et l'aperçu.
 7. **Contrôles après** : `launchctl list | grep fr.lisiere.companion` vide ;
-   `launchctl print-disabled gui/$(id -u)` le montre désactivé ; rétention
-   présente, taille = avant ; Hub : 4 carnets ouverts, conversations visibles,
-   changement de projet ≤ 300 ms, tout retrouvé après redémarrage du Hub.
-8. **Arrêt des mises à jour** : `launchctl bootout gui/$(id -u)/fr.lisiere.updates`
-   (le cutover ne gère que le compagnon). Contrôle : port 8765 fermé.
-9. **Usage réel** : Mathis confirme l'usage quotidien (porte du contrat).
-10. **Désinstallation** : retirer les deux plists de `~/Library/LaunchAgents`,
-    le venv et `update-service.py` ; garder sauvegarde, rétention et keystore.
-    Désinstaller `fr.lisiere.android` seulement après l'étape 2 réussie.
+   `launchctl print-disabled gui/$U | grep fr.lisiere.companion` affiche
+   `=> disabled` ; rétention présente, taille = avant ; Hub : 4 carnets ouverts,
+   conversations visibles, changement de projet ≤ 300 ms, tout retrouvé après
+   redémarrage du Hub.
+   **7 bis** : `python3 -B scripts/lisiere-backup.py --output <autre dossier neuf> --source-retained <rétention>`
+   sauvegarde la rétention, service arrêté, et la compare en entier.
+8. **Arrêt des mises à jour** (le cutover ne gère que le compagnon) :
+   `launchctl disable gui/$U/fr.lisiere.updates` puis
+   `launchctl bootout gui/$U/fr.lisiere.updates`. Le `bootout` seul ne dure
+   pas : `RunAtLoad` relance le service à la prochaine connexion. Contrôles :
+   `launchctl print-disabled gui/$U | grep fr.lisiere.updates` affiche
+   `=> disabled` ; `lsof -nP -iTCP:8765 -sTCP:LISTEN` est vide.
+9. **Usage réel** : Mathis confirme l'usage quotidien (porte du contrat). Avant,
+   étape E du guide : installer Context Room sur la BOOX.
+10. **Retrait des exécutables** : retirer ce qui peut relancer Lisière, jamais les
+    données. Déplacer (`mv`, pas `rm`) vers `$B/retired-executables/` :
+    `~/Library/LaunchAgents/fr.lisiere.companion.plist`, `fr.lisiere.updates.plist`,
+    `~/.local/bin/lisiere` (lien), `~/.local/share/lisiere/update-service.py`,
+    `~/Documents/projects/lisiere/.venv`. Garder en place : `signing/`, `backups/`,
+    rétention, barrière, `updates/`, `models/`, `~/Documents/Lisière`. Ne pas
+    faire `launchctl enable` sur ces libellés. Critère final :
+    `launchctl list | grep -c 'fr\.lisiere\.'` = 0 ; ports 8765, 8767, 8768
+    fermés ; `launchctl print gui/$U/fr.lisiere.companion` et `.../fr.lisiere.updates`
+    répondent « Could not find ». **Désinstaller `fr.lisiere.android` de la BOOX
+    (étape F du guide) seulement après l'étape 9**, quand deux copies du ZIP
+    sont vérifiées et l'import contrôlé. Pas avant.
+
+**Migration réelle des 4 carnets.** Les 4 mémos sont dans le projet
+« Recuperation Lisiere ». Ils passent dans l'espace Notebooks avec
+`migrate --notebooks-to-space`, **sans `--legacy-board`**. Cette action écrit
+dans `~/.context-room` : **Mathis a dit oui le 2026-10-23** pour ces quatre
+gestes, à la séance BOOX, pas avant le déploiement. Ordre : (1) noter le plist
+(`launchctl print`), puis arrêter le Hub : `launchctl bootout gui/$U/app.contextroom.local`
+(un `kill` le relancerait, `KeepAlive`) ; (2) `context-room backup --output <dossier neuf>`
+(`--plan` d'abord pour compter) ; (3) déployer la nouvelle version
+(`deploy-main.sh`) ; (4) `migrate --root <projet> --notebooks-to-space`
+(aperçu), puis `--apply --revision <R>`. Ensuite : relancer le Hub (`launchctl bootstrap`) et vérifier les 4 carnets. Après un crash : attendre 30 s (verrou),
+puis relancer ; si la réponse dit « Preview again », refaire l'aperçu.
 
 **Retour arrière.**
 - Avant l'étape 6 : rien à défaire.
 - Après l'étape 6 : `--rollback-cutover` ne fait **que** mettre CR en pause ; il
-  ne relance pas Lisière. Retour fonctionnel manuel : remettre le dossier de
-  rétention à sa place (ou restaurer le tar), `launchctl enable` puis
-  `launchctl bootstrap gui/$(id -u) <plist>`. Ensuite `--resume-cutover` pour
-  rouvrir les écritures CR.
-- Risque connu : `launchctl`, `lsof` et `renamex_np` n'ont jamais tourné sur
-  le vrai service (RELAIS-CODEX-LOCAL.md §5 demande un essai sur un compte et
-  un service synthétiques d'abord).
+  ne relance pas Lisière :
+  `migrate --root <projet> --rollback-cutover`, puis `--apply --revision <R>`.
+  Retour fonctionnel à Lisière, à la main :
+  1. `python3 -B src/exclusive_rename.py ~/.local/share/lisiere/workspace ~/.local/share/lisiere/workspace.context-room-fence-<16 hex>`
+     (met la barrière de côté) ;
+  2. `python3 -B src/exclusive_rename.py ~/.local/share/lisiere/workspace.context-room-retired-<16 hex> ~/.local/share/lisiere/workspace`
+     (remet les données) ;
+  3. `launchctl enable gui/$U/fr.lisiere.companion` puis
+     `launchctl bootstrap gui/$U ~/Library/LaunchAgents/fr.lisiere.companion.plist`.
+     Après l'étape 10, remettre d'abord le plist, le lien et le venv depuis
+     `$B/retired-executables/`.
+- **Revenir à Context Room après ce retour.** `--resume-cutover` refuse si
+  Lisière tourne encore. Arrêter Lisière à la main (le CLI n'a pas de `stop`) :
+
+  ```
+  U=$(id -u)
+  launchctl disable gui/$U/fr.lisiere.companion
+  launchctl print gui/$U/fr.lisiere.companion    # si le service est chargé :
+  launchctl bootout gui/$U/fr.lisiere.companion
+  launchctl print-disabled gui/$U | grep fr.lisiere.companion   # attendu : => disabled
+  ps -axo pid=,command= | grep '[l]isiere.server'              # attendu : vide
+  python3 -B src/mac_legacy_quiescence.py verify --source ~/.local/share/lisiere/workspace --plist ~/Library/LaunchAgents/fr.lisiere.companion.plist
+  ```
+
+  Puis remettre les dossiers comme à l'étape 6 : `workspace` → rétention, barrière
+  → `workspace` (les renommages 2 et 1 à l'envers, avec `exclusive_rename.py`).
+  Si la rétention contient du travail plus récent que la dernière révision connue,
+  l'exporter (`--export-lisiere <rétention> --output <nouveau snapshot>`), importer
+  ce travail, puis `migrate --root <projet> --resume-cutover --mac-snapshot <nouveau snapshot>`
+  et `--apply --revision <R>`. Sans travail nouveau, `--mac-snapshot` n'est pas utile.
+- Risque restant : sur le vrai service, `launchctl`, `lsof` et `renamex_np` n'ont
+  jamais tourné (l'essai L1 est synthétique : agent `test.contextroom.synthetic-*`).
+  Sept réglages `test.contextroom.synthetic-* => enabled` restent dans
+  `launchctl print-disabled gui/$U` : sans effet, seul root les retire.
 
 ### Essai à blanc fait (2026-10-15)
 
@@ -194,55 +284,4 @@ Avec `CONTEXT_ROOM_HUB_HOME`, `CONTEXT_ROOM_SHARED_HOME` et
 - Note : la date du dossier `workspace/` avance seule (le service vivant y
   touche) ; ce n'est pas l'essai.
 
-## (d) Manques à coder
-
-Estimations pour un agent Sonnet, tests compris. Ordre conseillé.
-
-| Lot | Contenu | Estim. | Bloque la bascule ? |
-|---|---|---|---|
-| L1 Essai synthétique de l'adaptateur | `mac_legacy_quiescence.py` + `exclusive_rename.py` sur un faux LaunchAgent `fr.lisiere.companion` dans un HOME de test (ou VM/compte de test) | 0,5 j | **oui** |
-| L2 Export tablette | Essai réel APK recovery → ZIP → reconcile ; doc pas à pas | 0,5 j + BOOX | **oui** |
-| L3 Espace « Carnets » libre (**décidé par Mathis le 2026-10-16**) | Voir § Décision ci-dessous | 1–1,5 j | **oui** (usage attendu) |
-| L4 Lecteur PDF / image | Rendu PDF paginé (pdf.js local), zoom, « image entière » mémorisée, annotation en carnet | 2 j | non |
-| L5 Projets et tâches Codex | Import du catalogue Codex Desktop dans le registre (aperçu + oui) ; liste en lecture seule des sessions Codex du Mac | 1,5 j | non |
-| L6 Réseau tablette | mDNS/Bonjour pour retrouver le Mac ; diagnostic réseau (LAN/Tailscale) dans `doctor` | 1 j | non |
-| L7 Mise à jour APK | Distribution d'APK signée par le Hub + vérification + installation depuis l'app | 1,5 j | non (PWA suffit) |
-| L8 Sauvegarde | `context-room backup/restore` des carnets, conversations et reçus | 1 j | non |
-| L9 Confort lecture/édition | Sommaire paginé, Aa, chercher/remplacer, Fast, « Suivre l'agent », QR d'appairage, export PNG/PDF d'un carnet | 2 j | non |
-
-Total : ~11 j. Minimum pour couper Lisière : **L1 + L2 + L3** (~2,5 j +
-BOOX). Pour que Mathis ne perde aucun usage : L4 et L5 en plus.
-
-### Décision 2026-10-16 : espace « Carnets » libre (L3)
-
-Statut : **fait** (L3, 2026-10-23), sauf l'essai sur la BOOX et la migration
-réelle des 4 mémos (à la bascule). Écarts avec la proposition : l'espace est
-une entrée marquée du registre ; ses carnets sont sous `Carnets/` ; libellés
-en anglais (Notebooks, New notebook, Move to project…).
-
-Mathis veut un espace « Carnets » libre, hors de tout projet, comme les mémos
-libres de Lisière. Proposition de conception (validée au début de L3) :
-
-- Un dossier dédié, par défaut `~/Documents/Context Room/Carnets`, enregistré
-  une fois dans le Hub comme espace spécial (pas un projet de code : pas de
-  Git, pas de contexte d'agent, pas de Shared).
-- Le Hub et la tablette montrent « Carnets » en tête de la navigation, avant
-  les projets. Bouton **Nouveau carnet** toujours visible, sans choisir de
-  projet.
-- Action **Déplacer vers un projet** (copie vérifiée, puis retrait de
-  l'original), et l'inverse.
-- Le format reste `.crnb` : l'éditeur, le cache hors ligne et la dictée
-  marchent sans changement.
-- Migration : les 4 mémos du projet « Recuperation Lisiere » passent dans
-  « Carnets » (aperçu puis oui). Les futurs imports `--import-lisiere` de
-  mémos sans projet visent « Carnets » par défaut.
-- Tests : unitaire (création, déplacement aller-retour, refus d'écraser) et
-  e2e (nouveau carnet sans projet, retrouvé après redémarrage du Hub).
-
-```
- Hub ─┬─ Carnets (libre)  ── lalala, test, rrgh, Mémo du 11 sept., + nouveaux
-      ├─ Projet A         ── docs, carnets du projet
-      └─ Projet B
-            ▲   Déplacer vers un projet / vers Carnets   │
-            └────────────────────────────────────────────┘
-```
+@@D@@
