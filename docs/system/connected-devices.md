@@ -427,3 +427,5 @@ microphone quality or real speech recognition. `OwnerRecordingTest.java` require
 a newly built instrumentation APK; an older successful preview build does not
 validate that test or the new Mac-served interface. No execution result is claimed
 until the instrumentation and host checks complete.
+
+Accepted risk: on a shared local network, someone can send many fake announcements with the public fingerprint. The tablet may then spend its search budget (32 services, 45 seconds) and fail to find the Mac. No token or key leaks, because the tablet still checks the pinned key before it sends anything; start the search again on a quiet network.
