@@ -16,7 +16,7 @@ const button = (label, callback, className = '') => { const node = notebookEleme
 async function metadata(storage, key, update) { for (let n = 0; n < 8; n++) { const state = await storage.read(key); try { await storage.commit(key, state.version, { metadata: update(state.metadata) }); return; } catch (error) { if (error.code !== 'notebook_cache_conflict') throw error; } } throw new Error('The local notebook cache is busy.'); }
 
 /** api and scopeKey must be captured from the exact project/location BEFORE navigation can change. */
-export async function openNotebookEditor({ api, path, resourceId, title, scopeKey, fixedSnapshot = null, reviewKey = '', onCorrection, onSubmitted = () => {}, onClosed = () => {}, onInteraction = () => {}, onConversation, initialImage, initialImageBackground = false, createOnly = false, beforePresent, offlineCapabilities = null, cacheServerId = '', browserDeviceId = document.querySelector('meta[name="context-room-browser-device"]')?.content || '' } = {}) {
+export async function openNotebookEditor({ api, path, resourceId, title, scopeKey, fixedSnapshot = null, reviewKey = '', onCorrection, onSubmitted = () => {}, onClosed = () => {}, onInteraction = () => {}, onConversation, initialImage, initialImageBackground = false, createOnly = false, newId, beforePresent, offlineCapabilities = null, cacheServerId = '', browserDeviceId = document.querySelector('meta[name="context-room-browser-device"]')?.content || '' } = {}) {
   notebookStyles(); if (path) notebookPath(path);
   const storage = new IndexedNotebookStorage(), browserId = await notebookBrowserIdentity(storage);
   const request = (url, options = {}) => api(url, { ...options, headers: { ...options.headers, 'x-context-room-notebook-client': browserId } });
@@ -46,7 +46,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     const document = normalizeNotebookDocument(fixedSnapshot);
     snapshot = { protocolVersion: NOTEBOOK_VERSION, resourceId: document.id, document, locator: { path, revision: reviewKey }, sequence: 0, revision: document.revision, tombstones: {}, accepted: false };
   } else if (!offlineError) {
-    try { snapshot = resourceId ? await transport.scene(resourceId) : await transport.open({ protocolVersion: NOTEBOOK_VERSION, id: cached?.snapshot.resourceId || crypto.randomUUID(), path, title: title || path.split('/').pop().replace(/\.crnb$/i, ''), ...(createOnly ? { createOnly: true } : {}) }); }
+    try { snapshot = resourceId ? await transport.scene(resourceId) : await transport.open({ protocolVersion: NOTEBOOK_VERSION, id: cached?.snapshot.resourceId || newId || crypto.randomUUID(), path, title: title || path.split('/').pop().replace(/\.crnb$/i, ''), ...(createOnly ? { createOnly: true } : {}) }); }
     catch (error) { offlineError = error; }
   }
   if (!snapshot && cached) snapshot = cached.snapshot;
@@ -416,7 +416,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
 }
 
 /** A folder-scoped create/open chooser, not a separate notes library or project catalogue. */
-export async function chooseNotebook({ api, directory = '', scopeKey, ...options }) {
+export async function chooseNotebook({ api, directory = '', scopeKey, onMove, ...options }) {
   notebookStyles(); const dialog = notebookElement('dialog', '', 'notebook-chooser'); dialog.setAttribute('aria-label', 'Notebook in this folder');
   const heading = notebookElement('h2', 'Notebook in this folder'), explanation = notebookElement('p', 'Use an ordinary .crnb file. Working ink stays separate from accepted documentation.');
   const form = document.createElement('form'), label = notebookElement('label', 'Notebook path'), input = document.createElement('input'); input.value = (directory ? directory.replace(/\/$/, '') + '/' : '') + 'Sketch.crnb'; input.required = true; input.setAttribute('aria-label', 'Notebook path'); label.append(input);
@@ -427,6 +427,8 @@ export async function chooseNotebook({ api, directory = '', scopeKey, ...options
   form.addEventListener('submit', event => { event.preventDefault(); open.disabled = true; openNotebookEditor({ api, path: input.value.trim(), scopeKey, ...options }).then(() => dialog.close()).catch(error => { status.textContent = error.message; open.disabled = false; }); });
   try {
     const data = await api('/api/notebooks');
-    for (const item of data.notebooks.filter(item => item.path.split('/').slice(0, -1).join('/') === directory.replace(/\/$/, ''))) { const row = notebookElement('li'); row.append(button(item.path + ' · working scene', () => { input.value = item.path; form.requestSubmit(); })); drafts.append(row); }
+    for (const item of data.notebooks.filter(item => item.path.split('/').slice(0, -1).join('/') === directory.replace(/\/$/, ''))) { const row = notebookElement('li'); row.append(button(item.path + ' · working scene', () => { input.value = item.path; form.requestSubmit(); }));
+      if (onMove) row.append(button('Move to Notebooks', () => onMove(item).then(moved => { if (moved) dialog.close(); }).catch(error => { status.textContent = error.message; })));
+      drafts.append(row); }
   } catch { status.textContent = 'The Mac is unavailable. Previously loaded notebook caches can still be opened by their exact path.'; }
 }

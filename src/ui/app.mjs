@@ -393,6 +393,14 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .context-hub-home-project-destination { min-height: 32px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--text); cursor: pointer; font-size: 11px; font-weight: 650; }
     .context-hub-home-project-destination:hover { background: var(--surface-card-hover); }
     .context-hub-home-project-destination:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 1px; }
+    .notebook-space-new { min-height: 48px; padding: 8px 18px; border: 1px solid var(--accent); border-radius: 10px; background: var(--accent); color: var(--accent-contrast, #fff); cursor: pointer; font-size: 14px; font-weight: 750; }
+    .notebook-space-list { list-style: none; margin: 0; padding: 6px; display: grid; gap: 2px; max-height: 320px; overflow-y: auto; }
+    .notebook-space-item { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 10px; }
+    .notebook-space-item:hover { background: var(--surface-card-hover); }
+    .notebook-space-item button { min-height: 44px; padding: 4px 12px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--text); cursor: pointer; font-size: 12px; font-weight: 650; }
+    .notebook-space-item .notebook-space-open { min-width: 0; display: grid; justify-items: start; gap: 2px; border-color: transparent; text-align: left; }
+    .notebook-space-item .notebook-space-open span { color: var(--muted); font-size: 10px; font-weight: 500; }
+    .notebook-space-item .notebook-space-resume { border-color: var(--accent); font-weight: 780; }
     .documents-map { display: grid; gap: 2px; padding: 6px; }
     .docs-map-group > summary { min-height: 40px; display: flex; align-items: center; gap: 8px; padding: 4px 10px; list-style: none; color: var(--muted); cursor: pointer; font-size: 12px; font-weight: 700; }
     .docs-map-group > summary::-webkit-details-marker { display: none; }
@@ -3626,6 +3634,16 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       <section class="editor-shell">
         <div id="home" class="docqa-home workspace-page" hidden>
           <div class="docqa-grid">
+            <section id="notebookSpacePanel" class="docqa-panel notebook-space-panel" aria-labelledby="notebookSpaceHeading" hidden>
+              <header>
+                <div>
+                  <h2 id="notebookSpaceHeading">Notebooks</h2>
+                  <div id="notebookSpaceSummary" class="muted"></div>
+                </div>
+                <button id="notebookSpaceNew" class="notebook-space-new" type="button" data-notebook-space-new>New notebook</button>
+              </header>
+              <ul id="notebookSpaceList" class="notebook-space-list" aria-label="Notebooks"></ul>
+            </section>
             <section id="contextHubProjectsPanel" class="docqa-panel context-hub-projects-panel" aria-labelledby="contextHubProjectsHeading" hidden>
               <header>
                 <div>
@@ -4550,14 +4568,21 @@ async function loadContextRoomAssistantUi() {
   return contextRoomAssistantUi ||= await import("/assets/ui/assistant.mjs");
 }
 
-async function openContextRoomNotebook(filePath, { directory = "", projectId = "", resourceId, beforePresent, title, initialImage, initialImageBackground, createOnly } = {}) {
+async function openContextRoomNotebook(filePath, { directory = "", projectId = "", resourceId, beforePresent, title, initialImage, initialImageBackground, createOnly, newId, onClosed } = {}) {
   const captured = captureNotebookApi(projectId);
   const notebook = await import("/assets/ui/notebook-editor.mjs");
-  const options = { ...captured, resourceId, beforePresent, title, initialImage, initialImageBackground, createOnly,
+  // A project's chooser offers Move to Notebooks once the space exists.
+  const sourceId = projectId || (IS_GLOBAL_CONTEXT_ROOM ? state.activeProjectLocationId || "" : "");
+  const space = IS_GLOBAL_CONTEXT_ROOM && !IS_HOSTED_HUB ? contextHubNotebookSpace() : null;
+  const source = sourceId ? (state.contextHub?.projects || []).find((project) => project.id === sourceId) : null;
+  const onMove = space && source && source.id !== space.id
+    ? (item) => moveNotebookBetweenPlaces(item, { id: source.id, title: source.title || source.id }, [{ id: space.id, title: "Notebooks", space: true }])
+    : undefined;
+  const options = { ...captured, resourceId, beforePresent, title, initialImage, initialImageBackground, createOnly, newId, onMove,
     onConversation: async (source, display) => { const assistant = await loadContextRoomAssistantUi(); return assistant.openConversation({ ...captured, source, ...display }); },
-    onClosed: () => contextRoomAssistantUi?.dockConversation(),
+    onClosed: () => { contextRoomAssistantUi?.dockConversation(); onClosed?.(); },
     onSubmitted: async () => { setStatus("Notebook submitted for human review. No file accepted."); if (typeof refreshDocQa === "function") await refreshDocQa(); } };
-  if (filePath) return notebook.openNotebookEditor({ ...options, path: filePath });
+  if (filePath || resourceId) return notebook.openNotebookEditor({ ...options, path: filePath || undefined });
   return notebook.chooseNotebook({ ...options, directory });
 }
 
@@ -7202,7 +7227,9 @@ function renderContextHubHomeProjects() {
     list.innerHTML = '<div class="global-project-explorer-empty">Loading projects…</div>';
     return;
   }
-  const projects = contextHubPrioritizedProjects(state.contextHub.projects || []);
+  renderNotebookSpace();
+  // The Notebooks space has its own section above; it is not a project.
+  const projects = contextHubPrioritizedProjects((state.contextHub.projects || []).filter((project) => project.space !== "notebooks"));
   const { inspected, total } = contextHubLocalCoverage(projects);
   coverage.textContent = projects.length + " project" + (projects.length === 1 ? "" : "s")
     + (total ? " · " + inspected + "/" + total + " local inspected" : "");
@@ -7227,6 +7254,105 @@ function renderContextHubHomeProjects() {
       + '<span class="context-hub-home-project-destinations">' + destination("context", "Context") + destination("review", "To review") + destination("documents", "Documents") + '</span>'
       + '</li>';
   }).join("");
+}
+
+// Notebooks space: notebooks for an idea that belongs to no project yet. It is one
+// registered root marked space "notebooks", created by the first New notebook.
+let notebookSpaceItems = { spaceId: "", hub: null, items: null, error: "" };
+
+function contextHubNotebookSpace() {
+  return (state.contextHub?.projects || []).find((project) => project.space === "notebooks") || null;
+}
+
+async function loadNotebookSpaceItems(space) {
+  const hub = state.contextHub;
+  notebookSpaceItems = { spaceId: space.id, hub, items: notebookSpaceItems.spaceId === space.id ? notebookSpaceItems.items : null, error: "" };
+  try {
+    const data = await captureNotebookApi(space.id).api("/api/notebooks");
+    if (notebookSpaceItems.hub !== hub) return;
+    notebookSpaceItems.items = [...(data.notebooks || [])].sort((left, right) => String(right.changedAt || "").localeCompare(String(left.changedAt || "")));
+  } catch (error) {
+    if (notebookSpaceItems.hub === hub) notebookSpaceItems.error = error.message;
+  }
+  renderNotebookSpace();
+}
+
+function reloadNotebookSpace() {
+  notebookSpaceItems.hub = null;
+  renderNotebookSpace();
+}
+
+function renderNotebookSpace() {
+  const panel = el("notebookSpacePanel");
+  const list = el("notebookSpaceList");
+  const summary = el("notebookSpaceSummary");
+  if (!panel || !list || !summary) return;
+  panel.hidden = !IS_GLOBAL_CONTEXT_ROOM || IS_HOSTED_HUB || !state.contextHub;
+  if (panel.hidden) return;
+  const space = contextHubNotebookSpace();
+  if (space?.available !== false && space && (notebookSpaceItems.spaceId !== space.id || notebookSpaceItems.hub !== state.contextHub)) {
+    void loadNotebookSpaceItems(space);
+  }
+  const items = space && notebookSpaceItems.spaceId === space.id ? notebookSpaceItems.items : [];
+  if (space?.available === false) {
+    summary.textContent = "The Notebooks folder is unavailable.";
+    list.innerHTML = '<li class="global-project-explorer-empty">' + escapeHtml(contextHubProjectPickerLocation(space)) + '</li>';
+    return;
+  }
+  if (!items) {
+    summary.textContent = "Loading…";
+    return;
+  }
+  summary.textContent = notebookSpaceItems.error || (items.length ? items.length + " notebook" + (items.length === 1 ? "" : "s") : "");
+  if (!items.length) {
+    list.innerHTML = '<li class="global-project-explorer-empty">A notebook for an idea that arrives. A project to go further.</li>';
+    return;
+  }
+  list.innerHTML = items.map((item, index) => {
+    const id = escapeHtml(item.id);
+    const title = escapeHtml(item.title || String(item.path || "").replace(/^Carnets\//, ""));
+    const changed = item.changedAt ? new Date(item.changedAt).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
+    return '<li class="notebook-space-item" data-notebook-id="' + id + '">'
+      + '<button class="notebook-space-open" type="button" data-notebook-space-open="' + id + '"><strong>' + title + '</strong>' + (changed ? '<span>Edited ' + escapeHtml(changed) + '</span>' : "") + '</button>'
+      + (index === 0 ? '<button class="notebook-space-resume" type="button" data-notebook-space-open="' + id + '" aria-label="Resume · ' + title + '">Resume</button>' : '<span></span>')
+      + '<button type="button" data-notebook-space-move="' + id + '" aria-label="Move to project · ' + title + '">Move to project…</button>'
+      + '</li>';
+  }).join("");
+}
+
+async function ensureNotebookSpace() {
+  const current = contextHubNotebookSpace();
+  if (current) return current;
+  const result = await api("/api/context-hub/notebook-space", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  if (result.catalog) applyContextHubMutationCatalog(result.catalog);
+  return result.project;
+}
+
+async function createSpaceNotebook() {
+  const space = await ensureNotebookSpace();
+  const { newSpaceNotebook } = await import("/assets/ui/notebook-space.mjs");
+  const { id, path: notebookPath, title } = newSpaceNotebook();
+  await openContextRoomNotebook(notebookPath, { projectId: space.id, title, createOnly: true, newId: id, onClosed: reloadNotebookSpace });
+  reloadNotebookSpace();
+}
+
+const contextHubNotebookMove = (body) => api("/api/context-hub/notebooks/move", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+async function moveNotebookBetweenPlaces(notebook, from, places) {
+  const { openNotebookMoveDialog } = await import("/assets/ui/notebook-space.mjs");
+  return new Promise((resolve, reject) => {
+    openNotebookMoveDialog({
+      notebook, from, places, move: contextHubNotebookMove,
+      scopeKeyFor: (id) => captureNotebookApi(id).scopeKey,
+      onMoved: (moved, target) => { setStatus("Notebook moved to " + target.title + "."); reloadNotebookSpace(); resolve(moved); },
+    }).then((dialog) => dialog.addEventListener("close", () => resolve(null), { once: true }), reject);
+  });
+}
+
+function notebookMovePlaces() {
+  return contextHubPrioritizedProjects(state.contextHub?.projects || [])
+    .filter((project) => project.space !== "notebooks" && project.available !== false && !String(project.id || "").startsWith("shared:"))
+    .map((project) => ({ id: project.id, title: project.title || project.id }));
 }
 
 // Since your last visit: compare pending review identities with the ones stored when
@@ -25502,6 +25628,21 @@ document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-context-hub-abandon-recovery]");
   if (!button || IS_HOSTED_CONTEXT_ROOM || state.sharedRecoveryBusy) return;
   showContextHubAbandonRecoveryDialog(button);
+});
+el("notebookSpacePanel")?.addEventListener("click", (event) => {
+  if (event.target.closest("[data-notebook-space-new]")) {
+    createSpaceNotebook().catch((error) => setStatus(error.message));
+    return;
+  }
+  const space = contextHubNotebookSpace();
+  const open = event.target.closest("[data-notebook-space-open]");
+  if (open && space) {
+    openContextRoomNotebook("", { projectId: space.id, resourceId: open.dataset.notebookSpaceOpen, onClosed: reloadNotebookSpace }).catch((error) => setStatus(error.message));
+    return;
+  }
+  const move = event.target.closest("[data-notebook-space-move]");
+  const item = move && space ? (notebookSpaceItems.items || []).find((entry) => entry.id === move.dataset.notebookSpaceMove) : null;
+  if (item) moveNotebookBetweenPlaces(item, { id: space.id, title: "Notebooks" }, notebookMovePlaces()).catch((error) => setStatus(error.message));
 });
 el("contextHubProjectsPanel")?.addEventListener("click", (event) => {
   if (event.target.closest("[data-context-hub-project-goto]")) {

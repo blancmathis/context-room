@@ -111,7 +111,16 @@ HTML resources are intentionally local and non-executable. Nested CSS resource U
 ## Editable notebooks
 
 The notebook action opens a retained working scene in an authorized ordinary
-folder. Drawing, autosave and synchronization do not accept documentation.
+folder. A notebook can also belong to no project: the Hub home's **New
+notebook** opens one at once in the Notebooks space, a registered folder
+(default `~/Documents/Context Room/Carnets`) whose notebooks live under
+`Carnets/`. **Move to project…** on a space notebook, and **Move to
+Notebooks** in a project's notebook chooser, move one working notebook with a
+preview: the destination is copied and verified, then the source scene is
+retired (kept, never deleted). An occupied path or identity, a published
+`.crnb` or a pending submission is refused; nothing is overwritten. The
+undo history does not follow; a device with pending ink sees the notebook as
+moved and keeps that ink as a conflict copy. Drawing, autosave and synchronization do not accept documentation.
 Objects retain stable identity, revision and authorship; selective gesture
 undo preserves independent edits. The original editable file and embedded
 images remain exportable.

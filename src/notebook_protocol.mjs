@@ -3,7 +3,7 @@ export const NOTEBOOK_VERSION = 1;
 export const NOTEBOOK_MIME = 'application/vnd.context-room.notebook+json';
 export const NOTEBOOK_LIMITS = Object.freeze({ bytes: 20 * 1024 * 1024, objects: 20000, edits: 256, points: 16384, text: 100000, assets: 128 });
 export function notebookError(code, message, details) {
-  return Object.assign(new Error(message), { code, statusCode: /conflict|stale|recovery/.test(code) ? 409 : /scope|authority/.test(code) ? 403 : 400, ...(details ? { details } : {}) });
+  return Object.assign(new Error(message), { code, statusCode: /conflict|stale|recovery|moved|move_published/.test(code) ? 409 : /scope|authority/.test(code) ? 403 : 400, ...(details ? { details } : {}) });
 }
 export function failNotebook(code, message, details) { throw notebookError(code, message, details); }
 const plain = v => v && typeof v === 'object' && !Array.isArray(v) && [Object.prototype, null].includes(Object.getPrototypeOf(v));

@@ -6,6 +6,7 @@ import AxeBuilder from '@axe-core/playwright';
 import { initializeContextRoomProject, writeMemoryWebappSettings, createMemoryServer, createContextRoomDeviceService } from '../../src/context_room.mjs';
 import { listNotebooks, readNotebook, mutateNotebook, decodeNotebook, importNotebookDraft } from '../../src/notebooks.mjs';
 import { convertLisiereBoard } from '../../src/lisiere_notebook.mjs';
+import { registerContextHubProject } from '../../src/context_hub.mjs';
 import { buildDocumentationCorpus } from '../../src/documentation.mjs';
 import { listLocalProposals } from '../../src/local_proposals.mjs';
 import { listSharedProposalWorkspaces } from '../../src/shared_context.mjs';
@@ -547,4 +548,105 @@ test('@smoke @notebook PNG review uses native editable source and accepts only t
     expect(fs.existsSync(path.join(f.root, 'docs/native-drawing.crnb'))).toBe(false);
     expect(f.errors).toEqual([]);
   } finally { await f.close(); }
+});
+
+test.describe('Notebooks space', () => {
+  // A Hub with one project and a temporary Notebooks folder; the server can restart on the same data.
+  async function hubFixture(page) {
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), '.context-room-notebook-space-'))), root = path.join(base, 'project'), spaceRoot = path.join(base, 'Notebooks'), previous = {};
+    for (const key of ['CONTEXT_ROOM_HUB_HOME', 'CONTEXT_ROOM_SHARED_HOME', 'CONTEXT_ROOM_REVIEW_AUTHORITY_HOME', 'CONTEXT_ROOM_NOTEBOOK_SPACE_HOME', 'GIT_CONFIG_GLOBAL']) {
+      previous[key] = process.env[key]; process.env[key] = key === 'GIT_CONFIG_GLOBAL' ? '/dev/null' : key === 'CONTEXT_ROOM_NOTEBOOK_SPACE_HOME' ? spaceRoot : path.join(base, key);
+    }
+    fs.mkdirSync(path.join(root, 'docs'), { recursive: true }); fs.writeFileSync(path.join(root, 'docs/guide.md'), '# Synthetic guide\n');
+    initializeContextRoomProject(root, { title: 'Synthetic project', allowedPaths: ['docs/'], watchAllow: ['docs/'] });
+    writeMemoryWebappSettings(root, { startupContext: { enabled: false }, startupSkills: { enabled: false }, startupHooks: { enabled: false } });
+    registerContextHubProject(root, { title: 'Synthetic project' });
+    const errors = []; page.on('pageerror', error => errors.push(error.message));
+    let runtime = null;
+    const stop = async () => { if (!runtime) return; const current = runtime; runtime = null; await new Promise(resolve => { current.server.close(resolve); current.server.closeAllConnections(); }); await current.waitForShutdown(); };
+    const start = async () => {
+      runtime = createMemoryServer({ root }); await new Promise(resolve => runtime.server.listen(0, '127.0.0.1', resolve));
+      await page.goto(`http://127.0.0.1:${runtime.server.address().port}/?hub=1&view=hub`);
+      await expect(page.locator('#notebookSpacePanel')).toBeVisible({ timeout: 45000 });
+    };
+    await start();
+    return { root, spaceRoot, errors, start, stop, async close() {
+      try { if (!page.isClosed()) await page.goto('about:blank'); }
+      finally { await stop(); for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } fs.rmSync(base, { recursive: true, force: true }); }
+    } };
+  }
+  async function newNotebookWithInk(page, f) {
+    await page.locator('#notebookSpacePanel').getByRole('button', { name: 'New notebook', exact: true }).click();
+    const dialog = page.locator('dialog.notebook-dialog[open]'); await expect(dialog).toHaveAttribute('data-save-state', 'confirmed');
+    const id = await dialog.getAttribute('data-resource-id');
+    await draw(page);
+    await expect.poll(() => readNotebook(f.spaceRoot, id).document.objects.length).toBe(1);
+    await expect(dialog).toHaveAttribute('data-save-state', 'confirmed');
+    await dialog.getByRole('button', { name: 'Close notebook', exact: true }).click(); await expect(dialog).toHaveCount(0);
+    return { id, ink: readNotebook(f.spaceRoot, id).document.objects };
+  }
+
+  test('@smoke @notebook new notebook without a project is found again after a Hub restart', async ({ page }, testInfo) => {
+    const f = await hubFixture(page);
+    try {
+      const panel = page.locator('#notebookSpacePanel');
+      await expect(panel).toContainText('A notebook for an idea that arrives. A project to go further.');
+      const { id, ink } = await newNotebookWithInk(page, f);
+      expect(listNotebooks(f.spaceRoot).map(entry => entry.path)).toEqual([`Carnets/${id}.crnb`]);
+      expect(listNotebooks(f.root)).toEqual([]);
+      await expect(panel.locator(`[data-notebook-id="${id}"]`)).toContainText('Edited');
+      await expect(page.locator('#contextHubProjectsPanel')).not.toContainText('Notebooks');
+      await f.stop(); await f.start();
+      await panel.getByRole('button', { name: /^Resume · Note · / }).click();
+      const reopened = page.locator('dialog.notebook-dialog[open]');
+      await expect(reopened).toHaveAttribute('data-resource-id', id); await expect(reopened).toHaveAttribute('data-save-state', 'confirmed');
+      expect(readNotebook(f.spaceRoot, id).document.objects).toEqual(ink);
+      await page.screenshot({ path: testInfo.outputPath('notebook-space-resumed.png') });
+      expect(f.errors).toEqual([]);
+    } finally { await f.close(); }
+  });
+
+  test('@notebook move to project and back keeps ink', async ({ page }, testInfo) => {
+    const f = await hubFixture(page);
+    try {
+      const panel = page.locator('#notebookSpacePanel');
+      const { id, ink } = await newNotebookWithInk(page, f);
+      await panel.locator(`[data-notebook-id="${id}"]`).getByRole('button', { name: /^Move to project · / }).click();
+      const toProject = page.getByRole('dialog', { name: 'Move to project', exact: true });
+      await toProject.getByRole('button', { name: 'Synthetic project', exact: true }).click();
+      await expect(toProject.getByLabel('File in the destination')).toHaveValue(/^docs\/.+\.crnb$/);
+      await toProject.getByLabel('File in the destination').fill('docs/Moved idea.crnb');
+      await expect(toProject.getByRole('button', { name: 'Move', exact: true })).toBeDisabled();
+      await toProject.getByRole('button', { name: 'Preview', exact: true }).click();
+      await expect(toProject.getByRole('status')).toContainText('Synthetic project › docs/Moved idea.crnb. Nothing is overwritten.');
+      await page.screenshot({ path: testInfo.outputPath('notebook-move-preview.png') });
+      await toProject.getByRole('button', { name: 'Move', exact: true }).click();
+      await expect(toProject).toHaveCount(0);
+      await expect(panel.locator(`[data-notebook-id="${id}"]`)).toHaveCount(0);
+      expect(listNotebooks(f.spaceRoot)).toEqual([]);
+      expect(listNotebooks(f.root).map(entry => [entry.id, entry.path])).toEqual([[id, 'docs/Moved idea.crnb']]);
+      expect(readNotebook(f.root, id).document.objects).toEqual(ink);
+      expect(fs.existsSync(path.join(f.root, 'docs/Moved idea.crnb'))).toBe(false);
+
+      const projectId = await page.evaluate(() => state.contextHub.projects.find(project => project.title === 'Synthetic project').id);
+      await page.evaluate(projectId => openContextRoomNotebook(null, { directory: 'docs', projectId }), projectId);
+      await page.getByRole('dialog', { name: 'Notebook in this folder', exact: true }).getByRole('button', { name: 'Move to Notebooks', exact: true }).click();
+      const back = page.getByRole('dialog', { name: 'Move to Notebooks', exact: true });
+      await back.getByRole('button', { name: 'Preview', exact: true }).click();
+      await expect(back.getByRole('status')).toContainText('Nothing is overwritten.');
+      await back.getByRole('button', { name: 'Move', exact: true }).click();
+      await expect(back).toHaveCount(0);
+      expect(listNotebooks(f.root)).toEqual([]);
+      expect(listNotebooks(f.spaceRoot).map(entry => [entry.id, entry.path])).toEqual([[id, `Carnets/${id}.crnb`]]);
+      expect(readNotebook(f.spaceRoot, id).document.objects).toEqual(ink);
+
+      await panel.getByRole('button', { name: /^Resume · / }).click();
+      const reopened = page.locator('dialog.notebook-dialog[open]');
+      await expect(reopened).toHaveAttribute('data-resource-id', id); await expect(reopened).toHaveAttribute('data-save-state', 'confirmed');
+      await draw(page, { start: [110, 210], end: [250, 260] });
+      await expect.poll(() => readNotebook(f.spaceRoot, id).document.objects.length).toBe(2);
+      expect(readNotebook(f.spaceRoot, id).document.objects[0]).toEqual(ink[0]);
+      expect(f.errors).toEqual([]);
+    } finally { await f.close(); }
+  });
 });

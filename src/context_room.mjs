@@ -15,11 +15,11 @@ import { submitNotebookShared } from "./notebook_workflow.mjs";
 import { NOTEBOOK_WEB_ASSETS } from "./notebook_web_assets.mjs";
 import { NOTEBOOK_LIMITS } from "./notebook_protocol.mjs";
 import { createLisiereConnector, migrateLisiereSession as recoverLisiereSession } from "./lisiere_connector.mjs";
-import { planLisiereNotebookImport, applyLisiereNotebookImport } from "./lisiere_migration.mjs";
+import { planLisiereNotebookImport, applyLisiereNotebookImport, listLisiereNotebookImports } from "./lisiere_migration.mjs";
 import { migrateLisiereReconciliation } from './lisiere_reconcile.mjs';
 import { migrateLisiereDocument } from "./lisiere_documents.mjs";
 import { migrateLisiereConversationHistory } from "./lisiere_conversations.mjs";
-import { listNotebooks, readNotebook } from "./notebooks.mjs";
+import { listNotebooks, readNotebook, transferNotebook } from "./notebooks.mjs";
 import { isDocumentAssetPath, listDocumentAssets, readDocumentAssetReview, recordAcceptedDocumentAsset, decideDocumentAsset } from "./document_assets.mjs";
 import { readReviewCleanupPolicy, writeReviewCleanupPolicy, previewReviewCleanup, applyReviewCleanup, recentReviewCleanupReceipts } from "./review_cleanup.mjs";
 import fs from "node:fs";
@@ -152,6 +152,7 @@ import {
   removeContextHubReviewSnoozes,
   registerContextHubProject,
   registerContextHubSharedRepository,
+  CONTEXT_HUB_NOTEBOOK_SPACE,
   setContextHubProjectOrder,
   setContextHubReviewSnoozes,
   unregisterContextHubSharedRepository,
@@ -495,6 +496,8 @@ const BACKGROUND_REPORT_INVALIDATING_PATHS = new Set([
   "/api/watch-rule",
   "/api/context-hub/project-settings",
   "/api/context-hub/projects",
+  "/api/context-hub/notebook-space",
+  "/api/context-hub/notebooks/move",
   "/api/context-hub/shared-recovery/abandon",
   "/api/context-hub/confirm-location",
   "/api/context-hub/shared-projects",
@@ -7914,6 +7917,45 @@ export function migrateLisiereNotebook(root, options = {}) {
   return options.apply ? applyLisiereNotebookImport(root, options, authority) : planLisiereNotebookImport(root, options, authority);
 }
 
+/** The registered Notebooks space, or a clear refusal that names the way to create it. */
+export function requireContextHubNotebookSpace() {
+  const space = listContextHubProjects({ readOnly: true }).find((entry) => entry.space === CONTEXT_HUB_NOTEBOOK_SPACE);
+  if (!space) throw sharedRequestError("Create the Notebooks space first (Hub › New notebook) or pass --root.", 409, "context_hub_notebook_space_missing");
+  if (!space.available) throw sharedRequestError(`The Notebooks space is unavailable: ${space.root}`, 409, "context_hub_notebook_space_unavailable");
+  return path.resolve(space.root);
+}
+
+/**
+ * Moves the working notebooks that a Lisière import created in `root` to the Notebooks space.
+ * Preview lists them with one revision; apply moves each one with a verified copy.
+ * The path stays when the space allows it, otherwise the file keeps its name under Carnets/.
+ */
+export function migrateNotebooksToSpace(root, { boardId, apply = false, expectedRevision } = {}) {
+  const sourceRoot = path.resolve(root), spaceRoot = requireContextHubNotebookSpace();
+  const authority = {
+    canWriteSource: (rel) => canEditLocalProposalPath(sourceRoot, rel),
+    canWriteTarget: (rel) => canEditLocalProposalPath(spaceRoot, rel),
+  };
+  const destinationPath = (rel) => rel.startsWith(CONTEXT_HUB_NOTEBOOK_FOLDER) ? rel : CONTEXT_HUB_NOTEBOOK_FOLDER + path.posix.basename(rel);
+  const plan = () => {
+    const notebooks = listLisiereNotebookImports(sourceRoot, { boardId }).map((entry) => {
+      const preview = transferNotebook(sourceRoot, spaceRoot, { resourceId: entry.id, path: destinationPath(entry.path) }, { ...authority, preview: true });
+      return { resourceId: entry.id, title: entry.title, boardId: entry.boardId, from: entry.path, to: preview.to.path, revision: preview.revision };
+    });
+    return { notebooks, revision: notebookHash({ kind: "notebooks-to-space", spaceRoot, notebooks }) };
+  };
+  const planned = plan();
+  const summary = { kind: "notebooks-to-space", root: sourceRoot, spaceRoot, revision: planned.revision, notebooks: planned.notebooks, overwrites: false };
+  if (!apply) return { ...summary, applied: false };
+  if (expectedRevision !== planned.revision) throw sharedRequestError("The notebooks changed after the preview. Preview again.", 409, "notebook_location_stale");
+  const moved = planned.notebooks.map((item) => transferNotebook(sourceRoot, spaceRoot, {
+    resourceId: item.resourceId, path: item.to, expectedRevision: item.revision,
+    operationId: `space-${notebookHash({ revision: planned.revision, resourceId: item.resourceId }).slice(0, 40)}`,
+  }, authority));
+  if (moved.length) markContextHubSnapshotStale();
+  return { ...summary, applied: true, moved: moved.map((item) => ({ resourceId: item.resourceId, to: item.to.path, retired: item.retired })) };
+}
+
 function legacyRecoverySourceForPath(project, rel) {
   if (typeof rel !== 'string' || !rel) throw sharedRequestError('Choose the document or imported notebook to link with this recovery.', 400, 'assistant_source_scope');
   if (!rel.endsWith('.crnb')) return { kind: 'document', path: rel };
@@ -13564,6 +13606,50 @@ export function createContextHubProject({ computerRoot, parent, folderName, titl
   }
 }
 
+// The Notebooks space: one registered root for notebooks that belong to no project yet.
+// Notebooks live under Carnets/ because allowedPaths only accepts folder prefixes.
+export const CONTEXT_HUB_NOTEBOOK_FOLDER = "Carnets/";
+
+export function contextHubNotebookSpaceRoot() {
+  return path.resolve(process.env.CONTEXT_ROOM_NOTEBOOK_SPACE_HOME
+    || path.join(process.env.HOME || os.homedir(), "Documents", "Context Room", "Carnets"));
+}
+
+export function ensureContextHubNotebookSpace({ spaceRoot = contextHubNotebookSpaceRoot() } = {}) {
+  const refuse = (message, code) => Object.assign(new Error(message), { statusCode: 409, code });
+  const current = listContextHubProjects({ readOnly: true }).find((entry) => entry.space === CONTEXT_HUB_NOTEBOOK_SPACE);
+  if (current) {
+    if (!current.available) throw refuse(`The Notebooks space is unavailable: ${current.root}`, "context_hub_notebook_space_unavailable");
+    return { created: false, projectRoot: current.root, registered: current };
+  }
+  const projectRoot = path.resolve(spaceRoot);
+  let made = false;
+  if (pathEntryExists(projectRoot)) {
+    if (!fs.lstatSync(projectRoot).isDirectory()) throw refuse(`The Notebooks folder is not a folder: ${projectRoot}`, "context_hub_notebook_space_occupied");
+    const configured = pathEntryExists(path.join(projectRoot, MEMORY_WEBAPP_SETTINGS));
+    const ownSpace = configured && readMemoryWebappSettings(projectRoot).allowedPaths.includes(CONTEXT_HUB_NOTEBOOK_FOLDER);
+    if (!ownSpace && fs.readdirSync(projectRoot).some((name) => name !== ".DS_Store")) {
+      throw refuse(`The Notebooks folder already holds other files: ${projectRoot}`, "context_hub_notebook_space_occupied");
+    }
+  } else {
+    fs.mkdirSync(projectRoot, { recursive: true });
+    made = true;
+  }
+  try {
+    fs.mkdirSync(path.join(projectRoot, CONTEXT_HUB_NOTEBOOK_FOLDER), { recursive: true });
+    const initialized = initializeContextRoomProject(projectRoot, {
+      title: "Notebooks",
+      allowedPaths: [CONTEXT_HUB_NOTEBOOK_FOLDER],
+      watchAllow: [CONTEXT_HUB_NOTEBOOK_FOLDER],
+    });
+    const registered = registerContextHubProject(projectRoot, { title: "Notebooks", space: CONTEXT_HUB_NOTEBOOK_SPACE });
+    return { created: true, projectRoot: registered.root, initialized, registered };
+  } catch (error) {
+    if (made) fs.rmSync(projectRoot, { recursive: true, force: true });
+    throw error;
+  }
+}
+
 function filterInferredHubSectionsForAllowedPaths(sections = [], allowedPaths = []) {
   const allowed = sanitizePathList(allowedPaths);
   const filterCard = (card) => {
@@ -17904,6 +17990,7 @@ function isOwnerReviewAuthorityMutation(pathname = "", method = "GET") {
     "POST /api/context-hub/project-explorer/action",
     "POST /api/context-hub/shared-recovery/abandon",
     "POST /api/context-hub/confirm-location",
+    "POST /api/context-hub/notebooks/move",
     "POST /api/watch-rule",
     "DELETE /api/watch-rule",
     "POST /api/review-gate",
@@ -22255,6 +22342,52 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     });
     return;
   }
+  if (req.method === "POST" && url.pathname === "/api/context-hub/notebook-space") {
+    await readJsonBody(req);
+    const space = ensureContextHubNotebookSpace();
+    if (space.created) {
+      markContextHubSnapshotStale();
+      appendContextRoomEvent("project.created", {
+        projectId: space.registered.logicalProjectId || space.registered.id,
+        locationId: space.registered.id,
+        resource: { path: space.projectRoot },
+        data: { title: space.registered.title, space: CONTEXT_HUB_NOTEBOOK_SPACE },
+      });
+    }
+    const catalog = space.created ? await refreshContextHubSnapshot(root, { refreshShared: false, force: true }) : null;
+    sendJson(res, space.created ? 201 : 200, { project: space.registered, projectRoot: space.projectRoot, created: space.created, catalog });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/context-hub/notebooks/move") {
+    const body = await readJsonBody(req);
+    const from = registeredContextHubWorktree(String(body.fromProjectId || ""));
+    const to = registeredContextHubWorktree(String(body.toProjectId || ""));
+    if (!from?.available || !to?.available) throw sharedRequestError("Both places must be available to move a notebook.", 404, "project_unavailable");
+    const sourceRoot = path.resolve(from.root), targetRoot = path.resolve(to.root);
+    const preview = body.preview === true, revision = preview ? "" : String(body.revision || "");
+    const moved = transferNotebook(sourceRoot, targetRoot, {
+      resourceId: body.resourceId,
+      path: body.path,
+      expectedRevision: revision,
+      operationId: String(body.operationId || `transfer-${(revision || "preview").slice(0, 32)}`),
+    }, {
+      canWriteSource: (rel) => canEditLocalProposalPath(sourceRoot, rel),
+      canWriteTarget: (rel) => canEditLocalProposalPath(targetRoot, rel),
+      preview,
+      destination: { projectId: to.id, title: to.title },
+    });
+    if (!preview) {
+      markContextHubSnapshotStale();
+      appendContextRoomEvent("notebook.moved", {
+        projectId: to.logicalProjectId || to.id,
+        locationId: to.id,
+        resource: { kind: "notebook", id: moved.resourceId, path: moved.to?.path || "" },
+        data: { fromLocationId: from.id, replayed: Boolean(moved.replayed) },
+      });
+    }
+    sendJson(res, 200, { ...moved, from: { ...moved.from, projectId: from.id, title: from.title } });
+    return;
+  }
   if (req.method === "POST" && url.pathname === "/api/context-hub/shared-projects") {
     const body = await readJsonBody(req);
     const repositoryId = String(hostedSharedProvider ? body.repositoryId || "" : body.repository || "").trim();
@@ -22516,6 +22649,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     const repository = assertConfiguredSharedRepository(root, repositorySelector);
     const project = registeredContextHubWorktree(projectId);
     if (!project?.available || !project.root) throw sharedRequestError("The selected local project is unavailable", 404, "project_unavailable");
+    if (project.space === CONTEXT_HUB_NOTEBOOK_SPACE) throw sharedRequestError("The Notebooks space is not a project and cannot connect to Shared.", 409, "notebook_space_not_shared");
     const current = readSharedProjectConnection(project.root);
     if (current && !sameContextHubRepository(current.repository, repository)) {
       throw sharedRequestError("Disconnect the current shared context before connecting another one", 409, "shared_context_already_connected", { current });
@@ -22669,6 +22803,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
         sharedTitle: project.sharedTitle || "",
         priorityId: project.priorityId || contextHubProjectPriorityId(project),
         priorityRank: Number.isInteger(project.priorityRank) ? project.priorityRank : null,
+        ...(project.space ? { space: project.space } : {}),
       })),
       attention: state.attention,
       sharedRepositories: state.sharedRepositories || [],

@@ -1,7 +1,7 @@
 import { readLisiereSnapshot, legacyError } from './lisiere_archive.mjs';
 import { convertLisiereBoard } from './lisiere_notebook.mjs';
-import { importNotebookDraft, encodeNotebook } from './notebooks.mjs';
-import { canonicalNotebookRoot, notebookHash, stableNotebookJson, readNotebookBytes, writeNotebookBytes, withNotebookLock } from './notebook_io.mjs';
+import { importNotebookDraft, encodeNotebook, listNotebooks, NOTEBOOK_STORE } from './notebooks.mjs';
+import { canonicalNotebookRoot, notebookHash, stableNotebookJson, readNotebookBytes, readNotebookJson, writeNotebookBytes, withNotebookLock } from './notebook_io.mjs';
 
 const STORE = '.context-room/migrations/lisiere-v1';
 const MAX_SOURCE = 32 * 1024 * 1024;
@@ -54,6 +54,12 @@ function prepare(root, { snapshot, boardId, path } = {}, canWrite) {
   } };
 }
 
+/** The Lisière project of one board, or null for a board that had none. */
+export function lisiereBoardProject(snapshot, boardId) {
+  for (const row of readLisiereSnapshot(snapshot).rows('boards')) if (row.id === boardId) return row.project ?? null;
+  throw legacyError('The selected legacy board is absent from this snapshot.');
+}
+
 /** Preview performs no filesystem writes, including when the project has no store yet. */
 export function planLisiereNotebookImport(root, options, { canWrite = () => false } = {}) {
   return { ...prepare(root, options, canWrite).summary, applied: false };
@@ -97,5 +103,17 @@ export function applyLisiereNotebookImport(root, options, { canWrite = () => fal
     retain(root, `${identity.recovery}/applied.json`, jsonBytes(receipt));
     return { ...summary, applied: true, imported: true, replayed: imported.replayed, currentRevision: imported.revision,
       locator: imported.locator, receipt: `${identity.recovery}/applied.json` };
+  });
+}
+
+/** Working notebooks that a Lisière import created here, read from their own header and retained plan. */
+export function listLisiereNotebookImports(root, { boardId } = {}) {
+  return listNotebooks(root).flatMap(entry => {
+    const requestId = readNotebookJson(root, `${NOTEBOOK_STORE}/resources/${entry.id}/header.json`)?.imported?.requestId;
+    if (typeof requestId !== 'string' || !/^lisiere-[a-f0-9]{64}$/.test(requestId)) return [];
+    const plan = readNotebookJson(root, `${STORE}/${requestId}/plan.json`);
+    const legacyBoard = plan?.resourceId === entry.id ? plan.source?.boardId ?? null : null;
+    if (boardId && legacyBoard !== boardId) return [];
+    return [{ ...entry, requestId, boardId: legacyBoard, project: plan?.source?.project ?? null }];
   });
 }

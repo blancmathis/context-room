@@ -52,8 +52,8 @@ code. « BOOX réelle » : la porte V18 (essai physique) n'est pas encore passé
 | Gros éditeur (annuler/rétablir, chercher/remplacer, 20 Mio) | Éditeur de documents ; pas de chercher/remplacer dans l'UI trouvé | partiel |
 | Lecteur PDF et image (pages, zoom, « Image entière », Annoter) | PDF servi en octets seulement (`src/document_assets.mjs:13`, « no integrated renderer promised ») ; annotation PNG de revue (`test/e2e/notebooks.spec.mjs:499`) | **absent** (PDF) / partiel (image) |
 | Carnets stylet/doigt, zoom 2 doigts, gomme, sélection, formes | `.crnb` (`src/notebook_*.mjs`, `src/ui/notebook-*.mjs`, `android/.../InkView.java`, `BooxInk.java`) ; `test/notebook*.test.mjs`, `test/e2e/notebooks.spec.mjs:216,372,484` | prouvé (navigateur) ; partiel (BOOX réelle) |
-| Mémos libres hors projet (`~/Documents/Lisière/Carnets`) | Un carnet vit toujours dans un projet. Les 4 mémos sont dans le projet « Recuperation Lisiere ». | partiel |
-| Accueil « reprendre / Nouveau mémo » | Carnet récupéré visible (`test/e2e/notebooks.spec.mjs:457`) ; pas de bouton « nouveau mémo » global | partiel |
+| Mémos libres hors projet (`~/Documents/Lisière/Carnets`) | Espace Notebooks (`~/Documents/Context Room/Carnets`), New notebook, déplacement vérifié vers un projet et retour (`test/notebooks.test.mjs` transfer, `test/hub_durable_identity.test.mjs` space, e2e « Notebooks space »). Les 4 mémos passent par `migrate --notebooks-to-space` à la bascule. | prouvé (navigateur) ; partiel (BOOX réelle) |
+| Accueil « reprendre / Nouveau mémo » | Section Notebooks en tête de l'accueil du Hub : New notebook, Resume sur le plus récent, retrouvé après redémarrage du Hub (e2e « Notebooks space ») | prouvé (navigateur) ; partiel (BOOX réelle) |
 | Cache hors ligne + file d'opérations à ID stables, conflit → copie | `test/e2e/notebooks.spec.mjs:261,283,318,358` | prouvé |
 | Persistance des décisions Appliquer/Refuser, reprise | Reçus signés + annulation (`docs/features/review-authority.md`) | prouvé |
 
@@ -215,8 +215,13 @@ BOOX). Pour que Mathis ne perde aucun usage : L4 et L5 en plus.
 
 ### Décision 2026-10-16 : espace « Carnets » libre (L3)
 
+Statut : **fait** (L3, 2026-10-23), sauf l'essai sur la BOOX et la migration
+réelle des 4 mémos (à la bascule). Écarts avec la proposition : l'espace est
+une entrée marquée du registre ; ses carnets sont sous `Carnets/` ; libellés
+en anglais (Notebooks, New notebook, Move to project…).
+
 Mathis veut un espace « Carnets » libre, hors de tout projet, comme les mémos
-libres de Lisière. Proposition de conception (à valider au début de L3) :
+libres de Lisière. Proposition de conception (validée au début de L3) :
 
 - Un dossier dédié, par défaut `~/Documents/Context Room/Carnets`, enregistré
   une fois dans le Hub comme espace spécial (pas un projet de code : pas de
