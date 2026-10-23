@@ -164,6 +164,10 @@ test('transfer moves a working notebook to another root and back', t=>{
   assert.equal(moved.moved,true); assert.equal(moved.to.projectId,'space'); assert.notEqual(moved.from.serverId,moved.to.serverId);
   const there=readNotebook(space,scene.resourceId);
   assert.deepEqual(there.document,before.document); assert.deepEqual(there.tombstones,{gone:2});
+  // The history continues past the source, so a cache that follows the move adopts the new location.
+  assert.equal(there.sequence,before.sequence+1);
+  mutateNotebook(space,{protocolVersion:1,resourceId:scene.resourceId,operationId:'after-move',locationRevision:there.locator.revision,edits:[put('after')]},{actor:human,canWrite:spaceWrite});
+  assert.equal(readNotebook(space,scene.resourceId).sequence,before.sequence+2); assert.equal(readNotebook(space,scene.resourceId).document.objects.length,2);
   assert.deepEqual(listNotebooks(root),[]); assert.equal(listNotebooks(space)[0].path,'Carnets/Sketch.crnb'); assert.ok(listNotebooks(space)[0].changedAt);
   assert.throws(()=>readNotebook(root,scene.resourceId),error=>error.code==='notebook_moved'&&error.statusCode===409&&error.details.destination.path==='Carnets/Sketch.crnb');
   assert.throws(()=>mutateNotebook(root,request('late',[put('late')]),{actor:human,canWrite}),{code:'notebook_moved'});
@@ -173,7 +177,7 @@ test('transfer moves a working notebook to another root and back', t=>{
   const back=move(space,root,scene.resourceId,'docs/Sketch.crnb','move-back',[spaceWrite,canWrite]);
   assert.equal(back.moved,true);
   const home=readNotebook(root,scene.resourceId);
-  assert.deepEqual(home.document.objects.map(o=>o.id).sort(),['more','stroke']);
+  assert.deepEqual(home.document.objects.map(o=>o.id).sort(),['after','more','stroke']);
   assert.notEqual(home.locator.revision,scene.locator.revision,'an old location revision does not come back');
   assert.throws(()=>readNotebook(space,scene.resourceId),{code:'notebook_moved'});
   mutateNotebook(root,{protocolVersion:1,resourceId:scene.resourceId,operationId:'home-ink',locationRevision:home.locator.revision,edits:[put('home','ink')]},{actor:human,canWrite});

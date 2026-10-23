@@ -81,7 +81,7 @@ function readState(root, id) {
   const header = readNotebookJson(root, `${folder}/header.json`);
   if (!header || header.schemaVersion !== 1 || header.document.id !== id) failNotebook('notebook_missing', 'Notebook working scene not found.');
   if (!['same', 'alias', 'confirmed'].includes(acceptsRootIdentity(root, header.rootIdentity))) failNotebook('notebook_root_conflict', 'This working scene belongs to another exact filesystem location.');
-  const state = { document: decodeNotebook(Buffer.from(JSON.stringify(header.document))), locator: header.locator, rootIdentity, sequence: 0,
+  const state = { document: decodeNotebook(Buffer.from(JSON.stringify(header.document))), locator: header.locator, rootIdentity, sequence: Number.isSafeInteger(header.transferred?.sequence) && header.transferred.sequence > 0 ? header.transferred.sequence : 0,
     chain: notebookHash(header), tombstones: initialTombstones(header.document, header.tombstones), origins: Object.fromEntries(header.document.objects.map(o => [o.id, o.createdBy])), receipts: new Map(), frozen: new Map(), submissions: new Map(), knownSources: new Set([header.locator.sourceHash]), history: [] };
   const directory = safeNotebookPath(root, `${folder}/events`);
   const files = fs.existsSync(directory) ? fs.readdirSync(directory).sort() : [];
@@ -358,7 +358,7 @@ export function transferNotebook(sourceRoot, targetRoot, request = {}, { canWrit
         assertFree();
         const locator = { path, sourceHash: null, revision: notebookHash({ rootIdentity: targetIdentity, path, id, sourceHash: null, transfer: operationId }) };
         writeNotebookJson(targetRoot, `${resourcePath(id)}/header.json`, { schemaVersion: 1, rootIdentity: targetIdentity, locator, document: state.document, tombstones,
-          transferred: { operationId, from: { serverId: from.serverId, path: state.locator.path, revision: state.locator.revision } } }, { exclusive: true });
+          transferred: { operationId, sequence: state.sequence + 1, from: { serverId: from.serverId, path: state.locator.path, revision: state.locator.revision } } }, { exclusive: true });
       } else if (arrived.transferred?.operationId !== operationId) failNotebook('notebook_location_conflict', 'The destination already holds this notebook. Nothing was overwritten.');
       // An earlier departure from the destination no longer applies once the notebook is back.
       fs.rmSync(safeNotebookPath(targetRoot, movedPath(id)), { force: true });
