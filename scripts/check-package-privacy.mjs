@@ -6,6 +6,10 @@ import { fileURLToPath } from "node:url";
 const packageRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const sensitivePackagePath = /(?:^|\/)(?:\.env(?:\.(?!(?:example|sample|template)$)[^/]+)?|\.netrc|\.npmrc|\.pypirc|credentials(?:\.json)?|id_(?:dsa|ecdsa|ed25519|rsa)|[^/]+\.(?:key|p12|pfx))$/i;
 const followsDataRootPlaceholder = (match) => String(match.input || "").slice(0, match.index).endsWith("<dataRoot>");
+// Third-party minified builds copied verbatim (src/vendor/pdfjs/, see scripts/update-pdfjs.mjs) hold an emscripten default home directory
+// and random strings that look like emails. They skip these two heuristics only; credential patterns and denied terms still apply.
+const vendoredBuildPath = /^src\/vendor\/pdfjs\//;
+const vendoredBuildSkips = new Set(["absolute user-home path", "email address"]);
 const contentPatterns = [
   {
     label: "absolute user-home path",
@@ -65,6 +69,7 @@ export function packagePrivacyFindings({ root, files, deniedTerms = [] }) {
     }
 
     for (const pattern of contentPatterns) {
+      if (vendoredBuildPath.test(relativePath) && vendoredBuildSkips.has(pattern.label)) continue;
       pattern.expression.lastIndex = 0;
       const matches = [...content.matchAll(pattern.expression)].filter((match) => !pattern.ignore?.(match[0], match));
       if (matches.length) findings.push(`${relativePath}: ${pattern.label}`);
