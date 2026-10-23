@@ -206,7 +206,10 @@ vérification de cette barrière et du snapshot retenu. Les journaux reprennent 
 phases enregistrées, sans remplacer un occupant inconnu.
 
 ```sh
-# macOS, compte synthétique pour le premier essai ; aucune donnée personnelle :
+# Essai réel opt-in sur gui/<uid>, agent synthétique test.contextroom.synthetic-<nonce>,
+# HOME temporaire, sans donnée personnelle :
+#   CONTEXT_ROOM_LAUNCHD_ESSAY=1 node --test --test-concurrency=1 test/lisiere_cutover_launchd.test.mjs
+# Bascule réelle :
 node bin/context-room.mjs migrate --root "$PROJECT" \
   --cutover-lisiere "$LEGACY_SOURCE" --mac-snapshot "$MAC_SNAPSHOT" \
   --legacy-plist "$LEGACY_PLIST"
@@ -523,7 +526,8 @@ Le refus synchrone de scope et la lecture des historiques restent testés côté
 
 **Écarts initiaux hérités, non élargis ici :** le kit Mac et le plist sont préparés,
 mais une installation activée/cohérente de bout en bout n’est pas démontrée ;
-Darwin/launchctl/lsof et la bascule standard restent à tester sur compte synthétique.
+Darwin/launchctl/lsof et la bascule standard sont prouvés par l’essai opt-in
+`test/lisiere_cutover_launchd.test.mjs` (agent synthétique, 2026-10-23) ; la bascule réelle reste à faire.
 L’UI PCM navigateur et l’instrumentation Android préparée restent non exécutées.
 Le cas sécurité Shared OpenSSH et une campagne complète au HEAD final restent
 ouverts ; les succès ciblés ne constituent pas une CI générale verte.

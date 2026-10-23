@@ -20,6 +20,14 @@ function agent(action, options, revision) {
   return JSON.parse(python(helper, [action, '--source', options.legacySource, '--plist', options.legacyPlist,
     ...(revision ? ['--revision', revision] : [])]));
 }
+/** CONTEXT_ROOM_SYNTHETIC_LEGACY_AGENT only narrows the target to a throwaway
+ * test label; the helper also requires a temporary HOME for it. */
+export function expectedLegacyLabel(env = process.env) {
+  const nonce = env.CONTEXT_ROOM_SYNTHETIC_LEGACY_AGENT;
+  if (nonce === undefined) return 'fr.lisiere.companion';
+  check(/^[a-z0-9]{8,32}$/.test(nonce), 'The synthetic legacy agent nonce must be 8 to 32 lowercase letters or digits.');
+  return 'test.contextroom.synthetic-' + nonce;
+}
 const closedFiles = source => JSON.parse(python(helper, ['closed-files', '--source', source]));
 const rename = (source, destination) => python(fileURLToPath(new URL('./exclusive_rename.py', import.meta.url)), [source, destination]);
 const statIdentity = file => canonicalNotebookRoot(file);
@@ -61,7 +69,7 @@ export async function planLisiereCutover(root, options, { inspectLegacy = args =
   const live = await exportLisiereSnapshot({ source: options.legacySource, output: options.macSnapshot });
   check(live.revision === snapshot.manifest.revision, 'The live legacy source changed after export. Export and reconcile its newer work first.');
   const service = await inspectLegacy(options);
-  check(service.label === 'fr.lisiere.companion' && /^[a-f0-9]{64}$/.test(service.plistSha256 || ''), 'Unrecognized legacy service identity.');
+  check(service.label === expectedLegacyLabel() && /^[a-f0-9]{64}$/.test(service.plistSha256 || ''), 'Unrecognized legacy service identity.');
   const plan = { version: 1, root, rootIdentity, legacySource: options.legacySource, sourceIdentity: statIdentity(options.legacySource),
     legacyPlist: options.legacyPlist, service, macSnapshot: options.macSnapshot, snapshotRevision: snapshot.manifest.revision,
     ...(supersedes ? { supersedes } : {}), effect: 'retire-original-workspace-and-enable-context-room-only', rollback: 'pause-writes-retain-all-data-no-legacy-restart' };
@@ -141,16 +149,50 @@ export async function applyLisiereCutover(root, options, {
   } finally { lock.release(); }
 }
 
+function checkFence(authority) {
+  // Validate the existing fence before enabling the generation. Never repair
+  // or re-create an occupied source path implicitly during resume.
+  const fence = authority.fence, marker = fence?.source && fs.existsSync(path.join(fence.source, 'CONTEXT_ROOM_RETIRED.json'))
+    ? readNotebookBytes(fence.source, 'CONTEXT_ROOM_RETIRED.json') : null;
+  check(marker && notebookHash(marker) === fence.markerHash && statIdentity(fence.source) === fence.identity
+    && fs.lstatSync(path.join(fence.source, 'workspace.sqlite')).isDirectory(), 'Restore the original fence explicitly before resuming.');
+}
+
+/** After a functional return to Lisière, resume needs the old writer stopped,
+ * the retained files closed, and any newer retained work acknowledged by an
+ * exact Mac snapshot (exported and imported by a human first). */
+async function resumeEvidence(journal, options, { verifyLegacy, closed }) {
+  const legacy = { legacySource: journal.plan.legacySource, legacyPlist: journal.plan.legacyPlist };
+  check((await verifyLegacy(legacy)).stopped === true, 'The legacy service is running again. Stop it with the local adapter before resuming.');
+  closed(journal.backup);
+  const known = journal.acknowledged?.at(-1)?.revision ?? journal.plan.snapshotRevision;
+  const live = (await exportLisiereSnapshot({ source: journal.backup, output: options.macSnapshot || journal.plan.macSnapshot })).revision;
+  if (options.macSnapshot !== undefined) {
+    check(typeof options.macSnapshot === 'string' && path.isAbsolute(options.macSnapshot) && !options.macSnapshot.startsWith(journal.backup + path.sep)
+      && readLisiereSnapshot(options.macSnapshot).manifest.revision === live, 'The --mac-snapshot must be an exact export of the retained source as it is now.');
+  }
+  if (live === known) return null;
+  check(options.macSnapshot !== undefined, 'The retained legacy source has newer work than this cutover recognized. Export it, import that work, then resume with --mac-snapshot <export>.');
+  return { snapshot: options.macSnapshot, revision: live };
+}
+
 /** Rollback never restores old control files over new work, reopens the legacy
  * SQLite path, or starts an old queue. It leaves an explicit no-writer state. */
-export function changeCutoverMode(root, { resume = false, apply = false, expectedRevision } = {}) {
+export async function changeCutoverMode(root, { resume = false, apply = false, expectedRevision, macSnapshot } = {}, {
+  verifyLegacy = args => agent('verify', args), closed = closedFiles,
+} = {}) {
   const authority = projectWriterAuthority(root);
   check(authority.enrolled && ['context-room', 'paused'].includes(authority.mode), 'Complete or explicitly recover the interrupted cutover first.');
   const journal = readJournal(root, authority.migrationId); check(journal, 'The original cutover journal is missing.');
   const targetMode = resume ? 'context-room' : 'paused';
-  const revision = notebookHash({ authority, targetMode });
+  check(resume || macSnapshot === undefined, '--mac-snapshot is used only to acknowledge newer retained work on resume.');
+  const pending = resume && authority.mode === 'paused';
+  if (pending) checkFence(authority);
+  const acknowledge = pending ? await resumeEvidence(journal, { macSnapshot }, { verifyLegacy, closed }) : null;
+  const revision = notebookHash({ authority, targetMode, ...(acknowledge ? { acknowledge } : {}) });
   const summary = { version: 1, kind: resume ? 'cutover-resume' : 'cutover-rollback', revision, mode: authority.mode, targetMode,
-    dataRestored: false, recentWorkPreservedInPlace: true, legacyQueueResumed: false, backup: journal.backup, accepted: false };
+    dataRestored: false, recentWorkPreservedInPlace: true, legacyQueueResumed: false, backup: journal.backup,
+    ...(acknowledge ? { acknowledged: acknowledge } : {}), accepted: false };
   if (!apply) return { ...summary, applied: false };
   if (expectedRevision !== revision) {
     check(authority.lastTransition?.revision === expectedRevision && authority.lastTransition?.targetMode === targetMode && authority.mode === targetMode,
@@ -162,12 +204,11 @@ export function changeCutoverMode(root, { resume = false, apply = false, expecte
   try {
     check(notebookHash(projectWriterAuthority(root)) === notebookHash(authority), 'Writer authority changed during the transition.');
     if (targetMode === 'context-room') {
-      // Validate the existing fence before enabling the generation. Never repair
-      // or re-create an occupied source path implicitly during resume.
-      const current = { ...authority, mode: 'context-room' };
-      const fence = current.fence, marker = readNotebookBytes(fence?.source, 'CONTEXT_ROOM_RETIRED.json');
-      check(marker && notebookHash(marker) === fence.markerHash && statIdentity(fence.source) === fence.identity
-        && fs.lstatSync(path.join(fence.source, 'workspace.sqlite')).isDirectory(), 'Restore the original fence explicitly before resuming.');
+      checkFence(authority);
+      const evidence = pending ? await resumeEvidence(journal, { macSnapshot }, { verifyLegacy, closed }) : null;
+      check(JSON.stringify(evidence) === JSON.stringify(acknowledge), 'The retained legacy source changed during the transition. Review a new resume preview.');
+      lock.assertHeld();
+      if (evidence) writeNotebookJson(root, `${BASE}/${authority.migrationId}.json`, { ...journal, acknowledged: [...(journal.acknowledged || []), evidence] });
     }
     const { enrolled, ...current } = authority;
     writeNotebookJson(root, WRITER_AUTHORITY, { ...current, mode: targetMode, generation: current.generation + 1, lastTransition: { revision, targetMode } });

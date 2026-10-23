@@ -75,6 +75,43 @@ class SnapshotContracts(unittest.TestCase):
                     self.assertEqual(file.stat().st_mode & 0o777, 0o600)
             self.assertEqual(db.execute('SELECT count(*) FROM devices').fetchone()[0], 1)
 
+    def closed_wal(self):
+        db = self.mac()
+        db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+        db.close()
+        for suffix in ('-wal', '-shm'):
+            Path(str(self.database) + suffix).unlink(missing_ok=True)
+        self.assertEqual(self.database.read_bytes()[18:20], b'\x02\x02')
+
+    def test_wal_closed_cleanly_exports_immutably_without_files_beside_it(self):
+        # The companion's SQLite 3.54 removes -wal/-shm on close; mode=ro alone then fails.
+        self.closed_wal()
+        with self.assertRaisesRegex(sqlite3.OperationalError, 'unable to open'):
+            sqlite3.connect(self.database.as_uri() + '?mode=ro', uri=True).execute('SELECT 1 FROM boards')
+        listing, original = sorted(self.source.iterdir()), self.database.read_bytes()
+        plan = snapshot.snapshot(self.source)
+        output = self.base / 'export'
+        self.assertEqual(snapshot.export(self.source, output, plan['revision']), plan)
+        self.assertEqual(self.table(plan, 'drafts', output)[0]['content'], 'Unsent human draft')
+        self.assertEqual(sorted(self.source.iterdir()), listing)
+        self.assertEqual(self.database.read_bytes(), original)
+
+    def test_wal_closed_cleanly_refuses_a_writer_during_the_read(self):
+        self.closed_wal()
+        connection, unchanged = snapshot.open_read_only(self.database)
+        try:
+            self.assertEqual(connection.execute('SELECT count(*) FROM boards').fetchone()[0], 1)
+            unchanged()
+            Path(str(self.database) + '-wal').write_bytes(b'')
+            with self.assertRaisesRegex(ValueError, 'changed during the export'):
+                unchanged()
+            Path(str(self.database) + '-wal').unlink()
+            os.utime(self.database, ns=(1, 1))
+            with self.assertRaisesRegex(ValueError, 'changed during the export'):
+                unchanged()
+        finally:
+            connection.close()
+
     def test_changed_revision_refuses_export_and_keeps_destination_absent(self):
         with self.mac() as db:
             plan = snapshot.snapshot(self.source)

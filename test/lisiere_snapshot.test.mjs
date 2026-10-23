@@ -12,7 +12,7 @@ test('real legacy SQLite snapshots preserve recovery data, omit credentials and 
   let output;
   try { output = execFileSync('python3', ['-B', script], { encoding: 'utf8', timeout: 30000, maxBuffer: 1024 * 1024, stdio: 'pipe' }); }
   catch (error) { throw new Error('Legacy SQLite contract failure:\n' + error.stdout + '\n' + error.stderr, { cause: error }); }
-  assert.match(output, /9 legacy snapshot contracts passed/);
+  assert.match(output, /11 legacy snapshot contracts passed/);
 });
 
 test('installed CLI previews and resumes a private SQLite export without a registered project or old executable', async t => {
