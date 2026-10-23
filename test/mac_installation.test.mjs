@@ -48,6 +48,16 @@ test('Mac kit rejects original changes, unsafe inputs, occupied outputs and unli
   assert.throws(() => prepareMacInstallation(f.source, f.options), /linked/);
   fs.unlinkSync(path.join(f.source, 'src/linked.mjs')); fs.writeFileSync(path.join(f.source, 'src/credential.key'), 'Synthetic—not a key');
   assert.throws(() => prepareMacInstallation(f.source, f.options), /credential/);
+  fs.unlinkSync(path.join(f.source, 'src/credential.key'));
+  // Only the vendored pdf.js standard fonts pass; any other font stays out of the kit.
+  fs.mkdirSync(path.join(f.source, 'src/vendor/pdfjs/standard_fonts'), { recursive: true });
+  fs.writeFileSync(path.join(f.source, 'src/vendor/pdfjs/standard_fonts/LiberationSans-Regular.ttf'), 'Synthetic font');
+  assert.ok(prepareMacInstallation(f.source, f.options).files >= 5);
+  for (const stray of ['src/Brand.ttf', 'src/vendor/pdfjs/Other.otf', 'src/vendor/pdfjs/standard_fonts/sub/Nested.ttf', 'src/vendor/pdfjs/standard_fonts/Web.woff2']) {
+    fs.mkdirSync(path.dirname(path.join(f.source, stray)), { recursive: true }); fs.writeFileSync(path.join(f.source, stray), 'Synthetic font');
+    assert.throws(() => prepareMacInstallation(f.source, f.options), /credential/, stray);
+    fs.unlinkSync(path.join(f.source, stray));
+  }
 });
 
 test('rendered LaunchAgent uses exact arguments, no shell, no registration or paid-provider fallback and preserves existing product stores', t => {
