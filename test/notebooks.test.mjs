@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { openNotebook, readNotebook, mutateNotebook, undoNotebook, freezeNotebook, readFrozenNotebook, recordNotebookSubmission, notebookReceipt, relocateNotebook, NOTEBOOK_STORE, encodeNotebook, decodeNotebook, addNotebookAsset } from '../src/notebooks.mjs';
+import { openNotebook, readNotebook, mutateNotebook, undoNotebook, freezeNotebook, readFrozenNotebook, recordNotebookSubmission, notebookReceipt, relocateNotebook, transferNotebook, listNotebooks, NOTEBOOK_STORE, encodeNotebook, decodeNotebook, addNotebookAsset } from '../src/notebooks.mjs';
 import { notebookHash, withNotebookLock, readNotebookBytes } from '../src/notebook_io.mjs';
 const human = {kind:'human',id:'human-fixture'}, agent = {kind:'agent',id:'agent-fixture'};
 const canWrite = value => value.startsWith('docs/') && value.endsWith('.crnb');
@@ -140,4 +140,83 @@ test('a reader waits for an immutable frame to finish its exclusive publication'
     assert.equal(readNotebookBytes(root, rel).toString(), 'complete frame');
     assert.equal(fs.lstatSync(target).nlink, 1);
   } finally { child.stdin.end(); await exited; }
+});
+
+function secondRoot(t) {
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'context-room-notebook-space-')));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true})); return root;
+}
+const spaceWrite = value => value.startsWith('Carnets/') && value.endsWith('.crnb');
+const move = (from, to, resourceId, target, operationId, writes = [canWrite, spaceWrite]) => {
+  const options = { canWriteSource: writes[0], canWriteTarget: writes[1] };
+  const preview = transferNotebook(from, to, { resourceId, path: target }, { ...options, preview: true });
+  return transferNotebook(from, to, { resourceId, path: target, operationId, expectedRevision: preview.revision }, options);
+};
+test('transfer moves a working notebook to another root and back', t=>{
+  const {root,scene,request}=fixture(t), space=secondRoot(t);
+  mutateNotebook(root,request('ink',[put('stroke','ink'),put('gone')]),{actor:human,canWrite});
+  mutateNotebook(root,request('erase',[{id:'gone',kind:'delete',expectedRevision:1}]),{actor:human,canWrite});
+  const before=readNotebook(root,scene.resourceId);
+  const preview=transferNotebook(root,space,{resourceId:scene.resourceId,path:'Carnets/Sketch.crnb'},{canWriteSource:canWrite,canWriteTarget:spaceWrite,preview:true});
+  assert.equal(preview.preview,true); assert.equal(preview.overwrites,false); assert.equal(preview.from.path,'docs/Sketch.crnb');
+  assert.equal(listNotebooks(space).length,0);
+  const moved=transferNotebook(root,space,{resourceId:scene.resourceId,path:'Carnets/Sketch.crnb',operationId:'move-out',expectedRevision:preview.revision},{canWriteSource:canWrite,canWriteTarget:spaceWrite,destination:{projectId:'space'}});
+  assert.equal(moved.moved,true); assert.equal(moved.to.projectId,'space'); assert.notEqual(moved.from.serverId,moved.to.serverId);
+  const there=readNotebook(space,scene.resourceId);
+  assert.deepEqual(there.document,before.document); assert.deepEqual(there.tombstones,{gone:2});
+  assert.deepEqual(listNotebooks(root),[]); assert.equal(listNotebooks(space)[0].path,'Carnets/Sketch.crnb'); assert.ok(listNotebooks(space)[0].changedAt);
+  assert.throws(()=>readNotebook(root,scene.resourceId),error=>error.code==='notebook_moved'&&error.statusCode===409&&error.details.destination.path==='Carnets/Sketch.crnb');
+  assert.throws(()=>mutateNotebook(root,request('late',[put('late')]),{actor:human,canWrite}),{code:'notebook_moved'});
+  assert.ok(fs.existsSync(path.join(root,NOTEBOOK_STORE,'retired',`${scene.resourceId}-move-out`,'header.json')),'the source is retained');
+  assert.equal(transferNotebook(root,space,{resourceId:scene.resourceId,path:'Carnets/Sketch.crnb',operationId:'move-out',expectedRevision:preview.revision},{canWriteSource:canWrite,canWriteTarget:spaceWrite}).replayed,true);
+  mutateNotebook(space,{protocolVersion:1,resourceId:scene.resourceId,operationId:'more-ink',locationRevision:there.locator.revision,edits:[put('more','ink')]},{actor:human,canWrite:spaceWrite});
+  const back=move(space,root,scene.resourceId,'docs/Sketch.crnb','move-back',[spaceWrite,canWrite]);
+  assert.equal(back.moved,true);
+  const home=readNotebook(root,scene.resourceId);
+  assert.deepEqual(home.document.objects.map(o=>o.id).sort(),['more','stroke']);
+  assert.notEqual(home.locator.revision,scene.locator.revision,'an old location revision does not come back');
+  assert.throws(()=>readNotebook(space,scene.resourceId),{code:'notebook_moved'});
+  mutateNotebook(root,{protocolVersion:1,resourceId:scene.resourceId,operationId:'home-ink',locationRevision:home.locator.revision,edits:[put('home','ink')]},{actor:human,canWrite});
+});
+test('transfer refuses to overwrite an occupied path or id', t=>{
+  const {root,scene}=fixture(t), space=secondRoot(t);
+  openNotebook(space,{path:'Carnets/Taken.crnb',id:'other-notebook',canWrite:spaceWrite});
+  assert.throws(()=>transferNotebook(root,space,{resourceId:scene.resourceId,path:'Carnets/Taken.crnb'},{canWriteSource:canWrite,canWriteTarget:spaceWrite,preview:true}),{code:'notebook_location_conflict'});
+  fs.mkdirSync(path.join(space,'Carnets'),{recursive:true}); fs.writeFileSync(path.join(space,'Carnets/File.crnb'),'{}');
+  assert.throws(()=>transferNotebook(root,space,{resourceId:scene.resourceId,path:'Carnets/File.crnb'},{canWriteSource:canWrite,canWriteTarget:spaceWrite,preview:true}),{code:'notebook_location_conflict'});
+  openNotebook(space,{path:'Carnets/Same-id.crnb',id:scene.resourceId,canWrite:spaceWrite});
+  assert.throws(()=>transferNotebook(root,space,{resourceId:scene.resourceId,path:'Carnets/Free.crnb'},{canWriteSource:canWrite,canWriteTarget:spaceWrite,preview:true}),{code:'notebook_location_conflict'});
+  assert.throws(()=>transferNotebook(root,space,{resourceId:scene.resourceId,path:'Elsewhere/Free.crnb'},{canWriteSource:canWrite,canWriteTarget:spaceWrite,preview:true}),{code:'notebook_path_scope'});
+  assert.throws(()=>transferNotebook(root,root,{resourceId:scene.resourceId,path:'docs/Other.crnb'},{canWriteSource:canWrite,canWriteTarget:canWrite,preview:true}),{code:'notebook_location_conflict'});
+  const clean=secondRoot(t), preview=transferNotebook(root,clean,{resourceId:scene.resourceId,path:'Carnets/Free.crnb'},{canWriteSource:canWrite,canWriteTarget:spaceWrite,preview:true});
+  assert.throws(()=>transferNotebook(root,clean,{resourceId:scene.resourceId,path:'Carnets/Free.crnb',operationId:'stale',expectedRevision:'0'.repeat(64)},{canWriteSource:canWrite,canWriteTarget:spaceWrite}),{code:'notebook_location_stale'});
+  assert.equal(readNotebook(root,scene.resourceId).resourceId,scene.resourceId); assert.equal(listNotebooks(clean).length,0); assert.ok(preview.revision);
+});
+test('transfer replays after a crash between copy and retirement', t=>{
+  const {root,scene,request}=fixture(t), space=secondRoot(t);
+  mutateNotebook(root,request('ink',[put('stroke','ink')]),{actor:human,canWrite});
+  const options={canWriteSource:canWrite,canWriteTarget:spaceWrite};
+  const preview=transferNotebook(root,space,{resourceId:scene.resourceId,path:'Carnets/Sketch.crnb'},{...options,preview:true});
+  const rename=fs.renameSync; fs.renameSync=(from,to)=>{ if(String(to).includes('/retired/')) throw Object.assign(new Error('simulated crash'),{code:'EIO'}); return rename(from,to); };
+  try { assert.throws(()=>transferNotebook(root,space,{resourceId:scene.resourceId,path:'Carnets/Sketch.crnb',operationId:'crash',expectedRevision:preview.revision},options),/simulated crash/); }
+  finally { fs.renameSync=rename; }
+  assert.equal(readNotebook(space,scene.resourceId).document.objects.length,1);
+  assert.throws(()=>readNotebook(root,scene.resourceId),{code:'notebook_moved'});
+  assert.ok(fs.existsSync(path.join(root,NOTEBOOK_STORE,'resources',scene.resourceId,'header.json')));
+  assert.throws(()=>transferNotebook(root,space,{resourceId:scene.resourceId,path:'Carnets/Other.crnb',operationId:'crash',expectedRevision:preview.revision},options),{code:'notebook_replay_conflict'});
+  const resumed=transferNotebook(root,space,{resourceId:scene.resourceId,path:'Carnets/Sketch.crnb',operationId:'crash',expectedRevision:preview.revision},options);
+  assert.equal(resumed.replayed,true);
+  assert.equal(fs.existsSync(path.join(root,NOTEBOOK_STORE,'resources',scene.resourceId)),false);
+  assert.ok(fs.existsSync(path.join(root,NOTEBOOK_STORE,'retired',`${scene.resourceId}-crash`,'header.json')));
+  assert.deepEqual(listNotebooks(space).map(n=>n.id),[scene.resourceId]);
+});
+test('transfer refuses a published notebook', t=>{
+  const {root,scene,request}=fixture(t), space=secondRoot(t);
+  mutateNotebook(root,request('ink',[put('stroke','ink')]),{actor:human,canWrite});
+  freezeNotebook(root,{resourceId:scene.resourceId,operationId:'freeze',expectedRevision:1,locationRevision:scene.locator.revision},{actor:human,canWrite});
+  recordNotebookSubmission(root,{resourceId:scene.resourceId,operationId:'submit',freezeId:'freeze',proposalId:'synthetic',proposalRevision:'revision'},{actor:human,canWrite,verifyProposal:()=>true});
+  assert.throws(()=>transferNotebook(root,space,{resourceId:scene.resourceId,path:'Carnets/Sketch.crnb'},{canWriteSource:canWrite,canWriteTarget:spaceWrite,preview:true}),error=>error.code==='notebook_move_published'&&error.statusCode===409);
+  const other=fixture(t); fs.mkdirSync(path.join(other.root,'docs')); fs.writeFileSync(path.join(other.root,'docs/Sketch.crnb'),encodeNotebook(readNotebook(other.root,other.scene.resourceId).document));
+  assert.throws(()=>transferNotebook(other.root,space,{resourceId:other.scene.resourceId,path:'Carnets/Sketch.crnb'},{canWriteSource:canWrite,canWriteTarget:spaceWrite,preview:true}),{code:'notebook_move_published'});
+  assert.equal(readNotebook(root,scene.resourceId).document.objects.length,1);
 });
