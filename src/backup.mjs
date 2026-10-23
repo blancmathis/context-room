@@ -309,6 +309,9 @@ function writeEntry(entry, bytes, expectedHash) {
 }
 function removeCreated(entry) {
   const base = entry.root in HOMES ? homeDirectory(entry.root) : entry.root;
+  // Remove only what this restore wrote: a file changed since then stays.
+  const current = readNotebookBytes(base, entry.path, MAX_FILE_BYTES);
+  if (current && sha256(current) !== entry.sha256) throw new Error('it changed after the restore wrote it');
   try { fs.unlinkSync(path.join(base, entry.path)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
 }
 function undoDirectory() {
@@ -356,7 +359,7 @@ export function applyRestore(directory, { only, replace = false, expectedRevisio
         else {
           const before = readNotebookBytes(undo, `objects/${action.currentSha256}`, MAX_FILE_BYTES);
           if (!before) throw new Error('the saved copy is missing');
-          writeEntry(action.entry, before);
+          writeEntry(action.entry, before, action.entry.sha256);
         }
       } catch (rollbackError) { stuck.push(`${action.entry.path} (${rollbackError.message})`); }
     }

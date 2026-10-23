@@ -316,6 +316,30 @@ test('a file changed after the undo copy stops the restore; the message names th
   assert.equal(fs.readFileSync(file, 'utf8'), 'edited\n', 'the file already written is put back');
 });
 
+test('the rollback puts a replaced file back only over what the restore wrote', t => {
+  const lab = laboratory(t), w = lab.world('a'), root = lab.project('one'); lab.populate(w, root);
+  const { output } = writeBackup({ output: path.join(lab.base, 'b1') });
+  const file = conversationFile(w), key = path.join(w.review, 'authority.key');
+  fs.writeFileSync(file, 'edited\n'); fs.rmSync(key);
+  const preview = previewRestore(output, { replace: true });
+  assert.throws(() => applyRestore(output, { replace: true, expectedRevision: preview.revision }, { checkpoint(name, index) {
+    if (name === 'before-write' && index === 1) { fs.writeFileSync(file, 'changed after the write\n'); fs.writeFileSync(key, 'late key'); }
+  } }), error => /could not be put back/.test(error.message) && /before-restore-/.test(error.message));
+  assert.equal(fs.readFileSync(file, 'utf8'), 'changed after the write\n');
+});
+
+test('the rollback removes a created file only while it holds what the restore wrote', t => {
+  const lab = laboratory(t), w = lab.world('a'), root = lab.project('one'); lab.populate(w, root);
+  const { output } = writeBackup({ output: path.join(lab.base, 'b1') });
+  const file = conversationFile(w), key = path.join(w.review, 'authority.key');
+  fs.rmSync(file); fs.rmSync(key);
+  const preview = previewRestore(output);
+  assert.throws(() => applyRestore(output, { expectedRevision: preview.revision }, { checkpoint(name, index) {
+    if (name === 'before-write' && index === 1) { fs.writeFileSync(file, 'changed after the write\n'); fs.writeFileSync(key, 'late key'); }
+  } }), /could not be put back: .*changed after the restore wrote it/);
+  assert.equal(fs.readFileSync(file, 'utf8'), 'changed after the write\n');
+});
+
 test('a linked project store or a hard-linked file is skipped with a warning, not a failure', t => {
   const lab = laboratory(t), w = lab.world('a'), one = lab.project('one'), linked = lab.project('linked'); lab.populate(w, one); lab.register(w, one, linked);
   const elsewhere = path.join(lab.base, 'archive'); fs.mkdirSync(path.join(elsewhere, 'notebooks'), { recursive: true });
