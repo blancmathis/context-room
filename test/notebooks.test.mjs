@@ -224,3 +224,13 @@ test('transfer refuses a published notebook', t=>{
   assert.throws(()=>transferNotebook(other.root,space,{resourceId:other.scene.resourceId,path:'Carnets/Sketch.crnb'},{canWriteSource:canWrite,canWriteTarget:spaceWrite,preview:true}),{code:'notebook_move_published'});
   assert.equal(readNotebook(root,scene.resourceId).document.objects.length,1);
 });
+
+test('createOnly refuses a path used by a notebook or an ordinary file', t=>{
+  const {root}=fixture(t);
+  assert.throws(()=>openNotebook(root,{path:'docs/Sketch.crnb',canWrite,createOnly:true}),{code:'notebook_location_conflict'});
+  assert.equal(openNotebook(root,{path:'docs/Sketch.crnb',canWrite}).locator.path,'docs/Sketch.crnb');
+  fs.mkdirSync(path.join(root,'docs'),{recursive:true}); fs.writeFileSync(path.join(root,'docs/Plain.crnb'),'Existing original bytes');
+  assert.throws(()=>openNotebook(root,{path:'docs/Plain.crnb',canWrite,createOnly:true}),{code:'notebook_location_conflict'});
+  assert.equal(fs.readFileSync(path.join(root,'docs/Plain.crnb'),'utf8'),'Existing original bytes');
+  assert.equal(openNotebook(root,{path:'docs/New.crnb',canWrite,createOnly:true}).locator.path,'docs/New.crnb');
+});

@@ -1261,13 +1261,27 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .plain-text-editor { display: block; width: 100%; min-height: 100%; resize: none; border: 0; outline: none; background: var(--file-bg); color: var(--file-fg); padding: 18px 22px; }
     .html-preview-shell { width: 100%; min-height: calc(100vh - 162px); max-height: calc(100vh - 162px); overflow: hidden; background: var(--file-bg); }
     .html-preview-frame { display: block; width: 100%; height: calc(100vh - 162px); min-height: 420px; border: 0; background: var(--file-bg); }
-    .image-preview-shell { min-height: calc(100vh - 162px); display: flex; flex-direction: column; background: var(--file-bg); color: var(--file-fg); }
-    .image-preview-toolbar { min-height: 42px; padding: 7px 10px; border-bottom: 1px solid var(--file-line); display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--file-muted); font: 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; }
-    .image-preview-toolbar button { min-height: 28px; padding: 4px 9px; border: 1px solid var(--file-line); border-radius: 7px; background: var(--file-header-bg); color: var(--file-fg); font: 700 11px/1 ui-sans-serif, system-ui, sans-serif; }
-    .image-preview-stage { flex: 1 1 auto; min-height: 0; display: grid; place-items: center; overflow: auto; padding: 24px; background: color-mix(in srgb, var(--file-bg) 95%, var(--file-fg) 5%); }
-    .image-preview-stage img { display: block; max-width: 100%; max-height: calc(100vh - 260px); width: auto; height: auto; object-fit: contain; }
-    .image-preview-stage.actual-size { place-items: start; }
-    .image-preview-stage.actual-size img { max-width: none; max-height: none; }
+    .doc-viewer { height: calc(100vh - 162px); min-height: 360px; display: flex; flex-direction: column; background: var(--file-bg); color: var(--file-fg); }
+    .dv-root { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; outline-offset: -2px; }
+    .dv-toolbar { padding: 6px 10px; border-bottom: 1px solid var(--file-line); display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; color: var(--file-muted); font: 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .dv-info { flex: 1 1 140px; min-width: 0; overflow-wrap: anywhere; }
+    .dv-button { min-width: 48px; min-height: 48px; padding: 6px 12px; border: 1px solid var(--file-line); border-radius: 7px; background: var(--file-header-bg); color: var(--file-fg); font: 700 13px/1 ui-sans-serif, system-ui, sans-serif; }
+    .dv-button:disabled { opacity: 0.45; }
+    .dv-primary { border-color: var(--file-fg); }
+    .dv-level { min-width: 52px; text-align: center; color: var(--file-fg); font: 700 13px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .dv-stage { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; touch-action: pan-x pan-y; background: color-mix(in srgb, var(--file-bg) 95%, var(--file-fg) 5%); }
+    .dv-content { margin: 0 auto; }
+    .dv-content img, .dv-canvas { display: block; width: 100%; height: 100%; user-select: none; -webkit-user-drag: none; }
+    .dv-canvas { background: #fff; }
+    .dv-pages { padding: 6px 10px; border-top: 1px solid var(--file-line); display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; color: var(--file-fg); font: 700 13px/1 ui-sans-serif, system-ui, sans-serif; }
+    .dv-page-input, .dv-annotate-input { min-height: 48px; padding: 4px 8px; border: 1px solid var(--file-line); border-radius: 7px; background: var(--file-bg); color: var(--file-fg); font: 700 14px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .dv-root .dv-page-input, .dv-root .dv-annotate-input { height: 48px; min-height: 48px; box-sizing: border-box; }
+    .dv-page-input { width: 4em; text-align: center; }
+    .dv-page-message, .dv-annotate-status { min-width: 0; color: var(--file-muted); font: 12px/1.3 ui-sans-serif, system-ui, sans-serif; }
+    .dv-annotate { padding: 8px 10px; border-bottom: 1px solid var(--file-line); display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font: 12px/1.3 ui-sans-serif, system-ui, sans-serif; }
+    .dv-annotate[hidden] { display: none; }
+    .dv-annotate-label { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 4px; color: var(--file-muted); }
+    .dv-error { margin: 24px auto; max-width: 420px; padding: 18px; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; border: 1px solid var(--file-line); border-radius: 8px; }
     .markdown-editor-input::selection { background: transparent; color: transparent !important; -webkit-text-fill-color: transparent !important; }
     .markdown-editor-caret { position: absolute; z-index: 4; width: 2px; border-radius: 1px; background: var(--file-h1); pointer-events: none; animation: markdownCaretBlink 1s steps(1, end) infinite; }
     @keyframes markdownCaretBlink { 0%, 48% { opacity: 1; } 49%, 100% { opacity: 0; } }
@@ -2245,7 +2259,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .file-action:hover { transform: none; }
     .diff-code, .doc-content, .doc-editor { padding: 18px 22px; }
     .diff-panel, .file-panel { height: 100%; min-height: 0; display: flex; flex-direction: column; }
-    .diff-code, .doc-content, .doc-editor, .external-review-doc, .markdown-editor-shell, .image-preview-shell { flex: 1 1 auto; min-height: 0; max-height: none; }
+    .diff-code, .doc-content, .doc-editor, .external-review-doc, .markdown-editor-shell, .doc-viewer { flex: 1 1 auto; min-height: 0; max-height: none; }
     .doc-content { max-width: 1040px; margin: 0 auto; font-size: 14px; line-height: 1.68; }
     .file-panel .doc-editor.markdown-view, .file-panel .markdown-editor-input { padding-left: 36px; }
     .file-panel .doc-editor.markdown-view .markdown-line { position: relative; }
@@ -3980,7 +3994,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 		state.workspaceSessionId = "";
 		state.workspaceLabel = "";
 		state.selectedVisualAsset = null;
-		state.imagePreviewActualSize = false;
 		state.explorerReturnFocus = null;
 		state.sharedContext = null;
 		state.sharedContextBusy = false;
@@ -4555,7 +4568,7 @@ async function loadContextRoomAssistantUi() {
   return contextRoomAssistantUi ||= await import("/assets/ui/assistant.mjs");
 }
 
-async function openContextRoomNotebook(filePath, { directory = "", projectId = "", resourceId, beforePresent, title, onClosed } = {}) {
+async function openContextRoomNotebook(filePath, { directory = "", projectId = "", resourceId, beforePresent, title, initialImage, initialImageBackground, createOnly, onClosed } = {}) {
   const captured = captureNotebookApi(projectId);
   const notebook = await import("/assets/ui/notebook-editor.mjs");
   // A project's chooser offers Move to Notebooks once the space exists.
@@ -4565,7 +4578,7 @@ async function openContextRoomNotebook(filePath, { directory = "", projectId = "
   const onMove = space && source && source.id !== space.id
     ? (item) => moveNotebookBetweenPlaces(item, { id: source.id, title: source.title || source.id }, [{ id: space.id, title: "Notebooks", space: true }])
     : undefined;
-  const options = { ...captured, resourceId, beforePresent, title, onMove,
+  const options = { ...captured, resourceId, beforePresent, title, initialImage, initialImageBackground, createOnly, onMove,
     onConversation: async (source, display) => { const assistant = await loadContextRoomAssistantUi(); return assistant.openConversation({ ...captured, source, ...display }); },
     onClosed: () => { contextRoomAssistantUi?.dockConversation(); onClosed?.(); },
     onSubmitted: async () => { setStatus("Notebook submitted for human review. No file accepted."); if (typeof refreshDocQa === "function") await refreshDocQa(); } };
@@ -7319,7 +7332,7 @@ async function createSpaceNotebook() {
   const space = await ensureNotebookSpace();
   const { newSpaceNotebook } = await import("/assets/ui/notebook-space.mjs");
   const { path: notebookPath, title } = newSpaceNotebook();
-  await openContextRoomNotebook(notebookPath, { projectId: space.id, title, onClosed: reloadNotebookSpace });
+  await openContextRoomNotebook(notebookPath, { projectId: space.id, title, createOnly: true, onClosed: reloadNotebookSpace });
   reloadNotebookSpace();
 }
 
@@ -13082,6 +13095,7 @@ function parentFolders(target) {
 
 function iconForPath(filePath) {
   if (/\.(png|jpe?g|gif|webp|avif)$/i.test(filePath)) return "▧";
+  if (/\.pdf$/i.test(filePath)) return "▤";
   if (/\.(svg|mmd|mermaid|puml|plantuml|dot|gv|drawio)$/i.test(filePath)) return "⌁";
   if (filePath.endsWith(".csv")) return "▦";
   if (filePath.endsWith(".json") || filePath.endsWith(".jsonl")) return "{}";
@@ -13969,7 +13983,6 @@ function clearMissingSelectedFile(stalePath = state.selected) {
   state.saved = "";
   state.savedHash = null;
   state.selectedVisualAsset = null;
-  state.imagePreviewActualSize = false;
   state.dirty = false;
   state.mode = "view";
   state.page = "hub";
@@ -14206,7 +14219,6 @@ async function selectFile(path, options = {}) {
   state.fileContentReadyPath = null;
   state.selectedStartupContext = null;
   state.selectedVisualAsset = null;
-  state.imagePreviewActualSize = false;
   state.activeStartupContextExplorer = null;
   state.reviewModePath = options.reviewMode ? path : null;
   state.reviewModeStatus = options.reviewMode ? reviewStatusForPath(path) : null;
@@ -20754,7 +20766,7 @@ function renderViewer() {
     : loadingFile
       ? renderFileLoadingState(file)
       : isImageDocument
-        ? renderImageDocumentPreview(state.selectedVisualAsset, file.path)
+        ? renderImageDocumentPreview(state.selectedVisualAsset)
       : !conflict && externalChange
         ? isHtmlDocument
           ? renderHtmlDocumentPreview(externalChange.diskContent || "", file.path)
@@ -21475,38 +21487,32 @@ function isHtmlDocumentPath(filePath) {
 }
 
 function isImageDocumentPath(filePath) {
-  return /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(String(filePath || ""));
+  return /\.(png|jpe?g|gif|webp|avif|svg|pdf)$/i.test(String(filePath || ""));
 }
 
-function renderImageDocumentPreview(asset, filePath = state.selected) {
-  if (!asset?.dataUrl) return '<div class="file-load-state error"><div class="file-load-state-inner"><strong>Image preview unavailable</strong><span>The visual asset could not be decoded safely.</span></div></div>';
-  const actualSize = state.imagePreviewActualSize;
-  const format = String(asset.mimeType || "image").replace("image/", "").toUpperCase().replace("JPEG", "JPG").replace("SVG+XML", "SVG");
-  return '<div class="image-preview-shell" data-image-preview>'
-    + '<div class="image-preview-toolbar"><span>' + escapeHtml(format + " · " + formatExplorerBytes(asset.bytes || 0)) + ' · <span data-image-dimensions>measuring…</span></span>'
-    + '<button type="button" data-image-size-toggle>' + (actualSize ? "Fit to window" : "Actual size") + '</button></div>'
-    + '<div class="image-preview-stage' + (actualSize ? " actual-size" : "") + '" data-image-stage>'
-      + '<img src="' + escapeHtml(asset.dataUrl) + '" alt="Preview of ' + escapeHtml(filePath || "image") + '" draggable="false" referrerpolicy="no-referrer" />'
-    + '</div></div>';
+function renderImageDocumentPreview(asset) {
+  if (!asset?.dataUrl) return '<div class="file-load-state error"><div class="file-load-state-inner"><strong>Preview unavailable</strong><span>The visual asset could not be decoded safely.</span></div></div>';
+  return '<div class="doc-viewer" data-document-viewer></div>';
 }
 
+let documentViewer = null;
 function wireImageDocumentPreview() {
-  const preview = document.querySelector("[data-image-preview]");
-  if (!preview) return;
-  const image = preview.querySelector("img");
-  const dimensions = preview.querySelector("[data-image-dimensions]");
-  const updateDimensions = () => {
-    if (!dimensions || !image?.naturalWidth || !image?.naturalHeight) return;
-    dimensions.textContent = image.naturalWidth + " × " + image.naturalHeight;
-  };
-  if (image?.complete) updateDimensions();
-  else image?.addEventListener("load", updateDimensions, { once: true });
-  preview.querySelector("[data-image-size-toggle]")?.addEventListener("click", () => {
-    state.imagePreviewActualSize = !state.imagePreviewActualSize;
-    const viewState = captureEditorViewState();
-    renderViewer();
-    restoreEditorViewState(viewState);
-  });
+  documentViewer?.destroy();
+  documentViewer = null;
+  const host = document.querySelector("[data-document-viewer]");
+  const asset = state.selectedVisualAsset;
+  const path = state.selected;
+  if (!host || !asset?.dataUrl) return;
+  const mount = () => { documentViewer?.destroy(); documentViewer = null; return import("/assets/ui/document-viewer.mjs").then((viewer) => {
+    if (!host.isConnected || state.selected !== path) return;
+    documentViewer = viewer.mountDocumentViewer(host, {
+      asset, path, projectId: state.projectId || "",
+      existingPaths: () => new Set((state.files || []).map((item) => item.path)),
+      annotate: ({ path: notebookPath, title, file }) => openContextRoomNotebook(notebookPath, { title, initialImage: file, initialImageBackground: true, createOnly: true }),
+      retry: mount,
+    });
+  }).catch(() => { if (host.isConnected) host.innerHTML = '<div class="file-load-state error"><div class="file-load-state-inner"><strong>Preview unavailable</strong><span>The viewer could not be loaded.</span></div></div>'; }); };
+  mount();
 }
 
 let mermaidLoaderPromise = null;

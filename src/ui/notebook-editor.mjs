@@ -16,7 +16,7 @@ const button = (label, callback, className = '') => { const node = notebookEleme
 async function metadata(storage, key, update) { for (let n = 0; n < 8; n++) { const state = await storage.read(key); try { await storage.commit(key, state.version, { metadata: update(state.metadata) }); return; } catch (error) { if (error.code !== 'notebook_cache_conflict') throw error; } } throw new Error('The local notebook cache is busy.'); }
 
 /** api and scopeKey must be captured from the exact project/location BEFORE navigation can change. */
-export async function openNotebookEditor({ api, path, resourceId, title, scopeKey, fixedSnapshot = null, reviewKey = '', onCorrection, onSubmitted = () => {}, onClosed = () => {}, onInteraction = () => {}, onConversation, initialImage, beforePresent, offlineCapabilities = null, cacheServerId = '', browserDeviceId = document.querySelector('meta[name="context-room-browser-device"]')?.content || '' } = {}) {
+export async function openNotebookEditor({ api, path, resourceId, title, scopeKey, fixedSnapshot = null, reviewKey = '', onCorrection, onSubmitted = () => {}, onClosed = () => {}, onInteraction = () => {}, onConversation, initialImage, initialImageBackground = false, createOnly = false, beforePresent, offlineCapabilities = null, cacheServerId = '', browserDeviceId = document.querySelector('meta[name="context-room-browser-device"]')?.content || '' } = {}) {
   notebookStyles(); if (path) notebookPath(path);
   const storage = new IndexedNotebookStorage(), browserId = await notebookBrowserIdentity(storage);
   const request = (url, options = {}) => api(url, { ...options, headers: { ...options.headers, 'x-context-room-notebook-client': browserId } });
@@ -46,7 +46,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     const document = normalizeNotebookDocument(fixedSnapshot);
     snapshot = { protocolVersion: NOTEBOOK_VERSION, resourceId: document.id, document, locator: { path, revision: reviewKey }, sequence: 0, revision: document.revision, tombstones: {}, accepted: false };
   } else if (!offlineError) {
-    try { snapshot = resourceId ? await transport.scene(resourceId) : await transport.open({ protocolVersion: NOTEBOOK_VERSION, id: cached?.snapshot.resourceId || crypto.randomUUID(), path, title: title || path.split('/').pop().replace(/\.crnb$/i, '') }); }
+    try { snapshot = resourceId ? await transport.scene(resourceId) : await transport.open({ protocolVersion: NOTEBOOK_VERSION, id: cached?.snapshot.resourceId || crypto.randomUUID(), path, title: title || path.split('/').pop().replace(/\.crnb$/i, ''), ...(createOnly ? { createOnly: true } : {}) }); }
     catch (error) { offlineError = error; }
   }
   if (!snapshot && cached) snapshot = cached.snapshot;
@@ -337,14 +337,17 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
       } finally { add.disabled = false; cancel.disabled = false; input.readOnly = false; }
     })()); });
   }
-  async function addImage(file) {
+  async function addImage(file, { background = false } = {}) {
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 12 * 1024 * 1024) throw new Error('Choose a PNG, JPEG or WebP image no larger than 12 MiB. The original is unchanged.');
     const bitmap = await createImageBitmap(file); const size = { width: bitmap.width, height: bitmap.height }; bitmap.close(); if (size.width * size.height > 16_000_000) throw new Error('This image exceeds the 16 million pixel rendering limit.');
     const bytes = new Uint8Array(await file.arrayBuffer()), digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), assetId = [...digest].map(value => value.toString(16).padStart(2, '0')).join('');
     const asset = { mimeType: file.type, data: notebookBase64(bytes), assetId };
     try { await client.enqueueAsset(asset); } catch (error) { failedLocalWork.push({ asset, error: error.message }); throw error; }
     const id = crypto.randomUUID(), scale = Math.min(1, 800 / size.width, 600 / size.height);
-    await enqueue([{ kind: 'put', id, expectedRevision: 0, object: { id, type: 'image', asset: assetId, x: (40 - surface.view.x) / surface.view.scale, y: (40 - surface.view.y) / surface.view.scale, width: size.width * scale, height: size.height * scale } }], { gestureId: crypto.randomUUID() }); surface.select([id]);
+    // A background keeps its pixel size at (0, 0), locked, and the view fits it; a picked image is a movable 800 x 600 object.
+    const placed = background ? { x: 0, y: 0, width: size.width, height: size.height, locked: true } : { x: (40 - surface.view.x) / surface.view.scale, y: (40 - surface.view.y) / surface.view.scale, width: size.width * scale, height: size.height * scale };
+    await enqueue([{ kind: 'put', id, expectedRevision: 0, object: { id, type: 'image', asset: assetId, ...placed } }], { gestureId: crypto.randomUUID() });
+    if (background) surface.fit(); else surface.select([id]);
   }
   async function exportRecovery() {
     await surface.settle().catch(() => {}); const recovery = await client.exportRecovery();
@@ -403,7 +406,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     if (saved.metadata.eink) { dialog.classList.add('notebook-eink'); eink.setAttribute('aria-pressed', 'true'); }
     if (saved.metadata.textDraft) await editText(saved.metadata.textDraft);
     renderObjects(); surface.schedule(); canvas.focus();
-    if (initialImage) await addImage(initialImage);
+    if (initialImage) await addImage(initialImage, { background: initialImageBackground });
     timer = setInterval(() => { if (document.visibilityState === 'visible') void sync(); }, 900);
     void sync();
     const editor = { dialog, client, surface, scope, scopeKey, browserDeviceId, path, resourceId, close, releaseView: () => viewLink.release(), busy: () => Boolean(surface.gesture || textForm || saving), binding: () => ({ resourceId, path, revision: view.revision, locationRevision: view.locator.revision, selection: [...surface.selection], working: true }) };
