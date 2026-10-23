@@ -891,6 +891,7 @@ const PROJECT_VISUAL_ASSET_TYPES = new Map([
   [".webp", "image/webp"],
   [".avif", "image/avif"],
   [".svg", "image/svg+xml"],
+  [".pdf", "application/pdf"],
 ]);
 const PROJECT_DIAGRAM_SOURCE_EXTENSIONS = new Set([".mmd", ".mermaid", ".puml", ".plantuml", ".dot", ".gv", ".drawio"]);
 const PROJECT_TEXT_FILENAMES = new Set([
@@ -11419,7 +11420,7 @@ export function buildDocumentationGraph(root = process.cwd(), options = {}) {
     const targetAbs = path.resolve(root, targetPath);
     if (!configuredPaths.has(targetPath) && fs.existsSync(targetAbs) && fs.statSync(targetAbs).isFile()) {
       const stats = fs.statSync(targetAbs);
-      graphFiles.push({ path: targetPath, label: path.basename(targetPath), exists: true, bytes: stats.size, updatedAt: stats.mtime.toISOString(), kind: PROJECT_VISUAL_ASSET_TYPES.has(path.extname(targetPath).toLowerCase()) ? "image" : "structured" });
+      graphFiles.push({ path: targetPath, label: path.basename(targetPath), exists: true, bytes: stats.size, updatedAt: stats.mtime.toISOString(), kind: path.extname(targetPath).toLowerCase() === ".pdf" ? "document" : PROJECT_VISUAL_ASSET_TYPES.has(path.extname(targetPath).toLowerCase()) ? "image" : "structured" });
       configuredPaths.add(targetPath);
     }
   }
@@ -18009,7 +18010,8 @@ function remoteStaticAssetPath(pathname) {
   const bundle = contextRoomWebAssetBundle("", "", "hosted-hub");
   return pathname === bundle.cssPath
     || pathname === bundle.jsPath
-    || pathname === mermaidWebAssetBundle().path;
+    || pathname === mermaidWebAssetBundle().path
+    || pathname.startsWith("/vendor/pdfjs/");
 }
 
 function remoteWorkspaceCommandPath(pathname) {
@@ -20941,7 +20943,7 @@ async function documentInspectionApiResult(root, url) {
   }
   const stats = fs.statSync(canonicalPath);
   if (!stats.isFile()) throw sharedRequestError("Document is unavailable", 404, "document_not_found");
-  const textual = !/\.(?:png|jpe?g|gif|webp|avif|svg)$/i.test(canonicalPath);
+  const textual = !/\.(?:png|jpe?g|gif|webp|avif|svg|pdf)$/i.test(canonicalPath);
   const content = textual && stats.size <= MAX_FILE_BYTES ? fs.readFileSync(canonicalPath, "utf8") : "";
   const inspection = inspectDocumentMetadata({ content, relPath: resolved.path, root: target.root, absolutePath: canonicalPath });
   const graphUrl = new URL(url);
@@ -21829,6 +21831,12 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     } else {
       sendJson(res, 404, { error: "Asset not found" });
     }
+    return;
+  }
+  if (["GET", "HEAD"].includes(req.method) && url.pathname.startsWith("/vendor/pdfjs/")) {
+    const asset = pdfjsWebAsset(url.pathname.slice("/vendor/pdfjs/".length));
+    if (asset) sendVersionedAsset(req, res, asset.variants, asset.contentType, asset.etag, { cacheControl: "no-cache" });
+    else sendJson(res, 404, { error: "Asset not found" });
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/workspaces") {
@@ -24575,6 +24583,7 @@ function fileKindForPath(relPath) {
   const ext = path.extname(normalizeRelPath(String(relPath || ""))).toLowerCase();
   if (ext === ".csv" || ext === ".tsv") return "csv";
   if (ext === ".html" || ext === ".htm") return "html";
+  if (ext === ".pdf") return "pdf";
   if (PROJECT_VISUAL_ASSET_TYPES.has(ext)) return ext === ".svg" ? "diagram" : "image";
   if (PROJECT_DIAGRAM_SOURCE_EXTENSIONS.has(ext)) return "diagram-source";
   if (ext === ".md" || ext === ".mdx" || ext === ".txt") return "markdown";
@@ -25385,7 +25394,7 @@ function sendNotModified(res, headers = {}) {
 }
 
 function sendOptions(res, pathname = "") {
-  const allow = pathname === "/" || pathname.startsWith("/assets/context-room.") || pathname.startsWith("/vendor/mermaid")
+  const allow = pathname === "/" || pathname.startsWith("/assets/context-room.") || pathname.startsWith("/vendor/mermaid") || pathname.startsWith("/vendor/pdfjs/")
     ? "GET, HEAD, OPTIONS"
     : pathname === "/api/workspaces/register"
       ? "POST, DELETE, OPTIONS"
@@ -25523,6 +25532,39 @@ function mermaidWebAssetBundle() {
     path: `/vendor/mermaid.${hash}.min.js`,
   };
   return mermaidWebAssetCache;
+}
+
+// pdf.js 6.4.299 (legacy build, for older WebViews) is copied into src/vendor/pdfjs/ by scripts/update-pdfjs.mjs and served from a fixed allowlist.
+const PDFJS_ASSET_TYPES = new Map([[".mjs", "text/javascript; charset=utf-8"], [".js", "text/javascript; charset=utf-8"], [".bcmap", "application/octet-stream"], [".pfb", "application/octet-stream"], [".ttf", "font/ttf"], [".wasm", "application/wasm"]]);
+let pdfjsAssetIndex = null;
+const pdfjsAssetCache = new Map();
+
+function pdfjsAssetFiles() {
+  if (pdfjsAssetIndex) return pdfjsAssetIndex;
+  const base = fileURLToPath(new URL("./vendor/pdfjs/", import.meta.url));
+  const files = new Map([["pdf.min.mjs", "pdf.min.mjs"], ["pdf.worker.min.mjs", "pdf.worker.min.mjs"]]);
+  for (const [dir, extensions] of [["standard_fonts", [".pfb", ".ttf"]], ["cmaps", [".bcmap"]], ["wasm", [".wasm", ".js"]]]) {
+    let names = [];
+    try { names = fs.readdirSync(path.join(base, dir)); } catch { /* package without this directory */ }
+    for (const name of names) if (extensions.includes(path.extname(name)) && /^[A-Za-z0-9._-]+$/.test(name)) files.set(`${dir}/${name}`, `${dir}/${name}`);
+  }
+  pdfjsAssetIndex = { base, files };
+  return pdfjsAssetIndex;
+}
+
+function pdfjsWebAsset(name) {
+  const { base, files } = pdfjsAssetFiles();
+  if (!files.has(name)) return null;
+  if (pdfjsAssetCache.has(name)) return pdfjsAssetCache.get(name);
+  let source;
+  try { source = fs.readFileSync(path.join(base, files.get(name))); } catch { return null; }
+  const asset = {
+    variants: compressedAssetVariants(source),
+    etag: `"${createHash("sha256").update(source).digest("hex").slice(0, 16)}"`,
+    contentType: PDFJS_ASSET_TYPES.get(path.extname(name)) || "application/octet-stream",
+  };
+  pdfjsAssetCache.set(name, asset);
+  return asset;
 }
 
 export function contextRoomWebAssetBundle(codexPromptMutationNonce = "", ownerMutationNonce = "", runtimeProfile = "local") {
