@@ -2159,7 +2159,8 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .shared-proposal-workspace-close { grid-column: 2; grid-row: 1; }
       #sharedProposalWorkspaceRefresh { grid-column: 1; grid-row: 2; justify-self: start; }
       #contextHubCreateProject { grid-column: 2; grid-row: 2; }
-      #contextHubCreateSharedProject { grid-column: 1 / -1; grid-row: 3; }
+      #contextHubCreateSharedProject { grid-column: 1; grid-row: 3; justify-self: start; }
+      #contextHubImportCodex { grid-column: 2; grid-row: 3; }
       .shared-proposal-search { grid-column: 1 / -1; grid-row: 4; }
       .context-hub-source-filter { grid-column: 1; grid-row: 5; }
       #sharedProposalProjectFilter { grid-column: 2; grid-row: 5; }
