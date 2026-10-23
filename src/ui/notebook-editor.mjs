@@ -131,7 +131,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   actions.append(exportFormat, button('Export', () => run(exportDrawing(exportFormat.value))), button('Recover local work', () => run(exportRecovery())));
   if (!reviewKey) {
     followButton = button('Follow agent', () => { const on = followButton.getAttribute('aria-pressed') !== 'true'; followButton.setAttribute('aria-pressed', String(on)); followNote.textContent = on ? 'Following the agent.' : ''; });
-    followButton.setAttribute('aria-pressed', 'false'); followButton.dataset.followAgent = ''; followButton.disabled = viewLink.mode !== 'independent';
+    followButton.setAttribute('aria-pressed', 'false'); followButton.dataset.followAgent = ''; followButton.disabled = viewLink.mode === 'follow';
     followNote = notebookElement('p', '', 'notebook-follow-state'); followNote.setAttribute('aria-live', 'polite'); statusRow.append(followNote); actions.append(followButton);
   }
   if (!reviewKey && capabilities.reviewAuthority !== 'unavailable') actions.append(button('Connect tablet', () => run(connectTablet())));
@@ -176,10 +176,10 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
       });
       } catch (error) { if (voiceActivation?.context.state !== 'closed') await voiceActivation?.context.close(); throw error; }
     };
-    const ask = button('Ask about selection', () => run(converse('text'))), dictateNotebook = button('Dictate about notebook', () => run(converse('dictate')));
-    ask.dataset.followAgent = dictateNotebook.dataset.followAgent = '';
-    actions.append(ask, dictateNotebook,
-      button('Dictate text', () => run(converse('dictate', true))), button('Voice', () => run(converse('voice'))));
+    // Talking to the agent keeps Follow agent on; dictating text into the notebook is a human edit and stops it.
+    const ask = button('Ask about selection', () => run(converse('text'))), dictateNotebook = button('Dictate about notebook', () => run(converse('dictate'))), voice = button('Voice', () => run(converse('voice')));
+    ask.dataset.followAgent = dictateNotebook.dataset.followAgent = voice.dataset.followAgent = '';
+    actions.append(ask, dictateNotebook, button('Dictate text', () => run(converse('dictate', true))), voice);
   }
   const objectTitle = notebookElement('h3', 'Objects'), filter = document.createElement('input'); filter.type = 'search'; filter.placeholder = 'Filter objects'; filter.setAttribute('aria-label', 'Filter notebook objects');
   const selectionText = notebookElement('p', 'Nothing selected'), selectionActions = notebookElement('div', '', 'notebook-selection-actions');

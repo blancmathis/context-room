@@ -189,12 +189,13 @@ created, changed or removed, the canvas moves only if that area is not already
 fully visible: a pan at the current scale if it fits with a 10 % margin,
 otherwise just enough zoom-out. It never zooms in and never opens another
 notebook. A pen or finger gesture, a tool or zoom action, **Fit drawing** or a
-key press stops it ("You took back the view."). It is unavailable while the
-view is shared or followed with a device, so one source moves the camera. If the
-tablet follows the agent and shares its view, the Mac follows with no extra step.
-Choosing **Follow [tablet]** stops Follow agent, and its button stays off while the
-Mac follows a device. **Ask about selection** and **Dictate about notebook** do not
-stop it: they do not move the view.
+key press stops it ("You took back the view."). Choosing **Follow [tablet]** also
+stops it, and its button stays off while this view follows a device, so one
+source moves the camera. A shared view can follow the agent: if the tablet follows
+the agent and shares its view, the Mac follows with no extra step. **Ask about
+selection**, **Dictate about notebook** and **Voice** do not stop it: they talk to
+the agent and do not move the view. **Dictate text** writes into the notebook, so
+it stops it.
 
 A pen or finger contact, a tool or keyboard action immediately stops following
 on that surface. A late network response cannot resume it or move the current
