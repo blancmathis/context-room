@@ -104,6 +104,7 @@ import {
   registerContextHubSharedRepository,
   withContextHubProjectSharedRegistration,
   writeContextHubRuntime,
+  updateContextHubRuntimeDiscovery,
 } from "../src/context_hub.mjs";
 import {
   backlinksDocumentation,
@@ -1235,7 +1236,7 @@ if (command === "hub") {
     }
     const deviceService = args['device-host'] ? createContextRoomDeviceService({ root: hostRoot,
       stateRoot: args['device-state'] ? path.resolve(String(args['device-state'])) : path.join(path.dirname(hostRoot), 'devices'),
-      discovery: { enabled: !args['no-device-discovery'] },
+      discovery: { enabled: !args['no-device-discovery'], onChange: state => { try { updateContextHubRuntimeDiscovery(state); } catch {} } },
       browser: browserRequested ? { origin: String(args['device-browser-origin']), certPath: path.resolve(String(args['device-browser-cert'])), keyPath: path.resolve(String(args['device-browser-key'])) } : null }) : null;
     const { server } = createMemoryServer({ root: hostRoot, port, registerInHub: false, persistentDocumentGraphLayout: true, deviceService });
     await new Promise((resolve, reject) => {
@@ -1810,7 +1811,7 @@ if (command === "migrate") {
         ? migrateLisiereConversation(agentFirstTarget.root, { snapshot: args["import-lisiere"], selector: args["legacy-conversation"], path: args.path, apply: Boolean(args.apply), expectedRevision: args.revision })
         : args["legacy-draft"]
         ? migrateLisiereDraft(agentFirstTarget.root, { snapshot: args["import-lisiere"], selector: args["legacy-draft"], path: args.path, apply: Boolean(args.apply), expectedRevision: args.revision })
-        : migrateLisiereNotebook(args.root || !args["legacy-board"] || lisiereBoardProject(args["import-lisiere"], args["legacy-board"]) !== null ? agentFirstTarget.root : requireContextHubNotebookSpace(), { snapshot: args["import-lisiere"], boardId: args["legacy-board"], path: args.path, apply: Boolean(args.apply), expectedRevision: args.revision })
+        : migrateLisiereNotebook(["root", "project", "location", "folder"].some((key) => args[key]) || !args["legacy-board"] || lisiereBoardProject(args["import-lisiere"], args["legacy-board"]) !== null ? agentFirstTarget.root : requireContextHubNotebookSpace(), { snapshot: args["import-lisiere"], boardId: args["legacy-board"], path: args.path, apply: Boolean(args.apply), expectedRevision: args.revision })
       : args.apply
       ? applyStateMigration(agentFirstTarget.root, { expectedRevision: args.revision })
       : planStateMigration(agentFirstTarget.root);

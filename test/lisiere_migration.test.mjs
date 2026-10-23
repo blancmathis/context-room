@@ -195,3 +195,25 @@ test('inventory paginates exact retained source records without loading a projec
   assert.equal(response.data.items[0].selector, draft.selector);
   const denied = spawnSync(process.execPath, [...args, '--apply'], options); assert.notEqual(denied.status, 0); assert.match(denied.stdout + denied.stderr, /read-only/);
 });
+
+test('D10: every TARGET option (--root, --project, --location, --folder) keeps a project-less import out of the Notebooks space', async t => {
+  const f = await fixture(t);
+  execFileSync('git', ['init', '--quiet', f.root], { stdio: 'pipe' });
+  initializeContextRoomProject(f.root, { title: 'Recovery fixture', allowedPaths: ['docs/'], watchAllow: ['docs/'] });
+  const cli = fileURLToPath(new URL('../bin/context-room.mjs', import.meta.url));
+  const homes = { HOME: f.base, CONTEXT_ROOM_HUB_HOME: path.join(f.base, 'hub'), CONTEXT_ROOM_SHARED_HOME: path.join(f.base, 'shared'), CONTEXT_ROOM_NOTEBOOK_SPACE_HOME: path.join(f.base, 'Carnets space') };
+  const saved = Object.fromEntries(Object.keys(homes).map(key => [key, process.env[key]]));
+  t.after(() => { for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value; });
+  Object.assign(process.env, homes);
+  const space = ensureContextHubNotebookSpace().projectRoot;
+  const run = (extra, cwd = f.root) => spawnSync(process.execPath, [cli, 'migrate', '--import-lisiere', f.snapshot, '--legacy-board', 'board', ...extra], { encoding: 'utf8', cwd, env: { ...process.env, ...homes }, timeout: 30000 });
+  // An explicit project or location that does not exist is an error, never a silent move to the space.
+  for (const extra of [['--project', 'no-such-project'], ['--location', 'no-such-location']]) {
+    const out = run([...extra, '--path', 'docs/Ideas.crnb']); assert.notEqual(out.status, 0, extra.join(' ')); assert.match(out.stdout + out.stderr, /unknown|not found|No project|location/i, extra.join(' '));
+    assert.deepEqual(listNotebooks(space), [], extra.join(' '));
+  }
+  // --folder names a place inside the current project: the import stays in that project.
+  const plan = run(['--folder', 'docs', '--path', 'docs/Ideas.crnb', '--plan']); assert.equal(plan.status, 0, plan.stdout + plan.stderr);
+  const applied = run(['--folder', 'docs', '--path', 'docs/Ideas.crnb', '--apply', '--revision', JSON.parse(plan.stdout).data.revision]); assert.equal(applied.status, 0, applied.stdout + applied.stderr);
+  assert.deepEqual(listNotebooks(f.root).map(entry => entry.path), ['docs/Ideas.crnb']); assert.deepEqual(listNotebooks(space), []);
+});

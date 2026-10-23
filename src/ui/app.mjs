@@ -5173,6 +5173,7 @@ function contextHubItemMatchesProject(item, project) {
 }
 
 function resolveContextHubProjectSelection(projects = [], requestedId = "", { aliases = true } = {}) {
+  projects = projects.filter((project) => project?.space !== "notebooks");
   const selector = String(requestedId || "").trim();
   if (!selector) return { project: null, worktree: null, match: "" };
   const normalized = selector.toLowerCase();
@@ -5945,7 +5946,7 @@ function setSharedProposalWorkspaceOpen(open) {
     const hubQuery = new URLSearchParams(window.location.search);
     const requestedProjectId = hubQuery.get("project") || "";
     if (!wasOpen && !state.sharedProposalSearch && hubQuery.get("q")) state.sharedProposalSearch = hubQuery.get("q");
-    const requestedProject = (state.contextHub?.projects || []).find((project) => project.id === requestedProjectId);
+    const requestedProject = (state.contextHub?.projects || []).find((project) => project.id === requestedProjectId && !contextHubIsNotebookSpace(project));
     if (!wasOpen && requestedProject && !state.sharedProposalProject) state.sharedProposalProject = requestedProject.projectKey;
     const items = contextHubVisibleItems();
     const selectedFromDock = el("sharedProposalSelect")?.value || "";
@@ -6284,8 +6285,10 @@ function contextHubProjectPickerLocation(project) {
   return repository ? sharedLocation + " · " + repository : sharedLocation;
 }
 
+// The Notebooks space is not a code project: it never appears where projects are picked, ordered or opened.
+const contextHubIsNotebookSpace = (project) => project?.space === "notebooks";
 function contextHubPrioritizedProjects(projects = []) {
-  return [...projects].sort((left, right) => {
+  return projects.filter((project) => !contextHubIsNotebookSpace(project)).sort((left, right) => {
     const leftRanked = Number.isInteger(left?.priorityRank);
     const rightRanked = Number.isInteger(right?.priorityRank);
     if (leftRanked !== rightRanked) return leftRanked ? -1 : 1;
@@ -7969,7 +7972,7 @@ function renderContextHubProjectPicker() {
   state.contextHubProjectPickerIndex = choices.length
     ? Math.max(0, Math.min(state.contextHubProjectPickerIndex, choices.length - 1))
     : 0;
-  const totalProjects = state.contextHub?.projects?.length || 0;
+  const totalProjects = (state.contextHub?.projects || []).filter((project) => !contextHubIsNotebookSpace(project)).length;
   status.textContent = state.contextHubProjectPickerQuery.trim()
     ? projects.length + " of " + totalProjects + " projects"
     : totalProjects + " project" + (totalProjects === 1 ? "" : "s");
@@ -10815,7 +10818,7 @@ async function applyWorkspaceUrlState({ reason = "history", force = false } = {}
 }
 
 function workspaceSelectedProject() {
-  const projects = state.contextHub?.projects || [];
+  const projects = (state.contextHub?.projects || []).filter((project) => !contextHubIsNotebookSpace(project));
   return projects.find((project) => project.id === state.activeProjectLocationId || (project.worktrees || []).some((worktree) => worktree.id === state.activeProjectLocationId))
     || projects.find((project) => project.projectKey === state.globalExplorerProjectKey)
     || null;
@@ -16765,7 +16768,7 @@ function globalSettingsReviewCounts() {
   return {
     local: items.filter((item) => item.type !== "shared").length,
     shared: items.filter((item) => item.type === "shared").length,
-    projects: (state.contextHub?.projects || []).length,
+    projects: (state.contextHub?.projects || []).filter((project) => !contextHubIsNotebookSpace(project)).length,
   };
 }
 
@@ -18122,7 +18125,7 @@ function renderSettingsPanel() {
     kicker: "Hub",
     title: "Hub organization",
     copy: "Prioritize projects across the device and arrange the selected project's Home sections.",
-    pills: [state.contextHub?.projects?.length + " projects", showGlobalProjectPicker ? "Select a project for sections" : selectedProjectPill, !showGlobalProjectPicker ? sections.length + " sections" : ""].filter(Boolean),
+    pills: [(state.contextHub?.projects || []).filter((project) => !contextHubIsNotebookSpace(project)).length + " projects", showGlobalProjectPicker ? "Select a project for sections" : selectedProjectPill, !showGlobalProjectPicker ? sections.length + " sections" : ""].filter(Boolean),
     body: '<div class="settings-concept"><strong>Priority is device-wide; sections remain project-owned.</strong><p>Project order controls where projects and their reviews appear. Home sections still belong to the selected project.</p></div><div class="settings-disclosure-list">'
       + projectPriorityDisclosure
       + (showGlobalProjectPicker

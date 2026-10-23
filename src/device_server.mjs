@@ -45,10 +45,14 @@ function bearer(req) {
 /** Optional native listener. Drawing and explicit owner credentials stay separate. */
 export const DEVICE_DISCOVERY_TYPE = '_contextroom._tcp';
 const DNS_SD = '/usr/bin/dns-sd';
+// dns-sd runs under a tiny shell tied to a pipe from the Hub: when the Hub dies (even by SIGKILL) the
+// pipe closes, the shell reads EOF and stops its own child by pid. Nothing is ever killed by name.
+export const ANNOUNCER_SHELL = '/bin/sh';
+export const ANNOUNCER_SCRIPT = 'exec 3<&0; "$@" & c=$!; trap \'kill "$c" 2>/dev/null; exit 0\' TERM INT HUP; { cat <&3 >/dev/null; kill "$c" 2>/dev/null; } 3<&3 & wait "$c"';
 const isLoopbackHost = host => host === '::1' || /^127\./.test(host);
 
 export function createConnectedDeviceService({ stateRoot, resolveProject, now = Date.now, browser: browserConfig = null, getWebBundle, discovery = {} } = {}) {
-  const { enabled: discoveryEnabled = true, spawn = spawnProcess, platform = process.platform } = discovery;
+  const { enabled: discoveryEnabled = true, spawn = spawnProcess, platform = process.platform, onChange } = discovery;
   let discoveryState = 'off', announcer = null, killTimer = null;
   // Bonjour announcement through the macOS responder. The TXT record holds the public
   // certificate fingerprint only: the tablet still authenticates with its pinned key.
@@ -56,17 +60,20 @@ export function createConnectedDeviceService({ stateRoot, resolveProject, now = 
     if (!discoveryEnabled || isLoopbackHost(host)) { discoveryState = 'off'; return; }
     if (platform !== 'darwin') { discoveryState = 'unsupported'; return; }
     try {
-      const child = spawn(DNS_SD, ['-R', `Context Room ${identity.fingerprint.slice(0, 12)}`, DEVICE_DISCOVERY_TYPE, 'local.', String(port),
-        'version=1', `fingerprint=${identity.fingerprint}`], { stdio: 'ignore' });
+      const child = spawn(ANNOUNCER_SHELL, ['-c', ANNOUNCER_SCRIPT, 'sh', DNS_SD, '-R', `Context Room ${identity.fingerprint.slice(0, 12)}`, DEVICE_DISCOVERY_TYPE, 'local.', String(port),
+        'version=1', `fingerprint=${identity.fingerprint}`], { stdio: ['pipe', 'ignore', 'ignore'] });
       announcer = child; discoveryState = 'announced';
-      child.once?.('error', () => { if (announcer === child) { announcer = null; discoveryState = 'failed'; } });
-      child.once?.('exit', () => { clearTimeout(killTimer); if (announcer === child) { announcer = null; discoveryState = 'failed'; } });
+      child.stdin?.on?.('error', () => {});
+      const died = () => { clearTimeout(killTimer); child.stdin?.destroy?.(); if (announcer === child) { announcer = null; discoveryState = 'failed'; try { onChange?.(discoveryState); } catch {} } };
+      child.once?.('error', died);
+      child.once?.('exit', died);
     } catch { announcer = null; discoveryState = 'failed'; }
   }
   function stopAnnouncing() {
     const child = announcer; announcer = null;
     if (discoveryState === 'announced') discoveryState = 'off';
     if (!child) return;
+    try { child.stdin?.destroy?.(); } catch {}
     try { child.kill('SIGTERM'); } catch {}
     killTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 2000); killTimer.unref?.();
   }

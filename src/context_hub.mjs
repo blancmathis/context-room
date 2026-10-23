@@ -2729,6 +2729,17 @@ export function writeContextHubRuntime({ pid = process.pid, port, root, url, dev
   return withRegistryLock(() => writeJson(runtimePath(), runtime));
 }
 
+/** Records a later change of the device discovery state, only for the runtime this process wrote. */
+export function updateContextHubRuntimeDiscovery(discovery, pid = process.pid) {
+  if (!DEVICE_DISCOVERY_STATES.has(discovery)) return false;
+  return withRegistryLock(() => {
+    const runtime = readJson(runtimePath(), null);
+    if (!runtime?.devices || Number(runtime.pid) !== Number(pid)) return false;
+    writeJson(runtimePath(), { ...runtime, devices: { ...runtime.devices, discovery } });
+    return true;
+  });
+}
+
 export function clearContextHubRuntime(pid = process.pid) {
   return withRegistryLock(() => {
     const runtime = readContextHubRuntime();

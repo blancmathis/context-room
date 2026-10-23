@@ -6,7 +6,7 @@ import AxeBuilder from '@axe-core/playwright';
 import { initializeContextRoomProject, writeMemoryWebappSettings, createMemoryServer, createContextRoomDeviceService } from '../../src/context_room.mjs';
 import { listNotebooks, readNotebook, mutateNotebook, decodeNotebook, importNotebookDraft } from '../../src/notebooks.mjs';
 import { convertLisiereBoard } from '../../src/lisiere_notebook.mjs';
-import { registerContextHubProject } from '../../src/context_hub.mjs';
+import { registerContextHubProject, listContextHubProjects } from '../../src/context_hub.mjs';
 import { buildDocumentationCorpus } from '../../src/documentation.mjs';
 import { listLocalProposals } from '../../src/local_proposals.mjs';
 import { listSharedProposalWorkspaces } from '../../src/shared_context.mjs';
@@ -602,6 +602,36 @@ test.describe('Notebooks space', () => {
       await expect(reopened).toHaveAttribute('data-resource-id', id); await expect(reopened).toHaveAttribute('data-save-state', 'confirmed');
       expect(readNotebook(f.spaceRoot, id).document.objects).toEqual(ink);
       await page.screenshot({ path: testInfo.outputPath('notebook-space-resumed.png') });
+      expect(f.errors).toEqual([]);
+    } finally { await f.close(); }
+  });
+
+  test('@notebook the Notebooks space is hidden from every project view, not only the Hub home', async ({ page }) => {
+    const f = await hubFixture(page);
+    try {
+      await newNotebookWithInk(page, f);
+      const space = listContextHubProjects().find(project => project.space === 'notebooks');
+      expect(space).toBeTruthy();
+      const home = page.locator('#contextHubHomeProjectList .context-hub-home-project');
+      await expect(home.filter({ hasText: 'Synthetic project' })).toHaveCount(1);
+      await expect(home.filter({ hasText: 'Notebooks' })).toHaveCount(0);
+      // Project picker: the space is neither listed nor counted, and a search for it finds nothing.
+      await page.keyboard.press('ControlOrMeta+k');
+      const picker = page.locator('#contextHubProjectPicker'); await expect(picker).toBeVisible();
+      await page.locator('#contextHubProjectPickerSearch').fill('Notebooks');
+      await expect(picker.locator('[data-context-hub-project-picker-choice]')).toHaveCount(0);
+      await page.locator('#contextHubProjectPickerSearch').fill('');
+      await expect(page.locator('#contextHubProjectPickerStatus')).toContainText('1 project');
+      await expect(picker.locator('[data-context-hub-project-picker-choice]')).toHaveCount(1);
+      await page.keyboard.press('Escape'); await expect(picker).toBeHidden();
+      // Opening the space by its id (link, bookmark) shows no Context, To review or Shared of a project.
+      const origin = new URL(page.url()).origin;
+      await page.goto(`${origin}/?hub=1&view=hub&project=${encodeURIComponent(space.id)}`);
+      await expect(page.locator('#notebookSpacePanel')).toBeVisible({ timeout: 45000 });
+      await expect(page.locator('#globalExplorerScope strong', { hasText: /^Notebooks$/ })).toHaveCount(0);
+      await expect(page.locator('#globalProjectList')).not.toContainText('Notebooks');
+      await expect(page.locator('#contextHubHomeProjectList .context-hub-home-project-destinations')).toHaveCount(1);
+      await expect(page.getByRole('button', { name: /Connect Shared/i })).toHaveCount(0);
       expect(f.errors).toEqual([]);
     } finally { await f.close(); }
   });
