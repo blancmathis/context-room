@@ -76,7 +76,16 @@ If that snapshot becomes stale, terminal, unavailable, or recovery-required duri
 
 ## Home
 
-The Hub home starts with the project list. Each row shows the project, its location,
+The Hub home starts with the Notebooks section: **New notebook**, then the
+notebooks of the Notebooks space, most recently changed first, the first with
+**Resume**. The first New notebook creates the space
+(`POST /api/context-hub/notebook-space`): a registry entry marked
+`space: "notebooks"`, at most one, kept across re-registration and location
+confirmation. The space is not a project: it has no Context, To review or
+Shared, and the project list does not show it. Moves between the space and a
+project use `POST /api/context-hub/notebooks/move` with a preview revision.
+
+The project list follows. Each row shows the project, its location,
 an attention pill, and three destinations: Context (agent environment), To review
 (Review Queue filtered to the project), and Documents (the project's documentation map, with its files in Explorer).
 

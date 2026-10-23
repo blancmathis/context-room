@@ -301,8 +301,9 @@ acknowledge, accept or restart work.
 
 Choose the source board ID from the inventory and an unused
 ordinary `.crnb` path in an existing Context Room project's writable, watched
-folders. A free legacy board can use any such explicitly chosen destination;
-there is no new inbox or project catalog.
+folders. Without `--root`, a free legacy board (no Lisière project) goes to
+the Notebooks space; if the space does not exist yet, the command asks to
+create it first (Hub › New notebook) or to pass `--root`.
 
 ```bash
 context-room migrate --root /path/to/project --import-lisiere /path/to/private-snapshot --legacy-board BOARD_ID --path docs/Ideas.crnb
@@ -335,6 +336,17 @@ Repeat the same apply command after interruption. Matching records are reused;
 later human notebook edits remain intact. If project configuration changed,
 obtain a fresh preview before resuming the same retained import. Changed backup
 bytes require reconciliation and are never overwritten.
+
+Free notebooks that an earlier import placed in a project move to the
+Notebooks space with one preview and one apply. Only Lisière imports move
+(`--legacy-board` keeps one); other notebooks, `migrations/` and pending
+proposals stay. Each notebook keeps its `Carnets/` path and uses the verified
+move of the [document workflow](../features/document-workflow.md#editable-notebooks).
+
+```bash
+context-room migrate --root /path/to/project --notebooks-to-space
+context-room migrate --root /path/to/project --notebooks-to-space --apply --revision REVISION
+```
 
 Import creates private working state, with explicit import provenance. It does
 not create an ordinary `.crnb` file or an accepted baseline. Use the existing
