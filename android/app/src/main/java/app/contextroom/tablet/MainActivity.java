@@ -238,7 +238,14 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
       screen.addView(label("Vos données Lisière sont conservées sur cet appareil. Préparez leur récupération avant de poursuivre la migration sur le Mac.", 16));
       screen.addView(button("Récupérer Lisière", () -> startActivity(new Intent(this, LegacyRecoveryActivity.class))));
     }
+    screen.addView(label("Sans caméra : enregistrez « Save pairing file » sur le Mac, transférez le fichier ici (BOOXDrop), puis importez-le.", 16));
+    screen.addView(button("Importer le fichier d’appairage", this::importPairingFile));
     if (connection != null) screen.addView(button("Revenir à Context Room", this::connectionHome));
+  }
+
+  void importPairingFile() {
+    try { startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), 74); }
+    catch (ActivityNotFoundException error) { showError("Le sélecteur de fichiers Android est indisponible."); }
   }
 
   void pair(JSONObject ticket) {
@@ -539,6 +546,16 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
           if (stream == null) throw new IOException("Destination indisponible."); stream.write(bytes);
         } catch (Exception error) { runOnUiThread(() -> { callback.onReceiveValue(false); ownerError("L’export n’a pas été écrit. Le travail reste disponible."); }); return; }
         runOnUiThread(() -> { callback.onReceiveValue(true); ownerError("Fichier exporté dans la destination choisie."); });
+      }); return;
+    }
+    if (request == 74) {
+      android.net.Uri uri = data == null ? null : data.getData();
+      if (result != RESULT_OK || uri == null || !"content".equals(uri.getScheme())) return;
+      disk.execute(() -> {
+        try (java.io.InputStream stream = getContentResolver().openInputStream(uri)) {
+          if (stream == null) throw new IOException("Le fichier ne peut pas être ouvert.");
+          JSONObject ticket = PairingFile.parse(stream); runOnUiThread(() -> { if (!dead) pair(ticket); });
+        } catch (Exception error) { runOnUiThread(() -> showError(error.getMessage())); }
       }); return;
     }
     if (request == 71) {

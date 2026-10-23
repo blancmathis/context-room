@@ -13,6 +13,7 @@ import { createDeviceAuthority, ensureDeviceIdentity } from '../src/device_autho
 import { createDeviceNavigation } from '../src/device_navigation.mjs';
 import { canonicalNotebookRoot } from '../src/notebook_io.mjs';
 import { readNotebook, mutateNotebook, openNotebook, NOTEBOOK_STORE } from '../src/notebooks.mjs';
+import { pairingQrText, pairingTicketFromFragment } from '../src/ui/pairing-share.mjs';
 import { createContextRoomDeviceService, createMemoryServer, initializeContextRoomProject } from '../src/context_room.mjs';
 
 function fixture(t) {
@@ -352,4 +353,15 @@ test('revocation while a notebook writer waits for its lock prevents a later com
     assert.equal(await exited, 0, errors);
     assert.equal(readNotebook(f.root, scene.resourceId).document.objects.length, 0);
   } finally { fs.linkSync = link; }
+});
+
+test('pairing QR URL keeps the ticket in the fragment only', () => {
+  const ticket = { protocolVersion: 1, serverId: 'srv', pairingId: 'pid', token: 'secret-token-ü', expiresAt: 1, url: 'https://192.168.1.2:4401', fingerprint: 'ab', browserUrl: 'https://192.168.1.2:4400', grants: [{ mode: 'draw', paths: ['docs/Sketch.crnb'] }] };
+  const text = pairingQrText(ticket), url = new URL(text);
+  assert.equal(url.origin, 'https://192.168.1.2:4400'); assert.equal(url.pathname, '/'); assert.equal(url.search, '');
+  assert.ok(url.hash.startsWith('#pair='));
+  assert.equal(text.split('#')[0].includes('secret-token'), false);
+  assert.deepEqual(JSON.parse(pairingTicketFromFragment(url.hash)), ticket);
+  assert.equal(pairingQrText({ ...ticket, browserUrl: undefined }), JSON.stringify({ ...ticket, browserUrl: undefined }));
+  for (const bad of ['', '#', '#pair=', '#pair=***', '#pair=bm90LWpzb24', '#pair=' + Buffer.from('"text"').toString('base64url'), '#other=abc']) assert.equal(pairingTicketFromFragment(bad), null, bad);
 });

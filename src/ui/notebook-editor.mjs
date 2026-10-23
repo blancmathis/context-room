@@ -10,6 +10,7 @@ import { notebookViewportPreview } from './assistant-observation.mjs';
 export function notebookElement(tag, text = '', className = '') { const node = document.createElement(tag); node.textContent = text; if (className) node.className = className; return node; }
 export function notebookStyles() { if (document.getElementById('context-room-notebook-style')) return; const link = document.createElement('link'); link.id = 'context-room-notebook-style'; link.rel = 'stylesheet'; link.href = '/assets/ui/notebook.css'; document.head.append(link); }
 import { notebookDownload } from './notebook-download.mjs';
+import { pairingShareNodes } from './pairing-share.mjs';
 export { notebookDownload } from './notebook-download.mjs';
 export function notebookBase64(bytes) { let text = ''; for (let offset = 0; offset < bytes.length; offset += 8192) text += String.fromCharCode(...bytes.subarray(offset, offset + 8192)); return btoa(text); }
 const button = (label, callback, className = '') => { const node = notebookElement('button', label, className); node.type = 'button'; if (callback) node.addEventListener('click', callback); return node; };
@@ -198,7 +199,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
         ticket = await request('/api/devices/pair', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ paths: [path], label: input.value }) });
         if (dismissed) { await request('/api/devices/cancel-pairing', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pairingId: ticket.pairingId }) }); return; }
         const code = document.createElement('textarea'); code.readOnly = true; code.setAttribute('aria-label', 'One-use tablet pairing code'); code.value = JSON.stringify(ticket);
-        result.replaceChildren(notebookElement('p', 'Paste this code in Context Room on the tablet within two minutes. It verifies this Mac and grants access to this notebook.'), code,
+        result.replaceChildren(notebookElement('p', 'Paste this code in Context Room on the tablet within two minutes. It verifies this Mac and grants access to this notebook.'), code, ...pairingShareNodes(ticket, 'this tablet'),
           button('Copy pairing code', () => navigator.clipboard.writeText(code.value).then(() => { message.textContent = 'Pairing code copied.'; }).catch(() => { code.select(); message.textContent = 'Select and copy the code.'; })));
       } catch (error) { message.textContent = error.message; }
       finally { create.disabled = false; }

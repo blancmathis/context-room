@@ -35,6 +35,7 @@ final class MacDiscovery {
   private final ExecutorService probe = Executors.newSingleThreadExecutor();
   private final List<NsdManager.ServiceInfoCallback> callbacks = new ArrayList<>();
   private final ArrayDeque<NsdServiceInfo> queue = new ArrayDeque<>();
+  private final Set<String> probed = new HashSet<>();
   private NsdManager.DiscoveryListener listener;
   private boolean foreground, resolving, closed;
   private int run, services;
@@ -84,7 +85,7 @@ final class MacDiscovery {
   private void start() {
     DeviceConnection current = host.connection();
     if (closed || !foreground || nsd == null || current == null || searching != null || System.currentTimeMillis() < nextAllowed) return;
-    searching = current; services = 0; run++;
+    searching = current; services = 0; run++; probed.clear();
     final int thisRun = run;
     listener = new NsdManager.DiscoveryListener() {
       public void onStartDiscoveryFailed(String type, int code) { main.post(() -> finish(thisRun, false)); }
@@ -132,7 +133,8 @@ final class MacDiscovery {
     DeviceConnection current = searching;
     if (thisRun != run || current == null || !accepts(info.getAttributes(), current.fingerprint, info.getPort())) return;
     final List<String> urls = candidates(addresses, info.getPort(), current.endpoint.toString());
-    if (urls.isEmpty()) return;
+    // onServiceUpdated repeats; one run probes each distinct address set once.
+    if (urls.isEmpty() || !probed.add(String.join(",", urls))) return;
     final long deadline = System.currentTimeMillis() + PROBE_BUDGET_MS;
     try {
       probe.execute(() -> {

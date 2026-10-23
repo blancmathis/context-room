@@ -1,3 +1,5 @@
+import { pairingShareNodes } from '/assets/ui/pairing-share.mjs';
+
 export async function openOwnerDeviceSettings(request) {
   const state = await request('/api/devices');
   const make = (tag, text = '') => { const node = document.createElement(tag); node.textContent = text; return node; };
@@ -24,7 +26,7 @@ export async function openOwnerDeviceSettings(request) {
         ticket = await post('/api/devices/pair-owner', { mode: 'owner', label: input.value });
         if (closed) { await post('/api/devices/cancel-pairing', { pairingId: ticket.pairingId }); return; }
         const code = make('textarea'); code.readOnly = true; code.value = JSON.stringify(ticket); code.setAttribute('aria-label', 'One-use owner pairing code');
-        result.replaceChildren(make('p', 'Paste this code in Context Room on the tablet within two minutes.'), code,
+        result.replaceChildren(make('p', 'Paste this code in Context Room on the tablet within two minutes.'), code, ...pairingShareNodes(ticket, 'this owner device'),
           button('Copy owner pairing code', () => navigator.clipboard.writeText(code.value).then(() => { message.textContent = 'Pairing code copied.'; }).catch(() => { code.select(); message.textContent = 'Select and copy the code.'; })));
       } catch (error) { message.textContent = error.message; }
       finally { create.disabled = !checkbox.checked; }
