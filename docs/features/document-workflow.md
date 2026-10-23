@@ -93,9 +93,10 @@ Keeping the UI closed does not authorize those edits. They are detected on the n
 | HTML/HTM | Sandboxed rendered page; local proposal images and linked CSS are resolved from that exact proposal version | Agent edits source; human reviews the rendering, with no HTML source editor |
 | Mermaid `.mmd` / `.mermaid` | Rendered diagram beside editable source | Edit diagram source; executable directives and external resources are blocked |
 | Editable notebook `.crnb` | Frozen objects, pressure-aware ink and embedded raster assets, with author provenance | Correct the frozen scene, then decide that exact document |
-| PNG, JPEG, WebP | Before/after image | Draw at native resolution, undo/redo strokes, save and accept |
+| PNG, JPEG, WebP | Before/after image; shared viewer with zoom to 32x and remembered "Whole image" | Draw at native resolution, undo/redo strokes, save and accept; "Annotate" opens a notebook with the image as a locked background |
 | GIF, SVG and other recognized image assets | Before/after image where the browser decoder supports it | Review existing bytes; no animation or vector editing claim |
-| PDF, DOCX, XLSX, PPTX | Changed binary resource and size; no integrated renderer promised | Accept/reject exact bytes; office content editing is not implemented |
+| PDF | Page reader (pdf.js, served locally): pages, zoom to 32x, remembered "Whole page" | Read only; "Annotate" opens a new notebook with the current page as a locked background image |
+| DOCX, XLSX, PPTX | Changed binary resource and size; no integrated renderer | Accept/reject exact bytes; office content editing is not implemented |
 
 A Markdown document opens for reading. Reading never writes the file. Prose keeps a column of about 72 characters. A document with two or more sections shows Contents: open beside the text on wide screens, folded above it on narrow ones. Each heading has a GitHub-style anchor (`#second-part`, then `#setup-1` for a repeated heading). Links to `#anchor` and `doc.md#anchor` go to that section. Front matter stays folded. In the Hub, "Referenced by" lists the documents that link to this one. It loads only when opened. Markdown above 120,000 characters or 2,500 lines is still rendered, one section per H1/H2; editing such a file uses plain text.
 
