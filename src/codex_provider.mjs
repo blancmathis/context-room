@@ -138,7 +138,8 @@ export async function createCodexProvider({ cwd, stateRoot, launch, maxResidentT
       || effective.web_search !== 'disabled') throw fault('codex_scope_unavailable', 'The local Codex configuration cannot provide the restricted Context Room tools.');
     const listed = await timed('modelCatalogMs', () => rpc.request('model/list', { limit: 100 }));
     const models = (listed.data || []).map(item => ({ id: item.id, name: item.displayName || item.id,
-      efforts: (item.supportedReasoningEfforts || []).map(value => value.reasoningEffort), defaultEffort: item.defaultReasoningEffort }));
+      efforts: (item.supportedReasoningEfforts || []).map(value => value.reasoningEffort), defaultEffort: item.defaultReasoningEffort,
+      fast: (item.serviceTiers || []).some(tier => tier?.id === 'priority') }));
     const provider = new CodexProvider(rpc, models, maxResidentThreads);
     provider.setupTiming = { version: 1, stages, restartRequired, totalMs: performance.now() - started };
     return provider;
@@ -251,7 +252,7 @@ class CodexProvider {
     }
     return matches[0];
   }
-  async startTurn({ threadId, text, images = [], model, effort, tool, onEvent = () => {} }) {
+  async startTurn({ threadId, text, images = [], model, effort, fast = false, tool, onEvent = () => {} }) {
     const thread = this.threads.get(threadId);
     if (!thread?.users) throw fault('codex_thread_scope', 'Resume the original owned conversation before starting its turn.');
     if (thread.active) throw fault('codex_turn_busy', 'This conversation is already responding.');
@@ -260,10 +261,11 @@ class CodexProvider {
       || images.some(url => typeof url !== 'string' || !/^data:image\/(png|jpeg|webp);base64,/.test(url) || url.length > 4 * 1024 * 1024)) throw fault('codex_input_limit', 'Use bounded text and at most two image previews.');
     const selected = model && this.models.find(item => item.id === model);
     if (model && !selected || selected && effort && !selected.efforts.includes(effort)) throw fault('codex_model_unavailable', 'This model or reasoning effort is unavailable.');
+    if (fast && !selected?.fast) throw fault('codex_fast_unavailable', 'Fast is not offered for this model.');
     const active = { turnId: null, abort: new AbortController(), calls: new Map(), tool, onEvent }; thread.active = active;
     try {
       const result = await this.rpc.request('turn/start', { threadId, input: [{ type: 'text', text }, ...images.map(url => ({ type: 'image', url }))],
-        environments: [], ...(model ? { model } : {}), ...(effort ? { effort } : {}) });
+        environments: [], ...(model ? { model, serviceTier: fast ? 'priority' : null } : {}), ...(effort ? { effort } : {}) });
       const turnId = result.turn?.id;
       if (!turnId || active.turnId && active.turnId !== turnId) throw fault('codex_protocol', 'Codex returned an inconsistent turn identity.');
       active.turnId = turnId;

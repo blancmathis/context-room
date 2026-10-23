@@ -20,3 +20,26 @@ test('connectors follow object IDs and object bounds include rotations',()=>{
  assert.equal(Math.round(rotated.width),52);assert.equal(Math.round(rotated.height),102);
  const overall=notebookSceneBounds({objects:[a,b,connector]});assert.ok(overall.width>=300);assert.ok(overall.height>=50);
 });
+import {notebookAgentChanges, notebookFollowViewport} from '../src/notebook_geometry.mjs';
+const boxFor=(id,x,kind='agent',revision=1)=>({id,type:'rect',x,y:0,width:100,height:100,strokeWidth:0,revision,updatedBy:{kind}});
+test('agent changes ignore human edits and the first render',()=>{
+ assert.equal(notebookAgentChanges(null,{objects:[boxFor('a',0)]}),null);
+ const previous={objects:[boxFor('a',0),boxFor('h',200,'human')]};
+ assert.equal(notebookAgentChanges(previous,previous),null);
+ assert.equal(notebookAgentChanges(previous,{objects:[boxFor('a',0),boxFor('h',900,'human',2)]}),null);
+ assert.deepEqual(notebookAgentChanges(previous,{objects:[...previous.objects,boxFor('n',5000),boxFor('m',6000,'agent')]}),{x:4999,y:-1,width:1102,height:102});
+ assert.deepEqual(notebookAgentChanges(previous,{objects:[boxFor('a',0,'agent',2),previous.objects[1]]}),{x:-1,y:-1,width:102,height:102});
+ assert.deepEqual(notebookAgentChanges(previous,{objects:[previous.objects[1]]}),{x:-1,y:-1,width:102,height:102});
+});
+test('follow viewport pans at the current scale, zooms out only when needed, never zooms in',()=>{
+ const view={x:0,y:0,scale:2,width:800,height:600};
+ assert.deepEqual(notebookFollowViewport(view,{x:5000,y:100,width:100,height:100}),{x:400-5050*2,y:300-150*2,scale:2});
+ const out=notebookFollowViewport(view,{x:5000,y:0,width:2000,height:100});
+ assert.equal(out.scale,800*.9/2000); assert.ok(out.scale<2);
+ assert.equal(notebookFollowViewport({...view,scale:.1},{x:50000,y:0,width:10,height:10}).scale,.1);
+ assert.equal(notebookFollowViewport(view,{x:5000,y:0,width:1e9,height:1}).scale,.05);
+});
+test('no reframe when the change is visible',()=>{
+ assert.equal(notebookFollowViewport({x:0,y:0,scale:1,width:800,height:600},{x:10,y:10,width:100,height:100}),null);
+ assert.notEqual(notebookFollowViewport({x:0,y:0,scale:1,width:800,height:600},{x:750,y:10,width:100,height:100}),null);
+});

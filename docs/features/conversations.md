@@ -68,7 +68,11 @@ Legacy Desktop bindings may contain only an identity and retained requests in
 the snapshot. The interface does not invent missing messages or claim an old
 request was delivered. The original task remains in Codex.
 
-The model catalog is loaded only after an explicit connection action. Reading,
+The model catalog is loaded only after an explicit connection action. **Fast**
+is offered, per conversation and off by default, only for models whose catalog
+entry lists the `priority` service tier. A Fast turn sends `serviceTier:
+"priority"`; every other turn sends an explicit `null` so a turn never inherits
+the previous one. Fast on a model without the tier is refused. Reading,
 drawing, `doctor`, `guard` and `brief` do not require an agent. The adapter starts
 its own local stdio Codex process; it never restarts Desktop. Model tools remain
 bound to the original file or notebook. Arbitrary shell, network, other project

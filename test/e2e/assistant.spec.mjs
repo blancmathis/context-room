@@ -177,3 +177,48 @@ test('@assistant lists Mac Codex tasks read-only and opens one on the Mac', asyn
     expect(f.turns.length).toBe(0); expect(f.starts.length).toBe(0); expect(errors).toEqual([]);
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
+
+test('@assistant follow agent frames a far agent edit and a human gesture stops it', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await page.evaluate(async () => { window.notebookUnderTest = await openContextRoomNotebook('docs/Sketch.crnb'); });
+    const notebook = page.getByRole('dialog', { name: 'Notebook: docs/Sketch.crnb', exact: true });
+    await expect(notebook).toHaveAttribute('data-save-state', 'confirmed');
+    await notebook.getByRole('button', { name: 'Ask about selection', exact: true }).click();
+    const pane = page.getByRole('complementary', { name: 'Original document conversation' });
+    const follow = notebook.getByRole('button', { name: 'Follow agent', exact: true });
+    await expect(follow).toHaveAttribute('aria-pressed', 'false'); await follow.dispatchEvent('click'); await expect(follow).toHaveAttribute('aria-pressed', 'true');
+    await pane.getByRole('textbox').fill('Draw far to the right.'); await pane.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect.poll(() => f.turns.length).toBe(1); const turn = f.turns[0];
+    const put = (id, x) => turn.tool('context_room_notebook', { action: 'edit', edits: [{ kind: 'put', id, expectedRevision: 0, object: { type: 'rect', x, y: 100, width: 180, height: 130 } }] }, { callId: id, turnId: turn.turnId, signal: new AbortController().signal });
+    await put('far-box', 5000);
+    await expect.poll(() => page.evaluate(() => { const [x, , width] = notebookUnderTest.surface.viewportBounds(); return x <= 5000 && 5180 <= x + width; })).toBe(true);
+    const box = await page.locator('canvas.notebook-canvas').boundingBox();
+    await page.mouse.move(box.x + 60, box.y + 60); await page.mouse.down(); await page.mouse.move(box.x + 140, box.y + 100, { steps: 4 }); await page.mouse.up();
+    await expect(follow).toHaveAttribute('aria-pressed', 'false'); await expect(notebook).toContainText('You took back the view.');
+    const held = await page.evaluate(() => notebookUnderTest.surface.viewportBounds());
+    await put('farther-box', 9000);
+    await expect.poll(() => page.evaluate(() => notebookUnderTest.surface.document.objects.some(object => object.id === 'farther-box'))).toBe(true);
+    expect(await page.evaluate(() => notebookUnderTest.surface.viewportBounds())).toEqual(held);
+    f.finish('Done.');
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('@assistant Fast checkbox follows the model catalogue and reaches turn/start', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await page.evaluate(() => selectFile('docs/Original.md')); await page.getByRole('button', { name: 'Discuss', exact: true }).click();
+    const pane = page.getByRole('complementary', { name: 'Original document conversation' });
+    await pane.locator('summary').filter({ hasText: 'Codex model' }).click(); await pane.getByRole('button', { name: 'Load available models' }).click();
+    const fast = pane.getByLabel('Conversation Fast mode'), models = pane.getByLabel('Conversation Codex model');
+    await expect(models).toContainText('Synthetic plain model'); await expect(fast).toBeEnabled(); await expect(fast).not.toBeChecked();
+    await fast.check(); await expect(fast).toBeChecked();
+    await models.selectOption('synthetic-plain'); await expect(fast).toBeDisabled(); await expect(fast).not.toBeChecked(); await expect(pane).toContainText('Fast is not offered for this model.');
+    await models.selectOption('gpt-6-astra'); await expect(fast).toBeEnabled(); await fast.check(); await expect(fast).toBeChecked();
+    await pane.getByRole('textbox').fill('Answer quickly.'); await pane.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect.poll(() => f.turns.length).toBe(1); expect(f.turns[0].fast).toBe(true); f.finish();
+    await expect(pane).toHaveAttribute('data-operation-status', 'completed');
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});

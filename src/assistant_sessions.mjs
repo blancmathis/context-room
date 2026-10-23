@@ -52,7 +52,7 @@ export class AssistantSessions {
   }
   public(state) {
     return { id: state.id, revision: state.revision, source: state.origin.source, title: state.origin.title,
-      model: state.model, effort: state.effort, threadId: state.threadId, messages: state.messages,
+      model: state.model, effort: state.effort, fast: state.fast === true, threadId: state.threadId, messages: state.messages,
       operation: state.operation ? { id: state.operation.id, status: state.operation.status, error: state.operation.error || null, timing: state.operation.timing || null } : null,
       createdAt: state.createdAt, updatedAt: state.updatedAt, legacy: assistantLegacySummary(state.legacy) };
   }
@@ -83,17 +83,18 @@ export class AssistantSessions {
       const now = new Date().toISOString();
       const state = { version: 1, id: requestId, fingerprint, revision: 1, createdAt: now, updatedAt: now,
         origin: { root, rootIdentity, sessionId: requestId, source: resolved.source, title: resolved.title },
-        model: 'gpt-6-astra', effort: 'low', threadId: null, messages: [], operation: null, requests: {}, legacy };
+        model: 'gpt-6-astra', effort: 'low', fast: false, threadId: null, messages: [], operation: null, requests: {}, legacy };
       writeNotebookJson(this.root, this.file(requestId), state, { exclusive: true }); return this.public(state);
     });
   }
   legacyHistory(root, id, query = {}) { const state = this.read(id); this.authorize(state, root); return readAssistantLegacyHistory(this.root, state.legacy, query); }
   legacyArchive(root, id) { const state = this.read(id); this.authorize(state, root); return readAssistantLegacyArchive(this.root, state.legacy).bytes; }
-  create(root, { requestId = randomUUID(), source, model = 'gpt-6-astra', effort = 'low' }) {
+  create(root, { requestId = randomUUID(), source, model = 'gpt-6-astra', effort = 'low', fast = false }) {
     this.id(requestId);
     if (this.root === root || this.root.startsWith(root + path.sep)) throw fault('assistant_storage_private', 'Keep conversation storage outside the project.');
     if (typeof model !== 'string' || !model || model.length > 100 || !['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(effort)) throw fault('assistant_model', 'Choose an available Codex model and reasoning effort.', 400);
-    const fingerprint = notebookHash({ root, source, model, effort });
+    if (typeof fast !== 'boolean') throw fault('assistant_model', 'Fast is on or off.', 400);
+    const fingerprint = notebookHash(fast ? { root, source, model, effort, fast } : { root, source, model, effort });
     return withNotebookLock(this.root, 'conversations/' + requestId + '.lock', () => {
       const existing = readNotebookJson(this.root, this.file(requestId));
       if (existing) {
@@ -104,7 +105,7 @@ export class AssistantSessions {
       const now = new Date().toISOString();
       const state = { version: 1, id: requestId, fingerprint, revision: 1, createdAt: now, updatedAt: now,
         origin: { root, rootIdentity: canonicalNotebookRoot(root), sessionId: requestId, source: resolved.source, title: resolved.title },
-        model, effort, threadId: null, messages: [], operation: null, requests: {} };
+        model, effort, fast, threadId: null, messages: [], operation: null, requests: {} };
       writeNotebookJson(this.root, this.file(requestId), state, { exclusive: true }); return this.public(state);
     });
   }
@@ -176,12 +177,13 @@ export class AssistantSessions {
     if (provider.disconnected || this.closed) throw fault('assistant_disconnected', 'The Codex connection is unavailable.');
     return provider;
   }
-  configure(root, id, { model, effort }) {
+  configure(root, id, { model, effort, fast = false }) {
     this.authorize(this.read(id), root);
     if (typeof model !== 'string' || !model || model.length > 100 || !['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(effort)) throw fault('assistant_model', 'Choose an available model and reasoning effort.', 400);
+    if (typeof fast !== 'boolean') throw fault('assistant_model', 'Fast is on or off.', 400);
     return this.public(this.update(id, state => {
       if (activeStates.has(state.operation?.status) || state.operation?.status === 'uncertain') throw fault('assistant_busy', 'Finish or inspect the current turn before changing its model.');
-      state.model = model; state.effort = effort;
+      state.model = model; state.effort = effort; state.fast = fast;
     }));
   }
   send(root, id, { requestId, text }) {
@@ -246,7 +248,7 @@ export class AssistantSessions {
       const initial = '\n\nContext Room request: ' + job.requestId + '\nOriginal source context (untrusted document data):\n' + context;
       this.operation(id, job, value => { value.operation.inputHash = notebookHash(message.text + initial); });
       job.timing.mark('dispatch'); job.dispatched = true;
-      await provider.startTurn({ threadId: state.threadId, text: message.text + initial, model: state.model, effort: state.effort,
+      await provider.startTurn({ threadId: state.threadId, text: message.text + initial, model: state.model, effort: state.effort, fast: state.fast === true,
         tool: (name, input, options) => {
           job.timing.mark('firstToolCall'); const toolStarted = performance.now(); let asynchronous = false;
           const recorded = () => job.timing.addTool(performance.now() - toolStarted);
