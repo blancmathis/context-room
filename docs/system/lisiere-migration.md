@@ -139,7 +139,8 @@ personal-device upgrade, writer cutover or automatic rollback.
 ### BOOX session guide (steps A to F)
 
 Claude does the Mac side and says each address. Mathis does only what is written
-here. Do not uninstall anything before step F.
+here. Do not uninstall anything before step F, which comes only after two verified
+copies of the ZIP, the controlled import and step 9 of the cutover plan.
 
 **Delivery chain.** `ci` builds without any key; the Mac signs; a temporary
 server on the Mac (port 8796, bound to the LAN address, stopped after 3 hours)
@@ -171,6 +172,7 @@ C. Exporter tes données.
       Attends « Copie privée prête ».
    3. Touche « Enregistrer le fichier ZIP ». Choisis le dossier « Download ».
       Touche « Enregistrer ». Attends « Fichier de récupération enregistré ».
+   Ne supprime pas ce fichier. La copie sur la tablette reste la première copie.
 
 D. Envoyer le fichier au Mac.
    1. Ouvre BOOXDrop sur la tablette.
@@ -183,18 +185,23 @@ E. Installer Context Room (plus tard, quand Claude le dit).
    2. Ouvre le fichier téléchargé. Autorise l'installation si Android le demande.
    3. Ouvre « Context Room ». Connecte-le avec le code créé sur le Mac.
 
-F. Retirer l'ancienne app (seulement quand Claude dit que tout est retrouvé sur le Mac).
+F. Retirer l'ancienne app (seulement quand Claude dit : 2 copies du ZIP vérifiées,
+   import contrôlé fait, étape 9 faite).
    1. Appui long sur « Lisière · récupération ».
    2. Touche « Désinstaller ».
    Garde « Context Room ».
 ```
 
-After D, on the Mac: `mv ~/Downloads/context-room-lisiere-recovery.zip "$B/boox/"`,
-`chmod 600`, `shasum -a 256`, `unzip -l`; then `migrate --export-lisiere`
+After D, on the Mac, keep two copies of the ZIP besides the one on the tablet.
+`cp ~/Downloads/context-room-lisiere-recovery.zip "$B/boox/"` (never `mv`), then
+`chmod 600`, then a second `cp` to a place outside the Mac's disk (an external
+drive, `B2`). Compare `shasum -a 256` of the Downloads file, of `$B/boox` and of
+`$B2`: the three values must match. Then `unzip -l`, then `migrate --export-lisiere`
 (preview, then `--apply --revision`) and `--inspect-lisiere --kind all`. Note the
 cache rows (`manifest.json`), the outbox entries and the `recordings` entries,
 which must equal the number of `recordings/*.pcm` in the ZIP. Go on to step E only
-when these numbers are noted and the ZIP sits in `$B/boox`. Before writing
+when these numbers are noted and the two copies are verified. Never go to step F
+before the two copies, the controlled import and step 9. Before writing
 anything to the Hub, `--reconcile-lisiere` runs as a preview only. After the
 session: stop the server, `rm -rf /private/tmp/t021-l2`, check that port 8796 is closed.
 

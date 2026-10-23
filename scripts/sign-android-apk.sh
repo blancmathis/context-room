@@ -28,10 +28,11 @@ export CONTEXT_ROOM_KEY_PASSWORD="${CONTEXT_ROOM_KEY_PASSWORD:-android}"
 "$tools/zipalign" -c -P 16 4 "$work/aligned.apk"
 "$tools/apksigner" sign --ks "$keystore" --ks-key-alias "${CONTEXT_ROOM_KEY_ALIAS:-androiddebugkey}" \
   --ks-pass env:CONTEXT_ROOM_KEY_PASSWORD --key-pass env:CONTEXT_ROOM_KEY_PASSWORD \
-  --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled false --out "$work/signed.apk" "$work/aligned.apk"
+  --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled false --out "$work/signed.apk" "$work/aligned.apk"
 package="$("$tools/aapt" dump badging "$work/signed.apk" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")"
 checks=(--apk "$work/signed.apk" --package "$package")
 [[ -z "$original" ]] || checks+=(--upgrade-from "$original")
+[[ "$package" != app.contextroom.tablet ]] || checks+=(--signer-sha256 adaef0f8c566e9a50e16c245591791c8e0a8d76aa63cf2db28683a6c4b437f8f)
 python3 "$project_root/scripts/check-android-artifact.py" "${checks[@]}"
 mv "$work/signed.apk" "$output"
 printf '%s\n' "$output" >&2
