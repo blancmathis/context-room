@@ -522,7 +522,8 @@ export function resolveCliTarget({ cwd = process.cwd(), project = "", location =
   const containing = candidates.filter((item) => item.available && isWithin(item.root, requested))
     .sort((left, right) => right.root.length - left.root.length);
   let selected = containing[0] || null;
-  if (!selected && candidates.length === 1) selected = candidates[0];
+  // The Notebooks space is never an implicit target: name it with --project or --location.
+  if (!selected && candidates.length === 1 && (project || location || candidates[0].space !== "notebooks")) selected = candidates[0];
   if (!selected && (project || location) && candidates.length > 1) {
     const candidateDetails = candidates.map((item) => ({ id: item.id, title: item.title, root: item.root, branch: item.worktree?.branch || "" }));
     throw cliSelectorConflict(

@@ -15,7 +15,7 @@ import { submitNotebookShared } from "./notebook_workflow.mjs";
 import { NOTEBOOK_WEB_ASSETS } from "./notebook_web_assets.mjs";
 import { NOTEBOOK_LIMITS } from "./notebook_protocol.mjs";
 import { createLisiereConnector, migrateLisiereSession as recoverLisiereSession } from "./lisiere_connector.mjs";
-import { planLisiereNotebookImport, applyLisiereNotebookImport } from "./lisiere_migration.mjs";
+import { planLisiereNotebookImport, applyLisiereNotebookImport, listLisiereNotebookImports } from "./lisiere_migration.mjs";
 import { migrateLisiereReconciliation } from './lisiere_reconcile.mjs';
 import { migrateLisiereDocument } from "./lisiere_documents.mjs";
 import { migrateLisiereConversationHistory } from "./lisiere_conversations.mjs";
@@ -7914,6 +7914,45 @@ export function reconcileLisiereNotebook(root, options = {}) {
 export function migrateLisiereNotebook(root, options = {}) {
   const authority = { canWrite: rel => canEditLocalProposalPath(root, rel), beforeWrite: () => ensureRuntimeGitExcludes(root) };
   return options.apply ? applyLisiereNotebookImport(root, options, authority) : planLisiereNotebookImport(root, options, authority);
+}
+
+/** The registered Notebooks space, or a clear refusal that names the way to create it. */
+export function requireContextHubNotebookSpace() {
+  const space = listContextHubProjects({ readOnly: true }).find((entry) => entry.space === CONTEXT_HUB_NOTEBOOK_SPACE);
+  if (!space) throw sharedRequestError("Create the Notebooks space first (Hub › New notebook) or pass --root.", 409, "context_hub_notebook_space_missing");
+  if (!space.available) throw sharedRequestError(`The Notebooks space is unavailable: ${space.root}`, 409, "context_hub_notebook_space_unavailable");
+  return path.resolve(space.root);
+}
+
+/**
+ * Moves the working notebooks that a Lisière import created in `root` to the Notebooks space.
+ * Preview lists them with one revision; apply moves each one with a verified copy.
+ * The path stays when the space allows it, otherwise the file keeps its name under Carnets/.
+ */
+export function migrateNotebooksToSpace(root, { boardId, apply = false, expectedRevision } = {}) {
+  const sourceRoot = path.resolve(root), spaceRoot = requireContextHubNotebookSpace();
+  const authority = {
+    canWriteSource: (rel) => canEditLocalProposalPath(sourceRoot, rel),
+    canWriteTarget: (rel) => canEditLocalProposalPath(spaceRoot, rel),
+  };
+  const destinationPath = (rel) => rel.startsWith(CONTEXT_HUB_NOTEBOOK_FOLDER) ? rel : CONTEXT_HUB_NOTEBOOK_FOLDER + path.posix.basename(rel);
+  const plan = () => {
+    const notebooks = listLisiereNotebookImports(sourceRoot, { boardId }).map((entry) => {
+      const preview = transferNotebook(sourceRoot, spaceRoot, { resourceId: entry.id, path: destinationPath(entry.path) }, { ...authority, preview: true });
+      return { resourceId: entry.id, title: entry.title, boardId: entry.boardId, from: entry.path, to: preview.to.path, revision: preview.revision };
+    });
+    return { notebooks, revision: notebookHash({ kind: "notebooks-to-space", spaceRoot, notebooks }) };
+  };
+  const planned = plan();
+  const summary = { kind: "notebooks-to-space", root: sourceRoot, spaceRoot, revision: planned.revision, notebooks: planned.notebooks, overwrites: false };
+  if (!apply) return { ...summary, applied: false };
+  if (expectedRevision !== planned.revision) throw sharedRequestError("The notebooks changed after the preview. Preview again.", 409, "notebook_location_stale");
+  const moved = planned.notebooks.map((item) => transferNotebook(sourceRoot, spaceRoot, {
+    resourceId: item.resourceId, path: item.to, expectedRevision: item.revision,
+    operationId: `space-${notebookHash({ revision: planned.revision, resourceId: item.resourceId }).slice(0, 40)}`,
+  }, authority));
+  if (moved.length) markContextHubSnapshotStale();
+  return { ...summary, applied: true, moved: moved.map((item) => ({ resourceId: item.resourceId, to: item.to.path, retired: item.retired })) };
 }
 
 function legacyRecoverySourceForPath(project, rel) {
