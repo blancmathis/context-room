@@ -32,7 +32,8 @@ assert re.findall(r"uses-permission[^\n]*name='([^']+)'", permissions) == expect
 manifest = command(str(sdk / 'aapt'), 'dump', 'xmltree', str(args.apk), 'AndroidManifest.xml')
 for attribute in ('allowBackup', 'usesCleartextTraffic'):
     assert re.search(r'android:' + attribute + r'\([^\n]+\)=\(type 0x12\)0x0\b', manifest), attribute + ' must be disabled'
-signature = command(str(sdk / 'apksigner'), 'verify', '--verbose', str(args.apk))
+# --min-sdk-version 24 forces the v2 block to be checked even when a v3 signature also verifies.
+signature = command(str(sdk / 'apksigner'), 'verify', '--verbose', '--min-sdk-version', '24', str(args.apk))
 assert 'Verified using v2 scheme (APK Signature Scheme v2): true' in signature
 upgrade = {}
 if args.upgrade_from:

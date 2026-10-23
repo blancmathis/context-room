@@ -4,7 +4,7 @@ set -euo pipefail
 umask 077
 usage() {
   printf 'Usage: %s /abs/built.apk /abs/key.keystore /abs/new-output.apk [--upgrade-from /abs/original.apk]\n' "$0" >&2
-  printf 'Needs ANDROID_HOME (build-tools 35.0.0) and node. Optional: CONTEXT_ROOM_KEY_ALIAS, CONTEXT_ROOM_KEY_PASSWORD (default: the Lisière key scheme).\n' >&2
+  printf 'Needs ANDROID_HOME (build-tools 35.0.0), java (JDK 17, for apksigner) and node. Optional: CONTEXT_ROOM_KEY_ALIAS, CONTEXT_ROOM_KEY_PASSWORD (default: the Lisière key scheme).\n' >&2
   exit 2
 }
 [[ $# == 3 || ( $# == 5 && "$4" == --upgrade-from ) ]] || usage
@@ -28,7 +28,7 @@ export CONTEXT_ROOM_KEY_PASSWORD="${CONTEXT_ROOM_KEY_PASSWORD:-android}"
 "$tools/zipalign" -c -P 16 4 "$work/aligned.apk"
 "$tools/apksigner" sign --ks "$keystore" --ks-key-alias "${CONTEXT_ROOM_KEY_ALIAS:-androiddebugkey}" \
   --ks-pass env:CONTEXT_ROOM_KEY_PASSWORD --key-pass env:CONTEXT_ROOM_KEY_PASSWORD \
-  --v1-signing-enabled true --v2-signing-enabled true --v4-signing-enabled false --out "$work/signed.apk" "$work/aligned.apk"
+  --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled false --out "$work/signed.apk" "$work/aligned.apk"
 package="$("$tools/aapt" dump badging "$work/signed.apk" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")"
 checks=(--apk "$work/signed.apk" --package "$package")
 [[ -z "$original" ]] || checks+=(--upgrade-from "$original")

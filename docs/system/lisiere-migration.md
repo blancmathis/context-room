@@ -82,22 +82,34 @@ Earlier project handoff directories are not part of this database export.
 
 ## Recover an existing Android installation
 
-The ordinary preview uses a separate application identity. To access data kept
-inside an existing Lisière installation, the explicit recovery build uses the
-same `fr.lisiere.android` identity and the preserved original signing key. It
-packages the same Context Room source with a higher Android version code:
+The tablet app, `app.contextroom.tablet`, is a separate application from
+Lisière. To reach data kept inside an existing Lisière installation, a
+recovery build uses the same `fr.lisiere.android` identity and the preserved
+original signing key. It packages the same Context Room source with a higher
+Android version code (96; the installed original is 95) and the visible name
+**Lisière · récupération**, so the wrong application is never removed.
+
+The build runs on `ci` and holds no key. The signature happens on the Mac, with
+the key that never leaves it:
 
 ```bash
-scripts/build-android-recovery.sh /absolute/path/to/original-lisiere.apk HIGHER_VERSION_CODE
+# On ci, in ~/work/context-room/T-021/L2/<launch>/ (JDK 17, SDK 35, a source archive of one commit):
+./gradlew --no-daemon :app:assembleDebug -PcontextRoomLegacyRecovery=true \
+  -PcontextRoomLegacyVersionCode=96 -PcontextRoomLegacyKeystore=<disposable key on ci>
+# Copy the APK alone to the Mac, then sign and check it there:
+ANDROID_HOME=~/Library/Android/sdk scripts/sign-android-apk.sh /abs/recovery-96-ci.apk \
+  ~/.local/share/lisiere/signing/development.keystore "$B/apk/recovery-96.apk" \
+  --upgrade-from /abs/original-lisiere-95.apk
 ```
 
-JDK 17, Android SDK/build-tools 35 and the original key in
-`~/.local/share/lisiere/signing/development.keystore` are required. The command
-builds and checks the original/new package identities, signer and increasing
-version. It does not install anything. Its APK is
-`android/.local/legacy-recovery-build/app/outputs/apk/debug/app-debug.apk`;
-ordinary preview output and signing remain separate. Keep signing material
-outside Git. A different key cannot upgrade the existing installation.
+`sign-android-apk.sh` takes absolute paths only, refuses a key inside the
+repository or an output that exists, aligns (`zipalign -P 16 4`), replaces the
+signature with `apksigner`, then runs `check-android-artifact.py` (package,
+permissions, v2 signature, same signer and a higher version as the original,
+shared web assets equal to the source). It prints the check JSON; a failed check
+leaves no output. Without `ci`, `scripts/build-android-recovery.sh` builds and
+checks on the Mac with the same key. Nothing installs by itself. Keep signing
+material outside Git. A different key cannot upgrade the existing installation.
 
 After an authorized upgrade, **Récupérer Lisière** on the connection screen
 opens an explicit local export. **Préparer une copie** retains the original
@@ -123,6 +135,74 @@ Queue reconciliation and proof of delivery remain separate from this conversion.
 snapshot extraction from its checked contents. It does not establish a
 personal-device upgrade, writer cutover or automatic rollback.
 
+
+### BOOX session guide (steps A to F)
+
+Claude does the Mac side and says each address. Mathis does only what is written
+here. Do not uninstall anything before step F.
+
+**Delivery chain.** `ci` builds without any key; the Mac signs; a temporary
+server on the Mac (port 8796, bound to the LAN address, stopped after 3 hours)
+serves the APK; the tablet's own Lisière updater installs it over the existing
+app; the ZIP returns by BOOXDrop. No cloud, no mail. The ZIP and snapshots
+never go to `ci`. The signed APKs, the ZIP and the snapshots are kept under
+`$B/{apk,boox,snapshots}` (`B=~/Backups/lisiere-2026-10`, created after the
+backup step). The server is `lisiere/updates/service.py` from the read-only
+Lisière repository: `publish` into `/private/tmp/t021-l2/updates`, then `serve`
+under `perl -e 'alarm shift; exec @ARGV' 10800 …`. It refuses any package but
+`fr.lisiere.android`, so step E serves the Context Room APK with
+`python3 -m http.server --bind <LAN IP> 8796 --directory <folder with that one APK>`.
+
+```text
+A. Avant.
+   La BOOX est chargée. Elle est sur le même Wi-Fi que le Mac. Le Mac est allumé.
+
+B. Mettre à jour sans rien perdre.
+   1. Ouvre Lisière. Va dans « Mises à jour ».
+   2. Dans « Adresse du Mac », écris l'adresse que Claude te donne
+      (elle ressemble à http://192.168.x.y:8796). Vérifie chaque chiffre.
+   3. Touche « Vérifier les mises à jour », puis « Télécharger et installer ».
+   4. Android demande « Mettre à jour cette application ? ». Touche « Mettre à jour ».
+   Ne désinstalle rien.
+
+C. Exporter tes données.
+   1. Ouvre l'app « Lisière · récupération ».
+   2. Touche « Récupérer Lisière », puis « Préparer une copie ».
+      Attends « Copie privée prête ».
+   3. Touche « Enregistrer le fichier ZIP ». Choisis le dossier « Download ».
+      Touche « Enregistrer ». Attends « Fichier de récupération enregistré ».
+
+D. Envoyer le fichier au Mac.
+   1. Ouvre BOOXDrop sur la tablette.
+   2. Dis à Claude l'adresse affichée.
+   3. Claude prend le fichier « context-room-lisiere-recovery.zip ».
+   Si BOOXDrop ne marche pas : câble USB, puis OpenMTP sur le Mac.
+
+E. Installer Context Room (plus tard, quand Claude le dit).
+   1. Dans le navigateur de la BOOX, ouvre l'adresse que Claude te donne.
+   2. Ouvre le fichier téléchargé. Autorise l'installation si Android le demande.
+   3. Ouvre « Context Room ». Connecte-le avec le code créé sur le Mac.
+
+F. Retirer l'ancienne app (seulement quand Claude dit que tout est retrouvé sur le Mac).
+   1. Appui long sur « Lisière · récupération ».
+   2. Touche « Désinstaller ».
+   Garde « Context Room ».
+```
+
+After D, on the Mac: `mv ~/Downloads/context-room-lisiere-recovery.zip "$B/boox/"`,
+`chmod 600`, `shasum -a 256`, `unzip -l`; then `migrate --export-lisiere`
+(preview, then `--apply --revision`) and `--inspect-lisiere --kind all`. Note the
+cache rows (`manifest.json`), the outbox entries and the `recordings` entries,
+which must equal the number of `recordings/*.pcm` in the ZIP. Go on to step E only
+when these numbers are noted and the ZIP sits in `$B/boox`. Before writing
+anything to the Hub, `--reconcile-lisiere` runs as a preview only. After the
+session: stop the server, `rm -rf /private/tmp/t021-l2`, check that port 8796 is closed.
+
+Risks seen in advance: macOS may ask to let `python3` receive connections; the
+Lisière updater may refill the companion's address in the field (read it again
+just before « Vérifier »); BOOXDrop from the tablet to the Mac has not been tried
+yet (the USB route is the fallback). Pairing the new app is a two-minute JSON
+code today; the pairing file (lot L9b) must exist before step E.
 
 ### Direct native ZIP conversion
 
