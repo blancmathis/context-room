@@ -41,6 +41,7 @@ export async function openLocalDraftEditor({ item, api, onChange }) {
   for (const button of [undoButton, redoButton, findButton]) { button.type = 'button'; button.className = 'quiet-button'; }
   let lastValue = '', lastEdit = 0, findBar = null;
   const setValue = (value, selection) => {
+    if (busy) return;
     history.push(editor.value);
     editor.value = value; lastValue = value; lastEdit = 0;
     if (selection) editor.setSelectionRange(selection.start, selection.end);

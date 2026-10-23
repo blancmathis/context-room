@@ -1260,8 +1260,11 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .plain-text-editor, .plain-text-view { margin: 0; white-space: pre; overflow: auto; tab-size: 2; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
     .plain-text-editor { display: block; width: 100%; min-height: 100%; resize: none; border: 0; outline: none; background: var(--file-bg); color: var(--file-fg); padding: 18px 22px; }
     .html-preview-shell { width: 100%; min-height: calc(100vh - 162px); max-height: calc(100vh - 162px); overflow: hidden; background: var(--file-bg); }
-    html[data-reading-size] #docReader.doc-editor { font-size: var(--reader-size, 15px); }
-    .doc-toc-search { width: 100%; min-height: 36px; margin: 4px 0; padding: 4px 8px; border: 1px solid var(--file-line); border-radius: 6px; background: var(--file-bg); color: var(--file-fg); font: inherit; }
+    html[data-reading-size] #docReader.doc-editor, html[data-reading-size] .markdown-editor-shell .doc-editor { font-size: var(--reader-size, 15px); }
+    html[data-reading-size] #docReader.plain-text-view, html[data-reading-size] #docEditor.plain-text-editor { font-size: calc(var(--reader-size, 15px) * 13 / 15); }
+    .doc-toc a[aria-current="location"], .contents-dialog a[aria-current="location"] { font-weight: 700; }
+    .file-actions .file-action[data-editor-undo], .file-actions .file-action[data-editor-redo], .file-actions .file-action[data-editor-find], .file-actions .file-action[data-reading-settings], .file-actions .file-action[data-html-contents] { min-height: 44px; min-width: 44px; }
+    .doc-toc-search { width: 100%; min-height: 44px; margin: 4px 0; padding: 4px 8px; border: 1px solid var(--file-line); border-radius: 6px; background: var(--file-bg); color: var(--file-fg); font: inherit; }
     .doc-toc-pager { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
     .doc-toc-pager button, .reading-dialog button, .contents-dialog button, .reader-page-bar button, .find-bar button { min-height: 44px; min-width: 44px; padding: 4px 12px; border: 1px solid var(--file-line); border-radius: 6px; background: var(--file-panel-bg); color: var(--file-fg); font: inherit; cursor: pointer; }
     .doc-toc-pager button:disabled, .find-bar button:disabled { opacity: 0.45; cursor: default; }
@@ -1272,7 +1275,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .reading-page-option { display: flex; align-items: center; gap: 8px; min-height: 44px; }
     .reading-note { margin: 6px 0; color: var(--file-muted); font-size: 12px; }
     .contents-dialog ol { display: grid; gap: 1px; margin: 4px 0 0; padding: 0; list-style: none; }
-    .contents-dialog a { display: block; padding: 8px; color: var(--file-fg); text-decoration: none; }
+    .contents-dialog a { display: flex; align-items: center; min-height: 44px; box-sizing: border-box; padding: 8px; color: var(--file-fg); text-decoration: none; }
     .contents-dialog .doc-toc-l2 a { padding-left: 20px; } .contents-dialog .doc-toc-l3 a, .contents-dialog .doc-toc-l4 a, .contents-dialog .doc-toc-l5 a, .contents-dialog .doc-toc-l6 a { padding-left: 32px; color: var(--file-muted); }
     .reader-page-bar { position: sticky; bottom: 0; display: flex; justify-content: space-between; gap: 8px; padding: 6px 12px; background: var(--file-panel-bg); border-top: 1px solid var(--file-line); }
     .reader-page-bar button { flex: 1; min-height: 56px; font-size: 16px; }
@@ -16563,7 +16566,7 @@ function renderFileActionItems({ modeToggle = null, reviewAction = null, seconda
     (reviewAction ? '<button class="file-action" type="button" data-file-review-decision="' + escapeHtml(reviewAction.status) + '">' + escapeHtml(reviewAction.label) + '</button>' : '') +
     (secondaryReviewAction ? '<button class="file-action" type="button" data-file-review-decision="' + escapeHtml(secondaryReviewAction.status) + '">' + escapeHtml(secondaryReviewAction.label) + '</button>' : '') +
     (nextReviewAction ? '<button class="file-action" type="button" data-next-review>' + escapeHtml(nextReviewAction.label) + '</button>' : '') +
-    (modeToggle === "view" ? '<button class="file-action" type="button" data-editor-undo>Undo</button><button class="file-action" type="button" data-editor-redo>Redo</button><button class="file-action" type="button" data-editor-find>Find</button>' : '') +
+    (modeToggle === "view" ? '<button class="file-action" type="button" data-editor-undo' + (editorHistoryAvailable("undo") ? '' : ' disabled') + '>Undo</button><button class="file-action" type="button" data-editor-redo' + (editorHistoryAvailable("redo") ? '' : ' disabled') + '>Redo</button><button class="file-action" type="button" data-editor-find>Find</button><button class="file-action" type="button" data-reading-settings aria-label="Text size">Aa</button>' : '') +
     (state.selected && !state.selectedStartupContext && state.mode === "view" && !isImageDocumentPath(state.selected) && (modeToggle === "edit" || isHtmlDocumentPath(state.selected)) ? (isHtmlDocumentPath(state.selected) ? '<button class="file-action" type="button" data-html-contents>Contents</button>' : '') + '<button class="file-action" type="button" data-reading-settings aria-label="Text size">Aa</button>' : '') +
     (deletable ? '<button class="file-action danger-action" type="button" data-file-delete>Delete</button>' : '') +
     (modeToggle === "edit" ? '<button class="file-action primary" type="button" data-file-mode="edit">Edit</button>' : '') +
@@ -20989,6 +20992,20 @@ function commitMarkdownEditorHistory(editor, event) {
   history.current = markdownEditorHistorySnapshot(editor);
   history.lastInputType = coalescible ? inputType : "";
   history.lastInputAt = coalescible ? now : 0;
+  updateEditorHistoryButtons();
+}
+
+function editorHistoryAvailable(direction) {
+  const history = state.markdownEditorHistory;
+  if (!history || history.path !== state.selected) return false;
+  return (direction === "redo" ? history.future : history.past).length > 0;
+}
+
+function updateEditorHistoryButtons() {
+  for (const direction of ["undo", "redo"]) {
+    const button = document.querySelector("[data-editor-" + direction + "]");
+    if (button) button.disabled = !editorHistoryAvailable(direction);
+  }
 }
 
 function resetMarkdownEditorHistoryGroup() {
@@ -21022,6 +21039,7 @@ function applyMarkdownEditorHistory(editor, direction) {
   history.current = markdownEditorHistorySnapshot(editor);
   resetMarkdownEditorHistoryGroup();
   syncMarkdownEditorValue(editor);
+  updateEditorHistoryButtons();
 }
 
 function syncMarkdownEditorValue(editor) {
@@ -21663,6 +21681,7 @@ function wireEditorFind(editor) {
     const apply = (value, selection) => {
       const history = prepareMarkdownEditorHistory(editor);
       history.past.push(markdownEditorHistorySnapshot(editor));
+      if (history.past.length > 200) history.past.shift();
       history.future.length = 0;
       editor.value = value;
       editor.setSelectionRange(selection.start, selection.end);
@@ -21670,6 +21689,7 @@ function wireEditorFind(editor) {
       history.current = markdownEditorHistorySnapshot(editor);
       resetMarkdownEditorHistoryGroup();
       syncMarkdownEditorValue(editor);
+      updateEditorHistoryButtons();
     };
     const select = (start, end) => {
       editor.setSelectionRange(start, end);

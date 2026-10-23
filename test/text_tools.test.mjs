@@ -11,6 +11,11 @@ test('foldForSearch keeps the length and folds case and accents', () => {
   for (const text of ['Éléphant à Paris', 'ÀÉÎÕÜ ǅ ﬁ', 'école']) assert.equal(foldForSearch(text).length, text.length);
 });
 
+test('findMatches reuses a text folded by the caller', () => {
+  const text = 'Un Mémo, un MEMO.';
+  assert.deepEqual(findMatches(text, 'memo', { folded: foldForSearch(text) }).starts, [3, 12]);
+});
+
 test('findMatches finds memo in Mémo unless exact mode is on', () => {
   assert.deepEqual(findMatches('Un Mémo, un MEMO.', 'memo').starts, [3, 12]);
   assert.equal(findMatches('Un Mémo', 'memo', { exact: true }).starts.length, 0);

@@ -12,6 +12,7 @@ test('the explicit browser module graph serves native drawing and both review UR
   for (const [url, file] of compatibility) assets.set(url, file);
   assert.equal(assets.get('/assets/ui/local-proposal-review.mjs'), 'ui/local-proposal-review.mjs');
   assert.equal(assets.get('/assets/ui/native-drawing.mjs'), 'ui/native-drawing.mjs');
+  assert.equal(assets.get('/assets/ui/text-tools.mjs'), 'ui/text-tools.mjs');
   for (const [url, file] of assets) {
     const source = fs.readFileSync(new URL('../src/' + file, import.meta.url), 'utf8');
     if (!file.endsWith('.mjs')) continue;
