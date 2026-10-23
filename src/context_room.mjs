@@ -6,6 +6,7 @@ import { inspectLocalAudio } from './local_audio_diagnostics.mjs';
 import { renderAppShell } from "./ui/app.mjs";
 import { handleNotebookHttp, isNotebookMutation } from "./notebook_http.mjs";
 import { AssistantRuntime, handleAssistantHttp, assistantStorageRoot } from "./assistant_runtime.mjs";
+import { previewCodexProjectImport, applyCodexProjectImport } from "./codex_catalog.mjs";
 import { attachLisiereRecording, recordingTargetFromResolved } from './lisiere_recording_links.mjs';
 import { AssistantSessions } from './assistant_sessions.mjs';
 import { createAssistantSourceResolver } from "./assistant_sources.mjs";
@@ -496,6 +497,7 @@ const BACKGROUND_REPORT_INVALIDATING_PATHS = new Set([
   "/api/watch-rule",
   "/api/context-hub/project-settings",
   "/api/context-hub/projects",
+  "/api/context-hub/codex-import",
   "/api/context-hub/notebook-space",
   "/api/context-hub/notebooks/move",
   "/api/context-hub/shared-recovery/abandon",
@@ -17990,6 +17992,7 @@ function isOwnerReviewAuthorityMutation(pathname = "", method = "GET") {
     "POST /api/context-hub/project-explorer/action",
     "POST /api/context-hub/shared-recovery/abandon",
     "POST /api/context-hub/confirm-location",
+    "POST /api/context-hub/codex-import",
     "POST /api/context-hub/notebooks/move",
     "POST /api/watch-rule",
     "DELETE /api/watch-rule",
@@ -21300,7 +21303,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   if (url.pathname.startsWith('/api/assistant/')) {
     if (!getAssistantRuntime) throw sharedRequestError('Conversations are unavailable in this runtime.', 409, 'assistant_unavailable');
     if (req.method === 'POST') beforeManagedControlMutation?.();
-    await handleAssistantHttp(req, res, { root, url, runtime: getAssistantRuntime(), readJsonBody, sendJson }); return;
+    await handleAssistantHttp(req, res, { root, url, runtime: getAssistantRuntime(), readJsonBody, sendJson, profile: requestRuntimeProfile }); return;
   }
   if (url.pathname === '/api/devices' || url.pathname.startsWith('/api/devices/')) {
     if (req.method === 'GET' && url.pathname === '/api/devices') {
@@ -22340,6 +22343,23 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       projectRoot: created.projectRoot,
       catalog,
     });
+    return;
+  }
+  if (url.pathname === "/api/context-hub/codex-import" && (req.method === "GET" || req.method === "POST")) {
+    if (requestRuntimeProfile !== "local" || hostedSharedProvider) {
+      throw sharedRequestError("Importing Codex Desktop projects is unavailable on hosted Context Room.", 404, "remote_operation_unavailable");
+    }
+    if (req.method === "GET") {
+      try { sendJson(res, 200, previewCodexProjectImport()); } catch (error) { throw sharedRequestError(error.message, error.statusCode || 409, error.code || "codex_catalog_unreadable"); }
+      return;
+    }
+    const body = await readJsonBody(req);
+    let applied;
+    try { applied = await applyCodexProjectImport({ roots: body.roots, expectedRevision: body.expectedRevision, initialize: initializeContextRoomProject }); }
+    catch (error) { throw sharedRequestError(error.message, error.statusCode || 400, error.code || "codex_import_failed"); }
+    markContextHubSnapshotStale();
+    const catalog = applied.imported ? await refreshContextHubSnapshot(root, { refreshShared: false, force: true }) : null;
+    sendJson(res, 200, { ...applied, catalog });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/context-hub/notebook-space") {

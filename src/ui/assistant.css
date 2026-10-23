@@ -40,3 +40,11 @@ html[data-context-room-keyboard-viewport] .assistant-panel { bottom: calc(var(--
 .assistant-sheet { display: grid; gap: 6px; }
 .assistant-sheet canvas { display: block; width: 100%; aspect-ratio: 3 / 2; box-sizing: border-box; border: 2px solid var(--control-line, #777); border-radius: 6px; background: #fff; touch-action: none; cursor: crosshair; }
 .assistant-sheet-status { color: var(--muted, #bbb); font-size: 12px; }
+.assistant-mac-tasks { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--control-line, #777); padding-top: 8px; }
+.assistant-mac-tasks input[type="search"] { min-height: 44px; box-sizing: border-box; flex: 1 1 160px; border: 1px solid var(--control-line, #777); border-radius: 6px; padding: 8px; background: transparent; color: inherit; }
+.assistant-mac-tasks label { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; }
+.assistant-mac-tasks input[type="checkbox"] { width: 24px; height: 24px; }
+.assistant-mac-row { display: flex; flex-direction: column; gap: 2px; padding: 4px 0; }
+.assistant-mac-row button { text-align: left; }
+.assistant-mac-row small, .assistant-mac-status, .assistant-mac-badge { color: var(--muted, #bbb); font-size: 12px; }
+.assistant-mac-detail h3 { margin: 0 0 4px; font-size: 15px; overflow-wrap: anywhere; }

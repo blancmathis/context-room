@@ -2075,6 +2075,11 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .creation-dialog-field > span:first-child { color: var(--text-soft); font-weight: 720; }
     .creation-dialog-field input, .creation-dialog-field select, .creation-dialog-field textarea { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); }
     .creation-dialog-field textarea { display: block; min-height: 92px; resize: vertical; }
+    .creation-dialog-checks { display: grid; gap: 4px; max-height: 40vh; overflow: auto; }
+    .creation-dialog-check { display: flex; align-items: flex-start; gap: 10px; min-height: 44px; padding: 6px 4px; color: var(--text); }
+    .creation-dialog-check input { width: 24px; height: 24px; flex: none; }
+    .creation-dialog-check small { display: block; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+    .creation-dialog-check.is-off { color: var(--muted); }
     .creation-dialog-note { color: var(--muted); font-size: 10px; line-height: 1.45; }
     .creation-dialog-status { min-height: 16px; color: var(--danger-fg); font-size: 11px; }
     .shared-proposal-change-summary { color: var(--muted); font-size: 11px; }
@@ -3323,6 +3328,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     html[data-context-room-runtime-profile="hosted-hub"] #contextHealthPanel,
     html[data-context-room-runtime-profile="hosted-hub"] #codexPromptCenter,
     html[data-context-room-runtime-profile="hosted-hub"] #contextHubCreateProject,
+    html[data-context-room-runtime-profile="hosted-hub"] #contextHubImportCodex,
     html[data-context-room-runtime-profile="hosted-hub"] #contextHubManageProjects,
     html[data-context-room-runtime-profile="hosted-hub"] #sharedSkillsWizard,
     html[data-context-room-runtime-profile="hosted-hub"] #codexReferencePopover,
@@ -3384,6 +3390,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     html[data-context-room-runtime-profile="hosted-review"] #contextHealthPanel,
     html[data-context-room-runtime-profile="hosted-review"] #codexPromptCenter,
     html[data-context-room-runtime-profile="hosted-review"] #contextHubCreateProject,
+    html[data-context-room-runtime-profile="hosted-review"] #contextHubImportCodex,
     html[data-context-room-runtime-profile="hosted-review"] #contextHubManageProjects,
     html[data-context-room-runtime-profile="hosted-review"] #contextHubCreateSharedDocument,
     html[data-context-room-runtime-profile="hosted-review"] #contextHubCreateSharedProject,
@@ -3848,6 +3855,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       </button>
       <button id="contextHubCreateSharedProject" class="dock-button" type="button" hidden>New shared project</button>
       <button id="contextHubCreateProject" class="dock-button primary" type="button" hidden>New project</button>
+      <button id="contextHubImportCodex" class="dock-button" type="button" hidden>Import from Codex</button>
       <button id="sharedProposalWorkspaceRefresh" class="dock-button" type="button">Refresh</button>
       <button id="sharedProposalWorkspaceClose" class="dock-button shared-proposal-workspace-close" type="button" aria-label="Close this secondary view">Close</button>
     </header>
@@ -8924,6 +8932,11 @@ function renderSharedProposalWorkspace() {
   if (workspace) workspace.dataset.globalRecovery = String(Boolean(globalRecoveryMarkup));
   const createProjectButton = el("contextHubCreateProject");
   const createSharedProjectButton = el("contextHubCreateSharedProject");
+  const importCodexButton = el("contextHubImportCodex");
+  if (importCodexButton) {
+    importCodexButton.hidden = !projectManagerMode || IS_HOSTED_HUB;
+    importCodexButton.disabled = Boolean(state.sharedContextBusy);
+  }
   if (createProjectButton) {
     createProjectButton.hidden = !projectManagerMode;
     createProjectButton.disabled = Boolean(state.sharedContextBusy);
@@ -24093,14 +24106,17 @@ function showContextHubCreationDialog({ title, body, submitLabel, fields = [], o
   const dialogGeneration = ++state.contextHubCreationGeneration;
   backdrop.className = "confirm-backdrop";
   const fieldMarkup = fields.map((field) => {
-    const input = field.type === "select"
+    const input = field.type === "checks"
+      ? '<span class="creation-dialog-checks" role="group" aria-label="' + escapeHtml(field.label) + '">' + (field.options || []).map((option) => '<label class="creation-dialog-check' + (option.disabled ? ' is-off' : '') + '"><input type="checkbox" name="' + escapeHtml(field.name) + '" value="' + escapeHtml(option.value) + '"' + (option.checked ? ' checked' : '') + (option.disabled ? ' disabled' : '') + ' /><span><strong>' + escapeHtml(option.label) + '</strong>' + (option.note ? '<small>' + escapeHtml(option.note) + '</small>' : '') + '</span></label>').join("") + '</span>'
+      : field.type === "select"
       ? '<select name="' + escapeHtml(field.name) + '"' + (field.required ? ' required' : '') + '>'
         + (field.options || []).map((option) => '<option value="' + escapeHtml(option.value) + '"' + (option.disabled ? ' disabled' : '') + '>' + escapeHtml(option.label) + '</option>').join("")
         + '</select>'
       : field.multiline
         ? '<textarea name="' + escapeHtml(field.name) + '" placeholder="' + escapeHtml(field.placeholder || "") + '"' + (field.required ? ' required' : '') + '>' + escapeHtml(field.value || "") + '</textarea>'
         : '<input name="' + escapeHtml(field.name) + '" type="text" value="' + escapeHtml(field.value || "") + '" placeholder="' + escapeHtml(field.placeholder || "") + '"' + (field.required ? ' required' : '') + ' />';
-    return '<label class="creation-dialog-field"><span>' + escapeHtml(field.label) + '</span>' + input + (field.note ? '<span class="creation-dialog-note">' + escapeHtml(field.note) + '</span>' : '') + '</label>';
+    const wrapper = field.type === "checks" ? "div" : "label";
+    return '<' + wrapper + ' class="creation-dialog-field"><span>' + escapeHtml(field.label) + '</span>' + input + (field.note ? '<span class="creation-dialog-note">' + escapeHtml(field.note) + '</span>' : '') + '</' + wrapper + '>';
   }).join("");
   backdrop.innerHTML = '<section class="confirm-dialog creation-dialog" role="dialog" aria-modal="true" aria-label="' + escapeHtml(title) + '">'
     + '<strong>' + escapeHtml(title) + '</strong>'
@@ -24165,6 +24181,7 @@ function showContextHubCreationDialog({ title, body, submitLabel, fields = [], o
     event.preventDefault();
     if (requestController || !isCurrent()) return;
     const values = Object.fromEntries(new FormData(form).entries());
+    for (const field of fields) if (field.type === "checks") values[field.name] = new FormData(form).getAll(field.name);
     requestController = new AbortController();
     state.contextHubCreationController = requestController;
     setBusy(true);
@@ -24209,6 +24226,53 @@ function applyContextHubCreationCatalog(catalog, projectId = "", proposalBranch 
   renderContextRoomGlobalReviewQueue();
   renderSharedProposalWorkspace();
   workspaceUpdate("catalog-refreshed");
+}
+
+async function showContextHubImportCodexDialog() {
+  let preview;
+  try { preview = await api("/api/context-hub/codex-import"); }
+  catch (error) { setStatus(error.message || "The Codex project list cannot be read."); return; }
+  const rows = preview.projects || [];
+  const importable = rows.filter((row) => row.status === "ready" || row.status === "needs-init");
+  const labels = { registered: "Already in Context Room", missing: "Folder missing", refused: "Not offered" };
+  const options = rows.map((row) => ({
+    value: row.root,
+    label: row.name,
+    checked: row.status === "ready",
+    disabled: row.status !== "ready" && row.status !== "needs-init",
+    note: row.root + " \u00b7 " + (row.status === "ready" ? "Ready" : row.status === "needs-init" ? "Will create .context-room/" : (labels[row.status] || row.status) + (row.reason ? " \u2014 " + row.reason : "")),
+  }));
+  showContextHubCreationDialog({
+    title: "Import from Codex",
+    body: preview.found && rows.length
+      ? "Projects Codex Desktop already knows. Nothing changes until you confirm. Folders marked \u201cWill create .context-room/\u201d are not ticked yet."
+      : "Codex Desktop has no project list on this Mac.",
+    submitLabel: "Import selected projects",
+    fields: importable.length ? [{ name: "roots", label: "Codex projects", type: "checks", options }] : [],
+    onSubmit: async (values) => {
+      const roots = values.roots || [];
+      if (!roots.length) throw new Error("Choose at least one project to import.");
+      const chosen = importable.filter((row) => roots.includes(row.root));
+      const created = chosen.filter((row) => row.status === "needs-init").length;
+      showConfirmDialog({
+        title: "Import " + chosen.length + (chosen.length === 1 ? " project" : " projects"),
+        body: "Context Room registers " + chosen.length + (chosen.length === 1 ? " folder" : " folders") + " and creates .context-room/ in " + created + " of them. Nothing else in your folders changes.",
+        confirmLabel: "Confirm import",
+        confirmPendingLabel: "Importing\u2026",
+        confirmVariant: "primary",
+        onConfirm: async () => {
+          const result = await api("/api/context-hub/codex-import", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ roots, expectedRevision: preview.revision }),
+          });
+          if (result.catalog) applyContextHubCreationCatalog(result.catalog);
+          const failed = (result.results || []).filter((item) => item.outcome === "failed");
+          setStatus("Imported " + result.imported + (result.imported === 1 ? " project" : " projects") + (failed.length ? "; " + failed.length + " could not be imported: " + failed.map((item) => item.reason).join(" ") : "."));
+        },
+      });
+    },
+  });
 }
 
 function showContextHubCreateProjectDialog() {
@@ -25609,6 +25673,7 @@ el("sharedProposalSelect")?.addEventListener("change", renderSharedContextContro
 el("sharedProposalWorkspaceRefresh")?.addEventListener("click", () => refreshContextHubUi().catch((error) => setStatus(error.message)));
 el("sharedProposalWorkspaceClose")?.addEventListener("click", closeContextRoomSecondaryView);
 el("contextHubCreateProject")?.addEventListener("click", showContextHubCreateProjectDialog);
+el("contextHubImportCodex")?.addEventListener("click", () => { void showContextHubImportCodexDialog(); });
 el("contextHubCreateSharedProject")?.addEventListener("click", () => {
   try { showContextHubCreateSharedProjectDialog(); }
   catch (error) { setStatus(error.message); }

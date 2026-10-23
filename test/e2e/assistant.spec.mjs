@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { assistantFixture } from '../fixtures/assistant.mjs';
+import { assistantFixture, MAC_TASK_ID } from '../fixtures/assistant.mjs';
 import { readNotebook } from '../../src/notebooks.mjs';
 
 test('@smoke @assistant conversation keeps its original document across navigation and explicit history resumption', async ({ page }, testInfo) => {
@@ -153,5 +153,27 @@ test('@smoke @assistant a stopped dictation and late playback cannot send or ack
     await pane.getByRole('button', { name: 'Read answer' }).click(); await page.waitForFunction(() => syntheticAudio.plays.length === 2);
     await page.evaluate(() => syntheticAudio.plays[1].resolve({ played: true })); await expect.poll(() => receipts.length).toBe(1); expect(receipts[0].conversationId).toBe(id);
     await expect(pane.locator('.assistant-audio-state')).toHaveText('Microphone off · audio stopped.');
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('@assistant lists Mac Codex tasks read-only and opens one on the Mac', async ({ page }) => {
+  const f = await assistantFixture({ platform: 'darwin' }), errors = []; page.on('pageerror', error => errors.push(error.message));
+  try {
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await page.evaluate(() => selectFile('docs/Original.md'));
+    await page.getByRole('button', { name: 'Discuss', exact: true }).click();
+    const pane = page.getByRole('complementary', { name: 'Original document conversation' }); await expect(pane).toBeVisible();
+    await pane.getByRole('button', { name: 'Codex tasks on this Mac', exact: true }).click();
+    const first = pane.getByRole('button', { name: /Read summary: Plan the <b>import<\/b>/ }); await expect(first).toBeVisible();
+    await expect(pane.locator('.assistant-mac-list b')).toHaveCount(0); // a title is text, never markup
+    await expect(pane.getByRole('button', { name: 'Next tasks', exact: true })).toBeVisible();
+    await first.click();
+    const detail = pane.locator('.assistant-mac-detail');
+    await expect(detail).toContainText('Summary \u00b7 read only'); await expect(detail).toContainText('Import my projects'); await expect(detail).toContainText('Done: 4 projects.');
+    await expect(pane.getByRole('button', { name: /continue/i })).toHaveCount(0);
+    await detail.getByRole('button', { name: 'Show on Mac', exact: true }).click();
+    await expect.poll(() => f.opened).toEqual(['codex://threads/' + MAC_TASK_ID]);
+    await detail.getByRole('button', { name: 'Back to tasks', exact: true }).click(); await expect(first).toBeVisible();
+    expect(f.turns.length).toBe(0); expect(f.starts.length).toBe(0); expect(errors).toEqual([]);
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });

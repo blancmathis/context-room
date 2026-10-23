@@ -37,7 +37,7 @@ export const CLI_PROFILE_COMMANDS = freeze({
   worker: ["docs search", "docs read", "docs inspect"],
   editing: ["changes begin", "changes status", "changes submit", "changes list"],
   admin: [
-    "project list", "project show", "project register",
+    "project list", "project show", "project register", "project import-codex",
     "ui list", "ui open",
     "watch set",
     "review list", "review show",
@@ -78,7 +78,7 @@ export const CLI_CAPABILITY_SECTIONS = freeze({
   },
   workspace: {
     summary: "Manage projects and navigation.",
-    commands: ["project list", "project show", "project register", "ui list", "ui open", "hub status"],
+    commands: ["project list", "project show", "project register", "project import-codex", "ui list", "ui open", "hub status"],
   },
   configuration: {
     summary: "Manage settings and diagnostics.",
@@ -232,6 +232,7 @@ export const CLI_COMMAND_REGISTRY = freeze([
   define("project show", { summary: "Show one exact registered project or worktree.", arguments: TARGET, scopes: PROJECT_SCOPES, handlerKey: "project.show", ui: "both" }),
   define("project search", { summary: "Search the registered project catalog.", arguments: PAGE, scopes: ["device"], handlerKey: "project.search", ui: "both", exposure: "compatibility", replacement: "project list --query" }),
   define("project register", { summary: "Explicitly register a project or worktree location.", arguments: [...TARGET, option("--title"), option("--dry-run", { value: "boolean" })], scopes: PROJECT_SCOPES, mutation: "mutating", protocol: "direct", effect: "reversible-local", handlerKey: "project.register", ui: "both" }),
+  define("project import-codex", { summary: "Preview, then import, the folders of your Codex Desktop projects into the Hub.", arguments: [option("--apply"), option("--expected-revision"), option("--json", { value: "boolean" })], scopes: ["device"], mutation: "mutating", protocol: "legacy-direct-with-preview", effect: "reversible-local", handlerKey: "project.import-codex", ui: "both" }),
   define("project open", { summary: "Open a registered project in the running Hub.", arguments: TARGET, scopes: PROJECT_SCOPES, handlerKey: "project.open", ui: "both", exposure: "compatibility", replacement: "ui open" }),
   define("project recent", { summary: "List recently used registered locations.", arguments: PAGE, scopes: ["device"], handlerKey: "project.recent", ui: "both", exposure: "compatibility", replacement: "project list --recent" }),
 

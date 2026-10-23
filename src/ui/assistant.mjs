@@ -3,6 +3,7 @@ import { captureMicrophone, recoverBrowserRecording, acknowledgeRecording } from
 import { LiveSourcePreview, createSketchSheet } from './assistant-observation.mjs';
 import { createLinkedRecordings } from './assistant-recordings.mjs';
 import { createRetainedHistory } from './assistant-legacy.mjs';
+import { createMacTasks } from './assistant-mac.mjs';
 export { documentDraftPreview } from './assistant-observation.mjs';
 
 const element = (tag, text = '', className = '') => { const node = document.createElement(tag); node.textContent = text; node.className = className; return node; };
@@ -97,8 +98,9 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   models.setAttribute('aria-label', 'Conversation Codex model'); efforts.setAttribute('aria-label', 'Conversation reasoning effort');
   const connect = button('Load available models', () => run((async () => { await post('/connect', {}); modelPending = true; await poll(); })()));
   modelRow.append(modelTitle, models, efforts, connect);
-  const retainedHistory = createRetainedHistory({ api }), linkedRecordings = createLinkedRecordings({ api });
-  panel.append(heading, original, audioStatus, boundary, ...(conversation.source.kind === 'notebook' ? [] : [sheet.section]), historyRow, retainedHistory.section, linkedRecordings.section, messages, modelRow, form, status, infoBox, errorBox); parent.append(panel);
+  const retainedHistory = createRetainedHistory({ api }), linkedRecordings = createLinkedRecordings({ api }), macTasks = createMacTasks({ api });
+  historyRow.append(macTasks.toggle); heading.insertBefore(macTasks.showCurrent, minimize);
+  panel.append(heading, original, audioStatus, boundary, ...(conversation.source.kind === 'notebook' ? [] : [sheet.section]), historyRow, macTasks.section, retainedHistory.section, linkedRecordings.section, messages, modelRow, form, status, infoBox, errorBox); parent.append(panel);
   const clientId = crypto.randomUUID();
   let closed = false, current = conversation, pollBusy = false, lease = null, renewTimer = null, recording = null, speaker = null,
     audioContext = null, audioGeneration = 0, modelPending = false, rendered = '', sendRequest = null, retainedRecording = null, recordingRequest = null, audioBusy = false, audioReading = false, changingConversation = false, draftWrites = Promise.resolve(), nativeRecordings = [], voice = null, voiceClosing = false, initializing = true, historyCursor = null, historyLoading = false;
@@ -193,7 +195,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   }
   function render() {
     self.conversation = current; const busy = activeStatuses.has(current.operation?.status), uncertain = current.operation?.status === 'uncertain';
-    retainedHistory.set(current); linkedRecordings.set(current);
+    retainedHistory.set(current); linkedRecordings.set(current); macTasks.set(current);
     panel.dataset.ready = String(!initializing); panel.setAttribute('aria-busy', String(initializing));
     panel.dataset.capturing = String(Boolean(recording));
     panel.classList.toggle('assistant-voice-enabled', Boolean(voice));
