@@ -22803,6 +22803,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
         sharedTitle: project.sharedTitle || "",
         priorityId: project.priorityId || contextHubProjectPriorityId(project),
         priorityRank: Number.isInteger(project.priorityRank) ? project.priorityRank : null,
+        ...(project.space ? { space: project.space } : {}),
       })),
       attention: state.attention,
       sharedRepositories: state.sharedRepositories || [],

@@ -9,7 +9,7 @@ export const notebookSpaceDisplayPath = value => String(value || '').startsWith(
 export function newSpaceNotebook(date = new Date()) {
   const id = crypto.randomUUID(), pad = value => String(value).padStart(2, '0');
   const title = `Note · ${date.getDate()} ${date.toLocaleString('en-GB', { month: 'short' })}, ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-  return { path: NOTEBOOK_SPACE_FOLDER + id + '.crnb', title };
+  return { id, path: NOTEBOOK_SPACE_FOLDER + id + '.crnb', title };
 }
 
 function fileNameFor(title) {

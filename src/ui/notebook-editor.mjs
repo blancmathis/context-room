@@ -16,7 +16,7 @@ const button = (label, callback, className = '') => { const node = notebookEleme
 async function metadata(storage, key, update) { for (let n = 0; n < 8; n++) { const state = await storage.read(key); try { await storage.commit(key, state.version, { metadata: update(state.metadata) }); return; } catch (error) { if (error.code !== 'notebook_cache_conflict') throw error; } } throw new Error('The local notebook cache is busy.'); }
 
 /** api and scopeKey must be captured from the exact project/location BEFORE navigation can change. */
-export async function openNotebookEditor({ api, path, resourceId, title, scopeKey, fixedSnapshot = null, reviewKey = '', onCorrection, onSubmitted = () => {}, onClosed = () => {}, onInteraction = () => {}, onConversation, initialImage, initialImageBackground = false, createOnly = false, beforePresent, offlineCapabilities = null, cacheServerId = '', browserDeviceId = document.querySelector('meta[name="context-room-browser-device"]')?.content || '' } = {}) {
+export async function openNotebookEditor({ api, path, resourceId, title, scopeKey, fixedSnapshot = null, reviewKey = '', onCorrection, onSubmitted = () => {}, onClosed = () => {}, onInteraction = () => {}, onConversation, initialImage, initialImageBackground = false, createOnly = false, newId, beforePresent, offlineCapabilities = null, cacheServerId = '', browserDeviceId = document.querySelector('meta[name="context-room-browser-device"]')?.content || '' } = {}) {
   notebookStyles(); if (path) notebookPath(path);
   const storage = new IndexedNotebookStorage(), browserId = await notebookBrowserIdentity(storage);
   const request = (url, options = {}) => api(url, { ...options, headers: { ...options.headers, 'x-context-room-notebook-client': browserId } });
@@ -46,7 +46,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     const document = normalizeNotebookDocument(fixedSnapshot);
     snapshot = { protocolVersion: NOTEBOOK_VERSION, resourceId: document.id, document, locator: { path, revision: reviewKey }, sequence: 0, revision: document.revision, tombstones: {}, accepted: false };
   } else if (!offlineError) {
-    try { snapshot = resourceId ? await transport.scene(resourceId) : await transport.open({ protocolVersion: NOTEBOOK_VERSION, id: cached?.snapshot.resourceId || crypto.randomUUID(), path, title: title || path.split('/').pop().replace(/\.crnb$/i, ''), ...(createOnly ? { createOnly: true } : {}) }); }
+    try { snapshot = resourceId ? await transport.scene(resourceId) : await transport.open({ protocolVersion: NOTEBOOK_VERSION, id: cached?.snapshot.resourceId || newId || crypto.randomUUID(), path, title: title || path.split('/').pop().replace(/\.crnb$/i, ''), ...(createOnly ? { createOnly: true } : {}) }); }
     catch (error) { offlineError = error; }
   }
   if (!snapshot && cached) snapshot = cached.snapshot;

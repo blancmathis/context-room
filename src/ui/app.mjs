@@ -4568,7 +4568,7 @@ async function loadContextRoomAssistantUi() {
   return contextRoomAssistantUi ||= await import("/assets/ui/assistant.mjs");
 }
 
-async function openContextRoomNotebook(filePath, { directory = "", projectId = "", resourceId, beforePresent, title, initialImage, initialImageBackground, createOnly, onClosed } = {}) {
+async function openContextRoomNotebook(filePath, { directory = "", projectId = "", resourceId, beforePresent, title, initialImage, initialImageBackground, createOnly, newId, onClosed } = {}) {
   const captured = captureNotebookApi(projectId);
   const notebook = await import("/assets/ui/notebook-editor.mjs");
   // A project's chooser offers Move to Notebooks once the space exists.
@@ -4578,7 +4578,7 @@ async function openContextRoomNotebook(filePath, { directory = "", projectId = "
   const onMove = space && source && source.id !== space.id
     ? (item) => moveNotebookBetweenPlaces(item, { id: source.id, title: source.title || source.id }, [{ id: space.id, title: "Notebooks", space: true }])
     : undefined;
-  const options = { ...captured, resourceId, beforePresent, title, initialImage, initialImageBackground, createOnly, onMove,
+  const options = { ...captured, resourceId, beforePresent, title, initialImage, initialImageBackground, createOnly, newId, onMove,
     onConversation: async (source, display) => { const assistant = await loadContextRoomAssistantUi(); return assistant.openConversation({ ...captured, source, ...display }); },
     onClosed: () => { contextRoomAssistantUi?.dockConversation(); onClosed?.(); },
     onSubmitted: async () => { setStatus("Notebook submitted for human review. No file accepted."); if (typeof refreshDocQa === "function") await refreshDocQa(); } };
@@ -7331,8 +7331,8 @@ async function ensureNotebookSpace() {
 async function createSpaceNotebook() {
   const space = await ensureNotebookSpace();
   const { newSpaceNotebook } = await import("/assets/ui/notebook-space.mjs");
-  const { path: notebookPath, title } = newSpaceNotebook();
-  await openContextRoomNotebook(notebookPath, { projectId: space.id, title, createOnly: true, onClosed: reloadNotebookSpace });
+  const { id, path: notebookPath, title } = newSpaceNotebook();
+  await openContextRoomNotebook(notebookPath, { projectId: space.id, title, createOnly: true, newId: id, onClosed: reloadNotebookSpace });
   reloadNotebookSpace();
 }
 
