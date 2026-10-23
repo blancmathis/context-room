@@ -6,6 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { contextHubRegistryRevision, listContextHubProjects, registerContextHubProject, contextHubRegistrationWarning } from './context_hub.mjs';
 import { appendContextRoomEvent } from './event_journal.mjs';
+import { readFilesystemIdentity, compareFilesystemIdentity } from './filesystem_identity.mjs';
 
 const run = promisify(execFile);
 const MAX_CATALOG_BYTES = 20 * 1024 * 1024;
@@ -47,8 +48,9 @@ export function readCodexDesktopCatalog({ codexHome = codexHomeDirectory() } = {
     roots.forEach((rootPath, index) => {
       if (!path.isAbsolute(rootPath) || rootPath.includes('\0')) { projects.push({ key: index ? `${entry.id}:${index}` : entry.id, name: name || path.basename(rootPath) || 'Project', root: rootPath, refused: 'The path is not absolute.' }); return; }
       const resolved = path.resolve(rootPath);
-      if (seen.has(resolved)) return;
-      seen.add(resolved);
+      const identity = real(resolved);
+      if (seen.has(identity)) return;
+      seen.add(identity);
       const base = path.basename(resolved) || resolved;
       projects.push({ key: index ? `${entry.id}:${index}` : entry.id, name: roots.length > 1 ? `${name || base} · ${base}` : name || base, root: resolved });
     });
@@ -76,6 +78,27 @@ function folderState(root, codexHome) {
   catch { return { status: 'needs-init' }; }
 }
 
+/**
+ * The registered location a folder already is: by path, else by durable identity
+ * (ino + birth time), so a moved folder is never taken for a new one. A legacy entry
+ * without a durable identity matches on its exact dev:ino.
+ */
+function registeredMatch(root, registered, byRoot = new Map(registered.map(entry => [real(entry.root), entry]))) {
+  const byPath = byRoot.get(real(root));
+  if (byPath) return { entry: byPath, moved: false };
+  const live = readFilesystemIdentity(root).identity;
+  if (!live) return null;
+  let stats = null;
+  const entry = registered.find(item => {
+    if (item.rootDurableIdentity) return compareFilesystemIdentity(item.rootDurableIdentity, live).status === 'same';
+    const stored = item.rootIdentity;
+    if (!stored?.ino) return false;
+    try { stats ||= fs.lstatSync(root); } catch { return false; }
+    return String(stored.ino) === String(stats.ino) && String(stored.dev) === String(stats.dev);
+  });
+  return entry ? { entry, moved: true } : null;
+}
+
 /** One row per folder. Read-only: nothing is written to a folder or to the Hub. */
 export function previewCodexProjectImport({ codexHome = codexHomeDirectory(), catalog = readCodexDesktopCatalog({ codexHome }) } = {}) {
   const registered = listContextHubProjects({ readOnly: true });
@@ -83,10 +106,14 @@ export function previewCodexProjectImport({ codexHome = codexHomeDirectory(), ca
   const rows = catalog.projects.map(project => {
     const base = { key: project.key, name: project.name, root: project.root, repository: fs.existsSync(path.join(project.root, '.git')) };
     if (project.refused) return { ...base, status: 'refused', reason: project.refused };
-    const match = byRoot.get(real(project.root));
-    if (match) return { ...base, status: 'registered', projectId: match.id, available: Boolean(match.available),
-      ...(match.available ? {} : { reason: match.unavailableReason || 'This location is unavailable.' }),
-      ...(match.unavailableReason === 'identity to confirm' ? { needsConfirmation: true } : {}) };
+    const found = refusedRoot(project.root, codexHome) ? null : registeredMatch(project.root, registered, byRoot), match = found?.entry;
+    if (match) {
+      const reason = found.moved ? `This folder moved. Its registered location is ${match.root}; the project keeps its Shared link there.` : match.unavailableReason || 'This location is unavailable.';
+      return { ...base, status: 'registered', projectId: match.id, available: found.moved ? false : Boolean(match.available),
+        ...(found.moved ? { moved: true, registeredRoot: match.root } : {}),
+        ...(found.moved || !match.available ? { reason } : {}),
+        ...(found.moved || match.unavailableReason === 'identity to confirm' ? { needsConfirmation: true } : {}) };
+    }
     return { ...base, ...folderState(project.root, codexHome) };
   });
   const revision = createHash('sha256').update(JSON.stringify(rows.map(row => [row.key, row.root, row.status]))).update(contextHubRegistryRevision()).digest('hex');
@@ -110,6 +137,7 @@ export async function applyCodexProjectImport({ roots, expectedRevision, codexHo
     try {
       // Re-check just before writing: the folder may have changed since the preview.
       const now = folderState(row.root, codexHome);
+      if (registeredMatch(row.root, listContextHubProjects({ readOnly: true }))) throw fault('codex_import_changed', 'This folder is already a registered location. Preview the import again.');
       if (now.status !== row.status) throw fault('codex_import_changed', 'The folder changed while importing. Preview the import again.');
       if (row.status === 'needs-init') init(row.root, { title: row.name });
       const registered = registerContextHubProject(row.root, { title: row.name });
@@ -131,7 +159,7 @@ const git = (cwd, args) => run('git', ['-C', cwd, ...args], { timeout: 3000, win
  * worktrees of the same repository when it is the top of that repository. A subfolder
  * never grants its parent repository. Reading only: no worktree is registered.
  */
-export async function codexSessionRoots(root) {
+async function listSessionRoots(root) {
   const base = real(root), roots = [base];
   try {
     const top = real((await git(base, ['rev-parse', '--show-toplevel'])).trim());
@@ -140,11 +168,35 @@ export async function codexSessionRoots(root) {
     const listed = (await git(base, ['worktree', 'list', '--porcelain', '-z'])).split('\0\0').map(block => block.split('\0'));
     const candidates = listed.filter(lines => !lines.includes('bare') && !lines.some(line => line.startsWith('prunable')))
       .map(lines => lines.find(line => line.startsWith('worktree '))?.slice(9)).filter(Boolean).map(real).filter(value => value !== base && fs.existsSync(value));
-    const checked = await Promise.all(candidates.map(async candidate => {
+    const checked = await mapLimited(candidates, GIT_CONCURRENCY, async candidate => {
       try { return real((await git(candidate, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim()) === common ? candidate : null; }
       catch { return null; }
-    }));
+    });
     for (const candidate of checked) if (candidate && !roots.includes(candidate)) roots.push(candidate);
   } catch { /* Not a repository, or Git is slow: the folder alone is still correct. */ }
   return roots;
 }
+
+async function mapLimited(items, limit, work) {
+  const out = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => { while (next < items.length) { const index = next++; out[index] = await work(items[index]); } }));
+  return out;
+}
+
+const ROOTS_TTL_MS = 10_000, ROOTS_CACHE_MAX = 64, GIT_CONCURRENCY = 4;
+const rootsCache = new Map();
+
+/** `listSessionRoots`, kept 10 s per folder (64 folders at most); concurrent callers share one run. */
+export function codexSessionRoots(root) {
+  const key = real(root), hit = rootsCache.get(key);
+  if (hit && Date.now() - hit.at < ROOTS_TTL_MS) return hit.promise.then(roots => [...roots]);
+  const promise = listSessionRoots(key);
+  rootsCache.delete(key);
+  rootsCache.set(key, { at: Date.now(), promise });
+  while (rootsCache.size > ROOTS_CACHE_MAX) rootsCache.delete(rootsCache.keys().next().value);
+  return promise.then(roots => [...roots]);
+}
+
+/** Forgets the cached session roots (tests). */
+export const clearCodexSessionRootsCache = () => rootsCache.clear();

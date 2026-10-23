@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { readCodexDesktopCatalog, previewCodexProjectImport, applyCodexProjectImport, codexSessionRoots } from '../src/codex_catalog.mjs';
+import { readCodexDesktopCatalog, previewCodexProjectImport, applyCodexProjectImport, codexSessionRoots, clearCodexSessionRootsCache } from '../src/codex_catalog.mjs';
 import { listContextHubProjects, registerContextHubProject } from '../src/context_hub.mjs';
 
 function sandbox(t) {
@@ -96,4 +96,48 @@ test('session roots add live worktrees of the same repository and never a parent
   assert.deepEqual(await codexSessionRoots(repo), [repo, fs.realpathSync(tree)]);
   assert.deepEqual(await codexSessionRoots(path.join(repo, 'sub')), [path.join(repo, 'sub')]);
   assert.deepEqual(await codexSessionRoots(s.folder('plain')), [path.join(s.base, 'plain')]);
+});
+
+test('a moved registered folder is registered by durable identity, keeps its Shared link, and is never registered again', async t => {
+  const s = sandbox(t), old = s.folder('old'), plain = s.folder('plain');
+  fakeInit(old, { title: 'Old' });
+  const shared = { repository: path.join(s.base, 'remote.git'), projectId: 'demo' };
+  const first = registerContextHubProject(old, { title: 'Old', shared });
+  const moved = path.join(s.base, 'moved'); fs.renameSync(old, moved);
+  s.write({ a: s.entry('a', 'Moved', [moved]), b: s.entry('b', 'Plain', [plain]) });
+  const before = JSON.stringify(listContextHubProjects({ readOnly: true }).map(({ id, root, shared }) => [id, root, shared]));
+  const preview = previewCodexProjectImport({ codexHome: s.codexHome });
+  const row = preview.projects[0];
+  assert.equal(row.status, 'registered'); assert.equal(row.moved, true); assert.equal(row.projectId, first.id);
+  assert.equal(row.registeredRoot, old); assert.equal(row.available, false); assert.equal(row.needsConfirmation, true);
+  assert.equal(preview.counts.ready, 0);
+  const result = await applyCodexProjectImport({ roots: [moved], expectedRevision: preview.revision, codexHome: s.codexHome, initialize: fakeInit, record: false });
+  assert.deepEqual(result.results.map(item => item.outcome), ['skipped']);
+  assert.equal(JSON.stringify(listContextHubProjects({ readOnly: true }).map(({ id, root, shared }) => [id, root, shared])), before);
+});
+
+test('an « identity to confirm » entry stays registered and points to the confirmation gesture', async t => {
+  const s = sandbox(t), root = s.folder('unconfirmed');
+  fakeInit(root, { title: 'U' });
+  const entry = registerContextHubProject(root, { title: 'U', shared: { repository: path.join(s.base, 'remote.git'), projectId: 'demo' } });
+  const file = path.join(process.env.CONTEXT_ROOM_HUB_HOME, 'registry.json'), raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const stored = raw.projects.find(item => item.id === entry.id); stored.rootDurableIdentity = null; stored.rootIdentity.dev = String(BigInt(stored.rootIdentity.dev) + 1n);
+  fs.writeFileSync(file, JSON.stringify(raw));
+  s.write({ a: s.entry('a', 'U', [root]) });
+  const preview = previewCodexProjectImport({ codexHome: s.codexHome });
+  assert.equal(preview.projects[0].status, 'registered'); assert.equal(preview.projects[0].needsConfirmation, true); assert.equal(preview.projects[0].projectId, entry.id);
+  const result = await applyCodexProjectImport({ roots: [root], expectedRevision: preview.revision, codexHome: s.codexHome, initialize: fakeInit, record: false });
+  assert.deepEqual(result.results.map(item => item.outcome), ['skipped']);
+  assert.equal(listContextHubProjects({ readOnly: true }).length, 1);
+  assert.deepEqual(listContextHubProjects({ readOnly: true })[0].shared, entry.shared);
+});
+
+test('two paths to the same folder give one row, and session roots are cached for a moment', async t => {
+  const s = sandbox(t), a = s.folder('a'), link = path.join(s.base, 'alias'); fs.symlinkSync(a, link);
+  s.write({ x: s.entry('x', 'A', [a]), y: s.entry('y', 'Alias', [link]) });
+  assert.equal(readCodexDesktopCatalog({ codexHome: s.codexHome }).projects.length, 1);
+  clearCodexSessionRootsCache();
+  const [first, second] = await Promise.all([codexSessionRoots(a), codexSessionRoots(a)]);
+  assert.deepEqual(first, second); first.push('mutated');
+  assert.deepEqual(await codexSessionRoots(a), [a]);
 });
