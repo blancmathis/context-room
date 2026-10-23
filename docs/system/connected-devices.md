@@ -42,7 +42,20 @@ context-room start --root . --device-host 127.0.0.1 --device-port 4318
 ```
 
 For another physical device, use the Mac's reachable LAN address instead of
-loopback. The device options apply to a new Hub process. An already-running
+loopback. The device options apply to a new Hub process.
+
+While the device listener runs, the Hub announces it on the local network with
+`dns-sd -R _contextroom._tcp` (macOS Bonjour). The TXT record holds only
+`version=1` and the public certificate `fingerprint`. It never holds a token,
+a server id or a path. Pass `--no-device-discovery` to turn the announcement
+off. The announcement stops when the Hub stops.
+
+If the Mac gets a new address, the tablet looks for it by itself after a
+network failure. It accepts only a service with the same version and the same
+pinned fingerprint, then checks the session before it keeps the new address.
+The first pairing still needs the explicit `--device-host`. Run
+`context-room doctor` to see a read-only report of the Mac address, the
+listener and the announcement. An already-running
 Hub is preserved and reports that these options were not applied.
 
 In a working notebook, **Connect tablet** opens the owner pairing interface.

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { inspectLocalAudio } from '../src/local_audio_diagnostics.mjs';
+import { inspectLocalNetwork } from '../src/local_network_diagnostics.mjs';
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -341,7 +342,7 @@ async function flushAndExit(code = 0) {
 
 const KNOWN_OPTIONS = new Set([
   "cutover-lisiere", "legacy-plist", "rollback-cutover", "resume-cutover", "legacy-recording", "conversation-id", "reconcile-lisiere", "recovery-view", "mac-snapshot", "legacy-actor", "export-lisiere", "import-lisiere", "inspect-lisiere", "legacy-board", "legacy-draft", "legacy-conversation", "legacy-session", "session-frame", "recordings", "output", "revision",
-  "device-host", "device-port", "device-state", "device-browser-origin", "device-browser-cert", "device-browser-key",
+  "device-host", "no-device-discovery", "device-port", "device-state", "device-browser-origin", "device-browser-cert", "device-browser-key",
   "reader", "propose",
   "action", "actionable", "advisory", "all", "all-projects", "allow", "allow-stale", "apply", "branch", "budget", "contract", "cursor", "cwd", "days", "depth", "description", "detail", "document", "dry-run", "enabled", "exclude", "expand", "fields", "files", "folder", "follow", "format", "fresh", "from", "goal", "h", "heading", "help", "highlight", "hook", "include",
   "assignment", "change", "collection", "collection-path", "collection-title", "destination", "id", "include", "json", "kind", "limit", "message", "mode", "name", "no-restart", "note", "operation", "order", "path", "pattern", "percent", "port", "profile", "project", "projects", "provider", "providers", "query", "skill",
@@ -1230,6 +1231,7 @@ if (command === "hub") {
     }
     const deviceService = args['device-host'] ? createContextRoomDeviceService({ root: hostRoot,
       stateRoot: args['device-state'] ? path.resolve(String(args['device-state'])) : path.join(path.dirname(hostRoot), 'devices'),
+      discovery: { enabled: !args['no-device-discovery'] },
       browser: browserRequested ? { origin: String(args['device-browser-origin']), certPath: path.resolve(String(args['device-browser-cert'])), keyPath: path.resolve(String(args['device-browser-key'])) } : null }) : null;
     const { server } = createMemoryServer({ root: hostRoot, port, registerInHub: false, persistentDocumentGraphLayout: true, deviceService });
     await new Promise((resolve, reject) => {
@@ -1244,7 +1246,8 @@ if (command === "hub") {
       console.log(`Context Room devices: ${deviceService.describe().url}`);
       if (deviceService.browser) console.log(`Context Room browser: ${deviceService.browser.origin}`);
     }
-    writeContextHubRuntime({ port, root: hostRoot, url });
+    const deviceDescription = deviceService?.describe();
+    writeContextHubRuntime({ port, root: hostRoot, url, devices: deviceDescription && { url: deviceDescription.url, ...(deviceDescription.browserUrl ? { browserUrl: deviceDescription.browserUrl } : {}), discovery: deviceDescription.discovery } });
     const focus = focusedProject ? `&project=${encodeURIComponent(focusedProject.id)}` : "";
     console.log(`Context Room Hub: ${url}/?hub=1${focus}`);
     console.log(`Projects: ${listContextHubProjects().length}`);
@@ -2138,6 +2141,7 @@ if (command === "doctor") {
     failAgentFirstCommand("doctor", error, { format: agentFirstFormat, target: agentFirstTarget });
   }
   report.runtimeDependencies ??= { audio: inspectLocalAudio() };
+  report.runtimeDependencies.network ??= await inspectLocalNetwork();
   if (args.format || args.project || args.location || args.folder || args.provider || args.cursor || args.limit) {
     emitAgentFirstResult("doctor", { target: agentFirstTarget, data: report }, { format: agentFirstFormat });
     if ((args.strict || args.profile === "strict") && report.issues?.some((issue) => ["critical", "high"].includes(issue.severity))) process.exit(1);
@@ -2156,6 +2160,12 @@ if (command === "doctor") {
   if (audioDependencies) {
     console.log(`Local voice: ${audioDependencies.transcriptionReadyForAttempt ? "ready for a recognition attempt; quality not verified" : "dependencies incomplete"}`);
     for (const issue of audioDependencies.issues) console.log(`- [optional audio: ${issue.code}] ${issue.action}`);
+  }
+  const networkDiagnostics = report.runtimeDependencies?.network;
+  if (networkDiagnostics) {
+    const { lan, tailscale, devices } = networkDiagnostics;
+    console.log(`Tablet network: LAN ${lan.addresses.join(", ") || "none found"}; Tailscale ${tailscale.state}; tablet listener ${devices.state}${devices.listener ? ` (${devices.listener} on this Mac)` : ""}; reachability from the tablet not verified`);
+    for (const issue of networkDiagnostics.issues) console.log(`- [optional network: ${issue.code}] ${issue.action}`);
   }
   for (const issue of report.issues.slice(0, 20)) {
     console.log(`- [${issue.severity}] ${issue.path ? `${issue.path}: ` : ""}${issue.message}`);

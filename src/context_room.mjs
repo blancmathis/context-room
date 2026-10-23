@@ -19497,11 +19497,11 @@ function remoteReviewUnavailableHtml(requestUrl) {
 </html>`;
 }
 
-export function createContextRoomDeviceService({ root = process.cwd(), stateRoot, browser = null } = {}) {
+export function createContextRoomDeviceService({ root = process.cwd(), stateRoot, browser = null, discovery } = {}) {
   const primaryRoot = fs.realpathSync(path.resolve(root));
   const primaryId = contextRoomProjectId(primaryRoot);
   const primaryIdentity = managedProjectRootIdentity(primaryRoot);
-  return createConnectedDeviceService({ stateRoot, browser, getWebBundle: () => contextRoomWebAssetBundle(), resolveProject(projectId) {
+  return createConnectedDeviceService({ stateRoot, browser, discovery, getWebBundle: () => contextRoomWebAssetBundle(), resolveProject(projectId) {
     const project = projectId === primaryId
       ? { root: primaryRoot, rootIdentity: primaryIdentity, available: true }
       : registeredContextHubWorktree(projectId);

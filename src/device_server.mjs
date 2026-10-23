@@ -1,5 +1,6 @@
 import { createBrowserDeviceService } from './device_browser.mjs';
 import https from 'node:https';
+import { spawn as spawnProcess } from 'node:child_process';
 import { isIP } from 'node:net';
 import { canonicalNotebookRoot } from './notebook_io.mjs';
 import { handleNotebookHttp } from './notebook_http.mjs';
@@ -42,7 +43,33 @@ function bearer(req) {
 }
 
 /** Optional native listener. Drawing and explicit owner credentials stay separate. */
-export function createConnectedDeviceService({ stateRoot, resolveProject, now = Date.now, browser: browserConfig = null, getWebBundle } = {}) {
+export const DEVICE_DISCOVERY_TYPE = '_contextroom._tcp';
+const DNS_SD = '/usr/bin/dns-sd';
+const isLoopbackHost = host => host === '::1' || /^127\./.test(host);
+
+export function createConnectedDeviceService({ stateRoot, resolveProject, now = Date.now, browser: browserConfig = null, getWebBundle, discovery = {} } = {}) {
+  const { enabled: discoveryEnabled = true, spawn = spawnProcess, platform = process.platform } = discovery;
+  let discoveryState = 'off', announcer = null, killTimer = null;
+  // Bonjour announcement through the macOS responder. The TXT record holds the public
+  // certificate fingerprint only: the tablet still authenticates with its pinned key.
+  function announce(host, port) {
+    if (!discoveryEnabled || isLoopbackHost(host)) { discoveryState = 'off'; return; }
+    if (platform !== 'darwin') { discoveryState = 'unsupported'; return; }
+    try {
+      const child = spawn(DNS_SD, ['-R', `Context Room ${identity.fingerprint.slice(0, 12)}`, DEVICE_DISCOVERY_TYPE, 'local.', String(port),
+        'version=1', `fingerprint=${identity.fingerprint}`], { stdio: 'ignore' });
+      announcer = child; discoveryState = 'announced';
+      child.once?.('error', () => { if (announcer === child) { announcer = null; discoveryState = 'failed'; } });
+      child.once?.('exit', () => { clearTimeout(killTimer); if (announcer === child) { announcer = null; discoveryState = 'failed'; } });
+    } catch { announcer = null; discoveryState = 'failed'; }
+  }
+  function stopAnnouncing() {
+    const child = announcer; announcer = null;
+    if (discoveryState === 'announced') discoveryState = 'off';
+    if (!child) return;
+    try { child.kill('SIGTERM'); } catch {}
+    killTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 2000); killTimer.unref?.();
+  }
   if (typeof resolveProject !== 'function') throw new TypeError('An existing Context Room project resolver is required.');
   const identity = ensureDeviceIdentity(stateRoot);
   const authority = createDeviceAuthority({ stateRoot, serverId: identity.serverId, now });
@@ -189,7 +216,7 @@ export function createConnectedDeviceService({ stateRoot, resolveProject, now = 
       if (!address || typeof address === 'string') throw deviceError('device_service_unavailable', 'The device listener is not running.', 503);
       const host = address.family === 'IPv6' ? `[${address.address}]` : address.address;
       return { protocolVersion: DEVICE_PROTOCOL, serverId: identity.serverId, fingerprint: identity.fingerprint,
-        url: `https://${host}:${address.port}`, certificateExpiresAt: identity.expiresAt, ...(browser?.server.listening ? { browserUrl: browser.origin } : {}) };
+        url: `https://${host}:${address.port}`, certificateExpiresAt: identity.expiresAt, discovery: discoveryState, ...(browser?.server.listening ? { browserUrl: browser.origin } : {}) };
     },
     async listen({ host = '127.0.0.1', port = 0 } = {}) {
       if (!isIP(host) || ['0.0.0.0', '::'].includes(host) || !Number.isInteger(port) || port < 0 || port > 65535) {
@@ -201,9 +228,10 @@ export function createConnectedDeviceService({ stateRoot, resolveProject, now = 
         server.once('error', fail); server.once('listening', ready); server.listen(port, host);
       });
       try { await browser?.listen(host); } catch (error) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); throw error; }
+      announce(host, server.address().port);
       return { host, port: server.address().port, serverId: identity.serverId, fingerprint: identity.fingerprint };
     },
-    async close() { await browser?.close(); owner.close(); return new Promise((resolve, reject) => { server.closeAllConnections(); server.close(error => error ? reject(error) : resolve()); }); },
+    async close() { stopAnnouncing(); await browser?.close(); owner.close(); return new Promise((resolve, reject) => { server.closeAllConnections(); server.close(error => error ? reject(error) : resolve()); }); },
     createOwnerPairing({ label } = {}) {
       if (!owner.available()) throw deviceError('device_owner_unavailable', 'Start the local owner interface before pairing.', 503);
       return { ...authority.createOwnerPairing({ label }), fingerprint: identity.fingerprint };
