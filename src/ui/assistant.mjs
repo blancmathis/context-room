@@ -48,7 +48,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   }
   if (!document.getElementById('context-room-assistant-style')) { const link = element('link'); link.id = 'context-room-assistant-style'; link.rel = 'stylesheet'; link.href = '/assets/ui/assistant.css'; document.head.append(link); }
   const SEND_TIMEOUT_MESSAGE = 'The Mac did not answer in time. Press Send again: the same message is replayed, not duplicated.';
-  const STOP_TIMEOUT_MESSAGE ='Your message was sent, but the Mac did not confirm the stop in time. The turn may still run: press Stop agent.';
+  const STOP_TIMEOUT_MESSAGE = 'Your message was sent, but the Mac did not confirm the stop in time. The turn may still run: press Stop agent.';
   // A timed post settles on its own timer, whether or not `api` honours the abort signal.
   // It rejects before it aborts, so the timeout error wins the race over the AbortError that `fail` hides.
   const post = (route, body, { timeout = 0, message = 'The Mac did not answer in time. Try again.' } = {}) => {
