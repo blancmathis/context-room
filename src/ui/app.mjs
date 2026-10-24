@@ -8836,9 +8836,15 @@ function renderContextRoomGlobalReviewQueue() {
   const draftsPanel = el("contextRoomWorkingDrafts");
   if (draftsPanel) {
     draftsPanel.hidden = !drafts.length;
-    draftsPanel.innerHTML = drafts.length ? '<strong>Working drafts</strong><p>Saved work awaiting submission.</p>'
+    const draftsHtml = drafts.length ? '<strong>Working drafts</strong><p>Saved work awaiting submission.</p>'
       + drafts.map(draft => '<button type="button" class="quiet-button" data-local-draft="' + escapeHtml(draft.id)
         + '" data-draft-project="' + escapeHtml(draft.projectId) + '">' + escapeHtml(draft.projectTitle) + ' · ' + escapeHtml(draft.title) + '</button>').join("") : "";
+    // Hub refreshes re-render often. Replacing an unchanged button between
+    // mousedown and mouseup loses the click and its keyboard focus.
+    if (draftsPanel.renderedDraftsHtml !== draftsHtml) {
+      draftsPanel.innerHTML = draftsHtml;
+      draftsPanel.renderedDraftsHtml = draftsHtml;
+    }
   }
   const localReviewCount = reviews.filter((item) => item.type === "local").length;
   const sharedReviewCount = reviews.filter((item) => item.type === "shared" || item.type === "local-proposal").length;
