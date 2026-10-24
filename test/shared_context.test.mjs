@@ -3038,6 +3038,31 @@ test("accepted instruction imports archive an unchanged source that is also the 
   assert.equal(fs.readdirSync(backupRoot).length, 1);
 });
 
+test("Shared connect, sync, and disconnect never expose a partly written project config", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  const configPath = path.join(fixture.project, ".context-room", "config.json");
+  const configDirectory = fs.realpathSync(path.dirname(configPath));
+  const torn = [];
+  const writeFileSync = fs.writeFileSync;
+  // A reader that runs between truncation and the write would see this state.
+  fs.writeFileSync = function interleavedWrite(file, data, ...rest) {
+    if (typeof file === "string" && path.basename(file) === "config.json"
+      && fs.realpathSync(path.dirname(file)) === configDirectory) {
+      writeFileSync.call(fs, file, "", ...rest);
+      try { JSON.parse(fs.readFileSync(configPath, "utf8")); } catch (error) { torn.push(error.message); }
+    }
+    return writeFileSync.call(fs, file, data, ...rest);
+  };
+  t.after(() => { fs.writeFileSync = writeFileSync; });
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  syncSharedContext(fixture.project, { allowOffline: false });
+  disconnectSharedContext(fixture.project);
+  fs.writeFileSync = writeFileSync;
+  assert.deepEqual(torn, []);
+  assert.equal(JSON.parse(fs.readFileSync(configPath, "utf8")).sharedContext, undefined);
+});
+
 test("a forged main trailer cannot archive or replace a pending local instruction import", (t) => {
   const fixture = makeFixture();
   withSharedHome(t, fixture);
