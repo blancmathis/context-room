@@ -736,6 +736,31 @@ test("review decisions emitted by the UI API use registered Hub identities", asy
   assert.notEqual(event.locationId, path.resolve(root));
 });
 
+test("the notebook space route is owner-protected", async (t) => {
+  const root = makeRoot();
+  const hubHome = makeRoot();
+  const previousHubHome = process.env.CONTEXT_ROOM_HUB_HOME;
+  const previousSpace = process.env.CONTEXT_ROOM_NOTEBOOK_SPACE_HOME;
+  process.env.CONTEXT_ROOM_HUB_HOME = hubHome;
+  process.env.CONTEXT_ROOM_NOTEBOOK_SPACE_HOME = path.join(makeRoot(), "Carnets");
+  t.after(() => {
+    if (previousHubHome === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
+    else process.env.CONTEXT_ROOM_HUB_HOME = previousHubHome;
+    if (previousSpace === undefined) delete process.env.CONTEXT_ROOM_NOTEBOOK_SPACE_HOME;
+    else process.env.CONTEXT_ROOM_NOTEBOOK_SPACE_HOME = previousSpace;
+  });
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"] });
+  const { server, ownerMutationNonce } = createMemoryServer({ root });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const url = `http://127.0.0.1:${server.address().port}/api/context-hub/notebook-space`;
+  const denied = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  assert.equal(denied.status, 403);
+  assert.equal((await denied.json()).code, "review_authority_nonce_required");
+  const allowed = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-context-room-owner-nonce": ownerMutationNonce }, body: "{}" });
+  assert.ok([200, 201].includes(allowed.status), `status ${allowed.status}`);
+});
+
 test("location confirmation is owner-protected and accepts only exact identities", async (t) => {
   const root = makeRoot();
   initializeContextRoomProject(root);

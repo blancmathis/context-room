@@ -141,3 +141,23 @@ test('two paths to the same folder give one row, and session roots are cached fo
   assert.deepEqual(first, second); first.push('mutated');
   assert.deepEqual(await codexSessionRoots(a), [a]);
 });
+
+test('the preview refuses folders inside Codex and SSH private state, not only the folders themselves', t => {
+  const s = sandbox(t), inside = path.join(s.codexHome, 'worktrees', 'task'); fs.mkdirSync(inside, { recursive: true });
+  const sibling = path.join(s.base, 'codex-sibling'); fs.mkdirSync(sibling);
+  s.write({ i: s.entry('i', 'Inside', [inside]), o: s.entry('o', 'Sibling', [sibling]), d: s.entry('d', 'Deep', [path.join(os.homedir(), '.ssh', 'nested', 'folder')]) });
+  const rows = previewCodexProjectImport({ codexHome: s.codexHome }).projects;
+  assert.equal(rows[0].status, 'refused'); assert.equal(rows[2].status, 'refused');
+  assert.notEqual(rows[1].status, 'refused', 'a sibling whose name starts with the same text stays allowed');
+});
+
+test('when the folder is initialized but the registration fails, the reason says so', async t => {
+  const s = sandbox(t), root = s.folder('half');
+  s.write({ a: s.entry('a', 'Half', [root]) });
+  const { revision } = previewCodexProjectImport({ codexHome: s.codexHome });
+  const broken = dir => { fs.mkdirSync(path.join(s.base, 'elsewhere')); fs.symlinkSync(path.join(s.base, 'elsewhere'), path.join(dir, '.context-room')); };
+  const result = await applyCodexProjectImport({ roots: [root], expectedRevision: revision, codexHome: s.codexHome, initialize: broken, record: false });
+  assert.equal(result.results[0].outcome, 'failed');
+  assert.match(result.results[0].reason, /initialized/);
+  assert.equal(fs.existsSync(path.join(root, '.context-room')), true);
+});

@@ -18007,6 +18007,7 @@ function isOwnerReviewAuthorityMutation(pathname = "", method = "GET") {
     "POST /api/context-hub/confirm-location",
     "POST /api/context-hub/codex-import",
     "POST /api/context-hub/notebooks/move",
+    "POST /api/context-hub/notebook-space",
     "POST /api/watch-rule",
     "DELETE /api/watch-rule",
     "POST /api/review-gate",
