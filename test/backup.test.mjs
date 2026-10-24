@@ -340,6 +340,23 @@ test('the rollback removes a created file only while it holds what the restore w
   assert.equal(fs.readFileSync(file, 'utf8'), 'changed after the write\n');
 });
 
+test('the rollback keeps a write that lands while it checks a created file', t => {
+  const lab = laboratory(t), w = lab.world('a'), root = lab.project('one'); lab.populate(w, root);
+  const { output } = writeBackup({ output: path.join(lab.base, 'b1') });
+  const file = conversationFile(w), key = path.join(w.review, 'authority.key');
+  fs.rmSync(file); fs.rmSync(key);
+  const preview = previewRestore(output), rename = fs.renameSync;
+  // A writer that opened the file before the rollback took it away writes after the rename.
+  fs.renameSync = (from, to) => { rename(from, to); if (from === file && String(to).includes('.restore-undo-')) fs.appendFileSync(to, 'late write\n'); };
+  try {
+    assert.throws(() => applyRestore(output, { expectedRevision: preview.revision }, { checkpoint(name, index) {
+      if (name === 'before-write' && index === 1) fs.writeFileSync(key, 'late key');
+    } }), /could not be put back: .*changed after the restore wrote it/);
+  } finally { fs.renameSync = rename; }
+  assert.match(fs.readFileSync(file, 'utf8'), /late write\n$/);
+  assert.deepEqual(fs.readdirSync(path.dirname(file)).filter(name => name.includes('.restore-undo-')), []);
+});
+
 test('a linked project store or a hard-linked file is skipped with a warning, not a failure', t => {
   const lab = laboratory(t), w = lab.world('a'), one = lab.project('one'), linked = lab.project('linked'); lab.populate(w, one); lab.register(w, one, linked);
   const elsewhere = path.join(lab.base, 'archive'); fs.mkdirSync(path.join(elsewhere, 'notebooks'), { recursive: true });
