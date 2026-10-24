@@ -355,6 +355,19 @@ test('the rollback refuses a created file whose parent became a link out of the 
   assert.deepEqual(fs.readdirSync(outside), [path.basename(file)]);
 });
 
+test('the rollback still names every stuck file when its folder can no longer be resolved', t => {
+  const lab = laboratory(t), w = lab.world('a'), root = lab.project('one'); lab.populate(w, root);
+  const { output } = writeBackup({ output: path.join(lab.base, 'b1') });
+  const file = conversationFile(w), key = path.join(w.review, 'authority.key');
+  fs.rmSync(file); fs.rmSync(key);
+  const preview = previewRestore(output), realpath = fs.realpathSync;
+  try {
+    assert.throws(() => applyRestore(output, { expectedRevision: preview.revision }, { checkpoint(name, index) {
+      if (name === 'before-write' && index === 1) fs.realpathSync = () => { throw Object.assign(new Error('synthetic resolution failure'), { code: 'EACCES' }); };
+    } }), error => /could not be put back: \S+/.test(error.message) && /Check each one by hand/.test(error.message));
+  } finally { fs.realpathSync = realpath; }
+});
+
 test('the rollback keeps a write that lands while it checks a created file', t => {
   const lab = laboratory(t), w = lab.world('a'), root = lab.project('one'); lab.populate(w, root);
   const { output } = writeBackup({ output: path.join(lab.base, 'b1') });

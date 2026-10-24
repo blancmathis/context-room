@@ -275,3 +275,53 @@ test('@assistant a delayed failing Fast re-sync keeps Send inactive, sends once 
     await expect(pane).toHaveAttribute('data-operation-status', 'completed');
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
+
+async function staleFastPane(page, f) {
+  await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+  await page.evaluate(() => selectFile('docs/Original.md')); await page.getByRole('button', { name: 'Discuss', exact: true }).click();
+  const pane = page.getByRole('complementary', { name: 'Original document conversation' });
+  await pane.locator('summary').filter({ hasText: 'Codex model' }).click(); await pane.getByRole('button', { name: 'Load available models' }).click();
+  const fast = pane.getByLabel('Conversation Fast mode'), models = pane.getByLabel('Conversation Codex model');
+  await expect(models).toContainText('Synthetic plain model'); await fast.check(); await expect(fast).toBeChecked();
+  // The server keeps Fast on for a model that does not offer it: the state that makes Send configure first.
+  const stale = async route => { const response = await route.fetch(); await route.fulfill({ response, json: { ...await response.json(), fast: true } }); };
+  await page.route('**/configure', stale);
+  await models.selectOption('synthetic-plain'); await expect(fast).toBeDisabled(); await page.unroute('**/configure', stale);
+  return { pane, box: pane.getByRole('textbox'), send: pane.getByRole('button', { name: 'Send', exact: true }) };
+}
+
+test('@assistant the history and New conversation stay inactive while Send re-syncs Fast', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    const { pane, box, send } = await staleFastPane(page, f);
+    let release; const gate = new Promise(resolve => { release = resolve; });
+    const slow = async route => { await gate; await route.continue(); };
+    await page.route('**/configure', slow);
+    const saved = pane.getByLabel('Saved conversations for this original source'), fresh = pane.getByRole('button', { name: 'New conversation', exact: true });
+    await expect(saved).toBeEnabled(); await expect(fresh).toBeEnabled();
+    await box.fill('Held text.'); await send.click();
+    await expect(send).toBeDisabled(); await expect(saved).toBeDisabled(); await expect(fresh).toBeDisabled();
+    release(); await expect.poll(() => f.turns.length).toBe(1); f.finish();
+    await expect(pane).toHaveAttribute('data-operation-status', 'completed');
+    await expect(saved).toBeEnabled(); await expect(fresh).toBeEnabled();
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('@assistant a configure that never answers ends in an error after the timeout, keeps the text and lets Send work', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    await page.clock.install();
+    const { pane, box, send } = await staleFastPane(page, f);
+    const silent = async () => {};
+    await page.route('**/configure', silent);
+    await box.fill('Kept text.'); await send.click(); await expect(send).toBeDisabled();
+    await page.clock.fastForward(20_000); await expect(send).toBeDisabled();
+    await page.clock.fastForward(30_000);
+    await expect(send).toBeEnabled(); await expect(box).toHaveValue('Kept text.'); await expect(pane).toContainText('Press Send again'); expect(f.turns.length).toBe(0);
+    await page.unroute('**/configure', silent);
+    await send.click();
+    await expect.poll(() => f.turns.length).toBe(1); f.finish();
+    await expect(pane).not.toContainText('The previous send is unconfirmed');
+    await expect(pane).toHaveAttribute('data-operation-status', 'completed');
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
