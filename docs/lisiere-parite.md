@@ -246,9 +246,11 @@ Ordre strict :
 2. **Préparer, sans effet sur les données.** Installer les fichiers de la
    nouvelle release : `scripts/prepare-mac-install.mjs --output <release> …`
    (aperçu, puis `--apply --revision <R>` ; voir
-   `docs/system/runtime-profiles.md`), puis copier `node_modules` de la
-   release précédente (`package-lock.json` inchangé depuis `bbfef3d`). **Ne pas
-   changer `RUNTIME`.** Pas `deploy-main.sh` : il relance le Hub.
+   `docs/system/runtime-profiles.md`), puis installer ses dépendances :
+   `(cd "<release>/runtime" && PATH="$HOME/.local/bin:$PATH" npm ci --omit=dev --ignore-scripts --no-audit --no-fund)`.
+   Ne pas copier `node_modules` de la release précédente : `package-lock.json`
+   a changé depuis `bbfef3d` (dompurify, fast-uri). **Ne pas changer
+   `RUNTIME`.** Pas `deploy-main.sh` : il relance le Hub.
 3. **Geste 2, sauvegarde.** `cr backup --plan --output "$B/context-room-backup-<date>"`
    (compte, n'écrit rien), puis `cr backup --output "$B/context-room-backup-<date>"`.
    Le dossier ne doit pas exister. Contrôle : `manifest.json` présent.
