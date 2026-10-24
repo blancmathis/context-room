@@ -380,6 +380,18 @@ export function interruptedNotebookTransfers(sourceRoot, targetRoot) {
     return fs.existsSync(safeNotebookPath(sourceRoot, `${NOTEBOOK_STORE}/retired/${journal.resourceId}-${journal.operationId}`)) ? [] : [cloneNotebook(journal)];
   });
 }
+function assertWorkingOnly(sourceRoot, state) {
+  if (state.locator.sourceHash || readNotebookBytes(sourceRoot, state.locator.path, NOTEBOOK_LIMITS.bytes) !== null) failNotebook('notebook_move_published', 'This notebook has a reviewed file. Only working notebooks move; nothing changed.');
+  if (state.submissions.size) failNotebook('notebook_move_published', 'This notebook was submitted for review. Finish that review first; nothing changed.');
+}
+/** The source half of a move preview, for a destination that does not exist yet. Writes
+ * nothing; the revision changes with any edit or relocation of the notebook. */
+export function previewNotebookDeparture(sourceRoot, request = {}, { canWriteSource = () => false } = {}) {
+  const id = notebookId(request.resourceId), serverId = notebookServerId(sourceRoot);
+  const state = readState(sourceRoot, id); requireWrite(state, canWriteSource); assertWorkingOnly(sourceRoot, state);
+  return { resourceId: id, title: state.document.title, from: { serverId, path: state.locator.path },
+    revision: notebookHash({ departure: true, serverId, id, revision: state.document.revision, sequence: state.sequence, locationRevision: state.locator.revision }) };
+}
 /** Move one working notebook to another root. Steps: journal (source), staged copy
  * (target incoming/, invisible), moved marker (source, the commit point), activation of the
  * copy, retirement of the source (kept under retired/, never deleted). A crash at any step
@@ -395,8 +407,7 @@ export function transferNotebook(sourceRoot, targetRoot, request = {}, { canWrit
   const plan = () => {
     const state = readState(sourceRoot, id); requireWrite(state, canWriteSource);
     if (!canWriteTarget(path)) failNotebook('notebook_path_scope', 'The destination folder is not authorized for notebooks.');
-    if (state.locator.sourceHash || readNotebookBytes(sourceRoot, state.locator.path, NOTEBOOK_LIMITS.bytes) !== null) failNotebook('notebook_move_published', 'This notebook has a reviewed file. Only working notebooks move; nothing changed.');
-    if (state.submissions.size) failNotebook('notebook_move_published', 'This notebook was submitted for review. Finish that review first; nothing changed.');
+    assertWorkingOnly(sourceRoot, state);
     const revision = notebookHash({ serverId: from.serverId, id, revision: state.document.revision, sequence: state.sequence, locationRevision: state.locator.revision, target: targetIdentity, path });
     return { state, revision };
   };
