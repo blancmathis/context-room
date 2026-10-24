@@ -307,7 +307,8 @@ Choose the source board ID from the inventory and an unused
 ordinary `.crnb` path in an existing Context Room project's writable, watched
 folders. Without `--root`, a free legacy board (no Lisière project) goes to
 the Notebooks space; if the space does not exist yet, the command asks to
-create it first (Hub › New notebook) or to pass `--root`.
+create it first (Hub › New notebook) or to pass `--root`. Only
+`--notebooks-to-space` (below) creates the space itself.
 
 ```bash
 context-room migrate --root /path/to/project --import-lisiere /path/to/private-snapshot --legacy-board BOARD_ID --path docs/Ideas.crnb
@@ -351,6 +352,14 @@ move of the [document workflow](../features/document-workflow.md#editable-notebo
 context-room migrate --root /path/to/project --notebooks-to-space
 context-room migrate --root /path/to/project --notebooks-to-space --apply --revision REVISION
 ```
+
+Without a Notebooks space (the Hub is stopped during the cutover), the preview
+writes nothing: it reports `space: "will-be-created"`, the space folder, and
+the notebooks and refusals checked on the source side. Apply with that
+revision checks it again, creates and registers the space, then moves. A
+stale revision is refused before anything is created. With an existing space
+nothing changes. The cutover order is in `docs/lisiere-parite.md`
+(« Migration réelle des 4 carnets »).
 
 If the apply stops (a crash or a killed process), run it again. Wait 30 s
 first: a lock left by the stopped process is released after 30 s, and before
@@ -630,11 +639,11 @@ context-room migrate --root /path/to/project --cutover-lisiere /path/to/legacy-w
 context-room migrate --root /path/to/project --cutover-lisiere /path/to/legacy-workspace --mac-snapshot /path/to/private-mac-snapshot --legacy-plist /path/to/original-companion.plist --apply --revision REVISION
 ```
 
-Before the cutover, back up the whole original installation (step 1; it creates
-the `$B` folder used by the BOOX guide):
+Before the cutover, back up the whole original installation (step 1) into a
+new folder inside the durable cutover folder `$B` used by the BOOX guide:
 
 ```bash
-python3 -B scripts/lisiere-backup.py --output ~/Backups/lisiere-2026-10
+python3 -B scripts/lisiere-backup.py --output "$B/lisiere-backup-<date>"
 ```
 
 It writes only inside the new `--output` folder (refused if it exists): row

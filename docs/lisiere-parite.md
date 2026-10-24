@@ -97,7 +97,7 @@ physique) n'est pas encore passée.
 | Redécouverte Bonjour `_lisiere._tcp` | Le Hub annonce `_contextroom` avec `dns-sd` ; l'APK retrouve le Mac par la même empreinte TLS (`DeviceConnection.java`, `MacDiscovery.java`) ; `test/device_discovery.test.mjs` (10/10 avec le diagnostic), essai réel `dns-sd` sur un Hub de test. Pas de `--device-host auto`. Corrigés ensuite : état de l'annonce et orphelin `dns-sd` (f88ab76), dédoublonnage des sondes (L9b-2, sans test). Limites : `MacDiscoveryTest` jamais lancé (pas d'émulateur) ; 32 fausses annonces locales peuvent épuiser le budget de recherche (accepté, noté dans `connected-devices.md`) ; la redécouverte après un changement d'adresse se vérifie à la séance BOOX. | partiel |
 | Service APK `fr.lisiere.updates` (8765) + mise à jour dans l'app | PWA mise à jour par service worker (`docs/system/connected-devices.md`). Chaîne APK fusionnée (L2L7, 82d62fc) : build sur `ci` sans clé, signature sur le Mac (`scripts/sign-android-apk.sh`, v2 + v3), contrôle `check-android-artifact.py`, clé stable `tablet.keystore`. Pas d'installateur dans l'app ; un serveur temporaire (port 8796, 3 h) sert l'APK à la séance BOOX. | écart accepté (Mathis, 2026-10-23) |
 | Clé de signature `development.keystore` | Reprise par `scripts/build-android-recovery.sh` (identité `fr.lisiere.android`) ; copie séparée par `scripts/lisiere-backup.py` (sha256 égal). L'app Context Room (`app.contextroom.tablet`) a sa propre clé `tablet.keystore`. | prouvé (M07, `eadc14c`) |
-| `lisiere backup` / `restore` (tar.gz) | `context-room backup` / `restore` (L8, 219c815 + 91d3995) : registre, reçus de revue, conversations, enregistrements, carnets ; aperçu puis révision exacte, copie « before-restore », jamais de suppression. `test/backup.test.mjs` 26/26 après r2. Limites : l'annulation ne retire pas les fichiers créés ; Hub à arrêter pour restaurer ; un enregistrement de plus de 256 Mo fait échouer la section ; aucune restauration réelle essayée. Les données Lisière ont leur propre script (étape 1 du § (c)). | partiel |
+| `lisiere backup` / `restore` (tar.gz) | `context-room backup` / `restore` (L8, 219c815 + 91d3995) : registre, reçus de revue, conversations, enregistrements, carnets ; aperçu puis révision exacte, copie « before-restore », jamais de suppression. `test/backup.test.mjs` 26/26 après r2. Limites : l'annulation ne retire pas les fichiers créés ; Hub à arrêter pour restaurer ; un enregistrement de plus de 256 Mo est sauté et listé (`skipped`) ; aucune restauration réelle essayée. Les données Lisière ont leur propre script (étape 1 du § (c)). | partiel |
 | Stockage `Titre--id.lisiere` (tableau.json, apercu.png, dessin.pdf, README) | `.crnb` dans le projet. Export PNG / PDF **à la demande** depuis l'éditeur (bouton Export, L9b-1) : `test/e2e/notebooks.spec.mjs:715` ; titre PDF coupé par point de code. Pas d'aperçu PNG ni de PDF automatique. Reste : ouvrir un PDF et un PNG exportés sur la BOOX. | écart accepté (Mathis, 2026-10-23) ; export à la demande prouvé |
 | `lisiere projects add/list`, `rpc …` | `project register`, API Hub | prouvé |
 | Désinstallation qui garde les données (`uninstall-companion.sh`) | `--cutover-lisiere` garde tout dans une rétention privée. Essai synthétique macOS (L1, ab443b4 + 284df00) : vrai `launchctl`, `lsof`, `renamex_np` sur un agent `test.contextroom.synthetic-*` ; `test/lisiere_cutover.test.mjs`, `test/lisiere_backup.test.mjs`, test opt-in `test/lisiere_cutover_launchd.test.mjs` (`CONTEXT_ROOM_LAUNCHD_ESSAY=1`) ; 81 tests OK, 2 sautés (launchd). | prouvé (synthétique, macOS) ; jamais appliqué au vrai service |
@@ -148,7 +148,7 @@ mention, Claude lance les commandes ; les gestes sur la BOOX sont ceux du guide.
       ─▶ 9 usage 1 semaine ─▶ 10 retrait des exécutables (+ guide F)
 ```
 
-1. **Sauvegarde** : `python3 -B scripts/lisiere-backup.py --output <dossier neuf>`.
+1. **Sauvegarde** : `python3 -B scripts/lisiere-backup.py --output "$B/lisiere-backup-<date>"` (dossier neuf).
    Le script refuse un dossier qui existe déjà et n'écrit que là (mode 0700).
    Il fait : comptes en lecture seule, copie SQLite cohérente (le tar d'une base
    WAL vivante ne l'est pas), `.tgz` de `~/.local/share/lisiere` (sans `models/`,
@@ -221,21 +221,53 @@ mention, Claude lance les commandes ; les gestes sur la BOOX sont ceux du guide.
 « Recuperation Lisiere ». Ils passent dans l'espace Notebooks avec
 `migrate --notebooks-to-space`, **sans `--legacy-board`**. Cette action écrit
 dans `~/.context-room` : **Mathis a dit oui le 2026-10-23** pour ces quatre
-gestes, à la séance BOOX, pas avant le déploiement. Ordre : (1) noter le plist
-(`launchctl print`), puis arrêter le Hub : `launchctl bootout gui/$U/app.contextroom.local`
-(un `kill` le relancerait, `KeepAlive`) ; (2) `context-room backup --output <dossier neuf>`
-(`--plan` d'abord pour compter) ; (3) installer la nouvelle release, Hub
-toujours arrêté : `scripts/prepare-mac-install.mjs --output <release>` (aperçu,
-puis `--apply --revision <R>` ; voir `docs/system/runtime-profiles.md`),
-copier `node_modules` de la release précédente (`package-lock.json` inchangé
-depuis `bbfef3d`), puis changer `RUNTIME` dans
-`~/.local/share/context-room/launch-installed.py` (garder la copie
-`launch-installed.before-<sha>.py`). Pas `deploy-main.sh` : il relance le Hub
-et part d'un autre dossier ; (4) avec la CLI de la nouvelle release,
-`migrate --root <projet> --notebooks-to-space` (aperçu), puis
-`--apply --revision <R>`. Ensuite : relancer le Hub (`launchctl bootstrap`) et
-vérifier les 4 carnets. Après un crash : attendre 30 s (verrou),
-puis relancer ; si la réponse dit « Preview again », refaire l'aperçu.
+gestes, à la séance BOOX, pas avant le déploiement. Le Hub reste arrêté du
+début à la fin. `<release>` = le dossier de la nouvelle release ;
+`CR="$HOME/.local/bin/node <release>/runtime/bin/context-room.mjs"` (la CLI
+n'est pas dans le `PATH`, et seule la nouvelle release a `backup`).
+Ordre strict :
+
+1. **Geste 1, arrêter le Hub.** Noter le plist :
+   `launchctl print gui/$U/app.contextroom.local | grep 'path ='`
+   (attendu : `$HOME/Library/LaunchAgents/app.contextroom.local.plist`). Puis
+   `launchctl bootout gui/$U/app.contextroom.local` (un `kill` le relancerait,
+   `KeepAlive`). Contrôle : `launchctl print …` répond « Could not find ».
+2. **Préparer, sans effet sur les données.** Installer les fichiers de la
+   nouvelle release : `scripts/prepare-mac-install.mjs --output <release> …`
+   (aperçu, puis `--apply --revision <R>` ; voir
+   `docs/system/runtime-profiles.md`), puis copier `node_modules` de la
+   release précédente (`package-lock.json` inchangé depuis `bbfef3d`). **Ne pas
+   changer `RUNTIME`.** Pas `deploy-main.sh` : il relance le Hub.
+3. **Geste 2, sauvegarde.** `$CR backup --plan --output "$B/context-room-backup-<date>"`
+   (compte, n'écrit rien), puis `$CR backup --output "$B/context-room-backup-<date>"`.
+   Le dossier ne doit pas exister. Contrôle : `manifest.json` présent.
+4. **Geste 3, changer `RUNTIME`** dans
+   `~/.local/share/context-room/launch-installed.py` vers `<release>`, après
+   la copie `launch-installed.before-<sha>.py`. Le Hub reste arrêté.
+5. **Geste 4, migrer.** `$CR migrate --root <projet> --notebooks-to-space`
+   (aperçu : `space: "will-be-created"`, 4 carnets dans `notebooks`, `refused`
+   vide), puis la même commande avec `--apply --revision <R>`. L'apply crée
+   l'espace (`~/Documents/Context Room/Carnets`) puis déplace. Après un crash :
+   attendre 30 s (verrou), puis relancer ; si la réponse dit « Preview again »,
+   refaire l'aperçu.
+6. **Relancer le Hub** : `launchctl bootstrap gui/$U <plist noté au geste 1>`,
+   puis vérifier les 4 carnets dans l'espace Notebooks.
+
+Retour arrière de ces gestes :
+- Geste 1 ou préparation : `launchctl bootstrap gui/$U <plist>` ; la release
+  préparée reste sur le disque sans effet.
+- Geste 2 : rien à défaire (dossier neuf, à garder).
+- Geste 3 : remettre `launch-installed.before-<sha>.py` à la place de
+  `launch-installed.py`, puis `launchctl bootstrap`.
+- Geste 4 : revenir à `bbfef3d` ne remet **pas** les carnets (sources dans
+  `retired/`, marqueur `moved`), et `restore` non plus. Avec la nouvelle
+  release, Hub lancé : **Move to project…** sur chaque carnet, vers
+  « Recuperation Lisiere » (déplacement vérifié, L3). Seulement ensuite,
+  revenir à `bbfef3d` comme au geste 3. Vu dans le code de `bbfef3d` :
+  l'ancien Hub lit un registre qui contient l'espace sans erreur ; il le
+  montre comme un projet ordinaire « Notebooks » et efface le champ `space`
+  à sa prochaine écriture du registre. Au retour à la nouvelle release,
+  Hub › New notebook le reconnaît de nouveau (dossier déjà configuré).
 
 **Retour arrière.**
 - Avant l'étape 6 : rien à défaire.
