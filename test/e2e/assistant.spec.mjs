@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { assistantFixture } from '../fixtures/assistant.mjs';
+import { assistantFixture, MAC_TASK_ID } from '../fixtures/assistant.mjs';
 import { readNotebook } from '../../src/notebooks.mjs';
 
 test('@smoke @assistant conversation keeps its original document across navigation and explicit history resumption', async ({ page }, testInfo) => {
@@ -153,5 +153,224 @@ test('@smoke @assistant a stopped dictation and late playback cannot send or ack
     await pane.getByRole('button', { name: 'Read answer' }).click(); await page.waitForFunction(() => syntheticAudio.plays.length === 2);
     await page.evaluate(() => syntheticAudio.plays[1].resolve({ played: true })); await expect.poll(() => receipts.length).toBe(1); expect(receipts[0].conversationId).toBe(id);
     await expect(pane.locator('.assistant-audio-state')).toHaveText('Microphone off · audio stopped.');
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('@assistant lists Mac Codex tasks read-only and opens one on the Mac', async ({ page }) => {
+  const f = await assistantFixture({ platform: 'darwin' }), errors = []; page.on('pageerror', error => errors.push(error.message));
+  try {
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await page.evaluate(() => selectFile('docs/Original.md'));
+    await page.getByRole('button', { name: 'Discuss', exact: true }).click();
+    const pane = page.getByRole('complementary', { name: 'Original document conversation' }); await expect(pane).toBeVisible();
+    await pane.getByRole('button', { name: 'Codex tasks on this Mac', exact: true }).click();
+    const first = pane.getByRole('button', { name: /Read summary: Plan the <b>import<\/b>/ }); await expect(first).toBeVisible();
+    await expect(pane.locator('.assistant-mac-list b')).toHaveCount(0); // a title is text, never markup
+    await expect(pane.getByRole('button', { name: 'Next tasks', exact: true })).toBeVisible();
+    await first.click();
+    const detail = pane.locator('.assistant-mac-detail');
+    await expect(detail).toContainText('Summary \u00b7 read only'); await expect(detail).toContainText('Import my projects'); await expect(detail).toContainText('Done: 4 projects.');
+    await expect(pane.getByRole('button', { name: /continue/i })).toHaveCount(0);
+    await detail.getByRole('button', { name: 'Show on Mac', exact: true }).click();
+    await expect.poll(() => f.opened).toEqual(['codex://threads/' + MAC_TASK_ID]);
+    await detail.getByRole('button', { name: 'Back to tasks', exact: true }).click(); await expect(first).toBeVisible();
+    expect(f.turns.length).toBe(0); expect(f.starts.length).toBe(0); expect(errors).toEqual([]);
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('@assistant follow agent frames a far agent edit and a human gesture stops it', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await page.evaluate(async () => { window.notebookUnderTest = await openContextRoomNotebook('docs/Sketch.crnb'); });
+    const notebook = page.getByRole('dialog', { name: 'Notebook: docs/Sketch.crnb', exact: true });
+    await expect(notebook).toHaveAttribute('data-save-state', 'confirmed');
+    await notebook.getByRole('button', { name: 'Ask about selection', exact: true }).click();
+    const pane = page.getByRole('complementary', { name: 'Original document conversation' });
+    const follow = notebook.getByRole('button', { name: 'Follow agent', exact: true });
+    await expect(follow).toHaveAttribute('aria-pressed', 'false'); await follow.dispatchEvent('click'); await expect(follow).toHaveAttribute('aria-pressed', 'true');
+    await pane.getByRole('textbox').fill('Draw far to the right.'); await pane.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect.poll(() => f.turns.length).toBe(1); const turn = f.turns[0];
+    const put = (id, x) => turn.tool('context_room_notebook', { action: 'edit', edits: [{ kind: 'put', id, expectedRevision: 0, object: { type: 'rect', x, y: 100, width: 180, height: 130 } }] }, { callId: id, turnId: turn.turnId, signal: new AbortController().signal });
+    await put('far-box', 5000);
+    await expect.poll(() => page.evaluate(() => { const [x, , width] = notebookUnderTest.surface.viewportBounds(); return x <= 5000 && 5180 <= x + width; })).toBe(true);
+    const box = await page.locator('canvas.notebook-canvas').boundingBox();
+    await page.mouse.move(box.x + 60, box.y + 60); await page.mouse.down(); await page.mouse.move(box.x + 140, box.y + 100, { steps: 4 }); await page.mouse.up();
+    await expect(follow).toHaveAttribute('aria-pressed', 'false'); await expect(notebook).toContainText('You took back the view.');
+    const held = await page.evaluate(() => notebookUnderTest.surface.viewportBounds());
+    await put('farther-box', 9000);
+    await expect.poll(() => page.evaluate(() => notebookUnderTest.surface.document.objects.some(object => object.id === 'farther-box'))).toBe(true);
+    expect(await page.evaluate(() => notebookUnderTest.surface.viewportBounds())).toEqual(held);
+    f.finish('Done.');
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('@assistant Fast checkbox follows the model catalogue and reaches turn/start', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await page.evaluate(() => selectFile('docs/Original.md')); await page.getByRole('button', { name: 'Discuss', exact: true }).click();
+    const pane = page.getByRole('complementary', { name: 'Original document conversation' });
+    await pane.locator('summary').filter({ hasText: 'Codex model' }).click(); await pane.getByRole('button', { name: 'Load available models' }).click();
+    const fast = pane.getByLabel('Conversation Fast mode'), models = pane.getByLabel('Conversation Codex model');
+    await expect(models).toContainText('Synthetic plain model'); await expect(fast).toBeEnabled(); await expect(fast).not.toBeChecked();
+    await fast.check(); await expect(fast).toBeChecked();
+    await models.selectOption('synthetic-plain'); await expect(fast).toBeDisabled(); await expect(fast).not.toBeChecked(); await expect(pane).toContainText('Fast was on but is not offered for this model now.');
+    await models.selectOption('gpt-6-astra'); await expect(fast).toBeEnabled(); await fast.check(); await expect(fast).toBeChecked();
+    await pane.getByRole('textbox').fill('Answer quickly.'); await pane.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect.poll(() => f.turns.length).toBe(1); expect(f.turns[0].fast).toBe(true); f.finish();
+    await expect(pane).toHaveAttribute('data-operation-status', 'completed');
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('@assistant a failed Fast re-sync before Send sends nothing, keeps the text and lets the text change', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    const { pane, box, send } = await staleFastPane(page, f);
+    const failing = route => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Synthetic configure failure.' }) });
+    await page.route('**/configure', failing);
+    await box.fill('First text.'); await send.click();
+    await expect(send).toBeEnabled(); await expect(box).toHaveValue('First text.'); expect(f.turns.length).toBe(0);
+    await page.unroute('**/configure', failing);
+    await box.fill('Changed text.'); await send.click();
+    await expect.poll(() => f.turns.length).toBe(1); f.finish();
+    await expect(pane).toHaveAttribute('data-operation-status', 'completed');
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('@assistant a delayed failing Fast re-sync keeps Send inactive, sends once and leaves no request id', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    const { pane, box, send } = await staleFastPane(page, f);
+    let release; const gate = new Promise(resolve => { release = resolve; });
+    const failing = async route => { await gate; await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Synthetic configure failure.' }) }); };
+    await page.route('**/configure', failing);
+    await box.fill('First text.'); await send.click();
+    await expect(send).toBeDisabled();
+    await send.click({ force: true }); await box.press('Enter'); await box.fill('Changed text.');
+    await page.waitForTimeout(600); await expect(send).toBeDisabled();
+    release(); await expect(send).toBeEnabled(); await expect(box).toHaveValue('Changed text.'); expect(f.turns.length).toBe(0);
+    await page.unroute('**/configure', failing);
+    await send.click();
+    await expect.poll(() => f.turns.length).toBe(1); f.finish();
+    await expect(pane).not.toContainText('The previous send is unconfirmed');
+    await expect(pane).toHaveAttribute('data-operation-status', 'completed');
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+async function staleFastPane(page, f) {
+  await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+  await page.evaluate(() => selectFile('docs/Original.md')); await page.getByRole('button', { name: 'Discuss', exact: true }).click();
+  const pane = page.getByRole('complementary', { name: 'Original document conversation' });
+  await pane.locator('summary').filter({ hasText: 'Codex model' }).click(); await pane.getByRole('button', { name: 'Load available models' }).click();
+  const fast = pane.getByLabel('Conversation Fast mode'), models = pane.getByLabel('Conversation Codex model');
+  await expect(models).toContainText('Synthetic plain model'); await fast.check(); await expect(fast).toBeChecked();
+  // The server keeps Fast on for a model that does not offer it: the state that makes Send configure first.
+  // The server itself stores it, not one faked response: the 500 ms poll replaces the conversation with the server's copy.
+  // Unroute only once the request has passed: a request still in flight would reach the server unchanged.
+  let stored; const passed = new Promise(resolve => { stored = resolve; });
+  const stale = async route => { await route.continue({ postData: JSON.stringify({ ...route.request().postDataJSON(), fast: true }) }); stored(); };
+  await page.route('**/configure', stale);
+  await models.selectOption('synthetic-plain'); await expect(fast).toBeDisabled(); await passed; await page.unroute('**/configure', stale);
+  return { pane, box: pane.getByRole('textbox'), send: pane.getByRole('button', { name: 'Send', exact: true }) };
+}
+
+test('@assistant the history and New conversation stay inactive while Send re-syncs Fast', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    const { pane, box, send } = await staleFastPane(page, f);
+    let release; const gate = new Promise(resolve => { release = resolve; });
+    const slow = async route => { await gate; await route.continue(); };
+    await page.route('**/configure', slow);
+    const saved = pane.getByLabel('Saved conversations for this original source'), fresh = pane.getByRole('button', { name: 'New conversation', exact: true });
+    await expect(saved).toBeEnabled(); await expect(fresh).toBeEnabled();
+    await box.fill('Held text.'); await send.click();
+    await expect(send).toBeDisabled(); await expect(saved).toBeDisabled(); await expect(fresh).toBeDisabled();
+    release(); await expect.poll(() => f.turns.length).toBe(1); f.finish();
+    await expect(pane).toHaveAttribute('data-operation-status', 'completed');
+    await expect(saved).toBeEnabled(); await expect(fresh).toBeEnabled();
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('@assistant a configure that never answers ends in an error after the timeout, keeps the text and lets Send work', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    await page.clock.install();
+    const { pane, box, send } = await staleFastPane(page, f);
+    const silent = async () => {};
+    await page.route('**/configure', silent);
+    await box.fill('Kept text.'); await send.click(); await expect(send).toBeDisabled();
+    await page.clock.fastForward(20_000); await expect(send).toBeDisabled();
+    await page.clock.fastForward(30_000);
+    await expect(send).toBeEnabled(); await expect(box).toHaveValue('Kept text.'); await expect(pane).toContainText('Press Send again'); expect(f.turns.length).toBe(0);
+    await page.unroute('**/configure', silent);
+    await send.click();
+    await expect.poll(() => f.turns.length).toBe(1); f.finish();
+    await expect(pane).not.toContainText('The previous send is unconfirmed');
+    await expect(pane).toHaveAttribute('data-operation-status', 'completed');
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('@assistant a send that never answers ends in an error after the timeout and the second Send replays the same request id', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    await page.clock.install();
+    const { pane, box, send } = await staleFastPane(page, f);
+    const ids = []; page.on('request', request => { if (request.url().endsWith('/send')) ids.push(request.postDataJSON().requestId); });
+    const silent = async () => {};
+    await page.route('**/send', silent);
+    await box.fill('Kept text.'); await send.click(); await expect(send).toBeDisabled();
+    await expect.poll(() => ids.length).toBe(1);
+    await page.clock.fastForward(20_000); await expect(send).toBeDisabled();
+    await page.clock.fastForward(30_000);
+    await expect(send).toBeEnabled(); await expect(box).toHaveValue('Kept text.'); await expect(pane).toContainText('Press Send again');
+    await page.unroute('**/send', silent);
+    await send.click();
+    await expect.poll(() => f.turns.length).toBe(1); f.finish();
+    expect(ids.length).toBe(2); expect(ids[1]).toBe(ids[0]);
+    await expect(pane).toHaveAttribute('data-operation-status', 'completed'); expect(f.turns.length).toBe(1);
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('@assistant a model change whose re-sync never answers ends in a plain timeout error, not the Send one', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    await page.clock.install();
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await page.evaluate(() => selectFile('docs/Original.md')); await page.getByRole('button', { name: 'Discuss', exact: true }).click();
+    const pane = page.getByRole('complementary', { name: 'Original document conversation' });
+    await pane.locator('summary').filter({ hasText: 'Codex model' }).click(); await pane.getByRole('button', { name: 'Load available models' }).click();
+    const models = pane.getByLabel('Conversation Codex model');
+    await expect(models).toContainText('Synthetic plain model');
+    let configures = 0; const silent = async () => { configures += 1; };
+    await page.route('**/configure', silent);
+    await models.selectOption('synthetic-plain'); await expect.poll(() => configures).toBe(1);
+    await page.clock.fastForward(50_000);
+    await expect(pane).toContainText('The Mac did not answer in time. Try again.'); await expect(pane).not.toContainText('Press Send again');
+    await page.unroute('**/configure', silent);
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('@assistant Send does nothing while the conversation changes and no text leaves for the conversation being left', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    for (let i = 0; i < 2; i++) expect((await f.post('/api/assistant/conversations', { requestId: crypto.randomUUID(), source: { kind: 'document', path: 'docs/Original.md' } })).status).toBe(201);
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await page.evaluate(() => selectFile('docs/Original.md')); await page.getByRole('button', { name: 'Discuss', exact: true }).click();
+    const pane = page.getByRole('complementary', { name: 'Original document conversation' }), saved = pane.getByLabel('Saved conversations for this original source');
+    const send = pane.getByRole('button', { name: 'Send', exact: true }), box = pane.getByRole('textbox');
+    await expect(saved.locator('option')).toHaveCount(2); await expect(send).toBeEnabled();
+    const leftId = await saved.inputValue(), nextId = await saved.locator('option').evaluateAll((options, left) => options.map(option => option.value).find(value => value !== left), leftId);
+    let release, sends = 0, reads = 0; const gate = new Promise(resolve => { release = resolve; });
+    page.on('request', request => { if (request.method() === 'POST' && request.url().endsWith('/send')) sends += 1; });
+    await page.route(new RegExp('/api/assistant/conversations/' + nextId + '$'), async route => { reads += 1; await gate; await route.continue(); });
+    await box.fill('Text for the conversation I am leaving.');
+    await saved.selectOption(nextId); await expect.poll(() => reads).toBe(1);
+    await expect(send).toBeDisabled();
+    await box.evaluate(textbox => { textbox.form.requestSubmit(); });
+    await page.waitForTimeout(300); expect(sends).toBe(0); expect(f.turns).toHaveLength(0);
+    release();
+    await expect(saved).toHaveValue(nextId); await expect(saved).toBeEnabled(); await expect(send).toBeEnabled();
+    expect(sends).toBe(0); expect(f.turns).toHaveLength(0);
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });

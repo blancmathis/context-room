@@ -1,4 +1,4 @@
-import { notebookObjectBounds, notebookHit, pointInPolygon, translateNotebookObject, notebookSceneBounds, notebookConnectorRoute } from '../notebook_geometry.mjs';
+import { notebookObjectBounds, notebookHit, pointInPolygon, translateNotebookObject, notebookSceneBounds, notebookConnectorRoute, NOTEBOOK_MIN_SCALE, NOTEBOOK_MAX_SCALE } from '../notebook_geometry.mjs';
 import { notebookInkOutline, notebookInkRadius } from '../notebook_ink.mjs';
 import { NotebookStroke } from '../notebook_gestures.mjs';
 const clone = value => structuredClone(value);
@@ -40,7 +40,7 @@ export class NotebookCanvas {
   screen(event) { const box = this.canvas.getBoundingClientRect(); return [event.clientX - box.left, event.clientY - box.top]; }
   world(event, view = this.view) { const p = this.screen(event); return [(p[0] - view.x) / view.scale, (p[1] - view.y) / view.scale, event.pointerType === 'pen' ? Math.max(0, Math.min(1, event.pressure)) : .65]; }
   zoomAt(x, y, factor) {
-    const scale = Math.max(.05, Math.min(20, this.view.scale * factor)), ratio = scale / this.view.scale;
+    const scale = Math.max(NOTEBOOK_MIN_SCALE, Math.min(NOTEBOOK_MAX_SCALE, this.view.scale * factor)), ratio = scale / this.view.scale;
     this.view = { x: x - (x - this.view.x) * ratio, y: y - (y - this.view.y) * ratio, scale }; this.onView({ ...this.view }); this.schedule();
   }
   fit() {
@@ -52,7 +52,7 @@ export class NotebookCanvas {
     if (this.gesture || !Array.isArray(bounds) || bounds.length !== 4 || bounds.some((n, i) => !Number.isFinite(n) || (i < 2 ? Math.abs(n) > 1e7 : n < 1 || n > 1e6))) return false;
     const [x, y, width, height] = bounds, w = this.canvas.clientWidth, h = this.canvas.clientHeight;
     if (w < 1 || h < 1) return false;
-    const scale = Math.min(20, w / width, h / height);
+    const scale = Math.min(NOTEBOOK_MAX_SCALE, w / width, h / height);
     this.view = { x: w / 2 - (x + width / 2) * scale, y: h / 2 - (y + height / 2) * scale, scale };
     this.onView({ ...this.view }); this.schedule(); return true;
   }

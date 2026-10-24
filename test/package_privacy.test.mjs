@@ -88,3 +88,13 @@ test("package privacy rejects sensitive filenames, denied terms, and manifest es
     "../outside.txt: package path escapes the repository",
   ]);
 });
+
+test("package privacy skips only the home-path and email heuristics inside the vendored pdf.js build", (t) => {
+  const root = privacyFixture(t);
+  const vendored = writeFixture(root, "src/vendor/pdfjs/pdf.worker.min.mjs", 'HOME:"/home/web_user" a@b.cd');
+  assert.deepEqual(packagePrivacyFindings({ root, files: [vendored] }), []);
+  const elsewhere = writeFixture(root, "src/other.mjs", 'HOME:"/home/web_user"');
+  assert.deepEqual(packagePrivacyFindings({ root, files: [elsewhere] }), ["src/other.mjs: absolute user-home path"]);
+  const token = writeFixture(root, "src/vendor/pdfjs/wasm/x.js", "ghp_" + "a".repeat(36));
+  assert.deepEqual(packagePrivacyFindings({ root, files: [token] }), ["src/vendor/pdfjs/wasm/x.js: GitHub access token"]);
+});

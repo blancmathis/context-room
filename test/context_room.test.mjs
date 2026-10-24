@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import test from "node:test";
+import { NOTEBOOK_WEB_ASSETS } from "../src/notebook_web_assets.mjs";
 import { prepareAndroidWeb } from "../scripts/prepare-android-web.mjs";
 
 test("Android incremental web packaging removes obsolete bundles and retains sibling assets", () => {
@@ -732,6 +734,31 @@ test("review decisions emitted by the UI API use registered Hub identities", asy
   assert.equal(event.sharedProjectId, "shared-demo");
   assert.equal(event.sharedRepository, "https://example.test/shared.git");
   assert.notEqual(event.locationId, path.resolve(root));
+});
+
+test("the notebook space route is owner-protected", async (t) => {
+  const root = makeRoot();
+  const hubHome = makeRoot();
+  const previousHubHome = process.env.CONTEXT_ROOM_HUB_HOME;
+  const previousSpace = process.env.CONTEXT_ROOM_NOTEBOOK_SPACE_HOME;
+  process.env.CONTEXT_ROOM_HUB_HOME = hubHome;
+  process.env.CONTEXT_ROOM_NOTEBOOK_SPACE_HOME = path.join(makeRoot(), "Carnets");
+  t.after(() => {
+    if (previousHubHome === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
+    else process.env.CONTEXT_ROOM_HUB_HOME = previousHubHome;
+    if (previousSpace === undefined) delete process.env.CONTEXT_ROOM_NOTEBOOK_SPACE_HOME;
+    else process.env.CONTEXT_ROOM_NOTEBOOK_SPACE_HOME = previousSpace;
+  });
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"] });
+  const { server, ownerMutationNonce } = createMemoryServer({ root });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const url = `http://127.0.0.1:${server.address().port}/api/context-hub/notebook-space`;
+  const denied = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  assert.equal(denied.status, 403);
+  assert.equal((await denied.json()).code, "review_authority_nonce_required");
+  const allowed = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-context-room-owner-nonce": ownerMutationNonce }, body: "{}" });
+  assert.ok([200, 201].includes(allowed.status), `status ${allowed.status}`);
 });
 
 test("location confirmation is owner-protected and accepts only exact identities", async (t) => {
@@ -7697,17 +7724,80 @@ test("HTML files open as sandboxed visual previews without source editing", () =
   assert.match(html, /savable \? '<button class="file-action primary"/);
 });
 
-test("image and exported diagram files open in a fitted read-only visual preview", () => {
+test("image and PDF files open in the shared zoomable viewer", () => {
   const html = renderAppHtml();
 
   assert.match(html, /function isImageDocumentPath\(filePath\)/);
-  assert.match(html, /function renderImageDocumentPreview\(asset, filePath = state\.selected\)/);
-  assert.match(html, /class="image-preview-stage/);
-  assert.match(html, /data-image-size-toggle/);
-  assert.match(html, /image\.naturalWidth \+ " × " \+ image\.naturalHeight/);
-  assert.match(html, /isImageDocument\s*\? renderImageDocumentPreview\(state\.selectedVisualAsset, file\.path\)/);
+  assert.match(html, /\\\.\(png\|jpe\?g\|gif\|webp\|avif\|svg\|pdf\)\$/);
+  assert.match(html, /function renderImageDocumentPreview\(asset\)/);
+  assert.match(html, /data-document-viewer/);
+  assert.match(html, /import\("\/assets\/ui\/document-viewer\.mjs"\)/);
+  assert.match(html, /initialImageBackground: true/);
+  assert.match(html, /isImageDocument\s*\? renderImageDocumentPreview\(state\.selectedVisualAsset\)/);
   assert.match(html, /savable: !isHtmlDocument && !isImageDocument/);
   assert.match(html, /isImageDocumentPath\(path\) \? Promise\.resolve\(null\)/);
+  assert.doesNotMatch(html, /imagePreviewActualSize|data-image-size-toggle/);
+  assert.equal(NOTEBOOK_WEB_ASSETS.get("/assets/ui/document-viewer.mjs")?.file, "ui/document-viewer.mjs");
+});
+
+test("PDF files are listed read-only and served as application/pdf up to 12 MB", () => {
+  const root = makeRoot();
+  fs.mkdirSync(path.join(root, "docs"));
+  const pdf = Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n");
+  fs.writeFileSync(path.join(root, "docs", "brief.pdf"), pdf);
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+
+  const entry = listExplorerFiles(root).find((file) => file.path === "docs/brief.pdf");
+  const opened = readMemoryFile(root, "docs/brief.pdf");
+  assert.equal(entry?.kind, "pdf");
+  assert.equal(entry?.readOnly, true);
+  assert.equal(opened.mimeType, "application/pdf");
+  assert.equal(opened.dataUrl, "data:application/pdf;base64," + pdf.toString("base64"));
+  assert.equal(opened.readOnly, true);
+  assert.equal(opened.binary, true);
+  assert.equal(listMemoryFiles(root).some((file) => file.path === "docs/brief.pdf"), false);
+
+  fs.writeFileSync(path.join(root, "docs", "huge.pdf"), Buffer.alloc(12_000_001));
+  assert.throws(() => readMemoryFile(root, "docs/huge.pdf"), /not allowed|too large/i);
+});
+
+test("pdfjs vendor route serves only the fixed allowlist with an ETag", async (t) => {
+  const root = makeRoot();
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+  const { server } = createMemoryServer({ root });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); }));
+  const port = server.address().port, base = `http://127.0.0.1:${port}`;
+  const raw = (requestPath) => new Promise((resolve, reject) => {
+    const request = http.request({ host: "127.0.0.1", port, path: requestPath, method: "GET", headers: { "accept-encoding": "identity" } }, (response) => { response.resume(); response.on("end", () => resolve(response.statusCode)); });
+    request.on("error", reject); request.end();
+  });
+
+  const lib = await fetch(base + "/vendor/pdfjs/pdf.min.mjs");
+  assert.equal(lib.status, 200);
+  assert.match(lib.headers.get("content-type"), /javascript/);
+  assert.equal(lib.headers.get("cache-control"), "no-cache");
+  const etag = lib.headers.get("etag");
+  assert.ok(etag);
+  await lib.arrayBuffer();
+  const again = await fetch(base + "/vendor/pdfjs/pdf.min.mjs", { headers: { "if-none-match": etag } });
+  assert.equal(again.status, 304);
+  assert.equal((await fetch(base + "/vendor/pdfjs/pdf.worker.min.mjs")).status, 200);
+  const font = await fetch(base + "/vendor/pdfjs/standard_fonts/LiberationSans-Regular.ttf");
+  assert.equal(font.status, 200);
+  assert.equal(font.headers.get("content-type"), "font/ttf");
+  await font.arrayBuffer();
+  const wasm = await fetch(base + "/vendor/pdfjs/wasm/qcms_bg.wasm");
+  assert.equal(wasm.headers.get("content-type"), "application/wasm");
+  await wasm.arrayBuffer();
+  const fallback = await fetch(base + "/vendor/pdfjs/wasm/openjpeg_nowasm_fallback.js");
+  assert.equal(fallback.status, 200);
+  assert.match(fallback.headers.get("content-type"), /javascript/);
+  await fallback.arrayBuffer();
+  for (const denied of ["/vendor/pdfjs/wasm/quickjs-eval.js", "/vendor/pdfjs/wasm/quickjs-eval.wasm", "/vendor/pdfjs/LICENSE", "/vendor/pdfjs/VERSION", "/vendor/pdfjs/../package.json", "/vendor/pdfjs/..%2fpackage.json", "/vendor/pdfjs/%2e%2e/%2e%2e/package.json", "/vendor/pdfjs/legacy/build/pdf.mjs", "/vendor/pdfjs/pdf.min.mjs.map", "/vendor/pdfjs/package.json", "/vendor/pdfjs/cmaps/", "/vendor/pdfjs/"]) {
+    assert.notEqual(await raw(denied), 200, denied);
+  }
+  assert.equal(await raw("/vendor/pdfjs/../package.json"), 404);
 });
 
 test("recurring theme refresh keeps an unchanged HTML preview iframe alive", () => {

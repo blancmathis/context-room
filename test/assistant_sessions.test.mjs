@@ -181,3 +181,28 @@ test('stop reaches the original provider task, and revoked source permissions bl
   await service.stop(f.original, conversation.id); await until(() => !service.running.size);
   f.revoke(); assert.throws(() => service.get(f.original, conversation.id), { code: 'source_permission' });
 });
+
+test('conversation keeps Fast per conversation and legacy state defaults to off', async t => {
+  const f = fixture(t), p = providerFixture(), service = f.service(async () => p.provider);
+  const conversation = service.create(f.original, { source: f.source });
+  assert.equal(conversation.fast, false);
+  const other = service.create(f.original, { source: f.source });
+  assert.equal(service.configure(f.original, conversation.id, { model: 'fixture', effort: 'low', fast: true }).fast, true);
+  assert.equal(service.get(f.original, other.id).fast, false);
+  service.send(f.original, conversation.id, { requestId: randomUUID(), text: 'Go' });
+  await until(() => p.turns.length === 1); assert.equal(p.turns[0].fast, true);
+  p.finish(); await until(() => !service.running.size);
+  service.update(other.id, state => { delete state.fast; });
+  assert.equal(service.get(f.original, other.id).fast, false);
+  service.send(f.original, other.id, { requestId: randomUUID(), text: 'Go' });
+  await until(() => p.turns.length === 2); assert.equal(p.turns[1].fast, false);
+  p.finish(); await until(() => !service.running.size);
+});
+
+test('configure refuses a non-boolean Fast', t => {
+  const f = fixture(t), service = f.service(() => { throw new Error('No provider'); });
+  const conversation = service.create(f.original, { source: f.source });
+  for (const fast of ['yes', 1, null]) assert.throws(() => service.configure(f.original, conversation.id, { model: 'fixture', effort: 'low', fast }), { code: 'assistant_model' });
+  assert.throws(() => service.create(f.original, { source: f.source, fast: 'yes' }), { code: 'assistant_model' });
+  assert.equal(service.get(f.original, conversation.id).fast, false);
+});

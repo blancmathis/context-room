@@ -6,6 +6,7 @@ import { inspectLocalAudio } from './local_audio_diagnostics.mjs';
 import { renderAppShell } from "./ui/app.mjs";
 import { handleNotebookHttp, isNotebookMutation } from "./notebook_http.mjs";
 import { AssistantRuntime, handleAssistantHttp, assistantStorageRoot } from "./assistant_runtime.mjs";
+import { previewCodexProjectImport, applyCodexProjectImport } from "./codex_catalog.mjs";
 import { attachLisiereRecording, recordingTargetFromResolved } from './lisiere_recording_links.mjs';
 import { AssistantSessions } from './assistant_sessions.mjs';
 import { createAssistantSourceResolver } from "./assistant_sources.mjs";
@@ -15,11 +16,11 @@ import { submitNotebookShared } from "./notebook_workflow.mjs";
 import { NOTEBOOK_WEB_ASSETS } from "./notebook_web_assets.mjs";
 import { NOTEBOOK_LIMITS } from "./notebook_protocol.mjs";
 import { createLisiereConnector, migrateLisiereSession as recoverLisiereSession } from "./lisiere_connector.mjs";
-import { planLisiereNotebookImport, applyLisiereNotebookImport } from "./lisiere_migration.mjs";
+import { planLisiereNotebookImport, applyLisiereNotebookImport, listLisiereNotebookImports } from "./lisiere_migration.mjs";
 import { migrateLisiereReconciliation } from './lisiere_reconcile.mjs';
 import { migrateLisiereDocument } from "./lisiere_documents.mjs";
 import { migrateLisiereConversationHistory } from "./lisiere_conversations.mjs";
-import { listNotebooks, readNotebook } from "./notebooks.mjs";
+import { listNotebooks, readNotebook, transferNotebook, previewNotebookDeparture, notebookTransferOperationId, interruptedNotebookTransfers } from "./notebooks.mjs";
 import { isDocumentAssetPath, listDocumentAssets, readDocumentAssetReview, recordAcceptedDocumentAsset, decideDocumentAsset } from "./document_assets.mjs";
 import { readReviewCleanupPolicy, writeReviewCleanupPolicy, previewReviewCleanup, applyReviewCleanup, recentReviewCleanupReceipts } from "./review_cleanup.mjs";
 import fs from "node:fs";
@@ -152,6 +153,7 @@ import {
   removeContextHubReviewSnoozes,
   registerContextHubProject,
   registerContextHubSharedRepository,
+  CONTEXT_HUB_NOTEBOOK_SPACE,
   setContextHubProjectOrder,
   setContextHubReviewSnoozes,
   unregisterContextHubSharedRepository,
@@ -495,6 +497,9 @@ const BACKGROUND_REPORT_INVALIDATING_PATHS = new Set([
   "/api/watch-rule",
   "/api/context-hub/project-settings",
   "/api/context-hub/projects",
+  "/api/context-hub/codex-import",
+  "/api/context-hub/notebook-space",
+  "/api/context-hub/notebooks/move",
   "/api/context-hub/shared-recovery/abandon",
   "/api/context-hub/confirm-location",
   "/api/context-hub/shared-projects",
@@ -891,6 +896,7 @@ const PROJECT_VISUAL_ASSET_TYPES = new Map([
   [".webp", "image/webp"],
   [".avif", "image/avif"],
   [".svg", "image/svg+xml"],
+  [".pdf", "application/pdf"],
 ]);
 const PROJECT_DIAGRAM_SOURCE_EXTENSIONS = new Set([".mmd", ".mermaid", ".puml", ".plantuml", ".dot", ".gv", ".drawio"]);
 const PROJECT_TEXT_FILENAMES = new Set([
@@ -7913,6 +7919,95 @@ export function migrateLisiereNotebook(root, options = {}) {
   return options.apply ? applyLisiereNotebookImport(root, options, authority) : planLisiereNotebookImport(root, options, authority);
 }
 
+/** The registered Notebooks space, or a clear refusal that names the way to create it. */
+export function requireContextHubNotebookSpace() {
+  const root = registeredContextHubNotebookSpace();
+  if (!root) throw sharedRequestError("Create the Notebooks space first (Hub › New notebook) or pass --root. migrate --notebooks-to-space creates it itself.", 409, "context_hub_notebook_space_missing");
+  return root;
+}
+
+/** The registered Notebooks space, null when none is registered yet. */
+function registeredContextHubNotebookSpace() {
+  const space = listContextHubProjects({ readOnly: true }).find((entry) => entry.space === CONTEXT_HUB_NOTEBOOK_SPACE);
+  if (space && !space.available) throw sharedRequestError(`The Notebooks space is unavailable: ${space.root}`, 409, "context_hub_notebook_space_unavailable");
+  return space ? path.resolve(space.root) : null;
+}
+
+/**
+ * Moves the working notebooks that a Lisière import created in `root` to the Notebooks space.
+ * Preview lists the accepted ones and each refused one with its reason, under one revision;
+ * apply moves only the accepted ones with a verified copy. Each notebook keeps one move
+ * identifier per destination, so a re-run after a crash resumes its own journal.
+ * The path stays when the space allows it, otherwise the file keeps its name under Carnets/.
+ * Without a registered space (the Hub stopped at the cutover), the preview writes nothing and
+ * says the space will be created; apply checks the revision first, then creates it and moves.
+ */
+export function migrateNotebooksToSpace(root, { boardId, apply = false, expectedRevision } = {}) {
+  const sourceRoot = path.resolve(root), registeredSpace = registeredContextHubNotebookSpace();
+  const canWriteSource = (rel) => canEditLocalProposalPath(sourceRoot, rel);
+  const destinationPath = (rel) => rel.startsWith(CONTEXT_HUB_NOTEBOOK_FOLDER) ? rel : CONTEXT_HUB_NOTEBOOK_FOLDER + path.posix.basename(rel);
+  const isNotebookRefusal = (error) => String(error?.code || "").startsWith("notebook_");
+  // The space does not exist yet: only the source side can be checked. The new space allows
+  // Carnets/ only, so each notebook keeps its name there; two notebooks may not share one.
+  const futurePlan = () => {
+    const spaceRoot = contextHubNotebookSpaceRoot();
+    assertNotebookSpaceFolderUsable(spaceRoot);
+    const notebooks = [], refused = [], taken = new Set();
+    for (const entry of listLisiereNotebookImports(sourceRoot, { boardId })) {
+      const item = { resourceId: entry.id, title: entry.title, boardId: entry.boardId, from: entry.path, to: destinationPath(entry.path) };
+      try {
+        const departure = previewNotebookDeparture(sourceRoot, { resourceId: entry.id }, { canWriteSource });
+        if (taken.has(item.to)) refused.push({ ...item, code: "notebook_location_conflict", reason: "Another notebook of this move takes the same destination. Nothing was overwritten." });
+        else { taken.add(item.to); notebooks.push({ ...item, revision: departure.revision, resume: false }); }
+      } catch (error) {
+        if (!isNotebookRefusal(error)) throw error;
+        refused.push({ ...item, code: error.code, reason: error.message });
+      }
+    }
+    return { spaceRoot, notebooks, refused, revision: notebookHash({ kind: "notebooks-to-space", space: "will-be-created", spaceRoot, notebooks, refused }) };
+  };
+  const plan = (spaceRoot) => {
+    const authority = { canWriteSource, canWriteTarget: (rel) => canEditLocalProposalPath(spaceRoot, rel) };
+    // Moves committed before a crash: the source is already closed, only the finish remains.
+    const notebooks = interruptedNotebookTransfers(sourceRoot, spaceRoot)
+      .filter((journal) => journal.operationId.startsWith("space-") && (!boardId || journal.to.migration?.boardId === boardId))
+      .map((journal) => ({ resourceId: journal.resourceId, title: journal.to.migration?.title ?? null, boardId: journal.to.migration?.boardId ?? null,
+        from: journal.from.path, to: journal.to.path, revision: journal.revision, operationId: journal.operationId, resume: true }));
+    const refused = [];
+    for (const entry of listLisiereNotebookImports(sourceRoot, { boardId })) {
+      const item = { resourceId: entry.id, title: entry.title, boardId: entry.boardId, from: entry.path, to: destinationPath(entry.path) };
+      try {
+        const preview = transferNotebook(sourceRoot, spaceRoot, { resourceId: entry.id, path: item.to }, { ...authority, preview: true });
+        notebooks.push({ ...item, to: preview.to.path, revision: preview.revision, operationId: notebookTransferOperationId(sourceRoot, spaceRoot, entry.id, "space"), resume: false });
+      } catch (error) {
+        if (!isNotebookRefusal(error)) throw error;
+        refused.push({ ...item, code: error.code, reason: error.message });
+      }
+    }
+    return { spaceRoot, authority, notebooks, refused, revision: notebookHash({ kind: "notebooks-to-space", spaceRoot, notebooks, refused }) };
+  };
+  const planned = registeredSpace ? plan(registeredSpace) : futurePlan();
+  const summary = { kind: "notebooks-to-space", root: sourceRoot, spaceRoot: planned.spaceRoot, space: registeredSpace ? "registered" : "will-be-created",
+    revision: planned.revision, notebooks: planned.notebooks, refused: planned.refused, overwrites: false };
+  if (!apply) return { ...summary, applied: false };
+  if (expectedRevision !== planned.revision) throw sharedRequestError("The notebooks changed after the preview. Preview again.", 409, "notebook_location_stale");
+  let moving = planned, created = false;
+  if (!registeredSpace && planned.notebooks.length) {
+    created = ensureContextHubNotebookSpace({ spaceRoot: planned.spaceRoot }).created;
+    moving = plan(requireContextHubNotebookSpace());
+    const shape = (result) => JSON.stringify([result.notebooks.map((item) => [item.resourceId, item.to]), result.refused.map((item) => item.resourceId)]);
+    if (shape(moving) !== shape(planned)) {
+      throw sharedRequestError("The Notebooks space now exists, but the move differs from the preview. Nothing moved. Preview again.", 409, "notebook_location_stale");
+    }
+  }
+  const moved = moving.notebooks.map((item) => transferNotebook(sourceRoot, moving.spaceRoot, {
+    resourceId: item.resourceId, path: item.to, expectedRevision: item.revision, operationId: item.operationId,
+  }, { ...moving.authority, destination: { migration: { kind: "notebooks-to-space", boardId: item.boardId, title: item.title } } }));
+  if (moved.length || created) markContextHubSnapshotStale();
+  return { ...summary, spaceRoot: moving.spaceRoot, spaceCreated: created, applied: true,
+    moved: moved.map((item) => ({ resourceId: item.resourceId, to: item.to.path, retired: item.retired, replayed: item.replayed })) };
+}
+
 function legacyRecoverySourceForPath(project, rel) {
   if (typeof rel !== 'string' || !rel) throw sharedRequestError('Choose the document or imported notebook to link with this recovery.', 400, 'assistant_source_scope');
   if (!rel.endsWith('.crnb')) return { kind: 'document', path: rel };
@@ -11419,7 +11514,7 @@ export function buildDocumentationGraph(root = process.cwd(), options = {}) {
     const targetAbs = path.resolve(root, targetPath);
     if (!configuredPaths.has(targetPath) && fs.existsSync(targetAbs) && fs.statSync(targetAbs).isFile()) {
       const stats = fs.statSync(targetAbs);
-      graphFiles.push({ path: targetPath, label: path.basename(targetPath), exists: true, bytes: stats.size, updatedAt: stats.mtime.toISOString(), kind: PROJECT_VISUAL_ASSET_TYPES.has(path.extname(targetPath).toLowerCase()) ? "image" : "structured" });
+      graphFiles.push({ path: targetPath, label: path.basename(targetPath), exists: true, bytes: stats.size, updatedAt: stats.mtime.toISOString(), kind: path.extname(targetPath).toLowerCase() === ".pdf" ? "document" : PROJECT_VISUAL_ASSET_TYPES.has(path.extname(targetPath).toLowerCase()) ? "image" : "structured" });
       configuredPaths.add(targetPath);
     }
   }
@@ -13559,6 +13654,54 @@ export function createContextHubProject({ computerRoot, parent, folderName, titl
     return { projectRoot: registered.root, initialized, registered };
   } catch (error) {
     fs.rmSync(projectRoot, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+// The Notebooks space: one registered root for notebooks that belong to no project yet.
+// Notebooks live under Carnets/ because allowedPaths only accepts folder prefixes.
+export const CONTEXT_HUB_NOTEBOOK_FOLDER = "Carnets/";
+
+export function contextHubNotebookSpaceRoot() {
+  return path.resolve(process.env.CONTEXT_ROOM_NOTEBOOK_SPACE_HOME
+    || path.join(process.env.HOME || os.homedir(), "Documents", "Context Room", "Carnets"));
+}
+
+/** Read-only: false when the folder is absent, true when it is empty or already a Notebooks space; refuses anything else. */
+function assertNotebookSpaceFolderUsable(projectRoot) {
+  const refuse = (message) => Object.assign(new Error(message), { statusCode: 409, code: "context_hub_notebook_space_occupied" });
+  if (!pathEntryExists(projectRoot)) return false;
+  if (!fs.lstatSync(projectRoot).isDirectory()) throw refuse(`The Notebooks folder is not a folder: ${projectRoot}`);
+  const configured = pathEntryExists(path.join(projectRoot, MEMORY_WEBAPP_SETTINGS));
+  const ownSpace = configured && readMemoryWebappSettings(projectRoot).allowedPaths.includes(CONTEXT_HUB_NOTEBOOK_FOLDER);
+  if (!ownSpace && fs.readdirSync(projectRoot).some((name) => name !== ".DS_Store")) throw refuse(`The Notebooks folder already holds other files: ${projectRoot}`);
+  return true;
+}
+
+export function ensureContextHubNotebookSpace({ spaceRoot = contextHubNotebookSpaceRoot() } = {}) {
+  const refuse = (message, code) => Object.assign(new Error(message), { statusCode: 409, code });
+  const current = listContextHubProjects({ readOnly: true }).find((entry) => entry.space === CONTEXT_HUB_NOTEBOOK_SPACE);
+  if (current) {
+    if (!current.available) throw refuse(`The Notebooks space is unavailable: ${current.root}`, "context_hub_notebook_space_unavailable");
+    return { created: false, projectRoot: current.root, registered: current };
+  }
+  const projectRoot = path.resolve(spaceRoot);
+  let made = false;
+  if (!assertNotebookSpaceFolderUsable(projectRoot)) {
+    fs.mkdirSync(projectRoot, { recursive: true });
+    made = true;
+  }
+  try {
+    fs.mkdirSync(path.join(projectRoot, CONTEXT_HUB_NOTEBOOK_FOLDER), { recursive: true });
+    const initialized = initializeContextRoomProject(projectRoot, {
+      title: "Notebooks",
+      allowedPaths: [CONTEXT_HUB_NOTEBOOK_FOLDER],
+      watchAllow: [CONTEXT_HUB_NOTEBOOK_FOLDER],
+    });
+    const registered = registerContextHubProject(projectRoot, { title: "Notebooks", space: CONTEXT_HUB_NOTEBOOK_SPACE });
+    return { created: true, projectRoot: registered.root, initialized, registered };
+  } catch (error) {
+    if (made) fs.rmSync(projectRoot, { recursive: true, force: true });
     throw error;
   }
 }
@@ -17903,6 +18046,9 @@ function isOwnerReviewAuthorityMutation(pathname = "", method = "GET") {
     "POST /api/context-hub/project-explorer/action",
     "POST /api/context-hub/shared-recovery/abandon",
     "POST /api/context-hub/confirm-location",
+    "POST /api/context-hub/codex-import",
+    "POST /api/context-hub/notebooks/move",
+    "POST /api/context-hub/notebook-space",
     "POST /api/watch-rule",
     "DELETE /api/watch-rule",
     "POST /api/review-gate",
@@ -18009,7 +18155,8 @@ function remoteStaticAssetPath(pathname) {
   const bundle = contextRoomWebAssetBundle("", "", "hosted-hub");
   return pathname === bundle.cssPath
     || pathname === bundle.jsPath
-    || pathname === mermaidWebAssetBundle().path;
+    || pathname === mermaidWebAssetBundle().path
+    || pathname.startsWith("/vendor/pdfjs/");
 }
 
 function remoteWorkspaceCommandPath(pathname) {
@@ -19497,11 +19644,11 @@ function remoteReviewUnavailableHtml(requestUrl) {
 </html>`;
 }
 
-export function createContextRoomDeviceService({ root = process.cwd(), stateRoot, browser = null } = {}) {
+export function createContextRoomDeviceService({ root = process.cwd(), stateRoot, browser = null, discovery } = {}) {
   const primaryRoot = fs.realpathSync(path.resolve(root));
   const primaryId = contextRoomProjectId(primaryRoot);
   const primaryIdentity = managedProjectRootIdentity(primaryRoot);
-  return createConnectedDeviceService({ stateRoot, browser, getWebBundle: () => contextRoomWebAssetBundle(), resolveProject(projectId) {
+  return createConnectedDeviceService({ stateRoot, browser, discovery, getWebBundle: () => contextRoomWebAssetBundle(), resolveProject(projectId) {
     const project = projectId === primaryId
       ? { root: primaryRoot, rootIdentity: primaryIdentity, available: true }
       : registeredContextHubWorktree(projectId);
@@ -20941,7 +21088,7 @@ async function documentInspectionApiResult(root, url) {
   }
   const stats = fs.statSync(canonicalPath);
   if (!stats.isFile()) throw sharedRequestError("Document is unavailable", 404, "document_not_found");
-  const textual = !/\.(?:png|jpe?g|gif|webp|avif|svg)$/i.test(canonicalPath);
+  const textual = !/\.(?:png|jpe?g|gif|webp|avif|svg|pdf)$/i.test(canonicalPath);
   const content = textual && stats.size <= MAX_FILE_BYTES ? fs.readFileSync(canonicalPath, "utf8") : "";
   const inspection = inspectDocumentMetadata({ content, relPath: resolved.path, root: target.root, absolutePath: canonicalPath });
   const graphUrl = new URL(url);
@@ -21211,7 +21358,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   if (url.pathname.startsWith('/api/assistant/')) {
     if (!getAssistantRuntime) throw sharedRequestError('Conversations are unavailable in this runtime.', 409, 'assistant_unavailable');
     if (req.method === 'POST') beforeManagedControlMutation?.();
-    await handleAssistantHttp(req, res, { root, url, runtime: getAssistantRuntime(), readJsonBody, sendJson }); return;
+    await handleAssistantHttp(req, res, { root, url, runtime: getAssistantRuntime(), readJsonBody, sendJson, profile: requestRuntimeProfile }); return;
   }
   if (url.pathname === '/api/devices' || url.pathname.startsWith('/api/devices/')) {
     if (req.method === 'GET' && url.pathname === '/api/devices') {
@@ -21831,6 +21978,12 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     }
     return;
   }
+  if (["GET", "HEAD"].includes(req.method) && url.pathname.startsWith("/vendor/pdfjs/")) {
+    const asset = pdfjsWebAsset(url.pathname.slice("/vendor/pdfjs/".length));
+    if (asset) sendVersionedAsset(req, res, asset.variants, asset.contentType, asset.etag, { cacheControl: "no-cache" });
+    else sendJson(res, 404, { error: "Asset not found" });
+    return;
+  }
   if (req.method === "GET" && url.pathname === "/api/workspaces") {
     if (!workspaceRegistry) throw sharedRequestError("Workspace registry is unavailable", 503, "workspace_registry_unavailable");
     const ownerSub = requestIdentity?.kind === "human" ? requestIdentity.sub : "";
@@ -22247,6 +22400,69 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     });
     return;
   }
+  if (url.pathname === "/api/context-hub/codex-import" && (req.method === "GET" || req.method === "POST")) {
+    if (requestRuntimeProfile !== "local" || hostedSharedProvider) {
+      throw sharedRequestError("Importing Codex Desktop projects is unavailable on hosted Context Room.", 404, "remote_operation_unavailable");
+    }
+    if (req.method === "GET") {
+      try { sendJson(res, 200, previewCodexProjectImport()); } catch (error) { throw sharedRequestError(error.message, error.statusCode || 409, error.code || "codex_catalog_unreadable"); }
+      return;
+    }
+    const body = await readJsonBody(req);
+    let applied;
+    try { applied = await applyCodexProjectImport({ roots: body.roots, expectedRevision: body.expectedRevision, initialize: initializeContextRoomProject }); }
+    catch (error) { throw sharedRequestError(error.message, error.statusCode || 400, error.code || "codex_import_failed"); }
+    markContextHubSnapshotStale();
+    const catalog = applied.imported ? await refreshContextHubSnapshot(root, { refreshShared: false, force: true }) : null;
+    sendJson(res, 200, { ...applied, catalog });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/context-hub/notebook-space") {
+    await readJsonBody(req);
+    const space = ensureContextHubNotebookSpace();
+    if (space.created) {
+      markContextHubSnapshotStale();
+      appendContextRoomEvent("project.created", {
+        projectId: space.registered.logicalProjectId || space.registered.id,
+        locationId: space.registered.id,
+        resource: { path: space.projectRoot },
+        data: { title: space.registered.title, space: CONTEXT_HUB_NOTEBOOK_SPACE },
+      });
+    }
+    const catalog = space.created ? await refreshContextHubSnapshot(root, { refreshShared: false, force: true }) : null;
+    sendJson(res, space.created ? 201 : 200, { project: space.registered, projectRoot: space.projectRoot, created: space.created, catalog });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/context-hub/notebooks/move") {
+    const body = await readJsonBody(req);
+    const from = registeredContextHubWorktree(String(body.fromProjectId || ""));
+    const to = registeredContextHubWorktree(String(body.toProjectId || ""));
+    if (!from?.available || !to?.available) throw sharedRequestError("Both places must be available to move a notebook.", 404, "project_unavailable");
+    const sourceRoot = path.resolve(from.root), targetRoot = path.resolve(to.root);
+    const preview = body.preview === true, revision = preview ? "" : String(body.revision || "");
+    const moved = transferNotebook(sourceRoot, targetRoot, {
+      resourceId: body.resourceId,
+      path: body.path,
+      expectedRevision: revision,
+      operationId: String(body.operationId || `transfer-${(revision || "preview").slice(0, 32)}`),
+    }, {
+      canWriteSource: (rel) => canEditLocalProposalPath(sourceRoot, rel),
+      canWriteTarget: (rel) => canEditLocalProposalPath(targetRoot, rel),
+      preview,
+      destination: { projectId: to.id, title: to.title },
+    });
+    if (!preview) {
+      markContextHubSnapshotStale();
+      appendContextRoomEvent("notebook.moved", {
+        projectId: to.logicalProjectId || to.id,
+        locationId: to.id,
+        resource: { kind: "notebook", id: moved.resourceId, path: moved.to?.path || "" },
+        data: { fromLocationId: from.id, replayed: Boolean(moved.replayed) },
+      });
+    }
+    sendJson(res, 200, { ...moved, from: { ...moved.from, projectId: from.id, title: from.title } });
+    return;
+  }
   if (req.method === "POST" && url.pathname === "/api/context-hub/shared-projects") {
     const body = await readJsonBody(req);
     const repositoryId = String(hostedSharedProvider ? body.repositoryId || "" : body.repository || "").trim();
@@ -22508,6 +22724,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     const repository = assertConfiguredSharedRepository(root, repositorySelector);
     const project = registeredContextHubWorktree(projectId);
     if (!project?.available || !project.root) throw sharedRequestError("The selected local project is unavailable", 404, "project_unavailable");
+    if (project.space === CONTEXT_HUB_NOTEBOOK_SPACE) throw sharedRequestError("The Notebooks space is not a project and cannot connect to Shared.", 409, "notebook_space_not_shared");
     const current = readSharedProjectConnection(project.root);
     if (current && !sameContextHubRepository(current.repository, repository)) {
       throw sharedRequestError("Disconnect the current shared context before connecting another one", 409, "shared_context_already_connected", { current });
@@ -22661,6 +22878,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
         sharedTitle: project.sharedTitle || "",
         priorityId: project.priorityId || contextHubProjectPriorityId(project),
         priorityRank: Number.isInteger(project.priorityRank) ? project.priorityRank : null,
+        ...(project.space ? { space: project.space } : {}),
       })),
       attention: state.attention,
       sharedRepositories: state.sharedRepositories || [],
@@ -24575,6 +24793,7 @@ function fileKindForPath(relPath) {
   const ext = path.extname(normalizeRelPath(String(relPath || ""))).toLowerCase();
   if (ext === ".csv" || ext === ".tsv") return "csv";
   if (ext === ".html" || ext === ".htm") return "html";
+  if (ext === ".pdf") return "pdf";
   if (PROJECT_VISUAL_ASSET_TYPES.has(ext)) return ext === ".svg" ? "diagram" : "image";
   if (PROJECT_DIAGRAM_SOURCE_EXTENSIONS.has(ext)) return "diagram-source";
   if (ext === ".md" || ext === ".mdx" || ext === ".txt") return "markdown";
@@ -25385,7 +25604,7 @@ function sendNotModified(res, headers = {}) {
 }
 
 function sendOptions(res, pathname = "") {
-  const allow = pathname === "/" || pathname.startsWith("/assets/context-room.") || pathname.startsWith("/vendor/mermaid")
+  const allow = pathname === "/" || pathname.startsWith("/assets/context-room.") || pathname.startsWith("/vendor/mermaid") || pathname.startsWith("/vendor/pdfjs/")
     ? "GET, HEAD, OPTIONS"
     : pathname === "/api/workspaces/register"
       ? "POST, DELETE, OPTIONS"
@@ -25523,6 +25742,39 @@ function mermaidWebAssetBundle() {
     path: `/vendor/mermaid.${hash}.min.js`,
   };
   return mermaidWebAssetCache;
+}
+
+// pdf.js 6.4.299 (legacy build, for older WebViews) is copied into src/vendor/pdfjs/ by scripts/update-pdfjs.mjs and served from a fixed allowlist.
+const PDFJS_ASSET_TYPES = new Map([[".mjs", "text/javascript; charset=utf-8"], [".js", "text/javascript; charset=utf-8"], [".bcmap", "application/octet-stream"], [".pfb", "application/octet-stream"], [".ttf", "font/ttf"], [".wasm", "application/wasm"]]);
+let pdfjsAssetIndex = null;
+const pdfjsAssetCache = new Map();
+
+function pdfjsAssetFiles() {
+  if (pdfjsAssetIndex) return pdfjsAssetIndex;
+  const base = fileURLToPath(new URL("./vendor/pdfjs/", import.meta.url));
+  const files = new Map([["pdf.min.mjs", "pdf.min.mjs"], ["pdf.worker.min.mjs", "pdf.worker.min.mjs"]]);
+  for (const [dir, extensions] of [["standard_fonts", [".pfb", ".ttf"]], ["cmaps", [".bcmap"]], ["wasm", [".wasm", ".js"]]]) {
+    let names = [];
+    try { names = fs.readdirSync(path.join(base, dir)); } catch { /* package without this directory */ }
+    for (const name of names) if (extensions.includes(path.extname(name)) && /^[A-Za-z0-9._-]+$/.test(name)) files.set(`${dir}/${name}`, `${dir}/${name}`);
+  }
+  pdfjsAssetIndex = { base, files };
+  return pdfjsAssetIndex;
+}
+
+function pdfjsWebAsset(name) {
+  const { base, files } = pdfjsAssetFiles();
+  if (!files.has(name)) return null;
+  if (pdfjsAssetCache.has(name)) return pdfjsAssetCache.get(name);
+  let source;
+  try { source = fs.readFileSync(path.join(base, files.get(name))); } catch { return null; }
+  const asset = {
+    variants: compressedAssetVariants(source),
+    etag: `"${createHash("sha256").update(source).digest("hex").slice(0, 16)}"`,
+    contentType: PDFJS_ASSET_TYPES.get(path.extname(name)) || "application/octet-stream",
+  };
+  pdfjsAssetCache.set(name, asset);
+  return asset;
 }
 
 export function contextRoomWebAssetBundle(codexPromptMutationNonce = "", ownerMutationNonce = "", runtimeProfile = "local") {

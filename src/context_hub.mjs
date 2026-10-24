@@ -32,6 +32,8 @@ function hubHome() {
     : path.join(process.env.HOME || os.homedir(), ".context-room", "hub");
 }
 
+export const contextHubHome = hubHome;
+
 export function contextHubHostRoot() {
   return path.join(hubHome(), "host");
 }
@@ -2029,6 +2031,7 @@ function normalizedRegistry(raw = {}, { refreshGit = false } = {}) {
           repository: canonicalRepositoryForStorage(entry.shared.repository),
           projectId: String(entry.shared.projectId).trim(),
         } : null,
+        ...(entry.space === CONTEXT_HUB_NOTEBOOK_SPACE ? { space: CONTEXT_HUB_NOTEBOOK_SPACE } : {}),
       }];
     } catch {
       return [];
@@ -2233,7 +2236,10 @@ export function unregisterContextHubSharedRepository(repository) {
   });
 }
 
-export function registerContextHubProject(root, { title = "", shared = null } = {}) {
+// The free notebook space is an ordinary registered root with this mark (at most one).
+export const CONTEXT_HUB_NOTEBOOK_SPACE = "notebooks";
+
+export function registerContextHubProject(root, { title = "", shared = null, space = "" } = {}) {
   const projectRoot = stableRoot(root);
   if (!fs.existsSync(projectRoot) || !fs.statSync(projectRoot).isDirectory()) throw new Error(`Context Hub project root does not exist: ${projectRoot}`);
   assertContextHubProjectControlFiles(projectRoot);
@@ -2251,6 +2257,7 @@ export function registerContextHubProject(root, { title = "", shared = null } = 
     rootIdentity,
     title,
     requestedShared,
+    space,
   }));
 }
 
@@ -2261,8 +2268,13 @@ function registerContextHubProjectInRegistry(registry, {
   rootIdentity,
   title = "",
   requestedShared = null,
+  space = "",
 } = {}) {
   assertNoUnknownHubSharedRecoveryLocked();
+  if (space && space !== CONTEXT_HUB_NOTEBOOK_SPACE) throw new Error(`Unknown Context Hub space: ${space}`);
+  if (space && registry.projects.some((entry) => entry.space === CONTEXT_HUB_NOTEBOOK_SPACE && entry.id !== id)) {
+    throw Object.assign(new Error("A Notebooks space is already registered."), { code: "context_hub_notebook_space_exists", statusCode: 409 });
+  }
   assertNoPendingHubSharedTransactionLocked((transaction) => transaction.logicalProjectId === identity.logicalProjectId);
   const existing = registry.projects.find((entry) => entry.id === id);
   const nextRootIdentity = normalizedProjectRootIdentity(rootIdentity) || contextHubProjectRootIdentity(projectRoot);
@@ -2313,6 +2325,7 @@ function registerContextHubProjectInRegistry(registry, {
     worktree: identity.worktree,
     worktreeIdentity: identity.membershipIdentity,
     shared: nextShared,
+    ...(space || existing?.space ? { space: CONTEXT_HUB_NOTEBOOK_SPACE } : {}),
   };
   const logicalProjectId = entry.logicalProjectId || entry.id;
   registry.projects = [...registry.projects.filter((project) => project.id !== id), entry].map((project) => (
@@ -2671,6 +2684,17 @@ export function recordContextHubProjectOpened(projectId) {
   });
 }
 
+const DEVICE_DISCOVERY_STATES = new Set(["announced", "off", "unsupported", "failed"]);
+function cleanRuntimeDevices(value) {
+  try {
+    const url = new URL(String(value?.url));
+    if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash) return null;
+    let browserUrl = "";
+    if (value.browserUrl) { const browser = new URL(String(value.browserUrl)); if (browser.protocol === "https:" && !browser.username && !browser.password) browserUrl = browser.origin; }
+    return { url: url.origin, ...(browserUrl ? { browserUrl } : {}), discovery: DEVICE_DISCOVERY_STATES.has(value.discovery) ? value.discovery : "off" };
+  } catch { return null; }
+}
+
 export function readContextHubRuntime() {
   const runtime = readJson(runtimePath(), null);
   if (!runtime || !Number.isInteger(Number(runtime.port)) || !runtime.url) return null;
@@ -2682,10 +2706,17 @@ export function readContextHubRuntime() {
     root: runtime.root ? stableRoot(runtime.root) : "",
     url: `http://127.0.0.1:${port}`,
     startedAt: String(runtime.startedAt || ""),
+    devices: cleanRuntimeDevices(runtime.devices),
   };
 }
 
-export function writeContextHubRuntime({ pid = process.pid, port, root, url } = {}) {
+/** True while a Hub process recorded in runtime.json is still running. */
+export function contextHubRuntimeAlive() {
+  const runtime = readContextHubRuntime();
+  return Boolean(runtime?.pid) && processIsAlive(runtime.pid);
+}
+
+export function writeContextHubRuntime({ pid = process.pid, port, root, url, devices } = {}) {
   const runtime = {
     version: 1,
     pid: Number(pid),
@@ -2693,8 +2724,20 @@ export function writeContextHubRuntime({ pid = process.pid, port, root, url } = 
     root: stableRoot(root),
     url: String(url),
     startedAt: new Date().toISOString(),
+    ...(cleanRuntimeDevices(devices) ? { devices: cleanRuntimeDevices(devices) } : {}),
   };
   return withRegistryLock(() => writeJson(runtimePath(), runtime));
+}
+
+/** Records a later change of the device discovery state, only for the runtime this process wrote. */
+export function updateContextHubRuntimeDiscovery(discovery, pid = process.pid) {
+  if (!DEVICE_DISCOVERY_STATES.has(discovery)) return false;
+  return withRegistryLock(() => {
+    const runtime = readJson(runtimePath(), null);
+    if (!runtime?.devices || Number(runtime.pid) !== Number(pid)) return false;
+    writeJson(runtimePath(), { ...runtime, devices: { ...runtime.devices, discovery } });
+    return true;
+  });
 }
 
 export function clearContextHubRuntime(pid = process.pid) {

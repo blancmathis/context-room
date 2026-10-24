@@ -522,7 +522,8 @@ export function resolveCliTarget({ cwd = process.cwd(), project = "", location =
   const containing = candidates.filter((item) => item.available && isWithin(item.root, requested))
     .sort((left, right) => right.root.length - left.root.length);
   let selected = containing[0] || null;
-  if (!selected && candidates.length === 1) selected = candidates[0];
+  // The Notebooks space is never an implicit target: name it with --project or --location.
+  if (!selected && candidates.length === 1 && (project || location || candidates[0].space !== "notebooks")) selected = candidates[0];
   if (!selected && (project || location) && candidates.length > 1) {
     const candidateDetails = candidates.map((item) => ({ id: item.id, title: item.title, root: item.root, branch: item.worktree?.branch || "" }));
     throw cliSelectorConflict(
@@ -2744,6 +2745,8 @@ export function doctorSafePlan(target) {
   };
 }
 
+const quotedPath = (value) => /^[\w@%+=:,./-]+$/.test(value) ? value : `'${String(value).replaceAll("'", `'"'"'`)}'`;
+
 export function renderAgentCliHuman(command, payload) {
   const data = payload?.data ?? payload;
   if (command === "capabilities") {
@@ -2768,8 +2771,33 @@ export function renderAgentCliHuman(command, payload) {
       return `${entry.path}\n${entry.summary}\n\nUsage\n  ${entry.usage}\n\nHuman review decisions\n  ${HUMAN_REVIEW_DOUBLE_CONFIRMATION_POLICY.instruction}\n`;
     }
   }
+  if (command === "backup" || command === "restore") {
+    const counts = Object.entries(data.sections || {}).map(([name, value]) => command === "backup"
+      ? `  ${name}: ${value.files} file${value.files === 1 ? "" : "s"}, ${value.bytes} bytes`
+      : `  ${name}: ${value.create} to create, ${value.same} same, ${value.conflict} differ, ${value.blocked} blocked`);
+    const secret = data.containsSecrets?.length ? [`This backup contains the review signing key (${data.containsSecrets.join(", ")}): keep it private.`] : [];
+    const lines = command === "backup"
+      ? [data.applied ? `Backup written to ${data.output}` : "Backup preview (nothing written)", `${data.files} files, ${data.bytes} bytes`, ...counts, ...secret, ...(data.warnings || []).map((item) => `Warning: ${item}`)]
+      : data.applied
+      ? [`Restored ${data.written} file${data.written === 1 ? "" : "s"} (${data.created} created, ${data.replaced} replaced, ${data.kept} kept, nothing deleted)`, ...counts,
+        ...(data.undoBackup ? [`To undo: context-room restore ${quotedPath(data.undoBackup)} --replace`] : [])]
+      : [`Restore preview of ${data.backup} (nothing written)`, ...counts, `${data.kept} current file${data.kept === 1 ? "" : "s"} not in the backup stay untouched`,
+        ...(data.conflicts || []).map((item) => `  differs: ${item.path}`), ...(data.blockedFiles || []).map((item) => `  blocked: ${item.path} (${item.reason})`), ...secret,
+        data.conflict && !data.replace ? `${data.conflict} file${data.conflict === 1 ? "" : "s"} differ: add --replace to overwrite them (saved first), or choose sections with --only.` : "",
+        `Stop the Hub, then run: context-room restore ${quotedPath(data.backup)} --apply --revision ${data.revision}${data.replace ? " --replace" : ""}`];
+    return lines.filter(Boolean).join("\n") + "\n";
+  }
   if (command === "project.list" || command === "project.search" || command === "project.recent") {
     return (data.projects || []).map((project) => `${project.title} · ${project.locations.length} location${project.locations.length === 1 ? "" : "s"}\n${project.locations.map((item) => `  ${item.branch || "no branch"} · ${item.root}`).join("\n")}`).join("\n\n") + "\n";
+  }
+  if (command === "project.import-codex") {
+    if (data.applied) return [`Imported ${data.imported} of ${data.results.length} folder${data.results.length === 1 ? "" : "s"}`,
+      ...data.results.map((item) => `  ${item.outcome.padEnd(8)} ${item.root}${item.reason ? ` (${item.reason})` : item.initialized ? " (created .context-room/)" : ""}`)].join("\n") + "\n";
+    const counts = Object.entries(data.counts || {}).filter(([, count]) => count).map(([status, count]) => `${count} ${status}`).join(", ");
+    return [data.found ? `Codex Desktop projects: ${counts || "none"}` : "Codex Desktop has no project list on this Mac.",
+      ...(data.projects || []).map((item) => `  ${item.status.padEnd(10)} ${item.root}${item.reason ? ` (${item.reason})` : ""}`),
+      ...(data.projects || []).some((item) => item.status === "ready" || item.status === "needs-init")
+        ? ["", "needs-init folders get a .context-room/ folder when imported.", `Import: context-room project import-codex --apply --expected-revision ${data.revision} <folder>...`] : []].join("\n") + "\n";
   }
   if (command === "agent.instructions") return String(data.prompt || "") + "\n";
   if (command === "docs.map") return data.proposal

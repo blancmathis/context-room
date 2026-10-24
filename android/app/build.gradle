@@ -4,11 +4,17 @@ plugins { id 'com.android.application' }
 // the original signing identity. The ordinary preview remains a separate app.
 def legacyRecovery = providers.gradleProperty('contextRoomLegacyRecovery').orElse('false').get() == 'true'
 def legacyCode = legacyRecovery ? providers.gradleProperty('contextRoomLegacyVersionCode').get().toInteger() : 1
-def legacyKey = new File(System.getProperty('user.home'), '.local/share/lisiere/signing/development.keystore')
+// Debug recovery builds are re-signed by scripts/sign-android-apk.sh with the preserved key on the owner's Mac.
+// -PcontextRoomLegacyKeystore points the Gradle signature at a disposable key; the default is the preserved one.
+def legacyKey = new File(providers.gradleProperty('contextRoomLegacyKeystore')
+    .orElse(new File(System.getProperty('user.home'), '.local/share/lisiere/signing/development.keystore').path).get())
 if (legacyRecovery) {
-    if (legacyCode <= 0 || !legacyKey.isFile()) throw new GradleException('Legacy recovery needs an explicit version code and the preserved original signing key.')
+    if (legacyCode <= 0) throw new GradleException('Legacy recovery needs an explicit positive version code.')
     layout.buildDirectory.set(rootProject.layout.projectDirectory.dir('.local/legacy-recovery-build/app'))
 }
+// The release artifact is unsigned: the owner's Mac signs it with the stable tablet key.
+def releaseCode = providers.gradleProperty('contextRoomVersionCode').orElse('10').get().toInteger()
+def releaseName = providers.gradleProperty('contextRoomVersionName').orElse('0.1.0-preview').get()
 
 android {
     namespace 'app.contextroom.tablet'
@@ -19,8 +25,10 @@ android {
         minSdk 28
         targetSdk 35
         // Increment the preview artifact for each installed functional milestone.
-        versionCode legacyRecovery ? legacyCode : 10
-        versionName legacyRecovery ? '0.1.0-recovery-preview' : '0.1.0-preview'
+        versionCode legacyRecovery ? legacyCode : releaseCode
+        versionName legacyRecovery ? '0.1.0-recovery-preview' : releaseName
+        // The recovery app stays visibly distinct so the wrong installation is never removed.
+        manifestPlaceholders = [appLabel: legacyRecovery ? 'Lisière · récupération' : 'Context Room']
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
     signingConfigs {
@@ -29,6 +37,10 @@ android {
             storePassword 'android'
             keyAlias 'androiddebugkey'
             keyPassword 'android'
+            // scripts/check-android-artifact.py requires v2 and v3 blocks, like scripts/sign-android-apk.sh.
+            // AGP signs v2 only by default and drops v2 once v3 is on (minSdk 28): ask for both.
+            enableV2Signing = true
+            enableV3Signing = true
         }
     }
     buildTypes {
@@ -52,6 +64,11 @@ def sharedWebAssets = tasks.register('sharedWebAssets', Exec) {
     inputs.file('../../scripts/prepare-android-web.mjs')
     outputs.dir(layout.buildDirectory.dir('generated/shared-web-assets'))
     commandLine 'node', 'scripts/prepare-android-web.mjs', layout.buildDirectory.dir('generated/shared-web-assets').get().asFile.absolutePath
+}
+tasks.matching { it.name == 'validateSigningDebug' }.configureEach {
+    doFirst {
+        if (legacyRecovery && !legacyKey.isFile()) throw new GradleException('Legacy recovery needs its signing key: ' + legacyKey)
+    }
 }
 tasks.named('preBuild').configure { dependsOn notebookAssets, sharedWebAssets }
 

@@ -3,6 +3,7 @@ import { captureMicrophone, recoverBrowserRecording, acknowledgeRecording } from
 import { LiveSourcePreview, createSketchSheet } from './assistant-observation.mjs';
 import { createLinkedRecordings } from './assistant-recordings.mjs';
 import { createRetainedHistory } from './assistant-legacy.mjs';
+import { createMacTasks } from './assistant-mac.mjs';
 export { documentDraftPreview } from './assistant-observation.mjs';
 
 const element = (tag, text = '', className = '') => { const node = document.createElement(tag); node.textContent = text; node.className = className; return node; };
@@ -46,7 +47,20 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     parent.append(active.panel); active.onState = onState; active.captureSource = captureSource; active.notifyState(); active.panel.hidden = false; active.panel.classList.remove('assistant-minimized'); active.present(mode, dictationTarget, primedAudioContext); return active;
   }
   if (!document.getElementById('context-room-assistant-style')) { const link = element('link'); link.id = 'context-room-assistant-style'; link.rel = 'stylesheet'; link.href = '/assets/ui/assistant.css'; document.head.append(link); }
-  const post = (route, body) => api('/api/assistant' + route, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const SEND_TIMEOUT_MESSAGE = 'The Mac did not answer in time. Press Send again: the same message is replayed, not duplicated.';
+  const STOP_TIMEOUT_MESSAGE = 'Your message was sent, but the Mac did not confirm the stop in time. The turn may still run: press Stop agent.';
+  // A timed post settles on its own timer, whether or not `api` honours the abort signal.
+  // It rejects before it aborts, so the timeout error wins the race over the AbortError that `fail` hides.
+  const post = (route, body, { timeout = 0, message = 'The Mac did not answer in time. Try again.' } = {}) => {
+    const controller = timeout ? new AbortController() : null;
+    const request = api('/api/assistant' + route, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), ...(controller ? { signal: controller.signal } : {}) });
+    if (!timeout) return request;
+    let timer;
+    const expired = new Promise((_, reject) => { timer = setTimeout(() => { reject(Object.assign(new Error(message), { code: 'assistant_request_timeout' })); controller.abort(); }, timeout); });
+    request.catch(() => {});
+    return Promise.race([request, expired]).finally(() => clearTimeout(timer));
+  };
+  const REQUEST_TIMEOUT_MS = 45000;
   const historyQuery = new URLSearchParams({ kind: source.kind, path: source.path, ...(source.resourceId ? { resourceId: source.resourceId } : {}), ...(source.locationRevision ? { locationRevision: source.locationRevision } : {}) });
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(source.selection || [])));
   const selectionHash = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
@@ -93,15 +107,17 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   for (const control of [dictate, audioStop, recoverAudio, discardAudio, useDictation]) control.dataset.dictationControl = '';
   const recover = button('Inspect original task', () => run((async () => { current = await post('/conversations/' + current.id + '/recover', {}); render(); })())); recover.hidden = true;
   controls.append(send, dictate, voiceButton, interruptVoiceButton, speak, audioStop, recoverAudio, discardAudio, useDictation, recover); form.append(input, controls);
-  const modelRow = element('details', '', 'assistant-model'), modelTitle = element('summary', 'Codex model'), models = element('select'), efforts = element('select');
+  const modelRow = element('details', '', 'assistant-model'), modelTitle = element('summary', 'Codex model'), models = element('select'), efforts = element('select'), fastLabel = element('label', '', 'assistant-fast'), fast = element('input'), fastNote = element('span', '', 'assistant-fast-note');
   models.setAttribute('aria-label', 'Conversation Codex model'); efforts.setAttribute('aria-label', 'Conversation reasoning effort');
   const connect = button('Load available models', () => run((async () => { await post('/connect', {}); modelPending = true; await poll(); })()));
-  modelRow.append(modelTitle, models, efforts, connect);
-  const retainedHistory = createRetainedHistory({ api }), linkedRecordings = createLinkedRecordings({ api });
-  panel.append(heading, original, audioStatus, boundary, ...(conversation.source.kind === 'notebook' ? [] : [sheet.section]), historyRow, retainedHistory.section, linkedRecordings.section, messages, modelRow, form, status, infoBox, errorBox); parent.append(panel);
+  fast.type = 'checkbox'; fast.setAttribute('aria-label', 'Conversation Fast mode'); fastLabel.append(fast, document.createTextNode(' Fast')); fastNote.setAttribute('role', 'note');
+  modelRow.append(modelTitle, models, efforts, fastLabel, fastNote, connect);
+  const retainedHistory = createRetainedHistory({ api }), linkedRecordings = createLinkedRecordings({ api }), macTasks = createMacTasks({ api });
+  historyRow.append(macTasks.toggle); heading.insertBefore(macTasks.showCurrent, minimize);
+  panel.append(heading, original, audioStatus, boundary, ...(conversation.source.kind === 'notebook' ? [] : [sheet.section]), historyRow, macTasks.section, retainedHistory.section, linkedRecordings.section, messages, modelRow, form, status, infoBox, errorBox); parent.append(panel);
   const clientId = crypto.randomUUID();
   let closed = false, current = conversation, pollBusy = false, lease = null, renewTimer = null, recording = null, speaker = null,
-    audioContext = null, audioGeneration = 0, modelPending = false, rendered = '', sendRequest = null, retainedRecording = null, recordingRequest = null, audioBusy = false, audioReading = false, changingConversation = false, draftWrites = Promise.resolve(), nativeRecordings = [], voice = null, voiceClosing = false, initializing = true, historyCursor = null, historyLoading = false;
+    audioContext = null, audioGeneration = 0, modelPending = false, catalogLoaded = false, fastDropped = false, rendered = '', sendRequest = null, sending = false, retainedRecording = null, recordingRequest = null, audioBusy = false, audioReading = false, changingConversation = false, draftWrites = Promise.resolve(), nativeRecordings = [], voice = null, voiceClosing = false, initializing = true, historyCursor = null, historyLoading = false;
   const fail = error => { if (!closed && error.name !== 'AbortError') { infoBox.textContent = ''; errorBox.textContent = error.message || String(error); } };
   function inform(text) { errorBox.textContent = ''; infoBox.textContent = text; }
   const run = promise => Promise.resolve(promise).catch(fail);
@@ -193,12 +209,12 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   }
   function render() {
     self.conversation = current; const busy = activeStatuses.has(current.operation?.status), uncertain = current.operation?.status === 'uncertain';
-    retainedHistory.set(current); linkedRecordings.set(current);
+    retainedHistory.set(current); linkedRecordings.set(current); macTasks.set(current);
     panel.dataset.ready = String(!initializing); panel.setAttribute('aria-busy', String(initializing));
     panel.dataset.capturing = String(Boolean(recording));
     panel.classList.toggle('assistant-voice-enabled', Boolean(voice));
-    send.disabled = initializing || busy || uncertain || Boolean(voice); stop.disabled = !busy; stop.hidden = !busy; models.disabled = initializing || busy || uncertain || Boolean(voice); efforts.disabled = models.disabled;
-    history.disabled = initializing || busy || uncertain || Boolean(recording) || audioBusy || audioReading || changingConversation || Boolean(voice) || voiceClosing || historyLoading;
+    send.disabled = initializing || sending || changingConversation || busy || uncertain || Boolean(voice); stop.disabled = !busy; stop.hidden = !busy; models.disabled = initializing || busy || uncertain || Boolean(voice); efforts.disabled = models.disabled; fast.disabled = models.disabled || fast.dataset.offered !== 'true';
+    history.disabled = initializing || busy || uncertain || Boolean(recording) || audioBusy || audioReading || changingConversation || sending || Boolean(voice) || voiceClosing || historyLoading;
     newConversation.disabled = history.disabled;
     olderHistory.disabled = reloadHistory.disabled = history.disabled;
     dictate.disabled = initializing || audioBusy || Boolean(voice); input.readOnly = initializing || Boolean(voice);
@@ -234,19 +250,25 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     } catch (error) { fail(error); } finally { pollBusy = false; }
   }
   function showModels(catalog = []) {
-    models.replaceChildren();
+    models.replaceChildren(); catalogLoaded = catalog.length > 0;
     const choices = catalog.length ? catalog : [{ id: current.model, name: current.model }];
-    for (const model of choices) { const option = element('option', model.name || model.id); option.value = model.id; option.dataset.efforts = JSON.stringify(model.efforts || []); models.append(option); }
+    for (const model of choices) { const option = element('option', model.name || model.id); option.value = model.id; option.dataset.efforts = JSON.stringify(model.efforts || []); option.dataset.fast = String(model.fast === true); models.append(option); }
     if (!choices.some(model => model.id === current.model)) { const option = element('option', current.model); option.value = current.model; models.append(option); }
     models.value = current.model; showEfforts();
+    if (catalogLoaded && current.fast === true && fast.dataset.offered !== 'true' && !activeStatuses.has(current.operation?.status)) run(configure());
   }
   function showEfforts() {
     const listed = JSON.parse(models.selectedOptions[0]?.dataset.efforts || '[]');
     efforts.replaceChildren(...(listed.length ? listed.map(item => typeof item === 'string' ? item : item.reasoningEffort) : ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).map(value => { const option = element('option', value); option.value = value; return option; }));
     efforts.value = [...efforts.options].some(option => option.value === current.effort) ? current.effort : efforts.options[0]?.value;
+    const offered = models.selectedOptions[0]?.dataset.fast === 'true'; fast.dataset.offered = String(offered); fast.checked = (offered || !catalogLoaded) && current.fast === true;
+    if (offered) fastDropped = false; else if (catalogLoaded && current.fast === true) fastDropped = true;
+    fast.disabled = models.disabled || !offered;
+    fastNote.textContent = offered ? '' : !catalogLoaded ? 'Load available models to change Fast.' : fastDropped ? 'Fast was on but is not offered for this model now. Turns run without it.' : 'Fast is not offered for this model.';
   }
-  async function configure() { current = await post('/conversations/' + current.id + '/configure', { model: models.value, effort: efforts.value }); render(); }
-  models.addEventListener('change', () => { showEfforts(); run(configure()); }); efforts.addEventListener('change', () => run(configure()));
+  // Only Send passes its own timeout message; a model, effort or Fast change keeps the default one.
+  async function configure(message) { current = await post('/conversations/' + current.id + '/configure', { model: models.value, effort: efforts.value, fast: fast.checked }, { timeout: REQUEST_TIMEOUT_MS, message }); render(); }
+  models.addEventListener('change', () => { showEfforts(); run(configure()); }); efforts.addEventListener('change', () => run(configure())); fast.addEventListener('change', () => run(configure()));
   async function refreshHistory({ append = false } = {}) {
     if (historyLoading || append && !historyCursor) return;
     historyLoading = true; render();
@@ -267,34 +289,44 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     } finally { historyLoading = false; render(); }
   }
   history.addEventListener('change', () => run((async () => {
-    if (recording || audioBusy || audioReading || changingConversation || voice || voiceClosing) { history.value = current.id; return; }
+    if (recording || audioBusy || audioReading || changingConversation || sending || voice || voiceClosing) { history.value = current.id; return; }
     changingConversation = true; const id = history.value; render();
     try { await preview.stop(); await saveDraft(); await releaseAudio(); const next = await api('/api/assistant/conversations/' + id); current = next; rendered = ''; await restoreDraft(); await preview.refresh(); showModels(); }
     finally { changingConversation = false; render(); }
   })()));
   form.addEventListener('submit', event => { event.preventDefault(); if (!voice) run(submitMessage()); });
   async function submitMessage(voiceSession = null) {
-    if (initializing || !input.value.trim() || activeStatuses.has(current.operation?.status)) return;
-    const text = input.value;
+    // A conversation change in progress would load the next draft, then put the old conversation back on screen.
+    if (sending || initializing || changingConversation || !input.value.trim() || activeStatuses.has(current.operation?.status)) return;
+    const text = input.value, origin = current.id;
     if (sendRequest && sendRequest.text !== text) throw new Error('The previous send is unconfirmed. Refresh its original conversation before changing the message.');
-    sendRequest ||= { requestId: crypto.randomUUID(), text }; send.disabled = true;
-    await saveDraft();
-    if (voiceSession && voice !== voiceSession) return;
-    if (voiceSession) voiceSession.requestId = sendRequest.requestId;
+    // One send at a time: Send stays inactive until it ends. A failed re-sync keeps no request id.
+    sending = true; render();
     try {
-      current = await post('/conversations/' + current.id + '/send', sendRequest); input.value = ''; sendRequest = null; await saveDraft(); inform(''); render();
-      if (voiceSession && voice !== voiceSession && activeStatuses.has(current.operation?.status)) await stopTurn(voiceSession.requestId);
-    }
-    catch (error) {
-      await poll();
-      if (current.messages.some(item => item.id === sendRequest?.requestId)) { input.value = ''; sendRequest = null; }
-      else if (error.status >= 400 && error.status < 500) sendRequest = null;
+      if (catalogLoaded && current.fast === true && fast.dataset.offered !== 'true') await configure(SEND_TIMEOUT_MESSAGE);
+      if (current.id !== origin) return;
+      sendRequest ||= { requestId: crypto.randomUUID(), text };
       await saveDraft();
-      throw error;
-    }
+      if (voiceSession && voice !== voiceSession) return;
+      if (voiceSession) voiceSession.requestId = sendRequest.requestId;
+      try {
+        current = await post('/conversations/' + current.id + '/send', sendRequest, { timeout: REQUEST_TIMEOUT_MS, message: SEND_TIMEOUT_MESSAGE }); if (input.value === text) input.value = ''; sendRequest = null; await saveDraft(); inform(''); render();
+      }
+      catch (error) {
+        // A silent Mac cannot answer a re-sync either: keep sendRequest for the replay.
+        if (error.code !== 'assistant_request_timeout') await poll();
+        if (current.messages.some(item => item.id === sendRequest?.requestId)) { if (input.value === text) input.value = ''; sendRequest = null; }
+        else if (error.status >= 400 && error.status < 500) sendRequest = null;
+        await saveDraft();
+        throw error;
+      }
+      // Voice closed during the send: stop the turn it started. Outside the send's catch: the message itself was sent.
+      if (voiceSession && voice !== voiceSession && activeStatuses.has(current.operation?.status)) await stopTurn(voiceSession.requestId, STOP_TIMEOUT_MESSAGE);
+    } finally { sending = false; render(); }
   }
-  async function stopTurn(operationId = current.operation?.id) {
-    const id = current.id, result = await post('/conversations/' + id + '/stop', { operationId });
+  // Only the stop after a closed Voice has a timeout; the Stop button waits as before.
+  async function stopTurn(operationId = current.operation?.id, timeoutMessage = '') {
+    const id = current.id, result = await post('/conversations/' + id + '/stop', { operationId }, timeoutMessage ? { timeout: REQUEST_TIMEOUT_MS, message: timeoutMessage } : {});
     if (id === current.id && current.operation?.id === operationId) { current = result; render(); }
   }
   async function acquireAudio(takeover = false, generation = audioGeneration) {

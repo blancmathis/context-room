@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { codexToolContent } from './assistant_observations.mjs';
@@ -7,6 +8,10 @@ import { codexToolContent } from './assistant_observations.mjs';
 const MAX_FRAME = 8 * 1024 * 1024;
 const DISABLED_FEATURES = ['shell_tool', 'apps', 'plugins', 'multi_agent'];
 const fault = (code, message) => Object.assign(new Error(message), { code });
+const MAC_TASK_PAGE = 30, MAC_TURN_PAGE = 5, MAC_TURN_TEXT = 16_000, MAC_TITLE = 240;
+const MAC_SOURCE_KINDS = ['cli', 'vscode', 'appServer', 'exec'];
+const realPath = value => { try { return fs.realpathSync(value); } catch { return path.resolve(String(value)); } };
+const clip = (text, limit) => ({ text: text.length > limit ? text.slice(0, limit) : text, truncated: text.length > limit });
 
 /** An owned stdio process, never the Desktop process or a network app-server. */
 export class CodexStdio extends EventEmitter {
@@ -133,7 +138,8 @@ export async function createCodexProvider({ cwd, stateRoot, launch, maxResidentT
       || effective.web_search !== 'disabled') throw fault('codex_scope_unavailable', 'The local Codex configuration cannot provide the restricted Context Room tools.');
     const listed = await timed('modelCatalogMs', () => rpc.request('model/list', { limit: 100 }));
     const models = (listed.data || []).map(item => ({ id: item.id, name: item.displayName || item.id,
-      efforts: (item.supportedReasoningEfforts || []).map(value => value.reasoningEffort), defaultEffort: item.defaultReasoningEffort }));
+      efforts: (item.supportedReasoningEfforts || []).map(value => value.reasoningEffort), defaultEffort: item.defaultReasoningEffort,
+      fast: (item.serviceTiers || []).some(tier => tier?.id === 'priority') }));
     const provider = new CodexProvider(rpc, models, maxResidentThreads);
     provider.setupTiming = { version: 1, stages, restartRequired, totalMs: performance.now() - started };
     return provider;
@@ -246,7 +252,7 @@ class CodexProvider {
     }
     return matches[0];
   }
-  async startTurn({ threadId, text, images = [], model, effort, tool, onEvent = () => {} }) {
+  async startTurn({ threadId, text, images = [], model, effort, fast = false, tool, onEvent = () => {} }) {
     const thread = this.threads.get(threadId);
     if (!thread?.users) throw fault('codex_thread_scope', 'Resume the original owned conversation before starting its turn.');
     if (thread.active) throw fault('codex_turn_busy', 'This conversation is already responding.');
@@ -255,10 +261,11 @@ class CodexProvider {
       || images.some(url => typeof url !== 'string' || !/^data:image\/(png|jpeg|webp);base64,/.test(url) || url.length > 4 * 1024 * 1024)) throw fault('codex_input_limit', 'Use bounded text and at most two image previews.');
     const selected = model && this.models.find(item => item.id === model);
     if (model && !selected || selected && effort && !selected.efforts.includes(effort)) throw fault('codex_model_unavailable', 'This model or reasoning effort is unavailable.');
+    if (fast && !selected?.fast) throw fault('codex_fast_unavailable', 'Fast is not offered for this model.');
     const active = { turnId: null, abort: new AbortController(), calls: new Map(), tool, onEvent }; thread.active = active;
     try {
       const result = await this.rpc.request('turn/start', { threadId, input: [{ type: 'text', text }, ...images.map(url => ({ type: 'image', url }))],
-        environments: [], ...(model ? { model } : {}), ...(effort ? { effort } : {}) });
+        environments: [], ...(model ? { model, serviceTier: fast ? 'priority' : null } : {}), ...(effort ? { effort } : {}) });
       const turnId = result.turn?.id;
       if (!turnId || active.turnId && active.turnId !== turnId) throw fault('codex_protocol', 'Codex returned an inconsistent turn identity.');
       active.turnId = turnId;
@@ -289,6 +296,39 @@ class CodexProvider {
     active.abort.abort(); // Stop scoped/progressive mutations before waiting for the model.
     if (active.turnId) await this.rpc.request('turn/interrupt', { threadId, turnId: active.turnId });
     return { stopped: true, turnId: active.turnId };
+  }
+  /** Read-only list of the Mac's Codex tasks whose working folder is exactly one of `roots`. */
+  async listMacTasks({ roots, cursor, search, archived = false }) {
+    const exact = (Array.isArray(roots) ? roots : []).map(realPath);
+    if (!exact.length) throw fault('codex_scope_unavailable', 'Choose a project folder first.');
+    const result = await this.rpc.request('thread/list', { cwd: exact, limit: MAC_TASK_PAGE, sortKey: 'updated_at', sortDirection: 'desc',
+      useStateDbOnly: true, sourceKinds: MAC_SOURCE_KINDS, archived: archived === true,
+      ...(cursor ? { cursor } : {}), ...(search ? { searchTerm: search } : {}) });
+    // The cwd filter is checked again here, and this connection's own threads never appear.
+    const data = (result.data || []).filter(thread => typeof thread?.id === 'string' && !this.threads.has(thread.id) && exact.includes(realPath(thread.cwd)))
+      .map(thread => ({ id: thread.id, title: clip(String(thread.name || thread.preview || '').trim() || 'Untitled task', MAC_TITLE).text,
+        updatedAt: Number(thread.updatedAt) || 0, archived: archived === true }));
+    return { data, nextCursor: typeof result.nextCursor === 'string' && result.nextCursor ? result.nextCursor : null, readOnly: true };
+  }
+  /** A summary of one Mac task, five exchanges at a time. It refuses a task outside `roots`. */
+  async readMacTask({ threadId, roots, cursor }) {
+    const exact = (Array.isArray(roots) ? roots : []).map(realPath);
+    if (this.threads.has(threadId)) throw fault('codex_scope_unavailable', 'This conversation belongs to Context Room, not to the Mac tasks.');
+    const read = await this.rpc.request('thread/read', { threadId, includeTurns: false });
+    const thread = read.thread;
+    if (thread?.id !== threadId || !exact.includes(realPath(thread.cwd))) throw fault('codex_scope_unavailable', 'This task does not belong to this project.');
+    const page = await this.rpc.request('thread/turns/list', { threadId, limit: MAC_TURN_PAGE, sortDirection: 'desc', itemsView: 'summary', ...(cursor ? { cursor } : {}) });
+    const turns = (page.data || []).map(turn => {
+      const user = [], assistant = [];
+      for (const item of turn.items || []) {
+        if (item?.type === 'userMessage') user.push((item.content || []).filter(value => value.type === 'text').map(value => value.text).join(''));
+        if (item?.type === 'agentMessage' && typeof item.text === 'string') assistant.push(item.text);
+      }
+      const you = clip(user.join('\n\n'), MAC_TURN_TEXT), codex = clip(assistant.join('\n\n'), MAC_TURN_TEXT);
+      return { id: String(turn.id), user: you.text, userTruncated: you.truncated, assistant: codex.text, assistantTruncated: codex.truncated, status: String(turn.status || '') };
+    }).reverse();
+    return { id: threadId, title: clip(String(thread.name || thread.preview || '').trim() || 'Untitled task', MAC_TITLE).text, turns,
+      nextCursor: typeof page.nextCursor === 'string' && page.nextCursor ? page.nextCursor : null, readOnly: true };
   }
   async close() { for (const thread of this.threads.values()) thread.active?.abort.abort(); await this.rpc.close(); }
 }

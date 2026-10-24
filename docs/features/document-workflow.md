@@ -46,7 +46,7 @@ Open one to edit Markdown or plain text, save its working version, or preview
 HTML visually. Saving never changes the ordinary document or accepted baseline.
 **Submit for review** checks the exact saved workspace revision. A concurrent
 edit or changed scope blocks replacement or submission, keeping the author's
-unsaved text in the editor. Closing with unsaved changes requires saving or
+unsaved text in the editor. The draft editor has Undo, Redo, and Find and replace (Cmd/Ctrl+F; "Exact" matches case and accents); Replace all counts its matches and is one undo step, and typing within one second is one undo step. Closing with unsaved changes requires saving or
 undoing those unsaved edits. The connected owner tablet uses the same interface.
 The integrated editor bounds a proposal to 256 working files and 64 MiB and an
 opened text file to 16 MiB. Larger workspaces remain available to the CLI.
@@ -93,11 +93,12 @@ Keeping the UI closed does not authorize those edits. They are detected on the n
 | HTML/HTM | Sandboxed rendered page; local proposal images and linked CSS are resolved from that exact proposal version | Agent edits source; human reviews the rendering, with no HTML source editor |
 | Mermaid `.mmd` / `.mermaid` | Rendered diagram beside editable source | Edit diagram source; executable directives and external resources are blocked |
 | Editable notebook `.crnb` | Frozen objects, pressure-aware ink and embedded raster assets, with author provenance | Correct the frozen scene, then decide that exact document |
-| PNG, JPEG, WebP | Before/after image | Draw at native resolution, undo/redo strokes, save and accept |
+| PNG, JPEG, WebP | Before/after image; shared viewer with zoom to 32x and remembered "Whole image" | Draw at native resolution, undo/redo strokes, save and accept; "Annotate" opens a notebook with the image as a locked background |
 | GIF, SVG and other recognized image assets | Before/after image where the browser decoder supports it | Review existing bytes; no animation or vector editing claim |
-| PDF, DOCX, XLSX, PPTX | Changed binary resource and size; no integrated renderer promised | Accept/reject exact bytes; office content editing is not implemented |
+| PDF | Page reader (pdf.js, served locally): pages, zoom to 32x, remembered "Whole page" | Read only; "Annotate" opens a new notebook with the current page as a locked background image |
+| DOCX, XLSX, PPTX | Changed binary resource and size; no integrated renderer | Accept/reject exact bytes; office content editing is not implemented |
 
-A Markdown document opens for reading. Reading never writes the file. Prose keeps a column of about 72 characters. A document with two or more sections shows Contents: open beside the text on wide screens, folded above it on narrow ones. Each heading has a GitHub-style anchor (`#second-part`, then `#setup-1` for a repeated heading). Links to `#anchor` and `doc.md#anchor` go to that section. Front matter stays folded. In the Hub, "Referenced by" lists the documents that link to this one. It loads only when opened. Markdown above 120,000 characters or 2,500 lines is still rendered, one section per H1/H2; editing such a file uses plain text.
+A Markdown document opens for reading. Reading never writes the file. Prose keeps a column of about 72 characters. A document with two or more sections shows Contents: open beside the text on wide screens, folded above it on narrow ones. Above 40 entries, Contents gets a search box and pages of 40, opens on the page of the heading you are reading, and handles tens of thousands of headings. An HTML document has a Contents button that lists its headings in a dialog. **Aa** sets the text size (15 to 26) for this device only, keeps your place, and zooms an HTML page as a whole. **Page** buttons (shown by default on touch screens, optional elsewhere through Aa) move one screen at a time without smooth scrolling, for e-ink. Search in the interface ignores case and accents, so `memo` finds `Mémo`. Each heading has a GitHub-style anchor (`#second-part`, then `#setup-1` for a repeated heading). Links to `#anchor` and `doc.md#anchor` go to that section. Front matter stays folded. In the Hub, "Referenced by" lists the documents that link to this one. It loads only when opened. Markdown above 120,000 characters or 2,500 lines is still rendered, one section per H1/H2; editing such a file uses plain text.
 
 The project page shows the Documents map. It follows the links of the accepted `docs/index.md` (or `docs/README.md`, then `README.md`) in order, grouped as Reference, Plans, and History; History stays folded. An accepted document the index does not link is Unfiled. Linking it from the index files it; the file does not move. At the end of a mapped document, Previous and Next follow the index order. Default `docs search` already leaves plans and history out and counts them in `excluded.notCurrent`; a `--status` filter (`target`, `record`, `historical`) brings them back.
 
@@ -110,10 +111,22 @@ HTML resources are intentionally local and non-executable. Nested CSS resource U
 ## Editable notebooks
 
 The notebook action opens a retained working scene in an authorized ordinary
-folder. Drawing, autosave and synchronization do not accept documentation.
+folder. A notebook can also belong to no project: the Hub home's **New
+notebook** opens one at once in the Notebooks space, a registered folder
+(default `~/Documents/Context Room/Carnets`) whose notebooks live under
+`Carnets/`. **Move to project…** on a space notebook, and **Move to
+Notebooks** in a project's notebook chooser, move one working notebook with a
+preview: the destination is copied and verified, then the source scene is
+retired (kept, never deleted). An occupied path or identity, a published
+`.crnb` or a pending submission is refused; nothing is overwritten. The
+undo history does not follow; a device with pending ink sees the notebook as
+moved and keeps that ink as a conflict copy. Drawing, autosave and synchronization do not accept documentation.
 Objects retain stable identity, revision and authorship; selective gesture
 undo preserves independent edits. The original editable file and embedded
-images remain exportable.
+images remain exportable. The notebook menu exports the editable `.crnb`, an
+SVG, a PNG and a one-page PDF of the drawing (a JPEG at the page size, so the
+same drawing gives the same bytes). Nothing is written next to the notebook
+automatically.
 
 Connectors can retain explicit attachment sides and a routed return; text can
 retain explicit line spacing. These properties survive editable-file export,

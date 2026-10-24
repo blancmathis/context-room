@@ -1,7 +1,7 @@
 import { NotebookClient, IndexedNotebookStorage, adoptNotebookCacheAliases, notebookBrowserIdentity, notebookHttpTransport } from '../notebook_client.mjs';
 import { normalizeNotebookDocument, notebookPath, NOTEBOOK_VERSION } from '../notebook_protocol.mjs';
-import { notebookSvg, notebookBounds } from '../notebook_render.mjs';
-import { notebookSceneBounds } from '../notebook_geometry.mjs';
+import { notebookSvg, notebookBounds, notebookPdf } from '../notebook_render.mjs';
+import { notebookSceneBounds, notebookAgentChanges, notebookFollowViewport } from '../notebook_geometry.mjs';
 import { NotebookCanvas } from './notebook-canvas.mjs';
 import { NotebookViewLink } from './notebook-views.mjs';
 import { prepareVoiceAudio } from './assistant.mjs';
@@ -10,13 +10,14 @@ import { notebookViewportPreview } from './assistant-observation.mjs';
 export function notebookElement(tag, text = '', className = '') { const node = document.createElement(tag); node.textContent = text; if (className) node.className = className; return node; }
 export function notebookStyles() { if (document.getElementById('context-room-notebook-style')) return; const link = document.createElement('link'); link.id = 'context-room-notebook-style'; link.rel = 'stylesheet'; link.href = '/assets/ui/notebook.css'; document.head.append(link); }
 import { notebookDownload } from './notebook-download.mjs';
+import { pairingShareNodes } from './pairing-share.mjs';
 export { notebookDownload } from './notebook-download.mjs';
 export function notebookBase64(bytes) { let text = ''; for (let offset = 0; offset < bytes.length; offset += 8192) text += String.fromCharCode(...bytes.subarray(offset, offset + 8192)); return btoa(text); }
 const button = (label, callback, className = '') => { const node = notebookElement('button', label, className); node.type = 'button'; if (callback) node.addEventListener('click', callback); return node; };
 async function metadata(storage, key, update) { for (let n = 0; n < 8; n++) { const state = await storage.read(key); try { await storage.commit(key, state.version, { metadata: update(state.metadata) }); return; } catch (error) { if (error.code !== 'notebook_cache_conflict') throw error; } } throw new Error('The local notebook cache is busy.'); }
 
 /** api and scopeKey must be captured from the exact project/location BEFORE navigation can change. */
-export async function openNotebookEditor({ api, path, resourceId, title, scopeKey, fixedSnapshot = null, reviewKey = '', onCorrection, onSubmitted = () => {}, onClosed = () => {}, onInteraction = () => {}, onConversation, initialImage, beforePresent, offlineCapabilities = null, cacheServerId = '', browserDeviceId = document.querySelector('meta[name="context-room-browser-device"]')?.content || '' } = {}) {
+export async function openNotebookEditor({ api, path, resourceId, title, scopeKey, fixedSnapshot = null, reviewKey = '', onCorrection, onSubmitted = () => {}, onClosed = () => {}, onInteraction = () => {}, onConversation, initialImage, initialImageBackground = false, createOnly = false, newId, beforePresent, offlineCapabilities = null, cacheServerId = '', browserDeviceId = document.querySelector('meta[name="context-room-browser-device"]')?.content || '' } = {}) {
   notebookStyles(); if (path) notebookPath(path);
   const storage = new IndexedNotebookStorage(), browserId = await notebookBrowserIdentity(storage);
   const request = (url, options = {}) => api(url, { ...options, headers: { ...options.headers, 'x-context-room-notebook-client': browserId } });
@@ -46,7 +47,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     const document = normalizeNotebookDocument(fixedSnapshot);
     snapshot = { protocolVersion: NOTEBOOK_VERSION, resourceId: document.id, document, locator: { path, revision: reviewKey }, sequence: 0, revision: document.revision, tombstones: {}, accepted: false };
   } else if (!offlineError) {
-    try { snapshot = resourceId ? await transport.scene(resourceId) : await transport.open({ protocolVersion: NOTEBOOK_VERSION, id: cached?.snapshot.resourceId || crypto.randomUUID(), path, title: title || path.split('/').pop().replace(/\.crnb$/i, '') }); }
+    try { snapshot = resourceId ? await transport.scene(resourceId) : await transport.open({ protocolVersion: NOTEBOOK_VERSION, id: cached?.snapshot.resourceId || newId || crypto.randomUUID(), path, title: title || path.split('/').pop().replace(/\.crnb$/i, ''), ...(createOnly ? { createOnly: true } : {}) }); }
     catch (error) { offlineError = error; }
   }
   if (!snapshot && cached) snapshot = cached.snapshot;
@@ -86,7 +87,9 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     catch (error) { failedLocalWork.push({ ...retained, error: error.message }); throw error; }
   };
   client = new NotebookClient({ storage, transport, scope, actor, onChange: render });
-  const interact = () => { viewLink?.interaction(); onInteraction({ resourceId, path }); };
+  let followButton = null, followNote = null, followPrevious = null;
+  const stopFollowing = () => { if (followButton?.getAttribute('aria-pressed') !== 'true') return; followButton.setAttribute('aria-pressed', 'false'); followNote.textContent = 'You took back the view.'; };
+  const interact = event => { if (!event?.target?.closest?.('[data-follow-agent]')) stopFollowing(); viewLink?.interaction(); onInteraction({ resourceId, path }); };
   surface = new NotebookCanvas(canvas, { enqueue, onSelection: () => scheduleObjects(), onText: at => run(editText(at)), onInteraction: interact, onRendered: () => viewLink?.rendered(),
     onView: viewport => { zoomLabel.textContent = Math.round(viewport.scale * 100) + '%'; run(client.saveView(viewport)); }, onError: fail,
     onSaving: count => { saving = count; renderStatus(); } });
@@ -96,7 +99,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   viewLink = new NotebookViewLink({ request, surface,
     target: projectId => view && !view.offline && !authBlocked ? { projectId, resourceId, path: view.locator.path, locationRevision: view.locator.revision } : null,
     busy: () => Boolean(surface.gesture || textForm || saving || !view || view.offline || view.pending),
-    changed: state => { viewState.textContent = state.text; viewState.hidden = !state.text; stopView.hidden = state.mode === 'independent'; dialog.dataset.viewMode = state.mode; } });
+    changed: state => { if (state.mode === 'follow') stopFollowing(); if (followButton) followButton.disabled = state.mode === 'follow'; viewState.textContent = state.text; viewState.hidden = !state.text; stopView.hidden = state.mode === 'independent'; dialog.dataset.viewMode = state.mode; } });
   for (const node of [header, tools, actions, inspector]) {
     node.addEventListener('pointerdown', interact, { signal: cleanup.signal }); node.addEventListener('keydown', interact, { signal: cleanup.signal });
   }
@@ -124,8 +127,13 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     if (globalThis.ContextRoomNativeOwner) run((async () => { const [file] = await ContextRoomNativeOwner.chooseImages(); if (file) await addImage(file); })());
     else imageInput.click();
   }));
-  const exportFormat = document.createElement('select'); exportFormat.setAttribute('aria-label', 'Notebook export format'); for (const [value, label] of [['crnb', 'Editable notebook'], ['svg', 'SVG drawing'], ['png', 'PNG preview']]) { const option = document.createElement('option'); option.value = value; option.textContent = label; exportFormat.append(option); }
+  const exportFormat = document.createElement('select'); exportFormat.setAttribute('aria-label', 'Notebook export format'); for (const [value, label] of [['crnb', 'Editable notebook'], ['svg', 'SVG drawing'], ['png', 'PNG preview'], ['pdf', 'PDF drawing']]) { const option = document.createElement('option'); option.value = value; option.textContent = label; exportFormat.append(option); }
   actions.append(exportFormat, button('Export', () => run(exportDrawing(exportFormat.value))), button('Recover local work', () => run(exportRecovery())));
+  if (!reviewKey) {
+    followButton = button('Follow agent', () => { const on = followButton.getAttribute('aria-pressed') !== 'true'; followButton.setAttribute('aria-pressed', String(on)); followNote.textContent = on ? 'Following the agent.' : ''; });
+    followButton.setAttribute('aria-pressed', 'false'); followButton.dataset.followAgent = ''; followButton.disabled = viewLink.mode === 'follow';
+    followNote = notebookElement('p', '', 'notebook-follow-state'); followNote.setAttribute('aria-live', 'polite'); statusRow.append(followNote); actions.append(followButton);
+  }
   if (!reviewKey && capabilities.reviewAuthority !== 'unavailable') actions.append(button('Connect tablet', () => run(connectTablet())));
   const eink = button('E-ink contrast', () => { dialog.classList.toggle('notebook-eink'); eink.setAttribute('aria-pressed', String(dialog.classList.contains('notebook-eink'))); run(client.change(state => ({ metadata: { ...state.metadata, eink: dialog.classList.contains('notebook-eink') } }))); }); eink.setAttribute('aria-pressed', 'false'); actions.append(eink);
   const fingerLabel = notebookElement('label', 'Finger draws'), finger = document.createElement('input'); finger.type = 'checkbox'; finger.addEventListener('change', () => surface.fingerInk = finger.checked); fingerLabel.prepend(finger); actions.append(fingerLabel);
@@ -168,8 +176,10 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
       });
       } catch (error) { if (voiceActivation?.context.state !== 'closed') await voiceActivation?.context.close(); throw error; }
     };
-    actions.append(button('Ask about selection', () => run(converse('text'))), button('Dictate about notebook', () => run(converse('dictate'))),
-      button('Dictate text', () => run(converse('dictate', true))), button('Voice', () => run(converse('voice'))));
+    // Talking to the agent keeps Follow agent on; dictating text into the notebook is a human edit and stops it.
+    const ask = button('Ask about selection', () => run(converse('text'))), dictateNotebook = button('Dictate about notebook', () => run(converse('dictate'))), voice = button('Voice', () => run(converse('voice')));
+    ask.dataset.followAgent = dictateNotebook.dataset.followAgent = voice.dataset.followAgent = '';
+    actions.append(ask, dictateNotebook, button('Dictate text', () => run(converse('dictate', true))), voice);
   }
   const objectTitle = notebookElement('h3', 'Objects'), filter = document.createElement('input'); filter.type = 'search'; filter.placeholder = 'Filter objects'; filter.setAttribute('aria-label', 'Filter notebook objects');
   const selectionText = notebookElement('p', 'Nothing selected'), selectionActions = notebookElement('div', '', 'notebook-selection-actions');
@@ -198,7 +208,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
         ticket = await request('/api/devices/pair', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ paths: [path], label: input.value }) });
         if (dismissed) { await request('/api/devices/cancel-pairing', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pairingId: ticket.pairingId }) }); return; }
         const code = document.createElement('textarea'); code.readOnly = true; code.setAttribute('aria-label', 'One-use tablet pairing code'); code.value = JSON.stringify(ticket);
-        result.replaceChildren(notebookElement('p', 'Paste this code in Context Room on the tablet within two minutes. It verifies this Mac and grants access to this notebook.'), code,
+        result.replaceChildren(notebookElement('p', 'Paste this code in Context Room on the tablet within two minutes. It verifies this Mac and grants access to this notebook.'), code, ...pairingShareNodes(ticket, 'this tablet'),
           button('Copy pairing code', () => navigator.clipboard.writeText(code.value).then(() => { message.textContent = 'Pairing code copied.'; }).catch(() => { code.select(); message.textContent = 'Select and copy the code.'; })));
       } catch (error) { message.textContent = error.message; }
       finally { create.disabled = false; }
@@ -300,6 +310,12 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   }
   async function render(next) {
     if (!next || closed) return; view = next; surface.setDocument(next.document); name.textContent = next.document.title;
+    if (followButton?.getAttribute('aria-pressed') === 'true') {
+      const changed = notebookAgentChanges(followPrevious, next.document), width = canvas.clientWidth, height = canvas.clientHeight;
+      const target = changed && width >= 1 && height >= 1 && notebookFollowViewport({ ...surface.view, width, height }, changed);
+      if (target) surface.frameViewport([-target.x / target.scale, -target.y / target.scale, width / target.scale, height / target.scale]);
+    }
+    followPrevious = next.document;
     renderStatus(); scheduleObjects(); const state = await client.state();
     undo.disabled = !state.metadata.gestureHistory?.undo.length || Boolean(surface.gesture); redo.disabled = !state.metadata.gestureHistory?.redo.length || Boolean(surface.gesture);
     const key = (next.conflicts || []).map(op => op.operationId + ':' + op.error?.code).join('|');
@@ -337,14 +353,17 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
       } finally { add.disabled = false; cancel.disabled = false; input.readOnly = false; }
     })()); });
   }
-  async function addImage(file) {
+  async function addImage(file, { background = false } = {}) {
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 12 * 1024 * 1024) throw new Error('Choose a PNG, JPEG or WebP image no larger than 12 MiB. The original is unchanged.');
     const bitmap = await createImageBitmap(file); const size = { width: bitmap.width, height: bitmap.height }; bitmap.close(); if (size.width * size.height > 16_000_000) throw new Error('This image exceeds the 16 million pixel rendering limit.');
     const bytes = new Uint8Array(await file.arrayBuffer()), digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), assetId = [...digest].map(value => value.toString(16).padStart(2, '0')).join('');
     const asset = { mimeType: file.type, data: notebookBase64(bytes), assetId };
     try { await client.enqueueAsset(asset); } catch (error) { failedLocalWork.push({ asset, error: error.message }); throw error; }
     const id = crypto.randomUUID(), scale = Math.min(1, 800 / size.width, 600 / size.height);
-    await enqueue([{ kind: 'put', id, expectedRevision: 0, object: { id, type: 'image', asset: assetId, x: (40 - surface.view.x) / surface.view.scale, y: (40 - surface.view.y) / surface.view.scale, width: size.width * scale, height: size.height * scale } }], { gestureId: crypto.randomUUID() }); surface.select([id]);
+    // A background keeps its pixel size at (0, 0), locked, and the view fits it; a picked image is a movable 800 x 600 object.
+    const placed = background ? { x: 0, y: 0, width: size.width, height: size.height, locked: true } : { x: (40 - surface.view.x) / surface.view.scale, y: (40 - surface.view.y) / surface.view.scale, width: size.width * scale, height: size.height * scale };
+    await enqueue([{ kind: 'put', id, expectedRevision: 0, object: { id, type: 'image', asset: assetId, ...placed } }], { gestureId: crypto.randomUUID() });
+    if (background) surface.fit(); else surface.select([id]);
   }
   async function exportRecovery() {
     await surface.settle().catch(() => {}); const recovery = await client.exportRecovery();
@@ -357,7 +376,15 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     const svg = notebookSvg(current);
     if (format === 'svg') return notebookDownload(svg, base + '.svg', 'image/svg+xml');
     const image = new Image(), url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
-    try { image.src = url; await image.decode(); const b = notebookBounds(current), scale = Math.min(1, 16384 / b.width, 16384 / b.height, Math.sqrt(16_000_000 / (b.width * b.height))); const output = document.createElement('canvas'); output.width = Math.max(1, Math.ceil(b.width * scale)); output.height = Math.max(1, Math.ceil(b.height * scale)); output.getContext('2d').drawImage(image, 0, 0, output.width, output.height); const blob = await new Promise(resolve => output.toBlob(resolve, 'image/png')); if (!blob) throw new Error('PNG export failed; editable source remains available.'); await notebookDownload(await blob.arrayBuffer(), base + '.png', 'image/png'); }
+    try {
+      image.src = url; await image.decode(); const b = notebookBounds(current), scale = Math.min(1, 16384 / b.width, 16384 / b.height, Math.sqrt(16_000_000 / (b.width * b.height)));
+      const output = document.createElement('canvas'); output.width = Math.max(1, Math.ceil(b.width * scale)); output.height = Math.max(1, Math.ceil(b.height * scale)); output.getContext('2d').drawImage(image, 0, 0, output.width, output.height);
+      const pdf = format === 'pdf', blob = await new Promise(resolve => pdf ? output.toBlob(resolve, 'image/jpeg', .92) : output.toBlob(resolve, 'image/png'));
+      if (!blob) throw new Error((pdf ? 'PDF' : 'PNG') + ' export failed; editable source remains available.');
+      const bytes = await blob.arrayBuffer();
+      if (!pdf) await notebookDownload(bytes, base + '.png', 'image/png');
+      else await notebookDownload(notebookPdf({ jpeg: new Uint8Array(bytes), width: output.width, height: output.height, title: current.title || base }).buffer, base + '.pdf', 'application/pdf');
+    }
     finally { URL.revokeObjectURL(url); }
   }
   async function submitScene() {
@@ -403,7 +430,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     if (saved.metadata.eink) { dialog.classList.add('notebook-eink'); eink.setAttribute('aria-pressed', 'true'); }
     if (saved.metadata.textDraft) await editText(saved.metadata.textDraft);
     renderObjects(); surface.schedule(); canvas.focus();
-    if (initialImage) await addImage(initialImage);
+    if (initialImage) await addImage(initialImage, { background: initialImageBackground });
     timer = setInterval(() => { if (document.visibilityState === 'visible') void sync(); }, 900);
     void sync();
     const editor = { dialog, client, surface, scope, scopeKey, browserDeviceId, path, resourceId, close, releaseView: () => viewLink.release(), busy: () => Boolean(surface.gesture || textForm || saving), binding: () => ({ resourceId, path, revision: view.revision, locationRevision: view.locator.revision, selection: [...surface.selection], working: true }) };
@@ -413,7 +440,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
 }
 
 /** A folder-scoped create/open chooser, not a separate notes library or project catalogue. */
-export async function chooseNotebook({ api, directory = '', scopeKey, ...options }) {
+export async function chooseNotebook({ api, directory = '', scopeKey, onMove, ...options }) {
   notebookStyles(); const dialog = notebookElement('dialog', '', 'notebook-chooser'); dialog.setAttribute('aria-label', 'Notebook in this folder');
   const heading = notebookElement('h2', 'Notebook in this folder'), explanation = notebookElement('p', 'Use an ordinary .crnb file. Working ink stays separate from accepted documentation.');
   const form = document.createElement('form'), label = notebookElement('label', 'Notebook path'), input = document.createElement('input'); input.value = (directory ? directory.replace(/\/$/, '') + '/' : '') + 'Sketch.crnb'; input.required = true; input.setAttribute('aria-label', 'Notebook path'); label.append(input);
@@ -424,6 +451,8 @@ export async function chooseNotebook({ api, directory = '', scopeKey, ...options
   form.addEventListener('submit', event => { event.preventDefault(); open.disabled = true; openNotebookEditor({ api, path: input.value.trim(), scopeKey, ...options }).then(() => dialog.close()).catch(error => { status.textContent = error.message; open.disabled = false; }); });
   try {
     const data = await api('/api/notebooks');
-    for (const item of data.notebooks.filter(item => item.path.split('/').slice(0, -1).join('/') === directory.replace(/\/$/, ''))) { const row = notebookElement('li'); row.append(button(item.path + ' · working scene', () => { input.value = item.path; form.requestSubmit(); })); drafts.append(row); }
+    for (const item of data.notebooks.filter(item => item.path.split('/').slice(0, -1).join('/') === directory.replace(/\/$/, ''))) { const row = notebookElement('li'); row.append(button(item.path + ' · working scene', () => { input.value = item.path; form.requestSubmit(); }));
+      if (onMove) row.append(button('Move to Notebooks', () => onMove(item).then(moved => { if (moved) dialog.close(); }).catch(error => { status.textContent = error.message; })));
+      drafts.append(row); }
   } catch { status.textContent = 'The Mac is unavailable. Previously loaded notebook caches can still be opened by their exact path.'; }
 }

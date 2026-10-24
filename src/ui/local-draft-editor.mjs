@@ -3,6 +3,8 @@ const element = (tag, text = '') => { const node = document.createElement(tag); 
 /** Working text and submission are separate from the existing human review. */
 export async function openLocalDraftEditor({ item, api, onChange }) {
   if (document.querySelector('dialog.local-draft-editor')) return;
+  const tools = await import('/assets/ui/text-tools.mjs');
+  if (document.querySelector('dialog.local-draft-editor')) return;
   const dialog = element('dialog'); dialog.className = 'local-draft-editor'; dialog.setAttribute('aria-label', item.title);
   const style = element('style'); style.textContent = `
     .local-draft-editor { box-sizing:border-box; width:min(920px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); overflow:auto; padding:24px; border:1px solid var(--line,#777); border-radius:12px; background:var(--surface-floating,#252526); color:var(--text,#ddd); }
@@ -16,6 +18,12 @@ export async function openLocalDraftEditor({ item, api, onChange }) {
     .local-draft-editor textarea { display:block; resize:vertical; }
     .local-draft-editor iframe { padding:0; background:white; }
     .local-draft-editor footer { justify-content:flex-end; margin-top:16px; }
+    .local-draft-editor .draft-tools { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px; }
+    .local-draft-editor .find-bar { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-bottom:8px; }
+    .local-draft-editor .find-bar[hidden] { display:none; }
+    .local-draft-editor .find-bar input[type=search],.local-draft-editor .find-bar input[type=text] { min-height:44px; min-width:140px; flex:1; padding:4px 8px; border:1px solid var(--line,#777); border-radius:6px; color:var(--text,#ddd); background:var(--file-bg,#1e1e1e); font:inherit; }
+    .local-draft-editor .find-bar button { min-height:44px; min-width:44px; }
+    .local-draft-editor .find-bar .find-count { font-size:12px; }
     .local-draft-editor [role=status] { min-height:24px; margin-top:12px; overflow-wrap:anywhere; }
   `;
   const header = element('header'), close = element('button', 'Close'); close.type = 'button'; close.className = 'quiet-button';
@@ -27,11 +35,39 @@ export async function openLocalDraftEditor({ item, api, onChange }) {
   footer.append(reset, save, submit);
   dialog.append(style, header, element('p', 'Changes stay in this working draft. Submit when ready for the separate human review.'), nav, body, status, footer);
   let draft, selected, editor, savedText = '', lineEnding = '\n', busy = false, requestId = 0;
+  // Undo for the working text: typing within one second is one step, and the history is bounded by characters.
+  const history = tools.createTextHistory();
+  const undoButton = element('button', 'Undo'), redoButton = element('button', 'Redo'), findButton = element('button', 'Find');
+  for (const button of [undoButton, redoButton, findButton]) { button.type = 'button'; button.className = 'quiet-button'; }
+  let lastValue = '', lastEdit = 0, findBar = null;
+  const setValue = (value, selection) => {
+    if (busy) return;
+    history.push(editor.value);
+    editor.value = value; lastValue = value; lastEdit = 0;
+    if (selection) editor.setSelectionRange(selection.start, selection.end);
+    buttons();
+  };
+  const step = direction => {
+    if (!editor || busy) return;
+    const value = direction === 'redo' ? history.redo(editor.value) : history.undo(editor.value);
+    if (value === null) return;
+    editor.value = value; lastValue = value; lastEdit = 0; buttons(); editor.focus();
+  };
+  const recordInput = () => {
+    const now = Date.now();
+    if (now - lastEdit > 1000) history.push(lastValue);
+    lastEdit = now; lastValue = editor.value; buttons();
+  };
+  const openFind = () => { if (editor && findBar) findBar.open({ caret: editor.selectionStart, selectedText: editor.value.slice(editor.selectionStart, editor.selectionEnd) }); };
+  undoButton.addEventListener('click', () => step('undo'));
+  redoButton.addEventListener('click', () => step('redo'));
+  findButton.addEventListener('click', openFind);
   const dirty = () => Boolean(editor && editor.value !== savedText);
   const url = rel => '/api/docqa/local-draft?' + new URLSearchParams({ proposal: item.id, ...(rel === undefined ? {} : { path: rel }) });
   function buttons() {
     if (editor) editor.readOnly = busy;
     close.disabled = busy; reset.disabled = busy || !dirty(); save.disabled = busy || !dirty();
+    undoButton.disabled = busy || !editor || !history.canUndo; redoButton.disabled = busy || !editor || !history.canRedo; findButton.disabled = busy || !editor;
     submit.disabled = busy || dirty() || !draft?.files.length;
     nav.querySelectorAll('button').forEach(button => { button.disabled = busy || dirty(); });
   }
@@ -41,9 +77,9 @@ export async function openLocalDraftEditor({ item, api, onChange }) {
   dialog.addEventListener('close', () => { requestId++; window.removeEventListener('beforeunload', unloading); dialog.remove(); }, { once: true });
   dialog.addEventListener('cancel', event => { if (!mayClose()) event.preventDefault(); });
   close.addEventListener('click', () => { if (mayClose()) dialog.close(); });
-  reset.addEventListener('click', () => { if (editor && !busy) { editor.value = savedText; status.textContent = 'Saved text restored in the editor.'; buttons(); } });
+  reset.addEventListener('click', () => { if (editor && !busy) { setValue(savedText); status.textContent = 'Saved text restored in the editor. Undo brings your edits back.'; } });
   function render(file) {
-    draft = file; selected = file.path; editor = null; nav.replaceChildren(); body.replaceChildren();
+    draft = file; selected = file.path; editor = null; findBar = null; history.clear(); nav.replaceChildren(); body.replaceChildren();
     for (const entry of file.files) {
       const button = element('button', entry.path); button.type = 'button'; button.className = 'quiet-button';
       button.setAttribute('aria-current', String(entry.path === selected));
@@ -57,7 +93,16 @@ export async function openLocalDraftEditor({ item, api, onChange }) {
         const original = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
         lineEnding = original.includes('\r\n') && !/[\r\n]/.test(original.replace(/\r\n/g, '')) ? '\r\n' : original.includes('\r') && !original.includes('\n') ? '\r' : '\n';
         editor = element('textarea'); editor.value = original; savedText = editor.value; editor.spellcheck = false;
-        editor.setAttribute('aria-label', `Working content: ${selected}`); editor.addEventListener('input', buttons); body.append(editor);
+        editor.setAttribute('aria-label', `Working content: ${selected}`); lastValue = savedText; lastEdit = 0; editor.addEventListener('input', recordInput);
+        editor.addEventListener('keydown', event => {
+          const mod = event.metaKey || event.ctrlKey; const key = event.key.toLowerCase();
+          if (!mod || event.altKey) return;
+          if (key === 'f' && !event.shiftKey) { event.preventDefault(); openFind(); }
+          else if (key === 'z' || (key === 'y' && !event.metaKey)) { event.preventDefault(); step(key === 'y' || event.shiftKey ? 'redo' : 'undo'); }
+        });
+        findBar = tools.createFindBar({ getText: () => editor.value, select: (start, end) => { editor.setSelectionRange(start, end); tools.revealTextareaOffset(editor, start); }, apply: (value, selection) => setValue(value, selection), onClose: () => editor.focus() });
+        const toolRow = element('div'); toolRow.className = 'draft-tools'; toolRow.append(undoButton, redoButton, findButton);
+        body.append(toolRow, findBar.element, editor);
       } catch { body.append(element('p', 'This original uses a different text encoding. Its bytes are retained for review.')); }
     } else if (/\.html?$/i.test(selected)) {
       const frame = element('iframe'); frame.title = `Working preview: ${selected}`; frame.setAttribute('sandbox', '');

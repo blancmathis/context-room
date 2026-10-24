@@ -393,6 +393,14 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .context-hub-home-project-destination { min-height: 32px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--text); cursor: pointer; font-size: 11px; font-weight: 650; }
     .context-hub-home-project-destination:hover { background: var(--surface-card-hover); }
     .context-hub-home-project-destination:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 1px; }
+    .notebook-space-new { min-height: 48px; padding: 8px 18px; border: 1px solid var(--accent); border-radius: 10px; background: var(--accent); color: var(--on-accent, var(--bg)); cursor: pointer; font-size: 14px; font-weight: 750; }
+    .notebook-space-list { list-style: none; margin: 0; padding: 6px; display: grid; gap: 2px; max-height: 320px; overflow-y: auto; }
+    .notebook-space-item { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 10px; }
+    .notebook-space-item:hover { background: var(--surface-card-hover); }
+    .notebook-space-item button { min-height: 44px; padding: 4px 12px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--text); cursor: pointer; font-size: 12px; font-weight: 650; }
+    .notebook-space-item .notebook-space-open { min-width: 0; display: grid; justify-items: start; gap: 2px; border-color: transparent; text-align: left; }
+    .notebook-space-item .notebook-space-open span { color: var(--muted); font-size: 10px; font-weight: 500; }
+    .notebook-space-item .notebook-space-resume { border-color: var(--accent); font-weight: 780; }
     .documents-map { display: grid; gap: 2px; padding: 6px; }
     .docs-map-group > summary { min-height: 40px; display: flex; align-items: center; gap: 8px; padding: 4px 10px; list-style: none; color: var(--muted); cursor: pointer; font-size: 12px; font-weight: 700; }
     .docs-map-group > summary::-webkit-details-marker { display: none; }
@@ -1252,14 +1260,52 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .plain-text-editor, .plain-text-view { margin: 0; white-space: pre; overflow: auto; tab-size: 2; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
     .plain-text-editor { display: block; width: 100%; min-height: 100%; resize: none; border: 0; outline: none; background: var(--file-bg); color: var(--file-fg); padding: 18px 22px; }
     .html-preview-shell { width: 100%; min-height: calc(100vh - 162px); max-height: calc(100vh - 162px); overflow: hidden; background: var(--file-bg); }
+    html[data-reading-size] #docReader.doc-editor, html[data-reading-size] .markdown-editor-shell .doc-editor { font-size: var(--reader-size, 15px); }
+    html[data-reading-size] #docReader.plain-text-view, html[data-reading-size] #docEditor.plain-text-editor { font-size: calc(var(--reader-size, 15px) * 13 / 15); }
+    .doc-toc a[aria-current="location"], .contents-dialog a[aria-current="location"] { font-weight: 700; }
+    .file-actions .file-action[data-editor-undo], .file-actions .file-action[data-editor-redo], .file-actions .file-action[data-editor-find], .file-actions .file-action[data-reading-settings], .file-actions .file-action[data-html-contents] { min-height: 44px; min-width: 44px; }
+    .doc-toc-search { width: 100%; min-height: 44px; margin: 4px 0; padding: 4px 8px; border: 1px solid var(--file-line); border-radius: 6px; background: var(--file-bg); color: var(--file-fg); font: inherit; }
+    .doc-toc-pager { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
+    .doc-toc-pager button, .reading-dialog button, .contents-dialog button, .reader-page-bar button, .find-bar button { min-height: 44px; min-width: 44px; padding: 4px 12px; border: 1px solid var(--file-line); border-radius: 6px; background: var(--file-panel-bg); color: var(--file-fg); font: inherit; cursor: pointer; }
+    .doc-toc-pager button:disabled, .find-bar button:disabled { opacity: 0.45; cursor: default; }
+    .reading-dialog, .contents-dialog { max-width: min(520px, 92vw); max-height: 80vh; overflow: auto; border: 1px solid var(--file-line); border-radius: 10px; background: var(--file-panel-bg); color: var(--file-fg); }
+    .reading-dialog h2, .contents-dialog h2 { margin: 0 0 8px; font-size: 16px; }
+    .reading-sizes { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+    .reading-sizes button[aria-pressed="true"] { border-width: 2px; font-weight: 700; }
+    .reading-page-option { display: flex; align-items: center; gap: 8px; min-height: 44px; }
+    .reading-note { margin: 6px 0; color: var(--file-muted); font-size: 12px; }
+    .contents-dialog ol { display: grid; gap: 1px; margin: 4px 0 0; padding: 0; list-style: none; }
+    .contents-dialog a { display: flex; align-items: center; min-height: 44px; box-sizing: border-box; padding: 8px; color: var(--file-fg); text-decoration: none; }
+    .contents-dialog .doc-toc-l2 a { padding-left: 20px; } .contents-dialog .doc-toc-l3 a, .contents-dialog .doc-toc-l4 a, .contents-dialog .doc-toc-l5 a, .contents-dialog .doc-toc-l6 a { padding-left: 32px; color: var(--file-muted); }
+    .reader-page-bar { position: sticky; bottom: 0; display: flex; justify-content: space-between; gap: 8px; padding: 6px 12px; background: var(--file-panel-bg); border-top: 1px solid var(--file-line); }
+    .reader-page-bar button { flex: 1; min-height: 56px; font-size: 16px; }
+    .find-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--file-line); background: var(--file-panel-bg); }
+    .find-bar[hidden] { display: none; }
+    .find-bar input[type="search"], .find-bar input[type="text"] { min-height: 44px; min-width: 140px; flex: 1; padding: 4px 8px; border: 1px solid var(--file-line); border-radius: 6px; background: var(--file-bg); color: var(--file-fg); font: inherit; }
+    .find-bar .find-exact { display: flex; align-items: center; gap: 4px; min-height: 44px; font-size: 12px; }
+    .find-bar .find-count { color: var(--file-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
     .html-preview-frame { display: block; width: 100%; height: calc(100vh - 162px); min-height: 420px; border: 0; background: var(--file-bg); }
-    .image-preview-shell { min-height: calc(100vh - 162px); display: flex; flex-direction: column; background: var(--file-bg); color: var(--file-fg); }
-    .image-preview-toolbar { min-height: 42px; padding: 7px 10px; border-bottom: 1px solid var(--file-line); display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--file-muted); font: 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; }
-    .image-preview-toolbar button { min-height: 28px; padding: 4px 9px; border: 1px solid var(--file-line); border-radius: 7px; background: var(--file-header-bg); color: var(--file-fg); font: 700 11px/1 ui-sans-serif, system-ui, sans-serif; }
-    .image-preview-stage { flex: 1 1 auto; min-height: 0; display: grid; place-items: center; overflow: auto; padding: 24px; background: color-mix(in srgb, var(--file-bg) 95%, var(--file-fg) 5%); }
-    .image-preview-stage img { display: block; max-width: 100%; max-height: calc(100vh - 260px); width: auto; height: auto; object-fit: contain; }
-    .image-preview-stage.actual-size { place-items: start; }
-    .image-preview-stage.actual-size img { max-width: none; max-height: none; }
+    .doc-viewer { height: calc(100vh - 162px); min-height: 360px; display: flex; flex-direction: column; background: var(--file-bg); color: var(--file-fg); }
+    .dv-root { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; outline-offset: -2px; }
+    .dv-toolbar { padding: 6px 10px; border-bottom: 1px solid var(--file-line); display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; color: var(--file-muted); font: 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .dv-info { flex: 1 1 140px; min-width: 0; overflow-wrap: anywhere; }
+    .dv-button { min-width: 48px; min-height: 48px; padding: 6px 12px; border: 1px solid var(--file-line); border-radius: 7px; background: var(--file-header-bg); color: var(--file-fg); font: 700 13px/1 ui-sans-serif, system-ui, sans-serif; }
+    .dv-button:disabled { opacity: 0.45; }
+    .dv-primary { border-color: var(--file-fg); }
+    .dv-level { min-width: 52px; text-align: center; color: var(--file-fg); font: 700 13px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .dv-stage { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; touch-action: pan-x pan-y; background: color-mix(in srgb, var(--file-bg) 95%, var(--file-fg) 5%); }
+    .dv-content { margin: 0 auto; }
+    .dv-content img, .dv-canvas { display: block; width: 100%; height: 100%; user-select: none; -webkit-user-drag: none; }
+    .dv-canvas { background: #fff; }
+    .dv-pages { padding: 6px 10px; border-top: 1px solid var(--file-line); display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; color: var(--file-fg); font: 700 13px/1 ui-sans-serif, system-ui, sans-serif; }
+    .dv-page-input, .dv-annotate-input { min-height: 48px; padding: 4px 8px; border: 1px solid var(--file-line); border-radius: 7px; background: var(--file-bg); color: var(--file-fg); font: 700 14px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .dv-root .dv-page-input, .dv-root .dv-annotate-input { height: 48px; min-height: 48px; box-sizing: border-box; }
+    .dv-page-input { width: 4em; text-align: center; }
+    .dv-page-message, .dv-annotate-status { min-width: 0; color: var(--file-muted); font: 12px/1.3 ui-sans-serif, system-ui, sans-serif; }
+    .dv-annotate { padding: 8px 10px; border-bottom: 1px solid var(--file-line); display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font: 12px/1.3 ui-sans-serif, system-ui, sans-serif; }
+    .dv-annotate[hidden] { display: none; }
+    .dv-annotate-label { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 4px; color: var(--file-muted); }
+    .dv-error { margin: 24px auto; max-width: 420px; padding: 18px; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; border: 1px solid var(--file-line); border-radius: 8px; }
     .markdown-editor-input::selection { background: transparent; color: transparent !important; -webkit-text-fill-color: transparent !important; }
     .markdown-editor-caret { position: absolute; z-index: 4; width: 2px; border-radius: 1px; background: var(--file-h1); pointer-events: none; animation: markdownCaretBlink 1s steps(1, end) infinite; }
     @keyframes markdownCaretBlink { 0%, 48% { opacity: 1; } 49%, 100% { opacity: 0; } }
@@ -2053,6 +2099,11 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .creation-dialog-field > span:first-child { color: var(--text-soft); font-weight: 720; }
     .creation-dialog-field input, .creation-dialog-field select, .creation-dialog-field textarea { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); }
     .creation-dialog-field textarea { display: block; min-height: 92px; resize: vertical; }
+    .creation-dialog-checks { display: grid; gap: 4px; max-height: 40vh; overflow: auto; }
+    .creation-dialog-check { display: flex; align-items: flex-start; gap: 10px; min-height: 44px; padding: 6px 4px; color: var(--text); }
+    .creation-dialog-check input { width: 24px; height: 24px; flex: none; }
+    .creation-dialog-check small { display: block; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .creation-dialog-check.is-off { color: var(--muted); }
     .creation-dialog-note { color: var(--muted); font-size: 10px; line-height: 1.45; }
     .creation-dialog-status { min-height: 16px; color: var(--danger-fg); font-size: 11px; }
     .shared-proposal-change-summary { color: var(--muted); font-size: 11px; }
@@ -2111,7 +2162,8 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .shared-proposal-workspace-close { grid-column: 2; grid-row: 1; }
       #sharedProposalWorkspaceRefresh { grid-column: 1; grid-row: 2; justify-self: start; }
       #contextHubCreateProject { grid-column: 2; grid-row: 2; }
-      #contextHubCreateSharedProject { grid-column: 1 / -1; grid-row: 3; }
+      #contextHubCreateSharedProject { grid-column: 1; grid-row: 3; justify-self: start; }
+      #contextHubImportCodex { grid-column: 2; grid-row: 3; }
       .shared-proposal-search { grid-column: 1 / -1; grid-row: 4; }
       .context-hub-source-filter { grid-column: 1; grid-row: 5; }
       #sharedProposalProjectFilter { grid-column: 2; grid-row: 5; }
@@ -2237,7 +2289,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .file-action:hover { transform: none; }
     .diff-code, .doc-content, .doc-editor { padding: 18px 22px; }
     .diff-panel, .file-panel { height: 100%; min-height: 0; display: flex; flex-direction: column; }
-    .diff-code, .doc-content, .doc-editor, .external-review-doc, .markdown-editor-shell, .image-preview-shell { flex: 1 1 auto; min-height: 0; max-height: none; }
+    .diff-code, .doc-content, .doc-editor, .external-review-doc, .markdown-editor-shell, .doc-viewer { flex: 1 1 auto; min-height: 0; max-height: none; }
     .doc-content { max-width: 1040px; margin: 0 auto; font-size: 14px; line-height: 1.68; }
     .file-panel .doc-editor.markdown-view, .file-panel .markdown-editor-input { padding-left: 36px; }
     .file-panel .doc-editor.markdown-view .markdown-line { position: relative; }
@@ -3301,6 +3353,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     html[data-context-room-runtime-profile="hosted-hub"] #contextHealthPanel,
     html[data-context-room-runtime-profile="hosted-hub"] #codexPromptCenter,
     html[data-context-room-runtime-profile="hosted-hub"] #contextHubCreateProject,
+    html[data-context-room-runtime-profile="hosted-hub"] #contextHubImportCodex,
     html[data-context-room-runtime-profile="hosted-hub"] #contextHubManageProjects,
     html[data-context-room-runtime-profile="hosted-hub"] #sharedSkillsWizard,
     html[data-context-room-runtime-profile="hosted-hub"] #codexReferencePopover,
@@ -3362,6 +3415,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     html[data-context-room-runtime-profile="hosted-review"] #contextHealthPanel,
     html[data-context-room-runtime-profile="hosted-review"] #codexPromptCenter,
     html[data-context-room-runtime-profile="hosted-review"] #contextHubCreateProject,
+    html[data-context-room-runtime-profile="hosted-review"] #contextHubImportCodex,
     html[data-context-room-runtime-profile="hosted-review"] #contextHubManageProjects,
     html[data-context-room-runtime-profile="hosted-review"] #contextHubCreateSharedDocument,
     html[data-context-room-runtime-profile="hosted-review"] #contextHubCreateSharedProject,
@@ -3612,6 +3666,16 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       <section class="editor-shell">
         <div id="home" class="docqa-home workspace-page" hidden>
           <div class="docqa-grid">
+            <section id="notebookSpacePanel" class="docqa-panel notebook-space-panel" aria-labelledby="notebookSpaceHeading" hidden>
+              <header>
+                <div>
+                  <h2 id="notebookSpaceHeading">Notebooks</h2>
+                  <div id="notebookSpaceSummary" class="muted"></div>
+                </div>
+                <button id="notebookSpaceNew" class="notebook-space-new" type="button" data-notebook-space-new>New notebook</button>
+              </header>
+              <ul id="notebookSpaceList" class="notebook-space-list" aria-label="Notebooks"></ul>
+            </section>
             <section id="contextHubProjectsPanel" class="docqa-panel context-hub-projects-panel" aria-labelledby="contextHubProjectsHeading" hidden>
               <header>
                 <div>
@@ -3816,6 +3880,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       </button>
       <button id="contextHubCreateSharedProject" class="dock-button" type="button" hidden>New shared project</button>
       <button id="contextHubCreateProject" class="dock-button primary" type="button" hidden>New project</button>
+      <button id="contextHubImportCodex" class="dock-button" type="button" hidden>Import from Codex</button>
       <button id="sharedProposalWorkspaceRefresh" class="dock-button" type="button">Refresh</button>
       <button id="sharedProposalWorkspaceClose" class="dock-button shared-proposal-workspace-close" type="button" aria-label="Close this secondary view">Close</button>
     </header>
@@ -3962,7 +4027,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 		state.workspaceSessionId = "";
 		state.workspaceLabel = "";
 		state.selectedVisualAsset = null;
-		state.imagePreviewActualSize = false;
 		state.explorerReturnFocus = null;
 		state.sharedContext = null;
 		state.sharedContextBusy = false;
@@ -4537,14 +4601,21 @@ async function loadContextRoomAssistantUi() {
   return contextRoomAssistantUi ||= await import("/assets/ui/assistant.mjs");
 }
 
-async function openContextRoomNotebook(filePath, { directory = "", projectId = "", resourceId, beforePresent } = {}) {
+async function openContextRoomNotebook(filePath, { directory = "", projectId = "", resourceId, beforePresent, title, initialImage, initialImageBackground, createOnly, newId, onClosed } = {}) {
   const captured = captureNotebookApi(projectId);
   const notebook = await import("/assets/ui/notebook-editor.mjs");
-  const options = { ...captured, resourceId, beforePresent,
+  // A project's chooser offers Move to Notebooks once the space exists.
+  const sourceId = projectId || (IS_GLOBAL_CONTEXT_ROOM ? state.activeProjectLocationId || "" : "");
+  const space = IS_GLOBAL_CONTEXT_ROOM && !IS_HOSTED_HUB ? contextHubNotebookSpace() : null;
+  const source = sourceId ? (state.contextHub?.projects || []).find((project) => project.id === sourceId) : null;
+  const onMove = space && source && source.id !== space.id
+    ? (item) => moveNotebookBetweenPlaces(item, { id: source.id, title: source.title || source.id }, [{ id: space.id, title: "Notebooks", space: true }])
+    : undefined;
+  const options = { ...captured, resourceId, beforePresent, title, initialImage, initialImageBackground, createOnly, newId, onMove,
     onConversation: async (source, display) => { const assistant = await loadContextRoomAssistantUi(); return assistant.openConversation({ ...captured, source, ...display }); },
-    onClosed: () => contextRoomAssistantUi?.dockConversation(),
+    onClosed: () => { contextRoomAssistantUi?.dockConversation(); onClosed?.(); },
     onSubmitted: async () => { setStatus("Notebook submitted for human review. No file accepted."); if (typeof refreshDocQa === "function") await refreshDocQa(); } };
-  if (filePath) return notebook.openNotebookEditor({ ...options, path: filePath });
+  if (filePath || resourceId) return notebook.openNotebookEditor({ ...options, path: filePath || undefined });
   return notebook.chooseNotebook({ ...options, directory });
 }
 
@@ -4968,10 +5039,10 @@ function sharedProposalLabel(item) {
 }
 
 function sharedProposalSearchText(item) {
-  return [item.type, item.projectId, item.projectTitle, item.title, item.description, item.branch, item.repositoryName, item.repositoryId, item.repository, item.author?.name, item.author?.email, item.sessionId, item.head, item.root, ...(item.files || [])]
+  return searchFold([item.type, item.projectId, item.projectTitle, item.title, item.description, item.branch, item.repositoryName, item.repositoryId, item.repository, item.author?.name, item.author?.email, item.sessionId, item.head, item.root, ...(item.files || [])]
     .filter(Boolean)
     .join(" ")
-    .toLowerCase();
+    );
 }
 
 function contextHubSharedProposalBelongsInQueue(item = {}) {
@@ -5135,6 +5206,7 @@ function contextHubItemMatchesProject(item, project) {
 }
 
 function resolveContextHubProjectSelection(projects = [], requestedId = "", { aliases = true } = {}) {
+  projects = projects.filter((project) => project?.space !== "notebooks");
   const selector = String(requestedId || "").trim();
   if (!selector) return { project: null, worktree: null, match: "" };
   const normalized = selector.toLowerCase();
@@ -5907,7 +5979,7 @@ function setSharedProposalWorkspaceOpen(open) {
     const hubQuery = new URLSearchParams(window.location.search);
     const requestedProjectId = hubQuery.get("project") || "";
     if (!wasOpen && !state.sharedProposalSearch && hubQuery.get("q")) state.sharedProposalSearch = hubQuery.get("q");
-    const requestedProject = (state.contextHub?.projects || []).find((project) => project.id === requestedProjectId);
+    const requestedProject = (state.contextHub?.projects || []).find((project) => project.id === requestedProjectId && !contextHubIsNotebookSpace(project));
     if (!wasOpen && requestedProject && !state.sharedProposalProject) state.sharedProposalProject = requestedProject.projectKey;
     const items = contextHubVisibleItems();
     const selectedFromDock = el("sharedProposalSelect")?.value || "";
@@ -6130,7 +6202,7 @@ function contextHubCardSearchText(card) {
 }
 
 function contextHubProjectSearchText(project) {
-  return [
+  return searchFold([
     project?.id,
     project?.projectKey,
     project?.title,
@@ -6148,7 +6220,7 @@ function contextHubProjectSearchText(project) {
       section.description,
       ...(section.cards || []).map(contextHubCardSearchText),
     ]),
-  ].filter(Boolean).join(" ").toLowerCase();
+  ].filter(Boolean).join(" "));
 }
 
 function contextHubLocalReviewsConfirmed(project) {
@@ -6246,8 +6318,10 @@ function contextHubProjectPickerLocation(project) {
   return repository ? sharedLocation + " · " + repository : sharedLocation;
 }
 
+// The Notebooks space is not a code project: it never appears where projects are picked, ordered or opened.
+const contextHubIsNotebookSpace = (project) => project?.space === "notebooks";
 function contextHubPrioritizedProjects(projects = []) {
-  return [...projects].sort((left, right) => {
+  return projects.filter((project) => !contextHubIsNotebookSpace(project)).sort((left, right) => {
     const leftRanked = Number.isInteger(left?.priorityRank);
     const rightRanked = Number.isInteger(right?.priorityRank);
     if (leftRanked !== rightRanked) return leftRanked ? -1 : 1;
@@ -6494,8 +6568,8 @@ function renderExplorerRelated(project, filePath) {
   if (!graph) return '<div class="global-project-folder-state">Loading related files…</div>';
   const projection = explorerRelatedProjection(graph, filePath);
   if (!projection.center) return '<div class="global-project-folder-state">This document has no graph entry in the selected truth layers.</div>';
-  const needle = state.globalProjectSearch.trim().toLowerCase();
-  const matches = (item) => !needle || [item.node.label, item.node.path, item.edge.type].filter(Boolean).join(" ").toLowerCase().includes(needle);
+  const needle = searchFold(state.globalProjectSearch.trim());
+  const matches = (item) => !needle || searchFold([item.node.label, item.node.path, item.edge.type].filter(Boolean).join(" ")).includes(needle);
   const dependsOn = projection.dependsOn.filter(matches);
   const dependedOnBy = projection.dependedOnBy.filter(matches);
   const references = projection.references.filter(matches);
@@ -6768,7 +6842,7 @@ function renderComputerExplorerNode(snapshot, depth = 0, needle = "") {
       const expanded = state.computerExplorerExpandedFolders.has(entry.path);
       const child = state.computerExplorerFolders.get(entry.path);
       const childTree = expanded && child ? renderComputerExplorerNode(child, depth + 1, needle) : { markup: "", visibleCount: 0 };
-      const selfMatches = !needle || entry.name.toLowerCase().includes(needle);
+      const selfMatches = !needle || searchFold(entry.name).includes(needle);
       if (needle && !selfMatches && !childTree.visibleCount) return "";
       visibleCount += 1 + childTree.visibleCount;
       const loading = state.computerExplorerLoadingFolders.has(entry.path);
@@ -6779,7 +6853,7 @@ function renderComputerExplorerNode(snapshot, depth = 0, needle = "") {
         + (error ? '<div class="computer-explorer-loading" style="padding-left:' + (28 + depth * 12) + 'px">' + escapeHtml(error) + '</div>' : '')
         + (expanded ? childTree.markup : "");
     }
-    if (needle && !entry.name.toLowerCase().includes(needle)) return "";
+    if (needle && !searchFold(entry.name).includes(needle)) return "";
     visibleCount += 1;
     return '<div class="global-project-tree-entry" data-kind="file" data-computer-explorer-file="' + escapeHtml(entry.path) + '" title="Files outside a project are browse-only" style="padding-left:' + (25 + depth * 12) + 'px"><span aria-hidden="true">◇</span><span class="global-project-tree-name">' + escapeHtml(entry.name) + '</span><span class="global-project-tree-meta">' + escapeHtml(formatExplorerBytes(entry.bytes || 0)) + '</span></div>';
   }).join("");
@@ -6793,7 +6867,7 @@ function renderComputerExplorer() {
     if (error) return '<div class="global-project-folder-state">' + escapeHtml(error) + '</div>';
     return '<div class="global-project-folder-state">Loading computer folders…</div>';
   }
-  const needle = state.globalProjectSearch.trim().toLowerCase();
+  const needle = searchFold(state.globalProjectSearch.trim());
   const tree = renderComputerExplorerNode(snapshot, 0, needle);
   return '<div class="computer-explorer-tree">' + (tree.markup || '<div class="global-project-folder-state">No loaded items match this search.</div>') + '</div>';
 }
@@ -7189,7 +7263,9 @@ function renderContextHubHomeProjects() {
     list.innerHTML = '<div class="global-project-explorer-empty">Loading projects…</div>';
     return;
   }
-  const projects = contextHubPrioritizedProjects(state.contextHub.projects || []);
+  renderNotebookSpace();
+  // The Notebooks space has its own section above; it is not a project.
+  const projects = contextHubPrioritizedProjects((state.contextHub.projects || []).filter((project) => project.space !== "notebooks"));
   const { inspected, total } = contextHubLocalCoverage(projects);
   coverage.textContent = projects.length + " project" + (projects.length === 1 ? "" : "s")
     + (total ? " · " + inspected + "/" + total + " local inspected" : "");
@@ -7214,6 +7290,105 @@ function renderContextHubHomeProjects() {
       + '<span class="context-hub-home-project-destinations">' + destination("context", "Context") + destination("review", "To review") + destination("documents", "Documents") + '</span>'
       + '</li>';
   }).join("");
+}
+
+// Notebooks space: notebooks for an idea that belongs to no project yet. It is one
+// registered root marked space "notebooks", created by the first New notebook.
+let notebookSpaceItems = { spaceId: "", hub: null, items: null, error: "" };
+
+function contextHubNotebookSpace() {
+  return (state.contextHub?.projects || []).find((project) => project.space === "notebooks") || null;
+}
+
+async function loadNotebookSpaceItems(space) {
+  const hub = state.contextHub;
+  notebookSpaceItems = { spaceId: space.id, hub, items: notebookSpaceItems.spaceId === space.id ? notebookSpaceItems.items : null, error: "" };
+  try {
+    const data = await captureNotebookApi(space.id).api("/api/notebooks");
+    if (notebookSpaceItems.hub !== hub) return;
+    notebookSpaceItems.items = [...(data.notebooks || [])].sort((left, right) => String(right.changedAt || "").localeCompare(String(left.changedAt || "")));
+  } catch (error) {
+    if (notebookSpaceItems.hub === hub) notebookSpaceItems.error = error.message;
+  }
+  renderNotebookSpace();
+}
+
+function reloadNotebookSpace() {
+  notebookSpaceItems.hub = null;
+  renderNotebookSpace();
+}
+
+function renderNotebookSpace() {
+  const panel = el("notebookSpacePanel");
+  const list = el("notebookSpaceList");
+  const summary = el("notebookSpaceSummary");
+  if (!panel || !list || !summary) return;
+  panel.hidden = !IS_GLOBAL_CONTEXT_ROOM || IS_HOSTED_HUB || !state.contextHub;
+  if (panel.hidden) return;
+  const space = contextHubNotebookSpace();
+  if (space?.available !== false && space && (notebookSpaceItems.spaceId !== space.id || notebookSpaceItems.hub !== state.contextHub)) {
+    void loadNotebookSpaceItems(space);
+  }
+  const items = space && notebookSpaceItems.spaceId === space.id ? notebookSpaceItems.items : [];
+  if (space?.available === false) {
+    summary.textContent = "The Notebooks folder is unavailable.";
+    list.innerHTML = '<li class="global-project-explorer-empty">' + escapeHtml(contextHubProjectPickerLocation(space)) + '</li>';
+    return;
+  }
+  if (!items) {
+    summary.textContent = "Loading…";
+    return;
+  }
+  summary.textContent = notebookSpaceItems.error || (items.length ? items.length + " notebook" + (items.length === 1 ? "" : "s") : "");
+  if (!items.length) {
+    list.innerHTML = '<li class="global-project-explorer-empty">A notebook for an idea that arrives. A project to go further.</li>';
+    return;
+  }
+  list.innerHTML = items.map((item, index) => {
+    const id = escapeHtml(item.id);
+    const title = escapeHtml(item.title || String(item.path || "").replace(/^Carnets\//, ""));
+    const changed = item.changedAt ? new Date(item.changedAt).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
+    return '<li class="notebook-space-item" data-notebook-id="' + id + '">'
+      + '<button class="notebook-space-open" type="button" data-notebook-space-open="' + id + '"><strong>' + title + '</strong>' + (changed ? '<span>Edited ' + escapeHtml(changed) + '</span>' : "") + '</button>'
+      + (index === 0 ? '<button class="notebook-space-resume" type="button" data-notebook-space-open="' + id + '" aria-label="Resume · ' + title + '">Resume</button>' : '<span></span>')
+      + '<button type="button" data-notebook-space-move="' + id + '" aria-label="Move to project · ' + title + '">Move to project…</button>'
+      + '</li>';
+  }).join("");
+}
+
+async function ensureNotebookSpace() {
+  const current = contextHubNotebookSpace();
+  if (current) return current;
+  const result = await api("/api/context-hub/notebook-space", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  if (result.catalog) applyContextHubMutationCatalog(result.catalog);
+  return result.project;
+}
+
+async function createSpaceNotebook() {
+  const space = await ensureNotebookSpace();
+  const { newSpaceNotebook } = await import("/assets/ui/notebook-space.mjs");
+  const { id, path: notebookPath, title } = newSpaceNotebook();
+  await openContextRoomNotebook(notebookPath, { projectId: space.id, title, createOnly: true, newId: id, onClosed: reloadNotebookSpace });
+  reloadNotebookSpace();
+}
+
+const contextHubNotebookMove = (body) => api("/api/context-hub/notebooks/move", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+async function moveNotebookBetweenPlaces(notebook, from, places) {
+  const { openNotebookMoveDialog } = await import("/assets/ui/notebook-space.mjs");
+  return new Promise((resolve, reject) => {
+    openNotebookMoveDialog({
+      notebook, from, places, move: contextHubNotebookMove,
+      scopeKeyFor: (id) => captureNotebookApi(id).scopeKey,
+      onMoved: (moved, target) => { setStatus("Notebook moved to " + target.title + "."); reloadNotebookSpace(); resolve(moved); },
+    }).then((dialog) => dialog.addEventListener("close", () => resolve(null), { once: true }), reject);
+  });
+}
+
+function notebookMovePlaces() {
+  return contextHubPrioritizedProjects(state.contextHub?.projects || [])
+    .filter((project) => project.space !== "notebooks" && project.available !== false && !String(project.id || "").startsWith("shared:"))
+    .map((project) => ({ id: project.id, title: project.title || project.id }));
 }
 
 // Since your last visit: compare pending review identities with the ones stored when
@@ -7749,7 +7924,7 @@ function renderGlobalProjectExplorer() {
   updateGlobalExplorerMarkup(scope, "");
   listLabel.textContent = "Projects";
   const allProjects = contextHubPrioritizedProjects(state.contextHub?.projects || []);
-  const needle = state.globalProjectSearch.trim().toLowerCase();
+  const needle = searchFold(state.globalProjectSearch.trim());
   const projects = allProjects.filter((project) => !needle || contextHubProjectSearchText(project).includes(needle));
   count.textContent = state.contextHub
     ? projects.length + (needle ? " of " + allProjects.length : "")
@@ -7807,7 +7982,7 @@ async function returnToGlobalContextHubHome() {
 }
 
 function contextHubProjectPickerChoices() {
-  const needle = state.contextHubProjectPickerQuery.trim().toLowerCase();
+  const needle = searchFold(state.contextHubProjectPickerQuery.trim());
   const projects = contextHubPrioritizedProjects(state.contextHub?.projects || [])
     .filter((project) => !needle || contextHubProjectSearchText(project).includes(needle));
   return {
@@ -7830,7 +8005,7 @@ function renderContextHubProjectPicker() {
   state.contextHubProjectPickerIndex = choices.length
     ? Math.max(0, Math.min(state.contextHubProjectPickerIndex, choices.length - 1))
     : 0;
-  const totalProjects = state.contextHub?.projects?.length || 0;
+  const totalProjects = (state.contextHub?.projects || []).filter((project) => !contextHubIsNotebookSpace(project)).length;
   status.textContent = state.contextHubProjectPickerQuery.trim()
     ? projects.length + " of " + totalProjects + " projects"
     : totalProjects + " project" + (totalProjects === 1 ? "" : "s");
@@ -8595,7 +8770,7 @@ function renderContextRoomGlobalReviewQueue() {
   renderReviewHistoryPanel();
   const hub = state.contextHub || { projects: [] };
   const hubReady = Boolean(state.contextHub);
-  const needle = state.sharedProposalSearch.trim().toLowerCase();
+  const needle = searchFold(state.sharedProposalSearch.trim());
   const reviews = contextHubHomeReviewItems(needle, "active");
   const activeReviews = contextHubHomeReviewItems(needle, "active");
   const snoozedReviews = contextHubHomeReviewItems(needle, "snoozed");
@@ -8661,9 +8836,15 @@ function renderContextRoomGlobalReviewQueue() {
   const draftsPanel = el("contextRoomWorkingDrafts");
   if (draftsPanel) {
     draftsPanel.hidden = !drafts.length;
-    draftsPanel.innerHTML = drafts.length ? '<strong>Working drafts</strong><p>Saved work awaiting submission.</p>'
+    const draftsHtml = drafts.length ? '<strong>Working drafts</strong><p>Saved work awaiting submission.</p>'
       + drafts.map(draft => '<button type="button" class="quiet-button" data-local-draft="' + escapeHtml(draft.id)
         + '" data-draft-project="' + escapeHtml(draft.projectId) + '">' + escapeHtml(draft.projectTitle) + ' · ' + escapeHtml(draft.title) + '</button>').join("") : "";
+    // Hub refreshes re-render often. Replacing an unchanged button between
+    // mousedown and mouseup loses the click and its keyboard focus.
+    if (draftsPanel.renderedDraftsHtml !== draftsHtml) {
+      draftsPanel.innerHTML = draftsHtml;
+      draftsPanel.renderedDraftsHtml = draftsHtml;
+    }
   }
   const localReviewCount = reviews.filter((item) => item.type === "local").length;
   const sharedReviewCount = reviews.filter((item) => item.type === "shared" || item.type === "local-proposal").length;
@@ -8782,6 +8963,11 @@ function renderSharedProposalWorkspace() {
   if (workspace) workspace.dataset.globalRecovery = String(Boolean(globalRecoveryMarkup));
   const createProjectButton = el("contextHubCreateProject");
   const createSharedProjectButton = el("contextHubCreateSharedProject");
+  const importCodexButton = el("contextHubImportCodex");
+  if (importCodexButton) {
+    importCodexButton.hidden = !projectManagerMode || IS_HOSTED_HUB;
+    importCodexButton.disabled = Boolean(state.sharedContextBusy);
+  }
   if (createProjectButton) {
     createProjectButton.hidden = !projectManagerMode;
     createProjectButton.disabled = Boolean(state.sharedContextBusy);
@@ -8832,7 +9018,7 @@ function renderSharedProposalWorkspace() {
     return;
   }
   if (search.value !== state.sharedProposalSearch) search.value = state.sharedProposalSearch;
-  const needle = state.sharedProposalSearch.trim().toLowerCase();
+  const needle = searchFold(state.sharedProposalSearch.trim());
   const visible = contextHubVisibleItems().filter((item) => {
     const project = item.project || contextHubProjectForItem(item);
     const sourceMatches = item.type === "project"
@@ -10676,7 +10862,7 @@ async function applyWorkspaceUrlState({ reason = "history", force = false } = {}
 }
 
 function workspaceSelectedProject() {
-  const projects = state.contextHub?.projects || [];
+  const projects = (state.contextHub?.projects || []).filter((project) => !contextHubIsNotebookSpace(project));
   return projects.find((project) => project.id === state.activeProjectLocationId || (project.worktrees || []).some((worktree) => worktree.id === state.activeProjectLocationId))
     || projects.find((project) => project.projectKey === state.globalExplorerProjectKey)
     || null;
@@ -11952,14 +12138,14 @@ function buildTree(files, directories = []) {
 }
 
 function visibleFiles() {
-  const q = el("search").value.toLowerCase().trim();
+  const q = searchFold(el("search").value).trim();
   const filters = state.pathFilters || [];
-  const generatedFilterQuery = folderFilterSearchQuery(filters).toLowerCase().trim();
+  const generatedFilterQuery = searchFold(folderFilterSearchQuery(filters)).trim();
   return state.files.filter((file) => {
     if (file.startupContext) return false;
     const inScope = !filters.length || filters.some((filter) => pathMatchesFilter(file.path, filter));
     const matchesWatchFilter = explorerWatchFilterMatches(file.path, state.explorerWatchFilter, state.settings || {});
-    const haystack = (file.path + " " + file.label + " " + file.category).toLowerCase();
+    const haystack = searchFold(file.path + " " + file.label + " " + file.category);
     const normalizedQuery = q.replace(/\/$/, "");
     const matchesQuery = !q
       || (filters.length && q === generatedFilterQuery)
@@ -11970,7 +12156,7 @@ function visibleFiles() {
 }
 
 function visibleExplorerDirectories(files = []) {
-  const q = el("search").value.toLowerCase().trim();
+  const q = searchFold(el("search").value).trim();
   const normalizedQuery = q.replace(/\/$/, "");
   const filters = state.pathFilters || [];
   return (state.directories || []).filter((directory) => {
@@ -11982,7 +12168,7 @@ function visibleExplorerDirectories(files = []) {
     });
     const watchMatch = explorerWatchFilterMatches(clean + "/", state.explorerWatchFilter, state.settings || {});
     const hasVisibleChild = files.some((file) => file.path.startsWith(clean + "/"));
-    const matchesQuery = !q || clean.toLowerCase().includes(q) || clean.toLowerCase().includes(normalizedQuery) || hasVisibleChild;
+    const matchesQuery = !q || searchFold(clean).includes(q) || searchFold(clean).includes(normalizedQuery) || hasVisibleChild;
     return inScope && watchMatch && matchesQuery;
   });
 }
@@ -12956,6 +13142,7 @@ function parentFolders(target) {
 
 function iconForPath(filePath) {
   if (/\.(png|jpe?g|gif|webp|avif)$/i.test(filePath)) return "▧";
+  if (/\.pdf$/i.test(filePath)) return "▤";
   if (/\.(svg|mmd|mermaid|puml|plantuml|dot|gv|drawio)$/i.test(filePath)) return "⌁";
   if (filePath.endsWith(".csv")) return "▦";
   if (filePath.endsWith(".json") || filePath.endsWith(".jsonl")) return "{}";
@@ -13843,7 +14030,6 @@ function clearMissingSelectedFile(stalePath = state.selected) {
   state.saved = "";
   state.savedHash = null;
   state.selectedVisualAsset = null;
-  state.imagePreviewActualSize = false;
   state.dirty = false;
   state.mode = "view";
   state.page = "hub";
@@ -14080,7 +14266,6 @@ async function selectFile(path, options = {}) {
   state.fileContentReadyPath = null;
   state.selectedStartupContext = null;
   state.selectedVisualAsset = null;
-  state.imagePreviewActualSize = false;
   state.activeStartupContextExplorer = null;
   state.reviewModePath = options.reviewMode ? path : null;
   state.reviewModeStatus = options.reviewMode ? reviewStatusForPath(path) : null;
@@ -16388,6 +16573,8 @@ function renderFileActionItems({ modeToggle = null, reviewAction = null, seconda
     (reviewAction ? '<button class="file-action" type="button" data-file-review-decision="' + escapeHtml(reviewAction.status) + '">' + escapeHtml(reviewAction.label) + '</button>' : '') +
     (secondaryReviewAction ? '<button class="file-action" type="button" data-file-review-decision="' + escapeHtml(secondaryReviewAction.status) + '">' + escapeHtml(secondaryReviewAction.label) + '</button>' : '') +
     (nextReviewAction ? '<button class="file-action" type="button" data-next-review>' + escapeHtml(nextReviewAction.label) + '</button>' : '') +
+    (modeToggle === "view" ? '<button class="file-action" type="button" data-editor-undo' + (editorHistoryAvailable("undo") ? '' : ' disabled') + '>Undo</button><button class="file-action" type="button" data-editor-redo' + (editorHistoryAvailable("redo") ? '' : ' disabled') + '>Redo</button><button class="file-action" type="button" data-editor-find>Find</button><button class="file-action" type="button" data-reading-settings aria-label="Text size">Aa</button>' : '') +
+    (state.selected && !state.selectedStartupContext && state.mode === "view" && !isImageDocumentPath(state.selected) && (modeToggle === "edit" || isHtmlDocumentPath(state.selected)) ? (isHtmlDocumentPath(state.selected) ? '<button class="file-action" type="button" data-html-contents>Contents</button>' : '') + '<button class="file-action" type="button" data-reading-settings aria-label="Text size">Aa</button>' : '') +
     (deletable ? '<button class="file-action danger-action" type="button" data-file-delete>Delete</button>' : '') +
     (modeToggle === "edit" ? '<button class="file-action primary" type="button" data-file-mode="edit">Edit</button>' : '') +
     (modeToggle === "view" ? '<button class="file-action" type="button" data-file-mode="view"' + (dirty ? ' disabled title="Save your changes first"' : '') + '>Done</button>' : '') +
@@ -16627,7 +16814,7 @@ function globalSettingsReviewCounts() {
   return {
     local: items.filter((item) => item.type !== "shared").length,
     shared: items.filter((item) => item.type === "shared").length,
-    projects: (state.contextHub?.projects || []).length,
+    projects: (state.contextHub?.projects || []).filter((project) => !contextHubIsNotebookSpace(project)).length,
   };
 }
 
@@ -17726,7 +17913,7 @@ function renderSnoozedReviewSettings() {
     const title = item.title || item.localFile?.split("/").pop() || item.branch || "Review";
     const detail = item.localFile || item.description || (item.type === "shared" ? "Shared proposal" : "Local review");
     const snooze = contextRoomReviewSnooze(item);
-    const search = [projectLabel, title, detail, item.type].filter(Boolean).join(" ").toLowerCase();
+    const search = searchFold([projectLabel, title, detail, item.type].filter(Boolean).join(" "));
     const returns = snooze?.until ? new Date(snooze.until).toLocaleString() : "Later";
     return '<div class="settings-snoozed-row" data-settings-snoozed-row data-settings-snoozed-search="' + escapeHtml(search) + '">'
       + '<div class="settings-snoozed-copy"><div class="settings-snoozed-topline"><span class="context-hub-source" data-source="' + (item.type === "shared" ? "shared" : "local") + '">' + (item.type === "shared" ? "Proposal" : "Local") + '</span><strong>' + escapeHtml(title) + '</strong></div>'
@@ -17740,7 +17927,7 @@ function renderSnoozedReviewSettings() {
 function wireSnoozedReviewSettings(root) {
   const search = root.querySelector("#settingsSnoozedReviewSearch");
   const filter = () => {
-    const query = (search?.value || "").trim().toLowerCase();
+    const query = searchFold((search?.value || "").trim());
     state.settingsSnoozedReviewQuery = search?.value || "";
     let visible = 0;
     root.querySelectorAll("[data-settings-snoozed-row]").forEach((row) => {
@@ -17984,7 +18171,7 @@ function renderSettingsPanel() {
     kicker: "Hub",
     title: "Hub organization",
     copy: "Prioritize projects across the device and arrange the selected project's Home sections.",
-    pills: [state.contextHub?.projects?.length + " projects", showGlobalProjectPicker ? "Select a project for sections" : selectedProjectPill, !showGlobalProjectPicker ? sections.length + " sections" : ""].filter(Boolean),
+    pills: [(state.contextHub?.projects || []).filter((project) => !contextHubIsNotebookSpace(project)).length + " projects", showGlobalProjectPicker ? "Select a project for sections" : selectedProjectPill, !showGlobalProjectPicker ? sections.length + " sections" : ""].filter(Boolean),
     body: '<div class="settings-concept"><strong>Priority is device-wide; sections remain project-owned.</strong><p>Project order controls where projects and their reviews appear. Home sections still belong to the selected project.</p></div><div class="settings-disclosure-list">'
       + projectPriorityDisclosure
       + (showGlobalProjectPicker
@@ -19586,7 +19773,7 @@ function renderMetadataTreeValue(value, key = "metadata", depth = 0, parentPath 
     return '<details ' + (depth < 1 ? 'open' : '') + ' data-metadata-branch="' + escapeHtml(valuePath) + '"><summary>' + safeKey + ' <span class="muted">' + entries.length + '</span></summary>' + entries.map(([childKey, childValue]) => renderMetadataTreeValue(childValue, childKey, depth + 1, valuePath)).join("") + '</details>';
   }
   const display = value == null ? "null" : typeof value === "string" ? value : JSON.stringify(value);
-  return '<div class="metadata-tree-value" data-metadata-search-text="' + escapeHtml((valuePath + " " + display).toLowerCase()) + '"><span><span class="metadata-tree-key">' + safeKey + '</span><code>' + escapeHtml(display) + '</code></span><button class="metadata-copy-path" type="button" data-metadata-copy-path="' + escapeHtml(valuePath) + '" title="Copy metadata path">Copy path</button></div>';
+  return '<div class="metadata-tree-value" data-metadata-search-text="' + escapeHtml(searchFold(valuePath + " " + display)) + '"><span><span class="metadata-tree-key">' + safeKey + '</span><code>' + escapeHtml(display) + '</code></span><button class="metadata-copy-path" type="button" data-metadata-copy-path="' + escapeHtml(valuePath) + '" title="Copy metadata path">Copy path</button></div>';
 }
 
 function renderDocumentContextPanel() {
@@ -19669,7 +19856,7 @@ function renderDocumentContextPanel() {
     next?.click();
   });
   holder.querySelector("[data-metadata-search]")?.addEventListener("input", (event) => {
-    const query = String(event.currentTarget.value || "").trim().toLowerCase();
+    const query = searchFold(String(event.currentTarget.value || "").trim());
     holder.querySelectorAll("[data-metadata-search-text]").forEach((row) => {
       row.dataset.filtered = query && !row.dataset.metadataSearchText.includes(query) ? "true" : "false";
     });
@@ -20628,7 +20815,7 @@ function renderViewer() {
     : loadingFile
       ? renderFileLoadingState(file)
       : isImageDocument
-        ? renderImageDocumentPreview(state.selectedVisualAsset, file.path)
+        ? renderImageDocumentPreview(state.selectedVisualAsset)
       : !conflict && externalChange
         ? isHtmlDocument
           ? renderHtmlDocumentPreview(externalChange.diskContent || "", file.path)
@@ -20663,6 +20850,9 @@ function renderViewer() {
   wireMermaidDocuments();
   wireHtmlPreviewNavigation();
   wireMarkdownDocLinks();
+  wireMarkdownToc();
+  applyReadingSize();
+  wirePageButtons();
   syncHandAnnotation();
   document.querySelector("[data-conflict-compare]")?.addEventListener("click", () => toggleConflictCompare());
   document.querySelector("[data-conflict-reload]")?.addEventListener("click", () => promptReloadConflictFromDisk());
@@ -20722,6 +20912,7 @@ function wireRenderedMarkdownEditor() {
   if (!docEditor) return;
   prepareMarkdownEditorHistory(docEditor);
   state.markdownHighlightLastText = docEditor.value;
+  wireEditorFind(docEditor);
   syncMarkdownEditorScroll();
   docEditor.addEventListener("beforeinput", (event) => captureMarkdownEditorHistory(docEditor, event));
   docEditor.addEventListener("input", (event) => {
@@ -20734,6 +20925,11 @@ function wireRenderedMarkdownEditor() {
     scheduleCodexReferenceActionUpdate();
   });
   docEditor.addEventListener("keydown", (event) => {
+    if ((isMacPlatform() ? event.metaKey : event.ctrlKey) && !event.altKey && !event.shiftKey && String(event.key || "").toLowerCase() === "f") {
+      event.preventDefault();
+      openEditorFind();
+      return;
+    }
     if (handleMarkdownEditorHistoryShortcut(event, docEditor)) return;
     if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) resetMarkdownEditorHistoryGroup();
     window.requestAnimationFrame(updateMarkdownEditorVisualSelection);
@@ -20803,6 +20999,20 @@ function commitMarkdownEditorHistory(editor, event) {
   history.current = markdownEditorHistorySnapshot(editor);
   history.lastInputType = coalescible ? inputType : "";
   history.lastInputAt = coalescible ? now : 0;
+  updateEditorHistoryButtons();
+}
+
+function editorHistoryAvailable(direction) {
+  const history = state.markdownEditorHistory;
+  if (!history || history.path !== state.selected) return false;
+  return (direction === "redo" ? history.future : history.past).length > 0;
+}
+
+function updateEditorHistoryButtons() {
+  for (const direction of ["undo", "redo"]) {
+    const button = document.querySelector("[data-editor-" + direction + "]");
+    if (button) button.disabled = !editorHistoryAvailable(direction);
+  }
 }
 
 function resetMarkdownEditorHistoryGroup() {
@@ -20836,6 +21046,7 @@ function applyMarkdownEditorHistory(editor, direction) {
   history.current = markdownEditorHistorySnapshot(editor);
   resetMarkdownEditorHistoryGroup();
   syncMarkdownEditorValue(editor);
+  updateEditorHistoryButtons();
 }
 
 function syncMarkdownEditorValue(editor) {
@@ -21173,15 +21384,344 @@ function markdownOutline(text) {
   return headings;
 }
 
+// ---- Reading comfort (T-021 L9a): paged Contents, text size (Aa), page buttons, find and replace.
+// The size and the page buttons belong to the device: the Mac and the tablet are read differently.
+const READING_SIZE_KEY = "context-room:reading-size";
+const PAGE_BUTTONS_KEY = "context-room:page-buttons";
+const READING_SIZES = [15, 18, 20, 22, 24, 26];
+const CONTENTS_PAGE_SIZE = 40;
+let textToolsPromise = null;
+
+function loadTextTools() {
+  if (!textToolsPromise) textToolsPromise = import("/assets/ui/text-tools.mjs").catch((error) => { textToolsPromise = null; throw error; });
+  return textToolsPromise;
+}
+
+function readingSize() {
+  try {
+    const size = Number(window.localStorage?.getItem(READING_SIZE_KEY));
+    return READING_SIZES.includes(size) ? size : 15;
+  } catch { return 15; }
+}
+
+function pageButtonsEnabled() {
+  try {
+    const stored = window.localStorage?.getItem(PAGE_BUTTONS_KEY);
+    if (stored === "1" || stored === "0") return stored === "1";
+  } catch {}
+  return Boolean(window.matchMedia?.("(pointer: coarse)").matches);
+}
+
+function applyReadingSize() {
+  const size = readingSize();
+  const root = document.documentElement;
+  if (size === 15) {
+    root.removeAttribute("data-reading-size");
+    root.style.removeProperty("--reader-size");
+  } else {
+    root.dataset.readingSize = String(size);
+    root.style.setProperty("--reader-size", size + "px");
+  }
+  applyHtmlPreviewZoom(size);
+}
+
+// An HTML document keeps its own styles: the whole page is zoomed, like setTextZoom in the Android app.
+function applyHtmlPreviewZoom(size = readingSize()) {
+  const root = document.querySelector("iframe.html-preview-frame")?.contentDocument?.documentElement;
+  if (!root) return;
+  const factor = size / 15;
+  root.style.removeProperty("zoom");
+  root.style.removeProperty("font-size");
+  if (factor === 1) return;
+  if ("zoom" in root.style) root.style.zoom = String(factor);
+  else root.style.fontSize = Math.round(factor * 100) + "%";
+}
+
+// The first heading on screen and where it sits, or the scroll ratio when the text has no headings.
+// Top edge of the visible reading area: 0 when the page itself scrolls, whose bounding box moves with the scroll.
+function readingAreaTop(scroller) {
+  return !scroller || scroller === document.scrollingElement || !isScrollableY(scroller) ? 0 : scroller.getBoundingClientRect().top;
+}
+
+function captureReadingPlace() {
+  const frame = document.querySelector("iframe.html-preview-frame");
+  if (frame?.contentDocument?.scrollingElement) {
+    const scroller = frame.contentDocument.scrollingElement;
+    return { frame, ratio: scroller.scrollTop / Math.max(1, scroller.scrollHeight) };
+  }
+  const reader = el("docReader") || el("docEditor");
+  if (!reader) return null;
+  const scroller = activeDocumentScrollTarget();
+  const limit = readingAreaTop(scroller) + 1;
+  const lines = reader.querySelectorAll("[data-line-index]");
+  if (lines.length) {
+    let low = 0;
+    let high = lines.length - 1;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (lines[middle].getBoundingClientRect().bottom > limit) high = middle; else low = middle + 1;
+    }
+    return { line: lines[low].dataset.lineIndex, offset: lines[low].getBoundingClientRect().top - limit };
+  }
+  return { ratio: (scroller?.scrollTop || 0) / Math.max(1, scroller?.scrollHeight || 1) };
+}
+
+function restoreReadingPlace(place) {
+  if (!place) return;
+  if (place.frame) {
+    const scroller = document.querySelector("iframe.html-preview-frame")?.contentDocument?.scrollingElement;
+    if (scroller) scroller.scrollTop = place.ratio * scroller.scrollHeight;
+    return;
+  }
+  const reader = el("docReader") || el("docEditor");
+  const scroller = activeDocumentScrollTarget();
+  if (!reader || !scroller) return;
+  if (place.line !== undefined) {
+    const line = reader.querySelector('[data-line-index="' + cssEscape(place.line) + '"]');
+    if (line) scroller.scrollTop += line.getBoundingClientRect().top - (readingAreaTop(scroller) + 1) - place.offset;
+  } else scroller.scrollTop = place.ratio * scroller.scrollHeight;
+}
+
+function setReadingSize(size) {
+  if (!READING_SIZES.includes(size)) return;
+  const place = captureReadingPlace();
+  try { window.localStorage?.setItem(READING_SIZE_KEY, String(size)); } catch {}
+  applyReadingSize();
+  window.requestAnimationFrame(() => restoreReadingPlace(place));
+}
+
+function openReadingSettings() {
+  document.querySelector("dialog.reading-dialog")?.remove();
+  const dialog = document.createElement("dialog");
+  dialog.className = "reading-dialog";
+  dialog.setAttribute("aria-label", "Text size");
+  const sizeButtons = () => READING_SIZES.map((size) => '<button type="button" data-reading-size-value="' + size + '" aria-pressed="' + String(size === readingSize()) + '">' + size + (size === 15 ? " Standard" : "") + '</button>').join("");
+  dialog.innerHTML = '<h2>Text size</h2><div class="reading-sizes" role="group" aria-label="Text size">' + sizeButtons() + '</div>'
+    + '<label class="reading-page-option"><input type="checkbox" data-reading-page-buttons' + (pageButtonsEnabled() ? " checked" : "") + '> Page buttons</label>'
+    + '<p class="reading-note">Kept on this device only.</p><button type="button" data-reading-close>Close</button>';
+  dialog.addEventListener("click", (event) => {
+    const choice = event.target.closest?.("[data-reading-size-value]");
+    if (choice) {
+      setReadingSize(Number(choice.dataset.readingSizeValue));
+      dialog.querySelectorAll("[data-reading-size-value]").forEach((button) => button.setAttribute("aria-pressed", String(Number(button.dataset.readingSizeValue) === readingSize())));
+    } else if (event.target.closest?.("[data-reading-close]")) dialog.close();
+  });
+  dialog.addEventListener("change", (event) => {
+    if (!event.target.matches?.("[data-reading-page-buttons]")) return;
+    try { window.localStorage?.setItem(PAGE_BUTTONS_KEY, event.target.checked ? "1" : "0"); } catch {}
+    wirePageButtons();
+  });
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  document.body.append(dialog);
+  dialog.showModal();
+  dialog.querySelector("[data-reading-size-value][aria-pressed=true]")?.focus();
+}
+
+// One screen minus two lines, with no smooth scrolling: e-ink shows trails behind an animation.
+function movePage(direction) {
+  const frame = document.querySelector("iframe.html-preview-frame");
+  if (frame?.contentWindow) {
+    frame.contentWindow.scrollBy({ top: direction * Math.max(40, frame.clientHeight - 48), behavior: "instant" });
+    return;
+  }
+  const reader = el("docReader");
+  const scroller = activeDocumentScrollTarget();
+  if (!reader || !scroller) return;
+  const lineHeight = parseFloat(window.getComputedStyle(reader).lineHeight) || 24;
+  const height = scroller === document.scrollingElement ? window.innerHeight : scroller.clientHeight;
+  scroller.scrollBy({ top: direction * Math.max(40, height - 2 * lineHeight), behavior: "instant" });
+}
+
+function wirePageButtons() {
+  document.querySelector(".reader-page-bar")?.remove();
+  const panel = document.querySelector(".file-panel");
+  const readable = el("docReader") || document.querySelector("iframe.html-preview-frame");
+  if (!panel || !readable || state.mode === "edit" || !pageButtonsEnabled()) return;
+  const bar = document.createElement("div");
+  bar.className = "reader-page-bar";
+  bar.setAttribute("role", "group");
+  bar.setAttribute("aria-label", "Page buttons");
+  bar.innerHTML = '<button type="button" data-page-move="-1" aria-label="Previous page">‹ Page</button><button type="button" data-page-move="1" aria-label="Next page">Page ›</button>';
+  bar.addEventListener("click", (event) => {
+    const button = event.target.closest?.("[data-page-move]");
+    if (button) movePage(Number(button.dataset.pageMove));
+  });
+  panel.append(bar);
+}
+
+// Paged Contents: more than one page of headings gets a search box and pages of 40.
+function contentsPanelMarkup(page, toc) {
+  const active = toc.active;
+  const items = page.items.map((heading) => '<li class="doc-toc-l' + heading.level + '"><a href="#' + escapeHtml(heading.slug) + '" data-toc-slug="' + escapeHtml(heading.slug) + '"' + (heading.index === active ? ' aria-current="location"' : "") + '>' + escapeHtml(heading.text) + '</a></li>').join("");
+  const count = page.total ? (page.start + 1).toLocaleString("en-US") + "–" + page.end.toLocaleString("en-US") + " of " + page.total.toLocaleString("en-US") : "No heading matches";
+  return '<ol data-toc-list>' + items + '</ol>'
+    + '<div class="doc-toc-pager"><button type="button" data-toc-page="-1"' + (page.hasPrevious ? "" : " disabled") + '>Previous</button>'
+    + '<span data-toc-count role="status" aria-live="polite">' + count + '</span>'
+    + '<button type="button" data-toc-page="1"' + (page.hasNext ? "" : " disabled") + '>Next</button></div>';
+}
+
+function contentsSearchMarkup(query) {
+  return '<input class="doc-toc-search" type="search" data-toc-query aria-label="Search headings" placeholder="Search headings" maxlength="200" value="' + escapeHtml(query) + '" autocomplete="off">';
+}
+
+// Index of the last heading that starts above the reading line, found with a binary search on positions.
+function currentHeadingIndex(entries, root, limit) {
+  let low = 0;
+  let high = entries.length - 1;
+  let found = -1;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    const heading = root.querySelector('[data-heading-id="' + cssEscape(entries[middle].slug) + '"]');
+    if (heading && heading.getBoundingClientRect().top <= limit) { found = middle; low = middle + 1; } else high = middle - 1;
+  }
+  return found;
+}
+
+async function drawContentsPanel(panel, toc, { toActive = false, root = el("docReader"), limit = null } = {}) {
+  const tools = await loadTextTools();
+  if (!panel.isConnected) return;
+  if (toActive && root) {
+    const edge = limit ?? (readingAreaTop(activeDocumentScrollTarget()) + 24);
+    toc.active = currentHeadingIndex(toc.entries, root, edge);
+  }
+  const page = tools.contentsPage(toc.entries, { query: toc.query, start: toActive ? null : toc.start, active: toActive ? toc.active : -1, pageSize: CONTENTS_PAGE_SIZE });
+  toc.start = page.start;
+  panel.querySelector("[data-toc-body]").innerHTML = contentsPanelMarkup(page, toc);
+}
+
+// Search box, pages and links of one Contents panel. onPick(slug) goes to a heading.
+function wireContentsPanel(panel, toc, { details = null, root = el("docReader"), track = true, onPick }) {
+  let timer = 0;
+  const redraw = (options) => drawContentsPanel(panel, toc, { root, ...options }).catch((error) => setStatus(error.message));
+  panel.addEventListener("input", (event) => {
+    if (!event.target.matches?.("[data-toc-query]")) return;
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      toc.query = event.target.value.slice(0, 200);
+      toc.start = 0;
+      redraw({ toActive: false });
+    }, 180);
+  });
+  panel.addEventListener("click", (event) => {
+    const page = event.target.closest?.("[data-toc-page]");
+    if (page) {
+      toc.start = Math.max(0, toc.start + Number(page.dataset.tocPage) * CONTENTS_PAGE_SIZE);
+      redraw({ toActive: false });
+      return;
+    }
+    const link = event.target.closest?.("[data-toc-slug]");
+    if (!link) return;
+    event.preventDefault();
+    onPick(link.dataset.tocSlug);
+  });
+  if (details) details.addEventListener("toggle", () => { if (details.open) redraw({ toActive: track }); });
+  if (!details || details.open) redraw({ toActive: track });
+  else if (toc.query) redraw({ toActive: false });
+}
+
 function renderMarkdownToc(outline) {
   const titles = outline.filter((heading) => heading.level === 1);
   const entries = outline.filter((heading) => heading.level <= 3 && (heading.level > 1 || titles.length > 1));
   if (entries.length < 2) return "";
   const open = window.matchMedia?.("(min-width: 1280px)").matches ? " open" : "";
+  if (entries.length > CONTENTS_PAGE_SIZE) {
+    const same = state.docToc?.path === state.selected && state.docToc.entries.length === entries.length;
+    state.docToc = { path: state.selected, entries: entries.map((heading) => ({ text: heading.text, slug: heading.slug, level: heading.level })), query: same ? state.docToc.query : "", start: same ? state.docToc.start : 0, active: -1 };
+    const first = entries.slice(0, CONTENTS_PAGE_SIZE).map((heading) => '<li class="doc-toc-l' + heading.level + '"><a href="#' + escapeHtml(heading.slug) + '" data-toc-slug="' + escapeHtml(heading.slug) + '">' + escapeHtml(heading.text) + '</a></li>').join("");
+    return '<nav class="doc-toc doc-toc-paged" aria-label="Contents" data-toc-paged><details' + open + '><summary>Contents <span>' + entries.length.toLocaleString("en-US") + '</span></summary>'
+      + contentsSearchMarkup(state.docToc.query) + '<div data-toc-body><ol data-toc-list>' + first + '</ol><div class="doc-toc-pager"><button type="button" data-toc-page="-1" disabled>Previous</button><span data-toc-count role="status" aria-live="polite">1–' + CONTENTS_PAGE_SIZE + ' of ' + entries.length.toLocaleString("en-US") + '</span><button type="button" data-toc-page="1">Next</button></div></div>'
+      + '</details></nav>';
+  }
   return '<nav class="doc-toc" aria-label="Contents"><details' + open + '><summary>Contents <span>' + entries.length + '</span></summary><ol>'
     + entries.map((heading) => '<li class="doc-toc-l' + heading.level + '"><a href="#' + escapeHtml(heading.slug) + '" data-doc-anchor="' + escapeHtml(heading.slug) + '">' + escapeHtml(heading.text) + '</a></li>').join("")
     + '</ol></details></nav>';
 }
+
+function wireMarkdownToc() {
+  const nav = document.querySelector("[data-toc-paged]");
+  const toc = state.docToc;
+  if (!nav || !toc || toc.path !== state.selected) return;
+  wireContentsPanel(nav, toc, { details: nav.querySelector("details"), onPick: (slug) => scrollToMarkdownAnchor(slug) });
+}
+
+// HTML documents: the headings come from the sandbox frame (same origin), in a dialog because the page is not ours to change.
+function htmlPreviewHeadings() {
+  const frameDocument = document.querySelector("iframe.html-preview-frame")?.contentDocument;
+  if (!frameDocument) return [];
+  return [...frameDocument.querySelectorAll("h1, h2, h3, h4, h5, h6")]
+    .map((heading, index) => ({ text: (heading.textContent || "").replace(/\s+/g, " ").trim(), level: Number(heading.tagName.slice(1)), slug: String(index), node: heading }))
+    .filter((heading) => heading.text);
+}
+
+function openHtmlContents() {
+  const frame = document.querySelector("iframe.html-preview-frame");
+  const headings = htmlPreviewHeadings();
+  document.querySelector("dialog.contents-dialog")?.remove();
+  const dialog = document.createElement("dialog");
+  dialog.className = "contents-dialog";
+  dialog.setAttribute("aria-label", "Contents");
+  dialog.innerHTML = '<h2>Contents <span>' + headings.length.toLocaleString("en-US") + '</span></h2>' + (headings.length ? contentsSearchMarkup("") : "") + '<div data-toc-body>' + (headings.length ? "" : '<p class="reading-note">This page has no headings.</p>') + '</div><button type="button" data-reading-close>Close</button>';
+  const toc = { entries: headings, query: "", start: 0, active: -1 };
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  dialog.querySelector("[data-reading-close]").addEventListener("click", () => dialog.close());
+  if (headings.length) {
+    wireContentsPanel(dialog, toc, {
+      track: false,
+      onPick: (slug) => {
+        dialog.close();
+        headings[Number(slug)]?.node.scrollIntoView({ behavior: "instant", block: "start" });
+      },
+    });
+  }
+  document.body.append(dialog);
+  dialog.showModal();
+}
+
+// ---- Find and replace in the editor, on top of the editor's own undo history.
+function wireEditorFind(editor) {
+  const previous = state.editorFind;
+  const wasOpen = Boolean(previous?.isOpen);
+  if (previous) state.editorFindValues = previous.values;
+  state.editorFind = null;
+  loadTextTools().then((tools) => {
+    if (!editor.isConnected) return;
+    const apply = (value, selection) => {
+      const history = prepareMarkdownEditorHistory(editor);
+      history.past.push(markdownEditorHistorySnapshot(editor));
+      if (history.past.length > 200) history.past.shift();
+      history.future.length = 0;
+      editor.value = value;
+      editor.setSelectionRange(selection.start, selection.end);
+      history.pending = null;
+      history.current = markdownEditorHistorySnapshot(editor);
+      resetMarkdownEditorHistoryGroup();
+      syncMarkdownEditorValue(editor);
+      updateEditorHistoryButtons();
+    };
+    const select = (start, end) => {
+      editor.setSelectionRange(start, end);
+      tools.revealTextareaOffset(editor, start);
+      updateMarkdownEditorVisualSelection();
+    };
+    const bar = tools.createFindBar({ getText: () => editor.value, select, apply, onClose: () => { state.editorFindValues = bar.values; try { editor.focus({ preventScroll: true }); } catch {} } });
+    bar.values = state.editorFindValues || {};
+    (editor.closest(".markdown-editor-shell") || editor).before(bar.element);
+    state.editorFind = bar;
+    if (wasOpen || state.editorFindWanted) {
+      state.editorFindWanted = false;
+      bar.open({ caret: editor.selectionStart, keepQuery: wasOpen });
+    }
+  }).catch((error) => setStatus(error.message));
+}
+
+function openEditorFind() {
+  const editor = el("docEditor");
+  if (!editor) return;
+  const bar = state.editorFind;
+  if (!bar || !bar.element.isConnected) { state.editorFindWanted = true; return; }
+  bar.open({ caret: editor.selectionStart, selectedText: editor.value.slice(editor.selectionStart, editor.selectionEnd) });
+}
+
 
 function renderMarkdownSections(text, outline, options) {
   const lines = text.split("\n");
@@ -21349,38 +21889,32 @@ function isHtmlDocumentPath(filePath) {
 }
 
 function isImageDocumentPath(filePath) {
-  return /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(String(filePath || ""));
+  return /\.(png|jpe?g|gif|webp|avif|svg|pdf)$/i.test(String(filePath || ""));
 }
 
-function renderImageDocumentPreview(asset, filePath = state.selected) {
-  if (!asset?.dataUrl) return '<div class="file-load-state error"><div class="file-load-state-inner"><strong>Image preview unavailable</strong><span>The visual asset could not be decoded safely.</span></div></div>';
-  const actualSize = state.imagePreviewActualSize;
-  const format = String(asset.mimeType || "image").replace("image/", "").toUpperCase().replace("JPEG", "JPG").replace("SVG+XML", "SVG");
-  return '<div class="image-preview-shell" data-image-preview>'
-    + '<div class="image-preview-toolbar"><span>' + escapeHtml(format + " · " + formatExplorerBytes(asset.bytes || 0)) + ' · <span data-image-dimensions>measuring…</span></span>'
-    + '<button type="button" data-image-size-toggle>' + (actualSize ? "Fit to window" : "Actual size") + '</button></div>'
-    + '<div class="image-preview-stage' + (actualSize ? " actual-size" : "") + '" data-image-stage>'
-      + '<img src="' + escapeHtml(asset.dataUrl) + '" alt="Preview of ' + escapeHtml(filePath || "image") + '" draggable="false" referrerpolicy="no-referrer" />'
-    + '</div></div>';
+function renderImageDocumentPreview(asset) {
+  if (!asset?.dataUrl) return '<div class="file-load-state error"><div class="file-load-state-inner"><strong>Preview unavailable</strong><span>The visual asset could not be decoded safely.</span></div></div>';
+  return '<div class="doc-viewer" data-document-viewer></div>';
 }
 
+let documentViewer = null;
 function wireImageDocumentPreview() {
-  const preview = document.querySelector("[data-image-preview]");
-  if (!preview) return;
-  const image = preview.querySelector("img");
-  const dimensions = preview.querySelector("[data-image-dimensions]");
-  const updateDimensions = () => {
-    if (!dimensions || !image?.naturalWidth || !image?.naturalHeight) return;
-    dimensions.textContent = image.naturalWidth + " × " + image.naturalHeight;
-  };
-  if (image?.complete) updateDimensions();
-  else image?.addEventListener("load", updateDimensions, { once: true });
-  preview.querySelector("[data-image-size-toggle]")?.addEventListener("click", () => {
-    state.imagePreviewActualSize = !state.imagePreviewActualSize;
-    const viewState = captureEditorViewState();
-    renderViewer();
-    restoreEditorViewState(viewState);
-  });
+  documentViewer?.destroy();
+  documentViewer = null;
+  const host = document.querySelector("[data-document-viewer]");
+  const asset = state.selectedVisualAsset;
+  const path = state.selected;
+  if (!host || !asset?.dataUrl) return;
+  const mount = () => { documentViewer?.destroy(); documentViewer = null; return import("/assets/ui/document-viewer.mjs").then((viewer) => {
+    if (!host.isConnected || state.selected !== path) return;
+    documentViewer = viewer.mountDocumentViewer(host, {
+      asset, path, projectId: state.projectId || "",
+      existingPaths: () => new Set((state.files || []).map((item) => item.path)),
+      annotate: ({ path: notebookPath, title, file }) => openContextRoomNotebook(notebookPath, { title, initialImage: file, initialImageBackground: true, createOnly: true }),
+      retry: mount,
+    });
+  }).catch(() => { if (host.isConnected) host.innerHTML = '<div class="file-load-state error"><div class="file-load-state-inner"><strong>Preview unavailable</strong><span>The viewer could not be loaded.</span></div></div>'; }); };
+  mount();
 }
 
 let mermaidLoaderPromise = null;
@@ -21963,6 +22497,7 @@ function wireHtmlPreviewNavigation() {
     const frameDocument = frame.contentDocument;
     if (!frameDocument || frame.__contextRoomNavigationDocument === frameDocument) return;
     frame.__contextRoomNavigationDocument = frameDocument;
+    applyHtmlPreviewZoom();
     frameDocument.addEventListener("click", (event) => {
       const anchor = event.target?.closest?.("a[href], [data-cr-document]");
       if (!anchor) return;
@@ -22441,6 +22976,11 @@ function wireFileActionButtons(root = document) {
     target?.focus({ preventScroll: true });
   });
   root.querySelector("[data-file-delete]")?.addEventListener("click", () => deletePaths([state.selected]).catch((error) => setStatus(error.message)));
+  root.querySelector("[data-reading-settings]")?.addEventListener("click", openReadingSettings);
+  root.querySelector("[data-html-contents]")?.addEventListener("click", openHtmlContents);
+  root.querySelector("[data-editor-undo]")?.addEventListener("click", () => { const editor = el("docEditor"); if (editor) { applyMarkdownEditorHistory(editor, "undo"); editor.focus({ preventScroll: true }); } });
+  root.querySelector("[data-editor-redo]")?.addEventListener("click", () => { const editor = el("docEditor"); if (editor) { applyMarkdownEditorHistory(editor, "redo"); editor.focus({ preventScroll: true }); } });
+  root.querySelector("[data-editor-find]")?.addEventListener("click", openEditorFind);
   root.querySelector("[data-empty-template-select]")?.addEventListener("change", (event) => applySelectedTemplateToEditor(event.currentTarget.value));
 }
 
@@ -23145,6 +23685,7 @@ function finalizeExternalReviewPanelInPlace(viewState) {
   doc.outerHTML = state.mode === "edit" ? renderMarkdownEditor(text) : renderMarkdownLineView(text, { filePath: state.selected });
   replaceExternalReviewActionsInPlace(text);
   wireMarkdownDocLinks();
+  wireMarkdownToc();
   wireRenderedMarkdownEditor();
   syncWorkspaceScroll();
   restoreFinalReviewViewport(visualAnchor, restoreState);
@@ -23958,14 +24499,17 @@ function showContextHubCreationDialog({ title, body, submitLabel, fields = [], o
   const dialogGeneration = ++state.contextHubCreationGeneration;
   backdrop.className = "confirm-backdrop";
   const fieldMarkup = fields.map((field) => {
-    const input = field.type === "select"
+    const input = field.type === "checks"
+      ? '<span class="creation-dialog-checks" role="group" aria-label="' + escapeHtml(field.label) + '">' + (field.options || []).map((option) => '<label class="creation-dialog-check' + (option.disabled ? ' is-off' : '') + '"><input type="checkbox" name="' + escapeHtml(field.name) + '" value="' + escapeHtml(option.value) + '"' + (option.checked ? ' checked' : '') + (option.disabled ? ' disabled' : '') + ' /><span><strong>' + escapeHtml(option.label) + '</strong>' + (option.note ? '<small>' + escapeHtml(option.note) + '</small>' : '') + '</span></label>' + (option.link ? '<button class="file-action" type="button" data-creation-open-project="' + escapeHtml(option.link.projectId) + '">' + escapeHtml(option.link.label) + '</button>' : '')).join("") + '</span>'
+      : field.type === "select"
       ? '<select name="' + escapeHtml(field.name) + '"' + (field.required ? ' required' : '') + '>'
         + (field.options || []).map((option) => '<option value="' + escapeHtml(option.value) + '"' + (option.disabled ? ' disabled' : '') + '>' + escapeHtml(option.label) + '</option>').join("")
         + '</select>'
       : field.multiline
         ? '<textarea name="' + escapeHtml(field.name) + '" placeholder="' + escapeHtml(field.placeholder || "") + '"' + (field.required ? ' required' : '') + '>' + escapeHtml(field.value || "") + '</textarea>'
         : '<input name="' + escapeHtml(field.name) + '" type="text" value="' + escapeHtml(field.value || "") + '" placeholder="' + escapeHtml(field.placeholder || "") + '"' + (field.required ? ' required' : '') + ' />';
-    return '<label class="creation-dialog-field"><span>' + escapeHtml(field.label) + '</span>' + input + (field.note ? '<span class="creation-dialog-note">' + escapeHtml(field.note) + '</span>' : '') + '</label>';
+    const wrapper = field.type === "checks" ? "div" : "label";
+    return '<' + wrapper + ' class="creation-dialog-field"><span>' + escapeHtml(field.label) + '</span>' + input + (field.note ? '<span class="creation-dialog-note">' + escapeHtml(field.note) + '</span>' : '') + '</' + wrapper + '>';
   }).join("");
   backdrop.innerHTML = '<section class="confirm-dialog creation-dialog" role="dialog" aria-modal="true" aria-label="' + escapeHtml(title) + '">'
     + '<strong>' + escapeHtml(title) + '</strong>'
@@ -24026,10 +24570,18 @@ function showContextHubCreationDialog({ title, body, submitLabel, fields = [], o
   };
   backdrop.addEventListener("click", (event) => { if (event.target === backdrop) close(); });
   backdrop.querySelector("[data-creation-cancel]")?.addEventListener("click", () => close());
+  for (const link of backdrop.querySelectorAll("[data-creation-open-project]")) {
+    link.addEventListener("click", () => {
+      const projectId = link.dataset.creationOpenProject;
+      close({ restoreFocus: false });
+      openContextHubProject(projectId, { pushHistory: true }).catch((error) => setStatus(error.message || "The project cannot be opened."));
+    });
+  }
   form?.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (requestController || !isCurrent()) return;
     const values = Object.fromEntries(new FormData(form).entries());
+    for (const field of fields) if (field.type === "checks") values[field.name] = new FormData(form).getAll(field.name);
     requestController = new AbortController();
     state.contextHubCreationController = requestController;
     setBusy(true);
@@ -24074,6 +24626,56 @@ function applyContextHubCreationCatalog(catalog, projectId = "", proposalBranch 
   renderContextRoomGlobalReviewQueue();
   renderSharedProposalWorkspace();
   workspaceUpdate("catalog-refreshed");
+}
+
+async function showContextHubImportCodexDialog() {
+  let preview;
+  try { preview = await api("/api/context-hub/codex-import"); }
+  catch (error) { setStatus(error.message || "The Codex project list cannot be read."); return; }
+  const rows = preview.projects || [];
+  const importable = rows.filter((row) => row.status === "ready" || row.status === "needs-init");
+  const labels = { registered: "Already in Context Room", missing: "Folder missing", refused: "Not offered" };
+  const options = rows.map((row) => ({
+    value: row.root,
+    label: row.name,
+    checked: row.status === "ready",
+    disabled: row.status !== "ready" && row.status !== "needs-init",
+    ...(row.needsConfirmation && row.projectId ? { link: { projectId: row.projectId, label: "Open to confirm the location" } } : {}),
+    note: row.root + " \u00b7 " + (row.status === "ready" ? "Ready" : row.status === "needs-init" ? "Will create .context-room/" : (labels[row.status] || row.status) + (row.reason ? " \u2014 " + row.reason : "")),
+  }));
+  showContextHubCreationDialog({
+    title: "Import from Codex",
+    body: preview.found && rows.length && !importable.length
+      ? "Nothing to import: every project Codex Desktop knows is already in Context Room, missing, or not offered. Projects marked \u201cidentity to confirm\u201d or moved keep their place; confirm them from the project."
+      : preview.found && rows.length
+      ? "Projects Codex Desktop already knows. Nothing changes until you confirm. Folders marked \u201cWill create .context-room/\u201d are not ticked yet."
+      : "Codex Desktop has no project list on this Mac.",
+    submitLabel: "Import selected projects",
+    fields: rows.length ? [{ name: "roots", label: "Codex projects", type: "checks", options }] : [],
+    onSubmit: async (values) => {
+      const roots = values.roots || [];
+      if (!roots.length) throw new Error("Choose at least one project to import.");
+      const chosen = importable.filter((row) => roots.includes(row.root));
+      const created = chosen.filter((row) => row.status === "needs-init").length;
+      showConfirmDialog({
+        title: "Import " + chosen.length + (chosen.length === 1 ? " project" : " projects"),
+        body: "Context Room registers " + chosen.length + (chosen.length === 1 ? " folder" : " folders") + " and creates .context-room/ in " + created + " of them. Nothing else in your folders changes.",
+        confirmLabel: "Confirm import",
+        confirmPendingLabel: "Importing\u2026",
+        confirmVariant: "primary",
+        onConfirm: async () => {
+          const result = await api("/api/context-hub/codex-import", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ roots, expectedRevision: preview.revision }),
+          });
+          if (result.catalog) applyContextHubCreationCatalog(result.catalog);
+          const failed = (result.results || []).filter((item) => item.outcome === "failed");
+          setStatus("Imported " + result.imported + (result.imported === 1 ? " project" : " projects") + (failed.length ? "; " + failed.length + " could not be imported: " + failed.map((item) => item.reason).join(" ") : "."));
+        },
+      });
+    },
+  });
 }
 
 function showContextHubCreateProjectDialog() {
@@ -25103,6 +25705,8 @@ function scrollEditorToTextAnchor(editor, snapshot) {
   }
   return true;
 }
+// Search ignores case and accents, like the CLI (src/documentation.mjs) and the Lisière app.
+function searchFold(value) { return String(value ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase(); }
 function escapeHtml(value) { return String(value).replace(/[&<>"]/g, (ch) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[ch])); }
 function escapeRegExp(value) { return String(value).replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&"); }
 function cssEscape(value) { return window.CSS && CSS.escape ? CSS.escape(value) : String(value).replace(/(["\\])/g, "\\$1"); }
@@ -25474,6 +26078,7 @@ el("sharedProposalSelect")?.addEventListener("change", renderSharedContextContro
 el("sharedProposalWorkspaceRefresh")?.addEventListener("click", () => refreshContextHubUi().catch((error) => setStatus(error.message)));
 el("sharedProposalWorkspaceClose")?.addEventListener("click", closeContextRoomSecondaryView);
 el("contextHubCreateProject")?.addEventListener("click", showContextHubCreateProjectDialog);
+el("contextHubImportCodex")?.addEventListener("click", () => { void showContextHubImportCodexDialog(); });
 el("contextHubCreateSharedProject")?.addEventListener("click", () => {
   try { showContextHubCreateSharedProjectDialog(); }
   catch (error) { setStatus(error.message); }
@@ -25496,6 +26101,21 @@ document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-context-hub-abandon-recovery]");
   if (!button || IS_HOSTED_CONTEXT_ROOM || state.sharedRecoveryBusy) return;
   showContextHubAbandonRecoveryDialog(button);
+});
+el("notebookSpacePanel")?.addEventListener("click", (event) => {
+  if (event.target.closest("[data-notebook-space-new]")) {
+    createSpaceNotebook().catch((error) => setStatus(error.message));
+    return;
+  }
+  const space = contextHubNotebookSpace();
+  const open = event.target.closest("[data-notebook-space-open]");
+  if (open && space) {
+    openContextRoomNotebook("", { projectId: space.id, resourceId: open.dataset.notebookSpaceOpen, onClosed: reloadNotebookSpace }).catch((error) => setStatus(error.message));
+    return;
+  }
+  const move = event.target.closest("[data-notebook-space-move]");
+  const item = move && space ? (notebookSpaceItems.items || []).find((entry) => entry.id === move.dataset.notebookSpaceMove) : null;
+  if (item) moveNotebookBetweenPlaces(item, { id: space.id, title: "Notebooks" }, notebookMovePlaces()).catch((error) => setStatus(error.message));
 });
 el("contextHubProjectsPanel")?.addEventListener("click", (event) => {
   if (event.target.closest("[data-context-hub-project-goto]")) {

@@ -7,7 +7,7 @@ import test from "node:test";
 import { registerContextHubProject, readContextHubRegistry, listContextHubProjects, confirmContextHubProjectLocation, withContextHubProjectSharedRegistration } from "../src/context_hub.mjs";
 import { readFilesystemIdentity } from "../src/filesystem_identity.mjs";
 import { rootIdentityAliases, acceptsRootIdentity } from "../src/location_attestation.mjs";
-import { initializeContextRoomProject } from "../src/context_room.mjs";
+import { initializeContextRoomProject, ensureContextHubNotebookSpace } from "../src/context_room.mjs";
 import { openNotebook, readNotebook } from "../src/notebooks.mjs";
 
 function fixture(t, { git = true } = {}) {
@@ -411,4 +411,43 @@ test("an exact no-birthtime enrollment can enter a Shared transaction", (t) => {
     { shared: { repository: path.join(base, "remote.git"), projectId: "demo" } },
     () => { called = true; throw stop; }), error => error === stop);
   assert.equal(called, true);
+});
+
+test("the Notebooks space mark survives re-registration and a device confirmation, and stays unique", (t) => {
+  const { root, base } = fixture(t);
+  const other = path.join(base, "other");
+  fs.mkdirSync(path.join(other, "docs"), { recursive: true });
+  initializeContextRoomProject(other, { title: "Other", allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+  const saved = registerContextHubProject(root, { title: "Notebooks", space: "notebooks" });
+  assert.equal(saved.space, "notebooks");
+  assert.equal(registerContextHubProject(root).space, "notebooks");
+  alterStats(t, { dev: 77 }, root);
+  assert.equal(listContextHubProjects()[0].space, "notebooks");
+  const old = `${saved.rootIdentity.dev}:${saved.rootIdentity.ino}`;
+  try { confirmContextHubProjectLocation({ projectId: saved.id, expectedRoot: root, expectedRootIdentity: old }); } catch {}
+  assert.equal(readContextHubRegistry().projects[0].space, "notebooks");
+  assert.throws(() => registerContextHubProject(other, { space: "notebooks" }), { code: "context_hub_notebook_space_exists" });
+  assert.equal(registerContextHubProject(other).space, undefined);
+  assert.throws(() => registerContextHubProject(other, { space: "boards" }), /Unknown Context Hub space/);
+});
+
+test("the Notebooks space is created once, closed to Carnets/, and refuses a foreign folder", (t) => {
+  const { base } = fixture(t);
+  const busy = path.join(base, "busy");
+  fs.mkdirSync(busy);
+  fs.writeFileSync(path.join(busy, "notes.txt"), "mine\n");
+  assert.throws(() => ensureContextHubNotebookSpace({ spaceRoot: busy }), { code: "context_hub_notebook_space_occupied" });
+  assert.equal(fs.readFileSync(path.join(busy, "notes.txt"), "utf8"), "mine\n");
+  const first = ensureContextHubNotebookSpace({ spaceRoot: path.join(base, "Documents/Context Room/Carnets") });
+  assert.equal(first.created, true);
+  assert.equal(first.registered.space, "notebooks");
+  const config = JSON.parse(fs.readFileSync(path.join(first.projectRoot, ".context-room/config.json"), "utf8"));
+  assert.deepEqual(config.allowedPaths, ["Carnets/"]);
+  assert.deepEqual(config.watchAllow, ["Carnets/"]);
+  assert.ok(!config.sharedContext);
+  assert.ok(fs.statSync(path.join(first.projectRoot, "Carnets")).isDirectory());
+  const again = ensureContextHubNotebookSpace({ spaceRoot: busy });
+  assert.equal(again.created, false);
+  assert.equal(again.registered.id, first.registered.id);
+  assert.equal(listContextHubProjects().filter((entry) => entry.space === "notebooks").length, 1);
 });

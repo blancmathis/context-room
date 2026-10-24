@@ -77,6 +77,28 @@ test('@pwa offline reconnect retains the original Hub route instead of opening t
   } finally { await page.goto('about:blank'); await f.close(); }
 });
 
+test('@web pairing fragment prefills the code and is removed from the address', async ({ page }) => {
+  const f = await fixture();
+  try {
+    const ticket = JSON.stringify({ protocolVersion: 1, pairingId: 'synthetic', token: 'synthetic-token', grants: [] });
+    await page.route(f.origin + '/', request => request.fulfill({ contentType: 'text/html', body: webEntryHtml(contextRoomWebAssetBundle(), { mode: 'pair' }) }), { times: 1 });
+    await page.goto(f.origin + '/#pair=' + Buffer.from(ticket).toString('base64url'));
+    await expect(page.getByLabel('One-use pairing code')).toHaveValue(ticket);
+    expect(new URL(page.url()).hash).toBe('');
+    await expect(page.getByRole('button', { name: 'Pair this browser', exact: true })).toBeEnabled();
+    await page.goBack(); expect(page.url()).not.toContain('#pair=');
+  } finally { await page.goto('about:blank'); await f.close(); }
+});
+
+test('@web pairing fragment is removed from the address in every entry mode', async ({ page }) => {
+  const f = await fixture();
+  try {
+    await page.route(f.origin + '/', request => request.fulfill({ contentType: 'text/html', body: webEntryHtml(contextRoomWebAssetBundle(), { mode: 'draw' }) }), { times: 1 });
+    await page.goto(f.origin + '/#pair=' + Buffer.from('{"token":"synthetic"}').toString('base64url'));
+    await expect.poll(() => new URL(page.url()).hash).toBe('');
+  } finally { await page.goto('about:blank'); await f.close(); }
+});
+
 test('@pwa native offline page keeps connection repair reachable', async ({ page }, info) => {
   const f = await fixture();
   try {
@@ -212,4 +234,33 @@ test('@pwa @tablet the same notebook controls remain reachable in tablet portrai
     await expect(page.locator('html')).not.toHaveAttribute('data-context-room-keyboard-viewport');
     expect(await page.locator('canvas.notebook-canvas').count()).toBe(1);
   } finally { await page.goto('about:blank'); await f.close(); }
+});
+
+test('@pwa imports a chosen Codex project after the second confirmation', async ({ page }) => {
+  const f = await fixture(), codexHome = path.join(f.base, 'codex'), previous = process.env.CODEX_HOME;
+  const ready = path.join(f.base, 'ready'), fresh = path.join(f.base, 'fresh'), untouched = path.join(f.base, 'untouched');
+  for (const dir of [ready, fresh, untouched]) fs.mkdirSync(dir, { recursive: true });
+  initializeContextRoomProject(ready, { title: 'Ready' });
+  fs.mkdirSync(codexHome); process.env.CODEX_HOME = codexHome;
+  const entry = (id, name, root) => [id, { id, name, rootPaths: [root] }];
+  fs.writeFileSync(path.join(codexHome, '.codex-global-state.json'), JSON.stringify({ 'local-projects': Object.fromEntries([entry('r', 'Ready one', ready), entry('f', 'Fresh one', fresh), entry('u', 'Untouched one', untouched)]), 'project-order': ['r', 'f', 'u'] }));
+  try {
+    // Open the manager by its deep link. The Home picker button sits in the review
+    // toolbar, which the app hides once a fresh snapshot confirms a clean queue,
+    // so clicking it races that render (it is hidden for good on a clean fixture).
+    await page.goto(f.origin + '/?hub=1&view=project-manager');
+    await expect(page.locator('#sharedProposalWorkspaceHeading')).toHaveText('Manage projects');
+    await page.locator('#contextHubImportCodex').click();
+    const dialog = page.getByRole('dialog', { name: 'Import from Codex' });
+    await expect(dialog.getByLabel(/Ready one/)).toBeChecked(); await expect(dialog.getByLabel(/Fresh one/)).not.toBeChecked();
+    await dialog.getByLabel(/Fresh one/).check(); await dialog.getByRole('button', { name: 'Import selected projects', exact: true }).click();
+    const confirm = page.getByRole('dialog', { name: 'Import 2 projects' });
+    await expect(confirm).toContainText('registers 2 folders and creates .context-room/ in 1 of them');
+    expect(fs.existsSync(path.join(fresh, '.context-room'))).toBe(false); // nothing is written before the second step
+    await confirm.getByRole('button', { name: 'Confirm import', exact: true }).click();
+    await expect.poll(() => fs.existsSync(path.join(fresh, '.context-room/config.json'))).toBe(true);
+    expect(fs.existsSync(path.join(untouched, '.context-room'))).toBe(false);
+    const hub = JSON.parse(fs.readFileSync(path.join(process.env.CONTEXT_ROOM_HUB_HOME, 'registry.json'), 'utf8').toString());
+    const roots = JSON.stringify(hub); expect(roots).toContain(fresh); expect(roots).toContain(ready); expect(roots).not.toContain(untouched);
+  } finally { if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous; await f.close(); }
 });

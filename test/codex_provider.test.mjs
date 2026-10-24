@@ -30,9 +30,12 @@ function fixture({ refuseRestriction = false, dottedName = false, maxResidentThr
             mcp_servers: { [dottedName ? 'inherited.secret' : 'inherited-secret']: { enabled: refuseRestriction || !args.includes('mcp_servers.inherited-secret.enabled=false') },
               plain: { enabled: !args.includes('mcp_servers.plain.enabled=false') } },
           } }
-          : value.method === 'model/list' ? { data: [{ id: 'fixture-model', displayName: 'Protocol fixture', supportedReasoningEfforts: [{ reasoningEffort: 'low' }], defaultReasoningEffort: 'low' }] }
+          : value.method === 'model/list' ? { data: [{ id: 'fixture-model', displayName: 'Protocol fixture', supportedReasoningEfforts: [{ reasoningEffort: 'low' }], defaultReasoningEffort: 'low', serviceTiers: [{ id: 'priority' }] }, { id: 'plain-model', displayName: 'Plain', supportedReasoningEfforts: [{ reasoningEffort: 'low' }], defaultReasoningEffort: 'low', serviceTiers: [] }] }
           : value.method === 'thread/start' ? { thread: { id: 'thread-' + ++threadSequence }, model: 'fixture-model' }
           : value.method === 'thread/resume' ? { thread: { id: value.params.threadId }, model: 'fixture-model' }
+          : value.method === 'thread/list' ? { data: [{ id: 'mac-1', name: 'Plan', cwd: '/synthetic/project', updatedAt: 5 }, { id: 'mac-2', preview: 'Other folder', cwd: '/synthetic/elsewhere', updatedAt: 4 }, { id: 'thread-1', name: 'Mine', cwd: '/synthetic/project', updatedAt: 3 }], nextCursor: 'c2' }
+          : value.method === 'thread/read' ? { thread: { id: value.params.threadId, name: 'Plan', cwd: value.params.threadId === 'mac-1' ? '/synthetic/project' : '/synthetic/elsewhere' } }
+          : value.method === 'thread/turns/list' ? { data: [{ id: 'u2', status: 'completed', items: [{ type: 'userMessage', content: [{ type: 'text', text: 'second' }] }, { type: 'agentMessage', text: 'x'.repeat(20000) }] }, { id: 'u1', status: 'completed', items: [{ type: 'userMessage', content: [{ type: 'text', text: 'first' }] }] }], nextCursor: null }
           : value.method === 'thread/unsubscribe' ? { status: 'unsubscribed' }
           : value.method === 'turn/start' ? { turn: { id: 'turn-' + ++turnSequence } }
           : value.method === 'turn/interrupt' ? {} : undefined;
@@ -223,4 +226,48 @@ test('stdio handles fragmented frames, late replies and malformed input without 
   const failure = once(rpc, 'failure'); f.children[0].stdout.write('invalid protocol\n');
   assert.equal((await failure)[0].code, 'codex_protocol');
   await assert.rejects(rpc.request('no-restart'), { code: 'codex_disconnected' });
+});
+
+test('mac task list sends a read-only thread/list for exact roots', async t => {
+  const f = fixture(), provider = await f.provider(); t.after(() => provider.close());
+  await provider.startThread({ tools: [tool] });
+  const result = await provider.listMacTasks({ roots: ['/synthetic/project'], search: 'Plan', archived: true });
+  const request = f.requests.find(item => item.method === 'thread/list');
+  assert.deepEqual(request.params.cwd, ['/synthetic/project']); assert.equal(request.params.archived, true); assert.equal(request.params.searchTerm, 'Plan'); assert.equal(request.params.useStateDbOnly, true);
+  assert.deepEqual(result.data.map(task => task.id), ['mac-1']); // other cwd and this connection's own thread are dropped
+  assert.equal(result.readOnly, true); assert.equal(result.nextCursor, 'c2');
+  assert.equal(f.requests.some(item => ['turn/start', 'thread/start', 'thread/resume'].includes(item.method) && item.params?.threadId === 'mac-1'), false);
+  await assert.rejects(provider.listMacTasks({ roots: [] }), { code: 'codex_scope_unavailable' });
+});
+
+test('mac task read refuses another cwd and clips long text', async t => {
+  const f = fixture(), provider = await f.provider(); t.after(() => provider.close());
+  await assert.rejects(provider.readMacTask({ threadId: 'mac-2', roots: ['/synthetic/project'] }), { code: 'codex_scope_unavailable' });
+  const task = await provider.readMacTask({ threadId: 'mac-1', roots: ['/synthetic/project'] });
+  assert.deepEqual(task.turns.map(item => item.user), ['first', 'second']); // chronological within the page
+  assert.equal(task.turns[1].assistantTruncated, true); assert.ok(task.turns[1].assistant.length <= 16100);
+  assert.equal(task.readOnly, true);
+});
+
+test('model catalog marks Fast only for models with the priority tier', async t => {
+  const f = fixture(), provider = await f.provider(); t.after(() => provider.close());
+  assert.deepEqual(provider.models.map(model => [model.id, model.fast]), [['fixture-model', true], ['plain-model', false]]);
+});
+
+test('turn start sends serviceTier priority for Fast and explicit null otherwise', async t => {
+  const f = fixture(), provider = await f.provider(); t.after(() => provider.close());
+  const { threadId } = await provider.startThread({ tools: [tool] });
+  const startParams = () => f.requests.filter(request => request.method === 'turn/start').at(-1).params;
+  const first = await provider.startTurn({ threadId, text: 'Fast turn', model: 'fixture-model', effort: 'low', fast: true });
+  assert.equal(startParams().serviceTier, 'priority');
+  f.children.at(-1).send({ method: 'turn/completed', params: { threadId, turn: { id: first.turnId, status: 'completed' } } }); await turn();
+  await provider.startTurn({ threadId, text: 'Normal turn', model: 'fixture-model', effort: 'low' });
+  assert.ok('serviceTier' in startParams()); assert.equal(startParams().serviceTier, null);
+});
+
+test('Fast is refused on a model without the priority tier', async t => {
+  const f = fixture(), provider = await f.provider(); t.after(() => provider.close());
+  const { threadId } = await provider.startThread({ tools: [tool] });
+  await assert.rejects(provider.startTurn({ threadId, text: 'Fast turn', model: 'plain-model', effort: 'low', fast: true }), { code: 'codex_fast_unavailable' });
+  assert.equal(f.requests.some(request => request.method === 'turn/start'), false);
 });

@@ -77,6 +77,30 @@ def checked_directory(value):
     return value.resolve(strict=True)
 
 
+def open_read_only(database):
+    """(connection, check) without writing beside the original.
+
+    A WAL database closed cleanly (no -wal, no -shm, as the companion leaves it
+    with SQLite 3.54) is unsafe with mode=ro: Apple's SQLite refuses it, a stock
+    SQLite 3.54 opens it but leaves -wal/-shm beside it. Without -wal the main file
+    holds every commit, so immutable=1 reads it exactly; check() then refuses if
+    the file was replaced or rewritten, or a -wal appeared, during the read."""
+    database = Path(database)
+    wal, shm = Path(str(database) + '-wal'), Path(str(database) + '-shm')
+    with open(database, 'rb') as handle:
+        header = handle.read(20)
+    clean_wal = header[:16] == b'SQLite format 3\x00' and header[18:20] == b'\x02\x02' and not os.path.lexists(wal) and not os.path.lexists(shm)
+    uri = database.absolute().as_uri() + ('?mode=ro&immutable=1' if clean_wal else '?mode=ro')
+    stamp = lambda: (lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns))(database.lstat())
+    first = stamp()
+    connection = sqlite3.connect(uri, uri=True, timeout=10)
+
+    def check():
+        if clean_wal and (stamp() != first or os.path.lexists(wal)):
+            raise ValueError('The legacy database changed during the export. The original is unchanged; retry.')
+    return connection, check
+
+
 def _snapshot_directory(source, output=None, recordings=None):
     """One read transaction; plan and export have the same content revision."""
     source = checked_directory(source)
@@ -120,7 +144,7 @@ def _snapshot_directory(source, output=None, recordings=None):
         files.append(entry)
         return entry
 
-    connection = sqlite3.connect(database.as_uri() + '?mode=ro', uri=True, timeout=10)
+    connection, unchanged = open_read_only(database)
     try:
         connection.execute('PRAGMA trusted_schema=OFF')
         connection.execute('PRAGMA query_only=ON')
@@ -217,6 +241,7 @@ def _snapshot_directory(source, output=None, recordings=None):
         current = regular(database)
         if (identity.st_dev, identity.st_ino) != (current.st_dev, current.st_ino):
             raise ValueError('The original database was replaced during the snapshot.')
+        unchanged()
         manifest = {'version': 2 if recordings is not None else VERSION, 'mediaType': 'application/vnd.context-room.lisiere-snapshot+json', 'kind': kind,
                     'databaseVersion': user_version, 'sourceIdentity': [identity.st_dev, identity.st_ino],
                     'tables': tables, 'files': files, 'excludedCredentials': excluded, 'accepted': False}

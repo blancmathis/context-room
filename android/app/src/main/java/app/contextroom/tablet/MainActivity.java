@@ -23,6 +23,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   NativeViews views;
   CredentialVault vault;
   DeviceConnection connection;
+  MacDiscovery discovery;
   OwnerWorkspace ownerWorkspace;
   boolean showingOwner, showingConversation, conversationBusy;
   android.webkit.ValueCallback<android.net.Uri[]> ownerFileCallback;
@@ -67,6 +68,10 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     engine.web.setVisibility(View.INVISIBLE); engine.web.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
     root.addView(engine.web, new LinearLayout.LayoutParams(1, 1));
     vault = new CredentialVault(this);
+    discovery = new MacDiscovery(this, vault, new MacDiscovery.Host() {
+      public DeviceConnection connection() { return connection; }
+      public void found(DeviceConnection found, String url) { setStatus("Mac retrouvé · synchronisation…"); if (engineReady && currentScope != null) engine.call("refresh"); }
+    });
     header("Context Room", "Ouverture du stockage local…");
     disk.execute(() -> {
       try { JSONObject savedConnection = vault.read(); DeviceConnection found = savedConnection == null ? null : new DeviceConnection(savedConnection);
@@ -99,6 +104,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     if (views != null) views.setMode("independent");
     if (ownerWorkspace != null) { if (ownerWorkspace.web.getParent() instanceof android.view.ViewGroup) ((android.view.ViewGroup) ownerWorkspace.web.getParent()).removeView(ownerWorkspace.web); ownerWorkspace.close(); ownerWorkspace = null; }
     connection = selected; engine.connection = selected; navigation.connect(selected);
+    if (selected != null) selected.unreachable = discovery::failed;
     if (engineReady && selected != null) engine.call("session", selected.session);
   }
   void connectionHome() { ownerScreen(); }
@@ -232,7 +238,14 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
       screen.addView(label("Vos données Lisière sont conservées sur cet appareil. Préparez leur récupération avant de poursuivre la migration sur le Mac.", 16));
       screen.addView(button("Récupérer Lisière", () -> startActivity(new Intent(this, LegacyRecoveryActivity.class))));
     }
+    screen.addView(label("Sans caméra : enregistrez « Save pairing file » sur le Mac, transférez le fichier ici (BOOXDrop), puis importez-le.", 16));
+    screen.addView(button("Importer le fichier d’appairage", this::importPairingFile));
     if (connection != null) screen.addView(button("Revenir à Context Room", this::connectionHome));
+  }
+
+  void importPairingFile() {
+    try { startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), 74); }
+    catch (ActivityNotFoundException error) { showError("Le sélecteur de fichiers Android est indisponible."); }
   }
 
   void pair(JSONObject ticket) {
@@ -535,6 +548,16 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
         runOnUiThread(() -> { callback.onReceiveValue(true); ownerError("Fichier exporté dans la destination choisie."); });
       }); return;
     }
+    if (request == 74) {
+      android.net.Uri uri = data == null ? null : data.getData();
+      if (result != RESULT_OK || uri == null || !"content".equals(uri.getScheme())) return;
+      disk.execute(() -> {
+        try (java.io.InputStream stream = getContentResolver().openInputStream(uri)) {
+          if (stream == null) throw new IOException("Le fichier ne peut pas être ouvert.");
+          JSONObject ticket = PairingFile.parse(stream); runOnUiThread(() -> { if (!dead) pair(ticket); });
+        } catch (Exception error) { runOnUiThread(() -> showError(error.getMessage())); }
+      }); return;
+    }
     if (request == 71) {
       android.webkit.ValueCallback<android.net.Uri[]> callback = ownerFileCallback; ownerFileCallback = null;
       boolean valid = fileChooserOwner == ownerWorkspace && showingOwner; fileChooserOwner = null;
@@ -552,8 +575,8 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     disk.execute(() -> { try (OutputStream stream = getContentResolver().openOutputStream(uri, "w")) { if (stream == null) throw new IOException("Le fichier ne peut pas être ouvert."); stream.write(bytes); runOnUiThread(() -> setStatus("Récupération exportée. Les gestes restent dans Context Room.")); }
       catch (Exception error) { runOnUiThread(() -> showError(error.getMessage())); } });
   }
-  @Override protected void onPause() { resumed = false; if (ownerWorkspace != null) ownerWorkspace.foreground(false); views.setMode("independent"); navigation.foreground(false); if (ink != null) { ink.finishReachedInk(); ink.suspendBoox(true); viewport(); } super.onPause(); }
-  @Override protected void onResume() { super.onResume(); resumed = true; if (ownerWorkspace != null) ownerWorkspace.foreground(showingOwner || showingConversation); finishMicrophonePermission(); navigation.foreground(!(showingOwner || showingConversation)); if (ink != null) ink.suspendBoox(false); if (engineReady && currentScope != null) engine.call("refresh"); }
+  @Override protected void onPause() { resumed = false; discovery.foreground(false); if (ownerWorkspace != null) ownerWorkspace.foreground(false); views.setMode("independent"); navigation.foreground(false); if (ink != null) { ink.finishReachedInk(); ink.suspendBoox(true); viewport(); } super.onPause(); }
+  @Override protected void onResume() { super.onResume(); resumed = true; if (ownerWorkspace != null) ownerWorkspace.foreground(showingOwner || showingConversation); finishMicrophonePermission(); discovery.foreground(true); navigation.foreground(!(showingOwner || showingConversation)); if (ink != null) ink.suspendBoox(false); if (engineReady && currentScope != null) engine.call("refresh"); }
   @Override public void onBackPressed() { interaction(); if (showingConversation) { closeNativeConversation(); return; } if (presentation) { setPresentation(false); return; } if (showingOwner && ownerWorkspace.web.canGoBack()) { ownerWorkspace.web.goBack(); return; } if (connection != null && ink != null) whenJournalIdle(() -> { engine.call("close"); connectionHome(); }); else super.onBackPressed(); }
-  @Override protected void onDestroy() { if (ink != null) ink.finishReachedInk(); dead = true; if (ownerFileCallback != null) { ownerFileCallback.onReceiveValue(null); ownerFileCallback = null; } if (ownerExportCallback != null) { ownerExportCallback.onReceiveValue(false); ownerExportCallback = null; ownerExportBytes = null; } if (ownerWorkspace != null) ownerWorkspace.close(); navigation.close(); engine.close(); disk.shutdown(); super.onDestroy(); }
+  @Override protected void onDestroy() { if (ink != null) ink.finishReachedInk(); dead = true; if (ownerFileCallback != null) { ownerFileCallback.onReceiveValue(null); ownerFileCallback = null; } if (ownerExportCallback != null) { ownerExportCallback.onReceiveValue(false); ownerExportCallback = null; ownerExportBytes = null; } if (ownerWorkspace != null) ownerWorkspace.close(); navigation.close(); engine.close(); discovery.close(); disk.shutdown(); super.onDestroy(); }
 }

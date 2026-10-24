@@ -42,7 +42,20 @@ context-room start --root . --device-host 127.0.0.1 --device-port 4318
 ```
 
 For another physical device, use the Mac's reachable LAN address instead of
-loopback. The device options apply to a new Hub process. An already-running
+loopback. The device options apply to a new Hub process.
+
+While the device listener runs, the Hub announces it on the local network with
+`dns-sd -R _contextroom._tcp` (macOS Bonjour). The TXT record holds only
+`version=1` and the public certificate `fingerprint`. It never holds a token,
+a server id or a path. Pass `--no-device-discovery` to turn the announcement
+off. The announcement stops when the Hub stops.
+
+If the Mac gets a new address, the tablet looks for it by itself after a
+network failure. It accepts only a service with the same version and the same
+pinned fingerprint, then checks the session before it keeps the new address.
+The first pairing still needs the explicit `--device-host`. Run
+`context-room doctor` to see a read-only report of the Mac address, the
+listener and the announcement. An already-running
 Hub is preserved and reports that these options were not applied.
 
 In a working notebook, **Connect tablet** opens the owner pairing interface.
@@ -55,6 +68,28 @@ The native client must verify the SHA-256 fingerprint of the TLS leaf certificat
 before sending the code or device credential. Pairing returns a new random
 credential valid for 30 days. Revocation is checked on every authenticated
 request and again after a body upload, before applying its changes.
+
+### Pairing code, QR code and pairing file
+
+"Create pairing code" (in a notebook, or in Connected devices for the complete
+owner interface) makes one ticket that expires after two minutes and works once.
+The sheet gives it in three forms. All three carry the same ticket.
+
+- **Code**: copy the text and paste it in the app or in the browser page.
+- **QR code**: a phone or tablet camera opens `<browser address>/#pair=<ticket>`.
+  The ticket is in the URL fragment, which a browser never sends to a server. The
+  browser pairing page fills the code field, removes the fragment from the address,
+  and waits for you to press "Pair this browser". Without a browser address, the QR
+  holds the raw ticket. A ticket too long for a QR code (version 25) shows
+  "Too long for a QR code. Save the pairing file or copy the code." instead.
+  `src/qr_code.mjs` makes the QR code on the Mac, with no dependency.
+- **Pairing file**: "Save pairing file" writes `context-room-pairing.json`. On a
+  tablet without a camera (the BOOX Note Air5 C), move the file with BOOXDrop, then
+  choose "Importer le fichier d’appairage" on the connection screen. The file is
+  limited to 8192 bytes, like the pasted code. The app has no QR scanner and does not
+  ask for the camera permission. After pairing, delete `context-room-pairing.json` on
+  the Mac and on the tablet. The ticket works once and for 2 minutes. The browser
+  history can keep the scan address; it holds only that spent ticket.
 
 ## Operate Context Room from the tablet
 
@@ -147,6 +182,20 @@ session or a new following action cannot reuse an earlier receipt. Sharing
 expires after five seconds without a heartbeat. These ephemeral camera states
 are discarded when the service restarts and never enter notebook operation
 history, documentary review or accepted content.
+
+**Follow agent** (off by default, never remembered, absent in a frozen review)
+keeps the view on what the agent writes. When a render shows objects the agent
+created, changed or removed, the canvas moves only if that area is not already
+fully visible: a pan at the current scale if it fits with a 10 % margin,
+otherwise just enough zoom-out. It never zooms in and never opens another
+notebook. A pen or finger gesture, a tool or zoom action, **Fit drawing** or a
+key press stops it ("You took back the view."). Choosing **Follow [tablet]** also
+stops it, and its button stays off while this view follows a device, so one
+source moves the camera. A shared view can follow the agent: if the tablet follows
+the agent and shares its view, the Mac follows with no extra step. **Ask about
+selection**, **Dictate about notebook** and **Voice** do not stop it: they talk to
+the agent and do not move the view. **Dictate text** writes into the notebook, so
+it stops it.
 
 A pen or finger contact, a tool or keyboard action immediately stops following
 on that surface. A late network response cannot resume it or move the current
@@ -299,20 +348,33 @@ device and resource. Saved viewports remain local to the device. Conflicts and
 unacknowledged work remain exportable; local saving and confirmation by the
 Mac have different visible states.
 
-Build from the source repository with JDK 17 and Android SDK/build-tools 35:
+Build with JDK 17 and Android SDK/build-tools 35. Two routes exist:
 
-```bash
-scripts/build-android.sh
-```
+- **Development preview.** `scripts/build-android.sh` writes
+  `android/app/build/outputs/apk/debug/app-debug.apk` with the separate
+  application ID `app.contextroom.tablet.preview` and an isolated key in
+  ignored local build state. It never reuses an installed application's identity.
+- **Owner release, `app.contextroom.tablet`.** `./gradlew :app:assembleRelease
+  -PcontextRoomVersionCode=N -PcontextRoomVersionName=X` (heavy builds run on
+  `ci`, which holds no key) writes an unsigned APK. `scripts/sign-android-apk.sh`
+  on the owner's Mac aligns it and signs it with the stable key
+  `~/.local/share/context-room/signing/tablet.keystore` (mode 0600, created once with
+  `keytool`, never in Git, never on `ci`, copied with its SHA-256 to the backup folder),
+  then runs `check-android-artifact.py --package app.contextroom.tablet`. The
+  application identity has no `.preview` suffix, so later updates install over
+  the earlier one without uninstalling. Without that key, an update would
+  require removal and lose the tablet cache.
 
-The output is `android/app/build/outputs/apk/debug/app-debug.apk`, with the
-separate application ID `app.contextroom.tablet.preview`. The script generates
-an isolated development key in ignored local build state; it does not reuse
-an installed application's signing identity. Dependency provenance is recorded
-in `android/NOTICE.md`. The explicit [Lisière recovery build](lisiere-migration.md#recover-an-existing-android-installation)
-retains an original installation's signing identity and data; it has a separate
-output and emulator upgrade/export checks. Release packaging, personal-device
-installation and physical BOOX validation remain separate gates.
+Update rule: the interface comes from the connected Mac (a Hub deployment is
+enough). Only native code changes the APK, and it changes rarely: install the
+new, higher version code over the old one through the guided procedure (a
+temporary server on the Mac for 3 hours, download on the tablet, Android's
+**Update**). The app does not install APKs itself. Dependency provenance is
+recorded in `android/NOTICE.md`. The explicit [Lisière recovery
+build](lisiere-migration.md#recover-an-existing-android-installation) retains
+an original installation's signing identity and data; it has a separate output
+and emulator upgrade/export checks. Personal-device installation and physical
+BOOX validation remain separate gates.
 
 For repeatable synthetic verification on a separately created emulator whose
 AVD name starts with `ContextRoom_`:
@@ -360,6 +422,12 @@ device edits, and restart the service before replaying a lost receipt. They
 also check revocation during upload, expired credentials, replaced directories,
 route and scope refusal, and the actual CLI launch.
 
+QR tests (`test/qr_code.test.mjs`) compare the encoder with matrices made once by
+`qrcode` 8.2 (`test/fixtures/qr/`, script `generate.py`) for versions 1, 5, 10, 17
+and 25 and for forced masks, and check the format and version bits.
+`test/devices.test.mjs` checks that the QR address holds the ticket only in its
+fragment. `android/.../PairingFileTest.java` checks the pairing-file bound and format.
+
 Browser tests (`test/e2e/notebooks.spec.mjs`) exercise owner pairing, the separate
 request/deferral/display states and revocation in Chromium, Firefox and WebKit.
 `test/device_owner.test.mjs` checks explicit owner pairing, the running-runtime
@@ -368,6 +436,9 @@ delayed responses against real HTTP/TLS handlers.
 `test/device_browser.test.mjs` adds strict certificate-chain, cookie, origin,
 permission and replacement-pairing checks. `test/device_display.test.mjs` checks
 common render receipts, pending-gesture deferral and cancellation.
+`test/notebook_geometry.test.mjs` covers the Follow agent change and framing rules;
+`test/e2e/assistant.spec.mjs` checks the framing and the human stop in the browser;
+`test/e2e/notebooks.spec.mjs` checks the PNG and PDF downloads.
 `npm run test:web-app` uses independent synthetic browser fixtures for offline
 process restarts, waiting-worker lifecycle, pressure and tablet layouts.
 The isolated Android 15 CI verifier now exercises the normal shared WebView
@@ -401,3 +472,5 @@ microphone quality or real speech recognition. `OwnerRecordingTest.java` require
 a newly built instrumentation APK; an older successful preview build does not
 validate that test or the new Mac-served interface. No execution result is claimed
 until the instrumentation and host checks complete.
+
+Accepted risk: on a shared local network, someone can send many fake announcements with the public fingerprint. The tablet may then spend its search budget (32 services, 45 seconds) and fail to find the Mac. No token or key leaks, because the tablet still checks the pinned key before it sends anything; start the search again on a quiet network.

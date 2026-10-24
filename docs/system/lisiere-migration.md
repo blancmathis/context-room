@@ -48,6 +48,10 @@ destination is refused; existing content is never overwritten. Keep exports
 outside public repositories: they contain original documents and user history.
 
 The helper reads a consistent SQLite transaction, including committed WAL data.
+It never writes beside the original. A WAL database closed cleanly (no `-wal`,
+no `-shm`, as the companion's SQLite 3.54 leaves it) cannot be opened with
+`mode=ro`; the helper then reads it with `immutable=1` and refuses the export
+if the file changes or a `-wal` appears before the read ends (retry).
 It accepts the recognized Mac and Android schemas at database version 0 or 1.
 Unknown tables, columns and later versions are refused for explicit inspection.
 The snapshot is bounded to 512 MiB, including Mac content-addressed assets.
@@ -82,22 +86,34 @@ Earlier project handoff directories are not part of this database export.
 
 ## Recover an existing Android installation
 
-The ordinary preview uses a separate application identity. To access data kept
-inside an existing Lisière installation, the explicit recovery build uses the
-same `fr.lisiere.android` identity and the preserved original signing key. It
-packages the same Context Room source with a higher Android version code:
+The tablet app, `app.contextroom.tablet`, is a separate application from
+Lisière. To reach data kept inside an existing Lisière installation, a
+recovery build uses the same `fr.lisiere.android` identity and the preserved
+original signing key. It packages the same Context Room source with a higher
+Android version code (96; the installed original is 95) and the visible name
+**Lisière · récupération**, so the wrong application is never removed.
+
+The build runs on `ci` and holds no key. The signature happens on the Mac, with
+the key that never leaves it:
 
 ```bash
-scripts/build-android-recovery.sh /absolute/path/to/original-lisiere.apk HIGHER_VERSION_CODE
+# On ci, in ~/work/context-room/T-021/L2/<launch>/ (JDK 17, SDK 35, a source archive of one commit):
+./gradlew --no-daemon :app:assembleDebug -PcontextRoomLegacyRecovery=true \
+  -PcontextRoomLegacyVersionCode=96 -PcontextRoomLegacyKeystore=<disposable key on ci>
+# Copy the APK alone to the Mac, then sign and check it there:
+ANDROID_HOME=~/Library/Android/sdk scripts/sign-android-apk.sh /abs/recovery-96-ci.apk \
+  ~/.local/share/lisiere/signing/development.keystore "$B/apk/recovery-96.apk" \
+  --upgrade-from /abs/original-lisiere-95.apk
 ```
 
-JDK 17, Android SDK/build-tools 35 and the original key in
-`~/.local/share/lisiere/signing/development.keystore` are required. The command
-builds and checks the original/new package identities, signer and increasing
-version. It does not install anything. Its APK is
-`android/.local/legacy-recovery-build/app/outputs/apk/debug/app-debug.apk`;
-ordinary preview output and signing remain separate. Keep signing material
-outside Git. A different key cannot upgrade the existing installation.
+`sign-android-apk.sh` takes absolute paths only, refuses a key inside the
+repository or an output that exists, aligns (`zipalign -P 16 4`), replaces the
+signature with `apksigner`, then runs `check-android-artifact.py` (package,
+permissions, v2 signature, same signer and a higher version as the original,
+shared web assets equal to the source). It prints the check JSON; a failed check
+leaves no output. Without `ci`, `scripts/build-android-recovery.sh` builds and
+checks on the Mac with the same key. Nothing installs by itself. Keep signing
+material outside Git. A different key cannot upgrade the existing installation.
 
 After an authorized upgrade, **Récupérer Lisière** on the connection screen
 opens an explicit local export. **Préparer une copie** retains the original
@@ -123,6 +139,81 @@ Queue reconciliation and proof of delivery remain separate from this conversion.
 snapshot extraction from its checked contents. It does not establish a
 personal-device upgrade, writer cutover or automatic rollback.
 
+
+### BOOX session guide (steps A to F)
+
+Claude does the Mac side and says each address. Mathis does only what is written
+here. Do not uninstall anything before step F, which comes only after two verified
+copies of the ZIP, the controlled import and step 9 of the cutover plan.
+
+**Delivery chain.** `ci` builds without any key; the Mac signs; a temporary
+server on the Mac (port 8796, bound to the LAN address, stopped after 3 hours)
+serves the APK; the tablet's own Lisière updater installs it over the existing
+app; the ZIP returns by BOOXDrop. No cloud, no mail. The ZIP and snapshots
+never go to `ci`. The signed APKs, the ZIP and the snapshots are kept under
+`$B/{apk,boox,snapshots}` (`B=~/Backups/lisiere-2026-10`, created after the
+backup step). The server is `lisiere/updates/service.py` from the read-only
+Lisière repository: `publish` into `/private/tmp/t021-l2/updates`, then `serve`
+under `perl -e 'alarm shift; exec @ARGV' 10800 …`. It refuses any package but
+`fr.lisiere.android`, so step E serves the Context Room APK with
+`python3 -m http.server --bind <LAN IP> 8796 --directory <folder with that one APK>`.
+
+```text
+A. Avant.
+   La BOOX est chargée. Elle est sur le même Wi-Fi que le Mac. Le Mac est allumé.
+
+B. Mettre à jour sans rien perdre.
+   1. Ouvre Lisière. Va dans « Mises à jour ».
+   2. Dans « Adresse du Mac », écris l'adresse que Claude te donne
+      (elle ressemble à http://192.168.x.y:8796). Vérifie chaque chiffre.
+   3. Touche « Vérifier les mises à jour », puis « Télécharger et installer ».
+   4. Android demande « Mettre à jour cette application ? ». Touche « Mettre à jour ».
+   Ne désinstalle rien.
+
+C. Exporter tes données.
+   1. Ouvre l'app « Lisière · récupération ».
+   2. Touche « Récupérer Lisière », puis « Préparer une copie ».
+      Attends « Copie privée prête ».
+   3. Touche « Enregistrer le fichier ZIP ». Choisis le dossier « Download ».
+      Touche « Enregistrer ». Attends « Fichier de récupération enregistré ».
+   Ne supprime pas ce fichier. La copie sur la tablette reste la première copie.
+
+D. Envoyer le fichier au Mac.
+   1. Ouvre BOOXDrop sur la tablette.
+   2. Dis à Claude l'adresse affichée.
+   3. Claude prend le fichier « context-room-lisiere-recovery.zip ».
+   Si BOOXDrop ne marche pas : câble USB, puis OpenMTP sur le Mac.
+
+E. Installer Context Room (plus tard, quand Claude le dit).
+   1. Dans le navigateur de la BOOX, ouvre l'adresse que Claude te donne.
+   2. Ouvre le fichier téléchargé. Autorise l'installation si Android le demande.
+   3. Ouvre « Context Room ». Connecte-le avec le code créé sur le Mac.
+
+F. Retirer l'ancienne app (seulement quand Claude dit : 2 copies du ZIP vérifiées,
+   import contrôlé fait, étape 9 faite).
+   1. Appui long sur « Lisière · récupération ».
+   2. Touche « Désinstaller ».
+   Garde « Context Room ».
+```
+
+After D, on the Mac, keep two copies of the ZIP besides the one on the tablet.
+`cp ~/Downloads/context-room-lisiere-recovery.zip "$B/boox/"` (never `mv`), then
+`chmod 600`, then a second `cp` to a place outside the Mac's disk (an external
+drive, `B2`). Compare `shasum -a 256` of the Downloads file, of `$B/boox` and of
+`$B2`: the three values must match. Then `unzip -l`, then `migrate --export-lisiere`
+(preview, then `--apply --revision`) and `--inspect-lisiere --kind all`. Note the
+cache rows (`manifest.json`), the outbox entries and the `recordings` entries,
+which must equal the number of `recordings/*.pcm` in the ZIP. Go on to step E only
+when these numbers are noted and the two copies are verified. Never go to step F
+before the two copies, the controlled import and step 9. Before writing
+anything to the Hub, `--reconcile-lisiere` runs as a preview only. After the
+session: stop the server, `rm -rf /private/tmp/t021-l2`, check that port 8796 is closed.
+
+Risks seen in advance: macOS may ask to let `python3` receive connections; the
+Lisière updater may refill the companion's address in the field (read it again
+just before « Vérifier »); BOOXDrop from the tablet to the Mac has not been tried
+yet (the USB route is the fallback). Pairing the new app is a two-minute JSON
+code today; the pairing file (lot L9b) must exist before step E.
 
 ### Direct native ZIP conversion
 
@@ -214,8 +305,10 @@ acknowledge, accept or restart work.
 
 Choose the source board ID from the inventory and an unused
 ordinary `.crnb` path in an existing Context Room project's writable, watched
-folders. A free legacy board can use any such explicitly chosen destination;
-there is no new inbox or project catalog.
+folders. Without `--root`, a free legacy board (no Lisière project) goes to
+the Notebooks space; if the space does not exist yet, the command asks to
+create it first (Hub › New notebook) or to pass `--root`. Only
+`--notebooks-to-space` (below) creates the space itself.
 
 ```bash
 context-room migrate --root /path/to/project --import-lisiere /path/to/private-snapshot --legacy-board BOARD_ID --path docs/Ideas.crnb
@@ -248,6 +341,31 @@ Repeat the same apply command after interruption. Matching records are reused;
 later human notebook edits remain intact. If project configuration changed,
 obtain a fresh preview before resuming the same retained import. Changed backup
 bytes require reconciliation and are never overwritten.
+
+Free notebooks that an earlier import placed in a project move to the
+Notebooks space with one preview and one apply. Only Lisière imports move
+(`--legacy-board` keeps one); other notebooks, `migrations/` and pending
+proposals stay. Each notebook keeps its `Carnets/` path and uses the verified
+move of the [document workflow](../features/document-workflow.md#editable-notebooks).
+
+```bash
+context-room migrate --root /path/to/project --notebooks-to-space
+context-room migrate --root /path/to/project --notebooks-to-space --apply --revision REVISION
+```
+
+Without a Notebooks space (the Hub is stopped during the cutover), the preview
+writes nothing: it reports `space: "will-be-created"`, the space folder, and
+the notebooks and refusals checked on the source side. Apply with that
+revision checks it again, creates and registers the space, then moves. A
+stale revision is refused before anything is created. With an existing space
+nothing changes. The cutover order is in `docs/lisiere-parite.md`
+(« Migration réelle des 4 carnets »).
+
+If the apply stops (a crash or a killed process), run it again. Wait 30 s
+first: a lock left by the stopped process is released after 30 s, and before
+that the command answers that the resource is busy. If the answer says
+« Preview again », run a new preview, then apply its new revision. Notebooks
+that already moved are not moved twice; each one stays active in exactly one place.
 
 Import creates private working state, with explicit import provenance. It does
 not create an ordinary `.crnb` file or an accepted baseline. Use the existing
@@ -521,6 +639,23 @@ context-room migrate --root /path/to/project --cutover-lisiere /path/to/legacy-w
 context-room migrate --root /path/to/project --cutover-lisiere /path/to/legacy-workspace --mac-snapshot /path/to/private-mac-snapshot --legacy-plist /path/to/original-companion.plist --apply --revision REVISION
 ```
 
+Before the cutover, back up the whole original installation (step 1) into a
+new folder inside the durable cutover folder `$B` used by the BOOX guide:
+
+```bash
+python3 -B scripts/lisiere-backup.py --output "$B/lisiere-backup-<date>"
+```
+
+It writes only inside the new `--output` folder (refused if it exists): row
+counts, an online SQLite copy (same read path as the export), a `.tgz` of
+`~/.local/share/lisiere` without `models/`, `~/Documents/Lisière`, both plists,
+the `~/.local/bin/lisiere` link and its target, `SHA256SUMS` and a separate
+`development.keystore`. The archive is extracted to a temporary folder and
+checked. **Only `manifest.json`, written last, proves a complete backup**; a
+failed run leaves a partial folder without it: start again in a new folder.
+After the cutover (step 7 bis), `--source-retained <retained workspace>` backs up
+the retained copy and compares it in full.
+
 The macOS adapter recognizes only this account's original
 `fr.lisiere.companion` LaunchAgent and default workspace. It refuses custom
 workspace overrides, unknown process state and open legacy files. Apply pauses
@@ -562,9 +697,21 @@ Rollback here means **pause all enrolled writes and retain recent work in place*
 It does not restore an old database over new gestures, undo human acceptance,
 restart the old queue, or reactivate the old product. Resuming Context Room is a
 new explicit revision-bound action. A functional downgrade to the old Lisière
-application is not implemented. The production `launchctl`, open-file check and
-Darwin no-replace rename require local macOS verification; Linux synthetic
-contracts exercise the coordinator and actual file/database protection only.
+application is not implemented. Resuming after a pause first checks that the
+legacy agent is still stopped, its files closed and the fence intact; if the
+retained workspace holds newer work than the last known revision, resume needs
+`--mac-snapshot` with an exact export of that work, recorded as acknowledged.
+The stop check reads `launchctl print-disabled` (macOS 26 prints
+`"label" => disabled`) and waits up to 10 s for the process to exit. The opt-in
+test `CONTEXT_ROOM_LAUNCHD_ESSAY=1 node --test --test-concurrency=1
+test/lisiere_cutover_launchd.test.mjs` runs the whole cutover against a real
+`gui/<uid>` agent. It uses a synthetic profile: `CONTEXT_ROOM_SYNTHETIC_LEGACY_AGENT=<nonce>`
+targets only `test.contextroom.synthetic-<nonce>` and needs a temporary HOME
+under `/private/tmp` or the Darwin user temporary folder (never `$TMPDIR`). The
+essay always uses the fixed label `test.contextroom.synthetic-crlaunchdessay`
+and its synthetic agent removes `-wal`/`-shm` on exit, like the companion. It
+unloads a leftover of that label first, then unloads and re-enables it at the
+end: `print-disabled` keeps one `enabled` override for it (removing it needs root).
 
 ### Queue projection versus retained tablet scene
 

@@ -14,6 +14,8 @@ root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
 parser.add_argument('--apk', type=Path, default=root / 'android/app/build/outputs/apk/debug/app-debug.apk')
 parser.add_argument('--upgrade-from', type=Path, help='Require a higher-version, identically signed upgrade of this original Lisière APK.')
+parser.add_argument('--signer-sha256', help='Expected signing certificate SHA-256 (hex, any case).')
+parser.add_argument('--package', help="Expected application ID (default: the preview package, or fr.lisiere.android with --upgrade-from).")
 args = parser.parse_args()
 sdk = Path(os.environ['ANDROID_HOME']) / 'build-tools/35.0.0'
 
@@ -23,7 +25,7 @@ def command(*arguments):
         raise SystemExit(Path(arguments[0]).name + ' failed: ' + result.stderr.strip()[-2000:])
     return result.stdout
 
-expected_package = 'fr.lisiere.android' if args.upgrade_from else 'app.contextroom.tablet.preview'
+expected_package = args.package or ('fr.lisiere.android' if args.upgrade_from else 'app.contextroom.tablet.preview')
 permissions = command(str(sdk / 'aapt'), 'dump', 'permissions', str(args.apk))
 assert 'package: ' + expected_package + '\n' in permissions, 'Unexpected application identity'
 expected_permissions = ['android.permission.INTERNET', 'android.permission.RECORD_AUDIO']
@@ -31,8 +33,14 @@ assert re.findall(r"uses-permission[^\n]*name='([^']+)'", permissions) == expect
 manifest = command(str(sdk / 'aapt'), 'dump', 'xmltree', str(args.apk), 'AndroidManifest.xml')
 for attribute in ('allowBackup', 'usesCleartextTraffic'):
     assert re.search(r'android:' + attribute + r'\([^\n]+\)=\(type 0x12\)0x0\b', manifest), attribute + ' must be disabled'
-signature = command(str(sdk / 'apksigner'), 'verify', '--verbose', str(args.apk))
+# --min-sdk-version 24 forces the v2 block to be checked even when a v3 signature also verifies.
+signature = command(str(sdk / 'apksigner'), 'verify', '--verbose', '--min-sdk-version', '24', str(args.apk))
 assert 'Verified using v2 scheme (APK Signature Scheme v2): true' in signature
+current = command(str(sdk / 'apksigner'), 'verify', '--verbose', str(args.apk))
+assert re.search(r'^Verifies$', current, re.M) and 'Verified using v3 scheme (APK Signature Scheme v3): true' in current, 'The v3 signature must verify'
+if args.signer_sha256:
+    found = re.findall(r'^Signer #\d+ certificate SHA-256 digest: ([0-9a-f]+)$', command(str(sdk / 'apksigner'), 'verify', '--print-certs', str(args.apk)), re.M)
+    assert found == [args.signer_sha256.lower()], 'Unexpected signing certificate'
 upgrade = {}
 if args.upgrade_from:
     def apk_identity(file):

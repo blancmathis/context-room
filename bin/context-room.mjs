@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { inspectLocalAudio } from '../src/local_audio_diagnostics.mjs';
+import { inspectLocalNetwork } from '../src/local_network_diagnostics.mjs';
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,8 +8,9 @@ import { updateAllContextRooms } from "../scripts/update-context-rooms.mjs";
 import { planLisiereCutover, applyLisiereCutover, changeCutoverMode } from '../src/lisiere_cutover.mjs';
 import { planStateMigration, applyStateMigration } from "../src/state_migration.mjs";
 import { exportLisiereSnapshot } from "../src/lisiere_snapshot.mjs";
+import { lisiereBoardProject } from "../src/lisiere_migration.mjs";
 import { inspectLisiereSnapshot } from "../src/lisiere_inventory.mjs";
-import { migrateLisiereNotebook, migrateLisiereDraft, migrateLisiereConversation, migrateLisiereDrawingSession, reconcileLisiereNotebook, migrateLisiereRecording, proposeDocumentMove, proposeDocumentationMap, buildAgentBriefSections, renderAgentBrief, documentationDriftReport, agentUsageReport, documentationTidyReport } from "../src/context_room.mjs";
+import { migrateLisiereNotebook, migrateNotebooksToSpace, requireContextHubNotebookSpace, migrateLisiereDraft, migrateLisiereConversation, migrateLisiereDrawingSession, reconcileLisiereNotebook, migrateLisiereRecording, proposeDocumentMove, proposeDocumentationMap, buildAgentBriefSections, renderAgentBrief, documentationDriftReport, agentUsageReport, documentationTidyReport } from "../src/context_room.mjs";
 import { visualGuide } from "../src/visual_guide.mjs";
 import {
   applyCliReviewAnnotation,
@@ -102,6 +104,7 @@ import {
   registerContextHubSharedRepository,
   withContextHubProjectSharedRegistration,
   writeContextHubRuntime,
+  updateContextHubRuntimeDiscovery,
 } from "../src/context_hub.mjs";
 import {
   backlinksDocumentation,
@@ -121,6 +124,7 @@ import {
   validateDocumentation,
 } from "../src/documentation.mjs";
 import { recordDocumentationRead } from "../src/documentation_readers.mjs";
+import { previewCodexProjectImport, applyCodexProjectImport } from "../src/codex_catalog.mjs";
 import { COMPACT_SEARCH_RESULT, CONTEXT_BUNDLE_TRIMMERS, fitToTokenBudget } from "../src/agent_budget.mjs";
 import { preReviewDocumentChecks } from "../src/doc_tidy.mjs";
 import {
@@ -340,9 +344,9 @@ async function flushAndExit(code = 0) {
 }
 
 const KNOWN_OPTIONS = new Set([
-  "cutover-lisiere", "legacy-plist", "rollback-cutover", "resume-cutover", "legacy-recording", "conversation-id", "reconcile-lisiere", "recovery-view", "mac-snapshot", "legacy-actor", "export-lisiere", "import-lisiere", "inspect-lisiere", "legacy-board", "legacy-draft", "legacy-conversation", "legacy-session", "session-frame", "recordings", "output", "revision",
-  "device-host", "device-port", "device-state", "device-browser-origin", "device-browser-cert", "device-browser-key",
-  "reader", "propose",
+  "cutover-lisiere", "legacy-plist", "rollback-cutover", "resume-cutover", "notebooks-to-space", "legacy-recording", "conversation-id", "reconcile-lisiere", "recovery-view", "mac-snapshot", "legacy-actor", "export-lisiere", "import-lisiere", "inspect-lisiere", "legacy-board", "legacy-draft", "legacy-conversation", "legacy-session", "session-frame", "recordings", "output", "revision",
+  "device-host", "no-device-discovery", "device-port", "device-state", "device-browser-origin", "device-browser-cert", "device-browser-key",
+  "reader", "propose", "replace",
   "action", "actionable", "advisory", "all", "all-projects", "allow", "allow-stale", "apply", "branch", "budget", "contract", "cursor", "cwd", "days", "depth", "description", "detail", "document", "dry-run", "enabled", "exclude", "expand", "fields", "files", "folder", "follow", "format", "fresh", "from", "goal", "h", "heading", "help", "highlight", "hook", "include",
   "assignment", "change", "collection", "collection-path", "collection-title", "destination", "id", "include", "json", "kind", "limit", "message", "mode", "name", "no-restart", "note", "operation", "order", "path", "pattern", "percent", "port", "profile", "project", "projects", "provider", "providers", "query", "skill",
   "expected-revision", "file", "filter", "idempotency-key", "label", "location", "no-color", "no-local", "non-interactive", "only", "plan", "profile", "project", "projects-file", "proposal", "quiet", "reason", "recent", "repository", "resource", "root", "scope", "search", "section", "selector", "session", "set", "settings", "severity", "shared", "shared-project", "shell", "since", "skills", "source", "status", "strict", "summary", "target", "task", "text", "title", "to", "types", "verbose", "version", "view", "watch", "workspace",
@@ -884,6 +888,8 @@ if (!rootStats?.isDirectory()) {
 
 const nativePlanCommand = (
   command === "migrate"
+  || command === "backup"
+  || command === "restore"
   || (command === "agent" && args._[1] === "handoff")
   || (command === "agent" && ["watch", "unwatch", "open", "navigate", "scroll", "highlight", "annotate"].includes(args._[1]))
   || (command === "review" && args._[1] === "annotate")
@@ -896,7 +902,9 @@ const nativePlanCommand = (
   || (command === "shared" && ["local", "security"].includes(args._[1]))
 );
 const nativeApplyCommand = (
-  command === "migrate"
+  (command === "project" && args._[1] === "import-codex")
+  || command === "migrate"
+  || command === "restore"
   || (command === "agent" && args._[1] === "handoff")
   || (command === "review" && args._[1] === "annotate")
   || (command === "shared" && args._[1] === "skills")
@@ -943,6 +951,18 @@ if (command === "project") {
       const registered = registerCliProject({ root, title });
       emitAgentFirstResult("project.register", { data: { effect: "reversible-local", registered } }, { format: agentFirstFormat });
       process.exit(0);
+    }
+    if (action === "import-codex") {
+      const folders = args._.slice(2).map(String);
+      if (!args.apply) {
+        emitAgentFirstResult("project.import-codex", { data: { effect: "reversible-local", ...previewCodexProjectImport() } }, { format: agentFirstFormat });
+        process.exit(0);
+      }
+      const expectedRevision = args["expected-revision"] && args["expected-revision"] !== true ? String(args["expected-revision"]) : "";
+      if (!folders.length || !expectedRevision) throw new ContextRoomCliError("codex-import-arguments", "Run project import-codex first, then add --apply --expected-revision <revision> and the folders to import.", { exitCode: 2 });
+      const applied = await applyCodexProjectImport({ roots: folders, expectedRevision });
+      emitAgentFirstResult("project.import-codex", { data: { effect: "reversible-local", applied: true, ...applied } }, { format: agentFirstFormat });
+      process.exit(applied.results.some((item) => item.outcome === "failed") ? 1 : 0);
     }
     if (action === "open") {
       emitAgentFirstResult("project.open", { target: agentFirstTarget, data: openCliProject(agentFirstTarget) }, { format: agentFirstFormat });
@@ -1230,6 +1250,7 @@ if (command === "hub") {
     }
     const deviceService = args['device-host'] ? createContextRoomDeviceService({ root: hostRoot,
       stateRoot: args['device-state'] ? path.resolve(String(args['device-state'])) : path.join(path.dirname(hostRoot), 'devices'),
+      discovery: { enabled: !args['no-device-discovery'], onChange: state => { try { updateContextHubRuntimeDiscovery(state); } catch {} } },
       browser: browserRequested ? { origin: String(args['device-browser-origin']), certPath: path.resolve(String(args['device-browser-cert'])), keyPath: path.resolve(String(args['device-browser-key'])) } : null }) : null;
     const { server } = createMemoryServer({ root: hostRoot, port, registerInHub: false, persistentDocumentGraphLayout: true, deviceService });
     await new Promise((resolve, reject) => {
@@ -1244,7 +1265,8 @@ if (command === "hub") {
       console.log(`Context Room devices: ${deviceService.describe().url}`);
       if (deviceService.browser) console.log(`Context Room browser: ${deviceService.browser.origin}`);
     }
-    writeContextHubRuntime({ port, root: hostRoot, url });
+    const deviceDescription = deviceService?.describe();
+    writeContextHubRuntime({ port, root: hostRoot, url, devices: deviceDescription && { url: deviceDescription.url, ...(deviceDescription.browserUrl ? { browserUrl: deviceDescription.browserUrl } : {}), discovery: deviceDescription.discovery } });
     const focus = focusedProject ? `&project=${encodeURIComponent(focusedProject.id)}` : "";
     console.log(`Context Room Hub: ${url}/?hub=1${focus}`);
     console.log(`Projects: ${listContextHubProjects().length}`);
@@ -1765,15 +1787,16 @@ if (command === "migrate") {
   try {
     if (args.plan && args.apply) throw new ContextRoomCliError("invalid-arguments", "Choose a migration preview or --apply, not both.", { exitCode: 2 });
     if (args._[1]) throw new ContextRoomCliError("unknown-command", "Migration takes named options, not a subcommand.", { exitCode: 2 });
-    if ([args["export-lisiere"], args["import-lisiere"], args["inspect-lisiere"], args["legacy-session"], args["reconcile-lisiere"], args["cutover-lisiere"], args["rollback-cutover"], args["resume-cutover"]].filter(Boolean).length > 1) throw new ContextRoomCliError("invalid-arguments", "Choose a legacy export, inventory or notebook import.", { exitCode: 2 });
+    if ([args["export-lisiere"], args["import-lisiere"], args["inspect-lisiere"], args["legacy-session"], args["reconcile-lisiere"], args["cutover-lisiere"], args["rollback-cutover"], args["resume-cutover"], args["notebooks-to-space"]].filter(Boolean).length > 1) throw new ContextRoomCliError("invalid-arguments", "Choose a legacy export, inventory or notebook import.", { exitCode: 2 });
     if (args["inspect-lisiere"] && args.apply) throw new ContextRoomCliError("invalid-arguments", "Recovery inventory is read-only; it cannot apply or acknowledge work.", { exitCode: 2 });
-    if (!args["import-lisiere"] && !args["legacy-session"] && !args["reconcile-lisiere"] && (args["legacy-board"] || args["legacy-draft"] || args["legacy-conversation"] || args["legacy-recording"] || args.path)) throw new ContextRoomCliError("invalid-arguments", "--legacy-board, --legacy-draft, --legacy-conversation and --path require --import-lisiere.", { exitCode: 2 });
+    if (args["notebooks-to-space"] && (args.path || args["legacy-draft"] || args["legacy-conversation"] || args["legacy-recording"])) throw new ContextRoomCliError("invalid-arguments", "--notebooks-to-space keeps each path; only --legacy-board narrows it.", { exitCode: 2 });
+    if (!args["import-lisiere"] && !args["legacy-session"] && !args["reconcile-lisiere"] && !args["notebooks-to-space"] && (args["legacy-board"] || args["legacy-draft"] || args["legacy-conversation"] || args["legacy-recording"] || args.path)) throw new ContextRoomCliError("invalid-arguments", "--legacy-board, --legacy-draft, --legacy-conversation and --path require --import-lisiere.", { exitCode: 2 });
     if ([args["legacy-board"], args["legacy-draft"], args["legacy-conversation"], args["legacy-recording"]].filter(Boolean).length > 1) throw new ContextRoomCliError("invalid-arguments", "Choose one legacy board, draft or conversation.", { exitCode: 2 });
     if (!args["export-lisiere"] && args.output) throw new ContextRoomCliError("invalid-arguments", "--output requires --export-lisiere.", { exitCode: 2 });
     if (!args["export-lisiere"] && args.recordings) throw new ContextRoomCliError("invalid-arguments", "--recordings requires --export-lisiere.", { exitCode: 2 });
     if (args["session-frame"] && !args["legacy-session"]) throw new ContextRoomCliError("invalid-arguments", "--session-frame requires --legacy-session.", { exitCode: 2 });
     if (args["legacy-session"] && (args["legacy-board"] || args["legacy-draft"] || args["legacy-conversation"] || args["legacy-recording"])) throw new ContextRoomCliError("invalid-arguments", "Select a transfer session or a snapshot record, not both.", { exitCode: 2 });
-    if ((args["mac-snapshot"] || args["legacy-actor"]) && !args["reconcile-lisiere"] && !args["cutover-lisiere"]) throw new ContextRoomCliError("invalid-arguments", "--mac-snapshot and --legacy-actor require --reconcile-lisiere.", { exitCode: 2 });
+    if (args["mac-snapshot"] && !args["reconcile-lisiere"] && !args["cutover-lisiere"] && !args["resume-cutover"]) throw new ContextRoomCliError("invalid-arguments", "--mac-snapshot requires --reconcile-lisiere, --cutover-lisiere or --resume-cutover.", { exitCode: 2 });
     if (args["reconcile-lisiere"] && (args["legacy-draft"] || args["legacy-conversation"] || args["legacy-recording"])) throw new ContextRoomCliError("invalid-arguments", "Reconciliation selects an exact board, not a draft or conversation.", { exitCode: 2 });
     if (args["conversation-id"] && !args["legacy-recording"]) throw new ContextRoomCliError("invalid-arguments", "--conversation-id requires --legacy-recording.", { exitCode: 2 });
     if (args["legacy-recording"] && Boolean(args.path) === Boolean(args["conversation-id"])) throw new ContextRoomCliError("invalid-arguments", "Select exactly one original --path or --conversation-id for the recording.", { exitCode: 2 });
@@ -1784,11 +1807,13 @@ if (command === "migrate") {
     const data = args["cutover-lisiere"]
       ? await (args.apply ? applyLisiereCutover(agentFirstTarget.root, cutoverOptions) : planLisiereCutover(agentFirstTarget.root, cutoverOptions))
       : args["rollback-cutover"] || args["resume-cutover"]
-      ? changeCutoverMode(agentFirstTarget.root, { resume: Boolean(args["resume-cutover"]), apply: Boolean(args.apply), expectedRevision: args.revision })
+      ? await changeCutoverMode(agentFirstTarget.root, { resume: Boolean(args["resume-cutover"]), apply: Boolean(args.apply), expectedRevision: args.revision, macSnapshot: args["mac-snapshot"] })
       : args["reconcile-lisiere"]
       ? reconcileLisiereNotebook(agentFirstTarget.root, { androidSnapshot: args["reconcile-lisiere"], macSnapshot: args["mac-snapshot"], boardId: args["legacy-board"], actor: args["legacy-actor"], recoveryView: args["recovery-view"], path: args.path, apply: Boolean(args.apply), expectedRevision: args.revision })
       : args["legacy-session"]
       ? migrateLisiereDrawingSession(agentFirstTarget.root, { sessionId: args["legacy-session"], frame: args["session-frame"], path: args.path, apply: Boolean(args.apply), expectedRevision: args.revision })
+      : args["notebooks-to-space"]
+      ? migrateNotebooksToSpace(agentFirstTarget.root, { boardId: args["legacy-board"], apply: Boolean(args.apply), expectedRevision: args.revision })
       : args["export-lisiere"]
       ? await exportLisiereSnapshot({ source: args["export-lisiere"], output: args.output, recordings: args.recordings, apply: Boolean(args.apply), expectedRevision: args.revision })
       : args["inspect-lisiere"]
@@ -1800,13 +1825,42 @@ if (command === "migrate") {
         ? migrateLisiereConversation(agentFirstTarget.root, { snapshot: args["import-lisiere"], selector: args["legacy-conversation"], path: args.path, apply: Boolean(args.apply), expectedRevision: args.revision })
         : args["legacy-draft"]
         ? migrateLisiereDraft(agentFirstTarget.root, { snapshot: args["import-lisiere"], selector: args["legacy-draft"], path: args.path, apply: Boolean(args.apply), expectedRevision: args.revision })
-        : migrateLisiereNotebook(agentFirstTarget.root, { snapshot: args["import-lisiere"], boardId: args["legacy-board"], path: args.path, apply: Boolean(args.apply), expectedRevision: args.revision })
+        : migrateLisiereNotebook(["root", "project", "location", "folder"].some((key) => args[key]) || !args["legacy-board"] || lisiereBoardProject(args["import-lisiere"], args["legacy-board"]) !== null ? agentFirstTarget.root : requireContextHubNotebookSpace(), { snapshot: args["import-lisiere"], boardId: args["legacy-board"], path: args.path, apply: Boolean(args.apply), expectedRevision: args.revision })
       : args.apply
       ? applyStateMigration(agentFirstTarget.root, { expectedRevision: args.revision })
       : planStateMigration(agentFirstTarget.root);
     emitAgentFirstResult("migrate", { target: agentFirstTarget, data }, { format: agentFirstFormat });
     process.exit(0);
   } catch (error) { failAgentFirstCommand("migrate", error, { format: agentFirstFormat, target: agentFirstTarget }); }
+}
+
+if (command === "backup" || command === "restore") {
+  try {
+    const { writeBackup, planBackup, previewRestore, applyRestore } = await import("../src/backup.mjs");
+    const usage = (message) => new ContextRoomCliError("invalid-arguments", message, { exitCode: 2 });
+    const text = (value) => (value && value !== true ? String(value) : "");
+    let data;
+    try {
+      if (command === "backup") {
+        if (args._[1]) throw usage("backup takes --output, not a positional argument.");
+        if (args.apply || args.revision || args.replace) throw usage("backup writes a new folder directly; it takes --output, --plan and --only.");
+        if (args.plan) data = planBackup({ only: args.only });
+        else if (!text(args.output)) throw usage("backup requires --output <new folder>.");
+        else data = writeBackup({ output: text(args.output), only: args.only });
+      } else {
+        if (!text(args._[1]) || args._[2]) throw usage("restore takes one backup folder: restore <folder> [--apply --revision <revision>] [--replace] [--only a,b].");
+        if (args.output) throw usage("restore does not take --output.");
+        if (args.plan && args.apply) throw usage("Choose a restore preview or --apply, not both.");
+        const options = { only: args.only, replace: Boolean(args.replace) };
+        data = args.apply ? applyRestore(args._[1], { ...options, expectedRevision: text(args.revision) }) : previewRestore(args._[1], options);
+      }
+    } catch (error) {
+      if (error instanceof ContextRoomCliError || !/^(backup|restore)_/.test(String(error?.code))) throw error;
+      throw new ContextRoomCliError(error.code.replaceAll("_", "-"), error.message, { exitCode: ["backup_sections", "backup_output"].includes(error.code) ? 2 : 1 });
+    }
+    emitAgentFirstResult(command, { target: null, data }, { format: agentFirstFormat });
+    process.exit(0);
+  } catch (error) { failAgentFirstCommand(command, error, { format: agentFirstFormat }); }
 }
 
 if (command === "changes") {
@@ -2138,6 +2192,7 @@ if (command === "doctor") {
     failAgentFirstCommand("doctor", error, { format: agentFirstFormat, target: agentFirstTarget });
   }
   report.runtimeDependencies ??= { audio: inspectLocalAudio() };
+  report.runtimeDependencies.network ??= await inspectLocalNetwork();
   if (args.format || args.project || args.location || args.folder || args.provider || args.cursor || args.limit) {
     emitAgentFirstResult("doctor", { target: agentFirstTarget, data: report }, { format: agentFirstFormat });
     if ((args.strict || args.profile === "strict") && report.issues?.some((issue) => ["critical", "high"].includes(issue.severity))) process.exit(1);
@@ -2156,6 +2211,12 @@ if (command === "doctor") {
   if (audioDependencies) {
     console.log(`Local voice: ${audioDependencies.transcriptionReadyForAttempt ? "ready for a recognition attempt; quality not verified" : "dependencies incomplete"}`);
     for (const issue of audioDependencies.issues) console.log(`- [optional audio: ${issue.code}] ${issue.action}`);
+  }
+  const networkDiagnostics = report.runtimeDependencies?.network;
+  if (networkDiagnostics) {
+    const { lan, tailscale, devices } = networkDiagnostics;
+    console.log(`Tablet network: LAN ${lan.addresses.join(", ") || "none found"}; Tailscale ${tailscale.state}; tablet listener ${devices.state}${devices.listener ? ` (${devices.listener} on this Mac)` : ""}; reachability from the tablet not verified`);
+    for (const issue of networkDiagnostics.issues) console.log(`- [optional network: ${issue.code}] ${issue.action}`);
   }
   for (const issue of report.issues.slice(0, 20)) {
     console.log(`- [${issue.severity}] ${issue.path ? `${issue.path}: ` : ""}${issue.message}`);

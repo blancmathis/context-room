@@ -42,7 +42,16 @@ A logical project represents one project across one or more registered Git workt
 
 The logical group keeps shared product identity, display order, and one Shared binding. Connecting or disconnecting Shared Context applies to the exact registered locations through a capability-bound transaction.
 
-Context Room does not discover every Git worktree implicitly. A worktree appears after explicit registration or launch.
+Context Room does not discover every Git worktree implicitly. A worktree appears after explicit registration, launch, or a confirmed import from Codex Desktop.
+
+## Import from Codex Desktop
+
+The Hub can list the projects Codex Desktop already knows and register the ones you choose. It reads `~/.codex/.codex-global-state.json` (`local-projects`, in `project-order`) and nothing else from `~/.codex`. A project with several folders gives one row per folder.
+
+- **Preview.** `GET /api/context-hub/codex-import` and `context-room project import-codex` write nothing. Each row is `registered`, `ready` (has `.context-room/config.json`), `needs-init`, `missing`, or `refused`. The home folder, the filesystem root, `~/.codex`, `~/.ssh`, relative paths and symbolic links are refused. The preview carries a revision.
+- **Apply.** Only folders you choose are imported, and only with that revision. If the Codex list or the Hub changed, the apply is refused (409) and you preview again. A registered folder is never registered again, so its Shared link stays. A `needs-init` folder gets `.context-room/` only when you choose it.
+- **Two steps in the Hub.** **Import from Codex** lists the rows (ready rows ticked, needs-init rows not). **Import selected projects** shows the count: "registers N folders and creates .context-room/ in M of them". Nothing is written until **Confirm import**.
+- **CLI.** `context-room project import-codex [--json]` previews. `--apply <folder>… --expected-revision <revision>` imports. The button and the route are absent on a hosted Hub.
 
 ## Global aggregation
 
@@ -76,7 +85,16 @@ If that snapshot becomes stale, terminal, unavailable, or recovery-required duri
 
 ## Home
 
-The Hub home starts with the project list. Each row shows the project, its location,
+The Hub home starts with the Notebooks section: **New notebook**, then the
+notebooks of the Notebooks space, most recently changed first, the first with
+**Resume**. The first New notebook creates the space
+(`POST /api/context-hub/notebook-space`): a registry entry marked
+`space: "notebooks"`, at most one, kept across re-registration and location
+confirmation. The space is not a project: it has no Context, To review or
+Shared, and the project list does not show it. Moves between the space and a
+project use `POST /api/context-hub/notebooks/move` with a preview revision.
+
+The project list follows. Each row shows the project, its location,
 an attention pill, and three destinations: Context (agent environment), To review
 (Review Queue filtered to the project), and Documents (the project's documentation map, with its files in Explorer).
 

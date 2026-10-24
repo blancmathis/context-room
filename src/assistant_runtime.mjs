@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { codexSessionRoots } from './codex_catalog.mjs';
 import { attachLisiereRecording, listLinkedRecordings, readLinkedRecording, recordingTargetFromResolved } from './lisiere_recording_links.mjs';
 import { AssistantSessions } from './assistant_sessions.mjs';
 import { AssistantObservations, withSourceObservation, withSourceImage, previewImage } from './assistant_observations.mjs';
@@ -11,15 +13,18 @@ import { canonicalNotebookRoot, notebookHash, readNotebookJson, writeNotebookJso
 const fault = (code, message, statusCode = 409) => Object.assign(new Error(message), { code, statusCode });
 const uuid = value => { if (typeof value !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value)) throw fault('assistant_identity', 'An exact client or request identity is required.', 400); return value; };
 const LEASE_MS = 30_000;
+const MAC_CACHE_MS = 10_000, MAC_CACHE_ENTRIES = 64, MAC_SEARCH_MAX = 200;
+const defaultOpenUrl = url => new Promise((resolve, reject) => execFile('/usr/bin/open', [url], { timeout: 5000, windowsHide: true }, error => error ? reject(error) : resolve()));
 const MAX_AUDIO_RESULTS = 24, MAX_AUDIO_RECEIPTS = 1024;
 export const assistantStorageRoot = () => path.resolve(process.env.CONTEXT_ROOM_ASSISTANT_HOME || path.join(os.homedir(), '.context-room', 'assistant'));
 
 /** One local owner runtime. Constructed lazily, never by doctor, guard or brief. */
 export class AssistantRuntime {
   constructor({ root = assistantStorageRoot(), resolveSource, providerFactory, audio,
-    modelPath = process.env.CONTEXT_ROOM_WHISPER_MODEL || path.join(root, 'models', 'ggml-large-v3-turbo-q5_0.bin'), now = () => Date.now() } = {}) {
+    modelPath = process.env.CONTEXT_ROOM_WHISPER_MODEL || path.join(root, 'models', 'ggml-large-v3-turbo-q5_0.bin'), now = () => Date.now(),
+    openUrl = defaultOpenUrl, platform = process.platform, sessionRoots = codexSessionRoots } = {}) {
     fs.mkdirSync(root, { recursive: true, mode: 0o700 }); canonicalNotebookRoot(root);
-    this.root = root; this.now = now;
+    this.root = root; this.now = now; this.openUrl = openUrl; this.platform = platform; this.sessionRoots = sessionRoots; this.macCache = new Map();
     this.sessions = new AssistantSessions({ root, providerFactory, resolveSource: (project, source, origin) => {
       if (origin?.creating && source?.kind === 'document' && source.annotation !== undefined) source = this.storeAnnotationImage(source);
       const resolved = resolveSource(project, source, origin);
@@ -66,6 +71,34 @@ export class AssistantRuntime {
   }
   recording(project, conversationId, id, format) {
     return readLinkedRecording(project, id, { storageRoot: this.root, current: this.recordingTarget(project, conversationId), format });
+  }
+  /** Read-only Codex tasks of this Mac for the exact project folder (and its live worktrees), cached for 10 seconds. */
+  async macTasks(project, { cursor = null, search = '', archived = false } = {}) {
+    if (typeof search !== 'string' || search.length > MAC_SEARCH_MAX || cursor !== null && (typeof cursor !== 'string' || cursor.length > 2000)) throw fault('assistant_mac_tasks_query', 'Use a shorter search and a cursor from the previous page.', 400);
+    const key = JSON.stringify([project, cursor, search, archived === true]), cached = this.macCache.get(key);
+    if (cached && this.now() - cached.at < MAC_CACHE_MS) return cached.value;
+    const provider = await this.sessions.ready();
+    if (typeof provider.listMacTasks !== 'function') throw fault('mac_tasks_unavailable', 'Codex tasks on this Mac are unavailable with this connection.');
+    const value = await provider.listMacTasks({ roots: await this.sessionRoots(project), cursor: cursor || undefined, search: search || undefined, archived: archived === true });
+    if (this.macCache.size >= MAC_CACHE_ENTRIES) this.macCache.delete(this.macCache.keys().next().value);
+    this.macCache.set(key, { at: this.now(), value }); return value;
+  }
+  async macTask(project, threadId, { cursor = null } = {}) {
+    uuid(threadId);
+    if (cursor !== null && (typeof cursor !== 'string' || cursor.length > 2000)) throw fault('assistant_mac_tasks_query', 'Use a cursor from the previous page.', 400);
+    const provider = await this.sessions.ready();
+    if (typeof provider.readMacTask !== 'function') throw fault('mac_tasks_unavailable', 'Codex tasks on this Mac are unavailable with this connection.');
+    try { return await provider.readMacTask({ threadId, roots: await this.sessionRoots(project), cursor: cursor || undefined }); }
+    catch (error) { if (error?.code === 'codex_scope_unavailable') throw fault('mac_task_scope', 'This task does not belong to this project.', 403); throw error; }
+  }
+  /** Opens Codex Desktop on the Mac at one task. Nothing is sent to Codex. */
+  async openOnMac(project, threadId, { profile, scoped = true } = {}) {
+    if (profile !== 'local' || this.platform !== 'darwin') throw fault('mac_open_unavailable', 'Showing a task needs Context Room running on the Mac itself.');
+    uuid(threadId);
+    if (scoped) await this.macTask(project, threadId);
+    try { await this.openUrl('codex://threads/' + threadId); }
+    catch { throw fault('mac_open_failed', 'Codex could not be shown on the Mac. Open Codex there and try again.', 502); }
+    return { opened: true, threadId };
   }
   capabilities(project) {
     const lease = this.readLease(), diagnostics = this.audio.diagnostics?.() || null;
@@ -183,10 +216,14 @@ export class AssistantRuntime {
 }
 
 /** All routes run behind the existing exact-project, trusted-origin and owner nonce guards. */
-export async function handleAssistantHttp(req, res, { root, url, runtime, readJsonBody, sendJson }) {
+export async function handleAssistantHttp(req, res, { root, url, runtime, readJsonBody, sendJson, profile = 'local' }) {
   const route = url.pathname.slice('/api/assistant'.length);
   if (req.method === 'GET') {
     if (route === '/capabilities') { sendJson(res, 200, runtime.capabilities(root)); return; }
+    if (route === '/mac-tasks') {
+      const q = url.searchParams; sendJson(res, 200, await runtime.macTasks(root, { cursor: q.get('cursor'), search: q.get('search') || '', archived: q.get('archived') === '1' })); return;
+    }
+    if (/^\/mac-tasks\/[^/]+$/.test(route)) { sendJson(res, 200, await runtime.macTask(root, route.split('/')[2], { cursor: url.searchParams.get('cursor') })); return; }
     if (route === '/conversations') {
       const q = url.searchParams;
       const source = q.has('kind') || q.has('path') || q.has('resourceId') || q.has('locationRevision') ? { kind: q.get('kind'), path: q.get('path'),
@@ -228,6 +265,12 @@ export async function handleAssistantHttp(req, res, { root, url, runtime, readJs
   else if (route === '/audio/speak') { result = runtime.speak(root, body); status = 202; }
   else if (route === '/audio/job') result = runtime.job(root, body.requestId, body);
   else if (route === '/audio/cancel') result = runtime.cancelAudio(root, body);
+  else if (/^\/mac-tasks\/[^/]+\/open$/.test(route)) result = await runtime.openOnMac(root, route.split('/')[2], { profile });
+  else if (/^\/conversations\/[^/]+\/open-on-mac$/.test(route)) {
+    const state = runtime.sessions.read(route.split('/')[2]); runtime.sessions.authorize(state, root);
+    if (!state.threadId) throw fault('mac_open_no_task', 'This conversation has no Codex task yet. Send a message first.');
+    result = await runtime.openOnMac(root, state.threadId, { profile, scoped: false });
+  }
   else if (route === '/audio/receipt') result = runtime.receipt(root, body);
   else throw fault('assistant_route', 'Unknown conversation operation.', 404);
   sendJson(res, status, result);
