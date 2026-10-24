@@ -309,10 +309,16 @@ function writeEntry(entry, bytes, expectedHash) {
 }
 function removeCreated(entry) {
   const base = entry.root in HOMES ? homeDirectory(entry.root) : entry.root;
-  // Remove only what this restore wrote: a file changed since then stays.
-  const current = readNotebookBytes(base, entry.path, MAX_FILE_BYTES);
-  if (current && sha256(current) !== entry.sha256) throw new Error('it changed after the restore wrote it');
-  try { fs.unlinkSync(path.join(base, entry.path)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  // Remove only what this restore wrote: a file changed since then stays. The file first
+  // leaves its name, so a write that lands before the check is seen and nothing new is lost.
+  const file = path.join(base, entry.path), held = path.join(path.dirname(file), `.${path.basename(file)}.restore-undo-${randomUUID()}`);
+  try { fs.renameSync(file, held); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
+  const stats = fs.lstatSync(held);
+  if (stats.isFile() && stats.size <= MAX_FILE_BYTES && sha256(fs.readFileSync(held)) === entry.sha256) { fs.unlinkSync(held); return; }
+  // link refuses a name taken in the meantime, so a newer file is never replaced.
+  try { fs.linkSync(held, file); } catch (error) { throw new Error(`it changed after the restore wrote it; it is kept as ${held} (${error.code || error.message})`); }
+  fs.unlinkSync(held);
+  throw new Error('it changed after the restore wrote it');
 }
 function undoDirectory() {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-'), parent = path.join(path.dirname(homeDirectory('@hub')), 'backups');

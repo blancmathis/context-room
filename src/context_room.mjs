@@ -20,7 +20,7 @@ import { planLisiereNotebookImport, applyLisiereNotebookImport, listLisiereNoteb
 import { migrateLisiereReconciliation } from './lisiere_reconcile.mjs';
 import { migrateLisiereDocument } from "./lisiere_documents.mjs";
 import { migrateLisiereConversationHistory } from "./lisiere_conversations.mjs";
-import { listNotebooks, readNotebook, transferNotebook, notebookTransferOperationId, interruptedNotebookTransfers } from "./notebooks.mjs";
+import { listNotebooks, readNotebook, transferNotebook, previewNotebookDeparture, notebookTransferOperationId, interruptedNotebookTransfers } from "./notebooks.mjs";
 import { isDocumentAssetPath, listDocumentAssets, readDocumentAssetReview, recordAcceptedDocumentAsset, decideDocumentAsset } from "./document_assets.mjs";
 import { readReviewCleanupPolicy, writeReviewCleanupPolicy, previewReviewCleanup, applyReviewCleanup, recentReviewCleanupReceipts } from "./review_cleanup.mjs";
 import fs from "node:fs";
@@ -7921,10 +7921,16 @@ export function migrateLisiereNotebook(root, options = {}) {
 
 /** The registered Notebooks space, or a clear refusal that names the way to create it. */
 export function requireContextHubNotebookSpace() {
+  const root = registeredContextHubNotebookSpace();
+  if (!root) throw sharedRequestError("Create the Notebooks space first (Hub › New notebook) or pass --root. migrate --notebooks-to-space creates it itself.", 409, "context_hub_notebook_space_missing");
+  return root;
+}
+
+/** The registered Notebooks space, null when none is registered yet. */
+function registeredContextHubNotebookSpace() {
   const space = listContextHubProjects({ readOnly: true }).find((entry) => entry.space === CONTEXT_HUB_NOTEBOOK_SPACE);
-  if (!space) throw sharedRequestError("Create the Notebooks space first (Hub › New notebook) or pass --root.", 409, "context_hub_notebook_space_missing");
-  if (!space.available) throw sharedRequestError(`The Notebooks space is unavailable: ${space.root}`, 409, "context_hub_notebook_space_unavailable");
-  return path.resolve(space.root);
+  if (space && !space.available) throw sharedRequestError(`The Notebooks space is unavailable: ${space.root}`, 409, "context_hub_notebook_space_unavailable");
+  return space ? path.resolve(space.root) : null;
 }
 
 /**
@@ -7933,15 +7939,35 @@ export function requireContextHubNotebookSpace() {
  * apply moves only the accepted ones with a verified copy. Each notebook keeps one move
  * identifier per destination, so a re-run after a crash resumes its own journal.
  * The path stays when the space allows it, otherwise the file keeps its name under Carnets/.
+ * Without a registered space (the Hub stopped at the cutover), the preview writes nothing and
+ * says the space will be created; apply checks the revision first, then creates it and moves.
  */
 export function migrateNotebooksToSpace(root, { boardId, apply = false, expectedRevision } = {}) {
-  const sourceRoot = path.resolve(root), spaceRoot = requireContextHubNotebookSpace();
-  const authority = {
-    canWriteSource: (rel) => canEditLocalProposalPath(sourceRoot, rel),
-    canWriteTarget: (rel) => canEditLocalProposalPath(spaceRoot, rel),
-  };
+  const sourceRoot = path.resolve(root), registeredSpace = registeredContextHubNotebookSpace();
+  const canWriteSource = (rel) => canEditLocalProposalPath(sourceRoot, rel);
   const destinationPath = (rel) => rel.startsWith(CONTEXT_HUB_NOTEBOOK_FOLDER) ? rel : CONTEXT_HUB_NOTEBOOK_FOLDER + path.posix.basename(rel);
-  const plan = () => {
+  const isNotebookRefusal = (error) => String(error?.code || "").startsWith("notebook_");
+  // The space does not exist yet: only the source side can be checked. The new space allows
+  // Carnets/ only, so each notebook keeps its name there; two notebooks may not share one.
+  const futurePlan = () => {
+    const spaceRoot = contextHubNotebookSpaceRoot();
+    assertNotebookSpaceFolderUsable(spaceRoot);
+    const notebooks = [], refused = [], taken = new Set();
+    for (const entry of listLisiereNotebookImports(sourceRoot, { boardId })) {
+      const item = { resourceId: entry.id, title: entry.title, boardId: entry.boardId, from: entry.path, to: destinationPath(entry.path) };
+      try {
+        const departure = previewNotebookDeparture(sourceRoot, { resourceId: entry.id }, { canWriteSource });
+        if (taken.has(item.to)) refused.push({ ...item, code: "notebook_location_conflict", reason: "Another notebook of this move takes the same destination. Nothing was overwritten." });
+        else { taken.add(item.to); notebooks.push({ ...item, revision: departure.revision, resume: false }); }
+      } catch (error) {
+        if (!isNotebookRefusal(error)) throw error;
+        refused.push({ ...item, code: error.code, reason: error.message });
+      }
+    }
+    return { spaceRoot, notebooks, refused, revision: notebookHash({ kind: "notebooks-to-space", space: "will-be-created", spaceRoot, notebooks, refused }) };
+  };
+  const plan = (spaceRoot) => {
+    const authority = { canWriteSource, canWriteTarget: (rel) => canEditLocalProposalPath(spaceRoot, rel) };
     // Moves committed before a crash: the source is already closed, only the finish remains.
     const notebooks = interruptedNotebookTransfers(sourceRoot, spaceRoot)
       .filter((journal) => journal.operationId.startsWith("space-") && (!boardId || journal.to.migration?.boardId === boardId))
@@ -7954,21 +7980,32 @@ export function migrateNotebooksToSpace(root, { boardId, apply = false, expected
         const preview = transferNotebook(sourceRoot, spaceRoot, { resourceId: entry.id, path: item.to }, { ...authority, preview: true });
         notebooks.push({ ...item, to: preview.to.path, revision: preview.revision, operationId: notebookTransferOperationId(sourceRoot, spaceRoot, entry.id, "space"), resume: false });
       } catch (error) {
-        if (!String(error?.code || "").startsWith("notebook_")) throw error;
+        if (!isNotebookRefusal(error)) throw error;
         refused.push({ ...item, code: error.code, reason: error.message });
       }
     }
-    return { notebooks, refused, revision: notebookHash({ kind: "notebooks-to-space", spaceRoot, notebooks, refused }) };
+    return { spaceRoot, authority, notebooks, refused, revision: notebookHash({ kind: "notebooks-to-space", spaceRoot, notebooks, refused }) };
   };
-  const planned = plan();
-  const summary = { kind: "notebooks-to-space", root: sourceRoot, spaceRoot, revision: planned.revision, notebooks: planned.notebooks, refused: planned.refused, overwrites: false };
+  const planned = registeredSpace ? plan(registeredSpace) : futurePlan();
+  const summary = { kind: "notebooks-to-space", root: sourceRoot, spaceRoot: planned.spaceRoot, space: registeredSpace ? "registered" : "will-be-created",
+    revision: planned.revision, notebooks: planned.notebooks, refused: planned.refused, overwrites: false };
   if (!apply) return { ...summary, applied: false };
   if (expectedRevision !== planned.revision) throw sharedRequestError("The notebooks changed after the preview. Preview again.", 409, "notebook_location_stale");
-  const moved = planned.notebooks.map((item) => transferNotebook(sourceRoot, spaceRoot, {
+  let moving = planned, created = false;
+  if (!registeredSpace && planned.notebooks.length) {
+    created = ensureContextHubNotebookSpace({ spaceRoot: planned.spaceRoot }).created;
+    moving = plan(requireContextHubNotebookSpace());
+    const shape = (result) => JSON.stringify([result.notebooks.map((item) => [item.resourceId, item.to]), result.refused.map((item) => item.resourceId)]);
+    if (shape(moving) !== shape(planned)) {
+      throw sharedRequestError("The Notebooks space now exists, but the move differs from the preview. Nothing moved. Preview again.", 409, "notebook_location_stale");
+    }
+  }
+  const moved = moving.notebooks.map((item) => transferNotebook(sourceRoot, moving.spaceRoot, {
     resourceId: item.resourceId, path: item.to, expectedRevision: item.revision, operationId: item.operationId,
-  }, { ...authority, destination: { migration: { kind: "notebooks-to-space", boardId: item.boardId, title: item.title } } }));
-  if (moved.length) markContextHubSnapshotStale();
-  return { ...summary, applied: true, moved: moved.map((item) => ({ resourceId: item.resourceId, to: item.to.path, retired: item.retired, replayed: item.replayed })) };
+  }, { ...moving.authority, destination: { migration: { kind: "notebooks-to-space", boardId: item.boardId, title: item.title } } }));
+  if (moved.length || created) markContextHubSnapshotStale();
+  return { ...summary, spaceRoot: moving.spaceRoot, spaceCreated: created, applied: true,
+    moved: moved.map((item) => ({ resourceId: item.resourceId, to: item.to.path, retired: item.retired, replayed: item.replayed })) };
 }
 
 function legacyRecoverySourceForPath(project, rel) {
@@ -13630,6 +13667,17 @@ export function contextHubNotebookSpaceRoot() {
     || path.join(process.env.HOME || os.homedir(), "Documents", "Context Room", "Carnets"));
 }
 
+/** Read-only: false when the folder is absent, true when it is empty or already a Notebooks space; refuses anything else. */
+function assertNotebookSpaceFolderUsable(projectRoot) {
+  const refuse = (message) => Object.assign(new Error(message), { statusCode: 409, code: "context_hub_notebook_space_occupied" });
+  if (!pathEntryExists(projectRoot)) return false;
+  if (!fs.lstatSync(projectRoot).isDirectory()) throw refuse(`The Notebooks folder is not a folder: ${projectRoot}`);
+  const configured = pathEntryExists(path.join(projectRoot, MEMORY_WEBAPP_SETTINGS));
+  const ownSpace = configured && readMemoryWebappSettings(projectRoot).allowedPaths.includes(CONTEXT_HUB_NOTEBOOK_FOLDER);
+  if (!ownSpace && fs.readdirSync(projectRoot).some((name) => name !== ".DS_Store")) throw refuse(`The Notebooks folder already holds other files: ${projectRoot}`);
+  return true;
+}
+
 export function ensureContextHubNotebookSpace({ spaceRoot = contextHubNotebookSpaceRoot() } = {}) {
   const refuse = (message, code) => Object.assign(new Error(message), { statusCode: 409, code });
   const current = listContextHubProjects({ readOnly: true }).find((entry) => entry.space === CONTEXT_HUB_NOTEBOOK_SPACE);
@@ -13639,14 +13687,7 @@ export function ensureContextHubNotebookSpace({ spaceRoot = contextHubNotebookSp
   }
   const projectRoot = path.resolve(spaceRoot);
   let made = false;
-  if (pathEntryExists(projectRoot)) {
-    if (!fs.lstatSync(projectRoot).isDirectory()) throw refuse(`The Notebooks folder is not a folder: ${projectRoot}`, "context_hub_notebook_space_occupied");
-    const configured = pathEntryExists(path.join(projectRoot, MEMORY_WEBAPP_SETTINGS));
-    const ownSpace = configured && readMemoryWebappSettings(projectRoot).allowedPaths.includes(CONTEXT_HUB_NOTEBOOK_FOLDER);
-    if (!ownSpace && fs.readdirSync(projectRoot).some((name) => name !== ".DS_Store")) {
-      throw refuse(`The Notebooks folder already holds other files: ${projectRoot}`, "context_hub_notebook_space_occupied");
-    }
-  } else {
+  if (!assertNotebookSpaceFolderUsable(projectRoot)) {
     fs.mkdirSync(projectRoot, { recursive: true });
     made = true;
   }
