@@ -234,6 +234,15 @@ Ordre strict :
    (attendu : `$HOME/Library/LaunchAgents/app.contextroom.local.plist`). Puis
    `launchctl bootout gui/$U/app.contextroom.local` (un `kill` le relancerait,
    `KeepAlive`). Contrôle : `launchctl print …` répond « Could not find ».
+   Puis vérifier le dossier de travail du plist :
+   `ls -d "$(plutil -extract WorkingDirectory raw <plist>)"`. S'il manque (une
+   ancienne release supprimée), launchd ne peut plus lancer le Hub : il échoue
+   toutes les 30 s (`last exit code = 78: EX_CONFIG`) sans rien écrire au
+   journal. Le corriger avant toute relance, retour arrière compris :
+   `cp <plist> "$B/app.contextroom.local.plist.before-<date>"`, puis
+   `plutil -replace WorkingDirectory -string "$HOME/.local/share/context-room" <plist>`
+   et `plutil -lint <plist>`. Sans effet sur le Hub : le lanceur fixe lui-même
+   le dossier du processus Node (`cwd=RUNTIME`).
 2. **Préparer, sans effet sur les données.** Installer les fichiers de la
    nouvelle release : `scripts/prepare-mac-install.mjs --output <release> …`
    (aperçu, puis `--apply --revision <R>` ; voir
