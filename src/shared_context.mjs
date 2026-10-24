@@ -98,6 +98,26 @@ function writeJson(filePath, value) {
   return value;
 }
 
+// Project config readers run in other threads; replace the file whole so they
+// never see the truncated state of an in-place write.
+function writeProjectConfigJson(filePath, value) {
+  let mode = 0o600;
+  try { mode = fs.statSync(filePath).mode & 0o777; } catch (error) { if (error.code !== "ENOENT") throw error; }
+  const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    const descriptor = fs.openSync(temporary, "wx", mode);
+    try {
+      fs.writeFileSync(descriptor, JSON.stringify(value, null, 2) + "\n", "utf8");
+      fs.fchmodSync(descriptor, mode);
+      fs.fsyncSync(descriptor);
+    } finally { fs.closeSync(descriptor); }
+    fs.renameSync(temporary, filePath);
+  } finally {
+    try { fs.unlinkSync(temporary); } catch (error) { if (error.code !== "ENOENT") throw error; }
+  }
+  return value;
+}
+
 function writePrivateJson(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
   const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
@@ -3402,18 +3422,6 @@ function sharedMutationPathSnapshot(filePath) {
   }
 }
 
-function removeSharedMutationLeaf(filePath) {
-  try {
-    const stats = fs.lstatSync(filePath);
-    if (stats.isDirectory() && !stats.isSymbolicLink()) {
-      throw new Error(`Shared reconciliation refuses to replace a directory during rollback: ${filePath}`);
-    }
-    fs.unlinkSync(filePath);
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-  }
-}
-
 function restoreSharedMutationPath(filePath, snapshot) {
   if (snapshot.kind === "directory") {
     const stats = fs.lstatSync(filePath);
@@ -3448,7 +3456,15 @@ function restoreSharedMutationPath(filePath, snapshot) {
     fs.symlinkSync(snapshot.target, filePath);
     return;
   }
-  removeSharedMutationLeaf(filePath);
+  // Rename replaces a file or link whole; unlinking first would let a reader see no file.
+  try {
+    const stats = fs.lstatSync(filePath);
+    if (stats.isDirectory() && !stats.isSymbolicLink()) {
+      throw new Error(`Shared reconciliation refuses to replace a directory during rollback: ${filePath}`);
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
   const temporary = `${filePath}.${process.pid}.${randomUUID()}.reconcile-restore.tmp`;
   try {
@@ -4747,7 +4763,7 @@ function configureProjectRoom(root, connection, repositoryConfig, currentRoot, s
   };
   config.hubSections = [...(config.hubSections || []).filter((item) => item?.id !== section.id), section];
   config.sharedContext = { enabled: true, projectId: connection.projectId, repository: connection.repository };
-  writeJson(configPath, config);
+  writeProjectConfigJson(configPath, config);
   return { updated: true, configPath, paths: { docs, projectSkills, globalSkills } };
 }
 
@@ -5050,7 +5066,7 @@ function removeSharedContextFromProjectConfig(root, connection) {
   config.readOnlyPaths = (config.readOnlyPaths || []).filter(keepUnmanaged);
   config.hubSections = (config.hubSections || []).filter((section) => section?.id !== "shared-context");
   delete config.sharedContext;
-  writeJson(configPath, config);
+  writeProjectConfigJson(configPath, config);
   return { configPath, previous, changed: true };
 }
 

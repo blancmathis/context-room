@@ -3038,6 +3038,31 @@ test("accepted instruction imports archive an unchanged source that is also the 
   assert.equal(fs.readdirSync(backupRoot).length, 1);
 });
 
+test("Shared connect, sync, and disconnect never expose a partly written project config", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  const configPath = path.join(fixture.project, ".context-room", "config.json");
+  const configDirectory = fs.realpathSync(path.dirname(configPath));
+  const torn = [];
+  const writeFileSync = fs.writeFileSync;
+  // A reader that runs between truncation and the write would see this state.
+  fs.writeFileSync = function interleavedWrite(file, data, ...rest) {
+    if (typeof file === "string" && path.basename(file) === "config.json"
+      && fs.realpathSync(path.dirname(file)) === configDirectory) {
+      writeFileSync.call(fs, file, "", ...rest);
+      try { JSON.parse(fs.readFileSync(configPath, "utf8")); } catch (error) { torn.push(error.message); }
+    }
+    return writeFileSync.call(fs, file, data, ...rest);
+  };
+  t.after(() => { fs.writeFileSync = writeFileSync; });
+  connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  syncSharedContext(fixture.project, { allowOffline: false });
+  disconnectSharedContext(fixture.project);
+  fs.writeFileSync = writeFileSync;
+  assert.deepEqual(torn, []);
+  assert.equal(JSON.parse(fs.readFileSync(configPath, "utf8")).sharedContext, undefined);
+});
+
 test("a forged main trailer cannot archive or replace a pending local instruction import", (t) => {
   const fixture = makeFixture();
   withSharedHome(t, fixture);
@@ -4069,6 +4094,43 @@ test("Shared sync rolls back current, config, owners, registries, and links afte
   assert.notEqual(synced.revision, initial.revision);
   assert.notEqual(fs.realpathSync(skillLink), baselineSkillTarget);
   assert.equal(fs.lstatSync(instructionLink).isSymbolicLink(), true);
+});
+
+test("a Shared rollback replaces the project config whole and never unlinks it first", (t) => {
+  const fixture = makeFixture();
+  withSharedHome(t, fixture);
+  const initial = connectSharedContext(fixture.project, { repository: fixture.remote, projectId: "demo" });
+  const configPath = path.join(fs.realpathSync(path.join(fixture.project, ".context-room")), "config.json");
+  const statePath = path.join(initial.cacheRoot, "state.json");
+  const baseline = fs.readFileSync(configPath);
+  writeFile(fixture.seed, "projects/demo/skills/demo-workflow/SKILL.md", "---\nname: demo-workflow\ndescription: Demo project workflow v3.\n---\n\n# Demo workflow v3\n");
+  git(fixture.seed, ["add", "."]);
+  git(fixture.seed, ["commit", "-m", "Advance Shared for a config rollback"]);
+  git(fixture.seed, ["push", "origin", "main"]);
+
+  const originalRenameSync = fs.renameSync.bind(fs);
+  const originalUnlinkSync = fs.unlinkSync.bind(fs);
+  const unlinked = [];
+  const restored = [];
+  fs.unlinkSync = (filePath) => {
+    if (path.resolve(String(filePath)) === path.resolve(configPath)) unlinked.push(String(filePath));
+    return originalUnlinkSync(filePath);
+  };
+  fs.renameSync = (source, destination) => {
+    const result = originalRenameSync(source, destination);
+    if (path.resolve(String(destination)) === path.resolve(configPath) && String(source).endsWith(".reconcile-restore.tmp")) restored.push(String(source));
+    if (path.resolve(String(destination)) === path.resolve(statePath)) throw new Error("injected state publication failure");
+    return result;
+  };
+  try {
+    assert.throws(() => syncSharedContext(fixture.project, { allowOffline: false }), /injected state publication failure/);
+  } finally {
+    fs.renameSync = originalRenameSync;
+    fs.unlinkSync = originalUnlinkSync;
+  }
+  assert.deepEqual(unlinked, []);
+  assert.equal(restored.length, 1, "the rollback must restore the config by rename");
+  assert.deepEqual(fs.readFileSync(configPath), baseline);
 });
 
 test("rebinding replaces only the previously managed paths and skill links", (t) => {
