@@ -11,11 +11,12 @@ n'a été écrite par cette doc.
 
 - La v2 reprend le cœur de Lisière : carnets, conversations par source, dictée,
   voix, appairage, vues partagées, présentation, cache hors ligne, migration.
-- Lots fusionnés jusqu'à `9db43b2` : L1 (bascule), L2L7 (chaîne APK), L3 (espace
+- Lots fusionnés (PR #74) : L1 (bascule), L2L7 (chaîne APK), L3 (espace
   Carnets), L4 (lecteur PDF/image), L5 (Codex du Mac), L6 (découverte), L8
   (sauvegarde), L9a (sommaire, Aa, recherche sans accents, chercher/remplacer,
   cibles de 44 px), L9b (Fast, Follow agent, export PNG/PDF, appairage
-  QR/fichier). Correctifs : e2e (7209b69), scan `/proc` sous Linux (678c13b).
+  QR/fichier). Correctifs : e2e (7209b69), scan `/proc` sous Linux (678c13b),
+  revue finale A (gestes de bascule des carnets) et revue finale B (5 points).
   L2 (export de la BOOX) attend la tablette.
 - Huit écarts de parité sont **acceptés par Mathis** (2026-10-23) : § (a) et
   `DECISIONS.md`. Les autres manques sont marqués « absent » ou « partiel ».
@@ -223,8 +224,9 @@ mention, Claude lance les commandes ; les gestes sur la BOOX sont ceux du guide.
 dans `~/.context-room` : **Mathis a dit oui le 2026-10-23** pour ces quatre
 gestes, à la séance BOOX, pas avant le déploiement. Le Hub reste arrêté du
 début à la fin. `<release>` = le dossier de la nouvelle release ;
-`CR="$HOME/.local/bin/node <release>/runtime/bin/context-room.mjs"` (la CLI
-n'est pas dans le `PATH`, et seule la nouvelle release a `backup`).
+`cr() { "$HOME/.local/bin/node" "<release>/runtime/bin/context-room.mjs" "$@"; }`
+(une fonction : zsh ne coupe pas une variable en mots ; la CLI n'est pas dans
+le `PATH`, et seule la nouvelle release a `backup`).
 Ordre strict :
 
 1. **Geste 1, arrêter le Hub.** Noter le plist :
@@ -238,13 +240,13 @@ Ordre strict :
    `docs/system/runtime-profiles.md`), puis copier `node_modules` de la
    release précédente (`package-lock.json` inchangé depuis `bbfef3d`). **Ne pas
    changer `RUNTIME`.** Pas `deploy-main.sh` : il relance le Hub.
-3. **Geste 2, sauvegarde.** `$CR backup --plan --output "$B/context-room-backup-<date>"`
-   (compte, n'écrit rien), puis `$CR backup --output "$B/context-room-backup-<date>"`.
+3. **Geste 2, sauvegarde.** `cr backup --plan --output "$B/context-room-backup-<date>"`
+   (compte, n'écrit rien), puis `cr backup --output "$B/context-room-backup-<date>"`.
    Le dossier ne doit pas exister. Contrôle : `manifest.json` présent.
 4. **Geste 3, changer `RUNTIME`** dans
    `~/.local/share/context-room/launch-installed.py` vers `<release>`, après
    la copie `launch-installed.before-<sha>.py`. Le Hub reste arrêté.
-5. **Geste 4, migrer.** `$CR migrate --root <projet> --notebooks-to-space`
+5. **Geste 4, migrer.** `cr migrate --root "<projet>" --notebooks-to-space`
    (aperçu : `space: "will-be-created"`, 4 carnets dans `notebooks`, `refused`
    vide), puis la même commande avec `--apply --revision <R>`. L'apply crée
    l'espace (`~/Documents/Context Room/Carnets`) puis déplace. Après un crash :
