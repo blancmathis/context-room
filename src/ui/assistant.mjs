@@ -285,8 +285,10 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     if (initializing || !input.value.trim() || activeStatuses.has(current.operation?.status)) return;
     const text = input.value;
     if (sendRequest && sendRequest.text !== text) throw new Error('The previous send is unconfirmed. Refresh its original conversation before changing the message.');
-    sendRequest ||= { requestId: crypto.randomUUID(), text }; send.disabled = true;
-    if (catalogLoaded && current.fast === true && fast.dataset.offered !== 'true') await configure();
+    const earlier = sendRequest; sendRequest ||= { requestId: crypto.randomUUID(), text }; send.disabled = true;
+    if (catalogLoaded && current.fast === true && fast.dataset.offered !== 'true') {
+      try { await configure(); } catch (error) { sendRequest = earlier; render(); throw error; }
+    }
     await saveDraft();
     if (voiceSession && voice !== voiceSession) return;
     if (voiceSession) voiceSession.requestId = sendRequest.requestId;
