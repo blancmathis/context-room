@@ -144,7 +144,8 @@ with sqlite3.connect(sys.argv[1]) as db:
     await expect(editor).toHaveValue(original);
     const big = ('Mémo ' + 'x'.repeat(260) + '\n').repeat(6400);
     expect(big.length).toBeGreaterThan(1_700_000);
-    await editor.fill(big);
+    // Playwright's WebKit fill() sends the 1.7 MB through its text-insertion path and takes over 100 s even on a bare textarea; setting the value and firing input costs about 1 s and is what the editor listens to.
+    await editor.evaluate((node, text) => { node.value = text; node.dispatchEvent(new Event('input', { bubbles: true })); }, big);
     await dialog.getByRole('button', { name: 'Find', exact: true }).click();
     const bar = dialog.locator('.find-bar');
     await bar.getByRole('searchbox', { name: 'Find' }).fill('memo');
