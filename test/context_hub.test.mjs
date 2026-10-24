@@ -2885,6 +2885,35 @@ test("Context Hub refresh keeps its Shared work when projects open meanwhile, th
   assert.deepEqual(payloads.map((payload) => payload.refreshShared), [true, false]);
 });
 
+test("Context Hub refresh reports refreshing while its local follow-up after opens is still running", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-refresh-followup-refreshing-"));
+  withHubHome(t, path.join(base, "hub"));
+  const root = makeProject(base, "Follow-up refreshing");
+  const project = registerContextHubProject(root);
+  let releaseFollowup;
+  const followupHeld = new Promise((resolve) => { releaseFollowup = resolve; });
+  let calls = 0;
+  const taskRunner = async () => {
+    calls += 1;
+    if (calls === 1) for (let index = 0; index < 3; index += 1) recordContextHubProjectOpened(project.id);
+    else await followupHeld;
+    return { enabled: true, generatedAt: new Date().toISOString(), marker: `run-${calls}`, projects: [], sharedRepositories: [], proposals: [], items: [], repositoryErrors: [], summary: {} };
+  };
+
+  const refreshed = await refreshContextHubSnapshot(root, { refreshShared: true, force: true, taskRunner });
+
+  // The committed order is behind the open times until the follow-up ends.
+  assert.equal(refreshed.freshness.refreshing, true);
+  assert.equal(refreshed.freshness.fresh, false);
+  releaseFollowup();
+  for (let index = 0; index < 200 && readContextHubSnapshot()?.state?.marker !== "run-2"; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(readContextHubSnapshot().state.marker, "run-2");
+  const settled = await refreshContextHubSnapshot(root, { refreshShared: false, taskRunner });
+  assert.equal(settled.freshness.refreshing, false);
+});
+
 test("Context Hub marks the snapshot stale when the local follow-up after opens fails", async (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-refresh-followup-failure-"));
   withHubHome(t, path.join(base, "hub"));
@@ -3277,6 +3306,72 @@ test("Context Hub project endpoint requests a coalescing snapshot refresh", asyn
   assert.equal(result.project.id, registered.id);
   assert.equal(refreshOptions.length, 1);
   assert.deepEqual(refreshOptions[0], { refreshShared: false, force: false });
+});
+
+// The scheduler reads the registry snapshot before its first await: a busy
+// registry lock (more than 5 s) throws there. A background refresh must never
+// let that throw reach the request that only asked for it.
+function failSnapshotReadInScheduler(t) {
+  const originalLink = fs.linkSync;
+  const state = { armed: false, thrown: 0 };
+  t.mock.method(fs, "linkSync", (from, to, ...rest) => {
+    if (state.armed && String(to).includes("registry")) {
+      const limit = Error.stackTraceLimit;
+      Error.stackTraceLimit = 50;
+      const stack = new Error().stack;
+      Error.stackTraceLimit = limit;
+      if (/readContextHubSnapshot/.test(stack) && /scheduleContextHubSnapshotRefresh/.test(stack)) {
+        state.thrown += 1;
+        throw Object.assign(new Error("registry lock busy"), { code: "context_hub_registry_busy" });
+      }
+    }
+    return originalLink(from, to, ...rest);
+  });
+  return state;
+}
+
+test("Context Hub GET /api/context-hub survives a background refresh that throws synchronously", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-get-sync-throw-"));
+  withHubHome(t, path.join(base, "hub"));
+  const root = makeProject(base, "Get sync throw");
+  registerContextHubProject(root);
+  const failure = failSnapshotReadInScheduler(t);
+  const room = createMemoryServer({ root });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  failure.armed = true;
+  const response = await fetch(origin + "/api/context-hub", { headers: { "x-context-room-project": room.projectId } });
+  failure.armed = false;
+
+  assert.ok(failure.thrown >= 1, "the scheduler read must have failed at least once");
+  assert.equal(response.status, 200, await response.text());
+});
+
+test("Context Hub project endpoint still answers 201 when the background refresh throws synchronously", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-project-sync-throw-"));
+  withHubHome(t, path.join(base, "hub"));
+  const root = makeProject(base, "Project sync throw");
+  const registered = registerContextHubProject(root);
+  const failure = failSnapshotReadInScheduler(t);
+  const room = createMemoryServer({ root });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  failure.armed = true;
+  const response = await fetch(origin + "/api/context-hub/project", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-context-room-project": room.projectId,
+      "x-context-room-owner-nonce": room.ownerMutationNonce,
+    },
+    body: JSON.stringify({ projectId: registered.id }),
+  });
+  failure.armed = false;
+
+  assert.ok(failure.thrown >= 1, "the scheduler read must have failed at least once");
+  assert.equal(response.status, 201, await response.text());
 });
 
 test("Context Hub serializes forced refreshes and publishes only the later result", async (t) => {

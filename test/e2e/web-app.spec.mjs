@@ -245,9 +245,7 @@ test('@pwa imports a chosen Codex project after the second confirmation', async 
   const entry = (id, name, root) => [id, { id, name, rootPaths: [root] }];
   fs.writeFileSync(path.join(codexHome, '.codex-global-state.json'), JSON.stringify({ 'local-projects': Object.fromEntries([entry('r', 'Ready one', ready), entry('f', 'Fresh one', fresh), entry('u', 'Untouched one', untouched)]), 'project-order': ['r', 'f', 'u'] }));
   try {
-    // Open the manager by its deep link. The Home picker button sits in the review
-    // toolbar, which the app hides once a fresh snapshot confirms a clean queue,
-    // so clicking it races that render (it is hidden for good on a clean fixture).
+    // Open the manager by its deep link: it needs no click on the Home picker.
     await page.goto(f.origin + '/?hub=1&view=project-manager');
     await expect(page.locator('#sharedProposalWorkspaceHeading')).toHaveText('Manage projects');
     await page.locator('#contextHubImportCodex').click();

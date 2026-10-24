@@ -44,8 +44,7 @@ with sqlite3.connect(sys.argv[1]) as db:
     page.on('pageerror', error => errors.push(error.message));
     await page.goto(origin + '/?hub=1&view=hub');
     const draftButton = page.locator(`[data-local-draft="${imported.proposalId}"]`), reviewRow = page.locator('[data-context-room-review^="local-proposal:"]').filter({ hasText: `Recovered draft · Recovered.${format}` });
-    // The review toolbar hides once the queue is confirmed fresh and clean; that
-    // moves the draft button up. Click only after this settled state.
+    // Click only once the queue is confirmed fresh and clean: the page is settled.
     const settled = page.getByRole('status').filter({ hasText: 'No submitted review pending' });
     await expect(draftButton).toBeVisible({ timeout: 45000 }); await expect(settled).toBeVisible({ timeout: 45000 }); await expect(reviewRow).toHaveCount(0);
     // A Hub refresh may re-render the queue between press and release.
