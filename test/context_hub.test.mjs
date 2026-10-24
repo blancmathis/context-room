@@ -2831,6 +2831,60 @@ test("Context Hub project opening keeps the last snapshot readable and stale", (
   assert.equal(readContextHubNavigationSnapshot().snapshot, null);
 });
 
+test("Context Hub project opens during a snapshot refresh do not discard its result", (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-open-during-refresh-"));
+  withHubHome(t, path.join(base, "hub"));
+  const project = registerContextHubProject(fs.realpathSync(makeProject(base, "Opened during refresh")));
+  const refresh = beginContextHubSnapshotRefresh();
+
+  for (let index = 0; index < 3; index += 1) recordContextHubProjectOpened(project.id);
+
+  const committed = commitContextHubSnapshot({ generatedAt: "2026-08-08T12:00:00.000Z", marker: "kept" }, refresh);
+  assert.equal(committed.committed, true);
+  assert.equal(committed.openTimesStale, true);
+  assert.equal(readContextHubSnapshot().state.marker, "kept");
+
+  // An open plus a change that can add a project still discards the result.
+  const changed = beginContextHubSnapshotRefresh();
+  recordContextHubProjectOpened(project.id);
+  registerContextHubSharedRepository("git@github.com:example/added-during-open.git");
+  const rejected = commitContextHubSnapshot({ generatedAt: "2026-08-08T12:00:01.000Z", marker: "stale" }, changed);
+  assert.equal(rejected.committed, false);
+  assert.equal(rejected.reason, "inputs-changed");
+});
+
+test("Context Hub refresh keeps its Shared work when projects open meanwhile, then rebuilds the order locally", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-refresh-open-followup-"));
+  withHubHome(t, path.join(base, "hub"));
+  const root = makeProject(base, "Refresh with opens");
+  const project = registerContextHubProject(root);
+  const payloads = [];
+  const taskRunner = async (_task, _root, payload) => {
+    payloads.push(payload);
+    if (payloads.length === 1) for (let index = 0; index < 3; index += 1) recordContextHubProjectOpened(project.id);
+    return {
+      enabled: true,
+      generatedAt: new Date().toISOString(),
+      marker: `run-${payloads.length}`,
+      projects: [],
+      sharedRepositories: [],
+      proposals: [],
+      items: [],
+      repositoryErrors: [],
+      summary: {},
+    };
+  };
+
+  const refreshed = await refreshContextHubSnapshot(root, { refreshShared: true, force: true, taskRunner });
+
+  assert.equal(refreshed.marker, "run-1");
+  for (let index = 0; index < 200 && readContextHubSnapshot()?.state?.marker !== "run-2"; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(readContextHubSnapshot().state.marker, "run-2");
+  assert.deepEqual(payloads.map((payload) => payload.refreshShared), [true, false]);
+});
+
 test("Context Hub registry mutation atomically prevents an in-flight snapshot commit", (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-snapshot-registry-race-"));
   withHubHome(t, path.join(base, "hub"));

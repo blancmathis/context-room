@@ -17727,7 +17727,13 @@ export function refreshContextHubSnapshot(root, {
       }
       return refresh(attempt + 1);
     }
-    const committedInputRevision = contextHubSnapshotInputKey(coordination);
+    // Opens during this refresh only moved open times: keep this Shared work and
+    // rebuild the local order next, without fetching Shared again.
+    const committedInputs = committed.openTimesStale ? committed.snapshot : coordination;
+    if (committed.openTimesStale) {
+      void refreshContextHubSnapshot(key, { refreshShared: false, force: true, taskRunner }).catch(() => {});
+    }
+    const committedInputRevision = contextHubSnapshotInputKey(committedInputs);
     if (contextHubCacheInputRevision !== committedInputRevision) {
       contextHubStateCache.clear();
       contextHubProjectSummaryCache.clear();
@@ -17735,8 +17741,8 @@ export function refreshContextHubSnapshot(root, {
     }
     contextHubStateCache.set(key, {
       value: state,
-      registryRevision: coordination.registryRevision,
-      invalidationRevision: coordination.invalidationRevision,
+      registryRevision: committedInputs.registryRevision,
+      invalidationRevision: committedInputs.invalidationRevision,
       expiresAt: Date.now() + CONTEXT_HUB_STATE_CACHE_TTL_MS,
     });
     return contextHubStateWithFreshness(contextHubStateForRoot(state, key), { generatedAt: state.generatedAt, refreshing: false });
