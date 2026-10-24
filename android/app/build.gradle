@@ -37,7 +37,9 @@ android {
             storePassword 'android'
             keyAlias 'androiddebugkey'
             keyPassword 'android'
-            // scripts/check-android-artifact.py requires a v3 block; AGP signs v2 only unless asked.
+            // scripts/check-android-artifact.py requires v2 and v3 blocks, like scripts/sign-android-apk.sh.
+            // AGP signs v2 only by default and drops v2 once v3 is on (minSdk 28): ask for both.
+            enableV2Signing = true
             enableV3Signing = true
         }
     }
