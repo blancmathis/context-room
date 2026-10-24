@@ -325,3 +325,24 @@ test('@assistant a configure that never answers ends in an error after the timeo
     await expect(pane).toHaveAttribute('data-operation-status', 'completed');
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
+
+test('@assistant a send that never answers ends in an error after the timeout and the second Send replays the same request id', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    await page.clock.install();
+    const { pane, box, send } = await staleFastPane(page, f);
+    const ids = []; page.on('request', request => { if (request.url().endsWith('/send')) ids.push(request.postDataJSON().requestId); });
+    const silent = async () => {};
+    await page.route('**/send', silent);
+    await box.fill('Kept text.'); await send.click(); await expect(send).toBeDisabled();
+    await expect.poll(() => ids.length).toBe(1);
+    await page.clock.fastForward(20_000); await expect(send).toBeDisabled();
+    await page.clock.fastForward(30_000);
+    await expect(send).toBeEnabled(); await expect(box).toHaveValue('Kept text.'); await expect(pane).toContainText('Press Send again');
+    await page.unroute('**/send', silent);
+    await send.click();
+    await expect.poll(() => f.turns.length).toBe(1); f.finish();
+    expect(ids.length).toBe(2); expect(ids[1]).toBe(ids[0]);
+    await expect(pane).toHaveAttribute('data-operation-status', 'completed'); expect(f.turns.length).toBe(1);
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
