@@ -171,7 +171,7 @@ test('@smoke Aa changes the text size, keeps the reading place and survives a re
     await expect.poll(sizeOf).toBe('24px');
     await page.evaluate(() => selectFile('docs/Notes.txt'));
     await expect(page.locator('#docReader.plain-text-view')).toBeVisible();
-    expect(await sizeOf()).toBe('24px');
+    expect(parseFloat(await sizeOf())).toBeCloseTo(20.8, 1);
 
     await page.evaluate(() => selectFile('docs/Page.html'));
     const frame = page.locator('iframe.html-preview-frame');

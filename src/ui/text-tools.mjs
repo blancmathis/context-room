@@ -18,12 +18,12 @@ export function foldForSearch(value) {
   return text.replace(UNIT_TO_FOLD, (part) => part <= "\x7f" ? part.toLowerCase() : foldUnit(part));
 }
 
-/** Start indexes of every match, up to `limit`; `more` says the count was cut. `exact` keeps case and accents. */
-export function findMatches(text, query, { exact = false, limit = FIND_LIMIT } = {}) {
+/** Start indexes of every match, up to `limit`; `more` says the count was cut. `exact` keeps case and accents. `folded` is `foldForSearch(text)` when the caller already has it. */
+export function findMatches(text, query, { exact = false, limit = FIND_LIMIT, folded = null } = {}) {
   const needle = exact ? String(query ?? "") : foldForSearch(query);
   const result = { starts: [], length: needle.length, more: false };
   if (!needle) return result;
-  const haystack = exact ? String(text ?? "") : foldForSearch(text);
+  const haystack = exact ? String(text ?? "") : folded ?? foldForSearch(text);
   for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, at + needle.length)) {
     if (result.starts.length >= limit) { result.more = true; break; }
     result.starts.push(at);
@@ -180,12 +180,15 @@ export function createFindBar({ getText, select, apply, onClose = () => {} }) {
   let current = -1;
   let result = { starts: [], length: 0, more: false };
   let cacheText = null;
+  let foldedCache = { text: null, folded: "" };
   let caretAt = 0;
 
   const run = () => {
     const text = getText();
     cacheText = text;
-    result = findMatches(text, queryInput.value, { exact: exactInput.checked });
+    const exact = exactInput.checked;
+    if (!exact && foldedCache.text !== text) foldedCache = { text, folded: foldForSearch(text) };
+    result = findMatches(text, queryInput.value, { exact, folded: exact ? null : foldedCache.folded });
     return result;
   };
   const show = () => {
