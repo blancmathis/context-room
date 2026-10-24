@@ -17674,7 +17674,7 @@ function waitForContextHubAcceptRefresh(refresh, timeoutMs = CONTEXT_HUB_ACCEPT_
 // the committed order stays behind the open times: mark the snapshot stale so
 // the next reader refreshes again instead of trusting it until the TTL.
 function followContextHubRefreshLocally(key, taskRunner) {
-  void refreshContextHubSnapshot(key, { refreshShared: false, force: true, taskRunner }).catch((error) => {
+  void Promise.resolve().then(() => refreshContextHubSnapshot(key, { refreshShared: false, force: true, taskRunner })).catch((error) => {
     // Never throws: nothing handles this promise, and an unhandled rejection
     // stops the Hub. Only open times are behind, so a Shared refresh still in
     // flight must keep committing its own Shared work (openTimeOnly).

@@ -2915,6 +2915,56 @@ test("Context Hub marks the snapshot stale when the local follow-up after opens 
   assert.match(warnings.join("\n"), /local follow-up refresh failed: local follow-up broke/);
 });
 
+test("Context Hub local follow-up that throws synchronously before its first await still resolves the committed refresh and marks stale", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-refresh-followup-sync-throw-"));
+  withHubHome(t, path.join(base, "hub"));
+  const root = makeProject(base, "Follow-up sync throw");
+  const project = registerContextHubProject(root);
+  const warnings = [];
+  t.mock.method(console, "warn", (message) => warnings.push(String(message)));
+  const originalLink = fs.linkSync;
+  let armed = false;
+  let thrown = 0;
+  // The follow-up's first registry-lock acquisition is the snapshot read at the
+  // top of refreshContextHubSnapshot; fail that one acquisition, once.
+  t.mock.method(fs, "linkSync", (from, to, ...rest) => {
+    if (armed && String(to).includes("registry")) {
+      const limit = Error.stackTraceLimit;
+      Error.stackTraceLimit = 50;
+      const stack = new Error().stack;
+      Error.stackTraceLimit = limit;
+      if (/readContextHubSnapshot/.test(stack) && /refreshContextHubSnapshot/.test(stack)) {
+        armed = false;
+        thrown += 1;
+        throw Object.assign(new Error("registry lock busy"), { code: "context_hub_registry_busy" });
+      }
+    }
+    return originalLink(from, to, ...rest);
+  });
+  let calls = 0;
+  const taskRunner = async () => {
+    calls += 1;
+    if (calls === 1) {
+      for (let index = 0; index < 3; index += 1) recordContextHubProjectOpened(project.id);
+      armed = true;
+      return { enabled: true, generatedAt: new Date().toISOString(), marker: "old-order", projects: [], sharedRepositories: [], proposals: [], items: [], repositoryErrors: [], summary: {} };
+    }
+    return { enabled: true, generatedAt: new Date().toISOString(), marker: "new-order", projects: [], sharedRepositories: [], proposals: [], items: [], repositoryErrors: [], summary: {} };
+  };
+
+  const refreshed = await refreshContextHubSnapshot(root, { refreshShared: true, force: true, taskRunner });
+  for (let index = 0; index < 200 && !warnings.length; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  assert.equal(thrown, 1);
+  assert.ok(refreshed);
+  const snapshot = readContextHubSnapshot();
+  assert.equal(snapshot.state.marker, "old-order");
+  assert.equal(snapshot.generatedAt, "1970-01-01T00:00:00.000Z");
+  assert.match(warnings.join("\n"), /local follow-up refresh failed: registry lock busy/);
+});
+
 test("Context Hub out-of-order refresh after opens adopts the newer snapshot and keeps its Shared sync", async (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-refresh-out-of-order-opens-"));
   withHubHome(t, path.join(base, "hub"));
