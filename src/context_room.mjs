@@ -17670,6 +17670,16 @@ function waitForContextHubAcceptRefresh(refresh, timeoutMs = CONTEXT_HUB_ACCEPT_
   });
 }
 
+// Rebuilds the local order after a commit that kept Shared work. If it fails,
+// the committed order stays behind the open times: mark the snapshot stale so
+// the next reader refreshes again instead of trusting it until the TTL.
+function followContextHubRefreshLocally(key, taskRunner) {
+  void refreshContextHubSnapshot(key, { refreshShared: false, force: true, taskRunner }).catch((error) => {
+    markContextHubSnapshotStale();
+    console.warn(`Context Hub local follow-up refresh failed: ${String(error?.message || error).slice(0, 500)}`);
+  });
+}
+
 export function refreshContextHubSnapshot(root, {
   refreshShared = true,
   force = false,
@@ -17730,9 +17740,7 @@ export function refreshContextHubSnapshot(root, {
     // Opens during this refresh only moved open times: keep this Shared work and
     // rebuild the local order next, without fetching Shared again.
     const committedInputs = committed.openTimesStale ? committed.snapshot : coordination;
-    if (committed.openTimesStale) {
-      void refreshContextHubSnapshot(key, { refreshShared: false, force: true, taskRunner }).catch(() => {});
-    }
+    if (committed.openTimesStale) followContextHubRefreshLocally(key, taskRunner);
     const committedInputRevision = contextHubSnapshotInputKey(committedInputs);
     if (contextHubCacheInputRevision !== committedInputRevision) {
       contextHubStateCache.clear();

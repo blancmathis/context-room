@@ -2885,6 +2885,36 @@ test("Context Hub refresh keeps its Shared work when projects open meanwhile, th
   assert.deepEqual(payloads.map((payload) => payload.refreshShared), [true, false]);
 });
 
+test("Context Hub marks the snapshot stale when the local follow-up after opens fails", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-refresh-followup-failure-"));
+  withHubHome(t, path.join(base, "hub"));
+  const root = makeProject(base, "Follow-up failure");
+  const project = registerContextHubProject(root);
+  const warnings = [];
+  t.mock.method(console, "warn", (message) => warnings.push(String(message)));
+  let calls = 0;
+  const taskRunner = async () => {
+    calls += 1;
+    if (calls === 1) {
+      for (let index = 0; index < 3; index += 1) recordContextHubProjectOpened(project.id);
+      return { enabled: true, generatedAt: new Date().toISOString(), marker: "old-order", projects: [], sharedRepositories: [], proposals: [], items: [], repositoryErrors: [], summary: {} };
+    }
+    throw new Error("local follow-up broke");
+  };
+
+  await refreshContextHubSnapshot(root, { refreshShared: true, force: true, taskRunner });
+  for (let index = 0; index < 200 && !warnings.length; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  assert.equal(calls, 2);
+  // The old order must not read as fresh until the TTL: the next reader refreshes.
+  const snapshot = readContextHubSnapshot();
+  assert.equal(snapshot.state.marker, "old-order");
+  assert.equal(snapshot.generatedAt, "1970-01-01T00:00:00.000Z");
+  assert.match(warnings.join("\n"), /local follow-up refresh failed: local follow-up broke/);
+});
+
 test("Context Hub registry mutation atomically prevents an in-flight snapshot commit", (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-snapshot-registry-race-"));
   withHubHome(t, path.join(base, "hub"));
