@@ -2793,11 +2793,11 @@ test("Context Hub snapshot commits reject invalidated and out-of-order refresh r
   const olderState = { generatedAt: "2026-08-08T12:00:01.000Z", marker: "older" };
 
   assert.equal(commitContextHubSnapshot(newerState, second).committed, true);
-  assert.deepEqual(commitContextHubSnapshot(olderState, first), {
-    committed: false,
-    reason: "out-of-order",
-    currentRefreshSequence: second.refreshSequence,
-  });
+  const outOfOrder = commitContextHubSnapshot(olderState, first);
+  assert.equal(outOfOrder.committed, false);
+  assert.equal(outOfOrder.reason, "out-of-order");
+  assert.equal(outOfOrder.currentRefreshSequence, second.refreshSequence);
+  assert.equal(outOfOrder.current.state.marker, "newer");
   assert.equal(readContextHubSnapshot().state.marker, "newer");
 
   const invalidated = beginContextHubSnapshotRefresh();
@@ -2913,6 +2913,66 @@ test("Context Hub marks the snapshot stale when the local follow-up after opens 
   assert.equal(snapshot.state.marker, "old-order");
   assert.equal(snapshot.generatedAt, "1970-01-01T00:00:00.000Z");
   assert.match(warnings.join("\n"), /local follow-up refresh failed: local follow-up broke/);
+});
+
+test("Context Hub out-of-order refresh after opens adopts the newer snapshot and keeps its Shared sync", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-refresh-out-of-order-opens-"));
+  withHubHome(t, path.join(base, "hub"));
+  const older = makeProject(base, "Older refresh");
+  const newer = makeProject(base, "Newer refresh");
+  const project = registerContextHubProject(older);
+  registerContextHubProject(newer);
+  let sharedCache = "before-sync";
+  let releaseOlder;
+  const olderGate = new Promise((resolve) => { releaseOlder = resolve; });
+  const calls = [];
+  const catalog = (marker) => ({
+    enabled: true,
+    generatedAt: new Date().toISOString(),
+    marker,
+    projects: [],
+    sharedRepositories: [{ id: "shared:demo", status: { syncedAt: sharedCache } }],
+    proposals: [],
+    items: [],
+    repositoryErrors: [],
+    summary: {},
+  });
+  const taskRunner = async (_task, taskRoot, payload) => {
+    const name = taskRoot === path.resolve(older) ? "older" : "newer";
+    calls.push({ name, refreshShared: payload.refreshShared });
+    if (name === "older" && calls.filter((call) => call.name === "older").length === 1) {
+      await olderGate;
+      // The Shared sync of this refresh writes the Shared cache.
+      sharedCache = "older-sync";
+      return catalog("older-1");
+    }
+    if (name === "newer" && calls.filter((call) => call.name === "newer").length === 1) {
+      for (let index = 0; index < 3; index += 1) recordContextHubProjectOpened(project.id);
+    }
+    return catalog(`${name}-${calls.length}`);
+  };
+
+  const olderRefresh = refreshContextHubSnapshot(older, { refreshShared: true, force: true, taskRunner });
+  await new Promise((resolve) => setImmediate(resolve));
+  await refreshContextHubSnapshot(newer, { refreshShared: false, force: true, taskRunner });
+  for (let index = 0; index < 200 && calls.filter((call) => call.name === "newer").length < 2; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  for (let index = 0; index < 200 && !/^newer-/.test(readContextHubSnapshot()?.state?.marker || ""); index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(readContextHubSnapshot().state.sharedRepositories[0].status.syncedAt, "before-sync");
+
+  releaseOlder();
+  await olderRefresh;
+  for (let index = 0; index < 200 && readContextHubSnapshot()?.state?.sharedRepositories?.[0]?.status?.syncedAt !== "older-sync"; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  // Opens alone never make the older refresh redo its Git and Shared work; its
+  // Shared sync still reaches the snapshot through one local pass.
+  assert.deepEqual(calls.filter((call) => call.name === "older").map((call) => call.refreshShared), [true, false]);
+  assert.equal(readContextHubSnapshot().state.sharedRepositories[0].status.syncedAt, "older-sync");
 });
 
 test("Context Hub registry mutation atomically prevents an in-flight snapshot commit", (t) => {

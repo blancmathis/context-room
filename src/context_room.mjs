@@ -17716,13 +17716,15 @@ export function refreshContextHubSnapshot(root, {
     if (!committed.committed) {
       contextHubStateCache.delete(key);
       if (committed.reason === "out-of-order") {
-        const current = readContextHubSnapshot();
-        if (
-          current?.state
-          && current.registryRevision === coordination.registryRevision
-          && current.invalidationRevision === coordination.invalidationRevision
-          && Number(current.refreshSequence) > coordination.refreshSequence
-        ) {
+        // A newer refresh committed at inputs that differ from ours by open
+        // times at most: adopt it instead of redoing the Git and Shared work.
+        const current = committed.current;
+        if (current?.state && typeof current.state === "object") {
+          // Opens moved the order, or the newer refresh read the Shared cache
+          // before our sync wrote it: a local pass picks both up, no fetch.
+          if (committed.openTimesStale || (refreshShared && JSON.stringify(state?.sharedRepositories ?? null) !== JSON.stringify(current.state.sharedRepositories ?? null))) {
+            followContextHubRefreshLocally(key, taskRunner);
+          }
           return contextHubStateWithFreshness(contextHubStateForRoot(current.state, key), { generatedAt: current.generatedAt, refreshing: false });
         }
         if (attempt < 2) return refresh(attempt + 1);
