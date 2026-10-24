@@ -367,11 +367,11 @@ export function applyRestore(directory, { only, replace = false, expectedRevisio
           if (!before) throw new Error('the saved copy is missing');
           writeEntry(action.entry, before, action.entry.sha256);
         }
-      } catch (rollbackError) { stuck.push(`${action.entry.path} (${rollbackError.message})`); }
+      } catch (rollbackError) { stuck.push(`${path.join(rootDirectory(action.entry.root), action.entry.path)} (${rollbackError.message})`); }
     }
     const saved = undo ? ` The files it replaced are saved in ${undo}.` : '';
     throw Object.assign(new Error(stuck.length
-      ? `The restore stopped (${error.message}). These files could not be put back: ${stuck.join('; ')}.${saved}`
+      ? `The restore stopped (${error.message}). These files could not be put back: ${stuck.join('; ')}. Check each one by hand; nothing outside its folder was touched.${saved}`
       : `The restore stopped (${error.message}). Files already written were put back.${saved}`), { code: error.code || 'restore_failed' });
   }
   return { ...publicPlan(plan), applied: true, written: written.length, created: written.filter(action => action.state === 'create').length, replaced: conflicts.length, undoBackup: undo };
