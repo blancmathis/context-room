@@ -222,18 +222,49 @@ mention, Claude lance les commandes ; les gestes sur la BOOX sont ceux du guide.
 « Recuperation Lisiere ». Ils passent dans l'espace Notebooks avec
 `migrate --notebooks-to-space`, **sans `--legacy-board`**. Cette action écrit
 dans `~/.context-room` : **Mathis a dit oui le 2026-10-23** pour ces quatre
-gestes, à la séance BOOX, pas avant le déploiement. Le Hub reste arrêté du
-début à la fin. `<release>` = le dossier de la nouvelle release ;
+gestes, à la séance BOOX, **après** le déploiement de `23facfc` (étape 0). Le
+Hub reste arrêté de l'étape 3 à l'étape 8. `<release>` = le dossier de la nouvelle release ;
 `cr() { "$HOME/.local/bin/node" "<release>/runtime/bin/context-room.mjs" "$@"; }`
 (une fonction : zsh ne coupe pas une variable en mots ; la CLI n'est pas dans
 le `PATH`, et seule la nouvelle release a `backup`).
-Ordre strict :
+Ordre strict (relu par Opus le 2026-10-25) :
 
-1. **Geste 1, arrêter le Hub.** Noter le plist :
+0. **Début de séance : déployer `23facfc`.** Rien de T-021 n'est dans
+   `bbfef3d` : `backup`, `migrate --notebooks-to-space`, `--export-lisiere`,
+   `--import-lisiere` et l'APK final ont besoin de `23facfc`. Il faut donc
+   préparer la release (étape 2) **avant** les étapes 2 à 6 du plan (c) et
+   avant l'appairage sur le port 4318. Le Hub tourne encore à ce stade.
+1. **Sauvegarde Lisière, en premier.**
+   `python3 -B scripts/lisiere-backup.py --output "$B/lisiere-backup-<date>"`.
+   Contrôle : `manifest.json` et `development.keystore` présents (sha
+   `e6681a8d…`). `$B/keys` ne contient que `tablet.keystore` : cette clé Lisière
+   n'a qu'une copie. Faire une copie de `$B` hors du Mac.
+2. **Préparer, sans effet sur les données (Hub encore en marche).**
+   `REL=~/.local/share/context-room/releases/23facfc-p4319`. Installer les
+   fichiers : `scripts/prepare-mac-install.mjs --output "$REL" --port 4319 …`
+   (aperçu, puis `--apply --revision <R>` ; voir
+   `docs/system/runtime-profiles.md`). Le dossier parent de `--output` doit
+   exister (`mkdir -p`). Puis les dépendances :
+   `(cd "$REL/runtime" && PATH="$HOME/.local/bin:$PATH" npm ci --omit=dev --ignore-scripts --no-audit --no-fund)`.
+   Contrôle : `cr --version` = 0.6.17. Ne pas copier `node_modules` de la
+   release précédente : `package-lock.json` a changé depuis `bbfef3d`
+   (dompurify, fast-uri). **Ne pas changer `RUNTIME`.** Pas `deploy-main.sh` :
+   il relance le Hub.
+3. **Geste 1, arrêter le Hub.** Noter le plist :
    `launchctl print gui/$U/app.contextroom.local | grep 'path ='`
    (attendu : `$HOME/Library/LaunchAgents/app.contextroom.local.plist`). Puis
    `launchctl bootout gui/$U/app.contextroom.local` (un `kill` le relancerait,
-   `KeepAlive`). Contrôle : `launchctl print …` répond « Could not find ».
+   `KeepAlive`). **Contrôle d'arrêt, les trois à la fois :**
+   1. `launchctl print gui/$U/app.contextroom.local` répond « Could not find » ;
+   2. `lsof -nP -iTCP:4319 -iTCP:4318 -sTCP:LISTEN` ne rend rien (ports libres) ;
+   3. `pgrep -f 'runtime/bin/context-room.mjs hub'` ne rend rien.
+
+   `launchctl print` seul ne suffit pas : au `bootout`, le lanceur arrête son
+   enfant Node avec 15 s d'attente, le plist n'a pas d'`ExitTimeOut`, et
+   launchd tue le lanceur après 20 s. L'enfant peut survivre et garder les
+   ports (cas vu avec `bbfef3d`). Aucune commande `backup` ni `migrate` ne
+   refuse un Hub vivant (seul `restore` le fait). S'il reste un processus
+   `hub` : `kill -TERM <pid>`, attendre, refaire les trois contrôles.
    Puis vérifier le dossier de travail du plist :
    `ls -d "$(plutil -extract WorkingDirectory raw <plist>)"`. S'il manque (une
    ancienne release supprimée), launchd ne peut plus lancer le Hub : il échoue
@@ -243,44 +274,72 @@ Ordre strict :
    `plutil -replace WorkingDirectory -string "$HOME/.local/share/context-room" <plist>`
    et `plutil -lint <plist>`. Sans effet sur le Hub : le lanceur fixe lui-même
    le dossier du processus Node (`cwd=RUNTIME`).
-2. **Préparer, sans effet sur les données.** Installer les fichiers de la
-   nouvelle release : `scripts/prepare-mac-install.mjs --output <release> …`
-   (aperçu, puis `--apply --revision <R>` ; voir
-   `docs/system/runtime-profiles.md`), puis installer ses dépendances :
-   `(cd "<release>/runtime" && PATH="$HOME/.local/bin:$PATH" npm ci --omit=dev --ignore-scripts --no-audit --no-fund)`.
-   Ne pas copier `node_modules` de la release précédente : `package-lock.json`
-   a changé depuis `bbfef3d` (dompurify, fast-uri). **Ne pas changer
-   `RUNTIME`.** Pas `deploy-main.sh` : il relance le Hub.
-3. **Geste 2, sauvegarde.** `cr backup --plan --output "$B/context-room-backup-<date>"`
-   (compte, n'écrit rien), puis `cr backup --output "$B/context-room-backup-<date>"`.
+4. **Copie brute, Hub arrêté, avant le premier démarrage de `23facfc`.**
+   `cr backup` ne couvre que le registre, les revues, les conversations, les
+   enregistrements et les carnets. Il ne couvre ni `shared`, ni `operations`,
+   ni `snapshot*`, ni les `.context-room/config.json` des projets. Or le Hub
+   `23facfc` réécrit ces fichiers à son premier démarrage. Copier :
+   `mkdir -p "$B/raw-before-23facfc"`, puis
+   `(cd ~/.context-room && cp -Rp hub shared preferences.json operations backups logs context-snapshots "$B/raw-before-23facfc/")`
+   (sans `assistant`, 550 Mo de modèles), puis le `.context-room/config.json`
+   de **chaque** projet du registre (6, dont le projet lié à Shared), en
+   gardant le chemin relatif de chaque projet, puis les données Lisière
+   (`~/.local/share/lisiere`, `development.keystore` compris). Contrôle :
+   `ls` et `shasum` du keystore copié. Cette copie sert au retour à `bbfef3d`
+   sur les 6 projets, pas seulement sur 3.
+5. **Geste 2, sauvegarde.** `cr backup --plan --output "$B/context-room-backup-<date>"`
+   (compte, n'écrit rien). Contrôle : `warnings` ne nomme pas
+   « Recuperation Lisiere », et les 41 fichiers de `notebooks/v1` de ce projet
+   figurent dans le plan. Puis `cr backup --output "$B/context-room-backup-<date>"`.
    Le dossier ne doit pas exister. Contrôle : `manifest.json` présent.
-4. **Geste 3, changer `RUNTIME`** dans
-   `~/.local/share/context-room/launch-installed.py` vers `<release>`, après
-   la copie `launch-installed.before-<sha>.py`. Le Hub reste arrêté.
-5. **Geste 4, migrer.** `cr migrate --root "<projet>" --notebooks-to-space`
+6. **Geste 3, changer `RUNTIME`** dans
+   `~/.local/share/context-room/launch-installed.py` vers `$REL`, après
+   `cp launch-installed.py launch-installed.before-23facfc.py`. Contrôles :
+   `grep -n '^RUNTIME' launch-installed.py` et
+   `python3 -I -m py_compile launch-installed.py`. Le Hub reste arrêté.
+7. **Geste 4, migrer.** `cr migrate --root "<projet>" --notebooks-to-space`
    (aperçu : `space: "will-be-created"`, 4 carnets dans `notebooks`, `refused`
-   vide), puis la même commande avec `--apply --revision <R>`. L'apply crée
+   vide), puis la même commande avec `--apply --revision <R>`. **Noter les 4
+   `from`** (`Carnets/<uuid>.crnb`) : ils servent au retour. L'apply crée
    l'espace (`~/Documents/Context Room/Carnets`) puis déplace. Après un crash :
    attendre 30 s (verrou), puis relancer ; si la réponse dit « Preview again »,
    refaire l'aperçu.
-6. **Relancer le Hub** : `launchctl bootstrap gui/$U <plist noté au geste 1>`,
-   puis vérifier les 4 carnets dans l'espace Notebooks.
+8. **Relancer le Hub** : `launchctl bootstrap gui/$U <plist noté à l'étape 3>`.
+   En 20 s au plus : le port 4319 répond, le port 4318 écoute (si le réseau
+   local est là), les 6 projets et l'espace Notebooks sont `available`, et les
+   4 carnets sont dans l'espace Notebooks.
 
 Retour arrière de ces gestes :
 - Geste 1 ou préparation : `launchctl bootstrap gui/$U <plist>` ; la release
   préparée reste sur le disque sans effet.
-- Geste 2 : rien à défaire (dossier neuf, à garder).
-- Geste 3 : remettre `launch-installed.before-<sha>.py` à la place de
-  `launch-installed.py`, puis `launchctl bootstrap`.
+- Copie brute et geste 2 : rien à défaire (dossiers neufs, à garder).
+- Geste 3 : remettre `launch-installed.before-23facfc.py` à la place de
+  `launch-installed.py`, puis `launchctl bootstrap`. Seulement après avoir
+  défait le geste 4.
 - Geste 4 : revenir à `bbfef3d` ne remet **pas** les carnets (sources dans
   `retired/`, marqueur `moved`), et `restore` non plus. Avec la nouvelle
   release, Hub lancé : **Move to project…** sur chaque carnet, vers
   « Recuperation Lisiere » (déplacement vérifié, L3). Seulement ensuite,
-  revenir à `bbfef3d` comme au geste 3. Vu dans le code de `bbfef3d` :
-  l'ancien Hub lit un registre qui contient l'espace sans erreur ; il le
-  montre comme un projet ordinaire « Notebooks » et efface le champ `space`
-  à sa prochaine écriture du registre. Au retour à la nouvelle release,
-  Hub › New notebook le reconnaît de nouveau (dossier déjà configuré).
+  revenir à `bbfef3d` comme au geste 3.
+  - **Chemin du fichier (D1).** Le dialogue propose `docs/<titre>.crnb` : le
+    projet « Recuperation Lisiere » le refuse (« The destination folder is not
+    authorized for notebooks »), il n'autorise que `Carnets/`. Taper le chemin
+    **d'origine** `Carnets/<uuid>.crnb` (le `from` noté à l'étape 7), pas un nom
+    libre : l'état reste exact. Les accents du titre ne sont pas retirés par
+    le Hub ; seul le script d'essai le faisait. Correctif de code à faire après
+    la séance : proposer le premier chemin autorisé du projet cible.
+  - **Sans Hub sous launchd.** Il n'existe pas de commande CLI pour déplacer un
+    carnet (seulement l'API du Hub). Si le Hub `23facfc` ne démarre pas sous
+    launchd, lancer à la main le Hub de la nouvelle release sur le port 4399 :
+    `(cd "$B" && nohup "$HOME/.local/bin/node" "$REL/runtime/bin/context-room.mjs" hub --no-local --port 4399 > hub-4399.log 2>&1 &)`,
+    ouvrir `http://127.0.0.1:4399`, faire « Move to project… » ×4, puis
+    l'arrêter (`pkill -TERM -f 'hub --no-local --port 4399'`).
+  - Vu dans le code de `bbfef3d` : l'ancien Hub lit un registre qui contient
+    l'espace sans erreur ; il le montre comme un projet ordinaire
+    « Notebooks » et efface le champ `space` à sa prochaine écriture du
+    registre. Au retour à la nouvelle release, `registerContextHubProject`
+    remet `space` sur l'entrée existante, et Hub › New notebook le reconnaît
+    de nouveau (dossier déjà configuré).
 
 **Retour arrière.**
 - Avant l'étape 6 : rien à défaire.
