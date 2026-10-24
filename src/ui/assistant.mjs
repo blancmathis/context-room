@@ -47,11 +47,16 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     parent.append(active.panel); active.onState = onState; active.captureSource = captureSource; active.notifyState(); active.panel.hidden = false; active.panel.classList.remove('assistant-minimized'); active.present(mode, dictationTarget, primedAudioContext); return active;
   }
   if (!document.getElementById('context-room-assistant-style')) { const link = element('link'); link.id = 'context-room-assistant-style'; link.rel = 'stylesheet'; link.href = '/assets/ui/assistant.css'; document.head.append(link); }
-  const post = (route, body, { timeout = 0 } = {}) => {
-    const controller = timeout ? new AbortController() : null, timer = timeout ? setTimeout(() => controller.abort(), timeout) : 0;
-    return api('/api/assistant' + route, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), ...(controller ? { signal: controller.signal } : {}) })
-      .catch(error => { throw controller?.signal.aborted ? Object.assign(new Error('The Mac did not answer in time. Press Send again: the same message is replayed, not duplicated.'), { code: 'assistant_request_timeout' }) : error; })
-      .finally(() => clearTimeout(timer));
+  const SEND_TIMEOUT_MESSAGE = 'The Mac did not answer in time. Press Send again: the same message is replayed, not duplicated.';
+  // A timed post settles on its own timer, whether or not `api` honours the abort signal.
+  const post = (route, body, { timeout = 0, message = 'The Mac did not answer in time. Try again.' } = {}) => {
+    const controller = timeout ? new AbortController() : null;
+    const request = api('/api/assistant' + route, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), ...(controller ? { signal: controller.signal } : {}) });
+    if (!timeout) return request;
+    let timer;
+    const expired = new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(Object.assign(new Error(message), { code: 'assistant_request_timeout' })); }, timeout); });
+    request.catch(() => {});
+    return Promise.race([request, expired]).finally(() => clearTimeout(timer));
   };
   const REQUEST_TIMEOUT_MS = 45000;
   const historyQuery = new URLSearchParams({ kind: source.kind, path: source.path, ...(source.resourceId ? { resourceId: source.resourceId } : {}), ...(source.locationRevision ? { locationRevision: source.locationRevision } : {}) });
@@ -259,7 +264,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     fast.disabled = models.disabled || !offered;
     fastNote.textContent = offered ? '' : !catalogLoaded ? 'Load available models to change Fast.' : fastDropped ? 'Fast was on but is not offered for this model now. Turns run without it.' : 'Fast is not offered for this model.';
   }
-  async function configure() { current = await post('/conversations/' + current.id + '/configure', { model: models.value, effort: efforts.value, fast: fast.checked }, { timeout: REQUEST_TIMEOUT_MS }); render(); }
+  async function configure() { current = await post('/conversations/' + current.id + '/configure', { model: models.value, effort: efforts.value, fast: fast.checked }, { timeout: REQUEST_TIMEOUT_MS, message: SEND_TIMEOUT_MESSAGE }); render(); }
   models.addEventListener('change', () => { showEfforts(); run(configure()); }); efforts.addEventListener('change', () => run(configure())); fast.addEventListener('change', () => run(configure()));
   async function refreshHistory({ append = false } = {}) {
     if (historyLoading || append && !historyCursor) return;
@@ -301,11 +306,12 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
       if (voiceSession && voice !== voiceSession) return;
       if (voiceSession) voiceSession.requestId = sendRequest.requestId;
       try {
-        current = await post('/conversations/' + current.id + '/send', sendRequest, { timeout: REQUEST_TIMEOUT_MS }); if (input.value === text) input.value = ''; sendRequest = null; await saveDraft(); inform(''); render();
-        if (voiceSession && voice !== voiceSession && activeStatuses.has(current.operation?.status)) await stopTurn(voiceSession.requestId);
+        current = await post('/conversations/' + current.id + '/send', sendRequest, { timeout: REQUEST_TIMEOUT_MS, message: SEND_TIMEOUT_MESSAGE }); if (input.value === text) input.value = ''; sendRequest = null; await saveDraft(); inform(''); render();
+        if (voiceSession && voice !== voiceSession && activeStatuses.has(current.operation?.status)) await stopTurn(voiceSession.requestId, true);
       }
       catch (error) {
-        await poll();
+        // A silent Mac cannot answer a re-sync either: keep sendRequest for the replay.
+        if (error.code !== 'assistant_request_timeout') await poll();
         if (current.messages.some(item => item.id === sendRequest?.requestId)) { if (input.value === text) input.value = ''; sendRequest = null; }
         else if (error.status >= 400 && error.status < 500) sendRequest = null;
         await saveDraft();
@@ -313,8 +319,8 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
       }
     } finally { sending = false; render(); }
   }
-  async function stopTurn(operationId = current.operation?.id) {
-    const id = current.id, result = await post('/conversations/' + id + '/stop', { operationId });
+  async function stopTurn(operationId = current.operation?.id, bounded = false) {
+    const id = current.id, result = await post('/conversations/' + id + '/stop', { operationId }, bounded ? { timeout: REQUEST_TIMEOUT_MS } : {});
     if (id === current.id && current.operation?.id === operationId) { current = result; render(); }
   }
   async function acquireAudio(takeover = false, generation = audioGeneration) {
