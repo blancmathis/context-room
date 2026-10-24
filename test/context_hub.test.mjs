@@ -2809,6 +2809,28 @@ test("Context Hub snapshot commits reject invalidated and out-of-order refresh r
   assert.equal(readContextHubSnapshot().generatedAt, "1970-01-01T00:00:00.000Z");
 });
 
+test("Context Hub project opening keeps the last snapshot readable and stale", (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-open-keeps-snapshot-"));
+  withHubHome(t, path.join(base, "hub"));
+  const project = registerContextHubProject(fs.realpathSync(makeProject(base, "Opened project")));
+  const sharedOnly = { projectKey: "shared:repo:demo", mode: "shared", title: "Shared only" };
+  writeContextHubSnapshot({ projects: [sharedOnly], marker: "before-open" });
+  const before = contextHubRegistryRevision();
+
+  recordContextHubProjectOpened(project.id);
+
+  // Only the open time changed: readers keep the Shared rows instead of the
+  // locals-only navigation fallback while the next refresh runs.
+  assert.notEqual(contextHubRegistryRevision(), before);
+  const navigation = readContextHubNavigationSnapshot();
+  assert.equal(navigation.snapshot.state.marker, "before-open");
+  assert.deepEqual(navigation.snapshot.state.projects, [sharedOnly]);
+  assert.equal(navigation.snapshot.generatedAt, "1970-01-01T00:00:00.000Z");
+  // A change that can add or remove projects still drops the snapshot.
+  unregisterContextHubProject(project.root);
+  assert.equal(readContextHubNavigationSnapshot().snapshot, null);
+});
+
 test("Context Hub registry mutation atomically prevents an in-flight snapshot commit", (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-snapshot-registry-race-"));
   withHubHome(t, path.join(base, "hub"));
