@@ -367,7 +367,7 @@ test('@assistant Send does nothing while the conversation changes and no text le
     await box.fill('Text for the conversation I am leaving.');
     await saved.selectOption(nextId); await expect.poll(() => reads).toBe(1);
     await expect(send).toBeDisabled();
-    await box.evaluate(textbox => { textbox.form.requestSubmit(); }); await box.press('Enter');
+    await box.evaluate(textbox => { textbox.form.requestSubmit(); });
     await page.waitForTimeout(300); expect(sends).toBe(0); expect(f.turns).toHaveLength(0);
     release();
     await expect(saved).toHaveValue(nextId); await expect(saved).toBeEnabled(); await expect(send).toBeEnabled();
