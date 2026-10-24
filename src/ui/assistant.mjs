@@ -48,6 +48,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   }
   if (!document.getElementById('context-room-assistant-style')) { const link = element('link'); link.id = 'context-room-assistant-style'; link.rel = 'stylesheet'; link.href = '/assets/ui/assistant.css'; document.head.append(link); }
   const SEND_TIMEOUT_MESSAGE = 'The Mac did not answer in time. Press Send again: the same message is replayed, not duplicated.';
+  const STOP_TIMEOUT_MESSAGE ='Your message was sent, but the Mac did not confirm the stop in time. The turn may still run: press Stop agent.';
   // A timed post settles on its own timer, whether or not `api` honours the abort signal.
   // It rejects before it aborts, so the timeout error wins the race over the AbortError that `fail` hides.
   const post = (route, body, { timeout = 0, message = 'The Mac did not answer in time. Try again.' } = {}) => {
@@ -212,7 +213,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     panel.dataset.ready = String(!initializing); panel.setAttribute('aria-busy', String(initializing));
     panel.dataset.capturing = String(Boolean(recording));
     panel.classList.toggle('assistant-voice-enabled', Boolean(voice));
-    send.disabled = initializing || sending || busy || uncertain || Boolean(voice); stop.disabled = !busy; stop.hidden = !busy; models.disabled = initializing || busy || uncertain || Boolean(voice); efforts.disabled = models.disabled; fast.disabled = models.disabled || fast.dataset.offered !== 'true';
+    send.disabled = initializing || sending || changingConversation || busy || uncertain || Boolean(voice); stop.disabled = !busy; stop.hidden = !busy; models.disabled = initializing || busy || uncertain || Boolean(voice); efforts.disabled = models.disabled; fast.disabled = models.disabled || fast.dataset.offered !== 'true';
     history.disabled = initializing || busy || uncertain || Boolean(recording) || audioBusy || audioReading || changingConversation || sending || Boolean(voice) || voiceClosing || historyLoading;
     newConversation.disabled = history.disabled;
     olderHistory.disabled = reloadHistory.disabled = history.disabled;
@@ -295,7 +296,8 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   })()));
   form.addEventListener('submit', event => { event.preventDefault(); if (!voice) run(submitMessage()); });
   async function submitMessage(voiceSession = null) {
-    if (sending || initializing || !input.value.trim() || activeStatuses.has(current.operation?.status)) return;
+    // A conversation change in progress would load the next draft, then put the old conversation back on screen.
+    if (sending || initializing || changingConversation || !input.value.trim() || activeStatuses.has(current.operation?.status)) return;
     const text = input.value, origin = current.id;
     if (sendRequest && sendRequest.text !== text) throw new Error('The previous send is unconfirmed. Refresh its original conversation before changing the message.');
     // One send at a time: Send stays inactive until it ends. A failed re-sync keeps no request id.
@@ -309,7 +311,6 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
       if (voiceSession) voiceSession.requestId = sendRequest.requestId;
       try {
         current = await post('/conversations/' + current.id + '/send', sendRequest, { timeout: REQUEST_TIMEOUT_MS, message: SEND_TIMEOUT_MESSAGE }); if (input.value === text) input.value = ''; sendRequest = null; await saveDraft(); inform(''); render();
-        if (voiceSession && voice !== voiceSession && activeStatuses.has(current.operation?.status)) await stopTurn(voiceSession.requestId, true);
       }
       catch (error) {
         // A silent Mac cannot answer a re-sync either: keep sendRequest for the replay.
@@ -319,10 +320,13 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
         await saveDraft();
         throw error;
       }
+      // Voice closed during the send: stop the turn it started. Outside the send's catch: the message itself was sent.
+      if (voiceSession && voice !== voiceSession && activeStatuses.has(current.operation?.status)) await stopTurn(voiceSession.requestId, STOP_TIMEOUT_MESSAGE);
     } finally { sending = false; render(); }
   }
-  async function stopTurn(operationId = current.operation?.id, bounded = false) {
-    const id = current.id, result = await post('/conversations/' + id + '/stop', { operationId }, bounded ? { timeout: REQUEST_TIMEOUT_MS } : {});
+  // Only the stop after a closed Voice has a timeout; the Stop button waits as before.
+  async function stopTurn(operationId = current.operation?.id, timeoutMessage = '') {
+    const id = current.id, result = await post('/conversations/' + id + '/stop', { operationId }, timeoutMessage ? { timeout: REQUEST_TIMEOUT_MS, message: timeoutMessage } : {});
     if (id === current.id && current.operation?.id === operationId) { current = result; render(); }
   }
   async function acquireAudio(takeover = false, generation = audioGeneration) {
