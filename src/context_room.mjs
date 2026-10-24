@@ -461,7 +461,7 @@ export const VISUAL_DOCUMENT_PATTERNS = Object.freeze([
   ...DIAGRAM_VISUAL_DOCUMENT_PATTERNS,
 ]);
 const DEFAULT_FILE_THEME = "context-room";
-const DEFAULT_APPEARANCE = { fileTheme: DEFAULT_FILE_THEME, colorMode: "system", autoOpenGitDiff: true, showHiddenFiles: true };
+const DEFAULT_APPEARANCE = { fileTheme: DEFAULT_FILE_THEME, colorMode: "system", autoOpenGitDiff: true, showHiddenFiles: true, hideEmptyReviewToolbar: false };
 export const DEFAULT_CODEX_REFERENCE_SHORTCUT = "Mod+Shift+L";
 const DEFAULT_SHORTCUTS = Object.freeze({ codexReference: DEFAULT_CODEX_REFERENCE_SHORTCUT });
 const DEFAULT_SOUNDS = Object.freeze({ enabled: true, volume: 0.35 });
@@ -14910,6 +14910,7 @@ function normalizeAppearanceSettings(value = {}) {
     colorMode: ["system", "light", "dark"].includes(colorMode) ? colorMode : DEFAULT_APPEARANCE.colorMode,
     autoOpenGitDiff: value.autoOpenGitDiff !== false,
     showHiddenFiles: value.showHiddenFiles !== false,
+    hideEmptyReviewToolbar: value.hideEmptyReviewToolbar === true,
   };
 }
 
@@ -17729,10 +17730,9 @@ export function refreshContextHubSnapshot(root, {
         if (current?.state && typeof current.state === "object") {
           // Opens moved the order, or the newer refresh read the Shared cache
           // before our sync wrote it: a local pass picks both up, no fetch.
-          if (committed.openTimesStale || (refreshShared && JSON.stringify(state?.sharedRepositories ?? null) !== JSON.stringify(current.state.sharedRepositories ?? null))) {
-            followContextHubRefreshLocally(key, taskRunner);
-          }
-          return contextHubStateWithFreshness(contextHubStateForRoot(current.state, key), { generatedAt: current.generatedAt, refreshing: false });
+          const followingLocally = committed.openTimesStale || (refreshShared && JSON.stringify(state?.sharedRepositories ?? null) !== JSON.stringify(current.state.sharedRepositories ?? null));
+          if (followingLocally) followContextHubRefreshLocally(key, taskRunner);
+          return contextHubStateWithFreshness(contextHubStateForRoot(current.state, key), { generatedAt: current.generatedAt, refreshing: followingLocally });
         }
         if (attempt < 2) return refresh(attempt + 1);
         const error = new Error("A newer Context Hub refresh superseded this result");
@@ -17762,7 +17762,7 @@ export function refreshContextHubSnapshot(root, {
       invalidationRevision: committedInputs.invalidationRevision,
       expiresAt: Date.now() + CONTEXT_HUB_STATE_CACHE_TTL_MS,
     });
-    return contextHubStateWithFreshness(contextHubStateForRoot(state, key), { generatedAt: state.generatedAt, refreshing: false });
+    return contextHubStateWithFreshness(contextHubStateForRoot(state, key), { generatedAt: state.generatedAt, refreshing: committed.openTimesStale });
   };
   const entry = { promise: null, refreshShared: Boolean(refreshShared), followup: null, followupRefreshShared: false };
   entry.promise = refresh().finally(() => {
@@ -21449,7 +21449,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   };
   const scheduleContextHubRefresh = () => {
     if (hostedSharedProvider) return;
-    void (scheduleContextHubSnapshotRefresh?.(root, { refreshShared: false })
+    void Promise.resolve().then(() => scheduleContextHubSnapshotRefresh?.(root, { refreshShared: false })
       || refreshContextHubSnapshot(root, { refreshShared: false })).catch(() => {});
   };
   const refreshContextHubForRequest = () => hostedSharedProvider
@@ -23223,11 +23223,10 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     contextHubStateCache.delete(path.resolve(root));
     let hubRefresh = { status: "complete" };
     if (!hostedSharedProvider) {
-      const refresh = scheduleContextHubSnapshotRefresh
-        ? scheduleContextHubSnapshotRefresh(contextHubRoot, { refreshShared: false, force: false })
-        : refreshContextHubSnapshot(contextHubRoot, { refreshShared: false, force: false });
       hubRefresh = { status: "pending" };
-      void Promise.resolve(refresh).catch(() => {});
+      void Promise.resolve().then(() => scheduleContextHubSnapshotRefresh
+        ? scheduleContextHubSnapshotRefresh(contextHubRoot, { refreshShared: false, force: false })
+        : refreshContextHubSnapshot(contextHubRoot, { refreshShared: false, force: false })).catch(() => {});
     }
     sendJson(res, 201, { ...result, hubRefresh });
     return;

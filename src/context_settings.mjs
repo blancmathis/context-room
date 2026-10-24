@@ -30,7 +30,7 @@ const EXACT_SETTINGS = Object.freeze([
   setting({ key: "markdownTemplates", store: "project", scope: "project", type: "templates", summary: "Reusable document templates shown in the explorer." }),
   setting({ key: "appearance.fileTheme", store: "device-preferences", scope: "device", type: "enum", values: ["context-room", "vscode-dark", "github-dark", "dracula", "solarized-dark", "light-plus"], summary: "Document reading theme." }),
   setting({ key: "appearance.colorMode", store: "device-preferences", scope: "device", type: "enum", values: ["system", "light", "dark"], summary: "Application color mode." }),
-  ...["appearance.autoOpenGitDiff", "appearance.showHiddenFiles", "sounds.enabled"].map(key => setting({ key, store: "device-preferences", scope: "device", type: "boolean", summary: "Device interface preference." })),
+  ...["appearance.autoOpenGitDiff", "appearance.showHiddenFiles", "appearance.hideEmptyReviewToolbar", "sounds.enabled"].map(key => setting({ key, store: "device-preferences", scope: "device", type: "boolean", summary: "Device interface preference." })),
   setting({ key: "sounds.volume", store: "device-preferences", scope: "device", type: "unit-number", summary: "Sound volume from 0 to 1." }),
   setting({ key: "shortcuts.codexReference", store: "device-preferences", scope: "device", type: "string", summary: "Keyboard shortcut used to copy a document reference." }),
   setting({ key: "explorer.computerRoot", store: "device-preferences", scope: "device", type: "absolute-path", summary: "Computer explorer starting folder; this does not register or watch projects." }),

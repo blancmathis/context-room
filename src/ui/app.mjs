@@ -8866,7 +8866,9 @@ function renderContextRoomGlobalReviewQueue() {
   sourceFilter.disabled = Boolean(state.sharedContextBusy);
   search.disabled = Boolean(state.sharedContextBusy);
   const reviewToolbar = queueElement.closest(".docqa-panel")?.querySelector(".context-room-review-toolbar");
-  if (reviewToolbar) reviewToolbar.hidden = cleanQueue;
+  // The toolbar keeps its place on a clean queue (no layout jump) unless the
+  // user chose to hide it.
+  if (reviewToolbar) reviewToolbar.hidden = cleanQueue && state.settings?.appearance?.hideEmptyReviewToolbar === true;
   summary.innerHTML = cleanQueue
     ? '<div class="review-summary-item"><strong>All clear</strong><span>no review pending</span></div>'
     : hubReady
@@ -9777,6 +9779,8 @@ async function refreshContextHubUi() {
   // One manual refresh at a time; a second call joins it. It never holds
   // contextHubBusy, so a project open does not wait for it (4 to 24 s).
   if (state.contextHubRefreshPromise) return state.contextHubRefreshPromise;
+  // A Shared open's background pass is the same POST: reuse it.
+  if (state.contextHubSharedRefreshPromise) return state.contextHubSharedRefreshPromise;
   if (state.contextHubBusy || state.sharedContextBusy) return;
   const openGeneration = state.contextHubPendingOpenGeneration;
   const ticket = beginContextHubSnapshotRequest();
@@ -13691,6 +13695,7 @@ async function loadHostedContextRoom(options = {}) {
       colorMode: "system",
       autoOpenGitDiff: true,
       showHiddenFiles: true,
+      hideEmptyReviewToolbar: false,
       ...(state.settings?.appearance || {}),
     },
   };
@@ -18185,6 +18190,7 @@ function renderSettingsPanel() {
     renderSettingsDisclosure({ id: "appearance-explorer", title: "Explorer and file behavior", copy: "Control hidden files, Git diff behavior, and the folder available through Computer mode.", status: appearance.showHiddenFiles !== false ? "Hidden files visible" : "Hidden files hidden", scope: "All rooms", trackDirty: true, body:
       '<div class="settings-grid compact"><div class="settings-field"><label class="settings-toggle" for="autoOpenGitDiff"><input id="autoOpenGitDiff" type="checkbox" ' + (appearance.autoOpenGitDiff !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Auto-open Git diff</strong><em>Turn this off to open the diff manually.</em></span></label></div>' +
       '<div class="settings-field"><label class="settings-toggle" for="showHiddenFiles"><input id="showHiddenFiles" type="checkbox" ' + (appearance.showHiddenFiles !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Show hidden files</strong><em>Display safe dotfiles and .context-room in every Explorer.</em></span></label></div>' +
+      '<div class="settings-field"><label class="settings-toggle" for="hideEmptyReviewToolbar"><input id="hideEmptyReviewToolbar" type="checkbox" ' + (appearance.hideEmptyReviewToolbar === true ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Hide review filters when nothing is pending</strong><em>Off keeps the project and type filters in place, so the page does not jump. Turn this on to hide them on a clean queue.</em></span></label></div>' +
       '<div class="settings-field"><label for="computerExplorerRoot">Computer Explorer root</label><span class="settings-field-note">Computer mode can browse this folder and everything inside it. Use an absolute path or ~/…</span><input id="computerExplorerRoot" type="text" value="' + escapeHtml(explorer.computerRoot || "") + '" placeholder="' + escapeHtml(DEFAULT_COMPUTER_EXPLORER_ROOT) + '" /></div></div>'
     }) +
     renderSettingsDisclosure({ id: "appearance-sounds", title: "Interface sounds", copy: "Use quiet feedback for frequent actions and deeper cues for important outcomes.", status: sounds.enabled !== false ? soundVolumePercent + "% volume" : "Muted", scope: "All rooms", trackDirty: true, body:
@@ -18627,6 +18633,7 @@ async function saveSettings() {
     colorMode: el("colorMode")?.value || DEFAULT_APPEARANCE.colorMode,
     autoOpenGitDiff: el("autoOpenGitDiff")?.checked !== false,
     showHiddenFiles: el("showHiddenFiles")?.checked !== false,
+    hideEmptyReviewToolbar: el("hideEmptyReviewToolbar")?.checked === true,
   };
   const shortcuts = {
     codexReference: el("codexReferenceShortcut")?.dataset.shortcut ?? currentCodexReferenceShortcut(),

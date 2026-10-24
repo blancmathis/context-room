@@ -301,3 +301,26 @@ test("@perf a Shared project opened during a manual Refresh joins it without a s
     await hub.close();
   }
 });
+
+test("@perf a manual Refresh during a Shared open's background refresh reuses its request", async ({ page }) => {
+  const hub = await fixture();
+  try {
+    await openHub(page, hub);
+    const refresh = await holdRefresh(page);
+    await projectRow(page, "Comet").click();
+    await expect(page.locator("#globalExplorerScope strong")).toHaveText("Comet");
+    await expect.poll(() => refresh.calls).toBe(1);
+
+    // The open's Shared pass is in flight: the manual Refresh joins it.
+    await page.evaluate(() => { void refreshContextHubUi().catch(() => {}); void refreshContextHubUi().catch(() => {}); });
+    await page.waitForTimeout(500);
+    expect(refresh.calls).toBe(1);
+
+    refresh.release();
+    await expect.poll(() => page.evaluate(() => Boolean(state.contextHubSharedRefreshPromise || state.contextHubRefreshPromise))).toBe(false);
+    expect(refresh.calls).toBe(1);
+  } finally {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+    await hub.close();
+  }
+});
