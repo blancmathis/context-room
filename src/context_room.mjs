@@ -17644,9 +17644,9 @@ function readFastContextHubState(root) {
   }));
 }
 
-function markContextHubSnapshotStale() {
+function markContextHubSnapshotStale({ openTimeOnly = false } = {}) {
   contextHubStateCache.clear();
-  invalidateContextHubSnapshot({ preserveState: true });
+  invalidateContextHubSnapshot({ preserveState: true, openTimeOnly });
 }
 
 function waitForContextHubAcceptRefresh(refresh, timeoutMs = CONTEXT_HUB_ACCEPT_REFRESH_TIMEOUT_MS) {
@@ -17675,7 +17675,14 @@ function waitForContextHubAcceptRefresh(refresh, timeoutMs = CONTEXT_HUB_ACCEPT_
 // the next reader refreshes again instead of trusting it until the TTL.
 function followContextHubRefreshLocally(key, taskRunner) {
   void refreshContextHubSnapshot(key, { refreshShared: false, force: true, taskRunner }).catch((error) => {
-    markContextHubSnapshotStale();
+    // Never throws: nothing handles this promise, and an unhandled rejection
+    // stops the Hub. Only open times are behind, so a Shared refresh still in
+    // flight must keep committing its own Shared work (openTimeOnly).
+    try {
+      markContextHubSnapshotStale({ openTimeOnly: true });
+    } catch (markError) {
+      console.warn(`Context Hub could not mark the snapshot stale after a failed follow-up: ${String(markError?.message || markError).slice(0, 500)}`);
+    }
     console.warn(`Context Hub local follow-up refresh failed: ${String(error?.message || error).slice(0, 500)}`);
   });
 }

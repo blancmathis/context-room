@@ -2975,6 +2975,131 @@ test("Context Hub out-of-order refresh after opens adopts the newer snapshot and
   assert.equal(readContextHubSnapshot().state.sharedRepositories[0].status.syncedAt, "older-sync");
 });
 
+test("Context Hub local follow-up failure never raises an unhandled rejection when marking stale fails too", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-refresh-followup-double-failure-"));
+  withHubHome(t, path.join(base, "hub"));
+  const root = makeProject(base, "Double failure");
+  const project = registerContextHubProject(root);
+  const warnings = [];
+  t.mock.method(console, "warn", (message) => warnings.push(String(message)));
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  t.after(() => process.off("unhandledRejection", onUnhandled));
+  let calls = 0;
+  const taskRunner = async () => {
+    calls += 1;
+    if (calls === 1) {
+      for (let index = 0; index < 3; index += 1) recordContextHubProjectOpened(project.id);
+      return { enabled: true, generatedAt: new Date().toISOString(), marker: "old-order", projects: [], sharedRepositories: [], proposals: [], items: [], repositoryErrors: [], summary: {} };
+    }
+    // Marking the snapshot stale writes the control file: make that write fail.
+    const control = path.join(base, "hub", "snapshot-control.json");
+    fs.rmSync(control, { force: true });
+    fs.mkdirSync(control);
+    throw new Error("local follow-up broke");
+  };
+
+  await refreshContextHubSnapshot(root, { refreshShared: true, force: true, taskRunner });
+  for (let index = 0; index < 200 && !warnings.length; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  assert.equal(calls, 2);
+  assert.deepEqual(unhandled, []);
+  assert.match(warnings.join("\n"), /local follow-up refresh failed: local follow-up broke/);
+  assert.match(warnings.join("\n"), /could not mark the snapshot stale/);
+});
+
+test("Context Hub failed local follow-up marks stale without redoing an in-flight Shared refresh", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-refresh-followup-open-time-stale-"));
+  withHubHome(t, path.join(base, "hub"));
+  const inflight = makeProject(base, "In-flight Shared refresh");
+  const failing = makeProject(base, "Failing follow-up");
+  registerContextHubProject(inflight);
+  const failingProject = registerContextHubProject(failing);
+  t.mock.method(console, "warn", () => {});
+  let releaseInflight;
+  const inflightGate = new Promise((resolve) => { releaseInflight = resolve; });
+  const calls = [];
+  const catalog = (marker) => ({ enabled: true, generatedAt: new Date().toISOString(), marker, projects: [], sharedRepositories: [], proposals: [], items: [], repositoryErrors: [], summary: {} });
+  let failingCalls = 0;
+  const taskRunner = async (_task, taskRoot, payload) => {
+    if (taskRoot === path.resolve(inflight)) {
+      calls.push(payload.refreshShared);
+      if (calls.length === 1) await inflightGate;
+      return catalog(`inflight-${calls.length}`);
+    }
+    failingCalls += 1;
+    if (failingCalls === 1) {
+      for (let index = 0; index < 3; index += 1) recordContextHubProjectOpened(failingProject.id);
+      return catalog("failing-1");
+    }
+    throw new Error("local follow-up broke");
+  };
+
+  const inflightRefresh = refreshContextHubSnapshot(inflight, { refreshShared: true, force: true, taskRunner });
+  await new Promise((resolve) => setImmediate(resolve));
+  await refreshContextHubSnapshot(failing, { refreshShared: true, force: true, taskRunner });
+  for (let index = 0; index < 200 && failingCalls < 2; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  releaseInflight();
+  await inflightRefresh;
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  // The failure marks the snapshot stale through open times only: the Shared
+  // refresh in flight still commits, it does not run its Shared pass again.
+  assert.equal(calls.filter((shared) => shared === true).length, 1);
+});
+
+test("Context Hub out-of-order refresh adopts a local-only newer snapshot when the Shared cache is already equal", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-refresh-out-of-order-equal-shared-"));
+  withHubHome(t, path.join(base, "hub"));
+  const older = makeProject(base, "Older equal");
+  const newer = makeProject(base, "Newer equal");
+  registerContextHubProject(older);
+  registerContextHubProject(newer);
+  let sharedCache = "before-sync";
+  let releaseOlder;
+  const olderGate = new Promise((resolve) => { releaseOlder = resolve; });
+  const calls = [];
+  const catalog = (marker) => ({
+    enabled: true,
+    generatedAt: new Date().toISOString(),
+    marker,
+    projects: [],
+    sharedRepositories: [{ id: "shared:demo", status: { syncedAt: sharedCache } }],
+    proposals: [],
+    items: [],
+    repositoryErrors: [],
+    summary: {},
+  });
+  const taskRunner = async (_task, taskRoot) => {
+    const name = taskRoot === path.resolve(older) ? "older" : "newer";
+    calls.push(name);
+    if (name === "older") {
+      await olderGate;
+      return catalog("older-1");
+    }
+    // The newer, local-only refresh reads the cache the older sync has written.
+    sharedCache = "older-sync";
+    return catalog("newer-1");
+  };
+
+  const olderRefresh = refreshContextHubSnapshot(older, { refreshShared: true, force: true, taskRunner });
+  await new Promise((resolve) => setImmediate(resolve));
+  await refreshContextHubSnapshot(newer, { refreshShared: false, force: true, taskRunner });
+  releaseOlder();
+  const adopted = await olderRefresh;
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  assert.deepEqual(calls, ["older", "newer"]);
+  assert.equal(adopted.marker, "newer-1");
+});
+
 test("Context Hub registry mutation atomically prevents an in-flight snapshot commit", (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-snapshot-registry-race-"));
   withHubHome(t, path.join(base, "hub"));
