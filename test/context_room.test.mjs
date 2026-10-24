@@ -3052,11 +3052,11 @@ test("appearance, sound, and shortcut preferences are shared across Context Room
   const savedProject = JSON.parse(fs.readFileSync(path.join(firstRoot, CONFIG_FILE), "utf8"));
 
   assert.equal(response.status, 200);
-  assert.deepEqual(payload.settings.appearance, { fileTheme: "github-dark", colorMode: "light", autoOpenGitDiff: false, showHiddenFiles: true, hideEmptyReviewToolbar: false });
+  assert.deepEqual(payload.settings.appearance, { fileTheme: "github-dark", colorMode: "light", autoOpenGitDiff: false, showHiddenFiles: true, hideEmptyReviewToolbar: true });
   assert.deepEqual(payload.settings.shortcuts, { codexReference: "Mod+Shift+R" });
   assert.deepEqual(payload.settings.sounds, { enabled: true, volume: 0.2 });
   assert.deepEqual(payload.settings.explorer, { computerRoot: secondRoot });
-  assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).appearance, { fileTheme: "github-dark", colorMode: "light", autoOpenGitDiff: false, showHiddenFiles: true, hideEmptyReviewToolbar: false });
+  assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).appearance, { fileTheme: "github-dark", colorMode: "light", autoOpenGitDiff: false, showHiddenFiles: true, hideEmptyReviewToolbar: true });
   assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).shortcuts, { codexReference: "Mod+Shift+R" });
   assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).sounds, { enabled: true, volume: 0.2 });
   assert.deepEqual(readResolvedContextRoomSettings(secondRoot, { preferencesPath }).explorer, { computerRoot: secondRoot });
