@@ -49,12 +49,13 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   if (!document.getElementById('context-room-assistant-style')) { const link = element('link'); link.id = 'context-room-assistant-style'; link.rel = 'stylesheet'; link.href = '/assets/ui/assistant.css'; document.head.append(link); }
   const SEND_TIMEOUT_MESSAGE = 'The Mac did not answer in time. Press Send again: the same message is replayed, not duplicated.';
   // A timed post settles on its own timer, whether or not `api` honours the abort signal.
+  // It rejects before it aborts, so the timeout error wins the race over the AbortError that `fail` hides.
   const post = (route, body, { timeout = 0, message = 'The Mac did not answer in time. Try again.' } = {}) => {
     const controller = timeout ? new AbortController() : null;
     const request = api('/api/assistant' + route, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), ...(controller ? { signal: controller.signal } : {}) });
     if (!timeout) return request;
     let timer;
-    const expired = new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(Object.assign(new Error(message), { code: 'assistant_request_timeout' })); }, timeout); });
+    const expired = new Promise((_, reject) => { timer = setTimeout(() => { reject(Object.assign(new Error(message), { code: 'assistant_request_timeout' })); controller.abort(); }, timeout); });
     request.catch(() => {});
     return Promise.race([request, expired]).finally(() => clearTimeout(timer));
   };
@@ -264,7 +265,8 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     fast.disabled = models.disabled || !offered;
     fastNote.textContent = offered ? '' : !catalogLoaded ? 'Load available models to change Fast.' : fastDropped ? 'Fast was on but is not offered for this model now. Turns run without it.' : 'Fast is not offered for this model.';
   }
-  async function configure() { current = await post('/conversations/' + current.id + '/configure', { model: models.value, effort: efforts.value, fast: fast.checked }, { timeout: REQUEST_TIMEOUT_MS, message: SEND_TIMEOUT_MESSAGE }); render(); }
+  // Only Send passes its own timeout message; a model, effort or Fast change keeps the default one.
+  async function configure(message) { current = await post('/conversations/' + current.id + '/configure', { model: models.value, effort: efforts.value, fast: fast.checked }, { timeout: REQUEST_TIMEOUT_MS, message }); render(); }
   models.addEventListener('change', () => { showEfforts(); run(configure()); }); efforts.addEventListener('change', () => run(configure())); fast.addEventListener('change', () => run(configure()));
   async function refreshHistory({ append = false } = {}) {
     if (historyLoading || append && !historyCursor) return;
@@ -299,7 +301,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     // One send at a time: Send stays inactive until it ends. A failed re-sync keeps no request id.
     sending = true; render();
     try {
-      if (catalogLoaded && current.fast === true && fast.dataset.offered !== 'true') await configure();
+      if (catalogLoaded && current.fast === true && fast.dataset.offered !== 'true') await configure(SEND_TIMEOUT_MESSAGE);
       if (current.id !== origin) return;
       sendRequest ||= { requestId: crypto.randomUUID(), text };
       await saveDraft();

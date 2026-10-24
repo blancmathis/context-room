@@ -346,3 +346,22 @@ test('@assistant a send that never answers ends in an error after the timeout an
     await expect(pane).toHaveAttribute('data-operation-status', 'completed'); expect(f.turns.length).toBe(1);
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
+
+test('@assistant a model change whose re-sync never answers ends in a plain timeout error, not the Send one', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    await page.clock.install();
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await page.evaluate(() => selectFile('docs/Original.md')); await page.getByRole('button', { name: 'Discuss', exact: true }).click();
+    const pane = page.getByRole('complementary', { name: 'Original document conversation' });
+    await pane.locator('summary').filter({ hasText: 'Codex model' }).click(); await pane.getByRole('button', { name: 'Load available models' }).click();
+    const models = pane.getByLabel('Conversation Codex model');
+    await expect(models).toContainText('Synthetic plain model');
+    let configures = 0; const silent = async () => { configures += 1; };
+    await page.route('**/configure', silent);
+    await models.selectOption('synthetic-plain'); await expect.poll(() => configures).toBe(1);
+    await page.clock.fastForward(50_000);
+    await expect(pane).toContainText('The Mac did not answer in time. Try again.'); await expect(pane).not.toContainText('Press Send again');
+    await page.unroute('**/configure', silent);
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
