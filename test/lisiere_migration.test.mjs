@@ -299,3 +299,32 @@ test('notebooks-to-space preview writes nothing, lists refused notebooks and res
   const after = migrateNotebooksToSpace(f.root);
   assert.deepEqual([after.notebooks, after.refused.map(item => item.resourceId)], [[], ['board']]);
 });
+
+test('notebooks-to-space without a space: a crash after the space is created asks for a new preview, then the move finishes without a copy or a loss', async t => {
+  const f = await fixture(t);
+  execFileSync('git', ['init', '--quiet', f.root], { stdio: 'pipe' });
+  initializeContextRoomProject(f.root, { title: 'Recovery fixture', allowedPaths: ['docs/'], watchAllow: ['docs/'] });
+  f.apply(f.plan().revision);
+  const other = { snapshot: f.snapshot, boardId: 'other-board', path: 'docs/Other.crnb' };
+  applyLisiereNotebookImport(f.root, { ...other, expectedRevision: planLisiereNotebookImport(f.root, other, authority).revision }, authority);
+  const spaceHome = path.join(f.base, 'Carnets space');
+  const homes = { CONTEXT_ROOM_HUB_HOME: path.join(f.base, 'hub'), CONTEXT_ROOM_SHARED_HOME: path.join(f.base, 'shared'), CONTEXT_ROOM_NOTEBOOK_SPACE_HOME: spaceHome };
+  const saved = Object.fromEntries(Object.keys(homes).map(key => [key, process.env[key]]));
+  t.after(() => { for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value; });
+  Object.assign(process.env, homes);
+  const preview = migrateNotebooksToSpace(f.root);
+  assert.equal(preview.space, 'will-be-created'); assert.equal(fs.existsSync(spaceHome), false);
+  const link = fs.linkSync, rename = fs.renameSync;
+  const guard = original => (from, to) => { if (String(to).includes('/moved/')) throw Object.assign(new Error('simulated crash'), { code: 'EIO' }); return original(from, to); };
+  fs.linkSync = guard(link); fs.renameSync = guard(rename);
+  try { assert.throws(() => migrateNotebooksToSpace(f.root, { apply: true, expectedRevision: preview.revision }), /simulated crash/); } finally { fs.linkSync = link; fs.renameSync = rename; }
+  assert.equal(fs.existsSync(spaceHome), true, 'the space was created before the crash');
+  assert.deepEqual(listNotebooks(f.root).map(entry => entry.id).sort(), ['board', 'other-board']);
+  assert.throws(() => migrateNotebooksToSpace(f.root, { apply: true, expectedRevision: preview.revision }), error => /Preview again/.test(error.message));
+  const fresh = migrateNotebooksToSpace(f.root); assert.notEqual(fresh.revision, preview.revision); assert.equal(fresh.space, 'registered');
+  const applied = migrateNotebooksToSpace(f.root, { apply: true, expectedRevision: fresh.revision });
+  assert.deepEqual(applied.moved.map(item => item.resourceId).sort(), ['board', 'other-board']);
+  assert.deepEqual(listNotebooks(f.root), []);
+  assert.deepEqual(listNotebooks(applied.spaceRoot).map(entry => entry.path).sort(), ['Carnets/Ideas.crnb', 'Carnets/Other.crnb']);
+  assert.deepEqual(migrateNotebooksToSpace(f.root).notebooks, []);
+});

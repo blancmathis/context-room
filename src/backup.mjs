@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
-import { notebookHash, readNotebookBytes, writeNotebookBytes } from './notebook_io.mjs';
+import { notebookHash, readNotebookBytes, safeNotebookPath, writeNotebookBytes } from './notebook_io.mjs';
 import { listNotebooks, NOTEBOOK_STORE } from './notebooks.mjs';
 import { assertProjectWriter } from './writer_authority.mjs';
 import { contextHubHome, contextHubRuntimeAlive } from './context_hub.mjs';
@@ -311,7 +311,7 @@ function removeCreated(entry) {
   const base = entry.root in HOMES ? homeDirectory(entry.root) : entry.root;
   // Remove only what this restore wrote: a file changed since then stays. The file first
   // leaves its name, so a write that lands before the check is seen and nothing new is lost.
-  const file = path.join(base, entry.path), held = path.join(path.dirname(file), `.${path.basename(file)}.restore-undo-${randomUUID()}`);
+  const file = safeNotebookPath(base, entry.path), held = path.join(path.dirname(file), `.${path.basename(file)}.restore-undo-${randomUUID()}`);
   try { fs.renameSync(file, held); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
   const stats = fs.lstatSync(held);
   if (stats.isFile() && stats.size <= MAX_FILE_BYTES && sha256(fs.readFileSync(held)) === entry.sha256) { fs.unlinkSync(held); return; }

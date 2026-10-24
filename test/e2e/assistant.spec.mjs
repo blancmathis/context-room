@@ -222,3 +222,27 @@ test('@assistant Fast checkbox follows the model catalogue and reaches turn/star
     await expect(pane).toHaveAttribute('data-operation-status', 'completed');
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
+
+test('@assistant a failed Fast re-sync before Send sends nothing, keeps the text and lets the text change', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await page.evaluate(() => selectFile('docs/Original.md')); await page.getByRole('button', { name: 'Discuss', exact: true }).click();
+    const pane = page.getByRole('complementary', { name: 'Original document conversation' });
+    await pane.locator('summary').filter({ hasText: 'Codex model' }).click(); await pane.getByRole('button', { name: 'Load available models' }).click();
+    const fast = pane.getByLabel('Conversation Fast mode'), models = pane.getByLabel('Conversation Codex model'), box = pane.getByRole('textbox'), send = pane.getByRole('button', { name: 'Send', exact: true });
+    await expect(models).toContainText('Synthetic plain model'); await fast.check(); await expect(fast).toBeChecked();
+    // The server keeps Fast on for a model that does not offer it: the state that makes Send configure first.
+    const stale = async route => { const response = await route.fetch(); await route.fulfill({ response, json: { ...await response.json(), fast: true } }); };
+    await page.route('**/configure', stale);
+    await models.selectOption('synthetic-plain'); await expect(fast).toBeDisabled(); await page.unroute('**/configure', stale);
+    const failing = route => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Synthetic configure failure.' }) });
+    await page.route('**/configure', failing);
+    await box.fill('First text.'); await send.click();
+    await expect(send).toBeEnabled(); await expect(box).toHaveValue('First text.'); expect(f.turns.length).toBe(0);
+    await page.unroute('**/configure', failing);
+    await box.fill('Changed text.'); await send.click();
+    await expect.poll(() => f.turns.length).toBe(1); f.finish();
+    await expect(pane).toHaveAttribute('data-operation-status', 'completed');
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});

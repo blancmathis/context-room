@@ -340,6 +340,21 @@ test('the rollback removes a created file only while it holds what the restore w
   assert.equal(fs.readFileSync(file, 'utf8'), 'changed after the write\n');
 });
 
+test('the rollback refuses a created file whose parent became a link out of the store', t => {
+  const lab = laboratory(t), w = lab.world('a'), root = lab.project('one'); lab.populate(w, root);
+  const { output } = writeBackup({ output: path.join(lab.base, 'b1') });
+  const file = conversationFile(w), key = path.join(w.review, 'authority.key'), content = fs.readFileSync(file);
+  fs.rmSync(file); fs.rmSync(key);
+  const outside = path.join(lab.base, 'outside'), kept = path.join(outside, path.basename(file));
+  fs.mkdirSync(outside); fs.writeFileSync(kept, content);
+  const preview = previewRestore(output);
+  assert.throws(() => applyRestore(output, { expectedRevision: preview.revision }, { checkpoint(name, index) {
+    if (name === 'before-write' && index === 1) { fs.rmSync(path.dirname(file), { recursive: true, force: true }); fs.symlinkSync(outside, path.dirname(file)); fs.writeFileSync(key, 'late key'); }
+  } }), /could not be put back/);
+  assert.deepEqual(fs.readFileSync(kept), content, 'the file outside the store is intact');
+  assert.deepEqual(fs.readdirSync(outside), [path.basename(file)]);
+});
+
 test('the rollback keeps a write that lands while it checks a created file', t => {
   const lab = laboratory(t), w = lab.world('a'), root = lab.project('one'); lab.populate(w, root);
   const { output } = writeBackup({ output: path.join(lab.base, 'b1') });
