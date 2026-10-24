@@ -126,6 +126,8 @@ function normalizedSnapshotControl(raw = {}) {
   return {
     version: 1,
     invalidationRevision: String(raw.invalidationRevision || "initial"),
+    // Rotated by every invalidation except an open-time-only change.
+    structuralRevision: String(raw.structuralRevision || "initial"),
     refreshSequence: Math.max(0, Number.parseInt(raw.refreshSequence, 10) || 0),
   };
 }
@@ -142,7 +144,7 @@ function writeSnapshotControl(control) {
   return writeJson(snapshotControlPath(), normalizedSnapshotControl(control));
 }
 
-function invalidateContextHubSnapshotLocked({ preserveState = false, previousRegistryRevision = "" } = {}) {
+function invalidateContextHubSnapshotLocked({ preserveState = false, previousRegistryRevision = "", openTimeOnly = false } = {}) {
   const snapshotPath = contextHubSnapshotPath();
   let snapshot = null;
   if (preserveState) {
@@ -156,13 +158,15 @@ function invalidateContextHubSnapshotLocked({ preserveState = false, previousReg
     && snapshot.registryRevision === (previousRegistryRevision || registryRevision)
     && snapshot.invalidationRevision === control.invalidationRevision;
   control.invalidationRevision = randomUUID();
+  if (!openTimeOnly) control.structuralRevision = randomUUID();
   writeSnapshotControl(control);
   if (canPreserve) {
     writeJson(snapshotPath, {
       version: CONTEXT_HUB_SNAPSHOT_VERSION,
       registryRevision,
       invalidationRevision: control.invalidationRevision,
-      refreshSequence: control.refreshSequence,
+      // The kept state is the one that refresh committed, not a later one.
+      refreshSequence: Math.max(0, Number.parseInt(snapshot.refreshSequence, 10) || 0),
       generatedAt: "1970-01-01T00:00:00.000Z",
       state: snapshot.state,
     });
@@ -179,7 +183,8 @@ export function invalidateContextHubSnapshot(options = {}) {
 
 // preserveSnapshot: the change cannot add or remove a project (open time only).
 // The last snapshot stays readable, marked stale, so readers never fall back to
-// the locals-only navigation state while the next refresh runs.
+// the locals-only navigation state while the next refresh runs. An in-flight
+// refresh may still commit (see commitContextHubSnapshot).
 function mutateContextHubRegistry(operation, { preserveSnapshot = false } = {}) {
   return withRegistryLock(() => {
     const registry = readContextHubRegistry();
@@ -187,7 +192,7 @@ function mutateContextHubRegistry(operation, { preserveSnapshot = false } = {}) 
     const result = operation(registry);
     if (result?.identityUnconfirmed === true) return result;
     writeJson(registryPath(), registry);
-    invalidateContextHubSnapshotLocked(preserveSnapshot ? { preserveState: true, previousRegistryRevision } : {});
+    invalidateContextHubSnapshotLocked(preserveSnapshot ? { preserveState: true, previousRegistryRevision, openTimeOnly: true } : {});
     return result;
   });
 }
@@ -2089,6 +2094,16 @@ export function contextHubRegistryRevision(registry = readContextHubRegistry()) 
   return createHash("sha256").update(JSON.stringify(normalizedRegistry(registry))).digest("hex");
 }
 
+// The registry without open times: opening a project changes nothing a
+// snapshot refresh computes except the recent-first order.
+function contextHubStructuralRegistryRevision(registry = readContextHubRegistry()) {
+  const normalized = normalizedRegistry(registry);
+  return createHash("sha256").update(JSON.stringify({
+    ...normalized,
+    projects: normalized.projects.map(({ lastOpenedAt, ...project }) => project),
+  })).digest("hex");
+}
+
 export function readContextHubSnapshotInputs() {
   return withRegistryLock(() => {
     const registry = readContextHubRegistry();
@@ -2104,11 +2119,15 @@ export function beginContextHubSnapshotRefresh() {
   return withRegistryLock(() => {
     const control = readSnapshotControl();
     if (control.invalidationRevision === "initial") control.invalidationRevision = randomUUID();
+    if (control.structuralRevision === "initial") control.structuralRevision = randomUUID();
     control.refreshSequence += 1;
     writeSnapshotControl(control);
+    const registry = readContextHubRegistry();
     return Object.freeze({
-      registryRevision: contextHubRegistryRevision(),
+      registryRevision: contextHubRegistryRevision(registry),
       invalidationRevision: control.invalidationRevision,
+      structuralRevision: control.structuralRevision,
+      structuralRegistryRevision: contextHubStructuralRegistryRevision(registry),
       refreshSequence: control.refreshSequence,
     });
   });
@@ -2169,18 +2188,24 @@ export function writeContextHubSnapshot(state, {
   });
 }
 
+// Project opens during a refresh change only open times. The refresh still
+// commits; openTimesStale asks the caller for a local follow-up for the order.
 export function commitContextHubSnapshot(state, coordination, {
   generatedAt = state?.generatedAt || new Date().toISOString(),
 } = {}) {
   return withRegistryLock(() => {
     const control = readSnapshotControl();
-    const currentRegistryRevision = contextHubRegistryRevision();
+    const registry = readContextHubRegistry();
+    const currentRegistryRevision = contextHubRegistryRevision(registry);
     const refreshSequence = Number.parseInt(coordination?.refreshSequence, 10) || 0;
     if (!refreshSequence) return { committed: false, reason: "invalid-coordination" };
-    if (
-      coordination?.registryRevision !== currentRegistryRevision
-      || coordination?.invalidationRevision !== control.invalidationRevision
-    ) {
+    const exact = coordination?.registryRevision === currentRegistryRevision
+      && coordination?.invalidationRevision === control.invalidationRevision;
+    const openTimesStale = !exact
+      && Boolean(coordination?.structuralRevision)
+      && coordination.structuralRevision === control.structuralRevision
+      && coordination.structuralRegistryRevision === contextHubStructuralRegistryRevision(registry);
+    if (!exact && !openTimesStale) {
       return { committed: false, reason: "inputs-changed", currentRegistryRevision };
     }
     let currentSnapshot = null;
@@ -2201,7 +2226,7 @@ export function commitContextHubSnapshot(state, coordination, {
       generatedAt: String(generatedAt || new Date().toISOString()),
       state,
     });
-    return { committed: true, snapshot };
+    return { committed: true, snapshot, openTimesStale };
   });
 }
 

@@ -4074,6 +4074,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 	state.contextHubBusyWaiters = [];
 	state.contextHubPendingOpenGeneration = 0;
 	state.contextHubSharedRefreshPromise = null;
+	state.contextHubRefreshPromise = null;
 	state.contextHubSharedRefreshRequest = null;
 	state.contextHubRequestedProjectNotice = "";
 	state.contextHubInitialProjectOpen = null;
@@ -9043,7 +9044,7 @@ function renderSharedProposalWorkspace() {
   if (listStatus) {
     const errorCount = hub.repositoryErrors?.length || 0;
     listStatus.dataset.error = String(errorCount > 0);
-    listStatus.textContent = state.contextHubBusy
+    listStatus.textContent = state.contextHubBusy || state.contextHubRefreshPromise
       ? "Refreshing projects and shared repositories…"
       : errorCount
         ? errorCount + " shared repositor" + (errorCount === 1 ? "y could not refresh." : "ies could not refresh.") + " Local projects remain available."
@@ -9477,7 +9478,7 @@ async function retrySharedProposalOpening() {
 
 async function refreshSharedProposalOpening() {
   const previous = state.contextRoomPreparingProposal;
-  if (!previous || state.contextHubBusy) return;
+  if (!previous || state.contextHubBusy || state.contextHubRefreshPromise) return;
   state.proposalOpenState = {
     phase: "loading",
     code: "",
@@ -9604,12 +9605,17 @@ function refreshContextHubSharedCatalogInBackground(projectId, generation) {
       renderGlobalProjectExplorer();
       renderContextRoomGlobalReviewQueue();
       renderSharedProposalWorkspace();
+    } else {
+      // A newer read owns the catalogue; read again so this refresh still shows.
+      pollFreshContextHubSnapshot();
     }
     if (!isCurrent()) return;
     const request = state.contextHubSharedRefreshRequest;
     const project = resolveContextHubProjectSelection(state.contextHub?.projects || [], request.projectId, { aliases: false }).project;
     if (project) setContextHubProjectOpenedStatus(project, project.sharedStatus || null);
-  }, (error) => {
+  }).catch((error) => {
+    // Nobody awaits this promise: a failure here, in the request or in a
+    // render, must end as a status, never as an unhandled rejection.
     if (isCurrent()) setStatus("project selected · Shared refresh failed · " + (error?.message || String(error)));
   }).finally(() => {
     if (state.contextHubSharedRefreshPromise === refresh) state.contextHubSharedRefreshPromise = null;
@@ -9762,32 +9768,43 @@ async function refreshContextHubUi() {
     setStatus(state.codexPromptsError ? "Codex prompt catalog refreshed with target warnings" : "Codex prompt catalog refreshed");
     return;
   }
+  // One manual refresh at a time; a second call joins it. It never holds
+  // contextHubBusy, so a project open does not wait for it (4 to 24 s).
+  if (state.contextHubRefreshPromise) return state.contextHubRefreshPromise;
   if (state.contextHubBusy || state.sharedContextBusy) return;
-  state.contextHubBusy = true;
-  renderSharedProposalWorkspace();
-  setStatus("refreshing Context Room…");
-  try {
-    const ticket = beginContextHubSnapshotRequest();
-    const refreshedCatalog = await api("/api/context-hub/refresh", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: "{}",
-    });
-    if (applyContextHubSnapshot(refreshedCatalog, ticket)) {
-      state.contextHubReviewQueueReady = true;
+  const openGeneration = state.contextHubPendingOpenGeneration;
+  const ticket = beginContextHubSnapshotRequest();
+  const refresh = (async () => {
+    try {
+      const refreshedCatalog = await api("/api/context-hub/refresh", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      const applied = applyContextHubSnapshot(refreshedCatalog, ticket);
+      if (applied) {
+        state.contextHubReviewQueueReady = true;
+        renderContextRoomGlobalReviewQueue();
+        renderSharedProposalWorkspace();
+        workspaceUpdate("catalog-refreshed");
+      } else {
+        // A newer read owns the catalogue; read again so this refresh still shows.
+        pollFreshContextHubSnapshot();
+      }
+      // A project opened meanwhile owns the status line.
+      if (openGeneration !== state.contextHubPendingOpenGeneration) return;
+      if (!applied) setStatus("Context Room kept a newer catalogue update");
+      else setStatus(state.contextHub.repositoryErrors?.length ? "Context Room refreshed with shared repository warnings" : "Context Room refreshed");
+    } finally {
+      if (state.contextHubRefreshPromise === refresh) state.contextHubRefreshPromise = null;
       renderContextRoomGlobalReviewQueue();
       renderSharedProposalWorkspace();
-      workspaceUpdate("catalog-refreshed");
-      setStatus(state.contextHub.repositoryErrors?.length ? "Context Room refreshed with shared repository warnings" : "Context Room refreshed");
-    } else {
-      setStatus("Context Room kept a newer catalogue update");
     }
-  } finally {
-    state.contextHubBusy = false;
-    for (const resolve of state.contextHubBusyWaiters.splice(0)) resolve();
-    renderContextRoomGlobalReviewQueue();
-    renderSharedProposalWorkspace();
-  }
+  })();
+  state.contextHubRefreshPromise = refresh;
+  renderSharedProposalWorkspace();
+  setStatus("refreshing Context Room…");
+  return refresh;
 }
 
 async function refreshContextRoomReviewQueue() {
@@ -15234,7 +15251,7 @@ function renderProposalReviewPage() {
       + revisionComparison
       + '<div class="proposal-review-notice-actions">'
       + (retryable ? '<button type="button" data-proposal-open-retry' + (state.sharedContextBusy ? ' disabled' : '') + '>Retry</button>' : '')
-      + '<button type="button" data-proposal-open-refresh' + (state.contextHubBusy ? ' disabled' : '') + '>Refresh status</button>'
+      + '<button type="button" data-proposal-open-refresh' + (state.contextHubBusy || state.contextHubRefreshPromise ? ' disabled' : '') + '>Refresh status</button>'
       + '<button type="button" data-proposal-open-back>Back to Hub</button>'
       + '</div>';
   } else {
