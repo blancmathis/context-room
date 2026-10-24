@@ -17644,9 +17644,9 @@ function readFastContextHubState(root) {
   }));
 }
 
-function markContextHubSnapshotStale() {
+function markContextHubSnapshotStale({ openTimeOnly = false } = {}) {
   contextHubStateCache.clear();
-  invalidateContextHubSnapshot({ preserveState: true });
+  invalidateContextHubSnapshot({ preserveState: true, openTimeOnly });
 }
 
 function waitForContextHubAcceptRefresh(refresh, timeoutMs = CONTEXT_HUB_ACCEPT_REFRESH_TIMEOUT_MS) {
@@ -17667,6 +17667,23 @@ function waitForContextHubAcceptRefresh(refresh, timeoutMs = CONTEXT_HUB_ACCEPT_
       (refreshed) => finish({ status: "complete", refreshed }),
       (error) => finish({ status: "pending", reason: "error", error }),
     );
+  });
+}
+
+// Rebuilds the local order after a commit that kept Shared work. If it fails,
+// the committed order stays behind the open times: mark the snapshot stale so
+// the next reader refreshes again instead of trusting it until the TTL.
+function followContextHubRefreshLocally(key, taskRunner) {
+  void Promise.resolve().then(() => refreshContextHubSnapshot(key, { refreshShared: false, force: true, taskRunner })).catch((error) => {
+    // Never throws: nothing handles this promise, and an unhandled rejection
+    // stops the Hub. Only open times are behind, so a Shared refresh still in
+    // flight must keep committing its own Shared work (openTimeOnly).
+    try {
+      markContextHubSnapshotStale({ openTimeOnly: true });
+    } catch (markError) {
+      console.warn(`Context Hub could not mark the snapshot stale after a failed follow-up: ${String(markError?.message || markError).slice(0, 500)}`);
+    }
+    console.warn(`Context Hub local follow-up refresh failed: ${String(error?.message || error).slice(0, 500)}`);
   });
 }
 
@@ -17706,13 +17723,15 @@ export function refreshContextHubSnapshot(root, {
     if (!committed.committed) {
       contextHubStateCache.delete(key);
       if (committed.reason === "out-of-order") {
-        const current = readContextHubSnapshot();
-        if (
-          current?.state
-          && current.registryRevision === coordination.registryRevision
-          && current.invalidationRevision === coordination.invalidationRevision
-          && Number(current.refreshSequence) > coordination.refreshSequence
-        ) {
+        // A newer refresh committed at inputs that differ from ours by open
+        // times at most: adopt it instead of redoing the Git and Shared work.
+        const current = committed.current;
+        if (current?.state && typeof current.state === "object") {
+          // Opens moved the order, or the newer refresh read the Shared cache
+          // before our sync wrote it: a local pass picks both up, no fetch.
+          if (committed.openTimesStale || (refreshShared && JSON.stringify(state?.sharedRepositories ?? null) !== JSON.stringify(current.state.sharedRepositories ?? null))) {
+            followContextHubRefreshLocally(key, taskRunner);
+          }
           return contextHubStateWithFreshness(contextHubStateForRoot(current.state, key), { generatedAt: current.generatedAt, refreshing: false });
         }
         if (attempt < 2) return refresh(attempt + 1);
@@ -17730,9 +17749,7 @@ export function refreshContextHubSnapshot(root, {
     // Opens during this refresh only moved open times: keep this Shared work and
     // rebuild the local order next, without fetching Shared again.
     const committedInputs = committed.openTimesStale ? committed.snapshot : coordination;
-    if (committed.openTimesStale) {
-      void refreshContextHubSnapshot(key, { refreshShared: false, force: true, taskRunner }).catch(() => {});
-    }
+    if (committed.openTimesStale) followContextHubRefreshLocally(key, taskRunner);
     const committedInputRevision = contextHubSnapshotInputKey(committedInputs);
     if (contextHubCacheInputRevision !== committedInputRevision) {
       contextHubStateCache.clear();

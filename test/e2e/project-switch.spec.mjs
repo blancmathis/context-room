@@ -254,3 +254,50 @@ test("@perf a Refresh result dropped for a newer read is read again", async ({ p
     await hub.close();
   }
 });
+
+test("@perf a Shared project opened during a manual Refresh joins it without a second POST", async ({ page }) => {
+  const hub = await fixture();
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  try {
+    await openHub(page, hub);
+    const refresh = await holdRefresh(page);
+    await page.evaluate(() => { void refreshContextHubUi().catch(() => {}); });
+    await expect.poll(() => refresh.calls).toBe(1);
+
+    await showProjectList(page);
+    const clickedAt = Date.now();
+    await projectRow(page, "Comet").click();
+    await expect(page.locator("#globalExplorerScope strong")).toHaveText("Comet", { timeout: 1_000 });
+    expect(Date.now() - clickedAt).toBeLessThan(1_000);
+    await page.waitForTimeout(500);
+    // The manual Refresh already runs the Shared pass: no second one.
+    expect(refresh.calls).toBe(1);
+
+    refresh.release();
+    await expect.poll(() => page.evaluate(() => Boolean(state.contextHubSharedRefreshPromise || state.contextHubRefreshPromise))).toBe(false);
+    await expect(page.locator("#status")).toHaveText(/^project selected · Shared (snapshot synced|offline|sync continuing)/);
+    expect(refresh.calls).toBe(1);
+
+    // A failed manual Refresh ends the joined open as a status.
+    await page.unroute("**/api/context-hub/refresh");
+    const failing = { calls: 0 };
+    await page.route("**/api/context-hub/refresh", async (route) => {
+      failing.calls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "refresh broke" }) }).catch(() => {});
+    });
+    await page.evaluate(() => { void refreshContextHubUi().catch(() => {}); });
+    await expect.poll(() => failing.calls).toBe(1);
+    await showProjectList(page);
+    await projectRow(page, "Delta").click();
+    await expect(page.locator("#globalExplorerScope strong")).toHaveText("Delta", { timeout: 1_000 });
+    await expect(page.locator("#status")).toHaveText(/^project selected · Shared refresh failed · /);
+    await page.waitForTimeout(300);
+    expect(failing.calls).toBe(1);
+    expect(pageErrors).toEqual([]);
+  } finally {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+    await hub.close();
+  }
+});

@@ -9590,25 +9590,31 @@ function setContextHubProjectOpenedStatus(project, sharedStatus) {
 // releases contextHubBusy at once and the next open starts immediately. One
 // refresh runs at a time; a later open joins it. The catalogue still goes
 // through the snapshot ticket, and only the latest open may set the status.
+// A manual Refresh in flight runs the same Shared pass and applies its
+// catalogue: the open joins it instead of sending a second POST.
 function refreshContextHubSharedCatalogInBackground(projectId, generation) {
   state.contextHubSharedRefreshRequest = { projectId, generation };
   if (state.contextHubSharedRefreshPromise) return state.contextHubSharedRefreshPromise;
-  const ticket = beginContextHubSnapshotRequest();
   const isCurrent = () => state.contextHubSharedRefreshRequest?.generation === state.contextHubPendingOpenGeneration;
-  const refresh = api("/api/context-hub/refresh", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: "{}",
-  }).then((refreshedCatalog) => {
-    if (applyContextHubSnapshot(refreshedCatalog, ticket)) {
-      state.contextHubReviewQueueReady = true;
-      renderGlobalProjectExplorer();
-      renderContextRoomGlobalReviewQueue();
-      renderSharedProposalWorkspace();
-    } else {
-      // A newer read owns the catalogue; read again so this refresh still shows.
-      pollFreshContextHubSnapshot();
-    }
+  const sharedPass = state.contextHubRefreshPromise || (() => {
+    const ticket = beginContextHubSnapshotRequest();
+    return api("/api/context-hub/refresh", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }).then((refreshedCatalog) => {
+      if (applyContextHubSnapshot(refreshedCatalog, ticket)) {
+        state.contextHubReviewQueueReady = true;
+        renderGlobalProjectExplorer();
+        renderContextRoomGlobalReviewQueue();
+        renderSharedProposalWorkspace();
+      } else {
+        // A newer read owns the catalogue; read again so this refresh still shows.
+        pollFreshContextHubSnapshot();
+      }
+    });
+  })();
+  const refresh = sharedPass.then(() => {
     if (!isCurrent()) return;
     const request = state.contextHubSharedRefreshRequest;
     const project = resolveContextHubProjectSelection(state.contextHub?.projects || [], request.projectId, { aliases: false }).project;

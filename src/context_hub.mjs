@@ -2216,7 +2216,8 @@ export function commitContextHubSnapshot(state, coordination, {
       && currentSnapshot?.invalidationRevision === control.invalidationRevision
       && currentSequence > refreshSequence
     ) {
-      return { committed: false, reason: "out-of-order", currentRefreshSequence: currentSequence };
+      // The newer snapshot is at the current inputs: the caller may adopt it.
+      return { committed: false, reason: "out-of-order", currentRefreshSequence: currentSequence, openTimesStale, current: currentSnapshot };
     }
     const snapshot = writeJson(contextHubSnapshotPath(), {
       version: CONTEXT_HUB_SNAPSHOT_VERSION,
