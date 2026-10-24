@@ -367,7 +367,10 @@ export function applyRestore(directory, { only, replace = false, expectedRevisio
           if (!before) throw new Error('the saved copy is missing');
           writeEntry(action.entry, before, action.entry.sha256);
         }
-      } catch (rollbackError) { stuck.push(`${path.join(rootDirectory(action.entry.root), action.entry.path)} (${rollbackError.message})`); }
+      } catch (rollbackError) {
+        let label; try { label = path.join(rootDirectory(action.entry.root), action.entry.path); } catch { label = `${action.entry.root}/${action.entry.path}`; }
+        stuck.push(`${label} (${rollbackError.message})`);
+      }
     }
     const saved = undo ? ` The files it replaced are saved in ${undo}.` : '';
     throw Object.assign(new Error(stuck.length
