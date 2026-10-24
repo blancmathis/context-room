@@ -4073,6 +4073,8 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 	state.contextHubBusy = false;
 	state.contextHubBusyWaiters = [];
 	state.contextHubPendingOpenGeneration = 0;
+	state.contextHubSharedRefreshPromise = null;
+	state.contextHubSharedRefreshRequest = null;
 	state.contextHubRequestedProjectNotice = "";
 	state.contextHubInitialProjectOpen = null;
 	state.contextHubInitialProjectOpenedId = "";
@@ -9565,6 +9567,57 @@ async function openContextHubLocalReview(reviewTarget) {
   await selectFile(reviewTarget.path, { reviewMode: true, forceReload: true });
 }
 
+function setContextHubProjectOpenedStatus(project, sharedStatus) {
+  if (project.shared && sharedStatus?.refreshing) {
+    setStatus(sharedStatus.revision
+      ? "project selected · Shared sync continuing · cached @" + shortSharedHash(sharedStatus.revision)
+      : "project selected · Shared sync continuing");
+  } else if (project.shared && sharedStatus?.refreshError) {
+    setStatus(sharedStatus.revision
+      ? "project selected · Shared refresh failed · cached @" + shortSharedHash(sharedStatus.revision)
+      : "project selected · Shared unavailable");
+  } else if (project.shared && sharedStatus?.online === false) {
+    setStatus(sharedStatus.revision
+      ? "project selected · Shared offline · cached @" + shortSharedHash(sharedStatus.revision)
+      : "project selected · Shared offline · cache unavailable");
+  } else {
+    setStatus(project.shared ? "project selected · Shared snapshot synced" : "project selected");
+  }
+}
+
+// Opening a Shared-only project never waits for the Shared refresh: the open
+// releases contextHubBusy at once and the next open starts immediately. One
+// refresh runs at a time; a later open joins it. The catalogue still goes
+// through the snapshot ticket, and only the latest open may set the status.
+function refreshContextHubSharedCatalogInBackground(projectId, generation) {
+  state.contextHubSharedRefreshRequest = { projectId, generation };
+  if (state.contextHubSharedRefreshPromise) return state.contextHubSharedRefreshPromise;
+  const ticket = beginContextHubSnapshotRequest();
+  const isCurrent = () => state.contextHubSharedRefreshRequest?.generation === state.contextHubPendingOpenGeneration;
+  const refresh = api("/api/context-hub/refresh", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  }).then((refreshedCatalog) => {
+    if (applyContextHubSnapshot(refreshedCatalog, ticket)) {
+      state.contextHubReviewQueueReady = true;
+      renderGlobalProjectExplorer();
+      renderContextRoomGlobalReviewQueue();
+      renderSharedProposalWorkspace();
+    }
+    if (!isCurrent()) return;
+    const request = state.contextHubSharedRefreshRequest;
+    const project = resolveContextHubProjectSelection(state.contextHub?.projects || [], request.projectId, { aliases: false }).project;
+    if (project) setContextHubProjectOpenedStatus(project, project.sharedStatus || null);
+  }, (error) => {
+    if (isCurrent()) setStatus("project selected · Shared refresh failed · " + (error?.message || String(error)));
+  }).finally(() => {
+    if (state.contextHubSharedRefreshPromise === refresh) state.contextHubSharedRefreshPromise = null;
+  });
+  state.contextHubSharedRefreshPromise = refresh;
+  return refresh;
+}
+
 async function openContextHubProject(projectId, options = {}, requestedGeneration = 0) {
   if (IS_HOSTED_REVIEW) throw new Error("Project navigation is unavailable inside an exact hosted review.");
   if (!projectId) return;
@@ -9615,41 +9668,14 @@ async function openContextHubProject(projectId, options = {}, requestedGeneratio
         state.contextHubInitialProjectOpenedId = targetProjectId;
         sharedStatus = opened.sharedStatus || sharedStatus;
         if (opened.sharedStatus) project.sharedStatus = opened.sharedStatus;
-      } else if (project.shared) {
-        setStatus("refreshing Shared catalogue…");
-        const ticket = beginContextHubSnapshotRequest();
-        const refreshedCatalog = await api("/api/context-hub/refresh", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: "{}",
-        });
-        if (generation !== state.contextHubPendingOpenGeneration) return;
-        const refreshed = applyContextHubSnapshot(refreshedCatalog, ticket);
-        if (refreshed) state.contextHubReviewQueueReady = true;
-        project = resolveContextHubProjectSelection(state.contextHub?.projects || [], projectId, { aliases: false }).project || project;
-        sharedStatus = project.sharedStatus || null;
-        if (refreshed) {
-          renderContextRoomGlobalReviewQueue();
-          renderSharedProposalWorkspace();
-        }
       }
+      const sharedRefresh = project.mode === "shared" && project.shared
+        ? refreshContextHubSharedCatalogInBackground(projectId, generation)
+        : null;
       await explorerOpen;
       if (generation !== state.contextHubPendingOpenGeneration) return;
-      if (project.shared && sharedStatus?.refreshing) {
-        setStatus(sharedStatus.revision
-          ? "project selected · Shared sync continuing · cached @" + shortSharedHash(sharedStatus.revision)
-          : "project selected · Shared sync continuing");
-      } else if (project.shared && sharedStatus?.refreshError) {
-        setStatus(sharedStatus.revision
-          ? "project selected · Shared refresh failed · cached @" + shortSharedHash(sharedStatus.revision)
-          : "project selected · Shared unavailable");
-      } else if (project.shared && sharedStatus?.online === false) {
-        setStatus(sharedStatus.revision
-          ? "project selected · Shared offline · cached @" + shortSharedHash(sharedStatus.revision)
-          : "project selected · Shared offline · cache unavailable");
-      } else {
-        setStatus(project.shared ? "project selected · Shared snapshot synced" : "project selected");
-      }
+      if (sharedRefresh) setStatus("project selected · refreshing Shared catalogue…");
+      else setContextHubProjectOpenedStatus(project, sharedStatus);
     } catch (error) {
       await explorerOpen.catch(() => {});
       if (previousWorktreeId == null) state.globalProjectWorktreeIds.delete(project.projectKey);

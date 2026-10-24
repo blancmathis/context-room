@@ -142,7 +142,7 @@ function writeSnapshotControl(control) {
   return writeJson(snapshotControlPath(), normalizedSnapshotControl(control));
 }
 
-function invalidateContextHubSnapshotLocked({ preserveState = false } = {}) {
+function invalidateContextHubSnapshotLocked({ preserveState = false, previousRegistryRevision = "" } = {}) {
   const snapshotPath = contextHubSnapshotPath();
   let snapshot = null;
   if (preserveState) {
@@ -153,7 +153,7 @@ function invalidateContextHubSnapshotLocked({ preserveState = false } = {}) {
   const canPreserve = snapshot?.state
     && typeof snapshot.state === "object"
     && Number(snapshot.version) === CONTEXT_HUB_SNAPSHOT_VERSION
-    && snapshot.registryRevision === registryRevision
+    && snapshot.registryRevision === (previousRegistryRevision || registryRevision)
     && snapshot.invalidationRevision === control.invalidationRevision;
   control.invalidationRevision = randomUUID();
   writeSnapshotControl(control);
@@ -177,13 +177,17 @@ export function invalidateContextHubSnapshot(options = {}) {
   return withRegistryLock(() => invalidateContextHubSnapshotLocked(options));
 }
 
-function mutateContextHubRegistry(operation) {
+// preserveSnapshot: the change cannot add or remove a project (open time only).
+// The last snapshot stays readable, marked stale, so readers never fall back to
+// the locals-only navigation state while the next refresh runs.
+function mutateContextHubRegistry(operation, { preserveSnapshot = false } = {}) {
   return withRegistryLock(() => {
     const registry = readContextHubRegistry();
+    const previousRegistryRevision = preserveSnapshot ? contextHubRegistryRevision(registry) : "";
     const result = operation(registry);
     if (result?.identityUnconfirmed === true) return result;
     writeJson(registryPath(), registry);
-    invalidateContextHubSnapshotLocked();
+    invalidateContextHubSnapshotLocked(preserveSnapshot ? { preserveState: true, previousRegistryRevision } : {});
     return result;
   });
 }
@@ -2681,7 +2685,7 @@ export function recordContextHubProjectOpened(projectId) {
     if (!project) throw new Error(`Unknown Context Hub project: ${projectId}`);
     project.lastOpenedAt = new Date().toISOString();
     return project;
-  });
+  }, { preserveSnapshot: true });
 }
 
 const DEVICE_DISCOVERY_STATES = new Set(["announced", "off", "unsupported", "failed"]);
