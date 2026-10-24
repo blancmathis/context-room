@@ -11,11 +11,12 @@ n'a été écrite par cette doc.
 
 - La v2 reprend le cœur de Lisière : carnets, conversations par source, dictée,
   voix, appairage, vues partagées, présentation, cache hors ligne, migration.
-- Lots fusionnés dans `40285c8` : L1 (bascule), L2L7 (chaîne APK), L3 (espace
+- Lots fusionnés jusqu'à `9db43b2` : L1 (bascule), L2L7 (chaîne APK), L3 (espace
   Carnets), L4 (lecteur PDF/image), L5 (Codex du Mac), L6 (découverte), L8
-  (sauvegarde), L9a (sommaire, Aa, recherche sans accents, chercher/remplacer),
-  L9b (Fast, Follow agent, export PNG/PDF, appairage QR/fichier). L2 (export de
-  la BOOX) attend la tablette.
+  (sauvegarde), L9a (sommaire, Aa, recherche sans accents, chercher/remplacer,
+  cibles de 44 px), L9b (Fast, Follow agent, export PNG/PDF, appairage
+  QR/fichier). Correctifs : e2e (7209b69), scan `/proc` sous Linux (678c13b).
+  L2 (export de la BOOX) attend la tablette.
 - Huit écarts de parité sont **acceptés par Mathis** (2026-10-23) : § (a) et
   `DECISIONS.md`. Les autres manques sont marqués « absent » ou « partiel ».
 - Aucun essai sur la BOOX réelle n'a eu lieu : la porte V18 reste fermée. La
@@ -57,9 +58,9 @@ physique) n'est pas encore passée.
 | Rôles propriétaire / dessin seul, révocation | `src/device_owner.mjs` ; `test/e2e/notebooks.spec.mjs:166` | prouvé |
 | Parcourir : Projets / Fichiers / Carnets / Récents | Navigation Hub + documents (`src/ui/app.mjs`, `src/device_navigation.mjs`) ; e2e Hub | prouvé |
 | Lecteur HTML (ressources locales, liens externes) | Docs rendues + `src/document_assets.mjs` | prouvé |
-| « Lire le texte » paginé, Sommaire > 300 sections, recherche sans accents, Aa | Lecteur de documents (L9a, 40285c8, `src/ui/text-tools.mjs`) : sommaire paginé (40 titres par page, avec recherche), sommaire des docs HTML, boutons Page, réglage Aa (en lecture seulement) ; recherche sans accents dans l'explorateur, les documents et les carnets. Preuves : `test/text_tools.test.mjs`, e2e `test/e2e/read-first.spec.mjs`. Limites : un texte aux accents décomposés (NFD) n'est pas trouvé ; aucun essai sur encre. « Lire le texte » remplacé par Page + Edit : écart accepté (Mathis, 2026-10-23). | partiel (essai BOOX à faire) |
+| « Lire le texte » paginé, Sommaire > 300 sections, recherche sans accents, Aa | Lecteur de documents (L9a, 40285c8, `src/ui/text-tools.mjs`) : sommaire paginé (40 titres par page, avec recherche, titre courant en gras), sommaire des docs HTML, boutons Page, réglage Aa (lecture et édition ; le texte brut suit Aa sans saut de taille) ; cibles de 44 px pour la recherche du sommaire, ses liens et les boutons Aa, Undo, Redo, Find, Contents (r2, 9db43b2) ; recherche sans accents dans l'explorateur, les documents et les carnets. Preuves : `test/text_tools.test.mjs`, e2e `test/e2e/read-first.spec.mjs`. Limites : un texte aux accents décomposés (NFD) n'est pas trouvé ; aucun essai sur encre. « Lire le texte » remplacé par Page + Edit : écart accepté (Mathis, 2026-10-23). | partiel (essai BOOX à faire) |
 | Modifier HTML/MD → diff → « Appliquer sur le Mac » | Brouillon + proposition locale + revue humaine (`src/local_proposals.mjs`, `docs/features/document-workflow.md`) | prouvé |
-| Gros éditeur (annuler/rétablir, chercher/remplacer, 20 Mio) | Éditeur Markdown et éditeur de brouillon (L9a, 40285c8) : Annuler, Rétablir, Rechercher/Remplacer ; « Tout remplacer » compte pour une seule étape d'annulation. Limite de 16 Mio au lieu de 20. Preuves : `test/text_tools.test.mjs`, e2e `test/e2e/read-first.spec.mjs` et `test/e2e/lisiere-drafts.spec.mjs`. | prouvé (e2e Chromium) ; limite 16 Mio : écart accepté (Mathis, 2026-10-23) |
+| Gros éditeur (annuler/rétablir, chercher/remplacer, 20 Mio) | Éditeur Markdown et éditeur de brouillon (L9a, 40285c8) : Annuler, Rétablir, Rechercher/Remplacer ; « Tout remplacer » compte pour une seule étape d'annulation et garde la borne de 200 étapes ; Undo et Redo sont grisés quand il n'y a rien à annuler ou à refaire ; la barre Find du brouillon ne change rien pendant Save ou Submit (r2, 9db43b2). Limite de 16 Mio au lieu de 20. Preuves : `test/text_tools.test.mjs`, e2e `test/e2e/read-first.spec.mjs` et `test/e2e/lisiere-drafts.spec.mjs`. Limite : le cas de 1,7 Mo (`lisiere-drafts.spec.mjs:109`, 6400 remplacements) dépasse 2 min sous WebKit ; la CI ne lance pas ce fichier. | prouvé (e2e Chromium) ; limite 16 Mio : écart accepté (Mathis, 2026-10-23) |
 | Lecteur PDF et image (pages, zoom, « Image entière », Annoter) | Lecteur PDF/image fusionné (L4, 7f178e6) : pdf.js 6.4.299 copié dans le paquet (`src/ui/document-viewer.mjs`), route `/vendor/pdfjs/` sans `'wasm-unsafe-eval'`. Preuves : `test/document_viewer.test.mjs` 27/27, route pdf.js 1/1 (`test/context_room.test.mjs`) ; annotation PNG de revue (`test/e2e/notebooks.spec.mjs:499`). Limites : aucun essai BOOX ; chemin tablette (proxy propriétaire) sans e2e ; pas de PDF JPX en test. La course `openPdf` est corrigée (L9a). Le kit Mac admet les polices standard de pdf.js vendues (7209b69, `test/mac_installation.test.mjs`) : avant, `prepare-mac-install` refusait le paquet. | partiel (essai BOOX à faire) |
 | Carnets stylet/doigt, zoom 2 doigts, gomme, sélection, formes | `.crnb` (`src/notebook_*.mjs`, `src/ui/notebook-*.mjs`, `android/.../InkView.java`, `BooxInk.java`) ; `test/notebook*.test.mjs`, `test/e2e/notebooks.spec.mjs:216,372,484` | prouvé (navigateur) ; partiel (BOOX réelle) |
 | Mémos libres hors projet (`~/Documents/Lisière/Carnets`) | Espace Notebooks (`~/Documents/Context Room/Carnets`), New notebook, déplacement vérifié vers un projet et retour (`test/notebooks.test.mjs` transfer, `test/hub_durable_identity.test.mjs` space, e2e « Notebooks space »). Les 4 mémos passent par `migrate --notebooks-to-space` à la bascule. | prouvé (navigateur) ; partiel (BOOX réelle) |
@@ -308,7 +309,7 @@ plus.
 | L6 Réseau tablette | mDNS/Bonjour pour retrouver le Mac ; diagnostic réseau (LAN/Tailscale) dans `doctor` | **fusionné** (f74c994, f88ab76, c597d6b) ; redécouverte à essayer sur la BOOX | non |
 | L7 Mise à jour APK | Distribution d'APK signée par le Hub + vérification + installation depuis l'app | chaîne APK **fusionnée** (L2L7, 82d62fc) ; pas d'installateur dans l'app : écart accepté (Mathis, 2026-10-23) | non (PWA suffit) |
 | L8 Sauvegarde | `context-room backup/restore` des carnets, conversations et reçus | **fusionné** (219c815, 91d3995) | non |
-| L9a Confort de lecture | Sommaire paginé, Aa, recherche sans accents, chercher/remplacer, annuler/rétablir | **fusionné** (40285c8) ; essai BOOX à faire | non |
+| L9a Confort de lecture | Sommaire paginé, Aa, recherche sans accents, chercher/remplacer, annuler/rétablir | **fusionné** (40285c8 ; r2 9db43b2) ; essai BOOX à faire | non |
 | L9b Confort de travail | Fast, « Suivre l'agent », QR et fichier d'appairage, export PNG/PDF d'un carnet | **fusionné** (c597d6b, 3c88c15, c03b208) ; aucun vrai tour Fast avant le 2026-11-17 | non |
 
 ### Décision 2026-10-16 : espace « Carnets » libre (L3)
