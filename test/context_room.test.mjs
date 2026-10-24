@@ -740,10 +740,14 @@ test("the notebook space route is owner-protected", async (t) => {
   const root = makeRoot();
   const hubHome = makeRoot();
   const previousHubHome = process.env.CONTEXT_ROOM_HUB_HOME;
+  const previousSpace = process.env.CONTEXT_ROOM_NOTEBOOK_SPACE_HOME;
   process.env.CONTEXT_ROOM_HUB_HOME = hubHome;
+  process.env.CONTEXT_ROOM_NOTEBOOK_SPACE_HOME = path.join(makeRoot(), "Carnets");
   t.after(() => {
     if (previousHubHome === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
     else process.env.CONTEXT_ROOM_HUB_HOME = previousHubHome;
+    if (previousSpace === undefined) delete process.env.CONTEXT_ROOM_NOTEBOOK_SPACE_HOME;
+    else process.env.CONTEXT_ROOM_NOTEBOOK_SPACE_HOME = previousSpace;
   });
   initializeContextRoomProject(root, { allowedPaths: ["docs/"] });
   const { server, ownerMutationNonce } = createMemoryServer({ root });
