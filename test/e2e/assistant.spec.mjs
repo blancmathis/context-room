@@ -350,3 +350,27 @@ test('@assistant a model change whose re-sync never answers ends in a plain time
     await page.unroute('**/configure', silent);
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
+
+test('@assistant Send does nothing while the conversation changes and no text leaves for the conversation being left', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    for (let i = 0; i < 2; i++) expect((await f.post('/api/assistant/conversations', { requestId: crypto.randomUUID(), source: { kind: 'document', path: 'docs/Original.md' } })).status).toBe(201);
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await page.evaluate(() => selectFile('docs/Original.md')); await page.getByRole('button', { name: 'Discuss', exact: true }).click();
+    const pane = page.getByRole('complementary', { name: 'Original document conversation' }), saved = pane.getByLabel('Saved conversations for this original source');
+    const send = pane.getByRole('button', { name: 'Send', exact: true }), box = pane.getByRole('textbox');
+    await expect(saved.locator('option')).toHaveCount(2); await expect(send).toBeEnabled();
+    const leftId = await saved.inputValue(), nextId = await saved.locator('option').evaluateAll((options, left) => options.map(option => option.value).find(value => value !== left), leftId);
+    let release, sends = 0, reads = 0; const gate = new Promise(resolve => { release = resolve; });
+    page.on('request', request => { if (request.method() === 'POST' && request.url().endsWith('/send')) sends += 1; });
+    await page.route(new RegExp('/api/assistant/conversations/' + nextId + '$'), async route => { reads += 1; await gate; await route.continue(); });
+    await box.fill('Text for the conversation I am leaving.');
+    await saved.selectOption(nextId); await expect.poll(() => reads).toBe(1);
+    await expect(send).toBeDisabled();
+    await box.evaluate(textbox => { textbox.form.requestSubmit(); }); await box.press('Enter');
+    await page.waitForTimeout(300); expect(sends).toBe(0); expect(f.turns).toHaveLength(0);
+    release();
+    await expect(saved).toHaveValue(nextId); await expect(saved).toBeEnabled(); await expect(send).toBeEnabled();
+    expect(sends).toBe(0); expect(f.turns).toHaveLength(0);
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
