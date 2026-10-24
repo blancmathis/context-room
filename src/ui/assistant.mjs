@@ -104,7 +104,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   panel.append(heading, original, audioStatus, boundary, ...(conversation.source.kind === 'notebook' ? [] : [sheet.section]), historyRow, macTasks.section, retainedHistory.section, linkedRecordings.section, messages, modelRow, form, status, infoBox, errorBox); parent.append(panel);
   const clientId = crypto.randomUUID();
   let closed = false, current = conversation, pollBusy = false, lease = null, renewTimer = null, recording = null, speaker = null,
-    audioContext = null, audioGeneration = 0, modelPending = false, catalogLoaded = false, fastDropped = false, rendered = '', sendRequest = null, retainedRecording = null, recordingRequest = null, audioBusy = false, audioReading = false, changingConversation = false, draftWrites = Promise.resolve(), nativeRecordings = [], voice = null, voiceClosing = false, initializing = true, historyCursor = null, historyLoading = false;
+    audioContext = null, audioGeneration = 0, modelPending = false, catalogLoaded = false, fastDropped = false, rendered = '', sendRequest = null, sending = false, retainedRecording = null, recordingRequest = null, audioBusy = false, audioReading = false, changingConversation = false, draftWrites = Promise.resolve(), nativeRecordings = [], voice = null, voiceClosing = false, initializing = true, historyCursor = null, historyLoading = false;
   const fail = error => { if (!closed && error.name !== 'AbortError') { infoBox.textContent = ''; errorBox.textContent = error.message || String(error); } };
   function inform(text) { errorBox.textContent = ''; infoBox.textContent = text; }
   const run = promise => Promise.resolve(promise).catch(fail);
@@ -200,7 +200,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     panel.dataset.ready = String(!initializing); panel.setAttribute('aria-busy', String(initializing));
     panel.dataset.capturing = String(Boolean(recording));
     panel.classList.toggle('assistant-voice-enabled', Boolean(voice));
-    send.disabled = initializing || busy || uncertain || Boolean(voice); stop.disabled = !busy; stop.hidden = !busy; models.disabled = initializing || busy || uncertain || Boolean(voice); efforts.disabled = models.disabled; fast.disabled = models.disabled || fast.dataset.offered !== 'true';
+    send.disabled = initializing || sending || busy || uncertain || Boolean(voice); stop.disabled = !busy; stop.hidden = !busy; models.disabled = initializing || busy || uncertain || Boolean(voice); efforts.disabled = models.disabled; fast.disabled = models.disabled || fast.dataset.offered !== 'true';
     history.disabled = initializing || busy || uncertain || Boolean(recording) || audioBusy || audioReading || changingConversation || Boolean(voice) || voiceClosing || historyLoading;
     newConversation.disabled = history.disabled;
     olderHistory.disabled = reloadHistory.disabled = history.disabled;
@@ -282,27 +282,29 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   })()));
   form.addEventListener('submit', event => { event.preventDefault(); if (!voice) run(submitMessage()); });
   async function submitMessage(voiceSession = null) {
-    if (initializing || !input.value.trim() || activeStatuses.has(current.operation?.status)) return;
+    if (sending || initializing || !input.value.trim() || activeStatuses.has(current.operation?.status)) return;
     const text = input.value;
     if (sendRequest && sendRequest.text !== text) throw new Error('The previous send is unconfirmed. Refresh its original conversation before changing the message.');
-    const earlier = sendRequest; sendRequest ||= { requestId: crypto.randomUUID(), text }; send.disabled = true;
-    if (catalogLoaded && current.fast === true && fast.dataset.offered !== 'true') {
-      try { await configure(); } catch (error) { sendRequest = earlier; render(); throw error; }
-    }
-    await saveDraft();
-    if (voiceSession && voice !== voiceSession) return;
-    if (voiceSession) voiceSession.requestId = sendRequest.requestId;
+    // One send at a time: Send stays inactive until it ends. A failed re-sync keeps no request id.
+    sending = true; render();
     try {
-      current = await post('/conversations/' + current.id + '/send', sendRequest); input.value = ''; sendRequest = null; await saveDraft(); inform(''); render();
-      if (voiceSession && voice !== voiceSession && activeStatuses.has(current.operation?.status)) await stopTurn(voiceSession.requestId);
-    }
-    catch (error) {
-      await poll();
-      if (current.messages.some(item => item.id === sendRequest?.requestId)) { input.value = ''; sendRequest = null; }
-      else if (error.status >= 400 && error.status < 500) sendRequest = null;
+      if (catalogLoaded && current.fast === true && fast.dataset.offered !== 'true') await configure();
+      sendRequest ||= { requestId: crypto.randomUUID(), text };
       await saveDraft();
-      throw error;
-    }
+      if (voiceSession && voice !== voiceSession) return;
+      if (voiceSession) voiceSession.requestId = sendRequest.requestId;
+      try {
+        current = await post('/conversations/' + current.id + '/send', sendRequest); if (input.value === text) input.value = ''; sendRequest = null; await saveDraft(); inform(''); render();
+        if (voiceSession && voice !== voiceSession && activeStatuses.has(current.operation?.status)) await stopTurn(voiceSession.requestId);
+      }
+      catch (error) {
+        await poll();
+        if (current.messages.some(item => item.id === sendRequest?.requestId)) { if (input.value === text) input.value = ''; sendRequest = null; }
+        else if (error.status >= 400 && error.status < 500) sendRequest = null;
+        await saveDraft();
+        throw error;
+      }
+    } finally { sending = false; render(); }
   }
   async function stopTurn(operationId = current.operation?.id) {
     const id = current.id, result = await post('/conversations/' + id + '/stop', { operationId });

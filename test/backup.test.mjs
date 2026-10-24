@@ -350,7 +350,7 @@ test('the rollback refuses a created file whose parent became a link out of the 
   const preview = previewRestore(output);
   assert.throws(() => applyRestore(output, { expectedRevision: preview.revision }, { checkpoint(name, index) {
     if (name === 'before-write' && index === 1) { fs.rmSync(path.dirname(file), { recursive: true, force: true }); fs.symlinkSync(outside, path.dirname(file)); fs.writeFileSync(key, 'late key'); }
-  } }), /could not be put back/);
+  } }), error => /could not be put back/.test(error.message) && error.message.includes(file) && /Check each one by hand; nothing outside its folder was touched/.test(error.message));
   assert.deepEqual(fs.readFileSync(kept), content, 'the file outside the store is intact');
   assert.deepEqual(fs.readdirSync(outside), [path.basename(file)]);
 });
