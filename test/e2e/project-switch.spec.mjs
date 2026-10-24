@@ -147,3 +147,110 @@ test("@perf a local project opens at once while a Shared refresh is delayed, and
     await hub.close();
   }
 });
+
+async function openHub(page, hub) {
+  await page.goto(hub.origin + "/?hub=1&view=hub");
+  await expect(page.locator("body")).not.toHaveClass(/app-booting|app-recovery/);
+  await showProjectList(page);
+  for (const title of ["Beacon", "Comet", "Delta"]) await expect(projectRow(page, title)).toBeVisible({ timeout: 15_000 });
+  // The boot poll is over: later catalogue reads come from the code under test.
+  await expect.poll(() => page.evaluate(() => state.contextHubSnapshotPollTimer === null && !state.contextHub?.freshness?.refreshing), { timeout: 15_000 }).toBe(true);
+}
+
+async function holdRefresh(page) {
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  const hold = { calls: 0, release };
+  await page.route("**/api/context-hub/refresh", async (route) => {
+    hold.calls += 1;
+    await held;
+    await route.continue().catch(() => {});
+  });
+  return hold;
+}
+
+test("@perf a project opens at once while a manual Refresh is held, and the Refresh sends one POST", async ({ page }) => {
+  const hub = await fixture();
+  try {
+    await openHub(page, hub);
+    const refresh = await holdRefresh(page);
+    await page.evaluate(() => { void refreshContextHubUi(); void refreshContextHubUi(); });
+    await expect.poll(() => refresh.calls).toBe(1);
+    // The Refresh status button stays disabled for the whole refresh.
+    expect(await page.evaluate(() => Boolean(state.contextHubBusy || state.contextHubRefreshPromise))).toBe(true);
+
+    await showProjectList(page);
+    const clickedAt = Date.now();
+    await projectRow(page, "Beacon").click();
+    await expect(page.locator("#globalExplorerScope strong")).toHaveText("Beacon", { timeout: 1_000 });
+    expect(Date.now() - clickedAt).toBeLessThan(1_000);
+    await expect(page.locator("#status")).toHaveText(/^project selected/);
+    await page.evaluate(() => { void refreshContextHubUi(); });
+    expect(await page.evaluate(() => Boolean(state.contextHubBusy || state.contextHubRefreshPromise))).toBe(true);
+
+    // The late result must not take the status line from the open.
+    refresh.release();
+    await expect.poll(() => page.evaluate(() => Boolean(state.contextHubRefreshPromise))).toBe(false);
+    await expect(page.locator("#globalExplorerScope strong")).toHaveText("Beacon");
+    await expect(page.locator("#status")).toHaveText(/^project selected/);
+    expect(refresh.calls).toBe(1);
+  } finally {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+    await hub.close();
+  }
+});
+
+test("@perf a failure while applying the background Shared refresh ends as a status, not an unhandled rejection", async ({ page }) => {
+  const hub = await fixture();
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  try {
+    await openHub(page, hub);
+    await page.route("**/api/context-hub/refresh", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ failWhileApplying: true }),
+    }));
+    await page.evaluate(() => {
+      const apply = applyContextHubSnapshot;
+      window.applyContextHubSnapshot = (catalog, ticket) => {
+        if (catalog?.failWhileApplying) throw new Error("catalogue render failed");
+        return apply(catalog, ticket);
+      };
+    });
+
+    await projectRow(page, "Comet").click();
+    await expect(page.locator("#globalExplorerScope strong")).toHaveText("Comet");
+    await expect(page.locator("#status")).toHaveText(/Shared refresh failed · catalogue render failed/);
+    await expect.poll(() => page.evaluate(() => Boolean(state.contextHubSharedRefreshPromise))).toBe(false);
+    await page.waitForTimeout(300);
+    expect(pageErrors).toEqual([]);
+  } finally {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+    await hub.close();
+  }
+});
+
+test("@perf a Refresh result dropped for a newer read is read again", async ({ page }) => {
+  const hub = await fixture();
+  try {
+    await openHub(page, hub);
+    const reads = [];
+    page.on("request", (request) => {
+      if (request.method() === "GET" && new URL(request.url()).pathname === "/api/context-hub") reads.push(Date.now());
+    });
+    const refresh = await holdRefresh(page);
+    await page.evaluate(() => { void refreshContextHubUi(); });
+    await expect.poll(() => refresh.calls).toBe(1);
+    // A newer read takes the ticket, so the held result can no longer apply.
+    await page.evaluate(() => { beginContextHubSnapshotRequest(); });
+
+    const releasedAt = Date.now();
+    refresh.release();
+    await expect.poll(() => page.evaluate(() => Boolean(state.contextHubRefreshPromise))).toBe(false);
+    await expect.poll(() => reads.filter((at) => at >= releasedAt).length, { timeout: 3_000 }).toBeGreaterThan(0);
+  } finally {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+    await hub.close();
+  }
+});
