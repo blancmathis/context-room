@@ -359,7 +359,9 @@ the notebooks and refusals checked on the source side. Apply with that
 revision checks it again, creates and registers the space, then moves. A
 stale revision is refused before anything is created. With an existing space
 nothing changes. The cutover order is in `docs/lisiere-parite.md`
-(« Migration réelle des 4 carnets »).
+(« Migration réelle des 4 carnets »). It deploys the new release first, stops
+the Hub (ports 4319 and 4318 free, no `hub` process), copies the raw data, and
+only then runs `backup` and `migrate`.
 
 If the apply stops (a crash or a killed process), run it again. Wait 30 s
 first: a lock left by the stopped process is released after 30 s, and before
