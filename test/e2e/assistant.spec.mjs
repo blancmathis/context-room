@@ -226,16 +226,7 @@ test('@assistant Fast checkbox follows the model catalogue and reaches turn/star
 test('@assistant a failed Fast re-sync before Send sends nothing, keeps the text and lets the text change', async ({ page }) => {
   const f = await assistantFixture();
   try {
-    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
-    await page.evaluate(() => selectFile('docs/Original.md')); await page.getByRole('button', { name: 'Discuss', exact: true }).click();
-    const pane = page.getByRole('complementary', { name: 'Original document conversation' });
-    await pane.locator('summary').filter({ hasText: 'Codex model' }).click(); await pane.getByRole('button', { name: 'Load available models' }).click();
-    const fast = pane.getByLabel('Conversation Fast mode'), models = pane.getByLabel('Conversation Codex model'), box = pane.getByRole('textbox'), send = pane.getByRole('button', { name: 'Send', exact: true });
-    await expect(models).toContainText('Synthetic plain model'); await fast.check(); await expect(fast).toBeChecked();
-    // The server keeps Fast on for a model that does not offer it: the state that makes Send configure first.
-    const stale = async route => { const response = await route.fetch(); await route.fulfill({ response, json: { ...await response.json(), fast: true } }); };
-    await page.route('**/configure', stale);
-    await models.selectOption('synthetic-plain'); await expect(fast).toBeDisabled(); await page.unroute('**/configure', stale);
+    const { pane, box, send } = await staleFastPane(page, f);
     const failing = route => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Synthetic configure failure.' }) });
     await page.route('**/configure', failing);
     await box.fill('First text.'); await send.click();
@@ -250,16 +241,7 @@ test('@assistant a failed Fast re-sync before Send sends nothing, keeps the text
 test('@assistant a delayed failing Fast re-sync keeps Send inactive, sends once and leaves no request id', async ({ page }) => {
   const f = await assistantFixture();
   try {
-    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
-    await page.evaluate(() => selectFile('docs/Original.md')); await page.getByRole('button', { name: 'Discuss', exact: true }).click();
-    const pane = page.getByRole('complementary', { name: 'Original document conversation' });
-    await pane.locator('summary').filter({ hasText: 'Codex model' }).click(); await pane.getByRole('button', { name: 'Load available models' }).click();
-    const fast = pane.getByLabel('Conversation Fast mode'), models = pane.getByLabel('Conversation Codex model'), box = pane.getByRole('textbox'), send = pane.getByRole('button', { name: 'Send', exact: true });
-    await expect(models).toContainText('Synthetic plain model'); await fast.check(); await expect(fast).toBeChecked();
-    // The server keeps Fast on for a model that does not offer it: the state that makes Send configure first.
-    const stale = async route => { const response = await route.fetch(); await route.fulfill({ response, json: { ...await response.json(), fast: true } }); };
-    await page.route('**/configure', stale);
-    await models.selectOption('synthetic-plain'); await expect(fast).toBeDisabled(); await page.unroute('**/configure', stale);
+    const { pane, box, send } = await staleFastPane(page, f);
     let release; const gate = new Promise(resolve => { release = resolve; });
     const failing = async route => { await gate; await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Synthetic configure failure.' }) }); };
     await page.route('**/configure', failing);
@@ -284,9 +266,12 @@ async function staleFastPane(page, f) {
   const fast = pane.getByLabel('Conversation Fast mode'), models = pane.getByLabel('Conversation Codex model');
   await expect(models).toContainText('Synthetic plain model'); await fast.check(); await expect(fast).toBeChecked();
   // The server keeps Fast on for a model that does not offer it: the state that makes Send configure first.
-  const stale = async route => { const response = await route.fetch(); await route.fulfill({ response, json: { ...await response.json(), fast: true } }); };
+  // The server itself stores it, not one faked response: the 500 ms poll replaces the conversation with the server's copy.
+  // Unroute only once the request has passed: a request still in flight would reach the server unchanged.
+  let stored; const passed = new Promise(resolve => { stored = resolve; });
+  const stale = async route => { await route.continue({ postData: JSON.stringify({ ...route.request().postDataJSON(), fast: true }) }); stored(); };
   await page.route('**/configure', stale);
-  await models.selectOption('synthetic-plain'); await expect(fast).toBeDisabled(); await page.unroute('**/configure', stale);
+  await models.selectOption('synthetic-plain'); await expect(fast).toBeDisabled(); await passed; await page.unroute('**/configure', stale);
   return { pane, box: pane.getByRole('textbox'), send: pane.getByRole('button', { name: 'Send', exact: true }) };
 }
 
