@@ -242,7 +242,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     for (const model of choices) { const option = element('option', model.name || model.id); option.value = model.id; option.dataset.efforts = JSON.stringify(model.efforts || []); option.dataset.fast = String(model.fast === true); models.append(option); }
     if (!choices.some(model => model.id === current.model)) { const option = element('option', current.model); option.value = current.model; models.append(option); }
     models.value = current.model; showEfforts();
-    if (catalogLoaded && current.fast === true && fast.dataset.offered !== 'true') run(configure());
+    if (catalogLoaded && current.fast === true && fast.dataset.offered !== 'true' && !activeStatuses.has(current.operation?.status)) run(configure());
   }
   function showEfforts() {
     const listed = JSON.parse(models.selectedOptions[0]?.dataset.efforts || '[]');
@@ -286,6 +286,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     const text = input.value;
     if (sendRequest && sendRequest.text !== text) throw new Error('The previous send is unconfirmed. Refresh its original conversation before changing the message.');
     sendRequest ||= { requestId: crypto.randomUUID(), text }; send.disabled = true;
+    if (catalogLoaded && current.fast === true && fast.dataset.offered !== 'true') await configure();
     await saveDraft();
     if (voiceSession && voice !== voiceSession) return;
     if (voiceSession) voiceSession.requestId = sendRequest.requestId;

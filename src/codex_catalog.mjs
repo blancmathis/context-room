@@ -20,8 +20,8 @@ const real = value => { try { return fs.realpathSync(value); } catch { return pa
 /** Folders the Hub never offers: the home folder, the filesystem root and Codex or SSH private state. */
 function refusedRoot(root, codexHome) {
   const home = real(os.homedir()), resolved = real(root);
-  const forbidden = [path.parse(resolved).root, home, real(codexHome), real(path.join(home, '.codex')), real(path.join(home, '.ssh'))];
-  return forbidden.includes(resolved);
+  const privateDirs = [real(codexHome), real(path.join(home, '.codex')), real(path.join(home, '.ssh'))];
+  return resolved === path.parse(resolved).root || resolved === home || privateDirs.some(dir => resolved === dir || resolved.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep));
 }
 
 /** Reads the catalog Codex Desktop keeps: `local-projects` in `project-order`, then the rest. */
@@ -134,19 +134,20 @@ export async function applyCodexProjectImport({ roots, expectedRevision, codexHo
     if (!row) { results.push({ root: requested, outcome: 'failed', reason: 'This folder is not in the Codex project list.' }); continue; }
     if (row.status === 'registered') { results.push({ root: row.root, name: row.name, outcome: 'skipped', reason: 'Already registered; nothing was changed.' }); continue; }
     if (row.status !== 'ready' && row.status !== 'needs-init') { results.push({ root: row.root, name: row.name, outcome: 'failed', reason: row.reason || 'This folder cannot be imported.' }); continue; }
+    let initialized = false;
     try {
       // Re-check just before writing: the folder may have changed since the preview.
       const now = folderState(row.root, codexHome);
       if (registeredMatch(row.root, listContextHubProjects({ readOnly: true }))) throw fault('codex_import_changed', 'This folder is already a registered location. Preview the import again.');
       if (now.status !== row.status) throw fault('codex_import_changed', 'The folder changed while importing. Preview the import again.');
-      if (row.status === 'needs-init') init(row.root, { title: row.name });
+      if (row.status === 'needs-init') { init(row.root, { title: row.name }); initialized = true; }
       const registered = registerContextHubProject(row.root, { title: row.name });
       const warning = contextHubRegistrationWarning(registered);
-      if (registered.identityUnconfirmed === true) { results.push({ root: row.root, name: row.name, outcome: 'failed', reason: warning }); continue; }
+      if (registered.identityUnconfirmed === true) { results.push({ root: row.root, name: row.name, outcome: 'failed', reason: initialized ? `The folder was initialized; its entry needs confirmation. ${warning}`.trim() : warning }); continue; }
       if (record) appendContextRoomEvent('project.location-registered', { projectId: registered.logicalProjectId, locationId: registered.id,
         sharedRepository: registered.shared?.repository || '', resource: { root: registered.root, branch: registered.worktree?.branch || '' } });
       results.push({ root: row.root, name: row.name, outcome: 'imported', projectId: registered.id, initialized: row.status === 'needs-init', ...(warning ? { warning } : {}) });
-    } catch (error) { results.push({ root: row.root, name: row.name, outcome: 'failed', reason: String(error?.message || 'The import failed.').slice(0, 240) }); }
+    } catch (error) { results.push({ root: row.root, name: row.name, outcome: 'failed', reason: `${initialized ? 'The folder was initialized, but it is not registered. ' : ''}${String(error?.message || 'The import failed.')}`.slice(0, 240) }); }
   }
   return { results, imported: results.filter(item => item.outcome === 'imported').length };
 }

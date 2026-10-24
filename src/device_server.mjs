@@ -57,6 +57,7 @@ export function createConnectedDeviceService({ stateRoot, resolveProject, now = 
   // Bonjour announcement through the macOS responder. The TXT record holds the public
   // certificate fingerprint only: the tablet still authenticates with its pinned key.
   function announce(host, port) {
+    stopAnnouncing();
     if (!discoveryEnabled || isLoopbackHost(host)) { discoveryState = 'off'; return; }
     if (platform !== 'darwin') { discoveryState = 'unsupported'; return; }
     try {
