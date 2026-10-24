@@ -102,11 +102,15 @@ function writeJson(filePath, value) {
 // never see the truncated state of an in-place write.
 function writeProjectConfigJson(filePath, value) {
   let mode = 0o600;
-  try { mode = fs.statSync(filePath).mode & 0o7777; } catch (error) { if (error.code !== "ENOENT") throw error; }
+  try { mode = fs.statSync(filePath).mode & 0o777; } catch (error) { if (error.code !== "ENOENT") throw error; }
   const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    fs.writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n", { encoding: "utf8", mode });
-    fs.chmodSync(temporary, mode);
+    const descriptor = fs.openSync(temporary, "wx", mode);
+    try {
+      fs.writeFileSync(descriptor, JSON.stringify(value, null, 2) + "\n", "utf8");
+      fs.fchmodSync(descriptor, mode);
+      fs.fsyncSync(descriptor);
+    } finally { fs.closeSync(descriptor); }
     fs.renameSync(temporary, filePath);
   } finally {
     try { fs.unlinkSync(temporary); } catch (error) { if (error.code !== "ENOENT") throw error; }
