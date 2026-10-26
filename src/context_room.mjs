@@ -20017,6 +20017,10 @@ export function createMemoryServer({
           source: "shared-project-sync",
         });
       }
+    }).catch((error) => {
+      // Never throws: nothing handles this promise, and an unhandled rejection
+      // stops the Hub. A failed hand-off only loses one refresh notification.
+      console.warn(`Context Hub project sync follow-up failed: ${String(error?.message || error).slice(0, 500)}`);
     });
     return entry;
   };

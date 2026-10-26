@@ -1281,6 +1281,98 @@ test("Context Hub project opening returns a truthful pending state while Shared 
   }
 });
 
+test("Context Hub a synchronous throw while following a completed project sync never becomes an unhandled rejection", async (t) => {
+  const base = makeRoot();
+  const remote = path.join(base, "remote.git");
+  const seed = path.join(base, "seed");
+  const project = path.join(base, "project");
+  const hostRoot = path.join(base, "host");
+  const previousHome = process.env.HOME;
+  const previousSharedHome = process.env.CONTEXT_ROOM_SHARED_HOME;
+  process.env.HOME = path.join(base, "home");
+  process.env.CONTEXT_ROOM_SHARED_HOME = path.join(process.env.HOME, ".context-room", "shared");
+  fs.mkdirSync(process.env.HOME, { recursive: true });
+  fs.mkdirSync(project, { recursive: true });
+  fs.mkdirSync(hostRoot, { recursive: true });
+
+  const unhandled = [];
+  const onUnhandled = (reason) => { unhandled.push(reason); };
+  process.on("unhandledRejection", onUnhandled);
+  t.after(() => process.off("unhandledRejection", onUnhandled));
+  t.mock.method(console, "warn", () => {});
+  let server = null;
+  let finishSync = null;
+  try {
+    execFileSync("git", ["init", "--bare", "--initial-branch=main", remote], { cwd: base, stdio: "ignore" });
+    execFileSync("git", ["clone", remote, seed], { cwd: base, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "context-room@example.test"], { cwd: seed, stdio: "ignore" });
+    execFileSync("git", ["config", "user.name", "Context Room Test"], { cwd: seed, stdio: "ignore" });
+    initializeSharedRepository(seed, { name: "Pending project sync" });
+    fs.writeFileSync(path.join(seed, "projects.json"), JSON.stringify({ version: 1, projects: [{ id: "demo", title: "Demo" }] }, null, 2) + "\n");
+    fs.mkdirSync(path.join(seed, "projects", "demo", "docs"), { recursive: true });
+    fs.writeFileSync(path.join(seed, "projects", "demo", "docs", "README.md"), "# Demo\n");
+    execFileSync("git", ["add", "."], { cwd: seed, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "Initialize shared"], { cwd: seed, stdio: "ignore" });
+    execFileSync("git", ["push", "origin", "main"], { cwd: seed, stdio: "ignore" });
+
+    initializeContextRoomProject(project, { title: "Demo", allowedPaths: [], watchAllow: [] });
+    initializeContextRoomProject(hostRoot, { title: "Host", allowedPaths: [], watchAllow: [] });
+    connectSharedContext(project, { repository: remote, projectId: "demo", sync: false });
+    const registered = registerContextHubProject(project, {
+      title: "Demo",
+      shared: { repository: remote, projectId: "demo" },
+    });
+    const projectSync = new Promise((resolve) => { finishSync = resolve; });
+    let snapshotRefreshes = 0;
+    ({ server } = createMemoryServer({
+      root: hostRoot,
+      contextHubProjectSync: () => projectSync,
+      contextHubAcceptRefreshTimeoutMs: 25,
+      contextHubSnapshotRefresh: async () => {
+        snapshotRefreshes += 1;
+        return { freshness: { generatedAt: new Date().toISOString() } };
+      },
+    }));
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+    const startedAt = Date.now();
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/context-hub/project`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId: registered.id }),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 201, JSON.stringify(payload));
+    assert.equal(payload.sharedStatus.refreshing, true);
+
+    // The completion handler runs inside a .then: a synchronous throw there
+    // (here from the state cache, armed once) must not escape unhandled.
+    let armed = true;
+    const originalDelete = Map.prototype.delete;
+    t.mock.method(Map.prototype, "delete", function (key) {
+      if (armed && key === path.resolve(hostRoot)) {
+        armed = false;
+        throw new Error("state cache failed");
+      }
+      return originalDelete.call(this, key);
+    });
+    finishSync({ online: true, revision: "a".repeat(40), fetchError: "" });
+    finishSync = null;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(armed, false, "the completion handler should have reached the state cache");
+    assert.deepEqual(unhandled.map((reason) => String(reason?.message || reason)), []);
+  } finally {
+    if (finishSync) finishSync({ online: false, revision: "", fetchError: "test cleanup" });
+    if (server?.listening) await new Promise((resolve) => server.close(resolve));
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousSharedHome === undefined) delete process.env.CONTEXT_ROOM_SHARED_HOME;
+    else process.env.CONTEXT_ROOM_SHARED_HOME = previousSharedHome;
+  }
+});
+
+
 test("Context Hub local project opening does not wait for the follow-up catalogue rebuild", async () => {
   const base = makeRoot();
   const project = path.join(base, "project");
