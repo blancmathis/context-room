@@ -5665,6 +5665,10 @@ export function deleteMemoryPaths(root, relPaths = [], {
 
 function readFileDiffSnapshot(root, relPath, headRevision = "HEAD", { readOnly = false } = {}) {
   const normalized = normalizeRelPath(relPath);
+  if (!resolveExternalPath(normalized) && !isAllowedMemoryPath(normalized, effectiveMemoryWebappSettings(root, { readOnly })) && isProjectReadableMemoryPath(normalized, root)) {
+    // Readable but not reviewed: opening it is a normal read, so it has no diff rather than an error.
+    return { path: normalized, changed: false, additions: 0, deletions: 0, patch: "", available: false, reason: "This file is outside the reviewed paths, so it has no diff." };
+  }
   if (resolveExternalPath(normalized) || !gitTopLevelRoot(root)) {
     const review = readReviewBaseFile(root, normalized, { readOnly });
     const changed = review.available && review.changeKind !== "unchanged";
@@ -6832,7 +6836,7 @@ function revertMemoryFileLocked(root, relPath, options = null) {
     : assertExpectedFileRevision(root, normalized, options?.expectedRevision);
   const expectedRevision = initial.revision;
   if (isCronJobVirtualPath(normalized) || isCronJobMarkdownPath(normalized)) {
-    if (!isAllowedMemoryPath(normalized, settings)) throw new Error(`Path not allowed in context room: ${relPath}`);
+    if (!isAllowedMemoryPath(normalized, settings)) throw sharedRequestError(`Path not allowed in context room: ${relPath}`, 403, "file_path_not_allowed", { path: normalized });
     const review = readReviewBaseFile(root, normalized);
     if (!review.available || review.changeKind === "unchanged") {
       return { path: normalized, reverted: false, deleted: false, reason: "No Context Room baseline change for this file." };
@@ -6848,7 +6852,7 @@ function revertMemoryFileLocked(root, relPath, options = null) {
     return { ...written, path: normalized, reverted: true, deleted: false, expectedRevision };
   }
   if (resolveExternalPath(normalized)) {
-    if (!isAllowedMemoryPath(normalized, settings)) throw new Error(`Path not allowed in context room: ${relPath}`);
+    if (!isAllowedMemoryPath(normalized, settings)) throw sharedRequestError(`Path not allowed in context room: ${relPath}`, 403, "file_path_not_allowed", { path: normalized });
     const review = readReviewBaseFile(root, normalized);
     const abs = resolveMemoryPath(root, normalized);
     if (!review.available || review.changeKind === "unchanged") return { path: normalized, reverted: false, deleted: false, reason: "No Context Room baseline change for this file." };
@@ -6894,7 +6898,7 @@ function revertMemoryFileLocked(root, relPath, options = null) {
       throw error;
     }
   }
-  if (!isAllowedMemoryPath(normalized, settings)) throw new Error(`Path not allowed in context room: ${relPath}`);
+  if (!isAllowedMemoryPath(normalized, settings)) throw sharedRequestError(`Path not allowed in context room: ${relPath}`, 403, "file_path_not_allowed", { path: normalized });
   const abs = resolveMemoryPath(root, normalized);
   const directBase = readReviewBaseFile(root, normalized);
   const directIndex = gitIndexStateForReviewPath(root, normalized);
@@ -6950,7 +6954,7 @@ function revertMemoryFileLocked(root, relPath, options = null) {
     let createdDirectories = [];
     try {
       const restorePath = oldPath || normalized;
-      if (oldPath && !isAllowedMemoryPath(oldPath, settings)) throw new Error(`Path not allowed in context room: ${oldPath}`);
+      if (oldPath && !isAllowedMemoryPath(oldPath, settings)) throw sharedRequestError(`Path not allowed in context room: ${oldPath}`, 403, "file_path_not_allowed", { path: oldPath });
       const restoreAbs = resolveMemoryPath(root, restorePath);
       const headRevision = claim.current.headRevision || initial.headRevision;
       if (!headRevision || gitHeadAt(root) !== headRevision) throw revertRevisionConflict(normalized, expectedRevision, claim.current);

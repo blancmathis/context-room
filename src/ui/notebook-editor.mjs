@@ -6,6 +6,7 @@ import { NotebookCanvas } from './notebook-canvas.mjs';
 import { NotebookViewLink } from './notebook-views.mjs';
 import { prepareVoiceAudio } from './assistant.mjs';
 import { notebookViewportPreview } from './assistant-observation.mjs';
+import { safeFileBase } from './file-names.mjs';
 
 export function notebookElement(tag, text = '', className = '') { const node = document.createElement(tag); node.textContent = text; if (className) node.className = className; return node; }
 /** A touch screen (BOOX, phones) opens its keyboard on any focused text field: leave the field alone there. */
@@ -14,7 +15,6 @@ export function showNotebookDialog(dialog, field, fallback) {
   dialog.showModal(); field.focus();
 }
 export function notebookStyles() { if (document.getElementById('context-room-notebook-style')) return; const link = document.createElement('link'); link.id = 'context-room-notebook-style'; link.rel = 'stylesheet'; link.href = '/assets/ui/notebook.css'; document.head.append(link); }
-import { safeFileBase } from './file-names.mjs';
 import { notebookDownload } from './notebook-download.mjs';
 import { pairingShareNodes } from './pairing-share.mjs';
 export { notebookDownload } from './notebook-download.mjs';
