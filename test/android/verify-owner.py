@@ -69,7 +69,7 @@ try:
     def exported_names():
         entries = run(adb + ['shell', 'ls', '-1', '/sdcard/Download'], capture_output=True, text=True).stdout.splitlines()
         # Android may append its collision suffix after an unknown extension.
-        pattern = r'retained-lisiere-history(?: \(\d+\))?\.json(?: \(\d+\))?' if args.history else r'Owner(?: \(\d+\))?\.crnb(?: \(\d+\))?'
+        pattern = r'retained-lisiere-history(?: \(\d+\))?\.json(?: \(\d+\))?' if args.history else r'Owner notebook(?: \(\d+\))?\.crnb(?: \(\d+\))?'
         if args.recording:
             pattern = re.escape(state['recording']['name'][:-4]) + r'(?: \(\d+\))?\.pcm(?: \(\d+\))?'
         return {name for name in entries if re.fullmatch(pattern, name)}
