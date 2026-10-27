@@ -76,6 +76,7 @@ dependencies {
     implementation 'com.onyx.android.sdk:onyxsdk-pen:1.5.4'
     implementation 'androidx.webkit:webkit:1.16.0'
     implementation platform('org.jetbrains.kotlin:kotlin-bom:1.8.22')
+    testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test:runner:1.6.2'
     androidTestImplementation 'androidx.test:rules:1.6.1'
     androidTestImplementation 'androidx.test.ext:junit:1.2.1'
