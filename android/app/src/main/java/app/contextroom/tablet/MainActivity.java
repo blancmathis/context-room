@@ -49,6 +49,8 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   long lastAgentRefresh;
   Button shareViewButton, followViewButton, presentationButton;
   Button ownerPairingButton;
+  final OwnerErrorBanner errorBanner = new OwnerErrorBanner();
+  final OwnerWake.Tracker wake = new OwnerWake.Tracker();
   TextView viewStatus;
   View drawingTools;
   boolean presentation;
@@ -95,7 +97,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     if (views != null) views.setMode("independent");
     setPresentation(false);
     screen.removeAllViews(); title = label(heading, 24); title.setTypeface(Typeface.DEFAULT, Typeface.BOLD); screen.addView(title);
-    ownerPairingButton = null;
+    ownerPairingButton = null; errorBanner.reset();
     status = label(detail, 15); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); screen.addView(status);
   }
   void setStatus(String text) { if (status != null && !text.contentEquals(status.getText())) status.setText(text); }
@@ -124,14 +126,15 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     if (dead || (!showingOwner && !showingConversation)) return;
     if (status != null) status.setVisibility(View.VISIBLE);
     showError(message);
-    if (showingOwner && ownerPairingButton == null) {
+    if (errorBanner.error(showingOwner, showingConversation)) {
       ownerPairingButton = button("Connexions", this::pairingScreen);
       screen.addView(ownerPairingButton, new LinearLayout.LayoutParams(-1, -2));
     }
   }
   @Override public void ownerRecovered() {
-    if (dead || !showingOwner || status == null) return;
+    if (dead || status == null || !errorBanner.recovered(showingOwner, showingConversation)) return;
     status.setVisibility(View.GONE);
+    if (ownerPairingButton != null) { screen.removeView(ownerPairingButton); ownerPairingButton = null; errorBanner.clearPairingButton(); }
   }
   @Override public void ownerConnectionAction(String action) {
     if (action.equals("connection.settings")) pairingScreen();
@@ -197,7 +200,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   @Override public void requestOwnerMicrophone(android.webkit.ValueCallback<Boolean> callback) {
     if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) { callback.onReceiveValue(true); return; }
     if (microphonePermissionCallback != null) { callback.onReceiveValue(false); return; }
-    microphonePermissionCallback = callback; requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, 73);
+    microphonePermissionCallback = callback; wake.appStartedActivity(SystemClock.elapsedRealtime()); requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, 73);
   }
   void finishMicrophonePermission() {
     if (!resumed || microphonePermissionResult == null || microphonePermissionCallback == null) return;
@@ -579,8 +582,9 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     disk.execute(() -> { try (OutputStream stream = getContentResolver().openOutputStream(uri, "w")) { if (stream == null) throw new IOException("Le fichier ne peut pas être ouvert."); stream.write(bytes); runOnUiThread(() -> setStatus("Récupération exportée. Les gestes restent dans Context Room.")); }
       catch (Exception error) { runOnUiThread(() -> showError(error.getMessage())); } });
   }
-  @Override protected void onPause() { resumed = false; discovery.foreground(false); if (ownerWorkspace != null) ownerWorkspace.foreground(false); views.setMode("independent"); navigation.foreground(false); if (ink != null) { ink.finishReachedInk(); ink.suspendBoox(true); viewport(); } super.onPause(); }
-  @Override protected void onResume() { super.onResume(); resumed = true; if (ownerWorkspace != null) ownerWorkspace.foreground(showingOwner || showingConversation); finishMicrophonePermission(); discovery.foreground(true); navigation.foreground(!(showingOwner || showingConversation)); if (ink != null) ink.suspendBoox(false); if (engineReady && currentScope != null) engine.call("refresh"); }
+  @Override public void startActivityForResult(Intent intent, int request, Bundle options) { wake.appStartedActivity(SystemClock.elapsedRealtime()); super.startActivityForResult(intent, request, options); }
+  @Override protected void onPause() { resumed = false; wake.paused(SystemClock.elapsedRealtime()); discovery.foreground(false); if (ownerWorkspace != null) ownerWorkspace.foreground(false); views.setMode("independent"); navigation.foreground(false); if (ink != null) { ink.finishReachedInk(); ink.suspendBoox(true); viewport(); } super.onPause(); }
+  @Override protected void onResume() { super.onResume(); resumed = true; if (ownerWorkspace != null) ownerWorkspace.foreground(showingOwner || showingConversation); if (wake.resumed() && ownerWorkspace != null && (showingOwner || showingConversation)) ownerWorkspace.dropTextFocus(); finishMicrophonePermission(); discovery.foreground(true); navigation.foreground(!(showingOwner || showingConversation)); if (ink != null) ink.suspendBoox(false); if (engineReady && currentScope != null) engine.call("refresh"); }
   @Override public void onBackPressed() { interaction(); if (showingConversation) { closeNativeConversation(); return; } if (presentation) { setPresentation(false); return; } if (showingOwner) { ownerWorkspace.web.evaluateJavascript(OwnerBack.CLOSE_TOP_DIALOG, result -> { if (dead) return; switch (OwnerBack.afterDialog(result, ownerWorkspace.web.canGoBack())) { case CONSUMED: return; case HISTORY: ownerWorkspace.web.goBack(); return; default: backOutsideOwner(); } }); return; } backOutsideOwner(); }
   private void backOutsideOwner() { if (connection != null && ink != null) whenJournalIdle(() -> { engine.call("close"); connectionHome(); }); else super.onBackPressed(); }
   @Override protected void onDestroy() { if (ink != null) ink.finishReachedInk(); dead = true; if (ownerFileCallback != null) { ownerFileCallback.onReceiveValue(null); ownerFileCallback = null; } if (ownerExportCallback != null) { ownerExportCallback.onReceiveValue(false); ownerExportCallback = null; ownerExportBytes = null; } if (ownerWorkspace != null) ownerWorkspace.close(); navigation.close(); engine.close(); discovery.close(); disk.shutdown(); super.onDestroy(); }

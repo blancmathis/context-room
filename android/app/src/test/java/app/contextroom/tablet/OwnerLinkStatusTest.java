@@ -17,4 +17,19 @@ public final class OwnerLinkStatusTest {
     status.failed(); status.succeeded(); status.failed();
     assertTrue(status.succeeded());
   }
+
+  @Test public void anOlderRequestThatSucceedsLateKeepsTheNewerError() {
+    OwnerLinkStatus status = new OwnerLinkStatus();
+    long older = status.begin(), newer = status.begin();
+    status.failed(newer);
+    assertFalse("the older success must not hide the newer error", status.succeeded(older));
+    assertTrue("a request started after the error clears it", status.succeeded(status.begin()));
+  }
+
+  @Test public void aNewerSuccessClearsAnOlderError() {
+    OwnerLinkStatus status = new OwnerLinkStatus();
+    long older = status.begin(), newer = status.begin();
+    status.failed(older);
+    assertTrue(status.succeeded(newer));
+  }
 }

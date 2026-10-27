@@ -162,14 +162,15 @@ final class OwnerWorkspace {
           host.openNotebook(value); return;
         }
         if (!Arrays.asList("request", "events", "navigation").contains(action)) throw new IOException("Opération native indisponible.");
+        final long ticket = linkStatus.begin();
         try {
           network.execute(() -> {
             JSONObject answer;
             try {
               if (closed) throw new IOException("L’interface propriétaire est fermée.");
               answer = InkView.json("id", id, "result", webRequest(action, value));
-              if (linkStatus.succeeded()) main.post(host::ownerRecovered);
-            } catch (Exception error) { linkStatus.failed(); answer = InkView.json("id", id, "error", safeError(error)); }
+              if (linkStatus.succeeded(ticket)) main.post(host::ownerRecovered);
+            } catch (Exception error) { linkStatus.failed(ticket); answer = InkView.json("id", id, "error", safeError(error)); }
             final String response = answer.toString();
             main.post(() -> { if (!closed && generation == requestedGeneration) reply.postMessage(response); });
           });
@@ -274,8 +275,10 @@ final class OwnerWorkspace {
     audio.foreground(enabled);
     if (closed) return;
     web.evaluateJavascript("window.dispatchEvent(new CustomEvent('context-room-native-active',{detail:" + enabled + "}))", null);
-    if (enabled) { web.onResume(); web.evaluateJavascript(OwnerWake.DROP_TEXT_FOCUS, null); } else web.onPause();
+    if (enabled) web.onResume(); else web.onPause();
   }
+  /** After a real wake only: the WebView hands focus back to a text field and the keyboard would open. */
+  void dropTextFocus() { if (!closed) web.evaluateJavascript(OwnerWake.DROP_TEXT_FOCUS, null); }
   void conversation(JSONObject target) {
     pendingConversation = target; final long started = SystemClock.elapsedRealtime();
     Runnable open = new Runnable() { public void run() {
