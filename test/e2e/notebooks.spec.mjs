@@ -420,6 +420,21 @@ test('@smoke @notebook rapid handwriting survives slow local storage with separa
   } finally { await f.close(); }
 });
 
+test('@notebook a stroke backlog reaches the Mac in batches, not one request per operation', async ({ page }) => {
+  const f = await fixture(page);
+  try {
+    const dialog = await open(page), resourceId = await dialog.getAttribute('data-resource-id');
+    const writes = [];
+    page.on('request', request => { const path = new URL(request.url()).pathname; if (request.method() === 'POST' && /^\/api\/notebooks\/(?:mutate|batch)$/.test(path)) writes.push(path); });
+    await draw(page, { start: [40, 30], end: [95, 60] });
+    await expect(dialog).toHaveAttribute('data-save-state', 'confirmed');
+    expect(readNotebook(f.root, resourceId).document.objects).toHaveLength(1);
+    // A lone queued operation still uses mutate; a backlog must not wait one round trip per operation.
+    expect(writes).toContain('/api/notebooks/batch');
+    expect(f.errors).toEqual([]);
+  } finally { await f.close(); }
+});
+
 test('@smoke @a11y @notebook object controls retain keyboard focus through independent scene updates', async ({ page }) => {
   const f = await fixture(page);
   try {
