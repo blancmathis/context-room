@@ -375,6 +375,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .global-project-row:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 1px; }
     .global-project-row-main { min-width: 0; display: grid; gap: 4px; }
     .global-project-row-title { min-width: 0; display: flex; align-items: center; gap: 6px; }
+    .global-project-row-title > :not(strong) { flex: none; }
     .global-project-row-title strong { min-width: 0; overflow: hidden; font-size: 12px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
     .global-project-row-location { min-width: 0; overflow: hidden; color: var(--muted); font: 9px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
     .global-project-row-side { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; justify-items: start; gap: 8px; color: var(--muted); font-size: 9px; white-space: nowrap; }
@@ -382,7 +383,9 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .global-project-row-action { justify-self: end; color: var(--accent-fg); font-weight: 780; }
     .context-hub-projects-panel header kbd { margin-left: 4px; font-size: 10px; color: var(--muted); }
     .context-hub-home-projects { list-style: none; margin: 0; padding: 6px; display: grid; gap: 2px; max-height: 360px; overflow-y: auto; }
-    .context-hub-home-project { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 8px 10px; border: 1px solid transparent; border-radius: 10px; }
+    .context-hub-home-project { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px 10px; border: 1px solid transparent; border-radius: 10px; }
+    .context-hub-home-project > .context-hub-home-project-main { flex: 1 1 220px; }
+    .context-hub-home-project > .context-hub-home-project-destinations { margin-left: auto; }
     .context-hub-home-project:hover { background: var(--surface-card-hover); }
     .context-hub-home-project[aria-current="true"] { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); box-shadow: inset 3px 0 0 var(--accent); }
     .context-hub-home-project-main { min-width: 0; display: grid; gap: 3px; }
@@ -415,7 +418,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .docs-map-link code { min-width: 0; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
     .docs-map-summary, .docs-map-note { margin: 0; padding: 0 10px; color: var(--muted); font-size: 12px; line-height: 1.45; }
     .docs-map-note { padding: 4px 10px 8px; }
-    @media (max-width: 639px) { .context-hub-home-project { grid-template-columns: minmax(0, 1fr); } .context-hub-home-project-attention { justify-self: start; } }
+    @media (max-width: 639px) { .context-hub-home-project > .context-hub-home-project-main { flex-basis: 100%; } .context-hub-home-project > .context-hub-home-project-destinations { margin-left: 0; } }
     .global-project-folder-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     .explorer-document-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; margin: 0 0 8px; padding: 2px; border-radius: 7px; background: var(--surface-card); }
     .explorer-document-tab { min-height: 28px; padding: 4px 8px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; font-size: 10px; font-weight: 650; }
@@ -7247,6 +7250,15 @@ function contextHubLocalCoverage(projects = state.contextHub?.projects || []) {
   return { inspected: local.filter(contextHubLocalReviewsConfirmed).length, total: local.length };
 }
 
+// Names the local projects behind an "inspected" shortfall, e.g. " (be-productive)".
+function contextHubUninspectedLocalNames() {
+  const names = (state.contextHub?.projects || [])
+    .filter((project) => project.mode !== "shared" && !contextHubLocalReviewsConfirmed(project))
+    .map((project) => project.title || project.id);
+  if (!names.length) return "";
+  return " (" + names.slice(0, 3).join(", ") + (names.length > 3 ? " and " + (names.length - 3) + " more" : "") + ")";
+}
+
 function contextHubProjectAttentionKind(project) {
   if (contextHubProjectSharedRecovery(project)) return "blocked";
   if (Number(project?.localReviewCount || 0) + Number(project?.sharedProposalCount || 0) > 0) return "work";
@@ -8881,7 +8893,7 @@ function renderContextRoomGlobalReviewQueue() {
   const unconfirmedReviewCopy = !sharedReviewCoverageConfirmed
     ? "Some Shared repositories could not be checked. The proposals shown below may be incomplete. Restore connectivity and refresh."
     : !localReviewCoverageConfirmed
-      ? "Some local locations could not be inspected. File counts are unknown. Restore access and refresh."
+      ? "Some local locations could not be inspected" + escapeHtml(contextHubUninspectedLocalNames()) + ". File counts are unknown. Restore access and refresh."
     : "Review coverage is not current. The items shown below may be incomplete. Refresh before relying on this queue.";
   const locationsToConfirmMarkup = IS_GLOBAL_CONTEXT_ROOM && !IS_HOSTED_CONTEXT_ROOM ? renderContextHubLocationsToConfirm() : "";
   const unconfirmedReviewMarkup = locationsToConfirmMarkup && sharedReviewCoverageConfirmed
