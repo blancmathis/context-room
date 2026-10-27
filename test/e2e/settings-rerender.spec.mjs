@@ -132,3 +132,27 @@ test("@smoke Settings save a global preference while no project is selected", as
   expect((await saved).status()).toBe(200);
   await expect.poll(() => page.evaluate(() => state.settings?.appearance?.fileTheme)).toBe(nextTheme);
 });
+
+test("@smoke Settings never save empty project fields when the project form is not rendered", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "chromium-mobile", "The desktop Settings form is the same on every engine; mobile opens it through the drawer.");
+  const data = fixture();
+  await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=hub`);
+  await waitForBoot(page);
+  await page.locator("#settingsButton").click();
+  await expect(page.locator("#settingsPage")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => Boolean(selectedGlobalProjectSettingsContext().payload?.settings))).toBe(true);
+  await page.locator('[data-settings-section-target="preferences"]').click();
+  await page.locator("#settings-group-appearance-explorer").evaluate((details) => { details.open = true; });
+  const theme = page.locator("#fileTheme");
+  const nextTheme = await theme.evaluate((select) => [...select.options].find((option) => option.value !== select.value)?.value || "");
+  await theme.selectOption(nextTheme);
+  await expect(page.locator("#watchAllow")).toHaveCount(1);
+  await page.locator("#watchAllow").evaluate((field) => field.remove());
+
+  const projectWrites = [];
+  page.on("request", (request) => { if (request.method() === "POST" && request.url().includes("/api/context-hub/project-settings")) projectWrites.push(request.postData()); });
+  const saved = page.waitForResponse((response) => response.url().endsWith("/api/context-hub/preferences") && response.request().method() === "POST", { timeout: 20_000 });
+  await page.locator("#saveSettings").click();
+  expect((await saved).status()).toBe(200);
+  expect(projectWrites).toEqual([]);
+});

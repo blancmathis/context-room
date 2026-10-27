@@ -53,7 +53,7 @@ import {
   CONFIG_FILE,
   DEFAULT_CODEX_REFERENCE_SHORTCUT,
   REVIEW_GATE_FILE,
-  GLOBAL_PREFERENCES_FILE,
+  globalPreferencesDisplayPath,
   DEFAULT_MARKDOWN_TEMPLATES,
   CONCEPT_VISUAL_DOCUMENT_PATTERNS,
   DATA_VISUAL_DOCUMENT_PATTERNS,
@@ -3112,7 +3112,18 @@ test("appearance, sound, and shortcut preferences are shared across Context Room
   initializeContextRoomProject(firstRoot, { allowedPaths: ["docs/"] });
   initializeContextRoomProject(secondRoot, { allowedPaths: ["docs/"] });
 
-  assert.equal(GLOBAL_PREFERENCES_FILE, "~/.context-room/preferences.json");
+  {
+    const previous = process.env.CONTEXT_ROOM_HUB_HOME;
+    try {
+      delete process.env.CONTEXT_ROOM_HUB_HOME;
+      assert.equal(globalPreferencesDisplayPath(), "~/.context-room/preferences.json");
+      const hubHome = makeRoot();
+      process.env.CONTEXT_ROOM_HUB_HOME = hubHome;
+      assert.equal(globalPreferencesDisplayPath(), path.join(path.resolve(hubHome), "preferences.json"));
+    } finally {
+      if (previous === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME; else process.env.CONTEXT_ROOM_HUB_HOME = previous;
+    }
+  }
   assert.equal(readGlobalContextRoomPreferences(preferencesPath).appearance.colorMode, "system");
   assert.equal(readGlobalContextRoomPreferences(preferencesPath).appearance.autoOpenGitDiff, true);
   assert.equal(readGlobalContextRoomPreferences(preferencesPath).appearance.showHiddenFiles, true);

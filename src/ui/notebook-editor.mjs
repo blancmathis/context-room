@@ -77,7 +77,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   const statusRow = notebookElement('footer', '', 'notebook-state'), status = notebookElement('p'), zoomLabel = notebookElement('p', '100%'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); statusRow.append(status, zoomLabel);
   const errorBox = notebookElement('p', '', 'notebook-error'); errorBox.setAttribute('role', 'alert'); const conflicts = notebookElement('div', '', 'notebook-conflicts');
   dialog.append(header, notice, tools, actions, workspace, conflicts, errorBox, statusRow); document.body.append(dialog); dialog.showModal();
-  let view, client, surface, viewLink, closed = false, syncing = false, saving = 0, timer, objectsTimer, textForm = null, lastConflictKey = '', authBlocked = false;
+  let view, client, surface, viewLink, closed = false, closing = false, syncing = false, saving = 0, timer, objectsTimer, textForm = null, lastConflictKey = '', authBlocked = false;
   const failedLocalWork = [], cleanup = new AbortController();
   document.addEventListener('context-room-assistant-progress', event => {
     if (event.detail?.scopeKey !== scopeKey || event.detail.resourceId !== resourceId || reviewKey) return;
@@ -414,9 +414,13 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     status.textContent = 'Frozen revision submitted to the existing review queue. No file has been accepted.'; await onSubmitted(receipt); await client.refresh();
   }
   async function close() {
-    if (closed) return; await surface.settle().catch(fail);
-    if ((failedLocalWork.length || surface.failedStroke) && !confirm('Some samples could not be saved. Export recovery before closing. Close without those unsaved samples?')) return;
-    await viewLink.close(); if (presentation) await setPresentation(false);
+    if (closed || closing) return; closing = true; let proceed = false;
+    try {
+      await surface.settle().catch(fail);
+      if ((failedLocalWork.length || surface.failedStroke) && !confirm('Some samples could not be saved. Export recovery before closing. Close without those unsaved samples?')) return;
+      await viewLink.close(); if (presentation) await setPresentation(false);
+      proceed = true;
+    } finally { if (!proceed) closing = false; }
     closed = true; clearInterval(timer); clearTimeout(objectsTimer); cleanup.abort(); client.close(); surface.dispose(); dialog.close(); dialog.remove(); document.dispatchEvent(new CustomEvent('context-room-notebook-closed', { detail: { dialog } })); await onClosed();
     // Keep the connection alive until in-flight durable operations settle; cache contents are never deleted.
     await client.serial; await Promise.resolve(client.flushing).catch(() => {}); await storage.close();

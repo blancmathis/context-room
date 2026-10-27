@@ -11,8 +11,12 @@ public final class OwnerBackTest {
     assertFalse(OwnerBack.closedDialog(null));
   }
 
-  @Test public void theScriptLetsTheDialogHandleCancelFirst() {
-    assertTrue(OwnerBack.CLOSE_TOP_DIALOG.contains("dialog[open]"));
-    assertTrue(OwnerBack.CLOSE_TOP_DIALOG.contains("new Event('cancel',{cancelable:true})"));
+  @Test public void aPageAnswerDecidesWhatBackDoes() {
+    assertEquals(OwnerBack.Action.CONSUMED, OwnerBack.afterDialog("true", true));
+    assertEquals(OwnerBack.Action.CONSUMED, OwnerBack.afterDialog("true", false));
+    assertEquals(OwnerBack.Action.HISTORY, OwnerBack.afterDialog("false", true));
+    assertEquals(OwnerBack.Action.OUTSIDE, OwnerBack.afterDialog("false", false));
+    assertEquals(OwnerBack.Action.HISTORY, OwnerBack.afterDialog("null", true));
+    assertEquals(OwnerBack.Action.OUTSIDE, OwnerBack.afterDialog(null, false));
   }
 }

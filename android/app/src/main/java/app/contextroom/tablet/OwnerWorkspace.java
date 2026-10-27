@@ -17,6 +17,7 @@ final class OwnerWorkspace {
   interface Host {
     void openNotebook(JSONObject target);
     void ownerError(String message);
+    default void ownerRecovered() {}
     void chooseOwnerFiles(ValueCallback<Uri[]> callback, String[] types, boolean multiple);
     void saveOwnerFile(byte[] bytes, String filename, String type, ValueCallback<Boolean> callback);
     void requestOwnerMicrophone(ValueCallback<Boolean> callback);
@@ -27,6 +28,7 @@ final class OwnerWorkspace {
   final WebView web;
   final DeviceConnection connection;
   final Host host;
+  final OwnerLinkStatus linkStatus = new OwnerLinkStatus();
   final NativeAudio audio;
   final PackagedWeb packagedWeb;
   final String origin;
@@ -166,12 +168,13 @@ final class OwnerWorkspace {
             try {
               if (closed) throw new IOException("L’interface propriétaire est fermée.");
               answer = InkView.json("id", id, "result", webRequest(action, value));
-            } catch (Exception error) { answer = InkView.json("id", id, "error", safeError(error)); }
+              if (linkStatus.succeeded()) main.post(host::ownerRecovered);
+            } catch (Exception error) { linkStatus.failed(); answer = InkView.json("id", id, "error", safeError(error)); }
             final String response = answer.toString();
             main.post(() -> { if (!closed && generation == requestedGeneration) reply.postMessage(response); });
           });
         } catch (RejectedExecutionException error) { reply.postMessage(InkView.json("id", id, "error", "La connexion est occupée. Réessayez après la fin de l’opération.").toString()); }
-      } catch (Exception error) { if (errorReplyId != null) reply.postMessage(InkView.json("id", errorReplyId, "error", safeError(error)).toString()); host.ownerError(safeError(error)); }
+      } catch (Exception error) { if (errorReplyId != null) reply.postMessage(InkView.json("id", errorReplyId, "error", safeError(error)).toString()); linkStatus.failed(); host.ownerError(safeError(error)); }
     });
     web.setWebViewClient(new WebViewClient() {
       @Override public void onPageStarted(WebView source, String url, android.graphics.Bitmap favicon) { generation++; audio.stop(); }
@@ -206,7 +209,7 @@ final class OwnerWorkspace {
           if (request.isForMainFrame() && path.equals("/")) {
             try { return packagedWeb.page(!connection.isOwner(), origin); } catch (Exception unavailable) { /* Preserve the original cache and report a broken package. */ }
           }
-          if (request.isForMainFrame()) main.post(() -> host.ownerError(safeError(error)));
+          if (request.isForMainFrame()) { linkStatus.failed(); main.post(() -> host.ownerError(safeError(error))); }
           return new WebResourceResponse("text/plain", "UTF-8", 503, "Unavailable", Collections.emptyMap(), new ByteArrayInputStream("Mac indisponible. Revenez à la connexion pour réessayer ; les carnets locaux sont conservés.".getBytes(StandardCharsets.UTF_8)));
         }
       }
@@ -271,7 +274,7 @@ final class OwnerWorkspace {
     audio.foreground(enabled);
     if (closed) return;
     web.evaluateJavascript("window.dispatchEvent(new CustomEvent('context-room-native-active',{detail:" + enabled + "}))", null);
-    if (enabled) web.onResume(); else web.onPause();
+    if (enabled) { web.onResume(); web.evaluateJavascript(OwnerWake.DROP_TEXT_FOCUS, null); } else web.onPause();
   }
   void conversation(JSONObject target) {
     pendingConversation = target; final long started = SystemClock.elapsedRealtime();

@@ -129,6 +129,10 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
       screen.addView(ownerPairingButton, new LinearLayout.LayoutParams(-1, -2));
     }
   }
+  @Override public void ownerRecovered() {
+    if (dead || !showingOwner || status == null) return;
+    status.setVisibility(View.GONE);
+  }
   @Override public void ownerConnectionAction(String action) {
     if (action.equals("connection.settings")) pairingScreen();
     else if (action.equals("connection.recovery")) {
@@ -577,7 +581,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   }
   @Override protected void onPause() { resumed = false; discovery.foreground(false); if (ownerWorkspace != null) ownerWorkspace.foreground(false); views.setMode("independent"); navigation.foreground(false); if (ink != null) { ink.finishReachedInk(); ink.suspendBoox(true); viewport(); } super.onPause(); }
   @Override protected void onResume() { super.onResume(); resumed = true; if (ownerWorkspace != null) ownerWorkspace.foreground(showingOwner || showingConversation); finishMicrophonePermission(); discovery.foreground(true); navigation.foreground(!(showingOwner || showingConversation)); if (ink != null) ink.suspendBoox(false); if (engineReady && currentScope != null) engine.call("refresh"); }
-  @Override public void onBackPressed() { interaction(); if (showingConversation) { closeNativeConversation(); return; } if (presentation) { setPresentation(false); return; } if (showingOwner) { ownerWorkspace.web.evaluateJavascript(OwnerBack.CLOSE_TOP_DIALOG, result -> { if (dead || OwnerBack.closedDialog(result)) return; if (ownerWorkspace.web.canGoBack()) ownerWorkspace.web.goBack(); else backOutsideOwner(); }); return; } backOutsideOwner(); }
+  @Override public void onBackPressed() { interaction(); if (showingConversation) { closeNativeConversation(); return; } if (presentation) { setPresentation(false); return; } if (showingOwner) { ownerWorkspace.web.evaluateJavascript(OwnerBack.CLOSE_TOP_DIALOG, result -> { if (dead) return; switch (OwnerBack.afterDialog(result, ownerWorkspace.web.canGoBack())) { case CONSUMED: return; case HISTORY: ownerWorkspace.web.goBack(); return; default: backOutsideOwner(); } }); return; } backOutsideOwner(); }
   private void backOutsideOwner() { if (connection != null && ink != null) whenJournalIdle(() -> { engine.call("close"); connectionHome(); }); else super.onBackPressed(); }
   @Override protected void onDestroy() { if (ink != null) ink.finishReachedInk(); dead = true; if (ownerFileCallback != null) { ownerFileCallback.onReceiveValue(null); ownerFileCallback = null; } if (ownerExportCallback != null) { ownerExportCallback.onReceiveValue(false); ownerExportCallback = null; ownerExportBytes = null; } if (ownerWorkspace != null) ownerWorkspace.close(); navigation.close(); engine.close(); discovery.close(); disk.shutdown(); super.onDestroy(); }
 }
