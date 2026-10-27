@@ -68,6 +68,7 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
   dialog.append(header, nav, blocksPanel, versions, status, footer);
   document.body.append(dialog);
   let objectUrls = [];
+  let viewers = [];
   let activePath = "";
   let editor = null;
   let initialText = "";
@@ -80,7 +81,7 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
   let correctionListener = null;
   let files = [...item.files];
   const isDirty = () => Boolean(editor && editor.value !== initialText || drawing?.dirty || importedDrawing || notebookCorrection);
-  const cleanupUrls = () => { objectUrls.forEach((url) => URL.revokeObjectURL(url)); objectUrls = []; };
+  const cleanupUrls = () => { objectUrls.forEach((url) => URL.revokeObjectURL(url)); objectUrls = []; viewers.forEach((viewer) => viewer?.destroy?.()); viewers = []; };
   dialog.addEventListener("close", () => { requestId++; cleanupUrls(); dialog.remove(); }, { once: true });
   const mayClose = () => {
     if (busy || isDirty()) { status.textContent = "Save and accept your correction, or undo it before closing."; return false; }
@@ -178,7 +179,20 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
           } catch (error) { status.textContent = error.message; }
         });
       }
-    } else if (bytes.includes(0) || ["pdf", "doc", "docx", "xlsx", "pptx", "zip"].includes(extension)) {
+    } else if (extension === "pdf") {
+      // The reader that opens a PDF elsewhere also shows it here; without it, say what the file is.
+      const host = element("div", "", "local-proposal-pdf");
+      host.style.cssText = "min-height:60dvh;display:grid";
+      section.append(host);
+      let binary = "";
+      for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+      const asset = { dataUrl: "data:application/pdf;base64," + btoa(binary), mimeType: "application/pdf", bytes: bytes.length, contentHash: `${label}:${file.revision || ""}:${file.path}` };
+      const memory = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+      import("/assets/ui/document-viewer.mjs").then(({ mountDocumentViewer }) => {
+        if (!section.isConnected) return;
+        viewers.push(mountDocumentViewer(host, { asset, path: file.path, projectId: item.projectId || "", storage: memory }));
+      }).catch(() => { host.replaceChildren(element("p", `${bytes.length.toLocaleString()} bytes. The PDF reader is unavailable here.`)); });
+    } else if (bytes.includes(0) || ["doc", "docx", "xlsx", "pptx", "zip"].includes(extension)) {
       section.append(element("p", `${bytes.length.toLocaleString()} bytes. Integrated preview is not available for this format yet.`));
     } else if (editable) {
       editor = element("textarea");

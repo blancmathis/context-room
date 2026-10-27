@@ -375,7 +375,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .global-project-row:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 1px; }
     .global-project-row-main { min-width: 0; display: grid; gap: 4px; }
     .global-project-row-title { min-width: 0; display: flex; align-items: center; gap: 6px; }
-    .global-project-row-title > :not(strong) { flex: none; }
+    .context-hub-home-project .global-project-row-title > :not(strong) { flex: none; }
     .global-project-row-title strong { min-width: 0; overflow: hidden; font-size: 12px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
     .global-project-row-location { min-width: 0; overflow: hidden; color: var(--muted); font: 9px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
     .global-project-row-side { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; justify-items: start; gap: 8px; color: var(--muted); font-size: 9px; white-space: nowrap; }
@@ -1846,6 +1846,8 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .review-flow-busy { color: var(--muted); font-size: 12px; }
     .review-history-panel { margin: 8px 0; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; }
     .review-history-panel[hidden] { display: none; }
+    #reviewQueuePanel > [data-review-cleanup] { margin: 8px var(--space-4) 0; }
+    #reviewQueuePanel > .review-flow-panel, #reviewQueuePanel > .review-history-panel { margin-inline: var(--space-4); }
     .review-history-panel summary { cursor: pointer; min-height: 32px; display: flex; align-items: center; font-weight: 600; }
     .review-history-hint { margin: 4px 0 8px; color: var(--muted); font-size: 12px; }
     .review-history-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
@@ -2903,6 +2905,8 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .global-project-inspection-disclosure-body { padding-inline: 0; }
     .global-project-inspection-empty { display: grid; gap: 4px; }
     .global-project-inspection-empty strong { color: var(--text); }
+    .global-project-inspection-note { display: grid; gap: 4px; margin-bottom: 10px; padding: 9px 11px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .global-project-inspection-note strong { color: var(--text); }
     @media (min-width: 1280px) {
       .global-context-room .docqa-grid { grid-template-columns: minmax(0,1fr) 340px; align-items: start; }
       .global-context-room #reviewQueuePanel { grid-column: 1; min-width: 0; }
@@ -4003,7 +4007,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 		${shouldReplaceDuplicatedWorkspaceIdentity.toString()}
 		${contextRoomProjectResponseAction.toString()}
 		const INITIAL_CONTEXT_ROOM_URL = window.location.href;
-		const state = { root: null, projectId: null, projectReloading: false, files: [], directories: [], startupContextFiles: [], startupSkillFolders: [], startupHookFiles: [], startupHooksHelpOpen: false, startupHookFilter: "all", hubDisclosuresOpen: new Set(), activeStartupSkillExplorer: null, activeStartupContextExplorer: null, startupSkillCreateFolder: null, startupContextContextTarget: null, selectedStartupContext: null, docqa: null, doctor: null, backgroundReportRenderKey: "", contextHealthStatusFilter: "open", contextHealthSeverityFilter: "triggered", contextHealthCategoryFilter: "all", contextHealthRefreshing: false, contextHealthCodexSending: false, settings: null, settingsOpen: false, settingsSection: "review-trust", settingsDisclosureState: {}, settingsBaselineByGroup: new Map(), settingsDirtyGroups: new Set(), settingsSearchQuery: "", settingsSearchIndex: -1, settingsSearchDismissWired: false, page: "hub", pendingMarkdown: null, availableHubCards: [], hubFolders: [], hubSections: [], rootHubSections: [], activeHubCardId: null, selectedReview: null, deletionBatchExpanded: false, deletionBatchLoading: false, deletionBatchItems: [], deletionBatchKey: "", deletionBatchReportedCount: 0, deletionBatchError: "", selectedDeletionReviews: new Set(), reviewModePath: null, reviewModeStatus: null, reviewSessions: {}, reviewFinalizationPromise: null, selected: null, selectedReadOnly: false, selectedDiff: null, fileLoadError: null, fileConflict: null, externalChange: null, conflictCompare: false, conflictMergeText: null, conflictMergeKey: "", conflictMergeMode: "auto", diffCollapsed: false, saved: "", savedHash: null, dirty: false, mode: "view", homeView: "root", planetStack: ["root"], filePanel: false, history: [], historyIndex: -1, pathFilters: [], explorerWatchFilter: "all", explorerRenderKey: "", explorerSearchFrame: 0, explorerWidth: 272, explorerStoredCollapsed: null, explorerNavigationOverride: null, inspectorWidth: 320, inspectorOpen: false, documentInspection: null, documentInspectionPath: "", documentInspectionLoading: false, focusMode: false, selectedForDelete: new Set(), selectionRequest: 0, openingFilePath: null, fileContentReadyPath: null, sessionStateTimer: null, agentCommandTimer: null, lastAgentCommandId: "", pendingAgentCommand: null, agentAnnotations: {}, userActiveAt: 0, userScrollIntentAt: 0, refreshInFlight: false, reportsRefreshInFlight: false, backgroundRefreshTimer: null, backgroundRefreshTimerKind: "", backgroundRefreshPendingOptions: null, filePrefetches: new Map(), prefetchTimer: null, prefetchPath: "", lastDiffRefreshAt: 0, lastReportRefreshAt: 0, lastFullRefreshAt: 0, navigationRestoreAttempted: false, bootStartedAt: Date.now(), bootMilestones: {}, markdownHighlightFrame: 0, markdownHighlightText: "", markdownHighlightLastText: "", docLinkModifierActive: false, workspaceId: "", workspaceClientInstanceId: "", workspaceChannel: null, workspaceHeartbeatTimer: null, runtimeEventSource: null, runtimeEventCursor: 0, runtimeEventsConnected: false, runtimeFallbackTimer: null, workspaceIdentityReady: false, workspaceSyncedUrl: "", expanded: new Set(["data", "automations", "integrations", "skills", "tools", "~", "~/.hermes", "~/.hermes/memories", "~/.hermes/skills"]) };
+		const state = { root: null, projectId: null, projectReloading: false, files: [], directories: [], startupContextFiles: [], startupSkillFolders: [], startupHookFiles: [], startupHooksHelpOpen: false, startupHookFilter: "all", hubDisclosuresOpen: new Set(), activeStartupSkillExplorer: null, activeStartupContextExplorer: null, startupSkillCreateFolder: null, startupContextContextTarget: null, selectedStartupContext: null, docqa: null, doctor: null, backgroundReportRenderKey: "", contextHealthStatusFilter: "open", contextHealthSeverityFilter: "triggered", contextHealthCategoryFilter: "all", contextHealthRefreshing: false, contextHealthCodexSending: false, settings: null, settingsOpen: false, settingsSection: "project", settingsDisclosureState: {}, settingsBaselineByGroup: new Map(), settingsDirtyGroups: new Set(), settingsSearchQuery: "", settingsSearchIndex: -1, settingsSearchDismissWired: false, page: "hub", pendingMarkdown: null, availableHubCards: [], hubFolders: [], hubSections: [], rootHubSections: [], activeHubCardId: null, selectedReview: null, deletionBatchExpanded: false, deletionBatchLoading: false, deletionBatchItems: [], deletionBatchKey: "", deletionBatchReportedCount: 0, deletionBatchError: "", selectedDeletionReviews: new Set(), reviewModePath: null, reviewModeStatus: null, reviewSessions: {}, reviewFinalizationPromise: null, selected: null, selectedReadOnly: false, selectedDiff: null, fileLoadError: null, fileConflict: null, externalChange: null, conflictCompare: false, conflictMergeText: null, conflictMergeKey: "", conflictMergeMode: "auto", diffCollapsed: false, saved: "", savedHash: null, dirty: false, mode: "view", homeView: "root", planetStack: ["root"], filePanel: false, history: [], historyIndex: -1, pathFilters: [], explorerWatchFilter: "all", explorerRenderKey: "", explorerSearchFrame: 0, explorerWidth: 272, explorerStoredCollapsed: null, explorerNavigationOverride: null, inspectorWidth: 320, inspectorOpen: false, documentInspection: null, documentInspectionPath: "", documentInspectionLoading: false, focusMode: false, selectedForDelete: new Set(), selectionRequest: 0, openingFilePath: null, fileContentReadyPath: null, sessionStateTimer: null, agentCommandTimer: null, lastAgentCommandId: "", pendingAgentCommand: null, agentAnnotations: {}, userActiveAt: 0, userScrollIntentAt: 0, refreshInFlight: false, reportsRefreshInFlight: false, backgroundRefreshTimer: null, backgroundRefreshTimerKind: "", backgroundRefreshPendingOptions: null, filePrefetches: new Map(), prefetchTimer: null, prefetchPath: "", lastDiffRefreshAt: 0, lastReportRefreshAt: 0, lastFullRefreshAt: 0, navigationRestoreAttempted: false, bootStartedAt: Date.now(), bootMilestones: {}, markdownHighlightFrame: 0, markdownHighlightText: "", markdownHighlightLastText: "", docLinkModifierActive: false, workspaceId: "", workspaceClientInstanceId: "", workspaceChannel: null, workspaceHeartbeatTimer: null, runtimeEventSource: null, runtimeEventCursor: 0, runtimeEventsConnected: false, runtimeFallbackTimer: null, workspaceIdentityReady: false, workspaceSyncedUrl: "", expanded: new Set(["data", "automations", "integrations", "skills", "tools", "~", "~/.hermes", "~/.hermes/memories", "~/.hermes/skills"]) };
 		Object.assign(state, {
 		  graph: null,
 		  graphLoading: false,
@@ -7651,6 +7655,8 @@ function finishReviewFlow({ stopped = false } = {}) {
   if (state.page !== "hub") goHub();
   renderReviewFlowPanel();
   setStatus(stopped ? "review stopped" : "review finished");
+  // The queue kept the count from before the flow: fetch the real one, then redraw the summary.
+  refreshContextHubReviewQueueAfterUndo().then(renderReviewFlowPanel).catch(() => {});
 }
 
 function closeReviewFlow() {
@@ -7737,8 +7743,8 @@ function renderReviewFlowPanel() {
   const count = state.contextHubReviewQueueReady ? reviewFlowCandidates().length : 0;
   panel.innerHTML = count > 1
     ? '<button type="button" class="primary" data-review-flow-panel="start">Review one after another · ' + count + ' files</button>'
-    : "";
-  panel.hidden = count <= 1;
+    : count === 1 ? '<p>Review one after another starts from 2 files.</p>' : "";
+  panel.hidden = count < 1;
 }
 
 // Recent decisions: local review receipts across projects, with "Undo this acceptance".
@@ -7852,6 +7858,8 @@ async function openContextHubProjectDestination(projectKey, destination) {
   if (state.globalExplorerProjectKey !== projectKey) return;
   // On drawer viewports, opening a project shows the Explorer over the page; close it for page destinations.
   if (destination !== "documents" && !isExplorerDesktopViewport() && !isExplorerCollapsed()) setExplorerCollapsedFromUser(true);
+  // "Go to project" (⌘K) lands on the page the user is on, with the project selected: keep the drawer closed.
+  if (destination === "open" && !isExplorerDesktopViewport()) return;
   if (destination === "review") {
     state.sharedProposalProject = projectKey;
     state.contextHubSource = "all";
@@ -8131,7 +8139,7 @@ function selectContextHubProjectPickerChoice(projectKey = "") {
   const purpose = state.contextHubProjectPickerPurpose;
   closeContextHubProjectPicker({ restoreFocus: false });
   if (purpose === "open") {
-    if (projectKey) openContextHubProjectDestination(projectKey, "documents").catch((error) => setStatus(error.message));
+    if (projectKey) openContextHubProjectDestination(projectKey, "open").catch((error) => setStatus(error.message));
     return;
   }
   state.sharedProposalProject = projectKey;
@@ -9583,20 +9591,21 @@ async function openContextHubLocalReview(reviewTarget) {
 }
 
 function setContextHubProjectOpenedStatus(project, sharedStatus) {
+  const announce = (text) => setStatus(text + (project?.title ? " · " + project.title : ""));
   if (project.shared && sharedStatus?.refreshing) {
-    setStatus(sharedStatus.revision
+    announce(sharedStatus.revision
       ? "project selected · Shared sync continuing · cached @" + shortSharedHash(sharedStatus.revision)
       : "project selected · Shared sync continuing");
   } else if (project.shared && sharedStatus?.refreshError) {
-    setStatus(sharedStatus.revision
+    announce(sharedStatus.revision
       ? "project selected · Shared refresh failed · cached @" + shortSharedHash(sharedStatus.revision)
       : "project selected · Shared unavailable");
   } else if (project.shared && sharedStatus?.online === false) {
-    setStatus(sharedStatus.revision
+    announce(sharedStatus.revision
       ? "project selected · Shared offline · cached @" + shortSharedHash(sharedStatus.revision)
       : "project selected · Shared offline · cache unavailable");
   } else {
-    setStatus(project.shared ? "project selected · Shared snapshot synced" : "project selected");
+    announce(project.shared ? "project selected · Shared snapshot synced" : "project selected");
   }
 }
 
@@ -15659,7 +15668,11 @@ function renderGlobalInspectionHealth(data) {
 
 function renderGlobalInspectionStartup(data) {
   if (data.effectiveContext) {
-    return renderEffectiveContextBody(data.effectiveContext, { embedded: true });
+    const startupOff = selectedGlobalProjectSettingsContext().payload?.settings?.startupContext?.enabled === false;
+    const offNotice = startupOff
+      ? '<div class="global-project-inspection-note" role="note" data-startup-context-off><strong>Agent instructions are off for this project.</strong><span>AGENTS.md and CLAUDE.md are not listed or counted here. Turn them on in Settings › Agent environment › Agent instructions.</span></div>'
+      : "";
+    return offNotice + renderEffectiveContextBody(data.effectiveContext, { embedded: true });
   }
   if (data.effectiveContextError) {
     return '<div class="global-project-inspection-error">' + escapeHtml(data.effectiveContextError) + '</div>';
@@ -16745,7 +16758,7 @@ const SETTINGS_THEME_PREVIEW_DOC = "# Preview document\n\n> Scope: docs/\n\n## R
 
 function normalizeSettingsSectionId(value) {
   const normalized = SETTINGS_SECTION_ALIASES[value] || value;
-  return SETTINGS_SECTION_IDS.includes(normalized) ? normalized : "review-trust";
+  return SETTINGS_SECTION_IDS.includes(normalized) ? normalized : "project";
 }
 
 function settingsTabForPanel(panelId) {

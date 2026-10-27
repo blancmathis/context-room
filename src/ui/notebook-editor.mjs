@@ -17,6 +17,11 @@ const button = (label, callback, className = '') => { const node = notebookEleme
 async function metadata(storage, key, update) { for (let n = 0; n < 8; n++) { const state = await storage.read(key); try { await storage.commit(key, state.version, { metadata: update(state.metadata) }); return; } catch (error) { if (error.code !== 'notebook_cache_conflict') throw error; } } throw new Error('The local notebook cache is busy.'); }
 
 /** api and scopeKey must be captured from the exact project/location BEFORE navigation can change. */
+// Exports are named by the notebook's title; the path may be an identifier.
+function exportFileBase(title) {
+  return String(title || '').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '-').replace(/\s+/g, ' ').replace(/^[\s.-]+|[\s.-]+$/g, '').slice(0, 80);
+}
+
 export async function openNotebookEditor({ api, path, resourceId, title, scopeKey, fixedSnapshot = null, reviewKey = '', onCorrection, onSubmitted = () => {}, onClosed = () => {}, onInteraction = () => {}, onConversation, initialImage, initialImageBackground = false, createOnly = false, newId, beforePresent, offlineCapabilities = null, cacheServerId = '', browserDeviceId = document.querySelector('meta[name="context-room-browser-device"]')?.content || '' } = {}) {
   notebookStyles(); if (path) notebookPath(path);
   const storage = new IndexedNotebookStorage(), browserId = await notebookBrowserIdentity(storage);
@@ -371,7 +376,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     status.textContent = 'Recovery export requested. Keep the file before closing unsaved work.';
   }
   async function exportDrawing(format) {
-    await surface.settle(); const current = (await client.view()).document, base = path.split('/').pop().replace(/\.crnb$/i, '');
+    await surface.settle(); const current = (await client.view()).document, base = exportFileBase(current.title) || path.split('/').pop().replace(/\.crnb$/i, '');
     if (format === 'crnb') return notebookDownload(JSON.stringify(normalizeNotebookDocument(current)) + '\n', base + '.crnb', 'application/vnd.context-room.notebook+json');
     const svg = notebookSvg(current);
     if (format === 'svg') return notebookDownload(svg, base + '.svg', 'image/svg+xml');
