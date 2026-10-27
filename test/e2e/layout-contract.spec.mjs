@@ -1150,3 +1150,31 @@ test("@layout layout contract and responsive tiers are internally coherent", asy
   expect(LAYOUT_CONTRACT.breakpoints).toEqual({ mobileMax: 639, drawerMax: 980, desktopMin: 981, wideInspectorMin: 1280 });
   expect(LAYOUT_CONTRACT.spacing.allowed).toEqual([4, 8, 12, 16, 20, 24]);
 });
+
+test("@layout project rows keep their title and badges whole at 1024 and 1440", async ({ page }) => {
+  const data = fixture();
+  for (const width of [1024, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=hub`);
+    await waitForBoot(page);
+    const rows = page.locator("#contextHubHomeProjectList .context-hub-home-project");
+    await expect(rows.first()).toBeVisible();
+    const shotDir = process.env.CONTEXT_ROOM_SHOT_DIR;
+    if (shotDir) await page.screenshot({ path: `${shotDir}/projects-${width}.png` });
+    const broken = await rows.evaluateAll((items) => items.flatMap((row) => {
+      const rowBox = row.getBoundingClientRect();
+      const title = row.querySelector(".global-project-row-title strong");
+      const problems = [];
+      if (title.scrollWidth > title.clientWidth + 1) problems.push("title cut: " + title.textContent);
+      for (const badge of row.querySelectorAll(".global-project-row-title > :not(strong)")) {
+        const box = badge.getBoundingClientRect();
+        if (box.right > rowBox.right + 1 || badge.scrollWidth > badge.clientWidth + 1 || box.left < title.getBoundingClientRect().right - 1) problems.push("badge cut: " + badge.textContent);
+      }
+      for (const chip of row.querySelectorAll(".context-hub-home-project-attention")) {
+        if (chip.scrollWidth > chip.clientWidth + 1) problems.push("attention chip truncated: " + chip.textContent);
+      }
+      return problems;
+    }));
+    expect(broken, `width ${width}`).toEqual([]);
+  }
+});

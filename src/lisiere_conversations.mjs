@@ -28,7 +28,7 @@ function portable(value, depth = 0) {
 /** Original SQLite cells stay exact, including unknown event types and int64s.
  * The readable projection is separate from those immutable source records. */
 export function readLisiereConversation(snapshot, selector) {
-  check(typeof selector === 'string' && /^[a-f0-9]{64}$/.test(selector), 'Choose an exact conversation selector from the recovery inventory.');
+  check(typeof selector === 'string' && /^[a-f0-9]{64}$/.test(selector), '--legacy-conversation needs the 64-character selector listed by "migrate --inspect-lisiere <snapshot> --kind conversations", not a conversation id or title.');
   const archive = readLisiereSnapshot(snapshot);
   check(archive.manifest.kind === 'mac-workspace', 'Conversation recovery needs the canonical Mac snapshot.');
   const matches = [];
