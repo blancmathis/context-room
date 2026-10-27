@@ -7178,6 +7178,8 @@ export function readDocReviewState(root = process.cwd(), { readOnly = false } = 
     authorizeOwnerTrustedState(root, "review-state", state, { actor: "legacy-bootstrap" });
     authority = inspectOwnerTrustedState(root, "review-state", state);
   }
+  // A read-only reader of a never-written project (no file, no authority yet) claims nothing: it is empty, not tampered.
+  if (readOnly && !authority.configured && authority.integrity === "missing" && !fs.existsSync(statePath)) return { version: 2, reviews: {} };
   if (!authority.trusted) {
     return { version: 2, reviews: {}, authorityViolation: { kind: "review-state", ...authority } };
   }
@@ -7217,6 +7219,8 @@ export function readGlobalReviewLedger(root = process.cwd(), { readOnly = false 
     authorizeOwnerTrustedState(ledgerRoot, "review-ledger", ledger, { actor: "legacy-bootstrap" });
     authority = inspectOwnerTrustedState(ledgerRoot, "review-ledger", ledger);
   }
+  // A read-only reader of a never-written project (no file, no authority yet) claims nothing: it is empty, not tampered.
+  if (readOnly && !authority.configured && authority.integrity === "missing" && !fs.existsSync(ledgerPath)) return { version: 2, reviews: {} };
   if (!authority.trusted) {
     return { version: 2, reviews: {}, authorityViolation: { kind: "review-ledger", ...authority } };
   }
@@ -11761,8 +11765,10 @@ export function buildConfigDiagnostics(root = process.cwd(), settings = readMemo
     if (!covered) issues.push({ type: "read_only_not_allowed", severity: "high", message: `Read-only path is not covered by allowedPaths: ${relPath}.` });
     if (projectPathEscapes(relPath)) issues.push({ path: relPath, type: "read_only_path_symlink_escape", severity: "high", message: `Read-only path escapes the project through a symbolic link while projectOnly is enabled: ${relPath}.` });
   }
+  // Project AGENTS.md files are always allowed (withProjectAgentInstructionPaths), even when the saved config omits them.
+  const agentInstructionPaths = new Set(listProjectAgentInstructionPaths(root));
   for (const relPath of settings.watchAllow || []) {
-    const covered = (settings.allowedPaths || []).some((allowed) => pathMatchesSetting(relPath, allowed) || pathMatchesSetting(allowed, relPath));
+    const covered = agentInstructionPaths.has(relPath) || (settings.allowedPaths || []).some((allowed) => pathMatchesSetting(relPath, allowed) || pathMatchesSetting(allowed, relPath));
     if (!covered) issues.push({ type: "watch_not_allowed", severity: "high", message: `Watched path is not covered by allowedPaths: ${relPath}.` });
     if (projectPathEscapes(relPath)) issues.push({ path: relPath, type: "watch_path_symlink_escape", severity: "high", message: `Watched path escapes the project through a symbolic link while projectOnly is enabled: ${relPath}.` });
   }
@@ -14692,7 +14698,10 @@ function shellQuote(value) {
 }
 
 function resolveGlobalPreferencesPath(preferencesPath = null) {
-  return preferencesPath ? path.resolve(preferencesPath) : path.join(os.homedir(), ".context-room", "preferences.json");
+  if (preferencesPath) return path.resolve(preferencesPath);
+  // An isolated Hub (CONTEXT_ROOM_HUB_HOME) keeps its preferences with the rest of its state.
+  if (process.env.CONTEXT_ROOM_HUB_HOME) return path.join(path.resolve(process.env.CONTEXT_ROOM_HUB_HOME), "preferences.json");
+  return path.join(os.homedir(), ".context-room", "preferences.json");
 }
 
 export function hubCardsForSettings(settings = defaultMemoryWebappSettings()) {
@@ -17231,7 +17240,9 @@ function contextHubProjectSettingsResponse(project, { hooks = null, preferencesP
     expectedRootIdentity: project.rootIdentity,
     readOnly: true,
   });
-  const revision = hashContent(JSON.stringify(settings));
+  // Global preferences are saved by their own route, often in the same click: they stay out of the project revision.
+  const { appearance, shortcuts, sounds, explorer, ...projectOwnedSettings } = settings;
+  const revision = hashContent(JSON.stringify(projectOwnedSettings));
   return {
     project: {
       id: project.id,
@@ -23106,7 +23117,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       markContextHubSnapshotStale();
     }
     const payload = req.method === "POST" ? contextHubProjectSettingsResponse(project, { hooks, preferencesPath: globalPreferencesPath }) : currentPayload;
-    const etag = `"${payload.revision}"`;
+    const etag = `"${hashContent(JSON.stringify(payload.settings))}"`;
     if (req.method === "GET" && req.headers["if-none-match"] === etag) {
       sendNotModified(res, { etag, "server-timing": "settings;dur=0.1" });
       return;
