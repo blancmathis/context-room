@@ -31,7 +31,8 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     capabilities = offlineCapabilities || (await storage.read(capKey)).metadata.capabilities; offlineError = error;
     if (!capabilities) { await storage.close(); throw new Error('Load this exact location once while connected before using its notebook cache. ' + error.message); }
   }
-  const actor = capabilities.actor || { kind: 'human', id: browserId }, transport = notebookHttpTransport(request, actor);
+  // One request per 16 operations: a stroke otherwise waits a round trip per operation on a tablet link.
+  const actor = capabilities.actor || { kind: 'human', id: browserId }, transport = notebookHttpTransport(request, actor, { batch: Array.isArray(capabilities.operations) && capabilities.operations.includes('batch') });
   const accountId = reviewKey ? 'review:' + reviewKey : capabilities.accountId || 'local-owner';
   await adoptNotebookCacheAliases(storage, { capabilities, accountId, deviceId: browserId });
   const entries = await storage.list();

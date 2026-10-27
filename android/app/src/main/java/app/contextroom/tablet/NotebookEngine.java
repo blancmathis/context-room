@@ -61,7 +61,7 @@ final class NotebookEngine {
     web.setWebChromeClient(new WebChromeClient() {
       @Override public boolean onConsoleMessage(ConsoleMessage message) {
         boolean error = message.messageLevel() == ConsoleMessage.MessageLevel.ERROR;
-        if (error && !EngineConsole.engineFault(true, message.message(), message.sourceId())) android.util.Log.i("ContextRoom", "Ignored console error from " + message.sourceId() + ": " + message.message());
+        if (error && !EngineConsole.engineFault(true, message.message(), message.sourceId())) android.util.Log.i("ContextRoom", EngineConsole.ignored(message.sourceId()));
         else if (error) listener.event(InkView.json("type", "error", "message", "Le moteur local a rencontré une erreur. Vérifiez la version d’Android System WebView ; le journal des gestes est conservé."));
         return true;
       }

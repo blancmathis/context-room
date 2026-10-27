@@ -14,6 +14,23 @@ public final class EngineConsoleTest {
     assertFalse(EngineConsole.engineFault(true, BOOX_STYLE, "https://appassets.androidplatform.net/assets/engine.html"));
   }
 
+  @Test public void olderWebViewWordingOfTheBlockedStyleIsNotAnEngineFault() {
+    String older = "Refused to apply inline style because it violates the following Content Security Policy directive: \"default-src 'none'\". Either the 'unsafe-inline' keyword, a hash, or a nonce is required to enable inline execution.";
+    assertFalse(EngineConsole.engineFault(true, older, "https://appassets.androidplatform.net/assets/engine.html"));
+    assertFalse(EngineConsole.engineFault(true, older, ""));
+  }
+
+  @Test public void errorsWithoutSourceStayVisible() {
+    assertTrue(EngineConsole.engineFault(true, "Uncaught ReferenceError: ContextRoomNative is not defined", ""));
+    assertTrue(EngineConsole.engineFault(true, "Uncaught (in promise) undefined", null));
+  }
+
+  @Test public void logcatKeepsTheSourceSchemeNotTheMessage() {
+    assertEquals("Ignored console error from javascript:", EngineConsole.ignored("javascript:(function(){var s=document.createElement('style');})()"));
+    assertEquals("Ignored console error from https:", EngineConsole.ignored("https://example.test/a.js"));
+    assertEquals("Ignored console error (no source)", EngineConsole.ignored(""));
+  }
+
   @Test public void injectedScriptErrorsAreNotEngineFaults() {
     assertFalse(EngineConsole.engineFault(true, "Uncaught TypeError: x is undefined", "javascript:(function(){})()"));
   }
