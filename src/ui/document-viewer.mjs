@@ -142,7 +142,8 @@ export function mountDocumentViewer(host, { asset, path, projectId = '', storage
   let target = null; // <img> or <canvas>
   const wholeButton = button('Whole ' + noun, () => whole()), out = button('−', () => zoomBy(1 / 1.5), { aria: 'Zoom out' }), level = el('span', 'dv-level', '100 %'), zin = button('+', () => zoomBy(1.5), { aria: 'Zoom in' });
   level.setAttribute('aria-live', 'polite');
-  const annotateButton = button('Annotate', () => openAnnotate(), { className: 'dv-primary' }); annotateButton.disabled = true;
+  const annotateButton = button('Annotate', () => openAnnotate(), { className: 'dv-primary' }), canAnnotate = typeof annotate === 'function'; annotateButton.disabled = true;
+  if (!canAnnotate) annotateButton.title = 'Annotating is not available here.';
   toolbar.append(info, wholeButton, out, level, zin, annotateButton);
   root.append(toolbar, form, stage);
   let pageBar = null, pageInput = null, pageTotal = null, pagePrev = null, pageNext = null, pageMessage = null;
@@ -239,7 +240,7 @@ export function mountDocumentViewer(host, { asset, path, projectId = '', storage
     const natural = state.pdfPage.getViewport({ scale: 1 }); state.natural = { width: natural.width, height: natural.height };
     applyFrame(); await renderPdfPage();
     if (state.destroyed || state.page !== number) return;
-    annotateButton.disabled = false; applyFrame();
+    annotateButton.disabled = !canAnnotate; applyFrame();
   }
   function goTo(number) { if (!isPdf || number < 1 || number > state.pages || number === state.page) return; showPage(number).catch(showRenderError); }
   function commitPageInput() {
@@ -345,7 +346,7 @@ export function mountDocumentViewer(host, { asset, path, projectId = '', storage
         state.natural = { width: image.naturalWidth || 800, height: image.naturalHeight || 600 }; target = image; content.append(image);
         info.textContent += ' · ' + state.natural.width + ' × ' + state.natural.height;
         const saved = readViewport(storage, key()); state.mode = saved?.mode === 'manual' ? 'manual' : 'fit'; state.saved = saved?.mode === 'manual' ? saved : null;
-        applyFrame(); annotateButton.disabled = false;
+        applyFrame(); annotateButton.disabled = !canAnnotate;
       }
     } catch (error) {
       showError({ title: isPdf ? 'This PDF could not be displayed.' : 'Image preview unavailable', detail: isPdf ? 'The file may be damaged or not a PDF.' : 'The visual asset could not be decoded safely.' });

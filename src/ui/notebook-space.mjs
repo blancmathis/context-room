@@ -1,5 +1,6 @@
 import { IndexedNotebookStorage } from '../notebook_client.mjs';
-import { notebookElement, notebookStyles } from './notebook-editor.mjs';
+import { notebookElement, notebookStyles, showNotebookDialog } from './notebook-editor.mjs';
+import { safeFileBase } from './file-names.mjs';
 import { foldForSearch } from './text-tools.mjs';
 
 /** The Notebooks space keeps its notebooks under one folder; the folder name is not shown. */
@@ -13,10 +14,7 @@ export function newSpaceNotebook(date = new Date()) {
   return { id, path: NOTEBOOK_SPACE_FOLDER + id + '.crnb', title };
 }
 
-function fileNameFor(title) {
-  const name = String(title || '').normalize('NFC').replace(/[^\p{L}\p{N} ._-]+/gu, '-').replace(/\s+/g, ' ').replace(/^[ .-]+|[ .-]+$/g, '').slice(0, 80);
-  return (name || 'Notebook') + '.crnb';
-}
+function fileNameFor(title) { return safeFileBase(title, 'Notebook') + '.crnb'; }
 
 /** Local ink that the Mac has not confirmed must reach it before the notebook changes place. */
 async function assertNotebookMovable(resourceId) {
@@ -49,7 +47,7 @@ async function followMovedNotebookCache({ resourceId, fromServerId, toServerId, 
  * One notebook at a time: choose the place, check the preview, then Move.
  * `move(body)` posts to /api/context-hub/notebooks/move; `scopeKeyFor(id)` names the destination cache scope.
  */
-export async function openNotebookMoveDialog({ notebook, from, places, move, scopeKeyFor, onMoved = () => {} }) {
+export async function openNotebookMoveDialog({ notebook, from, places, move, scopeKeyFor, onMoved = () => {}, onOpen = null }) {
   await assertNotebookMovable(notebook.id);
   notebookStyles();
   const toSpace = places.length === 1 && places[0].space;
@@ -100,9 +98,16 @@ export async function openNotebookMoveDialog({ notebook, from, places, move, sco
     try {
       const moved = await move(body({ revision: preview.revision }));
       await followMovedNotebookCache({ resourceId: notebook.id, fromServerId: moved.from.serverId, toServerId: moved.to.serverId, toScopeKey: scopeKeyFor(target.id) });
-      dialog.close(); onMoved(moved, target);
+      onMoved(moved, target);
+      if (target.space || !onOpen) { dialog.close(); return; }
+      // The moved file is a working notebook: it is not in the document tree, so offer to open it.
+      summary.textContent = `Moved to ${target.title} › ${moved.to.path}.`;
+      for (const node of [search, list, label, previewButton, moveButton]) node.hidden = true;
+      const openIt = notebookElement('button', 'Open it'); openIt.type = 'button'; cancel.textContent = 'Done';
+      openIt.addEventListener('click', () => { dialog.close(); onOpen(moved, target); });
+      actions.replaceChildren(openIt, cancel); openIt.focus();
     } catch (error) { summary.textContent = error.message; previewButton.disabled = false; }
   });
-  dialog.showModal(); (toSpace ? previewButton : search).focus();
+  showNotebookDialog(dialog, toSpace ? previewButton : search, toSpace ? previewButton : cancel);
   return dialog;
 }

@@ -23,11 +23,16 @@ test('@smoke review flow walks pending files across projects and ends with a sum
   await page.keyboard.press('l');
   await expect(bar).toContainText(/^2 of \d+/, { timeout: 30_000 });
 
+  const requests = [];
+  page.on('request', request => requests.push(`${request.method()} ${new URL(request.url()).pathname}`));
   await bar.locator('[data-review-flow="stop"]').click();
   const panel = page.locator('#reviewFlowPanel');
   await expect(panel).toContainText('Review stopped', { timeout: 30_000 });
   await expect(panel).toContainText('0 accepted · 0 changes requested · 1 later');
   await expect(bar).toBeHidden();
+  // The end of a review reloads the queue only: no full Hub refresh (Git rescan, Shared sync).
+  await expect.poll(() => requests.includes('GET /api/context-hub/review-queue')).toBe(true);
+  expect(requests).not.toContain('POST /api/context-hub/refresh');
   await panel.locator('[data-review-flow-panel="close"]').click();
   await expect(start).toBeVisible();
 });
