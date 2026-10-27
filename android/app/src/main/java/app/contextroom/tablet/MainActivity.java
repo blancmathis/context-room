@@ -132,8 +132,11 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     }
   }
   @Override public void ownerRecovered() {
-    if (dead || status == null || !errorBanner.recovered(showingOwner, showingConversation)) return;
-    status.setVisibility(View.GONE);
+    if (dead || status == null) return;
+    OwnerErrorBanner.Recovery recovery = errorBanner.recovered(showingOwner, showingConversation);
+    if (recovery == OwnerErrorBanner.Recovery.NONE) return;
+    if (recovery == OwnerErrorBanner.Recovery.HIDE_STATUS) status.setVisibility(View.GONE);
+    else renderNotebookStatus();
     if (ownerPairingButton != null) { screen.removeView(ownerPairingButton); ownerPairingButton = null; errorBanner.clearPairingButton(); }
   }
   @Override public void ownerConnectionAction(String action) {
@@ -384,6 +387,15 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     }
   }
 
+  void renderNotebookStatus() {
+    if (lastScene == null) return;
+    int conflicts = lastScene.optInt("conflicts");
+    if (conflicts > 0) setStatus(conflicts + " conflit(s) · exportez la récupération avant de réconcilier les gestes.");
+    else if (pendingNative > 0) setStatus("Enregistrement sur la tablette…");
+    else if (lastScene.optBoolean("offline")) setStatus("Conservé sur la tablette · en attente du Mac");
+    else if (lastScene.optInt("pending") > 0) setStatus("Conservé sur la tablette · synchronisation en cours");
+    else setStatus("Synchronisé avec le Mac · brouillon du carnet");
+  }
   void renderScene() {
     if (ink == null || lastScene == null || currentScope == null || !InkView.sameJson(currentScope, lastScene.optJSONObject("scope")) || journalFailed) return;
     ink.merge(lastScene.optJSONArray("objects"), pendingObjects.keySet(), true);
@@ -407,12 +419,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
         } catch (Exception error) { ink.imageErrors.add(hash); }
       }
     }
-    int conflicts = lastScene.optInt("conflicts");
-    if (conflicts > 0) setStatus(conflicts + " conflit(s) · exportez la récupération avant de réconcilier les gestes.");
-    else if (pendingNative > 0) setStatus("Enregistrement sur la tablette…");
-    else if (lastScene.optBoolean("offline")) setStatus("Conservé sur la tablette · en attente du Mac");
-    else if (lastScene.optInt("pending") > 0) setStatus("Conservé sur la tablette · synchronisation en cours");
-    else setStatus("Synchronisé avec le Mac · brouillon du carnet");
+    renderNotebookStatus();
     undoButton.setEnabled(lastScene.optInt("undo") > 0 && !ink.drawing);
     redoButton.setEnabled(lastScene.optInt("redo") > 0 && !ink.drawing);
     if (conversationButton != null) {

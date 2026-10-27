@@ -7,7 +7,7 @@ public final class OwnerErrorBannerTest {
   @Test public void theErrorClearsInConversationModeToo() {
     OwnerErrorBanner banner = new OwnerErrorBanner();
     banner.error(false, true);
-    assertTrue(banner.recovered(false, true));
+    assertEquals("the notebook status line comes back, it is not hidden", OwnerErrorBanner.Recovery.RESTORE_NOTEBOOK_STATUS, banner.recovered(false, true));
   }
 
   @Test public void theConnectionsButtonIsAddedOnceInOwnerMode() {
@@ -25,13 +25,13 @@ public final class OwnerErrorBannerTest {
   @Test public void recoveryReportsTheButtonToRemoveAndAllowsANewOne() {
     OwnerErrorBanner banner = new OwnerErrorBanner();
     banner.error(true, false);
-    assertTrue(banner.recovered(true, false));
+    assertEquals(OwnerErrorBanner.Recovery.HIDE_STATUS, banner.recovered(true, false));
     assertTrue("the button is still to remove", banner.hasPairingButton());
     banner.clearPairingButton();
     assertTrue("a new error adds the button again", banner.error(true, false));
   }
 
   @Test public void nothingToClearWithoutAnError() {
-    assertFalse(new OwnerErrorBanner().recovered(true, false));
+    assertEquals(OwnerErrorBanner.Recovery.NONE, new OwnerErrorBanner().recovered(true, false));
   }
 }

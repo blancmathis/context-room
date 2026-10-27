@@ -10,10 +10,12 @@ final class OwnerErrorBanner {
     if (owner && !pairingButton) { pairingButton = true; return true; }
     return false;
   }
-  /** True when the link recovered and the error, with its "Connexions" button, must go. */
-  boolean recovered(boolean owner, boolean conversation) {
-    if (!showing || (!owner && !conversation)) return false;
-    showing = false; return true;
+  /** What the header status line does once the link recovered. */
+  enum Recovery { NONE, HIDE_STATUS, RESTORE_NOTEBOOK_STATUS }
+  /** In owner mode the status line only carries the error, so it hides; in conversation mode it is the notebook status line, so it shows the notebook state again. */
+  Recovery recovered(boolean owner, boolean conversation) {
+    if (!showing || (!owner && !conversation)) return Recovery.NONE;
+    showing = false; return owner ? Recovery.HIDE_STATUS : Recovery.RESTORE_NOTEBOOK_STATUS;
   }
   boolean hasPairingButton() { return pairingButton; }
   void clearPairingButton() { pairingButton = false; }
