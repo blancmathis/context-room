@@ -8,7 +8,13 @@ import { prepareVoiceAudio } from './assistant.mjs';
 import { notebookViewportPreview } from './assistant-observation.mjs';
 
 export function notebookElement(tag, text = '', className = '') { const node = document.createElement(tag); node.textContent = text; if (className) node.className = className; return node; }
+/** A touch screen (BOOX, phones) opens its keyboard on any focused text field: leave the field alone there. */
+export function showNotebookDialog(dialog, field, fallback) {
+  if (globalThis.matchMedia?.('(pointer: coarse)').matches) { fallback.autofocus = true; dialog.showModal(); fallback.focus(); return; }
+  dialog.showModal(); field.focus();
+}
 export function notebookStyles() { if (document.getElementById('context-room-notebook-style')) return; const link = document.createElement('link'); link.id = 'context-room-notebook-style'; link.rel = 'stylesheet'; link.href = '/assets/ui/notebook.css'; document.head.append(link); }
+import { safeFileBase } from './file-names.mjs';
 import { notebookDownload } from './notebook-download.mjs';
 import { pairingShareNodes } from './pairing-share.mjs';
 export { notebookDownload } from './notebook-download.mjs';
@@ -18,9 +24,7 @@ async function metadata(storage, key, update) { for (let n = 0; n < 8; n++) { co
 
 /** api and scopeKey must be captured from the exact project/location BEFORE navigation can change. */
 // Exports are named by the notebook's title; the path may be an identifier.
-function exportFileBase(title) {
-  return String(title || '').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '-').replace(/\s+/g, ' ').replace(/^[\s.-]+|[\s.-]+$/g, '').slice(0, 80);
-}
+function exportFileBase(title) { return safeFileBase(title); }
 
 export async function openNotebookEditor({ api, path, resourceId, title, scopeKey, fixedSnapshot = null, reviewKey = '', onCorrection, onSubmitted = () => {}, onClosed = () => {}, onInteraction = () => {}, onConversation, initialImage, initialImageBackground = false, createOnly = false, newId, beforePresent, offlineCapabilities = null, cacheServerId = '', browserDeviceId = document.querySelector('meta[name="context-room-browser-device"]')?.content || '' } = {}) {
   notebookStyles(); if (path) notebookPath(path);
@@ -452,7 +456,7 @@ export async function chooseNotebook({ api, directory = '', scopeKey, onMove, ..
   const form = document.createElement('form'), label = notebookElement('label', 'Notebook path'), input = document.createElement('input'); input.value = (directory ? directory.replace(/\/$/, '') + '/' : '') + 'Sketch.crnb'; input.required = true; input.setAttribute('aria-label', 'Notebook path'); label.append(input);
   const open = button('Create or open notebook'); open.type = 'submit'; const cancel = button('Cancel', () => dialog.close()); form.append(label, open, cancel);
   const status = notebookElement('p'); status.setAttribute('role', 'status'); const drafts = notebookElement('ul'); drafts.setAttribute('aria-label', 'Working notebooks in this folder');
-  dialog.append(heading, explanation, form, drafts, status); document.body.append(dialog); dialog.showModal(); input.focus();
+  dialog.append(heading, explanation, form, drafts, status); document.body.append(dialog); showNotebookDialog(dialog, input, cancel);
   dialog.addEventListener('close', () => dialog.remove(), { once: true });
   form.addEventListener('submit', event => { event.preventDefault(); open.disabled = true; openNotebookEditor({ api, path: input.value.trim(), scopeKey, ...options }).then(() => dialog.close()).catch(error => { status.textContent = error.message; open.disabled = false; }); });
   try {

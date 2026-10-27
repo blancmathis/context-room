@@ -698,6 +698,9 @@ test.describe('Notebooks space', () => {
       await expect(toProject.getByRole('status')).toContainText('Synthetic project › docs/Moved idea.crnb. Nothing is overwritten.');
       await page.screenshot({ path: testInfo.outputPath('notebook-move-preview.png') });
       await toProject.getByRole('button', { name: 'Move', exact: true }).click();
+      // The moved notebook is not in the document tree: the dialog offers to open it.
+      await expect(toProject.getByRole('status')).toContainText('Moved to Synthetic project › docs/Moved idea.crnb');
+      await toProject.getByRole('button', { name: 'Done', exact: true }).click();
       await expect(toProject).toHaveCount(0);
       await expect(panel.locator(`[data-notebook-id="${id}"]`)).toHaveCount(0);
       expect(listNotebooks(f.spaceRoot)).toEqual([]);
@@ -723,6 +726,40 @@ test.describe('Notebooks space', () => {
       await draw(page, { start: [110, 210], end: [250, 260] });
       await expect.poll(() => readNotebook(f.spaceRoot, id).document.objects.length).toBe(2);
       expect(readNotebook(f.spaceRoot, id).document.objects[0]).toEqual(ink[0]);
+      expect(f.errors).toEqual([]);
+    } finally { await f.close(); }
+  });
+
+  test('@notebook the moved notebook opens from the dialog, and a touch screen keeps the keyboard closed', async ({ page }) => {
+    await page.addInitScript(() => { const real = window.matchMedia.bind(window); window.matchMedia = query => query === '(pointer: coarse)' ? { matches: true, media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} } : real(query); });
+    const f = await hubFixture(page);
+    try {
+      const panel = page.locator('#notebookSpacePanel');
+      const { id } = await newNotebookWithInk(page, f);
+      await panel.locator(`[data-notebook-id="${id}"]`).getByRole('button', { name: /^Move to project · / }).click();
+      const toProject = page.getByRole('dialog', { name: 'Move to project', exact: true });
+      await expect(toProject).toBeVisible();
+      expect(await page.evaluate(() => document.activeElement?.tagName)).not.toBe('INPUT');
+      await toProject.getByRole('button', { name: 'Synthetic project', exact: true }).click();
+      await toProject.getByLabel('File in the destination').fill('docs/Moved, with comma.crnb');
+      await toProject.getByRole('button', { name: 'Preview', exact: true }).click();
+      await expect(toProject.getByRole('status')).toContainText('Nothing is overwritten.');
+      await toProject.getByRole('button', { name: 'Move', exact: true }).click();
+      await toProject.getByRole('button', { name: 'Open it', exact: true }).click();
+      const opened = page.locator('dialog.notebook-dialog[open]');
+      await expect(opened).toHaveAttribute('data-resource-id', id);
+      expect(f.errors).toEqual([]);
+    } finally { await f.close(); }
+  });
+
+  test('@notebook the notebook chooser leaves the keyboard closed on a touch screen', async ({ page }) => {
+    await page.addInitScript(() => { const real = window.matchMedia.bind(window); window.matchMedia = query => query === '(pointer: coarse)' ? { matches: true, media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} } : real(query); });
+    const f = await hubFixture(page);
+    try {
+      const projectId = await page.evaluate(() => state.contextHub.projects.find(project => project.title === 'Synthetic project').id);
+      await page.evaluate(projectId => openContextRoomNotebook(null, { directory: 'docs', projectId }), projectId);
+      await expect(page.getByRole('dialog', { name: 'Notebook in this folder', exact: true })).toBeVisible();
+      expect(await page.evaluate(() => document.activeElement?.tagName)).not.toBe('INPUT');
       expect(f.errors).toEqual([]);
     } finally { await f.close(); }
   });

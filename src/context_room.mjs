@@ -959,7 +959,8 @@ export function resolveMemoryPath(root, relPath, { readOnly = false, expectedRoo
   const normalized = normalizeRelPath(relPath);
   const settings = providedSettings || effectiveMemoryWebappSettings(root, { readOnly, expectedRootIdentity });
   if (!isAllowedMemoryPath(normalized, settings)) {
-    throw new Error(`Path not allowed in context room: ${relPath}`);
+    // A refusal, not an internal error: the reader shows this message instead of a generic failure.
+    throw sharedRequestError(`Path not allowed in context room: ${relPath}`, 403, "file_path_not_allowed", { path: normalized });
   }
   const external = resolveExternalPath(normalized);
   if (external) {

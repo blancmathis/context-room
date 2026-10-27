@@ -7400,6 +7400,7 @@ async function moveNotebookBetweenPlaces(notebook, from, places) {
       notebook, from, places, move: contextHubNotebookMove,
       scopeKeyFor: (id) => captureNotebookApi(id).scopeKey,
       onMoved: (moved, target) => { setStatus("Notebook moved to " + target.title + "."); reloadNotebookSpace(); resolve(moved); },
+      onOpen: (moved, target) => { void openContextRoomNotebook(moved.to.path, { projectId: target.id, resourceId: notebook.id }).catch((error) => setStatus(error.message)); },
     }).then((dialog) => dialog.addEventListener("close", () => resolve(null), { once: true }), reject);
   });
 }
@@ -7656,7 +7657,7 @@ function finishReviewFlow({ stopped = false } = {}) {
   renderReviewFlowPanel();
   setStatus(stopped ? "review stopped" : "review finished");
   // The queue kept the count from before the flow: fetch the real one, then redraw the summary.
-  refreshContextHubReviewQueueAfterUndo().then(renderReviewFlowPanel).catch(() => {});
+  reloadContextHubReviewQueueOnly().then(renderReviewFlowPanel).catch(() => {});
 }
 
 function closeReviewFlow() {
@@ -7839,6 +7840,26 @@ function confirmReviewUndo(receiptId) {
       await refreshContextHubReviewQueueAfterUndo();
     },
   });
+}
+
+// Only the queue and its counts: no Git rescan and no Shared sync, unlike the full Hub refresh.
+async function reloadContextHubReviewQueueOnly() {
+  try {
+    const ticket = beginContextHubSnapshotRequest();
+    const reviews = sanitizeHostedHubCatalog(await api("/api/context-hub/review-queue?limit=80"));
+    const current = state.contextHub || {};
+    const queue = {
+      ...current,
+      attention: reviews.attention || current.attention,
+      freshness: reviews.freshness || current.freshness,
+      workingDrafts: reviews.workingDrafts || current.workingDrafts || [],
+      proposals: (reviews.items || []).filter((item) => item.type === "shared"),
+      items: reviews.items || [],
+      reviewPage: { total: reviews.total || 0, nextCursor: reviews.nextCursor },
+    };
+    if (applyContextHubSnapshot(queue, ticket)) state.contextHubReviewQueueReady = true;
+  } catch {}
+  renderContextRoomGlobalReviewQueue();
 }
 
 async function refreshContextHubReviewQueueAfterUndo() {

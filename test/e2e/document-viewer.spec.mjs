@@ -237,3 +237,19 @@ test('@notebook Annotate never opens an existing notebook or file, even one the 
     await expect(page.locator('dialog.notebook-dialog[open]')).toHaveCount(0);
   } finally { await f.close(); }
 });
+
+test('Annotate stays disabled where the viewer has no notebook to open (review dialog)', async ({ page }) => {
+  const f = await fixture(page);
+  try {
+    await page.evaluate(async () => {
+      const { mountDocumentViewer } = await import('/assets/ui/document-viewer.mjs');
+      const canvas = document.createElement('canvas'); canvas.width = 40; canvas.height = 20; canvas.getContext('2d').fillRect(0, 0, 40, 20);
+      const host = document.createElement('div'); host.id = 'bare-viewer'; document.body.append(host);
+      mountDocumentViewer(host, { asset: { dataUrl: canvas.toDataURL('image/png'), mimeType: 'image/png', bytes: 100, contentHash: 'bare' }, path: 'docs/bare.png', projectId: '' });
+    });
+    const bare = page.locator('#bare-viewer');
+    await expect(bare.locator('canvas.dv-canvas, img.dv-image').first()).toBeVisible();
+    await expect(bare.getByRole('button', { name: 'Annotate' })).toBeDisabled();
+    expect(f.errors).toEqual([]);
+  } finally { await f.close(); }
+});
