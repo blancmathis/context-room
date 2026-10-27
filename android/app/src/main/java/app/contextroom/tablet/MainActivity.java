@@ -136,7 +136,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     OwnerErrorBanner.Recovery recovery = errorBanner.recovered(showingOwner, showingConversation);
     if (recovery == OwnerErrorBanner.Recovery.NONE) return;
     if (recovery == OwnerErrorBanner.Recovery.HIDE_STATUS) status.setVisibility(View.GONE);
-    else renderNotebookStatus();
+    else { renderNotebookStatus(); if (presentation) status.setVisibility(View.GONE); }
     if (ownerPairingButton != null) { screen.removeView(ownerPairingButton); ownerPairingButton = null; errorBanner.clearPairingButton(); }
   }
   @Override public void ownerConnectionAction(String action) {
