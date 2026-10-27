@@ -18667,7 +18667,7 @@ async function saveSettings() {
   try {
     if (IS_GLOBAL_CONTEXT_ROOM) {
       await saveGlobalContextRoomSettings({
-        projectSettings: { watchAllow, watchRules: activeSettings.watchRules || [], startupContext, startupSkills, startupHooks, markdownTemplates, hubCards, hubSections },
+        projectSettings: { watchAllow, watchRules: activeSettings?.watchRules || [], startupContext, startupSkills, startupHooks, markdownTemplates, hubCards, hubSections },
         reviewGate,
         appearance,
         shortcuts,
@@ -18955,7 +18955,7 @@ function showFolderWatchModeDialog(folderPaths, onApply) {
 }
 
 function linesFromTextarea(id) {
-  return el(id).value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return (el(id)?.value || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 }
 
 function formatAgentHookSourcesForTextarea(sources = [], fallbackPaths = []) {

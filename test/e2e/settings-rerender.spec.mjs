@@ -110,3 +110,25 @@ test("@layout Settings tabs stay connected across delayed project settings refre
   await expect(computerRoot).toHaveValue(draft);
   await expect.poll(() => page.evaluate(() => state.settingsDirtyGroups.has("appearance-explorer"))).toBe(true);
 });
+
+test("@smoke Settings save a global preference while no project is selected", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "chromium-mobile", "The desktop Settings form is the same on every engine; mobile opens it through the drawer.");
+  const data = fixture();
+  await page.goto(`${data.origin}/?hub=1&view=hub`);
+  await waitForBoot(page);
+  expect(await page.evaluate(() => selectedGlobalSettingsProject())).toBeNull();
+
+  await page.locator("#settingsButton").click();
+  await expect(page.locator("#settingsPage")).toBeVisible();
+  await page.locator('[data-settings-section-target="preferences"]').click();
+  await page.locator("#settings-group-appearance-explorer").evaluate((details) => { details.open = true; });
+  const theme = page.locator("#fileTheme");
+  const nextTheme = await theme.evaluate((select) => [...select.options].find((option) => option.value !== select.value)?.value || "");
+  expect(nextTheme).not.toBe("");
+  await theme.selectOption(nextTheme);
+
+  const saved = page.waitForResponse((response) => response.url().endsWith("/api/context-hub/preferences") && response.request().method() === "POST", { timeout: 20_000 });
+  await page.locator("#saveSettings").click();
+  expect((await saved).status()).toBe(200);
+  await expect.poll(() => page.evaluate(() => state.settings?.appearance?.fileTheme)).toBe(nextTheme);
+});

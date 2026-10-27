@@ -4163,6 +4163,103 @@ test("global Explorer context actions stay scoped to the selected local project"
   assert.equal(inspection.effectiveContext.cost.schemaVersion, "context-room.context-cost/1");
 });
 
+test("a preference saved in the same click does not make the project settings save stale", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-settings-same-click-"));
+  withHubHome(t, path.join(base, "hub"));
+  const hostRoot = makeProject(base, "Host project");
+  const targetRoot = makeProject(base, "Target project");
+  const target = registerContextHubProject(targetRoot);
+  registerContextHubProject(hostRoot);
+  const room = createMemoryServer({ root: hostRoot, globalPreferencesPath: path.join(base, "preferences.json") });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const headers = { "content-type": "application/json", "x-context-room-project": room.projectId, "x-context-room-owner-nonce": room.ownerMutationNonce };
+  const loaded = await (await fetch(origin + "/api/context-hub/project-settings?projectId=" + encodeURIComponent(target.id))).json();
+
+  const preferences = await fetch(origin + "/api/context-hub/preferences", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ settings: { appearance: { fileTheme: "dracula" }, explorer: { computerRoot: base } } }),
+  });
+  assert.equal(preferences.status, 200, await preferences.text());
+  const projectSave = await fetch(origin + "/api/context-hub/project-settings", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ projectId: target.id, expectedRevision: loaded.revision, settings: loaded.settings }),
+  });
+  const projectSaveText = await projectSave.text();
+  assert.equal(projectSave.status, 200, projectSaveText);
+  assert.equal(JSON.parse(projectSaveText).settings.appearance.fileTheme, "dracula");
+});
+
+test("turning on agent instructions in project settings keeps the project healthy", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-settings-instructions-"));
+  withHubHome(t, path.join(base, "hub"));
+  const hostRoot = makeProject(base, "Host project");
+  const targetRoot = makeProject(base, "Target project");
+  fs.writeFileSync(path.join(targetRoot, "AGENTS.md"), "# Agents\n\nRead docs first.\n", "utf8");
+  const target = registerContextHubProject(targetRoot);
+  registerContextHubProject(hostRoot);
+  const room = createMemoryServer({ root: hostRoot, globalPreferencesPath: path.join(base, "preferences.json") });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const loaded = await (await fetch(origin + "/api/context-hub/project-settings?projectId=" + encodeURIComponent(target.id))).json();
+  assert.ok(loaded.settings.watchAllow.includes("AGENTS.md"));
+
+  const save = await fetch(origin + "/api/context-hub/project-settings", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-project": room.projectId, "x-context-room-owner-nonce": room.ownerMutationNonce },
+    body: JSON.stringify({
+      projectId: target.id,
+      expectedRevision: loaded.revision,
+      // The Settings form sends these fields only (src/ui/app.mjs saveSettings), never allowedPaths.
+      settings: {
+        watchAllow: loaded.settings.watchAllow,
+        watchRules: loaded.settings.watchRules || [],
+        startupContext: { ...loaded.settings.startupContext, enabled: true },
+        startupSkills: loaded.settings.startupSkills,
+        startupHooks: loaded.settings.startupHooks,
+      },
+    }),
+  });
+  assert.equal(save.status, 200, await save.clone().text());
+  assert.ok(readMemoryWebappSettings(targetRoot).watchAllow.includes("AGENTS.md"));
+  const inspection = await (await fetch(origin + "/api/context-hub/project-inspection?projectId=" + encodeURIComponent(target.id))).json();
+  assert.deepEqual(inspection.doctor.issues.filter((issue) => /allowedPaths/.test(issue.message)), []);
+  const { buildContextRoomDoctorReport } = await import("../src/context_room.mjs");
+  assert.deepEqual(buildContextRoomDoctorReport(targetRoot, { readOnly: true }).issues.filter((issue) => /allowedPaths/.test(issue.message)), []);
+});
+
+test("a project created from the Hub is not reported as tampered review evidence before its first write", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-new-project-evidence-"));
+  withHubHome(t, path.join(base, "hub"));
+  const { createContextHubProject, buildContextRoomDoctorReport } = await import("../src/context_room.mjs");
+  const { projectRoot } = createContextHubProject({ computerRoot: base, folderName: "Fresh project" });
+
+  const tampered = (report) => report.issues.filter((issue) => issue.type === "review_evidence_tamper").map((issue) => issue.message);
+  assert.deepEqual(tampered(buildContextRoomDoctorReport(projectRoot, { readOnly: true })), []);
+  assert.deepEqual(tampered(buildContextRoomDoctorReport(projectRoot)), []);
+  assert.deepEqual(tampered(buildContextRoomDoctorReport(projectRoot, { readOnly: true })), []);
+});
+
+test("an isolated Hub home keeps its global preferences out of the real home", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-isolated-preferences-"));
+  const hubHome = path.join(base, "hub");
+  withHubHome(t, hubHome);
+  const previousHome = process.env.HOME;
+  process.env.HOME = path.join(base, "home");
+  t.after(() => { process.env.HOME = previousHome; });
+  const { writeGlobalContextRoomPreferences, readGlobalContextRoomPreferences } = await import("../src/context_room.mjs");
+
+  writeGlobalContextRoomPreferences({ appearance: { fileTheme: "dracula" } });
+
+  assert.equal(fs.existsSync(path.join(base, "home", ".context-room", "preferences.json")), false);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(hubHome, "preferences.json"), "utf8")).appearance.fileTheme, "dracula");
+  assert.equal(readGlobalContextRoomPreferences().appearance.fileTheme, "dracula");
+});
+
 test("Context Hub rejects hard-linked project control files before registration", (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-control-hardlink-registration-"));
   withHubHome(t, path.join(base, "hub"));
