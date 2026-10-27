@@ -24863,7 +24863,7 @@ function isProjectReadableMemoryPath(relPath, root = process.cwd()) {
 
 function resolveProjectReadableMemoryPath(root, relPath) {
   const normalized = normalizeRelPath(String(relPath || ""));
-  if (!isProjectReadableMemoryPath(normalized, root)) throw new Error(`Path not allowed in context room: ${relPath}`);
+  if (!isProjectReadableMemoryPath(normalized, root)) throw sharedRequestError(`Path not allowed in context room: ${relPath}`, 403, "file_path_not_allowed", { path: normalized });
   const abs = path.resolve(root, normalized);
   assertProjectPathContained(root, abs, { label: relPath });
   return abs;
