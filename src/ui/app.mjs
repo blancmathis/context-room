@@ -15668,7 +15668,7 @@ function renderGlobalInspectionHealth(data) {
 
 function renderGlobalInspectionStartup(data) {
   if (data.effectiveContext) {
-    const startupOff = selectedGlobalProjectSettingsContext().payload?.settings?.startupContext?.enabled === false;
+    const startupOff = data.enabled?.startupContext === false || selectedGlobalProjectSettingsContext().payload?.settings?.startupContext?.enabled === false;
     const offNotice = startupOff
       ? '<div class="global-project-inspection-note" role="note" data-startup-context-off><strong>Agent instructions are off for this project.</strong><span>AGENTS.md and CLAUDE.md are not listed or counted here. Turn them on in Settings › Agent environment › Agent instructions.</span></div>'
       : "";
@@ -17632,7 +17632,7 @@ function renderSharedRepositoryManager() {
 function renderSharedContextHelpDialog() {
   return '<section class="shared-context-help-dialog" role="dialog" aria-modal="true" aria-labelledby="sharedContextHelpTitle" aria-describedby="sharedContextHelpDescription">'
     + '<header class="shared-context-help-dialog-head"><div class="shared-context-help-dialog-head-copy"><h2 id="sharedContextHelpTitle">Shared Contexts</h2><p id="sharedContextHelpDescription">A Shared Context is a dedicated Git repository that keeps accepted documentation and reusable agent resources separate from the code repository.</p></div><button class="shared-context-help-dialog-close" type="button" data-shared-context-help-close aria-label="Close Shared Context explanation">×</button></header>'
-    + '<div class="shared-context-help-dialog-body"><div class="shared-context-help-dialog-sections">'
+    + '<div class="shared-context-help-dialog-body" tabindex="0" role="region" aria-labelledby="sharedContextHelpTitle"><div class="shared-context-help-dialog-sections">'
     + '<section class="shared-context-help-section"><h3>Why it is useful</h3><div class="shared-context-help-grid">'
     + '<div class="shared-context-help-item"><strong>One canonical source</strong><span>Everyone reads the same accepted documentation instead of keeping competing copies in code branches and worktrees.</span></div>'
     + '<div class="shared-context-help-item"><strong>Independent from code</strong><span>Code worktrees can be created, merged, or removed without splitting or deleting the documentation history.</span></div>'
@@ -18335,7 +18335,9 @@ function showSharedContextHelpDialog(returnFocus = document.activeElement) {
     backdrop.remove();
     appShell?.removeAttribute("inert");
     document.removeEventListener("keydown", onKeydown);
-    if (restoreFocus && returnFocus instanceof HTMLElement && returnFocus.isConnected) returnFocus.focus();
+    // Settings may re-render while the dialog is open and replace the trigger: fall back to the live one.
+    const target = returnFocus instanceof HTMLElement && returnFocus.isConnected ? returnFocus : document.querySelector("[data-settings-help-trigger]");
+    if (restoreFocus && target instanceof HTMLElement) target.focus();
   };
   const onKeydown = (event) => {
     if (event.key === "Escape") {
