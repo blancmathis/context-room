@@ -8,5 +8,5 @@ if [[ ! -f .local/preview.keystore ]]; then
   keytool -genkeypair -keystore .local/preview.keystore -storepass android -keypass android \
     -alias androiddebugkey -dname 'CN=Context Room Preview' -keyalg RSA -keysize 2048 -validity 3650
 fi
-./gradlew --no-daemon --console=plain :app:assembleDebug :app:assembleDebugAndroidTest "$@"
+./gradlew --no-daemon --console=plain :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest "$@"
 printf '%s\n' "$project_root/android/app/build/outputs/apk/debug/app-debug.apk"
