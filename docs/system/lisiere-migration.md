@@ -188,6 +188,8 @@ E. Installer Context Room (plus tard, quand Claude le dit).
    1. Dans le navigateur de la BOOX, ouvre l'adresse que Claude te donne.
    2. Ouvre le fichier téléchargé. Autorise l'installation si Android le demande.
    3. Ouvre « Context Room ». Connecte-le avec le code créé sur le Mac.
+   4. Sur l'écran d'accueil, appui long sur l'icône « Context Room »,
+      puis « Unfreeze ». Le menu montre alors « Freeze » : c'est bon.
 
 F. Retirer l'ancienne app (seulement quand Claude dit : 2 copies du ZIP vérifiées,
    import contrôlé fait, étape 9 faite).
@@ -214,6 +216,18 @@ Lisière updater may refill the companion's address in the field (read it again
 just before « Vérifier »); BOOXDrop from the tablet to the Mac has not been tried
 yet (the USB route is the fallback). Pairing the new app is a two-minute JSON
 code today; the pairing file (lot L9b) must exist before step E.
+
+**BOOX Auto Freeze (firmware 4.2, seen 2026-10-27).** The BOOX launcher puts
+every newly installed third-party app on its Auto Freeze list
+(`RxEACUtils … isAutoFreeze: true` in logcat). When the app leaves the
+foreground, `ApplicationFreezeHelper` disables the package: `dumpsys package`
+shows `enabled=3`, and `monkey` or `am start` from `adb` open nothing. The
+launcher icon re-enables it on each tap, but a frozen app cannot sync in the
+background. This is a BOOX setting, not a Context Room fault, and an app cannot
+opt out. Gesture, once per installed package: long press the icon on the home
+screen, then « Unfreeze » (the menu then offers « Freeze »; logcat shows
+`isAutoFreeze: false`). An `adb install -r` update keeps the current setting of the package. From `adb`
+only, `pm enable <package>` re-enables the package once but leaves it on the list.
 
 ### Direct native ZIP conversion
 
