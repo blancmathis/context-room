@@ -311,7 +311,12 @@ const AGENT_CONTEXT_ASSET_FILENAMES = [
   "system/connected-devices.md",
   "system/lisiere-migration.md",
 ];
-export const GLOBAL_PREFERENCES_FILE = "~/.context-room/preferences.json";
+export function globalPreferencesDisplayPath() {
+  // The same file resolveGlobalPreferencesPath reads, with the home folder written as ~.
+  const target = resolveGlobalPreferencesPath();
+  const home = os.homedir();
+  return target.startsWith(home + path.sep) ? "~" + target.slice(home.length) : target;
+}
 const CONFIG_SCHEMA_URL = "https://unpkg.com/context-room@latest/schemas/config.schema.json";
 const DOCQA_REVIEW_STATE = `${CONFIG_DIR}/review-state.json`;
 const DOCQA_REVIEW_BASELINES = `${CONFIG_DIR}/review-baselines`;

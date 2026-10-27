@@ -18588,7 +18588,8 @@ async function saveGlobalContextRoomSettings({ projectSettings, reviewGate, appe
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ settings: { appearance, shortcuts, sounds, explorer } }),
   })];
-  if (selected.payload?.settings && selected.worktree?.id) {
+  // A partial render without the project fields must not save them as empty.
+  if (projectSettings && selected.payload?.settings && selected.worktree?.id) {
     requests.push(api("/api/context-hub/project-settings", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -18682,7 +18683,7 @@ async function saveSettings() {
   try {
     if (IS_GLOBAL_CONTEXT_ROOM) {
       await saveGlobalContextRoomSettings({
-        projectSettings: { watchAllow, watchRules: activeSettings?.watchRules || [], startupContext, startupSkills, startupHooks, markdownTemplates, hubCards, hubSections },
+        projectSettings: el("watchAllow") ? { watchAllow, watchRules: activeSettings?.watchRules || [], startupContext, startupSkills, startupHooks, markdownTemplates, hubCards, hubSections } : null,
         reviewGate,
         appearance,
         shortcuts,

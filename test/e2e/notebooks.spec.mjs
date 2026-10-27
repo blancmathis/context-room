@@ -435,6 +435,19 @@ test('@notebook a stroke backlog reaches the Mac in batches, not one request per
   } finally { await f.close(); }
 });
 
+test('@notebook two quick close requests close the notebook once', async ({ page }) => {
+  const f = await fixture(page);
+  try {
+    const dialog = await open(page);
+    await page.evaluate(() => { window.notebookClosedEvents = 0; document.addEventListener('context-room-notebook-closed', () => { window.notebookClosedEvents += 1; }); });
+    await page.evaluate(() => { const target = document.querySelector('dialog.notebook-dialog[open]'); target.dispatchEvent(new Event('cancel', { cancelable: true })); target.dispatchEvent(new Event('cancel', { cancelable: true })); });
+    await expect(dialog).toBeHidden();
+    await page.waitForTimeout(300);
+    expect(await page.evaluate(() => window.notebookClosedEvents)).toBe(1);
+    expect(f.errors).toEqual([]);
+  } finally { await f.close(); }
+});
+
 test('@smoke @a11y @notebook object controls retain keyboard focus through independent scene updates', async ({ page }) => {
   const f = await fixture(page);
   try {
