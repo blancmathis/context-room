@@ -508,7 +508,7 @@ test("the global home lists projects in a stable order with three destinations a
   assert.match(script, /function renderContextHubHomeProjects\(\)[\s\S]*local inspected[\s\S]*data-context-hub-project-destination="' \+ id/);
   assert.match(script, /destination\("context", "Context"\) \+ destination\("review", "To review"\) \+ destination\("documents", "Documents"\)/);
   assert.match(script, /\(event\.metaKey \|\| event\.ctrlKey\)[\s\S]{0,80}event\.key\.toLowerCase\(\) === "k"[\s\S]{0,120}openContextHubProjectPicker\(null, \{ purpose: "open" \}\)/);
-  assert.match(script, /function selectContextHubProjectPickerChoice[\s\S]*purpose === "open"[\s\S]*openContextHubProjectDestination\(projectKey, "documents"\)/);
+  assert.match(script, /function selectContextHubProjectPickerChoice[\s\S]*purpose === "open"[\s\S]*openContextHubProjectDestination\(projectKey, "open"\)/);
   assert.match(script, /\(localReviewCoverageConfirmed \? "" : " · " \+ contextHubLocalCoverage\(\)\.inspected/);
   assert.match(script, /Nothing to check yet/);
   assert.doesNotMatch(script, /Context is healthy/);

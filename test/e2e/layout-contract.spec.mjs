@@ -1178,3 +1178,35 @@ test("@layout project rows keep their title and badges whole at 1024 and 1440", 
     expect(broken, `width ${width}`).toEqual([]);
   }
 });
+
+test("@layout the uninspected banner names the projects behind the shortfall and hides raw errors", async ({ page }) => {
+  const data = fixture();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=hub`);
+  await waitForBoot(page);
+  const result = await page.evaluate(() => {
+    const projects = state.contextHub.projects.filter((project) => project.mode !== "shared");
+    projects.slice(0, 4).forEach((project, index) => { project.title = "Banner" + index; project.localReviewError = "RAW-ERROR-" + index; });
+    renderContextRoomGlobalReviewQueue();
+    return { count: Math.min(projects.length, 4), text: document.querySelector("#reviewQueuePanel .review-status-unconfirmed")?.textContent || "" };
+  });
+  expect(result.text).toContain("could not be inspected (Banner0");
+  expect(result.text).not.toContain("RAW-ERROR");
+  if (result.count > 3) expect(result.text).toContain(`and ${result.count - 3} more`);
+});
+
+test("@layout the agent-instructions-off notice shows from the inspection data alone", async ({ page }) => {
+  const data = fixture();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=hub`);
+  await waitForBoot(page);
+  const counts = await page.evaluate(() => {
+    const count = (enabled) => {
+      const host = document.createElement("div");
+      host.innerHTML = renderGlobalInspectionStartup({ enabled, effectiveContext: { files: [] } });
+      return host.querySelectorAll("[data-startup-context-off]").length;
+    };
+    return { off: count({ startupContext: false }), on: count({ startupContext: true }) };
+  });
+  expect(counts).toEqual({ off: 1, on: 0 });
+});

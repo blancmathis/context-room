@@ -1168,8 +1168,8 @@ test("@soak time-dependent reviews, drafts, and shared reconnect safely", async 
   await page.getByRole("menuitem", { name: "Snooze…" }).click();
   await page.getByRole("button", { name: "1 hour" }).click();
   await expect(page.locator(`[data-context-room-review-entry="${reviewId}"]`)).toHaveCount(0);
-  await openSettings(page);
-  const snoozed = page.locator('[data-settings-disclosure="review-snoozed"]');
+  await openSettings(page, "review-trust");
+  const snoozed =page.locator('[data-settings-disclosure="review-snoozed"]');
   await snoozed.locator("summary").click();
   await expect(snoozed).toContainText(reviewTitle);
   await page.clock.fastForward(3_700_000);
