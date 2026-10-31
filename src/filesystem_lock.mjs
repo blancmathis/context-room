@@ -70,6 +70,8 @@ function readDarwinProcessIdentity(pid) {
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 1_000,
       maxBuffer: 4_096,
+      // `lstart` text depends on the reader's language and time zone: pin both.
+      env: { LC_ALL: "C", TZ: "UTC", PATH: "/usr/bin:/bin" },
     }).trim().replace(/\s+/g, " ");
     return startedAt ? `darwin:${startedAt}` : "";
   } catch {
