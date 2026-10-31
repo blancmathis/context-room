@@ -1993,7 +1993,29 @@ function startupSkillNamespaceFolders(abs, folderName, containmentRoot = null) {
     .sort((a, b) => a.folderName.localeCompare(b.folderName, "fr"));
 }
 
+// While a scope is open, read-only settings lookups for one root are computed once.
+// Use it around a synchronous read-only batch (many readMemoryFile calls); never
+// around a write, because the cache would hide the change.
+let memorySettingsScope = null;
+
+export function withMemorySettingsScope(fn) {
+  if (memorySettingsScope) return fn();
+  memorySettingsScope = new Map();
+  try {
+    return fn();
+  } finally {
+    memorySettingsScope = null;
+  }
+}
+
 function effectiveMemoryWebappSettings(root = process.cwd(), { expectedRootIdentity = null, readOnly = false } = {}) {
+  if (!memorySettingsScope || !readOnly || expectedRootIdentity) return computeEffectiveMemoryWebappSettings(root, { expectedRootIdentity, readOnly });
+  const key = String(root);
+  if (!memorySettingsScope.has(key)) memorySettingsScope.set(key, computeEffectiveMemoryWebappSettings(root, { expectedRootIdentity, readOnly }));
+  return memorySettingsScope.get(key);
+}
+
+function computeEffectiveMemoryWebappSettings(root, { expectedRootIdentity, readOnly }) {
   const protectedSettings = effectiveOwnerReviewScope(
     root,
     readMemoryWebappSettings(root, { expectedRootIdentity }),
@@ -11482,8 +11504,18 @@ function collectHubPathMatchers(sections = []) {
   return { paths: [...new Set(paths)], ids };
 }
 
-function pathIsInHub(relPath, hubPaths = []) {
-  return hubPaths.some((item) => pathMatchesSetting(relPath, item));
+// Same answer as hubPaths.some(pathMatchesSetting), with one set lookup per path
+// ancestor instead of one comparison per hub path.
+function hubPathMatcher(hubPaths = []) {
+  const cleaned = new Set(hubPaths.map((item) => normalizeRelPath(item).replace(/\/$/, "")).filter(Boolean));
+  return (relPath) => {
+    const normalizedPath = normalizeRelPath(relPath).replace(/\/$/, "");
+    if (cleaned.has(normalizedPath)) return true;
+    for (let slash = normalizedPath.indexOf("/"); slash !== -1; slash = normalizedPath.indexOf("/", slash + 1)) {
+      if (cleaned.has(normalizedPath.slice(0, slash))) return true;
+    }
+    return false;
+  };
 }
 
 function startupRelPathsForRoot(root, startupFiles = []) {
@@ -11508,6 +11540,7 @@ export function buildDocumentationGraph(root = process.cwd(), options = {}) {
   const startupHooks = options.startupHooks || listStartupHookFiles(root, settings);
   const startupRelPaths = startupRelPathsForRoot(root, startupFiles);
   const hubInfo = collectHubPathMatchers(settings.hubSections || []);
+  const pathIsInHub = hubPathMatcher(hubInfo.paths);
   const nodes = [];
   const edges = [];
   const healthIssues = [];
@@ -11562,7 +11595,7 @@ export function buildDocumentationGraph(root = process.cwd(), options = {}) {
     metadata.identities = inspection.identities;
     metadata.relations = inspection.relations;
     const watched = isWatchedPath(file.path, settings);
-    const inHub = pathIsInHub(file.path, hubInfo.paths);
+    const inHub = pathIsInHub(file.path);
     const startup = startupRelPaths.has(file.path);
     const references = collectInlinePathReferences(content);
     const contextLinks = collectContextRoomLinks(content);
