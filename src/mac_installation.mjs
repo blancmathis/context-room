@@ -41,6 +41,7 @@ function packageEntries(source) {
 export function prepareMacInstallation(source, { output, nodePath, whisperPath = null, modelPath = null, port = 4317, apply = false, expectedRevision } = {}) {
   canonicalNotebookRoot(source);
   check(typeof output === 'string' && path.resolve(output) === output && output !== source && !output.startsWith(source + path.sep), 'Choose a new private kit directory outside the source.');
+  check(fs.existsSync(path.dirname(output)), `The parent folder of the kit does not exist: ${path.dirname(output)}. Create it first (mkdir -p), then run again.`);
   canonicalNotebookRoot(path.dirname(output));
   check(typeof nodePath === 'string' && path.isAbsolute(nodePath) && !/[\x00-\x1f]/.test(nodePath), 'Choose the exact absolute Node executable for the Mac.');
   check(Number.isSafeInteger(port) && port >= 1024 && port <= 65535, 'Choose an explicit unprivileged loopback port.');

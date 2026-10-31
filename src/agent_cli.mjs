@@ -496,7 +496,7 @@ function writeCliCache(cachePath, fingerprint, result) {
   }
 }
 
-export function resolveCliTarget({ cwd = process.cwd(), project = "", location = "", folder = "", requireLocal = true, readOnly = false } = {}) {
+export function resolveCliTarget({ cwd = process.cwd(), project = "", location = "", folder = "", requireLocal = true, readOnly = false, registering = false } = {}) {
   const requested = stablePath(cwd);
   const projects = listContextHubProjects({ refreshGit: false, readOnly });
   let candidates = projects;
@@ -523,7 +523,7 @@ export function resolveCliTarget({ cwd = process.cwd(), project = "", location =
     .sort((left, right) => right.root.length - left.root.length);
   let selected = containing[0] || null;
   // The Notebooks space is never an implicit target: name it with --project or --location.
-  if (!selected && candidates.length === 1 && (project || location || candidates[0].space !== "notebooks")) selected = candidates[0];
+  if (!selected && !registering && candidates.length === 1 && (project || location || candidates[0].space !== "notebooks")) selected = candidates[0];
   if (!selected && (project || location) && candidates.length > 1) {
     const candidateDetails = candidates.map((item) => ({ id: item.id, title: item.title, root: item.root, branch: item.worktree?.branch || "" }));
     throw cliSelectorConflict(
@@ -543,7 +543,9 @@ export function resolveCliTarget({ cwd = process.cwd(), project = "", location =
   if (!root && requireLocal) {
     throw new ContextRoomCliError("local-environment-unavailable", "No local Context Room project contains the current folder.", {
       details: { cwd: requested },
-      nextActions: [{ id: "project-register", label: "Register this location", command: `context-room project register --root ${JSON.stringify(requested)}`, mutates: true, requiresHuman: false }],
+      nextActions: registering
+        ? [{ id: "project-init", label: "Initialize Context Room in this folder", command: `context-room init --root ${JSON.stringify(requested)}`, mutates: true, requiresHuman: false }]
+        : [{ id: "project-register", label: "Register this location", command: `context-room project register --root ${JSON.stringify(requested)}`, mutates: true, requiresHuman: false }],
     });
   }
   root = root ? stablePath(root) : "";
