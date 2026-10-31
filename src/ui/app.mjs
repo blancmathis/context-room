@@ -4007,7 +4007,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 		${shouldReplaceDuplicatedWorkspaceIdentity.toString()}
 		${contextRoomProjectResponseAction.toString()}
 		const INITIAL_CONTEXT_ROOM_URL = window.location.href;
-		const state = { root: null, projectId: null, projectReloading: false, files: [], directories: [], startupContextFiles: [], startupSkillFolders: [], startupHookFiles: [], startupHooksHelpOpen: false, startupHookFilter: "all", hubDisclosuresOpen: new Set(), activeStartupSkillExplorer: null, activeStartupContextExplorer: null, startupSkillCreateFolder: null, startupContextContextTarget: null, selectedStartupContext: null, docqa: null, doctor: null, backgroundReportRenderKey: "", contextHealthStatusFilter: "open", contextHealthSeverityFilter: "triggered", contextHealthCategoryFilter: "all", contextHealthRefreshing: false, contextHealthCodexSending: false, settings: null, settingsOpen: false, settingsSection: "project", settingsDisclosureState: {}, settingsBaselineByGroup: new Map(), settingsDirtyGroups: new Set(), settingsSearchQuery: "", settingsSearchIndex: -1, settingsSearchDismissWired: false, page: "hub", pendingMarkdown: null, availableHubCards: [], hubFolders: [], hubSections: [], rootHubSections: [], activeHubCardId: null, selectedReview: null, deletionBatchExpanded: false, deletionBatchLoading: false, deletionBatchItems: [], deletionBatchKey: "", deletionBatchReportedCount: 0, deletionBatchError: "", selectedDeletionReviews: new Set(), reviewModePath: null, reviewModeStatus: null, reviewSessions: {}, reviewFinalizationPromise: null, selected: null, selectedReadOnly: false, selectedDiff: null, fileLoadError: null, fileConflict: null, externalChange: null, conflictCompare: false, conflictMergeText: null, conflictMergeKey: "", conflictMergeMode: "auto", diffCollapsed: false, saved: "", savedHash: null, dirty: false, mode: "view", homeView: "root", planetStack: ["root"], filePanel: false, history: [], historyIndex: -1, pathFilters: [], explorerWatchFilter: "all", explorerRenderKey: "", explorerSearchFrame: 0, explorerWidth: 272, explorerStoredCollapsed: null, explorerNavigationOverride: null, inspectorWidth: 320, inspectorOpen: false, documentInspection: null, documentInspectionPath: "", documentInspectionLoading: false, focusMode: false, selectedForDelete: new Set(), selectionRequest: 0, openingFilePath: null, fileContentReadyPath: null, sessionStateTimer: null, agentCommandTimer: null, lastAgentCommandId: "", pendingAgentCommand: null, agentAnnotations: {}, userActiveAt: 0, userScrollIntentAt: 0, refreshInFlight: false, reportsRefreshInFlight: false, backgroundRefreshTimer: null, backgroundRefreshTimerKind: "", backgroundRefreshPendingOptions: null, filePrefetches: new Map(), prefetchTimer: null, prefetchPath: "", lastDiffRefreshAt: 0, lastReportRefreshAt: 0, lastFullRefreshAt: 0, navigationRestoreAttempted: false, bootStartedAt: Date.now(), bootMilestones: {}, markdownHighlightFrame: 0, markdownHighlightText: "", markdownHighlightLastText: "", docLinkModifierActive: false, workspaceId: "", workspaceClientInstanceId: "", workspaceChannel: null, workspaceHeartbeatTimer: null, runtimeEventSource: null, runtimeEventCursor: 0, runtimeEventsConnected: false, runtimeFallbackTimer: null, workspaceIdentityReady: false, workspaceSyncedUrl: "", expanded: new Set(["data", "automations", "integrations", "skills", "tools", "~", "~/.hermes", "~/.hermes/memories", "~/.hermes/skills"]) };
+		const state = { root: null, projectId: null, projectReloading: false, files: [], directories: [], startupContextFiles: [], startupSkillFolders: [], startupHookFiles: [], startupHooksHelpOpen: false, startupHookFilter: "all", hubDisclosuresOpen: new Set(), activeStartupSkillExplorer: null, activeStartupContextExplorer: null, startupSkillCreateFolder: null, startupContextContextTarget: null, selectedStartupContext: null, docqa: null, doctor: null, backgroundReportRenderKey: "", contextHealthStatusFilter: "open", contextHealthSeverityFilter: "triggered", contextHealthCategoryFilter: "all", contextHealthRefreshing: false, contextHealthCodexSending: false, settings: null, settingsOpen: false, settingsSection: "project", settingsDisclosureState: {}, settingsBaselineByGroup: new Map(), settingsDirtyGroups: new Set(), settingsSearchQuery: "", settingsSearchIndex: -1, settingsSearchDismissWired: false, page: "hub", pendingMarkdown: null, availableHubCards: [], hubFolders: [], hubSections: [], rootHubSections: [], activeHubCardId: null, selectedReview: null, deletionBatchExpanded: false, deletionBatchLoading: false, deletionBatchItems: [], deletionBatchKey: "", deletionBatchReportedCount: 0, deletionBatchError: "", selectedDeletionReviews: new Set(), reviewModePath: null, reviewModeStatus: null, reviewSessions: {}, reviewFinalizationPromise: null, selected: null, selectedReadOnly: false, selectedDiff: null, fileLoadError: null, fileConflict: null, externalChange: null, conflictCompare: false, conflictMergeText: null, conflictMergeKey: "", conflictMergeMode: "auto", diffCollapsed: false, saved: "", savedHash: null, dirty: false, mode: "view", homeView: "root", planetStack: ["root"], filePanel: false, history: [], historyIndex: -1, pathFilters: [], explorerWatchFilter: "all", explorerRenderKey: "", explorerSearchFrame: 0, explorerWidth: 272, explorerStoredCollapsed: null, explorerNavigationOverride: null, inspectorWidth: 320, inspectorOpen: false, documentInspection: null, documentInspectionPath: "", documentInspectionLoading: false, focusMode: false, selectedForDelete: new Set(), selectionRequest: 0, openingFilePath: null, fileContentReadyPath: null, sessionStateTimer: null, agentCommandTimer: null, lastAgentCommandId: "", pendingAgentCommand: null, agentAnnotations: {}, userActiveAt: 0, userScrollIntentAt: 0, refreshInFlight: false, reportsRefreshInFlight: false, backgroundRefreshTimer: null, backgroundRefreshTimerKind: "", backgroundRefreshPendingOptions: null, filePrefetches: new Map(), prefetchTimer: null, prefetchPath: "", lastDiffRefreshAt: 0, lastReportRefreshAt: 0, lastFullRefreshAt: 0, navigationRestoreAttempted: false, bootStartedAt: Date.now(), bootMilestones: {}, markdownHighlightFrame: 0, markdownHighlightText: "", markdownHighlightLastText: "", docLinkModifierActive: false, workspaceId: "", workspaceClientInstanceId: "", workspaceChannel: null, workspaceHeartbeatTimer: null, runtimeEventSource: null, runtimeEventCursor: 0, runtimeEventInstanceId: "", runtimeEventsConnected: false, runtimeFallbackTimer: null, workspaceIdentityReady: false, workspaceSyncedUrl: "", expanded: new Set(["data", "automations", "integrations", "skills", "tools", "~", "~/.hermes", "~/.hermes/memories", "~/.hermes/skills"]) };
 		Object.assign(state, {
 		  graph: null,
 		  graphLoading: false,
@@ -11682,12 +11682,19 @@ function normalizedRuntimeEventCursor(value) {
   return Number.isSafeInteger(cursor) && cursor > 0 ? cursor : 0;
 }
 
-function rememberRuntimeEventCursor(cursor) {
-  const next = Math.max(state.runtimeEventCursor || 0, normalizedRuntimeEventCursor(cursor));
+function rememberRuntimeEventCursor(cursor, { reset = false } = {}) {
+  const next = reset ? normalizedRuntimeEventCursor(cursor) : Math.max(state.runtimeEventCursor || 0, normalizedRuntimeEventCursor(cursor));
   state.runtimeEventCursor = next;
   const key = runtimeEventCursorStorageKey();
   if (!key) return;
   try { window.sessionStorage?.setItem(key, String(next)); } catch {}
+}
+
+function rememberRuntimeEventInstance(instanceId) {
+  state.runtimeEventInstanceId = instanceId;
+  const key = runtimeEventCursorStorageKey();
+  if (!key) return;
+  try { window.sessionStorage?.setItem(key + ":instance", instanceId); } catch {}
 }
 
 function applyProposalReadinessEvent(data = {}) {
@@ -11718,8 +11725,10 @@ function applyProposalReadinessEvent(data = {}) {
 
 function handleRuntimeEvent(event = {}) {
   const cursor = normalizedRuntimeEventCursor(event.cursor);
-  if (cursor && cursor <= (state.runtimeEventCursor || 0)) return;
-  rememberRuntimeEventCursor(cursor);
+  // A resync carries the server's cursor, which is lower after a Hub restart.
+  if (event.type === "resync-required") rememberRuntimeEventCursor(cursor, { reset: true });
+  else if (cursor && cursor <= (state.runtimeEventCursor || 0)) return;
+  else rememberRuntimeEventCursor(cursor);
   if (event.type === "workspace-command") {
     const command = event.data?.command;
     if (!command || command.workspaceId !== state.workspaceId || !command.id || command.id === state.lastAgentCommandId || command.id === state.workspaceDeferredCommandId) return;
@@ -11764,17 +11773,23 @@ function startRuntimeEvents() {
   state.runtimeEventSource?.close();
   const key = runtimeEventCursorStorageKey();
   try { state.runtimeEventCursor = Number(window.sessionStorage?.getItem(key) || 0) || 0; } catch {}
+  try { state.runtimeEventInstanceId = String(window.sessionStorage?.getItem(key + ":instance") || ""); } catch {}
   const query = new URLSearchParams({ workspace: state.workspaceId, since: String(state.runtimeEventCursor || 0) });
   const source = new EventSource(contextRoomScopedRequestPath("/api/runtime-events?" + query.toString()));
   state.runtimeEventSource = source;
+  let resyncedBeforeReady = false;
   source.addEventListener("ready", (message) => {
     if (state.runtimeEventSource !== source || state.workspaceRuntimeStopped || state.workspaceUnloadPending) return;
-    if (!(state.runtimeEventCursor > 0)) {
-      try {
-        const readyCursor = normalizedRuntimeEventCursor(JSON.parse(message.data || "{}").cursor);
-        if (readyCursor) rememberRuntimeEventCursor(readyCursor);
-      } catch {}
-    }
+    let ready = {};
+    try { ready = JSON.parse(message.data || "{}") || {}; } catch {}
+    const readyCursor = normalizedRuntimeEventCursor(ready.cursor);
+    const instanceId = typeof ready.instanceId === "string" ? ready.instanceId.slice(0, 64) : "";
+    const restarted = Boolean(instanceId && state.runtimeEventInstanceId && instanceId !== state.runtimeEventInstanceId);
+    if (instanceId) rememberRuntimeEventInstance(instanceId);
+    // A restarted Hub numbers its events from 0 again; what the tab knew is stale.
+    if (restarted && !resyncedBeforeReady) handleRuntimeEvent({ cursor: readyCursor, type: "resync-required", data: { source: "runtime-restart" } });
+    else if (!(state.runtimeEventCursor > 0) && readyCursor) rememberRuntimeEventCursor(readyCursor);
+    resyncedBeforeReady = false;
     state.runtimeEventsConnected = true;
     window.clearInterval(state.runtimeFallbackTimer);
     state.runtimeFallbackTimer = null;
@@ -11782,7 +11797,11 @@ function startRuntimeEvents() {
   });
   source.addEventListener("runtime", (message) => {
     if (state.runtimeEventSource !== source || state.workspaceRuntimeStopped || state.workspaceUnloadPending) return;
-    try { handleRuntimeEvent(JSON.parse(message.data || "{}")); } catch {}
+    try {
+      const event = JSON.parse(message.data || "{}");
+      if (event?.type === "resync-required") resyncedBeforeReady = true;
+      handleRuntimeEvent(event);
+    } catch {}
   });
   source.onerror = () => {
     if (state.runtimeEventSource !== source || state.workspaceRuntimeStopped || state.workspaceUnloadPending) return;
