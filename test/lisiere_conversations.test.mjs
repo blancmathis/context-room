@@ -104,3 +104,10 @@ test('only a new explicit send starts a scoped task and can read historical data
   f.revoke(); assert.throws(() => turns[0].tool('context_room_history', {}, { signal: new AbortController().signal }), { code: 'assistant_source_scope' });
   turns[0].onEvent({ type: 'completed', status: 'completed', failed: false });
 });
+
+test('a non-private conversation store names the path and the chmod 700 command', async t => {
+  const f = await fixture(t);
+  fs.mkdirSync(f.storageRoot); fs.chmodSync(f.storageRoot, 0o755);
+  assert.throws(() => f.plan(), error => error.code === 'lisiere_recovery_conflict'
+    && error.message.includes(f.storageRoot) && error.message.includes(`chmod 700 ${JSON.stringify(f.storageRoot)}`));
+});
