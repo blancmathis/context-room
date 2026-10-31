@@ -18,6 +18,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 const lockWait = new Int32Array(new SharedArrayBuffer(4));
 const activeOwnerTokens = new Set();
 let cachedCurrentProcessIdentity;
+let cachedCurrentHostScope;
 
 function readBoundedUtf8(filePath, maximumBytes) {
   const descriptor = fs.openSync(filePath, "r");
@@ -88,6 +89,28 @@ function currentProcessIdentity() {
     cachedCurrentProcessIdentity = filesystemProcessIdentity(process.pid);
   }
   return cachedCurrentProcessIdentity;
+}
+
+// A host scope names one boot of one machine (and one PID namespace on Linux).
+// Only inside the same scope can a missing or reused PID prove its owner dead.
+function currentHostScope() {
+  if (cachedCurrentHostScope !== undefined) return cachedCurrentHostScope;
+  cachedCurrentHostScope = "";
+  if (process.platform === "linux") {
+    const identity = currentProcessIdentity();
+    if (identity) cachedCurrentHostScope = identity.slice(0, identity.lastIndexOf(":"));
+  } else if (process.platform === "darwin") {
+    try {
+      const bootSession = execFileSync("/usr/sbin/sysctl", ["-n", "kern.bootsessionuuid"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 1_000,
+        maxBuffer: 4_096,
+      }).trim().toLowerCase();
+      if (/^[0-9a-f-]{36}$/.test(bootSession)) cachedCurrentHostScope = `darwin:${bootSession}`;
+    } catch {}
+  }
+  return cachedCurrentHostScope;
 }
 
 function waitForLock(deadline, milliseconds = 20) {
@@ -184,6 +207,7 @@ function readLockRecord(filePath) {
       processIdentity: typeof record?.processIdentity === "string" && record.processIdentity.length <= 512
         ? record.processIdentity
         : "",
+      hostScope: typeof record?.hostScope === "string" && record.hostScope.length <= 512 ? record.hostScope : "",
       kind: record?.kind === "owner" ? "owner" : record?.kind === "coordination" ? "coordination" : "legacy",
       token: typeof record?.token === "string" ? record.token : "",
       acquiredAt: String(record?.acquiredAt || ""),
@@ -235,6 +259,7 @@ function createLockRecord(filePath, { kind = "coordination", ownerLockPath = fil
       threadId,
       ownerInstanceId: workerOwner?.id || "",
       processIdentity: currentProcessIdentity(),
+      hostScope: currentHostScope(),
       kind,
       token,
       acquiredAt: new Date().toISOString(),
@@ -246,6 +271,7 @@ function createLockRecord(filePath, { kind = "coordination", ownerLockPath = fil
       threadId,
       ownerInstanceId: workerOwner?.id || "",
       processIdentity: currentProcessIdentity(),
+      hostScope: currentHostScope(),
       kind,
       token,
       tempPath,
@@ -306,8 +332,26 @@ function lockOwnerAlive(record, options) {
   return !observedIdentity || observedIdentity === record.processIdentity;
 }
 
+// A young lock is taken over only when its owner is proven dead: the record
+// comes from this boot of this machine, and its PID is gone or now belongs to
+// another process. Any doubt (other machine, unreadable identity) waits staleMs.
+function lockOwnerProvenDead(record) {
+  const hostScope = currentHostScope();
+  if (!hostScope || record.hostScope !== hostScope || !record.processIdentity) return false;
+  if (!Number.isInteger(record.pid) || record.pid <= 0) return false;
+  try {
+    process.kill(record.pid, 0);
+  } catch (error) {
+    if (error?.code === "ESRCH") return true;
+    if (error?.code !== "EPERM") return false;
+  }
+  const observedIdentity = filesystemProcessIdentity(record.pid);
+  return Boolean(observedIdentity) && observedIdentity !== record.processIdentity;
+}
+
 function lockIsStale(record, staleMs, options) {
-  if (!record || record.ageMs <= staleMs) return false;
+  if (!record) return false;
+  if (record.ageMs <= staleMs) return Boolean(record.token) && lockOwnerProvenDead(record);
   if (!record.token) return true;
   return !lockOwnerAlive(record, options);
 }

@@ -27,7 +27,7 @@ function waitFor(predicate, message, timeoutMs = 8_000) {
   });
 }
 
-function runDecisionChild({ root, relPath, hubHome, gateRoot, index, moduleUrl }) {
+function runDecisionChild({ root, relPath, hubHome, gateRoot, index, moduleUrl, onSpawn = null }) {
   const source = String.raw`
 import fs from "node:fs";
 import path from "node:path";
@@ -84,6 +84,7 @@ process.stdout.write(JSON.stringify({ path: decision.path, status: decision.stat
       env: { ...process.env, CONTEXT_ROOM_HUB_HOME: hubHome },
       stdio: ["ignore", "pipe", "pipe"],
     });
+    onSpawn?.(child);
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => { stdout += chunk; });
@@ -167,6 +168,52 @@ test("concurrent DocQA decisions serialize across processes without losing state
   const ledgerAuthority = inspectOwnerTrustedState(fs.realpathSync(root), "review-ledger", rawLedger);
   assert.equal(stateAuthority.trusted, true, JSON.stringify(stateAuthority));
   assert.equal(ledgerAuthority.trusted, true, JSON.stringify(ledgerAuthority));
+});
+
+test("a DocQA decision takes over the review lock of a process killed mid-decision", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-docqa-killed-owner-"));
+  const root = path.join(base, "project");
+  const hubHome = path.join(base, "hub");
+  const gateRoot = path.join(base, "gate");
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.mkdirSync(gateRoot, { recursive: true });
+  const previousHubHome = process.env.CONTEXT_ROOM_HUB_HOME;
+  process.env.CONTEXT_ROOM_HUB_HOME = hubHome;
+  let child = null;
+  t.after(() => {
+    if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    if (previousHubHome === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
+    else process.env.CONTEXT_ROOM_HUB_HOME = previousHubHome;
+    fs.rmSync(base, { recursive: true, force: true });
+  });
+
+  for (const relPath of ["docs/seed.md", "docs/killed.md", "docs/after.md"]) {
+    fs.writeFileSync(path.join(root, relPath), `# ${relPath}\n`, "utf8");
+  }
+  execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "docqa@example.test"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "DocQA Killed Owner Test"], { cwd: root, stdio: "ignore" });
+  initializeContextRoomProject(root, { allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+  execFileSync("git", ["add", "."], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["commit", "-m", "Initial"], { cwd: root, stdio: "ignore" });
+  const decide = (relPath) => writeDocReviewDecision(root, relPath, {
+    status: "verified",
+    expectedContentHash: createHash("sha256").update(fs.readFileSync(path.join(root, relPath), "utf8")).digest("hex"),
+  });
+  decide("docs/seed.md");
+
+  const moduleUrl = new URL("../src/context_room.mjs", import.meta.url).href;
+  const killed = runDecisionChild({ root, relPath: "docs/killed.md", hubHome, gateRoot, index: 0, moduleUrl, onSpawn: (spawned) => { child = spawned; } });
+  await waitFor(() => fs.existsSync(path.join(gateRoot, "ready-0")), "DocQA child did not reach the start gate");
+  fs.writeFileSync(path.join(gateRoot, "start"), "start\n", "utf8");
+  await waitFor(() => fs.existsSync(path.join(gateRoot, "read-owner")), "DocQA child did not pause inside the review lock");
+  child.kill("SIGKILL");
+  await assert.rejects(killed);
+
+  // The review lock times out after 5 s; its stale delay is 15 min.
+  assert.equal(decide("docs/after.md").status, "verified");
+  const state = readDocReviewState(root);
+  assert.deepEqual(Object.keys(state.reviews).sort(), ["docs/after.md", "docs/seed.md"]);
 });
 
 test("a failed ledger publication rolls back local state, ledger, baseline, and trusted authority", (t) => {
