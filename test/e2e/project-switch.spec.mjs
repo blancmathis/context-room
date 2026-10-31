@@ -324,3 +324,20 @@ test("@perf a manual Refresh during a Shared open's background refresh reuses it
     await hub.close();
   }
 });
+
+test("Back from a selected project leaves no project selected in the Explorer or the cards", async ({ page }) => {
+  const hub = await fixture();
+  try {
+    await page.goto(hub.origin + "/?hub=1&view=hub");
+    await expect(page.locator("body")).not.toHaveClass(/app-booting|app-recovery/);
+    const card = page.locator("li.context-hub-home-project", { has: page.locator("strong", { hasText: "Beacon" }) });
+    await card.locator('[data-context-hub-project-destination="context"]').click();
+    await expect(card).toHaveAttribute("aria-current", "true");
+    await page.goBack();
+    await expect(page.locator('.global-project-row[aria-current="true"], .context-hub-home-project[aria-current="true"]')).toHaveCount(0);
+    await expect(page.locator("#globalExplorerScope strong")).toHaveCount(0);
+    await expect(page.locator("[data-global-project-folder]")).toHaveCount(0);
+  } finally {
+    await hub.close();
+  }
+});

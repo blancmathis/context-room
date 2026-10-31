@@ -10,7 +10,7 @@ export async function openOwnerDeviceSettings(request) {
   const post = (path, body) => request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   sheet.append(make('h2', 'Use Context Room on another device'));
   sheet.append(make('p', 'The complete owner interface includes your Hub, authorized folders, documents, settings and human reviews. The Mac stays connected and keeps the files.'));
-  sheet.append(make('p', 'To connect only a drawing surface, open a notebook and choose Connect tablet.'));
+  if (!window.ContextRoomNativeOwner) sheet.append(make('p', 'To connect only a drawing surface, open a notebook and choose Connect tablet.'));
   if (!state.enabled || !state.ownerAvailable) {
     sheet.append(make('p', 'Device connections are disabled. Start Context Room on the Mac with an explicit device address before pairing.'));
   } else if (window.ContextRoomNativeOwner) {

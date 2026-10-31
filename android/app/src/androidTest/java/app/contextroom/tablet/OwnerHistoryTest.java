@@ -27,6 +27,8 @@ public final class OwnerHistoryTest {
         ui.visible(activity, "[...document.querySelectorAll('button')].some(n => n.textContent === 'Discuss')");
         ui.evaluate(activity, "[...document.querySelectorAll('button')].find(n => n.textContent === 'Discuss').click()");
         ui.visible(activity, "document.querySelector('.assistant-panel')?.dataset.ready === 'true'");
+        // The panel is ready before refreshHistory() fills the select, so wait for the value.
+        ui.visible(activity, "document.querySelector('[aria-label=\"Saved conversations for this original source\"]')?.value === " + JSONObject.quote(legacy.getString("conversationId")));
         assertEquals(JSONObject.quote(legacy.getString("conversationId")), ui.evaluate(activity, "document.querySelector('[aria-label=\"Saved conversations for this original source\"]').value"));
         ui.click(activity, "[aria-label='Recovered Lisière history'] > details > summary");
         ui.visible(activity, "document.querySelector('[aria-label=\"Recovered Lisière history\"]')?.textContent.includes('Original human question')");

@@ -94,7 +94,7 @@ final class DeviceConnection {
   JSONObject owner(String action, JSONObject request) throws Exception {
     if (!isOwner() || credential.isEmpty() || !Arrays.asList("request", "events").contains(action)) throw new IOException("Cette connexion n’autorise pas l’interface complète.");
     JSONObject response = exchange("/device/owner/" + action, "POST", request.toString(), "", true, 42 * 1024 * 1024);
-    if (response.getInt("status") != 200) throw new IOException(response.getJSONObject("body").optString("error", "Connexion propriétaire indisponible."));
+    if (response.getInt("status") != 200) throw new IOException(response.getJSONObject("body").optString("error", "Mac unreachable."));
     return response.getJSONObject("body");
   }
 

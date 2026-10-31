@@ -144,7 +144,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
     followButton.setAttribute('aria-pressed', 'false'); followButton.dataset.followAgent = ''; followButton.disabled = viewLink.mode === 'follow';
     followNote = notebookElement('p', '', 'notebook-follow-state'); followNote.setAttribute('aria-live', 'polite'); statusRow.append(followNote); actions.append(followButton);
   }
-  if (!reviewKey && capabilities.reviewAuthority !== 'unavailable') actions.append(button('Connect tablet', () => run(connectTablet())));
+  if (!reviewKey && !globalThis.ContextRoomNativeOwner && capabilities.reviewAuthority !== 'unavailable') actions.append(button('Connect tablet', () => run(connectTablet())));
   const eink = button('E-ink contrast', () => { dialog.classList.toggle('notebook-eink'); eink.setAttribute('aria-pressed', String(dialog.classList.contains('notebook-eink'))); run(client.change(state => ({ metadata: { ...state.metadata, eink: dialog.classList.contains('notebook-eink') } }))); }); eink.setAttribute('aria-pressed', 'false'); actions.append(eink);
   const fingerLabel = notebookElement('label', 'Finger draws'), finger = document.createElement('input'); finger.type = 'checkbox'; finger.addEventListener('change', () => surface.fingerInk = finger.checked); fingerLabel.prepend(finger); actions.append(fingerLabel);
   const submitScope = document.createElement('select'); submitScope.setAttribute('aria-label', 'Notebook proposal destination');

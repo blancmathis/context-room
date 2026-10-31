@@ -43,7 +43,7 @@ public final class MacDiscoveryTest {
     assertFalse(urls.contains("https://192.168.1.2:4318"));
     for (String url : urls) assertFalse(url.contains("fe80") || url.contains("127.0.0.1"));
     List<String> few = MacDiscovery.candidates(Arrays.asList(InetAddress.getByName("2001:db8::7"), InetAddress.getByName("10.0.0.5")), 4318, "");
-    assertEquals(Arrays.asList("https://10.0.0.5:4318", "https://[2001:db8:0:0:0:0:0:7]:4318"), few);
+    assertEquals(Arrays.asList("https://10.0.0.5:4318", "https://[" + InetAddress.getByName("2001:db8::7").getHostAddress() + "]:4318"), few);
   }
 
   private CredentialVault vault() {

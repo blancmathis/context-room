@@ -267,8 +267,8 @@ final class OwnerWorkspace {
     return sameOrigin(uri) && ("/".equals(uri.getPath()) || uri.getPath().matches("/reviews/[A-Za-z0-9_-]+/?"));
   }
   static String safeError(Exception error) {
-    return error instanceof javax.net.ssl.SSLException ? "L’identité sécurisée du Mac a changé. La connexion est refusée."
-      : "Connexion propriétaire indisponible. Vérifiez le Mac et l’appairage ; les changements déjà enregistrés sont conservés.";
+    return error instanceof javax.net.ssl.SSLException ? "The Mac’s secure identity changed. Connection refused."
+      : "Mac unreachable. Saved changes are kept.";
   }
   void foreground(boolean enabled) {
     foreground = enabled;

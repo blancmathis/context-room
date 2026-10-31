@@ -37,7 +37,7 @@ export function webEntryHtml(bundle, { mode = 'offline', deviceId = '' } = {}) {
   return versionWebSource(`<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="context-room-web-entry" content="${mode}"><meta name="context-room-browser-device" content="${deviceId}">
-<meta name="theme-color" content="#101416"><title>Context Room</title>
+<meta name="theme-color" content="#f7f8f6"><meta name="color-scheme" content="light"><title>Context Room</title>
 <link rel="manifest" href="/manifest.webmanifest"><link rel="stylesheet" href="${bundle.cssPath}">
 <link rel="stylesheet" href="/assets/ui/web-app.css"><script src="/assets/ui/browser-session.js"></script></head>
 <body><main class="web-entry"><h1>Context Room</h1><p id="web-entry-status" role="status"></p>
@@ -61,7 +61,7 @@ export function webAppResponse(url, bundle) {
   }
   if (url.pathname === '/manifest.webmanifest') return { status: 200, headers: { ...headers, 'content-type': 'application/manifest+json' }, body: JSON.stringify({
     id: '/', name: 'Context Room', short_name: 'Context Room', start_url: '/', scope: '/', display: 'standalone',
-    background_color: '#101416', theme_color: '#101416', lang: 'en',
+    background_color: '#f7f8f6', theme_color: '#f7f8f6', lang: 'en',
     icons: [192, 512].map(size => ({ src: `/assets/icons/context-room-${size}.png`, sizes: `${size}x${size}`, type: 'image/png', purpose: 'any maskable' })),
   }) };
   if (url.pathname === '/offline.html') return { status: 200, headers: { ...headers, 'content-type': 'text/html; charset=utf-8',

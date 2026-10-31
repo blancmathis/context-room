@@ -10876,6 +10876,8 @@ async function applyWorkspaceUrlState({ reason = "history", force = false } = {}
         state.globalExplorerProjectKey = project.projectKey;
         state.globalExplorerMode = "project";
         state.globalProjectWorktreeIds.set(project.projectKey, requestedLocationId);
+      } else {
+        state.globalExplorerMode = "projects";
       }
       if (target.view !== "graph") await loadFiles({ navigation: true });
       if (generation !== state.workspaceNavigationGeneration) return false;
@@ -10935,6 +10937,11 @@ async function applyWorkspaceUrlState({ reason = "history", force = false } = {}
       if (proposalReturnFocusId) focusContextRoomHubReturnTarget(proposalReturnFocusId);
     }
     if (generation !== state.workspaceNavigationGeneration) return false;
+    if (projectChanged) {
+      // Back to "no project": the Explorer and the home cards must forget the old selection too.
+      renderGlobalProjectExplorer();
+      renderContextHubHomeProjects();
+    }
     state.workspaceSyncedUrl = window.location.href;
     persistNavigationState();
     publishSessionState().catch(() => {});
@@ -26222,6 +26229,12 @@ el("notebookSpacePanel")?.addEventListener("click", (event) => {
   const item = move && space ? (notebookSpaceItems.items || []).find((entry) => entry.id === move.dataset.notebookSpaceMove) : null;
   if (item) moveNotebookBetweenPlaces(item, { id: space.id, title: "Notebooks" }, notebookMovePlaces()).catch((error) => setStatus(error.message));
 });
+if (globalThis.ContextRoomNativeOwner) {
+  // The tablet has no keyboard shortcut: keep the button, drop the Mac-only hint.
+  const gotoButton = document.querySelector("[data-context-hub-project-goto]");
+  gotoButton?.querySelector("kbd")?.remove();
+  gotoButton?.setAttribute("title", "Go to project");
+}
 el("contextHubProjectsPanel")?.addEventListener("click", (event) => {
   if (event.target.closest("[data-context-hub-project-goto]")) {
     openContextHubProjectPicker(null, { purpose: "open" });

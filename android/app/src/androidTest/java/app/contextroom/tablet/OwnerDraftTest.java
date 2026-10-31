@@ -28,7 +28,7 @@ public final class OwnerDraftTest {
         ui.evaluate(activity, "(()=>{const e=document.querySelector('dialog[open] textarea');e.value += " + JSONObject.quote(addition) + ";e.dispatchEvent(new Event('input',{bubbles:true}))})()");
         ui.visible(activity, "[...document.querySelectorAll('dialog[open] button')].some(n=>n.textContent==='Save draft'&&!n.disabled)");
         ui.evaluate(activity, "[...document.querySelectorAll('dialog[open] button')].find(n=>n.textContent==='Save draft').click()");
-        ui.visible(activity, "document.querySelector('dialog[open] [role=status]')?.textContent.includes('Draft saved')");
+        ui.visible(activity, "document.querySelector('dialog[open] > [role=status]')?.textContent.includes('Draft saved')");
         ui.evaluate(activity, "[...document.querySelectorAll('dialog[open] button')].find(n=>n.textContent==='Close').click()");
         ui.visible(activity, "!document.querySelector('dialog[open]')");
         ui.evaluate(activity, "window.__draftTestDeparting = true; location.reload()");
