@@ -12,7 +12,9 @@ export function fitToTokenBudget(value, { budget, render, trimmers = [] }) {
   // Dropping the last items of one array one render at a time is quadratic on a large
   // result. The output only shrinks as items go, so find by bisection the smallest
   // number of drops that fits (or all of them) and land there; the state and the
-  // trimmed count are the ones the one-at-a-time loop reaches.
+  // trimmed count are the ones the one-at-a-time loop reaches. An empty array may
+  // render longer than one item (a "nothing found" line), so never assume that
+  // dropping everything is the shortest output.
   const popUntilItFits = (dotted) => {
     const array = arrayAt(dotted);
     const base = trimmed[dotted] || 0;
@@ -26,7 +28,6 @@ export function fitToTokenBudget(value, { budget, render, trimmers = [] }) {
     const length = array.length;
     let low = 1;
     let high = length;
-    if (length > 8 && !fitsAfter(length)) low = high = length;
     while (low < high) {
       const mid = (low + high) >> 1;
       if (fitsAfter(mid)) high = mid;

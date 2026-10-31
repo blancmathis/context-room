@@ -364,6 +364,35 @@ test("fitToTokenBudget on a large result lands where one-at-a-time dropping does
   }
 });
 
+test("fitToTokenBudget matches one-at-a-time dropping when an empty list renders a longer placeholder", () => {
+  const make = () => ({ data: { items: Array.from({ length: 12 }, (_, index) => `d${index}`) } });
+  const render = (value, report) => JSON.stringify({
+    items: value.data.items.length ? value.data.items : "No matching accepted docs were found for this request; widen the query.",
+    report,
+  });
+  for (let budget = 10; budget <= 120; budget += 1) {
+    const reference = make();
+    const refTrimmed = {};
+    const refReport = { requested: budget, estimatedTokens: 0, fits: true, trimmed: refTrimmed };
+    let refOutput = "";
+    for (let pass = 0; pass < 1000; pass += 1) {
+      refOutput = render(reference, refReport);
+      const estimate = estimateTokens(refOutput);
+      if (estimate > budget && reference.data.items.length) {
+        reference.data.items.pop();
+        refTrimmed["data.items"] = (refTrimmed["data.items"] || 0) + 1;
+        continue;
+      }
+      if (refReport.estimatedTokens === estimate && refReport.fits === estimate <= budget) break;
+      refReport.estimatedTokens = estimate;
+      refReport.fits = estimate <= budget;
+    }
+    const { output, report } = fitToTokenBudget(make(), { budget, render, trimmers: ["data.items"] });
+    assert.equal(output, refOutput, `budget ${budget}`);
+    assert.deepEqual(report, refReport, `budget ${budget}`);
+  }
+});
+
 test("context bundle, docs search and brief keep the whole printed output within --budget", (t) => {
   const { root, parent } = fixture(t);
   registerCliProject({ root, title: "Budget" });
