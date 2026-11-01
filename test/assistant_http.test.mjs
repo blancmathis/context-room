@@ -8,6 +8,8 @@ import { assistantFixture, MAC_TASK_ID, MAC_TASK_OTHER } from './fixtures/assist
 import { listLocalProposals, readLocalProposalFile } from '../src/local_proposals.mjs';
 import { writeDocReviewDecision } from '../src/context_room.mjs';
 import { codexToolContent } from '../src/assistant_observations.mjs';
+import { openNotebook, readNotebook, transferNotebook } from '../src/notebooks.mjs';
+import { notebookHash } from '../src/notebook_io.mjs';
 
 async function until(check) { for (let n = 0; n < 150; n++) { if (check()) return; await delay(20); } throw new Error('Synthetic provider did not start'); }
 
@@ -134,4 +136,31 @@ test('a conversation opens its own Codex task on the Mac only once it has one', 
   await until(() => f.turns.length === 1); f.finish();
   const opened = await f.post('/api/assistant/conversations/' + created.body.id + '/open-on-mac', {}); assert.equal(opened.status, 200);
   assert.match(f.opened[0], /^codex:\/\/threads\/0199bbbb-cccc-7ddd-8eee-/);
+});
+
+test('after a real move, the exact UI history query finds the conversation in the new project only', async t => {
+  const a = await assistantFixture(); t.after(() => a.close());
+  const b = await assistantFixture({ assistantRoot: path.join(a.base, 'private-assistant') }); t.after(() => b.close());
+  const allow = () => true, file = 'docs/Scene.crnb', scene = openNotebook(a.root, { path: file, canWrite: allow });
+  const source = { kind: 'notebook', path: file, resourceId: scene.resourceId, revision: scene.revision, locationRevision: scene.locator.revision, selection: [] };
+  const created = await a.post('/api/assistant/conversations', { requestId: randomUUID(), source }); assert.equal(created.status, 201);
+  const preview = transferNotebook(a.root, b.root, { resourceId: scene.resourceId, path: file }, { canWriteSource: allow, canWriteTarget: allow, preview: true });
+  transferNotebook(a.root, b.root, { resourceId: scene.resourceId, path: file, operationId: 'move-http', expectedRevision: preview.revision }, { canWriteSource: allow, canWriteTarget: allow });
+  // Built exactly as src/ui/assistant.mjs builds it, from the notebook as each project shows it.
+  const history = async (f, current) => {
+    const historyQuery = new URLSearchParams({ kind: current.kind, path: current.path, ...(current.resourceId ? { resourceId: current.resourceId } : {}), ...(current.locationRevision ? { locationRevision: current.locationRevision } : {}) });
+    const response = await fetch(f.url + '/api/assistant/conversations?' + historyQuery + '&limit=1&selectionHash=' + notebookHash(JSON.stringify(current.selection || [])));
+    return { status: response.status, body: await response.json() };
+  };
+  const moved = readNotebook(b.root, scene.resourceId, { includeDocument: false });
+  const here = { ...source, locationRevision: moved.locator.revision, revision: moved.revision };
+  const found = await history(b, here); assert.equal(found.status, 200);
+  assert.deepEqual(found.body.conversations.map(item => item.id), [created.body.id]);
+  const opened = await (await fetch(b.url + '/api/assistant/conversations/' + created.body.id)).json();
+  assert.equal(opened.source.locationRevision, moved.locator.revision);
+  assert.equal((await b.post('/api/assistant/conversations/' + created.body.id + '/send', { requestId: randomUUID(), text: 'Moved notebook' })).status, 202);
+  await until(() => b.turns.length === 1); b.finish();
+  assert.deepEqual((await history(a, source)).body.conversations, []);
+  const refused = await fetch(a.url + '/api/assistant/conversations/' + created.body.id);
+  assert.equal(refused.status, 409); assert.equal(JSON.stringify(await refused.json()).includes('assistant_notebook_moved'), true);
 });
