@@ -641,3 +641,30 @@ test("stale recovery rejects a reclaimers symlink without touching its external 
   assert.equal(fs.lstatSync(reclaimersPath).isSymbolicLink(), true);
   assert.equal(fs.existsSync(lockPath), false);
 });
+
+test("a non-durable owner record skips fsync, and an empty or truncated record is stale only after staleMs", () => {
+  const root = testRoot("non-durable-record");
+  const lockPath = path.join(root, "control.lock");
+  const original = fs.fsyncSync;
+  let synced = 0;
+  fs.fsyncSync = (descriptor) => { synced += 1; return original(descriptor); };
+  try {
+    withFilesystemLock(lockPath, () => {});
+    assert.equal(synced, 1, "The default owner record stays durable");
+    synced = 0;
+    withFilesystemLock(lockPath, () => {}, { durableRecord: false });
+    assert.equal(synced, 0, "durableRecord: false skips the owner-record fsync");
+  } finally {
+    fs.fsyncSync = original;
+  }
+  // A record written without fsync can come back empty or cut after a power loss.
+  for (const content of ["", "{\"pid\":12,\"tok"]) {
+    fs.writeFileSync(lockPath, content, { mode: 0o600 });
+    assert.throws(() => withFilesystemLock(lockPath, () => {}, { timeoutMs: 80, staleMs: 60_000 }), { code: "filesystem_lock_busy" },
+      "A young damaged record still waits: it may be a writer between open and write");
+    const old = new Date(Date.now() - 120_000);
+    fs.utimesSync(lockPath, old, old);
+    assert.equal(withFilesystemLock(lockPath, () => "reclaimed", { timeoutMs: 2_000, staleMs: 60_000, durableRecord: false }), "reclaimed");
+    assert.equal(fs.existsSync(lockPath), false);
+  }
+});

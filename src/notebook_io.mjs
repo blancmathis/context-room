@@ -112,7 +112,7 @@ export function writeNotebookBytes(root, rel, bytes, { exclusive = false, mode =
 }
 export const readNotebookJson = (root, rel, fallback = null) => { const bytes = readNotebookBytes(root, rel); return bytes === null ? fallback : JSON.parse(bytes.toString('utf8')); };
 export const writeNotebookJson = (root, rel, value, options) => writeNotebookBytes(root, rel, stableNotebookJson(value) + '\n', options);
-export function withNotebookLock(root, rel, operation) {
+export function withNotebookLock(root, rel, operation, lockOptions = {}) {
   if (rel.startsWith('.context-room/')) assertProjectWriter(root);
   const identity = canonicalNotebookRoot(root), parent = path.posix.dirname(rel);
   if (parent !== '.') makeNotebookDirectory(root, parent);
@@ -122,5 +122,5 @@ export function withNotebookLock(root, rel, operation) {
     safeNotebookPath(root, rel);
     if (rel.startsWith('.context-room/')) assertProjectWriter(root);
     return operation();
-  });
+  }, lockOptions);
 }
