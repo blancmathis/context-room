@@ -10876,7 +10876,8 @@ async function applyWorkspaceUrlState({ reason = "history", force = false } = {}
         state.globalExplorerProjectKey = project.projectKey;
         state.globalExplorerMode = "project";
         state.globalProjectWorktreeIds.set(project.projectKey, requestedLocationId);
-      } else {
+      } else if (!target.projectId) {
+        // Only "no project" shows the project list; a project not yet in the Hub list keeps its tree.
         state.globalExplorerMode = "projects";
       }
       if (target.view !== "graph") await loadFiles({ navigation: true });
