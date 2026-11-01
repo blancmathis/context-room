@@ -73,6 +73,22 @@ async function startSwitchableGitRemote(basePath) {
   };
 }
 
+function removeWritableTree(root) {
+  if (!fs.existsSync(root)) return;
+  const makeWritable = (target) => {
+    let stats;
+    try { stats = fs.lstatSync(target); } catch { return; }
+    if (stats.isDirectory() && !stats.isSymbolicLink()) {
+      try { fs.chmodSync(target, 0o755); } catch {}
+      for (const entry of fs.readdirSync(target)) makeWritable(path.join(target, entry));
+    } else if (!stats.isSymbolicLink()) {
+      try { fs.chmodSync(target, 0o644); } catch {}
+    }
+  };
+  makeWritable(root);
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
 test("a stalled Shared remote does not freeze the Hub during a Shared refresh", { timeout: 90_000 }, async (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-shared-stall-"));
   const env = {
@@ -89,6 +105,8 @@ test("a stalled Shared remote does not freeze the Hub during a Shared refresh", 
       else process.env[key] = value;
     }
   });
+  // Registered early so it runs last: the Hub and the remote are stopped first.
+  t.after(() => removeWritableTree(base));
 
   const remote = path.join(base, "remote.git");
   const seed = path.join(base, "seed");

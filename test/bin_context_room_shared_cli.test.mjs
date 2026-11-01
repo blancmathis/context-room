@@ -385,6 +385,8 @@ test("context bundle offline serves the last accepted snapshot only with --allow
   const payload = JSON.parse(stale.stdout);
   assert.equal(payload.ok, true);
   assert.ok(payload.warnings.some((warning) => /offline|last accepted/i.test(warning)), JSON.stringify(payload.warnings));
+  // The stale bundle still carries the accepted Shared content, not only a warning.
+  assert.match(JSON.stringify(payload.data), /Accepted shared guidance|projects\/demo/, "the stale bundle must include the accepted Shared resource");
 
   const strict = runCli(["context", "bundle", "--root", project, "--task=Read accepted guidance", "--format=json"], env, project);
   assert.notEqual(strict.status, 0, strict.stdout);
@@ -392,5 +394,26 @@ test("context bundle offline serves the last accepted snapshot only with --allow
   assert.equal(refused.ok, false);
   assert.equal(refused.error.code, "shared-freshness-unverified");
   assert.match(refused.error.message, /--allow-stale/);
+  assert.match(refused.error.message, /silent remote/, "the refusal documents the slow silent-remote case");
   assert.ok(refused.nextActions.some((action) => /--allow-stale/.test(action.command)), JSON.stringify(refused.nextActions));
+});
+
+test("context bundle --allow-stale without any Shared snapshot says there is none", (t) => {
+  const { env, project, remote } = fixture(t);
+  git(project, ["init", "--initial-branch=main"]);
+  git(project, ["config", "user.name", "No snapshot"]);
+  git(project, ["config", "user.email", "no-snapshot@example.test"]);
+  fs.mkdirSync(path.join(project, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(project, "docs", "README.md"), "# Project\n");
+  initializeContextRoomProject(project, { title: "No snapshot", allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+  git(project, ["add", "."]);
+  git(project, ["commit", "-m", "Initial"]);
+  connectSharedContext(project, { repository: remote, projectId: "demo", sync: false });
+  fs.renameSync(remote, remote + ".offline");
+
+  const stale = runCli(["context", "bundle", "--root", project, "--task=Read accepted guidance", "--allow-stale", "--format=json"], env, project);
+  assert.equal(stale.status, 0, stale.stderr + stale.stdout);
+  const payload = JSON.parse(stale.stdout);
+  assert.ok(payload.warnings.some((warning) => /no Shared snapshot/i.test(warning)), JSON.stringify(payload.warnings));
+  assert.ok(!payload.warnings.some((warning) => /uses the last accepted local snapshot/.test(warning)), JSON.stringify(payload.warnings));
 });

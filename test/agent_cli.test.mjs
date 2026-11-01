@@ -23,7 +23,8 @@ import {
 } from "../src/agent_cli.mjs";
 import { cliCapabilities, cliEnvelope, cliErrorEnvelope, ContextRoomCliError, projectCliData } from "../src/cli_contract.mjs";
 import { appendContextRoomEvent, contextRoomEventJournalPath, readContextRoomEvents } from "../src/event_journal.mjs";
-import { initializeContextRoomProject, writeDocReviewDecision, writeMemoryWebappSettings } from "../src/context_room.mjs";
+import { initializeContextRoomProject, readMemoryWebappSettings, writeDocReviewDecision, writeMemoryWebappSettings } from "../src/context_room.mjs";
+import { listContextHubProjects } from "../src/context_hub.mjs";
 import { fitToTokenBudget } from "../src/agent_budget.mjs";
 import { estimateTokens } from "../src/documentation.mjs";
 
@@ -429,4 +430,20 @@ test("context bundle, docs search and brief keep the whole printed output within
   assert.match(brief.stdout, /- docs\/guide\.md /);
   assert.doesNotMatch(brief.stdout.split("## Review Warnings")[0], /guide-draft/, "Read First lists accepted documents only");
   assert.match(brief.stdout, /not reviewed yet and left out/);
+});
+
+test("project register --title is the title the Hub lists", (t) => {
+  const { root } = fixture(t);
+  const registered = registerCliProject({ root, title: "Requested title" });
+  assert.equal(registered.title, "Requested title");
+  assert.equal(readMemoryWebappSettings(root).title, "Requested title");
+  const listed = listContextHubProjects().find((project) => project.id === registered.id);
+  assert.equal(listed.title, "Requested title");
+});
+
+test("project register --title refuses a folder without project config", (t) => {
+  const { parent } = fixture(t);
+  const bare = path.join(parent, "bare");
+  fs.mkdirSync(bare);
+  assert.throws(() => registerCliProject({ root: bare, title: "Nope" }), (error) => error.code === "title-needs-project-config");
 });

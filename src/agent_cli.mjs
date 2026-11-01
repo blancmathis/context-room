@@ -619,6 +619,16 @@ export function listCliProjects({ query = "", recent = false } = {}) {
 
 export function registerCliProject({ root = process.cwd(), title = "" } = {}) {
   const projectRoot = projectConfigRoot(root) || stablePath(root);
+  const requestedTitle = String(title || "").trim();
+  // The Hub lists the title stored in .context-room/config.json, so a requested
+  // title is written there. Without a config the title cannot be shown: refuse.
+  if (requestedTitle) {
+    if (!fs.existsSync(path.join(projectRoot, CONFIG_FILE))) {
+      throw new ContextRoomCliError("title-needs-project-config", "--title needs an initialized project (.context-room/config.json). Run context-room init first, or register without --title.", { exitCode: 2 });
+    }
+    const settings = readMemoryWebappSettings(projectRoot);
+    if (settings.title !== requestedTitle) writeMemoryWebappSettings(projectRoot, { ...settings, title: requestedTitle });
+  }
   const registered = registerContextHubProject(projectRoot, { title });
   const warning = contextHubRegistrationWarning(registered);
   if (warning) console.warn(warning);
@@ -1337,8 +1347,8 @@ function sharedFreshness(target, { fresh = false } = {}) {
 
 function staleSnapshotRefusal(error, target, { task = "", command = "context bundle" } = {}) {
   const revision = target.root && target.shared ? String(sharedContextStatus(target.root).revision || "") : "";
-  const snapshot = revision ? `the last accepted local snapshot (${revision.slice(0, 12)})` : "the last accepted local snapshot";
-  return new ContextRoomCliError("shared-freshness-unverified", `${error.message}\nOffline? Run again with --allow-stale to use ${snapshot}.`, {
+  const snapshot = revision ? `the last accepted local snapshot (${revision.slice(0, 12)})` : "the last accepted local snapshot (none yet: Shared content will be missing)";
+  return new ContextRoomCliError("shared-freshness-unverified", `${error.message}\nOffline? Run again with --allow-stale to use ${snapshot}. (A silent remote can take up to ${Math.round(DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS / 1000)} s to be detected before this refusal; --allow-stale skips that wait.)`, {
     details: error.details || null,
     retryable: true,
     nextActions: [{
@@ -1403,7 +1413,11 @@ export function buildAgentPrepare(target, { task = "", sessionId = "", provider 
     warnings: [
       freshness.status === "stale" ? "Shared evidence comes from the last accepted local snapshot. Use --fresh before a mutation or high-stakes decision." : "",
       freshness.status === "offline" ? `Shared remote was unreachable at the last sync; serving the last accepted local snapshot${freshness.revision ? ` (${freshness.revision.slice(0, 12)})` : ""}. Use --fresh once online.` : "",
-      servesStaleSnapshot ? "--allow-stale: Shared freshness was not verified; this bundle uses the last accepted local snapshot." : "",
+      servesStaleSnapshot
+        ? (freshness.revision
+          ? "--allow-stale: Shared freshness was not verified; this bundle uses the last accepted local snapshot."
+          : "--allow-stale: no Shared snapshot exists yet (never synchronized); this bundle has no Shared content.")
+        : "",
     ].filter(Boolean),
     nextActions,
   };

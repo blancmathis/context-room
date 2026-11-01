@@ -9,10 +9,27 @@ import { createMemoryServer, initializeContextRoomProject } from "../src/context
 
 // Missing or wrong input is the caller's problem: a 4xx with a code, never a
 // generic 500 "could not complete this request".
+function removeWritableTree(root) {
+  if (!fs.existsSync(root)) return;
+  const makeWritable = (target) => {
+    let stats;
+    try { stats = fs.lstatSync(target); } catch { return; }
+    if (stats.isDirectory() && !stats.isSymbolicLink()) {
+      try { fs.chmodSync(target, 0o755); } catch {}
+      for (const entry of fs.readdirSync(target)) makeWritable(path.join(target, entry));
+    } else if (!stats.isSymbolicLink()) {
+      try { fs.chmodSync(target, 0o644); } catch {}
+    }
+  };
+  makeWritable(root);
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
 test("missing input answers 4xx with a code, and Codex Prompt Center without Codex is an empty state", async (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-missing-input-"));
   const previousHubHome = process.env.CONTEXT_ROOM_HUB_HOME;
   process.env.CONTEXT_ROOM_HUB_HOME = path.join(base, "hub");
+  t.after(() => removeWritableTree(base));
   t.after(() => {
     if (previousHubHome === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
     else process.env.CONTEXT_ROOM_HUB_HOME = previousHubHome;

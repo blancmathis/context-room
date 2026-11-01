@@ -15766,6 +15766,25 @@ function runContextHubProcessTask(root, payload = {}, task = "context-hub") {
   });
 }
 
+// Refresh children of each project root, so closing a server stops its own
+// children instead of waiting for them (up to the 45 s process timeout).
+const contextHubProjectSyncChildren = new Map();
+function registerContextHubProjectSyncChild(root, child) {
+  if (!child || typeof child.once !== "function") return;
+  const children = contextHubProjectSyncChildren.get(root) || new Set();
+  children.add(child);
+  contextHubProjectSyncChildren.set(root, children);
+  child.once("close", () => {
+    children.delete(child);
+    if (!children.size && contextHubProjectSyncChildren.get(root) === children) contextHubProjectSyncChildren.delete(root);
+  });
+}
+function killContextHubProjectSyncChildren(root) {
+  for (const child of contextHubProjectSyncChildren.get(path.resolve(root)) || []) {
+    try { child.kill("SIGKILL"); } catch {}
+  }
+}
+
 function runContextHubProjectSyncProcessTask(root, {
   timeoutMs = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS,
 } = {}) {
@@ -15775,6 +15794,12 @@ function runContextHubProjectSyncProcessTask(root, {
     : DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS;
   const script = `
     const [moduleUrl, root, rawTimeoutMs] = process.argv.slice(1);
+    const boundedJsonValue = (value) => {
+      try {
+        const text = value === undefined ? "" : JSON.stringify(value);
+        return text && text.length <= 8192 ? JSON.parse(text) : undefined;
+      } catch { return undefined; }
+    };
     try {
       const { syncSharedContext } = await import(moduleUrl);
       const synced = syncSharedContext(root, {
@@ -15797,11 +15822,13 @@ function runContextHubProjectSyncProcessTask(root, {
         statusCode: error?.statusCode,
         retryable: error?.retryable === true,
         expose: error?.expose === true,
+        details: boundedJsonValue(error?.details),
+        nextActions: boundedJsonValue(error?.nextActions),
       }));
     }
   `;
   return new Promise((resolve, reject) => {
-    execFile(process.execPath, [
+    const child = execFile(process.execPath, [
       "--input-type=module",
       "--eval",
       script,
@@ -15831,8 +15858,11 @@ function runContextHubProjectSyncProcessTask(root, {
       if (Number.isInteger(result?.statusCode) && result.statusCode >= 400 && result.statusCode <= 599) taskError.statusCode = result.statusCode;
       if (result?.retryable === true) taskError.retryable = true;
       if (result?.expose === true) taskError.expose = true;
+      if (result?.details !== undefined) taskError.details = result.details;
+      if (Array.isArray(result?.nextActions)) taskError.nextActions = result.nextActions;
       reject(taskError);
     });
+    registerContextHubProjectSyncChild(path.resolve(root), child);
   });
 }
 
@@ -20719,6 +20749,7 @@ export function createMemoryServer({
   server.once("close", () => {
     cleanupTask?.kill();
     const pendingRefreshes = [...contextHubRefreshNotifications.values()];
+    for (const syncRoot of contextHubProjectSyncs.keys()) killContextHubProjectSyncChildren(syncRoot);
     const pendingProjectSyncs = [...contextHubProjectSyncs.values()].map((entry) => entry.promise);
     const backgroundTerminations = [];
     if (assistantRuntime) backgroundTerminations.push(assistantRuntime.close());

@@ -5726,7 +5726,7 @@ function renderCodexPromptWorkspace() {
         + '</button>'
       ).join("")
     ).join("")
-    : '<div class="shared-proposal-empty">' + escapeHtml(state.codexPromptsError || "No prompt target matches this search.") + '</div>';
+    : '<div class="shared-proposal-empty">' + escapeHtml(state.codexPromptsError || (state.codexPrompts && state.codexPrompts.available === false && state.codexPrompts.unavailableReason) || "No prompt target matches this search.") + '</div>';
   renderCodexPromptDetail();
 }
 
