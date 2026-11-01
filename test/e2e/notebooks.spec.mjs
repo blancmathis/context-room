@@ -389,7 +389,7 @@ test('@smoke @notebook successful synchronization preserves unrelated local erro
     await dialog.locator('input[type=file]').setInputFiles({ name: 'invalid.gif', mimeType: 'image/gif', buffer: Buffer.from('invalid') });
     const alert = dialog.locator('.notebook-error');
     await expect(alert).toContainText('Choose a PNG, JPEG or WebP');
-    await dialog.getByRole('button', { name: 'Reconnect', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Sync now', exact: true }).click();
     await expect(dialog).toHaveAttribute('data-save-state', 'confirmed');
     await expect(alert).toContainText('Choose a PNG, JPEG or WebP');
     expect(f.errors).toEqual([]);
@@ -788,5 +788,40 @@ test('@notebook export offers PNG and PDF downloads', async ({ page }) => {
     const pdf = await exported('pdf'); expect(pdf.name).toBe('Sketch.pdf'); expect(pdf.bytes.subarray(0, 8).toString('latin1')).toBe('%PDF-1.4');
     const text = pdf.bytes.toString('latin1'); expect(text).toContain('/Filter /DCTDecode'); expect(text.trimEnd().endsWith('%%EOF')).toBe(true);
     expect(f.errors).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test('@smoke @notebook the toolbars wrap at 800 px and scroll with a visible cue at 390 px', async ({ page }) => {
+  const f = await fixture(page);
+  try {
+    for (const width of [800, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      const dialog = await open(page);
+      const bars = await dialog.locator('.notebook-toolbar').evaluateAll((toolbars) => toolbars.map((toolbar) => {
+        const style = getComputedStyle(toolbar), scrolls = toolbar.scrollWidth > toolbar.clientWidth + 1;
+        const outside = [...toolbar.children].filter((node) => node.getClientRects().length && node.getBoundingClientRect().right > innerWidth + 1).length;
+        return { scrolls, cue: (style.maskImage || style.webkitMaskImage || 'none') !== 'none', outside: scrolls ? 0 : outside };
+      }));
+      for (const bar of bars) {
+        expect(bar.outside, `width ${width}`).toBe(0);
+        if (width === 800) expect(bar.scrolls, 'wraps at 800').toBe(false);
+        else if (bar.scrolls) expect(bar.cue, 'cue when clipped at 390').toBe(true);
+      }
+      await page.reload(); await page.waitForFunction(() => typeof openContextRoomNotebook === 'function' && Boolean(state.ownerMutationNonce && state.projectId));
+    }
+    expect(f.errors).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test('@smoke @notebook the retry button says Sync now when the Mac confirmed and Reconnect when it did not', async ({ page }) => {
+  const f = await fixture(page);
+  try {
+    const dialog = await open(page);
+    await expect(dialog.getByRole('button', { name: 'Sync now', exact: true })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Reconnect', exact: true })).toHaveCount(0);
+    await page.context().setOffline(true); await draw(page);
+    await expect(dialog.locator('[role=status]')).toContainText('Saved locally');
+    await expect(dialog.getByRole('button', { name: 'Reconnect', exact: true })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Sync now', exact: true })).toHaveCount(0);
   } finally { await f.close(); }
 });
