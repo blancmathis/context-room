@@ -65,6 +65,7 @@ public final class NativeNavigationSessionTest {
     next = InkView.json("status", 409, "body", InkView.json("code", "device_navigation_session", "error", "This tablet session has been replaced."));
     answer();
     assertEquals("a fresh session polls without the 1.2 s wait", 1, network.size());
+    next = InkView.json("status", 503, "body", new JSONObject());
     answer();
     assertNotEquals("the retired session is never sent again", sessions.get(0), sessions.get(1));
     assertEquals(navigation.session, sessions.get(1));
