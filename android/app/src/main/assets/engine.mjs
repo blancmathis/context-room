@@ -122,4 +122,4 @@ window.ContextRoomNative = {
   async exportRecovery() { if (client) emit('export', { data: await client.exportRecovery() }); },
   close() { ++generation; clearTimeout(poll); client?.close(); client = null; },
 };
-storage.ready.then(() => emit('ready')).catch(error => emit('engineStopped', { message: 'Durable storage is unavailable. No gesture is declared saved.' + error.message }));
+storage.ready.then(() => emit('ready')).catch(error => emit('engineStopped', { message: 'Durable storage is unavailable. No gesture is declared saved. ' + error.message }));

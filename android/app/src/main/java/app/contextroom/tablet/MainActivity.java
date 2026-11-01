@@ -330,8 +330,8 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
       }
       undoButton = button("Undo", () -> enqueue(InkView.json("action", "undo"))); tools.addView(undoButton);
       redoButton = button("Redo", () -> enqueue(InkView.json("action", "redo"))); tools.addView(redoButton);
-      tools.addView(button("Clear selection", () -> ink.selectedAction("delete")));
-      tools.addView(button("Connect", () -> ink.selectedAction("connect")));
+      tools.addView(button("Delete selection", () -> ink.selectedAction("delete")));
+      tools.addView(button("Link", () -> ink.selectedAction("connect")));
       tools.addView(button("Duplicate", () -> ink.selectedAction("duplicate")));
       if (BooxInk.supportedDevice()) tools.addView(button("BOOX mode", () -> ink.toggleBoox()));
       tools.addView(button("Reconnect", () -> engine.call("refresh")));
@@ -533,7 +533,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     target.suspendBoox(true);
     AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Add text").setView(input)
       .setPositiveButton("Add", (d, which) -> { if (ink == target && input.length() > 0) target.add(InkView.json("type", "text", "x", x, "y", y, "w", 260, "h", 80, "fontSize", 20, "text", input.getText().toString())); })
-      .setNegativeButton("Undo", null).create();
+      .setNegativeButton("Cancel", null).create();
     dialog.setOnDismissListener(d -> target.suspendBoox(false)); dialog.show();
   }
   void export(JSONObject clientRecovery) {
