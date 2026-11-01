@@ -1739,7 +1739,7 @@ if (command === "context") {
         const task = args.task && args.task !== true ? String(args.task) : args._.slice(2).join(" ").trim() || "current task";
         const result = sharedOnlyContextBundle
           ? buildSharedOnlyAgentPrepare({ repository: explicitSharedRepository, projectId: explicitSharedProject, task, provider, fresh: Boolean(args.fresh), budget: args.budget })
-          : buildAgentPrepareCached(agentFirstTarget, { task, provider, fresh: Boolean(args.fresh), budget: args.budget });
+          : buildAgentPrepareCached(agentFirstTarget, { task, provider, fresh: Boolean(args.fresh), budget: args.budget, allowStale: Boolean(args["allow-stale"]) });
         // A bundle is compact by default; `context effective` gives the complete context.
         // Under a budget the review rule keeps its instruction, not the whole policy object.
         const policy = result.data?.review?.humanDecisionPolicy;
@@ -2361,7 +2361,7 @@ if (command === "agent") {
         if (!task) throw new ContextRoomCliError("missing-task", "agent prepare requires --task or a task argument.", { exitCode: 2 });
         const result = sharedOnlyAgentPrepare
           ? buildSharedOnlyAgentPrepare({ repository: String(args.repository), projectId: sharedAgentProject, task, sessionId, provider, fresh: Boolean(args.fresh), budget: args.budget })
-          : buildAgentPrepareCached(agentFirstTarget, { task, sessionId, provider, fresh: Boolean(args.fresh), budget: args.budget });
+          : buildAgentPrepareCached(agentFirstTarget, { task, sessionId, provider, fresh: Boolean(args.fresh), budget: args.budget, allowStale: Boolean(args["allow-stale"]), command: "agent prepare" });
         emitAgentFirstResult("agent.prepare", result, { format: agentFirstFormat });
         process.exit(0);
       }

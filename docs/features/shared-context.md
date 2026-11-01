@@ -62,7 +62,7 @@ Accepted resources include documents, skills and optional metadata profiles. AGE
 
 ## Offline behavior
 
-Read-only consumption may use the last verified immutable accepted snapshot when the operation explicitly permits it. A full content check of a cached snapshot is reused for up to 30 seconds while every file keeps the same inode, size, mode, mtime, and ctime; any write or mode change forces a new full check. Creating, publishing, accepting, rejecting, or delivering a mutation requires online verification and fails closed when exact remote state cannot be proved.
+Read-only consumption may use the last verified immutable accepted snapshot when the operation explicitly permits it. A full content check of a cached snapshot is reused for up to 30 seconds while every file keeps the same inode, size, mode, mtime, and ctime; any write or mode change forces a new full check. `context bundle --allow-stale` and `agent prepare --allow-stale` are such operations: they skip the Shared network check and serve the last accepted local snapshot with a warning; without the flag, an unverifiable Shared revision fails and the error names `--allow-stale`. In the Hub, a Shared refresh runs in a child process, so a stalled remote never blocks other requests. Creating, publishing, accepting, rejecting, or delivering a mutation requires online verification and fails closed when exact remote state cannot be proved.
 
 ## Human authority
 
