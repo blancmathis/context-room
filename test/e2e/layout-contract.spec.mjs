@@ -566,6 +566,62 @@ test("@layout a fresh runtime subscription ignores replay already reflected by b
   }
 });
 
+test("@layout an open tab resyncs when a restarted Hub numbers runtime events from zero again", async ({ page, browserName }) => {
+  test.skip(browserName !== "chromium", "The cursor reset is engine-independent client logic.");
+  const data = fixture();
+  await page.addInitScript(() => {
+    window.__runtimeSources = [];
+    class ControlledRuntimeEventSource {
+      constructor() {
+        this.listeners = new Map();
+        this.closed = false;
+        window.__runtimeSources.push(this);
+        window.setTimeout(() => this.emit("ready", { cursor: 5, replayableFrom: 1, instanceId: "hub-before-restart" }), 0);
+      }
+
+      addEventListener(type, listener) {
+        this.listeners.set(type, [...(this.listeners.get(type) || []), listener]);
+      }
+
+      emit(type, payload) {
+        if (this.closed) return;
+        const event = new MessageEvent(type, { data: JSON.stringify(payload) });
+        for (const listener of this.listeners.get(type) || []) listener.call(this, event);
+      }
+
+      close() {
+        this.closed = true;
+      }
+    }
+    window.EventSource = ControlledRuntimeEventSource;
+  });
+
+  await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=hub`);
+  await waitForBoot(page);
+  await expect.poll(() => page.evaluate(() => state.runtimeEventCursor)).toBe(5);
+  const resyncStartedAt = await page.evaluate(() => Date.now());
+  const hubReloadedSinceResync = () => page.evaluate((since) => state.apiTrace.some((entry) => entry.path.startsWith("/api/context-hub") && entry.at >= since), resyncStartedAt);
+  // EventSource reconnects with Last-Event-ID 5; the restarted Hub is at cursor 0.
+  await page.evaluate(() => {
+    const source = window.__runtimeSources.at(-1);
+    source.emit("runtime", { cursor: 0, type: "resync-required", data: { instanceId: "hub-after-restart" } });
+    source.emit("ready", { cursor: 0, replayableFrom: 0, instanceId: "hub-after-restart" });
+    source.emit("runtime", { cursor: 1, type: "state-invalidated", data: { source: "filesystem", path: "docs/after-restart.md" } });
+  });
+  await expect.poll(() => page.evaluate(() => ({ cursor: state.runtimeEventCursor, instanceId: state.runtimeEventInstanceId }))).toEqual({
+    cursor: 1,
+    instanceId: "hub-after-restart",
+  });
+  await expect.poll(hubReloadedSinceResync).toBe(true);
+
+  // A restart seen only through a new instance id also drops the old cursor.
+  await page.evaluate(() => window.__runtimeSources.at(-1).emit("ready", { cursor: 0, replayableFrom: 0, instanceId: "hub-after-second-restart" }));
+  await expect.poll(() => page.evaluate(() => ({ cursor: state.runtimeEventCursor, instanceId: state.runtimeEventInstanceId }))).toEqual({
+    cursor: 0,
+    instanceId: "hub-after-second-restart",
+  });
+});
+
 test("@layout executable geometry contract stays continuous at every breakpoint", async ({ page }, testInfo) => {
   const data = fixture();
   const widths = process.env.CONTEXT_ROOM_LAYOUT_WIDTHS

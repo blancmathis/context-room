@@ -10223,6 +10223,9 @@ function workspacePairingLink({ publicHost, secret, issuer = "context-room", age
 
 function createRuntimeEventBus({ limit = 1_000 } = {}) {
   let cursor = 0;
+  // Cursors restart at 0 with each Hub process. The instance id lets an open tab
+  // tell a restarted Hub from a missed event.
+  const instanceId = randomBytes(12).toString("base64url");
   const events = [];
   const clients = new Set();
   const serialize = (event) => `id: ${event.cursor}\nevent: runtime\ndata: ${JSON.stringify(event)}\n\n`;
@@ -10250,8 +10253,9 @@ function createRuntimeEventBus({ limit = 1_000 } = {}) {
         "x-accel-buffering": "no",
       }));
       const oldestCursor = events[0]?.cursor || cursor;
-      if (since && since < oldestCursor - 1) {
-        res.write(serialize({ cursor, type: "resync-required", data: {}, createdAt: new Date().toISOString() }));
+      // A cursor ahead of this bus was issued by an earlier Hub process.
+      if (since && (since > cursor || since < oldestCursor - 1)) {
+        res.write(serialize({ cursor, type: "resync-required", data: { instanceId }, createdAt: new Date().toISOString() }));
       } else {
         for (const event of events) {
           if (event.cursor <= since || (filter && !filter(event))) continue;
@@ -10262,7 +10266,7 @@ function createRuntimeEventBus({ limit = 1_000 } = {}) {
       // `ready` means every replayable event has already been written. The
       // browser may safely advance past filtered events only after it has seen
       // the replay that belongs to this workspace.
-      res.write(`event: ready\ndata: ${JSON.stringify({ cursor, replayableFrom: events[0]?.cursor || cursor })}\n\n`);
+      res.write(`event: ready\ndata: ${JSON.stringify({ cursor, replayableFrom: events[0]?.cursor || cursor, instanceId })}\n\n`);
       let closed = false;
       const client = {
         res,
@@ -21950,10 +21954,13 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       if (!Number.isSafeInteger(cursor)) throw sharedRequestError("The runtime event cursor is invalid", 400, "request_cursor_invalid");
       return cursor;
     };
-    const since = Math.max(
-      runtimeCursor(url.searchParams.get("since")),
-      runtimeCursor(req.headers["last-event-id"]),
-    );
+    // EventSource sends Last-Event-ID on reconnect: it is the last id the tab
+    // saw, including the lower id of a resync after a Hub restart. The query
+    // keeps the cursor of the page load, so it only counts without the header.
+    const lastEventId = req.headers["last-event-id"];
+    const since = lastEventId === undefined || lastEventId === ""
+      ? runtimeCursor(url.searchParams.get("since"))
+      : runtimeCursor(lastEventId);
     runtimeEvents.subscribe(req, res, {
       since,
       workspaceId,

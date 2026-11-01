@@ -1817,6 +1817,59 @@ test("workspace runtime events deliver commands without periodic polling", async
   await reader.cancel();
 });
 
+test("a runtime event cursor from an earlier Hub process asks the tab to resync", async (t) => {
+  const root = makeRoot();
+  initializeContextRoomProject(root, { allowedPaths: [], watchAllow: [] });
+  const readUntilReady = async (baseUrl, headers = {}, query = "") => {
+    const controller = new AbortController();
+    const response = await fetch(baseUrl + "/api/runtime-events" + query, { headers, signal: controller.signal });
+    assert.equal(response.status, 200);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let received = "";
+    while (!received.includes("event: ready")) {
+      const next = await reader.read();
+      if (next.done) break;
+      received += decoder.decode(next.value, { stream: true });
+    }
+    await reader.cancel();
+    controller.abort();
+    const ready = JSON.parse(/event: ready\ndata: (.*)\n/.exec(received)?.[1] || "{}");
+    return { received, ready };
+  };
+  const listen = async () => {
+    const { server } = createMemoryServer({ root });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    t.after(async () => {
+      if (server.listening) await new Promise((resolve) => server.close(() => resolve()));
+    });
+    return { server, baseUrl: `http://127.0.0.1:${server.address().port}` };
+  };
+  const first = await listen();
+  for (let index = 0; index < 5; index += 1) {
+    await fetch(first.baseUrl + "/api/workspaces/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workspaceId: `workspace-before-${index}`, clientInstanceId: `client-before-${index}`, view: "hub" }),
+    });
+  }
+  const before = await readUntilReady(first.baseUrl);
+  assert.ok(before.ready.instanceId, before.received);
+  await new Promise((resolve) => first.server.close(() => resolve()));
+
+  const restarted = await listen();
+  const sinceCursor = Math.max(before.ready.cursor, 5);
+  const reconnect = await readUntilReady(restarted.baseUrl, { "last-event-id": String(sinceCursor) }, `?since=${sinceCursor}`);
+  assert.ok(reconnect.ready.cursor < sinceCursor, reconnect.received);
+  assert.ok(reconnect.ready.instanceId && reconnect.ready.instanceId !== before.ready.instanceId, reconnect.received);
+  assert.match(reconnect.received, /event: runtime\ndata: \{[^\n]*"type":"resync-required"/);
+  assert.ok(reconnect.received.indexOf("resync-required") < reconnect.received.indexOf("event: ready"), reconnect.received);
+
+  // After the resync EventSource reconnects with the lower id; the stale page-load query must not win.
+  const settled = await readUntilReady(restarted.baseUrl, { "last-event-id": String(reconnect.ready.cursor) }, `?since=${sinceCursor}`);
+  assert.doesNotMatch(settled.received, /resync-required/);
+});
+
 test("optimistic file writes and review decisions reject unseen revisions", async (t) => {
   const root = makeRoot();
   fs.mkdirSync(path.join(root, "docs"));
