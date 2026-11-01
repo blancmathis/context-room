@@ -108,7 +108,6 @@ import {
   sharedContextStatus,
   sharedSkillLocationsStatus,
   sharedInstructionLocationsStatus,
-  syncSharedContext,
   unlinkSharedSkillLocation,
   reconcileSharedInstructionLocations,
   resolveSharedDocumentationTarget,
@@ -15787,7 +15786,9 @@ function runContextHubProjectSyncProcessTask(root, {
         ok: false,
         error: error?.message || "Shared project sync failed",
         code: error?.code || "",
+        statusCode: error?.statusCode,
         retryable: error?.retryable === true,
+        expose: error?.expose === true,
       }));
     }
   `;
@@ -15819,7 +15820,9 @@ function runContextHubProjectSyncProcessTask(root, {
         || "Shared project sync failed",
       );
       if (result?.code) taskError.code = result.code;
+      if (Number.isInteger(result?.statusCode) && result.statusCode >= 400 && result.statusCode <= 599) taskError.statusCode = result.statusCode;
       if (result?.retryable === true) taskError.retryable = true;
+      if (result?.expose === true) taskError.expose = true;
       reject(taskError);
     });
   });
@@ -19755,6 +19758,7 @@ export function createMemoryServer({
   contextHubAbandonInvalidSharedRecovery = abandonInvalidContextHubSharedTransaction,
   contextHubConfirmLocation = confirmContextHubProjectLocation,
   contextHubAcceptRefreshTimeoutMs = CONTEXT_HUB_ACCEPT_REFRESH_TIMEOUT_MS,
+  sharedRefreshTimeoutMs = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS,
   port = DEFAULT_PORT,
   globalPreferencesPath = null,
   codexComposerInsert = insertIntoActiveCodexComposer,
@@ -20046,13 +20050,15 @@ export function createMemoryServer({
     });
     return refresh;
   };
-  const scheduleContextHubProjectSync = (targetRoot) => {
+  const scheduleContextHubProjectSync = (targetRoot, syncOptions = undefined) => {
     const resolvedRoot = path.resolve(targetRoot);
     const existing = contextHubProjectSyncs.get(resolvedRoot);
     if (existing) return existing;
     const entry = {
       notifyOnComplete: false,
-      promise: Promise.resolve().then(() => contextHubProjectSync(resolvedRoot)),
+      promise: Promise.resolve().then(() => (syncOptions
+        ? contextHubProjectSync(resolvedRoot, syncOptions)
+        : contextHubProjectSync(resolvedRoot))),
     };
     contextHubProjectSyncs.set(resolvedRoot, entry);
     void entry.promise.then(() => {
@@ -20442,6 +20448,9 @@ export function createMemoryServer({
         contextHubAbandonInvalidSharedRecovery,
         contextHubRoot: resolvedContextHubRoot,
         contextHubAcceptRefreshTimeoutMs,
+        // Shared Git can stall (captive portal, weak Wi-Fi). The refresh runs
+        // in a child process so the Hub event loop keeps serving everyone.
+        refreshSharedProject: (targetRoot) => scheduleContextHubProjectSync(targetRoot, { timeoutMs: sharedRefreshTimeoutMs }).promise,
         terminalDecisionChallenges,
         verifiedAcceptanceFlashes: acceptanceFlashStore,
         frameAncestorPorts: trustedFrameAncestorPorts,
@@ -21406,6 +21415,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   contextHubConfirmLocation = confirmContextHubProjectLocation,
   contextHubRoot = root,
   contextHubAcceptRefreshTimeoutMs = CONTEXT_HUB_ACCEPT_REFRESH_TIMEOUT_MS,
+  refreshSharedProject = (targetRoot) => runContextHubProjectSyncProcessTask(targetRoot),
   terminalDecisionChallenges = null,
   verifiedAcceptanceFlashes = null,
   frameAncestorPorts = [],
@@ -23839,7 +23849,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
   if (req.method === "POST" && url.pathname === "/api/shared-context/refresh") {
     if (!readSharedProjectConnection(root)) throw sharedRequestError("This project is not connected to shared context", 404, "shared_context_not_connected");
-    syncSharedContext(root, { allowOffline: true });
+    await refreshSharedProject(root);
     sendJson(res, 200, sharedContextUiState(root));
     return;
   }
