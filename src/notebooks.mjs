@@ -241,6 +241,17 @@ export function listNotebooks(root) {
 export function notebookDeparture(root, id) {
   try { return readNotebookJson(root, movedPath(notebookId(id))); } catch { return null; }
 }
+/** Cheap proof that nothing `followNotebook` reads in this root changed: the header, the last event, the moved marker and
+ * the pending arrivals (a few stat and readdir calls, no replay). Null when it cannot be computed. */
+export function notebookFingerprint(root, id) {
+  try {
+    id = notebookId(id);
+    const stat = rel => { try { const s = fs.statSync(safeNotebookPath(root, rel)); return [s.ino, s.size, s.mtimeMs]; } catch { return null; } };
+    const names = rel => { try { return fs.readdirSync(safeNotebookPath(root, rel)).sort(); } catch { return null; } };
+    const events = names(`${resourcePath(id)}/events`), incoming = names(`${NOTEBOOK_STORE}/incoming`);
+    return JSON.stringify([canonicalNotebookRoot(root), stat(`${resourcePath(id)}/header.json`), stat(movedPath(id)), events?.length ?? null, events?.at(-1) ?? null, incoming]);
+  } catch { return null; }
+}
 const acceptedRoot = (root, identity) => ['same', 'alias', 'confirmed'].includes(acceptsRootIdentity(root, identity));
 /** Current location of the notebook active in `root`, only when it provably is the notebook recorded at
  * `origin` ({ root, rootIdentity, locationRevision }); otherwise null. A resourceId alone proves nothing:

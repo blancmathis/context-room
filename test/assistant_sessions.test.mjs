@@ -309,3 +309,25 @@ test('a relocation inside the same project keeps the history; a duplicate path d
   assert.throws(() => openNotebook(w.A, { path: 'Carnets/Copy.crnb', canWrite: w.allow }), { code: 'notebook_location_conflict' });
   assert.deepEqual(w.ids(w.A, { ...here, path: 'Carnets/Copy.crnb' }), []);
 });
+
+test('a repeated get does not replay the notebook; a move or a relocation after a cached get is still seen', t => {
+  const w = notebookWorld(t), scene = openNotebook(w.A, { path: w.file, canWrite: w.allow }), id = scene.resourceId;
+  const conversation = w.service.create(w.A, { source: w.sourceOf(scene) });
+  const real = w.service.locateNotebook; let replays = 0;
+  w.service.locateNotebook = (...args) => { replays++; return real(...args); };
+  for (let i = 0; i < 5; i++) assert.equal(w.service.get(w.A, conversation.id).source.path, w.file);
+  assert.equal(replays, 1);
+  // A relocation changes the notebook history: the next get follows it, once.
+  relocateNotebook(w.A, { resourceId: id, operationId: 'relocate-cache', locationRevision: scene.locator.revision, path: 'Carnets/Renamed.crnb' }, { actor: { kind: 'human', id: 'fixture' }, canWrite: w.allow });
+  for (let i = 0; i < 3; i++) assert.equal(w.service.get(w.A, conversation.id).source.path, 'Carnets/Renamed.crnb');
+  assert.equal(replays, 2);
+  // A real move: the old project refuses at once, the new one follows, then both stay cached.
+  w.move(w.A, w.B, id);
+  assert.throws(() => w.service.get(w.A, conversation.id), { code: 'assistant_notebook_moved' });
+  assert.equal(w.service.get(w.B, conversation.id).source.path, w.query(w.B, id).path);
+  const after = replays;
+  for (let i = 0; i < 3; i++) w.service.get(w.B, conversation.id);
+  assert.equal(replays, after);
+  // A third project is still refused.
+  assert.throws(() => w.service.get(w.C, conversation.id), { code: 'assistant_scope' });
+});
