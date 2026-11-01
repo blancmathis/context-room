@@ -241,7 +241,7 @@ function currentWorkerOwner(lockPath) {
   return owner;
 }
 
-function createLockRecord(filePath, { kind = "coordination", ownerLockPath = filePath } = {}) {
+function createLockRecord(filePath, { kind = "coordination", ownerLockPath = filePath, durable = true } = {}) {
   const token = randomUUID();
   const workerOwner = threadId > 0 ? currentWorkerOwner(ownerLockPath) : null;
   const tempPath = path.join(
@@ -266,7 +266,9 @@ function createLockRecord(filePath, { kind = "coordination", ownerLockPath = fil
       token,
       acquiredAt: new Date().toISOString(),
     }) + "\n", "utf8");
-    fs.fsyncSync(handle);
+    // A non-durable record may be lost or left empty by a power cut: readLockRecord
+    // then sees no token, and lockIsStale reclaims it once older than staleMs.
+    if (durable) fs.fsyncSync(handle);
     record = {
       handle,
       pid: process.pid,
@@ -589,7 +591,7 @@ function acquireLock(paths, deadline, options) {
       continue;
     }
     try {
-      const owner = createLockRecord(paths.lock, { kind: "owner", ownerLockPath: paths.lock });
+      const owner = createLockRecord(paths.lock, { kind: "owner", ownerLockPath: paths.lock, durable: options.durableRecord });
       const current = readLockRecord(paths.lock);
       if (lockRecordMatches(owner, current)) return owner;
       try { fs.closeSync(owner.handle); } catch {}
@@ -719,6 +721,9 @@ export function acquireFilesystemLock(lockPath, options = {}) {
     busyCode: String(options.busyCode || "filesystem_lock_busy"),
     requireProcessIdentity: Boolean(options.requireProcessIdentity),
     secureSidecars: Boolean(options.secureSidecars),
+    // Only the owner record may skip fsync; reclaim records stay durable. Callers
+    // whose lock guards no state across a crash (device navigation) opt out.
+    durableRecord: options.durableRecord !== false,
   };
   const paths = lockPaths(lockPath);
   if (threadId > 0) currentWorkerOwner(paths.lock);

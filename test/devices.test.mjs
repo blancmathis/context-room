@@ -97,6 +97,27 @@ test('a steady presence poll keeps the tablet online without a durable write eac
   assert.notEqual(fs.readFileSync(controlPath, 'utf8'), written, 'A session change stays durable');
 });
 
+test('a steady poll and a receipt put no lock-record fsync on the Hub thread (C-12)', async t => {
+  const f = fixture(t), service = await serviceFor(t, f);
+  const scene = openNotebook(f.root, { id: 'navigation-book', path: 'docs/Sketch.crnb', canWrite: f.canWrite });
+  const paired = service.authority.pair(service.createPairing({ projectId: f.projectId, paths: ['docs/Sketch.crnb'] }));
+  let time = 1000;
+  const target = { projectId: f.projectId, resourceId: scene.resourceId, path: scene.locator.path, locationRevision: scene.locator.revision, sceneRevision: scene.revision };
+  const navigation = createDeviceNavigation({ stateRoot: f.stateRoot, serverId: service.describe().serverId, now: () => time,
+    inspectDevice: id => service.authority.inspect(id), resolveTarget: () => target });
+  const authenticate = () => service.authority.authenticate(paired.token), clientSessionId = 'fsync-native-session';
+  navigation.poll(paired.device.id, authenticate, { clientSessionId });
+  const original = fs.fsyncSync, synced = [];
+  fs.fsyncSync = descriptor => { synced.push(descriptor); return original(descriptor); };
+  t.after(() => { fs.fsyncSync = original; });
+  for (let n = 0; n < 5; n++) { time += 1200; navigation.poll(paired.device.id, authenticate, { clientSessionId }); }
+  assert.equal(synced.length, 0, 'An unchanged poll must not fsync anything, the lock record included');
+  const command = navigation.request({ deviceId: paired.device.id, operationId: 'fsync-operation', projectId: f.projectId, resourceId: scene.resourceId });
+  synced.length = 0;
+  navigation.receipt(paired.device.id, authenticate, { operationId: command.operationId, clientSessionId, status: 'deferred' });
+  assert.ok(synced.length > 0 && synced.length <= 2, `A receipt keeps only its command-file fsyncs, got ${synced.length}`);
+});
+
 test('remote notebook navigation is scoped, session-bound and confirmed only by an exact device receipt', async t => {
   const f = fixture(t), service = await serviceFor(t, f);
   const scene = openNotebook(f.root, { id: 'navigation-book', path: 'docs/Sketch.crnb', canWrite: f.canWrite });

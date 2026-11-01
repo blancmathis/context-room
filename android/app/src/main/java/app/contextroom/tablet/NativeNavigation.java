@@ -18,9 +18,11 @@ final class NativeNavigation {
     void receiveView(JSONObject data, JSONObject sent);
     void viewFailure();
   }
+  interface Transport { JSONObject send(DeviceConnection selected, String action, JSONObject body) throws Exception; }
   final Handler main = new Handler(Looper.getMainLooper());
   final Executor network;
   final Host host;
+  Transport transport = DeviceConnection::navigation;
   DeviceConnection connection;
   String session = UUID.randomUUID().toString();
   JSONObject command, receipt;
@@ -33,7 +35,9 @@ final class NativeNavigation {
   void connect(DeviceConnection selected) {
     if (connection == selected) return;
     generation++; connection = selected; session = UUID.randomUUID().toString();
-    command = null; receipt = null; opening = false; deferred = false; running = false;
+    // Keep `running`: a request of the old session may still be in flight. Polling the new session beside it let a late old poll
+    // reach the Hub second and retire the new session (C-12). The old answer is dropped below, then the new session polls.
+    command = null; receipt = null; opening = false; deferred = false;
     schedule(0);
   }
   void foreground(boolean value) { foreground = value; if (value) schedule(0); else main.removeCallbacks(tick); }
@@ -53,11 +57,12 @@ final class NativeNavigation {
     try {
       network.execute(() -> {
         JSONObject answer = null;
-        try { answer = selected.navigation(sent == null ? "poll" : "receipt", body); } catch (Exception ignored) { /* Retry the same receipt; edits have their own durable journal. */ }
+        try { answer = transport.send(selected, sent == null ? "poll" : "receipt", body); } catch (Exception ignored) { /* Retry the same receipt; edits have their own durable journal. */ }
         final JSONObject result = answer;
         main.post(() -> {
-          if (closed || run != generation || selected != connection) return;
+          if (closed) return;
           running = false;
+          if (run != generation || selected != connection) { schedule(0); return; }
           if (result != null) {
             int status = result.optInt("status"); JSONObject data = result.optJSONObject("body");
             if (sent != null) {
@@ -69,6 +74,9 @@ final class NativeNavigation {
                 && selected.session.optJSONObject("device").optString("id").equals(data.optString("deviceId")) && session.equals(data.optString("clientSessionId"))) {
               receive(data);
               host.receiveView(data.optJSONObject("view"), body.optJSONObject("view"));
+            } else if (status == 409 && data != null && "device_navigation_session".equals(data.optString("code"))) {
+              // The Hub retired this session (an older one reached it late). Never retry it: start a fresh session at once.
+              clearCommand(); host.viewFailure(); session = UUID.randomUUID().toString(); schedule(0); return;
             } else if (status == 401 || status == 403 || status == 409) { clearCommand(); host.viewFailure(); }
           }
           schedule(receipt != null && result != null ? 0 : result == null ? 3000 : 1200);

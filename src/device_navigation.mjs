@@ -39,7 +39,9 @@ export function createDeviceNavigation({ stateRoot, serverId, inspectDevice, res
       const durable = { ...state, presence: stored && state.presence && stored.clientSessionId === state.presence.clientSessionId && stored.serverEpoch === state.presence.serverEpoch ? stored : state.presence };
       if (JSON.stringify(durable) !== before) writeNotebookJson(stateRoot, `${prefix(deviceId)}/control.json`, durable);
       return result;
-    });
+      // The lock only serialises this Hub's requests; control.json and commands keep their own fsync. A durable lock record cost one fsync
+      // on the Hub's only thread per 1.2 s poll (C-12: up to 11.7 s under disk load). A record lost in a crash reads as empty, hence stale.
+    }, { durableRecord: false });
   }
   function save(deviceId, command) { writeNotebookJson(stateRoot, commandPath(deviceId, command.operationId), command); return command; }
   function currentTarget(device, target) {
