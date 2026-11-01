@@ -69,7 +69,7 @@ async function applyTheme(page, theme, mode) {
 
 async function expectNoAccessibilityViolations(page) {
   // Audit the settled frame: wait for running animations and transitions (dialog open, theme fade) to end.
-  await page.evaluate(() => Promise.all(document.getAnimations().map((animation) => animation.finished.catch(() => {}))));
+  await page.evaluate(() => Promise.all(document.getAnimations().filter((animation) => animation.effect?.getTiming().iterations !== Infinity).map((animation) => animation.finished.catch(() => {}))));
   const result = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
     .analyze();

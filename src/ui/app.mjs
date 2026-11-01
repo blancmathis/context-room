@@ -18361,8 +18361,19 @@ function wireSharedSkillLocationsSettingsActions(root) {
   root.querySelector("[data-shared-provider-apply]")?.addEventListener("click", () => applySharedSkillProviderSettings().catch((error) => setStatus(error.message)));
 }
 
+let settingsHelpFocusReturnUntil = 0;
+
 function wireSettingsHelpPanels(root) {
-  root.querySelectorAll("[data-settings-help-trigger]").forEach((button) => button.addEventListener("click", () => showSharedContextHelpDialog(button)));
+  const triggers = [...root.querySelectorAll("[data-settings-help-trigger]")];
+  triggers.forEach((button) => button.addEventListener("click", () => showSharedContextHelpDialog(button)));
+  if (settingsHelpFocusReturnUntil) {
+    const recent = Date.now() < settingsHelpFocusReturnUntil;
+    const lost = document.activeElement === document.body || !document.activeElement;
+    if (recent && lost && triggers[0] && !document.querySelector(".shared-context-help-backdrop")) {
+      triggers[0].focus();
+      settingsHelpFocusReturnUntil = 0;
+    } else if (!recent) settingsHelpFocusReturnUntil = 0;
+  }
 }
 
 function showSharedContextHelpDialog(returnFocus = document.activeElement) {
@@ -18379,11 +18390,8 @@ function showSharedContextHelpDialog(returnFocus = document.activeElement) {
     const target = returnFocus instanceof HTMLElement && returnFocus.isConnected ? returnFocus : document.querySelector("[data-settings-help-trigger]");
     if (restoreFocus && target instanceof HTMLElement) {
       target.focus();
-      // A Settings re-render right after closing can replace the trigger: if focus fell to the page, put it on the live one.
-      window.setTimeout(() => {
-        const live = returnFocus instanceof HTMLElement && returnFocus.isConnected ? returnFocus : document.querySelector("[data-settings-help-trigger]");
-        if ((document.activeElement === document.body || !document.activeElement) && live instanceof HTMLElement) live.focus();
-      }, 150);
+      // A Settings re-render soon after closing can replace the trigger: wireSettingsHelpPanels puts focus back when it lands (bounded window).
+      settingsHelpFocusReturnUntil = Date.now() + 3000;
     }
   };
   const onKeydown = (event) => {

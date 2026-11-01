@@ -15,7 +15,7 @@ import {
   unregisterContextHubProject,
   writeContextHubRuntime,
 } from "../src/context_hub.mjs";
-import { openSharedDocumentationProposalByBranch } from "../src/agent_cli.mjs";
+import { openSharedDocumentationProposalByBranch, renderAgentCliHuman } from "../src/agent_cli.mjs";
 import { createMemoryServer, initializeContextRoomProject } from "../src/context_room.mjs";
 import {
   disconnectSharedContext,
@@ -1081,6 +1081,29 @@ test("shared sync warns shared-offline when the Shared repository is unreachable
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /offline/);
   assert.match(result.stdout, /Warning: shared-offline/);
+});
+
+test("shared sync human output keeps conflicts, skill destinations and the offline line", () => {
+  const text = renderAgentCliHuman("shared.sync", {
+    data: {
+      online: false,
+      revision: "abcdef1234567890",
+      revisionChanged: true,
+      commitCount: 2,
+      skillMigrations: [{ id: "m1" }],
+      skillDestinations: [
+        { id: "d1", destination: "/p/.claude/skills", status: "conflict", message: "1 unmanaged destination conflict", conflicts: [{ path: "/p/.claude/skills/x", reason: "Unmanaged" }] },
+        { id: "d2", destination: "/p/.agents/skills", status: "ready", conflicts: [] }
+      ]
+    },
+    warnings: [{ message: "shared-offline: unreachable" }]
+  });
+  assert.match(text, /Shared sync: offline · snapshot abcdef123456 · changed \(2 commits\)/);
+  assert.match(text, /Conflicts: 1\n  \/p\/\.claude\/skills\/x \(Unmanaged\)/);
+  assert.match(text, /Skill destinations: 2 · 1 migration\n/);
+  assert.match(text, /conflict\s+\/p\/\.claude\/skills \(1 unmanaged destination conflict\)/);
+  assert.match(text, /ready\s+\/p\/\.agents\/skills/);
+  assert.match(text, /Warning: shared-offline/);
 });
 
 test("project register on a fresh folder points to init, never to itself, and ignores other projects", (t) => {

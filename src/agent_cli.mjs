@@ -2803,7 +2803,14 @@ export function renderAgentCliHuman(command, payload) {
   }
   if (command === "shared.sync") {
     const warnings = (payload?.warnings || []).map((item) => String(item?.message || item));
-    return [`Shared sync: ${data.online === false ? "offline" : "online"} · snapshot ${String(data.revision || "none").slice(0, 12)}`, ...warnings.map((item) => `Warning: ${item}`)].join("\n") + "\n";
+    const destinations = Array.isArray(data.skillDestinations) ? data.skillDestinations : [];
+    const conflicts = destinations.flatMap((item) => (item.conflicts || []).map((conflict) => `${conflict.path || item.destination || "?"}${conflict.reason ? ` (${conflict.reason})` : ""}`));
+    const migrations = Array.isArray(data.skillMigrations) ? data.skillMigrations.length : 0;
+    return [`Shared sync: ${data.online === false ? "offline" : "online"} · snapshot ${String(data.revision || "none").slice(0, 12)} · ${data.revisionChanged ? `changed (${Number(data.commitCount) || 0} commit${Number(data.commitCount) === 1 ? "" : "s"})` : "unchanged"}`,
+      `Conflicts: ${conflicts.length}`, ...conflicts.map((item) => `  ${item}`),
+      `Skill destinations: ${destinations.length}${migrations ? ` · ${migrations} migration${migrations === 1 ? "" : "s"}` : ""}`,
+      ...destinations.map((item) => `  ${String(item.status || "").padEnd(10)} ${item.destination || item.id || ""}${item.message ? ` (${item.message})` : ""}`),
+      ...warnings.map((item) => `Warning: ${item}`)].join("\n") + "\n";
   }
   if (command === "agent.instructions") return String(data.prompt || "") + "\n";
   if (command === "docs.map") return data.proposal
