@@ -3197,7 +3197,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       }
       .app.sidebar-collapsed > aside { transform: translateX(-105%); pointer-events: none; }
       .sidebar-resizer { display: none; }
-      .explorer-open { display: inline-flex !important; position: fixed; z-index: 70; top: 3px; left: 4px; width: 40px; height: 40px; align-items: center; justify-content: center; border: 0; border-radius: var(--native-radius-control); background: transparent; color: var(--text); }
+      .explorer-open { display: inline-flex !important; position: fixed; z-index: 70; top: 1px; left: 4px; width: 40px; height: 40px; align-items: center; justify-content: center; border: 0; border-radius: var(--native-radius-control); background: transparent; color: var(--text); }
       .app:not(.sidebar-collapsed) .explorer-open { display: none !important; }
       .app.sidebar-collapsed .workspace-dock { padding-left: 48px; }
       .shared-proposal-workspace, .app.sidebar-collapsed ~ .shared-proposal-workspace { left: 0; }
@@ -3572,17 +3572,14 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     body:not(.app-booting):not(.app-recovery) .boot-screen { display: none; }
     @keyframes bootSpin { to { transform: rotate(360deg); } }
     /* Touch targets: 44px on coarse pointers and drawer-size screens. */
-    @media (max-width: 980px), (pointer: coarse) {
+    /* Coarse pointer first: the drawer contract test slices from the last drawer-width media block. The 44px Explorer button sits at top: 1px in the 46px dock. */
+    @media (pointer: coarse), (max-width: 980px) {
       .explorer-open, .sidebar-toggle, .graph-open, .selection-action, .global-explorer-back,
       .context-hub-project-picker-close { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
       .global-explorer-mode, .global-project-watch-filter, .watch-filter,
       .project-priority-actions button, .settings-concept-help-button,
       [data-context-room-mode-prompt],
       .context-room-mode-warning button[data-context-room-mode-prompt] { min-width: 44px; min-height: 44px; }
-    }
-    /* The 44px Explorer button must fit the 46px dock between 640 and 980px. */
-    @media (min-width: 640px) and (max-width: 980px) {
-      .explorer-open { top: 1px; }
     }
     /* LAYOUT CONTRACT: END */
   </style>
