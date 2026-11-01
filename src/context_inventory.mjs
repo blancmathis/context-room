@@ -16,6 +16,7 @@ import {
   readDocReviewState,
   readGlobalReviewLedger,
   readMemoryFile,
+  withMemorySettingsScope,
   readMemoryWebappSettings,
 } from "./context_room.mjs";
 import { claudeInstructionMode, compareProviderVersions, contextProviderProfile } from "./provider_profiles.mjs";
@@ -858,7 +859,11 @@ function addMcpServers(inventory, target, coordinate, readers) {
   }
 }
 
-function addAcceptedLocalDocuments(inventory, target, coordinate, readers, queue = new Map()) {
+function addAcceptedLocalDocuments(...args) {
+  return withMemorySettingsScope(() => addAcceptedLocalDocumentsScoped(...args));
+}
+
+function addAcceptedLocalDocumentsScoped(inventory, target, coordinate, readers, queue = new Map()) {
   const reviewState = readers.readReviewState(target.root) || { reviews: {} };
   const globalLedger = readers.readGlobalReviewLedger(target.root) || { reviews: {} };
   const managedPaths = new Set((readers.listDocuments(target.root) || []).filter((item) => item.exists !== false).map((item) => unixPath(item.path)));

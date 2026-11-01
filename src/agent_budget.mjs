@@ -9,17 +9,46 @@ export function fitToTokenBudget(value, { budget, render, trimmers = [] }) {
   const trimmed = {};
   const report = { requested: budget, estimatedTokens: 0, fits: true, trimmed };
   const arrayAt = (dotted) => dotted.split(".").reduce((node, key) => node?.[key], value);
+  // Dropping the last items of one array one render at a time is quadratic on a large
+  // result. The output only shrinks as items go, so find by bisection the smallest
+  // number of drops that fits (or all of them) and land there; the state and the
+  // trimmed count are the ones the one-at-a-time loop reaches. An empty array may
+  // render longer than one item (a "nothing found" line), so never assume that
+  // dropping everything is the shortest output.
+  const popUntilItFits = (dotted) => {
+    const array = arrayAt(dotted);
+    const base = trimmed[dotted] || 0;
+    const removed = [];
+    const fitsAfter = (count) => {
+      while (removed.length < count) removed.push(array.pop());
+      while (removed.length > count) array.push(removed.pop());
+      trimmed[dotted] = base + count;
+      return estimateTokens(render(value, report)) <= budget;
+    };
+    const length = array.length;
+    let low = 1;
+    let high = length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (fitsAfter(mid)) high = mid;
+      else low = mid + 1;
+    }
+    fitsAfter(low);
+    return dotted;
+  };
   let output = "";
   for (let pass = 0; pass < 100000; pass += 1) {
     output = render(value, report);
     const estimate = estimateTokens(output);
     if (estimate > budget) {
-      const next = trimmers.find((trimmer) => typeof trimmer === "string"
-        ? Array.isArray(arrayAt(trimmer)) && arrayAt(trimmer).length && (arrayAt(trimmer).pop(), true)
-        : trimmer.apply(value));
+      const arrayTrimmer = trimmers.find((trimmer) => typeof trimmer === "string" && Array.isArray(arrayAt(trimmer)) && arrayAt(trimmer).length);
+      const objectBefore = arrayTrimmer === undefined ? trimmers.slice() : trimmers.slice(0, trimmers.indexOf(arrayTrimmer));
+      // An object trimmer listed before the first usable array still goes first, one step at a time.
+      const next = objectBefore.find((trimmer) => typeof trimmer !== "string" && trimmer.apply(value))
+        || (arrayTrimmer !== undefined && popUntilItFits(arrayTrimmer));
       if (next) {
         const name = typeof next === "string" ? next : next.name;
-        trimmed[name] = (trimmed[name] || 0) + 1;
+        if (typeof next !== "string") trimmed[name] = (trimmed[name] || 0) + 1;
         continue;
       }
     }

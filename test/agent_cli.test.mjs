@@ -331,6 +331,68 @@ test("fitToTokenBudget drops the least useful items first and reports what it le
   assert.deepEqual(JSON.parse(output).data.major, ["keep-a", "keep-b"]);
 });
 
+test("fitToTokenBudget on a large result lands where one-at-a-time dropping does, in few renders", () => {
+  const make = () => ({ data: {
+    issues: Array.from({ length: 3000 }, (_, index) => ({ id: index, text: `issue ${index} ${"x".repeat(index % 40)}` })),
+    items: Array.from({ length: 50 }, (_, index) => ({ id: index, text: "y".repeat(index % 7 + 1) })),
+    keep: ["a"],
+  } });
+  const trimmers = ["data.issues", "data.items", "data.keep"];
+  for (const budget of [40, 800, 6000, 20000]) {
+    // Reference: the original loop, one drop and one render per pass.
+    const reference = make();
+    const refTrimmed = {};
+    const refRender = (value, report) => JSON.stringify({ ...value, report }, null, 2);
+    const refReport = { requested: budget, estimatedTokens: 0, fits: true, trimmed: refTrimmed };
+    let refOutput = "";
+    for (let pass = 0; pass < 100000; pass += 1) {
+      refOutput = refRender(reference, refReport);
+      const estimate = estimateTokens(refOutput);
+      if (estimate > budget) {
+        const next = trimmers.find((name) => { const array = reference.data[name.split(".")[1]]; return array.length && (array.pop(), true); });
+        if (next) { refTrimmed[next] = (refTrimmed[next] || 0) + 1; continue; }
+      }
+      if (refReport.estimatedTokens === estimate && refReport.fits === estimate <= budget) break;
+      refReport.estimatedTokens = estimate;
+      refReport.fits = estimate <= budget;
+    }
+    let renders = 0;
+    const { output, report } = fitToTokenBudget(make(), { budget, trimmers, render: (value, current) => { renders += 1; return refRender(value, current); } });
+    assert.equal(output, refOutput, `budget ${budget}`);
+    assert.deepEqual(report, refReport);
+    assert.ok(renders < 200, `${renders} renders at budget ${budget}`);
+  }
+});
+
+test("fitToTokenBudget matches one-at-a-time dropping when an empty list renders a longer placeholder", () => {
+  const make = () => ({ data: { items: Array.from({ length: 12 }, (_, index) => `d${index}`) } });
+  const render = (value, report) => JSON.stringify({
+    items: value.data.items.length ? value.data.items : "No matching accepted docs were found for this request; widen the query.",
+    report,
+  });
+  for (let budget = 10; budget <= 120; budget += 1) {
+    const reference = make();
+    const refTrimmed = {};
+    const refReport = { requested: budget, estimatedTokens: 0, fits: true, trimmed: refTrimmed };
+    let refOutput = "";
+    for (let pass = 0; pass < 1000; pass += 1) {
+      refOutput = render(reference, refReport);
+      const estimate = estimateTokens(refOutput);
+      if (estimate > budget && reference.data.items.length) {
+        reference.data.items.pop();
+        refTrimmed["data.items"] = (refTrimmed["data.items"] || 0) + 1;
+        continue;
+      }
+      if (refReport.estimatedTokens === estimate && refReport.fits === estimate <= budget) break;
+      refReport.estimatedTokens = estimate;
+      refReport.fits = estimate <= budget;
+    }
+    const { output, report } = fitToTokenBudget(make(), { budget, render, trimmers: ["data.items"] });
+    assert.equal(output, refOutput, `budget ${budget}`);
+    assert.deepEqual(report, refReport, `budget ${budget}`);
+  }
+});
+
 test("context bundle, docs search and brief keep the whole printed output within --budget", (t) => {
   const { root, parent } = fixture(t);
   registerCliProject({ root, title: "Budget" });
