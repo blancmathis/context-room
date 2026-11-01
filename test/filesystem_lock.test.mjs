@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
@@ -457,6 +458,95 @@ test("a stale lock from a reused live PID is recovered only when its process ide
   assert.notEqual(JSON.parse(fs.readFileSync(lockPath, "utf8")).token, previousOwner.token);
   successor.release();
   assert.equal(fs.existsSync(lockPath), false);
+});
+
+async function holdLockInChild(t, lockPath, env = process.env) {
+  const source = `
+    const { acquireFilesystemLock } = await import(process.argv[1]);
+    acquireFilesystemLock(process.argv[2], { timeoutMs: 1_000, staleMs: 15 * 60_000 });
+    process.stdout.write("held\\n");
+    setInterval(() => {}, 1_000);
+  `;
+  const child = spawn(process.execPath, ["--input-type=module", "--eval", source, moduleUrl, lockPath], { env, stdio: ["ignore", "pipe", "inherit"] });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+  let output = "";
+  for await (const chunk of child.stdout) {
+    output += chunk;
+    if (output.includes("held")) break;
+  }
+  assert.match(output, /held/);
+  const record = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+  assert.equal(record.pid, child.pid);
+  return { child, record };
+}
+
+async function lockHeldByKilledProcess(t, lockPath) {
+  const { child, record } = await holdLockInChild(t, lockPath);
+  child.kill("SIGKILL");
+  await once(child, "exit");
+  return record;
+}
+
+test("a young lock whose owner is proven dead on this machine is taken over at once", async (t) => {
+  const root = testRoot("killed-owner");
+  const lockPath = path.join(root, "resource.lock");
+  const record = await lockHeldByKilledProcess(t, lockPath);
+  assert.ok(record.hostScope, "lock records must name the boot and machine of their owner");
+  const startedAt = performance.now();
+  const result = withFilesystemLock(lockPath, () => "taken", { timeoutMs: 1_000, staleMs: 15 * 60_000 });
+  assert.equal(result, "taken");
+  assert.ok(performance.now() - startedAt < 1_000);
+  assert.equal(fs.existsSync(lockPath), false);
+});
+
+function assertBusyAndUntouched(lockPath, token) {
+  assert.throws(
+    () => withFilesystemLock(lockPath, () => {}, { timeoutMs: 80, staleMs: 15 * 60_000 }),
+    (error) => error?.code === "filesystem_lock_busy",
+  );
+  assert.equal(JSON.parse(fs.readFileSync(lockPath, "utf8")).token, token);
+}
+
+test("a young lock held by a live process of the same host scope is not taken", async (t) => {
+  const lockPath = path.join(testRoot("live-owner"), "resource.lock");
+  const { record } = await holdLockInChild(t, lockPath);
+  assert.ok(record.hostScope);
+  assertBusyAndUntouched(lockPath, record.token);
+});
+
+test("a live holder stays busy when its identity is read under another LANG and time zone", async (t) => {
+  const lockPath = path.join(testRoot("live-owner-other-locale"), "resource.lock");
+  const { record } = await holdLockInChild(t, lockPath, { ...process.env, LC_ALL: "C", LANG: "C", TZ: "UTC" });
+  const saved = { LC_ALL: process.env.LC_ALL, LANG: process.env.LANG, TZ: process.env.TZ };
+  t.after(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  });
+  process.env.LC_ALL = "fr_FR.UTF-8";
+  process.env.LANG = "fr_FR.UTF-8";
+  process.env.TZ = "Pacific/Auckland";
+  assertBusyAndUntouched(lockPath, record.token);
+});
+
+test("a young lock from a dead PID keeps waiting when its machine or identity is not proven", async (t) => {
+  const root = testRoot("unproven-dead-owner");
+  const lockPath = path.join(root, "resource.lock");
+  const record = await lockHeldByKilledProcess(t, lockPath);
+  fs.unlinkSync(lockPath);
+  for (const variant of [
+    { ...record, hostScope: "linux:00000000-0000-4000-8000-000000000000:pid:[1]" },
+    { ...record, hostScope: undefined },
+    { ...record, processIdentity: "" },
+  ]) {
+    fs.writeFileSync(lockPath, `${JSON.stringify(variant)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    assert.throws(
+      () => withFilesystemLock(lockPath, () => {}, { timeoutMs: 80, staleMs: 15 * 60_000 }),
+      (error) => error?.code === "filesystem_lock_busy",
+    );
+    assert.equal(JSON.parse(fs.readFileSync(lockPath, "utf8")).token, record.token);
+    fs.unlinkSync(lockPath);
+  }
 });
 
 test("Hosted identity enforcement migrates a stale same-thread legacy PID generation without stealing live generations", () => {

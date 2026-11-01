@@ -1064,3 +1064,37 @@ test("Hub and UI opening preserve an exact registered worktree location", async 
   assert.equal(opened.target.location.id, feature.id);
   assert.equal(new URL(opened.data.openUrl).searchParams.get("project"), feature.id);
 });
+
+test("shared sync warns shared-offline when the Shared repository is unreachable, ok unchanged", (t) => {
+  const { env, project, first, base } = fixture(t);
+  let result = runCli(["shared", "connect", `--root=${project}`, `--repository=${first.remote}`, "--shared-project=demo", "--format=json"], env, project);
+  assert.equal(result.status, 0, result.stderr);
+  fs.renameSync(first.remote, `${first.remote}.offline`);
+  result = runCli(["shared", "sync", `--root=${project}`, "--format=json"], env, base);
+  assert.equal(result.status, 0, result.stderr);
+  const out = JSON.parse(result.stdout);
+  assert.equal(out.ok, true);
+  assert.equal(out.data.online, false);
+  assert.ok(out.warnings.some((w) => /^shared-offline/.test(String(w.message || w))), JSON.stringify(out.warnings));
+});
+
+test("project register on a fresh folder points to init, never to itself, and ignores other projects", (t) => {
+  const { env, project, base } = fixture(t);
+  const fresh = path.join(base, "fresh-repo");
+  fs.mkdirSync(fresh);
+  git(fresh, ["init"]);
+  let result = runCli(["project", "register", `--root=${fresh}`, "--format=json"], env, fresh);
+  const text = result.stdout + result.stderr;
+  assert.doesNotMatch(text, /folder-outside-location/);
+  if (result.status !== 0) {
+    assert.match(text, /context-room init/);
+    assert.doesNotMatch(text, /project register --root/);
+  }
+  // With another project already registered, the answer must not name that project's root.
+  result = runCli(["project", "register", `--root=${project}`, "--format=json"], env, project);
+  assert.equal(result.status, 0, result.stderr);
+  result = runCli(["project", "register", `--root=${fresh}`, "--format=json"], env, base);
+  const text2 = result.stdout + result.stderr;
+  assert.doesNotMatch(text2, /folder-outside-location/);
+  assert.equal(text2.includes(project), false, text2);
+});
