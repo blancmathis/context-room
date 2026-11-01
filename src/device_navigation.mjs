@@ -13,7 +13,7 @@ const exactTarget = (left, right) => left && right && ['projectId', 'resourceId'
 
 /** Navigation receipts are separate from durable notebook edits and never accept a file. */
 export function createDeviceNavigation({ stateRoot, serverId, inspectDevice, resolveTarget, now = Date.now }) {
-  const epoch = randomUUID();
+  const epoch = randomUUID(), live = new Map();
   const views = createDeviceViews({ resolveTarget, now });
   const prefix = deviceId => `navigation/${id(deviceId)}`;
   const commandPath = (deviceId, operationId) => `${prefix(deviceId)}/commands/${id(operationId)}.json`;
@@ -22,6 +22,7 @@ export function createDeviceNavigation({ stateRoot, serverId, inspectDevice, res
       const device = authenticate();
       if (device.id !== deviceId) throw deviceError('device_navigation_scope', 'The navigation belongs to another device.');
       const state = readNotebookJson(stateRoot, `${prefix(deviceId)}/control.json`, { version: DEVICE_PROTOCOL, serverId, deviceId, presence: null, retiredSessions: [], currentId: null });
+      const before = JSON.stringify(state);
       if (state.version !== DEVICE_PROTOCOL || state.serverId !== serverId || state.deviceId !== deviceId || !Array.isArray(state.retiredSessions)) throw deviceError('device_navigation_storage', 'The retained navigation state requires recovery.', 409);
       let command = state.currentId ? readNotebookJson(stateRoot, commandPath(deviceId, state.currentId)) : null;
       if (state.currentId && !command) throw deviceError('device_navigation_storage', 'A retained navigation request is missing.', 409);
@@ -29,8 +30,14 @@ export function createDeviceNavigation({ stateRoot, serverId, inspectDevice, res
         command = { ...command, status: 'expired', completedAt: now() };
         writeNotebookJson(stateRoot, commandPath(deviceId, command.operationId), command);
       }
+      // Presence (time, busy) lives for this epoch only: keep it in memory. Writing it on every 1.2 s poll put a synchronous fsync on the
+      // Hub's only thread; under disk load one poll held the Hub for 8-12 s and the tablet looked offline (C-12). A session change stays durable.
+      const stored = state.presence;
+      if (live.get(deviceId)?.serverEpoch === epoch && live.get(deviceId).clientSessionId === stored?.clientSessionId) state.presence = live.get(deviceId);
       const result = action(state, device, command);
-      writeNotebookJson(stateRoot, `${prefix(deviceId)}/control.json`, state);
+      if (state.presence) live.set(deviceId, state.presence); else live.delete(deviceId);
+      const durable = { ...state, presence: stored && state.presence && stored.clientSessionId === state.presence.clientSessionId && stored.serverEpoch === state.presence.serverEpoch ? stored : state.presence };
+      if (JSON.stringify(durable) !== before) writeNotebookJson(stateRoot, `${prefix(deviceId)}/control.json`, durable);
       return result;
     });
   }
