@@ -7253,7 +7253,11 @@ async function deleteGlobalExplorerContextTarget() {
 // click to the list instead of the row, and the user's choice is lost. Keep
 // the newest markup and apply it once the gesture's click has run.
 const globalExplorerHeldNodes = new Set();
+const GLOBAL_EXPLORER_HOLD_MAX_MS = 1000;
+let globalExplorerHoldTimer = 0;
 function releaseGlobalExplorerMarkup() {
+  window.clearTimeout(globalExplorerHoldTimer);
+  globalExplorerHoldTimer = 0;
   window.setTimeout(() => {
     for (const node of globalExplorerHeldNodes) {
       globalExplorerHeldNodes.delete(node);
@@ -7264,11 +7268,20 @@ function releaseGlobalExplorerMarkup() {
   }, 0);
 }
 document.addEventListener("pointerdown", (event) => {
+  // Only a primary-button press starts a click that a re-render could break.
+  if (event.isPrimary === false || event.button !== 0) return;
   const node = event.target?.closest?.("#globalProjectList, #contextHubHomeProjectList");
-  if (node) globalExplorerHeldNodes.add(node);
+  if (!node) return;
+  globalExplorerHeldNodes.add(node);
+  // Safety net: never hold a refresh longer than a normal click lasts.
+  window.clearTimeout(globalExplorerHoldTimer);
+  globalExplorerHoldTimer = window.setTimeout(releaseGlobalExplorerMarkup, GLOBAL_EXPLORER_HOLD_MAX_MS);
 }, true);
 document.addEventListener("pointerup", releaseGlobalExplorerMarkup, true);
 document.addEventListener("pointercancel", releaseGlobalExplorerMarkup, true);
+document.addEventListener("contextmenu", releaseGlobalExplorerMarkup, true);
+document.addEventListener("dragstart", releaseGlobalExplorerMarkup, true);
+window.addEventListener("blur", releaseGlobalExplorerMarkup);
 
 function updateGlobalExplorerMarkup(node, markup) {
   if (globalExplorerHeldNodes.has(node)) {
