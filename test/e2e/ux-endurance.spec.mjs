@@ -914,6 +914,47 @@ test("@smoke hidden workspace presence is delayed and reports the real visibilit
   expect(guard.failures, guard.failures.join("\n")).toEqual([]);
 });
 
+test("@smoke a project list held back during a press is applied after blur or contextmenu, without another click", async ({ page }) => {
+  const data = fixture();
+  const guard = attachFailureGuards(page);
+  await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=hub`);
+  await waitForBoot(page);
+  const list = page.locator("#contextHubHomeProjectList");
+  await expect(list.locator(".context-hub-home-project").first()).toBeVisible();
+  for (const [name, release] of [
+    ["blur", () => window.dispatchEvent(new Event("blur"))],
+    ["contextmenu", () => document.body.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))],
+  ]) {
+    const marker = `held-${name}`;
+    await list.dispatchEvent("pointerdown", { button: 0, isPrimary: true });
+    await page.evaluate((text) => {
+      updateGlobalExplorerMarkup(document.getElementById("contextHubHomeProjectList"), `<p id="${text}">${text}</p>`);
+    }, marker);
+    await page.waitForTimeout(100);
+    await expect(page.locator(`#${marker}`)).toHaveCount(0);
+    await page.evaluate(release);
+    // A real refresh may overwrite the held markup, so check the release
+    // itself: nothing is held or pending, and the next update lands at once.
+    await expect.poll(() => page.evaluate(() => ({
+      held: globalExplorerHeldNodes.size,
+      pending: document.getElementById("contextHubHomeProjectList").__contextRoomPendingMarkup === undefined,
+    }))).toEqual({ held: 0, pending: true });
+    // Checked in the same task, before any real refresh can replace it.
+    expect(await page.evaluate((text) => {
+      const node = document.getElementById("contextHubHomeProjectList");
+      updateGlobalExplorerMarkup(node, `<p id="${text}-after">after</p>`);
+      return Boolean(document.getElementById(`${text}-after`));
+    }, marker)).toBe(true);
+  }
+  // A non-primary button never holds a refresh back.
+  await list.dispatchEvent("pointerdown", { button: 2, isPrimary: true });
+  expect(await page.evaluate(() => {
+    updateGlobalExplorerMarkup(document.getElementById("contextHubHomeProjectList"), '<p id="held-right">x</p>');
+    return Boolean(document.getElementById("held-right"));
+  })).toBe(true);
+  expect(guard.failures, guard.failures.join("\n")).toEqual([]);
+});
+
 test("@smoke accepted unsaved navigation does not restart requests from the departing document", async ({ page }, testInfo) => {
   const data = fixture();
   const guard = attachFailureGuards(page);
@@ -990,7 +1031,9 @@ test("@smoke accepted unsaved navigation does not restart requests from the depa
   // Headless WebKit can leave the document that follows an accepted
   // beforeunload dialog without a layout pass (zero-size boxes) until
   // something forces a paint, so check the app state, not the geometry.
+  await expect.poll(() => page.evaluate(() => state.page)).toBe("settings");
   await expect(page.locator("#settingsPage")).toHaveJSProperty("hidden", false);
+  if (test.info().project.name.includes("chromium")) await expect(page.locator("#settingsPage")).toBeVisible();
   await page.waitForTimeout(350);
   const lifecycleLog = await page.evaluate(() => JSON.parse(sessionStorage.getItem("context-room:e2e-departing-fetches") || "{}"));
   expect(lifecycleLog.pagehides).toBeGreaterThanOrEqual(1);
