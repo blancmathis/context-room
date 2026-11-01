@@ -838,6 +838,7 @@ if (agentFirstTargetCommand) {
       location: args.location && args.location !== true ? String(args.location) : "",
       folder: args.folder && args.folder !== true ? String(args.folder) : "",
       requireLocal: true,
+      registering: command === "project" && args._[1] === "register",
       readOnly: contextBundleCommand || agentPrepareCommand,
     };
     try {
@@ -1518,7 +1519,9 @@ if (command === "shared") {
       process.exit(0);
     }
     if (action === "sync") {
-      emitAgentFirstResult("shared.sync", { target: agentFirstTarget, data: syncSharedContext(root, { allowOffline: true }) }, { format: agentFirstFormat });
+      const synced = syncSharedContext(root, { allowOffline: true });
+      const warnings = synced.online === false ? [`shared-offline: Shared repository unreachable (${synced.fetchError || "fetch failed"}); nothing was pulled and the last local snapshot ${String(synced.revision || "").slice(0, 12)} is in use.`] : [];
+      emitAgentFirstResult("shared.sync", { target: agentFirstTarget, data: synced, warnings }, { format: agentFirstFormat });
       process.exit(0);
     }
     if (action === "status") {
