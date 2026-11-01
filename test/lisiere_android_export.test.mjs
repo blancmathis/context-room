@@ -75,3 +75,24 @@ test('installed migrate command accepts a native ZIP with the same preview/apply
   assert.equal(applied.ok, true); assert.equal(applied.data.revision, preview.data.revision); assert.equal(applied.data.accepted, false);
   assert.equal(fs.existsSync(path.join(base, '.context-room')), false);
 });
+
+test('migrate names the missing --output parent and the missing --inspect-lisiere snapshot', t => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cr-android-missing-')));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const fixture = JSON.parse(execFileSync('python3', ['-B', script, '--fixture', path.join(base, 'fixture')], options));
+  const cli = fileURLToPath(new URL('../bin/context-room.mjs', import.meta.url));
+  const env = { ...process.env, HOME: base, CONTEXT_ROOM_HUB_HOME: path.join(base, 'hub'), CONTEXT_ROOM_SHARED_HOME: path.join(base, 'shared') };
+  const run = args => { try { return { ok: true, stdout: execFileSync(process.execPath, [cli, 'migrate', ...args], { ...options, cwd: base, env, stdio: ['ignore', 'pipe', 'pipe'] }) }; }
+    catch (error) { return { ok: false, stderr: String(error.stderr) }; } };
+  const parent = path.join(base, 'missing', 'parent'), output = path.join(parent, 'snapshot');
+  const preview = JSON.parse(run(['--export-lisiere', fixture.archive, '--output', output]).stdout);
+  const applied = run(['--export-lisiere', fixture.archive, '--output', output, '--apply', '--revision', preview.data.revision]);
+  assert.equal(applied.ok, false);
+  assert.ok(applied.stderr.includes(parent), applied.stderr);
+  assert.ok(applied.stderr.includes(`mkdir -p ${parent}`), applied.stderr);
+  const missing = path.join(base, 'no-such-snapshot');
+  const inspected = run(['--inspect-lisiere', missing]);
+  assert.equal(inspected.ok, false);
+  assert.ok(inspected.stderr.includes(missing), inspected.stderr);
+  assert.doesNotMatch(inspected.stderr, /ENOENT/);
+});

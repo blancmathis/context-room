@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { readLisiereSnapshot, decodeLisiereObject, legacyError } from './lisiere_archive.mjs';
 import { notebookHash } from './notebook_io.mjs';
 
@@ -16,6 +17,8 @@ export function inspectLisiereSnapshot(snapshot, { kind = 'all', limit = 50, cur
   limit = Number(limit);
   requireValue((kind === 'all' || KINDS.includes(kind)) && Number.isSafeInteger(limit) && limit >= 1 && limit <= 200,
     'Choose a recovery inventory kind and a page size between 1 and 200.');
+  if (typeof snapshot === 'string' && snapshot && !fs.existsSync(snapshot))
+    throw Object.assign(legacyError(`Recovery snapshot not found: ${snapshot}. Pass the directory written by migrate --export-lisiere --apply --output.`), { code: 'lisiere_snapshot_not_found' });
   const archive = readLisiereSnapshot(snapshot); let offset = 0;
   if (cursor !== undefined) {
     requireValue(typeof cursor === 'string' && cursor.length > 0 && cursor.length <= 512 && Buffer.from(cursor, 'base64url').toString('base64url') === cursor, 'Invalid recovery inventory cursor.');
