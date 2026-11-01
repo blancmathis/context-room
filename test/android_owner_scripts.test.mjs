@@ -17,8 +17,8 @@ class FakeEvent { constructor(type, init = {}) { this.type = type; this.cancelab
 function fakeDialog(name, { refuseCancel = false } = {}) {
   return { name, open: true, closed: 0, dispatchEvent(event) { this.cancelled = true; if (refuseCancel) event.preventDefault(); return !event.defaultPrevented; }, close() { this.closed += 1; this.open = false; } };
 }
-function fakePanel({ minimized = false } = {}) {
-  const button = { textContent: "Minimize conversation", clicked: 0, click() { this.clicked += 1; panel.minimized = true; } };
+function fakePanel({ minimized = false, label = "Minimize conversation" } = {}) {
+  const button = { textContent: label, clicked: 0, click() { this.clicked += 1; panel.minimized = true; } };
   const panel = { minimized, button, querySelectorAll: (selector) => (/header button/.test(selector) ? [{ textContent: "Open conversation", click() { throw new Error("wrong button"); } }, button] : []) };
   return panel;
 }
@@ -74,4 +74,11 @@ test("waking drops focus from a text field and leaves other elements alone", () 
   assert.equal(runOnPage(script, { activeElement: link }), false);
   assert.equal(link.blurred, 0);
   assert.equal(runOnPage(script, { activeElement: null }), false);
+});
+
+test("Back closes a dictation or voice panel through its Close button (C-15)", () => {
+  const script = javaString("OwnerBack.java", "CLOSE_TOP_DIALOG");
+  const panel = fakePanel({ label: "Close" });
+  assert.equal(runOnPage(script, { dialogs: [], panel }), true);
+  assert.equal(panel.button.clicked, 1);
 });

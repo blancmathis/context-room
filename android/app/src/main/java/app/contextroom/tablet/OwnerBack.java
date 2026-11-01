@@ -10,7 +10,7 @@ final class OwnerBack {
     + "if(d){if(d.dispatchEvent(new Event('cancel',{cancelable:true})))d.close();return true;}"
     + "var p=document.querySelector('.assistant-panel:not([hidden]):not(.assistant-minimized)');"
     + "var bs=p?Array.prototype.slice.call(p.querySelectorAll('header button')):[];"
-    + "var b=bs.filter(function(x){return x.textContent==='Minimize conversation';})[0];if(!b)return false;b.click();return true;})()";
+    + "var b=bs[bs.length-1];if(!b)return false;b.click();return true;})()";
   static boolean closedDialog(String evaluateResult) { return "true".equals(evaluateResult); }
   /** What Back does once the page answered the script above. */
   static Action afterDialog(String evaluateResult, boolean canGoBack) {
