@@ -18377,7 +18377,14 @@ function showSharedContextHelpDialog(returnFocus = document.activeElement) {
     document.removeEventListener("keydown", onKeydown);
     // Settings may re-render while the dialog is open and replace the trigger: fall back to the live one.
     const target = returnFocus instanceof HTMLElement && returnFocus.isConnected ? returnFocus : document.querySelector("[data-settings-help-trigger]");
-    if (restoreFocus && target instanceof HTMLElement) target.focus();
+    if (restoreFocus && target instanceof HTMLElement) {
+      target.focus();
+      // A Settings re-render right after closing can replace the trigger: if focus fell to the page, put it on the live one.
+      window.setTimeout(() => {
+        const live = returnFocus instanceof HTMLElement && returnFocus.isConnected ? returnFocus : document.querySelector("[data-settings-help-trigger]");
+        if ((document.activeElement === document.body || !document.activeElement) && live instanceof HTMLElement) live.focus();
+      }, 150);
+    }
   };
   const onKeydown = (event) => {
     if (event.key === "Escape") {
@@ -26407,9 +26414,14 @@ el("contextRoomReviewSelection")?.addEventListener("click", (event) => {
   }
 });
 el("reviewQueue")?.addEventListener("contextmenu", (event) => {
-  if (state.sharedContextBusy) return;
   const entry = event.target.closest("[data-context-room-review-entry]");
   if (!entry) return;
+  if (state.sharedContextBusy) {
+    // Say why nothing opens instead of ignoring the gesture silently.
+    event.preventDefault();
+    setStatus("Shared pass running · the menu opens again when it ends");
+    return;
+  }
   const item = contextHubReviewItems().find((candidate) => candidate.id === entry.dataset.contextRoomReviewEntry);
   if (item) openContextRoomReviewContextMenu(event, item);
 });

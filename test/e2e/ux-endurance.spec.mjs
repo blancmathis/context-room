@@ -1160,6 +1160,24 @@ test("@soak repeated multi-day navigation does not accumulate workspace or brows
 
 });
 
+test("@smoke a right-click on a review while a Shared pass runs says why, and works again after", async ({ page }) => {
+  const data = fixture();
+  await page.goto(`${data.origin}/?hub=1&view=hub`);
+  await waitForReady(page);
+  const localReview = page.locator('[data-context-room-review-entry]:has([data-source="local"])').first();
+  await expect(localReview).toBeVisible();
+  const reviewId = await localReview.getAttribute("data-context-room-review-entry");
+  const entry = page.locator(`[data-context-room-review-entry="${reviewId}"]`);
+  // Simulate a running Shared pass (the real one sets the same flag).
+  await page.evaluate(() => { state.sharedContextBusy = true; });
+  await entry.click({ button: "right" });
+  await expect(page.locator("#status")).toHaveText(/^Shared pass running/);
+  await expect(page.getByRole("menuitem", { name: "Snooze…" })).toBeHidden();
+  await page.evaluate(() => { state.sharedContextBusy = false; });
+  await entry.click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: "Snooze…" })).toBeVisible();
+});
+
 test("@soak time-dependent reviews, drafts, and shared reconnect safely", async ({ page }, testInfo) => {
   test.setTimeout(120_000);
   const data = fixture();

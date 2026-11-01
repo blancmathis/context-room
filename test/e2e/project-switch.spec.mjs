@@ -282,9 +282,12 @@ test("@perf a Shared project opened during a manual Refresh joins it without a s
     // A failed manual Refresh ends the joined open as a status.
     await page.unroute("**/api/context-hub/refresh");
     const failing = { calls: 0 };
+    // Hold the failing Refresh until the open has joined it: a fixed delay raced on slow runners.
+    let failRelease = () => {};
+    const failGate = new Promise((resolve) => { failRelease = resolve; });
     await page.route("**/api/context-hub/refresh", async (route) => {
       failing.calls += 1;
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await failGate;
       await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "refresh broke" }) }).catch(() => {});
     });
     await page.evaluate(() => { void refreshContextHubUi().catch(() => {}); });
@@ -292,6 +295,7 @@ test("@perf a Shared project opened during a manual Refresh joins it without a s
     await showProjectList(page);
     await projectRow(page, "Delta").click();
     await expect(page.locator("#globalExplorerScope strong")).toHaveText("Delta", { timeout: 1_000 });
+    failRelease();
     await expect(page.locator("#status")).toHaveText(/^project selected · Shared refresh failed · /);
     await page.waitForTimeout(300);
     expect(failing.calls).toBe(1);

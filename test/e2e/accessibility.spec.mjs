@@ -68,6 +68,8 @@ async function applyTheme(page, theme, mode) {
 }
 
 async function expectNoAccessibilityViolations(page) {
+  // Audit the settled frame: wait for running animations and transitions (dialog open, theme fade) to end.
+  await page.evaluate(() => Promise.all(document.getAnimations().map((animation) => animation.finished.catch(() => {}))));
   const result = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
     .analyze();
@@ -145,7 +147,10 @@ test("@a11y responsive Explorer and Shared help retain names, focus, and semanti
     await expect(page.locator(".shared-context-help-dialog")).toBeVisible();
     await expectNoAccessibilityViolations(page);
     await page.keyboard.press("Escape");
-    await expect(help).toBeFocused();
+    // Focus returns after the dialog is gone (next frame); wait for that state, then the focus.
+    await expect(page.locator(".shared-context-help-dialog")).toBeHidden();
+    await waitForBoot(page);
+    await expect(help).toBeFocused({ timeout: 10_000 });
   }
 
   const agentEnvironmentTab = page.locator('[data-settings-section-target="agent-environment"]');
@@ -170,7 +175,8 @@ test("@a11y responsive Explorer and Shared help retain names, focus, and semanti
   await sharedSkillsWizard.locator(".context-hub-project-picker-close").focus();
   await page.keyboard.press("Escape");
   await expect(sharedSkillsWizard).toBeHidden();
-  await expect(agentEnvironmentTab).toBeFocused();
+  await waitForBoot(page);
+  await expect(agentEnvironmentTab).toBeFocused({ timeout: 10_000 });
 });
 
 test("@a11y Explorer and critical review colors retain WCAG contrast in every theme", async ({ page }) => {

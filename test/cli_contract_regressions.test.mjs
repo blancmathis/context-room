@@ -1076,6 +1076,11 @@ test("shared sync warns shared-offline when the Shared repository is unreachable
   assert.equal(out.ok, true);
   assert.equal(out.data.online, false);
   assert.ok(out.warnings.some((w) => /^shared-offline/.test(String(w.message || w))), JSON.stringify(out.warnings));
+  // The human text must show the same warning.
+  result = runCli(["shared", "sync", `--root=${project}`, "--format=human"], env, base);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /offline/);
+  assert.match(result.stdout, /Warning: shared-offline/);
 });
 
 test("project register on a fresh folder points to init, never to itself, and ignores other projects", (t) => {
@@ -1086,10 +1091,9 @@ test("project register on a fresh folder points to init, never to itself, and ig
   let result = runCli(["project", "register", `--root=${fresh}`, "--format=json"], env, fresh);
   const text = result.stdout + result.stderr;
   assert.doesNotMatch(text, /folder-outside-location/);
-  if (result.status !== 0) {
-    assert.match(text, /context-room init/);
-    assert.doesNotMatch(text, /project register --root/);
-  }
+  assert.notEqual(result.status, 0, "a folder without .context-room cannot be registered");
+  assert.match(text, /context-room init/);
+  assert.doesNotMatch(text, /project register --root/);
   // With another project already registered, the answer must not name that project's root.
   result = runCli(["project", "register", `--root=${project}`, "--format=json"], env, project);
   assert.equal(result.status, 0, result.stderr);
@@ -1097,4 +1101,8 @@ test("project register on a fresh folder points to init, never to itself, and ig
   const text2 = result.stdout + result.stderr;
   assert.doesNotMatch(text2, /folder-outside-location/);
   assert.equal(text2.includes(project), false, text2);
+  // An explicit --project still selects that project from outside it (old behaviour).
+  const title = JSON.parse(runCli(["project", "list", "--format=json"], env, base).stdout).data.projects[0].title;
+  result = runCli(["project", "register", `--project=${title}`, "--format=json"], env, base);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
 });

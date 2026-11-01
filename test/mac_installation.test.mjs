@@ -99,5 +99,5 @@ test('installation CLI canonicalizes its own default source and prepares the act
 
 test('Mac kit with a missing parent folder gives a clear message, not a filesystem stack', t => {
   const f = fixture(t), output = path.join(f.base, 'missing', 'releases', 'r');
-  assert.throws(() => prepareMacInstallation(f.source, { ...f.options, output }), /parent folder of the kit does not exist/);
+  assert.throws(() => prepareMacInstallation(f.source, { ...f.options, output }), /parent folder of the kit does not exist.*mkdir -p '[^']*missing\/releases'/);
 });
