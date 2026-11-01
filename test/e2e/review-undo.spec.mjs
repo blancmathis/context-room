@@ -13,7 +13,7 @@ function fixture() {
 
 test('@smoke an acceptance can be undone from Recent decisions and the file goes back to review', async ({ page }, testInfo) => {
   const data = fixture();
-  const root = path.join(data.base, `Undo-${testInfo.project.name}`);
+  const root = path.join(data.base, `Undo-${testInfo.project.name}-${testInfo.repeatEachIndex}-${testInfo.retry}`);
   fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
   fs.writeFileSync(path.join(root, 'docs', 'README.md'), '# Undo\n', 'utf8');
   const git = (args) => execFileSync('git', args, { cwd: root, stdio: 'ignore' });

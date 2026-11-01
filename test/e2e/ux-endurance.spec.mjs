@@ -488,7 +488,10 @@ async function assertWorkbenchGutters(page, data, width) {
 
   await ensureExplorerOpen(page);
   await openProjectFile(page, "docs/README.md");
-  await closeExplorerDrawer(page);
+  // Below the desktop breakpoint the app closes the drawer itself once the
+  // file is open. Clicking the toggle here raced that close: the toggle slid
+  // out of the viewport and the click retried until the test timed out.
+  if (width <= 980) await expect(page.locator(".app")).toHaveClass(/sidebar-collapsed/);
   await expectHorizontalPadding(page, ".file-panel > header", gutter);
   await expectNoHorizontalOverflow(page);
 
@@ -960,14 +963,19 @@ test("@smoke accepted unsaved navigation does not restart requests from the depa
   const targetUrl = `${data.origin}/?hub=1&workspace=${navigationWorkspace}&view=settings&settings=preferences`;
   await page.evaluate((href) => {
     sessionStorage.setItem("context-room:e2e-departing-fetches", JSON.stringify({ pagehides: 0, late: [] }));
-    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
-    Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
-    document.dispatchEvent(new Event("visibilitychange"));
     state.dirty = true;
     const link = document.createElement("a");
     link.id = "e2e-accepted-unsaved-leave";
     link.href = href;
     link.textContent = "Leave and discard changes";
+    // Hide the page in the same task as the click that starts the navigation:
+    // the app's 150 ms hidden-presence timer is then still pending when
+    // beforeunload runs, whatever the time the click itself takes to land.
+    link.addEventListener("click", () => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+      Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+      document.dispatchEvent(new Event("visibilitychange"));
+    }, { capture: true, once: true });
     document.body.appendChild(link);
   }, targetUrl);
 
@@ -979,7 +987,10 @@ test("@smoke accepted unsaved navigation does not restart requests from the depa
   await clickPromise;
   await page.waitForURL(targetUrl);
   await waitForBoot(page);
-  await expect(page.locator("#settingsPage")).toBeVisible();
+  // Headless WebKit can leave the document that follows an accepted
+  // beforeunload dialog without a layout pass (zero-size boxes) until
+  // something forces a paint, so check the app state, not the geometry.
+  await expect(page.locator("#settingsPage")).toHaveJSProperty("hidden", false);
   await page.waitForTimeout(350);
   const lifecycleLog = await page.evaluate(() => JSON.parse(sessionStorage.getItem("context-room:e2e-departing-fetches") || "{}"));
   expect(lifecycleLog.pagehides).toBeGreaterThanOrEqual(1);
