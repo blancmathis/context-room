@@ -16,7 +16,7 @@ final class PackagedWeb {
   byte[] read(String asset, int maximum) throws IOException {
     try (InputStream input = context.getAssets().open(asset)) {
       ByteArrayOutputStream bytes = new ByteArrayOutputStream(); byte[] buffer = new byte[8192]; int count;
-      while ((count = input.read(buffer)) != -1) { if (bytes.size() + count > maximum) throw new IOException("Application embarquée trop grande."); bytes.write(buffer, 0, count); }
+      while ((count = input.read(buffer)) != -1) { if (bytes.size() + count > maximum) throw new IOException("Packaged app too large."); bytes.write(buffer, 0, count); }
       return bytes.toByteArray();
     }
   }

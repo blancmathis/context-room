@@ -72,9 +72,9 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     vault = new CredentialVault(this);
     discovery = new MacDiscovery(this, vault, new MacDiscovery.Host() {
       public DeviceConnection connection() { return connection; }
-      public void found(DeviceConnection found, String url) { setStatus("Mac retrouvé · synchronisation…"); if (engineReady && currentScope != null) engine.call("refresh"); }
+      public void found(DeviceConnection found, String url) { setStatus("Mac found · syncing…"); if (engineReady && currentScope != null) engine.call("refresh"); }
     });
-    header("Context Room", "Ouverture du stockage local…");
+    header("Context Room", "Opening local storage…");
     disk.execute(() -> {
       try { JSONObject savedConnection = vault.read(); DeviceConnection found = savedConnection == null ? null : new DeviceConnection(savedConnection);
         runOnUiThread(() -> { if (dead) return; useConnection(found); if (found == null) pairingScreen(); else if (engineReady) connectionHome(); });
@@ -101,7 +101,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     status = label(detail, 15); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); screen.addView(status);
   }
   void setStatus(String text) { if (status != null && !text.contentEquals(status.getText())) status.setText(text); }
-  void showError(String message) { setStatus(message == null ? "Le travail local est conservé. Réessayez la connexion." : message); }
+  void showError(String message) { setStatus(message == null ? "Local work is kept. Try the connection again." : message); }
   void useConnection(DeviceConnection selected) {
     if (views != null) views.setMode("independent");
     if (ownerWorkspace != null) { if (ownerWorkspace.web.getParent() instanceof android.view.ViewGroup) ((android.view.ViewGroup) ownerWorkspace.web.getParent()).removeView(ownerWorkspace.web); ownerWorkspace.close(); ownerWorkspace = null; }
@@ -113,21 +113,21 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   void ownerScreen() {
     engine.call("close"); engine.call("session", connection.session);
     ink = null; currentScope = null; lastScene = null; journal = null;
-    header("Context Room", "Les données canoniques restent sur le Mac.");
+    header("Context Room", "Canonical data stays on the Mac.");
     title.setVisibility(View.GONE); status.setVisibility(View.GONE); navigation.foreground(false);
     try {
       if (ownerWorkspace == null || ownerWorkspace.closed) ownerWorkspace = new OwnerWorkspace(this, connection, this);
       screen.addView(ownerWorkspace.web, new LinearLayout.LayoutParams(-1, 0, 1));
       ownerPairingButton = null;
       showingOwner = true; ownerWorkspace.foreground(resumed);
-    } catch (Exception error) { showError(error.getMessage()); screen.addView(button("Réessayer", this::ownerScreen)); screen.addView(button("Connexions", this::pairingScreen)); }
+    } catch (Exception error) { showError(error.getMessage()); screen.addView(button("Retry", this::ownerScreen)); screen.addView(button("Connections", this::pairingScreen)); }
   }
   @Override public void ownerError(String message) {
     if (dead || (!showingOwner && !showingConversation)) return;
     if (status != null) status.setVisibility(View.VISIBLE);
     showError(message);
     if (errorBanner.error(showingOwner, showingConversation)) {
-      ownerPairingButton = button("Connexions", this::pairingScreen);
+      ownerPairingButton = button("Connections", this::pairingScreen);
       screen.addView(ownerPairingButton, new LinearLayout.LayoutParams(-1, -2));
     }
   }
@@ -142,7 +142,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   @Override public void ownerConnectionAction(String action) {
     if (action.equals("connection.settings")) pairingScreen();
     else if (action.equals("connection.recovery")) {
-      header("Récupération native historique", "Les anciens journaux sont conservés. Le carnet normal utilise désormais l’interface web commune.");
+      header("Legacy native recovery", "Old journals are kept. The normal notebook now uses the shared web interface.");
       engine.call("catalogue", connection.session);
     }
   }
@@ -152,7 +152,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   }
   void nativeConversation(String mode) {
     if (connection == null || !connection.isOwner() || ink == null || ink.gestureActive() || pendingNative > 0 || inFlight != null || lastScene == null || currentScope == null || lastScene.optBoolean("offline") || lastScene.optInt("pending") > 0) {
-      showError("Attendez la confirmation du carnet par le Mac avant d’ouvrir sa conversation."); return;
+      showError("Wait for the Mac to confirm the notebook before opening its conversation."); return;
     }
     whenJournalIdle(() -> {
       try {
@@ -162,7 +162,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
         drawingWorkspace.setOrientation(wide ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
         ink.setLayoutParams(wide ? new LinearLayout.LayoutParams(0, -1, 1) : new LinearLayout.LayoutParams(-1, 0, 1));
         drawingWorkspace.addView(ownerWorkspace.web, wide ? new LinearLayout.LayoutParams(dp(390), -1) : new LinearLayout.LayoutParams(-1, dp(280)));
-        showingConversation = true; ownerWorkspace.foreground(resumed); conversationButton.setText("Fermer la conversation");
+        showingConversation = true; ownerWorkspace.foreground(resumed); conversationButton.setText("Close conversation");
         JSONObject source = InkView.json("kind", "notebook", "projectId", lastScene.optString("projectId"), "resourceId", lastScene.optString("resourceId"),
           "path", lastScene.optString("path"), "revision", lastScene.opt("sceneRevision"), "locationRevision", lastScene.opt("locationRevision"), "selection", new JSONArray(ink.selected), "mode", mode);
         ownerWorkspace.conversation(source);
@@ -197,7 +197,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     if (dead || !resumed || !showingConversation || ink == null || lastScene == null || nativeConversationState == null || nativeConversationState.optBoolean("closed")
       || source == null || !"notebook".equals(source.optString("kind")) || !lastScene.optString("projectId").equals(request.optString("projectId"))
       || !lastScene.optString("resourceId").equals(source.optString("resourceId")) || !lastScene.optString("path").equals(source.optString("path"))
-      || !Objects.equals(lastScene.opt("locationRevision"), source.opt("locationRevision"))) throw new IOException("Revenez au carnet d’origine pour partager son aperçu.");
+      || !Objects.equals(lastScene.opt("locationRevision"), source.opt("locationRevision"))) throw new IOException("Go back to the original notebook to share its preview.");
     return ink.sourcePreview(lastScene);
   }
   @Override public void requestOwnerMicrophone(android.webkit.ValueCallback<Boolean> callback) {
@@ -215,13 +215,13 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     if (request == 73) { microphonePermissionResult = results.length == 1 && results[0] == android.content.pm.PackageManager.PERMISSION_GRANTED; finishMicrophonePermission(); }
   }
   @Override public void saveOwnerFile(byte[] bytes, String filename, String type, android.webkit.ValueCallback<Boolean> callback) {
-    if (ownerExportCallback != null) { callback.onReceiveValue(false); ownerError("Terminez d’abord l’export ouvert."); return; }
+    if (ownerExportCallback != null) { callback.onReceiveValue(false); ownerError("Finish the open export first."); return; }
     ownerExportBytes = bytes; ownerExportCallback = callback;
     try { startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType(type).putExtra(Intent.EXTRA_TITLE, filename), 72); }
-    catch (ActivityNotFoundException error) { ownerExportBytes = null; ownerExportCallback = null; callback.onReceiveValue(false); ownerError("Le sélecteur de fichiers Android est indisponible."); }
+    catch (ActivityNotFoundException error) { ownerExportBytes = null; ownerExportCallback = null; callback.onReceiveValue(false); ownerError("The Android file picker is unavailable."); }
   }
   @Override public void chooseOwnerFiles(android.webkit.ValueCallback<android.net.Uri[]> callback, String[] types, boolean multiple) {
-    if (ownerFileCallback != null) { callback.onReceiveValue(null); ownerError("Terminez d’abord la sélection ouverte."); return; }
+    if (ownerFileCallback != null) { callback.onReceiveValue(null); ownerError("Finish the open selection first."); return; }
     ownerFileCallback = callback; fileChooserOwner = ownerWorkspace;
     Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT); intent.addCategory(Intent.CATEGORY_OPENABLE); intent.setType("*/*");
     ArrayList<String> accepted = new ArrayList<>();
@@ -229,49 +229,49 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     if (!accepted.isEmpty()) intent.putExtra(Intent.EXTRA_MIME_TYPES, accepted.toArray(new String[0]));
     intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, multiple);
     try { startActivityForResult(intent, 71); }
-    catch (ActivityNotFoundException error) { ownerFileCallback = null; fileChooserOwner = null; callback.onReceiveValue(null); ownerError("Le sélecteur de fichiers Android est indisponible."); }
+    catch (ActivityNotFoundException error) { ownerFileCallback = null; fileChooserOwner = null; callback.onReceiveValue(null); ownerError("The Android file picker is unavailable."); }
   }
 
   void pairingScreen() {
-    ink = null; header("Context Room", "Dessinez sur la tablette, retrouvez le même carnet sur votre Mac.");
-    screen.addView(label("Sur le Mac : « Connect tablet » dans un carnet pour dessiner, ou Réglages → Connected devices pour l’interface complète. Collez le code correspondant ici.", 17));
-    pairingInput = new EditText(this); pairingInput.setHint("Code de connexion"); pairingInput.setContentDescription("Code de connexion créé sur le Mac");
+    ink = null; header("Context Room", "Draw on the tablet, find the same notebook on your Mac.");
+    screen.addView(label("On the Mac: \"Connect tablet\" in a notebook to draw, or Settings → Connected devices for the full interface. Paste the matching code here.", 17));
+    pairingInput = new EditText(this); pairingInput.setHint("Connection code"); pairingInput.setContentDescription("Connection code created on the Mac");
     pairingInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
     pairingInput.setMinLines(4); pairingInput.setMaxLines(8); pairingInput.setTextSize(14); pairingInput.setPadding(dp(16),dp(12),dp(16),dp(12));
     LinearLayout.LayoutParams inputLayout = new LinearLayout.LayoutParams(-1, -2); inputLayout.setMargins(dp(16),dp(12),dp(16),dp(12)); screen.addView(pairingInput, inputLayout);
-    Button pair = button("Connecter cette tablette", () -> {
+    Button pair = button("Connect this tablet", () -> {
       String text = pairingInput.getText().toString();
-      if (text.length() > 8192) { showError("Ce code est trop long. Recopiez le code créé sur le Mac."); return; }
-      try { pair(new JSONObject(text)); } catch (Exception error) { showError("Le code est incomplet. Collez le contenu entier créé sur le Mac."); }
+      if (text.length() > 8192) { showError("This code is too long. Copy the code created on the Mac again."); return; }
+      try { pair(new JSONObject(text)); } catch (Exception error) { showError("The code is incomplete. Paste the entire content created on the Mac."); }
     }); screen.addView(pair);
     if (LegacyRecoveryArchive.available(this)) {
-      screen.addView(label("Vos données Lisière sont conservées sur cet appareil. Préparez leur récupération avant de poursuivre la migration sur le Mac.", 16));
-      screen.addView(button("Récupérer Lisière", () -> startActivity(new Intent(this, LegacyRecoveryActivity.class))));
+      screen.addView(label("Your Lisière data is kept on this device. Prepare its recovery before continuing the migration to the Mac.", 16));
+      screen.addView(button("Recover Lisière", () -> startActivity(new Intent(this, LegacyRecoveryActivity.class))));
     }
-    screen.addView(label("Sans caméra : enregistrez « Save pairing file » sur le Mac, transférez le fichier ici (BOOXDrop), puis importez-le.", 16));
-    screen.addView(button("Importer le fichier d’appairage", this::importPairingFile));
-    if (connection != null) screen.addView(button("Revenir à Context Room", this::connectionHome));
+    screen.addView(label("No camera: save \"Save pairing file\" on the Mac, move the file here (BOOXDrop), then import it.", 16));
+    screen.addView(button("Import pairing file", this::importPairingFile));
+    if (connection != null) screen.addView(button("Back to Context Room", this::connectionHome));
   }
 
   void importPairingFile() {
     try { startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), 74); }
-    catch (ActivityNotFoundException error) { showError("Le sélecteur de fichiers Android est indisponible."); }
+    catch (ActivityNotFoundException error) { showError("The Android file picker is unavailable."); }
   }
 
   void pair(JSONObject ticket) {
-    setStatus("Vérification de l’identité du Mac…");
+    setStatus("Checking the Mac's identity…");
     engine.network.execute(() -> {
       try {
         JSONObject saved = DeviceConnection.pair(ticket); vault.save(saved); DeviceConnection paired = new DeviceConnection(saved);
         runOnUiThread(() -> { if (dead) return; useConnection(paired); if (pairingInput != null) pairingInput.setText("");
-          if (engineReady) connectionHome(); else setStatus("Connexion enregistrée. Ouverture du moteur local…"); });
-      } catch (Exception error) { runOnUiThread(() -> showError(error instanceof javax.net.ssl.SSLException ? "Le certificat ne correspond pas au code du Mac. La connexion est refusée." : error.getMessage())); }
+          if (engineReady) connectionHome(); else setStatus("Connection saved. Opening the local engine…"); });
+      } catch (Exception error) { runOnUiThread(() -> showError(error instanceof javax.net.ssl.SSLException ? "The certificate does not match the Mac's code. The connection is refused." : error.getMessage())); }
     });
   }
 
   void catalogue(JSONObject event) {
     ink = null; currentScope = null; lastScene = null; journal = null;
-    header("Vos carnets", event.optBoolean("offline") ? "Mac indisponible · les carnets déjà ouverts restent accessibles." : "Connecté au Mac · les gestes sont partagés, la validation reste humaine.");
+    header("Your notebooks", event.optBoolean("offline") ? "Mac unreachable · notebooks already open stay available." : "Connected to the Mac · gestures are shared, review stays human.");
     ScrollView scroll = new ScrollView(this); LinearLayout list = new LinearLayout(this); list.setOrientation(LinearLayout.VERTICAL); scroll.addView(list);
     screen.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
     JSONArray notebooks = event.optJSONArray("notebooks");
@@ -280,10 +280,10 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
       Button open = button(item.optString("title", item.optString("path")) + "\n" + item.optString("path"), () -> openNotebook(item));
       open.setGravity(Gravity.START | Gravity.CENTER_VERTICAL); open.setPadding(dp(20),dp(12),dp(20),dp(12)); open.setEnabled(!item.optBoolean("unavailable")); list.addView(open);
     }
-    screen.addView(button("Actualiser la connexion", () -> engine.call("catalogue", connection.session)));
-    screen.addView(button("Connecter un autre carnet", this::pairingScreen));
-    screen.addView(button("Connexions enregistrées", this::savedConnections));
-    if (connection.isOwner()) screen.addView(button("Interface complète", this::ownerScreen));
+    screen.addView(button("Refresh connection", () -> engine.call("catalogue", connection.session)));
+    screen.addView(button("Connect another notebook", this::pairingScreen));
+    screen.addView(button("Saved connections", this::savedConnections));
+    if (connection.isOwner()) screen.addView(button("Full interface", this::ownerScreen));
     navigationScreen = true;
   }
 
@@ -292,12 +292,12 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
       try { JSONArray saved = vault.list(); String[] labels = new String[saved.length()];
         for (int n = 0; n < saved.length(); n++) { JSONObject device = saved.getJSONObject(n).getJSONObject("device");
           JSONObject grant = device.getJSONArray("grants").getJSONObject(0);
-          labels[n] = device.optString("label", "Tablette") + " · " + ("owner".equals(grant.optString("mode")) ? "Interface propriétaire" : grant.getJSONArray("paths").getString(0)); }
-        runOnUiThread(() -> new AlertDialog.Builder(this).setTitle("Connexions enregistrées").setItems(labels, (dialog, selected) -> disk.execute(() -> {
+          labels[n] = device.optString("label", "Tablet") + " · " + ("owner".equals(grant.optString("mode")) ? "Owner interface" : grant.getJSONArray("paths").getString(0)); }
+        runOnUiThread(() -> new AlertDialog.Builder(this).setTitle("Saved connections").setItems(labels, (dialog, selected) -> disk.execute(() -> {
           try { JSONObject value = saved.getJSONObject(selected); DeviceConnection picked = new DeviceConnection(value); vault.save(value);
             runOnUiThread(() -> { if (dead) return; useConnection(picked); engine.call("close"); connectionHome(); });
           } catch (Exception error) { runOnUiThread(() -> showError(error.getMessage())); }
-        })).setNegativeButton("Fermer", null).show());
+        })).setNegativeButton("Close", null).show());
       } catch (Exception error) { runOnUiThread(() -> showError(error.getMessage())); }
     });
   }
@@ -305,54 +305,54 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   @Override public void openNotebook(JSONObject item) {
     whenJournalIdle(() -> {
       engine.call("close"); journal = null; currentScope = null; pendingObjects.clear(); sceneVersion = -1; lastScene = null; inFlight = null; journalFailed = false; viewRestored = false;
-      header(item.optString("title", item.optString("path")), "Ouverture du carnet…");
+      header(item.optString("title", item.optString("path")), "Opening notebook…");
       openingId = UUID.randomUUID().toString(); openingProject = item.optString("projectId"); openingPath = item.optString("path");
       JSONObject openItem = InkView.copy(item);
       try { openItem.put("nativeOpenId", openingId); } catch (JSONException error) { throw new IllegalStateException(error); }
       HorizontalScrollView scrolling = new HorizontalScrollView(this); scrolling.setHorizontalScrollBarEnabled(false);
       drawingTools = scrolling;
       LinearLayout tools = new LinearLayout(this); scrolling.addView(tools); screen.addView(scrolling);
-      tools.addView(button(connection.isOwner() ? "Context Room" : "Carnets", () -> whenJournalIdle(() -> { engine.call("close"); connectionHome(); })));
+      tools.addView(button(connection.isOwner() ? "Context Room" : "Notebooks", () -> whenJournalIdle(() -> { engine.call("close"); connectionHome(); })));
       conversationButton = null; dictateButton = null; voiceButton = null;
       if (connection.isOwner()) {
-        conversationButton = button("Conversation", this::nativeConversation); dictateButton = button("Dicter", () -> nativeConversation("dictate")); voiceButton = button("Parler", () -> nativeConversation("voice"));
+        conversationButton = button("Conversation", this::nativeConversation); dictateButton = button("Dictate", () -> nativeConversation("dictate")); voiceButton = button("Speak", () -> nativeConversation("voice"));
         for (Button action : new Button[]{conversationButton, dictateButton, voiceButton}) { action.setEnabled(false); tools.addView(action); }
       }
       ink = new InkView(this, this); ink.recordingHistory = false; ink.setEnabled(false);
       HashMap<String, Button> toolButtons = new HashMap<>();
-      for (String[] tool : new String[][]{{"Stylo","ink"},{"Sélection","select"},{"Gomme","erase"},{"Texte","text"},{"Rectangle","rect"},{"Ellipse","ellipse"},{"Ligne","line"},{"Flèche","arrow"},{"Déplacer","pan"}}) {
+      for (String[] tool : new String[][]{{"Pen","ink"},{"Select","select"},{"Eraser","erase"},{"Text","text"},{"Rectangle","rect"},{"Ellipse","ellipse"},{"Line","line"},{"Arrow","arrow"},{"Pan","pan"}}) {
         Button select = button(tool[0], () -> { ink.setTool(tool[1]); for (Map.Entry<String, Button> entry : toolButtons.entrySet()) {
           boolean active = entry.getKey().equals(tool[1]); entry.getValue().setSelected(active); entry.getValue().setTypeface(Typeface.DEFAULT, active ? Typeface.BOLD : Typeface.NORMAL);
-          entry.getValue().setContentDescription(entry.getValue().getText() + (active ? " · outil actif" : ""));
+          entry.getValue().setContentDescription(entry.getValue().getText() + (active ? " · active tool" : ""));
         } });
-        if (tool[1].equals("ink")) { select.setSelected(true); select.setTypeface(Typeface.DEFAULT, Typeface.BOLD); select.setContentDescription("Stylo · outil actif"); }
+        if (tool[1].equals("ink")) { select.setSelected(true); select.setTypeface(Typeface.DEFAULT, Typeface.BOLD); select.setContentDescription("Pen · active tool"); }
         toolButtons.put(tool[1], select); tools.addView(select);
       }
-      undoButton = button("Annuler", () -> enqueue(InkView.json("action", "undo"))); tools.addView(undoButton);
-      redoButton = button("Rétablir", () -> enqueue(InkView.json("action", "redo"))); tools.addView(redoButton);
-      tools.addView(button("Effacer la sélection", () -> ink.selectedAction("delete")));
-      tools.addView(button("Relier", () -> ink.selectedAction("connect")));
-      tools.addView(button("Dupliquer", () -> ink.selectedAction("duplicate")));
-      if (BooxInk.supportedDevice()) tools.addView(button("Mode BOOX", () -> ink.toggleBoox()));
-      tools.addView(button("Reconnecter", () -> engine.call("refresh")));
-      tools.addView(button("Exporter la récupération", () -> engine.call("exportRecovery")));
-      tools.addView(button("Voir les conflits", () -> {
+      undoButton = button("Undo", () -> enqueue(InkView.json("action", "undo"))); tools.addView(undoButton);
+      redoButton = button("Redo", () -> enqueue(InkView.json("action", "redo"))); tools.addView(redoButton);
+      tools.addView(button("Delete selection", () -> ink.selectedAction("delete")));
+      tools.addView(button("Link", () -> ink.selectedAction("connect")));
+      tools.addView(button("Duplicate", () -> ink.selectedAction("duplicate")));
+      if (BooxInk.supportedDevice()) tools.addView(button("BOOX mode", () -> ink.toggleBoox()));
+      tools.addView(button("Reconnect", () -> engine.call("refresh")));
+      tools.addView(button("Export recovery", () -> engine.call("exportRecovery")));
+      tools.addView(button("View conflicts", () -> {
         JSONArray conflicts = lastScene == null ? null : lastScene.optJSONArray("conflictDetails"); StringBuilder detail = new StringBuilder();
         for (int n = 0; conflicts != null && n < conflicts.length(); n++) { JSONObject error = conflicts.optJSONObject(n).optJSONObject("error");
-          detail.append(error == null ? "Geste en conflit" : error.optString("message")).append("\n\n"); }
-        new AlertDialog.Builder(this).setTitle("Gestes à réconcilier").setMessage(detail.length() == 0 ? "Aucun conflit dans ce carnet." : detail.toString()).setPositiveButton("Fermer", null).show();
+          detail.append(error == null ? "Conflicting gesture" : error.optString("message")).append("\n\n"); }
+        new AlertDialog.Builder(this).setTitle("Gestures to reconcile").setMessage(detail.length() == 0 ? "No conflicts in this notebook." : detail.toString()).setPositiveButton("Close", null).show();
       }));
       drawingWorkspace = new LinearLayout(this); drawingWorkspace.addView(ink, new LinearLayout.LayoutParams(-1, -1));
       screen.addView(drawingWorkspace, new LinearLayout.LayoutParams(-1, 0, 1));
       HorizontalScrollView viewScrolling = new HorizontalScrollView(this); LinearLayout viewTools = new LinearLayout(this); viewScrolling.addView(viewTools);
-      shareViewButton = button("Partager ma vue", () -> views.setMode(views.mode.equals("share") ? "independent" : "share"));
-      followViewButton = button("Suivre le Mac", () -> views.setMode("follow"));
+      shareViewButton = button("Share my view", () -> views.setMode(views.mode.equals("share") ? "independent" : "share"));
+      followViewButton = button("Follow the Mac", () -> views.setMode("follow"));
       // A selected Follow button is also a direct stop; the generic button handler
       // already returns the view to human control before the action runs.
       followViewButton.setOnClickListener(v -> { if (views.mode.equals("follow")) interaction(); else { interaction(); views.setMode("follow"); } });
-      presentationButton = button("Plein écran", () -> setPresentation(!presentation));
+      presentationButton = button("Full screen", () -> setPresentation(!presentation));
       viewTools.addView(shareViewButton); viewTools.addView(followViewButton); viewTools.addView(presentationButton); screen.addView(viewScrolling);
-      viewStatus = label("Vues indépendantes.", 13); viewStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); screen.addView(viewStatus);
+      viewStatus = label("Independent views.", 13); viewStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); screen.addView(viewStatus);
       engine.call("open", openItem);
     });
   }
@@ -390,11 +390,11 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   void renderNotebookStatus() {
     if (lastScene == null) return;
     int conflicts = lastScene.optInt("conflicts");
-    if (conflicts > 0) setStatus(conflicts + " conflit(s) · exportez la récupération avant de réconcilier les gestes.");
-    else if (pendingNative > 0) setStatus("Enregistrement sur la tablette…");
-    else if (lastScene.optBoolean("offline")) setStatus("Conservé sur la tablette · en attente du Mac");
-    else if (lastScene.optInt("pending") > 0) setStatus("Conservé sur la tablette · synchronisation en cours");
-    else setStatus("Synchronisé avec le Mac · brouillon du carnet");
+    if (conflicts > 0) setStatus(conflicts + " conflict(s) · export the recovery before reconciling gestures.");
+    else if (pendingNative > 0) setStatus("Saving on the tablet…");
+    else if (lastScene.optBoolean("offline")) setStatus("Saved on the tablet · waiting for the Mac");
+    else if (lastScene.optInt("pending") > 0) setStatus("Saved on the tablet · syncing");
+    else setStatus("Synced with the Mac · notebook draft");
   }
   void renderScene() {
     if (ink == null || lastScene == null || currentScope == null || !InkView.sameJson(currentScope, lastScene.optJSONObject("scope")) || journalFailed) return;
@@ -437,9 +437,9 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     }
   }
   void enqueue(JSONObject action) {
-    if (journal == null || journalFailed) { failJournal(action, new IOException("Le stockage local n’est pas prêt. Le geste doit être récupéré.")); return; }
+    if (journal == null || journalFailed) { failJournal(action, new IOException("Local storage is not ready. The gesture must be recovered.")); return; }
     NativeCommandJournal selected = journal;
-    pendingNative++; pending(action, 1); setStatus("Enregistrement sur la tablette…");
+    pendingNative++; pending(action, 1); setStatus("Saving on the tablet…");
     disk.execute(() -> {
       try { selected.append(action); runOnUiThread(this::drain); }
       catch (Exception error) { runOnUiThread(() -> failJournal(action, error)); }
@@ -468,8 +468,8 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     showError(error.getMessage());
   }
   void whenJournalIdle(Runnable action) {
-    if (journalFailed) { showError("Récupérez les gestes du carnet avant de changer de vue."); return; }
-    if (pendingNative > 0 || inFlight != null || ink != null && ink.gestureActive()) { deferredNavigation = action; setStatus("Enregistrement local avant de changer de carnet…"); }
+    if (journalFailed) { showError("Recover the notebook gestures before changing view."); return; }
+    if (pendingNative > 0 || inFlight != null || ink != null && ink.gestureActive()) { deferredNavigation = action; setStatus("Saving locally before switching notebook…"); }
     else action.run();
   }
   void settleNavigation() {
@@ -513,15 +513,15 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   @Override public boolean frameView(JSONArray bounds) { if (ink == null || navigationBusy() || !ink.frameSharedView(bounds)) return false; viewport(); return true; }
   @Override public void viewNotice(String mode, String message) {
     if (viewStatus != null) viewStatus.setText(message);
-    if (shareViewButton != null) { shareViewButton.setSelected(mode.equals("share")); shareViewButton.setText(mode.equals("share") ? "Arrêter le partage" : "Partager ma vue"); }
-    if (followViewButton != null) { followViewButton.setSelected(mode.equals("follow")); followViewButton.setText(mode.equals("follow") ? "Arrêter le suivi" : "Suivre le Mac"); }
+    if (shareViewButton != null) { shareViewButton.setSelected(mode.equals("share")); shareViewButton.setText(mode.equals("share") ? "Stop sharing" : "Share my view"); }
+    if (followViewButton != null) { followViewButton.setSelected(mode.equals("follow")); followViewButton.setText(mode.equals("follow") ? "Stop following" : "Follow the Mac"); }
   }
   void setPresentation(boolean enabled) {
     presentation = enabled;
     if (title != null) title.setVisibility(enabled ? View.GONE : View.VISIBLE);
     if (status != null) status.setVisibility(enabled ? View.GONE : View.VISIBLE);
     if (drawingTools != null) drawingTools.setVisibility(enabled ? View.GONE : View.VISIBLE);
-    if (presentationButton != null) presentationButton.setText(enabled ? "Quitter le plein écran" : "Plein écran");
+    if (presentationButton != null) presentationButton.setText(enabled ? "Exit full screen" : "Full screen");
     getWindow().getDecorView().setSystemUiVisibility(enabled ? View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
       : View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
   }
@@ -529,11 +529,11 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   @Override public void draft(JSONArray points) { }
   @Override public void text(float x, float y) {
     if (ink == null) return;
-    InkView target = ink; EditText input = new EditText(this); input.setHint("Texte du carnet"); input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+    InkView target = ink; EditText input = new EditText(this); input.setHint("Notebook text"); input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
     target.suspendBoox(true);
-    AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Ajouter du texte").setView(input)
-      .setPositiveButton("Ajouter", (d, which) -> { if (ink == target && input.length() > 0) target.add(InkView.json("type", "text", "x", x, "y", y, "w", 260, "h", 80, "fontSize", 20, "text", input.getText().toString())); })
-      .setNegativeButton("Annuler", null).create();
+    AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Add text").setView(input)
+      .setPositiveButton("Add", (d, which) -> { if (ink == target && input.length() > 0) target.add(InkView.json("type", "text", "x", x, "y", y, "w", 260, "h", 80, "fontSize", 20, "text", input.getText().toString())); })
+      .setNegativeButton("Cancel", null).create();
     dialog.setOnDismissListener(d -> target.suspendBoox(false)); dialog.show();
   }
   void export(JSONObject clientRecovery) {
@@ -557,9 +557,9 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
       if (result != RESULT_OK || bytes == null || uri == null || !"content".equals(uri.getScheme())) { callback.onReceiveValue(false); return; }
       disk.execute(() -> {
         try (OutputStream stream = getContentResolver().openOutputStream(uri, "w")) {
-          if (stream == null) throw new IOException("Destination indisponible."); stream.write(bytes);
-        } catch (Exception error) { runOnUiThread(() -> { callback.onReceiveValue(false); ownerError("L’export n’a pas été écrit. Le travail reste disponible."); }); return; }
-        runOnUiThread(() -> { callback.onReceiveValue(true); ownerError("Fichier exporté dans la destination choisie."); });
+          if (stream == null) throw new IOException("Destination unavailable."); stream.write(bytes);
+        } catch (Exception error) { runOnUiThread(() -> { callback.onReceiveValue(false); ownerError("The export was not written. Your work is still available."); }); return; }
+        runOnUiThread(() -> { callback.onReceiveValue(true); ownerError("File exported to the chosen destination."); });
       }); return;
     }
     if (request == 74) {
@@ -567,7 +567,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
       if (result != RESULT_OK || uri == null || !"content".equals(uri.getScheme())) return;
       disk.execute(() -> {
         try (java.io.InputStream stream = getContentResolver().openInputStream(uri)) {
-          if (stream == null) throw new IOException("Le fichier ne peut pas être ouvert.");
+          if (stream == null) throw new IOException("The file cannot be opened.");
           JSONObject ticket = PairingFile.parse(stream); runOnUiThread(() -> { if (!dead) pair(ticket); });
         } catch (Exception error) { runOnUiThread(() -> showError(error.getMessage())); }
       }); return;
@@ -586,7 +586,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     }
     if (request != 7 || result != RESULT_OK || data == null || data.getData() == null || pendingExport == null) return;
     byte[] bytes = pendingExport; pendingExport = null; android.net.Uri uri = data.getData();
-    disk.execute(() -> { try (OutputStream stream = getContentResolver().openOutputStream(uri, "w")) { if (stream == null) throw new IOException("Le fichier ne peut pas être ouvert."); stream.write(bytes); runOnUiThread(() -> setStatus("Récupération exportée. Les gestes restent dans Context Room.")); }
+    disk.execute(() -> { try (OutputStream stream = getContentResolver().openOutputStream(uri, "w")) { if (stream == null) throw new IOException("The file cannot be opened."); stream.write(bytes); runOnUiThread(() -> setStatus("Recovery exported. Gestures stay in Context Room.")); }
       catch (Exception error) { runOnUiThread(() -> showError(error.getMessage())); } });
   }
   @Override public void startActivityForResult(Intent intent, int request, Bundle options) { wake.appStartedActivity(SystemClock.elapsedRealtime()); super.startActivityForResult(intent, request, options); }

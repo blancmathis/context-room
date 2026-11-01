@@ -20,10 +20,10 @@ public final class PairingFileTest {
   }
 
   @Test public void refusesOversizedTextAndNonTicketFiles() {
-    assertRefused("{\"pairingId\":\"p\",\"token\":\"" + new String(new char[PairingFile.MAX_BYTES]).replace('\0', 'x') + "\"}", "trop gros");
-    assertRefused("not json", "fichier d’appairage");
-    assertRefused("{\"hello\":1}", "fichier d’appairage");
-    assertRefused("", "fichier d’appairage");
+    assertRefused("{\"pairingId\":\"p\",\"token\":\"" + new String(new char[PairingFile.MAX_BYTES]).replace('\0', 'x') + "\"}", "too big");
+    assertRefused("not json", "pairing file");
+    assertRefused("{\"hello\":1}", "pairing file");
+    assertRefused("", "pairing file");
   }
   private static void assertRefused(String text, String message) {
     try { PairingFile.parse(stream(text)); fail("accepted"); } catch (IOException error) { assertTrue(error.getMessage(), error.getMessage().contains(message)); }

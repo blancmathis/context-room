@@ -85,7 +85,7 @@ public final class NotebookDeviceTest {
       instrumentation.runOnMainSync(activity::onBackPressed);
       assertTrue("Back leaves presentation without closing the notebook", onUi(activity, () -> !activity.presentation && activity.currentScope != null));
       instrumentation.runOnMainSync(() -> activity.shareViewButton.performClick()); navigationStage(activity, "tabletSharing"); ownerObserved(activity, "tabletViewReceived");
-      assertTrue("Receipt-free sharing cannot claim a Mac display", onUi(activity, () -> activity.views.mode.equals("share") && activity.viewStatus.getText().toString().contains("non confirmé")));
+      assertTrue("Receipt-free sharing cannot claim a Mac display", onUi(activity, () -> activity.views.mode.equals("share") && activity.viewStatus.getText().toString().contains("not confirmed")));
       scenario.moveToState(androidx.lifecycle.Lifecycle.State.STARTED);
       scenario.moveToState(androidx.lifecycle.Lifecycle.State.RESUMED);
       assertTrue("View following and sharing are never silently restored", onUi(activity, () -> activity.views.mode.equals("independent")));
@@ -200,7 +200,7 @@ public final class NotebookDeviceTest {
       waitFor("Return navigation did not wait for the second gesture", () -> onUi(activity, () -> activity.navigation.deferred));
       ownerObserved(activity, "deferredSecond");
       // A real native toolbar action reclaims the view before the queued opening.
-      instrumentation.runOnMainSync(() -> { android.widget.Button pen = findButton(activity.screen, "Stylo"); assertNotNull(pen); pen.performClick(); });
+      instrumentation.runOnMainSync(() -> { android.widget.Button pen = findButton(activity.screen, "Pen"); assertNotNull(pen); pen.performClick(); });
       pen(activity, MotionEvent.ACTION_UP, 210, 390, .5f, down);
       waitFor("Human cancellation did not settle", () -> onUi(activity, () -> activity.navigation.command == null && activity.pendingNative == 0 && activity.lastScene.optInt("pending") == 0));
       assertTrue("A human action must keep the chosen notebook", onUi(activity, () -> activity.ink == second && "android-second".equals(activity.currentScope.optString("resourceId"))));
@@ -265,7 +265,7 @@ public final class NotebookDeviceTest {
       waitFor("Offline gestures were not durably acknowledged locally", () -> onUi(activity, () -> activity.pendingNative == 0 && activity.lastScene.optInt("pending") >= 8 && activity.lastScene.optBoolean("offline")));
       assertEquals("Offline ink must not be reported as canonical", before + 1, scene(connection).getJSONObject("document").getJSONArray("objects").length());
       assertTrue("Native queue must be acknowledged by durable IDB", onUi(activity, () -> activity.journal.head() == null));
-      assertTrue(onUi(activity, () -> activity.status.getText().toString().contains("tablette")));
+      assertTrue(onUi(activity, () -> activity.status.getText().toString().contains("tablet")));
       screenshot(activity, "notebook-offline");
       assertNotNull(activity.vault.read());
     }

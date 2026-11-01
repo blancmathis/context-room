@@ -8,7 +8,7 @@ const requests = new Map();
 let publicSession, client, projectId, poll, generation = 0, serial = Promise.resolve();
 const request = (path, options = {}, project = projectId) => new Promise((resolve, reject) => {
   const id = crypto.randomUUID();
-  const timer = setTimeout(() => { requests.delete(id); reject(Object.assign(new Error('Connexion interrompue. Le travail local est conservé.'), { code: 'device_timeout' })); }, 18000);
+  const timer = setTimeout(() => { requests.delete(id); reject(Object.assign(new Error('Connection interrupted. Local work is kept.'), { code: 'device_timeout' })); }, 18000);
   requests.set(id, { resolve, reject, timer });
   NativeTransport.request(id, project || '', path, options.method || 'GET', options.body || '');
 });
@@ -48,13 +48,13 @@ async function open(item) {
   clearTimeout(poll); client?.close(); client = null;
   projectId = item.projectId;
   const grant = publicSession.device.grants.find(g => g.mode === 'owner' && g.serverId === publicSession.serverId || g.projectId === projectId && g.paths.includes(item.path));
-  if (!grant) throw new Error('Ce carnet ne fait pas partie de cette connexion.');
+  if (!grant) throw new Error('This notebook is not part of this connection.');
   const selectedProject = projectId, actor = { kind: 'human', id: `device-${publicSession.device.id}` };
   const cached = (await storage.list()).find(record => sameScope(record, selectedProject) && record.snapshot.locator.path === item.path);
   let capabilities;
   try { capabilities = await request('/api/notebooks/capabilities', {}, selectedProject); }
   catch (error) { if (!cached) throw error; capabilities = cached.metadata.capabilities; }
-  if (capabilities && (capabilities.serverId !== publicSession.serverId || capabilities.deviceId !== publicSession.device.id || capabilities.projectId !== selectedProject)) throw new Error('Le protocole appartient à une autre connexion.');
+  if (capabilities && (capabilities.serverId !== publicSession.serverId || capabilities.deviceId !== publicSession.device.id || capabilities.projectId !== selectedProject)) throw new Error('The protocol belongs to another connection.');
   const transport = notebookHttpTransport((path, options) => request(path, options, selectedProject), actor, { batch: capabilities?.operations?.includes('batch') });
   let scene, offline = false;
   try { scene = await transport.open({ protocolVersion: 1, path: item.path, id: cached?.snapshot.resourceId || crypto.randomUUID() }); }
@@ -62,7 +62,7 @@ async function open(item) {
   if (run !== generation) return;
   if (item.expectedTarget && (scene.resourceId !== item.expectedTarget.resourceId || scene.locator.path !== item.expectedTarget.path
       || scene.locator.revision !== item.expectedTarget.locationRevision || scene.revision < item.expectedTarget.sceneRevision || offline)) {
-    throw new Error('Le carnet demandé par le Mac n’est plus disponible à cet emplacement.');
+    throw new Error('The notebook requested by the Mac is no longer available at this location.');
   }
   const scope = { serverId: publicSession.serverId, accountId: `device:${publicSession.device.id}:project:${selectedProject}`, deviceId: publicSession.device.id, resourceId: scene.resourceId };
   const selected = new NotebookClient({ storage, transport, scope, actor, onChange: async view => {
@@ -97,11 +97,11 @@ function schedule(run, delay = 1400) {
 
 async function command(message) {
   const selected = client;
-  if (!selected || ['serverId', 'accountId', 'deviceId', 'resourceId'].some(key => message.scope?.[key] !== selected.scope[key])) throw new Error('Le geste appartient à un autre carnet. Le journal local est conservé.');
+  if (!selected || ['serverId', 'accountId', 'deviceId', 'resourceId'].some(key => message.scope?.[key] !== selected.scope[key])) throw new Error('The gesture belongs to another notebook. The local journal is kept.');
   const nativeCommand = { channel: message.channel, sequence: message.sequence, id: message.id };
   if (message.action === 'edit') await selected.enqueue(notebookNativeEdits(message.operations), { gestureId: message.gestureId, nativeCommand });
   else if (['undo', 'redo'].includes(message.action)) await selected.replayGesture(message.action, { nativeCommand });
-  else throw new Error('Commande native inconnue.');
+  else throw new Error('Unknown native command.');
   emit('command', { id: message.id, success: true });
   schedule(generation, 0);
 }
@@ -111,7 +111,7 @@ window.ContextRoomNative = {
     const pending = requests.get(id); if (!pending) return;
     clearTimeout(pending.timer); requests.delete(id);
     if (status >= 200 && status < 300) pending.resolve(body);
-    else pending.reject(Object.assign(new Error(body.error || 'La connexion au Mac a échoué.'), { status, code: body.code }));
+    else pending.reject(Object.assign(new Error(body.error || 'The connection to the Mac failed.'), { status, code: body.code }));
   },
   catalogue: session => catalogue(session).catch(reportError),
   session: session => { publicSession = session; },
@@ -122,4 +122,4 @@ window.ContextRoomNative = {
   async exportRecovery() { if (client) emit('export', { data: await client.exportRecovery() }); },
   close() { ++generation; clearTimeout(poll); client?.close(); client = null; },
 };
-storage.ready.then(() => emit('ready')).catch(error => emit('engineStopped', { message: 'Le stockage durable est indisponible. Aucun geste n’est déclaré enregistré. ' + error.message }));
+storage.ready.then(() => emit('ready')).catch(error => emit('engineStopped', { message: 'Durable storage is unavailable. No gesture is declared saved. ' + error.message }));

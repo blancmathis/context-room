@@ -41,7 +41,7 @@ public final class LegacyRecoveryResumeTest {
         return name.equals("com.android.documentsui") || name.equals("com.google.android.documentsui");
       });
       assertTrue(instrumentation.getUiAutomation().performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK));
-      NotebookDeviceTest.waitFor("Picker cancellation was not preserved", () -> ui(instrumentation, () -> activity.get().notice.getText().toString().contains("Enregistrement annulé.") && activity.get().save.isEnabled()));
+      NotebookDeviceTest.waitFor("Picker cancellation was not preserved", () -> ui(instrumentation, () -> activity.get().notice.getText().toString().contains("Save cancelled.") && activity.get().save.isEnabled()));
       new LegacyRecoveryTest().capture(instrumentation, activity.get(), "legacy-recovery-cancelled");
       scenario.recreate(); scenario.onActivity(activity::set);
       NotebookDeviceTest.waitFor("Cancelled export cannot resume", () -> ui(instrumentation, () -> activity.get().save.isEnabled()));

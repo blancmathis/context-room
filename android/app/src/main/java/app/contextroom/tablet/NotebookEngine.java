@@ -50,11 +50,11 @@ final class NotebookEngine {
       @Override public boolean shouldOverrideUrlLoading(WebView source, WebResourceRequest request) { return !request.getUrl().toString().equals(ORIGIN + "/assets/engine.html"); }
       @Override public void onReceivedSslError(WebView source, SslErrorHandler handler, android.net.http.SslError error) { handler.cancel(); }
       @Override public void onReceivedError(WebView source, WebResourceRequest request, WebResourceError error) {
-        if (request.isForMainFrame()) listener.event(InkView.json("type", "engineStopped", "message", "Le moteur de dessin n’a pas pu s’ouvrir. Le journal est conservé."));
+        if (request.isForMainFrame()) listener.event(InkView.json("type", "engineStopped", "message", "The drawing engine could not open. The journal is kept."));
       }
       @Override public boolean onRenderProcessGone(WebView source, RenderProcessGoneDetail detail) {
         closed = true;
-        listener.event(InkView.json("type", "engineStopped", "message", "Le moteur local s’est arrêté. Le journal est conservé ; rouvrez Context Room pour reprendre."));
+        listener.event(InkView.json("type", "engineStopped", "message", "The local engine stopped. The journal is kept; reopen Context Room to resume."));
         return true;
       }
     });
@@ -62,7 +62,7 @@ final class NotebookEngine {
       @Override public boolean onConsoleMessage(ConsoleMessage message) {
         boolean error = message.messageLevel() == ConsoleMessage.MessageLevel.ERROR;
         if (error && !EngineConsole.engineFault(true, message.message(), message.sourceId())) android.util.Log.i("ContextRoom", EngineConsole.ignored(message.sourceId()));
-        else if (error) listener.event(InkView.json("type", "error", "message", "Le moteur local a rencontré une erreur. Vérifiez la version d’Android System WebView ; le journal des gestes est conservé."));
+        else if (error) listener.event(InkView.json("type", "error", "message", "The local engine hit an error. Check the Android System WebView version; the gesture journal is kept."));
         return true;
       }
     });
@@ -82,14 +82,14 @@ final class NotebookEngine {
     @JavascriptInterface public void emit(String data) {
       if (closed || data == null || data.length() > 64 * 1024 * 1024) return;
       try { JSONObject event = new JSONObject(data); main.post(() -> { if (!closed) listener.event(event); }); }
-      catch (JSONException error) { main.post(() -> listener.event(InkView.json("type", "error", "message", "Réponse du moteur local illisible. Le journal est conservé."))); }
+      catch (JSONException error) { main.post(() -> listener.event(InkView.json("type", "error", "message", "The local engine's response is unreadable. The journal is kept."))); }
     }
   }
   final class Transport {
     @JavascriptInterface public void request(String id, String project, String path, String method, String body) {
       if (closed || id == null || !id.matches("[a-f0-9-]{36}")) return;
       DeviceConnection selected = connection;
-      if (selected == null) { respond(id, 503, InkView.json("code", "device_unpaired", "error", "Connectez cette tablette depuis le Mac.")); return; }
+      if (selected == null) { respond(id, 503, InkView.json("code", "device_unpaired", "error", "Connect this tablet from the Mac.")); return; }
       try {
         network.execute(() -> {
           try {
@@ -99,10 +99,10 @@ final class NotebookEngine {
             respond(id, answer.getInt("status"), answer.getJSONObject("body"));
           } catch (Exception error) {
             String code = error instanceof javax.net.ssl.SSLException ? "device_tls_identity" : "device_network";
-            respond(id, 503, InkView.json("code", code, "error", code.equals("device_tls_identity") ? "L’identité sécurisée du Mac n’a pas pu être vérifiée." : "Mac indisponible. Les gestes locaux restent sur la tablette."));
+            respond(id, 503, InkView.json("code", code, "error", code.equals("device_tls_identity") ? "The Mac's secure identity could not be verified." : "Mac unreachable. Local gestures stay on the tablet."));
           }
         });
-      } catch (RejectedExecutionException error) { respond(id, 429, InkView.json("code", "device_busy", "error", "La connexion est occupée. Les gestes locaux sont conservés.")); }
+      } catch (RejectedExecutionException error) { respond(id, 429, InkView.json("code", "device_busy", "error", "The connection is busy. Local gestures are kept.")); }
     }
   }
   private void respond(String id, int status, JSONObject body) { call("response", id, status, body); }
