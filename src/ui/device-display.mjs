@@ -132,7 +132,7 @@ export async function startDeviceDisplay({ currentEditor = () => null } = {}) {
     const display = new DeviceDisplay({ session,
       active: () => !document.hidden && globalThis.ContextRoomNativeOwner?.active !== false,
       busy: () => Boolean(globalThis.contextRoomDeviceNavigationBusy?.() || document.querySelector('.assistant-panel:not([hidden])') || document.activeElement?.matches('input, textarea, select') || [...document.querySelectorAll('dialog[open]')].some(d => !d.classList.contains('notebook-dialog'))),
-      changed: (mode, text) => { if (select) select.value = mode; if (status) status.textContent = text; },
+      changed: (mode, text) => { if (select) select.value = mode; if (status) { status.textContent = text; status.title = text; } },
       request: async (action, body) => {
         if (globalThis.ContextRoomNativeOwner?.navigation) {
           const response = await ContextRoomNativeOwner.navigation(action, body);

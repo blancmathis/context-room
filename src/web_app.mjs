@@ -34,7 +34,7 @@ export function versionWebSource(source) {
 }
 export function webEntryHtml(bundle, { mode = 'offline', deviceId = '' } = {}) {
   if (!['offline', 'pair', 'draw'].includes(mode) || deviceId && !/^[a-f0-9-]{36}$/.test(deviceId)) throw new TypeError('Invalid browser entry.');
-  return versionWebSource(`<!doctype html><html lang="en"><head><meta charset="utf-8">
+  return versionWebSource(`<!doctype html><html lang="en" data-file-theme="context-room" data-color-mode="light"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="context-room-web-entry" content="${mode}"><meta name="context-room-browser-device" content="${deviceId}">
 <meta name="theme-color" content="#f7f8f6"><meta name="color-scheme" content="light"><title>Context Room</title>

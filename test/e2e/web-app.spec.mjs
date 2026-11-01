@@ -77,6 +77,18 @@ test('@pwa offline reconnect retains the original Hub route instead of opening t
   } finally { await page.goto('about:blank'); await f.close(); }
 });
 
+test('@web cold-start offline entry uses the light theme, not the dark app default', async ({ page }) => {
+  const f = await fixture();
+  try {
+    await page.route(f.origin + '/', request => request.fulfill({ contentType: 'text/html', body: webEntryHtml(contextRoomWebAssetBundle()) }), { times: 1 });
+    await page.goto(f.origin + '/');
+    const colors = await page.evaluate(() => ({ entry: getComputedStyle(document.querySelector('.web-entry')).backgroundColor, text: getComputedStyle(document.querySelector('.web-entry')).color, body: getComputedStyle(document.body).backgroundColor }));
+    expect(colors.entry).toBe('rgb(247, 248, 246)');
+    expect(colors.body).toBe('rgb(247, 248, 246)');
+    expect(colors.text).not.toBe('rgb(255, 255, 255)');
+  } finally { await page.goto('about:blank'); await f.close(); }
+});
+
 test('@web pairing fragment prefills the code and is removed from the address', async ({ page }) => {
   const f = await fixture();
   try {

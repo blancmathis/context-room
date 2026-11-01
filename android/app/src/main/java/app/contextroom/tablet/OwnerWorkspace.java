@@ -222,10 +222,10 @@ final class OwnerWorkspace {
           String mapped = origin + value.substring(runtimeOrigin.length());
           if (ownerPage(mapped)) { source.loadUrl(mapped); return true; }
         }
-        main.post(() -> host.ownerError("Ce lien ne fait pas partie de l’interface Context Room connectée.")); return true;
+        main.post(() -> host.ownerError("This link is not part of the connected Context Room interface.")); return true;
       }
       @Override public void onReceivedSslError(WebView source, SslErrorHandler handler, android.net.http.SslError error) { handler.cancel(); }
-      @Override public boolean onRenderProcessGone(WebView source, RenderProcessGoneDetail detail) { closed = true; audio.close(); network.shutdownNow(); host.ownerError("L’interface s’est arrêtée. Revenez à la connexion pour la rouvrir."); return true; }
+      @Override public boolean onRenderProcessGone(WebView source, RenderProcessGoneDetail detail) { closed = true; audio.close(); network.shutdownNow(); host.ownerError("The interface stopped. Go back to the connection to reopen it."); return true; }
     });
     web.setWebChromeClient(new WebChromeClient() {
       @Override public boolean onConsoleMessage(ConsoleMessage message) { return true; }
@@ -287,7 +287,7 @@ final class OwnerWorkspace {
         if (closed || pendingConversation != target || !foreground) return;
         if (!"true".equals(ready)) {
           if (SystemClock.elapsedRealtime() - started < 15000) main.postDelayed(this, 150);
-          else host.ownerError("L’interface de conversation n’est pas prête. Revenez à Context Room pour la recharger.");
+          else host.ownerError("The conversation interface is not ready. Go back to Context Room to reload it.");
           return;
         }
         pendingConversation = null;
