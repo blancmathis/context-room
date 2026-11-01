@@ -1,5 +1,6 @@
 /** One foreground display protocol for browser and APK. It never owns ink or review. */
 export const sameDisplayTarget = (a, b) => a && b && ['projectId', 'resourceId', 'path', 'locationRevision'].every(key => a[key] === b[key]);
+const modeText = mode => mode === 'follow' ? 'Waiting for the owner to share this exact notebook.' : mode === 'share' ? 'View shared · display not yet confirmed.' : 'Independent views.';
 export class DeviceDisplay {
   constructor({ request, session, open, busy = () => false, active = () => true, changed = () => {}, clock = () => performance.now(), id = crypto.randomUUID() }) {
     Object.assign(this, { request, session, open, extraBusy: busy, active, changed, clock, id });
@@ -25,7 +26,7 @@ export class DeviceDisplay {
   setMode(mode) {
     if (!['independent', 'share', 'follow'].includes(mode)) throw new TypeError('Unknown display mode.');
     this.mode = mode; this.generation++; this.frame = null; this.viewReceipt = null;
-    this.changed(mode, mode === 'follow' ? 'Waiting for the owner to share this exact notebook.' : mode === 'share' ? 'View shared · display not yet confirmed.' : 'Independent views.');
+    this.changed(mode, modeText(mode));
   }
   interaction() {
     this.humanEpoch++; this.generation++; this.frame = null;
@@ -50,6 +51,7 @@ export class DeviceDisplay {
     try {
       const data = await this.request(receipt ? 'receipt' : 'poll', body);
       if (this.closed) return;
+      if (this.failed) { this.failed = false; this.changed(this.mode, modeText(this.mode)); }
       if (receipt) {
         if (this.receipt === receipt) this.receipt = null;
         if (receipt.status !== 'deferred' && this.command?.operationId === receipt.operationId) this.command = null;
@@ -66,7 +68,7 @@ export class DeviceDisplay {
         if (this.command?.operationId === receipt.operationId) { this.command = null; this.opening = false; }
       }
       if ([401, 403, 410].includes(error.status) || error.status === 409 && error.code !== 'device_navigation_stale') { this.command = null; this.receipt = null; this.setMode('independent'); this.closed = true; }
-      this.changed(this.mode, error.message + ' No display is confirmed.');
+      this.failed = true; this.changed(this.mode, error.message + ' No display is confirmed.');
     } finally { this.running = false; }
   }
   async receiveCommand(data) {
@@ -130,7 +132,7 @@ export async function startDeviceDisplay({ currentEditor = () => null } = {}) {
     const display = new DeviceDisplay({ session,
       active: () => !document.hidden && globalThis.ContextRoomNativeOwner?.active !== false,
       busy: () => Boolean(globalThis.contextRoomDeviceNavigationBusy?.() || document.querySelector('.assistant-panel:not([hidden])') || document.activeElement?.matches('input, textarea, select') || [...document.querySelectorAll('dialog[open]')].some(d => !d.classList.contains('notebook-dialog'))),
-      changed: (mode, text) => { if (select) select.value = mode; if (status) status.textContent = text; },
+      changed: (mode, text) => { if (select) select.value = mode; if (status) { status.textContent = text; status.title = text; } },
       request: async (action, body) => {
         if (globalThis.ContextRoomNativeOwner?.navigation) {
           const response = await ContextRoomNativeOwner.navigation(action, body);

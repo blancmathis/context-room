@@ -22,6 +22,9 @@ if (mode === 'offline') {
   link.href = location.pathname === '/offline.html' ? '/' : location.pathname + location.search;
   link.textContent = 'Reconnect to Context Room'; actions.append(link);
   if (globalThis.ContextRoomNativeOwner?.openConnectionSettings) actions.append(button('Connection settings', () => ContextRoomNativeOwner.openConnectionSettings()));
+  // The Hub may come back while this page is open: go back to it by ourselves. Any JSON answer proves the Hub is reachable.
+  const hubBack = async () => { try { const answer = await fetch('/browser/session', { cache: 'no-store', credentials: 'same-origin' }); return /json/.test(answer.headers.get('content-type') || ''); } catch { return false; } };
+  const watch = setInterval(async () => { if (document.hidden) return; if (await hubBack()) { clearInterval(watch); location.replace(link.href); } }, 4000);
   await appendCachedNotebooks(content);
 } else if (mode === 'pair') {
   status.textContent = 'Pair this browser from the Mac. Drawing permission and the complete owner interface are separate choices.';

@@ -1,5 +1,5 @@
-.assistant-panel { position: fixed; z-index: 20; right: 16px; bottom: 16px; width: min(420px, calc(100vw - 32px)); max-height: min(780px, calc(100dvh - 32px)); display: flex; flex-direction: column; box-sizing: border-box; overflow: auto; padding: 16px; gap: 10px; color: var(--text, #eee); background: var(--panel-strong, #202628); border: 1px solid var(--control-line, #777); border-radius: 12px; box-shadow: 0 8px 30px rgb(0 0 0 / .3); font: 14px/1.45 system-ui, sans-serif; }
-.assistant-panel > header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 0; position: sticky; top: 0; z-index: 1; background: var(--panel-strong, #202628); }
+.assistant-panel { position: fixed; z-index: 20; right: 16px; bottom: 16px; width: min(420px, calc(100vw - 32px)); max-height: min(780px, calc(100dvh - 32px)); display: flex; flex-direction: column; box-sizing: border-box; overflow: auto; padding: 0 16px 16px; gap: 10px; color: var(--text, #eee); background: var(--panel-strong, #202628); border: 1px solid var(--control-line, #777); border-radius: 12px; box-shadow: 0 8px 30px rgb(0 0 0 / .3); font: 14px/1.45 system-ui, sans-serif; }
+.assistant-panel > header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 16px 0 6px; position: sticky; top: 0; z-index: 1; background: var(--panel-strong, #202628); }
 .assistant-panel > * { flex-shrink: 0; }
 .assistant-audio-state { font-size: 12px; }
 .assistant-panel h2 { margin: 0; font-size: 18px; }

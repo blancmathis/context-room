@@ -101,3 +101,16 @@ test('a superseded display receipt releases the protocol for the next command in
   assert.ok(f.display.viewReceipt);
   f.display.receiveView({ frame: null, serverTime: 5101 }, f.display.viewBody()); assert.equal(f.display.viewReceipt, null);
 });
+
+test('a failed poll shows its error once, and the next good poll clears it', async () => {
+  const messages = []; let failing = true;
+  const f = fixture({ changed: (mode, text) => messages.push(text),
+    request: async () => { if (failing) throw new Error('Mac unreachable.');
+      return { protocolVersion: 1, serverId: session.serverId, deviceId: session.device.id, clientSessionId: 'display-session', serverTime: 100, command: null, view: null }; } });
+  await f.display.tick();
+  assert.match(messages.at(-1), /Mac unreachable\. No display is confirmed\./);
+  failing = false; await f.display.tick();
+  assert.equal(messages.at(-1), 'Independent views.');
+  const count = messages.length; await f.display.tick();
+  assert.equal(messages.length, count, 'a healthy poll does not rewrite the status');
+});

@@ -78,7 +78,7 @@
 @media (max-height: 450px) { .notebook-dialog > header { flex-wrap: nowrap; overflow-x: auto; } .notebook-dialog > header > * { flex-shrink: 0; } .notebook-workspace { flex-shrink: 0; min-height: 140px; } }
 
 .notebook-device-display { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: 32em; }
-.notebook-device-display span { width: 100%; }
+.notebook-device-display span { width: 100%; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
 
 /* The virtual keyboard may shrink only the visual viewport, not 100dvh. */
 html[data-context-room-keyboard-viewport] .notebook-dialog { top: calc(var(--context-room-visible-top) + 12px); bottom: auto; margin-block: 0; height: min(960px, calc(var(--context-room-visible-height) - 24px)); }
