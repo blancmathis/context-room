@@ -26,10 +26,10 @@ final class DeviceConnection {
   DeviceConnection(JSONObject saved) throws Exception {
     endpoint = endpoint(saved.getString("url"));
     fingerprint = saved.getString("fingerprint").replace(":", "").toLowerCase(Locale.ROOT);
-    if (!fingerprint.matches("[a-f0-9]{64}")) throw new IOException("Empreinte de certificat invalide.");
+    if (!fingerprint.matches("[a-f0-9]{64}")) throw new IOException("Invalid certificate fingerprint.");
     serverId = saved.getString("serverId");
     credential = saved.optString("token");
-    if (!credential.isEmpty() && !credential.matches("[A-Za-z0-9_-]{43}")) throw new IOException("Identifiant de connexion invalide.");
+    if (!credential.isEmpty() && !credential.matches("[A-Za-z0-9_-]{43}")) throw new IOException("Invalid connection ID.");
     session = saved.optJSONObject("device") == null ? null : InkView.json("serverId", serverId, "device", saved.getJSONObject("device"));
     SSLContext context = SSLContext.getInstance("TLS");
     context.init(null, new TrustManager[] {new X509TrustManager() {
@@ -59,7 +59,7 @@ final class DeviceConnection {
     URI uri = new URI(value);
     if (!"https".equals(uri.getScheme()) || uri.getHost() == null || uri.getUserInfo() != null || uri.getQuery() != null || uri.getFragment() != null
         || !(uri.getPath().isEmpty() || uri.getPath().equals("/")) || uri.getPort() < 1 || uri.getPort() > 65535)
-      throw new IOException("Collez une connexion HTTPS complète créée sur le Mac.");
+      throw new IOException("Paste a complete HTTPS connection created on the Mac.");
     return new URI("https", null, uri.getHost(), uri.getPort(), null, null, null);
   }
 
@@ -102,10 +102,10 @@ final class DeviceConnection {
     String route = path.split("\\?", 2)[0];
     URI relative = new URI(path);
     if (!path.startsWith("/") || path.startsWith("//") || relative.isAbsolute() || relative.getFragment() != null || !route.equals(relative.getPath()) || route.contains("%") || route.contains("\\") || !relative.normalize().equals(relative))
-      throw new IOException("Chemin de connexion interdit.");
-    if (!(method.equals("GET") && READS.contains(route) || method.equals("POST") && WRITES.contains(route))) throw new IOException("Opération hors de la permission de dessin.");
-    if (!route.equals("/device/session") && !permittedProject(project)) throw new IOException("Projet hors de cette connexion.");
-    if (credential.isEmpty()) throw new IOException("La tablette n’est pas connectée.");
+      throw new IOException("Connection path not allowed.");
+    if (!(method.equals("GET") && READS.contains(route) || method.equals("POST") && WRITES.contains(route))) throw new IOException("Operation outside the drawing permission.");
+    if (!route.equals("/device/session") && !permittedProject(project)) throw new IOException("Project outside this connection.");
+    if (credential.isEmpty()) throw new IOException("The tablet is not connected.");
     return exchange(path, method, body, project, true);
   }
 
@@ -114,7 +114,7 @@ final class DeviceConnection {
   }
   JSONObject exchange(String path, String method, String body, String project, boolean authenticated, int maximum) throws Exception {
     byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-    if (bytes.length > maximum) throw new IOException("La requête dépasse la taille autorisée. Le journal est conservé.");
+    if (bytes.length > maximum) throw new IOException("The request exceeds the allowed size. The journal is kept.");
     HttpsURLConnection connection = (HttpsURLConnection) endpoint.resolve(path).toURL().openConnection();
     boolean reached = false;
     connection.setSSLSocketFactory(sockets);
@@ -139,14 +139,14 @@ final class DeviceConnection {
       }
       int status = connection.getResponseCode();
       reached = true; lastFailed = false;
-      if (status >= 300 && status < 400) throw new IOException("La connexion a demandé une redirection. Elle a été refusée.");
-      if (connection.getContentLengthLong() > maximum) throw new IOException("Réponse trop grande.");
+      if (status >= 300 && status < 400) throw new IOException("The connection asked for a redirect. It was refused.");
+      if (connection.getContentLengthLong() > maximum) throw new IOException("Response too large.");
       InputStream stream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
-      if (stream == null) throw new IOException("Le Mac n’a pas renvoyé de réponse.");
+      if (stream == null) throw new IOException("The Mac sent no response.");
       ByteArrayOutputStream data = new ByteArrayOutputStream();
       try (InputStream input = stream) {
         byte[] buffer = new byte[8192]; int count;
-        while ((count = input.read(buffer)) != -1) { if (data.size() + count > maximum) throw new IOException("Réponse trop grande."); data.write(buffer, 0, count); }
+        while ((count = input.read(buffer)) != -1) { if (data.size() + count > maximum) throw new IOException("Response too large."); data.write(buffer, 0, count); }
       }
       JSONObject result = new JSONObject(data.toString(StandardCharsets.UTF_8.name()));
       return InkView.json("status", status, "body", result);
@@ -159,18 +159,18 @@ final class DeviceConnection {
 
   // Called only by native foreground navigation, never by the JavaScript bridge.
   JSONObject navigation(String action, JSONObject body) throws Exception {
-    if (!Arrays.asList("poll", "receipt").contains(action) || credential.isEmpty() || session == null) throw new IOException("Navigation hors de cette connexion.");
+    if (!Arrays.asList("poll", "receipt").contains(action) || credential.isEmpty() || session == null) throw new IOException("Navigation outside this connection.");
     return exchange("/device/navigation/" + action, "POST", body.toString(), "", true);
   }
 
   static JSONObject pair(JSONObject ticket) throws Exception {
-    if (ticket.optInt("protocolVersion") != 1 || ticket.optLong("expiresAt") <= System.currentTimeMillis()) throw new IOException("Ce code a expiré. Créez-en un autre sur le Mac.");
+    if (ticket.optInt("protocolVersion") != 1 || ticket.optLong("expiresAt") <= System.currentTimeMillis()) throw new IOException("This code has expired. Create another on the Mac.");
     DeviceConnection pending = new DeviceConnection(InkView.json("url", ticket.getString("url"), "fingerprint", ticket.getString("fingerprint"), "serverId", ticket.getString("serverId")));
     JSONObject answer = pending.exchange("/device/pair", "POST", InkView.json("protocolVersion", 1, "pairingId", ticket.getString("pairingId"), "token", ticket.getString("token")).toString(), "", false);
     JSONObject body = answer.getJSONObject("body");
-    if (answer.getInt("status") != 201) throw new IOException(body.optString("error", "Le code de connexion a été refusé."));
-    if (body.optInt("protocolVersion") != 1 || !pending.serverId.equals(body.optString("serverId"))) throw new IOException("La réponse appartient à un autre Mac.");
-    if (!InkView.sameJson(ticket.optJSONArray("grants"), body.getJSONObject("device").optJSONArray("grants"))) throw new IOException("Les permissions reçues ne correspondent pas au code choisi.");
+    if (answer.getInt("status") != 201) throw new IOException(body.optString("error", "The connection code was refused."));
+    if (body.optInt("protocolVersion") != 1 || !pending.serverId.equals(body.optString("serverId"))) throw new IOException("The response belongs to another Mac.");
+    if (!InkView.sameJson(ticket.optJSONArray("grants"), body.getJSONObject("device").optJSONArray("grants"))) throw new IOException("The permissions received do not match the chosen code.");
     JSONObject saved = InkView.copy(body);
     saved.put("url", pending.endpoint.toString()).put("fingerprint", pending.fingerprint);
     new DeviceConnection(saved);

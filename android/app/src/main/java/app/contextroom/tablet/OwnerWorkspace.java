@@ -23,7 +23,7 @@ final class OwnerWorkspace {
     void requestOwnerMicrophone(ValueCallback<Boolean> callback);
     void ownerConversationState(JSONObject state);
     default void ownerConnectionAction(String action) {}
-    default InkView.SourcePreview ownerObservation(JSONObject request) throws Exception { throw new IOException("Aperçu du carnet indisponible."); }
+    default InkView.SourcePreview ownerObservation(JSONObject request) throws Exception { throw new IOException("Notebook preview unavailable."); }
   }
   final WebView web;
   final DeviceConnection connection;
@@ -40,11 +40,11 @@ final class OwnerWorkspace {
   JSONObject pendingConversation;
 
   OwnerWorkspace(Context context, DeviceConnection connection, Host host) throws Exception {
-    if (connection.session == null || !connection.serverId.matches("[a-f0-9-]{36}")) throw new IOException("Une connexion propriétaire explicite est nécessaire.");
-    if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) throw new IOException("Mettez Android System WebView à jour pour utiliser l’interface complète.");
+    if (connection.session == null || !connection.serverId.matches("[a-f0-9-]{36}")) throw new IOException("An explicit owner connection is required.");
+    if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) throw new IOException("Update Android System WebView to use the full interface.");
     this.connection = connection; this.host = host; packagedWeb = new PackagedWeb(context);
     String device = connection.session.getJSONObject("device").getString("id");
-    if (!device.matches("[a-f0-9-]{36}")) throw new IOException("Identité de tablette invalide.");
+    if (!device.matches("[a-f0-9-]{36}")) throw new IOException("Invalid tablet identity.");
     origin = "https://owner-" + connection.serverId + "." + device + ".contextroom.invalid";
     web = new WebView(context);
     audio = new NativeAudio(context, event -> { if (!closed) web.evaluateJavascript("window.dispatchEvent(new CustomEvent('context-room-native-audio',{detail:" + event.toString() + "}))", null); });
@@ -67,33 +67,33 @@ final class OwnerWorkspace {
         JSONObject input = new JSONObject(serialized); String id = input.getString("id"), action = input.getString("action");
         if (!id.matches("[a-f0-9-]{36}")) return;
         errorReplyId = id;
-        if (!foreground) { reply.postMessage(InkView.json("id", id, "error", "L’interface propriétaire est en pause.").toString()); return; }
+        if (!foreground) { reply.postMessage(InkView.json("id", id, "error", "The owner interface is paused.").toString()); return; }
         JSONObject value = input.getJSONObject("value");
         if (action.equals("connection.settings") || action.equals("connection.recovery")) {
           reply.postMessage(InkView.json("id", id, "result", InkView.json("opened", true)).toString());
           host.ownerConnectionAction(action); return;
         }
         if (action.equals("conversation.observation")) {
-          if (value.toString().length() > 32000) throw new IOException("Source d’aperçu trop grande.");
+          if (value.toString().length() > 32000) throw new IOException("Preview source too large.");
           InkView.SourcePreview preview = host.ownerObservation(value);
           try { network.execute(() -> {
             JSONObject answer;
             try {
               ByteArrayOutputStream bytes = new ByteArrayOutputStream(); String type = "image/png";
-              if (!preview.image.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, bytes)) throw new IOException("Aperçu indisponible.");
-              if (bytes.size() > 1024 * 1024) { bytes.reset(); type = "image/jpeg"; if (!preview.image.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, bytes)) throw new IOException("Aperçu indisponible."); }
-              if (bytes.size() > 1024 * 1024) throw new IOException("Aperçu trop grand.");
+              if (!preview.image.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, bytes)) throw new IOException("Preview unavailable.");
+              if (bytes.size() > 1024 * 1024) { bytes.reset(); type = "image/jpeg"; if (!preview.image.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, bytes)) throw new IOException("Preview unavailable."); }
+              if (bytes.size() > 1024 * 1024) throw new IOException("Preview too large.");
               preview.frame.put("image", "data:" + type + ";base64," + android.util.Base64.encodeToString(bytes.toByteArray(), android.util.Base64.NO_WRAP));
               answer = InkView.json("id", id, "result", preview.frame);
-            } catch (Exception error) { answer = InkView.json("id", id, "error", "L’aperçu du carnet n’a pas pu être préparé."); }
+            } catch (Exception error) { answer = InkView.json("id", id, "error", "The notebook preview could not be prepared."); }
             finally { preview.image.recycle(); }
             final String response = answer.toString();
             main.post(() -> { if (!closed && foreground && generation == requestedGeneration) reply.postMessage(response); });
-          }); } catch (RejectedExecutionException error) { preview.image.recycle(); throw new IOException("La préparation des aperçus est occupée."); }
+          }); } catch (RejectedExecutionException error) { preview.image.recycle(); throw new IOException("Previews are busy."); }
           return;
         }
         if (action.equals("conversation.state")) {
-          if (value.toString().length() > 32000) throw new IOException("État de conversation trop grand.");
+          if (value.toString().length() > 32000) throw new IOException("Conversation state too large.");
           host.ownerConversationState(value); reply.postMessage(InkView.json("id", id, "result", InkView.json("received", true)).toString()); return;
         }
         if (action.startsWith("audio.")) {
@@ -102,7 +102,7 @@ final class OwnerWorkspace {
           if (action.equals("audio.controller")) { audio.bind(value); answer.onReceiveValue(InkView.json("bound", true)); }
           else if (action.equals("audio.permission")) host.requestOwnerMicrophone(granted -> answer.onReceiveValue(InkView.json("granted", granted)));
           else if (action.equals("audio.recording.start")) host.requestOwnerMicrophone(granted -> {
-            try { if (!granted || closed || !foreground || requestedGeneration != generation) throw new IOException("Le microphone n’a pas été autorisé pour cette conversation."); audio.start(value, answer); }
+            try { if (!granted || closed || !foreground || requestedGeneration != generation) throw new IOException("The microphone was not allowed for this conversation."); audio.start(value, answer); }
             catch (Exception error) { answer.onReceiveValue(NativeAudio.error(error.getMessage())); }
           });
           else if (action.equals("audio.recording.finish")) audio.finish(value, answer);
@@ -114,7 +114,7 @@ final class OwnerWorkspace {
             if (current) { if (action.equals("audio.stop")) audio.stop(); else audio.stopPlayback(); }
             answer.onReceiveValue(InkView.json("stopped", current));
           }
-          else throw new IOException("Opération audio indisponible.");
+          else throw new IOException("Audio operation unavailable.");
           return;
         }
         if (action.equals("file.choose-images")) {
@@ -126,55 +126,55 @@ final class OwnerWorkspace {
                 if (uris != null && uris.length > 0) {
                   Uri uri = uris[0]; android.content.ContentResolver resolver = context.getContentResolver();
                   String type = resolver.getType(uri), filename = "Image";
-                  if (!Arrays.asList("image/png", "image/jpeg", "image/webp").contains(type)) throw new IOException("Format d’image indisponible.");
+                  if (!Arrays.asList("image/png", "image/jpeg", "image/webp").contains(type)) throw new IOException("Image format unavailable.");
                   try (android.database.Cursor metadata = resolver.query(uri, new String[]{android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null)) {
                     if (metadata != null && metadata.moveToFirst()) filename = metadata.getString(0);
                   }
                   ByteArrayOutputStream bytes = new ByteArrayOutputStream();
                   try (InputStream inputFile = resolver.openInputStream(uri)) {
-                    if (inputFile == null) throw new IOException("Image indisponible.");
+                    if (inputFile == null) throw new IOException("Image unavailable.");
                     byte[] buffer = new byte[8192]; int count;
-                    while ((count = inputFile.read(buffer)) != -1) { if (bytes.size() + count > 12 * 1024 * 1024) throw new IOException("Image trop volumineuse."); bytes.write(buffer, 0, count); }
+                    while ((count = inputFile.read(buffer)) != -1) { if (bytes.size() + count > 12 * 1024 * 1024) throw new IOException("Image too large."); bytes.write(buffer, 0, count); }
                   }
                   files.put(InkView.json("name", filename == null ? "Image" : filename.substring(0, Math.min(filename.length(), 180)), "type", type,
                     "body", android.util.Base64.encodeToString(bytes.toByteArray(), android.util.Base64.NO_WRAP)));
                 }
                 answer = InkView.json("id", id, "result", InkView.json("files", files));
-              } catch (Exception error) { answer = InkView.json("id", id, "error", "L’image n’a pas pu être ouverte. Choisissez un PNG, JPEG ou WebP de 12 Mio maximum."); }
+              } catch (Exception error) { answer = InkView.json("id", id, "error", "The image could not be opened. Choose a PNG, JPEG or WebP up to 12 MiB."); }
               final String response = answer.toString();
               main.post(() -> { if (!closed && generation == requestedGeneration) reply.postMessage(response); });
-            }); } catch (RejectedExecutionException error) { if (!closed) reply.postMessage(InkView.json("id", id, "error", "La connexion est occupée.").toString()); }
+            }); } catch (RejectedExecutionException error) { if (!closed) reply.postMessage(InkView.json("id", id, "error", "The connection is busy.").toString()); }
           }, new String[]{"image/png", "image/jpeg", "image/webp"}, false); return;
         }
         if (action.equals("file.save")) {
           String filename = value.optString("filename"), type = value.optString("type"), encoded = value.optString("body");
           if (filename.isEmpty() || filename.length() > 180 || filename.matches(".*[\\\\/\\x00-\\x1f].*") || filename.equals(".") || filename.equals("..")
-            || !type.matches("[a-z]+/[a-zA-Z0-9.+_-]+") || encoded.length() > 40 * 1024 * 1024) throw new IOException("Export invalide.");
+            || !type.matches("[a-z]+/[a-zA-Z0-9.+_-]+") || encoded.length() > 40 * 1024 * 1024) throw new IOException("Invalid export.");
           byte[] bytes = android.util.Base64.decode(encoded, android.util.Base64.NO_WRAP);
-          if (bytes.length > 30 * 1024 * 1024 || !android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP).equals(encoded)) throw new IOException("Export invalide.");
+          if (bytes.length > 30 * 1024 * 1024 || !android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP).equals(encoded)) throw new IOException("Invalid export.");
           host.saveOwnerFile(bytes, filename, type, saved -> {
             if (!closed && generation == requestedGeneration) reply.postMessage(InkView.json("id", id, "result", InkView.json("saved", saved)).toString());
           }); return;
         }
         if (action.equals("notebook.open")) {
-          if (!value.optString("projectId").matches("[a-f0-9]{24}") || !value.optString("path").endsWith(".crnb") || value.optString("path").length() > 4096) throw new IOException("Carnet invalide.");
+          if (!value.optString("projectId").matches("[a-f0-9]{24}") || !value.optString("path").endsWith(".crnb") || value.optString("path").length() > 4096) throw new IOException("Invalid notebook.");
           reply.postMessage(InkView.json("id", id, "result", InkView.json("requested", true)).toString());
           host.openNotebook(value); return;
         }
-        if (!Arrays.asList("request", "events", "navigation").contains(action)) throw new IOException("Opération native indisponible.");
+        if (!Arrays.asList("request", "events", "navigation").contains(action)) throw new IOException("Native operation unavailable.");
         final long ticket = linkStatus.begin();
         try {
           network.execute(() -> {
             JSONObject answer;
             try {
-              if (closed) throw new IOException("L’interface propriétaire est fermée.");
+              if (closed) throw new IOException("The owner interface is closed.");
               answer = InkView.json("id", id, "result", webRequest(action, value));
               if (linkStatus.succeeded(ticket)) main.post(host::ownerRecovered);
             } catch (Exception error) { linkStatus.failed(ticket); answer = InkView.json("id", id, "error", safeError(error)); }
             final String response = answer.toString();
             main.post(() -> { if (!closed && generation == requestedGeneration) reply.postMessage(response); });
           });
-        } catch (RejectedExecutionException error) { reply.postMessage(InkView.json("id", id, "error", "La connexion est occupée. Réessayez après la fin de l’opération.").toString()); }
+        } catch (RejectedExecutionException error) { reply.postMessage(InkView.json("id", id, "error", "The connection is busy. Try again when the operation ends.").toString()); }
       } catch (Exception error) { if (errorReplyId != null) reply.postMessage(InkView.json("id", errorReplyId, "error", safeError(error)).toString()); linkStatus.failed(); host.ownerError(safeError(error)); }
     });
     web.setWebViewClient(new WebViewClient() {
@@ -189,19 +189,19 @@ final class OwnerWorkspace {
           if (!request.isForMainFrame()) { WebResourceResponse packaged = packagedWeb.response(request.getUrl()); if (packaged != null) return packaged; }
           JSONObject answer = connection.owner("request", InkView.json("version", 1, "method", "GET", "path", path + (query == null ? "" : "?" + query), "headers", new JSONObject(), "body", ""));
           int status = answer.getInt("status");
-          if (status >= 300 && status < 400) throw new IOException("Redirection de l’interface refusée.");
+          if (status >= 300 && status < 400) throw new IOException("Interface redirect refused.");
           byte[] bytes = android.util.Base64.decode(answer.getString("body"), android.util.Base64.NO_WRAP);
           JSONObject rawHeaders = answer.getJSONObject("headers"); Map<String, String> headers = new HashMap<>();
           for (Iterator<String> keys = rawHeaders.keys(); keys.hasNext();) { String key = keys.next(); headers.put(key, rawHeaders.getString(key)); }
           headers.put("Cache-Control", "no-store");
           String type = headers.getOrDefault("content-type", "application/octet-stream").split(";", 2)[0];
           if (request.isForMainFrame() && status == 200) {
-            if (!type.equals("text/html")) throw new IOException("L’interface du Mac est invalide.");
+            if (!type.equals("text/html")) throw new IOException("The Mac interface is invalid.");
             String sourceOrigin = answer.getString("origin");
-            if (!sourceOrigin.matches("http://(?:127\\.0\\.0\\.1|\\[::1\\]):[0-9]{1,5}")) throw new IOException("L’origine du Mac est invalide.");
+            if (!sourceOrigin.matches("http://(?:127\\.0\\.0\\.1|\\[::1\\]):[0-9]{1,5}")) throw new IOException("The Mac origin is invalid.");
             runtimeOrigin = sourceOrigin;
             String html = new String(bytes, StandardCharsets.UTF_8);
-            if (!html.contains("<head>")) throw new IOException("L’interface du Mac est incomplète.");
+            if (!html.contains("<head>")) throw new IOException("The Mac interface is incomplete.");
             html = html.replace("<head>", "<head><meta name=\"context-room-native-origin\" content=\"" + runtimeOrigin + "\"><script src=\"/native/owner-bridge.js\"></script>");
             bytes = html.getBytes(StandardCharsets.UTF_8);
           }
@@ -211,7 +211,7 @@ final class OwnerWorkspace {
             try { return packagedWeb.page(!connection.isOwner(), origin); } catch (Exception unavailable) { /* Preserve the original cache and report a broken package. */ }
           }
           if (request.isForMainFrame()) { linkStatus.failed(); main.post(() -> host.ownerError(safeError(error))); }
-          return new WebResourceResponse("text/plain", "UTF-8", 503, "Unavailable", Collections.emptyMap(), new ByteArrayInputStream("Mac indisponible. Revenez à la connexion pour réessayer ; les carnets locaux sont conservés.".getBytes(StandardCharsets.UTF_8)));
+          return new WebResourceResponse("text/plain", "UTF-8", 503, "Unavailable", Collections.emptyMap(), new ByteArrayInputStream("Mac unreachable. Go back to the connection to retry; local notebooks are kept.".getBytes(StandardCharsets.UTF_8)));
         }
       }
       @Override public boolean shouldOverrideUrlLoading(WebView source, WebResourceRequest request) {
@@ -241,7 +241,7 @@ final class OwnerWorkspace {
   }
   JSONObject webRequest(String action, JSONObject value) throws Exception {
     if (action.equals("navigation")) {
-      if (value.toString().length() > 32000) throw new IOException("Navigation trop grande.");
+      if (value.toString().length() > 32000) throw new IOException("Navigation too large.");
       return connection.navigation(value.getString("action"), value.getJSONObject("body"));
     }
     String path = value.optString("path"), method = value.optString("method");
@@ -250,7 +250,7 @@ final class OwnerWorkspace {
       return envelope(session);
     }
     if (connection.isOwner()) return connection.owner(action, value);
-    if (!action.equals("request") || value.optInt("version") != 1) throw new IOException("Opération hors de la permission de dessin.");
+    if (!action.equals("request") || value.optInt("version") != 1) throw new IOException("Operation outside the drawing permission.");
     JSONObject headers = value.optJSONObject("headers");
     String project = headers == null ? "" : headers.optString("x-context-room-device-project");
     String body = new String(android.util.Base64.decode(value.optString("body"), android.util.Base64.NO_WRAP), StandardCharsets.UTF_8);

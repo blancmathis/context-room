@@ -34,9 +34,9 @@ public final class LegacyRecoveryTest {
     Instrumentation.ActivityMonitor monitor=instrumentation.addMonitor(LegacyRecoveryActivity.class.getName(),null,false);
     try(ActivityScenario<MainActivity> scenario=ActivityScenario.launch(MainActivity.class)) {
       MainActivity main=helper.activity(scenario);
-      NotebookDeviceTest.waitFor("Recovery entry is missing after upgrade",()->helper.onUi(main,()->find(main.root,"Récupérer Lisière")!=null));
+      NotebookDeviceTest.waitFor("Recovery entry is missing after upgrade",()->helper.onUi(main,()->find(main.root,"Recover Lisière")!=null));
       capture(instrumentation,main,"legacy-upgraded-entry");
-      instrumentation.runOnMainSync(()->find(main.root,"Récupérer Lisière").performClick());
+      instrumentation.runOnMainSync(()->find(main.root,"Recover Lisière").performClick());
       LegacyRecoveryActivity activity=(LegacyRecoveryActivity)instrumentation.waitForMonitorWithTimeout(monitor,10000); assertNotNull(activity);
       try {
         NotebookDeviceTest.waitFor("Recovery preparation unavailable",()->helper.onUi(main,()->activity.prepare.isEnabled()));
@@ -45,7 +45,7 @@ public final class LegacyRecoveryTest {
         capture(instrumentation,activity,"legacy-recovery-ready");
         instrumentation.runOnMainSync(()->activity.save.performClick());
         new OwnerWorkspaceTest().systemClick("SAVE");
-        NotebookDeviceTest.waitFor("Android recovery export unconfirmed",()->helper.onUi(main,()->activity.notice.getText().toString().contains("Fichier de récupération enregistré.")));
+        NotebookDeviceTest.waitFor("Android recovery export unconfirmed",()->helper.onUi(main,()->activity.notice.getText().toString().contains("Recovery file saved.")));
         capture(instrumentation,activity,"legacy-recovery-exported");
         assertNotNull(new LegacyRecoveryArchive(activity).completed());
       } catch(Throwable error) { capture(instrumentation,activity,"legacy-recovery-failure"); throw error; }

@@ -74,7 +74,7 @@ final class InkView extends View {
     setBackgroundColor(Color.WHITE);
     setFocusable(true);
     setContentDescription(
-        "Tableau de dessin. Le stylet dessine ; deux doigts déplacent et agrandissent.");
+        "Drawing board. The stylus draws; two fingers pan and zoom.");
     zoom =
         new ScaleGestureDetector(
             c,
@@ -106,7 +106,7 @@ final class InkView extends View {
   void ToastMessage() {
     android.widget.Toast.makeText(
             getContext(),
-            "Ce mode nécessite une tablette BOOX compatible.",
+            "This mode needs a compatible BOOX tablet.",
             android.widget.Toast.LENGTH_LONG)
         .show();
   }
@@ -440,7 +440,7 @@ final class InkView extends View {
     SourcePreview(Bitmap image, JSONObject frame) { this.image = image; this.frame = frame; }
   }
   SourcePreview sourcePreview(JSONObject scene) {
-    if (!isShown() || getWidth() < 1 || getHeight() < 1) throw new IllegalStateException("Le carnet d’origine n’est pas visible.");
+    if (!isShown() || getWidth() < 1 || getHeight() < 1) throw new IllegalStateException("The original notebook is not visible.");
     float factor = Math.min(1, Math.min(1024f / getWidth(), 1024f / getHeight()));
     Bitmap bitmap = Bitmap.createBitmap(Math.max(1, Math.round(getWidth() * factor)), Math.max(1, Math.round(getHeight() * factor)), Bitmap.Config.ARGB_8888);
     try {
@@ -621,7 +621,7 @@ final class InkView extends View {
           c.drawRect(b, paint);
           paint.setStyle(Paint.Style.FILL);
           paint.setTextSize(16);
-          c.drawText(imageErrors.contains(o.optString("assetId"))?"Image indisponible":"Chargement de l’image…", b.left + 8, b.top + 24, paint);
+          c.drawText(imageErrors.contains(o.optString("assetId"))?"Image unavailable":"Loading image…", b.left + 8, b.top + 24, paint);
         }
         break;
     }
@@ -689,8 +689,8 @@ final class InkView extends View {
       JSONObject expected = h.optJSONObject(redo ? "before" : "after");
       if (!sameGeometry(expected,objects.get(id)))
         throw new IllegalStateException(
-            "Cet objet a changé depuis cette action. Utilise l’historique pour relire les"
-                + " changements.");
+            "This object changed since this action. Use history to review the"
+                + " changes.");
       JSONObject desired = h.optJSONObject(redo ? "after" : "before");
       JSONObject current = objects.get(id);
       long rev = current == null ? revisions.getOrDefault(id, 0L) : current.optLong("revision");
@@ -946,7 +946,7 @@ final class InkView extends View {
         point.put(0,transformBox.left+(point.optDouble(0)-transformBox.left)*factor);
         point.put(1,transformBox.top+(point.optDouble(1)-transformBox.top)*factor);
       }
-    }catch(JSONException error){throw new IllegalStateException("Redimensionnement impossible",error);}
+    }catch(JSONException error){throw new IllegalStateException("Cannot resize",error);}
     return value;
   }
 
@@ -1267,7 +1267,7 @@ final class InkView extends View {
     JSONArray operations = new JSONArray();
     int segment = 0;
     for (int offset = 0; offset < reached.length(); offset += INK_SEGMENT_POINTS - 1, segment++) {
-      if (segment >= 128) throw new IllegalArgumentException("Le geste BOOX est trop long. Le préfixe déjà enregistré est conservé.");
+      if (segment >= 128) throw new IllegalArgumentException("The BOOX stroke is too long. The part already saved is kept.");
       while (rawSegmentIds.size() <= segment) rawSegmentIds.add(UUID.randomUUID().toString());
       String id = rawSegmentIds.get(segment); JSONObject old = objects.get(id);
       JSONArray samples = new JSONArray(); for (int n = offset; n < Math.min(reached.length(), offset + INK_SEGMENT_POINTS); n++) samples.put(reached.optJSONArray(n));

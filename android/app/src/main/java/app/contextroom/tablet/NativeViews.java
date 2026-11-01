@@ -19,8 +19,8 @@ final class NativeViews {
   NativeViews(Host host) { this.host = host; }
   void setMode(String next) {
     mode = next; generation++; pending = null; receipt = null;
-    host.viewNotice(mode, next.equals("share") ? "Vue partagée · affichage distant non confirmé."
-      : next.equals("follow") ? "En attente d’une vue partagée depuis le Mac." : "Vues indépendantes.");
+    host.viewNotice(mode, next.equals("share") ? "Shared view · remote display not confirmed."
+      : next.equals("follow") ? "Waiting for a shared view from the Mac." : "Independent views.");
   }
   void interaction() { if (mode.equals("follow")) setMode("independent"); }
   JSONObject body() {
@@ -41,25 +41,25 @@ final class NativeViews {
     if (data == null || sent == null || sent.optLong("clientGeneration", -1) != generation || !sent.optString("mode").equals(mode)) return;
     if (mode.equals("share")) {
       JSONObject confirmed = data.optJSONObject("receipt");
-      host.viewNotice(mode, confirmed != null && confirmed.optLong("sequence", -1) == sent.optLong("sequence") ? "Vue actuelle affichée sur le Mac." : "Vue partagée · affichage distant non confirmé.");
+      host.viewNotice(mode, confirmed != null && confirmed.optLong("sequence", -1) == sent.optLong("sequence") ? "Current view shown on the Mac." : "Shared view · remote display not confirmed.");
       return;
     }
     if (!mode.equals("follow")) return;
     JSONObject frame = data.optJSONObject("frame");
     if (frame == null || !sameTarget(host.viewTarget(), frame.optJSONObject("target")) || host.viewBusy()) {
-      pending = null; host.viewNotice(mode, "En attente d’une vue partagée de ce carnet précis."); return;
+      pending = null; host.viewNotice(mode, "Waiting for a shared view of this exact notebook."); return;
     }
     if (receipt != null && receipt.optString("sessionId").equals(frame.optString("sessionId")) && receipt.optLong("sequence") == frame.optLong("sequence")
         && receipt.optJSONArray("viewport").toString().equals(host.viewBounds().toString())) return;
     deadline = SystemClock.elapsedRealtime() + Math.max(0, Math.min(5000, frame.optLong("expiresAt") - data.optLong("serverTime")));
     if (SystemClock.elapsedRealtime() >= deadline) return;
     pending = frame;
-    if (!host.frameView(frame.optJSONArray("viewport"))) { pending = null; host.viewNotice(mode, "Ce cadrage ne peut pas être affiché à cette taille."); }
+    if (!host.frameView(frame.optJSONArray("viewport"))) { pending = null; host.viewNotice(mode, "This framing cannot be shown at this size."); }
   }
   void rendered() {
     if (pending == null || !mode.equals("follow") || host.viewBusy() || SystemClock.elapsedRealtime() >= deadline || !sameTarget(host.viewTarget(), pending.optJSONObject("target"))) return;
     receipt = InkView.json("sessionId", pending.optString("sessionId"), "sequence", pending.optLong("sequence"), "target", host.viewTarget(), "viewport", host.viewBounds());
     pending = null;
-    host.viewNotice(mode, "Vous suivez le Mac · un geste ou un outil arrête le suivi.");
+    host.viewNotice(mode, "You are following the Mac · any gesture or tool stops following.");
   }
 }

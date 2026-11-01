@@ -90,7 +90,7 @@ final class NativeNavigation {
     if (SystemClock.elapsedRealtime() >= deadline) { clearCommand(); return; }
     if (!foreground || receipt != null || opening) return;
     if (host.navigationBusy()) {
-      if (!deferred) { deferred = true; report("deferred", null); host.navigationNotice("Ouverture demandée depuis le Mac · en attente de la fin du geste ou de la saisie."); }
+      if (!deferred) { deferred = true; report("deferred", null); host.navigationNotice("Open requested from the Mac · waiting for the gesture or typing to end."); }
       return;
     }
     opening = true;
@@ -103,7 +103,7 @@ final class NativeNavigation {
     schedule(0);
   }
   void interaction() {
-    if (command != null && (receipt == null || receipt.optString("status").equals("deferred"))) { report("cancelled", null); host.navigationNotice("Vous avez repris la main sur la tablette."); }
+    if (command != null && (receipt == null || receipt.optString("status").equals("deferred"))) { report("cancelled", null); host.navigationNotice("You took control back on the tablet."); }
   }
   void unavailable() { if (opening && receipt == null) report("unavailable", null); }
   void rendered(JSONObject scene) {

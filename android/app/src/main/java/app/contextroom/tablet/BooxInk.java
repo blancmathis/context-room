@@ -227,7 +227,7 @@ final class BooxInk {
     view.getContext().getSharedPreferences("ink", 0).edit().putBoolean("boox", false).apply();
     Toast.makeText(
             view.getContext(),
-            "Mode BOOX indisponible sur ce firmware. Encre Android active.",
+            "BOOX mode unavailable on this firmware. Android ink is active.",
             Toast.LENGTH_LONG)
         .show();
   }

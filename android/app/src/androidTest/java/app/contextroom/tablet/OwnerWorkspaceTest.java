@@ -171,7 +171,7 @@ public final class OwnerWorkspaceTest {
         } finally { resolver.delete(imported, null, null); }
         evaluate(activity, "[...document.querySelectorAll('.notebook-dialog button')].find(n=>n.textContent==='Export').click()");
         systemClick("SAVE");
-        NotebookDeviceTest.waitFor("Android export was not completed", () -> drawing.onUi(activity, () -> activity.status.getText().toString().contains("Fichier exporté")));
+        NotebookDeviceTest.waitFor("Android export was not completed", () -> drawing.onUi(activity, () -> activity.status.getText().toString().contains("File exported")));
         assertEquals("Export must retain the editable scene", "true", evaluate(activity, "document.querySelector('.notebook-state [role=status]')?.textContent.includes('2 objects')"));
         screenshot(activity, "owner-exported-notebook");
         evaluate(activity, "[...document.querySelectorAll('.notebook-dialog button')].find(n=>n.textContent==='Close notebook').click()");

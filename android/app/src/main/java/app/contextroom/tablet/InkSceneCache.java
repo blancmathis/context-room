@@ -161,7 +161,7 @@ final class InkSceneCache {
       float size=(float)object.optDouble("fontSize",22);measure.setTextSize(size);Paint.FontMetrics metrics=measure.getFontMetrics();float baseline=result.top+size;
       for(String line:object.optString("text").split("\n")){result.union(result.left,baseline+metrics.top,result.left+measure.measureText(line),baseline+metrics.bottom);baseline+=size*1.4f;}
     }else if(type.equals("image")&&!view.images.containsKey(object.optString("assetId"))){
-      measure.setTextSize(16);String label=view.imageErrors.contains(object.optString("assetId"))?"Image indisponible":"Chargement de l’image…";
+      measure.setTextSize(16);String label=view.imageErrors.contains(object.optString("assetId"))?"Image unavailable":"Loading image…";
       result.union(result.left+8,result.top+24+measure.getFontMetrics().top,result.left+8+measure.measureText(label),result.top+24+measure.getFontMetrics().bottom);
     }
     float pad=Math.max(12/view.scale,(float)object.optDouble("width",2)/2+2/view.scale);
