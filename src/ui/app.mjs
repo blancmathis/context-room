@@ -7725,6 +7725,15 @@ function reviewFlowCounts(flow) {
   return { ...counts, open: Math.max(0, flow.items.length - flow.index) };
 }
 
+// Every Hub refresh re-renders the review flow. Rewriting identical markup
+// replaced the buttons between a press and its release, so on a slow machine
+// the click landed on the panel, not the button, and was lost.
+function setReviewFlowMarkup(node, markup) {
+  if (node.__reviewFlowMarkup === markup) return;
+  node.innerHTML = markup;
+  node.__reviewFlowMarkup = markup;
+}
+
 function renderReviewFlowBar() {
   let bar = el("reviewFlowBar");
   const item = reviewFlowShownItem();
@@ -7756,7 +7765,7 @@ function renderReviewFlowBar() {
     ? '<button type="button" class="primary" data-review-flow="accept"' + disabled + '>Accept <kbd>A</kbd></button>' : "";
   const changes = secondaryReviewActionForSelectedFile()
     ? '<button type="button" data-review-flow="changes"' + disabled + '>Request changes <kbd>R</kbd></button>' : "";
-  bar.innerHTML = '<div class="review-flow-where"><strong>' + (flow.index + 1) + ' of ' + flow.items.length + '</strong> · '
+  setReviewFlowMarkup(bar, '<div class="review-flow-where"><strong>' + (flow.index + 1) + ' of ' + flow.items.length + '</strong> · '
       + escapeHtml(item.projectTitle || "Project") + ' · ' + escapeHtml(lever.label) + '</div>'
     + '<p class="review-flow-why"><strong>Why</strong> ' + escapeHtml(why) + ' <strong>Effect</strong> ' + escapeHtml(lever.effect) + '</p>'
     + (changed ? '<p class="review-flow-note">Changed since this review started. You decide on the version shown.</p>' : "")
@@ -7764,7 +7773,7 @@ function renderReviewFlowBar() {
     + '<button type="button" data-review-flow="later"' + disabled + '>Later <kbd>L</kbd></button>'
     + '<button type="button" class="quiet-button" data-review-flow="stop"' + disabled + '>Stop</button>'
     + (flow.busy ? '<span class="review-flow-busy" role="status">Saving…</span>' : "")
-    + '</div>';
+    + '</div>');
   bar.hidden = false;
 }
 
@@ -7777,26 +7786,26 @@ function renderReviewFlowPanel() {
     const separate = reviewFlowSeparateCount();
     const parts = [counts.accepted + " accepted", counts.changes + " changes requested", counts.later + " later"];
     if (counts.open) parts.push(counts.open + " not reached");
-    panel.innerHTML = '<strong>' + (flow.stopped ? "Review stopped" : "Review finished") + '</strong>'
+    setReviewFlowMarkup(panel, '<strong>' + (flow.stopped ? "Review stopped" : "Review finished") + '</strong>'
       + '<p>' + escapeHtml(parts.join(" · ")) + '.</p>'
       + (separate ? '<p>Shared and local proposals stay a separate step: ' + separate + ' waiting.</p>' : "")
       + '<div class="review-flow-actions">'
       + (separate ? '<button type="button" data-review-flow-panel="proposals">Show proposals</button>' : "")
-      + '<button type="button" class="quiet-button" data-review-flow-panel="close">Close</button></div>';
+      + '<button type="button" class="quiet-button" data-review-flow-panel="close">Close</button></div>');
     panel.hidden = false;
     return;
   }
   if (flow) {
-    panel.innerHTML = '<strong>Review in progress</strong><p>' + (flow.index + 1) + ' of ' + flow.items.length + '.</p>'
+    setReviewFlowMarkup(panel, '<strong>Review in progress</strong><p>' + (flow.index + 1) + ' of ' + flow.items.length + '.</p>'
       + '<div class="review-flow-actions"><button type="button" class="primary" data-review-flow-panel="continue">Continue</button>'
-      + '<button type="button" class="quiet-button" data-review-flow-panel="stop">Stop</button></div>';
+      + '<button type="button" class="quiet-button" data-review-flow-panel="stop">Stop</button></div>');
     panel.hidden = false;
     return;
   }
   const count = state.contextHubReviewQueueReady ? reviewFlowCandidates().length : 0;
-  panel.innerHTML = count > 1
+  setReviewFlowMarkup(panel, count > 1
     ? '<button type="button" class="primary" data-review-flow-panel="start">Review one after another · ' + count + ' files</button>'
-    : count === 1 ? '<p>Review one after another starts from 2 files.</p>' : "";
+    : count === 1 ? '<p>Review one after another starts from 2 files.</p>' : "");
   panel.hidden = count < 1;
 }
 
@@ -18376,6 +18385,7 @@ function renderSettingsPanel() {
   '</div>' +
   '<div class="settings-footer"><span id="settingsSaveState" class="settings-save-state" data-dirty="false"><strong>All changes saved</strong><span>Project settings and global preferences are up to date.</span></span><div class="docqa-actions"><button id="saveSettings" class="primary" type="button" disabled>Save settings</button></div></div>' +
   '</div>';
+  const typingFocus = settingsTypingFocus(holder);
   updateSettingsPanelMarkup(holder, panelMarkup);
   wireSettingsTabs(holder);
   wireSettingsDisclosures(holder);
@@ -18414,6 +18424,28 @@ function renderSettingsPanel() {
   wireSettingsDirtyTracking(holder);
   holder.querySelector('[data-owner-device-settings]')?.addEventListener('click', () => import('/assets/connected-devices.mjs').then(module => module.openOwnerDeviceSettings(api)).catch(error => setStatus(error.message)));
   el("saveSettings")?.addEventListener("click", () => saveSettings().catch((error) => setStatus(error.message)));
+  restoreSettingsTypingFocus(holder, typingFocus);
+}
+
+// A background render replaces the settings content. Without this, a text
+// field the user is typing in lost its focus, and the next keys went nowhere.
+function settingsTypingFocus(holder) {
+  const active = document.activeElement;
+  if (!active?.id || !holder.contains(active) || !active.matches?.("textarea, input:not([type]), input[type='text'], input[type='search'], input[type='url'], input[type='number']")) return null;
+  return { id: active.id, element: active, start: active.selectionStart, end: active.selectionEnd };
+}
+
+function restoreSettingsTypingFocus(holder, focus) {
+  if (!focus) return;
+  const next = el(focus.id);
+  if (!next || next === focus.element || !holder.contains(next) || next.disabled || next.tagName !== focus.element.tagName) return;
+  const current = document.activeElement;
+  if (current && current !== document.body && current !== focus.element) return;
+  next.focus({ preventScroll: true });
+  try {
+    const end = Math.min(Number(focus.end ?? next.value.length), next.value.length);
+    next.setSelectionRange(Math.min(Number(focus.start ?? end), end), end);
+  } catch {}
 }
 
 function wireSharedSkillLocationsSettingsActions(root) {
