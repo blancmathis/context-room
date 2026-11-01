@@ -314,6 +314,7 @@ export async function openNotebookEditor({ api, path, resourceId, title, scopeKe
   function renderStatus() {
     if (!view || closed) return;
     const origin = reviewKey ? 'Review correction saved on this device' : authBlocked ? 'Access unavailable; local work remains recoverable' : view.status === 'conflict' ? 'Conflict — local operations retained' : view.pending ? `Saved locally · ${view.pending} operation(s) awaiting the Mac` : view.offline ? 'Cached locally · Mac unavailable' : 'Confirmed by the Mac';
+    retry.textContent = authBlocked || view.status === 'conflict' || view.pending || view.offline ? 'Reconnect' : 'Sync now';
     status.textContent = saving ? 'Saving this gesture to the device…' : origin + ` · scene r${view.revision} · ${view.document.objects.length} objects`;
     submit.disabled = Boolean(saving || failedLocalWork.length || view.conflicts?.length || !reviewKey && (view.pending || view.offline || authBlocked));
     dialog.dataset.saveState = saving ? 'saving' : view.status; dialog.dataset.resourceId = resourceId; dialog.dataset.sceneRevision = String(view.revision);

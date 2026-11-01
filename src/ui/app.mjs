@@ -2909,6 +2909,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .global-project-inspection-note strong { color: var(--text); }
     @media (min-width: 1280px) {
       .global-context-room .docqa-grid { grid-template-columns: minmax(0,1fr) 340px; align-items: start; }
+      .global-context-room .context-hub-home-projects { max-height: min(540px, calc(100dvh - 240px)); }
       .global-context-room #reviewQueuePanel { grid-column: 1; min-width: 0; }
       .global-context-room #contextHealthPanel { grid-column: 2; position: sticky; top: 0; max-height: calc(100vh - 48px); overflow: auto; border-left: 1px solid var(--line); border-top: 0; }
       .global-context-room #contextEnginePanel { grid-column: 1 / -1; }
@@ -3196,7 +3197,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       }
       .app.sidebar-collapsed > aside { transform: translateX(-105%); pointer-events: none; }
       .sidebar-resizer { display: none; }
-      .explorer-open { display: inline-flex !important; position: fixed; z-index: 70; top: 3px; left: 4px; width: 40px; height: 40px; align-items: center; justify-content: center; border: 0; border-radius: var(--native-radius-control); background: transparent; color: var(--text); }
+      .explorer-open { display: inline-flex !important; position: fixed; z-index: 70; top: 1px; left: 4px; width: 40px; height: 40px; align-items: center; justify-content: center; border: 0; border-radius: var(--native-radius-control); background: transparent; color: var(--text); }
       .app:not(.sidebar-collapsed) .explorer-open { display: none !important; }
       .app.sidebar-collapsed .workspace-dock { padding-left: 48px; }
       .shared-proposal-workspace, .app.sidebar-collapsed ~ .shared-proposal-workspace { left: 0; }
@@ -3233,7 +3234,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       }
       .workspace-dock { height: var(--native-titlebar-height); padding-right: var(--workbench-gutter-compact); }
       .workspace-title { display: none; }
-      .dock-status { flex-basis: 88px; min-width: 48px; max-width: 88px; margin-inline: 2px; font-size: 10px; }
+      .dock-status { flex: 0 1 88px; min-width: 0; max-width: 88px; margin-inline: 2px; font-size: 10px; }
       .context-room-brand { min-width: max-content; min-height: 40px; padding-inline: 7px; }
       .workspace-dock > .dock-button { min-height: 40px; }
       #back.dock-button, #forward.dock-button, #graphLocal.dock-button { min-width: 40px; }
@@ -3570,6 +3571,16 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .boot-indicator { width: 16px; height: 16px; border: 2px solid color-mix(in srgb, var(--line) 82%, transparent); border-top-color: var(--accent); border-radius: 50%; animation: bootSpin 700ms linear infinite; }
     body:not(.app-booting):not(.app-recovery) .boot-screen { display: none; }
     @keyframes bootSpin { to { transform: rotate(360deg); } }
+    /* Touch targets: 44px on coarse pointers and drawer-size screens. */
+    /* Coarse pointer first: the drawer contract test slices from the last drawer-width media block. The 44px Explorer button sits at top: 1px in the 46px dock. */
+    @media (pointer: coarse), (max-width: 980px) {
+      .explorer-open, .sidebar-toggle, .graph-open, .selection-action, .global-explorer-back,
+      .context-hub-project-picker-close { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
+      .global-explorer-mode, .global-project-watch-filter, .watch-filter,
+      .project-priority-actions button, .settings-concept-help-button,
+      [data-context-room-mode-prompt],
+      .context-room-mode-warning button[data-context-room-mode-prompt] { min-width: 44px; min-height: 44px; }
+    }
     /* LAYOUT CONTRACT: END */
   </style>
 </head>
@@ -26109,7 +26120,20 @@ el("globalProjectList")?.addEventListener("click", (event) => {
     const project = (state.contextHub?.projects || []).find((item) => item.projectKey === fileButton.dataset.globalProjectKey);
     if (!project) return;
     const worktree = globalProjectSelectedWorktree(project);
-    openContextHubProject(worktree?.id || project.id, { filePath: fileButton.dataset.globalProjectFile }).catch((error) => setStatus(error.message));
+    openContextHubProject(worktree?.id || project.id, { filePath: fileButton.dataset.globalProjectFile })
+      .then(() => {
+        // The Explorer drawer (every non-desktop width) hides the document it just opened; close it once the open succeeds.
+        if (!isExplorerDesktopViewport() && !isExplorerCollapsed()) {
+          setExplorerCollapsedFromUser(true);
+          state.explorerReturnFocus = null;
+          const viewer = el("viewer");
+          if (viewer) {
+            if (!viewer.hasAttribute("tabindex")) viewer.setAttribute("tabindex", "-1");
+            window.requestAnimationFrame(() => window.setTimeout(() => viewer.focus({ preventScroll: true }), 0));
+          }
+        }
+      })
+      .catch((error) => setStatus(error.message));
     return;
   }
   const watchFilter = event.target.closest("[data-global-project-watch-filter]");
