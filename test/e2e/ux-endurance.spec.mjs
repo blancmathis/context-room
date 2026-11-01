@@ -126,6 +126,10 @@ async function openProjectFile(page, filePath) {
   phases.push({ step: "click", elapsedMs: performance.now() - startedAt });
   await expect(page.locator("#workspaceTitle")).toContainText(filePath.split("/").pop());
   await expect(page.locator("#viewer")).toBeVisible();
+  // Below the desktop width the app closes the Explorer drawer once the open
+  // succeeds, after the title changes. Wait for it, or a following
+  // ensureExplorerOpen can reopen the drawer just before that close.
+  if (!await page.evaluate(() => isExplorerDesktopViewport())) await expect(page.locator(".app")).toHaveClass(/sidebar-collapsed/);
   const elapsedMs = performance.now() - startedAt;
   (page.__soakFilePhases ||= []).push({ filePath, elapsedMs, phases, resources: (page.__soakRequests || []).slice(-12) });
   return elapsedMs;
@@ -214,7 +218,7 @@ function attachFailureGuards(page) {
     if (message.type() === "error") failures.push(`console: ${message.text()}`);
   });
   page.on("response", (response) => {
-    if (response.status() === 409 || response.status() >= 500) failures.push(`http ${response.status()}: ${response.url()}`);
+    if ([403, 409].includes(response.status()) || response.status() >= 500) failures.push(`http ${response.status()}: ${response.url()}`);
   });
   return { failures, requestCount: () => requests };
 }
@@ -234,14 +238,16 @@ function consumeExpectedDuplicateRegistrationFailures(failures, startIndex) {
   const consumedIndexes = new Set();
   const consumedPaths = new Set();
   for (let index = startIndex; index < failures.length; index += 1) {
-    const match = failures[index].match(/^http (409|500): (\S+)$/);
+    // Since #92 a read against the not-yet-registered duplicate answers 403
+    // file_path_not_allowed instead of a plain 500; both are the same transient read.
+    const match = failures[index].match(/^http (403|409|500): (\S+)$/);
     if (!match) continue;
     const pathname = new URL(match[2]).pathname;
     if (!expectedPaths.has(pathname)) continue;
     expect(consumedPaths.has(pathname), `${pathname} fails at most once while the duplicate workspace registers`).toBe(false);
     consumedPaths.add(pathname);
     consumedIndexes.add(index);
-    const statusText = match[1] === "409" ? "Conflict" : "Internal Server Error";
+    const statusText = { 403: "Forbidden", 409: "Conflict", 500: "Internal Server Error" }[match[1]];
     const expectedConsole = `console: Failed to load resource: the server responded with a status of ${match[1]} (${statusText})`;
     if (failures[index + 1] === expectedConsole) consumedIndexes.add(index + 1);
   }
@@ -257,8 +263,9 @@ test("@smoke duplicate registration consumes only its transient stale file reads
     "http 500: http://127.0.0.1/api/reports",
     "console: Failed to load resource: the server responded with a status of 500 (Internal Server Error)",
     "pageerror: unexpected duplicate failure",
-    "http 409: http://127.0.0.1/api/file/review-base?path=docs%2FREADME.md",
-    "console: Failed to load resource: the server responded with a status of 409 (Conflict)",
+    "http 403: http://127.0.0.1/api/file/review-base?path=docs%2FREADME.md",
+    "console: Failed to load resource: the server responded with a status of 403 (Forbidden)",
+    "http 403: http://127.0.0.1/api/reports",
   ];
 
   consumeExpectedDuplicateRegistrationFailures(failures, 1);
@@ -268,6 +275,7 @@ test("@smoke duplicate registration consumes only its transient stale file reads
     "http 500: http://127.0.0.1/api/reports",
     "console: Failed to load resource: the server responded with a status of 500 (Internal Server Error)",
     "pageerror: unexpected duplicate failure",
+    "http 403: http://127.0.0.1/api/reports",
   ]);
 });
 

@@ -431,6 +431,10 @@ test("@layout rapid document switches settle Git review reads", async ({ page, b
   if (await docsFolder.getAttribute("aria-expanded") !== "true") await docsFolder.click();
   await page.locator('[data-global-project-file="docs/README.md"]').first().click();
   await expect(page).toHaveURL((url) => url.searchParams.get("file") === "docs/README.md");
+  // At this width the app closes the Explorer drawer once the file open
+  // succeeds, after the URL changes. Reopening before that close let the
+  // drawer slide away under the next click, which then retried until timeout.
+  await expect(page.locator(".app")).toHaveClass(/sidebar-collapsed/);
 
   await ensureExplorerOpen(page);
   if (await docsFolder.getAttribute("aria-expanded") !== "true") await docsFolder.click();
