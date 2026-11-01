@@ -17,9 +17,13 @@ class FakeEvent { constructor(type, init = {}) { this.type = type; this.cancelab
 function fakeDialog(name, { refuseCancel = false } = {}) {
   return { name, open: true, closed: 0, dispatchEvent(event) { this.cancelled = true; if (refuseCancel) event.preventDefault(); return !event.defaultPrevented; }, close() { this.closed += 1; this.open = false; } };
 }
+// The real header order of src/ui/assistant.mjs: Open conversation (hidden), Stop agent, the close button
+// (label "Minimize conversation", or "Close" in Dictate/Voice), then Share live source and Sketch sheet.
 function fakePanel({ minimized = false, label = "Minimize conversation" } = {}) {
-  const button = { textContent: label, clicked: 0, click() { this.clicked += 1; panel.minimized = true; } };
-  const panel = { minimized, button, querySelectorAll: (selector) => (/header button/.test(selector) ? [{ textContent: "Open conversation", click() { throw new Error("wrong button"); } }, button] : []) };
+  const wrong = (name) => ({ textContent: name, clicked: 0, click() { this.clicked += 1; } });
+  const close = { textContent: label, clicked: 0, attrs: ["data-assistant-close"], click() { this.clicked += 1; panel.minimized = true; } };
+  const buttons = [wrong("Open conversation"), wrong("Stop agent"), close, wrong("Share live source"), wrong("Sketch sheet")];
+  const panel = { minimized, button: close, buttons, querySelectorAll: (selector) => (/header button/.test(selector) ? buttons : []), querySelector: (selector) => (selector === "header [data-assistant-close]" ? close : null) };
   return panel;
 }
 function runOnPage(script, { dialogs = [], activeElement = null, panel = null } = {}) {
@@ -54,6 +58,7 @@ test("Back closes the open Conversation panel (not a dialog) and consumes the pr
   const panel = fakePanel();
   assert.equal(runOnPage(script, { dialogs: [], panel }), true);
   assert.equal(panel.button.clicked, 1);
+  assert.deepEqual(panel.buttons.filter((b) => b !== panel.button).map((b) => b.clicked), [0, 0, 0, 0], "Share live source and Sketch sheet are never clicked");
   assert.equal(runOnPage(script, { dialogs: [], panel }), false, "once the panel is closed, Back goes to page history");
 });
 
@@ -78,7 +83,10 @@ test("waking drops focus from a text field and leaves other elements alone", () 
 
 test("Back closes a dictation or voice panel through its Close button (C-15)", () => {
   const script = javaString("OwnerBack.java", "CLOSE_TOP_DIALOG");
-  const panel = fakePanel({ label: "Close" });
-  assert.equal(runOnPage(script, { dialogs: [], panel }), true);
-  assert.equal(panel.button.clicked, 1);
+  for (const label of ["Close", "Close"]) {
+    const panel = fakePanel({ label });
+    assert.equal(runOnPage(script, { dialogs: [], panel }), true);
+    assert.equal(panel.button.clicked, 1);
+    assert.deepEqual(panel.buttons.filter((b) => b !== panel.button).map((b) => b.clicked), [0, 0, 0, 0]);
+  }
 });

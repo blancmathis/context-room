@@ -9,8 +9,8 @@ final class OwnerBack {
   static final String CLOSE_TOP_DIALOG = "(function(){var all=document.querySelectorAll('dialog[open]');var d=all[all.length-1];"
     + "if(d){if(d.dispatchEvent(new Event('cancel',{cancelable:true})))d.close();return true;}"
     + "var p=document.querySelector('.assistant-panel:not([hidden]):not(.assistant-minimized)');"
-    + "var bs=p?Array.prototype.slice.call(p.querySelectorAll('header button')):[];"
-    + "var b=bs[bs.length-1];if(!b)return false;b.click();return true;})()";
+    + "var b=p?p.querySelector('header [data-assistant-close]'):null;"
+    + "if(!b)return false;b.click();return true;})()";
   static boolean closedDialog(String evaluateResult) { return "true".equals(evaluateResult); }
   /** What Back does once the page answered the script above. */
   static Action afterDialog(String evaluateResult, boolean canGoBack) {
