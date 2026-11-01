@@ -53,7 +53,11 @@ const owner = http.createServer(async (req, res) => {
     else if (req.method === 'POST' && url.pathname === '/online') { if (!service.server.listening) await service.listen({ port: devicePort }); data = { online: true }; }
     else { res.writeHead(404); res.end(); return; }
     res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(data));
-  } catch { res.writeHead(500); res.end('{"error":"fixture_failed"}'); }
+  } catch (error) {
+    // The driver only sees a bare 500: keep the real cause in fixture.log.
+    process.stderr.write(`Fixture ${req.method} ${req.url} failed: ${error?.code || ''} ${error?.message || error}\n`);
+    res.writeHead(500); res.end('{"error":"fixture_failed"}');
+  }
 });
 await new Promise(resolve => owner.listen(0, '127.0.0.1', resolve));
 fs.writeFileSync(path.join(base, 'fixture.json'), JSON.stringify({ ownerUrl: `http://127.0.0.1:${owner.address().port}`, serverId: service.describe().serverId, projectId, resourceId: scene.resourceId }), { mode: 0o600 });

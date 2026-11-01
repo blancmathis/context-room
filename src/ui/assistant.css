@@ -30,6 +30,19 @@
 .assistant-direct .assistant-history, .assistant-direct .assistant-model { display: none; }
 .assistant-direct-dictation .assistant-messages, .assistant-direct-dictation .assistant-composer button:not([data-dictation-control]) { display: none; }
 .assistant-direct-dictation[data-capturing=true] .assistant-composer textarea { display: none; }
+/* Touch screen with the keyboard open (or a very short screen): the browser scrolls the field into view. Only Stop agent stays sticky (the full header is too tall), and the history sits just above the field, so New conversation, Refresh history and the list stay in view while typing. */
+@media (pointer: coarse) and (max-height: 600px) {
+  /* The header is tall here and must not cover the history, so its controls flow in the panel and only Stop agent sticks to the top. */
+  .assistant-panel { flex-direction: row; flex-wrap: wrap; align-content: flex-start; align-items: center; }
+  .assistant-panel > header { display: contents; }
+  .assistant-panel > header > h2 { margin-top: 10px; }
+  .assistant-panel > :not(header) { flex: 0 0 100%; min-width: 0; }
+  .assistant-panel > header > [data-agent-stop] { position: sticky; top: 0; z-index: 2; }
+  .assistant-panel > .assistant-history { order: 1; }
+  .assistant-panel > .assistant-composer, .assistant-panel > .assistant-composer ~ * { order: 2; }
+  /* Scrolling the field into view keeps room for the history row above it (select + two button rows). */
+  .assistant-panel > .assistant-composer textarea { scroll-margin-top: 170px; }
+}
 @media (max-width: 650px) { .assistant-panel { right: 8px; bottom: 8px; width: calc(100vw - 16px); max-height: 68dvh; padding: 12px; } .assistant-messages { max-height: 22dvh; } }
 body.context-room-native-conversation > :not(.assistant-native-host):not(.assistant-panel) { display: none !important; }
 body.context-room-native-conversation .assistant-native-host:not(body) { position: fixed; inset: 0; display: block; width: 100%; height: 100dvh; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; }

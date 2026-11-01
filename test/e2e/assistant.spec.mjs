@@ -384,3 +384,28 @@ test('@assistant Send does nothing while the conversation changes and no text le
     expect(sends).toBe(0); expect(f.turns).toHaveLength(0);
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
+
+test('@assistant on a touch tablet, Discuss keeps the keyboard closed and the keyboard never hides the history controls', async ({ browser, browserName }) => {
+  test.skip(browserName !== 'chromium', 'Touch emulation with a coarse pointer is checked in Chromium.');
+  const f = await assistantFixture();
+  // BOOX/Android tablet in landscape: 1280×800 CSS px, touch first.
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2, colorScheme: 'dark' });
+  const page = await context.newPage();
+  try {
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+    await page.evaluate(() => selectFile('docs/Original.md')); await page.getByRole('button', { name: 'Discuss', exact: true }).tap();
+    const pane = page.getByRole('complementary', { name: 'Original document conversation' }); await expect(pane).toBeVisible();
+    const textbox = pane.getByRole('textbox', { name: 'Message to the original document agent' });
+    await expect(textbox).toBeVisible(); await expect(textbox).not.toBeFocused();
+    // Android resizes the WebView when the keyboard opens: 408 CSS px are left on the 2560×1600 tablet.
+    await page.setViewportSize({ width: 1280, height: 408 }); await textbox.tap(); await expect(textbox).toBeFocused();
+    const reachable = locator => locator.evaluate(element => {
+      const box = element.getBoundingClientRect(), x = box.left + box.width / 2, y = box.top + box.height / 2;
+      const hit = document.elementFromPoint(x, y), panel = element.closest('.assistant-panel').getBoundingClientRect();
+      return box.top >= Math.max(0, panel.top) && box.bottom <= Math.min(innerHeight, panel.bottom) && Boolean(hit) && (hit === element || element.contains(hit));
+    });
+    for (const control of [pane.getByRole('button', { name: 'New conversation' }), pane.getByRole('button', { name: 'Refresh history' }), pane.getByLabel('Saved conversations for this original source'), textbox])
+      await expect.poll(() => reachable(control), { message: await control.evaluate(element => element.getAttribute('aria-label') || element.textContent) }).toBe(true);
+  } finally { await context.close(); await f.close(); }
+});

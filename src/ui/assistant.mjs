@@ -177,7 +177,8 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     if (mode === 'dictate' && !initializing && !recording && !audioBusy && !retainedRecording) run(toggleDictation());
     if (mode === 'voice' && !voice) run(startVoice(primedContext).finally(() => { if (primedContext && primedContext.state !== 'closed') return primedContext.close(); }));
     else if (primedContext && primedContext.state !== 'closed') run(primedContext.close());
-    if (mode !== 'voice') input.focus();
+    // On a touch screen, focus opens the keyboard and hides the history controls: the person taps the field.
+    if (mode !== 'voice' && !(mode === 'text' && matchMedia('(pointer: coarse)').matches)) input.focus();
   }, notifyState(extra = {}) {
     run(self.onState({ conversationId: current.id, scopeKey, source: current.source, progress: current.progress, closed,
       busy: activeStatuses.has(current.operation?.status), audioActive: Boolean(recording) || audioBusy || audioReading || Boolean(voice), hasDraft: Boolean(input.value.trim() || retainedRecording), ...extra }));

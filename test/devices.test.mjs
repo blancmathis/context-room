@@ -73,6 +73,30 @@ test('navigation recovers an interrupted control pointer and rejects acknowledge
   assert.throws(() => navigation.request({ ...request, operationId: 'new-offline-request' }), { code: 'device_navigation_offline' });
 });
 
+test('a steady presence poll keeps the tablet online without a durable write each time (C-12)', async t => {
+  const f = fixture(t), service = await serviceFor(t, f);
+  const scene = openNotebook(f.root, { id: 'navigation-book', path: 'docs/Sketch.crnb', canWrite: f.canWrite });
+  const paired = service.authority.pair(service.createPairing({ projectId: f.projectId, paths: ['docs/Sketch.crnb'] }));
+  let time = 1000;
+  const target = { projectId: f.projectId, resourceId: scene.resourceId, path: scene.locator.path, locationRevision: scene.locator.revision, sceneRevision: scene.revision };
+  const navigation = createDeviceNavigation({ stateRoot: f.stateRoot, serverId: service.describe().serverId, now: () => time,
+    inspectDevice: id => service.authority.inspect(id), resolveTarget: () => target });
+  const authenticate = () => service.authority.authenticate(paired.token), clientSessionId = 'steady-native-session';
+  navigation.poll(paired.device.id, authenticate, { clientSessionId });
+  const controlPath = path.join(f.stateRoot, 'navigation', paired.device.id, 'control.json');
+  const written = fs.readFileSync(controlPath, 'utf8');
+  // Each durable write is a synchronous fsync on the Hub's only thread: under disk load, one per poll held it for 8-12 s.
+  for (let n = 0; n < 20; n++) { time += 1200; navigation.poll(paired.device.id, authenticate, { clientSessionId, busy: n % 2 === 0 }); }
+  assert.equal(fs.readFileSync(controlPath, 'utf8'), written, 'An unchanged session must not rewrite the control file');
+  assert.equal(navigation.inspect(paired.device.id).online, true, 'Presence stays fresh from memory 24 s after the first poll');
+  assert.equal(navigation.view({ sessionId: 'mac-owner-session', deviceId: paired.device.id, projectId: f.projectId, target, sequence: 1, mode: 'share', viewport: [0, 0, 700, 480] }).receipt, null);
+  time += 15_000;
+  assert.equal(navigation.inspect(paired.device.id).online, false);
+  navigation.poll(paired.device.id, authenticate, { clientSessionId: 'next-native-session' });
+  assert.throws(() => navigation.poll(paired.device.id, authenticate, { clientSessionId }), { code: 'device_navigation_session' });
+  assert.notEqual(fs.readFileSync(controlPath, 'utf8'), written, 'A session change stays durable');
+});
+
 test('remote notebook navigation is scoped, session-bound and confirmed only by an exact device receipt', async t => {
   const f = fixture(t), service = await serviceFor(t, f);
   const scene = openNotebook(f.root, { id: 'navigation-book', path: 'docs/Sketch.crnb', canWrite: f.canWrite });
