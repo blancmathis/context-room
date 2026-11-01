@@ -6,7 +6,10 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AssistantSessions } from '../src/assistant_sessions.mjs';
-import { readNotebookJson, writeNotebookJson, notebookHash } from '../src/notebook_io.mjs';
+import { readNotebookJson, writeNotebookJson, notebookHash, stableNotebookJson } from '../src/notebook_io.mjs';
+import { openNotebook, readNotebook, transferNotebook, relocateNotebook, encodeNotebook, followNotebook } from '../src/notebooks.mjs';
+import { emptyNotebook } from '../src/notebook_protocol.mjs';
+import { createAssistantSourceResolver } from '../src/assistant_sources.mjs';
 
 async function until(check) { const end = Date.now() + 5000; while (!check()) { if (Date.now() > end) throw new Error('Synthetic session did not settle'); await delay(10); } }
 function providerFixture() {
@@ -205,4 +208,126 @@ test('configure refuses a non-boolean Fast', t => {
   for (const fast of ['yes', 1, null]) assert.throws(() => service.configure(f.original, conversation.id, { model: 'fixture', effort: 'low', fast }), { code: 'assistant_model' });
   assert.throws(() => service.create(f.original, { source: f.source, fast: 'yes' }), { code: 'assistant_model' });
   assert.equal(service.get(f.original, conversation.id).fast, false);
+});
+
+
+/** Real notebooks in three private projects, the real source resolver and a synthetic provider. */
+function notebookWorld(t) {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'context-room-follow-')));
+  const [store, A, B, C] = ['private', 'a', 'b', 'c'].map(name => { const dir = path.join(base, name); fs.mkdirSync(dir, { mode: 0o700 }); return dir; });
+  const p = providerFixture(), allow = () => true;
+  const resolveSource = createAssistantSourceResolver({ canRead: allow, canWrite: allow, proposeDocument: () => { throw new Error('No document here'); } });
+  const service = new AssistantSessions({ root: store, resolveSource, providerFactory: async () => p.provider });
+  t.after(async () => { await service.close(); fs.rmSync(base, { recursive: true, force: true }); });
+  const file = 'Carnets/Scene.crnb';
+  const move = (from, to, id) => {
+    const preview = transferNotebook(from, to, { resourceId: id, path: file }, { canWriteSource: allow, canWriteTarget: allow, preview: true });
+    return transferNotebook(from, to, { resourceId: id, path: file, operationId: 'move-' + randomUUID(), expectedRevision: preview.revision }, { canWriteSource: allow, canWriteTarget: allow });
+  };
+  const sourceOf = scene => ({ kind: 'notebook', path: scene.locator.path, resourceId: scene.resourceId, revision: scene.revision, locationRevision: scene.locator.revision, selection: [] });
+  // The exact query of src/ui/assistant.mjs, built from the notebook as this project sees it now.
+  const query = (root, id) => { const scene = readNotebook(root, id, { includeDocument: false }); return { kind: 'notebook', path: scene.locator.path, resourceId: id, locationRevision: scene.locator.revision }; };
+  const ids = (root, source) => service.history(root, { source, selectionHash: notebookHash(JSON.stringify([])) }).conversations.map(item => item.id).sort();
+  return { base, store, A, B, C, p, service, file, move, sourceOf, query, ids, allow };
+}
+
+test('a real move A→B carries the conversation, its send and its retained history; A refuses it cleanly', async t => {
+  const w = notebookWorld(t), scene = openNotebook(w.A, { path: w.file, canWrite: w.allow }), id = scene.resourceId;
+  const plain = w.service.create(w.A, { source: w.sourceOf(scene) });
+  const archiveBytes = Buffer.from(stableNotebookJson({ version: 1, original: { conversation: { id: 'old-conversation', thread: 'old-thread' } }, messages: [{ role: 'user', text: 'Retained message' }] }) + '\n');
+  const legacy = { hash: notebookHash(archiveBytes), messageCount: 1, originalConversationId: 'old-conversation', originalThreadId: 'old-thread' };
+  const retained = w.service.importRetainedConversation(w.A, { requestId: randomUUID(), legacy, archiveBytes,
+    source: { ...w.sourceOf(scene), original: { revision: scene.revision, title: scene.document.title, selection: [] } } });
+  const before = w.query(w.A, id);
+  w.move(w.A, w.B, id);
+  const here = w.query(w.B, id);
+  assert.deepEqual(w.ids(w.B, here), [plain.id, retained.id].sort());
+  const seen = w.service.get(w.B, plain.id);
+  assert.equal(seen.source.path, here.path); assert.equal(seen.source.locationRevision, here.locationRevision);
+  assert.equal(w.service.history(w.B, { source: here }).conversations[0].source.locationRevision, here.locationRevision);
+  assert.equal(w.service.legacyHistory(w.B, retained.id).messages[0].text, 'Retained message');
+  w.service.send(w.B, plain.id, { requestId: randomUUID(), text: 'Draw here' });
+  await until(() => w.p.turns.length === 1);
+  const result = await w.p.turns[0].tool('context_room_notebook', { action: 'scene' }, { callId: 'scene', turnId: w.p.turns[0].turnId, signal: new AbortController().signal });
+  assert.equal(JSON.stringify(result).includes(here.locationRevision) || JSON.stringify(result).includes(id), true);
+  w.p.finish(); await until(() => !w.service.running.size);
+  assert.equal(w.service.get(w.B, plain.id).operation.status, 'completed');
+  // The old root lists nothing and refuses every use with a clear code.
+  assert.deepEqual(w.ids(w.A, before), []); assert.deepEqual(w.service.list(w.A), []);
+  for (const use of [() => w.service.get(w.A, plain.id), () => w.service.legacyHistory(w.A, retained.id),
+    () => w.service.send(w.A, plain.id, { requestId: randomUUID(), text: 'Old place' })]) assert.throws(use, { code: 'assistant_notebook_moved' });
+  // A third project never sees it.
+  assert.deepEqual(w.ids(w.C, here), []); assert.throws(() => w.service.get(w.C, plain.id), { code: 'assistant_scope' });
+});
+
+test('a chain A→B→C→A follows hop by hop, within the hop limit', t => {
+  const w = notebookWorld(t), scene = openNotebook(w.A, { path: w.file, canWrite: w.allow }), id = scene.resourceId;
+  const fromA = w.service.create(w.A, { source: w.sourceOf(scene) });
+  w.move(w.A, w.B, id);
+  const fromB = w.service.create(w.B, { source: w.sourceOf(readNotebook(w.B, id)) });
+  w.move(w.B, w.C, id);
+  assert.deepEqual(w.ids(w.C, w.query(w.C, id)), [fromA.id, fromB.id].sort());
+  assert.equal(w.service.get(w.C, fromA.id).source.locationRevision, w.query(w.C, id).locationRevision);
+  assert.throws(() => w.service.get(w.B, fromB.id), { code: 'assistant_notebook_moved' });
+  assert.throws(() => w.service.get(w.B, fromA.id), { code: 'assistant_scope' });
+  const origin = { root: w.A, rootIdentity: readNotebookJson(w.store, 'conversations/' + fromA.id + '.json').origin.rootIdentity, locationRevision: scene.locator.revision };
+  assert.equal(followNotebook(w.C, id, origin, { maxHops: 1 }), null);
+  assert.equal(followNotebook(w.C, id, origin, { maxHops: 2 }).locationRevision, w.query(w.C, id).locationRevision);
+  // Back home: the first root's retired copy still proves its own departure.
+  w.move(w.C, w.A, id);
+  assert.deepEqual(w.ids(w.A, w.query(w.A, id)), [fromA.id, fromB.id].sort());
+  assert.deepEqual(w.ids(w.C, w.query(w.A, id)), []);
+});
+
+test('a copied .crnb with the same resourceId sees no conversation of the original', t => {
+  const w = notebookWorld(t), bytes = encodeNotebook(emptyNotebook('copied-scene', 'Copied'));
+  for (const root of [w.A, w.B]) { fs.mkdirSync(path.join(root, 'Carnets'), { recursive: true }); fs.writeFileSync(path.join(root, w.file), bytes); }
+  const original = openNotebook(w.A, { path: w.file, canWrite: w.allow }), copy = openNotebook(w.B, { path: w.file, canWrite: w.allow });
+  assert.equal(copy.resourceId, original.resourceId);
+  const conversation = w.service.create(w.A, { source: w.sourceOf(original) });
+  assert.deepEqual(w.ids(w.B, w.query(w.B, 'copied-scene')), []);
+  assert.throws(() => w.service.get(w.B, conversation.id), { code: 'assistant_scope' });
+  assert.throws(() => w.service.send(w.B, conversation.id, { requestId: randomUUID(), text: 'Copy' }), { code: 'assistant_scope' });
+  assert.deepEqual(w.ids(w.A, w.query(w.A, 'copied-scene')), [conversation.id]);
+});
+
+test('a relocation inside the same project keeps the history; a duplicate path does not inherit it', async t => {
+  const w = notebookWorld(t), scene = openNotebook(w.A, { path: w.file, canWrite: w.allow }), id = scene.resourceId;
+  const conversation = w.service.create(w.A, { source: w.sourceOf(scene) }), before = w.query(w.A, id);
+  relocateNotebook(w.A, { resourceId: id, operationId: 'relocate-1', locationRevision: scene.locator.revision, path: 'Carnets/Renamed.crnb' }, { actor: { kind: 'human', id: 'fixture' }, canWrite: w.allow });
+  const here = w.query(w.A, id);
+  assert.equal(here.path, 'Carnets/Renamed.crnb');
+  assert.deepEqual(w.ids(w.A, here), [conversation.id]);
+  assert.equal(w.service.get(w.A, conversation.id).source.path, 'Carnets/Renamed.crnb');
+  assert.deepEqual(w.ids(w.A, before), []);
+  w.service.send(w.A, conversation.id, { requestId: randomUUID(), text: 'Still mine' });
+  await until(() => w.p.turns.length === 1); w.p.finish(); await until(() => !w.service.running.size);
+  assert.equal(w.service.get(w.A, conversation.id).operation.status, 'completed');
+  // A copy of the file in the same project cannot take the identity, and its path finds nothing.
+  fs.mkdirSync(path.join(w.A, 'Carnets'), { recursive: true });
+  fs.writeFileSync(path.join(w.A, 'Carnets/Copy.crnb'), encodeNotebook({ ...readNotebook(w.A, id).document }));
+  assert.throws(() => openNotebook(w.A, { path: 'Carnets/Copy.crnb', canWrite: w.allow }), { code: 'notebook_location_conflict' });
+  assert.deepEqual(w.ids(w.A, { ...here, path: 'Carnets/Copy.crnb' }), []);
+});
+
+test('a repeated get does not replay the notebook; a move or a relocation after a cached get is still seen', t => {
+  const w = notebookWorld(t), scene = openNotebook(w.A, { path: w.file, canWrite: w.allow }), id = scene.resourceId;
+  const conversation = w.service.create(w.A, { source: w.sourceOf(scene) });
+  const real = w.service.locateNotebook; let replays = 0;
+  w.service.locateNotebook = (...args) => { replays++; return real(...args); };
+  for (let i = 0; i < 5; i++) assert.equal(w.service.get(w.A, conversation.id).source.path, w.file);
+  assert.equal(replays, 1);
+  // A relocation changes the notebook history: the next get follows it, once.
+  relocateNotebook(w.A, { resourceId: id, operationId: 'relocate-cache', locationRevision: scene.locator.revision, path: 'Carnets/Renamed.crnb' }, { actor: { kind: 'human', id: 'fixture' }, canWrite: w.allow });
+  for (let i = 0; i < 3; i++) assert.equal(w.service.get(w.A, conversation.id).source.path, 'Carnets/Renamed.crnb');
+  assert.equal(replays, 2);
+  // A real move: the old project refuses at once, the new one follows, then both stay cached.
+  w.move(w.A, w.B, id);
+  assert.throws(() => w.service.get(w.A, conversation.id), { code: 'assistant_notebook_moved' });
+  assert.equal(w.service.get(w.B, conversation.id).source.path, w.query(w.B, id).path);
+  const after = replays;
+  for (let i = 0; i < 3; i++) w.service.get(w.B, conversation.id);
+  assert.equal(replays, after);
+  // A third project is still refused.
+  assert.throws(() => w.service.get(w.C, conversation.id), { code: 'assistant_scope' });
 });

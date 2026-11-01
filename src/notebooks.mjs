@@ -119,7 +119,7 @@ function applyFrame(state, frame, file) {
   else if (frame.kind === 'submit') {
     state.submissions.set(frame.operationId, frame.submission);
     state.knownSources.add(frame.submission.sourceHash);
-  } else if (frame.kind === 'relocate') state.locator = frame.locator;
+  } else if (frame.kind === 'relocate') { state.locator = frame.locator; state.locations.push(frame.locator.revision); }
   else failNotebook('notebook_recovery_conflict', 'Unknown notebook history operation.');
   state.sequence = frame.sequence; state.chain = hash;
   state.receipts.set(frame.operationId, { file, actor: frame.actor, fingerprint: frame.fingerprint, receipt: frame.receipt });
@@ -132,7 +132,7 @@ function readState(root, id) {
   if (!header || header.schemaVersion !== 1 || header.document.id !== id) failNotebook('notebook_missing', 'Notebook working scene not found.');
   if (!['same', 'alias', 'confirmed'].includes(acceptsRootIdentity(root, header.rootIdentity))) failNotebook('notebook_root_conflict', 'This working scene belongs to another exact filesystem location.');
   const state = { document: decodeNotebook(Buffer.from(JSON.stringify(header.document))), locator: header.locator, rootIdentity, sequence: Number.isSafeInteger(header.transferred?.sequence) && header.transferred.sequence > 0 ? header.transferred.sequence : 0,
-    chain: notebookHash(header), tombstones: initialTombstones(header.document, header.tombstones), origins: Object.fromEntries(header.document.objects.map(o => [o.id, o.createdBy])), receipts: new Map(), frozen: new Map(), submissions: new Map(), knownSources: new Set([header.locator.sourceHash]), history: [] };
+    chain: notebookHash(header), tombstones: initialTombstones(header.document, header.tombstones), origins: Object.fromEntries(header.document.objects.map(o => [o.id, o.createdBy])), receipts: new Map(), frozen: new Map(), submissions: new Map(), knownSources: new Set([header.locator.sourceHash]), locations: [header.locator.revision], history: [] };
   const directory = safeNotebookPath(root, `${folder}/events`);
   const files = fs.existsSync(directory) ? fs.readdirSync(directory).sort() : [];
   for (const file of files) {
@@ -236,6 +236,51 @@ export function listNotebooks(root) {
     const changedAt = state.history.at(-1)?.at || fs.statSync(safeNotebookPath(root, `${resourcePath(id)}/header.json`)).mtime.toISOString();
     return [{ id, title: state.document.title, path: state.locator.path, revision: state.document.revision, locationRevision: state.locator.revision, changedAt, pending: true }];
   });
+}
+/** The move marker this root keeps after its notebook left, or null. */
+export function notebookDeparture(root, id) {
+  try { return readNotebookJson(root, movedPath(notebookId(id))); } catch { return null; }
+}
+/** Cheap proof that nothing `followNotebook` reads in this root changed: the header, the last event, the moved marker and
+ * the pending arrivals (a few stat and readdir calls, no replay). Null when it cannot be computed. */
+export function notebookFingerprint(root, id) {
+  try {
+    id = notebookId(id);
+    const stat = rel => { try { const s = fs.statSync(safeNotebookPath(root, rel)); return [s.ino, s.size, s.mtimeMs]; } catch { return null; } };
+    const names = rel => { try { return fs.readdirSync(safeNotebookPath(root, rel)).sort(); } catch { return null; } };
+    const events = names(`${resourcePath(id)}/events`), incoming = names(`${NOTEBOOK_STORE}/incoming`);
+    return JSON.stringify([canonicalNotebookRoot(root), stat(`${resourcePath(id)}/header.json`), stat(movedPath(id)), events?.length ?? null, events?.at(-1) ?? null, incoming]);
+  } catch { return null; }
+}
+const acceptedRoot = (root, identity) => ['same', 'alias', 'confirmed'].includes(acceptsRootIdentity(root, identity));
+/** Current location of the notebook active in `root`, only when it provably is the notebook recorded at
+ * `origin` ({ root, rootIdentity, locationRevision }); otherwise null. A resourceId alone proves nothing:
+ * a copied `.crnb` keeps it. Same root: the notebook's own relocation chain holds the recorded location.
+ * Another root: walk back hop by hop. Each arrival header names its source root and move; that source
+ * must hold the commit of this exact move (its retired copy, or its moved marker before retirement). */
+export function followNotebook(root, id, origin, { maxHops = 32 } = {}) {
+  id = notebookId(id);
+  let state; try { state = readState(root, id); } catch { return null; }
+  const here = { path: state.locator.path, locationRevision: state.locator.revision };
+  const isOrigin = candidate => candidate === origin.root && acceptedRoot(candidate, origin.rootIdentity);
+  if (isOrigin(root) && state.locations.includes(origin.locationRevision)) return here;
+  let header = readNotebookJson(root, `${resourcePath(id)}/header.json`);
+  for (let hop = 0; hop < maxHops; hop++) {
+    const move = header?.transferred, from = move?.from;
+    if (header?.document?.id !== id || typeof move?.operationId !== 'string' || typeof from?.root !== 'string' || typeof from.rootIdentity !== 'string') return null;
+    let previous;
+    try {
+      if (canonicalNotebookRoot(from.root) !== from.rootIdentity) return null;
+      previous = readNotebookJson(from.root, `${NOTEBOOK_STORE}/retired/${id}-${notebookId(move.operationId)}/header.json`);
+      if (!previous) {
+        if (readNotebookJson(from.root, movedPath(id))?.operationId !== move.operationId) return null;
+        previous = readNotebookJson(from.root, `${resourcePath(id)}/header.json`);
+      }
+    } catch { return null; }
+    if (isOrigin(from.root)) return here;
+    header = previous;
+  }
+  return null;
 }
 export function readNotebook(root, id, options) { return publicState(readState(root, notebookId(id)), options); }
 export function notebookReceipt(root, id, operationId) {

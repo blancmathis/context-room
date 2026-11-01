@@ -7,7 +7,7 @@ import { initializeContextRoomProject, writeMemoryWebappSettings, createMemorySe
 export const MAC_TASK_ID = '0199aaaa-bbbb-7ccc-8ddd-000000000001';
 export const MAC_TASK_OTHER = '0199aaaa-bbbb-7ccc-8ddd-000000000002';
 
-export async function assistantFixture({ audio, uuidThreads = false, platform, openUrl, macTasks = true } = {}) {
+export async function assistantFixture({ audio, uuidThreads = false, platform, openUrl, macTasks = true, assistantRoot = null } = {}) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'context-room-assistant-fixture-'))), root = path.join(base, 'project'), previous = {};
   for (const key of ['CONTEXT_ROOM_HUB_HOME', 'CONTEXT_ROOM_SHARED_HOME', 'CONTEXT_ROOM_REVIEW_AUTHORITY_HOME']) { previous[key] = process.env[key]; process.env[key] = path.join(base, key); }
   fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
@@ -31,7 +31,7 @@ export async function assistantFixture({ audio, uuidThreads = false, platform, o
         return { id: input.threadId, title: 'Plan the <b>import</b>', turns: [{ id: 't1', user: 'Import my projects', userTruncated: false, assistant: 'Done: 4 projects.', assistantTruncated: false, status: 'completed' }], nextCursor: input.cursor ? null : 'older', readOnly: true }; },
     } : {}),
   };
-  const room = createMemoryServer({ root, assistantOptions: { root: path.join(base, 'private-assistant'), ...(audio ? { audio } : {}), providerFactory: async () => { connections++; return provider; },
+  const room = createMemoryServer({ root, assistantOptions: { root: assistantRoot || path.join(base, 'private-assistant'), ...(audio ? { audio } : {}), providerFactory: async () => { connections++; return provider; },
     sessionRoots: async () => [fs.realpathSync(root)], ...(platform ? { platform } : {}), openUrl: openUrl || (async url => { opened.push(url); }) } });
   await new Promise(resolve => room.server.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${room.server.address().port}`;
