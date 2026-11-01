@@ -69,6 +69,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   if (active) await active.dispose();
   const panel = element('aside', '', 'assistant-panel'); panel.setAttribute('aria-label', 'Original document conversation');
   const heading = element('header'), title = element('h2', 'Conversation'), minimize = button('Minimize conversation', () => panel.classList.contains('assistant-direct') ? run(self.dispose().then(() => self.notifyState({ dismiss: true }))) : panel.classList.toggle('assistant-minimized'));
+  minimize.dataset.assistantClose = '';
   const expand = button('Open conversation', () => self.present('text', self.dictationTarget)); expand.hidden = true;
   heading.append(title, expand, minimize); const original = element('p', conversation.source.path, 'assistant-origin');
   const boundary = element('p', 'Linked to this original source. Proposed changes require human review.', 'assistant-boundary');
