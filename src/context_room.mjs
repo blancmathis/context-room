@@ -108,7 +108,6 @@ import {
   sharedContextStatus,
   sharedSkillLocationsStatus,
   sharedInstructionLocationsStatus,
-  syncSharedContext,
   unlinkSharedSkillLocation,
   reconcileSharedInstructionLocations,
   resolveSharedDocumentationTarget,
@@ -1838,9 +1837,14 @@ export function listStartupContextFiles(root = process.cwd(), settings = readMem
   });
 }
 
+// An unknown startup file is a missing resource (404), not a server fault.
+function startupFileNotFoundError(message) {
+  return sharedRequestError(message, 404, "startup_file_not_found");
+}
+
 export function readStartupContextFile(root = process.cwd(), order = 0, settings = readMemoryWebappSettings(root)) {
   const found = resolveStartupContextFile(root, order, settings);
-  if (!found) throw new Error(`Startup context file not found: ${order}`);
+  if (!found) throw startupFileNotFoundError(`Startup context file not found: ${order}`);
   const abs = found.startupContext.absolutePath;
   const snapshot = readStartupRegularFileSnapshot(abs, found.startupContext.displayPath, { containmentRoot: path.dirname(abs) });
   const content = snapshot.bytes.toString("utf8");
@@ -1861,7 +1865,7 @@ export function writeStartupContextFile(root = process.cwd(), order = 0, content
   assertManagedProjectRootIdentity(root, expectedRootIdentity);
   const resolvedSettings = settings || readMemoryWebappSettings(root, { expectedRootIdentity });
   const found = resolveStartupContextFile(root, order, resolvedSettings);
-  if (!found) throw new Error(`Startup context file not found: ${order}`);
+  if (!found) throw startupFileNotFoundError(`Startup context file not found: ${order}`);
   return writeAbsoluteStartupFile(root, found.startupContext.absolutePath, content, publicStartupContextFile(found).startupContext, {
     expectedRootIdentity,
     expectedContentHash,
@@ -1873,7 +1877,7 @@ export function deleteStartupContextFile(root = process.cwd(), order = 0, settin
   assertManagedProjectRootIdentity(root, expectedRootIdentity);
   const resolvedSettings = settings || readMemoryWebappSettings(root, { expectedRootIdentity });
   const found = resolveStartupContextFile(root, order, resolvedSettings);
-  if (!found) throw new Error(`Startup context file not found: ${order}`);
+  if (!found) throw startupFileNotFoundError(`Startup context file not found: ${order}`);
   const startupContext = publicStartupContextFile(found).startupContext;
   const abs = path.resolve(found.startupContext.absolutePath);
   if (path.extname(abs).toLowerCase() !== ".md") throw new Error(`Only Markdown startup context files can be deleted: ${startupContext.displayPath}`);
@@ -2362,7 +2366,7 @@ export function listStartupHookFiles(root = process.cwd(), settings = readMemory
 
 export function readStartupHookFile(root = process.cwd(), order = 0, settings = readMemoryWebappSettings(root)) {
   const found = resolveStartupHookFile(root, order, settings);
-  if (!found) throw new Error(`Startup hook file not found: ${order}`);
+  if (!found) throw startupFileNotFoundError(`Startup hook file not found: ${order}`);
   const abs = found.startupHook.absolutePath;
   const visible = fs.lstatSync(abs, { bigint: true });
   if (visible.isSymbolicLink() || !visible.isFile() || visible.nlink !== 1n) {
@@ -2388,7 +2392,7 @@ export function writeStartupHookFile(root = process.cwd(), order = 0, content = 
   assertManagedProjectRootIdentity(root, expectedRootIdentity);
   const resolvedSettings = settings || readMemoryWebappSettings(root, { expectedRootIdentity });
   const found = resolveStartupHookFile(root, order, resolvedSettings);
-  if (!found) throw new Error(`Startup hook file not found: ${order}`);
+  if (!found) throw startupFileNotFoundError(`Startup hook file not found: ${order}`);
   if (found.startupHook.readOnly) throw new Error(`Startup hook editing is disabled: ${found.startupHook.displayPath}`);
   return writeAbsoluteStartupFile(root, found.startupHook.absolutePath, content, publicStartupHookFile(found).startupContext, {
     expectedRootIdentity,
@@ -3086,7 +3090,7 @@ function resolveStartupSkillFile(root, folderOrder, skillName, settings = readMe
   const normalizedOrder = Number(folderOrder);
   const requestedName = path.basename(String(skillName || "").trim());
   const folder = listStartupSkillFolders(root, settings).find((item) => item.order === normalizedOrder);
-  if (!folder || !requestedName || !folder.skills.includes(requestedName)) throw new Error(`Startup skill not found: ${skillName}`);
+  if (!folder || !requestedName || !folder.skills.includes(requestedName)) throw startupFileNotFoundError(`Startup skill not found: ${skillName}`);
   const folderAbs = path.resolve(folder.absolutePath);
   const projectOnly = normalizeStartupSkillSettings(settings.startupSkills).projectOnly === true;
   const candidates = [
@@ -3099,7 +3103,7 @@ function resolveStartupSkillFile(root, folderOrder, skillName, settings = readMe
       && Boolean(startupRegularFileCandidate(resolved, displayPath(resolved)))
       && (!projectOnly || projectPathIsContained(root, resolved));
   });
-  if (!abs) throw new Error(`Startup skill file not found: ${skillName}`);
+  if (!abs) throw startupFileNotFoundError(`Startup skill file not found: ${skillName}`);
   return { folder, requestedName, abs };
 }
 
@@ -9194,6 +9198,9 @@ function deriveSharedReviewManifest(root, review) {
 }
 
 export function readSharedDocumentAsset(root, rel) {
+  if (!fs.existsSync(path.join(path.resolve(root), SHARED_REVIEW_CONFIG))) {
+    throw sharedRequestError("No Shared review is open in this project.", 409, "shared_review_not_open");
+  }
   const review = readSharedReview(root), manifest = deriveSharedReviewManifest(root, review), unit = manifest.units.get(rel);
   if (!unit || !isDocumentAssetPath(rel)) throw sharedRequestError("This asset is outside the exact proposal.", 403, "asset_scope");
   const current = readSharedWorkspaceResource(root, rel);
@@ -15787,7 +15794,9 @@ function runContextHubProjectSyncProcessTask(root, {
         ok: false,
         error: error?.message || "Shared project sync failed",
         code: error?.code || "",
+        statusCode: error?.statusCode,
         retryable: error?.retryable === true,
+        expose: error?.expose === true,
       }));
     }
   `;
@@ -15819,7 +15828,9 @@ function runContextHubProjectSyncProcessTask(root, {
         || "Shared project sync failed",
       );
       if (result?.code) taskError.code = result.code;
+      if (Number.isInteger(result?.statusCode) && result.statusCode >= 400 && result.statusCode <= 599) taskError.statusCode = result.statusCode;
       if (result?.retryable === true) taskError.retryable = true;
+      if (result?.expose === true) taskError.expose = true;
       reject(taskError);
     });
   });
@@ -19755,6 +19766,7 @@ export function createMemoryServer({
   contextHubAbandonInvalidSharedRecovery = abandonInvalidContextHubSharedTransaction,
   contextHubConfirmLocation = confirmContextHubProjectLocation,
   contextHubAcceptRefreshTimeoutMs = CONTEXT_HUB_ACCEPT_REFRESH_TIMEOUT_MS,
+  sharedRefreshTimeoutMs = DEFAULT_SHARED_GIT_NETWORK_TIMEOUT_MS,
   port = DEFAULT_PORT,
   globalPreferencesPath = null,
   codexComposerInsert = insertIntoActiveCodexComposer,
@@ -20046,13 +20058,15 @@ export function createMemoryServer({
     });
     return refresh;
   };
-  const scheduleContextHubProjectSync = (targetRoot) => {
+  const scheduleContextHubProjectSync = (targetRoot, syncOptions = undefined) => {
     const resolvedRoot = path.resolve(targetRoot);
     const existing = contextHubProjectSyncs.get(resolvedRoot);
     if (existing) return existing;
     const entry = {
       notifyOnComplete: false,
-      promise: Promise.resolve().then(() => contextHubProjectSync(resolvedRoot)),
+      promise: Promise.resolve().then(() => (syncOptions
+        ? contextHubProjectSync(resolvedRoot, syncOptions)
+        : contextHubProjectSync(resolvedRoot))),
     };
     contextHubProjectSyncs.set(resolvedRoot, entry);
     void entry.promise.then(() => {
@@ -20442,6 +20456,9 @@ export function createMemoryServer({
         contextHubAbandonInvalidSharedRecovery,
         contextHubRoot: resolvedContextHubRoot,
         contextHubAcceptRefreshTimeoutMs,
+        // Shared Git can stall (captive portal, weak Wi-Fi). The refresh runs
+        // in a child process so the Hub event loop keeps serving everyone.
+        refreshSharedProject: (targetRoot) => scheduleContextHubProjectSync(targetRoot, { timeoutMs: sharedRefreshTimeoutMs }).promise,
         terminalDecisionChallenges,
         verifiedAcceptanceFlashes: acceptanceFlashStore,
         frameAncestorPorts: trustedFrameAncestorPorts,
@@ -21406,6 +21423,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   contextHubConfirmLocation = confirmContextHubProjectLocation,
   contextHubRoot = root,
   contextHubAcceptRefreshTimeoutMs = CONTEXT_HUB_ACCEPT_REFRESH_TIMEOUT_MS,
+  refreshSharedProject = (targetRoot) => runContextHubProjectSyncProcessTask(targetRoot),
   terminalDecisionChallenges = null,
   verifiedAcceptanceFlashes = null,
   frameAncestorPorts = [],
@@ -23839,7 +23857,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
   if (req.method === "POST" && url.pathname === "/api/shared-context/refresh") {
     if (!readSharedProjectConnection(root)) throw sharedRequestError("This project is not connected to shared context", 404, "shared_context_not_connected");
-    syncSharedContext(root, { allowOffline: true });
+    await refreshSharedProject(root);
     sendJson(res, 200, sharedContextUiState(root));
     return;
   }
@@ -24765,11 +24783,13 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
   if (req.method === "GET" && url.pathname === "/api/file/diff") {
     const relPath = url.searchParams.get("path") || "";
+    if (!relPath) throw sharedRequestError("path is required", 400, "file_path_required");
     sendJson(res, 200, await readBackgroundFileTask("file-diff", root, { path: relPath }, { expectedRootIdentity }));
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/file/review-base") {
     const relPath = url.searchParams.get("path") || "";
+    if (!relPath) throw sharedRequestError("path is required", 400, "file_path_required");
     sendJson(res, 200, await readBackgroundFileTask("review-base", root, { path: relPath }, { expectedRootIdentity }));
     return;
   }

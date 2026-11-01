@@ -10,6 +10,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import sqlite3
 import stat
@@ -73,7 +74,7 @@ def checked_directory(value):
         if candidate.is_symlink():
             raise ValueError('Migration does not follow symbolic source or destination directories.')
     if not value.is_dir():
-        raise ValueError('The selected migration directory does not exist.')
+        raise ValueError(f'The selected migration directory does not exist: {value}')
     return value.resolve(strict=True)
 
 
@@ -382,6 +383,8 @@ def export(source, destination, expected_revision, recordings=None):
     if not expected_revision:
         raise ValueError('Preview the snapshot and supply its exact revision before exporting.')
     destination = Path(destination).absolute()
+    if not destination.parent.is_symlink() and not destination.parent.exists():
+        raise ValueError(f"The parent folder of --output does not exist: {destination.parent}. Create it first: mkdir -p {shlex.quote(str(destination.parent))}")
     parent = checked_directory(destination.parent)
     if destination.name in ('', '.', '..'):
         raise ValueError('Choose an exact new export directory name.')

@@ -3428,6 +3428,28 @@ function currentState({ catalog, overrides, receipts, target }) {
   };
 }
 
+// No Codex prompt storage yet (Codex never ran, or no runtime catalog):
+// the Prompt Center shows an empty state, not an error.
+function codexPromptStorageExists(storageRoot) {
+  assertNoPromptStorageSymlinks(storageRoot);
+  return assertPrivateDirectory(storageRoot, "Codex prompt storage", { required: false });
+}
+
+function emptyCodexPromptCenterSummary() {
+  return {
+    schemaVersion: CODEX_PROMPT_PROTOCOL_VERSION,
+    codexVersion: "",
+    catalogRevision: "",
+    overridesRevision: 0,
+    generatedAt: "",
+    available: false,
+    unavailableReason: "No Codex prompt catalog on this machine yet. Start Codex once to publish it.",
+    groups: [],
+    summary: { targets: 0, editable: 0, overrides: 0, conflicts: 0, restartRequired: 0, liveProcesses: 0 },
+    restartMessage: CODEX_PROMPT_RESTART_MESSAGE,
+  };
+}
+
 export function readCodexPromptCenterSummary({
   storageRoot = defaultCodexPromptStorageRoot(),
   catalog: suppliedCatalog = null,
@@ -3436,6 +3458,7 @@ export function readCodexPromptCenterSummary({
   getRuntimeProcessStartUnixMs = defaultCodexRuntimeProcessStartUnixMs,
   getRuntimeProcessStartIdentity = defaultCodexRuntimeProcessStartIdentity,
 } = {}) {
+  if (!suppliedCatalog && !codexPromptStorageExists(storageRoot)) return emptyCodexPromptCenterSummary();
   const runtimeCatalog = readCodexPromptCatalog({ storageRoot, catalog: suppliedCatalog });
   const overrides = readCodexPromptOverrides({ storageRoot });
   const catalog = catalogWithOrphanedOverrides(runtimeCatalog, overrides);
@@ -3536,6 +3559,9 @@ export function readCodexPromptTarget(targetId, {
   getRuntimeProcessStartUnixMs = defaultCodexRuntimeProcessStartUnixMs,
   getRuntimeProcessStartIdentity = defaultCodexRuntimeProcessStartIdentity,
 } = {}) {
+  if (!suppliedCatalog && !codexPromptStorageExists(storageRoot)) {
+    throw promptCenterError("Unknown Codex prompt target", 404, "codex_prompt_target_not_found");
+  }
   const runtimeCatalog = readCodexPromptCatalog({ storageRoot, catalog: suppliedCatalog });
   const overrides = readCodexPromptOverrides({ storageRoot });
   const catalog = catalogWithOrphanedOverrides(runtimeCatalog, overrides);

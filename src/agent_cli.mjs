@@ -461,7 +461,7 @@ function agentPrepareFingerprint(target, options) {
     .map((line) => statFingerprint(path.join(target.root, line.slice(3))));
   return createHash("sha256").update(JSON.stringify({
     target: publicTarget(target),
-    options: { task: options.task, sessionId: options.sessionId, provider: options.provider, budget: options.budget },
+    options: { task: options.task, sessionId: options.sessionId, provider: options.provider, budget: options.budget, allowStale: Boolean(options.allowStale) },
     head: gitText(target.root, ["rev-parse", "HEAD"]),
     status,
     changedContent,
@@ -1335,12 +1335,38 @@ function sharedFreshness(target, { fresh = false } = {}) {
   };
 }
 
-export function buildAgentPrepare(target, { task = "", sessionId = "", provider = "auto", fresh = false, budget = 1200 } = {}) {
+function staleSnapshotRefusal(error, target, { task = "", command = "context bundle" } = {}) {
+  const revision = target.root && target.shared ? String(sharedContextStatus(target.root).revision || "") : "";
+  const snapshot = revision ? `the last accepted local snapshot (${revision.slice(0, 12)})` : "the last accepted local snapshot";
+  return new ContextRoomCliError("shared-freshness-unverified", `${error.message}\nOffline? Run again with --allow-stale to use ${snapshot}.`, {
+    details: error.details || null,
+    retryable: true,
+    nextActions: [{
+      id: "allow-stale",
+      label: "Use the last accepted local Shared snapshot",
+      command: `context-room ${command} --location ${JSON.stringify(target.location?.id || "")} --allow-stale --task ${JSON.stringify(task || "current task")} --format json`,
+      mutates: false,
+      requiresHuman: false,
+    }],
+  });
+}
+
+export function buildAgentPrepare(target, { task = "", sessionId = "", provider = "auto", fresh = false, budget = 1200, allowStale = false, command = "context bundle" } = {}) {
   if (!target.root) throw new ContextRoomCliError("local-environment-unavailable", "Agent prepare requires a registered local project location.");
   const freshness = sharedFreshness(target, { fresh });
   const report = buildDocQaReport(target.root, { readOnly: true });
   const doctor = buildContextRoomDoctorReport(target.root, { docqa: report, readOnly: true });
-  const environment = buildAgentEnvironment(target, { provider, report });
+  // --allow-stale: no Shared network check; the last accepted local snapshot
+  // is served with a warning. Without it, an unverifiable Shared revision fails
+  // and the error names --allow-stale.
+  const servesStaleSnapshot = Boolean(allowStale) && !fresh && Boolean(target.shared);
+  let environment;
+  try {
+    environment = buildAgentEnvironment(target, { provider, report, ...(servesStaleSnapshot ? { allowStale: true, refreshShared: false } : {}) });
+  } catch (error) {
+    if (error?.code === "shared-freshness-unverified" && !servesStaleSnapshot) throw staleSnapshotRefusal(error, target, { task, command });
+    throw error;
+  }
   let documentation = { query: String(task || ""), results: [], revision: null };
   if (String(task || "").trim()) {
     documentation = searchDocumentation(target.root, task, { limit: 8, budget, sessionId });
@@ -1374,7 +1400,11 @@ export function buildAgentPrepare(target, { task = "", sessionId = "", provider 
       proposals,
       health: { issues: doctor.issues.length, critical: doctor.issues.filter((item) => item.severity === "critical").length, high: doctor.issues.filter((item) => item.severity === "high").length, items: doctor.issues.slice(0, 20) },
     },
-    warnings: [freshness.status === "stale" ? "Shared evidence comes from the last accepted local snapshot. Use --fresh before a mutation or high-stakes decision." : ""].filter(Boolean),
+    warnings: [
+      freshness.status === "stale" ? "Shared evidence comes from the last accepted local snapshot. Use --fresh before a mutation or high-stakes decision." : "",
+      freshness.status === "offline" ? `Shared remote was unreachable at the last sync; serving the last accepted local snapshot${freshness.revision ? ` (${freshness.revision.slice(0, 12)})` : ""}. Use --fresh once online.` : "",
+      servesStaleSnapshot ? "--allow-stale: Shared freshness was not verified; this bundle uses the last accepted local snapshot." : "",
+    ].filter(Boolean),
     nextActions,
   };
 }

@@ -365,3 +365,32 @@ test("shared connect, bind, and setup recover coherently after SIGKILL immediate
     assert.equal(events.some((event) => event.event === "unlink"), false, `${action} unexpectedly cleaned its journal before SIGKILL`);
   }
 });
+
+test("context bundle offline serves the last accepted snapshot only with --allow-stale", (t) => {
+  const { env, project, remote } = fixture(t);
+  git(project, ["init", "--initial-branch=main"]);
+  git(project, ["config", "user.name", "Offline bundle"]);
+  git(project, ["config", "user.email", "offline-bundle@example.test"]);
+  fs.mkdirSync(path.join(project, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(project, "docs", "README.md"), "# Project\n");
+  initializeContextRoomProject(project, { title: "Offline bundle", allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+  git(project, ["add", "."]);
+  git(project, ["commit", "-m", "Initial"]);
+  connectSharedContext(project, { repository: remote, projectId: "demo" });
+  // The remote refuses connections: the machine is offline.
+  fs.renameSync(remote, remote + ".offline");
+
+  const stale = runCli(["context", "bundle", "--root", project, "--task=Read accepted guidance", "--allow-stale", "--format=json"], env, project);
+  assert.equal(stale.status, 0, stale.stderr);
+  const payload = JSON.parse(stale.stdout);
+  assert.equal(payload.ok, true);
+  assert.ok(payload.warnings.some((warning) => /offline|last accepted/i.test(warning)), JSON.stringify(payload.warnings));
+
+  const strict = runCli(["context", "bundle", "--root", project, "--task=Read accepted guidance", "--format=json"], env, project);
+  assert.notEqual(strict.status, 0, strict.stdout);
+  const refused = JSON.parse(strict.stderr);
+  assert.equal(refused.ok, false);
+  assert.equal(refused.error.code, "shared-freshness-unverified");
+  assert.match(refused.error.message, /--allow-stale/);
+  assert.ok(refused.nextActions.some((action) => /--allow-stale/.test(action.command)), JSON.stringify(refused.nextActions));
+});
