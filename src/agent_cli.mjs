@@ -523,7 +523,7 @@ export function resolveCliTarget({ cwd = process.cwd(), project = "", location =
     .sort((left, right) => right.root.length - left.root.length);
   let selected = containing[0] || null;
   // The Notebooks space is never an implicit target: name it with --project or --location.
-  if (!selected && !registering && candidates.length === 1 && (project || location || candidates[0].space !== "notebooks")) selected = candidates[0];
+  if (!selected && (!registering || project || location) && candidates.length === 1 && (project || location || candidates[0].space !== "notebooks")) selected = candidates[0];
   if (!selected && (project || location) && candidates.length > 1) {
     const candidateDetails = candidates.map((item) => ({ id: item.id, title: item.title, root: item.root, branch: item.worktree?.branch || "" }));
     throw cliSelectorConflict(
@@ -2800,6 +2800,17 @@ export function renderAgentCliHuman(command, payload) {
       ...(data.projects || []).map((item) => `  ${item.status.padEnd(10)} ${item.root}${item.reason ? ` (${item.reason})` : ""}`),
       ...(data.projects || []).some((item) => item.status === "ready" || item.status === "needs-init")
         ? ["", "needs-init folders get a .context-room/ folder when imported.", `Import: context-room project import-codex --apply --expected-revision ${data.revision} <folder>...`] : []].join("\n") + "\n";
+  }
+  if (command === "shared.sync") {
+    const warnings = (payload?.warnings || []).map((item) => String(item?.message || item));
+    const destinations = Array.isArray(data.skillDestinations) ? data.skillDestinations : [];
+    const conflicts = destinations.flatMap((item) => (item.conflicts || []).map((conflict) => `${conflict.path || item.destination || "?"}${conflict.reason ? ` (${conflict.reason})` : ""}`));
+    const migrations = Array.isArray(data.skillMigrations) ? data.skillMigrations.length : 0;
+    return [`Shared sync: ${data.online === false ? "offline" : "online"} · snapshot ${String(data.revision || "none").slice(0, 12)} · ${data.revisionChanged ? `changed (${Number(data.commitCount) || 0} commit${Number(data.commitCount) === 1 ? "" : "s"})` : "unchanged"}`,
+      `Conflicts: ${conflicts.length}`, ...conflicts.map((item) => `  ${item}`),
+      `Skill destinations: ${destinations.length}${migrations ? ` · ${migrations} migration${migrations === 1 ? "" : "s"}` : ""}`,
+      ...destinations.map((item) => `  ${String(item.status || "").padEnd(10)} ${item.destination || item.id || ""}${item.message ? ` (${item.message})` : ""}`),
+      ...warnings.map((item) => `Warning: ${item}`)].join("\n") + "\n";
   }
   if (command === "agent.instructions") return String(data.prompt || "") + "\n";
   if (command === "docs.map") return data.proposal

@@ -194,10 +194,20 @@ test('@assistant follow agent frames a far agent edit and a human gesture stops 
     const put = (id, x) => turn.tool('context_room_notebook', { action: 'edit', edits: [{ kind: 'put', id, expectedRevision: 0, object: { type: 'rect', x, y: 100, width: 180, height: 130 } }] }, { callId: id, turnId: turn.turnId, signal: new AbortController().signal });
     await put('far-box', 5000);
     await expect.poll(() => page.evaluate(() => { const [x, , width] = notebookUnderTest.surface.viewportBounds(); return x <= 5000 && 5180 <= x + width; })).toBe(true);
-    const box = await page.locator('canvas.notebook-canvas').boundingBox();
-    await page.mouse.move(box.x + 60, box.y + 60); await page.mouse.down(); await page.mouse.move(box.x + 140, box.y + 100, { steps: 4 }); await page.mouse.up();
+    // On a phone the conversation pane covers the whole canvas: minimize it, then drag where the canvas is the top element.
+    const freePoint = () => page.locator('canvas.notebook-canvas').evaluate((canvas) => {
+      const box = canvas.getBoundingClientRect();
+      for (let y = box.top + 20; y < box.bottom - 60; y += 20) for (let x = box.left + 20; x < box.right - 100; x += 20) if (document.elementFromPoint(x, y) === canvas && document.elementFromPoint(x + 80, y + 40) === canvas) return { x, y };
+      return null;
+    });
+    if (!(await freePoint())) await pane.getByRole('button', { name: 'Minimize conversation', exact: true }).click();
+    await expect.poll(freePoint).not.toBeNull();
+    const from = await freePoint();
+    await page.mouse.move(from.x, from.y); await page.mouse.down(); await page.mouse.move(from.x + 80, from.y + 40, { steps: 4 }); await page.mouse.up();
     await expect(follow).toHaveAttribute('aria-pressed', 'false'); await expect(notebook).toContainText('You took back the view.');
-    const held = await page.evaluate(() => notebookUnderTest.surface.viewportBounds());
+    // Minimizing the pane resizes the canvas: wait for the view to settle before freezing it.
+    let held, settled = 0;
+    await expect.poll(async () => { const now = await page.evaluate(() => notebookUnderTest.surface.viewportBounds()); settled = held && JSON.stringify(held) === JSON.stringify(now) ? settled + 1 : 0; held = now; return settled; }, { intervals: [150] }).toBeGreaterThanOrEqual(3);
     await put('farther-box', 9000);
     await expect.poll(() => page.evaluate(() => notebookUnderTest.surface.document.objects.some(object => object.id === 'farther-box'))).toBe(true);
     expect(await page.evaluate(() => notebookUnderTest.surface.viewportBounds())).toEqual(held);

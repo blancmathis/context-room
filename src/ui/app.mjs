@@ -18336,6 +18336,7 @@ function renderSettingsPanel() {
   wireSnoozedReviewSettings(holder);
   wireSettingsSearch();
   activateSettingsSection(state.settingsSection, { resetScroll: false });
+  restoreSettingsHelpFocus(holder);
   wireHubSettingsButtons(holder);
   wireProjectPrioritySettings(holder);
   wireSharedContextManagementSettings(holder);
@@ -18380,8 +18381,41 @@ function wireSharedSkillLocationsSettingsActions(root) {
   root.querySelector("[data-shared-provider-apply]")?.addEventListener("click", () => applySharedSkillProviderSettings().catch((error) => setStatus(error.message)));
 }
 
+let settingsHelpFocusReturnPending = false;
+let settingsHelpFocusReturnSince = 0;
+
+function clearSettingsHelpFocusReturn() {
+  settingsHelpFocusReturnPending = false;
+  for (const type of ["pointerdown", "keydown", "focusin"]) document.removeEventListener(type, onSettingsHelpFocusReturnInput, true);
+}
+
+function onSettingsHelpFocusReturnInput(event) {
+  // The input that closed the dialog (Escape, click) is not "the user moved on".
+  if (event.timeStamp <= settingsHelpFocusReturnSince) return;
+  if (event.type === "focusin" && (event.target === document.body || event.target?.matches?.("[data-settings-help-trigger]"))) return;
+  clearSettingsHelpFocusReturn();
+}
+
+function armSettingsHelpFocusReturn() {
+  clearSettingsHelpFocusReturn();
+  settingsHelpFocusReturnPending = true;
+  settingsHelpFocusReturnSince = performance.now();
+  for (const type of ["pointerdown", "keydown", "focusin"]) document.addEventListener(type, onSettingsHelpFocusReturnInput, true);
+}
+
 function wireSettingsHelpPanels(root) {
-  root.querySelectorAll("[data-settings-help-trigger]").forEach((button) => button.addEventListener("click", () => showSharedContextHelpDialog(button)));
+  const triggers = [...root.querySelectorAll("[data-settings-help-trigger]")];
+  triggers.forEach((button) => button.addEventListener("click", () => showSharedContextHelpDialog(button)));
+}
+
+// After the dialog closes, a Settings re-render can replace the trigger and drop focus to body.
+// The return stays pending (no timer) until the user acts elsewhere; every re-render refocuses the live trigger.
+// Runs after the section is activated: showing/hiding panels earlier in the render would drop the focus again.
+function restoreSettingsHelpFocus(root) {
+  if (!settingsHelpFocusReturnPending || document.querySelector(".shared-context-help-backdrop")) return;
+  const trigger = root.querySelector("[data-settings-help-trigger]");
+  const lost = document.activeElement === document.body || !document.activeElement;
+  if (trigger && lost) trigger.focus();
 }
 
 function showSharedContextHelpDialog(returnFocus = document.activeElement) {
@@ -18396,7 +18430,11 @@ function showSharedContextHelpDialog(returnFocus = document.activeElement) {
     document.removeEventListener("keydown", onKeydown);
     // Settings may re-render while the dialog is open and replace the trigger: fall back to the live one.
     const target = returnFocus instanceof HTMLElement && returnFocus.isConnected ? returnFocus : document.querySelector("[data-settings-help-trigger]");
-    if (restoreFocus && target instanceof HTMLElement) target.focus();
+    if (restoreFocus && target instanceof HTMLElement) {
+      target.focus();
+      // A Settings re-render after closing can replace the trigger: wireSettingsHelpPanels puts focus back until the user acts elsewhere.
+      if (target.matches("[data-settings-help-trigger]")) armSettingsHelpFocusReturn();
+    }
   };
   const onKeydown = (event) => {
     if (event.key === "Escape") {
@@ -26445,9 +26483,14 @@ el("contextRoomReviewSelection")?.addEventListener("click", (event) => {
   }
 });
 el("reviewQueue")?.addEventListener("contextmenu", (event) => {
-  if (state.sharedContextBusy) return;
   const entry = event.target.closest("[data-context-room-review-entry]");
   if (!entry) return;
+  if (state.sharedContextBusy) {
+    // Say why nothing opens instead of ignoring the gesture silently.
+    event.preventDefault();
+    setStatus("Shared pass running · the menu opens again when it ends");
+    return;
+  }
   const item = contextHubReviewItems().find((candidate) => candidate.id === entry.dataset.contextRoomReviewEntry);
   if (item) openContextRoomReviewContextMenu(event, item);
 });

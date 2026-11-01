@@ -113,7 +113,7 @@ function privateDestination(root, project) {
   check(root !== project && !root.startsWith(project + path.sep), 'Keep recovered history outside the project and public repository.');
   if (ancestor === root) {
     canonicalNotebookRoot(root); const stats = fs.statSync(root);
-    check(!(stats.mode & 0o077) && (!process.getuid || stats.uid === process.getuid()), `Recovered conversations need a private directory owned by this account: ${root}. Run: chmod 700 ${JSON.stringify(root)}`);
+    check(!(stats.mode & 0o077) && (!process.getuid || stats.uid === process.getuid()), `Recovered conversations need a private directory owned by this account: ${root}. Run: chmod 700 '${root.replace(/'/g, "'\\''")}'`);
   }
 }
 

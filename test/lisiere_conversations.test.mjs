@@ -109,5 +109,5 @@ test('a non-private conversation store names the path and the chmod 700 command'
   const f = await fixture(t);
   fs.mkdirSync(f.storageRoot); fs.chmodSync(f.storageRoot, 0o755);
   assert.throws(() => f.plan(), error => error.code === 'lisiere_recovery_conflict'
-    && error.message.includes(f.storageRoot) && error.message.includes(`chmod 700 ${JSON.stringify(f.storageRoot)}`));
+    && error.message.includes(f.storageRoot) && error.message.includes(`chmod 700 '${f.storageRoot.replace(/'/g, "'\\''")}'`));
 });
