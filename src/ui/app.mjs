@@ -3577,7 +3577,12 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .context-hub-project-picker-close { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
       .global-explorer-mode, .global-project-watch-filter, .watch-filter,
       .project-priority-actions button, .settings-concept-help-button,
-      [data-context-room-mode-prompt] { min-width: 44px; min-height: 44px; }
+      [data-context-room-mode-prompt],
+      .context-room-mode-warning button[data-context-room-mode-prompt] { min-width: 44px; min-height: 44px; }
+    }
+    /* The 44px Explorer button must fit the 46px dock between 640 and 980px. */
+    @media (min-width: 640px) and (max-width: 980px) {
+      .explorer-open { top: 1px; }
     }
     /* LAYOUT CONTRACT: END */
   </style>
@@ -26112,8 +26117,16 @@ el("globalProjectList")?.addEventListener("click", (event) => {
     const worktree = globalProjectSelectedWorktree(project);
     openContextHubProject(worktree?.id || project.id, { filePath: fileButton.dataset.globalProjectFile })
       .then(() => {
-        // The full-screen Explorer drawer hides the document it just opened; close it once the open succeeds.
-        if (isExplorerMobileViewport() && !isExplorerCollapsed()) setExplorerCollapsedFromUser(true);
+        // The Explorer drawer (every non-desktop width) hides the document it just opened; close it once the open succeeds.
+        if (!isExplorerDesktopViewport() && !isExplorerCollapsed()) {
+          setExplorerCollapsedFromUser(true);
+          state.explorerReturnFocus = null;
+          const viewer = el("viewer");
+          if (viewer) {
+            if (!viewer.hasAttribute("tabindex")) viewer.setAttribute("tabindex", "-1");
+            window.requestAnimationFrame(() => window.setTimeout(() => viewer.focus({ preventScroll: true }), 0));
+          }
+        }
       })
       .catch((error) => setStatus(error.message));
     return;
