@@ -206,3 +206,22 @@ test('configure refuses a non-boolean Fast', t => {
   assert.throws(() => service.create(f.original, { source: f.source, fast: 'yes' }), { code: 'assistant_model' });
   assert.equal(service.get(f.original, conversation.id).fast, false);
 });
+
+test('a notebook conversation follows its notebook to another project, and no other', t => {
+  const f = fixture(t), moved = path.join(path.dirname(f.root), 'moved');
+  fs.mkdirSync(moved, { mode: 0o700 });
+  const homes = { [f.original]: null, [moved]: { path: 'Carnets/Scene.crnb', locationRevision: notebookHash('moved-location') } };
+  const resolveSource = (project, source) => ({ source, title: 'Scene', context: { project }, tools: [], call: async () => ({}) });
+  const service = new AssistantSessions({ root: f.root, resolveSource, locateNotebook: (project, id) => id === 'original' ? homes[project] ?? null : null });
+  t.after(() => service.close());
+  const conversation = service.create(f.original, { requestId: randomUUID(), source: f.source });
+  const query = { kind: 'notebook', path: 'Carnets/Scene.crnb', resourceId: 'original', locationRevision: notebookHash('moved-location') };
+  // Red before the fix: the moved project saw nothing.
+  assert.deepEqual(service.history(moved, { source: query }).conversations.map(item => item.id), [conversation.id]);
+  assert.equal(service.get(moved, conversation.id).id, conversation.id);
+  // Other notebook identity, other project without that notebook, and an unfiltered list stay empty.
+  assert.deepEqual(service.history(moved, { source: { ...query, resourceId: 'another' } }).conversations, []);
+  assert.deepEqual(service.history(f.other, { source: query }).conversations, []);
+  assert.deepEqual(service.list(moved), []);
+  assert.throws(() => service.get(f.other, conversation.id), { code: 'assistant_scope' });
+});
