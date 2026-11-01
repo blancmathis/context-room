@@ -30,7 +30,7 @@
 .assistant-direct .assistant-history, .assistant-direct .assistant-model { display: none; }
 .assistant-direct-dictation .assistant-messages, .assistant-direct-dictation .assistant-composer button:not([data-dictation-control]) { display: none; }
 .assistant-direct-dictation[data-capturing=true] .assistant-composer textarea { display: none; }
-/* Touch screen with the keyboard open (or a very short screen): the browser scrolls the field into view. The header stays sticky (Stop agent stays reachable) but is compact, and the history sits just above the field, so New conversation, Refresh history and the list stay in view while typing. */
+/* Touch screen with the keyboard open (or a very short screen): the browser scrolls the field into view. Only Stop agent stays sticky (the full header is too tall), and the history sits just above the field, so New conversation, Refresh history and the list stay in view while typing. */
 @media (pointer: coarse) and (max-height: 600px) {
   /* The header is tall here and must not cover the history, so its controls flow in the panel and only Stop agent sticks to the top. */
   .assistant-panel { flex-direction: row; flex-wrap: wrap; align-content: flex-start; align-items: center; }
