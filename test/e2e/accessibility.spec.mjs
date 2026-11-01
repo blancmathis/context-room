@@ -62,9 +62,20 @@ async function applyTheme(page, theme, mode) {
     document.documentElement.dataset.fileTheme = theme;
     document.documentElement.dataset.colorMode = mode;
   }, { theme, mode });
-  // Theme colors share the workbench's 160 ms surface transition. Audit the
-  // settled palette instead of a deliberately interpolated transition frame.
-  await page.waitForTimeout(180);
+  // Audit the settled palette, not an interpolated transition frame. Surface
+  // transitions last 160 to 260 ms and start late on a loaded runner, so wait
+  // for the transitions themselves instead of a fixed delay.
+  await waitForSettledFrame(page);
+}
+
+async function waitForSettledFrame(page) {
+  await page.evaluate(async () => {
+    // Flush style so that transitions started by the last change are listed.
+    getComputedStyle(document.documentElement).color;
+    await Promise.all(document.getAnimations()
+      .filter((animation) => animation.effect?.getTiming().iterations !== Infinity)
+      .map((animation) => animation.finished.catch(() => {})));
+  });
 }
 
 async function expectNoAccessibilityViolations(page) {
@@ -111,6 +122,7 @@ test("@a11y Home and Settings text retain WCAG AA contrast in every theme", asyn
       const tab = settingsTabs.nth(index);
       await tab.click();
       await expect(tab).toHaveAttribute("aria-selected", "true");
+      await waitForSettledFrame(page);
       const settings = await new AxeBuilder({ page })
         .include("#settingsPage")
         .withRules(["color-contrast"])

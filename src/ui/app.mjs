@@ -7248,7 +7248,33 @@ async function deleteGlobalExplorerContextTarget() {
   await runGlobalProjectExplorerAction("delete", preview.result || preview);
 }
 
+// A background refresh (catalogue, runtime event) must not swap a row out
+// between the press and the release of a pointer: the browser then sends the
+// click to the list instead of the row, and the user's choice is lost. Keep
+// the newest markup and apply it once the gesture's click has run.
+const globalExplorerHeldNodes = new Set();
+function releaseGlobalExplorerMarkup() {
+  window.setTimeout(() => {
+    for (const node of globalExplorerHeldNodes) {
+      globalExplorerHeldNodes.delete(node);
+      const pending = node.__contextRoomPendingMarkup;
+      node.__contextRoomPendingMarkup = undefined;
+      if (pending !== undefined) updateGlobalExplorerMarkup(node, pending);
+    }
+  }, 0);
+}
+document.addEventListener("pointerdown", (event) => {
+  const node = event.target?.closest?.("#globalProjectList, #contextHubHomeProjectList");
+  if (node) globalExplorerHeldNodes.add(node);
+}, true);
+document.addEventListener("pointerup", releaseGlobalExplorerMarkup, true);
+document.addEventListener("pointercancel", releaseGlobalExplorerMarkup, true);
+
 function updateGlobalExplorerMarkup(node, markup) {
+  if (globalExplorerHeldNodes.has(node)) {
+    node.__contextRoomPendingMarkup = markup;
+    return;
+  }
   if (node.__contextRoomMarkup === markup) {
     node.querySelectorAll("select").forEach((select) => {
       const selected = select.querySelector("option[selected]");
@@ -7290,7 +7316,7 @@ function renderContextHubHomeProjects() {
   if (panel.hidden) return;
   if (!state.contextHub) {
     coverage.textContent = "Loading…";
-    list.innerHTML = '<div class="global-project-explorer-empty">Loading projects…</div>';
+    updateGlobalExplorerMarkup(list, '<div class="global-project-explorer-empty">Loading projects…</div>');
     return;
   }
   renderNotebookSpace();
@@ -7305,10 +7331,12 @@ function renderContextHubHomeProjects() {
     sinceLastVisit.hidden = !sinceLastVisit.textContent;
   }
   if (!projects.length) {
-    list.innerHTML = '<div class="global-project-explorer-empty">No project registered yet. Add a folder from Manage projects.</div>';
+    updateGlobalExplorerMarkup(list, '<div class="global-project-explorer-empty">No project registered yet. Add a folder from Manage projects.</div>');
     return;
   }
-  list.innerHTML = projects.map((project) => {
+  // Same markup cache and pointer hold as the Explorer list: a refresh must
+  // not swap a destination button out from under the user's click.
+  updateGlobalExplorerMarkup(list, projects.map((project) => {
     const selected = project.projectKey === state.globalExplorerProjectKey;
     const key = escapeHtml(project.projectKey);
     const title = escapeHtml(project.title || project.id);
@@ -7319,7 +7347,7 @@ function renderContextHubHomeProjects() {
       + '<span class="context-hub-home-project-attention" data-attention="' + contextHubProjectAttentionKind(project) + '">' + escapeHtml(contextHubProjectAttentionLabel(project)) + '</span>'
       + '<span class="context-hub-home-project-destinations">' + destination("context", "Context") + destination("review", "To review") + destination("documents", "Documents") + '</span>'
       + '</li>';
-  }).join("");
+  }).join(""));
 }
 
 // Notebooks space: notebooks for an idea that belongs to no project yet. It is one
@@ -7810,14 +7838,17 @@ function renderReviewHistoryPanel() {
   if (!state.reviewHistory) return;
   if (!panel.dataset.wired) {
     panel.dataset.wired = "1";
-    panel.addEventListener("toggle", () => { state.reviewHistoryOpen = panel.open; });
     panel.addEventListener("click", (event) => {
       const button = event.target.closest("[data-review-undo]");
       if (button) confirmReviewUndo(button.dataset.reviewUndo);
     });
   }
-  panel.open = Boolean(state.reviewHistoryOpen);
-  panel.innerHTML = '<summary>Recent decisions · ' + receipts.length + '</summary>'
+  // The <details> element itself keeps the open state the user chose. Do not
+  // copy it back from a cached flag: the "toggle" event that would update that
+  // flag fires after the click, so a render in between closed the panel again.
+  // Rewrite the content only when it changes, so a refresh cannot swap the
+  // summary or a button out from under a click.
+  const markup = '<summary>Recent decisions · ' + receipts.length + '</summary>'
     + '<p class="review-history-hint">Undo removes an acceptance. The file stays as it is and goes back to review.</p>'
     + (receipts.length ? "" : '<p class="review-history-hint">No decisions yet. Files you accept or send back appear here.</p>')
     + '<ul class="review-history-list">' + receipts.map((receipt) => {
@@ -7828,6 +7859,9 @@ function renderReviewHistoryPanel() {
         + (receipt.undo?.available ? '<button type="button" class="file-action" data-review-undo="' + escapeHtml(receipt.id) + '">Undo this acceptance</button>' : "")
         + '</li>';
     }).join("") + '</ul>';
+  if (panel.__reviewHistoryMarkup === markup) return;
+  panel.innerHTML = markup;
+  panel.__reviewHistoryMarkup = markup;
 }
 
 function confirmReviewUndo(receiptId) {
