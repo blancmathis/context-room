@@ -13655,11 +13655,15 @@ function applyInitialContextHubWhenReady(contextHubRequest) {
     }
     // A superseding runtime snapshot must resolve an ambiguous initial alias
     // too; otherwise boot discards the selector and reports an unqualified ready.
+    // When every boot snapshot was superseded, boot can finish before the Hub
+    // list exists: the URL restore then keeps the raw alias as the active
+    // location with no explorer project. The later snapshot must resolve it.
     const recoverSupersededInitialProject = Boolean(
       IS_GLOBAL_CONTEXT_ROOM
       && (requestedProjectSelection || requestedProjectAmbiguous)
       && (
         !state.activeProjectLocationId
+        || (state.activeProjectLocationId === requestedProjectId && !state.globalExplorerProjectKey)
         || (
           document.body.classList.contains("app-booting")
           && (
