@@ -18317,6 +18317,7 @@ function renderSettingsPanel() {
   wireSnoozedReviewSettings(holder);
   wireSettingsSearch();
   activateSettingsSection(state.settingsSection, { resetScroll: false });
+  restoreSettingsHelpFocus(holder);
   wireHubSettingsButtons(holder);
   wireProjectPrioritySettings(holder);
   wireSharedContextManagementSettings(holder);
@@ -18361,19 +18362,41 @@ function wireSharedSkillLocationsSettingsActions(root) {
   root.querySelector("[data-shared-provider-apply]")?.addEventListener("click", () => applySharedSkillProviderSettings().catch((error) => setStatus(error.message)));
 }
 
-let settingsHelpFocusReturnUntil = 0;
+let settingsHelpFocusReturnPending = false;
+let settingsHelpFocusReturnSince = 0;
+
+function clearSettingsHelpFocusReturn() {
+  settingsHelpFocusReturnPending = false;
+  for (const type of ["pointerdown", "keydown", "focusin"]) document.removeEventListener(type, onSettingsHelpFocusReturnInput, true);
+}
+
+function onSettingsHelpFocusReturnInput(event) {
+  // The input that closed the dialog (Escape, click) is not "the user moved on".
+  if (event.timeStamp <= settingsHelpFocusReturnSince) return;
+  if (event.type === "focusin" && (event.target === document.body || event.target?.matches?.("[data-settings-help-trigger]"))) return;
+  clearSettingsHelpFocusReturn();
+}
+
+function armSettingsHelpFocusReturn() {
+  clearSettingsHelpFocusReturn();
+  settingsHelpFocusReturnPending = true;
+  settingsHelpFocusReturnSince = performance.now();
+  for (const type of ["pointerdown", "keydown", "focusin"]) document.addEventListener(type, onSettingsHelpFocusReturnInput, true);
+}
 
 function wireSettingsHelpPanels(root) {
   const triggers = [...root.querySelectorAll("[data-settings-help-trigger]")];
   triggers.forEach((button) => button.addEventListener("click", () => showSharedContextHelpDialog(button)));
-  if (settingsHelpFocusReturnUntil) {
-    const recent = Date.now() < settingsHelpFocusReturnUntil;
-    const lost = document.activeElement === document.body || !document.activeElement;
-    if (recent && lost && triggers[0] && !document.querySelector(".shared-context-help-backdrop")) {
-      triggers[0].focus();
-      settingsHelpFocusReturnUntil = 0;
-    } else if (!recent) settingsHelpFocusReturnUntil = 0;
-  }
+}
+
+// After the dialog closes, a Settings re-render can replace the trigger and drop focus to body.
+// The return stays pending (no timer) until the user acts elsewhere; every re-render refocuses the live trigger.
+// Runs after the section is activated: showing/hiding panels earlier in the render would drop the focus again.
+function restoreSettingsHelpFocus(root) {
+  if (!settingsHelpFocusReturnPending || document.querySelector(".shared-context-help-backdrop")) return;
+  const trigger = root.querySelector("[data-settings-help-trigger]");
+  const lost = document.activeElement === document.body || !document.activeElement;
+  if (trigger && lost) trigger.focus();
 }
 
 function showSharedContextHelpDialog(returnFocus = document.activeElement) {
@@ -18390,8 +18413,8 @@ function showSharedContextHelpDialog(returnFocus = document.activeElement) {
     const target = returnFocus instanceof HTMLElement && returnFocus.isConnected ? returnFocus : document.querySelector("[data-settings-help-trigger]");
     if (restoreFocus && target instanceof HTMLElement) {
       target.focus();
-      // A Settings re-render soon after closing can replace the trigger: wireSettingsHelpPanels puts focus back when it lands (bounded window).
-      settingsHelpFocusReturnUntil = Date.now() + 3000;
+      // A Settings re-render after closing can replace the trigger: wireSettingsHelpPanels puts focus back until the user acts elsewhere.
+      if (target.matches("[data-settings-help-trigger]")) armSettingsHelpFocusReturn();
     }
   };
   const onKeydown = (event) => {
