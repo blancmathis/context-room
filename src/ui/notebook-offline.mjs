@@ -73,8 +73,9 @@ export async function appendCachedNotebooks(container, { opened = () => {} } = {
   const list = document.createElement('ul'); list.setAttribute('aria-label', 'Notebooks saved on this device');
   for (const entry of entries) {
     const item = document.createElement('li'), button = document.createElement('button'); button.type = 'button';
-    const route = offlineNotebookRoute(entry);
-    button.textContent = entry.snapshot.locator.path + ' · ' + (route.targetProjectId || route.projectId).slice(0, 8);
+    const title = String(entry.snapshot.document?.title || '').trim();
+    button.textContent = title || entry.snapshot.locator.path;
+    if (title) { const path = document.createElement('small'); path.textContent = entry.snapshot.locator.path; button.append(document.createElement('br'), path); }
     button.addEventListener('click', async () => {
       button.disabled = true;
       try { const notebook = await openCachedNotebook(entry); opened(notebook); }
