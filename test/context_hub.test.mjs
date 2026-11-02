@@ -653,15 +653,16 @@ test("Context Hub refreshes a transient catalogue gap before declaring an exact 
     assert.equal(opened.review.proposal, proposal.branch);
     assert.equal(opened.review.proposalHead, published.head);
     assert.deepEqual(opened.docqa.pendingPaths, ["projects/demo/docs/README.md"]);
-    assert.match(opened.url, new RegExp(`^${origin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/reviews/`));
+    // C-16: a same-origin path, so the owner tablet transport keeps its own origin.
+    assert.match(opened.url, /^\/reviews\/[^/]+$/);
   }
   assert.equal(materializationCalls, 1, "current local main refs must collapse stale snapshot bases before materialization");
   assert.equal(reviewServerListenCalls, 0, "an exact local review must stay on the Hub server");
   assert.equal(new Set(openedReviews.map((opened) => opened.url)).size, 1);
   assert.deepEqual(new Set(openedReviews.map((opened) => opened.review.baseRevision)), new Set([materializedBase]));
-  const reviewPageResponse = await fetch(openedReviews[0].url + "/");
+  const reviewPageResponse = await fetch(origin + openedReviews[0].url + "/");
   assert.equal(reviewPageResponse.status, 200);
-  const targetDocQaResponse = await fetch(openedReviews[0].url + "/api/docqa");
+  const targetDocQaResponse = await fetch(origin + openedReviews[0].url + "/api/docqa");
   const targetDocQa = await targetDocQaResponse.json();
   assert.equal(targetDocQaResponse.status, 200, JSON.stringify(targetDocQa));
   assert.deepEqual(targetDocQa.pendingPaths, ["projects/demo/docs/README.md"]);
@@ -878,8 +879,8 @@ test("Context Hub keeps exact local reviews on the Hub server", { timeout: 30_00
   assert.equal(reviewServerListenCalls, 0);
   assert.ok(materialized);
   assert.equal(fs.existsSync(materialized.reviewRoot), true);
-  assert.match(opened.url, /^http:\/\/127\.0\.0\.1:\d+\/reviews\//);
-  assert.equal((await fetch(opened.url)).status, 200);
+  assert.match(opened.url, /^\/reviews\/[^/]+$/);
+  assert.equal((await fetch(`http://127.0.0.1:${room.server.address().port}${opened.url}`)).status, 200);
   assert.equal(
     fs.existsSync(path.join(sharedHome, "review-authority", `${materialized.metadata.authorityId}.json`)),
     true,

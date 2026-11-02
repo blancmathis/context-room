@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import http from "node:http";
 import { test, expect } from "@playwright/test";
 
 import {
@@ -751,4 +752,137 @@ test.describe.serial("real proposal workflows", () => {
     }
   });
 
+});
+
+// The owner tablet reaches the Mac Hub through a transport whose page origin is
+// not the Hub's loopback origin, while the Hub sees a loopback Host header. A
+// loopback proxy on another port reproduces exactly that split (C-16).
+async function startForeignOriginProxy(targetOrigin) {
+  const target = new URL(targetOrigin);
+  const sockets = new Set();
+  const server = http.createServer((request, response) => {
+    const headers = { ...request.headers, host: target.host };
+    for (const header of ["origin", "referer"]) {
+      const value = String(request.headers[header] || "");
+      if (!value) continue;
+      try {
+        const forwarded = new URL(value);
+        if (forwarded.host !== request.headers.host) continue;
+        headers[header] = header === "origin"
+          ? target.origin
+          : `${target.origin}${forwarded.pathname}${forwarded.search}${forwarded.hash}`;
+      } catch {}
+    }
+    const upstream = http.request({
+      hostname: target.hostname,
+      port: target.port,
+      method: request.method,
+      path: request.url,
+      headers,
+    }, (upstreamResponse) => {
+      response.writeHead(upstreamResponse.statusCode || 502, upstreamResponse.headers);
+      upstreamResponse.pipe(response);
+    });
+    upstream.on("error", (error) => {
+      if (!response.headersSent) response.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+      response.end(error.message);
+    });
+    request.pipe(upstream);
+  });
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  return {
+    origin: `http://127.0.0.1:${server.address().port}`,
+    async close() {
+      for (const socket of sockets) socket.destroy();
+      await new Promise((resolve) => server.close(resolve));
+    },
+  };
+}
+
+test.describe("Shared review through a foreign page origin", () => {
+  test.use({ serviceWorkers: "block" });
+
+  test("@smoke a Shared proposal opens from the review queue when the page origin differs from the Hub Host", async ({ page }, testInfo) => {
+    test.skip(!["chromium-desktop", "webkit-desktop"].includes(testInfo.project.name), "The real Shared review opening runs on desktop Chromium and WebKit.");
+    test.setTimeout(120_000);
+
+    const data = fixture();
+    const runBase = fs.mkdtempSync(path.join(data.base, "real-proposal-foreign-origin-"));
+    const item = createSharedWorkflowFixture(runBase, {
+      slug: `foreign-origin-${testInfo.project.name}`,
+      projectId: "demo",
+      projectTitle: "Foreign Origin Project",
+      proposalTitle: `Foreign origin Shared review ${testInfo.project.name}`,
+      proposalDescription: "Open an exact Shared review from a page whose origin is not the Hub Host.",
+      baselineFiles: { "docs/README.md": "# Foreign origin\n\nAccepted baseline.\n" },
+      proposalFiles: { "docs/README.md": "# Foreign origin\n\nProposal content.\n" },
+    });
+    const proxy = await startForeignOriginProxy(data.origin);
+    let registered = false;
+    try {
+      registered = true;
+      registerContextHubSharedRepository(item.remote);
+      registerContextHubProject(item.project, {
+        title: item.projectTitle,
+        shared: { repository: item.remote, projectId: item.projectId },
+      });
+      expect(proxy.origin).not.toBe(new URL(data.origin).origin);
+
+      const hubUrl = `${proxy.origin}/?hub=1&workspace=real-foreign-origin-${testInfo.project.name}&view=hub`;
+      await page.goto(hubUrl);
+      await waitForBoot(page);
+      await refreshContextHubThroughUi(page);
+      await expect(proposalRow(page, item.proposalTitle)).toHaveCount(1);
+
+      // Refusal kept: a prepared review that names another origin, or another
+      // authority, must never be adopted by the page.
+      for (const forge of ["origin", "authority"]) {
+        await page.route("**/api/context-hub/review", async (route) => {
+          const response = await route.fetch();
+          const body = await response.json();
+          const authorityId = String(body.review?.authorityId || "");
+          body.url = forge === "origin"
+            ? `${data.origin}/reviews/${encodeURIComponent(authorityId)}`
+            : `/reviews/${encodeURIComponent(authorityId + "-forged")}`;
+          await route.fulfill({ response, json: body });
+        });
+        await openProposalFromHub(page, item.proposalTitle);
+        await expect(page.getByText("The prepared review does not preserve its exact local review authority.").first()).toBeVisible();
+        expect(new URL(page.url()).origin).toBe(proxy.origin);
+        expect(new URL(page.url()).pathname).not.toMatch(/^\/reviews\//);
+        await page.unroute("**/api/context-hub/review");
+        await page.goto(hubUrl);
+        await waitForBoot(page);
+        await expect(proposalRow(page, item.proposalTitle)).toHaveCount(1);
+      }
+
+      const opening = page.waitForResponse((response) => (
+        response.request().method() === "POST"
+        && new URL(response.url()).pathname === "/api/context-hub/review"
+      ));
+      await openProposalFromHub(page, item.proposalTitle);
+      const prepared = await (await opening).json();
+      expect(prepared.url).toMatch(/^\/reviews\/[^/]+$/);
+      await expect(page).toHaveURL((url) => url.origin === proxy.origin
+        && /^\/reviews\/[^/]+\/?$/.test(url.pathname)
+        && url.searchParams.get("view") === "proposal");
+      await expect(page.getByRole("heading", { name: item.proposalTitle })).toBeVisible();
+      await expect(page.locator("[data-proposal-review-path]")).toHaveCount(1);
+      await expect(page.getByText("The prepared review does not preserve its exact local review authority.")).toHaveCount(0);
+    } finally {
+      await proxy.close();
+      if (registered) {
+        try { if (readSharedProjectConnection(item.project)) disconnectSharedContext(item.project); } catch {}
+        try { unregisterContextHubProject(item.project); } catch {}
+        try { unregisterContextHubSharedRepository(item.remote); } catch {}
+      }
+    }
+  });
 });

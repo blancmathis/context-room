@@ -95,7 +95,7 @@ if (!reviewResponse.ok) throw new Error('Synthetic Shared review did not open: '
 const sharedReview = await reviewResponse.json();
 const ticket = { ...service.describe(), ...service.createOwnerPairing({ label: 'Synthetic owner tablet' }),
   url: `https://10.0.2.2:${service.server.address().port}`, testProjectId: runtime.projectId,
-  testSharedPath: new URL(sharedReview.url).pathname, testSharedHead: sharedReceipt.proposalRevision,
+  testSharedPath: new URL(sharedReview.url, 'http://127.0.0.1').pathname, testSharedHead: sharedReceipt.proposalRevision,
   ...(legacyHistory ? { testLegacyHistory: legacyHistory } : {}), ...(tabletDraft ? { testTabletDraft: tabletDraft } : {}), ...(recording ? { testRecording: recording } : {}) };
 fs.writeFileSync(path.join(base, 'ticket.json'), JSON.stringify(ticket), { mode: 0o600 });
 fs.writeFileSync(path.join(base, 'fixture.json'), JSON.stringify({ projectId: runtime.projectId, sourceRoot: root, serverId: service.serverId,
