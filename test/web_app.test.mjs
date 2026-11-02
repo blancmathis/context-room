@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contextRoomWebAssetBundle } from '../src/context_room.mjs';
 import { captureWebBuild, WEB_ASSETS, webAppResponse, webAppVersion, versionWebSource } from '../src/web_app.mjs';
-import { offlineNotebookRoute } from '../src/ui/notebook-offline.mjs';
+import { offlineNotebookRoute, watchHubReturn } from '../src/ui/notebook-offline.mjs';
 
 test('public offline build is complete, version-coherent and contains no owner authority', () => {
   const bundle = contextRoomWebAssetBundle('synthetic-prompt-secret', 'synthetic-owner-secret');
@@ -132,4 +132,16 @@ test('common keyboard layout follows the visual viewport without interpreting pi
   assert.equal(typeof bundle.html, 'string');
   assert.doesNotMatch(bundle.html, /interactive-widget/);
   assert.doesNotMatch(webAppResponse(new URL('/offline.html', 'https://room.example.test'), bundle).body, /interactive-widget/);
+});
+
+test('the offline page never returns to the Hub while a local notebook is open', async () => {
+  let open = false, replaced = 0;
+  const watch = watchHubReturn({ hubBack: async () => true, replace: () => { replaced += 1; }, notebookOpen: () => open, intervalMs: 5 });
+  open = true;
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.equal(replaced, 0);
+  open = false;
+  await new Promise(resolve => setTimeout(resolve, 60));
+  clearInterval(watch);
+  assert.equal(replaced, 1);
 });

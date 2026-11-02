@@ -1,5 +1,5 @@
 import './web-app.mjs';
-import { appendCachedNotebooks } from './notebook-offline.mjs';
+import { appendCachedNotebooks, watchHubReturn } from './notebook-offline.mjs';
 import { openNotebookEditor } from './notebook-editor.mjs';
 import { pairingTicketFromFragment } from './pairing-share.mjs';
 const mode = document.querySelector('meta[name="context-room-web-entry"]').content;
@@ -24,7 +24,9 @@ if (mode === 'offline') {
   if (globalThis.ContextRoomNativeOwner?.openConnectionSettings) actions.append(button('Connection settings', () => ContextRoomNativeOwner.openConnectionSettings()));
   // The Hub may come back while this page is open: go back to it by ourselves. Any JSON answer proves the Hub is reachable.
   const hubBack = async () => { try { const answer = await fetch('/browser/session', { cache: 'no-store', credentials: 'same-origin' }); return /json/.test(answer.headers.get('content-type') || ''); } catch { return false; } };
-  const watch = setInterval(async () => { if (document.hidden) return; if (await hubBack()) { clearInterval(watch); location.replace(link.href); } }, 4000);
+  // Never reload while a local notebook is open or being opened (its buttons are disabled meanwhile): unsaved strokes would be lost.
+  watchHubReturn({ hubBack, replace: () => location.replace(link.href), hidden: () => document.hidden,
+    notebookOpen: () => Boolean(document.querySelector('.notebook-dialog') || content.querySelector('button:disabled')) });
   await appendCachedNotebooks(content);
 } else if (mode === 'pair') {
   status.textContent = 'Pair this browser from the Mac. Drawing permission and the complete owner interface are separate choices.';
