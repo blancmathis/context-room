@@ -13639,7 +13639,14 @@ async function openInitialContextHubRequestedProject(contextHub, requestedGenera
 function applyInitialContextHubWhenReady(contextHubRequest) {
   return contextHubRequest.then(({ contextHub: payload, ticket, applyRequestedProject = false, requestedGeneration = 0 }) => {
     const contextHub = sanitizeHostedHubCatalog(payload);
-    if (!applyContextHubSnapshot(contextHub, ticket)) return state.contextHub;
+    if (!applyContextHubSnapshot(contextHub, ticket)) {
+      // The Hub home can boot on the catalogue alone. A manual refresh that
+      // supersedes this snapshot does not redraw the home, so its confirmed
+      // review state (since-last-visit line) must be drawn once it lands.
+      const refresh = state.contextHubRefreshPromise;
+      if (refresh) void refresh.catch(() => {}).then(() => { if (state.contextHub) renderGlobalProjectExplorer(); });
+      return state.contextHub;
+    }
     state.contextHubReviewQueueReady = true;
     enforceHostedHubSourceFilters();
     const requestedProjectId = new URLSearchParams(window.location.search).get("project") || "";
