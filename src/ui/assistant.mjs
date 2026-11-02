@@ -163,7 +163,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     dictate.textContent = 'Dictate'; inform('Recorded dictation discarded. Your text draft is unchanged.'); render();
   }
   const self = { panel, scopeKey, conversation: current, onState, dictationTarget, captureSource, focus: () => input.focus(),
-    idle: () => !activeStatuses.has(current.operation?.status) && !input.value.trim() && !retainedRecording && !recording && !audioBusy && !audioReading && !voice, present(mode, target = null, primedContext = null) {
+    idle: () => !activeStatuses.has(current.operation?.status) && !input.value.trim() && !sendRequest && !sending && !retainedRecording && !recording && !audioBusy && !audioReading && !voice, present(mode, target = null, primedContext = null) {
     if (mode === 'dictate' && voice) { run(endVoice().then(() => self.present(mode, target, primedContext))); return; }
     if (mode === 'voice' && !voice && (recording || retainedRecording || audioBusy || input.value.trim() || sendRequest || activeStatuses.has(current.operation?.status))) {
       if (primedContext && primedContext.state !== 'closed') run(primedContext.close());
