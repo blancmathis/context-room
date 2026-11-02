@@ -88,3 +88,15 @@ export async function appendCachedNotebooks(container, { opened = () => {} } = {
   if (!entries.length) container.append(Object.assign(document.createElement('p'), { textContent: 'No reconnectable working notebook is saved in this browser. Open one while connected first. Other and older recovery caches are not deleted.' }));
   return entries.length;
 }
+
+/** Poll until the Hub answers, then go back to it. Never while a local notebook is open or opening: a reload would drop unsaved work. */
+export function watchHubReturn({ hubBack, replace, notebookOpen = () => false, intervalMs = 4000, hidden = () => false }) {
+  const watch = setInterval(async () => {
+    if (hidden() || notebookOpen()) return;
+    if (!await hubBack()) return;
+    // The answer took time: a notebook may have opened meanwhile.
+    if (notebookOpen()) return;
+    clearInterval(watch); replace();
+  }, intervalMs);
+  return watch;
+}

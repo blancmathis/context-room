@@ -224,3 +224,7 @@ test("parity validator reports dispatcher, capability, argument, completion, mut
     "documentation-example-obsolete",
   ]) assert.ok(codes.has(code), code);
 });
+
+test("agent prepare and context bundle describe --allow-stale", () => {
+  for (const path of ["agent prepare", "context bundle"]) assert.ok(cliCommandArgumentNames(path).includes("--allow-stale"), path);
+});

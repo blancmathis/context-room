@@ -75,14 +75,22 @@ final class NativeNavigation {
               receive(data);
               host.receiveView(data.optJSONObject("view"), body.optJSONObject("view"));
             } else if (status == 409 && data != null && "device_navigation_session".equals(data.optString("code"))) {
-              // The Hub retired this session (an older one reached it late). Never retry it: start a fresh session at once.
-              clearCommand(); host.viewFailure(); session = UUID.randomUUID().toString(); schedule(0); return;
+              // The Hub retired this session (an older one reached it late). Never retry it: start a fresh session.
+              // The first renewals are immediate; a rapid run means another instance fights for this device, so back off.
+              clearCommand(); host.viewFailure(); session = UUID.randomUUID().toString(); schedule(renewalDelay(SystemClock.elapsedRealtime())); return;
             } else if (status == 401 || status == 403 || status == 409) { clearCommand(); host.viewFailure(); }
           }
           schedule(receipt != null && result != null ? 0 : result == null ? 3000 : 1200);
         });
       });
     } catch (RejectedExecutionException error) { running = false; schedule(1500); }
+  }
+
+  final RenewalBackoff renewals = new RenewalBackoff();
+  long renewalDelay(long now) {
+    long delay = renewals.next(now);
+    if (delay > 0) android.util.Log.w("ContextRoom", "Navigation session retired again; next renewal in " + delay + " ms");
+    return delay;
   }
 
   void clearCommand() { command = null; opening = false; deferred = false; }
