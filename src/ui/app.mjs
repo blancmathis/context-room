@@ -3173,8 +3173,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .graph-toolbar-controls { justify-content: flex-start; flex-wrap: wrap; }
       .graph-toolbar-controls .graph-search { flex: 1 1 100%; }
       .graph-toolbar-controls input { width: 100%; }
-      .graph-filterbar { flex-wrap: wrap; overflow-x: visible; }
-      .settings-tabs { flex-wrap: wrap; overflow-x: visible; }
     }
     @media (max-width: 980px) {
       .app, .app.sidebar-collapsed {

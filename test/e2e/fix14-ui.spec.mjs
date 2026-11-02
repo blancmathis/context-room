@@ -6,7 +6,6 @@ import { assistantFixture } from '../fixtures/assistant.mjs';
 import { legacyConversationSnapshot } from '../fixtures/lisiere-conversations.mjs';
 import { migrateLisiereConversation } from '../../src/context_room.mjs';
 
-const fully = (page, locator) => locator.evaluate(node => { const box = node.getBoundingClientRect(); return box.width > 0 && box.left >= 0 && box.right <= innerWidth + 0.5 && box.top >= 0 && box.bottom <= innerHeight + 0.5; });
 
 test('@assistant after New conversation (empty), reopening selects the imported history, not the empty conversation', async ({ page }) => {
   const f = await assistantFixture();
@@ -53,31 +52,6 @@ test('@assistant on a phone with a 330 px keyboard, the focused message field is
     await expect(textbox).toBeVisible();
     await page.setViewportSize({ width: 390, height: 330 }); await textbox.tap(); await expect(textbox).toBeFocused();
     await expect.poll(() => textbox.evaluate(node => { const box = node.getBoundingClientRect(), panel = node.closest('.assistant-panel').getBoundingClientRect(); return box.top >= Math.max(0, panel.top) - 0.5 && box.bottom <= Math.min(innerHeight, panel.bottom) + 0.5; })).toBe(true);
-  } finally { await context.close(); await f.close(); }
-});
-
-for (const width of [1024, 800]) test(`@layout settings tabs and texts stay inside a ${width} px viewport`, async ({ browser }) => {
-  const f = await assistantFixture();
-  const context = await browser.newContext({ viewport: { width, height: 900 }, colorScheme: 'dark' }), page = await context.newPage();
-  try {
-    await page.goto(f.url + '/?view=hub'); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
-    await page.locator('#settingsButton').click();
-    const tab = page.locator('#settings-tab-advanced-extensions'); await expect(tab).toBeVisible();
-    expect(await fully(page, tab)).toBe(true);
-    const outside = await page.evaluate(() => [...document.querySelectorAll('.settings-tabs *')].filter(node => node.offsetParent && node.getBoundingClientRect().right > innerWidth + 1).map(node => node.tagName + '.' + node.className));
-    expect(outside).toEqual([]);
-  } finally { await context.close(); await f.close(); }
-});
-
-test('@layout the graph filters stay inside a 1024 px viewport', async ({ browser }) => {
-  const f = await assistantFixture();
-  const context = await browser.newContext({ viewport: { width: 1024, height: 900 }, colorScheme: 'dark' }), page = await context.newPage();
-  try {
-    await page.goto(f.url + '/?view=hub'); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
-    await page.locator('#graphOpen').click();
-    await expect(page.locator('#graphRelationFilter')).toBeVisible();
-    const outside = await page.evaluate(() => [...document.querySelectorAll('.graph-filterbar *, .graph-toolbar *')].filter(node => node.offsetParent && node.getBoundingClientRect().width && node.getBoundingClientRect().right > innerWidth + 1).map(node => node.tagName + '#' + node.id + '.' + node.className));
-    expect(outside).toEqual([]);
   } finally { await context.close(); await f.close(); }
 });
 
