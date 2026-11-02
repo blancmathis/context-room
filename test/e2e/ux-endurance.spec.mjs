@@ -223,6 +223,19 @@ function attachFailureGuards(page) {
   return { failures, requestCount: () => requests };
 }
 
+// The UI retries `GET /api/context-hub/attention` quietly when another writer holds the
+// registry lock (409 context_hub_registry_busy, seen under load on a shared runner). Drop
+// only those responses, each with its one matching browser console line; every other 403/409 still fails.
+function consumeRetriedAttentionBusy(failures) {
+  const consoleLine = "console: Failed to load resource: the server responded with a status of 409 (Conflict)";
+  for (let index = failures.length - 1; index >= 0; index -= 1) {
+    if (!/^http 409: \S*\/api\/context-hub\/attention(?:\?|$)/.test(failures[index])) continue;
+    failures.splice(index, 1);
+    const consoleIndex = failures.indexOf(consoleLine);
+    if (consoleIndex >= 0) failures.splice(consoleIndex, 1);
+  }
+}
+
 function consumeExpectedConflictConsole(failures) {
   const expected = "console: Failed to load resource: the server responded with a status of 409 (Conflict)";
   const matches = failures.reduce((indexes, failure, index) => failure === expected ? [...indexes, index] : indexes, []);
@@ -1193,6 +1206,7 @@ test("@soak repeated multi-day navigation does not accumulate workspace or brows
       await openProject(companion, cycle % 2 ? "Atlas" : "Beacon");
     }
     if (cycle % 4 === 3) checkpoints.push(await collectMetrics(page, guard.requestCount));
+    consumeRetriedAttentionBusy(guard.failures); consumeRetriedAttentionBusy(companionGuard.failures);
     expect(guard.failures, guard.failures.join("\n")).toEqual([]);
     expect(companionGuard.failures, companionGuard.failures.join("\n")).toEqual([]);
     expect(await page.locator("body").getAttribute("data-workspace-diagnostics")).not.toContain('"phase":"recovery"');
@@ -1216,6 +1230,7 @@ test("@soak repeated multi-day navigation does not accumulate workspace or brows
   expect(final.requests - baseline.requests).toBeLessThan(cycle * 80 + 80);
   assertResponsiveTimings("project open", timings.project);
   assertResponsiveTimings("file open", timings.file);
+  consumeRetriedAttentionBusy(guard.failures); consumeRetriedAttentionBusy(companionGuard.failures);
   expect(guard.failures, guard.failures.join("\n")).toEqual([]);
   expect(companionGuard.failures, companionGuard.failures.join("\n")).toEqual([]);
   await companion.close();

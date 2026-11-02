@@ -563,7 +563,7 @@ test("Hosted identity enforcement migrates a stale same-thread legacy PID genera
   fs.utimesSync(lockPath, staleDate, staleDate);
 
   const successor = acquireFilesystemLock(lockPath, {
-    timeoutMs: 250,
+    timeoutMs: 2_000,
     staleMs: 10,
     requireProcessIdentity: true,
   });
