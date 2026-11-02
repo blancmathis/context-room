@@ -64,7 +64,8 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   const historyQuery = new URLSearchParams({ kind: source.kind, path: source.path, ...(source.resourceId ? { resourceId: source.resourceId } : {}), ...(source.locationRevision ? { locationRevision: source.locationRevision } : {}) });
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(source.selection || [])));
   const selectionHash = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
-  const saved = fresh ? null : (await api('/api/assistant/conversations?' + historyQuery + '&limit=1&selectionHash=' + selectionHash)).conversations[0];
+  // The most recent conversation that holds messages; a newer empty one is only the fallback.
+  const saved = fresh ? null : (found => found.find(item => item.messageCount > 0) || found[0])((await api('/api/assistant/conversations?' + historyQuery + '&limit=50&selectionHash=' + selectionHash)).conversations);
   const conversation = saved ? await api('/api/assistant/conversations/' + saved.id) : await post('/conversations', { requestId: crypto.randomUUID(), source });
   if (active) await active.dispose();
   const panel = element('aside', '', 'assistant-panel'); panel.setAttribute('aria-label', 'Original document conversation');

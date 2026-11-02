@@ -96,3 +96,16 @@ test('migrate names the missing --output parent and the missing --inspect-lisier
   assert.ok(inspected.stderr.includes(missing), inspected.stderr);
   assert.doesNotMatch(inspected.stderr, /ENOENT/);
 });
+
+test('an export whose output parent is missing says what to do, without a Python exception prefix', async t => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cr-android-export-msg-')));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const fixture = JSON.parse(execFileSync('python3', ['-B', script, '--fixture', path.join(base, 'fixture')], options));
+  const output = path.join(base, 'missing', 'snapshot');
+  const preview = await exportLisiereSnapshot({ source: fixture.archive, output });
+  await assert.rejects(exportLisiereSnapshot({ source: fixture.archive, output, apply: true, expectedRevision: preview.revision }), error => {
+    assert.match(error.message, /^The parent folder of --output does not exist: .*Create it first: mkdir -p /);
+    assert.doesNotMatch(error.message, /ValueError/);
+    return true;
+  });
+});

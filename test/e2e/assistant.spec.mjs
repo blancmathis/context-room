@@ -409,3 +409,24 @@ test('@assistant on a touch tablet, Discuss keeps the keyboard closed and the ke
       await expect.poll(() => reachable(control), { message: await control.evaluate(element => element.getAttribute('aria-label') || element.textContent) }).toBe(true);
   } finally { await context.close(); await f.close(); }
 });
+
+test('@assistant opening a source selects its most recent conversation that has messages, not a newer empty one', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    const dir = path.join(f.base, 'private-assistant/conversations'), ids = [];
+    for (let i = 0; i < 2; i++) {
+      const created = await f.post('/api/assistant/conversations', { requestId: crypto.randomUUID(), source: { kind: 'document', path: 'docs/Original.md' } });
+      expect(created.status).toBe(201); ids.push(created.body.id);
+    }
+    const file = path.join(dir, ids[0] + '.json'), saved = JSON.parse(fs.readFileSync(file));
+    saved.messages.push({ id: crypto.randomUUID(), role: 'user', text: 'An earlier question.', at: '2024-01-01T00:00:00.000Z' });
+    saved.updatedAt = '2024-01-01T00:00:00.000Z'; fs.writeFileSync(file, JSON.stringify(saved), { mode: 0o600 });
+    const newer = path.join(dir, ids[1] + '.json'), empty = JSON.parse(fs.readFileSync(newer));
+    empty.updatedAt = '2024-06-01T00:00:00.000Z'; fs.writeFileSync(newer, JSON.stringify(empty), { mode: 0o600 });
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await page.evaluate(() => selectFile('docs/Original.md')); await page.getByRole('button', { name: 'Discuss', exact: true }).click();
+    const pane = page.getByRole('complementary', { name: 'Original document conversation' });
+    await expect(pane.getByLabel('Saved conversations for this original source')).toHaveValue(ids[0]);
+    await expect(pane.getByRole('log')).toContainText('An earlier question.');
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
