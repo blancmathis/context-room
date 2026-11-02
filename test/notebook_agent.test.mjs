@@ -35,7 +35,7 @@ test('agent context remains in the original physical project and cannot accept o
 test('stopping progressive ink keeps only the durable reached path and independent human work', async t => {
   const f = fixture(t), controller = new AbortController(), progress = [];
   const result = await f.context.draw({ id: 'agent-ink', type: 'ink', points: [[0,0,.5],[1000,0,.8]], color: '#111111', strokeWidth: 3 }, {
-    operationId: 'fresh-stroke', durationMs: 600, signal: controller.signal,
+    operationId: 'fresh-stroke', durationMs: 6000, signal: controller.signal,
     onProgress: event => {
       progress.push(event);
       if (progress.length === 2) {

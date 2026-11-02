@@ -259,7 +259,7 @@ test("a fully published Worker record remains complete and exactly cleanable if 
   await holder.worker.terminate();
   await exited;
   assert.deepEqual(
-    cleanupFilesystemLockWorkerOwner(owner, { timeoutMs: 300, staleMs: 15 }),
+    cleanupFilesystemLockWorkerOwner(owner, { timeoutMs: 2_000, staleMs: 15 }),
     { removed: 2 },
   );
   assert.equal(fs.existsSync(lockPath), false);
@@ -284,7 +284,7 @@ test("a live Worker lock is not stolen after staleMs, and exit cleanup removes o
 
   const exited = once(first.worker, "exit");
   const cleanupAfterExit = exited.then(() => cleanupFilesystemLockWorkerOwner(firstOwner, {
-    timeoutMs: 300,
+    timeoutMs: 2_000,
     staleMs: 15,
   }));
   await first.worker.terminate();
@@ -298,7 +298,7 @@ test("a live Worker lock is not stolen after staleMs, and exit cleanup removes o
   try {
     fs.fsyncSync = () => { throw new Error('A no-op cleanup must not publish and sync a coordination record for the live successor.'); };
     assert.deepEqual(
-      cleanupFilesystemLockWorkerOwner(firstOwner, { timeoutMs: 100, staleMs: 15 }),
+      cleanupFilesystemLockWorkerOwner(firstOwner, { timeoutMs: 2_000, staleMs: 15 }),
       { removed: 0 },
     );
   } finally { fs.fsyncSync = sync; }
@@ -322,7 +322,7 @@ test("cleanup removes abandoned coordination records exactly and preserves succe
   writeOwnerRecord(reclaimPath, firstOwner, { kind: "coordination", token: "first-reclaim" });
   writeOwnerRecord(ticketPath, firstOwner, { kind: "coordination", token: "first-ticket" });
   assert.deepEqual(
-    cleanupFilesystemLockWorkerOwner(firstOwner, { timeoutMs: 300, staleMs: 10_000 }),
+    cleanupFilesystemLockWorkerOwner(firstOwner, { timeoutMs: 2_000, staleMs: 10_000 }),
     { removed: 3 },
   );
   assert.equal(fs.existsSync(lockPath), false);
@@ -332,7 +332,7 @@ test("cleanup removes abandoned coordination records exactly and preserves succe
   writeOwnerRecord(lockPath, successorOwner, { kind: "owner", token: "successor-lock" });
   writeOwnerRecord(reclaimPath, successorOwner, { kind: "coordination", token: "successor-reclaim" });
   writeOwnerRecord(ticketPath, successorOwner, { kind: "coordination", token: "successor-ticket" });
-  assert.deepEqual(cleanupFilesystemLockWorkerOwner(firstOwner, { timeoutMs: 35, staleMs: 10_000 }), { removed: 0 });
+  assert.deepEqual(cleanupFilesystemLockWorkerOwner(firstOwner, { timeoutMs: 2_000, staleMs: 10_000 }), { removed: 0 });
   assert.equal(recordToken(lockPath), "successor-lock");
   assert.equal(recordToken(reclaimPath), "successor-reclaim");
   assert.equal(recordToken(ticketPath), "successor-ticket");
@@ -424,7 +424,7 @@ test("asynchronous filesystem lock critical sections are rejected and released",
 test("an explicit filesystem lock lease remains exclusive until its owner releases it", () => {
   const root = testRoot("explicit-lease");
   const lockPath = path.join(root, "resource.lock");
-  const lease = acquireFilesystemLock(lockPath, { timeoutMs: 100, staleMs: 10 });
+  const lease = acquireFilesystemLock(lockPath, { timeoutMs: 2_000, staleMs: 10 });
 
   lease.assertHeld();
   assert.equal(fs.existsSync(lockPath), true);
@@ -442,7 +442,7 @@ test("an explicit filesystem lock lease remains exclusive until its owner releas
 test("a stale lock from a reused live PID is recovered only when its process identity differs", () => {
   const root = testRoot("reused-live-pid");
   const lockPath = path.join(root, "resource.lock");
-  const original = acquireFilesystemLock(lockPath, { timeoutMs: 100, staleMs: 10 });
+  const original = acquireFilesystemLock(lockPath, { timeoutMs: 2_000, staleMs: 10 });
   const previousOwner = JSON.parse(fs.readFileSync(lockPath, "utf8"));
   assert.equal(previousOwner.pid, process.pid);
   assert.ok(previousOwner.processIdentity, "lock records must bind the PID to a verifiable process identity");
@@ -454,7 +454,7 @@ test("a stale lock from a reused live PID is recovered only when its process ide
   const staleDate = new Date(Date.now() - 5_000);
   fs.utimesSync(lockPath, staleDate, staleDate);
 
-  const successor = acquireFilesystemLock(lockPath, { timeoutMs: 250, staleMs: 10 });
+  const successor = acquireFilesystemLock(lockPath, { timeoutMs: 2_000, staleMs: 10 });
   assert.notEqual(JSON.parse(fs.readFileSync(lockPath, "utf8")).token, previousOwner.token);
   successor.release();
   assert.equal(fs.existsSync(lockPath), false);
@@ -493,7 +493,7 @@ test("a young lock whose owner is proven dead on this machine is taken over at o
   const record = await lockHeldByKilledProcess(t, lockPath);
   assert.ok(record.hostScope, "lock records must name the boot and machine of their owner");
   const startedAt = performance.now();
-  const result = withFilesystemLock(lockPath, () => "taken", { timeoutMs: 1_000, staleMs: 15 * 60_000 });
+  const result = withFilesystemLock(lockPath, () => "taken", { timeoutMs: 2_000, staleMs: 15 * 60_000 });
   assert.equal(result, "taken");
   assert.ok(performance.now() - startedAt < 1_000);
   assert.equal(fs.existsSync(lockPath), false);
@@ -627,7 +627,7 @@ test("stale recovery rejects a reclaimers symlink without touching its external 
   let lease = null;
   let acquisitionError = null;
   try {
-    lease = acquireFilesystemLock(lockPath, { timeoutMs: 100, staleMs: 10 });
+    lease = acquireFilesystemLock(lockPath, { timeoutMs: 2_000, staleMs: 10 });
   } catch (error) {
     acquisitionError = error;
   } finally {

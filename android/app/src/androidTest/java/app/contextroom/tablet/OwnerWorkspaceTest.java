@@ -67,6 +67,23 @@ public final class OwnerWorkspaceTest {
   void systemClick(String text) throws Exception {
     systemClick(text, "com.android.documentsui", "com.google.android.documentsui");
   }
+  // A tablet DocumentsUI keeps its roots pane open and remembers the last root, so
+  // "Show roots" may be absent and Downloads already shown. Click it only when needed.
+  void openDownloadsRoot() throws Exception {
+    NotebookDeviceTest.waitFor("Android file picker did not show Downloads or Show roots", () -> {
+      android.view.accessibility.AccessibilityNodeInfo root = instrumentation.getUiAutomation().getRootInActiveWindow();
+      String packageName = root == null ? "" : String.valueOf(root.getPackageName());
+      if (!java.util.Arrays.asList("com.android.documentsui", "com.google.android.documentsui").contains(packageName)) return false;
+      return pickerHasVisible(root, "Downloads") || pickerHasVisible(root, "Show roots");
+    });
+    android.view.accessibility.AccessibilityNodeInfo root = instrumentation.getUiAutomation().getRootInActiveWindow();
+    if (root == null || !pickerHasVisible(root, "Downloads")) systemClick("Show roots");
+    systemClick("Downloads");
+  }
+  private boolean pickerHasVisible(android.view.accessibility.AccessibilityNodeInfo root, String text) {
+    android.view.accessibility.AccessibilityNodeInfo node = findText(root, text);
+    return node != null && node.isVisibleToUser();
+  }
   void permissionClick(String text) throws Exception {
     systemClick(text, "com.android.permissioncontroller", "com.google.android.permissioncontroller");
   }
@@ -178,7 +195,7 @@ public final class OwnerWorkspaceTest {
           try (OutputStream output = resolver.openOutputStream(imported)) { assertTrue(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output)); }
           android.content.ContentValues published = new android.content.ContentValues(); published.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0); assertEquals(1, resolver.update(imported, published, null, null));
           evaluate(activity, "[...document.querySelectorAll('.notebook-dialog button')].find(n=>n.textContent==='Image').click()");
-          systemClick("Show roots"); systemClick("Downloads");
+          openDownloadsRoot();
           screenshot(activity, "owner-image-picker");
           systemClick(importedName);
           visible(activity, "document.querySelector('.notebook-state [role=status]')?.textContent.includes('2 objects')");

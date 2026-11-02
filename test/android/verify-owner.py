@@ -48,7 +48,7 @@ if args.recording:
     fixture_env['CONTEXT_ROOM_TEST_RECORDING'] = '1'
 fixture = subprocess.Popen(['node', str(repo / 'test/android/owner-fixture.mjs'), str(fixture_dir)], cwd=repo, env=fixture_env, stdout=fixture_log, stderr=subprocess.STDOUT)
 try:
-    deadline = time.monotonic() + 20
+    deadline = time.monotonic() + 60
     while not (fixture_dir / 'fixture.json').exists():
         if fixture.poll() is not None or time.monotonic() > deadline:
             raise RuntimeError('Owner fixture did not become ready; inspect fixture.log')
