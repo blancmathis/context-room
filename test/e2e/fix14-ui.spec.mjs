@@ -91,3 +91,17 @@ test('@layout the file review dialog keeps Reload review / Reject file / Accept 
     fs.rmSync(parent, { recursive: true, force: true });
   }
 });
+
+test('@assistant an idle document conversation closes when the user returns home; a draft keeps it with its text', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    const pane = page.getByRole('complementary', { name: 'Original document conversation' });
+    await page.evaluate(() => selectFile('docs/Original.md')); await page.getByRole('button', { name: 'Discuss', exact: true }).click(); await expect(pane).toBeVisible();
+    await page.evaluate(() => showHome()); await expect(pane).toHaveCount(0);
+    await page.evaluate(() => selectFile('docs/Original.md')); await page.getByRole('button', { name: 'Discuss', exact: true }).click(); await expect(pane).toBeVisible();
+    const box = pane.getByRole('textbox', { name: 'Message to the original document agent' }); await box.fill('keep this draft');
+    await page.evaluate(() => showHome()); await expect(pane).toHaveCount(1);
+    await expect(box).toHaveValue('keep this draft');
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});

@@ -15106,6 +15106,8 @@ function showHome() {
     state.activeHubCardId = null;
     if (el("search")) el("search").value = "";
   }
+  // Leaving a document: its idle conversation closes (a draft or a running turn keeps it docked), as for a notebook.
+  contextRoomAssistantUi?.dockConversation();
   state.page = "hub";
   state.openingFilePath = null;
   state.settingsOpen = false;
