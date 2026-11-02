@@ -18989,7 +18989,18 @@ function hostedReviewOpened(opened, hostedSharedProvider, repositoryId) {
   };
 }
 
-function localReviewOpened(opened, origin, { docqa: preparedDocQa = null } = {}) {
+// A local review URL is always returned as a same-origin path. The page that
+// asked for it resolves it against its own origin: the Mac Hub on 127.0.0.1, or
+// the owner tablet transport (https://owner-….contextroom.invalid), whose
+// requests reach this server with a loopback Host header. An absolute URL built
+// from Host would carry the wrong origin there, and the client correctly refuses
+// any prepared review whose origin differs from its own (C-16).
+function localReviewRelativeUrl(url) {
+  const reviewUrl = new URL(String(url || ""), "http://context-room.invalid");
+  return reviewUrl.pathname.replace(/\/+$/, "") + reviewUrl.search;
+}
+
+function localReviewOpened(opened, { docqa: preparedDocQa = null } = {}) {
   const reviewRoot = path.resolve(opened.reviewRoot);
   const review = readSharedReview(reviewRoot);
   const docqa = preparedDocQa || buildSharedReviewDocQaReport(reviewRoot, review);
@@ -19029,10 +19040,8 @@ function localReviewOpened(opened, origin, { docqa: preparedDocQa = null } = {})
       directory = path.posix.dirname(directory);
     }
   }
-  const reviewUrl = new URL(String(opened.url || ""), origin);
-  reviewUrl.pathname = reviewUrl.pathname.replace(/\/+$/, "");
   return {
-    url: reviewUrl.toString(),
+    url: localReviewRelativeUrl(opened.url),
     reused: opened.reused === true,
     reviewRoot,
     projectId: contextRoomProjectId(reviewRoot),
@@ -23417,7 +23426,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
             const docqa = sharedReviewDocQaReport ? sharedReviewDocQaReport(warmRoom) : null;
             openingTiming.docqa += performance.now() - docQaStartedAt;
             const payloadStartedAt = performance.now();
-            const payload = localReviewOpened(warmRoom, `http://${requestHeader(req, "host")}`, { docqa });
+            const payload = localReviewOpened(warmRoom, { docqa });
             openingTiming.payload += performance.now() - payloadStartedAt;
             res.setHeader("server-timing", serverTimingHeader(openingTiming));
             sendJson(res, 201, payload);
@@ -23480,7 +23489,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
         const docqa = sharedReviewDocQaReport ? sharedReviewDocQaReport(warmRoom) : null;
         openingTiming.docqa += performance.now() - docQaStartedAt;
         const payloadStartedAt = performance.now();
-        const payload = localReviewOpened(warmRoom, `http://${requestHeader(req, "host")}`, { docqa });
+        const payload = localReviewOpened(warmRoom, { docqa });
         openingTiming.payload += performance.now() - payloadStartedAt;
         res.setHeader("server-timing", serverTimingHeader(openingTiming));
         sendJson(res, 201, payload);
@@ -23571,7 +23580,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       const docqa = sharedReviewDocQaReport ? sharedReviewDocQaReport(result) : null;
       openingTiming.docqa += performance.now() - docQaStartedAt;
       const payloadStartedAt = performance.now();
-      const payload = localReviewOpened(result, `http://${requestHeader(req, "host")}`, { docqa });
+      const payload = localReviewOpened(result, { docqa });
       openingTiming.payload += performance.now() - payloadStartedAt;
       res.setHeader("server-timing", serverTimingHeader(openingTiming));
       sendJson(res, 201, payload);
@@ -23934,8 +23943,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
         });
         openingTiming.room += performance.now() - roomStartedAt;
         if (warmRoom) {
-          const reviewUrl = new URL(String(warmRoom.url || ""), `http://${requestHeader(req, "host")}`);
-          reviewUrl.pathname = reviewUrl.pathname.replace(/\/+$/, "");
+          const reviewUrl = localReviewRelativeUrl(warmRoom.url);
           const docQaStartedAt = performance.now();
           const docqa = sharedReviewDocQaReport
             ? sharedReviewDocQaReport(warmRoom)
@@ -23943,7 +23951,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
           openingTiming.docqa += performance.now() - docQaStartedAt;
           const payloadStartedAt = performance.now();
           const payload = {
-            url: reviewUrl.toString(),
+            url: reviewUrl,
             port: warmRoom.port,
             reviewRoot: warmRoom.reviewRoot,
             review: warmRoom.metadata,
@@ -23993,8 +24001,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       projectRoot: root,
     });
     openingTiming.room += performance.now() - roomStartedAt;
-    const reviewUrl = new URL(String(result.url || ""), `http://${requestHeader(req, "host")}`);
-    reviewUrl.pathname = reviewUrl.pathname.replace(/\/+$/, "");
+    const reviewUrl = localReviewRelativeUrl(result.url);
     const docQaStartedAt = performance.now();
     const docqa = sharedReviewDocQaReport
       ? sharedReviewDocQaReport(result)
@@ -24002,7 +24009,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     openingTiming.docqa += performance.now() - docQaStartedAt;
     const payloadStartedAt = performance.now();
     const payload = {
-      url: reviewUrl.toString(),
+      url: reviewUrl,
       port: result.port,
       reviewRoot: result.reviewRoot,
       review: result.metadata,

@@ -41,6 +41,22 @@ public final class OwnerWorkspaceTest {
     android.graphics.Bitmap bitmap = instrumentation.getUiAutomation().takeScreenshot(); assertNotNull(bitmap);
     try (OutputStream output = new FileOutputStream(new File(activity.getFilesDir(), name + ".png"))) { assertTrue(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output)); }
   }
+  /** Real touch on the centre of a WebView element: the page sees a trusted pointer event, as on the tablet. */
+  void tap(MainActivity activity, String element) throws Exception {
+    visible(activity, element);
+    evaluate(activity, "(" + element + ").scrollIntoView({block:'center',behavior:'instant'})");
+    SystemClock.sleep(150);
+    String[] centre = evaluate(activity, "(()=>{const r=(" + element + ").getBoundingClientRect();return (r.left+r.width/2)+','+(r.top+r.height/2)})()").replace("\"", "").split(",");
+    int[] origin = new int[2]; float[] density = new float[1];
+    instrumentation.runOnMainSync(() -> { activity.ownerWorkspace.web.getLocationOnScreen(origin); density[0] = activity.getResources().getDisplayMetrics().density; });
+    float x = origin[0] + Float.parseFloat(centre[0]) * density[0], y = origin[1] + Float.parseFloat(centre[1]) * density[0];
+    long at = SystemClock.uptimeMillis();
+    for (int action : new int[]{MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP}) {
+      MotionEvent event = MotionEvent.obtain(at, SystemClock.uptimeMillis(), action, x, y, 0);
+      event.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN); assertTrue(instrumentation.getUiAutomation().injectInputEvent(event, true)); event.recycle();
+      if (action == MotionEvent.ACTION_DOWN) SystemClock.sleep(80);
+    }
+  }
   android.view.accessibility.AccessibilityNodeInfo findText(android.view.accessibility.AccessibilityNodeInfo node, String text) {
     if (node == null) return null;
     if (text.equalsIgnoreCase(String.valueOf(node.getText())) || text.equalsIgnoreCase(String.valueOf(node.getContentDescription()))) return node;
@@ -190,10 +206,19 @@ public final class OwnerWorkspaceTest {
         visible(activity, "document.querySelector('.connected-devices-dialog')?.textContent.includes('Create new pairing codes from Context Room on the Mac')");
         assertEquals("Remote owners cannot silently pair another owner", "true", evaluate(activity, "![...document.querySelectorAll('.connected-devices-dialog button')].some(n=>n.textContent==='Create owner pairing code')"));
         screenshot(activity, "owner-settings");
+        // C-16: open the Shared proposal the way the owner does, by a real tap in
+        // the Hub review queue. The Mac prepares the review through the owner
+        // transport, whose page origin is not the Mac's loopback Host.
         String reviewPath = ticket.getString("testSharedPath");
-        assertFalse("Exercise the exact URL returned by the Mac without a trailing slash", reviewPath.endsWith("/"));
-        instrumentation.runOnMainSync(() -> activity.ownerWorkspace.web.loadUrl(activity.ownerWorkspace.origin + reviewPath + "?view=file&file=projects%2Fdrawing%2Fdocs%2FShared.crnb"));
-        visible(activity, "location.pathname === " + JSONObject.quote(reviewPath) + " && document.body?.dataset.workspaceDiagnostics && JSON.parse(document.body.dataset.workspaceDiagnostics).phase === 'ready'");
+        assertFalse("The Mac returns the exact review path without a trailing slash", reviewPath.endsWith("/"));
+        evaluate(activity, "document.querySelector('.connected-devices-dialog')?.close?.()");
+        click(activity, "#brandHome");
+        visible(activity, "document.body?.dataset.workspaceDiagnostics && JSON.parse(document.body.dataset.workspaceDiagnostics).phase === 'ready'");
+        tap(activity, "[...document.querySelectorAll('.context-hub-home-project')].find(n=>n.textContent.includes('Drawing project'))?.querySelector('[data-context-hub-project-destination=review]')");
+        tap(activity, "[...document.querySelectorAll('[data-context-room-review-entry]')].find(n=>n.textContent.includes('Owner Shared notebook'))?.querySelector('[data-context-room-review]:not([disabled])')");
+        visible(activity, "location.pathname.replace(/\\/$/, '') === " + JSONObject.quote(reviewPath) + " && ['proposal','file'].includes(new URLSearchParams(location.search).get('view')) && !document.body.innerText.includes('does not preserve its exact local review authority')");
+        if (!"true".equals(evaluate(activity, "Boolean(document.querySelector('.notebook-review-render'))")))
+          tap(activity, "[...document.querySelectorAll('[data-proposal-review-path]')].find(n=>n.textContent.includes('Shared.crnb'))");
         visible(activity, "Boolean(document.querySelector('.notebook-review-render [data-object-id=shared-shape] rect'))");
         visible(activity, "[...document.querySelectorAll('.notebook-review-origins')].some(n=>n.textContent.includes('Frozen scene r1 · 1 objects'))");
         visible(activity, "(()=>{const n=document.querySelector('.notebook-review-render');return n.checkVisibility({visibilityProperty:true,opacityProperty:true}) && n.getBoundingClientRect().height>200})()");

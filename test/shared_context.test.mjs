@@ -6675,6 +6675,10 @@ test("shared Context Room API lists proposals and opens an exact review room", a
   });
   assert.equal(reviewResponse.status, 201);
   const opened = await reviewResponse.json();
+  // C-16: a same-origin path; each client resolves it against its own origin.
+  assert.match(opened.url, /^\/reviews\/[^/]+$/);
+  const openedPath = opened.url;
+  opened.url = origin + opened.url;
   assert.equal(opened.review.proposalHead, published.head);
   assert.equal(opened.review.title, "API review");
   assert.equal(opened.review.description, "");
@@ -6752,7 +6756,7 @@ test("shared Context Room API lists proposals and opens an exact review room", a
   });
   assert.equal(reopenedResponse.status, 201);
   const reopened = await reopenedResponse.json();
-  assert.equal(reopened.url, opened.url);
+  assert.equal(reopened.url, openedPath);
   assert.equal(reopened.reviewRoot, opened.reviewRoot);
 
   writeFile(opened.reviewRoot, "projects/demo/docs/README.md", "# Demo\n\nAPI review.\n");
@@ -7190,6 +7194,8 @@ test("reopening the same proposal head after shared main advances creates a fres
   const openedResponse = await openReview();
   assert.equal(openedResponse.status, 201);
   const opened = await openedResponse.json();
+  assert.match(opened.url, /^\/reviews\/[^/]+$/);
+  opened.url = origin + opened.url;
   const exactResponse = await fetch(opened.url + "/api/shared-context");
   const exactProjectId = exactResponse.headers.get("x-context-room-project");
   const reviewPage = await fetch(opened.url + "/");
