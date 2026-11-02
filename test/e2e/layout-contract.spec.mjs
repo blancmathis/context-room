@@ -1019,6 +1019,30 @@ test("@layout same-project activation preserves an in-flight Explorer folder", a
   }
 });
 
+test("@layout a busy Context Hub registry makes the attention read retry quietly", async ({ page, browserName }) => {
+  test.skip(browserName !== "chromium", "One browser proves the retry contract.");
+  const data = fixture();
+  let attentionRequests = 0;
+  await page.route(/\/api\/context-hub\/attention\?/, async (route) => {
+    attentionRequests += 1;
+    if (attentionRequests <= 2) {
+      await route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Context Hub registry is busy in another process", code: "context_hub_registry_busy" }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+  await page.goto(`${data.origin}/?hub=1&project=${encodeURIComponent(data.projects.atlas.id)}&view=hub&explorer=expanded`);
+  await waitForBoot(page);
+  await expect.poll(() => attentionRequests, { timeout: 15_000 }).toBeGreaterThanOrEqual(3);
+  await expect.poll(() => page.evaluate(() => state.contextAttentionLoading)).toBe(false);
+  expect(await page.evaluate(() => state.contextAttentionError)).toBe("");
+  await expect(page.locator("#status")).not.toContainText("registry is busy");
+});
+
 test("@layout project switching renders before background activation completes", async ({ page, browserName }) => {
   test.skip(browserName !== "chromium", "One browser proves the optimistic project-switch contract.");
   const data = fixture();

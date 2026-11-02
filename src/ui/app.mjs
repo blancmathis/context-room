@@ -16167,7 +16167,19 @@ async function loadContextAttention(project) {
   state.contextAttentionProjectKey = project.projectKey;
   renderContextRoomOtherAttention();
   try {
-    const payload = await api("/api/context-hub/attention?projectId=" + encodeURIComponent(worktree.id));
+    // A read must not surface a transient registry lock held by another writer:
+    // retry quietly (the panel keeps "Checking…"), and show the error only if it persists.
+    let payload;
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        payload = await api("/api/context-hub/attention?projectId=" + encodeURIComponent(worktree.id));
+        break;
+      } catch (error) {
+        if (error?.code !== "context_hub_registry_busy" || attempt >= 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 1_000 * attempt));
+        if (state.globalExplorerProjectKey !== project.projectKey) return null;
+      }
+    }
     if (state.globalExplorerProjectKey !== project.projectKey) return null;
     state.contextAttentionItems = (payload.items || []).filter((item) => item.kind !== "review");
     return payload;

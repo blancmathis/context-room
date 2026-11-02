@@ -337,7 +337,7 @@ test('@assistant a send that never answers ends in an error after the timeout an
     await page.unroute('**/send', silent);
     await send.click();
     await expect.poll(() => f.turns.length).toBe(1); f.finish();
-    expect(ids.length).toBe(2); expect(ids[1]).toBe(ids[0]);
+    await expect.poll(() => ids.length).toBe(2); expect(ids[1]).toBe(ids[0]);
     await expect(pane).toHaveAttribute('data-operation-status', 'completed'); expect(f.turns.length).toBe(1);
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
