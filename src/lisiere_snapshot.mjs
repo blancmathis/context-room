@@ -23,7 +23,7 @@ export async function exportLisiereSnapshot({ source, output, recordings, apply 
   try { result = await execute('python3', args, { encoding: 'utf8', timeout: 120000, maxBuffer: 8 * 1024 * 1024 }); }
   catch (error) {
     if (error.code === 'ENOENT') throw failure('migration_python_unavailable', 'Lisière SQLite export needs Python 3.9 or later with its standard sqlite3 module. Install it locally, then retry the same preview.', error);
-    const detail = String(error.stderr || '').trim().split('\n').at(-1)?.slice(0, 600);
+    const detail = String(error.stderr || '').trim().split('\n').at(-1)?.replace(/^[A-Za-z_.]*(?:Error|Exception): /, '').slice(0, 600);
     throw failure('migration_snapshot_failed', detail || 'The bounded SQLite snapshot did not finish. The original workspace is unchanged; retain any export journal for retry.', error);
   }
   let manifest;

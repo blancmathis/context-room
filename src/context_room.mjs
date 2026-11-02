@@ -35,7 +35,7 @@ import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:zlib";
 import { appendContextRoomEvent, appendContextRoomEvents } from "./event_journal.mjs";
-import { documentsLinkingTo, planDocumentMove } from "./doc_move.mjs";
+import { documentsLinkingTo, planDocumentMove, suggestNotebookDestination } from "./doc_move.mjs";
 import { documentationDrift } from "./doc_drift.mjs";
 import { claudeCodeUsage } from "./agent_usage.mjs";
 import { beginLocalProposal, listLocalProposals, submitLocalProposal, decideLocalProposalFile, readLocalProposalFile, readLocalProposalResource, readLocalProposalDraft, writeLocalProposalDraft, readLocalProposalBlockMap, inspectLocalProposal } from "./local_proposals.mjs";
@@ -22576,6 +22576,13 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     const to = registeredContextHubWorktree(String(body.toProjectId || ""));
     if (!from?.available || !to?.available) throw sharedRequestError("Both places must be available to move a notebook.", 404, "project_unavailable");
     const sourceRoot = path.resolve(from.root), targetRoot = path.resolve(to.root);
+    if (body.suggest === true) {
+      const fileName = String(body.fileName || "");
+      if (!/^[^/\\\x00-\x1f]{1,200}\.crnb$/.test(fileName) || fileName.startsWith(".")) throw sharedRequestError("Choose a notebook file name.", 400, "invalid_request");
+      const targetSettings = readMemoryWebappSettings(targetRoot);
+      sendJson(res, 200, { suggestedPath: suggestNotebookDestination({ fileName, allowedPaths: targetSettings.allowedPaths, canWrite: (rel) => canEditLocalProposalPath(targetRoot, rel, targetSettings) }) });
+      return;
+    }
     const preview = body.preview === true, revision = preview ? "" : String(body.revision || "");
     const moved = transferNotebook(sourceRoot, targetRoot, {
       resourceId: body.resourceId,

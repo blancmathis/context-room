@@ -108,3 +108,15 @@ export function documentsLinkingTo(docs = [], from) {
     .filter((doc) => linkTargets(doc.content).some((target) => resolveLink(normalizeRel(doc.path), target.value)?.resolved === source))
     .map((doc) => normalizeRel(doc.path));
 }
+
+/** Default destination of a notebook moved into a project: `docs/` when the project allows it,
+ * otherwise the first allowed folder (for example `Carnets/`). Never a path the project would refuse. */
+export function suggestNotebookDestination({ fileName, allowedPaths = [], canWrite = () => false } = {}) {
+  const fallback = 'docs/' + fileName;
+  const folders = ['docs/', ...(Array.isArray(allowedPaths) ? allowedPaths : [])]
+    .filter(entry => typeof entry === 'string' && entry.endsWith('/') && !entry.startsWith('~') && !entry.startsWith('/') && !entry.split('/').includes('..'));
+  for (const folder of new Set(folders)) {
+    try { if (canWrite(folder + fileName)) return folder + fileName; } catch { /* a folder that cannot be checked is not offered */ }
+  }
+  return fallback;
+}
