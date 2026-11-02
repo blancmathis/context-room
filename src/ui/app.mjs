@@ -6775,9 +6775,13 @@ async function openGlobalProjectExplorer(project) {
   state.projectSwitchMetrics.selectionVisibleMs = performance.now() - state.projectSwitchMetrics.startedAt;
   document.body.dataset.projectSwitchMetrics = JSON.stringify(state.projectSwitchMetrics);
   renderContextHealth();
-  const attentionGeneration = state.globalProjectSelectionGeneration;
+  // Attention belongs to the selected project location, not to a request
+  // generation: the boot navigation restore aborts obsolete requests (and
+  // bumps the generation) while keeping this same selection, and nothing
+  // else would load its attention afterwards.
+  const attentionLocationId = state.activeProjectLocationId;
   const loadAttentionWhenIdle = () => {
-    if (attentionGeneration !== state.globalProjectSelectionGeneration || state.globalExplorerProjectKey !== project.projectKey) return;
+    if (state.globalExplorerProjectKey !== project.projectKey || state.activeProjectLocationId !== attentionLocationId) return;
     void loadContextAttention(project).catch((error) => setStatus(error.message));
   };
   if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(loadAttentionWhenIdle, { timeout: 800 });
