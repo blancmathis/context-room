@@ -624,7 +624,9 @@ test("app reveals one complete initial frame and keeps recurring refreshes in th
   assert.match(loadFilesSource, /const restored = await restoreRequest;/);
   assert.doesNotMatch(loadFilesSource, /await reportsRequest/);
   assert.match(loadFilesSource, /else if \(reportsRequest\) applyInitialReportsWhenReady\(reportsRequest\);/);
-  assert.match(loadFilesSource, /state\.contextHubReadyPromise = new Promise[\s\S]*applyInitialContextHubWhenReady\(loadInitialContextHubData\(\{ openRequestedProject: true \}\)\)/);
+  assert.match(loadFilesSource, /state\.contextHubReadyPromise = new Promise[\s\S]*applyInitialContextHubWhenReady\(loadInitialContextHubData\(\{ openRequestedProject: true, onCatalog: markCatalogReady \}\)\)/);
+  // The Hub home boots on the catalogue alone; every other boot target waits for the one complete snapshot.
+  assert.match(loadFilesSource, /await \(homeOnlyBoot && initialCatalogReady\s*\? Promise\.race\(\[state\.contextHubReadyPromise, initialCatalogReady\]\)\s*: state\.contextHubReadyPromise\);/);
   assert.match(script, /function applyInitialReportsWhenReady\(reportsRequest\) \{[\s\S]*reportsRequest\.then\(\(reports\) => \{[\s\S]*requestAnimationFrame\(\(\) => window\.requestAnimationFrame\(\(\) => \{[\s\S]*applyBackgroundReportPayload\(reports\);[\s\S]*renderAfterBackgroundReportPayload\(\);/);
   assert.match(script, /function renderAfterBackgroundReportPayload\(\) \{[\s\S]*if \(state\.page === "file" && state\.selected && !state\.openingFilePath\) \{[\s\S]*renderViewer\(\);[\s\S]*restoreEditorViewState\(viewState\);/);
   assert.match(script, /function restoreNavigationAfterInitialLoad\(\)[\s\S]*void openRequest\.then\(\(\) => setStatus\("restored"\)\)/);
@@ -7574,7 +7576,7 @@ test("browser refresh restores the last Context Room page", () => {
   assert.match(html, /function acceptContextRoomRoot\(nextRoot\)[\s\S]*document\.body\.classList\.contains\("app-booting"\) \? "refreshing" : "ready",[\s\S]*"selected-project-root-changed"/);
   assert.match(html, /acceptContextRoomRoot\(data\.root\);/);
   assert.match(html, /const hasDirectContextHubTarget = Boolean\(requestedReviewFile \|\| requestedHubCard \|\| requestedStartupOrder \|\| state\.sharedContext\?\.mode === "review"\);/);
-  assert.match(html, /if \(options\.initial && IS_GLOBAL_CONTEXT_ROOM\) \{[\s\S]*await state\.contextHubReadyPromise;[\s\S]*renderGlobalProjectExplorer\(\);/);
+  assert.match(html, /if \(options\.initial && IS_GLOBAL_CONTEXT_ROOM\) \{[\s\S]*await \(homeOnlyBoot && initialCatalogReady[\s\S]*: state\.contextHubReadyPromise\);\s*renderGlobalProjectExplorer\(\);/);
   assert.match(html, /const restoreRequest = skipsGenericNavigationRestore \? Promise\.resolve\(false\) : restoreNavigationAfterInitialLoad\(\);/);
   assert.match(html, /const restored = await restoreRequest;/);
   assert.match(html, /if \(restored\) \{[\s\S]*scheduleSessionStatePush\(\);[\s\S]*return;/);

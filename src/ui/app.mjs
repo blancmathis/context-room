@@ -6775,9 +6775,13 @@ async function openGlobalProjectExplorer(project) {
   state.projectSwitchMetrics.selectionVisibleMs = performance.now() - state.projectSwitchMetrics.startedAt;
   document.body.dataset.projectSwitchMetrics = JSON.stringify(state.projectSwitchMetrics);
   renderContextHealth();
-  const attentionGeneration = state.globalProjectSelectionGeneration;
+  // Attention belongs to the selected project location, not to a request
+  // generation: the boot navigation restore aborts obsolete requests (and
+  // bumps the generation) while keeping this same selection, and nothing
+  // else would load its attention afterwards.
+  const attentionLocationId = state.activeProjectLocationId;
   const loadAttentionWhenIdle = () => {
-    if (attentionGeneration !== state.globalProjectSelectionGeneration || state.globalExplorerProjectKey !== project.projectKey) return;
+    if (state.globalExplorerProjectKey !== project.projectKey || state.activeProjectLocationId !== attentionLocationId) return;
     void loadContextAttention(project).catch((error) => setStatus(error.message));
   };
   if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(loadAttentionWhenIdle, { timeout: 800 });
@@ -13639,7 +13643,14 @@ async function openInitialContextHubRequestedProject(contextHub, requestedGenera
 function applyInitialContextHubWhenReady(contextHubRequest) {
   return contextHubRequest.then(({ contextHub: payload, ticket, applyRequestedProject = false, requestedGeneration = 0 }) => {
     const contextHub = sanitizeHostedHubCatalog(payload);
-    if (!applyContextHubSnapshot(contextHub, ticket)) return state.contextHub;
+    if (!applyContextHubSnapshot(contextHub, ticket)) {
+      // The Hub home can boot on the catalogue alone. A manual refresh that
+      // supersedes this snapshot does not redraw the home, so its confirmed
+      // review state (since-last-visit line) must be drawn once it lands.
+      const refresh = state.contextHubRefreshPromise;
+      if (refresh) void refresh.catch(() => {}).then(() => { if (state.contextHub) renderGlobalProjectExplorer(); });
+      return state.contextHub;
+    }
     state.contextHubReviewQueueReady = true;
     enforceHostedHubSourceFilters();
     const requestedProjectId = new URLSearchParams(window.location.search).get("project") || "";
@@ -13718,7 +13729,7 @@ function applyInitialContextHubWhenReady(contextHubRequest) {
   });
 }
 
-async function loadInitialContextHubData({ openRequestedProject = false } = {}) {
+async function loadInitialContextHubData({ openRequestedProject = false, onCatalog = null } = {}) {
   const requestedGeneration = openRequestedProject ? ++state.contextHubPendingOpenGeneration : 0;
   const ticket = beginContextHubSnapshotRequest();
   state.contextHubReviewQueueReady = false;
@@ -13740,6 +13751,7 @@ async function loadInitialContextHubData({ openRequestedProject = false } = {}) 
       if (state.page === "graph") renderGraphPage();
     });
   }
+  onCatalog?.();
   const [reviewsRaw, sectionsRaw] = await Promise.all([
     api("/api/context-hub/review-queue?limit=80"),
     api("/api/context-hub/sections"),
@@ -13960,12 +13972,24 @@ async function loadFiles(options = {}) {
     hasDirectContextHubTarget
     || (requestedProject && !initialQuery?.has("view")),
   );
+  let initialCatalogReady = null;
   if (options.initial && state.sharedContext?.mode !== "review") {
+    let markCatalogReady = () => {};
+    initialCatalogReady = new Promise((resolve) => { markCatalogReady = resolve; });
     state.contextHubReadyPromise = new Promise((resolve) => window.setTimeout(resolve, 0))
-      .then(() => applyInitialContextHubWhenReady(loadInitialContextHubData({ openRequestedProject: true })));
+      .then(() => applyInitialContextHubWhenReady(loadInitialContextHubData({ openRequestedProject: true, onCatalog: markCatalogReady })));
+    void state.contextHubReadyPromise.finally(markCatalogReady);
   }
   if (options.initial && IS_GLOBAL_CONTEXT_ROOM) {
-    await state.contextHubReadyPromise;
+    // The Hub home only needs the project catalogue to render. Review-queue
+    // and section reads share the server with project activation and refresh
+    // work, so a busy server must not hold the boot screen on them; the home
+    // shows its unconfirmed review state until the full snapshot lands.
+    const homeOnlyBoot = !hasDirectContextHubTarget
+      && (requestedWorkspaceView === "hub" || (requestedProject && !initialQuery?.has("view")));
+    await (homeOnlyBoot && initialCatalogReady
+      ? Promise.race([state.contextHubReadyPromise, initialCatalogReady])
+      : state.contextHubReadyPromise);
     renderGlobalProjectExplorer();
   }
   const restoreRequest = skipsGenericNavigationRestore ? Promise.resolve(false) : restoreNavigationAfterInitialLoad();
