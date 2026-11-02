@@ -43,7 +43,7 @@ export async function openLocalProposalReview({ item, api, scopeKey, onChange })
     .local-proposal-review img { max-width: 100%; max-height: 55dvh; object-fit: contain; }
     .local-proposal-review .local-proposal-diagram { margin-top: 16px; overflow: auto; }
     .local-proposal-review .local-proposal-diagram svg { display: block; width: 100%; height: auto; max-width: 100%; }
-    .local-proposal-review footer { justify-content: flex-end; margin-top: 20px; }
+    .local-proposal-review footer { justify-content: flex-end; margin-top: 20px; position: sticky; bottom: 0; z-index: 1; padding-block: 10px; background: var(--surface-floating, #252526); }
     .local-proposal-review [role=status] { min-height: 24px; margin-top: 12px; color: var(--muted, #9a9a9a); }
     .local-proposal-review .local-proposal-blocks { margin-bottom: 20px; }
     .local-proposal-review .local-proposal-blocks p { margin: 0 0 8px; color: var(--muted, #9a9a9a); }

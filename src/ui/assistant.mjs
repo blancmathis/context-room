@@ -15,7 +15,12 @@ const historyLabel = value => new Date(value.createdAt).toLocaleString() + ' · 
 let active = null;
 let opening = Promise.resolve();
 
-export function dockConversation(parent = document.body) { if (active) parent.append(active.panel); }
+// The notebook is closing: an idle conversation (no running turn, no draft, no audio) closes with it so it never floats over the Hub home; a busy one stays docked.
+export function dockConversation(parent = document.body) {
+  if (!active) return;
+  if (active.idle()) { active.dispose().catch(() => {}); return; }
+  parent.append(active.panel);
+}
 export function prepareVoiceAudio() {
   if (globalThis.ContextRoomNativeOwner?.playAudio) return null;
   const context = new (window.AudioContext || window.webkitAudioContext)(), resumed = context.resume(); resumed.catch(() => {});
@@ -65,7 +70,7 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(source.selection || [])));
   const selectionHash = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
   // The most recent conversation that holds messages; a newer empty one is only the fallback.
-  const saved = fresh ? null : (found => found.find(item => item.messageCount > 0) || found[0])((await api('/api/assistant/conversations?' + historyQuery + '&limit=50&selectionHash=' + selectionHash)).conversations);
+  const saved = fresh ? null : (found => found.find(item => item.messageCount > 0 || item.legacy?.messageCount > 0) || found[0])((await api('/api/assistant/conversations?' + historyQuery + '&limit=50&selectionHash=' + selectionHash)).conversations);
   const conversation = saved ? await api('/api/assistant/conversations/' + saved.id) : await post('/conversations', { requestId: crypto.randomUUID(), source });
   if (active) await active.dispose();
   const panel = element('aside', '', 'assistant-panel'); panel.setAttribute('aria-label', 'Original document conversation');
@@ -157,7 +162,8 @@ async function buildConversation({ api, scopeKey, source, parent = document.body
     await acknowledgeRecording({ scopeKey, conversationId: current.id }, discarded); await refreshNativeRecordings();
     dictate.textContent = 'Dictate'; inform('Recorded dictation discarded. Your text draft is unchanged.'); render();
   }
-  const self = { panel, scopeKey, conversation: current, onState, dictationTarget, captureSource, focus: () => input.focus(), present(mode, target = null, primedContext = null) {
+  const self = { panel, scopeKey, conversation: current, onState, dictationTarget, captureSource, focus: () => input.focus(),
+    idle: () => !activeStatuses.has(current.operation?.status) && !input.value.trim() && !sendRequest && !sending && !retainedRecording && !recording && !audioBusy && !audioReading && !voice, present(mode, target = null, primedContext = null) {
     if (mode === 'dictate' && voice) { run(endVoice().then(() => self.present(mode, target, primedContext))); return; }
     if (mode === 'voice' && !voice && (recording || retainedRecording || audioBusy || input.value.trim() || sendRequest || activeStatuses.has(current.operation?.status))) {
       if (primedContext && primedContext.state !== 'closed') run(primedContext.close());

@@ -47,3 +47,17 @@ with sqlite3.connect(sys.argv[1]) as db:
   await assert.rejects(exportLisiereSnapshot({ source, output, apply: true, expectedRevision: '0'.repeat(64) }), /changed after/);
   await assert.rejects(exportLisiereSnapshot({ source: true, output }), { code: 'migration_arguments' });
 });
+
+test('a corrupt SQLite workspace reports a plain message without the Python exception prefix', async t => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cr-snapshot-corrupt-')));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const source = path.join(base, 'old workspace');
+  fs.mkdirSync(source, { mode: 0o700 });
+  fs.writeFileSync(path.join(source, 'workspace.sqlite'), 'this is not a sqlite database '.repeat(40));
+  await assert.rejects(exportLisiereSnapshot({ source, output: path.join(base, 'recovery') }), error => {
+    assert.equal(error.code, 'migration_snapshot_failed');
+    assert.doesNotMatch(error.message, /sqlite3\.|DatabaseError/);
+    assert.match(error.message, /not a database/);
+    return true;
+  });
+});

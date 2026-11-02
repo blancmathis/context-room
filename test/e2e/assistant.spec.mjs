@@ -48,8 +48,8 @@ test('@smoke @assistant notebook co-drawing reaches the canonical scene and the 
     expect(readNotebook(f.root, receipt.resourceId).document.objects[0].createdBy.kind).toBe('agent');
     await pane.getByRole('button', { name: 'Minimize conversation' }).click();
     await page.screenshot({ path: testInfo.outputPath('notebook-conversation.png') });
-    await notebook.getByRole('button', { name: 'Close notebook', exact: true }).click(); await expect(pane).toBeVisible();
-    await expect(pane.locator('.assistant-origin')).toHaveText('docs/Sketch.crnb'); expect(fs.existsSync(path.join(f.root, 'docs/Sketch.crnb'))).toBe(false);
+    await notebook.getByRole('button', { name: 'Close notebook', exact: true }).click(); await expect(pane).toHaveCount(0);
+    expect(fs.existsSync(path.join(f.root, 'docs/Sketch.crnb'))).toBe(false);
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
 
