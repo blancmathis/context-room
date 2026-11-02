@@ -690,6 +690,26 @@ test.describe('Notebooks space', () => {
     } finally { await f.close(); }
   });
 
+  test('@notebook move to a project that only allows Carnets/ proposes a path it accepts', async ({ page }) => {
+    const f = await hubFixture(page);
+    try {
+      const second = path.join(path.dirname(f.root), 'carnets-project'); fs.mkdirSync(path.join(second, 'Carnets'), { recursive: true });
+      initializeContextRoomProject(second, { title: 'Carnets project', allowedPaths: ['Carnets/'], watchAllow: ['Carnets/'] });
+      writeMemoryWebappSettings(second, { startupContext: { enabled: false }, startupSkills: { enabled: false }, startupHooks: { enabled: false } });
+      registerContextHubProject(second, { title: 'Carnets project' });
+      await f.stop(); await f.start();
+      const { id } = await newNotebookWithInk(page, f);
+      await page.locator('#notebookSpacePanel').locator(`[data-notebook-id="${id}"]`).getByRole('button', { name: /^Move to project · / }).click();
+      const toProject = page.getByRole('dialog', { name: 'Move to project', exact: true });
+      await toProject.getByRole('button', { name: 'Carnets project', exact: true }).click();
+      await expect(toProject.getByLabel('File in the destination')).toHaveValue(/^Carnets\/.+\.crnb$/);
+      await toProject.getByRole('button', { name: 'Preview', exact: true }).click();
+      await expect(toProject.getByRole('status')).toContainText('Nothing is overwritten.');
+      await toProject.getByRole('button', { name: 'Synthetic project', exact: true }).click();
+      await expect(toProject.getByLabel('File in the destination')).toHaveValue(/^docs\/.+\.crnb$/);
+    } finally { await f.close(); }
+  });
+
   test('@notebook move to project and back keeps ink', async ({ page }, testInfo) => {
     const f = await hubFixture(page);
     try {

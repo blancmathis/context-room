@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { prepareMacInstallation, verifyMacInstallation, macLaunchAgent } from '../src/mac_installation.mjs';
 
@@ -100,4 +100,15 @@ test('installation CLI canonicalizes its own default source and prepares the act
 test('Mac kit with a missing parent folder gives a clear message, not a filesystem stack', t => {
   const f = fixture(t), output = path.join(f.base, 'missing', 'releases', 'r');
   assert.throws(() => prepareMacInstallation(f.source, { ...f.options, output }), /parent folder of the kit does not exist.*mkdir -p '[^']*missing\/releases'/);
+});
+
+test('the prepare-mac-install command, preview and apply, tells how to create a missing --output parent', t => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cr-mac-install-cli-'))); t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const output = path.join(base, 'absent', 'kit'), script = fileURLToPath(new URL('../scripts/prepare-mac-install.mjs', import.meta.url));
+  for (const extra of [[], ['--apply', '--revision', 'a'.repeat(64)]]) {
+    const run = spawnSync(process.execPath, [script, '--output', output, '--node', process.execPath, ...extra], { encoding: 'utf8', timeout: 60000 });
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, /^The parent folder of the kit does not exist: .*absent\. Create it first \(mkdir -p '[^']*absent'\)/);
+    assert.doesNotMatch(run.stderr, /ENOENT|lstat/);
+  }
 });

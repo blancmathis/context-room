@@ -68,12 +68,21 @@ export async function openNotebookMoveDialog({ notebook, from, places, move, sco
   let target = toSpace ? places[0] : null, preview = null;
   const invalidate = () => { preview = null; moveButton.disabled = true; summary.textContent = ''; };
   const defaultPath = place => place.space ? NOTEBOOK_SPACE_FOLDER + notebook.id + '.crnb' : 'docs/' + fileNameFor(notebook.title);
+  // The project decides which folders accept a notebook: ask it, and only replace the default the person did not touch.
+  const adaptDefaultPath = async place => {
+    if (place.space) return;
+    const proposed = pathInput.value;
+    try {
+      const { suggestedPath } = await move({ suggest: true, fromProjectId: from.id, toProjectId: place.id, resourceId: notebook.id, fileName: fileNameFor(notebook.title) });
+      if (typeof suggestedPath === 'string' && target?.id === place.id && pathInput.value === proposed && suggestedPath !== proposed) { pathInput.value = suggestedPath; invalidate(); }
+    } catch { /* keep the default; Preview explains a refusal */ }
+  };
   const renderPlaces = () => {
     const query = foldForSearch(search.value.trim());
     list.replaceChildren(...places.filter(place => !query || foldForSearch(place.title).includes(query)).map(place => {
       const row = notebookElement('li'), choose = notebookElement('button', place.title, 'notebook-move-place'); choose.type = 'button';
       choose.setAttribute('aria-pressed', String(target?.id === place.id));
-      choose.addEventListener('click', () => { target = place; pathInput.value = defaultPath(place); invalidate(); renderPlaces(); });
+      choose.addEventListener('click', () => { target = place; pathInput.value = defaultPath(place); invalidate(); renderPlaces(); adaptDefaultPath(place); });
       row.append(choose); return row;
     }));
   };
