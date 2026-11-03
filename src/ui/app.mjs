@@ -7431,6 +7431,7 @@ function renderHomeLayoutPanel() {
           if (cursor) params.set("cursor", cursor);
           return api("/api/context-hub/project-explorer?" + params);
         },
+        inspect: (project) => api("/api/context-hub/project-inspection?projectId=" + encodeURIComponent(worktreeId(project)) + "&provider=" + encodeURIComponent(agentContextProvider())),
         notebooks: async (project) => {
           const data = await captureNotebookApi(project.id).api("/api/notebooks");
           return [...(data.notebooks || [])].sort((left, right) => String(right.changedAt || "").localeCompare(String(left.changedAt || "")));

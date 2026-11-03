@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultHomePrefs, normalizeHomePrefs, homeEntryType, sortHomeEntries, filterHomeEntries, countHomeTypes, groupHomeProjects } from '../src/ui/home-layouts.mjs';
+import { defaultHomePrefs, normalizeHomePrefs, homeEntryType, sortHomeEntries, filterHomeEntries, countHomeTypes, groupHomeProjects, isInternalProject, reviewTotal, distinctWhere, summarizeInspection, formatBytes, formatTokens } from '../src/ui/home-layouts.mjs';
 import { NOTEBOOK_WEB_ASSETS } from '../src/notebook_web_assets.mjs';
 
 const f = (name, extra = {}) => ({ name, type: 'file', ...extra });
@@ -42,4 +42,41 @@ test('normalizeHomePrefs tolerates junk and module is served', () => {
   const p = normalizeHomePrefs({ pinned: 'x', type: 'nope' });
   assert.ok(Array.isArray(p.pinned) && Array.isArray(p.hidden));
   assert.ok(NOTEBOOK_WEB_ASSETS.has('/assets/ui/home-layouts.mjs'));
+});
+
+test('internal Hub folder is hidden unless asked', () => {
+  const hub = { projectKey: 'h', title: 'Context Room Hub', root: '/home/u/.context-room/hub/host' };
+  const a = { projectKey: 'a', title: 'A', root: '/a' };
+  assert.equal(isInternalProject(hub), true);
+  assert.equal(isInternalProject(a), false);
+  assert.deepEqual(groupHomeProjects([hub, a], defaultHomePrefs()).main.map(p => p.projectKey), ['a']);
+  assert.deepEqual(groupHomeProjects([hub, a], { ...defaultHomePrefs(), showInternal: true }).main.map(p => p.projectKey).sort(), ['a', 'h']);
+});
+
+test('reviewTotal adds local and shared counts', () => {
+  assert.equal(reviewTotal({ localReviewCount: 2, sharedProposalCount: 3 }), 5);
+  assert.equal(reviewTotal({}), 0);
+});
+
+test('distinctWhere hides a location that repeats the title', () => {
+  assert.equal(distinctWhere('goalong.ai', '/x/goalong.ai'), '');
+  assert.equal(distinctWhere('Notes', '/x/other'), '/x/other');
+});
+
+test('summarizeInspection reads the existing inspection payload', () => {
+  assert.equal(summarizeInspection(null), null);
+  const s = summarizeInspection({
+    doctor: { docqa: { totalDocs: 10, changedDocs: 2, needsReview: 1 }, graph: { stale: 1 } },
+    startupContext: [{ startupContext: { fileName: 'AGENTS.md' } }, { startupContext: { fileName: 'AGENTS.md' } }],
+    effectiveContext: { cost: { startup: { tokens: 1500 } }, freshness: { state: 'fresh' } },
+  });
+  assert.deepEqual(s, { names: ['AGENTS.md'], tokens: 1500, total: 10, stale: 3, review: 1, state: 'fresh' });
+});
+
+test('formatters', () => {
+  assert.equal(formatBytes(0), 'File');
+  assert.equal(formatBytes(2048), '2 KB');
+  assert.equal(formatBytes(12), '12 B');
+  assert.equal(formatTokens(1500), '~1.5k tokens');
+  assert.equal(formatTokens(300), '~300 tokens');
 });
