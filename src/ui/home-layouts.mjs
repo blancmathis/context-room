@@ -1,29 +1,18 @@
-// Prototype (T-021): two layouts for the global Home, behind ?homeLayout=a|b.
+// Prototype (T-021): layouts for the global Home, behind ?homeLayout=a|b|hub. `hub` = configurable blocks kept by the Hub.
 // One project list. Files of every type. A view the person sets up with one tap: pin, hide, type, sort.
 // E-ink rules: grey, targets of 44 px or more, no animation, breakpoints 639, 980/981 and 1279/1280 only.
 
-export const HOME_LAYOUTS = ['a', 'b'];
-export const HOME_TYPES = [['all', 'All'], ['md', 'Markdown'], ['html', 'HTML'], ['crnb', 'Notebooks'], ['image', 'Images'], ['other', 'Other']];
-export const HOME_FILE_SORTS = [['name', 'Name'], ['recent', 'Modified'], ['type', 'Type']];
-export const HOME_PROJECT_SORTS = [['name', 'Name'], ['opened', 'Last opened'], ['reviews', 'Reviews']];
+import {
+  HOME_TYPES, HOME_FILE_SORTS, HOME_PROJECT_SORTS, defaultHomePrefs, normalizeHomePrefs,
+  HOME_BLOCKS, homeBlockInfo, hiddenHomeBlocks, defaultHomeConfig, normalizeHomeConfig,
+  moveHomeBlock, removeHomeBlock, addHomeBlock, sizeHomeBlock,
+} from './home-config.mjs';
+
+export { HOME_TYPES, HOME_FILE_SORTS, HOME_PROJECT_SORTS, defaultHomePrefs, normalizeHomePrefs };
+export const HOME_LAYOUTS = ['a', 'b', 'hub'];
 const PREFS_KEY = 'context-room.home.v1';
+const CONFIG_KEY = 'context-room.home.config.v2';
 const TYPE_TAG = { folder: 'DIR', md: 'MD', html: 'HTML', crnb: 'NB', image: 'IMG', other: 'TXT' };
-
-export const defaultHomePrefs = () => ({ pinned: [], hidden: [], projectSort: 'opened', fileSort: 'name', type: 'all', showShared: false });
-
-export function normalizeHomePrefs(raw) {
-  const base = defaultHomePrefs();
-  if (!raw || typeof raw !== 'object') return base;
-  const list = value => Array.isArray(value) ? [...new Set(value.filter(item => typeof item === 'string'))] : [];
-  return {
-    pinned: list(raw.pinned),
-    hidden: list(raw.hidden).filter(key => !list(raw.pinned).includes(key)),
-    projectSort: HOME_PROJECT_SORTS.some(([id]) => id === raw.projectSort) ? raw.projectSort : base.projectSort,
-    fileSort: HOME_FILE_SORTS.some(([id]) => id === raw.fileSort) ? raw.fileSort : base.fileSort,
-    type: HOME_TYPES.some(([id]) => id === raw.type) ? raw.type : base.type,
-    showShared: raw.showShared === true,
-  };
-}
 
 /** md, html, crnb, image, other; folders stay folders. */
 export function homeEntryType(entry) {
@@ -153,6 +142,31 @@ const STYLE = `
 .hl-tile-actions button { flex: 1 1 auto; font-size: 12px; }
 .hl-feed-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--hl-line); }
 .hl-feed-head h3 { font-size: 15px; }
+/* Hub: configurable blocks */
+.hl[data-layout="hub"] .hl-strip { display: flex; gap: 8px; overflow-x: auto; padding: 10px 12px; border-bottom: 1px solid var(--hl-line); }
+.hl[data-layout="hub"] .hl-strip button { flex: 0 0 auto; white-space: nowrap; }
+.app.home-hub .docqa-grid { grid-template-columns: minmax(0, 1fr) !important; }
+.home-block-off { display: none !important; }
+.app.home-hub .docqa-grid > [data-home-block] { min-width: 0; order: 50; position: static !important; max-height: none !important; overflow: visible !important; border-left: 1px solid var(--line) !important; }
+.app.home-hub .docqa-grid > .home-layout-panel { order: 0; }
+.hl-cfg-on { outline: 2px dashed var(--text); outline-offset: -2px; }
+.hl-blockbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 2px solid var(--text); background: var(--surface-card-hover); }
+.hl-blockbar strong { margin-right: auto; font-size: 13px; }
+.hl .hl-blockbar button, .hl-blockbar button { min-height: 44px; min-width: 44px; padding: 0 12px; border: 1px solid var(--control-line, var(--line)); border-radius: 8px; background: transparent; color: var(--text); font: inherit; cursor: pointer; }
+.hl-blockbar button:disabled { opacity: .4; cursor: default; }
+.hl-blockbar button:focus-visible { outline: 3px solid var(--text); outline-offset: 2px; }
+.hl-cfg { display: grid; gap: 10px; padding: 12px 16px; border-bottom: 2px solid var(--text); background: var(--surface-card-hover); }
+.hl-cfg p { margin: 0; color: var(--muted); font-size: 12px; }
+.hl-cfg-add { display: flex; flex-wrap: wrap; gap: 8px; }
+.hl-cfg-add button { text-align: left; }
+.hl-cfg-add small { display: block; color: var(--muted); font-size: 11px; font-weight: 400; }
+.hl-cfg-state { color: var(--muted); font-size: 12px; }
+@media (min-width: 1280px) {
+  .app.home-hub .docqa-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; align-items: start; }
+  .app.home-hub .docqa-grid > [data-home-block][data-home-size="full"], .app.home-hub .docqa-grid > .home-layout-panel { grid-column: 1 / -1 !important; }
+  .app.home-hub .docqa-grid > [data-home-block][data-home-size="half"] { grid-column: span 1 !important; }
+}
+@media (max-width: 1279px) { .hl-blockbar [data-hl-size] { display: none; } }
 @media (max-width: 1279px) { .hl-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 980px) {
   .hl[data-layout="a"] .hl-split { grid-template-columns: 1fr; }
@@ -171,11 +185,18 @@ const STYLE = `
 }
 `;
 
-function loadPrefs() {
-  try { return normalizeHomePrefs(JSON.parse(window.localStorage.getItem(PREFS_KEY) || 'null')); } catch { return defaultHomePrefs(); }
+/** The cache of the Hub's choice: it paints the Home before the Hub answers. The Hub copy is the truth. */
+function readCachedConfig() {
+  try {
+    const stored = window.localStorage.getItem(CONFIG_KEY);
+    if (stored) return { config: normalizeHomeConfig(JSON.parse(stored)), local: true };
+    const legacy = window.localStorage.getItem(PREFS_KEY);
+    if (legacy) return { config: { ...defaultHomeConfig(), prefs: normalizeHomePrefs(JSON.parse(legacy)) }, local: true };
+  } catch { /* private mode or damaged cache: start from the default */ }
+  return { config: defaultHomeConfig(), local: false };
 }
-function savePrefs(prefs) {
-  try { window.localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* private mode: the view still works for this visit */ }
+function writeCachedConfig(config) {
+  try { window.localStorage.setItem(CONFIG_KEY, JSON.stringify(config)); } catch { /* private mode: the Hub still keeps it */ }
 }
 
 /**
@@ -187,14 +208,45 @@ export function createHomeLayout({ layout, host, ctx }) {
   if (!document.getElementById('homeLayoutStyle')) {
     const style = document.createElement('style'); style.id = 'homeLayoutStyle'; style.textContent = STYLE; document.head.append(style);
   }
-  let prefs = loadPrefs();
+  const cached = readCachedConfig();
+  let config = cached.config;
+  let prefs = config.prefs;
+  let configuring = false;
+  let saveState = 'idle';
+  let saveTimer = 0;
   let selectedKey = '';
   let directory = '';
   let editing = false;
   const listings = new Map(); // `${key}::${dir}` -> { entries, error, loading, more }
   let renderedMarkup = '';
 
-  const persist = next => { prefs = normalizeHomePrefs(next); savePrefs(prefs); render(); };
+  const setConfig = next => { config = normalizeHomeConfig(next); prefs = config.prefs; writeCachedConfig(config); render(); scheduleSave(); };
+  const persist = next => setConfig({ ...config, prefs: next });
+  function scheduleSave() {
+    if (!ctx.saveConfig) return;
+    window.clearTimeout(saveTimer);
+    saveState = 'saving';
+    saveTimer = window.setTimeout(async () => {
+      saveTimer = 0;
+      try { await ctx.saveConfig(config); saveState = 'saved'; } catch { saveState = 'error'; }
+      render();
+    }, 250);
+  }
+  // The Hub copy wins. A first run on a new Hub sends the local choice up once.
+  async function pull() {
+    if (!ctx.loadConfig || saveTimer) return;
+    try {
+      const result = await ctx.loadConfig();
+      if (result.stored) {
+        const next = normalizeHomeConfig(result.home);
+        if (JSON.stringify(next) !== JSON.stringify(config)) { config = next; prefs = config.prefs; writeCachedConfig(config); render(); }
+      } else if (cached.local) scheduleSave();
+    } catch { /* the cached choice keeps working */ }
+  }
+  if (layout === 'hub') {
+    void pull();
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && !configuring) void pull(); });
+  }
   const projectsAll = () => (ctx.projects() || []).filter(project => project.projectKey);
   const byKey = key => projectsAll().find(project => project.projectKey === key) || null;
   const groups = () => groupHomeProjects(projectsAll(), prefs);
@@ -337,8 +389,8 @@ export function createHomeLayout({ layout, host, ctx }) {
     </div>`;
   }
 
-  function feed() {
-    const scope = directoryScoped && byKey(selectedKey) ? byKey(selectedKey) : null;
+  function feed(allowScope = true, title = 'Files across main projects') {
+    const scope = allowScope && directoryScoped && byKey(selectedKey) ? byKey(selectedKey) : null;
     if (scope) return `<div class="hl-feed-head"><h3>${esc(scope.title)}</h3><button type="button" data-hl-all>All main projects</button></div>${filesPane(scope, { heading: false })}`;
     const sources = visibleMain();
     const loaded = sources.map(project => ({ project, listing: entriesFor(project, '') }));
@@ -347,16 +399,18 @@ export function createHomeLayout({ layout, host, ctx }) {
     const counts = countHomeTypes(all.map(item => item.entry));
     const shown = filterHomeEntries(all.map(item => item.entry), prefs.type);
     const rows = sortHomeEntries(shown, prefs.fileSort === 'name' ? 'recent' : prefs.fileSort).map(entry => all.find(item => item.entry === entry)).map(item => fileRow(item.project, item.entry, { showProject: true }));
-    return `<div class="hl-feed-head"><h3>Files across main projects</h3><span class="hl-file-date">${pending ? 'Loading…' : all.length + ' files at the top level'}</span></div>${chips(counts)}<div>${rows.join('') || (pending ? '<div class="hl-empty">Loading files…</div>' : '<div class="hl-empty">No file of this type at the top level. Open a project to browse its folders.</div>')}</div>`;
+    return `<div class="hl-feed-head"><h3>${esc(title)}</h3><span class="hl-file-date">${pending ? 'Loading…' : all.length + ' files at the top level'}</span></div>${chips(counts)}<div>${rows.join('') || (pending ? '<div class="hl-empty">Loading files…</div>' : '<div class="hl-empty">No file of this type at the top level. Open a project to browse its folders.</div>')}</div>`;
   }
   let directoryScoped = false;
+
+  const moreListOf = (title, items, extra = '', hidden = false) => items.length ? `<details class="hl-group" ${extra}><summary>${esc(title)} · ${items.length}</summary><ul style="list-style:none;margin:0;padding:0">${items.map(project => projectRow(project, { hidden })).join('')}</ul></details>` : '';
 
   function renderB() {
     ensureSelection();
     const g = groups();
     const main = (g.pinned.length ? g.pinned : g.main.slice(0, 6)).filter(browsable);
     const others = [...g.pinned.length ? g.main : g.main.slice(6)];
-    const moreList = (title, items, extra = '', hidden = false) => items.length ? `<details class="hl-group" ${extra}><summary>${esc(title)} · ${items.length}</summary><ul style="list-style:none;margin:0;padding:0">${items.map(project => projectRow(project, { hidden })).join('')}</ul></details>` : '';
+    const moreList = moreListOf;
     return `<div class="hl" data-layout="b">
       <div class="hl-head"><div><h2>Home</h2><p>${g.pinned.length ? 'Your pinned projects' : 'First projects · tap ☆ to choose yours'}</p></div><div class="hl-tools">${goto()}${viewMenu()}</div></div>
       <div class="hl-tiles">${main.map(tile).join('') || '<div class="hl-empty">Pin a project with ☆.</div>'}</div>
@@ -365,11 +419,112 @@ export function createHomeLayout({ layout, host, ctx }) {
     </div>`;
   }
 
+  // ---------- hub: configurable blocks ----------
+  const root = layout === 'hub' ? (host.parentElement || host) : host;
+  const blockOn = type => config.blocks.some(block => block.type === type);
+  const blockEls = new Map();
+  const blockNode = type => {
+    const info = homeBlockInfo(type);
+    if (info.panel) return document.getElementById(info.panel);
+    let node = blockEls.get(type);
+    if (!node) {
+      node = document.createElement('section');
+      node.className = 'docqa-panel hl-block';
+      node.setAttribute('aria-label', info.title);
+      host.parentElement.insertBefore(node, host.nextSibling);
+      blockEls.set(type, node);
+    }
+    return node;
+  };
+  const barInner = type => {
+    const index = config.blocks.findIndex(block => block.type === type);
+    const size = config.blocks[index]?.size;
+    const info = homeBlockInfo(type);
+    return `<strong>${esc(info.title)}</strong>`
+      + `<button type="button" data-hl-move="up" data-hl-block="${type}" data-hl-focus="up:${type}" aria-label="Move ${esc(info.title)} up"${index <= 0 ? ' disabled' : ''}>↑ Up</button>`
+      + `<button type="button" data-hl-move="down" data-hl-block="${type}" data-hl-focus="down:${type}" aria-label="Move ${esc(info.title)} down"${index >= config.blocks.length - 1 ? ' disabled' : ''}>↓ Down</button>`
+      + `<button type="button" data-hl-size="${type}" data-hl-focus="size:${type}" aria-label="${esc(info.title)}: ${size === 'full' ? 'make half width' : 'make full width'}">${size === 'full' ? 'Half width' : 'Full width'}</button>`
+      + `<button type="button" data-hl-remove="${type}" data-hl-focus="remove:${type}" aria-label="Hide ${esc(info.title)} from Home">Hide</button>`;
+  };
+  const barOf = type => configuring ? `<div class="hl-blockbar" data-hl-bar="${type}">${barInner(type)}</div>` : '';
+
+  function hubHead() {
+    const hidden = hiddenHomeBlocks(config);
+    const state = { idle: '', saving: 'Saving in the Hub…', saved: 'Saved in the Hub. Other devices show it too.', error: 'Not saved: the Hub did not answer. The choice stays on this device.' }[saveState];
+    const panel = configuring ? `<div class="hl-cfg">
+      <p>Move, resize or hide each block with its bar. Add a block back below. The Hub keeps your choice.</p>
+      <div class="hl-cfg-add" role="group" aria-label="Add a block">${hidden.length
+        ? hidden.map(info => `<button type="button" data-hl-add="${info.type}" data-hl-focus="add:${info.type}">+ ${esc(info.title)}<small>${esc(info.hint)}</small></button>`).join('')
+        : '<span class="hl-cfg-state">Every block is shown.</span>'}</div>
+      <div class="hl-tools"><button type="button" data-hl-config-reset data-hl-focus="cfgreset">Reset to the default Home</button><span class="hl-cfg-state" role="status">${esc(state)}</span></div>
+    </div>` : '';
+    const empty = !configuring && !config.blocks.length ? '<div class="hl-empty">Your Home shows no block. Use Configure to add one.</div>' : '';
+    return `<div class="hl" data-layout="hub"><div class="hl-head"><div><h2>Home</h2><p>${projectsAll().length} projects · ${config.blocks.length} of ${HOME_BLOCKS.length} blocks shown</p></div><div class="hl-tools">${goto()}<button type="button" data-hl-configure aria-pressed="${configuring}" data-hl-focus="configure">${configuring ? 'Done' : 'Configure'}</button></div></div>${panel}${empty}</div>`;
+  }
+
+  function hubBlockMarkup(type) {
+    const g = groups();
+    if (type === 'projects') {
+      const main = (g.pinned.length ? g.pinned : g.main.slice(0, 6)).filter(browsable);
+      const others = g.pinned.length ? g.main : g.main.slice(6);
+      return `<div class="hl" data-layout="hub">${barOf(type)}<div class="hl-head"><div><h2>Projects</h2><p>${g.pinned.length ? 'Your pinned projects' : 'First projects · tap ☆ to choose yours'}</p></div><div class="hl-tools">${viewMenu()}</div></div>`
+        + `<div class="hl-tiles">${main.map(tile).join('') || '<div class="hl-empty">Pin a project with ☆.</div>'}</div>`
+        + `${moreListOf('Other projects', others)}${moreListOf('Shared · no local folder', g.shared, prefs.showShared ? 'open' : '')}${moreListOf('Hidden', g.hidden, '', true)}</div>`;
+    }
+    if (type === 'files') {
+      const project = byKey(selectedKey);
+      const strip = visibleMain().map(item => `<button type="button" data-hl-open="${esc(item.projectKey)}" aria-current="${item.projectKey === selectedKey}">${esc(item.title)}</button>`).join('');
+      return `<div class="hl" data-layout="hub">${barOf(type)}<div class="hl-head"><div><h2>Files</h2><p>${project ? esc(project.title) : 'Pick a project'}</p></div></div><div class="hl-strip" role="group" aria-label="Projects">${strip}</div>${project ? filesPane(project) : '<div class="hl-empty">Pin or pick a project to see its files.</div>'}</div>`;
+    }
+    return `<div class="hl" data-layout="hub">${barOf(type)}<div class="hl-head"><div><h2>Recent files</h2><p>The newest files of your main projects</p></div></div>${feed(false, 'Newest first')}</div>`;
+  }
+
+  function paint(node, markup) {
+    if (node._hl === markup) return;
+    const openDetails = [...node.querySelectorAll('details[open]')].map(item => item.querySelector('summary')?.textContent?.split(' · ')[0] || '');
+    node.innerHTML = markup; node._hl = markup;
+    for (const item of node.querySelectorAll('details')) if (openDetails.includes(item.querySelector('summary')?.textContent?.split(' · ')[0] || '')) item.open = true;
+  }
+
+  function paintLegacyBar(node, type) {
+    const bar = node.querySelector(':scope > .hl-blockbar');
+    const inner = configuring ? barInner(type) : '';
+    if (!inner) { bar?.remove(); return; }
+    if (bar && bar._hl === inner) return;
+    bar?.remove();
+    const fresh = document.createElement('div');
+    fresh.className = 'hl-blockbar'; fresh.dataset.hlBar = type; fresh._hl = inner; fresh.innerHTML = inner;
+    node.prepend(fresh);
+  }
+
+  function renderHub() {
+    const active = document.activeElement && root.contains(document.activeElement) ? document.activeElement.dataset.hlFocus : '';
+    paint(host, hubHead());
+    for (const info of HOME_BLOCKS) {
+      const node = blockNode(info.type);
+      if (!node) continue;
+      const index = config.blocks.findIndex(block => block.type === info.type);
+      node.dataset.homeBlock = info.type;
+      node.classList.toggle('home-block-off', index < 0);
+      node.classList.toggle('hl-cfg-on', configuring && index >= 0);
+      if (index >= 0) { node.style.order = String(index + 1); node.dataset.homeSize = config.blocks[index].size; }
+      if (info.panel) { paintLegacyBar(node, info.type); continue; }
+      if (index >= 0) paint(node, hubBlockMarkup(info.type)); else paint(node, '');
+    }
+    if (active) root.querySelector(`[data-hl-focus="${CSS.escape(active)}"]:not([disabled])`)?.focus({ preventScroll: true });
+  }
+
   // ---------- render ----------
   function render() {
-    if (!ctx.ready()) { host.innerHTML = '<div class="hl-empty">Loading projects…</div>'; renderedMarkup = ''; return; }
+    if (!ctx.ready()) { host.innerHTML = '<div class="hl-empty">Loading projects…</div>'; renderedMarkup = ''; host._hl = undefined; return; }
     ensureSelection();
     const project = byKey(selectedKey);
+    if (layout === 'hub') {
+      if (blockOn('files') && project) void load(project, directory);
+      if (blockOn('recent')) visibleMain().forEach(item => void load(item, ''));
+      renderHub();
+      return;
+    }
     if (layout === 'a' && project) void load(project, directory);
     if (layout === 'b') {
       if (directoryScoped && project) void load(project, directory);
@@ -385,9 +540,19 @@ export function createHomeLayout({ layout, host, ctx }) {
   }
 
   // ---------- events ----------
-  host.addEventListener('click', event => {
+  root.addEventListener('click', event => {
     const target = event.target instanceof Element ? event.target : null;
     if (!target) return;
+    if (target.closest('[data-hl-configure]')) { configuring = !configuring; if (!configuring && saveState !== 'error') saveState = 'idle'; render(); return; }
+    const move = target.closest('[data-hl-move]');
+    if (move) { setConfig(moveHomeBlock(config, move.dataset.hlBlock, move.dataset.hlMove === 'up' ? -1 : 1)); return; }
+    const size = target.closest('[data-hl-size]');
+    if (size) { setConfig(sizeHomeBlock(config, size.dataset.hlSize)); return; }
+    const remove = target.closest('[data-hl-remove]');
+    if (remove) { setConfig(removeHomeBlock(config, remove.dataset.hlRemove)); return; }
+    const add = target.closest('[data-hl-add]');
+    if (add) { setConfig(addHomeBlock(config, add.dataset.hlAdd)); return; }
+    if (target.closest('[data-hl-config-reset]')) { setConfig({ ...defaultHomeConfig(), prefs }); return; }
     const pin = target.closest('[data-hl-pin]');
     if (pin) {
       const key = pin.dataset.hlPin, on = prefs.pinned.includes(key);
@@ -403,7 +568,11 @@ export function createHomeLayout({ layout, host, ctx }) {
     const type = target.closest('[data-hl-type]');
     if (type) { persist({ ...prefs, type: type.dataset.hlType }); return; }
     const open = target.closest('[data-hl-open]');
-    if (open) { selectedKey = open.dataset.hlOpen; directory = ''; directoryScoped = true; render(); return; }
+    if (open) {
+      selectedKey = open.dataset.hlOpen; directory = ''; directoryScoped = true; render();
+      if (layout === 'hub' && blockOn('files')) blockNode('files')?.scrollIntoView?.({ block: 'start' });
+      return;
+    }
     if (target.closest('[data-hl-all]')) { directoryScoped = false; directory = ''; render(); return; }
     const dir = target.closest('[data-hl-dir]');
     if (dir) { selectedKey = dir.dataset.hlProject; directory = dir.dataset.hlDir; directoryScoped = true; render(); return; }
@@ -420,7 +589,7 @@ export function createHomeLayout({ layout, host, ctx }) {
       else ctx.openFile(project, file.dataset.hlFile);
     }
   });
-  host.addEventListener('change', event => {
+  root.addEventListener('change', event => {
     const select = event.target instanceof Element ? event.target.closest('[data-hl-pref]') : null;
     if (select) persist({ ...prefs, [select.dataset.hlPref]: select.value });
   });
@@ -438,5 +607,6 @@ export function createHomeLayout({ layout, host, ctx }) {
   }
 
   // The folder cache lives for the visit; a new catalog (refresh) drops it so stale rows never stay.
-  return { update() { render(); }, invalidate() { listings.clear(); renderedMarkup = ''; render(); }, state: () => ({ prefs, selectedKey, directory }) };
+  if (layout === 'hub') document.querySelector('.app')?.classList.add('home-hub');
+  return { update() { render(); }, invalidate() { listings.clear(); renderedMarkup = ''; host._hl = undefined; for (const node of blockEls.values()) node._hl = undefined; render(); }, state: () => ({ prefs, config, configuring, selectedKey, directory }) };
 }

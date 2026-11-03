@@ -4256,7 +4256,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 	const IS_HOSTED_CONTEXT_ROOM = IS_HOSTED_HUB || IS_HOSTED_REVIEW;
 	const IS_GLOBAL_CONTEXT_ROOM = IS_HOSTED_HUB || (IS_LOCAL && CONTEXT_ROOM_QUERY.get("hub") === "1");
 	// Temporary (T-021 prototype): ?homeLayout=a|b swaps the Home for one of two layouts.
-	const HOME_LAYOUT = ["a", "b"].includes(String(CONTEXT_ROOM_QUERY.get("homeLayout") || "").toLowerCase()) ? String(CONTEXT_ROOM_QUERY.get("homeLayout")).toLowerCase() : "";
+	const HOME_LAYOUT = ["a", "b", "hub"].includes(String(CONTEXT_ROOM_QUERY.get("homeLayout") || "").toLowerCase()) ? String(CONTEXT_ROOM_QUERY.get("homeLayout")).toLowerCase() : "";
 	let workspaceDirty = Boolean(state.dirty);
 	Object.defineProperty(state, "dirty", {
 	  configurable: false,
@@ -7336,6 +7336,7 @@ function renderContextHubHomeProjects() {
   if (panel.hidden) return;
   if (HOME_LAYOUT) {
     panel.hidden = true;
+    if (HOME_LAYOUT === "hub") renderNotebookSpace();
     renderHomeLayoutPanel();
     return;
   }
@@ -7431,6 +7432,8 @@ function renderHomeLayoutPanel() {
           if (cursor) params.set("cursor", cursor);
           return api("/api/context-hub/project-explorer?" + params);
         },
+        loadConfig: () => api("/api/context-hub/home"),
+        saveConfig: (home) => api("/api/context-hub/home", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ home }) }),
         notebooks: async (project) => {
           const data = await captureNotebookApi(project.id).api("/api/notebooks");
           return [...(data.notebooks || [])].sort((left, right) => String(right.changedAt || "").localeCompare(String(left.changedAt || "")));
@@ -7455,7 +7458,7 @@ function renderNotebookSpace() {
   const list = el("notebookSpaceList");
   const summary = el("notebookSpaceSummary");
   if (!panel || !list || !summary) return;
-  panel.hidden = !IS_GLOBAL_CONTEXT_ROOM || IS_HOSTED_HUB || !state.contextHub || Boolean(HOME_LAYOUT);
+  panel.hidden = !IS_GLOBAL_CONTEXT_ROOM || IS_HOSTED_HUB || !state.contextHub || HOME_LAYOUT === "a" || HOME_LAYOUT === "b";
   if (panel.hidden) return;
   const space = contextHubNotebookSpace();
   if (space?.available !== false && space && (notebookSpaceItems.spaceId !== space.id || notebookSpaceItems.hub !== state.contextHub)) {

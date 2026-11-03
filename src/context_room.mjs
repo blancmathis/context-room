@@ -14,6 +14,7 @@ import { notebookHash, readNotebookBytes, writeNotebookBytes, makeNotebookDirect
 import { withDocumentationMapBlock } from "./doc_map_block.mjs";
 import { submitNotebookShared } from "./notebook_workflow.mjs";
 import { NOTEBOOK_WEB_ASSETS } from "./notebook_web_assets.mjs";
+import { normalizeHomeConfig } from "./ui/home-config.mjs";
 import { NOTEBOOK_LIMITS } from "./notebook_protocol.mjs";
 import { createLisiereConnector, migrateLisiereSession as recoverLisiereSession } from "./lisiere_connector.mjs";
 import { planLisiereNotebookImport, applyLisiereNotebookImport, listLisiereNotebookImports } from "./lisiere_migration.mjs";
@@ -14583,6 +14584,40 @@ export function writeGlobalContextRoomPreferences(next = {}, preferencesPath = n
   });
 }
 
+// The configurable Home (T-021): blocks and view choices live next to the global preferences, in `home.json`.
+export function homeConfigPath(preferencesPath = null) {
+  return path.join(path.dirname(resolveGlobalPreferencesPath(preferencesPath)), "home.json");
+}
+
+export function readHomeConfig(preferencesPath = null) {
+  const target = homeConfigPath(preferencesPath);
+  try {
+    const home = normalizeHomeConfig(JSON.parse(fs.readFileSync(target, "utf8")));
+    return { home, revision: hashContent(JSON.stringify(home)), stored: true };
+  } catch {
+    const home = normalizeHomeConfig(null);
+    return { home, revision: hashContent(JSON.stringify(home)), stored: false };
+  }
+}
+
+export function writeHomeConfig(next, preferencesPath = null, { expectedRevision = null } = {}) {
+  const target = homeConfigPath(preferencesPath);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  return withFilesystemLock(target + ".lock", () => {
+    if (fs.existsSync(target) && fs.lstatSync(target).isSymbolicLink()) throw new Error("The Home configuration cannot be a symbolic link.");
+    if (expectedRevision && readHomeConfig(preferencesPath).revision !== expectedRevision) {
+      const error = new Error("The Home changed on another device. Reload it first.");
+      error.code = "home_config_stale";
+      throw error;
+    }
+    const home = normalizeHomeConfig(next);
+    const temporary = target + "." + randomBytes(12).toString("hex") + ".tmp";
+    try { fs.writeFileSync(temporary, JSON.stringify(home, null, 2) + "\n", { flag: "wx", mode: 0o600 }); fs.renameSync(temporary, target); }
+    finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
+    return { home, revision: hashContent(JSON.stringify(home)), stored: true };
+  });
+}
+
 export function readResolvedContextRoomSettings(root = process.cwd(), { preferencesPath = null, expectedRootIdentity = null, readOnly = false } = {}) {
   const protectedSettings = effectiveOwnerReviewScope(root, readMemoryWebappSettings(root, { expectedRootIdentity }), { readOnly });
   const projectSettings = settingsWithUnifiedReviewPaths(withProjectAgentInstructionPaths(root, protectedSettings), { stripLegacy: true });
@@ -23242,6 +23277,20 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       return;
     }
     sendJson(res, 200, payload, { headers: { etag, "server-timing": "settings;dur=0.1" } });
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/context-hub/home") {
+    sendJson(res, 200, readHomeConfig(globalPreferencesPath));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/context-hub/home") {
+    const body = await readJsonBody(req);
+    if (!body || typeof body.home !== "object" || body.home === null) throw sharedRequestError("home is required", 400, "home_config_invalid");
+    let written;
+    try { written = writeHomeConfig(body.home, globalPreferencesPath, { expectedRevision: body.expectedRevision ? String(body.expectedRevision) : null }); }
+    catch (error) { if (error?.code === "home_config_stale") throw sharedRequestError(error.message, 409, "home_config_stale"); throw error; }
+    appendContextRoomEvent("settings.changed", { resource: { scope: "hub", key: "home" }, data: { blocks: written.home.blocks.length } });
+    sendJson(res, 200, written);
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/context-hub/preferences") {
