@@ -145,7 +145,9 @@ import {
   readContextHubAttention,
   readContextHubRegistry,
   readContextHubSnapshot,
+  readContextHubSnapshotAsync,
   readContextHubNavigationSnapshot,
+  readContextHubNavigationSnapshotAsync,
   readContextHubSnapshotInputs,
   invalidateContextHubSnapshot,
   recordContextHubProjectOpened,
@@ -17736,7 +17738,17 @@ function contextHubStateForRoot(state, root) {
 }
 
 function readFastContextHubState(root) {
-  const navigation = readContextHubNavigationSnapshot(), snapshot = navigation.snapshot;
+  return fastContextHubStateFromNavigation(root, readContextHubNavigationSnapshot());
+}
+
+// Request handlers on the Hub main thread: never block the event loop on the
+// registry lock held by another process.
+async function readFastContextHubStateAsync(root) {
+  return fastContextHubStateFromNavigation(root, await readContextHubNavigationSnapshotAsync());
+}
+
+function fastContextHubStateFromNavigation(root, navigation) {
+  const snapshot = navigation.snapshot;
   if (!snapshot?.state) {
     return contextHubStateWithAttention(contextHubStateWithFreshness(contextHubStateForRoot(minimalContextHubState(root, navigation), root), { refreshing: true }));
   }
@@ -20072,19 +20084,28 @@ export function createMemoryServer({
     }
     // Scheduling only needs snapshot freshness. Constructing a whole fallback
     // catalogue here repeats the foreground registry reads during every opening.
-    const retainedSnapshot = !remoteAccess && !options.force ? readContextHubSnapshot() : null;
-    const shouldNotify = Boolean(options.force || (!remoteAccess && (!retainedSnapshot?.state
-      || Date.now() - Date.parse(retainedSnapshot.generatedAt) > CONTEXT_HUB_SNAPSHOT_TTL_MS
-      || contextHubSnapshotRefreshes.has(resolvedRoot))));
-    const refresh = Promise.resolve()
+    // The read waits for the registry lock without blocking the event loop.
+    // Its decision runs before the refresh starts, as the former synchronous read did.
+    const retainedRead = !remoteAccess && !options.force ? readContextHubSnapshotAsync() : Promise.resolve(null);
+    let refresh = null;
+    void retainedRead.then((retainedSnapshot) => {
+      const shouldNotify = Boolean(options.force || (!remoteAccess && (!retainedSnapshot?.state
+        || Date.now() - Date.parse(retainedSnapshot.generatedAt) > CONTEXT_HUB_SNAPSHOT_TTL_MS
+        || contextHubSnapshotRefreshes.has(resolvedRoot))));
+      if (!shouldNotify || contextHubRefreshNotifications.has(resolvedRoot)) return;
+      contextHubRefreshNotifications.set(resolvedRoot, refresh);
+      notifyContextHubRefresh(resolvedRoot, refresh);
+    }, () => {});
+    refresh = retainedRead
       .then(() => contextHubSnapshotRefresh(resolvedRoot, options))
       .then((snapshot) => {
         prepareContextHubSnapshot(snapshot);
         scheduleAuthorizedCleanup();
         return snapshot;
       });
-    if (!shouldNotify || contextHubRefreshNotifications.has(resolvedRoot)) return refresh;
-    contextHubRefreshNotifications.set(resolvedRoot, refresh);
+    return refresh;
+  };
+  const notifyContextHubRefresh = (resolvedRoot, refresh) => {
     void refresh.then((snapshot) => {
       const generatedAt = String(snapshot.freshness?.generatedAt || snapshot.generatedAt || "");
       if (generatedAt && contextHubLastNotifiedGenerations.get(resolvedRoot) === generatedAt) return;
@@ -21025,7 +21046,7 @@ export async function documentGraphApiResult(root, url, { background = true } = 
   const refresh = url.searchParams.get("refresh") === "1";
   const queryKey = documentGraphQueryKey(url);
   if (scope === "global") {
-    const hub = readFastContextHubState(root);
+    const hub = await readFastContextHubStateAsync(root);
     const projectSignature = (hub.projects || []).map((project) => [
       project.id,
       project.projectKey,
@@ -21053,7 +21074,7 @@ export async function documentGraphApiResult(root, url, { background = true } = 
     }, { refresh });
   }
   const requestedLocationId = String(url.searchParams.get("locationId") || url.searchParams.get("projectId") || "").trim();
-  const selectionHub = readFastContextHubState(root);
+  const selectionHub = await readFastContextHubStateAsync(root);
   const selectedHubProject = requestedLocationId
     ? resolveContextHubProjectSelection(selectionHub.projects || [], requestedLocationId).project || registeredContextHubWorktree(requestedLocationId)
     : null;
@@ -21066,7 +21087,7 @@ export async function documentGraphApiResult(root, url, { background = true } = 
     const provider = String(url.searchParams.get("provider") || "codex").trim().toLowerCase();
     const folder = normalizeRelPath(String(url.searchParams.get("folder") || ".").trim() || ".");
     const requestedProposal = String(url.searchParams.get("proposal") || "").trim();
-    const hub = readFastContextHubState(root);
+    const hub = await readFastContextHubStateAsync(root);
     const proposals = layers.includes("proposal")
       ? (hub.proposals || []).filter((proposal) => (
           (!requestedProposal || proposal.id === requestedProposal || proposal.branch === requestedProposal)
@@ -21140,7 +21161,7 @@ export async function documentGraphApiResult(root, url, { background = true } = 
         readReviewQueue: () => ({ queue: reviewReport.queue || [] }),
       },
     });
-    const hub = readFastContextHubState(root);
+    const hub = await readFastContextHubStateAsync(root);
     const project = resolveContextHubProjectSelection(hub.projects || [], target.locationId || target.projectId, { aliases: false }).project;
     const requestedProposal = String(url.searchParams.get("proposal") || "").trim();
     const proposals = layers.includes("proposal")
@@ -21341,7 +21362,7 @@ export function resolveDocumentReferenceInDocuments(documents = [], selector = "
 async function resolveDocumentReferenceForApi(root, target, selector, { anchor = "", proposal = "" } = {}) {
   const proposalSelector = String(proposal || "").trim();
   if (proposalSelector) {
-    const hub = readFastContextHubState(root);
+    const hub = await readFastContextHubStateAsync(root);
     const selectedProject = target.locationId || target.projectId
       ? resolveContextHubProjectSelection(hub.projects || [], target.locationId || target.projectId, { aliases: false }).project
       : null;
@@ -21560,9 +21581,9 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       } : {}),
     })) return;
   }
-  const readContextHubForRequest = () => {
+  const readContextHubForRequest = async () => {
     if (!hostedSharedProvider) {
-      const state = readFastContextHubState(root);
+      const state = await readFastContextHubStateAsync(root);
       return decorateContextHubReadiness ? decorateContextHubReadiness(state) : state;
     }
     if (hostedSharedProvider.shouldRefresh?.()) {
@@ -21586,13 +21607,13 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   const configuredRepositoryForRequest = (repositoryId) => hostedSharedProvider
     ? hostedSharedProvider.resolveRepository(repositoryId)
     : assertConfiguredSharedRepository(root, repositoryId);
-  const resolveContextHubRejectionRequest = (body = {}) => {
+  const resolveContextHubRejectionRequest = async (body = {}) => {
     const requested = Array.isArray(body.items) ? body.items : [];
     if (!requested.length) throw sharedRequestError("At least one review item is required", 400, "context_hub_reject_required");
     if (requested.length > 200) throw sharedRequestError("At most 200 review items can be rejected at once", 400, "context_hub_reject_limit");
 
     if (!hostedSharedProvider) contextHubStateCache.clear();
-    const hub = hostedSharedProvider ? readContextHubForRequest() : contextHubStateWithAttention(contextHubUiState(root));
+    const hub = hostedSharedProvider ? await readContextHubForRequest() : contextHubStateWithAttention(contextHubUiState(root));
     const candidates = new Map();
     for (const proposal of hub.proposals || []) {
       candidates.set(proposal.id, { kind: "shared", proposal });
@@ -22522,7 +22543,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
   if (req.method === "POST" && url.pathname === "/api/context-hub/project-order") {
     const body = await readJsonBody(req);
-    const current = readFastContextHubState(root);
+    const current = await readFastContextHubStateAsync(root);
     const allowed = new Set((current.projects || []).map((project) => project.priorityId || contextHubProjectPriorityId(project)));
     const requested = Array.isArray(body.projectOrder) ? body.projectOrder.map(String) : [];
     const unknown = requested.filter((id) => !allowed.has(id));
@@ -22686,7 +22707,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     const repositoryId = String(hostedSharedProvider ? body.repositoryId || "" : body.repository || "").trim();
     const repository = configuredRepositoryForRequest(repositoryId);
     const projectId = String(body.projectId || "").trim();
-    const current = readContextHubForRequest();
+    const current = await readContextHubForRequest();
     const selected = (current.projects || []).find((project) => (
       (hostedSharedProvider ? project.shared?.repositoryId === repositoryId : sameContextHubRepository(project.shared?.repository, repository))
       && project.shared?.projectId === projectId
@@ -23012,14 +23033,14 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
   if (req.method === "GET" && url.pathname === "/api/context-hub") {
     const startedAt = performance.now();
-    const state = readContextHubForRequest();
+    const state = await readContextHubForRequest();
     scheduleContextHubRefresh();
     sendJson(res, 200, state, { headers: { "server-timing": `hub-snapshot;dur=${(performance.now() - startedAt).toFixed(1)}` } });
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/context-hub/catalog") {
     const startedAt = performance.now();
-    const state = readContextHubForRequest();
+    const state = await readContextHubForRequest();
     scheduleContextHubRefresh();
     sendJson(res, 200, {
       enabled: state.enabled,
@@ -23059,7 +23080,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/context-hub/review-queue") {
-    const state = readContextHubForRequest();
+    const state = await readContextHubForRequest();
     scheduleContextHubRefresh();
     sendJson(res, 200, paginatedContextHubReviews(state, {
       cursor: url.searchParams.get("cursor") || 0,
@@ -23068,7 +23089,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/context-hub/sections") {
-    const state = readContextHubForRequest();
+    const state = await readContextHubForRequest();
     scheduleContextHubRefresh();
     sendJson(res, 200, {
       generatedAt: state.generatedAt,
@@ -23391,7 +23412,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     if (!/^[a-f0-9]{40}$/.test(expectedHead)) {
       throw sharedRequestError("An exact proposal head is required.", 400, "shared_context_proposal_head_required");
     }
-    const current = readContextHubForRequest();
+    const current = await readContextHubForRequest();
     const currentRepository = (current.sharedRepositories || []).find((candidate) => (
       candidate.id === repositoryId
       || candidate.repositoryId === repositoryId
@@ -23727,7 +23748,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       );
     }
     const body = await readJsonBody(req, { maxBytes: 256_000 });
-    const selection = resolveContextHubRejectionRequest(body);
+    const selection = await resolveContextHubRejectionRequest(body);
     if (!selection.requiresChallenge) {
       throw sharedRequestError(
         "A rejection challenge is not required for one local file review",
@@ -23760,7 +23781,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       );
     }
     const body = await readJsonBody(req, { maxBytes: 256_000 });
-    let selection = resolveContextHubRejectionRequest(body);
+    let selection = await resolveContextHubRejectionRequest(body);
     let { candidates, normalized } = selection;
     if (selection.requiresChallenge) {
       const challengeId = String(body.challengeId || "").trim();
@@ -23784,7 +23805,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     // Re-resolve every CAS-bound item after consuming the one-shot challenge
     // and before acquiring credentials or applying any side effect. This is
     // the last point at which a multi-repository batch can still fail atomically.
-    const currentSelection = resolveContextHubRejectionRequest(body);
+    const currentSelection = await resolveContextHubRejectionRequest(body);
     if (currentSelection.selectionDigest !== selection.selectionDigest) {
       throw sharedRequestError(
         "The selected review items changed after terminal confirmation",

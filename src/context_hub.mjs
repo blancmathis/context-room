@@ -103,11 +103,12 @@ const REGISTRY_LOCK_TIMEOUT_MS = 5_000;
 const REGISTRY_LOCK_STALE_MS = 1_000;
 let registryLockDepth = 0;
 
-function withRegistryLock(operation, { recoverSharedTransactions = true } = {}) {
+function withRegistryLock(operation, { recoverSharedTransactions = true, timeoutMs = REGISTRY_LOCK_TIMEOUT_MS, onLocked = null } = {}) {
   if (registryLockDepth > 0) return operation();
   return withFilesystemLock(registryLockPath(), () => {
     registryLockDepth += 1;
     try {
+      onLocked?.();
       recoverInvalidHubSharedQuarantineStagingLocked();
       if (recoverSharedTransactions) recoverContextHubSharedTransactionsLocked({ tolerateConflicts: true });
       return operation();
@@ -115,11 +116,36 @@ function withRegistryLock(operation, { recoverSharedTransactions = true } = {}) 
       registryLockDepth -= 1;
     }
   }, {
-    timeoutMs: REGISTRY_LOCK_TIMEOUT_MS,
+    timeoutMs,
     staleMs: REGISTRY_LOCK_STALE_MS,
     busyMessage: "Context Hub registry is busy in another process",
     busyCode: "context_hub_registry_busy",
   });
+}
+
+// The Hub server reads the registry on its main thread while attention tasks,
+// the refresh worker and CLI commands hold the same lock in other processes.
+// A synchronous wait there froze every request for seconds (crit4, 2026-11-04),
+// so hot readers try briefly and yield to the event loop between attempts.
+const REGISTRY_LOCK_ASYNC_ATTEMPT_MS = 20;
+const REGISTRY_LOCK_ASYNC_RETRY_MS = 15;
+
+async function withRegistryLockAsync(operation, options = {}) {
+  const deadline = performance.now() + REGISTRY_LOCK_TIMEOUT_MS;
+  while (true) {
+    let locked = false;
+    const remainingMs = deadline - performance.now();
+    try {
+      return withRegistryLock(operation, {
+        ...options,
+        timeoutMs: Math.max(1, Math.min(REGISTRY_LOCK_ASYNC_ATTEMPT_MS, remainingMs)),
+        onLocked: () => { locked = true; },
+      });
+    } catch (error) {
+      if (locked || error?.code !== "context_hub_registry_busy" || performance.now() >= deadline) throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, REGISTRY_LOCK_ASYNC_RETRY_MS));
+  }
 }
 
 function normalizedSnapshotControl(raw = {}) {
@@ -2153,16 +2179,26 @@ export function readContextHubSnapshot() {
 // A missing snapshot must not require three separately published registry locks
 // to build the same fallback. Read one coherent set while retaining all normal
 // transaction recovery, root identity and live project-control checks.
+function readContextHubNavigationSnapshotLocked() {
+  const snapshot = readContextHubSnapshotLocked();
+  if (snapshot?.state) return { snapshot };
+  return {
+    snapshot: null,
+    projects: listContextHubProjects(),
+    sharedRepositories: readContextHubRegistry().sharedRepositories,
+  };
+}
+
 export function readContextHubNavigationSnapshot() {
-  return withRegistryLock(() => {
-    const snapshot = readContextHubSnapshotLocked();
-    if (snapshot?.state) return { snapshot };
-    return {
-      snapshot: null,
-      projects: listContextHubProjects(),
-      sharedRepositories: readContextHubRegistry().sharedRepositories,
-    };
-  });
+  return withRegistryLock(readContextHubNavigationSnapshotLocked);
+}
+
+export function readContextHubSnapshotAsync() {
+  return withRegistryLockAsync(readContextHubSnapshotLocked);
+}
+
+export function readContextHubNavigationSnapshotAsync() {
+  return withRegistryLockAsync(readContextHubNavigationSnapshotLocked);
 }
 
 export function writeContextHubSnapshot(state, {
