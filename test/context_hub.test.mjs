@@ -3709,6 +3709,19 @@ test("progressive project Explorer bounds a 20,000-file folder and searches path
   assert.deepEqual(search.entries.map((entry) => entry.path), ["docs/file-00001.md"]);
 });
 
+test("project Explorer answers 404 for a missing folder and still refuses a symlink that leaves the project", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-explorer-missing-"));
+  const root = path.join(base, "proj");
+  const outside = path.join(base, "outside");
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.mkdirSync(outside, { recursive: true });
+  fs.symlinkSync(outside, path.join(root, "docs", "escape"));
+  initializeContextRoomProject(root, { title: "Missing folder", allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+  assert.throws(() => listProjectExplorerPage(root, { directory: "docs/nope" }), (error) => error.statusCode === 404 && /Folder not found/.test(error.message));
+  assert.throws(() => listProjectExplorerPage(root, { directory: "nope/deeper" }), (error) => error.statusCode === 404);
+  assert.throws(() => listProjectExplorerPage(root, { directory: "docs/escape" }), (error) => /symbolic link/.test(error.message) && error.statusCode !== 404);
+});
+
 test("registered Git worktrees stay distinct locally but appear as one logical project", async (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-worktrees-"));
   withHubHome(t, path.join(base, "hub"));

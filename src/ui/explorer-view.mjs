@@ -200,6 +200,9 @@ const STYLE = `
 @media (max-width: 980px) {
   .hl .hl-split { grid-template-columns: 1fr; }
   .hl .hl-side { display: none; }
+  .hl.hl-editing .hl-side { display: block; border-right: 0; border-bottom: 1px solid var(--hl-line); }
+  .hl.hl-editing .hl-strip { display: none; }
+  .hl.hl-editing .hl-quiet, .hl.hl-editing .hl-star { min-height: 44px; min-width: 44px; }
   .hl .hl-strip { display: flex; gap: 8px; overflow-x: auto; padding: 10px 12px; border-bottom: 1px solid var(--hl-line); }
   .hl .hl-strip button { flex: 0 0 auto; white-space: nowrap; }
 }
@@ -269,6 +272,10 @@ export function createExplorerView({ host, ctx, initial = {}, onNavigate = () =>
         listings.set(key, { entries: page.entries || [], more: page.nextCursor || null });
       }
     } catch (error) {
+      // A folder that is gone (stale link, deleted): go back to the project root instead of a retry that cannot work.
+      if (dir && /^Folder not found/.test(error?.message || '') && project.projectKey === selectedKey && dir === directory) {
+        listings.delete(key); directory = ''; navigated(); render(); return;
+      }
       listings.set(key, { error: error?.message || 'Could not list this folder.' });
     }
     render();
@@ -418,7 +425,7 @@ export function createExplorerView({ host, ctx, initial = {}, onNavigate = () =>
     const project = byKey(selectedKey);
     const g = groups();
     const strip = [...g.pinned, ...g.main].filter(browsable).map(item => `<button type="button" data-hl-open="${esc(item.projectKey)}" aria-current="${item.projectKey === selectedKey}">${esc(item.title)}</button>`).join('');
-    return `<div class="hl">
+    return `<div class="hl${editing ? ' hl-editing' : ''}">
       <div class="hl-head"><div><h2>Files</h2><p>${g.pinned.length + g.main.length + g.shared.length} projects · ${visibleMain().length} with files here</p></div><div class="hl-tools">${goto()}${viewMenu()}</div></div>
       <div class="hl-strip" role="group" aria-label="Projects">${strip}</div>
       <div class="hl-split"><div class="hl-side">${projectList()}</div><div class="hl-main">${project ? filesPane(project) : '<div class="hl-empty">Pin or pick a project to see its files.</div>'}</div></div>
