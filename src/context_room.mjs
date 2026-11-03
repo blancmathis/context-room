@@ -22087,6 +22087,19 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     if (asset) { writeHttpResponse(res, asset.status, asset.headers, req.method === 'HEAD' ? '' : asset.body); return; }
   }
   if (["GET", "HEAD"].includes(req.method) && url.pathname === "/") {
+    // The --no-local Hub serves its empty internal host folder: land on the
+    // global home (hub=1) instead, whatever the saved or bare URL form.
+    if (requestRuntimeProfile === "local" && !url.searchParams.has("hub")) {
+      let isHostRoot = false;
+      try { isHostRoot = fs.realpathSync(root) === fs.realpathSync(contextHubHostRoot()); } catch {}
+      if (isHostRoot) {
+        const target = new URL(url);
+        target.searchParams.set("hub", "1");
+        res.writeHead(302, { location: `${target.pathname}${target.search}`, "cache-control": "no-store" });
+        res.end();
+        return;
+      }
+    }
     const bundle = contextRoomWebAssetBundle(promptMutationNonce, ownerMutationNonce, requestRuntimeProfile);
     sendHtml(
       res,
