@@ -199,7 +199,7 @@ export function parseWorkspaceNavigationUrl(input, base = "http://127.0.0.1/") {
   const navigation = {
     workspaceId: /^[A-Za-z0-9_-]{8,120}$/.test(clean("workspace", 120)) ? clean("workspace", 120) : "",
     projectId: clean("project", 240),
-    view: ["hub", "file", "settings", "proposal", "new-doc", "project-manager", "codex-prompts", "graph"].includes(requestedView) ? requestedView : "hub",
+    view: ["hub", "file", "settings", "proposal", "new-doc", "project-manager", "codex-prompts", "graph", "explorer"].includes(requestedView) ? requestedView : "hub",
     folder: clean("folder"),
     search: clean("search", 300),
     file: clean("file"),
