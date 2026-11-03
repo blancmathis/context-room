@@ -4602,3 +4602,27 @@ test("the Hub stops on SIGTERM while a browser event stream stays open", async (
   const result = await Promise.race([closed, new Promise((resolve) => setTimeout(() => resolve("timeout"), 10_000))]);
   assert.deepEqual(result, { status: 0, signal: null });
 });
+
+test("the --no-local Hub host root redirects the bare and saved-workspace URLs to the global home", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-host-home-"));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  withHubHome(t, path.join(base, "hub"));
+  const hostRoot = contextHubHostRoot();
+  fs.mkdirSync(hostRoot, { recursive: true });
+  initializeContextRoomProject(hostRoot, { title: "Context Room Hub", allowedPaths: [], watchAllow: [] });
+  const room = createMemoryServer({ root: hostRoot, registerInHub: false, landOnHubHome: true });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const bare = await fetch(origin + "/", { redirect: "manual" });
+  assert.equal(bare.status, 302);
+  assert.equal(bare.headers.get("location"), "/?hub=1");
+  const saved = await fetch(origin + "/?workspace=abc&view=hub", { redirect: "manual" });
+  assert.equal(saved.status, 302);
+  assert.equal(saved.headers.get("location"), "/?workspace=abc&view=hub&hub=1");
+  const explicit = await fetch(origin + "/?hub=1&project=x", { redirect: "manual" });
+  assert.equal(explicit.status, 200);
+});
