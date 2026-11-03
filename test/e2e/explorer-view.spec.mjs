@@ -214,3 +214,46 @@ test("@explorer open a folder, go back through the breadcrumb, open a file; the 
     await expect(view(page).getByRole("navigation", { name: "Path" }).locator('[aria-current="page"]')).toHaveText("docs");
   } finally { try { if (!page.isClosed()) await page.goto("about:blank"); } finally { await hub.close(); } }
 });
+
+test("@explorer a missing folder in the URL falls back to the project root, without an error", async ({ page }) => {
+  const hub = await fixture();
+  try {
+    await openExplorer(page, hub.origin);
+    await projectButton(page, "Alpha").click();
+    await expect(fileLink(page, "README.md")).toBeVisible();
+    await page.goto(page.url().replace(/&?explorerDir=[^&]*/, "") + "&explorerDir=gone%2Fnowhere");
+    await expect(view(page)).toBeVisible({ timeout: 15_000 });
+    await expect(fileLink(page, "README.md")).toBeVisible({ timeout: 15_000 });
+    await expect(view(page).locator("[data-hl-retry]")).toHaveCount(0);
+    await expect(page).not.toHaveURL(/explorerDir=/);
+  } finally { try { if (!page.isClosed()) await page.goto("about:blank"); } finally { await hub.close(); } }
+});
+
+test("@explorer on a phone, View > Hide projects… shows pin and hide at 44 px; the choices survive a reload", async ({ page }) => {
+  const hub = await fixture();
+  try {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(hub.origin + "/?hub=1&view=hub");
+    await expect(page.locator("body")).not.toHaveClass(/app-booting|app-recovery/);
+    await page.locator("[data-home-explorer]").click();
+    await expect(view(page)).toBeVisible();
+    await view(page).locator(".hl-view > summary").click();
+    await view(page).locator("[data-hl-edit]").click();
+    const pin = view(page).getByRole("button", { name: "Pin Beta" });
+    await expect(pin).toBeVisible({ timeout: 15_000 });
+    const box = await pin.boundingBox();
+    expect(box.width).toBeGreaterThanOrEqual(44);
+    expect(box.height).toBeGreaterThanOrEqual(44);
+    await pin.click();
+    await expect(view(page).getByRole("button", { name: "Unpin Beta" })).toBeVisible();
+    const hide = view(page).locator(".hl-row", { has: page.locator(".hl-select", { hasText: "Alpha" }) }).locator("[data-hl-hide]");
+    expect((await hide.boundingBox()).height).toBeGreaterThanOrEqual(44);
+    await hide.click();
+    await expect(view(page).locator("details.hl-group", { hasText: "Hidden" })).toHaveCount(1);
+    await page.reload();
+    await expect(view(page).locator("details.hl-group", { hasText: "Hidden" })).toHaveCount(1, { timeout: 15_000 });
+    await view(page).locator(".hl-view > summary").click();
+    await view(page).locator("[data-hl-edit]").click();
+    await expect(view(page).getByRole("button", { name: "Unpin Beta" })).toBeVisible();
+  } finally { try { if (!page.isClosed()) await page.goto("about:blank"); } finally { await hub.close(); } }
+});

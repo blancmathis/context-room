@@ -1233,9 +1233,13 @@ function resolveProjectExplorerDirectory(root, relPath = "") {
   if (absolute !== resolvedRoot && !absolute.startsWith(`${resolvedRoot}${path.sep}`)) {
     throw sharedRequestError("Explorer directory is outside this project", 400, "context_hub_explorer_path_invalid");
   }
+  // A path that does not exist is "not found", not a symlink escape. Dangling symlinks still exist for lstat and keep the containment refusal.
+  if (!pathEntryExists(absolute)) {
+    throw sharedRequestError(`Folder not found: ${normalized || "."}`, 404, "context_hub_explorer_directory_not_found");
+  }
   assertProjectPathContained(resolvedRoot, absolute, { label: normalized || "." });
   if (!fs.existsSync(absolute) || !fs.statSync(absolute).isDirectory()) {
-    throw sharedRequestError(`Explorer directory not found: ${normalized || "."}`, 404, "context_hub_explorer_directory_not_found");
+    throw sharedRequestError(`Folder not found: ${normalized || "."}`, 404, "context_hub_explorer_directory_not_found");
   }
   return { normalized, absolute, resolvedRoot };
 }
