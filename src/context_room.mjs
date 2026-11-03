@@ -141,10 +141,10 @@ import {
   contextHubRepositoryIdentity,
   contextHubRegistrationWarning,
   listContextHubProjects,
+  listContextHubProjectsAsync,
   listContextHubSharedRecoveryIssues,
   readContextHubAttention,
   readContextHubRegistry,
-  readContextHubSnapshot,
   readContextHubSnapshotAsync,
   readContextHubNavigationSnapshot,
   readContextHubNavigationSnapshotAsync,
@@ -17803,13 +17803,19 @@ function followContextHubRefreshLocally(key, taskRunner) {
   });
 }
 
-export function refreshContextHubSnapshot(root, {
+export function refreshContextHubSnapshot(root, options = {}) {
+  // A forced refresh ignores the retained snapshot; the other path waits for
+  // the registry lock without blocking the event loop.
+  if (options.force) return startContextHubSnapshotRefresh(root, options, null);
+  return readContextHubSnapshotAsync().then((snapshot) => startContextHubSnapshotRefresh(root, options, snapshot));
+}
+
+function startContextHubSnapshotRefresh(root, {
   refreshShared = true,
   force = false,
   taskRunner = runBackgroundTask,
-} = {}) {
+} = {}, snapshot) {
   const key = path.resolve(root);
-  const snapshot = readContextHubSnapshot();
   if (!force && snapshot?.state && Date.now() - Date.parse(snapshot.generatedAt) <= CONTEXT_HUB_SNAPSHOT_TTL_MS) {
     return Promise.resolve(contextHubStateWithFreshness(contextHubStateForRoot(snapshot.state, key), { generatedAt: snapshot.generatedAt, refreshing: false }));
   }
@@ -20681,7 +20687,7 @@ export function createMemoryServer({
         },
         sharedReviewDocQaReport: cachedSharedReviewDocQaReport,
         startContextHubProject: async (requestedProjectId) => {
-          const project = listContextHubProjects().find((item) => item.id === requestedProjectId);
+          const project = (await listContextHubProjectsAsync()).find((item) => item.id === requestedProjectId);
           if (!project) throw sharedRequestError(`Unknown local project: ${requestedProjectId}`, 404, "context_hub_project_not_found");
           if (!project.available) throw sharedRequestError(`Local project is unavailable: ${project.root}`, 409, "context_hub_project_unavailable");
           recordContextHubProjectOpened(project.id);

@@ -2674,6 +2674,10 @@ export function listContextHubProjects({ refreshGit = false, readOnly = false } 
   return readOnly ? readProjects() : withRegistryLock(readProjects);
 }
 
+export function listContextHubProjectsAsync(options = {}) {
+  return withRegistryLockAsync(() => listContextHubProjects(options));
+}
+
 function locationConfirmationError(message, code) {
   return Object.assign(new Error(message), { code, statusCode: 409 });
 }
