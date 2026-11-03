@@ -19814,6 +19814,7 @@ export function createMemoryServer({
   registerInHub = false,
   frameAncestorPorts = [],
   persistentDocumentGraphLayout = false,
+  landOnHubHome = false,
   remoteAccess = null,
   verifiedAcceptanceFlashes = null,
   beforeManagedControlMutation = null,
@@ -20501,6 +20502,7 @@ export function createMemoryServer({
         terminalDecisionChallenges,
         verifiedAcceptanceFlashes: acceptanceFlashStore,
         frameAncestorPorts: trustedFrameAncestorPorts,
+        landOnHubHome,
         requestIdentity,
         runtimeProfile: runtimeRequestProfile,
         hostedReviewProjectId: remoteReview?.metadata?.projectId || "",
@@ -21457,6 +21459,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   promptMutationNonce = "",
   ownerMutationNonce = "",
   expectedRootIdentity = null,
+  landOnHubHome = false,
   beforeManagedControlMutation = null,
   contextHubAbandonSharedRecovery = abandonContextHubSharedTransaction,
   contextHubAbandonInvalidSharedRecovery = abandonInvalidContextHubSharedTransaction,
@@ -22087,18 +22090,14 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     if (asset) { writeHttpResponse(res, asset.status, asset.headers, req.method === 'HEAD' ? '' : asset.body); return; }
   }
   if (["GET", "HEAD"].includes(req.method) && url.pathname === "/") {
-    // The --no-local Hub serves its empty internal host folder: land on the
+    // The --no-local Hub serves an empty internal host folder: land on the
     // global home (hub=1) instead, whatever the saved or bare URL form.
-    if (requestRuntimeProfile === "local" && !url.searchParams.has("hub")) {
-      let isHostRoot = false;
-      try { isHostRoot = fs.realpathSync(root) === fs.realpathSync(contextHubHostRoot()); } catch {}
-      if (isHostRoot) {
-        const target = new URL(url);
-        target.searchParams.set("hub", "1");
-        res.writeHead(302, { location: `${target.pathname}${target.search}`, "cache-control": "no-store" });
-        res.end();
-        return;
-      }
+    if (landOnHubHome && requestRuntimeProfile === "local" && !url.searchParams.has("hub")) {
+      const target = new URL(url);
+      target.searchParams.set("hub", "1");
+      res.writeHead(302, { location: `${target.pathname}${target.search}`, "cache-control": "no-store" });
+      res.end();
+      return;
     }
     const bundle = contextRoomWebAssetBundle(promptMutationNonce, ownerMutationNonce, requestRuntimeProfile);
     sendHtml(

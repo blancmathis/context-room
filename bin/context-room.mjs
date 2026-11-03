@@ -1253,7 +1253,7 @@ if (command === "hub") {
       stateRoot: args['device-state'] ? path.resolve(String(args['device-state'])) : path.join(path.dirname(hostRoot), 'devices'),
       discovery: { enabled: !args['no-device-discovery'], onChange: state => { try { updateContextHubRuntimeDiscovery(state); } catch {} } },
       browser: browserRequested ? { origin: String(args['device-browser-origin']), certPath: path.resolve(String(args['device-browser-cert'])), keyPath: path.resolve(String(args['device-browser-key'])) } : null }) : null;
-    const { server } = createMemoryServer({ root: hostRoot, port, registerInHub: false, persistentDocumentGraphLayout: true, deviceService });
+    const { server } = createMemoryServer({ root: hostRoot, port, registerInHub: false, persistentDocumentGraphLayout: true, landOnHubHome: true, deviceService });
     await new Promise((resolve, reject) => {
       const onError = (error) => reject(error);
       server.once("error", onError);
