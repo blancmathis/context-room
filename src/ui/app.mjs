@@ -7415,12 +7415,15 @@ function syncHomeExplorerMode() {
   if (panel) panel.hidden = !on;
   // One project list only: the Explorer drawer steps aside while the Files view shows.
   document.querySelector(".app")?.classList.toggle("explorer-view-on", on && Boolean(home) && !home.hidden);
+  // The view module carries its own styles: load it the first time the mode turns on, whatever the path (click, Back, URL).
+  if (on && !explorerViewController) renderExplorerViewPanel();
 }
 
 function setHomeExplorer(on, { push = true } = {}) {
   if (!EXPLORER_VIEW_AVAILABLE) return;
   state.homeExplorer = Boolean(on);
   showHome();
+  if (state.homeExplorer) renderExplorerViewPanel();
   persistNavigationState();
   if (push) syncWorkspaceUrl({ push: true });
 }

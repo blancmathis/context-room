@@ -100,6 +100,33 @@ test("@explorer Files opens from the home in one click, hides the internal Hub, 
   } finally { try { if (!page.isClosed()) await page.goto("about:blank"); } finally { await hub.close(); } }
 });
 
+test("@explorer Files renders on a quiet Hub: no catalog refresh needed after the click, and Home comes back", async ({ page }) => {
+  // The real Hub (2026-11-03) sends no catalog refresh after the click: the view must not wait for one.
+  const hub = await fixture();
+  try {
+    await page.goto(hub.origin + "/?hub=1&view=hub");
+    await expect(page.locator("#contextHubProjectsPanel")).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator("#contextHubHomeProjectList")).toContainText("Alpha", { timeout: 15_000 });
+    // From here, the catalog and the event stream stay silent.
+    await page.route((url) => url.pathname === "/api/context-hub" || url.pathname === "/api/runtime-events", () => {});
+    await page.locator("[data-home-explorer]").click();
+    await expect(page).toHaveURL(/view=explorer/);
+    await expect(view(page)).toBeVisible();
+    await expect(page.locator("#contextHubProjectsPanel")).toBeHidden();
+    await expect(projectButton(page, "Alpha")).toBeVisible({ timeout: 15_000 });
+    await projectButton(page, "Alpha").click();
+    await expect(fileLink(page, "README.md")).toBeVisible({ timeout: 15_000 });
+    await view(page).locator("[data-explorer-home]").click();
+    await expect(page).toHaveURL(/view=hub/);
+    await expect(page.locator("#contextHubProjectsPanel")).toBeVisible();
+    await expect(view(page)).toBeHidden();
+    // Back in the browser history reopens the Files view.
+    await page.goBack();
+    await expect(page).toHaveURL(/view=explorer/);
+    await expect(view(page)).toBeVisible();
+  } finally { try { if (!page.isClosed()) await page.goto("about:blank"); } finally { await hub.close(); } }
+});
+
 test("@explorer pin, hide and unhide a project; the choice survives a reload", async ({ page }) => {
   const hub = await fixture();
   try {
