@@ -1751,7 +1751,7 @@ test("Context Hub registration preserves an unconfirmed root and its Shared link
   const hostRoot = contextHubHostRoot();
   fs.mkdirSync(hostRoot, { recursive: true });
   initializeContextRoomProject(hostRoot, { title: "Test Hub", allowedPaths: [], watchAllow: [] });
-  const room = createMemoryServer({ root: hostRoot, registerInHub: false, landOnHubHome: true });
+  const room = createMemoryServer({ root: hostRoot, registerInHub: false });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
   const port = room.server.address().port;
   writeContextHubRuntime({ port, root: hostRoot, url: `http://127.0.0.1:${port}` });
@@ -4610,7 +4610,7 @@ test("the --no-local Hub host root redirects the bare and saved-workspace URLs t
   const hostRoot = contextHubHostRoot();
   fs.mkdirSync(hostRoot, { recursive: true });
   initializeContextRoomProject(hostRoot, { title: "Context Room Hub", allowedPaths: [], watchAllow: [] });
-  const room = createMemoryServer({ root: hostRoot, registerInHub: false });
+  const room = createMemoryServer({ root: hostRoot, registerInHub: false, landOnHubHome: true });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
   t.after(async () => {
     if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
