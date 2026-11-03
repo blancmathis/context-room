@@ -3684,6 +3684,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       <section class="editor-shell">
         <div id="home" class="docqa-home workspace-page" hidden>
           <div class="docqa-grid">
+            <section id="homeLayoutPanel" class="docqa-panel home-layout-panel" aria-label="Home" hidden></section>
             <section id="notebookSpacePanel" class="docqa-panel notebook-space-panel" aria-labelledby="notebookSpaceHeading" hidden>
               <header>
                 <div>
@@ -4254,6 +4255,8 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 	const IS_HOSTED_REVIEW = CONTEXT_ROOM_RUNTIME_PROFILE === "hosted-review";
 	const IS_HOSTED_CONTEXT_ROOM = IS_HOSTED_HUB || IS_HOSTED_REVIEW;
 	const IS_GLOBAL_CONTEXT_ROOM = IS_HOSTED_HUB || (IS_LOCAL && CONTEXT_ROOM_QUERY.get("hub") === "1");
+	// Temporary (T-021 prototype): ?homeLayout=a|b swaps the Home for one of two layouts.
+	const HOME_LAYOUT = ["a", "b"].includes(String(CONTEXT_ROOM_QUERY.get("homeLayout") || "").toLowerCase()) ? String(CONTEXT_ROOM_QUERY.get("homeLayout")).toLowerCase() : "";
 	let workspaceDirty = Boolean(state.dirty);
 	Object.defineProperty(state, "dirty", {
 	  configurable: false,
@@ -7331,6 +7334,11 @@ function renderContextHubHomeProjects() {
   if (!panel || !list || !coverage) return;
   panel.hidden = !IS_GLOBAL_CONTEXT_ROOM || IS_HOSTED_HUB;
   if (panel.hidden) return;
+  if (HOME_LAYOUT) {
+    panel.hidden = true;
+    renderHomeLayoutPanel();
+    return;
+  }
   if (!state.contextHub) {
     coverage.textContent = "Loading…";
     updateGlobalExplorerMarkup(list, '<div class="global-project-explorer-empty">Loading projects…</div>');
@@ -7390,7 +7398,56 @@ async function loadNotebookSpaceItems(space) {
 
 function reloadNotebookSpace() {
   notebookSpaceItems.hub = null;
+  homeLayoutController?.invalidate();
   renderNotebookSpace();
+}
+
+// Temporary home layouts (?homeLayout=a|b). The module draws one project list and a file browser.
+let homeLayoutController = null;
+let homeLayoutLoading = false;
+function renderHomeLayoutPanel() {
+  const host = el("homeLayoutPanel");
+  if (!host) return;
+  host.hidden = false;
+  if (homeLayoutController) { homeLayoutController.update(); return; }
+  if (homeLayoutLoading) return;
+  homeLayoutLoading = true;
+  const worktreeId = (project) => globalProjectSelectedWorktree(project)?.id || project.id;
+  import("/assets/ui/home-layouts.mjs").then((module) => {
+    homeLayoutController = module.createHomeLayout({
+      layout: HOME_LAYOUT,
+      host,
+      ctx: {
+        projects: () => state.contextHub?.projects || [],
+        ready: () => Boolean(state.contextHub),
+        attention: (project) => ({ kind: contextHubProjectAttentionKind(project), label: contextHubProjectAttentionLabel(project) }),
+        where: (project) => contextHubProjectPickerLocation(project),
+        href: (project, filePath) => workspaceProjectHref(worktreeId(project), filePath),
+        openFile: (project, filePath) => { openContextHubProject(worktreeId(project), { filePath }).catch((error) => setStatus(error.message)); },
+        openNotebook: (project, id) => { openContextRoomNotebook("", { projectId: project.id, resourceId: id, onClosed: reloadNotebookSpace }).catch((error) => setStatus(error.message)); },
+        listDirectory: (project, directory, cursor) => {
+          const params = new URLSearchParams({ projectId: worktreeId(project), limit: "250" });
+          if (directory) params.set("path", directory);
+          if (cursor) params.set("cursor", cursor);
+          return api("/api/context-hub/project-explorer?" + params);
+        },
+        notebooks: async (project) => {
+          const data = await captureNotebookApi(project.id).api("/api/notebooks");
+          return [...(data.notebooks || [])].sort((left, right) => String(right.changedAt || "").localeCompare(String(left.changedAt || "")));
+        },
+      },
+    });
+    host.addEventListener("click", (event) => {
+      if (event.target.closest("[data-notebook-space-new]")) createSpaceNotebook().catch((error) => setStatus(error.message));
+    });
+    // One project list only: the Explorer drawer steps aside while the Home shows.
+    const home = el("home");
+    const appRoot = document.querySelector(".app");
+    const sync = () => appRoot?.classList.toggle("home-layout-on", Boolean(home) && !home.hidden);
+    new MutationObserver(sync).observe(home, { attributes: true, attributeFilter: ["hidden"] });
+    sync();
+    homeLayoutController.update();
+  }).catch((error) => { host.textContent = "Could not load the Home layout: " + error.message; });
 }
 
 function renderNotebookSpace() {
@@ -7398,7 +7455,7 @@ function renderNotebookSpace() {
   const list = el("notebookSpaceList");
   const summary = el("notebookSpaceSummary");
   if (!panel || !list || !summary) return;
-  panel.hidden = !IS_GLOBAL_CONTEXT_ROOM || IS_HOSTED_HUB || !state.contextHub;
+  panel.hidden = !IS_GLOBAL_CONTEXT_ROOM || IS_HOSTED_HUB || !state.contextHub || Boolean(HOME_LAYOUT);
   if (panel.hidden) return;
   const space = contextHubNotebookSpace();
   if (space?.available !== false && space && (notebookSpaceItems.spaceId !== space.id || notebookSpaceItems.hub !== state.contextHub)) {
