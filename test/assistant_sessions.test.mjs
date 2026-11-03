@@ -331,3 +331,19 @@ test('a repeated get does not replay the notebook; a move or a relocation after 
   // A third project is still refused.
   assert.throws(() => w.service.get(w.C, conversation.id), { code: 'assistant_scope' });
 });
+
+test('a conversation of a moved notebook shows in the new project list without any source filter, and skips are counted', t => {
+  const w = notebookWorld(t), scene = openNotebook(w.A, { path: w.file, canWrite: w.allow }), id = scene.resourceId;
+  const plain = w.service.create(w.A, { source: w.sourceOf(scene) });
+  w.move(w.A, w.B, id);
+  assert.deepEqual(w.service.list(w.B).map(item => item.id), [plain.id]);
+  assert.equal(w.service.list(w.B)[0].source.path, w.query(w.B, id).path);
+  assert.deepEqual(w.service.list(w.A), []);
+  assert.deepEqual(w.service.list(w.C), []);
+  // A broken (not merely moved) conversation is counted and named, not swallowed.
+  const file = path.join(w.store, 'conversations', plain.id + '.json'), state = JSON.parse(fs.readFileSync(file, 'utf8'));
+  state.origin.source = { ...state.origin.source, kind: 'unknown-kind' }; fs.writeFileSync(file, JSON.stringify(state));
+  const quiet = w.service.list(w.A);
+  assert.deepEqual(quiet, []);
+  assert.equal(w.service.diagnostics.skipped, 1); assert.equal(w.service.diagnostics.skippedIds[0], plain.id);
+});

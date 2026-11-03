@@ -23,7 +23,7 @@ function defaultLocateNotebook(root, resourceId, origin) {
 /** Private bindings and durable send receipts. The provider retains its original task identity. */
 export class AssistantSessions {
   constructor({ root, providerFactory = options => createCodexProvider(options), resolveSource, locateNotebook = defaultLocateNotebook, fingerprintNotebook = notebookFingerprint }) {
-    this.locateNotebook = locateNotebook; this.fingerprintNotebook = fingerprintNotebook; this.locations = new Map();
+    this.locateNotebook = locateNotebook; this.fingerprintNotebook = fingerprintNotebook; this.locations = new Map(); this.diagnostics = { skipped: 0, moved: 0, skippedIds: [] };
     this.root = root; this.identity = canonicalNotebookRoot(root); this.providerFactory = providerFactory;
     const stats = fs.statSync(root);
     if (stats.mode & 0o077 || process.getuid && stats.uid !== process.getuid()) throw fault('assistant_storage_private', 'Conversations require a private directory owned by this account.');
@@ -177,9 +177,24 @@ export class AssistantSessions {
       // A notebook query matches by notebook identity, then by the location the conversation follows now.
       const byNotebook = source?.kind === 'notebook' && typeof source.resourceId === 'string'
         && state.origin.source?.kind === 'notebook' && state.origin.source.resourceId === source.resourceId;
-      if (state.origin.root !== root && !byNotebook || !byNotebook && source && Object.entries(source).some(([key, value]) => state.origin.source[key] !== value)
+      // A notebook conversation stored under its old project still belongs to the project its notebook moved to.
+      const follows = !byNotebook && !source && state.origin.root !== root && state.origin.source?.kind === 'notebook'
+        && typeof state.origin.source.resourceId === 'string' && this.followedSource(state, root, cache) !== null;
+      if (state.origin.root !== root && !byNotebook && !follows || !byNotebook && source && Object.entries(source).some(([key, value]) => state.origin.source[key] !== value)
         || selectionHash && notebookHash(JSON.stringify(state.origin.source.selection || [])) !== selectionHash) continue;
-      let current; try { current = this.scope(state, root, cache).source; } catch { continue; }
+      let current;
+      try { current = this.scope(state, root, cache).source; } catch (error) {
+        // A moved notebook is expected in its old project; anything else is a conversation the user cannot see: count and name it.
+        if (error?.code === 'assistant_notebook_moved') this.diagnostics.moved++;
+        else {
+          this.diagnostics.skipped++;
+          if (this.diagnostics.skippedIds.length < 50 && !this.diagnostics.skippedIds.includes(state.id)) {
+            this.diagnostics.skippedIds.push(state.id);
+            console.warn('[assistant] conversation ' + state.id + ' hidden from its list: ' + (error?.code || error?.message || 'unknown'));
+          }
+        }
+        continue;
+      }
       if (byNotebook && Object.entries(source).some(([key, value]) => current[key] !== value)) continue;
       const { messages, ...summary } = this.public(state, current); result.push({ ...summary, messageCount: messages.length });
     }
