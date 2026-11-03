@@ -65,11 +65,25 @@ test('rendered LaunchAgent uses exact arguments, no shell, no registration or pa
   const xml = macLaunchAgent({ runtime: '/opt/Context Room & local', home, nodePath: '/opt/Node & tools/node', port: 4317 });
   const parsed = JSON.parse(execFileSync('python3', ['-B', '-c', 'import plistlib,json,sys;print(json.dumps(plistlib.loads(sys.stdin.buffer.read())))'], { input: xml, encoding: 'utf8' }));
   assert.deepEqual(parsed.ProgramArguments, ['/opt/Node & tools/node', '/opt/Context Room & local/bin/context-room.mjs', 'hub', '--no-local', '--port', '4317']);
-  assert.equal(parsed.Label, 'app.contextroom.local'); assert.equal(parsed.KeepAlive.SuccessfulExit, false);
+  assert.equal(parsed.Label, 'app.contextroom.local'); assert.equal(parsed.KeepAlive, true); // any exit restarts; `launchctl bootout` is the only intended stop
   assert.deepEqual(Object.keys(parsed.EnvironmentVariables), ['PATH']);
   assert.equal(parsed.EnvironmentVariables.PATH.startsWith('/opt/Node & tools:'), true);
   assert.equal(Object.keys(parsed.EnvironmentVariables).some(key => key.endsWith('_HOME')), false);
   assert.equal(fs.existsSync(home), false); assert.doesNotMatch(xml, /lisiere|shell|whisper|device-host|sudo/);
+});
+
+test('installed launcher exits non-zero unless it received a stop signal itself', t => {
+  const script = fileURLToPath(new URL('../scripts/launch-installed.py', import.meta.url));
+  const run = code => execFileSync('python3', ['-B', '-c', 'import importlib.util,sys;s=importlib.util.spec_from_file_location("l",sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);' + code, script], { encoding: 'utf8' }).trim();
+  assert.equal(run('print(m.exit_code(False,0))'), '75');
+  assert.equal(run('print(m.exit_code(False,None))'), '75');
+  assert.equal(run('print(m.exit_code(False,3))'), '3');
+  assert.equal(run('print(m.exit_code(True,0))'), '0');
+  assert.equal(run('print(m.exit_code(True,-15))'), '0');
+  // End to end: a child that exits 0 by itself must make the launcher exit 75.
+  const env = { ...process.env, CONTEXT_ROOM_LAUNCH_NODE: '/usr/bin/true', CONTEXT_ROOM_LAUNCH_NO_LAN: '1' };
+  const result = spawnSync('python3', ['-B', script], { env, encoding: 'utf8', timeout: 20000 });
+  assert.equal(result.status, 75, result.stderr);
 });
 
 // The exported library receives canonical roots, but a directory file: URL has a
