@@ -22159,7 +22159,27 @@ function scrollToMarkdownAnchor(anchor) {
   target.setAttribute("tabindex", "-1");
   target.scrollIntoView({ block: "start" });
   target.focus({ preventScroll: true });
+  settleAnchorScroll(target);
   return true;
+}
+
+// Large documents render one section per H1/H2 with content-visibility:auto. Sections not yet shown have only an
+// estimated height, so the first jump lands off target once the real sizes appear. Align again over a few frames.
+let anchorSettleToken = 0;
+function settleAnchorScroll(target, frames = 10) {
+  const token = ++anchorSettleToken; // a newer jump cancels the older alignment
+  let previous = null;
+  let stable = 0;
+  const step = (left) => {
+    if (token !== anchorSettleToken || !target.isConnected) return;
+    const top = target.getBoundingClientRect().top;
+    stable = previous !== null && Math.abs(top - previous) < 1 ? stable + 1 : 0;
+    previous = top;
+    if (stable >= 2 || left <= 0) return;
+    target.scrollIntoView({ block: "start" });
+    window.requestAnimationFrame(() => step(left - 1));
+  };
+  window.requestAnimationFrame(() => step(frames));
 }
 
 // Incoming links come from the cached document graph, loaded only when the reader opens this list.
