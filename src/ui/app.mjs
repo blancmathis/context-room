@@ -4095,6 +4095,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 	state.conflictCheckTimer = null;
 	state.contextHubBusy = false;
 	state.contextHubBusyWaiters = [];
+	state.contextHubOpensInFlight = 0;
 	state.contextHubPendingOpenGeneration = 0;
 	state.contextHubSharedRefreshPromise = null;
 	state.contextHubRefreshPromise = null;
@@ -9838,7 +9839,11 @@ async function openContextHubProject(projectId, options = {}, requestedGeneratio
   if (IS_HOSTED_REVIEW) throw new Error("Project navigation is unavailable inside an exact hosted review.");
   if (!projectId) return;
   const generation = requestedGeneration || ++state.contextHubPendingOpenGeneration;
-  if (state.contextHubBusy) {
+  // A plain project switch never waits for the previous open's POST /project
+  // (it may wait up to 750 ms for a Shared sync, 1.5 s under load: crit4).
+  // The superseded open ends quietly at its next generation check. Opens with
+  // a file or review target still wait, as they act on the opened project.
+  if (state.contextHubBusy && (options.filePath || options.reviewTarget)) {
     setStatus("finishing the current project update…");
     await new Promise((resolve) => state.contextHubBusyWaiters.push(resolve));
     if (generation !== state.contextHubPendingOpenGeneration) return;
@@ -9865,6 +9870,7 @@ async function openContextHubProject(projectId, options = {}, requestedGeneratio
       url: window.location.href,
     };
     state.contextHubBusy = true;
+    state.contextHubOpensInFlight += 1;
     state.globalProjectWorktreeIds.set(project.projectKey, targetProjectId);
     const explorerOpen = openGlobalProjectExplorer(project);
     if (options.pushHistory) {
@@ -9894,6 +9900,8 @@ async function openContextHubProject(projectId, options = {}, requestedGeneratio
       else setContextHubProjectOpenedStatus(project, sharedStatus);
     } catch (error) {
       await explorerOpen.catch(() => {});
+      // A newer open owns the explorer, the history and the status now.
+      if (generation !== state.contextHubPendingOpenGeneration) return;
       if (previousWorktreeId == null) state.globalProjectWorktreeIds.delete(project.projectKey);
       else state.globalProjectWorktreeIds.set(project.projectKey, previousWorktreeId);
       const rollbackProject = (state.contextHub?.projects || [])
@@ -9928,8 +9936,11 @@ async function openContextHubProject(projectId, options = {}, requestedGeneratio
       }
       throw error;
     } finally {
-      state.contextHubBusy = false;
-      for (const resolve of state.contextHubBusyWaiters.splice(0)) resolve();
+      state.contextHubOpensInFlight = Math.max(0, state.contextHubOpensInFlight - 1);
+      if (!state.contextHubOpensInFlight) {
+        state.contextHubBusy = false;
+        for (const resolve of state.contextHubBusyWaiters.splice(0)) resolve();
+      }
     }
     return;
   }

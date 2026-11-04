@@ -585,11 +585,13 @@ test("@smoke the latest project and worktree selection survives an in-flight pro
   await page.locator(".global-project-row", { hasText: "Atlas" }).click();
   await expect.poll(() => openings.length).toBe(1);
   await page.getByRole("button", { name: "Back to projects" }).click();
+  // A switch never waits for the gated first POST: Beacon opens at once.
   await page.locator(".global-project-row", { hasText: "Beacon" }).click();
+  await expect(page.locator("#globalExplorerScope strong")).toHaveText("Beacon");
+  await page.getByRole("button", { name: "Back to projects" }).click();
   await page.locator(".global-project-row", { hasText: "Atlas" }).click();
+  await expect.poll(() => openings.length).toBe(3);
   releaseFirstOpening();
-
-  await expect.poll(() => openings.length).toBe(2);
   await expect(page.locator("#globalExplorerScope strong")).toHaveText("Atlas");
   const worktree = page.getByLabel("Choose worktree");
   await expect(worktree).toBeVisible();

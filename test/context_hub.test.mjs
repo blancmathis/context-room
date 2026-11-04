@@ -2955,18 +2955,20 @@ test("Context Hub local follow-up that throws synchronously before its first awa
   const originalLink = fs.linkSync;
   let armed = false;
   let thrown = 0;
-  // The follow-up's first registry-lock acquisition is the snapshot read at the
-  // top of refreshContextHubSnapshot; fail that one acquisition, once.
+  // The forced follow-up's first registry-lock acquisition is the refresh
+  // coordination at the top of refreshContextHubSnapshot; fail it, once. A busy
+  // lock there now falls back to the asynchronous wait, so the injected failure
+  // is an I/O error, which still throws synchronously.
   t.mock.method(fs, "linkSync", (from, to, ...rest) => {
     if (armed && String(to).includes("registry")) {
       const limit = Error.stackTraceLimit;
       Error.stackTraceLimit = 50;
       const stack = new Error().stack;
       Error.stackTraceLimit = limit;
-      if (/readContextHubSnapshot/.test(stack) && /refreshContextHubSnapshot/.test(stack)) {
+      if (/beginContextHubSnapshotRefresh/.test(stack) && /refreshContextHubSnapshot/.test(stack)) {
         armed = false;
         thrown += 1;
-        throw Object.assign(new Error("registry lock busy"), { code: "context_hub_registry_busy" });
+        throw Object.assign(new Error("registry lock busy"), { code: "EIO" });
       }
     }
     return originalLink(from, to, ...rest);
