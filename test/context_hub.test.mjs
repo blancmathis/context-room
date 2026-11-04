@@ -3402,6 +3402,11 @@ test("Context Hub serializes forced refreshes and publishes only the later resul
 
   const first = refreshContextHubSnapshot(root, { refreshShared: false, force: true, taskRunner });
   const second = refreshContextHubSnapshot(root, { refreshShared: false, force: true, taskRunner });
+  // The refresh may start on a later turn when an asynchronous registry-lock
+  // waiter (left by an earlier request) is queued: wait for the first worker.
+  const started = Date.now() + 2_000;
+  while (calls < 1 && Date.now() < started) await new Promise((resolve) => setTimeout(resolve, 5));
+  await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(calls, 1, "the second forced refresh must wait for the active worker result");
 
   pending.shift()(state("first", "2026-08-08T12:00:01.000Z"));
@@ -3443,6 +3448,9 @@ test("Context Hub projects a newer cross-root snapshot onto the requesting root"
 
   const first = refreshContextHubSnapshot(firstRoot, { refreshShared: false, force: true, taskRunner });
   const second = refreshContextHubSnapshot(secondRoot, { refreshShared: false, force: true, taskRunner });
+  // Both refreshes may start on a later turn behind a queued registry-lock waiter.
+  const started = Date.now() + 2_000;
+  while (pending.size < 2 && Date.now() < started) await new Promise((resolve) => setTimeout(resolve, 5));
   assert.equal(pending.size, 2);
 
   pending.get(secondRoot)(state("second", secondRoot, "2026-08-08T12:00:02.000Z"));

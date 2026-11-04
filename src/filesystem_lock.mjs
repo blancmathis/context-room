@@ -713,6 +713,24 @@ export function cleanupFilesystemLockWorkerOwner(owner, options = {}) {
   return { removed };
 }
 
+// Cheap read-only probe for callers that retry short attempts: true when the
+// owner (or an unfinished reclaim) is stale, so a longer attempt can finish the
+// durable reclaim records. Never throws: any doubt reads as not stale.
+export function filesystemLockLooksStale(lockPath, options = {}) {
+  const normalizedOptions = {
+    staleMs: positiveFiniteNumber(options.staleMs, DEFAULT_STALE_MS),
+    requireProcessIdentity: Boolean(options.requireProcessIdentity),
+  };
+  try {
+    const paths = lockPaths(lockPath);
+    const reclaim = readLockRecord(paths.reclaim);
+    if (reclaim) return lockIsStale(reclaim, normalizedOptions.staleMs, normalizedOptions);
+    return lockIsStale(readLockRecord(paths.lock), normalizedOptions.staleMs, normalizedOptions);
+  } catch {
+    return false;
+  }
+}
+
 export function acquireFilesystemLock(lockPath, options = {}) {
   const normalizedOptions = {
     timeoutMs: positiveFiniteNumber(options.timeoutMs, DEFAULT_TIMEOUT_MS),

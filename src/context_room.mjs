@@ -153,6 +153,7 @@ import {
   readContextHubNavigationSnapshotAsync,
   readContextHubSnapshotInputs,
   invalidateContextHubSnapshot,
+  invalidateContextHubSnapshotAsync,
   recordContextHubProjectOpenedAsync,
   removeContextHubReviewSnoozes,
   registerContextHubProject,
@@ -17785,6 +17786,13 @@ function markContextHubSnapshotStale({ openTimeOnly = false } = {}) {
   invalidateContextHubSnapshot({ preserveState: true, openTimeOnly });
 }
 
+// Request paths after a mutation: the cache drops at once, the durable
+// invalidation waits for the registry lock without blocking the event loop.
+async function markContextHubSnapshotStaleAsync({ openTimeOnly = false } = {}) {
+  contextHubStateCache.clear();
+  await invalidateContextHubSnapshotAsync({ preserveState: true, openTimeOnly });
+}
+
 function waitForContextHubAcceptRefresh(refresh, timeoutMs = CONTEXT_HUB_ACCEPT_REFRESH_TIMEOUT_MS) {
   const parsedTimeoutMs = Number(timeoutMs);
   const boundedTimeoutMs = Number.isFinite(parsedTimeoutMs)
@@ -22600,7 +22608,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       const status = /already exists/i.test(error.message) ? 409 : 400;
       throw sharedRequestError(error.message, status, "context_hub_project_create_failed");
     }
-    markContextHubSnapshotStale();
+    await markContextHubSnapshotStaleAsync();
     const catalog = await refreshContextHubSnapshot(root, { refreshShared: false, force: true });
     appendContextRoomEvent("project.created", {
       projectId: created.registered.logicalProjectId || created.registered.id,
@@ -22627,7 +22635,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     let applied;
     try { applied = await applyCodexProjectImport({ roots: body.roots, expectedRevision: body.expectedRevision, initialize: initializeContextRoomProject }); }
     catch (error) { throw sharedRequestError(error.message, error.statusCode || 400, error.code || "codex_import_failed"); }
-    markContextHubSnapshotStale();
+    await markContextHubSnapshotStaleAsync();
     const catalog = applied.imported ? await refreshContextHubSnapshot(root, { refreshShared: false, force: true }) : null;
     sendJson(res, 200, { ...applied, catalog });
     return;
@@ -22636,7 +22644,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     await readJsonBody(req);
     const space = ensureContextHubNotebookSpace();
     if (space.created) {
-      markContextHubSnapshotStale();
+      await markContextHubSnapshotStaleAsync();
       appendContextRoomEvent("project.created", {
         projectId: space.registered.logicalProjectId || space.registered.id,
         locationId: space.registered.id,
@@ -22674,7 +22682,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       destination: { projectId: to.id, title: to.title },
     });
     if (!preview) {
-      markContextHubSnapshotStale();
+      await markContextHubSnapshotStaleAsync();
       appendContextRoomEvent("notebook.moved", {
         projectId: to.logicalProjectId || to.id,
         locationId: to.id,
@@ -22727,7 +22735,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       const status = /already exists/i.test(error.message) ? 409 : 400;
       throw sharedRequestError(`Could not create this Shared project proposal: ${error.message}`, status, "shared_project_create_failed");
     }
-    if (!hostedSharedProvider) markContextHubSnapshotStale();
+    if (!hostedSharedProvider) await markContextHubSnapshotStaleAsync();
     const catalog = await refreshContextHubForRequest();
     sendJson(res, 201, hostedSharedProvider
       ? hostedSharedProjectResult(created, repositoryId, catalog)
@@ -22761,7 +22769,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       if (push && error?.retryable === true) throw sharedRemotePublicationError(error);
       throw sharedRequestError(`Could not create this shared document: ${error.message}`, 400, "shared_document_create_failed");
     }
-    if (!hostedSharedProvider) markContextHubSnapshotStale();
+    if (!hostedSharedProvider) await markContextHubSnapshotStaleAsync();
     const catalog = await refreshContextHubForRequest();
     sendJson(res, 201, hostedSharedProvider
       ? hostedSharedDocumentResult(created, repositoryId, catalog)
@@ -22779,7 +22787,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       throw sharedRequestError(`Could not add this shared repository: ${error.message}`, 400, "shared_repository_unavailable");
     }
     registerContextHubSharedRepository(repository);
-    markContextHubSnapshotStale();
+    await markContextHubSnapshotStaleAsync();
     const catalog = await refreshContextHubSnapshot(root, { refreshShared: true, force: true });
     appendContextRoomEvent("settings.changed", { resource: { scope: "device", key: "hub.sharedRepositories" }, data: { repository, action: "added" } });
     sendJson(res, 201, {
@@ -22800,7 +22808,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       throw sharedRequestError("Disconnect every local project before removing this shared repository from Context Room", 409, "shared_repository_in_use", { bindings });
     }
     const result = unregisterContextHubSharedRepository(repository);
-    markContextHubSnapshotStale();
+    await markContextHubSnapshotStaleAsync();
     const catalog = await refreshContextHubSnapshot(root, { refreshShared: false, force: true });
     appendContextRoomEvent("settings.changed", { resource: { scope: "device", key: "hub.sharedRepositories" }, data: { repository, action: "removed" } });
     sendJson(res, 200, { ...result, catalog });
@@ -22991,7 +22999,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       }
       throw sharedRequestError(`Could not connect this Shared project: ${error.message}`, 400, "shared_context_connect_failed");
     }
-    markContextHubSnapshotStale();
+    await markContextHubSnapshotStaleAsync();
     const catalog = await refreshContextHubSnapshot(root, { refreshShared: true, force: true });
     appendContextRoomEvent("settings.changed", { resource: { scope: "project", projectId, key: "sharedContext" }, data: { repository, sharedProjectId: detected.projectId, action: "connected" } });
     sendJson(res, 200, { connected, catalog });
@@ -23023,7 +23031,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       }
       throw sharedRequestError(`Could not disconnect this Shared project: ${error.message}`, 500, "shared_context_disconnect_failed");
     }
-    markContextHubSnapshotStale();
+    await markContextHubSnapshotStaleAsync();
     const catalog = await refreshContextHubSnapshot(root, { refreshShared: false, force: true });
     appendContextRoomEvent("settings.changed", { resource: { scope: "project", projectId, key: "sharedContext" }, data: { action: "disconnected" } });
     sendJson(res, 200, { ...result, catalog });
@@ -23302,7 +23310,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       }
       contextHubProjectSummaryCache.clear();
       contextHubStateCache.clear();
-      markContextHubSnapshotStale();
+      await markContextHubSnapshotStaleAsync();
     }
     const payload = req.method === "POST" ? contextHubProjectSettingsResponse(project, { hooks, preferencesPath: globalPreferencesPath }) : currentPayload;
     const etag = `"${hashContent(JSON.stringify(payload.settings))}"`;
@@ -23373,7 +23381,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     if (action !== "delete-preview") {
       contextHubProjectSummaryCache.delete(path.resolve(project.root));
       contextHubStateCache.clear();
-      markContextHubSnapshotStale();
+      await markContextHubSnapshotStaleAsync();
     }
     sendJson(res, 200, { action, result });
     return;
@@ -23685,7 +23693,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     });
     contextHubProjectSummaryCache.clear();
     contextHubStateCache.clear();
-    markContextHubSnapshotStale();
+    await markContextHubSnapshotStaleAsync();
     sendJson(res, 200, { ...result, projectId: location.id });
     return;
   }
@@ -23760,7 +23768,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     }
     contextHubProjectSummaryCache.clear();
     contextHubStateCache.clear();
-    markContextHubSnapshotStale();
+    await markContextHubSnapshotStaleAsync();
     sendJson(res, 200, {
       accepted,
       errors,
@@ -23946,7 +23954,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     if (!hostedSharedProvider) {
       contextHubProjectSummaryCache.clear();
       contextHubStateCache.clear();
-      markContextHubSnapshotStale();
+      await markContextHubSnapshotStaleAsync();
     } else {
       void hostedSharedProvider.refresh({ force: true }).catch(() => {});
     }
@@ -24266,7 +24274,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     if (!hostedSharedProvider) {
       contextHubStateCache.clear();
       contextHubProjectSummaryCache.clear();
-      markContextHubSnapshotStale();
+      await markContextHubSnapshotStaleAsync();
     }
     const refresh = hostedSharedProvider
       ? Promise.resolve().then(() => hostedSharedProvider.refresh({ force: true }))
@@ -24424,7 +24432,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     if (!hostedSharedProvider) {
       contextHubStateCache.clear();
       contextHubProjectSummaryCache.clear();
-      markContextHubSnapshotStale();
+      await markContextHubSnapshotStaleAsync();
     }
     const refresh = hostedSharedProvider
       ? Promise.resolve().then(() => hostedSharedProvider.refresh({ force: true }))

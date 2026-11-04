@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isMainThread, threadId } from "node:worker_threads";
-import { withFilesystemLock } from "./filesystem_lock.mjs";
+import { filesystemLockLooksStale, withFilesystemLock } from "./filesystem_lock.mjs";
 import { readFilesystemIdentity, compareFilesystemIdentity } from "./filesystem_identity.mjs";
 import { attestLocation, observeLocation, acceptsRootIdentity } from "./location_attestation.mjs";
 import { legacyRootIdentities } from "./location_history.mjs";
@@ -118,6 +118,12 @@ function withRegistryLock(operation, { recoverSharedTransactions = true, timeout
   }, {
     timeoutMs,
     staleMs: REGISTRY_LOCK_STALE_MS,
+    // The owner record guards no state of its own: the registry, journals and
+    // snapshot files are written durably. A record lost or left empty by a
+    // power cut has no token and is reclaimed after staleMs, like a dead owner.
+    // Its fsync ran on the Hub main thread on every acquisition and stalled
+    // the event loop up to 1.3 s on a slow disk (ci /data, 2026-11-04).
+    durableRecord: false,
     busyMessage: "Context Hub registry is busy in another process",
     busyCode: "context_hub_registry_busy",
   });
@@ -130,12 +136,19 @@ function withRegistryLock(operation, { recoverSharedTransactions = true, timeout
 // attempts. Waiters in this process queue behind one another: a single attempt
 // runs at a time, so N waiting requests never stack N lock waits in one turn.
 // Reclaiming a stale lock writes two durable records, which one 1 ms attempt
-// cannot finish: after REGISTRY_LOCK_ASYNC_RECLAIM_AFTER_MS of waiting, every
-// fourth attempt may wait up to REGISTRY_LOCK_ASYNC_RECLAIM_ATTEMPT_MS.
+// cannot finish. Once a failed attempt sees a stale owner (dead process), the
+// next attempts wait longer, by steps: on a slow disk (fsync > 1 s) a fixed
+// short window would fail forever and answer 409 to every request. Only a
+// stale lock gets these windows: a live holder still costs 1 ms per attempt.
 const REGISTRY_LOCK_ASYNC_ATTEMPT_MS = 1;
 const REGISTRY_LOCK_ASYNC_RETRY_MS = 10;
-const REGISTRY_LOCK_ASYNC_RECLAIM_AFTER_MS = REGISTRY_LOCK_STALE_MS;
-const REGISTRY_LOCK_ASYNC_RECLAIM_ATTEMPT_MS = 25;
+const REGISTRY_LOCK_ASYNC_RECLAIM_STEPS_MS = Object.freeze([25, 100, 250, 1_000]);
+
+export function contextHubRegistryLockAttemptMs({ stale = false, failedReclaims = 0 } = {}) {
+  if (!stale) return REGISTRY_LOCK_ASYNC_ATTEMPT_MS;
+  const step = Math.max(0, Math.min(REGISTRY_LOCK_ASYNC_RECLAIM_STEPS_MS.length - 1, Math.floor(Number(failedReclaims) || 0)));
+  return REGISTRY_LOCK_ASYNC_RECLAIM_STEPS_MS[step];
+}
 let registryLockAsyncQueue = Promise.resolve();
 let registryLockAsyncPending = 0;
 
@@ -158,12 +171,13 @@ function withRegistryLockIfFree(operation, options = {}) {
   }
 }
 
-async function attemptRegistryLockUntil(operation, options, startedAt, deadline) {
-  for (let attempt = 0; ; attempt += 1) {
+async function attemptRegistryLockUntil(operation, options, deadline) {
+  let stale = false;
+  let failedReclaims = 0;
+  for (;;) {
     let locked = false;
     const remainingMs = deadline - performance.now();
-    const reclaiming = performance.now() - startedAt >= REGISTRY_LOCK_ASYNC_RECLAIM_AFTER_MS && attempt % 4 === 3;
-    const attemptMs = reclaiming ? REGISTRY_LOCK_ASYNC_RECLAIM_ATTEMPT_MS : REGISTRY_LOCK_ASYNC_ATTEMPT_MS;
+    const attemptMs = contextHubRegistryLockAttemptMs({ stale, failedReclaims });
     try {
       return withRegistryLock(operation, {
         ...options,
@@ -173,6 +187,8 @@ async function attemptRegistryLockUntil(operation, options, startedAt, deadline)
     } catch (error) {
       if (locked || error?.code !== "context_hub_registry_busy" || performance.now() >= deadline) throw error;
     }
+    if (stale) failedReclaims += 1;
+    stale = filesystemLockLooksStale(registryLockPath(), { staleMs: REGISTRY_LOCK_STALE_MS });
     await new Promise((resolve) => setTimeout(resolve, REGISTRY_LOCK_ASYNC_RETRY_MS));
   }
 }
@@ -185,7 +201,7 @@ function withRegistryLockAsync(operation, options = {}) {
   registryLockAsyncPending += 1;
   const run = registryLockAsyncQueue
     .then(() => new Promise((resolve) => setImmediate(resolve)))
-    .then(() => attemptRegistryLockUntil(operation, options, startedAt, deadline))
+    .then(() => attemptRegistryLockUntil(operation, options, deadline))
     .finally(() => { registryLockAsyncPending -= 1; });
   registryLockAsyncQueue = run.then(() => {}, () => {});
   return run;
@@ -248,6 +264,11 @@ function invalidateContextHubSnapshotLocked({ preserveState = false, previousReg
 
 export function invalidateContextHubSnapshot(options = {}) {
   return withRegistryLock(() => invalidateContextHubSnapshotLocked(options));
+}
+
+// Request paths: never wait for the registry lock on the Hub main thread.
+export function invalidateContextHubSnapshotAsync(options = {}) {
+  return withRegistryLockAsync(() => invalidateContextHubSnapshotLocked(options));
 }
 
 // preserveSnapshot: the change cannot add or remove a project (open time only).
