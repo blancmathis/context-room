@@ -146,6 +146,7 @@ import {
   readContextHubAttention,
   readContextHubRegistry,
   readContextHubSnapshotAsync,
+  readContextHubSnapshotIfFree,
   readContextHubNavigationSnapshot,
   readContextHubNavigationSnapshotAsync,
   readContextHubSnapshotInputs,
@@ -17807,6 +17808,8 @@ export function refreshContextHubSnapshot(root, options = {}) {
   // A forced refresh ignores the retained snapshot; the other path waits for
   // the registry lock without blocking the event loop.
   if (options.force) return startContextHubSnapshotRefresh(root, options, null);
+  const retained = readContextHubSnapshotIfFree();
+  if (retained.ready) return startContextHubSnapshotRefresh(root, options, retained.snapshot);
   return readContextHubSnapshotAsync().then((snapshot) => startContextHubSnapshotRefresh(root, options, snapshot));
 }
 
@@ -20090,18 +20093,20 @@ export function createMemoryServer({
     }
     // Scheduling only needs snapshot freshness. Constructing a whole fallback
     // catalogue here repeats the foreground registry reads during every opening.
-    // The read waits for the registry lock without blocking the event loop.
-    // Its decision runs before the refresh starts, as the former synchronous read did.
-    const retainedRead = !remoteAccess && !options.force ? readContextHubSnapshotAsync() : Promise.resolve(null);
+    // While another process holds the registry lock, the freshness read waits
+    // without blocking the event loop; the decision still runs before the refresh.
+    const retained = !remoteAccess && !options.force ? readContextHubSnapshotIfFree() : { ready: true, snapshot: null };
+    const retainedRead = retained.ready ? Promise.resolve(retained.snapshot) : readContextHubSnapshotAsync();
     let refresh = null;
-    void retainedRead.then((retainedSnapshot) => {
+    const decideNotification = (retainedSnapshot) => {
       const shouldNotify = Boolean(options.force || (!remoteAccess && (!retainedSnapshot?.state
         || Date.now() - Date.parse(retainedSnapshot.generatedAt) > CONTEXT_HUB_SNAPSHOT_TTL_MS
         || contextHubSnapshotRefreshes.has(resolvedRoot))));
       if (!shouldNotify || contextHubRefreshNotifications.has(resolvedRoot)) return;
       contextHubRefreshNotifications.set(resolvedRoot, refresh);
       notifyContextHubRefresh(resolvedRoot, refresh);
-    }, () => {});
+    };
+    if (!retained.ready) void retainedRead.then(decideNotification, () => {});
     refresh = retainedRead
       .then(() => contextHubSnapshotRefresh(resolvedRoot, options))
       .then((snapshot) => {
@@ -20109,6 +20114,7 @@ export function createMemoryServer({
         scheduleAuthorizedCleanup();
         return snapshot;
       });
+    if (retained.ready) decideNotification(retained.snapshot);
     return refresh;
   };
   const notifyContextHubRefresh = (resolvedRoot, refresh) => {

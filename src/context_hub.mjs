@@ -2193,6 +2193,22 @@ export function readContextHubNavigationSnapshot() {
   return withRegistryLock(readContextHubNavigationSnapshotLocked);
 }
 
+// One short attempt: callers keep their synchronous behaviour while the lock
+// is free and fall back to readContextHubSnapshotAsync when another process holds it.
+export function readContextHubSnapshotIfFree() {
+  let locked = false;
+  try {
+    const snapshot = withRegistryLock(readContextHubSnapshotLocked, {
+      timeoutMs: REGISTRY_LOCK_ASYNC_ATTEMPT_MS,
+      onLocked: () => { locked = true; },
+    });
+    return { ready: true, snapshot };
+  } catch (error) {
+    if (locked || error?.code !== "context_hub_registry_busy") throw error;
+    return { ready: false, snapshot: null };
+  }
+}
+
 export function readContextHubSnapshotAsync() {
   return withRegistryLockAsync(readContextHubSnapshotLocked);
 }
