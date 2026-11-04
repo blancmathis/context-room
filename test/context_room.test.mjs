@@ -639,7 +639,11 @@ test("app reveals one complete initial frame and keeps recurring refreshes in th
   assert.match(script, /IS_HOSTED_CONTEXT_ROOM && document\.body\.classList\.contains\("app-booting"\) && \/\^\(\?:proposal \)\?ready\$\/i\.test/);
   const globalQueueSource = script.slice(script.indexOf("function renderContextRoomGlobalReviewQueue"), script.indexOf("function renderSingleProjectWorktreeSwitch"));
   assert.doesNotMatch(globalQueueSource, /renderGlobalProjectExplorer\(\)/);
-  assert.match(html, /body\.app-booting \.app \{ visibility: hidden; opacity: 0; pointer-events: none; \}/);
+  // No `visibility: hidden` while booting: WebKit keeps a stale computed value on descendants after the class goes away.
+  assert.match(html, /body\.app-booting \.app \{ opacity: 0; pointer-events: none; \}/);
+  assert.doesNotMatch(html, /body\.app-booting \.app \{[^}]*visibility/);
+  assert.match(html, /<div class="app" inert>/);
+  assert.match(script, /document\.body\.classList\.remove\("app-booting"\);\s*document\.querySelector\("\.app"\)\?\.removeAttribute\("inert"\);/);
   assert.match(script, /const reportsPath = "\/api\/reports"/);
   assert.match(script, /readFileForOpen\(path, \{ force: options\.forceReload \}\)/);
   assert.match(diskRefreshSource, /const data = await readSelectedDiskFile\(previousSelected\)/);

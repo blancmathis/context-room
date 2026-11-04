@@ -3561,7 +3561,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .boot-indicator, .context-room-proposal-opening-indicator { animation: none !important; border-color: var(--line); border-top-color: var(--accent); }
     }
     .explorer-open[hidden], .graph-open[hidden] { display: none !important; }
-    body.app-booting .app { visibility: hidden; opacity: 0; pointer-events: none; }
+    body.app-booting .app { opacity: 0; pointer-events: none; }
     .boot-screen { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; background: var(--bg); color: var(--muted); }
     .boot-screen-inner { display: flex; align-items: center; gap: 10px; font: 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
     .boot-recovery { width: min(420px, calc(100vw - 40px)); display: grid; gap: 12px; color: var(--text); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
@@ -3599,7 +3599,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     <symbol id="cr-icon-graph" viewBox="0 0 20 20"><circle cx="4" cy="10" r="2"></circle><circle cx="10" cy="4" r="2"></circle><circle cx="16" cy="11" r="2"></circle><circle cx="10" cy="16" r="2"></circle><path d="M5.5 8.5L8.5 5.5M11.7 5.1l2.6 4.5M14.2 12.3l-2.7 2.5M8.4 14.8l-3-3.2"></path></symbol>
   </svg>
   <div id="bootScreen" class="boot-screen" role="status"><div id="bootScreenContent" class="boot-screen-inner"><span class="boot-indicator" aria-hidden="true"></span><span>Opening Context Room</span></div></div>
-  <div class="app">
+  <div class="app" inert>
     <div id="explorerEdgeTrigger" class="explorer-edge-trigger" aria-hidden="true"></div>
     <button id="explorerOpen" class="explorer-open" type="button" title="Open explorer" aria-label="Open explorer"><svg class="ui-icon" aria-hidden="true"><use href="#cr-icon-sidebar"></use></svg></button>
     <aside>
@@ -14162,6 +14162,7 @@ function finishInitialBoot() {
   document.body.dataset.bootMs = String(state.bootMilestones.complete);
   document.body.dataset.bootMilestones = JSON.stringify(state.bootMilestones);
   document.body.classList.remove("app-booting");
+  document.querySelector(".app")?.removeAttribute("inert");
   el("bootScreen")?.setAttribute("aria-hidden", "true");
   if (IS_HOSTED_HUB) setStatus("ready");
   else if (IS_HOSTED_REVIEW && state.page !== "file") setStatus("proposal ready");
