@@ -137,6 +137,26 @@ const REGISTRY_LOCK_ASYNC_RETRY_MS = 10;
 const REGISTRY_LOCK_ASYNC_RECLAIM_AFTER_MS = REGISTRY_LOCK_STALE_MS;
 const REGISTRY_LOCK_ASYNC_RECLAIM_ATTEMPT_MS = 25;
 let registryLockAsyncQueue = Promise.resolve();
+let registryLockAsyncPending = 0;
+
+// One short attempt, only when no asynchronous waiter of this process is
+// queued (FIFO): callers keep their synchronous behaviour while the lock is
+// free and fall back to the asynchronous wait when another process holds it.
+function withRegistryLockIfFree(operation, options = {}) {
+  if (registryLockAsyncPending > 0 && registryLockDepth === 0) return { ready: false, value: null };
+  let locked = false;
+  try {
+    const value = withRegistryLock(operation, {
+      ...options,
+      timeoutMs: REGISTRY_LOCK_ASYNC_ATTEMPT_MS,
+      onLocked: () => { locked = true; },
+    });
+    return { ready: true, value };
+  } catch (error) {
+    if (locked || error?.code !== "context_hub_registry_busy") throw error;
+    return { ready: false, value: null };
+  }
+}
 
 async function attemptRegistryLockUntil(operation, options, startedAt, deadline) {
   for (let attempt = 0; ; attempt += 1) {
@@ -162,9 +182,11 @@ function withRegistryLockAsync(operation, options = {}) {
   const deadline = startedAt + REGISTRY_LOCK_TIMEOUT_MS;
   // Yield between queued holders: once the lock frees, each holder's durable
   // lock record and operation run in their own event-loop turn.
+  registryLockAsyncPending += 1;
   const run = registryLockAsyncQueue
     .then(() => new Promise((resolve) => setImmediate(resolve)))
-    .then(() => attemptRegistryLockUntil(operation, options, startedAt, deadline));
+    .then(() => attemptRegistryLockUntil(operation, options, startedAt, deadline))
+    .finally(() => { registryLockAsyncPending -= 1; });
   registryLockAsyncQueue = run.then(() => {}, () => {});
   return run;
 }
@@ -2172,6 +2194,12 @@ export function beginContextHubSnapshotRefresh() {
   return withRegistryLock(beginContextHubSnapshotRefreshLocked);
 }
 
+// The refresh starts synchronously while the lock is free (callers and tests
+// rely on the worker starting in the same turn), asynchronously otherwise.
+export function beginContextHubSnapshotRefreshIfFree() {
+  return withRegistryLockIfFree(beginContextHubSnapshotRefreshLocked);
+}
+
 export function beginContextHubSnapshotRefreshAsync() {
   return withRegistryLockAsync(beginContextHubSnapshotRefreshLocked);
 }
@@ -2229,17 +2257,8 @@ export function readContextHubNavigationSnapshot() {
 // One short attempt: callers keep their synchronous behaviour while the lock
 // is free and fall back to readContextHubSnapshotAsync when another process holds it.
 export function readContextHubSnapshotIfFree() {
-  let locked = false;
-  try {
-    const snapshot = withRegistryLock(readContextHubSnapshotLocked, {
-      timeoutMs: REGISTRY_LOCK_ASYNC_ATTEMPT_MS,
-      onLocked: () => { locked = true; },
-    });
-    return { ready: true, snapshot };
-  } catch (error) {
-    if (locked || error?.code !== "context_hub_registry_busy") throw error;
-    return { ready: false, snapshot: null };
-  }
+  const { ready, value } = withRegistryLockIfFree(readContextHubSnapshotLocked);
+  return { ready, snapshot: value };
 }
 
 export function readContextHubSnapshotAsync() {

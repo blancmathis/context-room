@@ -136,6 +136,7 @@ import {
   abandonContextHubSharedTransaction,
   confirmContextHubProjectLocation,
   beginContextHubSnapshotRefreshAsync,
+  beginContextHubSnapshotRefreshIfFree,
   commitContextHubSnapshotAsync,
   contextHubHostRoot,
   contextHubRegistryLockPath,
@@ -17855,7 +17856,8 @@ function startContextHubSnapshotRefresh(root, {
     return active.followup;
   }
   const refresh = async (attempt = 0) => {
-    const coordination = await beginContextHubSnapshotRefreshAsync();
+    const started = beginContextHubSnapshotRefreshIfFree();
+    const coordination = started.ready ? started.value : await beginContextHubSnapshotRefreshAsync();
     const state = await taskRunner("context-hub", key, {
       refreshShared,
       refreshGit: true,

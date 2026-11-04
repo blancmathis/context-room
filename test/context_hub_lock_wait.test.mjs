@@ -49,20 +49,26 @@ async function startHubWithLockHeld(t) {
   const previousHubHome = process.env.CONTEXT_ROOM_HUB_HOME;
   const hubHome = path.join(base, "hub");
   process.env.CONTEXT_ROOM_HUB_HOME = hubHome;
-  t.after(() => {
-    if (previousHubHome === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
-    else process.env.CONTEXT_ROOM_HUB_HOME = previousHubHome;
-    fs.rmSync(base, { recursive: true, force: true });
+  let room = null;
+  let holder = null;
+  // One ordered cleanup: stop the holder and the server (and the refreshes it
+  // still runs) before the Hub home goes away, or a late write keeps it busy.
+  t.after(async () => {
+    try {
+      if (holder && holder.child.exitCode === null) holder.child.kill("SIGKILL");
+      if (room?.server.listening) await new Promise((resolve) => room.server.close(resolve));
+      if (room) await room.waitForShutdown();
+    } finally {
+      if (previousHubHome === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
+      else process.env.CONTEXT_ROOM_HUB_HOME = previousHubHome;
+      fs.rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+    }
   });
   const root = makeProject(base, "alpha");
   const registered = registerContextHubProject(root, { title: "Alpha" });
 
-  const room = createMemoryServer({ root });
+  room = createMemoryServer({ root });
   await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
-  t.after(async () => {
-    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
-    await room.waitForShutdown();
-  });
   const origin = `http://127.0.0.1:${room.server.address().port}`;
   const headers = { "x-context-room-project": room.projectId };
   const warm = await fetch(`${origin}/api/context-hub`, { headers });
@@ -70,8 +76,7 @@ async function startHubWithLockHeld(t) {
   await warm.arrayBuffer();
   await new Promise((resolve) => setTimeout(resolve, 300));
 
-  const holder = holdRegistryLockInOtherProcess(contextHubRegistryLockPath(), { ...process.env, CONTEXT_ROOM_HUB_HOME: hubHome });
-  t.after(() => { if (holder.child.exitCode === null) holder.child.kill("SIGKILL"); });
+  holder = holdRegistryLockInOtherProcess(contextHubRegistryLockPath(), { ...process.env, CONTEXT_ROOM_HUB_HOME: hubHome });
   await holder.locked;
 
   return { origin, headers, holder, project: registered };
