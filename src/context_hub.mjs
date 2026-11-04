@@ -103,7 +103,7 @@ const REGISTRY_LOCK_TIMEOUT_MS = 5_000;
 const REGISTRY_LOCK_STALE_MS = 1_000;
 let registryLockDepth = 0;
 
-function withRegistryLock(operation, { recoverSharedTransactions = true, timeoutMs = REGISTRY_LOCK_TIMEOUT_MS, onLocked = null } = {}) {
+function withRegistryLock(operation, { recoverSharedTransactions = true, timeoutMs = REGISTRY_LOCK_TIMEOUT_MS, maxWaitMs = undefined, onLocked = null } = {}) {
   if (registryLockDepth > 0) return operation();
   return withFilesystemLock(registryLockPath(), () => {
     registryLockDepth += 1;
@@ -117,6 +117,7 @@ function withRegistryLock(operation, { recoverSharedTransactions = true, timeout
     }
   }, {
     timeoutMs,
+    maxWaitMs,
     staleMs: REGISTRY_LOCK_STALE_MS,
     // The owner record guards no state of its own: the registry, journals and
     // snapshot files are written durably. A record lost or left empty by a
@@ -138,16 +139,22 @@ function withRegistryLock(operation, { recoverSharedTransactions = true, timeout
 // Reclaiming a stale lock writes two durable records, which one 1 ms attempt
 // cannot finish. Once a failed attempt sees a stale owner (dead process), the
 // next attempts wait longer, by steps: on a slow disk (fsync > 1 s) a fixed
-// short window would fail forever and answer 409 to every request. Only a
-// stale lock gets these windows: a live holder still costs 1 ms per attempt.
+// short window would fail forever and answer 409 to every request. The last
+// step is the time left before the request deadline. Only a stale lock gets
+// these windows: a live holder still costs 1 ms per attempt.
+// A window is a deadline for the reclaim's disk work, not a lock wait: an
+// attempt never spends more than REGISTRY_LOCK_ASYNC_MAX_WAIT_MS blocked in a
+// wait on the main thread, even if another process takes the lock between the
+// stale probe and the attempt. It then fails as busy and yields.
 const REGISTRY_LOCK_ASYNC_ATTEMPT_MS = 1;
 const REGISTRY_LOCK_ASYNC_RETRY_MS = 10;
-const REGISTRY_LOCK_ASYNC_RECLAIM_STEPS_MS = Object.freeze([25, 100, 250, 1_000]);
+const REGISTRY_LOCK_ASYNC_MAX_WAIT_MS = 25;
+const REGISTRY_LOCK_ASYNC_RECLAIM_STEPS_MS = Object.freeze([25, 100, 250, 1_000, Infinity]);
 
 export function contextHubRegistryLockAttemptMs({ stale = false, failedReclaims = 0 } = {}) {
-  if (!stale) return REGISTRY_LOCK_ASYNC_ATTEMPT_MS;
+  if (!stale) return { timeoutMs: REGISTRY_LOCK_ASYNC_ATTEMPT_MS, maxWaitMs: REGISTRY_LOCK_ASYNC_ATTEMPT_MS };
   const step = Math.max(0, Math.min(REGISTRY_LOCK_ASYNC_RECLAIM_STEPS_MS.length - 1, Math.floor(Number(failedReclaims) || 0)));
-  return REGISTRY_LOCK_ASYNC_RECLAIM_STEPS_MS[step];
+  return { timeoutMs: REGISTRY_LOCK_ASYNC_RECLAIM_STEPS_MS[step], maxWaitMs: REGISTRY_LOCK_ASYNC_MAX_WAIT_MS };
 }
 let registryLockAsyncQueue = Promise.resolve();
 let registryLockAsyncPending = 0;
@@ -177,11 +184,12 @@ async function attemptRegistryLockUntil(operation, options, deadline) {
   for (;;) {
     let locked = false;
     const remainingMs = deadline - performance.now();
-    const attemptMs = contextHubRegistryLockAttemptMs({ stale, failedReclaims });
+    const attempt = contextHubRegistryLockAttemptMs({ stale, failedReclaims });
     try {
       return withRegistryLock(operation, {
         ...options,
-        timeoutMs: Math.max(1, Math.min(attemptMs, remainingMs)),
+        timeoutMs: Math.max(1, Math.min(attempt.timeoutMs, remainingMs)),
+        maxWaitMs: attempt.maxWaitMs,
         onLocked: () => { locked = true; },
       });
     } catch (error) {

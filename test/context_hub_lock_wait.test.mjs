@@ -6,8 +6,9 @@ import { execFileSync, spawn } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { contextHubRegistryLockAttemptMs, contextHubRegistryLockPath, registerContextHubProject } from "../src/context_hub.mjs";
+import { contextHubRegistryLockAttemptMs, contextHubRegistryLockPath, listContextHubProjectsAsync, registerContextHubProject } from "../src/context_hub.mjs";
 import { createMemoryServer, initializeContextRoomProject } from "../src/context_room.mjs";
+import { acquireFilesystemLock } from "../src/filesystem_lock.mjs";
 
 const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const HOLD_MS = 1500;
@@ -26,7 +27,7 @@ function makeProject(base, name) {
 }
 
 // Another process (attention task, refresh worker, CLI) holds the Hub registry lock.
-function holdRegistryLockInOtherProcess(lockPath, env) {
+function holdRegistryLockInOtherProcess(lockPath, env = process.env) {
   const lockModule = pathToFileURL(path.join(SOURCE_ROOT, "src", "filesystem_lock.mjs")).href;
   const script = `
     const { withFilesystemLock } = await import(${JSON.stringify(lockModule)});
@@ -129,8 +130,29 @@ function watchEventLoop(t) {
 // old stacked 1 ms attempts paused ~370 ms. GC, fsync of durable files
 // and refresh begin/commit pause the loop too, with or without the lock: a
 // baseline pass of the same load without the lock sets the allowance.
+// The cap keeps a noisy baseline from hiding a real freeze (>= 1 s).
 function allowedGapMs(baselineGapMs) {
-  return Math.max(250, baselineGapMs + 150);
+  return Math.min(800, Math.max(250, baselineGapMs + 150));
+}
+
+// A slow disk: every fsync of this process blocks for delayMs first.
+function slowFsync(t, delayMs) {
+  const fsyncSync = fs.fsyncSync;
+  const slow = function (...args) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
+    return fsyncSync.apply(this, args);
+  };
+  fs.fsyncSync = slow;
+  const restore = () => { if (fs.fsyncSync === slow) fs.fsyncSync = fsyncSync; };
+  t.after(restore);
+  return restore;
+}
+
+async function killedLockHolder(lockPath) {
+  const holder = holdRegistryLockInOtherProcess(lockPath);
+  await holder.locked;
+  holder.child.kill("SIGKILL");
+  await holder.exited;
 }
 
 async function measureLoad(t, run, { holdLock = null, after = null } = {}) {
@@ -229,22 +251,85 @@ test("Hub event loop never freezes when a mutation invalidates the snapshot whil
 
 // A stale lock needs two durable records; on a slow disk (fsync > 1 s) a fixed
 // short window never finishes them and every request answers 409.
+// The last step is the time left before the request deadline. A window is a
+// deadline for disk work: the wait on the main thread stays capped at 25 ms.
 test("Registry lock attempts grow by steps only while the lock is stale", () => {
-  assert.equal(contextHubRegistryLockAttemptMs({ stale: false, failedReclaims: 9 }), 1);
+  assert.deepEqual(contextHubRegistryLockAttemptMs({ stale: false, failedReclaims: 9 }), { timeoutMs: 1, maxWaitMs: 1 });
   const steps = [0, 1, 2, 3, 4, 20].map((failedReclaims) => contextHubRegistryLockAttemptMs({ stale: true, failedReclaims }));
-  assert.deepEqual(steps, [25, 100, 250, 1000, 1000, 1000]);
+  assert.deepEqual(steps.map((step) => step.timeoutMs), [25, 100, 250, 1000, Infinity, Infinity]);
+  assert.ok(steps.every((step) => step.maxWaitMs === 25));
 });
 
+// Advice B (review PR #129): a long reclaim window must not become a long
+// synchronous wait when a live process holds the lock.
+test("A lock attempt with a long deadline waits at most maxWaitMs for a live holder", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-lock-budget-"));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const lockPath = path.join(base, "registry.lock");
+  const holder = holdRegistryLockInOtherProcess(lockPath);
+  t.after(() => { if (holder.child.exitCode === null) holder.child.kill("SIGKILL"); });
+  await holder.locked;
+  const startedAt = performance.now();
+  assert.throws(
+    () => acquireFilesystemLock(lockPath, { timeoutMs: 1000, maxWaitMs: 25, staleMs: 1000, busyCode: "probe_busy" }),
+    (error) => error?.code === "probe_busy",
+  );
+  const elapsed = performance.now() - startedAt;
+  assert.ok(elapsed < 200, `the attempt waited ${Math.round(elapsed)} ms for a live holder (cap 25 ms)`);
+  await holder.exited;
+});
+
+// Advice A: the reclaim record's fsync may outlast the window (1.8 s seen on ci
+// /data). The reclaim must still finish, or every attempt fails the same way.
+test("A stale lock is reclaimed in one attempt even when fsync takes 1.8 s", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-lock-slow-fsync-"));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const lockPath = path.join(base, "registry.lock");
+  await killedLockHolder(lockPath);
+  const restore = slowFsync(t, 1800);
+  let lease = null;
+  try {
+    lease = acquireFilesystemLock(lockPath, { timeoutMs: 1000, maxWaitMs: 25, staleMs: 1000, durableRecord: false, busyCode: "probe_busy" });
+  } finally {
+    restore();
+  }
+  assert.ok(lease, "the stale lock was not reclaimed");
+  lease.assertHeld();
+  lease.release();
+});
+
+// Advice D: with a slow disk (fsync 150 ms) the old fixed 25 ms reclaim window
+// (3097084) never finished the reclaim and answered 409 after 5 s.
 test("Hub takes over the registry lock of a killed process without answering 409", async (t) => {
   const { origin, headers, holdLock, project } = await startHub(t);
   const holder = await holdLock();
   holder.child.kill("SIGKILL");
   await holder.exited;
+  const restore = slowFsync(t, 150);
   const response = await fetch(`${origin}/api/context-hub/project`, {
     method: "POST",
     headers,
     body: JSON.stringify({ projectId: project.id }),
-  });
+  }).finally(restore);
   const body = await response.text();
   assert.ok(response.status === 200 || response.status === 201, `POST /project after a killed lock holder: ${response.status} ${body.slice(0, 300)}`);
+});
+
+// Advice D, without a server: only the asynchronous path may reclaim (no sync
+// 5 s caller, no refresh worker). On 3097084 its fixed 25 ms reclaim window
+// could not finish a 150 ms fsync and every attempt failed until busy (409).
+test("The asynchronous registry path reclaims a killed holder's lock on a slow disk", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-lock-killed-"));
+  const previousHubHome = process.env.CONTEXT_ROOM_HUB_HOME;
+  process.env.CONTEXT_ROOM_HUB_HOME = path.join(base, "hub");
+  t.after(() => {
+    if (previousHubHome === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
+    else process.env.CONTEXT_ROOM_HUB_HOME = previousHubHome;
+    fs.rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  });
+  registerContextHubProject(makeProject(base, "alpha"), { title: "Alpha" });
+  await killedLockHolder(contextHubRegistryLockPath());
+  const restore = slowFsync(t, 150);
+  const projects = await listContextHubProjectsAsync().finally(restore);
+  assert.equal(projects.length, 1);
 });

@@ -115,10 +115,22 @@ function currentHostScope() {
   return cachedCurrentHostScope;
 }
 
-function waitForLock(deadline, milliseconds = 20) {
+// options.maxWaitMs caps the time one acquisition spends blocked in
+// Atomics.wait, apart from its deadline: a caller on a main thread may give a
+// stale-lock reclaim a long deadline (slow fsync) yet never wait long for a
+// live holder. Once the budget is spent, the acquisition fails as busy.
+function waitForLock(deadline, options = {}) {
   const remaining = deadline - performance.now();
   if (remaining <= 0) return;
-  Atomics.wait(lockWait, 0, 0, Math.max(1, Math.min(remaining, Number(milliseconds) || 20)));
+  let slice = Math.min(remaining, 20);
+  if (Number.isFinite(options.maxWaitMs)) {
+    const budget = options.maxWaitMs - (options.waitedMs || 0);
+    if (budget <= 0) throw busyError(options.busyMessage, options.busyCode);
+    slice = Math.min(slice, budget);
+  }
+  const startedAt = performance.now();
+  Atomics.wait(lockWait, 0, 0, Math.max(1, slice));
+  if (Number.isFinite(options.maxWaitMs)) options.waitedMs = (options.waitedMs || 0) + (performance.now() - startedAt);
 }
 
 function assertBeforeDeadline(deadline, options) {
@@ -523,7 +535,7 @@ function recoverStaleReclaim(paths, deadline, observed, options) {
         return true;
       }
       assertBeforeDeadline(deadline, options);
-      waitForLock(deadline);
+      waitForLock(deadline, options);
     }
   } finally {
     if (ticketPath && ticket) {
@@ -544,7 +556,7 @@ function withReclaim(paths, deadline, options, operation) {
     const existing = readLockRecord(paths.reclaim);
     if (existing) {
       if (lockIsStale(existing, options.staleMs, options)) recoverStaleReclaim(paths, deadline, existing, options);
-      else { assertBeforeDeadline(deadline, options); waitForLock(deadline); }
+      else { assertBeforeDeadline(deadline, options); waitForLock(deadline, options); }
       continue;
     }
     try {
@@ -557,11 +569,13 @@ function withReclaim(paths, deadline, options, operation) {
         continue;
       }
       assertBeforeDeadline(deadline, options);
-      waitForLock(deadline);
+      waitForLock(deadline, options);
     }
   }
+  // The reclaim record is published: finish the short operation even if its
+  // fsync ran past the deadline. Abandoning it here would fail every attempt
+  // on a disk whose fsync outlasts the window (1.8 s seen on ci /data).
   try {
-    assertBeforeDeadline(deadline, options);
     return operation();
   } finally {
     releaseReclaim(paths, reclaim);
@@ -578,16 +592,25 @@ function removeLockGeneration(paths, expected) {
 function acquireLock(paths, deadline, options) {
   assertBeforeDeadline(deadline, options);
   fs.mkdirSync(path.dirname(paths.lock), { recursive: true, mode: 0o700 });
+  // After a finished reclaim, one publication attempt (once per acquisition)
+  // may run past the deadline: the slow part (fsync) is done, the lock is free.
+  let afterReclaim = false;
+  let graceUsed = false;
   while (true) {
-    assertBeforeDeadline(deadline, options);
+    if (!afterReclaim) assertBeforeDeadline(deadline, options);
+    const graced = afterReclaim;
+    afterReclaim = false;
+    if (graced) graceUsed = true;
     if (fs.existsSync(paths.reclaim)) {
+      if (graced) assertBeforeDeadline(deadline, options);
       const reclaim = readLockRecord(paths.reclaim);
       if (lockIsStale(reclaim, options.staleMs, options)) {
         withReclaim(paths, deadline, options, () => {});
+        afterReclaim = !graceUsed;
         continue;
       }
       assertBeforeDeadline(deadline, options);
-      waitForLock(deadline);
+      waitForLock(deadline, options);
       continue;
     }
     try {
@@ -604,10 +627,13 @@ function acquireLock(paths, deadline, options) {
           if (!lockIsStale(claimed, options.staleMs, options)) return false;
           return removeLockGeneration(paths, claimed);
         });
-        if (recovered) continue;
+        if (recovered) {
+          afterReclaim = !graceUsed;
+          continue;
+        }
       }
       assertBeforeDeadline(deadline, options);
-      waitForLock(deadline);
+      waitForLock(deadline, options);
     }
   }
 }
@@ -742,6 +768,8 @@ export function acquireFilesystemLock(lockPath, options = {}) {
     // Only the owner record may skip fsync; reclaim records stay durable. Callers
     // whose lock guards no state across a crash (device navigation) opt out.
     durableRecord: options.durableRecord !== false,
+    maxWaitMs: options.maxWaitMs != null && Number(options.maxWaitMs) >= 0 ? Number(options.maxWaitMs) : Infinity,
+    waitedMs: 0,
   };
   const paths = lockPaths(lockPath);
   if (threadId > 0) currentWorkerOwner(paths.lock);
