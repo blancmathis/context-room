@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { isUtf8 } from "node:buffer";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { parseDocument } from "yaml";
 import { parse as parseJsonc } from "jsonc-parser";
@@ -1341,8 +1341,30 @@ function sourceIdentity(root) {
   const topLevel = tryGit(resolved, ["rev-parse", "--show-toplevel"]);
   if (!topLevel) return null;
   const transports = tryGit(topLevel, ["remote"]).split("\n").filter(Boolean)
-    .flatMap((name) => tryGit(topLevel, ["remote", "get-url", "--all", name]).split("\n"))
-    .map((remote) => String(remote || "").trim()).filter(Boolean);
+    .flatMap((name) => tryGit(topLevel, ["remote", "get-url", "--all", name]).split("\n"));
+  return sourceIdentityFromGit(resolved, topLevel, transports);
+}
+
+// Same Git reads as tryGit, without blocking the event loop (Hub project open).
+function tryGitAsync(cwd, args) {
+  return new Promise((resolve) => {
+    execFile("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: { ...process.env } }, (error, stdout) => {
+      resolve(error ? "" : String(stdout).trim());
+    });
+  });
+}
+
+async function sourceIdentityAsync(root) {
+  const resolved = stableRoot(root);
+  const topLevel = await tryGitAsync(resolved, ["rev-parse", "--show-toplevel"]);
+  if (!topLevel) return null;
+  const names = (await tryGitAsync(topLevel, ["remote"])).split("\n").filter(Boolean);
+  const urls = await Promise.all(names.map((name) => tryGitAsync(topLevel, ["remote", "get-url", "--all", name])));
+  return sourceIdentityFromGit(resolved, topLevel, urls.flatMap((output) => output.split("\n")));
+}
+
+function sourceIdentityFromGit(resolved, topLevel, remoteLines) {
+  const transports = remoteLines.map((remote) => String(remote || "").trim()).filter(Boolean);
   if (!transports.length) return null;
   const stableTopLevel = stableRoot(topLevel);
   const sourceSubpath = path.relative(stableTopLevel, resolved).replaceAll(path.sep, "/") || ".";
@@ -1482,8 +1504,7 @@ function selectRegisteredBinding(matches, sourceSubpath, specificity) {
   return top[0];
 }
 
-function resolveRegisteredConnection(root) {
-  const source = sourceIdentity(root);
+function resolveRegisteredConnection(root, source = sourceIdentity(root)) {
   const registry = readJson(registryPath(), { bindings: [] });
   if (!source) {
     const resolved = stableRoot(root);
@@ -5799,7 +5820,14 @@ export function reconcileSharedSkillLocations(root, { provider = "all", allowOff
 }
 
 export function sharedContextStatus(root) {
-  const connection = readSharedProjectConnection(root);
+  return sharedContextStatusForConnection(readSharedProjectConnection(root));
+}
+
+export async function sharedContextStatusAsync(root) {
+  return sharedContextStatusForConnection(resolveRegisteredConnection(root, await sourceIdentityAsync(root)));
+}
+
+function sharedContextStatusForConnection(connection) {
   if (!connection) return { connected: false };
   const state = readJson(sharedStatePath(connection.repository), {});
   const security = readJson(path.join(repositoryCacheRoot(connection.repository), "github-security.json"), null);

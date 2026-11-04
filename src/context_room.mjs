@@ -106,6 +106,7 @@ import {
   setSharedSkillLocationOverride,
   setSharedSkillProviderSettings,
   sharedContextStatus,
+  sharedContextStatusAsync,
   sharedSkillLocationsStatus,
   sharedInstructionLocationsStatus,
   unlinkSharedSkillLocation,
@@ -134,8 +135,8 @@ import {
   abandonInvalidContextHubSharedTransaction,
   abandonContextHubSharedTransaction,
   confirmContextHubProjectLocation,
-  beginContextHubSnapshotRefresh,
-  commitContextHubSnapshot,
+  beginContextHubSnapshotRefreshAsync,
+  commitContextHubSnapshotAsync,
   contextHubHostRoot,
   contextHubRegistryLockPath,
   contextHubRepositoryIdentity,
@@ -151,7 +152,7 @@ import {
   readContextHubNavigationSnapshotAsync,
   readContextHubSnapshotInputs,
   invalidateContextHubSnapshot,
-  recordContextHubProjectOpened,
+  recordContextHubProjectOpenedAsync,
   removeContextHubReviewSnoozes,
   registerContextHubProject,
   registerContextHubSharedRepository,
@@ -17024,8 +17025,17 @@ function contextHubStateWithAttention(state = {}) {
   };
 }
 
-function contextHubLocalLocations(root) {
-  const hub = contextHubUiState(root);
+// Routes on the Hub server build a fresh state in a short-lived process: the
+// build takes the registry lock many times, and another process may hold it.
+function contextHubUiStateOffThread(root, options = {}) {
+  return runContextHubProcessTask(root, options);
+}
+
+async function contextHubLocalLocationsAsync(root) {
+  return contextHubLocalLocationsFromState(await contextHubUiStateOffThread(root));
+}
+
+function contextHubLocalLocationsFromState(hub) {
   return (hub.projects || [])
     .filter((project) => project.available && project.mode !== "shared")
     .flatMap((project) => (project.worktrees?.length ? project.worktrees : [project]).map((location) => ({ ...location, title: project.title || location.title })))
@@ -17034,7 +17044,15 @@ function contextHubLocalLocations(root) {
 
 function reviewCleanupCandidates(root) {
   contextHubStateCache.clear();
-  const hub = contextHubStateWithAttention(contextHubUiState(root));
+  return reviewCleanupCandidatesFromState(root, contextHubStateWithAttention(contextHubUiState(root)));
+}
+
+async function reviewCleanupCandidatesAsync(root) {
+  contextHubStateCache.clear();
+  return reviewCleanupCandidatesFromState(root, contextHubStateWithAttention(await contextHubUiStateOffThread(root)));
+}
+
+function reviewCleanupCandidatesFromState(root, hub) {
   const locations = new Map((hub.projects || []).flatMap((project) => project.worktrees?.length ? project.worktrees : [project]).map((location) => [location.id, location]));
   return contextHubAtomicReviewItems(hub).flatMap((item) => {
     if (item.type === "shared") {
@@ -17837,14 +17855,14 @@ function startContextHubSnapshotRefresh(root, {
     return active.followup;
   }
   const refresh = async (attempt = 0) => {
-    const coordination = beginContextHubSnapshotRefresh();
+    const coordination = await beginContextHubSnapshotRefreshAsync();
     const state = await taskRunner("context-hub", key, {
       refreshShared,
       refreshGit: true,
       force: true,
       snapshotCoordinated: true,
     });
-    const committed = commitContextHubSnapshot(state, coordination, { generatedAt: state.generatedAt });
+    const committed = await commitContextHubSnapshotAsync(state, coordination, { generatedAt: state.generatedAt });
     if (!committed.committed) {
       contextHubStateCache.delete(key);
       if (committed.reason === "out-of-order") {
@@ -20696,8 +20714,8 @@ export function createMemoryServer({
           const project = (await listContextHubProjectsAsync()).find((item) => item.id === requestedProjectId);
           if (!project) throw sharedRequestError(`Unknown local project: ${requestedProjectId}`, 404, "context_hub_project_not_found");
           if (!project.available) throw sharedRequestError(`Local project is unavailable: ${project.root}`, 409, "context_hub_project_unavailable");
-          recordContextHubProjectOpened(project.id);
-          const cached = sharedContextStatus(project.root);
+          await recordContextHubProjectOpenedAsync(project.id);
+          const cached = await sharedContextStatusAsync(project.root);
           let sharedStatus = null;
           if (cached.connected) {
             const sync = scheduleContextHubProjectSync(project.root);
@@ -21625,7 +21643,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     if (requested.length > 200) throw sharedRequestError("At most 200 review items can be rejected at once", 400, "context_hub_reject_limit");
 
     if (!hostedSharedProvider) contextHubStateCache.clear();
-    const hub = hostedSharedProvider ? await readContextHubForRequest() : contextHubStateWithAttention(contextHubUiState(root));
+    const hub = hostedSharedProvider ? await readContextHubForRequest() : contextHubStateWithAttention(await contextHubUiStateOffThread(root));
     const candidates = new Map();
     for (const proposal of hub.proposals || []) {
       candidates.set(proposal.id, { kind: "shared", proposal });
@@ -23013,7 +23031,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     const body = await readJsonBody(req);
     const until = String(body.until || "");
     if (!Number.isFinite(Date.parse(until)) || Date.parse(until) <= Date.now()) throw sharedRequestError("Snooze deadline must be in the future", 400, "invalid_snooze_deadline");
-    const current = contextHubStateWithAttention(contextHubUiState(root, { refreshShared: true, force: true }));
+    const current = contextHubStateWithAttention(await contextHubUiStateOffThread(root, { refreshShared: true, force: true }));
     const index = new Map(contextHubAtomicReviewItems(current).map((item) => [item.id, item]));
     const requested = Array.isArray(body.items) ? body.items : [];
     if (!requested.length) throw sharedRequestError("At least one review is required", 400, "missing_review_items");
@@ -23656,7 +23674,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     if (hostedSharedProvider) throw sharedRequestError("Undo is available only for local file reviews", 400, "review_undo_local_only");
     const body = await readJsonBody(req, { maxBytes: 4_000 });
     assertExactObjectKeys(body, ["projectId", "receiptId", "requestId"], "Review undo");
-    const location = contextHubLocalLocations(root).find((entry) => entry.id === String(body.projectId || ""));
+    const location = (await contextHubLocalLocationsAsync(root)).find((entry) => entry.id === String(body.projectId || ""));
     if (!location) throw sharedRequestError("This project location is not available.", 404, "review_undo_project_unavailable");
     const result = undoDocReviewAcceptance(location.root, {
       receiptId: String(body.receiptId || ""),
@@ -23679,7 +23697,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     if (requested.length > 200) throw sharedRequestError("At most 200 local review items can be accepted at once", 400, "context_hub_accept_limit");
 
     contextHubStateCache.clear();
-    const hub = contextHubUiState(root);
+    const hub = await contextHubUiStateOffThread(root);
     const candidates = contextHubLocalReviewCandidates(hub);
     const byId = new Map();
     for (const entry of requested) {
@@ -24739,7 +24757,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/review-cleanup") {
-    const hub = contextHubUiState(root);
+    const hub = await contextHubUiStateOffThread(root);
     sendJson(res, 200, { policy: readReviewCleanupPolicy(root), receipts: recentReviewCleanupReceipts(root), projects: (hub.projects || []).flatMap((project) => project.worktrees?.length ? project.worktrees : [project]).map((project) => ({ id: project.id, title: project.title })) });
     return;
   }
@@ -24749,12 +24767,12 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
   if (req.method === "POST" && url.pathname === "/api/review-cleanup/preview") {
     const body = await readJsonBody(req);
-    sendJson(res, 200, previewReviewCleanup(root, reviewCleanupCandidates(root), { days: body.days, projectIds: body.projectIds || [] }));
+    sendJson(res, 200, previewReviewCleanup(root, await reviewCleanupCandidatesAsync(root), { days: body.days, projectIds: body.projectIds || [] }));
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/review-cleanup/apply") {
     const body = await readJsonBody(req);
-    const result = applyReviewCleanup(root, reviewCleanupCandidates(root), { days: body.days, projectIds: body.projectIds || [], expectedRevision: body.expectedRevision, reject: rejectCleanupCandidate });
+    const result = applyReviewCleanup(root, await reviewCleanupCandidatesAsync(root), { days: body.days, projectIds: body.projectIds || [], expectedRevision: body.expectedRevision, reject: rejectCleanupCandidate });
     scheduleContextHubRefresh();
     sendJson(res, 200, result);
     return;

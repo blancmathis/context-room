@@ -126,19 +126,28 @@ function withRegistryLock(operation, { recoverSharedTransactions = true, timeout
 // The Hub server reads the registry on its main thread while attention tasks,
 // the refresh worker and CLI commands hold the same lock in other processes.
 // A synchronous wait there froze every request for seconds (crit4, 2026-11-04),
-// so hot readers try briefly and yield to the event loop between attempts.
-const REGISTRY_LOCK_ASYNC_ATTEMPT_MS = 20;
-const REGISTRY_LOCK_ASYNC_RETRY_MS = 15;
+// so hot readers try once without waiting and yield to the event loop between
+// attempts. Waiters in this process queue behind one another: a single attempt
+// runs at a time, so N waiting requests never stack N lock waits in one turn.
+// Reclaiming a stale lock writes two durable records, which one 1 ms attempt
+// cannot finish: after REGISTRY_LOCK_ASYNC_RECLAIM_AFTER_MS of waiting, every
+// fourth attempt may wait up to REGISTRY_LOCK_ASYNC_RECLAIM_ATTEMPT_MS.
+const REGISTRY_LOCK_ASYNC_ATTEMPT_MS = 1;
+const REGISTRY_LOCK_ASYNC_RETRY_MS = 10;
+const REGISTRY_LOCK_ASYNC_RECLAIM_AFTER_MS = REGISTRY_LOCK_STALE_MS;
+const REGISTRY_LOCK_ASYNC_RECLAIM_ATTEMPT_MS = 25;
+let registryLockAsyncQueue = Promise.resolve();
 
-async function withRegistryLockAsync(operation, options = {}) {
-  const deadline = performance.now() + REGISTRY_LOCK_TIMEOUT_MS;
-  while (true) {
+async function attemptRegistryLockUntil(operation, options, startedAt, deadline) {
+  for (let attempt = 0; ; attempt += 1) {
     let locked = false;
     const remainingMs = deadline - performance.now();
+    const reclaiming = performance.now() - startedAt >= REGISTRY_LOCK_ASYNC_RECLAIM_AFTER_MS && attempt % 4 === 3;
+    const attemptMs = reclaiming ? REGISTRY_LOCK_ASYNC_RECLAIM_ATTEMPT_MS : REGISTRY_LOCK_ASYNC_ATTEMPT_MS;
     try {
       return withRegistryLock(operation, {
         ...options,
-        timeoutMs: Math.max(1, Math.min(REGISTRY_LOCK_ASYNC_ATTEMPT_MS, remainingMs)),
+        timeoutMs: Math.max(1, Math.min(attemptMs, remainingMs)),
         onLocked: () => { locked = true; },
       });
     } catch (error) {
@@ -146,6 +155,18 @@ async function withRegistryLockAsync(operation, options = {}) {
     }
     await new Promise((resolve) => setTimeout(resolve, REGISTRY_LOCK_ASYNC_RETRY_MS));
   }
+}
+
+function withRegistryLockAsync(operation, options = {}) {
+  const startedAt = performance.now();
+  const deadline = startedAt + REGISTRY_LOCK_TIMEOUT_MS;
+  // Yield between queued holders: once the lock frees, each holder's durable
+  // lock record and operation run in their own event-loop turn.
+  const run = registryLockAsyncQueue
+    .then(() => new Promise((resolve) => setImmediate(resolve)))
+    .then(() => attemptRegistryLockUntil(operation, options, startedAt, deadline));
+  registryLockAsyncQueue = run.then(() => {}, () => {});
+  return run;
 }
 
 function normalizedSnapshotControl(raw = {}) {
@@ -211,16 +232,22 @@ export function invalidateContextHubSnapshot(options = {}) {
 // The last snapshot stays readable, marked stale, so readers never fall back to
 // the locals-only navigation state while the next refresh runs. An in-flight
 // refresh may still commit (see commitContextHubSnapshot).
-function mutateContextHubRegistry(operation, { preserveSnapshot = false } = {}) {
-  return withRegistryLock(() => {
-    const registry = readContextHubRegistry();
-    const previousRegistryRevision = preserveSnapshot ? contextHubRegistryRevision(registry) : "";
-    const result = operation(registry);
-    if (result?.identityUnconfirmed === true) return result;
-    writeJson(registryPath(), registry);
-    invalidateContextHubSnapshotLocked(preserveSnapshot ? { preserveState: true, previousRegistryRevision, openTimeOnly: true } : {});
-    return result;
-  });
+function mutateContextHubRegistryLocked(operation, { preserveSnapshot = false } = {}) {
+  const registry = readContextHubRegistry();
+  const previousRegistryRevision = preserveSnapshot ? contextHubRegistryRevision(registry) : "";
+  const result = operation(registry);
+  if (result?.identityUnconfirmed === true) return result;
+  writeJson(registryPath(), registry);
+  invalidateContextHubSnapshotLocked(preserveSnapshot ? { preserveState: true, previousRegistryRevision, openTimeOnly: true } : {});
+  return result;
+}
+
+function mutateContextHubRegistry(operation, options = {}) {
+  return withRegistryLock(() => mutateContextHubRegistryLocked(operation, options));
+}
+
+function mutateContextHubRegistryAsync(operation, options = {}) {
+  return withRegistryLockAsync(() => mutateContextHubRegistryLocked(operation, options));
 }
 
 function cleanAttentionId(value) {
@@ -2142,20 +2169,26 @@ export function readContextHubSnapshotInputs() {
 }
 
 export function beginContextHubSnapshotRefresh() {
-  return withRegistryLock(() => {
-    const control = readSnapshotControl();
-    if (control.invalidationRevision === "initial") control.invalidationRevision = randomUUID();
-    if (control.structuralRevision === "initial") control.structuralRevision = randomUUID();
-    control.refreshSequence += 1;
-    writeSnapshotControl(control);
-    const registry = readContextHubRegistry();
-    return Object.freeze({
-      registryRevision: contextHubRegistryRevision(registry),
-      invalidationRevision: control.invalidationRevision,
-      structuralRevision: control.structuralRevision,
-      structuralRegistryRevision: contextHubStructuralRegistryRevision(registry),
-      refreshSequence: control.refreshSequence,
-    });
+  return withRegistryLock(beginContextHubSnapshotRefreshLocked);
+}
+
+export function beginContextHubSnapshotRefreshAsync() {
+  return withRegistryLockAsync(beginContextHubSnapshotRefreshLocked);
+}
+
+function beginContextHubSnapshotRefreshLocked() {
+  const control = readSnapshotControl();
+  if (control.invalidationRevision === "initial") control.invalidationRevision = randomUUID();
+  if (control.structuralRevision === "initial") control.structuralRevision = randomUUID();
+  control.refreshSequence += 1;
+  writeSnapshotControl(control);
+  const registry = readContextHubRegistry();
+  return Object.freeze({
+    registryRevision: contextHubRegistryRevision(registry),
+    invalidationRevision: control.invalidationRevision,
+    structuralRevision: control.structuralRevision,
+    structuralRegistryRevision: contextHubStructuralRegistryRevision(registry),
+    refreshSequence: control.refreshSequence,
   });
 }
 
@@ -2242,45 +2275,51 @@ export function writeContextHubSnapshot(state, {
 
 // Project opens during a refresh change only open times. The refresh still
 // commits; openTimesStale asks the caller for a local follow-up for the order.
-export function commitContextHubSnapshot(state, coordination, {
+export function commitContextHubSnapshot(state, coordination, options = {}) {
+  return withRegistryLock(() => commitContextHubSnapshotLocked(state, coordination, options));
+}
+
+export function commitContextHubSnapshotAsync(state, coordination, options = {}) {
+  return withRegistryLockAsync(() => commitContextHubSnapshotLocked(state, coordination, options));
+}
+
+function commitContextHubSnapshotLocked(state, coordination, {
   generatedAt = state?.generatedAt || new Date().toISOString(),
 } = {}) {
-  return withRegistryLock(() => {
-    const control = readSnapshotControl();
-    const registry = readContextHubRegistry();
-    const currentRegistryRevision = contextHubRegistryRevision(registry);
-    const refreshSequence = Number.parseInt(coordination?.refreshSequence, 10) || 0;
-    if (!refreshSequence) return { committed: false, reason: "invalid-coordination" };
-    const exact = coordination?.registryRevision === currentRegistryRevision
-      && coordination?.invalidationRevision === control.invalidationRevision;
-    const openTimesStale = !exact
-      && Boolean(coordination?.structuralRevision)
-      && coordination.structuralRevision === control.structuralRevision
-      && coordination.structuralRegistryRevision === contextHubStructuralRegistryRevision(registry);
-    if (!exact && !openTimesStale) {
-      return { committed: false, reason: "inputs-changed", currentRegistryRevision };
-    }
-    let currentSnapshot = null;
-    try { currentSnapshot = readJson(contextHubSnapshotPath(), null); } catch {}
-    const currentSequence = Number.parseInt(currentSnapshot?.refreshSequence, 10) || 0;
-    if (
-      currentSnapshot?.registryRevision === currentRegistryRevision
-      && currentSnapshot?.invalidationRevision === control.invalidationRevision
-      && currentSequence > refreshSequence
-    ) {
-      // The newer snapshot is at the current inputs: the caller may adopt it.
-      return { committed: false, reason: "out-of-order", currentRefreshSequence: currentSequence, openTimesStale, current: currentSnapshot };
-    }
-    const snapshot = writeJson(contextHubSnapshotPath(), {
-      version: CONTEXT_HUB_SNAPSHOT_VERSION,
-      registryRevision: currentRegistryRevision,
-      invalidationRevision: control.invalidationRevision,
-      refreshSequence,
-      generatedAt: String(generatedAt || new Date().toISOString()),
-      state,
-    });
-    return { committed: true, snapshot, openTimesStale };
+  const control = readSnapshotControl();
+  const registry = readContextHubRegistry();
+  const currentRegistryRevision = contextHubRegistryRevision(registry);
+  const refreshSequence = Number.parseInt(coordination?.refreshSequence, 10) || 0;
+  if (!refreshSequence) return { committed: false, reason: "invalid-coordination" };
+  const exact = coordination?.registryRevision === currentRegistryRevision
+    && coordination?.invalidationRevision === control.invalidationRevision;
+  const openTimesStale = !exact
+    && Boolean(coordination?.structuralRevision)
+    && coordination.structuralRevision === control.structuralRevision
+    && coordination.structuralRegistryRevision === contextHubStructuralRegistryRevision(registry);
+  if (!exact && !openTimesStale) {
+    return { committed: false, reason: "inputs-changed", currentRegistryRevision };
+  }
+  let currentSnapshot = null;
+  try { currentSnapshot = readJson(contextHubSnapshotPath(), null); } catch {}
+  const currentSequence = Number.parseInt(currentSnapshot?.refreshSequence, 10) || 0;
+  if (
+    currentSnapshot?.registryRevision === currentRegistryRevision
+    && currentSnapshot?.invalidationRevision === control.invalidationRevision
+    && currentSequence > refreshSequence
+  ) {
+    // The newer snapshot is at the current inputs: the caller may adopt it.
+    return { committed: false, reason: "out-of-order", currentRefreshSequence: currentSequence, openTimesStale, current: currentSnapshot };
+  }
+  const snapshot = writeJson(contextHubSnapshotPath(), {
+    version: CONTEXT_HUB_SNAPSHOT_VERSION,
+    registryRevision: currentRegistryRevision,
+    invalidationRevision: control.invalidationRevision,
+    refreshSequence,
+    generatedAt: String(generatedAt || new Date().toISOString()),
+    state,
   });
+  return { committed: true, snapshot, openTimesStale };
 }
 
 export function registerContextHubSharedRepository(repository) {
@@ -2761,13 +2800,21 @@ export function confirmContextHubProjectLocation({
   });
 }
 
-export function recordContextHubProjectOpened(projectId) {
-  return mutateContextHubRegistry((registry) => {
+function recordProjectOpenedInRegistry(projectId) {
+  return (registry) => {
     const project = registry.projects.find((entry) => entry.id === projectId);
     if (!project) throw new Error(`Unknown Context Hub project: ${projectId}`);
     project.lastOpenedAt = new Date().toISOString();
     return project;
-  }, { preserveSnapshot: true });
+  };
+}
+
+export function recordContextHubProjectOpened(projectId) {
+  return mutateContextHubRegistry(recordProjectOpenedInRegistry(projectId), { preserveSnapshot: true });
+}
+
+export function recordContextHubProjectOpenedAsync(projectId) {
+  return mutateContextHubRegistryAsync(recordProjectOpenedInRegistry(projectId), { preserveSnapshot: true });
 }
 
 const DEVICE_DISCOVERY_STATES = new Set(["announced", "off", "unsupported", "failed"]);
