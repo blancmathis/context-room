@@ -7613,6 +7613,7 @@ test("workspace URL restoration parses every supported destination without brows
     graphCamera: { x: 0, y: 0, scale: 1 },
   });
   assert.equal(parseWorkspaceNavigationUrl("/?view=unknown").view, "hub");
+  assert.equal(parseWorkspaceNavigationUrl("/?hub=1&view=explorer").view, "explorer");
   assert.equal(parseWorkspaceNavigationUrl("/?view=hub").view, "hub");
   assert.equal(parseWorkspaceNavigationUrl("/?view=file&file=README.md").view, "file");
   assert.equal(parseWorkspaceNavigationUrl("/?view=proposal&proposal=p1").view, "proposal");

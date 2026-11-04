@@ -585,11 +585,13 @@ test("@smoke the latest project and worktree selection survives an in-flight pro
   await page.locator(".global-project-row", { hasText: "Atlas" }).click();
   await expect.poll(() => openings.length).toBe(1);
   await page.getByRole("button", { name: "Back to projects" }).click();
+  // A switch never waits for the gated first POST: Beacon opens at once.
   await page.locator(".global-project-row", { hasText: "Beacon" }).click();
+  await expect(page.locator("#globalExplorerScope strong")).toHaveText("Beacon");
+  await page.getByRole("button", { name: "Back to projects" }).click();
   await page.locator(".global-project-row", { hasText: "Atlas" }).click();
+  await expect.poll(() => openings.length).toBe(3);
   releaseFirstOpening();
-
-  await expect.poll(() => openings.length).toBe(2);
   await expect(page.locator("#globalExplorerScope strong")).toHaveText("Atlas");
   const worktree = page.getByLabel("Choose worktree");
   await expect(worktree).toBeVisible();
@@ -600,6 +602,54 @@ test("@smoke the latest project and worktree selection survives an in-flight pro
   await worktree.selectOption(nextWorktree);
   await expect(page).toHaveURL((url) => url.searchParams.get("project") === nextWorktree);
   await expect(page.getByLabel("Choose worktree")).toHaveValue(nextWorktree);
+});
+
+// A switch does not wait for the previous open: a late failure of that earlier
+// open must not roll the newer selection back.
+test("@smoke a late failed open of the previous project never rolls back the newer selection", async ({ page }) => {
+  const { origin, projects } = fixture();
+  let releaseAtlas;
+  const atlasGate = new Promise((resolve) => { releaseAtlas = resolve; });
+  let atlasFailed;
+  const atlasFailure = new Promise((resolve) => { atlasFailed = resolve; });
+  const atlasIds = [projects.atlas.id, projects.atlas.worktreeId];
+  const beaconIds = [projects.beacon.id, projects.beacon.worktreeId].filter(Boolean);
+  const openings = [];
+  await page.route("**/api/context-hub/project", async (route) => {
+    const body = route.request().postDataJSON();
+    openings.push(body);
+    if (!atlasIds.includes(body.projectId)) {
+      await route.continue();
+      return;
+    }
+    await atlasGate;
+    await route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Atlas open failed late" }),
+    });
+    atlasFailed();
+  });
+  await page.goto(origin + "/?hub=1&workspace=workspace-project-late-failure&view=hub");
+  await waitForBoot(page);
+  const explorerOpen = page.getByRole("button", { name: "Open explorer" });
+  if (await explorerOpen.isVisible()) await explorerOpen.click();
+
+  await page.locator(".global-project-row", { hasText: "Atlas" }).click();
+  await expect.poll(() => openings.length).toBe(1);
+  await page.getByRole("button", { name: "Back to projects" }).click();
+  await page.locator(".global-project-row", { hasText: "Beacon" }).click();
+  await expect.poll(() => openings.length).toBe(2);
+  await expect(page.locator("#globalExplorerScope strong")).toHaveText("Beacon");
+  await expect(page).toHaveURL((url) => beaconIds.includes(url.searchParams.get("project")));
+
+  releaseAtlas();
+  await atlasFailure;
+  // Give the client time to handle the late 500 before checking nothing moved.
+  await page.waitForTimeout(500);
+  await expect(page.locator("#globalExplorerScope strong")).toHaveText("Beacon");
+  await expect(page).toHaveURL((url) => beaconIds.includes(url.searchParams.get("project")));
+  await expect(page.locator(".global-project-row", { hasText: "Atlas" })).toHaveCount(0);
 });
 
 test("@smoke expanded project folders stay isolated between worktrees", async ({ page }) => {

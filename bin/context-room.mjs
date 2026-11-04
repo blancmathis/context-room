@@ -1253,7 +1253,7 @@ if (command === "hub") {
       stateRoot: args['device-state'] ? path.resolve(String(args['device-state'])) : path.join(path.dirname(hostRoot), 'devices'),
       discovery: { enabled: !args['no-device-discovery'], onChange: state => { try { updateContextHubRuntimeDiscovery(state); } catch {} } },
       browser: browserRequested ? { origin: String(args['device-browser-origin']), certPath: path.resolve(String(args['device-browser-cert'])), keyPath: path.resolve(String(args['device-browser-key'])) } : null }) : null;
-    const { server } = createMemoryServer({ root: hostRoot, port, registerInHub: false, persistentDocumentGraphLayout: true, deviceService });
+    const { server } = createMemoryServer({ root: hostRoot, port, registerInHub: false, persistentDocumentGraphLayout: true, landOnHubHome: true, deviceService });
     await new Promise((resolve, reject) => {
       const onError = (error) => reject(error);
       server.once("error", onError);
@@ -1271,12 +1271,15 @@ if (command === "hub") {
     const focus = focusedProject ? `&project=${encodeURIComponent(focusedProject.id)}` : "";
     console.log(`Context Room Hub: ${url}/?hub=1${focus}`);
     console.log(`Projects: ${listContextHubProjects().length}`);
+    // The launcher log has no timestamps; this is the only durable trace of a start or stop.
+    console.log(`Context Room Hub: start ${new Date().toISOString()} pid ${process.pid}`);
     // Open event streams never end alone: drop them, and never outlive a stop
     // signal, or the next start finds the device port still taken.
     let closing = false;
-    const close = async () => {
+    const close = async (signalName) => {
       if (closing) return;
       closing = true;
+      console.log(`Context Room Hub: stop on ${signalName} ${new Date().toISOString()}`);
       setTimeout(() => process.exit(0), 5000).unref();
       server.close();
       server.closeAllConnections();

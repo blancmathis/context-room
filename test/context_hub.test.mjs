@@ -2955,18 +2955,20 @@ test("Context Hub local follow-up that throws synchronously before its first awa
   const originalLink = fs.linkSync;
   let armed = false;
   let thrown = 0;
-  // The follow-up's first registry-lock acquisition is the snapshot read at the
-  // top of refreshContextHubSnapshot; fail that one acquisition, once.
+  // The forced follow-up's first registry-lock acquisition is the refresh
+  // coordination at the top of refreshContextHubSnapshot; fail it, once. A busy
+  // lock there now falls back to the asynchronous wait, so the injected failure
+  // is an I/O error, which still throws synchronously.
   t.mock.method(fs, "linkSync", (from, to, ...rest) => {
     if (armed && String(to).includes("registry")) {
       const limit = Error.stackTraceLimit;
       Error.stackTraceLimit = 50;
       const stack = new Error().stack;
       Error.stackTraceLimit = limit;
-      if (/readContextHubSnapshot/.test(stack) && /refreshContextHubSnapshot/.test(stack)) {
+      if (/beginContextHubSnapshotRefresh/.test(stack) && /refreshContextHubSnapshot/.test(stack)) {
         armed = false;
         thrown += 1;
-        throw Object.assign(new Error("registry lock busy"), { code: "context_hub_registry_busy" });
+        throw Object.assign(new Error("registry lock busy"), { code: "EIO" });
       }
     }
     return originalLink(from, to, ...rest);
@@ -3400,6 +3402,11 @@ test("Context Hub serializes forced refreshes and publishes only the later resul
 
   const first = refreshContextHubSnapshot(root, { refreshShared: false, force: true, taskRunner });
   const second = refreshContextHubSnapshot(root, { refreshShared: false, force: true, taskRunner });
+  // The refresh may start on a later turn when an asynchronous registry-lock
+  // waiter (left by an earlier request) is queued: wait for the first worker.
+  const started = Date.now() + 2_000;
+  while (calls < 1 && Date.now() < started) await new Promise((resolve) => setTimeout(resolve, 5));
+  await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(calls, 1, "the second forced refresh must wait for the active worker result");
 
   pending.shift()(state("first", "2026-08-08T12:00:01.000Z"));
@@ -3441,6 +3448,9 @@ test("Context Hub projects a newer cross-root snapshot onto the requesting root"
 
   const first = refreshContextHubSnapshot(firstRoot, { refreshShared: false, force: true, taskRunner });
   const second = refreshContextHubSnapshot(secondRoot, { refreshShared: false, force: true, taskRunner });
+  // Both refreshes may start on a later turn behind a queued registry-lock waiter.
+  const started = Date.now() + 2_000;
+  while (pending.size < 2 && Date.now() < started) await new Promise((resolve) => setTimeout(resolve, 5));
   assert.equal(pending.size, 2);
 
   pending.get(secondRoot)(state("second", secondRoot, "2026-08-08T12:00:02.000Z"));
@@ -3707,6 +3717,19 @@ test("progressive project Explorer bounds a 20,000-file folder and searches path
   assert.equal(second.entries[0].path, "docs/file-00250.md");
   const search = listProjectExplorerPage(root, { query: "file-00001" });
   assert.deepEqual(search.entries.map((entry) => entry.path), ["docs/file-00001.md"]);
+});
+
+test("project Explorer answers 404 for a missing folder and still refuses a symlink that leaves the project", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-explorer-missing-"));
+  const root = path.join(base, "proj");
+  const outside = path.join(base, "outside");
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.mkdirSync(outside, { recursive: true });
+  fs.symlinkSync(outside, path.join(root, "docs", "escape"));
+  initializeContextRoomProject(root, { title: "Missing folder", allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+  assert.throws(() => listProjectExplorerPage(root, { directory: "docs/nope" }), (error) => error.statusCode === 404 && /Folder not found/.test(error.message));
+  assert.throws(() => listProjectExplorerPage(root, { directory: "nope/deeper" }), (error) => error.statusCode === 404);
+  assert.throws(() => listProjectExplorerPage(root, { directory: "docs/escape" }), (error) => /symbolic link/.test(error.message) && error.statusCode !== 404);
 });
 
 test("registered Git worktrees stay distinct locally but appear as one logical project", async (t) => {
@@ -4590,9 +4613,10 @@ test("the Hub stops on SIGTERM while a browser event stream stays open", async (
   const child = spawn(process.execPath, [cliPath, "hub", "--no-local", "--port", String(port)], { env, stdio: ["ignore", "pipe", "pipe"] });
   t.after(() => child.exitCode === null && child.kill("SIGKILL"));
   const closed = new Promise((resolve) => child.once("close", (status, signal) => resolve({ status, signal })));
+  let output = "";
   await new Promise((resolve, reject) => {
     let stdout = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk; if (stdout.includes("Context Room Hub:")) resolve(); });
+    child.stdout.on("data", (chunk) => { stdout += chunk; output += chunk; if (stdout.includes("Context Room Hub:")) resolve(); });
     closed.then(() => reject(new Error("Hub exited before it started")));
   });
   const stream = await fetch(`http://127.0.0.1:${port}/api/runtime-events`);
@@ -4601,4 +4625,31 @@ test("the Hub stops on SIGTERM while a browser event stream stays open", async (
   child.kill("SIGTERM");
   const result = await Promise.race([closed, new Promise((resolve) => setTimeout(() => resolve("timeout"), 10_000))]);
   assert.deepEqual(result, { status: 0, signal: null });
+  // The launcher log has no timestamps: the Hub must date its own start and stop lines.
+  assert.match(output, /^Context Room Hub: start \d{4}-\d\d-\d\dT[\d:.]+Z pid \d+$/m);
+  assert.match(output, /^Context Room Hub: stop on SIGTERM \d{4}-\d\d-\d\dT[\d:.]+Z$/m);
+});
+
+test("the --no-local Hub host root redirects the bare and saved-workspace URLs to the global home", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-host-home-"));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  withHubHome(t, path.join(base, "hub"));
+  const hostRoot = contextHubHostRoot();
+  fs.mkdirSync(hostRoot, { recursive: true });
+  initializeContextRoomProject(hostRoot, { title: "Context Room Hub", allowedPaths: [], watchAllow: [] });
+  const room = createMemoryServer({ root: hostRoot, registerInHub: false, landOnHubHome: true });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    if (room.server.listening) await new Promise((resolve) => room.server.close(resolve));
+    await room.waitForShutdown();
+  });
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const bare = await fetch(origin + "/", { redirect: "manual" });
+  assert.equal(bare.status, 302);
+  assert.equal(bare.headers.get("location"), "/?hub=1");
+  const saved = await fetch(origin + "/?workspace=abc&view=hub", { redirect: "manual" });
+  assert.equal(saved.status, 302);
+  assert.equal(saved.headers.get("location"), "/?workspace=abc&view=hub&hub=1");
+  const explicit = await fetch(origin + "/?hub=1&project=x", { redirect: "manual" });
+  assert.equal(explicit.status, 200);
 });

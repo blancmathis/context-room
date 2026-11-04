@@ -111,10 +111,10 @@ export function macLaunchAgent({ runtime, nodePath, home, whisperPath = null, mo
     check(value === null || typeof value === 'string' && path.isAbsolute(value) && !/[\x00-\x1f]/.test(value), 'Invalid explicit local audio path.');
     if (value !== null) environment[key] = value;
   }
-  // Successful exit (including an already running Hub) must not create a restart loop.
+  // KeepAlive = true: any exit restarts the Hub (ThrottleInterval bounds a loop). A deliberate stop is `launchctl bootout`.
   return '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n'
     + '<key>Label</key><string>app.contextroom.local</string>\n<key>ProgramArguments</key><array>' + args.map(arg => '<string>' + xml(arg) + '</string>').join('') + '</array>\n'
     + '<key>EnvironmentVariables</key><dict>' + Object.entries(environment).map(([key, value]) => '<key>' + key + '</key><string>' + xml(value) + '</string>').join('') + '</dict>\n'
-    + '<key>WorkingDirectory</key><string>' + xml(runtime) + '</string>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n<key>ThrottleInterval</key><integer>30</integer>\n'
+    + '<key>WorkingDirectory</key><string>' + xml(runtime) + '</string>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><true/>\n<key>ThrottleInterval</key><integer>30</integer>\n'
     + '<key>StandardOutPath</key><string>' + xml(path.join(home, 'Library/Logs/ContextRoom.log')) + '</string>\n<key>StandardErrorPath</key><string>' + xml(path.join(home, 'Library/Logs/ContextRoom.log')) + '</string>\n</dict></plist>\n';
 }
