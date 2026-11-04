@@ -77,7 +77,7 @@ final class MacDiscovery {
     if (!visible) { stop(); return; }
     backoff = 0; nextAllowed = 0;
     DeviceConnection current = host.connection();
-    if (current != null && current.lastFailed) start();
+    if (current != null && current.reach.lastFailed) start();
   }
 
   void close() { closed = true; stop(); probe.shutdownNow(); }

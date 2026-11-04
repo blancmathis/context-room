@@ -50,6 +50,9 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
   Button shareViewButton, followViewButton, presentationButton;
   Button ownerPairingButton;
   final OwnerErrorBanner errorBanner = new OwnerErrorBanner();
+  final Handler mainHandler = new Handler(Looper.getMainLooper());
+  final Runnable reachProbe = this::probeMac;
+  boolean probing;
   final OwnerWake.Tracker wake = new OwnerWake.Tracker();
   TextView viewStatus;
   View drawingTools;
@@ -106,7 +109,7 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
     if (views != null) views.setMode("independent");
     if (ownerWorkspace != null) { if (ownerWorkspace.web.getParent() instanceof android.view.ViewGroup) ((android.view.ViewGroup) ownerWorkspace.web.getParent()).removeView(ownerWorkspace.web); ownerWorkspace.close(); ownerWorkspace = null; }
     connection = selected; engine.connection = selected; navigation.connect(selected);
-    if (selected != null) selected.unreachable = discovery::failed;
+    if (selected != null) { selected.reach.unreachable = discovery::failed; selected.reach.reachable = () -> runOnUiThread(() -> { if (connection == selected) connectionReached(); }); }
     if (engineReady && selected != null) engine.call("session", selected.session);
   }
   void connectionHome() { ownerScreen(); }
@@ -130,6 +133,25 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
       ownerPairingButton = button("Connections", this::pairingScreen);
       screen.addView(ownerPairingButton, new LinearLayout.LayoutParams(-1, -2));
     }
+    probeMac();
+  }
+  /** Main thread. The Mac answered again on some channel: clear the owner link error now, not at the next owner request. */
+  void connectionReached() { if (!dead && ownerWorkspace != null) ownerWorkspace.reached(); }
+  /** While a link error is on screen and the app is visible, ask the Mac every 5 s, so the error clears on the first
+   * answer even when nothing else talks to the Mac (a failure page, an idle screen after a wake). */
+  void probeMac() {
+    mainHandler.removeCallbacks(reachProbe);
+    final DeviceConnection selected = connection;
+    if (dead || !resumed || probing || selected == null || ownerWorkspace == null || !errorBanner.showing() || !ownerWorkspace.linkStatus.showing()) return;
+    probing = true;
+    try {
+      engine.network.execute(() -> {
+        boolean answered;
+        try { selected.request("", "/device/session", "GET", ""); answered = true; } catch (Exception error) { answered = false; }
+        final boolean back = answered;
+        runOnUiThread(() -> { probing = false; if (back && connection == selected) connectionReached(); mainHandler.postDelayed(reachProbe, 5000); });
+      });
+    } catch (java.util.concurrent.RejectedExecutionException busy) { probing = false; mainHandler.postDelayed(reachProbe, 5000); }
   }
   @Override public void ownerRecovered() {
     if (dead || status == null) return;
@@ -590,8 +612,8 @@ public final class MainActivity extends Activity implements InkView.Listener, Na
       catch (Exception error) { runOnUiThread(() -> showError(error.getMessage())); } });
   }
   @Override public void startActivityForResult(Intent intent, int request, Bundle options) { wake.appStartedActivity(SystemClock.elapsedRealtime()); super.startActivityForResult(intent, request, options); }
-  @Override protected void onPause() { resumed = false; wake.paused(SystemClock.elapsedRealtime()); discovery.foreground(false); if (ownerWorkspace != null) ownerWorkspace.foreground(false); views.setMode("independent"); navigation.foreground(false); if (ink != null) { ink.finishReachedInk(); ink.suspendBoox(true); viewport(); } super.onPause(); }
-  @Override protected void onResume() { super.onResume(); resumed = true; if (ownerWorkspace != null) ownerWorkspace.foreground(showingOwner || showingConversation); if (wake.resumed() && ownerWorkspace != null && (showingOwner || showingConversation)) ownerWorkspace.dropTextFocus(); finishMicrophonePermission(); discovery.foreground(true); navigation.foreground(!(showingOwner || showingConversation)); if (ink != null) ink.suspendBoox(false); if (engineReady && currentScope != null) engine.call("refresh"); }
+  @Override protected void onPause() { resumed = false; mainHandler.removeCallbacks(reachProbe); wake.paused(SystemClock.elapsedRealtime()); discovery.foreground(false); if (ownerWorkspace != null) ownerWorkspace.foreground(false); views.setMode("independent"); navigation.foreground(false); if (ink != null) { ink.finishReachedInk(); ink.suspendBoox(true); viewport(); } super.onPause(); }
+  @Override protected void onResume() { super.onResume(); resumed = true; if (ownerWorkspace != null) ownerWorkspace.foreground(showingOwner || showingConversation); if (wake.resumed() && ownerWorkspace != null && (showingOwner || showingConversation)) ownerWorkspace.dropTextFocus(); finishMicrophonePermission(); discovery.foreground(true); navigation.foreground(!(showingOwner || showingConversation)); if (ink != null) ink.suspendBoox(false); if (engineReady && currentScope != null) engine.call("refresh"); probeMac(); }
   @Override public void onBackPressed() { interaction(); if (showingConversation) { closeNativeConversation(); return; } if (presentation) { setPresentation(false); return; } if (showingOwner) { ownerWorkspace.web.evaluateJavascript(OwnerBack.CLOSE_TOP_DIALOG, result -> { if (dead) return; switch (OwnerBack.afterDialog(result, ownerWorkspace.web.canGoBack())) { case CONSUMED: return; case HISTORY: ownerWorkspace.web.goBack(); return; default: backOutsideOwner(); } }); return; } backOutsideOwner(); }
   private void backOutsideOwner() { if (connection != null && ink != null) whenJournalIdle(() -> { engine.call("close"); connectionHome(); }); else super.onBackPressed(); }
   @Override protected void onDestroy() { if (ink != null) ink.finishReachedInk(); dead = true; if (ownerFileCallback != null) { ownerFileCallback.onReceiveValue(null); ownerFileCallback = null; } if (ownerExportCallback != null) { ownerExportCallback.onReceiveValue(false); ownerExportCallback = null; ownerExportBytes = null; } if (ownerWorkspace != null) ownerWorkspace.close(); navigation.close(); engine.close(); discovery.close(); disk.shutdown(); super.onDestroy(); }

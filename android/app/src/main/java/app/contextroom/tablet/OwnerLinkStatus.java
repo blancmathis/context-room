@@ -12,6 +12,8 @@ final class OwnerLinkStatus {
   /** An error that belongs to no request (page error, native failure): it counts as the newest. */
   synchronized void failed() { failed(begin()); }
   synchronized void failed(long ticket) { if (!showing || ticket > failedTicket) failedTicket = ticket; showing = true; }
+  /** A link failure is still waiting for a success. */
+  synchronized boolean showing() { return showing; }
   /** True once, on the first success after a failure: the header must drop the error. */
   synchronized boolean succeeded() { return succeeded(begin()); }
   synchronized boolean succeeded(long ticket) {
