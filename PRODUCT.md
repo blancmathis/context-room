@@ -22,7 +22,9 @@ This document does not define UI behavior, CLI syntax, storage layouts, Shared p
 
 AI agents can read and change a codebase faster than a person can continuously reconstruct its intent. Context Room gives the owner one place to inspect the documentation, instructions, skills, proposals, and review obligations that influence that work.
 
-The product is not a generic file browser, a wiki, a vector database, or an autonomous authority. It is a control surface over explicit files and deterministic evidence.
+Context Room is the interface for aligning with AI agents on our projects. The goal is projects that are as clear as possible and easy to follow, so agents always have everything clear. That means three things for the person using it: manage files easily, read them with the best readability, and edit them easily. Daily use is browsing and seeing all the files of the main projects; notebooks are one file type among others.
+
+The product is not a wiki, a vector database, or an autonomous authority. It is a file workspace that is also a control surface over explicit files and deterministic evidence.
 
 ## Primary readers
 
