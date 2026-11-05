@@ -178,6 +178,39 @@ test('@assistant lists Mac Codex tasks read-only and opens one on the Mac', asyn
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
 
+test('@assistant the BOOX owner WebView shows no Show on Mac button', async ({ page }) => {
+  const f = await assistantFixture({ platform: 'darwin', uuidThreads: true }), errors = []; page.on('pageerror', error => errors.push(error.message));
+  try {
+    await page.addInitScript(() => { window.ContextRoomNativeOwner = Object.freeze({ active: true }); });
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await page.evaluate(() => selectFile('docs/Original.md'));
+    await page.getByRole('button', { name: 'Discuss', exact: true }).click();
+    const pane = page.getByRole('complementary', { name: 'Original document conversation' }); await expect(pane).toBeVisible();
+    await pane.getByRole('textbox').fill('Hello.'); await pane.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect.poll(() => f.turns.length).toBe(1); f.finish('Hi.'); await expect(pane).toHaveAttribute('data-operation-status', 'completed');
+    await expect(pane.getByRole('button', { name: 'Show on Mac', exact: true })).toHaveCount(0);
+    await pane.getByRole('button', { name: 'Codex tasks on this Mac', exact: true }).click();
+    await pane.getByRole('button', { name: /Read summary: Plan the/ }).click();
+    await expect(pane.locator('.assistant-mac-detail')).toContainText('Summary \u00b7 read only');
+    await expect(pane.getByRole('button', { name: 'Show on Mac', exact: true })).toHaveCount(0);
+    expect(errors).toEqual([]);
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('@assistant a failed Show on Mac from the header shows its error', async ({ page }) => {
+  const f = await assistantFixture({ platform: 'darwin', uuidThreads: true, openUrl: async () => { throw new Error('Codex could not open.'); } });
+  try {
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await page.evaluate(() => selectFile('docs/Original.md'));
+    await page.getByRole('button', { name: 'Discuss', exact: true }).click();
+    const pane = page.getByRole('complementary', { name: 'Original document conversation' }); await expect(pane).toBeVisible();
+    await pane.getByRole('textbox').fill('Hello.'); await pane.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect.poll(() => f.turns.length).toBe(1); f.finish('Hi.'); await expect(pane).toHaveAttribute('data-operation-status', 'completed');
+    await pane.getByRole('button', { name: 'Show on Mac', exact: true }).click();
+    await expect(pane.locator('.assistant-mac-status')).toBeVisible(); await expect(pane.locator('.assistant-mac-status')).not.toHaveText('');
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
 test('@assistant follow agent frames a far agent edit and a human gesture stops it', async ({ page }) => {
   const f = await assistantFixture();
   try {

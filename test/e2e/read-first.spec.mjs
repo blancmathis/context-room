@@ -145,6 +145,46 @@ test('@smoke a 20001-heading document pages its Contents and finds headings with
   } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
 });
 
+test('@smoke a 320-heading document: every Contents entry scrolls to its heading', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    const file = path.join(f.root, 'docs/Index.md');
+    fs.writeFileSync(file, '# Index\n\n' + Array.from({ length: 320 }, (_, index) => `## Section ${index + 1}\n\n` + 'A paragraph of body text that fills a line or two of the reading column.\n\n'.repeat(12)).join('') );
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await page.evaluate(() => selectFile('docs/Index.md'));
+    const toc = page.locator('#docReader nav.doc-toc');
+    if (!(await toc.locator('details').evaluate((details) => details.open))) await toc.locator('summary').click();
+    // No wait for the Contents to finish drawing: a tap right after opening is the case that failed.
+    for (const [pages, name] of [[0, 'Section 12'], [3, 'Section 130'], [4, 'Section 290']]) {
+      for (let i = 0; i < pages; i += 1) await toc.getByRole('button', { name: 'Next', exact: true }).click();
+      await page.evaluate(() => { document.querySelector('#docReader').scrollIntoView(); window.scrollTo(0, 0); });
+      await toc.getByRole('link', { name, exact: true }).click();
+      const heading = page.locator('#docReader [data-heading-id="' + name.toLowerCase().replace(' ', '-') + '"]');
+      await expect(heading).toBeInViewport();
+      // Off-screen sections have only an estimated height: the heading must still end at the top of the reading area.
+      await expect.poll(() => heading.evaluate((node) => Math.round(node.getBoundingClientRect().top - (document.getElementById('docReader').getBoundingClientRect().top)))).toBeLessThan(200);
+    }
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
+test('@smoke a 320-heading HTML page: every Contents entry scrolls to its heading', async ({ page }) => {
+  const f = await assistantFixture();
+  try {
+    fs.writeFileSync(path.join(f.root, 'docs/Long.html'), '<!doctype html><html><body>' + Array.from({ length: 320 }, (_, index) => `<h2>Part ${index + 1}</h2>` + '<p>Body line.</p>'.repeat(8)).join('') + '</body></html>');
+    await page.goto(f.url); await page.waitForFunction(() => Boolean(state.ownerMutationNonce && state.projectId));
+    await page.evaluate(() => selectFile('docs/Long.html'));
+    const frame = page.locator('iframe.html-preview-frame'); await expect(frame).toBeVisible();
+    for (const [pages, name] of [[0, 'Part 12'], [3, 'Part 130'], [7, 'Part 320']]) {
+      await page.getByRole('button', { name: 'Contents' }).first().click();
+      const dialog = page.getByRole('dialog', { name: 'Contents' });
+      for (let i = 0; i < pages; i += 1) await dialog.getByRole('button', { name: 'Next', exact: true }).click();
+      await dialog.getByRole('link', { name, exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+      await expect(frame.contentFrame().getByRole('heading', { name, exact: true })).toBeInViewport();
+    }
+  } finally { try { if (!page.isClosed()) await page.goto('about:blank'); } finally { await f.close(); } }
+});
+
 test('@smoke Aa changes the text size, keeps the reading place and survives a reload', async ({ page }) => {
   const f = await assistantFixture();
   try {

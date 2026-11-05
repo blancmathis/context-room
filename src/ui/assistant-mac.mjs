@@ -7,7 +7,11 @@ const when = seconds => seconds ? new Date(seconds * 1000).toLocaleString() : ''
  * Codex tasks of this Mac for the exact project, read only. There is no way to send, continue
  * or change a task from here. Titles and text go in with textContent, never as HTML.
  */
-const localProfile = () => { const profile = document.documentElement.dataset.contextRoomRuntimeProfile; return !profile || profile === 'local'; };
+const localProfile = () => {
+  // The BOOX owner WebView injects ContextRoomNativeOwner: its page cannot open Codex on the Mac (criterion 5.10).
+  if (globalThis.ContextRoomNativeOwner) return false;
+  const profile = document.documentElement.dataset.contextRoomRuntimeProfile; return !profile || profile === 'local';
+};
 export function createMacTasks({ api, isLocal = localProfile }) {
   const section = element('section', '', 'assistant-mac-tasks'); section.setAttribute('aria-label', 'Codex tasks on this Mac'); section.hidden = true;
   const toggle = button('Codex tasks on this Mac', () => { section.hidden = !section.hidden; if (!section.hidden && !loaded) void loadList({ reset: true }); });
@@ -24,7 +28,8 @@ export function createMacTasks({ api, isLocal = localProfile }) {
   const paging = element('div', '', 'assistant-controls'); paging.append(previous, next, retry); paging.hidden = true;
   section.append(controls, status, list, paging, detail);
   let currentId = null, thread = null, loaded = false, nextCursor = null, lastCursor = null, stack = [], generation = 0, busy = false;
-  const run = promise => Promise.resolve(promise).catch(error => { status.textContent = error.message || String(error); });
+  // The status line sits in the section: reveal it so an error is never hidden behind the closed list.
+  const run = promise => Promise.resolve(promise).catch(error => { status.textContent = error.message || String(error); section.hidden = false; });
   async function openOnMac(route) { status.textContent = ''; await api(route, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); status.textContent = 'Shown on the Mac.'; }
   async function loadList({ cursor = null, reset = false, back = false, popped = false } = {}) {
     if (busy) return; busy = true; const epoch = ++generation; detail.hidden = true; list.hidden = false; paging.hidden = !loaded; retry.hidden = true;
