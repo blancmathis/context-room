@@ -15,9 +15,8 @@ final class DeviceConnection {
   static final Set<String> READS = new HashSet<>(Arrays.asList("/device/session", "/api/notebooks", "/api/notebooks/capabilities", "/api/notebooks/scene", "/api/notebooks/receipt", "/api/notebooks/export"));
   static final Set<String> WRITES = new HashSet<>(Arrays.asList("/api/notebooks/open", "/api/notebooks/mutate", "/api/notebooks/batch", "/api/notebooks/undo", "/api/notebooks/asset"));
   volatile URI endpoint;
-  /** Set by the activity; called off the main thread when the Mac cannot be reached at all. */
-  volatile Runnable unreachable;
-  volatile boolean lastFailed;
+  /** Hooks set by the activity: lost, and back on the first answer after a loss. */
+  final MacReach reach = new MacReach();
   int connectTimeout = 5000;
   final String fingerprint, serverId, credential;
   final JSONObject session;
@@ -46,7 +45,8 @@ final class DeviceConnection {
   }
 
   /** The pin never depends on the host, so a rediscovered address keeps the same trust. */
-  void adopt(String url) throws Exception { endpoint = endpoint(url); lastFailed = false; }
+  /** The candidate at this address already answered as the same Mac: that is a contact. */
+  void adopt(String url) throws Exception { endpoint = endpoint(url); reach.reached(reach.begin()); }
 
   /** True only when the pinned certificate answers as the same Mac, with the saved credential. */
   boolean sameMac() throws Exception {
@@ -116,7 +116,7 @@ final class DeviceConnection {
     byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
     if (bytes.length > maximum) throw new IOException("The request exceeds the allowed size. The journal is kept.");
     HttpsURLConnection connection = (HttpsURLConnection) endpoint.resolve(path).toURL().openConnection();
-    boolean reached = false;
+    boolean reached = false; final long contact = reach.begin();
     connection.setSSLSocketFactory(sockets);
     // The exact leaf certificate, transferred by the local owner, is the authority.
     connection.setHostnameVerifier((host, tls) -> {
@@ -138,7 +138,7 @@ final class DeviceConnection {
         try (OutputStream output = connection.getOutputStream()) { output.write(bytes); }
       }
       int status = connection.getResponseCode();
-      reached = true; lastFailed = false;
+      reached = true; reach.reached(contact);
       if (status >= 300 && status < 400) throw new IOException("The connection asked for a redirect. It was refused.");
       if (connection.getContentLengthLong() > maximum) throw new IOException("Response too large.");
       InputStream stream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
@@ -152,7 +152,7 @@ final class DeviceConnection {
       return InkView.json("status", status, "body", result);
     } catch (IOException error) {
       // A certificate mismatch is not a moved Mac: only plain network failures start a search.
-      if (!(error instanceof SSLException) && !reached) { lastFailed = true; Runnable hook = unreachable; if (hook != null) hook.run(); }
+      if (!(error instanceof SSLException) && !reached) reach.failed(contact);
       throw error;
     } finally { connection.disconnect(); }
   }

@@ -17,6 +17,7 @@ final class OwnerErrorBanner {
     if (!showing || (!owner && !conversation)) return Recovery.NONE;
     showing = false; return owner ? Recovery.HIDE_STATUS : Recovery.RESTORE_NOTEBOOK_STATUS;
   }
+  boolean showing() { return showing; }
   boolean hasPairingButton() { return pairingButton; }
   void clearPairingButton() { pairingButton = false; }
   /** The screen was rebuilt: nothing is shown any more. */

@@ -36,6 +36,8 @@ final class OwnerWorkspace {
   final ThreadPoolExecutor network = new ThreadPoolExecutor(4, 4, 0, TimeUnit.SECONDS, new ArrayBlockingQueue<>(32));
   volatile boolean closed, foreground = true;
   volatile String runtimeOrigin = "";
+  /** The page only shows the "Mac unreachable" text: it has no script, so it never asks the Mac again by itself. */
+  volatile boolean failedPage;
   long generation;
   JSONObject pendingConversation;
 
@@ -205,12 +207,13 @@ final class OwnerWorkspace {
             html = html.replace("<head>", "<head><meta name=\"context-room-native-origin\" content=\"" + runtimeOrigin + "\"><script src=\"/native/owner-bridge.js\"></script>");
             bytes = html.getBytes(StandardCharsets.UTF_8);
           }
+          if (request.isForMainFrame()) failedPage = false;
           return new WebResourceResponse(type, "UTF-8", status, status >= 400 ? "Request failed" : "OK", headers, new ByteArrayInputStream(bytes));
         } catch (Exception error) {
           if (request.isForMainFrame() && path.equals("/")) {
-            try { return packagedWeb.page(!connection.isOwner(), origin); } catch (Exception unavailable) { /* Preserve the original cache and report a broken package. */ }
+            try { WebResourceResponse offline = packagedWeb.page(!connection.isOwner(), origin); failedPage = false; return offline; } catch (Exception unavailable) { /* Preserve the original cache and report a broken package. */ }
           }
-          if (request.isForMainFrame()) { linkStatus.failed(); main.post(() -> host.ownerError(safeError(error))); }
+          if (request.isForMainFrame()) { failedPage = true; linkStatus.failed(); main.post(() -> host.ownerError(safeError(error))); }
           return new WebResourceResponse("text/plain", "UTF-8", 503, "Unavailable", Collections.emptyMap(), new ByteArrayInputStream("Mac unreachable. Go back to the connection to retry; local notebooks are kept.".getBytes(StandardCharsets.UTF_8)));
         }
       }
@@ -276,7 +279,16 @@ final class OwnerWorkspace {
     if (closed) return;
     web.evaluateJavascript("window.dispatchEvent(new CustomEvent('context-room-native-active',{detail:" + enabled + "}))", null);
     if (enabled) web.onResume(); else web.onPause();
+    if (enabled && failedPage) reloadFailedPage();
   }
+  /** Main thread. Another channel (notebook engine, rediscovery, wake probe) reached the Mac: the link error goes,
+   * and a failure page loads again, because nothing on it would ever retry (D1). */
+  void reached() {
+    if (closed) return;
+    if (linkStatus.succeeded()) host.ownerRecovered();
+    if (foreground && failedPage) reloadFailedPage();
+  }
+  private void reloadFailedPage() { failedPage = false; web.reload(); }
   /** After a real wake only: the WebView hands focus back to a text field and the keyboard would open. */
   void dropTextFocus() { if (!closed) web.evaluateJavascript(OwnerWake.DROP_TEXT_FOCUS, null); }
   void conversation(JSONObject target) {
