@@ -3860,7 +3860,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
             <label class="graph-compact-filter">Relation<select id="graphRelationFilter"><option value="">All relations</option><option value="depends-on">Dependencies</option><option value="references">References</option><option value="appears-in-diagram">Diagram appearances</option><option value="declares-source">Legacy declared sources</option><option value="applies-to">Applies to</option><option value="shared-origin">Shared origin</option><option value="managed-link">Managed links</option></select></label>
             <label><input id="graphShowUnresolved" type="checkbox" /> Unresolved</label>
             <label><input id="graphShowOrphans" type="checkbox" checked /> Orphans</label>
-            <label><input id="graphShowArrows" type="checkbox" /> Direction arrows</label>
+            <label title="Direction arrows"><input id="graphShowArrows" type="checkbox" /> Arrows</label>
           </div>
           <div class="graph-workbench">
             <div class="graph-canvas-wrap">
