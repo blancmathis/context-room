@@ -398,6 +398,21 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .context-hub-home-project-destination:hover { background: var(--surface-card-hover); }
     .context-hub-home-project-destination:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 1px; }
     .notebook-space-new { min-height: 48px; padding: 8px 18px; border: 1px solid var(--accent); border-radius: 10px; background: var(--accent); color: var(--on-accent, var(--bg)); cursor: pointer; font-size: 14px; font-weight: 750; }
+    .notebook-space-panel[data-no-projects="true"] .notebook-space-new { background: transparent; color: var(--accent); }
+    .context-hub-welcome { display: grid; gap: 10px; justify-items: start; padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+    .context-hub-welcome h2, .context-hub-welcome p { margin: 0; }
+    .context-hub-welcome h2 { font-size: 20px; }
+    .context-hub-welcome p { color: var(--muted); font-size: 14px; }
+    .context-hub-welcome button, .global-project-explorer-empty button { min-height: 44px; padding: 8px 18px; font-size: 14px; }
+    .global-project-explorer-empty button { margin-top: 10px; }
+    .add-project-dialog { width: min(560px, 100%); }
+    .add-project-nav { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .add-project-nav code { min-width: 0; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .add-project-list { display: grid; gap: 4px; max-height: 220px; margin: 0; padding: 4px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; list-style: none; }
+    .add-project-list button { width: 100%; min-height: 40px; padding: 6px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text); font-size: 13px; text-align: left; cursor: pointer; }
+    .add-project-list button:hover { background: var(--surface-card-hover); }
+    .add-project-list li.add-project-empty { padding: 10px; color: var(--muted); font-size: 12px; }
+    .add-project-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
     .notebook-space-list { list-style: none; margin: 0; padding: 6px; display: grid; gap: 2px; max-height: 320px; overflow-y: auto; }
     .notebook-space-item { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 10px; }
     .notebook-space-item:hover { background: var(--surface-card-hover); }
@@ -3691,6 +3706,11 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       <section class="editor-shell">
         <div id="home" class="docqa-home workspace-page" hidden>
           <div class="docqa-grid">
+            <section id="contextHubWelcome" class="context-hub-welcome" aria-labelledby="contextHubWelcomeHeading" hidden>
+              <h2 id="contextHubWelcomeHeading">Add your first project</h2>
+              <p>Pick a folder that holds your docs. Context Room adds a small .context-room settings folder to it.</p>
+              <button class="file-action primary" type="button" data-add-project>Add a project…</button>
+            </section>
             <section id="explorerViewPanel" class="docqa-panel explorer-view-panel" aria-label="Files" hidden></section>
             <section id="notebookSpacePanel" class="docqa-panel notebook-space-panel" aria-labelledby="notebookSpaceHeading" hidden>
               <header>
@@ -3908,7 +3928,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
         <span class="context-hub-project-trigger-icon" aria-hidden="true">⌄</span>
       </button>
       <button id="contextHubCreateSharedProject" class="dock-button" type="button" hidden>New shared project</button>
-      <button id="contextHubCreateProject" class="dock-button primary" type="button" hidden>New project</button>
+      <button id="contextHubCreateProject" class="dock-button primary" type="button" hidden>Add project…</button>
       <button id="contextHubImportCodex" class="dock-button" type="button" hidden>Import from Codex</button>
       <button id="sharedProposalWorkspaceRefresh" class="dock-button" type="button">Refresh</button>
       <button id="sharedProposalWorkspaceClose" class="dock-button shared-proposal-workspace-close" type="button" aria-label="Close this secondary view">Close</button>
@@ -7367,8 +7387,11 @@ function renderContextHubHomeProjects() {
     sinceLastVisit.textContent = contextHubSinceLastVisitText();
     sinceLastVisit.hidden = !sinceLastVisit.textContent;
   }
+  const welcome = el("contextHubWelcome");
+  if (welcome) welcome.hidden = IS_HOSTED_HUB || projects.length > 0;
+  el("notebookSpacePanel")?.setAttribute("data-no-projects", String(projects.length === 0));
   if (!projects.length) {
-    updateGlobalExplorerMarkup(list, '<div class="global-project-explorer-empty">No project registered yet. Add a folder from Manage projects.</div>');
+    updateGlobalExplorerMarkup(list, '<div class="global-project-explorer-empty">No project yet.</div>');
     return;
   }
   // Same markup cache and pointer hold as the Explorer list: a refresh must
@@ -8156,7 +8179,9 @@ function renderGlobalProjectExplorer() {
           + '</a>';
       }).join("")
     : state.contextHub
-      ? '<div class="global-project-explorer-empty">No project matches this search.</div>'
+      ? (allProjects.length || needle
+        ? '<div class="global-project-explorer-empty">No project matches this search.</div>'
+        : '<div class="global-project-explorer-empty">No project yet.' + (IS_HOSTED_HUB ? '' : ' Add one from the home page.') + '</div>')
       : '<div class="global-project-explorer-empty">Loading projects…</div>');
 }
 
@@ -9479,7 +9504,9 @@ function renderSharedProposalWorkspace() {
   };
   list.innerHTML = visible.length
     ? groups.filter(([, items]) => items.length).map(([label, items]) => '<div class="context-hub-group-title">' + escapeHtml(label) + ' · ' + items.length + '</div>' + items.map(renderItem).join("")).join("")
-    : '<div class="shared-proposal-empty">Nothing matches these filters. Try all sources or clear the search.</div>';
+    : projectManagerMode && !(hub.projects || []).length
+      ? '<div class="shared-proposal-empty">No project yet.' + (IS_HOSTED_HUB ? '' : '<br><button class="file-action primary" type="button" data-add-project>Add project…</button>') + '</div>'
+      : '<div class="shared-proposal-empty">Nothing matches these filters. Try all sources or clear the search.</div>';
   renderContextHubOverview(selected);
 }
 
@@ -25301,6 +25328,132 @@ async function showContextHubImportCodexDialog() {
   });
 }
 
+function showContextHubAddProjectDialog() {
+  state.activeModalClose?.({ restoreFocus: false });
+  const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const backdrop = document.createElement("div");
+  backdrop.className = "confirm-backdrop";
+  backdrop.innerHTML = '<section class="confirm-dialog creation-dialog add-project-dialog" role="dialog" aria-modal="true" aria-label="Add a project">'
+    + '<strong>Add a project</strong>'
+    + '<p>Pick a folder that already exists. Context Room adds a small .context-room settings folder to it.</p>'
+    + '<form class="creation-dialog-form">'
+    + '<label class="creation-dialog-field"><span>Folder</span><input name="path" type="text" spellcheck="false" autocomplete="off" placeholder="Paste a folder path" required /></label>'
+    + '<div class="add-project-nav"><button class="file-action" type="button" data-add-project-up aria-label="Parent folder" title="Parent folder">↑</button><code data-add-project-here></code><label class="add-project-hidden"><input type="checkbox" data-add-project-hidden /> Show hidden folders</label></div>'
+    + '<ul class="add-project-list" aria-label="Folders" data-add-project-list></ul>'
+    + '<label class="creation-dialog-field"><span>Project name</span><input name="title" type="text" placeholder="Folder name" /></label>'
+    + '<div class="creation-dialog-status" role="status" aria-live="polite"></div>'
+    + '<div class="confirm-actions add-project-actions"><button class="file-action" type="button" data-add-project-new>Create a new folder instead</button><span><button class="file-action" type="button" data-creation-cancel>Cancel</button> <button class="file-action primary" type="submit" data-creation-submit>Add this folder</button></span></div>'
+    + '</form></section>';
+  const form = backdrop.querySelector("form");
+  const pathInput = form.elements.path;
+  const titleInput = form.elements.title;
+  const list = backdrop.querySelector("[data-add-project-list]");
+  const here = backdrop.querySelector("[data-add-project-here]");
+  const up = backdrop.querySelector("[data-add-project-up]");
+  const hiddenToggle = backdrop.querySelector("[data-add-project-hidden]");
+  const submit = backdrop.querySelector("[data-creation-submit]");
+  const status = backdrop.querySelector(".creation-dialog-status");
+  let closed = false;
+  let parentPath = "";
+  let titleEdited = false;
+  let loadToken = 0;
+  let releaseBackgroundIsolation = () => {};
+  const controller = new AbortController();
+  const close = ({ restoreFocus = true } = {}) => {
+    if (closed) return;
+    closed = true;
+    controller.abort();
+    backdrop.remove();
+    releaseBackgroundIsolation();
+    document.removeEventListener("keydown", onKeydown, true);
+    if (state.activeModalClose === close) state.activeModalClose = null;
+    if (restoreFocus && returnFocus?.isConnected) returnFocus.focus();
+  };
+  const onKeydown = (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      close();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = [...backdrop.querySelectorAll("button:not([disabled]), input:not([disabled])")];
+    if (!focusable.length) return;
+    if (event.shiftKey && document.activeElement === focusable[0]) { event.preventDefault(); focusable.at(-1).focus(); }
+    else if (!event.shiftKey && document.activeElement === focusable.at(-1)) { event.preventDefault(); focusable[0].focus(); }
+  };
+  const loadFolder = async (target) => {
+    const token = ++loadToken;
+    try {
+      const listing = await api("/api/context-hub/computer-explorer?foldersOnly=1" + (hiddenToggle.checked ? "&hidden=1" : "") + (target ? "&path=" + encodeURIComponent(target) : ""), { signal: controller.signal });
+      if (closed || token !== loadToken) return;
+      status.textContent = "";
+      pathInput.value = listing.current;
+      here.textContent = listing.current;
+      here.title = listing.current;
+      parentPath = listing.parent || "";
+      up.disabled = !parentPath;
+      if (!titleEdited) titleInput.value = listing.current === listing.root ? "" : listing.current.split(/[\\/]/).filter(Boolean).at(-1) || "";
+      const folders = (listing.entries || []).filter((entry) => entry.kind === "directory" && !entry.symlink);
+      list.innerHTML = folders.length
+        ? folders.map((entry) => '<li><button type="button" data-add-project-folder="' + escapeHtml(entry.path) + '">' + escapeHtml(entry.name) + '</button></li>').join("")
+        : '<li class="add-project-empty">No sub-folder here.</li>';
+    } catch (error) {
+      if (closed || token !== loadToken || error?.name === "AbortError") return;
+      status.textContent = error.message || "This folder cannot be read.";
+    }
+  };
+  backdrop.addEventListener("click", (event) => { if (event.target === backdrop) close(); });
+  backdrop.querySelector("[data-creation-cancel]").addEventListener("click", () => close());
+  backdrop.querySelector("[data-add-project-new]").addEventListener("click", () => { close(); showContextHubCreateProjectDialog(); });
+  hiddenToggle.addEventListener("change", () => { void loadFolder(pathInput.value.trim()); });
+  up.addEventListener("click", () => { if (parentPath) void loadFolder(parentPath); });
+  list.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-add-project-folder]");
+    if (button) void loadFolder(button.dataset.addProjectFolder);
+  });
+  pathInput.addEventListener("change", () => { if (pathInput.value.trim()) void loadFolder(pathInput.value.trim()); });
+  titleInput.addEventListener("input", () => { titleEdited = titleInput.value.trim() !== ""; });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (submit.disabled || closed) return;
+    submit.disabled = true;
+    submit.setAttribute("aria-busy", "true");
+    status.textContent = "Adding…";
+    try {
+      const result = await api("/api/context-hub/projects", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ existing: true, path: pathInput.value.trim(), title: titleInput.value.trim() }),
+        signal: controller.signal,
+      });
+      if (closed) return;
+      if (result.catalog) applyContextHubCreationCatalog(result.catalog, result.project?.id || "");
+      const entryId = result.project?.id || "";
+      const project = (state.contextHub?.projects || []).find((item) => item.id === entryId || (item.worktrees || []).some((worktree) => worktree.id === entryId));
+      close({ restoreFocus: false });
+      if (project) {
+        if (explorerViewController) explorerViewController.navigate({ projectKey: project.projectKey });
+        else explorerInitialPlace.projectKey = project.projectKey;
+        setHomeExplorer(true);
+        await openGlobalProjectExplorer(project);
+      }
+      setStatus(result.alreadyRegistered ? "Already in your projects" : "Added " + (project?.title || result.project?.title || "project"));
+    } catch (error) {
+      if (closed || error?.name === "AbortError") return;
+      submit.disabled = false;
+      submit.removeAttribute("aria-busy");
+      status.textContent = error.message || "This folder cannot be added.";
+    }
+  });
+  document.addEventListener("keydown", onKeydown, true);
+  document.body.appendChild(backdrop);
+  releaseBackgroundIsolation = isolateContextRoomModalBackground(backdrop);
+  state.activeModalClose = close;
+  void loadFolder(state.settings?.explorer?.computerRoot || DEFAULT_COMPUTER_EXPLORER_ROOT);
+  pathInput.focus();
+}
+
 function showContextHubCreateProjectDialog() {
   const computerRoot = state.settings?.explorer?.computerRoot || DEFAULT_COMPUTER_EXPLORER_ROOT;
   showContextHubCreationDialog({
@@ -26713,7 +26866,12 @@ el("proposalDockBack")?.addEventListener("click", () => showProposalReview());
 el("sharedProposalSelect")?.addEventListener("change", renderSharedContextControls);
 el("sharedProposalWorkspaceRefresh")?.addEventListener("click", () => refreshContextHubUi().catch((error) => setStatus(error.message)));
 el("sharedProposalWorkspaceClose")?.addEventListener("click", closeContextRoomSecondaryView);
-el("contextHubCreateProject")?.addEventListener("click", showContextHubCreateProjectDialog);
+el("contextHubCreateProject")?.addEventListener("click", showContextHubAddProjectDialog);
+document.addEventListener("click", (event) => {
+  if (!event.target.closest?.("[data-add-project]") || state.sharedContextBusy) return;
+  event.preventDefault();
+  showContextHubAddProjectDialog();
+});
 el("contextHubImportCodex")?.addEventListener("click", () => { void showContextHubImportCodexDialog(); });
 el("contextHubCreateSharedProject")?.addEventListener("click", () => {
   try { showContextHubCreateSharedProjectDialog(); }
