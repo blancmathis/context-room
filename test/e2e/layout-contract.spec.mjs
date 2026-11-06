@@ -1263,6 +1263,30 @@ test("@layout project rows keep their title and badges whole at 1024 and 1440", 
   }
 });
 
+test("@layout the review queue starts right under Notebooks while Projects and inspection share the side column", async ({ page }) => {
+  const data = fixture();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`${data.origin}/?hub=1&view=hub`);
+  await waitForBoot(page);
+  await expect(page.locator("#contextHubHomeProjectList .context-hub-home-project").first()).toBeVisible();
+  const box = (selector) => page.locator(selector).evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right, visible: Boolean(element.offsetParent) };
+  });
+  const [notebooks, projects, review, health] = await Promise.all(["#notebookSpacePanel", "#contextHubProjectsPanel", "#reviewQueuePanel", "#contextHealthPanel"].map(box));
+  // The side column used to share row heights with Notebooks, which pushed the queue below the fold.
+  expect(Math.abs(review.top - (notebooks.visible ? notebooks.bottom : projects.top))).toBeLessThanOrEqual(2);
+  expect(projects.left).toBeGreaterThanOrEqual(review.right - 1);
+  expect(Math.abs(health.top - projects.bottom)).toBeLessThanOrEqual(2);
+  await page.setViewportSize({ width: 1100, height: 900 });
+  const tops = await page.evaluate(() => ["#notebookSpacePanel", "#contextHubProjectsPanel", "#reviewQueuePanel", "#contextHealthPanel"]
+    .map((selector) => document.querySelector(selector))
+    .filter((element) => element?.offsetParent)
+    .map((element) => Math.round(element.getBoundingClientRect().top)));
+  expect(tops.length).toBeGreaterThanOrEqual(3);
+  expect(tops).toEqual([...tops].sort((a, b) => a - b));
+});
+
 test("@layout the uninspected banner names the projects behind the shortfall and hides raw errors", async ({ page }) => {
   const data = fixture();
   await page.setViewportSize({ width: 1440, height: 900 });

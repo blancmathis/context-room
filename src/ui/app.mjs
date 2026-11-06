@@ -2209,6 +2209,8 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .context-room-brand:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
     .context-room-brand:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 68%, transparent); outline-offset: -2px; }
     .context-room-brand-mark { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 3px 10px color-mix(in srgb, var(--accent) 36%, transparent); }
+    body.hub-connection-lost .context-room-brand-mark { background: var(--danger); box-shadow: none; }
+    body.hub-connection-lost #status { color: var(--danger); font-weight: 600; }
     .context-room-brand strong { font-size: 12px; line-height: 1.2; font-weight: 820; }
     .workspace-title { flex: 1 1 auto; min-width: 0; padding: 0 8px; color: var(--muted); font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .workspace-title:empty { display: none; }
@@ -2771,6 +2773,9 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       box-shadow: none;
     }
     .docqa-panel + .docqa-panel { border-top: 1px solid var(--line); }
+    .home-side { display: contents; }
+    .docqa-grid > .home-side > .docqa-panel:first-child, .docqa-grid > .home-side + .docqa-panel { border-top: 1px solid var(--line); }
+    #notebookSpacePanel { order: 1; } #contextHubProjectsPanel { order: 2; } #reviewQueuePanel { order: 3; } #contextEnginePanel { order: 4; } #contextHealthPanel { order: 5; } #documentsMapPanel { order: 6; }
     .docqa-panel > header, .proposal-review-head, .settings-page-header {
       min-height: 64px;
       padding: 14px var(--workbench-gutter);
@@ -2914,6 +2919,12 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .global-context-room #reviewQueuePanel { grid-column: 1; min-width: 0; }
       .global-context-room #contextHealthPanel { grid-column: 2; position: sticky; top: 0; max-height: calc(100vh - 48px); overflow: auto; border-left: 1px solid var(--line); border-top: 0; }
       .global-context-room #contextEnginePanel { grid-column: 1 / -1; }
+      /* Local Hub: Projects + Project inspection form one side column that never shares row heights with the main column, so the review queue starts right under Notebooks. */
+      :root:not([data-context-room-runtime-profile^="hosted"]) .global-context-room .docqa-grid { grid-template-rows: auto 1fr; }
+      :root:not([data-context-room-runtime-profile^="hosted"]) .global-context-room #notebookSpacePanel { grid-column: 1; grid-row: 1; min-width: 0; }
+      :root:not([data-context-room-runtime-profile^="hosted"]) .global-context-room #reviewQueuePanel { grid-row: 2; }
+      :root:not([data-context-room-runtime-profile^="hosted"]) .global-context-room .home-side { display: grid; grid-column: 2; grid-row: 1 / span 2; align-content: start; min-width: 0; position: sticky; top: 0; max-height: calc(100vh - 48px); overflow: auto; border-left: 1px solid var(--line); }
+      :root:not([data-context-room-runtime-profile^="hosted"]) .global-context-room .home-side > #contextHealthPanel { grid-column: auto; position: static; max-height: none; overflow: visible; border-left: 0; }
     }
     .startup-context-item { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; }
     .settings-page { overflow: hidden; }
@@ -3696,6 +3707,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
               </header>
               <ul id="notebookSpaceList" class="notebook-space-list" aria-label="Notebooks"></ul>
             </section>
+            <div class="home-side">
             <section id="contextHubProjectsPanel" class="docqa-panel context-hub-projects-panel" aria-labelledby="contextHubProjectsHeading" hidden>
               <header>
                 <div>
@@ -3710,6 +3722,19 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
               </header>
               <ul id="contextHubHomeProjectList" class="context-hub-home-projects" aria-label="Projects"></ul>
             </section>
+            <section id="contextHealthPanel" class="docqa-panel">
+              <header>
+                <div>
+                  <h2>Context health</h2>
+                </div>
+                <div class="docqa-actions context-health-header-actions">
+                  <button id="sendContextHealthToCodex" class="file-action context-health-codex-action" type="button" title="Add a fix prompt for the currently shown issues to the active Codex composer. Nothing is sent." disabled><span aria-hidden="true">@</span> Fix in Codex</button>
+                  <button id="refreshContextHealth" class="file-action" type="button" title="Run every health check again and show all results">Refresh all</button>
+                </div>
+              </header>
+              <div id="contextHealth" class="markdown-tools"><div class="issue">Analyzing project context...</div></div>
+            </section>
+            </div>
             <section id="reviewQueuePanel" class="docqa-panel">
               <header>
                 <div>
@@ -3764,18 +3789,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
                 </div>
               </header>
               <div id="contextEngineBody" class="markdown-tools" aria-live="polite"></div>
-            </section>
-            <section id="contextHealthPanel" class="docqa-panel">
-              <header>
-                <div>
-                  <h2>Context health</h2>
-                </div>
-                <div class="docqa-actions context-health-header-actions">
-                  <button id="sendContextHealthToCodex" class="file-action context-health-codex-action" type="button" title="Add a fix prompt for the currently shown issues to the active Codex composer. Nothing is sent." disabled><span aria-hidden="true">@</span> Fix in Codex</button>
-                  <button id="refreshContextHealth" class="file-action" type="button" title="Run every health check again and show all results">Refresh all</button>
-                </div>
-              </header>
-              <div id="contextHealth" class="markdown-tools"><div class="issue">Analyzing project context...</div></div>
             </section>
             <section id="documentsMapPanel" class="docqa-panel documents-map-panel" aria-labelledby="documentsMapHeading" hidden>
               <header>
@@ -8058,8 +8071,32 @@ async function openContextHubProjectDestination(projectKey, destination) {
     return;
   }
   if (isExplorerCollapsed()) setExplorerCollapsedFromUser(false);
-  if (isExplorerDesktopViewport()) el("documentsMapPanel")?.scrollIntoView({ block: "start", behavior: "smooth" });
+  // The map stays hidden until it is rendered for the newly selected project; scrolling to a hidden panel did nothing.
+  renderDocumentsMap();
+  if (isExplorerDesktopViewport()) revealDocumentsMap(projectKey);
   window.requestAnimationFrame(() => el("globalProjectList")?.querySelector("a, button")?.focus());
+}
+
+function revealDocumentsMap(projectKey) {
+  const panel = el("documentsMapPanel");
+  const page = el("home");
+  if (!panel || panel.hidden || !page) return;
+  panel.scrollIntoView({ block: "start", behavior: "smooth" });
+  // The map and the review queue above it both finish loading after the click and push the map down.
+  // Keep it in view while the page settles (bounded), unless the user scrolls on their own.
+  const keep = () => {
+    if (state.globalExplorerProjectKey === projectKey && !panel.hidden) panel.scrollIntoView({ block: "start" });
+  };
+  const observer = typeof ResizeObserver === "function" ? new ResizeObserver(keep) : null;
+  const userEvents = ["wheel", "touchstart", "keydown", "pointerdown"];
+  const stop = () => {
+    observer?.disconnect();
+    window.clearTimeout(timer);
+    for (const type of userEvents) page.removeEventListener(type, stop, true);
+  };
+  const timer = window.setTimeout(stop, 3000);
+  for (const type of userEvents) page.addEventListener(type, stop, { capture: true, passive: true });
+  if (observer) for (const child of page.querySelector(".docqa-grid")?.children || []) observer.observe(child);
 }
 
 function renderGlobalProjectExplorer() {
@@ -11981,6 +12018,7 @@ function startRuntimeEvents() {
     else if (!(state.runtimeEventCursor > 0) && readyCursor) rememberRuntimeEventCursor(readyCursor);
     resyncedBeforeReady = false;
     state.runtimeEventsConnected = true;
+    markHubConnection(true);
     window.clearInterval(state.runtimeFallbackTimer);
     state.runtimeFallbackTimer = null;
     publishSessionState().catch(() => {});
@@ -11996,8 +12034,30 @@ function startRuntimeEvents() {
   source.onerror = () => {
     if (state.runtimeEventSource !== source || state.workspaceRuntimeStopped || state.workspaceUnloadPending) return;
     state.runtimeEventsConnected = false;
+    markHubConnection(false);
     ensureRuntimeFallback();
   };
+}
+
+// The status line must not keep saying "ready" while the Hub is gone (restart, sleep, crash).
+// EventSource retries by itself; a short grace period hides ordinary reconnects.
+function markHubConnection(connected) {
+  if (connected) {
+    window.clearTimeout(state.hubConnectionLostTimer);
+    state.hubConnectionLostTimer = null;
+    if (!document.body.classList.contains("hub-connection-lost")) return;
+    document.body.classList.remove("hub-connection-lost");
+    setStatus("Hub reconnected");
+    return;
+  }
+  // Failed retries repeat the error; they must not restart the grace period.
+  if (state.hubConnectionLostTimer || document.body.classList.contains("hub-connection-lost")) return;
+  state.hubConnectionLostTimer = window.setTimeout(() => {
+    state.hubConnectionLostTimer = null;
+    if (state.runtimeEventsConnected || state.workspaceRuntimeStopped || state.workspaceUnloadPending) return;
+    document.body.classList.add("hub-connection-lost");
+    setStatus("Hub unreachable · reconnecting…");
+  }, 3000);
 }
 
 async function pollAgentCommand() {
@@ -26916,8 +26976,20 @@ document.addEventListener("keydown", (event) => {
   decideReviewFlow(action).catch((error) => setStatus(error.message));
 });
 document.addEventListener("click", (event) => {
-  if (!event.target.closest("[data-review-cleanup]")) return;
-  import("/assets/review-cleanup.mjs").then(({ openReviewCleanup }) => openReviewCleanup({ api, onChange: refreshContextRoomReviewQueue })).catch((error) => setStatus(error.message));
+  const trigger = event.target.closest("[data-review-cleanup]");
+  if (!trigger) return;
+  // Loading the cleanup state can take seconds on large queues: show it, and never open a second dialog.
+  if (trigger.getAttribute("aria-busy") === "true" || document.querySelector('dialog[open][aria-label="Review cleanup"]')) return;
+  const label = trigger.textContent;
+  trigger.setAttribute("aria-busy", "true");
+  trigger.textContent = "Opening review cleanup…";
+  import("/assets/review-cleanup.mjs")
+    .then(({ openReviewCleanup }) => openReviewCleanup({ api, onChange: refreshContextRoomReviewQueue }))
+    .catch((error) => setStatus(error.message))
+    .finally(() => {
+      trigger.removeAttribute("aria-busy");
+      trigger.textContent = label;
+    });
 });
 document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-local-draft]");
