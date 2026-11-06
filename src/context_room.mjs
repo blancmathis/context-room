@@ -21328,7 +21328,24 @@ async function documentInspectionApiResult(root, url) {
   };
 }
 
+// "Go to" (⌘K): file names and file text across every registered local project. Read-only.
+async function gotoSearchApiResult(url) {
+  const { searchGoto, warmGotoSearch } = await import("./goto_search.mjs");
+  const startedAt = Date.now();
+  const projects = listContextHubProjects({ readOnly: true });
+  if (url.searchParams.get("warm") === "1") {
+    warmGotoSearch(projects, listMemoryFiles);
+    return { schemaVersion: "context-room.goto-search/1", warmed: true, files: [], text: [] };
+  }
+  const query = String(url.searchParams.get("query") || url.searchParams.get("q") || "").trim();
+  if (!query) throw sharedRequestError("query is required", 400, "document_search_query_required");
+  const limit = Math.min(100, Math.max(1, Number.parseInt(url.searchParams.get("limit") || "40", 10) || 40));
+  const result = searchGoto(projects, listMemoryFiles, query, { limit });
+  return { schemaVersion: "context-room.goto-search/1", query, ...result, elapsedMs: Date.now() - startedAt };
+}
+
 async function documentSearchApiResult(root, url) {
+  if (String(url.searchParams.get("scope") || "") === "all") return gotoSearchApiResult(url);
   const target = contextApiTarget(root, url);
   const query = String(url.searchParams.get("query") || url.searchParams.get("q") || "").trim();
   if (!query) throw sharedRequestError("query is required", 400, "document_search_query_required");
