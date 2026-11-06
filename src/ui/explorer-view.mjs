@@ -426,7 +426,7 @@ export function createExplorerView({ host, ctx, initial = {}, onNavigate = () =>
     const g = groups();
     const strip = [...g.pinned, ...g.main].filter(browsable).map(item => `<button type="button" data-hl-open="${esc(item.projectKey)}" aria-current="${item.projectKey === selectedKey}">${esc(item.title)}</button>`).join('');
     return `<div class="hl${editing ? ' hl-editing' : ''}">
-      <div class="hl-head"><div><h2>Files</h2><p>${g.pinned.length + g.main.length + g.shared.length} projects · ${visibleMain().length} with files here</p></div><div class="hl-tools">${goto()}${viewMenu()}</div></div>
+      <div class="hl-head"><div><h2>Files</h2><p>${g.pinned.length + g.main.length + g.shared.length} ${g.pinned.length + g.main.length + g.shared.length === 1 ? "project" : "projects"} · ${visibleMain().length} with files here</p></div><div class="hl-tools">${goto()}${viewMenu()}</div></div>
       <div class="hl-strip" role="group" aria-label="Projects">${strip}</div>
       <div class="hl-split"><div class="hl-side">${projectList()}</div><div class="hl-main">${project ? filesPane(project) : '<div class="hl-empty">Pin or pick a project to see its files.</div>'}</div></div>
     </div>`;

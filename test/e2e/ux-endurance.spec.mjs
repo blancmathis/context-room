@@ -531,7 +531,8 @@ async function assertWorkbenchGutters(page, data, width) {
     const rect = node.getBoundingClientRect();
     return { height: rect.height, singleRow: node.scrollHeight <= node.clientHeight + 1 };
   });
-  expect(filterbar.height).toBeLessThanOrEqual(54);
+  // Filters wrap onto a second row instead of scrolling sideways (F23); at most two rows.
+  expect(filterbar.height).toBeLessThanOrEqual(width <= 639 ? 54 : 100);
   expect(filterbar.singleRow).toBe(true);
   await expectNoHorizontalOverflow(page);
 

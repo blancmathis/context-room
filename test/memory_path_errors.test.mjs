@@ -110,3 +110,15 @@ test('reverting a rename whose old path is not allowed is refused with a 403', (
     return true;
   });
 });
+
+test('a missing file outside the allowed paths is a 404 file_not_found, not a path refusal', (t) => {
+  const root = ignoredRoot(t);
+  assert.throws(() => readMemoryFile(root, 'notes/nope.md'), (error) => {
+    assert.equal(error.statusCode, 404);
+    assert.equal(error.code, 'file_not_found');
+    assert.equal(error.expose, true);
+    assert.equal(error.details.path, 'notes/nope.md');
+    return true;
+  });
+  assert.throws(() => readMemoryFile(root, 'notes/image.exe'), (error) => error.code === 'file_path_not_allowed');
+});

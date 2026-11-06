@@ -3133,7 +3133,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .graph-toolbar-controls label { display: grid; gap: 3px; color: var(--muted); font-size: 10px; }
     .graph-toolbar-controls input, .graph-toolbar-controls select { height: 32px; min-width: 104px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); }
     .graph-toolbar-controls input { width: min(28vw, 280px); padding: 0 10px; }
-    .graph-filterbar { min-height: 38px; display: flex; align-items: center; flex-wrap: nowrap; gap: 12px; padding: 6px var(--workbench-gutter); overflow-x: auto; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; scrollbar-width: thin; }
+    .graph-filterbar { min-height: 38px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; padding: 6px var(--workbench-gutter); border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; }
     .graph-filterbar label { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
     .graph-filterbar input { accent-color: var(--accent); }
     .graph-compact-filter select { height: 28px; max-width: 140px; padding: 0 24px 0 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); font-size: 11px; }
@@ -3583,7 +3583,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     @media (pointer: coarse), (max-width: 980px) {
       .explorer-open, .sidebar-toggle, .graph-open, .selection-action, .global-explorer-back,
       .context-hub-project-picker-close { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
-      .global-explorer-mode, .global-project-watch-filter, .watch-filter,
+      .global-explorer-mode, .global-project-watch-filter, .watch-filter, .graph-filterbar label, #graphRefresh,
       .project-priority-actions button, .settings-concept-help-button,
       [data-context-room-mode-prompt],
       .context-room-mode-warning button[data-context-room-mode-prompt] { min-width: 44px; min-height: 44px; }
@@ -3592,6 +3592,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
   </style>
 </head>
 <body class="app-booting">
+  <a id="skipToMain" href="#cr-main" style="position:fixed;left:8px;top:-64px;z-index:99;padding:10px;background:var(--surface);color:var(--text)">Skip to content</a>
   <svg class="ui-icon-sprite" aria-hidden="true">
     <symbol id="cr-icon-sidebar" viewBox="0 0 20 20"><rect x="2.5" y="3" width="15" height="14" rx="2.5"></rect><path d="M7 3v14"></path></symbol>
     <symbol id="cr-icon-close" viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15"></path></symbol>
@@ -3644,7 +3645,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       </div>
       <div id="sidebarResizer" class="sidebar-resizer" role="separator" aria-label="Resize Explorer" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="360" aria-valuenow="272" tabindex="0"></div>
     </aside>
-    <main>
+    <main id="cr-main" tabindex="-1" style="outline:0">
       <div class="workspace-chrome">
         <div class="workspace-dock" role="toolbar" aria-label="Workspace navigation">
           <button id="proposalDockAccept" class="dock-button primary" type="button" hidden>Accept proposal</button>
@@ -4612,6 +4613,14 @@ const SATELLITE_POSITIONS = [
   [23, 18], [77, 18], [17, 54], [83, 54], [32, 82], [68, 82], [50, 12], [50, 88]
 ];
 const el = (id) => document.getElementById(id);
+const nounCount = (count, plural) => count + " " + (count === 1 ? plural.replace(/ies$/, "y").replace(/s$/, "") : plural);
+{
+  // Off-screen until it has focus; inline so the stylesheet budget stays untouched.
+  const skip = el("skipToMain");
+  skip?.addEventListener("focus", () => { skip.style.top = "8px"; });
+  skip?.addEventListener("blur", () => { skip.style.top = "-64px"; });
+  skip?.addEventListener("click", (event) => { event.preventDefault(); el("cr-main")?.focus(); });
+}
 
 function captureNotebookApi(targetProjectId = "") {
   const projectId = state.projectId || "";
@@ -6689,7 +6698,7 @@ function contextHubWorktreeSelectorMarkup(project, selectedId, attributeName) {
   if (worktrees.length <= 1) return "";
   return '<label class="context-hub-worktree-switch"><span>Worktree</span><select ' + attributeName + ' aria-label="Choose worktree">'
     + worktrees.map((worktree) => '<option value="' + escapeHtml(worktree.id) + '"' + (worktree.id === selectedId ? " selected" : "") + (worktree.available ? "" : " disabled") + '>'
-      + escapeHtml((worktree.branch || String(worktree.root || "").replaceAll("\\", "/").split("/").filter(Boolean).pop() || "worktree") + (worktree.current ? " · current" : "") + (worktree.localReviewCount ? " · " + worktree.localReviewCount + " reviews" : ""))
+      + escapeHtml((worktree.branch || String(worktree.root || "").replaceAll("\\", "/").split("/").filter(Boolean).pop() || "worktree") + (worktree.current ? " · current" : "") + (worktree.localReviewCount ? " · " + nounCount(worktree.localReviewCount, "reviews") : ""))
       + '</option>').join("")
     + '</select></label>';
 }
@@ -8110,7 +8119,7 @@ function renderGlobalProjectExplorer() {
     search.setAttribute("aria-label", related ? "Search related files" : "Search project files");
     if (clearSearch) clearSearch.title = related ? "Clear related-file search" : "Clear project file search";
     scope.hidden = false;
-    updateGlobalExplorerMarkup(scope, '<button class="global-explorer-back" type="button" data-global-explorer-back aria-label="Back to projects">←</button><span class="global-explorer-scope-copy"><strong>' + escapeHtml(selectedProject.title || selectedProject.id) + '</strong><code title="' + escapeHtml(selectedWorktree?.root || contextHubProjectPickerLocation(selectedProject)) + '">' + escapeHtml(selectedWorktree?.root || contextHubProjectPickerLocation(selectedProject)) + '</code></span>'
+    updateGlobalExplorerMarkup(scope, '<button class="global-explorer-back" type="button" data-global-explorer-back aria-label="Back to projects" title="Back to projects">←</button><span class="global-explorer-scope-copy"><strong>' + escapeHtml(selectedProject.title || selectedProject.id) + '</strong><code title="' + escapeHtml(selectedWorktree?.root || contextHubProjectPickerLocation(selectedProject)) + '">' + escapeHtml(selectedWorktree?.root || contextHubProjectPickerLocation(selectedProject)) + '</code></span>'
       + contextHubWorktreeSelectorMarkup(selectedProject, selectedWorktree?.id || "", 'data-global-project-worktree="' + escapeHtml(selectedProject.projectKey) + '"'));
     listLabel.textContent = related ? "Related" : selectedProject.mode === "shared" ? "Shared files" : "Files";
     const relatedGraph = state.explorerRelatedGraphs.get(explorerRelatedGraphKey(selectedProject));
@@ -9429,7 +9438,7 @@ function renderSharedProposalWorkspace() {
   const selected = visible.find((item) => item.id === state.contextHubSelection) || null;
   const hubSummary = hub.summary || {};
   summary.textContent = projectManagerMode
-    ? (hubSummary.projects || projects.length || 0) + " projects · "
+    ? nounCount(hubSummary.projects || projects.length || 0, "projects") + " · "
       + (hubSummary.localProjects || 0) + " local · " + (hubSummary.sharedProjects || 0) + " shared"
     : (hubSummary.localReviews ?? "—") + " local files · " + (hubSummary.proposals || 0) + " shared proposals";
   const listStatus = el("contextHubListStatus");
@@ -14904,7 +14913,7 @@ async function selectFile(path, options = {}) {
     if (isCurrentSelection(requestId, path)) {
       state.openingFilePath = null;
       state.fileContentReadyPath = null;
-      state.fileLoadError = { path, message: error.message || "Failed to open file." };
+      state.fileLoadError = { path, message: error.message || "Failed to open file.", code: error.code || "" };
       state.saved = "";
       state.savedHash = null;
       state.selectedVisualAsset = null;
@@ -17104,8 +17113,8 @@ function renderFileActionButtons(options = {}) {
 
 function renderFileActionItems({ modeToggle = null, reviewAction = null, secondaryReviewAction = null, nextReviewAction = null, dirty = false, templateState = null, blockedByConflict = false, conversationBlocked = blockedByConflict, readOnly = false, deletable = true, savable = true } = {}) {
   return '' +
-    (IS_LOCAL && state.selected && !state.selectedStartupContext && !readOnly && /\.(md|markdown|txt|html?)$/i.test(state.selected) ? '<button class="file-action" type="button" data-file-conversation' + (dirty || conversationBlocked ? ' disabled title="Save or resolve the original document first"' : '') + '>Discuss</button><button class="file-action" type="button" data-file-dictate' + (conversationBlocked ? ' disabled' : '') + '>Dictate</button><button class="file-action" type="button" data-file-voice' + (dirty || conversationBlocked ? ' disabled' : '') + '>Voice</button>'
-      + (state.mode === "view" && /\.(md|markdown)$/i.test(state.selected) && !usePlainTextSurface(state.selected, state.saved) ? '<button class="file-action" type="button" data-file-annotate aria-pressed="' + (handAnnotation ? "true" : "false") + '"' + (dirty || conversationBlocked ? ' disabled' : '') + '>Annotate</button>' : '') : '') +
+    (IS_LOCAL && state.selected && !state.selectedStartupContext && !readOnly && /\.(md|markdown|txt|html?)$/i.test(state.selected) ? '<button class="file-action" type="button" data-file-conversation' + (dirty || conversationBlocked ? ' disabled title="Save or resolve the original document first"' : ' title="Type to the agent about this document"') + '>Discuss</button><button class="file-action" type="button" data-file-dictate title="Speak to type text into this document" ' + (conversationBlocked ? ' disabled' : '') + '>Dictate</button><button class="file-action" type="button" data-file-voice title="Talk out loud with the agent about this document"' + (dirty || conversationBlocked ? ' disabled' : '') + '>Voice</button>'
+      + (state.mode === "view" && /\.(md|markdown)$/i.test(state.selected) && !usePlainTextSurface(state.selected, state.saved) ? '<button class="file-action" type="button" data-file-annotate title="Mark a passage and ask the agent about it" aria-pressed="' + (handAnnotation ? "true" : "false") + '"' + (dirty || conversationBlocked ? ' disabled' : '') + '>Annotate</button>' : '') : '') +
     (templateState ? '<div class="empty-template-actions"><select class="file-template-select" data-empty-template-select aria-label="Template">' + renderFileTemplateOptions(templateState.selectedId) + '</select></div>' : '') +
     (reviewAction ? '<button class="file-action" type="button" data-file-review-decision="' + escapeHtml(reviewAction.status) + '">' + escapeHtml(reviewAction.label) + '</button>' : '') +
     (secondaryReviewAction ? '<button class="file-action" type="button" data-file-review-decision="' + escapeHtml(secondaryReviewAction.status) + '">' + escapeHtml(secondaryReviewAction.label) + '</button>' : '') +
@@ -18596,7 +18605,7 @@ function renderSettingsPanel() {
     title: "Projects and shared contexts",
     copy: "Give each project one accepted documentation source that stays consistent across collaborators and worktrees.",
     scope: "Project + Device",
-    pills: [sharedContextManagerRepositories().length + " repositories", (state.contextHub?.projects || []).filter((project) => project.mode !== "shared" && project.shared).length + " connected"],
+    pills: [nounCount(sharedContextManagerRepositories().length, "repositories"), (state.contextHub?.projects || []).filter((project) => project.mode !== "shared" && project.shared).length + " connected"],
     body: renderSharedContextManagementSettings(),
   }) +
   renderSettingsSection({
@@ -18605,7 +18614,7 @@ function renderSettingsPanel() {
     title: showGlobalProjectPicker ? "Global review overview" : "Review rules",
     copy: showGlobalProjectPicker ? "Understand the aggregate queue, then select one project in Explorer to change its review rules here." : "Choose what enters the queue and which Git actions wait for human review.",
     scope: showGlobalProjectPicker ? "All projects" : "Project",
-    pills: showGlobalProjectPicker ? [globalReviewCounts.local + " local files", globalReviewCounts.shared + " proposals", globalReviewCounts.projects + " projects"] : [selectedProjectPill, watchCount + " watched", reviewGateCount + " gates"].filter(Boolean),
+    pills: showGlobalProjectPicker ? [globalReviewCounts.local + " local files", globalReviewCounts.shared + " proposals", nounCount(globalReviewCounts.projects, "projects")] : [selectedProjectPill, watchCount + " watched", nounCount(reviewGateCount, "gates")].filter(Boolean),
     body: showGlobalProjectPicker ? globalReviewBody : '<div class="settings-concept"><strong>Every watched version needs human verification.</strong><p>A document remains in the queue until its current content hash is verified. Git adds a diff when available, but never decides whether the document is already reviewed.</p></div><div class="settings-disclosure-list">' +
     reviewCleanupDisclosure + agentCliGuideDisclosure +
     snoozedReviewDisclosure +
@@ -18632,12 +18641,12 @@ function renderSettingsPanel() {
     kicker: "Startup",
     title: "Agent startup environment",
     copy: "Control which instructions, local skills, and executable hooks Context Room discovers for this project.",
-    pills: [startupContextCount + " names", startupSkillFolderCount + " folders", startupHookNameCount + " git names", startupAgentHookCount + " agent paths", startupHookManagerCount + " managers"],
+    pills: [nounCount(startupContextCount, "names"), nounCount(startupSkillFolderCount, "folders"), startupHookNameCount + " git names", startupAgentHookCount + " agent paths", nounCount(startupHookManagerCount, "managers")],
     body: showGlobalProjectPicker ? globalStartupBody : '<div class="settings-concept"><strong>Startup describes what can affect an agent before work begins.</strong><p>Local skill discovery finds folders already installed around the project. Shared skills are different: they keep reviewed canonical skills in a shared context and link accepted versions into provider folders.</p></div><div class="settings-disclosure-list">' +
     renderSettingsDisclosure({ id: "startup-context", title: "Agent instructions", copy: "Find instruction files such as AGENTS.md and CLAUDE.md before an agent starts work.", status: startupContext.enabled ? startupContextCount + " configured" : "Disabled", scope: "Project", trackDirty: true, body:
       '<div class="settings-field"><label class="settings-toggle" for="startupContextEnabled"><input id="startupContextEnabled" type="checkbox" ' + (startupContext.enabled ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Discover startup instructions</strong><em>Include configured ancestor filenames and global instruction paths.</em></span></label><label class="settings-input-label" for="startupContextFileNames">Ancestor filenames</label><textarea id="startupContextFileNames" placeholder="one ancestor filename per line">' + escapeHtml(startupFileNames) + '</textarea><label class="settings-input-label" for="startupContextGlobalPaths">Global instruction paths</label><textarea id="startupContextGlobalPaths" placeholder="one global path per line">' + escapeHtml(startupGlobalPaths) + '</textarea></div>'
     }) +
-    renderSettingsDisclosure({ id: "startup-skills", title: "Local skill discovery", copy: "Find skill folders that already exist around this project.", status: startupSkills.enabled !== false ? startupSkillFolderCount + " folders" : "Disabled", scope: "Project", trackDirty: true, body:
+    renderSettingsDisclosure({ id: "startup-skills", title: "Local skill discovery", copy: "Find skill folders that already exist around this project.", status: startupSkills.enabled !== false ? nounCount(startupSkillFolderCount, "folders") : "Disabled", scope: "Project", trackDirty: true, body:
       '<div class="settings-field"><label class="settings-toggle" for="startupSkillsEnabled"><input id="startupSkillsEnabled" type="checkbox" ' + (startupSkills.enabled !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Discover local skills</strong><em>List skill folders visible to agents without managing or copying them.</em></span></label><label class="settings-input-label" for="startupSkillFolderNames">Skill folder names</label><textarea id="startupSkillFolderNames" placeholder="one folder path per line">' + escapeHtml(startupSkillFolderNames) + '</textarea><p class="settings-help">Need one reviewed version shared across a team or multiple projects? Shared resources are in this Agent environment category.</p></div>'
     }) +
     renderSettingsDisclosure({ id: "startup-hooks", title: "Hooks and automation", copy: "Inspect executable sources that can affect agents, commits, and validation.", status: startupHooks.enabled !== false ? startupHookNameCount + startupAgentHookCount + startupHookManagerCount + " sources" : "Disabled", scope: "Project", trackDirty: true, body:
@@ -18700,21 +18709,21 @@ function renderSettingsPanel() {
     kicker: "Templates",
     title: showGlobalProjectPicker ? "Project document templates" : "Markdown document templates",
     copy: showGlobalProjectPicker ? "Templates belong to one project and stay out of the global Hub host." : "Reusable shapes for new documentation files.",
-    pills: showGlobalProjectPicker ? ["Project-specific"] : [selectedProjectPill, markdownTemplates.length + " templates"].filter(Boolean),
+    pills: showGlobalProjectPicker ? ["Project-specific"] : [selectedProjectPill, nounCount(markdownTemplates.length, "templates")].filter(Boolean),
     body: showGlobalProjectPicker ? '<div class="settings-concept"><strong>Templates are project-owned.</strong><p>Select the project whose new documents should use them.</p></div><div class="settings-disclosure-list">' + renderSettingsDisclosure({ id: "templates-list", title: "Document templates", copy: "Create, enable, and edit reusable Markdown starting points inside one project.", status: "Project-specific", scope: "Project", body: renderGlobalProjectSettingsGate("Markdown document templates") }) + '</div>' : '<div class="settings-concept"><strong>Templates keep new documentation consistent.</strong><p>Each template is a reusable starting shape. Open one only when you need to edit its fields.</p></div><div class="settings-disclosure-list">' +
-      renderSettingsDisclosure({ id: "templates-list", title: "Document templates", copy: "Create, enable, and edit reusable Markdown starting points.", status: markdownTemplates.length + " templates", scope: "Project", trackDirty: true, body: '<div class="settings-body-toolbar"><span>Disabled templates stay saved but do not appear when creating a document.</span><button id="addMarkdownTemplate" class="secondary" type="button">Add template</button></div><div class="hub-card-options settings-editor-list" id="markdownTemplateEditors">' + markdownTemplates.map((template) => renderMarkdownTemplateEditor(template, false)).join("") + '</div>' }) + '</div>',
+      renderSettingsDisclosure({ id: "templates-list", title: "Document templates", copy: "Create, enable, and edit reusable Markdown starting points.", status: nounCount(markdownTemplates.length, "templates"), scope: "Project", trackDirty: true, body: '<div class="settings-body-toolbar"><span>Disabled templates stay saved but do not appear when creating a document.</span><button id="addMarkdownTemplate" class="secondary" type="button">Add template</button></div><div class="hub-card-options settings-editor-list" id="markdownTemplateEditors">' + markdownTemplates.map((template) => renderMarkdownTemplateEditor(template, false)).join("") + '</div>' }) + '</div>',
   }) +
   renderSettingsSection({
     id: "hub",
     kicker: "Hub",
     title: "Hub organization",
     copy: "Prioritize projects across the device and arrange the selected project's Home sections.",
-    pills: [(state.contextHub?.projects || []).filter((project) => !contextHubIsNotebookSpace(project)).length + " projects", showGlobalProjectPicker ? "Select a project for sections" : selectedProjectPill, !showGlobalProjectPicker ? sections.length + " sections" : ""].filter(Boolean),
+    pills: [nounCount((state.contextHub?.projects || []).filter((project) => !contextHubIsNotebookSpace(project)).length, "projects"), showGlobalProjectPicker ? "Select a project for sections" : selectedProjectPill, !showGlobalProjectPicker ? nounCount(sections.length, "sections") : ""].filter(Boolean),
     body: '<div class="settings-concept"><strong>Priority is device-wide; sections remain project-owned.</strong><p>Project order controls where projects and their reviews appear. Home sections still belong to the selected project.</p></div><div class="settings-disclosure-list">'
       + projectPriorityDisclosure
       + (showGlobalProjectPicker
         ? renderSettingsDisclosure({ id: "hub-sections", title: "Home sections and cards", copy: "Arrange the links and separators shown below one project's review queue.", status: "Project-specific", scope: "Project", body: renderGlobalProjectSettingsGate("Home sections and cards") })
-        : renderSettingsDisclosure({ id: "hub-sections", title: "Home sections and cards", copy: "Arrange the project links and separators shown below the review queue.", status: sections.length + " sections", scope: "Project", trackDirty: true, body: '<div class="settings-body-toolbar"><span>Right-click a section in Settings to remove it from Home.</span><button id="addHubSection" class="secondary" type="button">Add section</button></div>' + (!sections.length ? '<div class="settings-empty-state">No Home sections yet. Add one to create a labeled separator or a group of project links.</div>' : '') + '<div class="hub-card-options settings-editor-list" id="hubSectionEditors">' + sections.map((section) => renderHubSectionEditor(section, false)).join("") + '</div>' }))
+        : renderSettingsDisclosure({ id: "hub-sections", title: "Home sections and cards", copy: "Arrange the project links and separators shown below the review queue.", status: nounCount(sections.length, "sections"), scope: "Project", trackDirty: true, body: '<div class="settings-body-toolbar"><span>Right-click a section in Settings to remove it from Home.</span><button id="addHubSection" class="secondary" type="button">Add section</button></div>' + (!sections.length ? '<div class="settings-empty-state">No Home sections yet. Add one to create a labeled separator or a group of project links.</div>' : '') + '<div class="hub-card-options settings-editor-list" id="hubSectionEditors">' + sections.map((section) => renderHubSectionEditor(section, false)).join("") + '</div>' }))
       + '</div>',
   }) +
   renderSettingsSection({
@@ -19017,7 +19026,7 @@ function renderHubSectionEditor(section, open = false) {
 function renderHubCardEditor(card, depth = 0, open = false) {
   const paths = (card.paths || [card.path]).filter(Boolean).join("\n");
   const children = card.cards || [];
-  const summaryMeta = [paths ? paths.split(/\r?\n/).length + " paths" : "no paths", children.length ? children.length + " subcards" : ""].filter(Boolean).join(" · ");
+  const summaryMeta = [paths ? paths.split(/\r?\n/).length + " paths" : "no paths", children.length ? nounCount(children.length, "subcards") : ""].filter(Boolean).join(" · ");
   return '<details class="hub-card-editor ' + (depth ? 'nested' : '') + '" data-hub-card-editor data-card-id="' + escapeHtml(card.id || "") + '" ' + (open ? 'open' : '') + '>' +
     '<summary class="hub-card-editor-summary"><span>' + escapeHtml(card.title || "New card") + '</span><code>' + escapeHtml(summaryMeta) + '</code></summary>' +
     '<div class="hub-card-editor-head"><label class="hub-card-editor-title"><input type="checkbox" data-card-enabled ' + (card.enabled !== false ? 'checked' : '') + ' /> active</label><label class="hub-card-editor-title"><input type="checkbox" data-card-auto-children ' + (card.autoChildren ? 'checked' : '') + ' /> auto subcards</label><div class="docqa-actions"><button class="selection-action" type="button" data-add-child-card title="add a child card">+</button><button class="selection-action danger-action" type="button" data-remove-hub-card title="remove this card">×</button></div></div>' +
@@ -21406,7 +21415,9 @@ function renderViewer() {
   const diffMarkup = hasDiff ? renderDiffPanel(diff) : "";
   const templateState = !isStartupFile && !isHtmlDocument && !isImageDocument && !openingFile && !loadError && !conflict && !externalChange ? templateStateForContent(text) : null;
   const actionsMarkup = loadError
-    ? '<div class="file-actions"><button class="file-action primary" type="button" data-file-retry>Retry</button></div>'
+    ? (loadError.code === "file_not_found"
+      ? '<div class="file-actions"><button class="file-action primary" type="button" data-file-missing-back>Back to home</button><button class="file-action" type="button" data-file-retry>Retry</button></div>'
+      : '<div class="file-actions"><button class="file-action primary" type="button" data-file-retry>Retry</button></div>')
     : openingFile
       ? renderFileActionsLoading()
       : externalChange && !conflict
@@ -21442,6 +21453,7 @@ function renderViewer() {
     setDiffCollapsed(true);
   });
   document.querySelector("[data-revert-diff]")?.addEventListener("click", () => promptRevertCurrentDiff());
+  document.querySelector("[data-file-missing-back]")?.addEventListener("click", () => showHome());
   document.querySelector("[data-file-retry]")?.addEventListener("click", () => retrySelectedFileLoad().catch((error) => setStatus(error.message)));
   document.querySelector("[data-apply-external-change]")?.addEventListener("click", requestApplyExternalChange);
   document.querySelector("[data-reject-external-change]")?.addEventListener("click", () => promptRejectExternalChange());
@@ -21507,6 +21519,7 @@ function retrySelectedFileLoad() {
 }
 
 function renderFileLoadError(error = {}) {
+  if (error.code === "file_not_found") return '<div class="file-load-state error" role="alert"><div class="file-load-state-inner"><strong>This file no longer exists</strong><span>It may have been moved or deleted.</span><span><code>' + escapeHtml(error.path || state.selected || "") + '</code></span></div></div>';
   return '<div class="file-load-state error" role="alert"><div class="file-load-state-inner"><strong>Could not open this file</strong><span>' + escapeHtml(error.message || "Request failed.") + '</span><span><code>' + escapeHtml(error.path || state.selected || "") + '</code></span></div></div>';
 }
 
