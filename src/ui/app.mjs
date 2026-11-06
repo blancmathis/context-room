@@ -2209,8 +2209,8 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .context-room-brand:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
     .context-room-brand:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 68%, transparent); outline-offset: -2px; }
     .context-room-brand-mark { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 3px 10px color-mix(in srgb, var(--accent) 36%, transparent); }
-    body.hub-connection-lost .context-room-brand-mark { background: var(--danger); box-shadow: none; }
-    body.hub-connection-lost #status { color: var(--danger); font-weight: 600; }
+    .hub-connection-lost .context-room-brand-mark { background: var(--danger); box-shadow: none; }
+    .hub-connection-lost #status { color: var(--danger); font-weight: 600; }
     .context-room-brand strong { font-size: 12px; line-height: 1.2; font-weight: 820; }
     .workspace-title { flex: 1 1 auto; min-width: 0; padding: 0 8px; color: var(--muted); font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .workspace-title:empty { display: none; }
@@ -2773,9 +2773,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       box-shadow: none;
     }
     .docqa-panel + .docqa-panel { border-top: 1px solid var(--line); }
-    .home-side { display: contents; }
-    .docqa-grid > .home-side > .docqa-panel:first-child, .docqa-grid > .home-side + .docqa-panel { border-top: 1px solid var(--line); }
-    #notebookSpacePanel { order: 1; } #contextHubProjectsPanel { order: 2; } #reviewQueuePanel { order: 3; } #contextEnginePanel { order: 4; } #contextHealthPanel { order: 5; } #documentsMapPanel { order: 6; }
     .docqa-panel > header, .proposal-review-head, .settings-page-header {
       min-height: 64px;
       padding: 14px var(--workbench-gutter);
@@ -2919,12 +2916,10 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .global-context-room #reviewQueuePanel { grid-column: 1; min-width: 0; }
       .global-context-room #contextHealthPanel { grid-column: 2; position: sticky; top: 0; max-height: calc(100vh - 48px); overflow: auto; border-left: 1px solid var(--line); border-top: 0; }
       .global-context-room #contextEnginePanel { grid-column: 1 / -1; }
-      /* Local Hub: Projects + Project inspection form one side column spanning every main row, so the main column (Notebooks, review queue, …) stacks without gaps.
-         Main items flow down column 1 in their order; the last explicit row is flexible, so a tall side column never pushes rows of the main column apart. */
-      :root:not([data-context-room-runtime-profile^="hosted"]) .global-context-room .docqa-grid { grid-template-rows: auto auto auto auto 1fr; }
-      :root:not([data-context-room-runtime-profile^="hosted"]) .global-context-room .docqa-grid > :not(.home-side):not(#contextEnginePanel):not(.explorer-view-panel) { grid-column: 1; min-width: 0; }
-      :root:not([data-context-room-runtime-profile^="hosted"]) .global-context-room .home-side { display: grid; grid-column: 2; grid-row: 1 / -1; align-content: start; min-width: 0; position: sticky; top: 0; max-height: calc(100vh - 48px); overflow: auto; border-left: 1px solid var(--line); }
-      :root:not([data-context-room-runtime-profile^="hosted"]) .global-context-room .home-side > #contextHealthPanel { grid-column: auto; position: static; max-height: none; overflow: visible; border-left: 0; }
+      [data-context-room-runtime-profile="local"] .global-context-room .docqa-grid { grid-template-rows: auto auto auto auto auto 1fr; }
+      [data-context-room-runtime-profile="local"] .global-context-room .docqa-grid > :not(#contextHubProjectsPanel):not(#contextHealthPanel):not(#contextEnginePanel):not(.explorer-view-panel) { grid-column: 1; min-width: 0; }
+      [data-context-room-runtime-profile="local"] .global-context-room #contextHubProjectsPanel { grid-column: 2; grid-row: 1 / -1; align-self: start; min-width: 0; }
+      [data-context-room-runtime-profile="local"] .global-context-room #contextHealthPanel { grid-row: 1 / -1; align-self: start; margin-top: var(--projects-h); }
     }
     .startup-context-item { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; }
     .settings-page { overflow: hidden; }
@@ -3707,7 +3702,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
               </header>
               <ul id="notebookSpaceList" class="notebook-space-list" aria-label="Notebooks"></ul>
             </section>
-            <div class="home-side">
             <section id="contextHubProjectsPanel" class="docqa-panel context-hub-projects-panel" aria-labelledby="contextHubProjectsHeading" hidden>
               <header>
                 <div>
@@ -3722,19 +3716,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
               </header>
               <ul id="contextHubHomeProjectList" class="context-hub-home-projects" aria-label="Projects"></ul>
             </section>
-            <section id="contextHealthPanel" class="docqa-panel">
-              <header>
-                <div>
-                  <h2>Context health</h2>
-                </div>
-                <div class="docqa-actions context-health-header-actions">
-                  <button id="sendContextHealthToCodex" class="file-action context-health-codex-action" type="button" title="Add a fix prompt for the currently shown issues to the active Codex composer. Nothing is sent." disabled><span aria-hidden="true">@</span> Fix in Codex</button>
-                  <button id="refreshContextHealth" class="file-action" type="button" title="Run every health check again and show all results">Refresh all</button>
-                </div>
-              </header>
-              <div id="contextHealth" class="markdown-tools"><div class="issue">Analyzing project context...</div></div>
-            </section>
-            </div>
             <section id="reviewQueuePanel" class="docqa-panel">
               <header>
                 <div>
@@ -3789,6 +3770,18 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
                 </div>
               </header>
               <div id="contextEngineBody" class="markdown-tools" aria-live="polite"></div>
+            </section>
+            <section id="contextHealthPanel" class="docqa-panel">
+              <header>
+                <div>
+                  <h2>Context health</h2>
+                </div>
+                <div class="docqa-actions context-health-header-actions">
+                  <button id="sendContextHealthToCodex" class="file-action context-health-codex-action" type="button" title="Add a fix prompt for the currently shown issues to the active Codex composer. Nothing is sent." disabled><span aria-hidden="true">@</span> Fix in Codex</button>
+                  <button id="refreshContextHealth" class="file-action" type="button" title="Run every health check again and show all results">Refresh all</button>
+                </div>
+              </header>
+              <div id="contextHealth" class="markdown-tools"><div class="issue">Analyzing project context...</div></div>
             </section>
             <section id="documentsMapPanel" class="docqa-panel documents-map-panel" aria-labelledby="documentsMapHeading" hidden>
               <header>
@@ -4304,6 +4297,12 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 	state.activeProjectLocationId = "";
 	document.body.classList.toggle("global-context-room", IS_GLOBAL_CONTEXT_ROOM);
 	document.body.classList.toggle("focused-review-context-room", !IS_GLOBAL_CONTEXT_ROOM);
+	// Wide Hub home: Context health sits under Projects in the same side area and needs that panel's height.
+	if (IS_GLOBAL_CONTEXT_ROOM && typeof ResizeObserver === "function") {
+		const homeGrid = document.querySelector("#home .docqa-grid");
+		const projectsPanel = document.getElementById("contextHubProjectsPanel");
+		if (homeGrid && projectsPanel) new ResizeObserver(() => homeGrid.style.setProperty("--projects-h", projectsPanel.offsetHeight + "px")).observe(projectsPanel);
+	}
 const LEGACY_NAVIGATION_STATE_STORAGE_PREFIX = "context-room:navigation:";
 const WORKSPACE_NAVIGATION_STATE_STORAGE_PREFIX = "context-room:workspace-navigation:";
 const WORKSPACE_ID_SESSION_KEY = "context-room:workspace-id";
