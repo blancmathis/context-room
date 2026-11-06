@@ -2210,7 +2210,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .context-room-brand:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 68%, transparent); outline-offset: -2px; }
     .context-room-brand-mark { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 3px 10px color-mix(in srgb, var(--accent) 36%, transparent); }
     .hub-connection-lost .context-room-brand-mark { background: var(--danger); box-shadow: none; }
-    .hub-connection-lost #status { color: var(--danger); font-weight: 600; }
+    #status[data-hub-lost] { color: var(--danger); font-weight: 600; }
     .context-room-brand strong { font-size: 12px; line-height: 1.2; font-weight: 820; }
     .workspace-title { flex: 1 1 auto; min-width: 0; padding: 0 8px; color: var(--muted); font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .workspace-title:empty { display: none; }
@@ -11997,6 +11997,8 @@ function ensureRuntimeFallback() {
 function startRuntimeEvents() {
   if (!state.workspaceId || state.workspaceRuntimeStopped || state.workspaceUnloadPending) return;
   state.runtimeEventSource?.close();
+  window.clearTimeout(state.runtimeEventsReopenTimer);
+  state.runtimeEventsReopenTimer = null;
   const key = runtimeEventCursorStorageKey();
   try { state.runtimeEventCursor = Number(window.sessionStorage?.getItem(key) || 0) || 0; } catch {}
   try { state.runtimeEventInstanceId = String(window.sessionStorage?.getItem(key + ":instance") || ""); } catch {}
@@ -12016,6 +12018,7 @@ function startRuntimeEvents() {
     if (restarted && !resyncedBeforeReady) handleRuntimeEvent({ cursor: readyCursor, type: "resync-required", data: { source: "runtime-restart" } });
     else if (!(state.runtimeEventCursor > 0) && readyCursor) rememberRuntimeEventCursor(readyCursor);
     resyncedBeforeReady = false;
+    state.runtimeEventsReopenAttempts = 0;
     state.runtimeEventsConnected = true;
     markHubConnection(true);
     window.clearInterval(state.runtimeFallbackTimer);
@@ -12035,11 +12038,24 @@ function startRuntimeEvents() {
     state.runtimeEventsConnected = false;
     markHubConnection(false);
     ensureRuntimeFallback();
+    // After an HTTP error the browser closes the stream for good: reopen it ourselves, one source at a time.
+    if (source.readyState === EventSource.CLOSED) scheduleRuntimeEventsReopen();
   };
+}
+
+function scheduleRuntimeEventsReopen() {
+  if (state.runtimeEventsReopenTimer) return;
+  const attempt = state.runtimeEventsReopenAttempts || 0;
+  state.runtimeEventsReopenAttempts = attempt + 1;
+  state.runtimeEventsReopenTimer = window.setTimeout(() => {
+    state.runtimeEventsReopenTimer = null;
+    startRuntimeEvents();
+  }, Math.min(30_000, 1000 * 2 ** attempt));
 }
 
 // The status line must not keep saying "ready" while the Hub is gone (restart, sleep, crash).
 // EventSource retries by itself; a short grace period hides ordinary reconnects.
+function hubUnreachableText() { return "Hub unreachable · reconnecting…"; }
 function markHubConnection(connected) {
   if (connected) {
     window.clearTimeout(state.hubConnectionLostTimer);
@@ -12055,8 +12071,8 @@ function markHubConnection(connected) {
     state.hubConnectionLostTimer = null;
     if (state.runtimeEventsConnected || state.workspaceRuntimeStopped || state.workspaceUnloadPending) return;
     document.body.classList.add("hub-connection-lost");
-    setStatus("Hub unreachable · reconnecting…");
-  }, 3000);
+    setStatus(hubUnreachableText());
+  }, 8000);
 }
 
 async function pollAgentCommand() {
@@ -26007,6 +26023,7 @@ function setStatus(text) {
   if (IS_HOSTED_CONTEXT_ROOM && document.body.classList.contains("app-booting") && /^(?:proposal )?ready$/i.test(String(text || "").trim())) return;
   status.textContent = text;
   status.title = text;
+  status.toggleAttribute("data-hub-lost", text === hubUnreachableText());
 }
 function rememberButtonLabel(button) {
   if (!button) return "";
@@ -26974,18 +26991,21 @@ document.addEventListener("keydown", (event) => {
   if (event.repeat) return;
   decideReviewFlow(action).catch((error) => setStatus(error.message));
 });
+let reviewCleanupLoadInFlight = null;
 document.addEventListener("click", (event) => {
   const trigger = event.target.closest("[data-review-cleanup]");
   if (!trigger) return;
   // Loading the cleanup state can take seconds on large queues: show it, and never open a second dialog.
-  if (trigger.getAttribute("aria-busy") === "true" || document.querySelector('dialog[open][aria-label="Review cleanup"]')) return;
+  // One load at a time for every trigger (home and Settings).
+  if (reviewCleanupLoadInFlight || trigger.getAttribute("aria-busy") === "true" || document.querySelector('dialog[open][aria-label="Review cleanup"]')) return;
   const label = trigger.textContent;
   trigger.setAttribute("aria-busy", "true");
   trigger.textContent = "Opening review cleanup…";
-  import("/assets/review-cleanup.mjs")
+  reviewCleanupLoadInFlight = import("/assets/review-cleanup.mjs")
     .then(({ openReviewCleanup }) => openReviewCleanup({ api, onChange: refreshContextRoomReviewQueue }))
     .catch((error) => setStatus(error.message))
     .finally(() => {
+      reviewCleanupLoadInFlight = null;
       trigger.removeAttribute("aria-busy");
       trigger.textContent = label;
     });
