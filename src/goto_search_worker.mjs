@@ -19,6 +19,7 @@ const engine = createGotoEngine({
   resolveFile: (root, rel) => {
     try { return resolveMemoryPath(root, rel, { readOnly: true, settings: settingsFor(root) }); } catch { return ""; }
   },
+  onProgress: () => parentPort.postMessage({ progress: true }),
   ...(process.env.CONTEXT_ROOM_GOTO_MAX_BYTES ? { maxTotalBytes: Number(process.env.CONTEXT_ROOM_GOTO_MAX_BYTES) } : {}),
 });
 

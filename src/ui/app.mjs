@@ -1753,7 +1753,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .context-hub-project-picker-modal { position: fixed; inset: 0; z-index: 140; display: grid; place-items: start center; padding: max(20px, 8dvh) 20px 20px; }
     .context-hub-project-picker-modal[hidden] { display: none !important; }
     .context-hub-project-picker-backdrop { position: absolute; inset: 0; border: 0; background: rgba(2, 6, 23, .72); cursor: default; }
-    .context-hub-project-picker-dialog { position: relative; width: min(680px, 100%); max-height: min(760px, calc(100dvh - 40px)); display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; overflow: hidden; border: 1px solid color-mix(in srgb, var(--line) 82%, var(--accent) 18%); border-radius: 14px; background: var(--panel-strong); box-shadow: 0 26px 80px rgba(0, 0, 0, .48); animation: contextHubProjectPickerIn 180ms cubic-bezier(.22, 1, .36, 1); }
+    .context-hub-project-picker-dialog { position: relative; width: min(680px, 100%); max-height: min(760px, calc(92dvh - 20px)); display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; overflow: hidden; border: 1px solid color-mix(in srgb, var(--line) 82%, var(--accent) 18%); border-radius: 14px; background: var(--panel-strong); box-shadow: 0 26px 80px rgba(0, 0, 0, .48); animation: contextHubProjectPickerIn 180ms cubic-bezier(.22, 1, .36, 1); }
     @keyframes contextHubProjectPickerIn { from { opacity: .78; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     .context-hub-project-picker-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 18px 18px 13px; }
     .context-hub-project-picker-title { min-width: 0; }
@@ -4149,7 +4149,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 		state.contextHubProjectPickerReturnFocus = "";
 		state.contextHubProjectPickerPurpose = "filter";
 		state.contextHubProjectPickerIsolationRelease = null;
-		state.gotoSearch = { query: "", files: [], text: [], loading: false, seq: 0, timer: null, showAllFiles: false, showAllText: false, warmed: false };
+		state.gotoSearch = { query: "", files: [], text: [], loading: false, failed: false, truncated: false, seq: 0, timer: null, showAllFiles: false, showAllText: false, warmed: false };
 		state.activeModalClose = null;
 		state.contextHubCreationGeneration = 0;
 		state.contextHubCreationController = null;
@@ -8277,15 +8277,19 @@ function gotoGroupLabel(kind) {
 
 function resetGotoSearch() {
   window.clearTimeout(state.gotoSearch?.timer);
-  state.gotoSearch = { query: "", files: [], text: [], loading: false, seq: (state.gotoSearch?.seq || 0) + 1, timer: null, showAllFiles: false, showAllText: false, warmed: state.gotoSearch?.warmed || false };
+  state.gotoSearch = { query: "", files: [], text: [], loading: false, failed: false, truncated: false, seq: (state.gotoSearch?.seq || 0) + 1, timer: null, showAllFiles: false, showAllText: false, warmed: state.gotoSearch?.warmed || false };
 }
 
 // One request per pause in typing; an older answer never replaces a newer one.
+// All automatic retries (worker failure and "still building") share one budget, so they cannot reset each other.
+const GOTO_RETRY_BUDGET = 8;
 function scheduleGotoSearch(retry = 0) {
   const goto = state.gotoSearch;
   window.clearTimeout(goto.timer);
-  if (!retry) { goto.showAllFiles = false; goto.showAllText = false; }
+  if (!retry) { goto.showAllFiles = false; goto.showAllText = false; goto.attempts = 0; goto.exhausted = false; }
   const query = state.contextHubProjectPickerQuery.trim();
+  // A queued Enter belongs to one query: a keystroke that leaves the trimmed query unchanged keeps it.
+  if (!retry && goto.pendingEnterQuery !== query) goto.pendingEnter = false;
   if (state.contextHubProjectPickerPurpose !== "open" || IS_HOSTED_HUB || query.length < GOTO_MIN_QUERY) {
     goto.seq += 1;
     goto.files = [];
@@ -8300,20 +8304,35 @@ function scheduleGotoSearch(retry = 0) {
   goto.timer = window.setTimeout(async () => {
     goto.timer = null;
     let building = false;
+    let failedNow = false;
     try {
       const result = await api("/api/context-hub/document-search?scope=all&limit=40&query=" + encodeURIComponent(query));
       if (seq !== goto.seq || !state.contextHubProjectPickerOpen) return;
       goto.files = Array.isArray(result.files) ? result.files : [];
       goto.text = Array.isArray(result.text) ? result.text : [];
-      building = Boolean(result.building) && retry < 8;
+      goto.failed = Boolean(result.failed);
+      goto.truncated = Boolean(result.truncated);
+      building = Boolean(result.building);
+      failedNow = goto.failed;
     } catch {
+      failedNow = true;
       if (seq !== goto.seq) return;
       goto.files = [];
       goto.text = [];
+      goto.failed = true;
     }
     goto.query = query;
+    const wantsRetry = building || failedNow;
+    const mayRetry = wantsRetry && goto.attempts < GOTO_RETRY_BUDGET;
+    goto.exhausted = wantsRetry && !mayRetry;
+    if (goto.exhausted) goto.truncated = true;
+    building = building && mayRetry;
     goto.loading = building;
-    if (building) { goto.timer = window.setTimeout(() => scheduleGotoSearch(retry + 1), 700); }
+    if (mayRetry) {
+      goto.attempts += 1;
+      // The worker waits 5 s, 10 s, ... before it restarts: after a failure, search again when that wait is over.
+      goto.timer = window.setTimeout(() => scheduleGotoSearch(1), failedNow ? Math.min(60000, 5500 * 2 ** Math.min(goto.attempts - 1, 4)) : 700);
+    }
     renderContextHubProjectPicker();
     if (!building && goto.pendingEnter) {
       goto.pendingEnter = false;
@@ -8402,7 +8421,7 @@ function renderContextHubProjectPicker() {
   const openPurpose = state.contextHubProjectPickerPurpose === "open";
   const gotoCount = choices.filter((item) => item?.gotoKind === "file" || item?.gotoKind === "text").length;
   status.textContent = state.contextHubProjectPickerQuery.trim()
-    ? projects.length + " of " + totalProjects + " projects" + (openPurpose && gotoCount ? " · " + gotoCount + (gotoCount === 1 ? " document" : " documents") : "") + (openPurpose && state.gotoSearch.loading ? " · Searching…" : "")
+    ? projects.length + " of " + totalProjects + " projects" + (openPurpose && gotoCount ? " · " + gotoCount + (gotoCount === 1 ? " document" : " documents") : "") + (openPurpose && state.gotoSearch.loading ? " · Searching…" : openPurpose && state.gotoSearch.failed ? " · Search unavailable" : openPurpose && state.gotoSearch.exhausted ? " · Gave up, type again to retry" : openPurpose && state.gotoSearch.truncated ? " · Partial results" : "")
     : totalProjects + " project" + (totalProjects === 1 ? "" : "s");
   list.setAttribute("aria-label", openPurpose ? "Results" : "Projects");
   const optionMarkup = choices.length
@@ -8445,7 +8464,7 @@ function renderContextHubProjectPicker() {
     : null;
   list.innerHTML = optionMarkup
     ? (grouped ?? optionMarkup.join(""))
-    : '<div class="context-hub-project-picker-empty"><strong>' + (openPurpose && state.contextHubProjectPickerQuery.trim().length >= GOTO_MIN_QUERY && !state.gotoSearch.loading ? "Nothing found." : "No project found.") + '</strong><br />' + (openPurpose ? "Try a project, a file name or a word from a file." : "Try a name, folder path, or shared project ID.") + '</div>';
+    : '<div class="context-hub-project-picker-empty"><strong>' + (openPurpose && state.contextHubProjectPickerQuery.trim().length >= GOTO_MIN_QUERY && !state.gotoSearch.loading ? (state.gotoSearch.failed ? "Document search is unavailable." : "Nothing found.") : "No project found.") + '</strong><br />' + (openPurpose ? (state.gotoSearch.failed ? "Projects still match by name. Type again in a few seconds." : "Try a project, a file name or a word from a file.") : "Try a name, folder path, or shared project ID.") + '</div>';
   const activeId = choices.length ? "contextHubProjectPickerOption-" + state.contextHubProjectPickerIndex : "";
   if (activeId) search.setAttribute("aria-activedescendant", activeId);
   else search.removeAttribute("aria-activedescendant");
@@ -26982,6 +27001,7 @@ el("contextHubProjectPickerSearch")?.addEventListener("keydown", (event) => {
     // Nothing to open yet: wait for the answer to this query. An older answer is never used.
     event.preventDefault();
     state.gotoSearch.pendingEnter = true;
+    state.gotoSearch.pendingEnterQuery = state.contextHubProjectPickerQuery.trim();
   }
 });
 el("contextHubProjectPicker")?.addEventListener("keydown", (event) => {
