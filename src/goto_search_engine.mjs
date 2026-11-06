@@ -80,9 +80,19 @@ export function createGotoEngine({ listFiles, resolveFile, ...overrides }) {
     const previous = index.builtAt ? { entries: index.entries } : null;
     const files = listFiles(root);
     const entries = new Map();
+    // Make room first: drop the least recently used other projects until this one fits (or none is left to drop).
+    let need = 0;
+    for (const file of files) if (file.exists && cleanRel(String(file.path || "")) && file.bytes <= limits.maxFileBytes) need += file.bytes;
+    while (totalBytes() - index.bytes + need > limits.maxTotalBytes) {
+      let oldest = null;
+      for (const [other, candidate] of indexes) if (other !== root && !candidate.building && (!oldest || candidate.used < oldest[1].used)) oldest = [other, candidate];
+      if (!oldest) break;
+      indexes.delete(oldest[0]);
+    }
     const others = totalBytes() - index.bytes;
     let bytes = 0;
     let reads = 0;
+    let skipped = false;
     for (const file of files) {
       const rel = String(file.path || "");
       if (!file.exists || !cleanRel(rel)) continue;
@@ -91,12 +101,14 @@ export function createGotoEngine({ listFiles, resolveFile, ...overrides }) {
       if (unchanged && (prior.read || file.bytes > limits.maxFileBytes)) { entries.set(rel, prior); bytes += prior.fold.length; continue; }
       const entry = readEntry(root, rel, file, limits.maxTotalBytes - others - bytes);
       if (!entry) continue;
+      if (!entry.read && file.bytes <= limits.maxFileBytes) skipped = true;
       entries.set(rel, entry);
       bytes += entry.fold.length;
       if (++reads % 40 === 0) await tick();
     }
     index.entries = entries;
     index.bytes = bytes;
+    index.truncated = skipped;
     index.builtAt = Date.now();
     return index;
   }
@@ -161,7 +173,8 @@ export function createGotoEngine({ listFiles, resolveFile, ...overrides }) {
     if (stat.mtime.toISOString() !== entry.updatedAt || stat.size !== entry.bytes) {
       current = readEntry(project.root, entry.path, { bytes: stat.size, updatedAt: stat.mtime.toISOString() }, limits.maxFileBytes);
       if (!current) return null;
-      indexes.get(project.root)?.entries.set(entry.path, current);
+      const held = indexes.get(project.root);
+      if (held) { held.bytes += current.fold.length - entry.fold.length; held.entries.set(entry.path, current); }
     }
     if (kind === "file") return rankOf(current, phrase, terms) >= 0 ? { entry: current } : null;
     if (!current.fold || !terms.every((term) => current.fold.includes(term))) return null;
@@ -198,6 +211,7 @@ export function createGotoEngine({ listFiles, resolveFile, ...overrides }) {
       }
       index.used = ++clock;
       result.searchedProjects += 1;
+      if (index.truncated) result.truncated = true;
       for (const entry of index.entries.values()) {
         const rank = rankOf(entry, phrase, terms);
         if (rank >= 0) { files.push({ project, entry, rank }); continue; }

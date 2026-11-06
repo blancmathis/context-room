@@ -119,3 +119,46 @@ test("Go to keeps the input at the same place while results change, and counts o
   expect(await top()).toBe(start);
   expect(start).toBeLessThan(200);
 });
+
+test("Go to does not open a result when Enter was pressed for an earlier query", async ({ page }) => {
+  const search = await openGoto(page);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  await page.route("**/api/context-hub/document-search?*", async (route) => { await gate; await route.fulfill({ json: { files: [{ projectKey: "local:x", projectId: fixture().projects.atlas.id, projectTitle: "Atlas", path: "docs/operations.md", name: "operations.md" }], text: [] } }); });
+  await search.pressSequentially("zzq");
+  await page.keyboard.press("Enter");
+  await search.pressSequentially("qword");
+  release();
+  await expect(page.locator('#contextHubProjectPickerList [role="group"][aria-label="Files"]')).toBeVisible();
+  await expect(page.locator("#contextHubProjectPickerStatus")).not.toContainText("Searching");
+  await page.waitForTimeout(300);
+  expect(new URL(page.url()).searchParams.get("file")).toBeNull();
+  await expect(page.locator("#contextHubProjectPicker")).toBeVisible();
+});
+
+test("Go to tells the user when search failed or was partial", async ({ page }) => {
+  let mode = "failed";
+  await page.route("**/api/context-hub/document-search?*", (route) => route.fulfill({
+    json: mode === "failed" ? { files: [], text: [], failed: true, truncated: true }
+      : { files: [], text: [{ projectKey: "local:x", projectId: "x", projectTitle: "X", path: "a.md", name: "a.md", snippet: "zzword", matchStart: 0, matchLength: 6, line: 1, term: "zzword" }], truncated: true },
+  }));
+  const search = await openGoto(page);
+  await search.fill("zzqqword");
+  await expect(page.locator("#contextHubProjectPickerStatus")).toContainText("Search unavailable");
+  await expect(page.locator("#contextHubProjectPickerList")).toContainText("Document search is unavailable");
+  mode = "partial";
+  await search.fill("zzqqword2");
+  await expect(page.locator("#contextHubProjectPickerStatus")).toContainText("Partial results");
+});
+
+test("Go to keeps its footer inside a laptop-height window", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const files = Array.from({ length: 40 }, (_, i) => ({ projectKey: "local:x", projectId: "x", projectTitle: "X", path: `docs/f${i}.md`, name: `f${i}.md` }));
+  await page.route("**/api/context-hub/document-search?*", (route) => route.fulfill({ json: { files, text: files.map((item) => ({ ...item, snippet: "zzqqword", matchStart: 0, matchLength: 8, line: 1, term: "zzqqword" })) } }));
+  const search = await openGoto(page);
+  await search.fill("zzqqword");
+  await expect(page.locator('#contextHubProjectPickerList [role="group"][aria-label="In text"]')).toBeVisible();
+  await page.waitForTimeout(400);
+  const footer = await page.locator("#contextHubProjectPicker footer").first().boundingBox();
+  expect(footer.y + footer.height).toBeLessThanOrEqual(800);
+});

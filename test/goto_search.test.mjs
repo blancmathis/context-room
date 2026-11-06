@@ -8,7 +8,7 @@ import test from "node:test";
 import { registerContextHubProject } from "../src/context_hub.mjs";
 import { createMemoryServer, initializeContextRoomProject } from "../src/context_room.mjs";
 import { createGotoEngine } from "../src/goto_search_engine.mjs";
-import { gotoSearchProjects, gotoSearchStatsForTests, resetGotoSearchIndexForTests, stopGotoSearchWorkerForTests } from "../src/goto_search.mjs";
+import { gotoSearchProjects, gotoSearchStatsForTests, gotoWorkerSpawnsForTests, resetGotoSearchIndexForTests, searchGoto, setGotoWorkerUrlForTests, stopGotoSearchWorkerForTests } from "../src/goto_search.mjs";
 
 function makeProject(base, name, files) {
   const root = path.join(base, name);
@@ -197,4 +197,56 @@ test("Go to engine bounds memory globally, frees removed projects and re-reads o
     await new Promise((resolve) => setTimeout(resolve, 100));
     assert.equal(resolves, before, "a refresh of unchanged files reads nothing");
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+function listDir(root) {
+  return fs.readdirSync(root).map((name) => {
+    const stat = fs.statSync(path.join(root, name));
+    return { path: name, exists: true, bytes: stat.size, updatedAt: stat.mtime.toISOString() };
+  });
+}
+
+test("Go to evicts old projects so the newest one keeps its text search, and says when a file was left unread", async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-goto-evict-"));
+  const mk = (name, count) => {
+    const root = path.join(base, name);
+    fs.mkdirSync(root, { recursive: true });
+    for (let i = 0; i < count; i += 1) fs.writeFileSync(path.join(root, `f${i}.md`), `# F${i}\n${"x".repeat(1000)} ${name}needle${i}\n`);
+    return { id: name, root, title: name, projectKey: `local:${name}` };
+  };
+  const [a, b, c] = ["a", "b", "c"].map((name) => mk(name, 20));
+  const engine = createGotoEngine({ maxTotalBytes: 30_000, ttlMs: 0, listFiles: listDir, resolveFile: (root, rel) => path.join(root, rel) });
+  try {
+    for (let round = 0; round < 2; round += 1) {
+      for (const project of [a, b, c]) {
+        const result = await engine.search([a, b, c], `${project.id}needle1`);
+        assert.equal(result.text.length > 0, true, `project ${project.id} still has text search in round ${round}`);
+        assert.equal(engine.stats().bytes <= 30_000, true);
+      }
+    }
+    const huge = mk("huge", 40); // 40 KB of text, cap 30 KB: some files cannot be read
+    const partial = await engine.search([huge], "hugeneedle1");
+    assert.equal(partial.truncated, true, "a project that does not fit says so");
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test("Go to reports a worker that cannot start and does not start a new one for every request", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-goto-broken-"));
+  const broken = path.join(base, "broken-worker.mjs");
+  fs.writeFileSync(broken, 'throw new Error("cannot load");\n');
+  const originalError = console.error;
+  const logged = [];
+  console.error = (...args) => { logged.push(args.join(" ")); };
+  await stopGotoSearchWorkerForTests();
+  setGotoWorkerUrlForTests(new URL(`file://${broken}`));
+  t.after(async () => { console.error = originalError; await stopGotoSearchWorkerForTests(); setGotoWorkerUrlForTests(null); fs.rmSync(base, { recursive: true, force: true }); });
+  const projects = [{ id: "p", root: base, title: "p" }];
+  const first = await searchGoto(projects, "anything");
+  assert.equal(first.failed, true, "the failure reaches the caller");
+  assert.equal(first.building, false, "a failure is not shown as an index still building");
+  const second = await searchGoto(projects, "anything");
+  const third = await searchGoto(projects, "anything");
+  assert.equal(second.failed && third.failed, true);
+  assert.equal(gotoWorkerSpawnsForTests(), 1, "one spawn attempt, then back-off");
+  assert.equal(logged.some((line) => line.includes("cannot load")), true, "the cause is logged");
 });
