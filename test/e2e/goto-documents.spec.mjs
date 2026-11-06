@@ -162,3 +162,34 @@ test("Go to keeps its footer inside a laptop-height window", async ({ page }) =>
   const footer = await page.locator("#contextHubProjectPicker footer").first().boundingBox();
   expect(footer.y + footer.height).toBeLessThanOrEqual(800);
 });
+
+test("Go to keeps a queued Enter when a keystroke leaves the trimmed query unchanged", async ({ page }) => {
+  const search = await openGoto(page);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  await page.route("**/api/context-hub/document-search?*", async (route) => { await gate; await route.continue(); });
+  await search.fill("runbook");
+  await page.keyboard.press("Enter");
+  await search.pressSequentially(" ");
+  release();
+  await expect.poll(() => new URL(page.url()).searchParams.get("file")).toBe("docs/runbook.md");
+});
+
+test("Go to says search is unavailable, then searches again by itself", async ({ page }) => {
+  test.setTimeout(45_000);
+  let calls = 0;
+  await page.route("**/api/context-hub/document-search?*", async (route) => {
+    calls += 1;
+    if (calls === 1) await route.fulfill({ json: { terms: [], files: [], text: [], truncated: true, building: false, failed: true } });
+    else await route.continue();
+  });
+  const search = await openGoto(page);
+  await search.fill("zzqqnothing");
+  const list = page.locator("#contextHubProjectPickerList");
+  await expect(list).toContainText("Document search is unavailable.");
+  await expect(list).toContainText("Projects still match by name. Type again in a few seconds.");
+  await expect(page.locator("#contextHubProjectPickerStatus")).toContainText("Search unavailable");
+  await expect(page.locator("#contextHubProjectPickerStatus")).not.toContainText("Search unavailable", { timeout: 15_000 });
+  expect(calls).toBeGreaterThanOrEqual(2);
+  await expect(list).toContainText("Nothing found.");
+});

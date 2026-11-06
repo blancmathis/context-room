@@ -8,7 +8,7 @@ import test from "node:test";
 import { registerContextHubProject } from "../src/context_hub.mjs";
 import { createMemoryServer, initializeContextRoomProject } from "../src/context_room.mjs";
 import { createGotoEngine } from "../src/goto_search_engine.mjs";
-import { gotoSearchProjects, gotoSearchStatsForTests, gotoWorkerSpawnsForTests, resetGotoSearchIndexForTests, searchGoto, setGotoWorkerUrlForTests, stopGotoSearchWorkerForTests } from "../src/goto_search.mjs";
+import { gotoSearchProjects, gotoSearchStatsForTests, gotoWorkerSpawnsForTests, resetGotoSearchIndexForTests, searchGoto, setGotoTimingsForTests, setGotoWorkerUrlForTests, stopGotoSearchWorkerForTests } from "../src/goto_search.mjs";
 
 function makeProject(base, name, files) {
   const root = path.join(base, name);
@@ -249,4 +249,74 @@ test("Go to reports a worker that cannot start and does not start a new one for 
   assert.equal(second.failed && third.failed, true);
   assert.equal(gotoWorkerSpawnsForTests(), 1, "one spawn attempt, then back-off");
   assert.equal(logged.some((line) => line.includes("cannot load")), true, "the cause is logged");
+});
+
+test("Go to: projects of one search do not evict each other, so a repeated query reads no file", async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-goto-thrash-"));
+  const mk = (name) => {
+    const root = path.join(base, name);
+    fs.mkdirSync(root, { recursive: true });
+    for (let i = 0; i < 20; i += 1) fs.writeFileSync(path.join(root, `f${i}.md`), `# F${i}\n${"x".repeat(1000)} ${name}needle${i}\n`);
+    return { id: name, root, title: name, projectKey: `local:${name}` };
+  };
+  const projects = ["a", "b", "c"].map(mk);
+  const engine = createGotoEngine({ maxTotalBytes: 30_000, listFiles: listDir, resolveFile: (root, rel) => path.join(root, rel) });
+  const realRead = fs.readFileSync;
+  let reads = 0;
+  fs.readFileSync = function (file, ...rest) { if (String(file).startsWith(base)) reads += 1; return realRead.call(this, file, ...rest); };
+  try {
+    const first = await engine.search(projects, "f1");
+    assert.equal(first.truncated, true, "projects that do not fit together say the read was partial");
+    assert.equal(first.files.length > 0, true);
+    for (let round = 0; round < 5; round += 1) {
+      reads = 0;
+      const again = await engine.search(projects, round % 2 ? "f1" : "zzznomatch");
+      assert.equal(reads, 0, `round ${round}: a repeated query inside the cache time reads 0 files`);
+      assert.equal(again.truncated, true);
+      assert.equal(engine.stats().projects, 3, "no project was evicted by another one of the same search");
+      assert.equal(engine.stats().bytes <= 30_000, true);
+    }
+  } finally { fs.readFileSync = realRead; fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test("Go to: re-reading a changed file at verify time respects the global cap", async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-goto-verify-cap-"));
+  const root = path.join(base, "p");
+  fs.mkdirSync(root, { recursive: true });
+  for (let i = 0; i < 10; i += 1) fs.writeFileSync(path.join(root, `f${i}.md`), `# F${i}\n${"x".repeat(1000)}\n`);
+  const project = { id: "p", root, title: "p", projectKey: "local:p" };
+  const engine = createGotoEngine({ maxTotalBytes: 12_000, listFiles: listDir, resolveFile: (r, rel) => path.join(r, rel) });
+  try {
+    await engine.search([project], "f3");
+    fs.writeFileSync(path.join(root, "f3.md"), `# F3\n${"y".repeat(3000)}\n`);
+    const result = await engine.search([project], "f3");
+    assert.equal(result.files.some((item) => item.path === "f3.md"), true, "the changed file is still found by name");
+    assert.equal(engine.stats().bytes <= 12_000, true, `index bytes ${engine.stats().bytes} stay under the cap`);
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test("Go to replaces a worker that hangs: a timeout counts as a worker failure", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-goto-hung-"));
+  const marker = path.join(base, "hung-once");
+  const hung = path.join(base, "hung-worker.mjs");
+  fs.writeFileSync(hung, `import fs from "node:fs";
+import { parentPort } from "node:worker_threads";
+parentPort.on("message", ({ id }) => {
+  if (!fs.existsSync(${JSON.stringify(marker)})) { fs.writeFileSync(${JSON.stringify(marker)}, "x"); for (;;); }
+  parentPort.postMessage({ id, result: { terms: [], files: [], text: [], truncated: false, building: false, searchedProjects: 0, filesTotal: 0, textTotal: 0 } });
+});
+`);
+  const originalError = console.error;
+  console.error = () => {};
+  await stopGotoSearchWorkerForTests();
+  setGotoWorkerUrlForTests(new URL(`file://${hung}`));
+  setGotoTimingsForTests({ timeoutMs: 300, backoffMs: 50 });
+  t.after(async () => { console.error = originalError; await stopGotoSearchWorkerForTests(); setGotoTimingsForTests(); setGotoWorkerUrlForTests(null); fs.rmSync(base, { recursive: true, force: true }); });
+  const projects = [{ id: "p", root: base, title: "p" }];
+  const first = await searchGoto(projects, "anything");
+  assert.equal(first.failed, true, "the hung request fails");
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const second = await searchGoto(projects, "anything");
+  assert.equal(second.failed, undefined, "after the back-off a new worker answers");
+  assert.equal(gotoWorkerSpawnsForTests(), 2, "the hung worker was replaced");
 });

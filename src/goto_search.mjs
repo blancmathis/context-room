@@ -7,7 +7,8 @@ import { Worker } from "node:worker_threads";
 
 export { foldSearchText } from "./goto_search_engine.mjs";
 
-const REQUEST_TIMEOUT_MS = 8000;
+let requestTimeoutMs = 8000;
+let backoffBaseMs = 5000;
 let worker = null;
 let workerUrl = new URL("./goto_search_worker.mjs", import.meta.url);
 let nextId = 1;
@@ -21,7 +22,7 @@ function noteWorkerFailure(created, reason) {
   if (worker === created) worker = null;
   failAll(reason);
   failures += 1;
-  backoffUntil = Date.now() + Math.min(60_000, 5000 * 2 ** (failures - 1));
+  backoffUntil = Date.now() + Math.min(12 * backoffBaseMs, backoffBaseMs * 2 ** (failures - 1));
   console.error("[context-room] Go to search worker failed: " + reason);
 }
 
@@ -53,7 +54,13 @@ function request(payload) {
   if (!worker && Date.now() < backoffUntil) return Promise.resolve({ failed: "unavailable" });
   const id = nextId++;
   return new Promise((resolve) => {
-    const timer = setTimeout(() => { pending.delete(id); console.error("[context-room] Go to search timed out"); resolve({ failed: "timeout" }); }, REQUEST_TIMEOUT_MS);
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      resolve({ failed: "timeout" });
+      // A worker that does not answer is hung (sync loop): replace it instead of feeding it more requests.
+      const hung = worker;
+      if (hung) { noteWorkerFailure(hung, "request timed out"); hung.terminate().catch(() => {}); }
+    }, requestTimeoutMs);
     pending.set(id, { resolve, timer });
     try { startWorker().postMessage({ id, ...payload }); } catch (error) { pending.delete(id); clearTimeout(timer); resolve({ failed: String(error?.message || error) }); }
   });
@@ -92,4 +99,5 @@ export async function resetGotoSearchIndexForTests() { if (worker) await request
 export async function gotoSearchStatsForTests() { return (await request({ type: "stats" })).result; }
 export async function stopGotoSearchWorkerForTests() { const current = worker; worker = null; if (current) await current.terminate(); }
 export function setGotoWorkerUrlForTests(url) { workerUrl = url || new URL("./goto_search_worker.mjs", import.meta.url); failures = 0; backoffUntil = 0; spawns = 0; }
+export function setGotoTimingsForTests({ timeoutMs = 8000, backoffMs = 5000 } = {}) { requestTimeoutMs = timeoutMs; backoffBaseMs = backoffMs; }
 export const gotoWorkerSpawnsForTests = () => spawns;

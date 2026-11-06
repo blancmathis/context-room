@@ -44,16 +44,27 @@ export function createGotoEngine({ listFiles, resolveFile, ...overrides }) {
   const limits = { ...DEFAULTS, ...overrides };
   const indexes = new Map();
   let clock = 0;
+  // Projects of the current search/warm: they are never evicted for each other (that would be a cyclic scan).
+  let protectedRoots = new Set();
 
   const totalBytes = () => { let sum = 0; for (const index of indexes.values()) sum += index.bytes; return sum; };
 
-  function evictFor(keepRoot) {
-    while (totalBytes() > limits.maxTotalBytes) {
-      let oldest = null;
-      for (const [root, index] of indexes) if (root !== keepRoot && !index.building && (!oldest || index.used < oldest[1].used)) oldest = [root, index];
-      if (!oldest) return;
-      indexes.delete(oldest[0]);
+  // Drops the least recently used project that can go: outside the current search, or unused within the cache time.
+  function evictOne(keepRoot) {
+    const now = Date.now();
+    let oldest = null;
+    for (const [root, index] of indexes) {
+      if (root === keepRoot || index.building) continue;
+      if (protectedRoots.has(root) && now - index.usedAt < limits.ttlMs) continue;
+      if (!oldest || index.used < oldest[1].used) oldest = [root, index];
     }
+    if (!oldest) return false;
+    indexes.delete(oldest[0]);
+    return true;
+  }
+
+  function evictFor(keepRoot) {
+    while (totalBytes() > limits.maxTotalBytes) if (!evictOne(keepRoot)) return;
   }
 
   // Reads one file through the access check. Returns null when the file must not be served.
@@ -83,12 +94,7 @@ export function createGotoEngine({ listFiles, resolveFile, ...overrides }) {
     // Make room first: drop the least recently used other projects until this one fits (or none is left to drop).
     let need = 0;
     for (const file of files) if (file.exists && cleanRel(String(file.path || "")) && file.bytes <= limits.maxFileBytes) need += file.bytes;
-    while (totalBytes() - index.bytes + need > limits.maxTotalBytes) {
-      let oldest = null;
-      for (const [other, candidate] of indexes) if (other !== root && !candidate.building && (!oldest || candidate.used < oldest[1].used)) oldest = [other, candidate];
-      if (!oldest) break;
-      indexes.delete(oldest[0]);
-    }
+    while (totalBytes() - index.bytes + need > limits.maxTotalBytes) if (!evictOne(root)) break;
     const others = totalBytes() - index.bytes;
     let bytes = 0;
     let reads = 0;
@@ -117,7 +123,7 @@ export function createGotoEngine({ listFiles, resolveFile, ...overrides }) {
     let index = indexes.get(root);
     if (index?.building) return index.building;
     const previous = index || null;
-    const holder = previous || { entries: new Map(), bytes: 0, builtAt: 0, used: ++clock, building: null };
+    const holder = previous || { entries: new Map(), bytes: 0, builtAt: 0, used: ++clock, usedAt: Date.now(), building: null };
     if (!previous) indexes.set(root, holder);
     const promise = build(root, holder).then(() => {
       holder.building = null;
@@ -171,10 +177,15 @@ export function createGotoEngine({ listFiles, resolveFile, ...overrides }) {
     if (!stat.isFile()) return null;
     let current = entry;
     if (stat.mtime.toISOString() !== entry.updatedAt || stat.size !== entry.bytes) {
-      current = readEntry(project.root, entry.path, { bytes: stat.size, updatedAt: stat.mtime.toISOString() }, limits.maxFileBytes);
+      const room = limits.maxTotalBytes - (totalBytes() - entry.fold.length);
+      current = readEntry(project.root, entry.path, { bytes: stat.size, updatedAt: stat.mtime.toISOString() }, Math.min(limits.maxFileBytes, room));
       if (!current) return null;
       const held = indexes.get(project.root);
-      if (held) { held.bytes += current.fold.length - entry.fold.length; held.entries.set(entry.path, current); }
+      if (held) {
+        held.bytes += current.fold.length - entry.fold.length;
+        held.entries.set(entry.path, current);
+        if (!current.read && stat.size <= limits.maxFileBytes) held.truncated = true;
+      }
     }
     if (kind === "file") return rankOf(current, phrase, terms) >= 0 ? { entry: current } : null;
     if (!current.fold || !terms.every((term) => current.fold.includes(term))) return null;
@@ -192,7 +203,8 @@ export function createGotoEngine({ listFiles, resolveFile, ...overrides }) {
     const terms = foldSearchText(query).split(/\s+/).filter(Boolean);
     const result = { terms, files: [], text: [], truncated: false, building: false, searchedProjects: 0, filesTotal: 0, textTotal: 0 };
     if (!terms.length) return result;
-    prune(new Set(projects.map((project) => project.root)));
+    protectedRoots = new Set(projects.map((project) => project.root));
+    prune(protectedRoots);
     const phrase = terms.join(" ");
     const files = [];
     const text = [];
@@ -210,6 +222,7 @@ export function createGotoEngine({ listFiles, resolveFile, ...overrides }) {
         ensureBuilt(project.root).catch(() => {});
       }
       index.used = ++clock;
+      index.usedAt = Date.now();
       result.searchedProjects += 1;
       if (index.truncated) result.truncated = true;
       for (const entry of index.entries.values()) {
@@ -250,7 +263,8 @@ export function createGotoEngine({ listFiles, resolveFile, ...overrides }) {
   }
 
   function warm(projects) {
-    prune(new Set(projects.map((project) => project.root)));
+    protectedRoots = new Set(projects.map((project) => project.root));
+    prune(protectedRoots);
     for (const project of projects) {
       const index = indexes.get(project.root);
       if (!index || (!index.building && Date.now() - index.builtAt > limits.ttlMs)) ensureBuilt(project.root).catch(() => {});

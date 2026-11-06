@@ -8256,11 +8256,13 @@ function resetGotoSearch() {
 }
 
 // One request per pause in typing; an older answer never replaces a newer one.
-function scheduleGotoSearch(retry = 0) {
+function scheduleGotoSearch(retry = 0, failures = 0) {
   const goto = state.gotoSearch;
   window.clearTimeout(goto.timer);
-  if (!retry) { goto.showAllFiles = false; goto.showAllText = false; goto.pendingEnter = false; }
+  if (!retry) { goto.showAllFiles = false; goto.showAllText = false; }
   const query = state.contextHubProjectPickerQuery.trim();
+  // A queued Enter belongs to one query: a keystroke that leaves the trimmed query unchanged keeps it.
+  if (!retry && goto.pendingEnterQuery !== query) goto.pendingEnter = false;
   if (state.contextHubProjectPickerPurpose !== "open" || IS_HOSTED_HUB || query.length < GOTO_MIN_QUERY) {
     goto.seq += 1;
     goto.files = [];
@@ -8275,6 +8277,7 @@ function scheduleGotoSearch(retry = 0) {
   goto.timer = window.setTimeout(async () => {
     goto.timer = null;
     let building = false;
+    let failedNow = false;
     try {
       const result = await api("/api/context-hub/document-search?scope=all&limit=40&query=" + encodeURIComponent(query));
       if (seq !== goto.seq || !state.contextHubProjectPickerOpen) return;
@@ -8283,7 +8286,9 @@ function scheduleGotoSearch(retry = 0) {
       goto.failed = Boolean(result.failed);
       goto.truncated = Boolean(result.truncated);
       building = Boolean(result.building) && retry < 8;
+      failedNow = goto.failed;
     } catch {
+      failedNow = true;
       if (seq !== goto.seq) return;
       goto.files = [];
       goto.text = [];
@@ -8292,6 +8297,8 @@ function scheduleGotoSearch(retry = 0) {
     goto.query = query;
     goto.loading = building;
     if (building) { goto.timer = window.setTimeout(() => scheduleGotoSearch(retry + 1), 700); }
+    // The worker waits 5 s, 10 s, ... before it restarts: search again by itself when that wait is over.
+    else if (failedNow && failures < 5) goto.timer = window.setTimeout(() => scheduleGotoSearch(1, failures + 1), Math.min(60000, 5500 * 2 ** failures));
     renderContextHubProjectPicker();
     if (!building && goto.pendingEnter) {
       goto.pendingEnter = false;
@@ -8423,7 +8430,7 @@ function renderContextHubProjectPicker() {
     : null;
   list.innerHTML = optionMarkup
     ? (grouped ?? optionMarkup.join(""))
-    : '<div class="context-hub-project-picker-empty"><strong>' + (openPurpose && state.contextHubProjectPickerQuery.trim().length >= GOTO_MIN_QUERY && !state.gotoSearch.loading ? (state.gotoSearch.failed ? "Document search is unavailable." : "Nothing found.") : "No project found.") + '</strong><br />' + (openPurpose ? "Try a project, a file name or a word from a file." : "Try a name, folder path, or shared project ID.") + '</div>';
+    : '<div class="context-hub-project-picker-empty"><strong>' + (openPurpose && state.contextHubProjectPickerQuery.trim().length >= GOTO_MIN_QUERY && !state.gotoSearch.loading ? (state.gotoSearch.failed ? "Document search is unavailable." : "Nothing found.") : "No project found.") + '</strong><br />' + (openPurpose ? (state.gotoSearch.failed ? "Projects still match by name. Type again in a few seconds." : "Try a project, a file name or a word from a file.") : "Try a name, folder path, or shared project ID.") + '</div>';
   const activeId = choices.length ? "contextHubProjectPickerOption-" + state.contextHubProjectPickerIndex : "";
   if (activeId) search.setAttribute("aria-activedescendant", activeId);
   else search.removeAttribute("aria-activedescendant");
@@ -26827,6 +26834,7 @@ el("contextHubProjectPickerSearch")?.addEventListener("keydown", (event) => {
     // Nothing to open yet: wait for the answer to this query. An older answer is never used.
     event.preventDefault();
     state.gotoSearch.pendingEnter = true;
+    state.gotoSearch.pendingEnterQuery = state.contextHubProjectPickerQuery.trim();
   }
 });
 el("contextHubProjectPicker")?.addEventListener("keydown", (event) => {
