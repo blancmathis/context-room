@@ -445,7 +445,7 @@ test("@smoke the home lists projects in a stable order and Cmd+K goes to a proje
   const before = await titles();
 
   await page.keyboard.press("ControlOrMeta+k");
-  await expect(page.locator("#contextHubProjectPickerTitle")).toHaveText("Go to project");
+  await expect(page.locator("#contextHubProjectPickerTitle")).toHaveText("Go to");
   await page.locator("#contextHubProjectPickerSearch").fill("Atlas");
   await page.keyboard.press("Enter");
   await expect(page.locator("#contextHubProjectPicker")).toBeHidden();

@@ -102,7 +102,7 @@ The order is the manual project order, then the title. Attention, opening a proj
 and refreshes never reorder the list. The header shows local coverage, for example
 `1/7 local inspected`.
 
-⌘K (Ctrl+K) opens the project picker to go to a project: type, then press Enter.
+⌘K (Ctrl+K) opens "Go to": type, then press Enter. It lists projects, then Files (name or path matches) and In text (a word inside a file, with a short excerpt) from every local project, ignoring case and accents. Enter on a file opens it in its project. The server answers from `GET /api/context-hub/document-search?scope=all`, a read-only index that also covers files not reviewed yet.
 
 The active project and the Review Queue filter are separate scopes. Opening a
 project, in Explorer, with ⌘K or with Back and Forward, does not change the

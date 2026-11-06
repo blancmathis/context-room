@@ -992,6 +992,7 @@ export function listMemoryFiles(root = process.cwd(), {
   settings: providedSettings = null,
   readOnly = false,
   expectedRootIdentity = null,
+  metadataOnly = false,
 } = {}) {
   const baseSettings = providedSettings || effectiveMemoryWebappSettings(root, { readOnly, expectedRootIdentity });
   const activeRepoRoots = sanitizePathList((externalRoots || []).filter((item) => !normalizeRelPath(String(item || "")).startsWith("~")))
@@ -1119,7 +1120,7 @@ export function listMemoryFiles(root = process.cwd(), {
       const abs = resolveExternalPath(file.path) || path.join(root, file.path);
       const exists = fs.existsSync(abs);
       const stats = exists ? fs.statSync(abs) : null;
-      const content = exists && stats.isFile() && stats.size <= MAX_FILE_BYTES
+      const content = !metadataOnly && exists && stats.isFile() && stats.size <= MAX_FILE_BYTES
         ? fs.readFileSync(abs, "utf8")
         : "";
       return {
@@ -2022,7 +2023,7 @@ export function withMemorySettingsScope(fn) {
   }
 }
 
-function effectiveMemoryWebappSettings(root = process.cwd(), { expectedRootIdentity = null, readOnly = false } = {}) {
+export function effectiveMemoryWebappSettings(root = process.cwd(), { expectedRootIdentity = null, readOnly = false } = {}) {
   if (!memorySettingsScope || !readOnly || expectedRootIdentity) return computeEffectiveMemoryWebappSettings(root, { expectedRootIdentity, readOnly });
   const key = String(root);
   if (!memorySettingsScope.has(key)) memorySettingsScope.set(key, computeEffectiveMemoryWebappSettings(root, { expectedRootIdentity, readOnly }));
@@ -21328,7 +21329,28 @@ async function documentInspectionApiResult(root, url) {
   };
 }
 
+// "Go to" (⌘K): file names and file text across every registered local project. Read-only.
+let gotoProjectsCache = { at: 0, hub: "", projects: [] };
+async function gotoSearchApiResult(url) {
+  const { searchGoto, warmGotoSearch } = await import("./goto_search.mjs");
+  const startedAt = Date.now();
+  // The registry read stats every project: one read per 2 s, not one per keystroke.
+  const hub = process.env.CONTEXT_ROOM_HUB_HOME || "";
+  if (Date.now() - gotoProjectsCache.at > 2000 || gotoProjectsCache.hub !== hub) gotoProjectsCache = { at: Date.now(), hub, projects: listContextHubProjects({ readOnly: true }) };
+  const projects = gotoProjectsCache.projects;
+  if (url.searchParams.get("warm") === "1") {
+    warmGotoSearch(projects);
+    return { schemaVersion: "context-room.goto-search/1", warmed: true, files: [], text: [] };
+  }
+  const query = String(url.searchParams.get("query") || url.searchParams.get("q") || "").trim();
+  if (!query) throw sharedRequestError("query is required", 400, "document_search_query_required");
+  const limit = Math.min(100, Math.max(1, Number.parseInt(url.searchParams.get("limit") || "40", 10) || 40));
+  const result = await searchGoto(projects, query, { limit });
+  return { schemaVersion: "context-room.goto-search/1", query, ...result, elapsedMs: Date.now() - startedAt };
+}
+
 async function documentSearchApiResult(root, url) {
+  if (String(url.searchParams.get("scope") || "") === "all") return gotoSearchApiResult(url);
   const target = contextApiTarget(root, url);
   const query = String(url.searchParams.get("query") || url.searchParams.get("q") || "").trim();
   if (!query) throw sharedRequestError("query is required", 400, "document_search_query_required");

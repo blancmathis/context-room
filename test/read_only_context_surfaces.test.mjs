@@ -82,6 +82,7 @@ test("Context Hub inspection, document graph, and document search GETs do not bo
     `/api/context-hub/project-inspection?projectId=${encodeURIComponent(project.id)}`,
     `/api/context-hub/document-graph?scope=project&locationId=${encodeURIComponent(project.id)}&layout=0&allowStale=1`,
     `/api/context-hub/document-search?locationId=${encodeURIComponent(project.id)}&query=${encodeURIComponent("Read-only search marker")}`,
+    `/api/context-hub/document-search?scope=all&query=${encodeURIComponent("Read-only search marker")}`,
   ];
 
   for (const route of routes) {
