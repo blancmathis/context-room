@@ -546,6 +546,8 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 	    .file-load-state strong { color: var(--text); font-size: 15px; }
 	    .file-load-state code { color: var(--accent); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
 	    .file-load-state.error, .file-load-state.error strong { color: var(--danger-fg); }
+	    .file-load-state.missing { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+	    .file-load-state.missing code { color: var(--text-soft); font-size: 12px; }
 	    .explorer-title { color: var(--accent); font-size: 11px; font-weight: 850; text-transform: uppercase; letter-spacing: 0.12em; margin: 10px 0 6px; }
     .tree { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; line-height: 1.35; overflow: visible; padding-right: 4px; min-height: 180px; }
     .tree-node { min-width: 0; }
@@ -3148,10 +3150,10 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .graph-toolbar-controls label { display: grid; gap: 3px; color: var(--muted); font-size: 10px; }
     .graph-toolbar-controls input, .graph-toolbar-controls select { height: 32px; min-width: 104px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); }
     .graph-toolbar-controls input { width: min(28vw, 280px); padding: 0 10px; }
-    .graph-filterbar { min-height: 38px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; padding: 6px var(--workbench-gutter); border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+    .graph-filterbar { min-height: 38px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; padding: 6px var(--workbench-gutter); border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; }
     .graph-filterbar label { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
     .graph-filterbar input { accent-color: var(--accent); }
-    .graph-compact-filter select { height: 28px; max-width: 140px; padding: 0 24px 0 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); font-size: 11px; }
+    .graph-compact-filter select { height: 28px; width: 96px; max-width: 112px; padding: 0 24px 0 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); font-size: 11px; }
     .graph-filter-separator { width: 1px; height: 18px; background: var(--line); }
     .graph-workbench { position: relative; min-height: 0; height: auto; display: grid; grid-template-columns: minmax(0, 1fr) 320px; }
     .graph-canvas-wrap { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: color-mix(in srgb, var(--bg) 96%, var(--surface)); }
@@ -3842,6 +3844,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
               <label>Scope<select id="graphScope"><option value="global">All projects</option><option value="project">Project</option><option value="local">Local</option></select></label>
               <label id="graphDepthField" hidden>Depth<select id="graphDepth"><option value="1">1</option><option value="2">2</option><option value="3">3</option></select></label>
               <label id="graphProposalField" hidden>Proposal<select id="graphProposalSelect"></select></label>
+              <button id="graphRefresh" class="file-action" type="button">Refresh</button>
               <button id="graphFit" class="file-action" type="button">Fit</button>
               <button id="graphListToggle" class="file-action" type="button" aria-pressed="false">List</button>
             </div>
@@ -3858,7 +3861,6 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
             <label><input id="graphShowUnresolved" type="checkbox" /> Unresolved</label>
             <label><input id="graphShowOrphans" type="checkbox" checked /> Orphans</label>
             <label><input id="graphShowArrows" type="checkbox" /> Direction arrows</label>
-            <button id="graphRefresh" class="quiet-button" type="button">Refresh</button>
           </div>
           <div class="graph-workbench">
             <div class="graph-canvas-wrap">
@@ -18621,7 +18623,7 @@ function renderSettingsPanel() {
   const globalReviewBody = '<div class="settings-concept"><strong>Review stays human-owned.</strong><p>Your agent retrieves accepted documentation with <code>ask</code>. <code>edit</code> prepares a shared proposal worktree. <code>capabilities</code> is only a static command inventory and never chooses an operation. Human file decisions remain yours. An operating agent must ask once, restate the exact action, scope, and effects after the first yes, ask again, and do nothing without a second separate, unambiguous yes.</p><p>Home combines review work from every registered project. Each watched document stays in review until a person verifies its current content; proposals remain grouped shared reviews.</p></div><div class="settings-disclosure-list">'
     + reviewCleanupDisclosure + agentCliGuideDisclosure
     + snoozedReviewDisclosure
-    + renderSettingsDisclosure({ id: "review-documents", title: "Documents to review", copy: "See the aggregate queue, then select one project to choose its watched documents.", status: globalReviewCounts.local + " local files", scope: "All projects", body: renderGlobalProjectSettingsGate("Watched documents and folder modes") })
+    + renderSettingsDisclosure({ id: "review-documents", title: "Documents to review", copy: "See the aggregate queue, then select one project to choose its watched documents.", status: nounCount(globalReviewCounts.local, "local files"), scope: "All projects", body: renderGlobalProjectSettingsGate("Watched documents and folder modes") })
     + renderSettingsDisclosure({ id: "review-protection", title: "Protect Git actions", copy: "Configure owner-controlled Git gates in the project where its hooks run.", status: "Project-specific", scope: "Owner control", body: renderGlobalProjectSettingsGate("Git-action protection") })
     + '</div>';
   const globalStartupBody = '<div class="settings-concept"><strong>Startup follows one selected project and worktree.</strong><p>A global room never combines unrelated agent instructions, local skills, or hooks into one startup environment.</p></div><div class="settings-disclosure-list">'
@@ -18660,7 +18662,7 @@ function renderSettingsPanel() {
     title: showGlobalProjectPicker ? "Global review overview" : "Review rules",
     copy: showGlobalProjectPicker ? "Understand the aggregate queue, then select one project in Explorer to change its review rules here." : "Choose what enters the queue and which Git actions wait for human review.",
     scope: showGlobalProjectPicker ? "All projects" : "Project",
-    pills: showGlobalProjectPicker ? [globalReviewCounts.local + " local files", globalReviewCounts.shared + " proposals", nounCount(globalReviewCounts.projects, "projects")] : [selectedProjectPill, watchCount + " watched", nounCount(reviewGateCount, "gates")].filter(Boolean),
+    pills: showGlobalProjectPicker ? [nounCount(globalReviewCounts.local, "local files"), nounCount(globalReviewCounts.shared, "proposals"), nounCount(globalReviewCounts.projects, "projects")] : [selectedProjectPill, watchCount + " watched", nounCount(reviewGateCount, "gates")].filter(Boolean),
     body: showGlobalProjectPicker ? globalReviewBody : '<div class="settings-concept"><strong>Every watched version needs human verification.</strong><p>A document remains in the queue until its current content hash is verified. Git adds a diff when available, but never decides whether the document is already reviewed.</p></div><div class="settings-disclosure-list">' +
     reviewCleanupDisclosure + agentCliGuideDisclosure +
     snoozedReviewDisclosure +
@@ -18687,7 +18689,7 @@ function renderSettingsPanel() {
     kicker: "Startup",
     title: "Agent startup environment",
     copy: "Control which instructions, local skills, and executable hooks Context Room discovers for this project.",
-    pills: [nounCount(startupContextCount, "names"), nounCount(startupSkillFolderCount, "folders"), startupHookNameCount + " git names", startupAgentHookCount + " agent paths", nounCount(startupHookManagerCount, "managers")],
+    pills: [nounCount(startupContextCount, "names"), nounCount(startupSkillFolderCount, "folders"), nounCount(startupHookNameCount, "git names"), nounCount(startupAgentHookCount, "agent paths"), nounCount(startupHookManagerCount, "managers")],
     body: showGlobalProjectPicker ? globalStartupBody : '<div class="settings-concept"><strong>Startup describes what can affect an agent before work begins.</strong><p>Local skill discovery finds folders already installed around the project. Shared skills are different: they keep reviewed canonical skills in a shared context and link accepted versions into provider folders.</p></div><div class="settings-disclosure-list">' +
     renderSettingsDisclosure({ id: "startup-context", title: "Agent instructions", copy: "Find instruction files such as AGENTS.md and CLAUDE.md before an agent starts work.", status: startupContext.enabled ? startupContextCount + " configured" : "Disabled", scope: "Project", trackDirty: true, body:
       '<div class="settings-field"><label class="settings-toggle" for="startupContextEnabled"><input id="startupContextEnabled" type="checkbox" ' + (startupContext.enabled ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Discover startup instructions</strong><em>Include configured ancestor filenames and global instruction paths.</em></span></label><label class="settings-input-label" for="startupContextFileNames">Ancestor filenames</label><textarea id="startupContextFileNames" placeholder="one ancestor filename per line">' + escapeHtml(startupFileNames) + '</textarea><label class="settings-input-label" for="startupContextGlobalPaths">Global instruction paths</label><textarea id="startupContextGlobalPaths" placeholder="one global path per line">' + escapeHtml(startupGlobalPaths) + '</textarea></div>'
@@ -18695,7 +18697,7 @@ function renderSettingsPanel() {
     renderSettingsDisclosure({ id: "startup-skills", title: "Local skill discovery", copy: "Find skill folders that already exist around this project.", status: startupSkills.enabled !== false ? nounCount(startupSkillFolderCount, "folders") : "Disabled", scope: "Project", trackDirty: true, body:
       '<div class="settings-field"><label class="settings-toggle" for="startupSkillsEnabled"><input id="startupSkillsEnabled" type="checkbox" ' + (startupSkills.enabled !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Discover local skills</strong><em>List skill folders visible to agents without managing or copying them.</em></span></label><label class="settings-input-label" for="startupSkillFolderNames">Skill folder names</label><textarea id="startupSkillFolderNames" placeholder="one folder path per line">' + escapeHtml(startupSkillFolderNames) + '</textarea><p class="settings-help">Need one reviewed version shared across a team or multiple projects? Shared resources are in this Agent environment category.</p></div>'
     }) +
-    renderSettingsDisclosure({ id: "startup-hooks", title: "Hooks and automation", copy: "Inspect executable sources that can affect agents, commits, and validation.", status: startupHooks.enabled !== false ? startupHookNameCount + startupAgentHookCount + startupHookManagerCount + " sources" : "Disabled", scope: "Project", trackDirty: true, body:
+    renderSettingsDisclosure({ id: "startup-hooks", title: "Hooks and automation", copy: "Inspect executable sources that can affect agents, commits, and validation.", status: startupHooks.enabled !== false ? nounCount(startupHookNameCount + startupAgentHookCount + startupHookManagerCount, "sources") : "Disabled", scope: "Project", trackDirty: true, body:
     '<div class="settings-grid">' +
       '<div class="settings-field"><label class="settings-toggle" for="startupHooksEnabled"><input id="startupHooksEnabled" type="checkbox" ' + (startupHooks.enabled !== false ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Startup hooks</strong><em>List hook files that can affect agents and commits.</em></span></label><label class="settings-input-label" for="startupHookFileNames">Git hook filenames</label><textarea id="startupHookFileNames" placeholder="one hook filename per line">' + escapeHtml(startupHookFileNames) + '</textarea></div>' +
       '<div class="settings-field"><label class="settings-toggle" for="startupHooksEditable"><input id="startupHooksEditable" type="checkbox" ' + (startupHooks.editable ? 'checked' : '') + ' /><span class="settings-switch" aria-hidden="true"></span><span class="settings-toggle-copy"><strong>Edit hooks</strong><em>Off by default because hooks execute code.</em></span></label><label class="settings-input-label" for="startupHookManagerPaths">Hook manager paths</label><textarea id="startupHookManagerPaths" placeholder="one hook manager path per line">' + escapeHtml(startupHookManagerPaths) + '</textarea></div>' +
@@ -19072,7 +19074,7 @@ function renderHubSectionEditor(section, open = false) {
 function renderHubCardEditor(card, depth = 0, open = false) {
   const paths = (card.paths || [card.path]).filter(Boolean).join("\n");
   const children = card.cards || [];
-  const summaryMeta = [paths ? paths.split(/\r?\n/).length + " paths" : "no paths", children.length ? nounCount(children.length, "subcards") : ""].filter(Boolean).join(" · ");
+  const summaryMeta = [paths ? nounCount(paths.split(/\r?\n/).length, "paths") : "no paths", children.length ? nounCount(children.length, "subcards") : ""].filter(Boolean).join(" · ");
   return '<details class="hub-card-editor ' + (depth ? 'nested' : '') + '" data-hub-card-editor data-card-id="' + escapeHtml(card.id || "") + '" ' + (open ? 'open' : '') + '>' +
     '<summary class="hub-card-editor-summary"><span>' + escapeHtml(card.title || "New card") + '</span><code>' + escapeHtml(summaryMeta) + '</code></summary>' +
     '<div class="hub-card-editor-head"><label class="hub-card-editor-title"><input type="checkbox" data-card-enabled ' + (card.enabled !== false ? 'checked' : '') + ' /> active</label><label class="hub-card-editor-title"><input type="checkbox" data-card-auto-children ' + (card.autoChildren ? 'checked' : '') + ' /> auto subcards</label><div class="docqa-actions"><button class="selection-action" type="button" data-add-child-card title="add a child card">+</button><button class="selection-action danger-action" type="button" data-remove-hub-card title="remove this card">×</button></div></div>' +
@@ -21565,7 +21567,7 @@ function retrySelectedFileLoad() {
 }
 
 function renderFileLoadError(error = {}) {
-  if (error.code === "file_not_found") return '<div class="file-load-state error" role="alert"><div class="file-load-state-inner"><strong>This file no longer exists</strong><span>It may have been moved or deleted.</span><span><code>' + escapeHtml(error.path || state.selected || "") + '</code></span></div></div>';
+  if (error.code === "file_not_found") return '<div class="file-load-state missing" role="status"><div class="file-load-state-inner"><strong>This file no longer exists</strong><span>It may have been moved or deleted.</span><span><code>' + escapeHtml(error.path || state.selected || "") + '</code></span></div></div>';
   return '<div class="file-load-state error" role="alert"><div class="file-load-state-inner"><strong>Could not open this file</strong><span>' + escapeHtml(error.message || "Request failed.") + '</span><span><code>' + escapeHtml(error.path || state.selected || "") + '</code></span></div></div>';
 }
 
