@@ -359,7 +359,7 @@ export function createExplorerView({ host, ctx, initial = {}, onNavigate = () =>
     const list = items => `<ul style="list-style:none;margin:0;padding:0">${items.map(project => projectRow(project)).join('')}</ul>`;
     const detail = (id, title, items, extra = '') => items.length ? `<details class="hl-group" ${extra}><summary>${esc(title)} · ${items.length}</summary><ul style="list-style:none;margin:0;padding:0">${items.map(project => projectRow(project, { hidden: id === 'hidden' })).join('')}</ul></details>` : '';
     return (g.pinned.length ? `<div class="hl-group-title">Pinned</div>${list(g.pinned)}` : '')
-      + `<div class="hl-group-title">${g.pinned.length ? 'Projects' : 'Projects · tap ☆ to pin'}</div>${g.main.length ? list(g.main) : '<div class="hl-empty">No other project with a local folder.</div>'}`
+      + `<div class="hl-group-title">${g.pinned.length ? 'Projects' : 'Projects · tap ☆ to pin'}</div>${g.main.length ? list(g.main) : (g.shared.length || g.hidden.length ? '<div class="hl-empty">No other project with a local folder.</div>' : '<div class="hl-empty">No project yet.</div>')}`
       + detail('shared', 'Shared · no local folder', g.shared, prefs.showShared ? 'open' : '')
       + detail('hidden', 'Hidden', g.hidden);
   }
@@ -428,7 +428,7 @@ export function createExplorerView({ host, ctx, initial = {}, onNavigate = () =>
     return `<div class="hl${editing ? ' hl-editing' : ''}">
       <div class="hl-head"><div><h2>Files</h2><p>${g.pinned.length + g.main.length + g.shared.length} ${g.pinned.length + g.main.length + g.shared.length === 1 ? "project" : "projects"} · ${visibleMain().length} with files here</p></div><div class="hl-tools">${goto()}${viewMenu()}</div></div>
       <div class="hl-strip" role="group" aria-label="Projects">${strip}</div>
-      <div class="hl-split"><div class="hl-side">${projectList()}</div><div class="hl-main">${project ? filesPane(project) : '<div class="hl-empty">Pin or pick a project to see its files.</div>'}</div></div>
+      <div class="hl-split"><div class="hl-side">${projectList()}</div><div class="hl-main">${project ? filesPane(project) : (g.pinned.length + g.main.length + g.shared.length + g.hidden.length ? '<div class="hl-empty">Pin or pick a project to see its files.</div>' : '<div class="hl-empty">No project yet. Add one from the home page.</div>')}</div></div>
     </div>`;
   }
 

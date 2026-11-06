@@ -282,6 +282,7 @@ test.describe("remaining real browser user matrix", () => {
 
     const createButton = page.locator("#contextHubCreateProject");
     await createButton.click();
+    await page.getByRole("dialog", { name: "Add a project" }).getByRole("button", { name: "Create a new folder instead" }).click();
     const dialog = page.locator(".confirm-backdrop");
     await expect(dialog).toBeVisible();
     await expect(app).toHaveAttribute("inert", "");
@@ -323,6 +324,7 @@ test.describe("remaining real browser user matrix", () => {
       await waitForBoot(page);
       await openProjectManagerFromHome(page);
       await page.locator("#contextHubCreateProject").click();
+      await page.getByRole("dialog", { name: "Add a project" }).getByRole("button", { name: "Create a new folder instead" }).click();
       const dialog = page.getByRole("dialog", { name: "Create a project" });
       await expect(dialog).toBeVisible();
       await dialog.getByLabel("Project name").fill(title);
