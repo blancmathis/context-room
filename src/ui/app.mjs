@@ -400,17 +400,17 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .notebook-space-new { min-height: 48px; padding: 8px 18px; border: 1px solid var(--accent); border-radius: 10px; background: var(--accent); color: var(--on-accent, var(--bg)); cursor: pointer; font-size: 14px; font-weight: 750; }
     .notebook-space-panel[data-no-projects="true"] .notebook-space-new { background: transparent; color: var(--accent); }
     .context-hub-welcome { display: grid; gap: 10px; justify-items: start; padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
-    .context-hub-welcome h2 { margin: 0; font-size: 20px; }
-    .context-hub-welcome p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.45; }
+    .context-hub-welcome h2, .context-hub-welcome p { margin: 0; }
+    .context-hub-welcome h2 { font-size: 20px; }
+    .context-hub-welcome p { color: var(--muted); font-size: 14px; }
     .context-hub-welcome button, .global-project-explorer-empty button { min-height: 44px; padding: 8px 18px; font-size: 14px; }
     .global-project-explorer-empty button { margin-top: 10px; }
     .add-project-dialog { width: min(560px, 100%); }
     .add-project-nav { display: flex; align-items: center; gap: 8px; min-width: 0; }
-    .add-project-nav button { min-width: 44px; min-height: 40px; }
     .add-project-nav code { min-width: 0; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
     .add-project-list { display: grid; gap: 4px; max-height: 220px; margin: 0; padding: 4px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; list-style: none; }
     .add-project-list button { width: 100%; min-height: 40px; padding: 6px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text); font-size: 13px; text-align: left; cursor: pointer; }
-    .add-project-list button:hover, .add-project-list button:focus-visible { background: color-mix(in srgb, var(--text) 8%, transparent); }
+    .add-project-list button:hover { background: var(--surface-card-hover); }
     .add-project-list li.add-project-empty { padding: 10px; color: var(--muted); font-size: 12px; }
     .add-project-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
     .notebook-space-list { list-style: none; margin: 0; padding: 6px; display: grid; gap: 2px; max-height: 320px; overflow-y: auto; }
@@ -25149,7 +25149,7 @@ function showContextHubAddProjectDialog() {
     + '<strong>Add a project</strong>'
     + '<p>Pick a folder that already exists. Context Room adds a small .context-room settings folder to it.</p>'
     + '<form class="creation-dialog-form">'
-    + '<label class="creation-dialog-field"><span>Folder</span><input name="path" type="text" spellcheck="false" autocomplete="off" placeholder="/Users/you/projects/atlas" required /></label>'
+    + '<label class="creation-dialog-field"><span>Folder</span><input name="path" type="text" spellcheck="false" autocomplete="off" placeholder="Paste a folder path" required /></label>'
     + '<div class="add-project-nav"><button class="file-action" type="button" data-add-project-up aria-label="Parent folder" title="Parent folder">↑</button><code data-add-project-here></code><label class="add-project-hidden"><input type="checkbox" data-add-project-hidden /> Show hidden folders</label></div>'
     + '<ul class="add-project-list" aria-label="Folders" data-add-project-list></ul>'
     + '<label class="creation-dialog-field"><span>Project name</span><input name="title" type="text" placeholder="Folder name" /></label>'
