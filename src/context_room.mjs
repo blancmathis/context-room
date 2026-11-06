@@ -25140,7 +25140,7 @@ function fileKindForPath(relPath) {
   return "text";
 }
 
-function isProjectReadableMemoryPath(relPath, root = process.cwd()) {
+function isProjectReadableMemoryPath(relPath, root = process.cwd(), { allowMissing = false } = {}) {
   const normalized = normalizeRelPath(String(relPath || ""));
   if (!normalized || normalized.startsWith("../") || normalized.includes("/../") || path.isAbsolute(normalized)) return false;
   const contextRoomRuntime = normalized.startsWith(CONFIG_DIR + "/");
@@ -25149,14 +25149,19 @@ function isProjectReadableMemoryPath(relPath, root = process.cwd()) {
   const resolvedRoot = path.resolve(root);
   const abs = path.resolve(resolvedRoot, normalized);
   if (abs === resolvedRoot || !abs.startsWith(`${resolvedRoot}${path.sep}`)) return false;
-  if (!projectPathIsContained(resolvedRoot, abs)) return false;
-  if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return false;
+  if (!projectPathIsContained(resolvedRoot, abs, { allowMissing })) return false;
+  if (!fs.existsSync(abs)) return allowMissing;
+  if (!fs.statSync(abs).isFile()) return false;
   return fs.statSync(abs).size <= (isProjectVisualAssetFile(normalized) ? MAX_VISUAL_ASSET_BYTES : MAX_FILE_BYTES);
 }
 
 function resolveProjectReadableMemoryPath(root, relPath) {
   const normalized = normalizeRelPath(String(relPath || ""));
-  if (!isProjectReadableMemoryPath(normalized, root)) throw sharedRequestError(`Path not allowed in context room: ${relPath}`, 403, "file_path_not_allowed", { path: normalized });
+  if (!isProjectReadableMemoryPath(normalized, root)) {
+    // A path that would be readable if it existed is missing, not refused: the reader says so by code.
+    if (isProjectReadableMemoryPath(normalized, root, { allowMissing: true })) throw sharedRequestError(`File not found: ${relPath}`, 404, "file_not_found", { path: normalized });
+    throw sharedRequestError(`Path not allowed in context room: ${relPath}`, 403, "file_path_not_allowed", { path: normalized });
+  }
   const abs = path.resolve(root, normalized);
   assertProjectPathContained(root, abs, { label: relPath });
   return abs;

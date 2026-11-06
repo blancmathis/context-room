@@ -406,7 +406,7 @@ test("global document relations group registered worktrees and only connect expl
 test("app presents a compact review-first workspace", () => {
   const html = renderAppHtml();
   const asideEnd = html.indexOf("</aside>");
-  const mainStart = html.indexOf("<main>", asideEnd);
+  const mainStart = html.indexOf('<main id="cr-main"', asideEnd);
   const dockStart = html.indexOf('class="workspace-dock"', mainStart);
   const brandStart = html.indexOf('id="brandHome" class="context-room-brand"', dockStart);
   const workspaceSwitchStart = html.indexOf('id="settingsButton" class="dock-button workspace-switch"', dockStart);
@@ -7701,7 +7701,7 @@ test("file opening renders loading and retry states instead of a blank document"
   assert.match(html, /kind: "startup-skill",[\s\S]*renderViewer\(\);/);
   assert.match(html, /kind: "startup-hook",[\s\S]*renderViewer\(\);/);
   assert.match(html, /kind: "hosted-review",[\s\S]*renderViewer\(\);/);
-  assert.match(html, /state\.fileLoadError = \{ path, message: error\.message \|\| "Failed to open file\." \};/);
+  assert.match(html, /state\.fileLoadError = \{ path, message: error\.message \|\| "Failed to open file\.", code: error\.code \|\| "" \};/);
   assert.match(html, /updateExplorerSelectedFile\(previousSelected, path\)/);
   assert.match(html, /targetProjectId === state\.activeProjectLocationId[\s\S]*preserveViewer: state\.page === "file"[\s\S]*syncWorkspaceUrl\(\{ push: true \}\)[\s\S]*project-file-in-place/);
   assert.match(html, /const preserveViewer = Boolean\(options\.preserveViewer[\s\S]*el\("viewer"\)\.inert = true;[\s\S]*if \(!preserveViewer\) renderViewer\(\);/);
@@ -8298,7 +8298,8 @@ test("quiet workbench spacing uses semantic gutters instead of competing surface
   assert.match(html, /\.document-context-body \{[^}]*padding:\s*8px var\(--inspector-gutter\) 24px/);
   assert.match(html, /#contextHealthPanel > header \{[^}]*padding-inline:\s*var\(--inspector-gutter\)/);
   assert.match(html, /\.global-project-inspection \{[^}]*padding:\s*12px var\(--inspector-gutter\)/);
-  assert.match(html, /\.graph-filterbar \{[^}]*flex-wrap:\s*nowrap;[^}]*padding:\s*6px var\(--workbench-gutter\);[^}]*overflow-x:\s*auto/);
+  assert.match(html, /\.graph-filterbar \{[^}]*flex-wrap:\s*wrap;[^}]*padding:\s*6px var\(--workbench-gutter\)/);
+  assert.match(html, /\.graph-filterbar \{[^}]*padding-inline:\s*var\(--workbench-gutter-compact\);[^}]*overflow-x:\s*auto;[^}]*flex-wrap:\s*nowrap/);
   assert.match(html, /\.sidebar-head \{[^}]*padding:\s*0 0 8px/);
   assert.match(html, /\.app\.sidebar-collapsed \.sidebar-head \{[^}]*padding:\s*0 0 8px/);
   assert.doesNotMatch(html, /(?:^|\n)\s*aside \{/);
