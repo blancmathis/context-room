@@ -1263,6 +1263,44 @@ test("@layout project rows keep their title and badges whole at 1024 and 1440", 
   }
 });
 
+test("@layout the review queue starts right under Notebooks while Projects and inspection share the side column", async ({ page }) => {
+  const data = fixture();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`${data.origin}/?hub=1&view=hub`);
+  await waitForBoot(page);
+  await expect(page.locator("#contextHubHomeProjectList .context-hub-home-project").first()).toBeVisible();
+  const box = (selector) => page.locator(selector).evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right, visible: Boolean(element.offsetParent) };
+  });
+  const [notebooks, projects, review, health] = await Promise.all(["#notebookSpacePanel", "#contextHubProjectsPanel", "#reviewQueuePanel", "#contextHealthPanel"].map(box));
+  // The side column used to share row heights with Notebooks, which pushed the queue below the fold.
+  expect(Math.abs(review.top - (notebooks.visible ? notebooks.bottom : projects.top))).toBeLessThanOrEqual(2);
+  expect(projects.left).toBeGreaterThanOrEqual(review.right - 1);
+  expect(health.visible).toBe(true);
+  // The offset under Projects comes from a ResizeObserver, applied on the next frame.
+  await expect.poll(() => page.evaluate(() => Math.round(Math.abs(document.querySelector("#contextHealthPanel").getBoundingClientRect().top
+    - document.querySelector("#contextHubProjectsPanel").getBoundingClientRect().bottom))), { message: "Project inspection sits right under Projects" }).toBeLessThanOrEqual(2);
+  // Context engine (Explorer menu "inspect the agent environment") stays in the main column right under the queue:
+  // a full-width panel could only start below the whole side column, leaving a gap as tall as Projects.
+  // Shown as openContextEngineInspection shows it; its content does not change its placement.
+  await page.evaluate(() => { document.getElementById("contextEnginePanel").hidden = false; });
+  await expect(page.locator("#contextEnginePanel")).toBeVisible();
+  const engineOffset = () => page.evaluate(() => {
+    const rect = (selector) => document.querySelector(selector).getBoundingClientRect();
+    const panel = rect("#contextEnginePanel"), queue = rect("#reviewQueuePanel"), side = rect("#contextHubProjectsPanel");
+    return Math.round(Math.max(Math.abs(panel.top - queue.bottom), panel.right - side.left));
+  });
+  await expect.poll(engineOffset, { message: "Context engine sits right under the queue, left of the side column" }).toBeLessThanOrEqual(2);
+  await page.setViewportSize({ width: 1100, height: 900 });
+  const tops = await page.evaluate(() => ["#notebookSpacePanel", "#contextHubProjectsPanel", "#reviewQueuePanel", "#contextHealthPanel"]
+    .map((selector) => document.querySelector(selector))
+    .filter((element) => element?.offsetParent)
+    .map((element) => Math.round(element.getBoundingClientRect().top)));
+  expect(tops.length).toBeGreaterThanOrEqual(3);
+  expect(tops).toEqual([...tops].sort((a, b) => a - b));
+});
+
 test("@layout the uninspected banner names the projects behind the shortfall and hides raw errors", async ({ page }) => {
   const data = fixture();
   await page.setViewportSize({ width: 1440, height: 900 });

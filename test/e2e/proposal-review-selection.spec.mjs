@@ -245,11 +245,12 @@ test("@smoke a shared-only deep link boots without a local target and labels an 
   expect(settingsTargets.length).toBeGreaterThan(0);
   expect(settingsTargets).toEqual(settingsTargets.map(() => ""));
 
-  await page.evaluate(() => {
-    state.globalExplorerMode = "projects";
-    state.globalExplorerProjectKey = "";
-    renderGlobalProjectExplorer();
-  });
+  // Use the real gesture: it supersedes the pending open and drops ?project= from the URL. Setting the
+  // explorer state by hand kept the deep link, so a later Hub refresh re-opened the project (seen on WebKit).
+  // On a phone the explorer is a closed drawer: open it first, as a user would.
+  const explorerOpen = page.getByRole("button", { name: "Open explorer" });
+  if (await explorerOpen.isVisible()) await explorerOpen.click();
+  await page.getByRole("button", { name: "Back to projects" }).click();
   const row = page.locator('[data-global-project-key="shared:offline-repository:orphan"]');
   await expect(row).toContainText("Offline · cached snapshot");
   await expect(row).not.toContainText("Up to date");

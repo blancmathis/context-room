@@ -117,6 +117,15 @@ since this browser last left Context Room: new, updated, and no longer pending
 reviews, by project. Local reviews have no date, so the comparison uses each
 review's identity and revision, stored in the browser only.
 
+On wide screens Projects and Project inspection share one side column, so the
+Review Queue starts right under Notebooks. When the Hub stops answering for 8 s
+(longer than the browser's own 3 to 5 s reconnect delay),
+the dock status reads "Hub unreachable · reconnecting…" with a red dot, until
+the event stream is back ("Hub reconnected"). If the browser gives up after an
+HTTP error, the page reopens the stream itself, with a wait that grows from 1 s
+to 30 s and resets once the stream is back. The red text shows only while that
+message is shown.
+
 ## Recovery and unavailable state
 
 Registry and Shared-binding mutations use private journals and exact capability checks. If recovery is ambiguous, Context Room blocks further mutation and surfaces recovery-required rather than guessing.
