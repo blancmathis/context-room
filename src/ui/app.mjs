@@ -3150,10 +3150,10 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .graph-toolbar-controls label { display: grid; gap: 3px; color: var(--muted); font-size: 10px; }
     .graph-toolbar-controls input, .graph-toolbar-controls select { height: 32px; min-width: 104px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); }
     .graph-toolbar-controls input { width: min(28vw, 280px); padding: 0 10px; }
-    .graph-filterbar { min-height: 38px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; padding: 6px var(--workbench-gutter); border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+    .graph-filterbar { min-height: 38px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; padding: 6px var(--workbench-gutter); border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; }
     .graph-filterbar label { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
     .graph-filterbar input { accent-color: var(--accent); }
-    .graph-compact-filter select { height: 28px; width: 96px; max-width: 112px; padding: 0 24px 0 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); font-size: 11px; }
+    .graph-compact-filter select { height: 28px; max-width: 112px; padding: 0 24px 0 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); font-size: 11px; }
     .graph-filter-separator { width: 1px; height: 18px; background: var(--line); }
     .graph-workbench { position: relative; min-height: 0; height: auto; display: grid; grid-template-columns: minmax(0, 1fr) 320px; }
     .graph-canvas-wrap { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: color-mix(in srgb, var(--bg) 96%, var(--surface)); }

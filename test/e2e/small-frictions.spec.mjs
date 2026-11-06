@@ -210,8 +210,17 @@ for (const width of [1280, 1440]) {
       await expect(page.locator("#graphPage")).toBeVisible();
       const geometry = await page.evaluate(() => {
         const bar = document.querySelector(".graph-filterbar").getBoundingClientRect();
-        return { children: [...document.querySelector(".graph-filterbar").children].map((c) => Math.round(c.getBoundingClientRect().width)).join(","), avail: bar.width, barHeight: bar.height, refreshInHeader: Boolean(document.querySelector(".graph-toolbar #graphRefresh")) };
+        // A select narrower than its chosen option cuts the text ("All relatic"): measure the text it must show.
+        const context = document.createElement("canvas").getContext("2d");
+        const clipped = [...document.querySelectorAll(".graph-filterbar select")].filter((select) => {
+          const style = getComputedStyle(select);
+          context.font = style.fontSize + " " + style.fontFamily;
+          const text = select.options[select.selectedIndex].text;
+          return Math.ceil(context.measureText(text).width) + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) > select.clientWidth;
+        }).map((select) => select.options[select.selectedIndex].text);
+        return { children: [...document.querySelector(".graph-filterbar").children].map((c) => Math.round(c.getBoundingClientRect().width)).join(","), avail: bar.width, barHeight: bar.height, clipped, refreshInHeader: Boolean(document.querySelector(".graph-toolbar #graphRefresh")) };
       });
+      expect(geometry.clipped, JSON.stringify(geometry)).toEqual([]);
       expect(geometry.refreshInHeader).toBe(true);
       expect(geometry.barHeight, JSON.stringify(geometry)).toBeLessThanOrEqual(46);
     } finally { await closeHub(page, hub); }
