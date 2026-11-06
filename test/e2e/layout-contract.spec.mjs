@@ -1277,7 +1277,21 @@ test("@layout the review queue starts right under Notebooks while Projects and i
   // The side column used to share row heights with Notebooks, which pushed the queue below the fold.
   expect(Math.abs(review.top - (notebooks.visible ? notebooks.bottom : projects.top))).toBeLessThanOrEqual(2);
   expect(projects.left).toBeGreaterThanOrEqual(review.right - 1);
-  expect(Math.abs(health.top - projects.bottom)).toBeLessThanOrEqual(2);
+  expect(health.visible).toBe(true);
+  // The offset under Projects comes from a ResizeObserver, applied on the next frame.
+  await expect.poll(() => page.evaluate(() => Math.round(Math.abs(document.querySelector("#contextHealthPanel").getBoundingClientRect().top
+    - document.querySelector("#contextHubProjectsPanel").getBoundingClientRect().bottom))), { message: "Project inspection sits right under Projects" }).toBeLessThanOrEqual(2);
+  // Context engine (Explorer menu "inspect the agent environment") stays in the main column right under the queue:
+  // a full-width panel could only start below the whole side column, leaving a gap as tall as Projects.
+  // Shown as openContextEngineInspection shows it; its content does not change its placement.
+  await page.evaluate(() => { document.getElementById("contextEnginePanel").hidden = false; });
+  await expect(page.locator("#contextEnginePanel")).toBeVisible();
+  const engineOffset = () => page.evaluate(() => {
+    const rect = (selector) => document.querySelector(selector).getBoundingClientRect();
+    const panel = rect("#contextEnginePanel"), queue = rect("#reviewQueuePanel"), side = rect("#contextHubProjectsPanel");
+    return Math.round(Math.max(Math.abs(panel.top - queue.bottom), panel.right - side.left));
+  });
+  await expect.poll(engineOffset, { message: "Context engine sits right under the queue, left of the side column" }).toBeLessThanOrEqual(2);
   await page.setViewportSize({ width: 1100, height: 900 });
   const tops = await page.evaluate(() => ["#notebookSpacePanel", "#contextHubProjectsPanel", "#reviewQueuePanel", "#contextHealthPanel"]
     .map((selector) => document.querySelector(selector))

@@ -2938,7 +2938,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .global-context-room #contextHealthPanel { grid-column: 2; position: sticky; top: 0; max-height: calc(100vh - 48px); overflow: auto; border-left: 1px solid var(--line); border-top: 0; }
       .global-context-room #contextEnginePanel { grid-column: 1 / -1; }
       [data-context-room-runtime-profile="local"] .global-context-room .docqa-grid { grid-template-rows: auto auto auto auto auto 1fr; }
-      [data-context-room-runtime-profile="local"] .global-context-room .docqa-grid > :not(#contextHubProjectsPanel):not(#contextHealthPanel):not(#contextEnginePanel):not(.explorer-view-panel) { grid-column: 1; min-width: 0; }
+      [data-context-room-runtime-profile="local"] .global-context-room .docqa-grid > :not(#contextHubProjectsPanel):not(#contextHealthPanel):not(.explorer-view-panel) { grid-column: 1; min-width: 0; }
       [data-context-room-runtime-profile="local"] .global-context-room #contextHubProjectsPanel { grid-column: 2; grid-row: 1 / -1; align-self: start; min-width: 0; }
       [data-context-room-runtime-profile="local"] .global-context-room #contextHealthPanel { grid-row: 1 / -1; align-self: start; margin-top: var(--projects-h); }
     }
