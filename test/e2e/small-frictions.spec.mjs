@@ -131,7 +131,7 @@ test("@smoke a file that no longer exists says so and offers a way back; a real 
     await expect(page.locator("#contextHubProjectsPanel")).toBeVisible();
     await page.goto(open("notes/blob.bin"));
     await expect(page.getByText("Could not open this file")).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByText(/Path not allowed/)).toBeVisible();
+    await expect(page.locator("#viewer").getByText(/Path not allowed/)).toBeVisible();
     await expect(page.getByRole("button", { name: "Back to home" })).toHaveCount(0);
   } finally { await closeHub(page, hub); }
 });

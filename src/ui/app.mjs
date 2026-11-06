@@ -3362,7 +3362,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .doc-content { font-size: 15px; }
       .shared-proposal-workspace-head { grid-template-columns: minmax(0,1fr) auto; padding-inline: var(--workbench-gutter-compact); }
       .graph-toolbar { padding: 10px var(--workbench-gutter-compact); }
-      .graph-filterbar { gap: 8px; padding-inline: var(--workbench-gutter-compact); overflow-x: auto; flex-wrap: nowrap; }
+      .graph-filterbar { gap: 8px; padding-inline: var(--workbench-gutter-compact); overflow-x: auto; flex-wrap: nowrap; scrollbar-width: thin; }
       .review-list { max-height: none; overflow: visible; scrollbar-gutter: auto; }
       .graph-list-row { grid-template-columns: minmax(0, 1fr) auto; gap: 3px 10px; padding-inline: var(--workbench-gutter-compact); }
       .graph-list-row > span:first-child { grid-column: 1 / -1; min-width: 0; overflow-wrap: anywhere; }
