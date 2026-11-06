@@ -61,3 +61,60 @@ test("@smoke Go to keeps projects first and Escape closes it", async ({ page }) 
   await page.keyboard.press("Escape");
   await expect(page.locator("#contextHubProjectPicker")).toBeHidden();
 });
+
+test("Go to opens the exact location that was searched", async ({ page }) => {
+  const { projects } = fixture();
+  const search = await openGoto(page);
+  await search.fill("procedure");
+  await expect(page.locator('#contextHubProjectPickerList [role="group"][aria-label="In text"]')).toBeVisible();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => new URL(page.url()).searchParams.get("file")).toBe("docs/operations.md");
+  expect(new URL(page.url()).searchParams.get("project")).toBe(projects.atlas.id);
+});
+
+test("Go to opens the project id the server returned, not the selected worktree", async ({ page }) => {
+  const { projects } = fixture();
+  await page.route("**/api/context-hub/document-search?*", (route) => route.fulfill({
+    json: { files: [{ projectKey: "local:x", projectId: projects.atlas.worktreeId, projectTitle: "Atlas", path: "docs/operations.md", name: "operations.md" }], text: [] },
+  }));
+  const search = await openGoto(page);
+  await search.fill("zzqqword");
+  await expect(page.locator('#contextHubProjectPickerList [role="group"][aria-label="Files"]')).toBeVisible();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => new URL(page.url()).searchParams.get("project")).toBe(projects.atlas.worktreeId);
+});
+
+test("Go to never opens a result of an older query, and Enter waits for the new one", async ({ page }) => {
+  const search = await openGoto(page);
+  await search.fill("runbook");
+  await expect(page.locator('#contextHubProjectPickerList [role="group"][aria-label="Files"]')).toBeVisible();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  await page.route("**/api/context-hub/document-search?*", async (route) => { await gate; await route.continue(); });
+  await search.pressSequentially(" zzznomatch");
+  await page.keyboard.press("Enter");
+  await expect(page.locator('#contextHubProjectPickerList [role="group"][aria-label="Files"]')).toHaveCount(0);
+  expect(new URL(page.url()).searchParams.get("file")).toBeNull();
+  release();
+  await expect(page.locator("#contextHubProjectPickerStatus")).not.toContainText("Searching");
+  expect(new URL(page.url()).searchParams.get("file")).toBeNull();
+});
+
+test("Go to keeps the input at the same place while results change, and counts one document correctly", async ({ page }) => {
+  const search = await openGoto(page);
+  const top = async () => Math.round((await search.boundingBox()).y);
+  const start = await top();
+  await search.fill("pro");
+  await expect(page.locator("#contextHubProjectPickerStatus")).not.toContainText("Searching");
+  expect(await top()).toBe(start);
+  await search.fill("procedure");
+  await expect(page.locator("#contextHubProjectPickerStatus")).toContainText("1 document");
+  await expect(page.locator("#contextHubProjectPickerStatus")).not.toContainText("1 documents");
+  expect(await top()).toBe(start);
+  await search.fill("zzqqnothing");
+  await expect(page.locator("#contextHubProjectPickerStatus")).not.toContainText("Searching");
+  expect(await top()).toBe(start);
+  expect(start).toBeLessThan(200);
+});

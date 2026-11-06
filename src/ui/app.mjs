@@ -1735,7 +1735,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .context-hub-project-trigger:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 2px; }
     .context-hub-project-trigger-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .context-hub-project-trigger-icon { flex: 0 0 auto; color: var(--muted); font-size: 13px; }
-    .context-hub-project-picker-modal { position: fixed; inset: 0; z-index: 140; display: grid; place-items: center; padding: 20px; }
+    .context-hub-project-picker-modal { position: fixed; inset: 0; z-index: 140; display: grid; place-items: start center; padding: max(20px, 8dvh) 20px 20px; }
     .context-hub-project-picker-modal[hidden] { display: none !important; }
     .context-hub-project-picker-backdrop { position: absolute; inset: 0; border: 0; background: rgba(2, 6, 23, .72); cursor: default; }
     .context-hub-project-picker-dialog { position: relative; width: min(680px, 100%); max-height: min(760px, calc(100dvh - 40px)); display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; overflow: hidden; border: 1px solid color-mix(in srgb, var(--line) 82%, var(--accent) 18%); border-radius: 14px; background: var(--panel-strong); box-shadow: 0 26px 80px rgba(0, 0, 0, .48); animation: contextHubProjectPickerIn 180ms cubic-bezier(.22, 1, .36, 1); }
@@ -8213,6 +8213,8 @@ const GOTO_MIN_QUERY = 2;
 function gotoDocumentChoices() {
   if (state.contextHubProjectPickerPurpose !== "open" || !state.contextHubProjectPickerQuery.trim() || IS_HOSTED_HUB) return [];
   const goto = state.gotoSearch;
+  // Lists from an older query are never shown or acted on.
+  if (goto.query !== state.contextHubProjectPickerQuery.trim()) return [];
   const currentKey = state.globalExplorerProjectKey || state.sharedProposalProject || "";
   const ordered = (items) => [...items.keys()].sort((left, right) =>
     Number(items[right].projectKey === currentKey) - Number(items[left].projectKey === currentKey) || left - right).map((index) => items[index]);
@@ -8254,11 +8256,10 @@ function resetGotoSearch() {
 }
 
 // One request per pause in typing; an older answer never replaces a newer one.
-function scheduleGotoSearch() {
+function scheduleGotoSearch(retry = 0) {
   const goto = state.gotoSearch;
   window.clearTimeout(goto.timer);
-  goto.showAllFiles = false;
-  goto.showAllText = false;
+  if (!retry) { goto.showAllFiles = false; goto.showAllText = false; }
   const query = state.contextHubProjectPickerQuery.trim();
   if (state.contextHubProjectPickerPurpose !== "open" || IS_HOSTED_HUB || query.length < GOTO_MIN_QUERY) {
     goto.seq += 1;
@@ -8266,26 +8267,35 @@ function scheduleGotoSearch() {
     goto.text = [];
     goto.loading = false;
     goto.query = "";
+    goto.pendingEnter = false;
     return;
   }
   goto.loading = true;
   const seq = ++goto.seq;
   goto.timer = window.setTimeout(async () => {
     goto.timer = null;
+    let building = false;
     try {
       const result = await api("/api/context-hub/document-search?scope=all&limit=40&query=" + encodeURIComponent(query));
       if (seq !== goto.seq || !state.contextHubProjectPickerOpen) return;
       goto.files = Array.isArray(result.files) ? result.files : [];
       goto.text = Array.isArray(result.text) ? result.text : [];
-      goto.query = query;
+      building = Boolean(result.building) && retry < 8;
     } catch {
       if (seq !== goto.seq) return;
       goto.files = [];
       goto.text = [];
     }
-    goto.loading = false;
+    goto.query = query;
+    goto.loading = building;
+    if (building) { goto.timer = window.setTimeout(() => scheduleGotoSearch(retry + 1), 700); }
     renderContextHubProjectPicker();
-  }, 150);
+    if (!building && goto.pendingEnter) {
+      goto.pendingEnter = false;
+      const first = contextHubProjectPickerChoices().choices.findIndex((item) => item?.gotoKind === "file" || item?.gotoKind === "text");
+      if (first >= 0) activateContextHubProjectPickerIndex(first);
+    }
+  }, retry ? 0 : 150);
 }
 
 function warmGotoSearch() {
@@ -8295,10 +8305,11 @@ function warmGotoSearch() {
 }
 
 async function openGotoDocument(item) {
-  const project = (state.contextHub?.projects || []).find((entry) => entry.projectKey === item.projectKey);
-  if (!project) return;
-  const worktree = globalProjectSelectedWorktree(project);
-  await openContextHubProject(worktree?.id || project.id, { filePath: item.path, pushHistory: true });
+  // Open the location that was searched, not whichever worktree is selected for the project.
+  const project = (state.contextHub?.projects || []).find((entry) => entry.id === item.projectId)
+    || (state.contextHub?.projects || []).flatMap((entry) => entry.worktrees || []).find((entry) => entry?.id === item.projectId);
+  if (!project) { setStatus("That project is no longer registered."); return; }
+  await openContextHubProject(item.projectId, { filePath: item.path, pushHistory: true });
   if (item.gotoKind === "text") revealGotoMatch(item.path, item.term || "");
 }
 
@@ -8366,7 +8377,7 @@ function renderContextHubProjectPicker() {
   const openPurpose = state.contextHubProjectPickerPurpose === "open";
   const gotoCount = choices.filter((item) => item?.gotoKind === "file" || item?.gotoKind === "text").length;
   status.textContent = state.contextHubProjectPickerQuery.trim()
-    ? projects.length + " of " + totalProjects + " projects" + (openPurpose && gotoCount ? " · " + gotoCount + " documents" : "") + (openPurpose && state.gotoSearch.loading ? " · Searching…" : "")
+    ? projects.length + " of " + totalProjects + " projects" + (openPurpose && gotoCount ? " · " + gotoCount + (gotoCount === 1 ? " document" : " documents") : "") + (openPurpose && state.gotoSearch.loading ? " · Searching…" : "")
     : totalProjects + " project" + (totalProjects === 1 ? "" : "s");
   list.setAttribute("aria-label", openPurpose ? "Results" : "Projects");
   const optionMarkup = choices.length
@@ -26809,6 +26820,10 @@ el("contextHubProjectPickerSearch")?.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && choices.length) {
     event.preventDefault();
     activateContextHubProjectPickerIndex(state.contextHubProjectPickerIndex);
+  } else if (event.key === "Enter" && state.gotoSearch.loading) {
+    // Nothing to open yet: wait for the answer to this query. An older answer is never used.
+    event.preventDefault();
+    state.gotoSearch.pendingEnter = true;
   }
 });
 el("contextHubProjectPicker")?.addEventListener("keydown", (event) => {
