@@ -2919,11 +2919,11 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       .global-context-room #reviewQueuePanel { grid-column: 1; min-width: 0; }
       .global-context-room #contextHealthPanel { grid-column: 2; position: sticky; top: 0; max-height: calc(100vh - 48px); overflow: auto; border-left: 1px solid var(--line); border-top: 0; }
       .global-context-room #contextEnginePanel { grid-column: 1 / -1; }
-      /* Local Hub: Projects + Project inspection form one side column that never shares row heights with the main column, so the review queue starts right under Notebooks. */
-      :root:not([data-context-room-runtime-profile^="hosted"]) .global-context-room .docqa-grid { grid-template-rows: auto 1fr; }
-      :root:not([data-context-room-runtime-profile^="hosted"]) .global-context-room #notebookSpacePanel { grid-column: 1; grid-row: 1; min-width: 0; }
-      :root:not([data-context-room-runtime-profile^="hosted"]) .global-context-room #reviewQueuePanel { grid-row: 2; }
-      :root:not([data-context-room-runtime-profile^="hosted"]) .global-context-room .home-side { display: grid; grid-column: 2; grid-row: 1 / span 2; align-content: start; min-width: 0; position: sticky; top: 0; max-height: calc(100vh - 48px); overflow: auto; border-left: 1px solid var(--line); }
+      /* Local Hub: Projects + Project inspection form one side column spanning every main row, so the main column (Notebooks, review queue, …) stacks without gaps.
+         Main items flow down column 1 in their order; the last explicit row is flexible, so a tall side column never pushes rows of the main column apart. */
+      :root:not([data-context-room-runtime-profile^="hosted"]) .global-context-room .docqa-grid { grid-template-rows: auto auto auto auto 1fr; }
+      :root:not([data-context-room-runtime-profile^="hosted"]) .global-context-room .docqa-grid > :not(.home-side):not(#contextEnginePanel):not(.explorer-view-panel) { grid-column: 1; min-width: 0; }
+      :root:not([data-context-room-runtime-profile^="hosted"]) .global-context-room .home-side { display: grid; grid-column: 2; grid-row: 1 / -1; align-content: start; min-width: 0; position: sticky; top: 0; max-height: calc(100vh - 48px); overflow: auto; border-left: 1px solid var(--line); }
       :root:not([data-context-room-runtime-profile^="hosted"]) .global-context-room .home-side > #contextHealthPanel { grid-column: auto; position: static; max-height: none; overflow: visible; border-left: 0; }
     }
     .startup-context-item { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; }
