@@ -105,6 +105,7 @@ test("Go to never opens a result of an older query, and Enter waits for the new 
 test("Go to keeps the input at the same place while results change, and counts one document correctly", async ({ page }) => {
   const search = await openGoto(page);
   const top = async () => Math.round((await search.boundingBox()).y);
+  await page.waitForTimeout(400); // the open animation (180 ms) has ended
   const start = await top();
   await search.fill("pro");
   await expect(page.locator("#contextHubProjectPickerStatus")).not.toContainText("Searching");
