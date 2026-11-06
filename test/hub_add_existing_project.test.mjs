@@ -143,6 +143,20 @@ test("refuses a folder that holds the home folder", () => {
   } finally { process.env.HOME = prior; os.homedir = priorOs; }
 });
 
+test("refuses ~/.context-room and its folders (backups, logs) even when the Hub home lives elsewhere", () => {
+  const prior = process.env.HOME;
+  const fakeHome = path.join(scratch, "people-cr", "me");
+  const own = path.join(fakeHome, ".context-room");
+  for (const dir of ["backups", "logs"]) fs.mkdirSync(path.join(own, dir), { recursive: true });
+  process.env.HOME = fakeHome; // CONTEXT_ROOM_HUB_HOME stays outside this home.
+  try {
+    for (const target of [own, path.join(own, "backups"), path.join(own, "logs")]) {
+      assert.throws(() => addExistingContextHubProject({ computerRoot: scratch, path: target }), /Context Room itself|holds its data/, target);
+    }
+    assert.equal(fs.existsSync(path.join(own, "backups", ".context-room")), false);
+  } finally { process.env.HOME = prior; }
+});
+
 test("the folder lister hides dot-folders for the picker and flags symlinks", async (t) => {
   const host = path.join(scratch, "host2");
   fs.mkdirSync(host);

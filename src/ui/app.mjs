@@ -8172,7 +8172,7 @@ function renderGlobalProjectExplorer() {
     : state.contextHub
       ? (allProjects.length || needle
         ? '<div class="global-project-explorer-empty">No project matches this search.</div>'
-        : '<div class="global-project-explorer-empty">No project yet.' + (IS_HOSTED_HUB ? '' : ' Use “Add a project…” above.') + '</div>')
+        : '<div class="global-project-explorer-empty">No project yet.' + (IS_HOSTED_HUB ? '' : ' Add one from the home page.') + '</div>')
       : '<div class="global-project-explorer-empty">Loading projects…</div>');
 }
 

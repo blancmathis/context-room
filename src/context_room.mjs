@@ -13774,7 +13774,8 @@ export function addExistingContextHubProject({ computerRoot, path: folderPath, t
   const realHome = realpathOfNearestExisting(os.homedir());
   if (realRoot === realHome) throw contextHubAddError("Choose a folder inside your home folder, not the whole home folder.");
   if (realHome.startsWith(`${realRoot}${path.sep}`)) throw contextHubAddError("Choose a folder inside your home folder, not one that contains it.");
-  const ownHomes = [contextHubHome(), contextHubHostRoot(), contextHubSharedHomeForGuard(), contextHubReviewAuthorityHomeForGuard()].map(realpathOfNearestExisting);
+  // `~/.context-room` also holds registry backups, logs and operations, even when the Hub home is elsewhere.
+  const ownHomes = [path.join(os.homedir(), ".context-room"), contextHubHome(), contextHubHostRoot(), contextHubSharedHomeForGuard(), contextHubReviewAuthorityHomeForGuard()].map(realpathOfNearestExisting);
   for (const own of ownHomes) {
     if (realRoot === own || realRoot.startsWith(`${own}${path.sep}`) || own.startsWith(`${realRoot}${path.sep}`)) {
       throw contextHubAddError("This folder belongs to Context Room itself, or holds its data.");

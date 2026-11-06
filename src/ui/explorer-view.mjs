@@ -428,7 +428,7 @@ export function createExplorerView({ host, ctx, initial = {}, onNavigate = () =>
     return `<div class="hl${editing ? ' hl-editing' : ''}">
       <div class="hl-head"><div><h2>Files</h2><p>${g.pinned.length + g.main.length + g.shared.length} projects · ${visibleMain().length} with files here</p></div><div class="hl-tools">${goto()}${viewMenu()}</div></div>
       <div class="hl-strip" role="group" aria-label="Projects">${strip}</div>
-      <div class="hl-split"><div class="hl-side">${projectList()}</div><div class="hl-main">${project ? filesPane(project) : (g.pinned.length + g.main.length + g.shared.length + g.hidden.length ? '<div class="hl-empty">Pin or pick a project to see its files.</div>' : '<div class="hl-empty">No project yet. Use “Add a project…” above.</div>')}</div></div>
+      <div class="hl-split"><div class="hl-side">${projectList()}</div><div class="hl-main">${project ? filesPane(project) : (g.pinned.length + g.main.length + g.shared.length + g.hidden.length ? '<div class="hl-empty">Pin or pick a project to see its files.</div>' : '<div class="hl-empty">No project yet. Add one from the home page.</div>')}</div></div>
     </div>`;
   }
 
