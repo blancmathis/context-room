@@ -526,7 +526,7 @@ test("the global Context Room keeps project targeting inside one workspace", () 
   assert.match(html, /id="globalProjectSearch"[\s\S]*id="globalProjectList"/);
   assert.match(html, /\.shared-proposal-workspace \{ position: fixed; inset: 0 0 0 320px;/);
   assert.match(html, /\.app\.sidebar-collapsed ~ \.shared-proposal-workspace \{ left: 56px; \}/);
-  assert.match(html, /id="contextHubCreateProject"[\s\S]*New project/);
+  assert.match(html, /id="contextHubCreateProject"[\s\S]*Add project…/);
   assert.match(html, /id="contextHubCreateSharedDocument"[\s\S]*New shared document/);
   assert.doesNotMatch(html, /id="sharedProposalBrowser"/);
   assert.match(html, /body\.focused-review-context-room \.context-room-review-toolbar \{ grid-template-columns:/);

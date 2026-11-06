@@ -398,6 +398,21 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .context-hub-home-project-destination:hover { background: var(--surface-card-hover); }
     .context-hub-home-project-destination:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 1px; }
     .notebook-space-new { min-height: 48px; padding: 8px 18px; border: 1px solid var(--accent); border-radius: 10px; background: var(--accent); color: var(--on-accent, var(--bg)); cursor: pointer; font-size: 14px; font-weight: 750; }
+    .notebook-space-panel[data-no-projects="true"] .notebook-space-new { background: transparent; color: var(--accent); }
+    .context-hub-welcome { display: grid; gap: 10px; justify-items: start; padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+    .context-hub-welcome h2, .context-hub-welcome p { margin: 0; }
+    .context-hub-welcome h2 { font-size: 20px; }
+    .context-hub-welcome p { color: var(--muted); font-size: 14px; }
+    .context-hub-welcome button, .global-project-explorer-empty button { min-height: 44px; padding: 8px 18px; font-size: 14px; }
+    .global-project-explorer-empty button { margin-top: 10px; }
+    .add-project-dialog { width: min(560px, 100%); }
+    .add-project-nav { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .add-project-nav code { min-width: 0; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .add-project-list { display: grid; gap: 4px; max-height: 220px; margin: 0; padding: 4px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; list-style: none; }
+    .add-project-list button { width: 100%; min-height: 40px; padding: 6px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text); font-size: 13px; text-align: left; cursor: pointer; }
+    .add-project-list button:hover { background: var(--surface-card-hover); }
+    .add-project-list li.add-project-empty { padding: 10px; color: var(--muted); font-size: 12px; }
+    .add-project-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
     .notebook-space-list { list-style: none; margin: 0; padding: 6px; display: grid; gap: 2px; max-height: 320px; overflow-y: auto; }
     .notebook-space-item { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 10px; }
     .notebook-space-item:hover { background: var(--surface-card-hover); }
@@ -1735,7 +1750,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .context-hub-project-trigger:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent); outline-offset: 2px; }
     .context-hub-project-trigger-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .context-hub-project-trigger-icon { flex: 0 0 auto; color: var(--muted); font-size: 13px; }
-    .context-hub-project-picker-modal { position: fixed; inset: 0; z-index: 140; display: grid; place-items: center; padding: 20px; }
+    .context-hub-project-picker-modal { position: fixed; inset: 0; z-index: 140; display: grid; place-items: start center; padding: max(20px, 8dvh) 20px 20px; }
     .context-hub-project-picker-modal[hidden] { display: none !important; }
     .context-hub-project-picker-backdrop { position: absolute; inset: 0; border: 0; background: rgba(2, 6, 23, .72); cursor: default; }
     .context-hub-project-picker-dialog { position: relative; width: min(680px, 100%); max-height: min(760px, calc(100dvh - 40px)); display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; overflow: hidden; border: 1px solid color-mix(in srgb, var(--line) 82%, var(--accent) 18%); border-radius: 14px; background: var(--panel-strong); box-shadow: 0 26px 80px rgba(0, 0, 0, .48); animation: contextHubProjectPickerIn 180ms cubic-bezier(.22, 1, .36, 1); }
@@ -1761,6 +1776,12 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .context-hub-project-picker-option-main { min-width: 0; }
     .context-hub-project-picker-option-title { min-width: 0; display: flex; align-items: center; gap: 7px; }
     .context-hub-project-picker-option-title strong { min-width: 0; overflow: hidden; font-size: 12px; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+    .context-hub-project-picker-group { display: grid; gap: 2px; }
+    .context-hub-project-picker-group + .context-hub-project-picker-group, .context-hub-project-picker-group + .context-hub-project-picker-option { margin-top: 8px; }
+    .context-hub-project-picker-group-label { padding: 6px 12px 2px; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+    .context-hub-project-picker-option .goto-path { margin-left: 8px; color: var(--muted); font: 10px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 400; }
+    .context-hub-project-picker-option .goto-snippet { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    .context-hub-project-picker-option .goto-snippet mark { background: color-mix(in srgb, var(--accent) 28%, transparent); color: inherit; border-radius: 3px; }
     .context-hub-project-picker-option-location { display: block; margin-top: 4px; overflow: hidden; color: var(--muted); font: 9px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
     .context-hub-project-picker-option-meta { align-self: center; color: var(--muted); font-size: 10px; line-height: 1.3; text-align: right; white-space: nowrap; }
     .context-hub-project-picker-option-check { color: var(--accent); font-size: 14px; font-weight: 800; }
@@ -3691,6 +3712,11 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
       <section class="editor-shell">
         <div id="home" class="docqa-home workspace-page" hidden>
           <div class="docqa-grid">
+            <section id="contextHubWelcome" class="context-hub-welcome" aria-labelledby="contextHubWelcomeHeading" hidden>
+              <h2 id="contextHubWelcomeHeading">Add your first project</h2>
+              <p>Pick a folder that holds your docs. Context Room adds a small .context-room settings folder to it.</p>
+              <button class="file-action primary" type="button" data-add-project>Add a project…</button>
+            </section>
             <section id="explorerViewPanel" class="docqa-panel explorer-view-panel" aria-label="Files" hidden></section>
             <section id="notebookSpacePanel" class="docqa-panel notebook-space-panel" aria-labelledby="notebookSpaceHeading" hidden>
               <header>
@@ -3711,7 +3737,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
                 </div>
                 <div class="context-hub-projects-actions">
                   <button class="quiet-button" type="button" data-home-explorer title="Browse the files of every project">Files</button>
-                  <button class="quiet-button" type="button" data-context-hub-project-goto title="Go to project (⌘K)">Go to… <kbd>⌘K</kbd></button>
+                  <button class="quiet-button" type="button" data-context-hub-project-goto title="Go to project, file or text (⌘K)">Go to… <kbd>⌘K</kbd></button>
                 </div>
               </header>
               <ul id="contextHubHomeProjectList" class="context-hub-home-projects" aria-label="Projects"></ul>
@@ -3908,7 +3934,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
         <span class="context-hub-project-trigger-icon" aria-hidden="true">⌄</span>
       </button>
       <button id="contextHubCreateSharedProject" class="dock-button" type="button" hidden>New shared project</button>
-      <button id="contextHubCreateProject" class="dock-button primary" type="button" hidden>New project</button>
+      <button id="contextHubCreateProject" class="dock-button primary" type="button" hidden>Add project…</button>
       <button id="contextHubImportCodex" class="dock-button" type="button" hidden>Import from Codex</button>
       <button id="sharedProposalWorkspaceRefresh" class="dock-button" type="button">Refresh</button>
       <button id="sharedProposalWorkspaceClose" class="dock-button shared-proposal-workspace-close" type="button" aria-label="Close this secondary view">Close</button>
@@ -4129,6 +4155,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 		state.contextHubProjectPickerReturnFocus = "";
 		state.contextHubProjectPickerPurpose = "filter";
 		state.contextHubProjectPickerIsolationRelease = null;
+		state.gotoSearch = { query: "", files: [], text: [], loading: false, seq: 0, timer: null, showAllFiles: false, showAllText: false, warmed: false };
 		state.activeModalClose = null;
 		state.contextHubCreationGeneration = 0;
 		state.contextHubCreationController = null;
@@ -6732,7 +6759,9 @@ function renderGlobalProjectFolder(project) {
       ["unwatched", "Not watched"],
     ].map(([value, label]) => '<button class="global-project-watch-filter' + (filter === value ? " active" : "") + '" type="button" aria-pressed="' + String(filter === value) + '" data-global-project-watch-filter="' + value + '" data-global-project-key="' + escapeHtml(project.projectKey) + '">' + label + '</button>').join("")
     + '</div><span class="global-project-tree-meta">' + visibleCount + (needle ? " results" : " at root") + '</span></div>'
-    + '<div class="global-project-folder-tree">' + (markup || '<div class="global-project-folder-state">No files match this view.</div>') + '</div>';
+    + '<div class="global-project-folder-tree">' + (markup || (needle && !IS_HOSTED_HUB
+      ? '<div class="global-project-folder-state">No file name matches. <button class="file-action" type="button" data-goto-text-search="' + escapeHtml(needle) + '">Search the text with ⌘K</button></div>'
+      : '<div class="global-project-folder-state">No files match this view.</div>')) + '</div>';
   return withDocumentTabs(locationContent);
 }
 
@@ -7370,8 +7399,11 @@ function renderContextHubHomeProjects() {
     sinceLastVisit.textContent = contextHubSinceLastVisitText();
     sinceLastVisit.hidden = !sinceLastVisit.textContent;
   }
+  const welcome = el("contextHubWelcome");
+  if (welcome) welcome.hidden = IS_HOSTED_HUB || projects.length > 0;
+  el("notebookSpacePanel")?.setAttribute("data-no-projects", String(projects.length === 0));
   if (!projects.length) {
-    updateGlobalExplorerMarkup(list, '<div class="global-project-explorer-empty">No project registered yet. Add a folder from Manage projects.</div>');
+    updateGlobalExplorerMarkup(list, '<div class="global-project-explorer-empty">No project yet.</div>');
     return;
   }
   // Same markup cache and pointer hold as the Explorer list: a refresh must
@@ -8183,7 +8215,9 @@ function renderGlobalProjectExplorer() {
           + '</a>';
       }).join("")
     : state.contextHub
-      ? '<div class="global-project-explorer-empty">No project matches this search.</div>'
+      ? (allProjects.length || needle
+        ? '<div class="global-project-explorer-empty">No project matches this search.</div>'
+        : '<div class="global-project-explorer-empty">No project yet.' + (IS_HOSTED_HUB ? '' : ' Add one from the home page.') + '</div>')
       : '<div class="global-project-explorer-empty">Loading projects…</div>');
 }
 
@@ -8228,8 +8262,162 @@ function contextHubProjectPickerChoices() {
     .filter((project) => !needle || contextHubProjectSearchText(project).includes(needle));
   return {
     projects,
-    choices: needle || state.contextHubProjectPickerPurpose === "open" ? projects : [null, ...projects],
+    choices: needle || state.contextHubProjectPickerPurpose === "open" ? [...projects, ...gotoDocumentChoices()] : [null, ...projects],
   };
+}
+
+const GOTO_GROUP_LIMIT = 8;
+const GOTO_MIN_QUERY = 2;
+
+// "Go to" lists documents after the projects: files (name match), then text (content match).
+// The selected project comes first; a group shows 8 rows and a "Show more" row.
+function gotoDocumentChoices() {
+  if (state.contextHubProjectPickerPurpose !== "open" || !state.contextHubProjectPickerQuery.trim() || IS_HOSTED_HUB) return [];
+  const goto = state.gotoSearch;
+  // Lists from an older query are never shown or acted on.
+  if (goto.query !== state.contextHubProjectPickerQuery.trim()) return [];
+  const currentKey = state.globalExplorerProjectKey || state.sharedProposalProject || "";
+  const ordered = (items) => [...items.keys()].sort((left, right) =>
+    Number(items[right].projectKey === currentKey) - Number(items[left].projectKey === currentKey) || left - right).map((index) => items[index]);
+  const group = (items, kind, showAll) => {
+    const list = ordered(items).map((item) => ({ ...item, gotoKind: kind }));
+    if (showAll || list.length <= GOTO_GROUP_LIMIT) return list;
+    return [...list.slice(0, GOTO_GROUP_LIMIT), { gotoKind: "more", moreFor: kind, hidden: list.length - GOTO_GROUP_LIMIT }];
+  };
+  return [...group(goto.files, "file", goto.showAllFiles), ...group(goto.text, "text", goto.showAllText)];
+}
+
+function gotoSnippetMarkup(item) {
+  const text = String(item.snippet || "");
+  const start = Math.max(0, Math.min(text.length, Number(item.matchStart) || 0));
+  const end = Math.max(start, Math.min(text.length, start + (Number(item.matchLength) || 0)));
+  return escapeHtml(text.slice(0, start)) + (end > start ? "<mark>" + escapeHtml(text.slice(start, end)) + "</mark>" : "") + escapeHtml(text.slice(end));
+}
+
+function renderGotoPickerOption(item, index, active) {
+  const id = 'id="contextHubProjectPickerOption-' + index + '" class="context-hub-project-picker-option" type="button" role="option" aria-selected="false" data-active="' + String(active) + '" data-context-hub-project-picker-index="' + index + '"';
+  if (item.gotoKind === "more") {
+    return '<button ' + id + ' data-goto-kind="more"><span class="context-hub-project-picker-option-main"><span class="context-hub-project-picker-option-title"><strong>Show ' + item.hidden + ' more</strong></span></span></button>';
+  }
+  const detail = item.gotoKind === "text"
+    ? '<span class="context-hub-project-picker-option-location goto-snippet">' + gotoSnippetMarkup(item) + '</span>'
+    : '<span class="context-hub-project-picker-option-location" title="' + escapeHtml(item.path) + '">' + escapeHtml(item.path) + '</span>';
+  return '<button ' + id + ' data-goto-kind="' + item.gotoKind + '"><span class="context-hub-project-picker-option-main"><span class="context-hub-project-picker-option-title"><strong>' + escapeHtml(item.name) + '</strong>'
+    + (item.gotoKind === "text" ? '<span class="goto-path">' + escapeHtml(item.path) + '</span>' : "") + '</span>' + detail + '</span>'
+    + '<span class="context-hub-project-picker-option-meta">' + escapeHtml(item.projectTitle || "") + '</span></button>';
+}
+
+function gotoGroupLabel(kind) {
+  return kind === "file" ? "Files" : kind === "text" ? "In text" : "Projects";
+}
+
+function resetGotoSearch() {
+  window.clearTimeout(state.gotoSearch?.timer);
+  state.gotoSearch = { query: "", files: [], text: [], loading: false, seq: (state.gotoSearch?.seq || 0) + 1, timer: null, showAllFiles: false, showAllText: false, warmed: state.gotoSearch?.warmed || false };
+}
+
+// One request per pause in typing; an older answer never replaces a newer one.
+function scheduleGotoSearch(retry = 0) {
+  const goto = state.gotoSearch;
+  window.clearTimeout(goto.timer);
+  if (!retry) { goto.showAllFiles = false; goto.showAllText = false; }
+  const query = state.contextHubProjectPickerQuery.trim();
+  if (state.contextHubProjectPickerPurpose !== "open" || IS_HOSTED_HUB || query.length < GOTO_MIN_QUERY) {
+    goto.seq += 1;
+    goto.files = [];
+    goto.text = [];
+    goto.loading = false;
+    goto.query = "";
+    goto.pendingEnter = false;
+    return;
+  }
+  goto.loading = true;
+  const seq = ++goto.seq;
+  goto.timer = window.setTimeout(async () => {
+    goto.timer = null;
+    let building = false;
+    try {
+      const result = await api("/api/context-hub/document-search?scope=all&limit=40&query=" + encodeURIComponent(query));
+      if (seq !== goto.seq || !state.contextHubProjectPickerOpen) return;
+      goto.files = Array.isArray(result.files) ? result.files : [];
+      goto.text = Array.isArray(result.text) ? result.text : [];
+      building = Boolean(result.building) && retry < 8;
+    } catch {
+      if (seq !== goto.seq) return;
+      goto.files = [];
+      goto.text = [];
+    }
+    goto.query = query;
+    goto.loading = building;
+    if (building) { goto.timer = window.setTimeout(() => scheduleGotoSearch(retry + 1), 700); }
+    renderContextHubProjectPicker();
+    if (!building && goto.pendingEnter) {
+      goto.pendingEnter = false;
+      const first = contextHubProjectPickerChoices().choices.findIndex((item) => item?.gotoKind === "file" || item?.gotoKind === "text");
+      if (first >= 0) activateContextHubProjectPickerIndex(first);
+    }
+  }, retry ? 0 : 150);
+}
+
+function warmGotoSearch() {
+  if (IS_HOSTED_HUB || state.gotoSearch.warmed) return;
+  state.gotoSearch.warmed = true;
+  api("/api/context-hub/document-search?scope=all&warm=1").catch(() => { state.gotoSearch.warmed = false; });
+}
+
+async function openGotoDocument(item) {
+  // Open the location that was searched, not whichever worktree is selected for the project.
+  const project = (state.contextHub?.projects || []).find((entry) => entry.id === item.projectId)
+    || (state.contextHub?.projects || []).flatMap((entry) => entry.worktrees || []).find((entry) => entry?.id === item.projectId);
+  if (!project) { setStatus("That project is no longer registered."); return; }
+  await openContextHubProject(item.projectId, { filePath: item.path, pushHistory: true });
+  if (item.gotoKind === "text") revealGotoMatch(item.path, item.term || "");
+}
+
+// Best effort: select the first occurrence in the opened reader. Gives up quietly after about 3 seconds.
+function revealGotoMatch(filePath, term, attempt = 0) {
+  const needle = searchFold(term);
+  if (!needle || attempt > 20) return;
+  const body = state.page === "file" && state.selected === filePath ? document.querySelector(".doc-reader-body") : null;
+  if (!body) {
+    window.setTimeout(() => revealGotoMatch(filePath, term, attempt + 1), 150);
+    return;
+  }
+  const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const folded = searchFold(node.nodeValue);
+    const at = folded.indexOf(needle);
+    if (at < 0) continue;
+    const aligned = folded.length === node.nodeValue.length;
+    const range = document.createRange();
+    range.setStart(node, aligned ? at : 0);
+    range.setEnd(node, aligned ? at + needle.length : node.nodeValue.length);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    node.parentElement?.scrollIntoView({ block: "center" });
+    return;
+  }
+  if (attempt < 20) window.setTimeout(() => revealGotoMatch(filePath, term, attempt + 1), 150);
+}
+
+function activateContextHubProjectPickerIndex(index) {
+  const { choices } = contextHubProjectPickerChoices();
+  const item = choices[index] || null;
+  if (item?.gotoKind === "more") {
+    if (item.moreFor === "file") state.gotoSearch.showAllFiles = true;
+    else state.gotoSearch.showAllText = true;
+    state.contextHubProjectPickerIndex = index;
+    renderContextHubProjectPicker();
+    return;
+  }
+  if (item?.gotoKind === "file" || item?.gotoKind === "text") {
+    if (state.sharedContextBusy) return;
+    closeContextHubProjectPicker({ restoreFocus: false });
+    openGotoDocument(item).catch((error) => setStatus(error.message));
+    return;
+  }
+  selectContextHubProjectPickerChoice(item?.projectKey || "");
 }
 
 function renderContextHubProjectPicker() {
@@ -8247,12 +8435,16 @@ function renderContextHubProjectPicker() {
     ? Math.max(0, Math.min(state.contextHubProjectPickerIndex, choices.length - 1))
     : 0;
   const totalProjects = (state.contextHub?.projects || []).filter((project) => !contextHubIsNotebookSpace(project)).length;
+  const openPurpose = state.contextHubProjectPickerPurpose === "open";
+  const gotoCount = choices.filter((item) => item?.gotoKind === "file" || item?.gotoKind === "text").length;
   status.textContent = state.contextHubProjectPickerQuery.trim()
-    ? projects.length + " of " + totalProjects + " projects"
+    ? projects.length + " of " + totalProjects + " projects" + (openPurpose && gotoCount ? " · " + gotoCount + (gotoCount === 1 ? " document" : " documents") : "") + (openPurpose && state.gotoSearch.loading ? " · Searching…" : "")
     : totalProjects + " project" + (totalProjects === 1 ? "" : "s");
-  list.innerHTML = choices.length
+  list.setAttribute("aria-label", openPurpose ? "Results" : "Projects");
+  const optionMarkup = choices.length
     ? choices.map((project, index) => {
         const active = index === state.contextHubProjectPickerIndex;
+        if (project?.gotoKind) return renderGotoPickerOption(project, index, active);
         const selected = project
           ? project.projectKey === state.sharedProposalProject
           : !state.sharedProposalProject;
@@ -8275,8 +8467,21 @@ function renderContextHubProjectPicker() {
           + '<span class="context-hub-project-picker-option-main"><span class="context-hub-project-picker-option-title"><strong>' + escapeHtml(project.title || project.id) + '</strong>' + contextHubProjectSourceBadges(project) + '</span><span class="context-hub-project-picker-option-location" title="' + escapeHtml(contextHubProjectPickerLocation(project)) + '">' + escapeHtml(contextHubProjectPickerLocation(project)) + '</span></span>'
           + '<span class="context-hub-project-picker-option-meta">' + escapeHtml(meta) + (selected ? ' <span class="context-hub-project-picker-option-check" aria-hidden="true">✓</span>' : "") + '</span>'
           + '</button>';
-      }).join("")
-    : '<div class="context-hub-project-picker-empty"><strong>No project found.</strong><br />Try a name, folder path, or shared project ID.</div>';
+      })
+    : null;
+  const grouped = openPurpose && gotoCount && optionMarkup
+    ? optionMarkup.map((markup, index) => ({ markup, kind: choices[index]?.gotoKind === "more" ? choices[index].moreFor : choices[index]?.gotoKind || "project" }))
+        .reduce((groups, entry) => {
+          const last = groups.at(-1);
+          if (last && last.kind === entry.kind) last.items.push(entry.markup);
+          else groups.push({ kind: entry.kind, items: [entry.markup] });
+          return groups;
+        }, [])
+        .map((group) => '<div class="context-hub-project-picker-group" role="group" aria-label="' + gotoGroupLabel(group.kind) + '"><div class="context-hub-project-picker-group-label" aria-hidden="true">' + gotoGroupLabel(group.kind) + '</div>' + group.items.join("") + '</div>').join("")
+    : null;
+  list.innerHTML = optionMarkup
+    ? (grouped ?? optionMarkup.join(""))
+    : '<div class="context-hub-project-picker-empty"><strong>' + (openPurpose && state.contextHubProjectPickerQuery.trim().length >= GOTO_MIN_QUERY && !state.gotoSearch.loading ? "Nothing found." : "No project found.") + '</strong><br />' + (openPurpose ? "Try a project, a file name or a word from a file." : "Try a name, folder path, or shared project ID.") + '</div>';
   const activeId = choices.length ? "contextHubProjectPickerOption-" + state.contextHubProjectPickerIndex : "";
   if (activeId) search.setAttribute("aria-activedescendant", activeId);
   else search.removeAttribute("aria-activedescendant");
@@ -8311,15 +8516,22 @@ function isolateContextRoomModalBackground(activeModal = null) {
   };
 }
 
-function openContextHubProjectPicker(trigger, { purpose = "filter" } = {}) {
+function openContextHubProjectPicker(trigger, { purpose = "filter", initialQuery = "" } = {}) {
   if (state.sharedContextBusy) return;
   state.contextHubProjectPickerOpen = true;
   state.contextHubProjectPickerPurpose = purpose === "open" ? "open" : "filter";
   const pickerTitle = el("contextHubProjectPickerTitle");
-  if (pickerTitle) pickerTitle.textContent = purpose === "open" ? "Go to project" : "Choose a project";
+  if (pickerTitle) pickerTitle.textContent = purpose === "open" ? "Go to" : "Choose a project";
   const pickerHint = pickerTitle?.nextElementSibling;
-  if (pickerHint) pickerHint.textContent = purpose === "open" ? "Open a project. Its files, reviews and agent context follow." : "Filter the whole Context Room without leaving your current view.";
-  state.contextHubProjectPickerQuery = "";
+  if (pickerHint) pickerHint.textContent = purpose === "open" ? "Open a project or a file. Search file names and text." : "Filter the whole Context Room without leaving your current view.";
+  const pickerSearch = el("contextHubProjectPickerSearch");
+  if (pickerSearch) {
+    pickerSearch.placeholder = purpose === "open" ? "Projects, files or text…" : "Search by name, path or shared project…";
+    pickerSearch.setAttribute("aria-label", purpose === "open" ? "Search projects, files and text" : "Search projects");
+  }
+  state.contextHubProjectPickerQuery = String(initialQuery || "");
+  resetGotoSearch();
+  if (purpose === "open") { warmGotoSearch(); if (state.contextHubProjectPickerQuery.trim()) scheduleGotoSearch(); }
   state.contextHubProjectPickerReturnFocus = trigger?.dataset.contextHubProjectPickerTrigger || "";
   document.querySelectorAll("[data-context-hub-project-picker-trigger]").forEach((button) => button.setAttribute("aria-expanded", String(button === trigger)));
   const projects = contextHubPrioritizedProjects(state.contextHub?.projects || []);
@@ -8341,6 +8553,7 @@ function closeContextHubProjectPicker({ restoreFocus = true } = {}) {
   state.contextHubProjectPickerOpen = false;
   state.contextHubProjectPickerQuery = "";
   state.contextHubProjectPickerIndex = 0;
+  resetGotoSearch();
   const modal = el("contextHubProjectPicker");
   if (modal) modal.hidden = true;
   state.contextHubProjectPickerIsolationRelease?.();
@@ -9327,7 +9540,9 @@ function renderSharedProposalWorkspace() {
   };
   list.innerHTML = visible.length
     ? groups.filter(([, items]) => items.length).map(([label, items]) => '<div class="context-hub-group-title">' + escapeHtml(label) + ' · ' + items.length + '</div>' + items.map(renderItem).join("")).join("")
-    : '<div class="shared-proposal-empty">Nothing matches these filters. Try all sources or clear the search.</div>';
+    : projectManagerMode && !(hub.projects || []).length
+      ? '<div class="shared-proposal-empty">No project yet.' + (IS_HOSTED_HUB ? '' : '<br><button class="file-action primary" type="button" data-add-project>Add project…</button>') + '</div>'
+      : '<div class="shared-proposal-empty">Nothing matches these filters. Try all sources or clear the search.</div>';
   renderContextHubOverview(selected);
 }
 
@@ -25188,6 +25403,132 @@ async function showContextHubImportCodexDialog() {
   });
 }
 
+function showContextHubAddProjectDialog() {
+  state.activeModalClose?.({ restoreFocus: false });
+  const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const backdrop = document.createElement("div");
+  backdrop.className = "confirm-backdrop";
+  backdrop.innerHTML = '<section class="confirm-dialog creation-dialog add-project-dialog" role="dialog" aria-modal="true" aria-label="Add a project">'
+    + '<strong>Add a project</strong>'
+    + '<p>Pick a folder that already exists. Context Room adds a small .context-room settings folder to it.</p>'
+    + '<form class="creation-dialog-form">'
+    + '<label class="creation-dialog-field"><span>Folder</span><input name="path" type="text" spellcheck="false" autocomplete="off" placeholder="Paste a folder path" required /></label>'
+    + '<div class="add-project-nav"><button class="file-action" type="button" data-add-project-up aria-label="Parent folder" title="Parent folder">↑</button><code data-add-project-here></code><label class="add-project-hidden"><input type="checkbox" data-add-project-hidden /> Show hidden folders</label></div>'
+    + '<ul class="add-project-list" aria-label="Folders" data-add-project-list></ul>'
+    + '<label class="creation-dialog-field"><span>Project name</span><input name="title" type="text" placeholder="Folder name" /></label>'
+    + '<div class="creation-dialog-status" role="status" aria-live="polite"></div>'
+    + '<div class="confirm-actions add-project-actions"><button class="file-action" type="button" data-add-project-new>Create a new folder instead</button><span><button class="file-action" type="button" data-creation-cancel>Cancel</button> <button class="file-action primary" type="submit" data-creation-submit>Add this folder</button></span></div>'
+    + '</form></section>';
+  const form = backdrop.querySelector("form");
+  const pathInput = form.elements.path;
+  const titleInput = form.elements.title;
+  const list = backdrop.querySelector("[data-add-project-list]");
+  const here = backdrop.querySelector("[data-add-project-here]");
+  const up = backdrop.querySelector("[data-add-project-up]");
+  const hiddenToggle = backdrop.querySelector("[data-add-project-hidden]");
+  const submit = backdrop.querySelector("[data-creation-submit]");
+  const status = backdrop.querySelector(".creation-dialog-status");
+  let closed = false;
+  let parentPath = "";
+  let titleEdited = false;
+  let loadToken = 0;
+  let releaseBackgroundIsolation = () => {};
+  const controller = new AbortController();
+  const close = ({ restoreFocus = true } = {}) => {
+    if (closed) return;
+    closed = true;
+    controller.abort();
+    backdrop.remove();
+    releaseBackgroundIsolation();
+    document.removeEventListener("keydown", onKeydown, true);
+    if (state.activeModalClose === close) state.activeModalClose = null;
+    if (restoreFocus && returnFocus?.isConnected) returnFocus.focus();
+  };
+  const onKeydown = (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      close();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = [...backdrop.querySelectorAll("button:not([disabled]), input:not([disabled])")];
+    if (!focusable.length) return;
+    if (event.shiftKey && document.activeElement === focusable[0]) { event.preventDefault(); focusable.at(-1).focus(); }
+    else if (!event.shiftKey && document.activeElement === focusable.at(-1)) { event.preventDefault(); focusable[0].focus(); }
+  };
+  const loadFolder = async (target) => {
+    const token = ++loadToken;
+    try {
+      const listing = await api("/api/context-hub/computer-explorer?foldersOnly=1" + (hiddenToggle.checked ? "&hidden=1" : "") + (target ? "&path=" + encodeURIComponent(target) : ""), { signal: controller.signal });
+      if (closed || token !== loadToken) return;
+      status.textContent = "";
+      pathInput.value = listing.current;
+      here.textContent = listing.current;
+      here.title = listing.current;
+      parentPath = listing.parent || "";
+      up.disabled = !parentPath;
+      if (!titleEdited) titleInput.value = listing.current === listing.root ? "" : listing.current.split(/[\\/]/).filter(Boolean).at(-1) || "";
+      const folders = (listing.entries || []).filter((entry) => entry.kind === "directory" && !entry.symlink);
+      list.innerHTML = folders.length
+        ? folders.map((entry) => '<li><button type="button" data-add-project-folder="' + escapeHtml(entry.path) + '">' + escapeHtml(entry.name) + '</button></li>').join("")
+        : '<li class="add-project-empty">No sub-folder here.</li>';
+    } catch (error) {
+      if (closed || token !== loadToken || error?.name === "AbortError") return;
+      status.textContent = error.message || "This folder cannot be read.";
+    }
+  };
+  backdrop.addEventListener("click", (event) => { if (event.target === backdrop) close(); });
+  backdrop.querySelector("[data-creation-cancel]").addEventListener("click", () => close());
+  backdrop.querySelector("[data-add-project-new]").addEventListener("click", () => { close(); showContextHubCreateProjectDialog(); });
+  hiddenToggle.addEventListener("change", () => { void loadFolder(pathInput.value.trim()); });
+  up.addEventListener("click", () => { if (parentPath) void loadFolder(parentPath); });
+  list.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-add-project-folder]");
+    if (button) void loadFolder(button.dataset.addProjectFolder);
+  });
+  pathInput.addEventListener("change", () => { if (pathInput.value.trim()) void loadFolder(pathInput.value.trim()); });
+  titleInput.addEventListener("input", () => { titleEdited = titleInput.value.trim() !== ""; });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (submit.disabled || closed) return;
+    submit.disabled = true;
+    submit.setAttribute("aria-busy", "true");
+    status.textContent = "Adding…";
+    try {
+      const result = await api("/api/context-hub/projects", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ existing: true, path: pathInput.value.trim(), title: titleInput.value.trim() }),
+        signal: controller.signal,
+      });
+      if (closed) return;
+      if (result.catalog) applyContextHubCreationCatalog(result.catalog, result.project?.id || "");
+      const entryId = result.project?.id || "";
+      const project = (state.contextHub?.projects || []).find((item) => item.id === entryId || (item.worktrees || []).some((worktree) => worktree.id === entryId));
+      close({ restoreFocus: false });
+      if (project) {
+        if (explorerViewController) explorerViewController.navigate({ projectKey: project.projectKey });
+        else explorerInitialPlace.projectKey = project.projectKey;
+        setHomeExplorer(true);
+        await openGlobalProjectExplorer(project);
+      }
+      setStatus(result.alreadyRegistered ? "Already in your projects" : "Added " + (project?.title || result.project?.title || "project"));
+    } catch (error) {
+      if (closed || error?.name === "AbortError") return;
+      submit.disabled = false;
+      submit.removeAttribute("aria-busy");
+      status.textContent = error.message || "This folder cannot be added.";
+    }
+  });
+  document.addEventListener("keydown", onKeydown, true);
+  document.body.appendChild(backdrop);
+  releaseBackgroundIsolation = isolateContextRoomModalBackground(backdrop);
+  state.activeModalClose = close;
+  void loadFolder(state.settings?.explorer?.computerRoot || DEFAULT_COMPUTER_EXPLORER_ROOT);
+  pathInput.focus();
+}
+
 function showContextHubCreateProjectDialog() {
   const computerRoot = state.settings?.explorer?.computerRoot || DEFAULT_COMPUTER_EXPLORER_ROOT;
   showContextHubCreationDialog({
@@ -26601,7 +26942,12 @@ el("proposalDockBack")?.addEventListener("click", () => showProposalReview());
 el("sharedProposalSelect")?.addEventListener("change", renderSharedContextControls);
 el("sharedProposalWorkspaceRefresh")?.addEventListener("click", () => refreshContextHubUi().catch((error) => setStatus(error.message)));
 el("sharedProposalWorkspaceClose")?.addEventListener("click", closeContextRoomSecondaryView);
-el("contextHubCreateProject")?.addEventListener("click", showContextHubCreateProjectDialog);
+el("contextHubCreateProject")?.addEventListener("click", showContextHubAddProjectDialog);
+document.addEventListener("click", (event) => {
+  if (!event.target.closest?.("[data-add-project]") || state.sharedContextBusy) return;
+  event.preventDefault();
+  showContextHubAddProjectDialog();
+});
 el("contextHubImportCodex")?.addEventListener("click", () => { void showContextHubImportCodexDialog(); });
 el("contextHubCreateSharedProject")?.addEventListener("click", () => {
   try { showContextHubCreateSharedProjectDialog(); }
@@ -26645,7 +26991,7 @@ if (globalThis.ContextRoomNativeOwner) {
   // The tablet has no keyboard shortcut: keep the button, drop the Mac-only hint.
   const gotoButton = document.querySelector("[data-context-hub-project-goto]");
   gotoButton?.querySelector("kbd")?.remove();
-  gotoButton?.setAttribute("title", "Go to project");
+  gotoButton?.setAttribute("title", "Go to project or file");
 }
 el("contextHubProjectsPanel")?.addEventListener("click", (event) => {
   if (event.target.closest("[data-home-explorer]")) {
@@ -26660,15 +27006,21 @@ el("contextHubProjectsPanel")?.addEventListener("click", (event) => {
   if (!button) return;
   openContextHubProjectDestination(button.dataset.projectKey, button.dataset.contextHubProjectDestination).catch((error) => setStatus(error.message));
 });
+document.addEventListener("click", (event) => {
+  const button = event.target.closest?.("[data-goto-text-search]");
+  if (!button || !IS_GLOBAL_CONTEXT_ROOM || state.contextHubProjectPickerOpen) return;
+  event.preventDefault();
+  openContextHubProjectPicker(null, { purpose: "open", initialQuery: button.dataset.gotoTextSearch || "" });
+});
 el("contextHubProjectPicker")?.addEventListener("click", (event) => {
   const closeButton = event.target.closest("[data-context-hub-project-picker-close]");
   if (closeButton) {
     closeContextHubProjectPicker();
     return;
   }
-  const choice = event.target.closest("[data-context-hub-project-picker-choice]");
+  const choice = event.target.closest("[data-context-hub-project-picker-index]");
   if (!choice || state.sharedContextBusy) return;
-  selectContextHubProjectPickerChoice(choice.dataset.contextHubProjectPickerChoice || "");
+  activateContextHubProjectPickerIndex(Number(choice.dataset.contextHubProjectPickerIndex));
 });
 el("contextHubManageProjects")?.addEventListener("click", () => {
   closeContextHubProjectPicker({ restoreFocus: false });
@@ -26681,6 +27033,7 @@ el("contextHubProjectPickerSearch")?.addEventListener("input", (event) => {
   if (state.sharedContextBusy) return;
   state.contextHubProjectPickerQuery = event.target.value;
   state.contextHubProjectPickerIndex = 0;
+  scheduleGotoSearch();
   renderContextHubProjectPicker();
 });
 el("contextHubProjectPickerSearch")?.addEventListener("keydown", (event) => {
@@ -26700,8 +27053,11 @@ el("contextHubProjectPickerSearch")?.addEventListener("keydown", (event) => {
   }
   if (event.key === "Enter" && choices.length) {
     event.preventDefault();
-    const project = choices[state.contextHubProjectPickerIndex] || null;
-    selectContextHubProjectPickerChoice(project?.projectKey || "");
+    activateContextHubProjectPickerIndex(state.contextHubProjectPickerIndex);
+  } else if (event.key === "Enter" && state.gotoSearch.loading) {
+    // Nothing to open yet: wait for the answer to this query. An older answer is never used.
+    event.preventDefault();
+    state.gotoSearch.pendingEnter = true;
   }
 });
 el("contextHubProjectPicker")?.addEventListener("keydown", (event) => {

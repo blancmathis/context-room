@@ -44,6 +44,8 @@ The logical group keeps shared product identity, display order, and one Shared b
 
 Context Room does not discover every Git worktree implicitly. A worktree appears after explicit registration, launch, or a confirmed import from Codex Desktop.
 
+The UI adds an existing folder with **Add a project…** (empty Hub welcome, empty Explorer, Manage projects). The folder must sit inside the Computer root and use no symbolic link. Context Room keeps an existing `.context-room/config.json`, infers one when it is missing, and never registers a known folder twice (`POST /api/context-hub/projects` with `existing: true` returns `alreadyRegistered`).
+
 ## Import from Codex Desktop
 
 The Hub can list the projects Codex Desktop already knows and register the ones you choose. It reads `~/.codex/.codex-global-state.json` (`local-projects`, in `project-order`) and nothing else from `~/.codex`. A project with several folders gives one row per folder.
@@ -102,7 +104,7 @@ The order is the manual project order, then the title. Attention, opening a proj
 and refreshes never reorder the list. The header shows local coverage, for example
 `1/7 local inspected`.
 
-⌘K (Ctrl+K) opens the project picker to go to a project: type, then press Enter.
+⌘K (Ctrl+K) opens "Go to": type, then press Enter. It lists projects, then Files (name or path matches) and In text (a word inside a file, with a short excerpt) from every local project, ignoring case and accents. Enter on a file opens it in its project. The server answers from `GET /api/context-hub/document-search?scope=all`, a read-only index that also covers files not reviewed yet.
 
 The active project and the Review Queue filter are separate scopes. Opening a
 project, in Explorer, with ⌘K or with Back and Forward, does not change the

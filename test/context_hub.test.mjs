@@ -4560,7 +4560,9 @@ test("Context Room keeps a 150-project registry complete in the live picker whil
   const bundle = contextRoomWebAssetBundle();
   assert.ok(Buffer.byteLength(html) < 100_000);
   assert.match(bundle.js, /visibleReviews = renderedReviews\.slice\(0, CONTEXT_HUB_HOME_REVIEW_LIMIT\)/);
-  assert.match(bundle.js, /choices: needle \|\| state\.contextHubProjectPickerPurpose === "open" \? projects : \[null, \.\.\.projects\]/);
+  // The live picker lists every matching project, uncut; "Go to" adds its document rows after them.
+  assert.match(bundle.js, /choices: needle \|\| state\.contextHubProjectPickerPurpose === "open" \? \[\.\.\.projects, \.\.\.gotoDocumentChoices\(\)\] : \[null, \.\.\.projects\]/);
+  assert.doesNotMatch(bundle.js, /projects\.slice\([^)]*\)[^;]*gotoDocumentChoices/);
   assert.match(bundle.js, /contextHubProjectPickerQuery = event\.target\.value/);
 });
 

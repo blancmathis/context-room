@@ -139,6 +139,7 @@ import {
   beginContextHubSnapshotRefreshIfFree,
   commitContextHubSnapshotAsync,
   contextHubHostRoot,
+  contextHubHome,
   contextHubRegistryLockPath,
   contextHubRepositoryIdentity,
   contextHubRegistrationWarning,
@@ -992,6 +993,7 @@ export function listMemoryFiles(root = process.cwd(), {
   settings: providedSettings = null,
   readOnly = false,
   expectedRootIdentity = null,
+  metadataOnly = false,
 } = {}) {
   const baseSettings = providedSettings || effectiveMemoryWebappSettings(root, { readOnly, expectedRootIdentity });
   const activeRepoRoots = sanitizePathList((externalRoots || []).filter((item) => !normalizeRelPath(String(item || "")).startsWith("~")))
@@ -1119,7 +1121,7 @@ export function listMemoryFiles(root = process.cwd(), {
       const abs = resolveExternalPath(file.path) || path.join(root, file.path);
       const exists = fs.existsSync(abs);
       const stats = exists ? fs.statSync(abs) : null;
-      const content = exists && stats.isFile() && stats.size <= MAX_FILE_BYTES
+      const content = !metadataOnly && exists && stats.isFile() && stats.size <= MAX_FILE_BYTES
         ? fs.readFileSync(abs, "utf8")
         : "";
       return {
@@ -2022,7 +2024,7 @@ export function withMemorySettingsScope(fn) {
   }
 }
 
-function effectiveMemoryWebappSettings(root = process.cwd(), { expectedRootIdentity = null, readOnly = false } = {}) {
+export function effectiveMemoryWebappSettings(root = process.cwd(), { expectedRootIdentity = null, readOnly = false } = {}) {
   if (!memorySettingsScope || !readOnly || expectedRootIdentity) return computeEffectiveMemoryWebappSettings(root, { expectedRootIdentity, readOnly });
   const key = String(root);
   if (!memorySettingsScope.has(key)) memorySettingsScope.set(key, computeEffectiveMemoryWebappSettings(root, { expectedRootIdentity, readOnly }));
@@ -13728,6 +13730,71 @@ export function createContextHubProject({ computerRoot, parent, folderName, titl
   }
 }
 
+function contextHubAddError(message, statusCode = 400) {
+  return Object.assign(new Error(message), { statusCode, code: "context_hub_project_add_failed" });
+}
+
+function realpathOfNearestExisting(target) {
+  let current = path.resolve(target);
+  const rest = [];
+  while (!pathEntryExists(current) && current !== path.dirname(current)) { rest.unshift(path.basename(current)); current = path.dirname(current); }
+  let real = current;
+  try { real = fs.realpathSync(current); } catch {}
+  return path.join(real, ...rest);
+}
+
+function contextHubSharedHomeForGuard() {
+  return process.env.CONTEXT_ROOM_SHARED_HOME
+    ? path.resolve(process.env.CONTEXT_ROOM_SHARED_HOME)
+    : path.join(process.env.HOME || os.homedir(), ".context-room", "shared");
+}
+
+function contextHubReviewAuthorityHomeForGuard() {
+  return path.resolve(process.env.CONTEXT_ROOM_REVIEW_AUTHORITY_HOME
+    || path.join(contextHubHome(), "review-authority"));
+}
+
+/** Adds a folder that already exists. An existing project config is kept; an already registered folder is never registered again. */
+export function addExistingContextHubProject({ computerRoot, path: folderPath, title = "" } = {}) {
+  const explorerRoot = path.resolve(String(computerRoot || ""));
+  const requested = String(folderPath || "").trim();
+  if (!requested || !path.isAbsolute(requested)) throw contextHubAddError("Enter an absolute folder path.");
+  const projectRoot = path.resolve(requested);
+  if (!pathEntryExists(explorerRoot) || !fs.statSync(explorerRoot).isDirectory()) {
+    throw contextHubAddError(`The Computer root is not a folder: ${explorerRoot}`, 409);
+  }
+  if (projectRoot !== explorerRoot && !projectRoot.startsWith(`${explorerRoot}${path.sep}`)) {
+    throw contextHubAddError("This folder is not inside the Computer root.");
+  }
+  if (!pathEntryExists(projectRoot)) throw contextHubAddError("Folder not found.");
+  if (projectPathHasSymlinkComponent(explorerRoot, projectRoot)) throw contextHubAddError("This path uses a symbolic link. Choose the real folder.");
+  if (!fs.statSync(projectRoot).isDirectory()) throw contextHubAddError("This path is not a folder.");
+  if (!projectPathIsContained(explorerRoot, projectRoot)) throw contextHubAddError("This folder is not inside the Computer root.");
+  const realRoot = fs.realpathSync(projectRoot);
+  if (projectRoot === explorerRoot) throw contextHubAddError("Choose a folder inside the whole Computer root, not the root itself.");
+  const realHome = realpathOfNearestExisting(os.homedir());
+  if (realRoot === realHome) throw contextHubAddError("Choose a folder inside your home folder, not the whole home folder.");
+  if (realHome.startsWith(`${realRoot}${path.sep}`)) throw contextHubAddError("Choose a folder inside your home folder, not one that contains it.");
+  // `~/.context-room` also holds registry backups, logs and operations, even when the Hub home is elsewhere.
+  const ownHomes = [path.join(os.homedir(), ".context-room"), contextHubHome(), contextHubHostRoot(), contextHubSharedHomeForGuard(), contextHubReviewAuthorityHomeForGuard()].map(realpathOfNearestExisting);
+  for (const own of ownHomes) {
+    if (realRoot === own || realRoot.startsWith(`${own}${path.sep}`) || own.startsWith(`${realRoot}${path.sep}`)) {
+      throw contextHubAddError("This folder belongs to Context Room itself, or holds its data.");
+    }
+  }
+  const stats = fs.statSync(realRoot);
+  const known = listContextHubProjects({ readOnly: true }).find((entry) => (
+    path.resolve(entry.root) === realRoot
+    || (entry.rootIdentity && Number(entry.rootIdentity.ino) === stats.ino && Number(entry.rootIdentity.dev) === stats.dev)
+  ));
+  if (known) return { projectRoot: realRoot, alreadyRegistered: true, registered: known };
+  const projectTitle = String(title || path.basename(realRoot)).trim().slice(0, 160) || path.basename(realRoot);
+  const configExists = pathEntryExists(path.join(realRoot, MEMORY_WEBAPP_SETTINGS));
+  const initialized = configExists ? null : initializeContextRoomProject(realRoot, { title: projectTitle });
+  const registered = registerContextHubProject(realRoot, { title: projectTitle });
+  return { projectRoot: registered.root, alreadyRegistered: false, initialized, registered };
+}
+
 // The Notebooks space: one registered root for notebooks that belong to no project yet.
 // Notebooks live under Carnets/ because allowedPaths only accepts folder prefixes.
 export const CONTEXT_HUB_NOTEBOOK_FOLDER = "Carnets/";
@@ -21328,7 +21395,28 @@ async function documentInspectionApiResult(root, url) {
   };
 }
 
+// "Go to" (⌘K): file names and file text across every registered local project. Read-only.
+let gotoProjectsCache = { at: 0, hub: "", projects: [] };
+async function gotoSearchApiResult(url) {
+  const { searchGoto, warmGotoSearch } = await import("./goto_search.mjs");
+  const startedAt = Date.now();
+  // The registry read stats every project: one read per 2 s, not one per keystroke.
+  const hub = process.env.CONTEXT_ROOM_HUB_HOME || "";
+  if (Date.now() - gotoProjectsCache.at > 2000 || gotoProjectsCache.hub !== hub) gotoProjectsCache = { at: Date.now(), hub, projects: listContextHubProjects({ readOnly: true }) };
+  const projects = gotoProjectsCache.projects;
+  if (url.searchParams.get("warm") === "1") {
+    warmGotoSearch(projects);
+    return { schemaVersion: "context-room.goto-search/1", warmed: true, files: [], text: [] };
+  }
+  const query = String(url.searchParams.get("query") || url.searchParams.get("q") || "").trim();
+  if (!query) throw sharedRequestError("query is required", 400, "document_search_query_required");
+  const limit = Math.min(100, Math.max(1, Number.parseInt(url.searchParams.get("limit") || "40", 10) || 40));
+  const result = await searchGoto(projects, query, { limit });
+  return { schemaVersion: "context-room.goto-search/1", query, ...result, elapsedMs: Date.now() - startedAt };
+}
+
 async function documentSearchApiResult(root, url) {
+  if (String(url.searchParams.get("scope") || "") === "all") return gotoSearchApiResult(url);
   const target = contextApiTarget(root, url);
   const query = String(url.searchParams.get("query") || url.searchParams.get("q") || "").trim();
   if (!query) throw sharedRequestError("query is required", 400, "document_search_query_required");
@@ -22596,6 +22684,28 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   if (req.method === "POST" && url.pathname === "/api/context-hub/projects") {
     const body = await readJsonBody(req);
     const preferences = readGlobalContextRoomPreferences(globalPreferencesPath);
+    if (body.existing === true) {
+      let added;
+      try {
+        added = addExistingContextHubProject({ computerRoot: preferences.explorer.computerRoot, path: body.path, title: body.title });
+      } catch (error) {
+        throw sharedRequestError(error.message, error.statusCode || 400, error.code || "context_hub_project_add_failed");
+      }
+      if (added.alreadyRegistered) {
+        sendJson(res, 200, { project: added.registered, projectRoot: added.projectRoot, alreadyRegistered: true });
+        return;
+      }
+      await markContextHubSnapshotStaleAsync();
+      const addedCatalog = await refreshContextHubSnapshot(root, { refreshShared: false, force: true });
+      appendContextRoomEvent("project.registered", {
+        projectId: added.registered.logicalProjectId || added.registered.id,
+        locationId: added.registered.id,
+        resource: { path: added.projectRoot },
+        data: { title: added.registered.title },
+      });
+      sendJson(res, 201, { project: added.registered, projectRoot: added.projectRoot, alreadyRegistered: false, catalog: addedCatalog });
+      return;
+    }
     let created;
     try {
       created = createContextHubProject({
@@ -23398,8 +23508,9 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       throw sharedRequestError("Choose a folder inside the configured Computer Explorer root", 403, "context_hub_computer_path_outside_root");
     }
     const showHiddenFiles = preferences.appearance.showHiddenFiles !== false;
+    const foldersOnly = url.searchParams.get("foldersOnly") === "1";
     const entries = fs.readdirSync(currentPath, { withFileTypes: true })
-      .filter((entry) => showHiddenFiles || !entry.name.startsWith("."))
+      .filter((entry) => (showHiddenFiles && !foldersOnly) || url.searchParams.get("hidden") === "1" || !entry.name.startsWith("."))
       .map((entry) => {
         const absolutePath = path.join(currentPath, entry.name);
         let kind = "other";
@@ -23409,7 +23520,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
           kind = stats.isDirectory() ? "directory" : stats.isFile() ? "file" : "other";
           bytes = stats.isFile() ? stats.size : 0;
         } catch {}
-        return { name: entry.name, path: absolutePath, kind, bytes };
+        return { name: entry.name, path: absolutePath, kind, bytes, symlink: entry.isSymbolicLink() };
       })
       .filter((entry) => entry.kind !== "other")
       .sort((left, right) => Number(right.kind === "directory") - Number(left.kind === "directory") || left.name.localeCompare(right.name, "fr"));
