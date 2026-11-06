@@ -44,6 +44,8 @@ The logical group keeps shared product identity, display order, and one Shared b
 
 Context Room does not discover every Git worktree implicitly. A worktree appears after explicit registration, launch, or a confirmed import from Codex Desktop.
 
+The UI adds an existing folder with **Add a project…** (empty Hub welcome, empty Explorer, Manage projects). The folder must sit inside the Computer root and use no symbolic link. Context Room keeps an existing `.context-room/config.json`, infers one when it is missing, and never registers a known folder twice (`POST /api/context-hub/projects` with `existing: true` returns `alreadyRegistered`).
+
 ## Import from Codex Desktop
 
 The Hub can list the projects Codex Desktop already knows and register the ones you choose. It reads `~/.codex/.codex-global-state.json` (`local-projects`, in `project-order`) and nothing else from `~/.codex`. A project with several folders gives one row per folder.
