@@ -139,6 +139,7 @@ import {
   beginContextHubSnapshotRefreshIfFree,
   commitContextHubSnapshotAsync,
   contextHubHostRoot,
+  contextHubHome,
   contextHubRegistryLockPath,
   contextHubRepositoryIdentity,
   contextHubRegistrationWarning,
@@ -13732,6 +13733,26 @@ function contextHubAddError(message, statusCode = 400) {
   return Object.assign(new Error(message), { statusCode, code: "context_hub_project_add_failed" });
 }
 
+function realpathOfNearestExisting(target) {
+  let current = path.resolve(target);
+  const rest = [];
+  while (!pathEntryExists(current) && current !== path.dirname(current)) { rest.unshift(path.basename(current)); current = path.dirname(current); }
+  let real = current;
+  try { real = fs.realpathSync(current); } catch {}
+  return path.join(real, ...rest);
+}
+
+function contextHubSharedHomeForGuard() {
+  return process.env.CONTEXT_ROOM_SHARED_HOME
+    ? path.resolve(process.env.CONTEXT_ROOM_SHARED_HOME)
+    : path.join(process.env.HOME || os.homedir(), ".context-room", "shared");
+}
+
+function contextHubReviewAuthorityHomeForGuard() {
+  return path.resolve(process.env.CONTEXT_ROOM_REVIEW_AUTHORITY_HOME
+    || path.join(contextHubHome(), "review-authority"));
+}
+
 /** Adds a folder that already exists. An existing project config is kept; an already registered folder is never registered again. */
 export function addExistingContextHubProject({ computerRoot, path: folderPath, title = "" } = {}) {
   const explorerRoot = path.resolve(String(computerRoot || ""));
@@ -13750,9 +13771,15 @@ export function addExistingContextHubProject({ computerRoot, path: folderPath, t
   if (!projectPathIsContained(explorerRoot, projectRoot)) throw contextHubAddError("This folder is not inside the Computer root.");
   const realRoot = fs.realpathSync(projectRoot);
   if (projectRoot === explorerRoot) throw contextHubAddError("Choose a folder inside the whole Computer root, not the root itself.");
-  if (realRoot === fs.realpathSync(os.homedir())) throw contextHubAddError("Choose a folder inside your home folder, not the whole home folder.");
-  const hostRoot = contextHubHostRoot();
-  if (realRoot === hostRoot || realRoot.startsWith(`${hostRoot}${path.sep}`)) throw contextHubAddError("This folder belongs to Context Room itself.");
+  const realHome = realpathOfNearestExisting(os.homedir());
+  if (realRoot === realHome) throw contextHubAddError("Choose a folder inside your home folder, not the whole home folder.");
+  if (realHome.startsWith(`${realRoot}${path.sep}`)) throw contextHubAddError("Choose a folder inside your home folder, not one that contains it.");
+  const ownHomes = [contextHubHome(), contextHubHostRoot(), contextHubSharedHomeForGuard(), contextHubReviewAuthorityHomeForGuard()].map(realpathOfNearestExisting);
+  for (const own of ownHomes) {
+    if (realRoot === own || realRoot.startsWith(`${own}${path.sep}`) || own.startsWith(`${realRoot}${path.sep}`)) {
+      throw contextHubAddError("This folder belongs to Context Room itself, or holds its data.");
+    }
+  }
   const stats = fs.statSync(realRoot);
   const known = listContextHubProjects({ readOnly: true }).find((entry) => (
     path.resolve(entry.root) === realRoot
@@ -23458,8 +23485,9 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       throw sharedRequestError("Choose a folder inside the configured Computer Explorer root", 403, "context_hub_computer_path_outside_root");
     }
     const showHiddenFiles = preferences.appearance.showHiddenFiles !== false;
+    const foldersOnly = url.searchParams.get("foldersOnly") === "1";
     const entries = fs.readdirSync(currentPath, { withFileTypes: true })
-      .filter((entry) => showHiddenFiles || !entry.name.startsWith("."))
+      .filter((entry) => (showHiddenFiles && !foldersOnly) || url.searchParams.get("hidden") === "1" || !entry.name.startsWith("."))
       .map((entry) => {
         const absolutePath = path.join(currentPath, entry.name);
         let kind = "other";
@@ -23469,7 +23497,7 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
           kind = stats.isDirectory() ? "directory" : stats.isFile() ? "file" : "other";
           bytes = stats.isFile() ? stats.size : 0;
         } catch {}
-        return { name: entry.name, path: absolutePath, kind, bytes };
+        return { name: entry.name, path: absolutePath, kind, bytes, symlink: entry.isSymbolicLink() };
       })
       .filter((entry) => entry.kind !== "other")
       .sort((left, right) => Number(right.kind === "directory") - Number(left.kind === "directory") || left.name.localeCompare(right.name, "fr"));

@@ -46,9 +46,14 @@ test("@smoke an empty Hub offers Add a project and an existing folder appears in
     await page.goto(hub.origin + "/?hub=1&view=hub");
     await expect(page.getByRole("heading", { name: "Add your first project" })).toBeVisible();
     await expect(page.getByText("No project matches this search.")).toHaveCount(0);
-    await page.getByRole("button", { name: "Add a project…" }).first().click();
+    await expect(page.getByRole("button", { name: "Add a project…" })).toHaveCount(1);
+    await expect(page.locator("#contextHubWelcome")).toContainText(".context-room settings folder");
+    await expect(page.locator("#contextHubWelcome")).not.toContainText("only reads");
+    await page.getByRole("button", { name: "Add a project…" }).click();
     const dialog = page.getByRole("dialog", { name: "Add a project" });
     await expect(dialog).toBeVisible();
+    await expect(dialog).not.toContainText("only reads");
+    await expect(dialog.getByLabel("Show hidden folders")).not.toBeChecked();
     await dialog.getByLabel("Folder", { exact: true }).fill(hub.folder);
     await dialog.getByLabel("Folder", { exact: true }).dispatchEvent("change");
     await expect(dialog.getByLabel("Project name")).toHaveValue("Existing Docs");
@@ -69,7 +74,7 @@ test("an empty Hub explains an error in plain words and Create a new folder stay
   const hub = await emptyHub();
   try {
     await page.goto(hub.origin + "/?hub=1&view=hub");
-    await page.getByRole("button", { name: "Add a project…" }).first().click();
+    await page.getByRole("button", { name: "Add a project…" }).click();
     const dialog = page.getByRole("dialog", { name: "Add a project" });
     await dialog.getByLabel("Folder", { exact: true }).fill("/definitely/not/inside");
     await dialog.getByRole("button", { name: "Add this folder" }).click();

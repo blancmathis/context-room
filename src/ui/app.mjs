@@ -3702,7 +3702,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
           <div class="docqa-grid">
             <section id="contextHubWelcome" class="context-hub-welcome" aria-labelledby="contextHubWelcomeHeading" hidden>
               <h2 id="contextHubWelcomeHeading">Add your first project</h2>
-              <p>Pick a folder that holds your docs. Context Room only reads it until you edit.</p>
+              <p>Pick a folder that holds your docs. Context Room adds a small .context-room settings folder to it.</p>
               <button class="file-action primary" type="button" data-add-project>Add a project…</button>
             </section>
             <section id="explorerViewPanel" class="docqa-panel explorer-view-panel" aria-label="Files" hidden></section>
@@ -8172,7 +8172,7 @@ function renderGlobalProjectExplorer() {
     : state.contextHub
       ? (allProjects.length || needle
         ? '<div class="global-project-explorer-empty">No project matches this search.</div>'
-        : '<div class="global-project-explorer-empty">No project yet.' + (IS_HOSTED_HUB ? '' : '<br><button class="file-action primary" type="button" data-add-project>Add a project…</button>') + '</div>')
+        : '<div class="global-project-explorer-empty">No project yet.' + (IS_HOSTED_HUB ? '' : ' Use “Add a project…” above.') + '</div>')
       : '<div class="global-project-explorer-empty">Loading projects…</div>');
 }
 
@@ -25147,10 +25147,10 @@ function showContextHubAddProjectDialog() {
   backdrop.className = "confirm-backdrop";
   backdrop.innerHTML = '<section class="confirm-dialog creation-dialog add-project-dialog" role="dialog" aria-modal="true" aria-label="Add a project">'
     + '<strong>Add a project</strong>'
-    + '<p>Pick a folder that already exists. Context Room only reads it until you edit.</p>'
+    + '<p>Pick a folder that already exists. Context Room adds a small .context-room settings folder to it.</p>'
     + '<form class="creation-dialog-form">'
     + '<label class="creation-dialog-field"><span>Folder</span><input name="path" type="text" spellcheck="false" autocomplete="off" placeholder="/Users/you/projects/atlas" required /></label>'
-    + '<div class="add-project-nav"><button class="file-action" type="button" data-add-project-up aria-label="Parent folder" title="Parent folder">↑</button><code data-add-project-here></code></div>'
+    + '<div class="add-project-nav"><button class="file-action" type="button" data-add-project-up aria-label="Parent folder" title="Parent folder">↑</button><code data-add-project-here></code><label class="add-project-hidden"><input type="checkbox" data-add-project-hidden /> Show hidden folders</label></div>'
     + '<ul class="add-project-list" aria-label="Folders" data-add-project-list></ul>'
     + '<label class="creation-dialog-field"><span>Project name</span><input name="title" type="text" placeholder="Folder name" /></label>'
     + '<div class="creation-dialog-status" role="status" aria-live="polite"></div>'
@@ -25162,6 +25162,7 @@ function showContextHubAddProjectDialog() {
   const list = backdrop.querySelector("[data-add-project-list]");
   const here = backdrop.querySelector("[data-add-project-here]");
   const up = backdrop.querySelector("[data-add-project-up]");
+  const hiddenToggle = backdrop.querySelector("[data-add-project-hidden]");
   const submit = backdrop.querySelector("[data-creation-submit]");
   const status = backdrop.querySelector(".creation-dialog-status");
   let closed = false;
@@ -25196,7 +25197,7 @@ function showContextHubAddProjectDialog() {
   const loadFolder = async (target) => {
     const token = ++loadToken;
     try {
-      const listing = await api("/api/context-hub/computer-explorer" + (target ? "?path=" + encodeURIComponent(target) : ""), { signal: controller.signal });
+      const listing = await api("/api/context-hub/computer-explorer?foldersOnly=1" + (hiddenToggle.checked ? "&hidden=1" : "") + (target ? "&path=" + encodeURIComponent(target) : ""), { signal: controller.signal });
       if (closed || token !== loadToken) return;
       status.textContent = "";
       pathInput.value = listing.current;
@@ -25205,7 +25206,7 @@ function showContextHubAddProjectDialog() {
       parentPath = listing.parent || "";
       up.disabled = !parentPath;
       if (!titleEdited) titleInput.value = listing.current === listing.root ? "" : listing.current.split(/[\\/]/).filter(Boolean).at(-1) || "";
-      const folders = (listing.entries || []).filter((entry) => entry.kind === "directory");
+      const folders = (listing.entries || []).filter((entry) => entry.kind === "directory" && !entry.symlink);
       list.innerHTML = folders.length
         ? folders.map((entry) => '<li><button type="button" data-add-project-folder="' + escapeHtml(entry.path) + '">' + escapeHtml(entry.name) + '</button></li>').join("")
         : '<li class="add-project-empty">No sub-folder here.</li>';
@@ -25216,7 +25217,8 @@ function showContextHubAddProjectDialog() {
   };
   backdrop.addEventListener("click", (event) => { if (event.target === backdrop) close(); });
   backdrop.querySelector("[data-creation-cancel]").addEventListener("click", () => close());
-  backdrop.querySelector("[data-add-project-new]").addEventListener("click", () => { close({ restoreFocus: false }); showContextHubCreateProjectDialog(); });
+  backdrop.querySelector("[data-add-project-new]").addEventListener("click", () => { close(); showContextHubCreateProjectDialog(); });
+  hiddenToggle.addEventListener("change", () => { void loadFolder(pathInput.value.trim()); });
   up.addEventListener("click", () => { if (parentPath) void loadFolder(parentPath); });
   list.addEventListener("click", (event) => {
     const button = event.target.closest("[data-add-project-folder]");
