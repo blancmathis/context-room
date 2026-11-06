@@ -127,6 +127,13 @@ test("@smoke a file that no longer exists says so and offers a way back; a real 
     await expect(page.getByText("Path not allowed")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Back to home" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
+    // F32: a calm empty state, not an error: UI font, neutral colour, only the path in monospace.
+    const calm = await page.locator("#viewer .file-load-state").evaluate((node) => {
+      const strong = getComputedStyle(node.querySelector("strong"));
+      const [r, g, b] = strong.color.match(/\d+/g).map(Number);
+      return { error: node.classList.contains("error"), role: node.getAttribute("role"), strongMono: /mono|menlo|courier/i.test(strong.fontFamily), strongRed: r - Math.max(g, b) > 40, codeMono: /mono|menlo/i.test(getComputedStyle(node.querySelector("code")).fontFamily) };
+    });
+    expect(calm, JSON.stringify(calm)).toEqual({ error: false, role: "status", strongMono: false, strongRed: false, codeMono: true });
     await page.getByRole("button", { name: "Back to home" }).click();
     await expect(page.locator("#contextHubProjectsPanel")).toBeVisible();
     await page.goto(open("notes/blob.bin"));
@@ -160,8 +167,8 @@ test("@smoke graph filters wrap inside the toolbar at 1440 px and stay tappable"
     await expect(page.locator("#graphPage")).toBeVisible();
     const geometry = await page.locator(".graph-filterbar").evaluate((bar) => {
       const box = bar.getBoundingClientRect();
-      const refresh = bar.querySelector("#graphRefresh").getBoundingClientRect();
-      return { overflowX: bar.scrollWidth - bar.clientWidth, refreshRight: refresh.right, barRight: box.right, wraps: getComputedStyle(bar).flexWrap };
+      const last = [...bar.children].at(-1).getBoundingClientRect();
+      return { overflowX: bar.scrollWidth - bar.clientWidth, refreshRight: last.right, barRight: box.right, wraps: getComputedStyle(bar).flexWrap };
     });
     expect(geometry.overflowX).toBeLessThanOrEqual(1);
     expect(geometry.refreshRight).toBeLessThanOrEqual(geometry.barRight - 8);
@@ -183,3 +190,39 @@ test("@a11y graph filter targets are at least 40 px on a touch device", async ({
     for (const height of heights) expect(height).toBeGreaterThanOrEqual(40);
   } finally { await context.close(); await closeHub(page, hub); }
 });
+
+test("@smoke counters use the singular for one item (source guard on nounCount)", async () => {
+  const source = fs.readFileSync(new URL("../../src/ui/app.mjs", import.meta.url), "utf8");
+  const bad = source.match(/[+] " (paths|agent paths|git names|sources|local files|proposals)"/g);
+  expect(bad).toBeNull();
+});
+
+for (const width of [1280, 1440]) {
+  test(`@smoke graph filter bar is one row at ${width} px and Refresh sits with Fit and List`, async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name.includes("mobile"), "touch devices use 44 px targets and may wrap; covered by the ux-endurance caps");
+    const hub = await fixture();
+    try {
+      await page.setViewportSize({ width, height: 900 });
+      const href = await openAlphaFile(page, hub.origin, "README.md");
+      await page.goto(href.toString());
+      await ready(page);
+      await page.locator("#graphLocal").click();
+      await expect(page.locator("#graphPage")).toBeVisible();
+      const geometry = await page.evaluate(() => {
+        const bar = document.querySelector(".graph-filterbar").getBoundingClientRect();
+        // A select narrower than its chosen option cuts the text ("All relatic"): measure the text it must show.
+        const context = document.createElement("canvas").getContext("2d");
+        const clipped = [...document.querySelectorAll(".graph-filterbar select")].filter((select) => {
+          const style = getComputedStyle(select);
+          context.font = style.fontSize + " " + style.fontFamily;
+          const text = select.options[select.selectedIndex].text;
+          return Math.ceil(context.measureText(text).width) + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) > select.clientWidth;
+        }).map((select) => select.options[select.selectedIndex].text);
+        return { children: [...document.querySelector(".graph-filterbar").children].map((c) => Math.round(c.getBoundingClientRect().width)).join(","), avail: bar.width, barHeight: bar.height, clipped, refreshInHeader: Boolean(document.querySelector(".graph-toolbar #graphRefresh")) };
+      });
+      expect(geometry.clipped, JSON.stringify(geometry)).toEqual([]);
+      expect(geometry.refreshInHeader).toBe(true);
+      expect(geometry.barHeight, JSON.stringify(geometry)).toBeLessThanOrEqual(46);
+    } finally { await closeHub(page, hub); }
+  });
+}

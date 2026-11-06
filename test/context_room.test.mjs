@@ -7070,7 +7070,7 @@ test("rendered app supports selectable file themes and colored markdown reading"
   assert.match(html, /Human verification remains yours/);
   assert.match(html, /title:\s*"Protect Git actions"/);
   assert.match(html, /title: showGlobalProjectPicker \? "Global review overview" : "Review rules"/);
-  assert.match(html, /status: globalReviewCounts\.local \+ " local files", scope: "All projects", body: renderGlobalProjectSettingsGate\("Watched documents and folder modes"\)/);
+  assert.match(html, /status: nounCount\(globalReviewCounts\.local, "local files"\), scope: "All projects", body: renderGlobalProjectSettingsGate\("Watched documents and folder modes"\)/);
   assert.match(html, /Select a local project in the Explorer\./);
   assert.doesNotMatch(html, /data-open-selected-project-settings/);
   assert.match(html, /function activeSettingsForPanel\(\)/);
