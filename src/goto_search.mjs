@@ -35,7 +35,9 @@ function startWorker() {
   if (worker) return worker;
   spawns += 1;
   const created = new Worker(workerUrl);
-  created.on("message", ({ id, result, error }) => {
+  created.on("message", ({ id, result, error, progress }) => {
+    // A worker that reports progress is busy, not hung: the silence timer starts again.
+    if (progress) { if (worker === created) for (const [pendingId, entry] of pending) { clearTimeout(entry.timer); entry.timer = armTimeout(pendingId); } return; }
     failures = 0;
     const entry = pending.get(id);
     if (!entry) return;
@@ -50,19 +52,25 @@ function startWorker() {
   return created;
 }
 
+// Only silence counts as a failure: the timer is armed again whenever the worker reports progress.
+function armTimeout(id) {
+  return setTimeout(() => {
+    const entry = pending.get(id);
+    if (!entry) return;
+    pending.delete(id);
+    entry.resolve({ failed: "timeout" });
+    // A worker that does not answer is hung (sync loop): replace it instead of feeding it more requests.
+    const hung = worker;
+    if (hung) { noteWorkerFailure(hung, "request timed out"); hung.terminate().catch(() => {}); }
+  }, requestTimeoutMs);
+}
+
 function request(payload) {
   if (!worker && Date.now() < backoffUntil) return Promise.resolve({ failed: "unavailable" });
   const id = nextId++;
   return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      pending.delete(id);
-      resolve({ failed: "timeout" });
-      // A worker that does not answer is hung (sync loop): replace it instead of feeding it more requests.
-      const hung = worker;
-      if (hung) { noteWorkerFailure(hung, "request timed out"); hung.terminate().catch(() => {}); }
-    }, requestTimeoutMs);
-    pending.set(id, { resolve, timer });
-    try { startWorker().postMessage({ id, ...payload }); } catch (error) { pending.delete(id); clearTimeout(timer); resolve({ failed: String(error?.message || error) }); }
+    pending.set(id, { resolve, timer: armTimeout(id) });
+    try { startWorker().postMessage({ id, ...payload }); } catch (error) { clearTimeout(pending.get(id)?.timer); pending.delete(id); resolve({ failed: String(error?.message || error) }); }
   });
 }
 

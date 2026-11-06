@@ -320,3 +320,69 @@ parentPort.on("message", ({ id }) => {
   assert.equal(second.failed, undefined, "after the back-off a new worker answers");
   assert.equal(gotoWorkerSpawnsForTests(), 2, "the hung worker was replaced");
 });
+
+test("Go to: overlapping builds (warm) never hold more than the global cap, and the cut is reported", async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-goto-overlap-"));
+  const projects = ["a", "b", "c"].map((name) => {
+    const root = path.join(base, name);
+    fs.mkdirSync(root, { recursive: true });
+    for (let i = 0; i < 100; i += 1) fs.writeFileSync(path.join(root, `f${i}.md`), `# F${i}\n${"x".repeat(1000)}\n`);
+    return { id: name, root, title: name, projectKey: `local:${name}` };
+  });
+  const engine = createGotoEngine({ maxTotalBytes: 30_000, listFiles: listDir, resolveFile: (root, rel) => path.join(root, rel) });
+  try {
+    engine.warm(projects);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.equal(engine.stats().bytes <= 30_000, true, `index bytes ${engine.stats().bytes} stay under the 30000 cap`);
+    const result = await engine.search(projects, "f1");
+    assert.equal(engine.stats().bytes <= 30_000, true, "still under the cap after a search");
+    assert.equal(result.truncated, true, "a project that was cut says Partial results");
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test("Go to: a worker that reports progress is not killed by the timeout", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-goto-slow-"));
+  const slow = path.join(base, "slow-worker.mjs");
+  fs.writeFileSync(slow, `import { parentPort } from "node:worker_threads";
+parentPort.on("message", ({ id }) => {
+  let n = 0;
+  const beat = setInterval(() => {
+    parentPort.postMessage({ progress: true });
+    if (++n === 8) { clearInterval(beat); parentPort.postMessage({ id, result: { terms: [], files: [], text: [], truncated: false, building: false, searchedProjects: 1, filesTotal: 0, textTotal: 0 } }); }
+  }, 100);
+});
+`);
+  await stopGotoSearchWorkerForTests();
+  setGotoWorkerUrlForTests(new URL(`file://${slow}`));
+  setGotoTimingsForTests({ timeoutMs: 300, backoffMs: 50 });
+  t.after(async () => { await stopGotoSearchWorkerForTests(); setGotoTimingsForTests(); setGotoWorkerUrlForTests(null); fs.rmSync(base, { recursive: true, force: true }); });
+  const reply = await searchGoto([{ id: "p", root: base, title: "p" }], "anything");
+  assert.equal(reply.failed, undefined, "800 ms of work with progress every 100 ms survives a 300 ms timeout");
+  assert.equal(gotoWorkerSpawnsForTests(), 1, "the worker was not replaced");
+});
+
+test("Go to palette: failure retries and 'building' retries share one budget and then stop", async () => {
+  const source = fs.readFileSync(new URL("../src/ui/app.mjs", import.meta.url), "utf8");
+  const start = source.indexOf("const GOTO_RETRY_BUDGET") >= 0 ? source.indexOf("const GOTO_RETRY_BUDGET") : source.indexOf("function scheduleGotoSearch");
+  const end = source.indexOf("function warmGotoSearch");
+  assert.equal(start > 0 && end > start, true, "palette code found");
+  const timers = [];
+  let calls = 0;
+  const answers = [{ failed: true, truncated: true }, { building: true, truncated: true }];
+  const state = { gotoSearch: { seq: 0, timer: null }, contextHubProjectPickerQuery: "notes", contextHubProjectPickerPurpose: "open", contextHubProjectPickerOpen: true };
+  const sandbox = {
+    state, IS_HOSTED_HUB: false, GOTO_MIN_QUERY: 2,
+    window: { clearTimeout: () => {}, setTimeout: (fn) => { timers.push(fn); return timers.length; } },
+    api: async () => answers[calls++ % 2],
+    renderContextHubProjectPicker: () => {}, contextHubProjectPickerChoices: () => ({ choices: [] }), activateContextHubProjectPickerIndex: () => {},
+  };
+  const vm = await import("node:vm");
+  vm.createContext(sandbox);
+  vm.runInContext(source.slice(start, end) + "\nthis.scheduleGotoSearch = scheduleGotoSearch;", sandbox);
+  sandbox.scheduleGotoSearch();
+  for (let guard = 0; timers.length && guard < 60; guard += 1) { await timers.shift()(); }
+  assert.equal(timers.length, 0, "the retries end");
+  assert.equal(calls <= 9, true, `at most 1 + 8 requests, got ${calls}`);
+  assert.equal(state.gotoSearch.truncated, true, "the palette says Partial results");
+  assert.equal(state.gotoSearch.exhausted, true, "the palette says it gave up");
+});

@@ -46,6 +46,9 @@ export function createGotoEngine({ listFiles, resolveFile, ...overrides }) {
   let clock = 0;
   // Projects of the current search/warm: they are never evicted for each other (that would be a cyclic scan).
   let protectedRoots = new Set();
+  // Builds run one at a time: each one then sees the real bytes held by the others, so the global cap holds.
+  let buildQueue = Promise.resolve();
+  const progress = () => { try { limits.onProgress?.(); } catch { /* a progress signal never breaks a build */ } };
 
   const totalBytes = () => { let sum = 0; for (const index of indexes.values()) sum += index.bytes; return sum; };
 
@@ -89,7 +92,9 @@ export function createGotoEngine({ listFiles, resolveFile, ...overrides }) {
 
   async function build(root, index) {
     const previous = index.builtAt ? { entries: index.entries } : null;
+    progress();
     const files = listFiles(root);
+    progress();
     const entries = new Map();
     // Make room first: drop the least recently used other projects until this one fits (or none is left to drop).
     let need = 0;
@@ -104,13 +109,21 @@ export function createGotoEngine({ listFiles, resolveFile, ...overrides }) {
       if (!file.exists || !cleanRel(rel)) continue;
       const prior = previous?.entries.get(rel);
       const unchanged = prior && prior.updatedAt === file.updatedAt && prior.bytes === file.bytes;
-      if (unchanged && (prior.read || file.bytes > limits.maxFileBytes)) { entries.set(rel, prior); bytes += prior.fold.length; continue; }
+      if (unchanged && (prior.read || file.bytes > limits.maxFileBytes)) {
+        // A kept entry still counts against the budget: when the others grew, drop its text and say so.
+        if (prior.fold.length > limits.maxTotalBytes - others - bytes) {
+          entries.set(rel, { ...prior, read: false, fold: "", title: prior.title, titleFold: prior.titleFold });
+          skipped = true;
+          continue;
+        }
+        entries.set(rel, prior); bytes += prior.fold.length; continue;
+      }
       const entry = readEntry(root, rel, file, limits.maxTotalBytes - others - bytes);
       if (!entry) continue;
       if (!entry.read && file.bytes <= limits.maxFileBytes) skipped = true;
       entries.set(rel, entry);
       bytes += entry.fold.length;
-      if (++reads % 40 === 0) await tick();
+      if (++reads % 40 === 0) { progress(); await tick(); }
     }
     index.entries = entries;
     index.bytes = bytes;
@@ -125,7 +138,8 @@ export function createGotoEngine({ listFiles, resolveFile, ...overrides }) {
     const previous = index || null;
     const holder = previous || { entries: new Map(), bytes: 0, builtAt: 0, used: ++clock, usedAt: Date.now(), building: null };
     if (!previous) indexes.set(root, holder);
-    const promise = build(root, holder).then(() => {
+    const run = () => build(root, holder);
+    const promise = (buildQueue = buildQueue.then(run, run)).then(() => {
       holder.building = null;
       evictFor(root);
       return holder;
