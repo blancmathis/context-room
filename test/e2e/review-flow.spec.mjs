@@ -255,3 +255,28 @@ test('@smoke review flow shows skipped documentation checks instead of an empty 
   await page.evaluate(() => { state.externalChange = null; });
   await bar.locator('[data-review-flow="stop"]').click();
 });
+
+// The proposal dialog asks a dropped checks run once more, then says the checks were skipped.
+test('@smoke proposal dialog retries a superseded checks run once, then shows the skipped note', async ({ page }) => {
+  const data = fixture();
+  await page.goto(`${data.origin}/?hub=1&view=hub`);
+  const result = await page.evaluate(async () => {
+    const { openLocalProposalReview } = await import('/assets/ui/local-proposal-review.mjs');
+    const calls = [];
+    const file = { path: 'docs/a.md', kind: 'modified', revision: 1, beforeBase64: btoa('old\n'), afterBase64: btoa('new\n'),
+      before: { mode: 0o644 }, after: { mode: 0o644 }, documentChecks: [], documentChecksPending: true };
+    const api = async (url) => {
+      if (url.includes('/api/docqa/document-checks')) { calls.push(url); return { documentChecks: [], documentChecksSuperseded: true }; }
+      if (url.includes('/api/docqa/local-proposal-file')) return file;
+      return null;
+    };
+    await openLocalProposalReview({ item: { type: 'local-proposal', proposalId: 'p1', title: 'Retry proposal', files: ['docs/a.md'] }, api, scopeKey: 'k', onChange: () => {} });
+    const deadline = Date.now() + 10_000;
+    const panel = () => document.querySelector('dialog.local-proposal-review .local-proposal-checks');
+    while (Date.now() < deadline && !(panel() && !panel().hidden && panel().textContent.includes('skipped'))) await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return { calls: calls.length, text: panel()?.textContent || '' };
+  });
+  expect(result.calls).toBe(2);
+  expect(result.text).toContain('Documentation checks were skipped');
+});

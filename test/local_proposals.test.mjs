@@ -292,6 +292,27 @@ test("a mode the agent set on a file it never received is kept and shown as a pe
   assert.equal(fs.statSync(path.join(root, "docs/run.md")).mode & 0o777, 0o755);
 });
 
+test("an agent under umask 002 does not cause a permissions change on files it never received", (t) => {
+  const { root, begin, edit } = fixture(t);
+  fs.writeFileSync(path.join(root, "docs/g.md"), "project g\n");
+  fs.chmodSync(path.join(root, "docs/g.md"), 0o644);
+  fs.writeFileSync(path.join(root, "docs/x.md"), "project x\n");
+  fs.chmodSync(path.join(root, "docs/x.md"), 0o644);
+  let proposal = begin();
+  const previous = process.umask(0o002);
+  try {
+    edit(proposal, "docs/g.md", "agent g\n");
+    fs.chmodSync(path.join(proposal.editRoot, "docs/g.md"), 0o664);
+    edit(proposal, "docs/x.md", "agent x\n");
+    fs.chmodSync(path.join(proposal.editRoot, "docs/x.md"), 0o775);
+  } finally { process.umask(previous); }
+  proposal = submitLocalProposal(root, proposal.id);
+  const change = (rel) => proposal.changes.find((entry) => entry.path === rel);
+  assert.equal(change("docs/g.md").after.mode & 0o777, 0o644, "664 is not a change Git tracks");
+  assert.equal(change("docs/g.md").before.mode, change("docs/g.md").after.mode);
+  assert.equal(change("docs/x.md").after.mode & 0o777, 0o775, "a real executable bit change is kept");
+});
+
 test("a rebased file the agent had is not described as unseen", (t) => {
   const { root, begin, edit } = fixture(t);
   let proposal = begin();
