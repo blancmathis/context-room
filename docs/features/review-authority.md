@@ -51,7 +51,17 @@ This is a behavioral authority rule. The command surface reinforces it by withho
 
 ## Owner-authorized scope
 
-Context Room stores the last owner-authorized review scope outside project configuration. Direct configuration changes that narrow the protected scope do not become effective automatically. They produce an authority issue until the owner saves the intended scope through the human Settings surface.
+Context Room stores the last owner-authorized review scope outside project configuration. Direct configuration changes that narrow the protected scope do not become effective automatically. They produce an authority issue (`doctor`: critical `review_authority_tamper`) until the owner saves the intended scope through the human Settings surface.
+
+Where the owner decides: Hub, project selected, **Settings** > tab **Review and trust** > card **Documents to review**, field **Watched documents and folders**, then **Save settings**. While configuration tries to reduce the scope, the card shows a notice that names the paths the configuration drops. The field still shows the owner-authorized (effective) scope:
+
+- Save with those paths still listed: they stay in review and the reduction is discarded. The status line says so.
+- Remove them first (by hand, or with the notice button **Remove them from the field**), then save: the reduction is signed and becomes effective.
+- Until the owner saves, the footer says **Your decision is needed** and **Save settings** stays enabled, even with an unchanged form.
+
+`init` and `setup --allow`, and both Settings save routes, refuse a scope path with a `.` or `..` segment (`.`, `./`, `..`, `docs/..`): it matches no file. A configuration edited by hand with such a path gets a high `review_scope_path_matches_nothing` issue in `doctor`.
+
+The first `init` without `--allow` puts every discovered document in the scope, Git-ignored ones included. It reports how many discovered documents Git ignores, and under which folders (`gitIgnoredDocumentation` with `init --format json`). Pass `--allow` on the first `init` to choose the scope.
 
 ## File review evidence
 
@@ -61,7 +71,7 @@ A changed hash, restored deletion, changed mode or changed proposal head invalid
 
 A review base write (`POST /api/docqa/review-baseline`) may carry `expectedContentHash`, the hash of the version the reviewer saw. When the file changed since, the write fails with 409 `review_revision_conflict` and the base stays as it was, so the newer change still shows in review. The review flow always sends it, because it saves decisions after the next file opens.
 
-A local proposal file closed by "Compare with current file" is not a decision. When the project file already holds the agent's version, or the file is deleted on both sides, nothing is left to decide: the proposal records the file in `settledFiles` (who: the human, via `compare-current`; when; why: `already-in-project` or `deleted-both-sides`), writes no file and no review evidence. The record is visible only when the human closes the file, and in `settledFiles` (stored with the proposal). A proposal whose files were all closed this way gets the status `settled`, never `accepted`, `rejected` or `resolved`. A `settled` proposal leaves the review queue.
+A local proposal file closed by "Compare with current file" is not a decision. When the project file already holds the agent's version, or the file is deleted on both sides, nothing is left to decide: the proposal records the file in `settledFiles` (who: the human, via `compare-current`; when; why: `already-in-project` or `deleted-both-sides`), writes no file and no review evidence. The record is stored with the proposal in `settledFiles`; the review queue item carries it and the proposal view shows it under "Closed without a decision" as soon as it opens. A proposal whose files were all closed this way gets the status `settled`, never `accepted`, `rejected` or `resolved`. A `settled` proposal leaves the review queue.
 
 ## Receipts and undo
 

@@ -860,6 +860,11 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
     .settings-concept { display: grid; gap: 7px; max-width: 76ch; padding: 2px 0 var(--space-2); }
     .settings-concept strong { color: var(--label-strong); font-size: 14px; line-height: 1.35; }
     .settings-concept p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
+    .review-scope-notice { display: grid; gap: 8px; margin: 0 0 var(--space-3); padding: 12px 14px; border: 1px solid var(--line); border-left: 4px solid var(--danger); border-radius: 8px; }
+    .review-scope-notice strong { color: var(--label-strong); font-size: 14px; line-height: 1.35; }
+    .review-scope-notice p { margin: 0; color: var(--text); font-size: 13px; line-height: 1.55; }
+    .review-scope-notice ul { margin: 0; padding-left: 18px; display: grid; gap: 2px; }
+    .review-scope-notice button { justify-self: start; min-height: 40px; }
     .settings-concept-help { min-width: 0; display: grid; justify-items: start; margin-top: 3px; }
     .settings-concept-help-button { min-height: 28px; display: inline-flex; align-items: center; gap: 7px; padding: 4px 9px 4px 7px; border: 1px solid var(--line); border-radius: 7px; background: transparent; color: var(--label-strong); font-family: inherit; font-size: 12px; font-weight: 650; line-height: 1.2; cursor: pointer; }
     .settings-concept-help-button:hover { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); background: color-mix(in srgb, var(--accent) 7%, transparent); }
@@ -18017,6 +18022,47 @@ function settingsDisclosureIsOpen(id) {
   return SETTINGS_DISCLOSURE_DEFAULTS[id] !== false;
 }
 
+function reviewScopePathKey(value) {
+  return String(value || "").trim().replace(/^\.\//, "").replace(/\/+$/, "");
+}
+
+// Project configuration tried to reduce the owner-authorized review scope. The field still shows the effective
+// (owner) scope, so say it, name the paths, and let the owner remove them before Save settings.
+function renderReviewScopeNotice(notice, watchAllow = []) {
+  if (!notice) return "";
+  const paths = Array.isArray(notice.paths) ? notice.paths : [];
+  const inField = new Set((watchAllow || []).map(reviewScopePathKey));
+  const removable = paths.filter((item) => inField.has(reviewScopePathKey(item)));
+  const list = paths.length ? '<ul>' + paths.map((item) => '<li><code>' + escapeHtml(item) + '</code></li>').join("") + '</ul>' : "";
+  if (notice.damaged && !paths.length) {
+    return '<div class="review-scope-notice" role="alert" data-review-scope-notice><strong>Owner review authority needs your confirmation.</strong><p>The signed review scope could not be fully verified. The field below shows the last scope Context Room could recover, and it stays in effect. Check it, then Save settings to sign it again.</p></div>';
+  }
+  return '<div class="review-scope-notice" role="alert" data-review-scope-notice>' +
+    '<strong>Project configuration tries to stop reviewing ' + (paths.length === 1 ? 'this path' : paths.length + ' paths') + '.</strong>' +
+    list +
+    '<p>The field below still shows the scope you approved, and it stays in effect. Save settings with these paths still listed and they stay in review: the reduction is discarded. To accept the reduction, remove them from the field' + (paths.length > removable.length ? ' and from the folder watch modes' : '') + ', then Save settings.</p>' +
+    (removable.length ? '<button class="secondary" type="button" data-apply-review-scope-reduction="' + escapeHtml(JSON.stringify(removable)) + '">Remove ' + (removable.length === 1 ? 'it' : 'them') + ' from the field</button>' : '') +
+  '</div>';
+}
+
+function applyReviewScopeReductionToField(button) {
+  let paths = [];
+  try { paths = JSON.parse(button.dataset.applyReviewScopeReduction || "[]"); } catch { paths = []; }
+  const field = el("watchAllow");
+  if (!field || !paths.length) return;
+  const drop = new Set(paths.map(reviewScopePathKey));
+  field.value = field.value.split("\n").filter((line) => !drop.has(reviewScopePathKey(line))).join("\n");
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+  setStatus("removed from the field: " + paths.join(", ") + " · Save settings to accept the reduction");
+}
+
+// Paths the configuration tried to remove but the owner kept in the field: a save keeps them in review.
+function reviewScopePathsKeptBySave(notice, watchAllow = []) {
+  const paths = Array.isArray(notice?.paths) ? notice.paths : [];
+  const inField = new Set((watchAllow || []).map(reviewScopePathKey));
+  return paths.filter((item) => inField.has(reviewScopePathKey(item)));
+}
+
 function renderSettingsDisclosure({ id, title, copy, status = "", scope = "", body = "", trackDirty = false } = {}) {
   const safeId = SETTINGS_DISCLOSURE_IDS.includes(id) ? id : slugifyUiId(id || title);
   const open = settingsDisclosureIsOpen(safeId) ? " open" : "";
@@ -18047,15 +18093,19 @@ function updateSettingsSaveState() {
   const count = state.settingsDirtyGroups.size;
   const holder = el("settingsSaveState");
   const button = el("saveSettings");
+  // A pending raw scope reduction needs one Save from the owner, even with an unchanged form (keep it or reduce it).
+  const scopeDecision = Boolean(el("watchAllow") && activeSettingsForPanel()?.reviewScopeNotice);
   if (holder) {
-    holder.dataset.dirty = String(count > 0);
+    holder.dataset.dirty = String(count > 0 || scopeDecision);
     holder.innerHTML = count
       ? '<strong>Unsaved changes</strong><span>' + count + ' setting group' + (count === 1 ? '' : 's') + ' changed</span>'
-      : '<strong>All changes saved</strong><span>Project settings and global preferences are up to date.</span>';
+      : scopeDecision
+        ? '<strong>Your decision is needed</strong><span>Documents to review: keep the scope shown or remove the paths, then Save settings.</span>'
+        : '<strong>All changes saved</strong><span>Project settings and global preferences are up to date.</span>';
   }
   const selected = selectedGlobalProjectSettingsContext();
   const validating = Boolean(selected.key && selected.payload && !state.globalProjectSettingsValidated.has(selected.key));
-  if (button) button.disabled = count === 0 || validating;
+  if (button) button.disabled = (count === 0 && !scopeDecision) || validating;
 }
 
 function refreshSettingsDirtyGroup(group) {
@@ -19153,6 +19203,7 @@ function renderSettingsPanel() {
   const selectedProjectPill = IS_GLOBAL_CONTEXT_ROOM && selectedSettings.project ? selectedSettings.project.title || selectedSettings.project.id : "";
   const watchAllow = (settings.watchAllow || []).join("\n");
   const watchRules = settings.watchRules || [];
+  const reviewScopeNoticeMarkup = renderReviewScopeNotice(settings.reviewScopeNotice, settings.watchAllow || []);
   const watchRulesMarkup = watchRules.length
     ? '<div class="watch-rule-list">' + watchRules.map((rule) => {
         const option = WATCH_RULE_MODE_OPTIONS.find((item) => item.id === rule.mode);
@@ -19235,7 +19286,8 @@ function renderSettingsPanel() {
     body: showGlobalProjectPicker ? globalReviewBody : '<div class="settings-concept"><strong>Every watched version needs human verification.</strong><p>A document remains in the queue until its current content hash is verified. Git adds a diff when available, but never decides whether the document is already reviewed.</p></div><div class="settings-disclosure-list">' +
     reviewCleanupDisclosure + agentCliGuideDisclosure +
     snoozedReviewDisclosure +
-    renderSettingsDisclosure({ id: "review-documents", title: "Documents to review", copy: "Choose files and folders whose current versions require human verification.", status: watchCount + " watched", scope: "Project", trackDirty: true, body:
+    renderSettingsDisclosure({ id: "review-documents", title: "Documents to review", copy: "Choose files and folders whose current versions require human verification.", status: settings.reviewScopeNotice ? "Needs your decision" : watchCount + " watched", scope: "Project", trackDirty: true, body:
+      reviewScopeNoticeMarkup +
       '<div class="settings-grid">' +
         '<div class="settings-field large"><label for="watchAllow">Watched documents and folders</label><span class="settings-field-note">One path per line. Every current content version stays in review until a person verifies it. Folder entries use the recursive current-and-future default.</span><textarea id="watchAllow" placeholder="docs/&#10;website/docs/">' + escapeHtml(watchAllow) + '</textarea></div>' +
         '<div class="settings-field large"><label>Folder watch modes</label><span class="settings-field-note">Your agent can add or widen one explicit rule with <code>context-room watch set &lt;path&gt; --mode &lt;mode&gt;</code>. Only you can narrow or remove review coverage here in Settings. Human verification remains yours.</span>' + watchRulesMarkup + '</div>' +
@@ -19389,6 +19441,7 @@ function renderSettingsPanel() {
   }
   wireShortcutRecorder();
   holder.querySelectorAll("[data-remove-watch-rule]").forEach((button) => button.addEventListener("click", () => removeWatchRuleFromSettings(button.dataset.removeWatchRule).catch((error) => setStatus(error.message))));
+  holder.querySelectorAll("[data-apply-review-scope-reduction]").forEach((button) => button.addEventListener("click", () => applyReviewScopeReductionToField(button)));
   previewSelectedFileTheme();
   wireSettingsDirtyTracking(holder);
   holder.querySelector('[data-owner-device-settings]')?.addEventListener('click', () => import('/assets/connected-devices.mjs').then(module => module.openOwnerDeviceSettings(api)).catch(error => setStatus(error.message)));
@@ -19726,7 +19779,7 @@ async function removeWatchRuleFromSettings(relPath) {
   await refreshAfterWatchMutation(result.settings, "folder watch rule removed");
 }
 
-async function saveGlobalContextRoomSettings({ projectSettings, reviewGate, appearance, shortcuts, sounds, explorer }) {
+async function saveGlobalContextRoomSettings({ projectSettings, reviewGate, appearance, shortcuts, sounds, explorer, keptScopeNote = "" }) {
   const selected = selectedGlobalProjectSettingsContext();
   const requests = [api("/api/context-hub/preferences", {
     method: "POST",
@@ -19762,7 +19815,7 @@ async function saveGlobalContextRoomSettings({ projectSettings, reviewGate, appe
   const hookWarning = projectResult?.hooks?.conflicts?.length
     ? " · custom hooks need manual wiring: " + projectResult.hooks.conflicts.join(", ")
     : projectResult?.hooks?.unavailable ? " · " + projectResult.hooks.unavailable : "";
-  setStatus((projectResult ? "project settings saved" : "global preferences saved") + hookWarning);
+  setStatus((projectResult ? "project settings saved" + keptScopeNote : "global preferences saved") + hookWarning);
   workspaceUpdate("settings-saved");
   flashSavedButton(el("saveSettings"), "Saved");
   scheduleSessionStatePush();
@@ -19771,6 +19824,8 @@ async function saveGlobalContextRoomSettings({ projectSettings, reviewGate, appe
 async function saveSettings() {
   const activeSettings = activeSettingsForPanel();
   const watchAllow = linesFromTextarea("watchAllow");
+  const keptScopePaths = el("watchAllow") ? reviewScopePathsKeptBySave(activeSettings?.reviewScopeNotice, watchAllow) : [];
+  const keptScopeNote = keptScopePaths.length ? " · still in review, reduction discarded: " + keptScopePaths.join(", ") : "";
   const reviewGate = {
     operations: [...document.querySelectorAll("[data-review-gate-operation]:checked")].map((input) => input.value),
   };
@@ -19834,6 +19889,7 @@ async function saveSettings() {
         shortcuts,
         sounds,
         explorer,
+        keptScopeNote,
       });
       return;
     }
@@ -19890,7 +19946,7 @@ async function saveSettings() {
     const hookWarning = reviewGateResult.hooks?.conflicts?.length
       ? " · custom hooks need manual wiring: " + reviewGateResult.hooks.conflicts.join(", ")
       : reviewGateResult.hooks?.unavailable ? " · " + reviewGateResult.hooks.unavailable : "";
-    setStatus("settings saved" + hookWarning);
+    setStatus("settings saved" + keptScopeNote + hookWarning);
     workspaceUpdate("settings-saved");
     flashSavedButton(el("saveSettings"), "Saved");
     scheduleSessionStatePush();

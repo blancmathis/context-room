@@ -2072,12 +2072,35 @@ if (command === "init") {
     console.error(`Context Room initialization failed: ${error.message}`);
     process.exit(1);
   }
+  if (!process.env.NODE_TEST_CONTEXT) registerContextHubProject(root, { title: args.title });
+  const ignored = result.gitIgnoredDocumentation;
+  const ignoredAdvice = ignored?.count
+    ? `They are in the review scope. To leave them out of this project, remove their folders in the Hub: Settings > Review and trust > Documents to review, then Save settings. On a new project, pass --allow with only the folders and files to review on the first init, for example: context-room init --allow docs/,README.md`
+    : "";
+  if (args.format === "json") {
+    writeStdout(JSON.stringify({
+      ok: true,
+      configPath: result.configPath,
+      discoverySkipped: result.discoverySkipped,
+      documentationDiscovered: result.discoverySkipped ? null : result.documentationPaths.length,
+      gitIgnoredDocumentation: ignored ? { ...ignored, advice: ignoredAdvice } : null,
+      allowedPaths: result.config.allowedPaths,
+      watchedPaths: result.config.watchAllow.length,
+      hubSections: result.config.hubSections.length,
+      agentContextPath: result.agentContextPath,
+    }, null, 2));
+    process.exit(0);
+  }
   console.log(`Context Room initialized: ${result.configPath}`);
   if (result.discoverySkipped) console.log("Documentation discovery skipped: the existing configuration was preserved.");
   else console.log(`Documentation discovered: ${result.documentationPaths.length}`);
+  if (ignored?.count) {
+    const folders = ignored.folders.map((item) => `${item.path} (${item.count})`).join(", ") + (ignored.moreFolders ? `, and ${ignored.moreFolders} more folders` : "");
+    console.log(`Ignored by Git: ${ignored.count} of the discovered documents, under ${folders}.`);
+    console.log(ignoredAdvice);
+  }
   console.log(`Watched paths: ${result.config.watchAllow.length}`);
   console.log(`Hub sections: ${result.config.hubSections.length}`);
-  if (!process.env.NODE_TEST_CONTEXT) registerContextHubProject(root, { title: args.title });
   console.log(`Agent setup guide: ${result.agentContextPath}`);
   console.log(`Agent next step: read ${JSON.stringify(result.agentContextPath)} and follow its setup checklist.`);
   console.log(`Run: context-room setup --root ${quotedCliValue(root)}`);

@@ -68,6 +68,7 @@ import {
   buildAgentBrief,
   buildAgentReviewQueue,
   buildContextRoomDoctorReport,
+  ownerReviewScopeNotice,
   buildContextRoomReports,
   buildDeletedReviewBatch,
   buildDocQaReport,
@@ -2275,6 +2276,62 @@ test("raw config narrowing fails closed until the human owner explicitly saves t
   assert.equal(ownerReduced.startupContext.enabled, false);
   assert.equal(ownerReduced.startupSkills.enabled, false);
   assert.equal(buildContextRoomDoctorReport(root).issues.some((issue) => issue.type === "review_authority_tamper"), false);
+});
+
+test("Settings names a pending raw scope reduction and refuses dead scope paths", async (t) => {
+  const root = makeRoot();
+  const hubHome = makeRoot();
+  const previousHubHome = process.env.CONTEXT_ROOM_HUB_HOME;
+  process.env.CONTEXT_ROOM_HUB_HOME = hubHome;
+  t.after(() => {
+    if (previousHubHome === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
+    else process.env.CONTEXT_ROOM_HUB_HOME = previousHubHome;
+  });
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.mkdirSync(path.join(root, "notes"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs", "guide.md"), "# Guide\n");
+  fs.writeFileSync(path.join(root, "notes", "n.md"), "# Note\n");
+  initializeContextRoomProject(root, { allowedPaths: ["docs/", "notes/"], watchAllow: ["docs/", "notes/"] });
+  assert.equal(ownerReviewScopeNotice(root), null);
+
+  const configPath = path.join(root, CONFIG_FILE);
+  const narrowed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  narrowed.watchAllow = ["docs/"];
+  fs.writeFileSync(configPath, JSON.stringify(narrowed, null, 2) + "\n");
+  const notice = ownerReviewScopeNotice(root);
+  assert.ok(notice.fields.includes("watchAllow"));
+  assert.ok(notice.paths.includes("notes/"));
+
+  const room = createMemoryServer({ root });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => room.server.close(resolve)));
+  const base = `http://127.0.0.1:${room.server.address().port}`;
+  const current = await (await fetch(`${base}/api/settings`)).json();
+  assert.ok(current.settings.reviewScopeNotice.paths.includes("notes/"), "Settings sees the pending reduction");
+  assert.ok(current.settings.watchAllow.includes("notes/"), "the signed scope stays effective");
+
+  const headers = { "content-type": "application/json", "x-context-room-owner-nonce": room.ownerMutationNonce };
+  for (const field of ["watchAllow", "allowedPaths"]) {
+    const response = await fetch(`${base}/api/settings`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ settings: { ...narrowed, [field]: ["docs/", ".."] } }),
+    });
+    assert.equal(response.status, 400);
+    const body = await response.json();
+    assert.equal(body.code, "review_scope_path_invalid");
+    assert.match(body.error, new RegExp(`${field} cannot be "\\.\\."`));
+  }
+  assert.ok(ownerReviewScopeNotice(root).paths.includes("notes/"), "a refused save signs nothing");
+
+  const saved = await fetch(`${base}/api/settings`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ settings: { ...narrowed, reviewScopeNotice: notice } }),
+  });
+  assert.equal(saved.status, 200);
+  assert.equal(ownerReviewScopeNotice(root), null);
+  assert.equal(readResolvedContextRoomSettings(root).watchAllow.includes("notes/"), false);
 });
 
 test("startup context API opens files from the last owner-authorized scope after raw narrowing", async (t) => {
@@ -9257,9 +9314,73 @@ test("initializeContextRoomProject refuses allowedPaths '.' and './' instead of 
   try {
     fs.mkdirSync(path.join(project, "docs"));
     fs.writeFileSync(path.join(project, "docs/a.md"), "# a\n");
-    for (const value of [".", "./", ".//"]) {
+    for (const value of [".", "./", ".//", "..", "../", "docs/..", "docs/./a.md", " .. "]) {
       assert.throws(() => initializeContextRoomProject(project, { title: "Dot", allowedPaths: [value] }), /allowedPaths cannot be/);
     }
+    assert.throws(() => initializeContextRoomProject(project, { title: "Dot", allowedPaths: ["docs/"], watchAllow: [".."] }), /watchAllow cannot be/);
     assert.equal(fs.existsSync(path.join(project, ".context-room/config.json")), false, "nothing is saved");
   } finally { fs.rmSync(project, { recursive: true, force: true }); }
+});
+
+test("doctor flags a hand-edited scope path with '.' or '..' instead of saying OK", (t) => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-dead-scope-"));
+  const hubHome = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-dead-scope-hub-"));
+  const previousHubHome = process.env.CONTEXT_ROOM_HUB_HOME;
+  process.env.CONTEXT_ROOM_HUB_HOME = hubHome;
+  t.after(() => {
+    if (previousHubHome === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
+    else process.env.CONTEXT_ROOM_HUB_HOME = previousHubHome;
+    fs.rmSync(project, { recursive: true, force: true });
+    fs.rmSync(hubHome, { recursive: true, force: true });
+  });
+  fs.mkdirSync(path.join(project, "docs"));
+  fs.writeFileSync(path.join(project, "docs/a.md"), "# a\n");
+  initializeContextRoomProject(project, { allowedPaths: ["docs/"], watchAllow: ["docs/"] });
+  assert.equal(buildContextRoomDoctorReport(project).issues.some((issue) => issue.type === "review_scope_path_matches_nothing"), false);
+  const configPath = path.join(project, CONFIG_FILE);
+  const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  config.allowedPaths.push(".", "..");
+  config.watchAllow.push(".");
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+  const issues = buildContextRoomDoctorReport(project).issues.filter((issue) => issue.type === "review_scope_path_matches_nothing");
+  assert.equal(issues.length, 3);
+  assert.ok(issues.every((issue) => issue.severity === "high"));
+  const allowed = issues.filter((issue) => /allowedPaths entry/.test(issue.message));
+  const watched = issues.filter((issue) => /watchAllow entry/.test(issue.message));
+  assert.deepEqual(allowed.map((issue) => issue.path).sort(), [".", ".."]);
+  assert.deepEqual(watched.map((issue) => issue.path), ["."]);
+  assert.match(watched[0].message, /Settings > Review and trust > Documents to review/);
+});
+
+test("first init without --allow reports how many discovered documents Git ignores, and where", (t) => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-ignored-docs-"));
+  const hubHome = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-ignored-docs-hub-"));
+  const previousHubHome = process.env.CONTEXT_ROOM_HUB_HOME;
+  process.env.CONTEXT_ROOM_HUB_HOME = hubHome;
+  t.after(() => {
+    if (previousHubHome === undefined) delete process.env.CONTEXT_ROOM_HUB_HOME;
+    else process.env.CONTEXT_ROOM_HUB_HOME = previousHubHome;
+    fs.rmSync(project, { recursive: true, force: true });
+    fs.rmSync(hubHome, { recursive: true, force: true });
+  });
+  execFileSync("git", ["init", "-q"], { cwd: project });
+  fs.writeFileSync(path.join(project, ".gitignore"), "docs/\n");
+  fs.writeFileSync(path.join(project, "README.md"), "# Readme\n");
+  fs.mkdirSync(path.join(project, "docs"));
+  for (const name of ["a", "b", "c"]) fs.writeFileSync(path.join(project, `docs/${name}.md`), `# ${name}\n`);
+  const result = initializeContextRoomProject(project);
+  assert.equal(result.documentationPaths.length, 4);
+  assert.deepEqual(result.gitIgnoredDocumentation, { count: 3, folders: [{ path: "docs/", count: 3 }], moreFolders: 0 });
+  assert.ok(result.config.allowedPaths.includes("docs/"), "ignored documents stay in the scope");
+
+  const second = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-ignored-docs-allow-"));
+  t.after(() => fs.rmSync(second, { recursive: true, force: true }));
+  execFileSync("git", ["init", "-q"], { cwd: second });
+  fs.writeFileSync(path.join(second, "README.md"), "# Readme\n");
+  assert.equal(initializeContextRoomProject(second, { allowedPaths: ["README.md"] }).gitIgnoredDocumentation, null, "--allow chose the scope");
+  const outsideGit = fs.mkdtempSync(path.join(os.tmpdir(), "context-room-ignored-docs-nogit-"));
+  t.after(() => fs.rmSync(outsideGit, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(outsideGit, "README.md"), "# Readme\n");
+  const outside = initializeContextRoomProject(outsideGit).gitIgnoredDocumentation;
+  assert.ok(outside === null || outside.count === 0);
 });

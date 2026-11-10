@@ -4290,6 +4290,74 @@ test("a preference saved in the same click does not make the project settings sa
   assert.equal(JSON.parse(projectSaveText).settings.appearance.fileTheme, "dracula");
 });
 
+test("Hub project settings name a pending raw scope reduction and let the owner keep or confirm it", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-settings-scope-notice-"));
+  withHubHome(t, path.join(base, "hub"));
+  const hostRoot = makeProject(base, "Host project");
+  const targetRoot = makeProject(base, "Target project");
+  const target = registerContextHubProject(targetRoot);
+  registerContextHubProject(hostRoot);
+  const room = createMemoryServer({ root: hostRoot, globalPreferencesPath: path.join(base, "preferences.json") });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const headers = { "content-type": "application/json", "x-context-room-project": room.projectId, "x-context-room-owner-nonce": room.ownerMutationNonce };
+  const settingsUrl = origin + "/api/context-hub/project-settings?projectId=" + encodeURIComponent(target.id);
+  const { buildContextRoomDoctorReport } = await import("../src/context_room.mjs");
+  const configPath = path.join(targetRoot, ".context-room", "config.json");
+  const reduceRaw = () => {
+    const raw = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    raw.watchAllow = ["docs/README.md"];
+    fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + "\n");
+  };
+  const formFields = (settings, watchAllow = settings.watchAllow) => ({
+    watchAllow,
+    watchRules: settings.watchRules || [],
+    startupContext: settings.startupContext,
+    startupSkills: settings.startupSkills,
+    startupHooks: settings.startupHooks,
+  });
+  const tamper = () => buildContextRoomDoctorReport(targetRoot, { readOnly: true }).issues.some((issue) => issue.type === "review_authority_tamper");
+
+  assert.equal((await (await fetch(settingsUrl)).json()).settings.reviewScopeNotice, null);
+  reduceRaw();
+  assert.equal(tamper(), true);
+  const pending = await (await fetch(settingsUrl)).json();
+  assert.ok(pending.settings.reviewScopeNotice.paths.includes("docs/"), "the form says the reduction waits for the owner");
+  assert.ok(pending.settings.watchAllow.includes("docs/"), "the signed scope stays effective");
+
+  const dead = await fetch(origin + "/api/context-hub/project-settings", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ projectId: target.id, expectedRevision: pending.revision, settings: formFields(pending.settings, ["docs/", "."]) }),
+  });
+  assert.equal(dead.status, 400);
+  assert.equal((await dead.json()).code, "review_scope_path_invalid");
+
+  const keep = await fetch(origin + "/api/context-hub/project-settings", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ projectId: target.id, expectedRevision: pending.revision, settings: formFields(pending.settings) }),
+  });
+  assert.equal(keep.status, 200, await keep.clone().text());
+  assert.equal((await keep.json()).settings.reviewScopeNotice, null);
+  assert.ok(readMemoryWebappSettings(targetRoot).watchAllow.includes("docs/"), "saving the shown scope keeps it and drops the reduction");
+  assert.equal(tamper(), false);
+
+  reduceRaw();
+  const again = await (await fetch(settingsUrl)).json();
+  const confirm = await fetch(origin + "/api/context-hub/project-settings", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ projectId: target.id, expectedRevision: again.revision, settings: formFields(again.settings, ["docs/README.md"]) }),
+  });
+  assert.equal(confirm.status, 200, await confirm.clone().text());
+  const confirmed = await (await fetch(settingsUrl)).json();
+  assert.equal(confirmed.settings.reviewScopeNotice, null);
+  assert.deepEqual(confirmed.settings.watchAllow, ["docs/README.md"]);
+  assert.equal(tamper(), false);
+});
+
 test("turning on agent instructions in project settings keeps the project healthy", async (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-settings-instructions-"));
   withHubHome(t, path.join(base, "hub"));
