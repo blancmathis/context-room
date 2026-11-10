@@ -6405,7 +6405,7 @@ function gitIndexStateForReviewPath(root, relPath) {
   }
 }
 
-function gitIndexStatesForReviewPaths(root, relPaths, resources = null) {
+function gitIndexStatesForReviewPaths(root, relPaths, resources = null, { readContent = true } = {}) {
   const repositoryRoot = gitTopLevelRoot(root);
   const normalizedPaths = [...new Set(relPaths.map((relPath) => normalizeRelPath(relPath)).filter(Boolean))];
   if (!repositoryRoot) return new Map(normalizedPaths.map((relPath) => [relPath, null]));
@@ -6484,7 +6484,7 @@ function gitIndexStatesForReviewPaths(root, relPaths, resources = null) {
       const stagedAgainstHead = unmerged
         || Boolean(stageZero) !== Boolean(head)
         || Boolean(stageZero && head && (stageZero.mode !== head.mode || stageZero.oid !== head.oid));
-      const current = stageZero ? resources?.get(relPath) || readSharedWorkspaceResource(root, relPath) : null;
+      const current = stageZero && readContent ? resources?.get(relPath) || readSharedWorkspaceResource(root, relPath) : null;
       const currentBlobOid = current?.state === "present"
         ? createHash(objectFormat).update(`blob ${current.bytes.length}\0`).update(current.bytes).digest("hex")
         : "";
@@ -6508,6 +6508,58 @@ function gitIndexStatesForReviewPaths(root, relPaths, resources = null) {
     unavailable.cause = error;
     throw unavailable;
   }
+}
+
+// A review snapshot (docqa report, documentation navigation) checks the Git
+// index of every reviewed file. One `git ls-files` + `git ls-tree` per file
+// made each acceptance slow down the next one (B2, audit 2026-11-10). Inside
+// a scope, the first check reads the index entries of all reviewed paths in one
+// batch. Only plain cases are kept (no conflict, index equal to HEAD); any other
+// path, and any batch error, falls back to the exact per-path check. The scope
+// is synchronous, so it never spans another request.
+let gitIndexStateScope = null;
+const GIT_INDEX_BATCH_CHUNK = 500;
+
+function withGitIndexStateScope(root, fn) {
+  if (gitIndexStateScope) return fn();
+  const scope = { root: path.resolve(root), reviews: null, states: null };
+  gitIndexStateScope = scope;
+  try {
+    return fn();
+  } finally {
+    if (gitIndexStateScope === scope) gitIndexStateScope = null;
+  }
+}
+
+// Plain cases only: no conflict and the index equal to HEAD. The staged blob
+// equals HEAD there, so the match never reads the file content.
+function plainGitIndexStatesForReviewPaths(root, relPaths) {
+  const paths = [...new Set(relPaths.map((relPath) => normalizeRelPath(relPath)).filter(Boolean))];
+  const states = new Map();
+  for (let start = 0; start < paths.length; start += GIT_INDEX_BATCH_CHUNK) {
+    const batch = gitIndexStatesForReviewPaths(root, paths.slice(start, start + GIT_INDEX_BATCH_CHUNK), null, { readContent: false });
+    for (const [relPath, indexState] of batch) {
+      if (indexState && !indexState.unmerged && !indexState.stagedAgainstHead) states.set(relPath, indexState);
+    }
+  }
+  return states;
+}
+
+function scopedGitIndexStateForReviewPath(root, reviews, relPath) {
+  const scope = gitIndexStateScope;
+  if (scope && scope.root === path.resolve(root) && reviews) {
+    if (scope.reviews !== reviews) {
+      scope.reviews = reviews;
+      try {
+        scope.states = plainGitIndexStatesForReviewPaths(root, Object.keys(reviews));
+      } catch {
+        scope.states = null;
+      }
+    }
+    const normalized = normalizeRelPath(relPath);
+    if (scope.states?.has(normalized)) return scope.states.get(normalized);
+  }
+  return gitIndexStateForReviewPath(root, relPath);
 }
 
 function gitIndexStateMatchesReviewedResource(indexState, { contentHash, resourceState, resourceMode }) {
@@ -7642,10 +7694,14 @@ function readDocReviewBaseline(root, relPath, review = null) {
   return { path: baselinePath, content, contentHash: baselineHash, reviewHash: reviewContentHash(content) };
 }
 
-function writeDocReviewBaselineUnderLock(root, relPath, { note = "" } = {}) {
+function writeDocReviewBaselineUnderLock(root, relPath, { note = "", expectedContentHash = null } = {}) {
   assertDocReviewEvidenceLockHeld(root);
   const file = readReviewTrackedFile(root, relPath);
   const normalized = file.path;
+  // The base must be the version the reviewer saw, never a newer one written meanwhile.
+  if (expectedContentHash != null && hashContent(file.content) !== String(expectedContentHash)) {
+    throw sharedRequestError("The document changed before its review base was saved. Review the newer version.", 409, "review_revision_conflict");
+  }
   preflightDocReviewMutationPaths(root, normalized, { baseline: true });
   const resourceState = resourceStateForReviewFile(file);
   const resourceMode = resourceModeForReviewFile(root, normalized, file);
@@ -10683,7 +10739,7 @@ function currentReviewFor(root, reviews, relPath, content, resourceState = "pres
     const baseline = readDocReviewBaseline(root, relPath, review);
     const baselineReviewHash = review.baselineReviewHash || baseline?.reviewHash || null;
     const resourceMode = currentReviewResourceMode(root, relPath, resourceState);
-    const gitIndexState = gitIndexStateForReviewPath(root, relPath);
+    const gitIndexState = scopedGitIndexStateForReviewPath(root, reviews, relPath);
     const gitIndexVersion = gitIndexState?.version || null;
     const resourceCurrent = reviewResourceIdentityMatches(review, resourceState, resourceVersion)
       && reviewResourceModeMatches(review, resourceMode, { root, relPath, resourceState })
@@ -10738,6 +10794,10 @@ function currentReviewFor(root, reviews, relPath, content, resourceState = "pres
 }
 
 export function buildReadOnlyDocumentationReviewSnapshot(root = process.cwd(), options = {}) {
+  return withGitIndexStateScope(root, () => buildReadOnlyDocumentationReviewSnapshotInScope(root, options));
+}
+
+function buildReadOnlyDocumentationReviewSnapshotInScope(root, options) {
   const settings = options.settings || effectiveMemoryWebappSettings(root, { readOnly: true });
   const files = options.files || listMemoryFiles(root, { includeContent: true, settings, readOnly: true });
   const reviewState = readDocReviewState(root, { readOnly: true });
@@ -12636,10 +12696,10 @@ function buildDocQaReportUnderLock(root = process.cwd(), options = {}) {
 }
 
 export function buildDocQaReport(root = process.cwd(), options = {}) {
-  if (options.readOnly === true) return buildDocQaReportUnderLock(root, options);
+  if (options.readOnly === true) return withGitIndexStateScope(root, () => buildDocQaReportUnderLock(root, options));
   return withDocReviewEvidenceLock(
     root,
-    () => buildDocQaReportUnderLock(root, options),
+    () => withGitIndexStateScope(root, () => buildDocQaReportUnderLock(root, options)),
     { expectedRootIdentity: options?.expectedRootIdentity || null },
   );
 }
@@ -25093,7 +25153,8 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
   if (req.method === "POST" && url.pathname === "/api/docqa/review-baseline") {
     const body = await readJsonBody(req);
-    sendJson(res, 200, writeDocReviewBaseline(root, body.path, { note: body.note, expectedRootIdentity }));
+    if (body.expectedContentHash != null && typeof body.expectedContentHash !== "string") throw sharedRequestError("expectedContentHash must be a string", 400, "review_revision_required");
+    sendJson(res, 200, writeDocReviewBaseline(root, body.path, { note: body.note, expectedContentHash: body.expectedContentHash ?? null, expectedRootIdentity }));
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/file") {
