@@ -8382,13 +8382,38 @@ function confirmReviewUndo(receiptId) {
 // (and their outbox records) land first; afterwards the flow and the report
 // cached for that project are dropped or read again, so neither shows a file
 // in its old review state.
+// A stuck Hub must not hold "Trusting…" forever: wait about 10 s, as openReviewFlowItem does.
+// A save that lands later meets the server checks under the review lock.
 async function settleReviewFlowSavesBeforeBulkReview() {
-  await reviewFlowSaves.chain.catch(() => {});
+  await Promise.race([reviewFlowSaves.chain.catch(() => {}), new Promise((resolve) => window.setTimeout(resolve, 10000))]);
+}
+
+// Only this project's items leave an open flow; items of other projects keep their place.
+function dropProjectFromReviewFlow(projectId) {
+  const flow = currentReviewFlow();
+  if (!flow || flow.done || !flow.items.some((item) => item.projectId === projectId)) return;
+  const kept = flow.items.filter((item) => item.projectId !== projectId);
+  if (!kept.length) {
+    closeReviewFlow();
+    return;
+  }
+  const shown = flow.items[flow.index];
+  const index = flow.items.slice(0, flow.index).filter((item) => item.projectId !== projectId).length;
+  for (const item of flow.items) if (item.projectId === projectId) delete flow.results[item.id];
+  flow.items = kept;
+  flow.index = index;
+  if (index >= kept.length) {
+    finishReviewFlow();
+    return;
+  }
+  saveReviewFlow();
+  renderReviewFlowBar();
+  renderReviewFlowPanel();
+  if (shown?.projectId === projectId) openReviewFlowItem().catch((error) => setStatus(error.message));
 }
 
 function refreshReviewCachesAfterBulkReview(projectId) {
-  const flow = currentReviewFlow();
-  if (flow && !flow.done && flow.items.some((item) => item.projectId === projectId)) closeReviewFlow();
+  dropProjectFromReviewFlow(projectId);
   if (!projectId || state.activeProjectLocationId !== projectId) return;
   api("/api/docqa").then((docqa) => {
     if (state.activeProjectLocationId !== projectId) return;
@@ -8411,6 +8436,10 @@ async function showTrustCurrentVersionsDialog(projectId, projectTitle = "", { af
     return;
   } finally {
     if (trigger?.isConnected) { trigger.disabled = false; trigger.removeAttribute("aria-busy"); trigger.textContent = triggerLabel; }
+  }
+  if (preview?.reason === "too_many_files") {
+    setStatus("This project has " + preview.count + " files waiting, more than the " + preview.maxFiles + " one trust can take. Register a smaller folder, or review the files one by one.");
+    return;
   }
   if (!preview?.offered || !preview.items?.length) {
     if (!afterAdd) setStatus(preview?.reason === "has_accepted_versions" ? "This project already has accepted versions. Review its files one by one." : "No file is waiting for a first acceptance.");
@@ -8440,6 +8469,7 @@ async function showTrustCurrentVersionsDialog(projectId, projectTitle = "", { af
         });
       } catch (error) {
         if (error?.code === "trust_current_stale") throw new Error("Files changed since this list was shown. Nothing was trusted. Cancel, then open it again to see the new list.");
+        if (error?.code === "review_control_file_too_large") throw new Error("This project has too many files to trust in one step. Nothing was trusted. Review its files one by one, or register a smaller folder.");
         throw error;
       }
       state.reviewHistoryStale = true;

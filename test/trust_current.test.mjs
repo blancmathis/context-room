@@ -193,3 +193,52 @@ test("control files above the 750 KB file limit still snapshot: a 1 000-file tru
   assert.equal(undone.count, many.length + DOCS.length);
   assert.deepEqual(Object.keys(readDocReviewState(root).reviews), ["docs/later.md"]);
 });
+
+test("a trust of 2 000 files of 15 KB splits its baseline into parts under the bound; a later decision and the undo succeed", () => {
+  const root = makeProject("trust-split");
+  const body = "Line with \"quotes\" and text.\n".repeat(520).slice(0, 15_000);
+  const many = Array.from({ length: 2_000 }, (_, index) => `docs/bulk/${String(index).padStart(4, "0")}.md`);
+  fs.mkdirSync(path.join(root, "docs", "bulk"), { recursive: true });
+  for (const doc of many) fs.writeFileSync(path.join(root, doc), `# ${doc}\n\n${body}`, "utf8");
+  const preview = previewTrustCurrentDocVersions(root);
+  assert.equal(preview.count, many.length + DOCS.length);
+  const trusted = trustCurrentDocVersions(root, { items: preview.items });
+  const receipt = readDocReviewHistory(root).receipts[0];
+  assert.equal(receipt.action, "trust-current");
+  const bundlesDir = path.join(root, ".context-room", "review-baselines", ".bundles");
+  const parts = fs.readdirSync(bundlesDir).filter((name) => name.endsWith(".json"));
+  assert.ok(parts.length >= 4, `${parts.length} parts`);
+  for (const name of parts) assert.ok(fs.statSync(path.join(bundlesDir, name)).size < 8 * 1024 * 1024, name);
+  const reviews = readDocReviewState(root).reviews;
+  assert.equal(new Set(Object.values(reviews).map((entry) => entry.baselinePath)).size, parts.length);
+  // Every entry reads its accepted text back from its own part.
+  assert.equal(buildDocQaReport(root).summary.needsReview, 0);
+  // A later single decision, then the undo of the whole trust.
+  fs.writeFileSync(path.join(root, "docs", "later.md"), "# Later\n", "utf8");
+  writeDocReviewDecision(root, "docs/later.md", { status: "verified", receiptSource: "file-review" });
+  const undone = undoDocReviewAcceptance(root, { receiptId: trusted.receipt.id });
+  assert.equal(undone.count, many.length + DOCS.length);
+  assert.deepEqual(Object.keys(readDocReviewState(root).reviews), ["docs/later.md"]);
+  const left = fs.readdirSync(bundlesDir).filter((name) => parts.includes(name));
+  assert.deepEqual(left, [], "the undo removes every part");
+  // Trusted again: the same parts are written again.
+  const again = previewTrustCurrentDocVersions(root);
+  assert.equal(again.offered, false);
+  assert.equal(again.reason, "has_accepted_versions");
+});
+
+test("more files than one trust can take are refused at the list, with a plain sentence", () => {
+  const root = makeProject("trust-limit");
+  fs.mkdirSync(path.join(root, "docs", "bulk"), { recursive: true });
+  for (let index = 0; index < 5_001; index += 1) fs.writeFileSync(path.join(root, "docs", "bulk", `${index}.md`), "# x\n", "utf8");
+  const preview = previewTrustCurrentDocVersions(root);
+  assert.equal(preview.offered, false);
+  assert.equal(preview.reason, "too_many_files");
+  assert.equal(preview.maxFiles, 5_000);
+  assert.ok(preview.count > 5_000);
+  assert.throws(() => trustCurrentDocVersions(root, { items: [{ path: "docs/README.md", contentHash: "0".repeat(64) }] }), (error) => {
+    assert.equal(error.code, "trust_current_unavailable");
+    assert.match(error.message, /smaller folder/);
+    return true;
+  });
+});
