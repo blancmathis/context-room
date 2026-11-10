@@ -4111,6 +4111,7 @@ export function renderAppShell({ codexPromptMutationNonce = "", ownerMutationNon
 	state.localForegroundRefreshTimer = null;
 	state.localForegroundRefreshBackground = false;
 	state.localForegroundRefreshForceReports = false;
+	state.localForegroundRefreshReportsNow = false;
 	state.backgroundRefreshController = null;
 	state.workspacePresenceControllers = new Set();
 	state.workspacePresenceActive = null;
@@ -14948,12 +14949,16 @@ function quiesceWorkspaceBackgroundActivity() {
   state.localForegroundRefreshTimer = null;
   state.localForegroundRefreshBackground = false;
   state.localForegroundRefreshForceReports = false;
+  state.localForegroundRefreshReportsNow = false;
 }
 
+// Focus and page restore ask for the reports now, but from the server cache: the
+// file watcher, every mutating request and the cache TTL already keep it current.
+// The fresh=1 query (a full recompute) stays for decisions, runtime invalidations and user asks.
 function scheduleWorkspaceResumeRefresh(source = "page-restore") {
   if (IS_HOSTED_REVIEW) scheduleHostedReviewRefresh();
   else if (IS_HOSTED_HUB) scheduleRuntimeContextHubRefresh({ data: { source } });
-  else scheduleLocalForegroundRefresh({ background: true, forceReports: true });
+  else scheduleLocalForegroundRefresh({ background: true, reportsNow: true });
 }
 
 function settleWorkspaceUnload(outcome) {
@@ -24339,11 +24344,12 @@ function reviewRiskNoticeMarkup(beforeText, afterText) {
 
 // Deterministic documentation warnings for this version: added dead links, likely duplicate. Never a block.
 function reviewDocumentChecksMarkup(checks) {
-  const list = Array.isArray(checks) ? checks.filter((item) => item && ["dead_link", "duplicate_doc", "duplicate_partial"].includes(item.type)) : [];
+  const list = Array.isArray(checks) ? checks.filter((item) => item && ["dead_link", "duplicate_doc", "duplicate_partial", "checks_unavailable"].includes(item.type)) : [];
   if (!list.length) return "";
   const links = list.filter((item) => item.type === "dead_link").length;
   const summary = [links ? links + " new dead link" + (links === 1 ? "" : "s") : "", list.some((item) => item.type === "duplicate_doc") ? "likely duplicate" : "",
-    list.some((item) => item.type === "duplicate_partial") ? "duplicate check partial" : ""].filter(Boolean).join(" · ");
+    list.some((item) => item.type === "duplicate_partial") ? "duplicate check partial" : "",
+    list.some((item) => item.type === "checks_unavailable") ? "unavailable" : ""].filter(Boolean).join(" · ");
   const rows = list.slice(0, 8).map((item) => '<li data-review-doc-check="' + escapeHtml(item.type) + '">' + (item.type === "dead_link" ? '<span>Line ' + escapeHtml(String(item.line)) + '</span> ' : '') + escapeHtml(item.message) + '</li>').join("");
   return '<details class="issue review-risk-notice" data-review-doc-checks open><summary><strong>Documentation checks</strong> <span>' + escapeHtml(summary) + '</span></summary><ul>' + rows + '</ul><p class="muted">A warning: you can still accept.</p></details>';
 }
@@ -26245,12 +26251,20 @@ function selectedStartupContextReviewPath(path = state.selected) {
 }
 
 // The review opens without waiting for documentation checks; the box fills in when they finish.
-function fillPendingReviewDocumentChecks(change) {
+// A run dropped for a newer file (another tab, say) is asked once more, then shown as skipped.
+function fillPendingReviewDocumentChecks(change, retried = false) {
   api("/api/docqa/document-checks?path=" + encodeURIComponent(change.path)).then((result) => {
-    if (state.externalChange !== change || !Array.isArray(result?.documentChecks) || !result.documentChecks.length) return;
-    change.documentChecks = result.documentChecks;
+    if (state.externalChange !== change) return;
+    if (result?.documentChecksSuperseded && !retried) return fillPendingReviewDocumentChecks(change, true);
+    const checks = result?.documentChecksSuperseded ? [supersededDocumentCheck(change.path)] : result?.documentChecks;
+    if (!Array.isArray(checks) || !checks.length) return;
+    change.documentChecks = checks;
     renderViewer();
   }).catch(() => {});
+}
+
+function supersededDocumentCheck(path) {
+  return { type: "checks_unavailable", path, line: 1, message: "Documentation checks were skipped: another file was checked first. Open the file again to retry." };
 }
 
 function applyChangedFileInlineReview(path, diff, review, requestId = state.selectionRequest) {
@@ -26725,20 +26739,23 @@ async function refreshFromDisk() {
   }
 }
 
-function scheduleLocalForegroundRefresh({ background = false, forceReports = false } = {}) {
+function scheduleLocalForegroundRefresh({ background = false, forceReports = false, reportsNow = false } = {}) {
   if (state.workspaceRuntimeStopped || state.workspaceUnloadPending || IS_HOSTED_CONTEXT_ROOM || document.hidden) return;
   state.localForegroundRefreshBackground = Boolean(state.localForegroundRefreshBackground || background);
   state.localForegroundRefreshForceReports = Boolean(state.localForegroundRefreshForceReports || forceReports);
+  state.localForegroundRefreshReportsNow = Boolean(state.localForegroundRefreshReportsNow || reportsNow);
   if (state.localForegroundRefreshTimer) return;
   state.localForegroundRefreshTimer = window.setTimeout(() => {
     state.localForegroundRefreshTimer = null;
     if (state.workspaceRuntimeStopped || state.workspaceUnloadPending || document.hidden) return;
     const refreshBackground = state.localForegroundRefreshBackground;
     const refreshReports = state.localForegroundRefreshForceReports;
+    const reportsNow = state.localForegroundRefreshReportsNow;
     state.localForegroundRefreshBackground = false;
     state.localForegroundRefreshForceReports = false;
+    state.localForegroundRefreshReportsNow = false;
     if (state.selected) refreshFromDisk().catch(() => {});
-    if (refreshBackground) scheduleBackgroundRefresh({ forceReports: refreshReports });
+    if (refreshBackground) scheduleBackgroundRefresh({ forceReports: refreshReports, reportsNow });
   }, 50);
 }
 
@@ -26748,6 +26765,7 @@ function scheduleBackgroundRefresh(options = {}) {
   const pending = state.backgroundRefreshPendingOptions || {};
   state.backgroundRefreshPendingOptions = {
     forceReports: Boolean(pending.forceReports || options.forceReports),
+    reportsNow: Boolean(pending.reportsNow || options.reportsNow),
     forceFull: Boolean(pending.forceFull || options.forceFull),
   };
   if (state.backgroundRefreshTimer || state.reportsRefreshInFlight) return;
@@ -26788,7 +26806,7 @@ async function refreshBackgroundReports(options = {}) {
   const now = Date.now();
   const reportInterval = state.selected ? 30_000 : 15_000;
   const fullInterval = state.selected ? 60_000 : 30_000;
-  const shouldRefreshReports = options.forceReports || now - (state.lastReportRefreshAt || 0) >= reportInterval;
+  const shouldRefreshReports = options.forceReports || options.reportsNow || now - (state.lastReportRefreshAt || 0) >= reportInterval;
   const shouldRefreshFull = options.forceFull || now - (state.lastFullRefreshAt || 0) >= fullInterval;
   if (!shouldRefreshReports && !shouldRefreshFull) return;
   state.reportsRefreshInFlight = true;

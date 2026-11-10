@@ -1107,6 +1107,79 @@ test("direct room boot refreshes Shared through the protected POST and GET remai
   assert.doesNotMatch(directBootSource, /shared-context\?refresh/);
 });
 
+// Project attention reads Git HEAD once for the whole queue (one batched
+// cat-file), shared by the health check and the freshness queue. A `git show`
+// per modified file, done twice, took 35 s on a 500-file queue.
+test("Context Hub attention reads Git HEAD in one batch, not once per modified file", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-attention-batch-"));
+  withHubHome(t, path.join(base, "hub"));
+  const root = makeProject(base, "Attention batch");
+  for (let index = 0; index < 12; index += 1) writeHubFile(root, `docs/page-${index}.md`, `# Page ${index}\n\nSee [readme](README.md).\n`);
+  execFileSync("git", ["add", "."], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["commit", "-m", "Pages"], { cwd: root, stdio: "ignore" });
+  for (let index = 0; index < 12; index += 1) writeHubFile(root, `docs/page-${index}.md`, `# Page ${index}\n\nChanged.\n`);
+  const project = registerContextHubProject(root);
+  const room = createMemoryServer({ root });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const refreshResponse = await fetch(origin + "/api/context-hub/refresh", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-context-room-project": room.projectId },
+    body: "{}",
+  });
+  assert.equal(refreshResponse.status, 200, await refreshResponse.text());
+
+  const bin = path.join(base, "bin");
+  const log = path.join(base, "git.log");
+  fs.mkdirSync(bin);
+  const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+  fs.writeFileSync(path.join(bin, "git"), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${log}"\nexec "${realGit}" "$@"\n`, { mode: 0o755 });
+  const previousPath = process.env.PATH;
+  process.env.PATH = bin + path.delimiter + previousPath;
+  t.after(() => { process.env.PATH = previousPath; });
+  const response = await fetch(origin + "/api/context-hub/attention?projectId=" + encodeURIComponent(project.id));
+  const body = await response.json();
+  process.env.PATH = previousPath;
+  assert.equal(response.status, 200, JSON.stringify(body));
+  const calls = fs.readFileSync(log, "utf8").split("\n").filter(Boolean);
+  assert.ok(calls.some((call) => call.startsWith("cat-file --batch")), calls.join("\n"));
+  assert.deepEqual(calls.filter((call) => call.startsWith("show HEAD:")), []);
+  const reviewPaths = body.items.map((item) => JSON.stringify(item)).filter((item) => item.includes("docs/page-"));
+  assert.ok(reviewPaths.length >= 12, JSON.stringify(body.items).slice(0, 2000));
+});
+
+// Attention reads the snapshot's effective settings, as the in-room Context
+// Health does. AGENTS.md is watched by default even when watchAllow names only
+// docs/, so attention no longer lists it as "editable but not watched".
+test("Context Hub attention agrees with Context Health on a startup file watched by default", async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-attention-startup-"));
+  withHubHome(t, path.join(base, "hub"));
+  const root = path.join(base, "Startup");
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  writeHubFile(root, "docs/a.md", "# A\n");
+  writeHubFile(root, "AGENTS.md", "# Agents\n\nRead [a](docs/a.md).\n");
+  execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "hub@example.test"], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Context Hub Test"], { cwd: root, stdio: "ignore" });
+  initializeContextRoomProject(root, { title: "Startup", allowedPaths: ["docs/", "AGENTS.md"], watchAllow: ["docs/"] });
+  execFileSync("git", ["add", "."], { cwd: root, stdio: "ignore" });
+  execFileSync("git", ["commit", "-m", "Initial"], { cwd: root, stdio: "ignore" });
+  writeHubFile(root, "AGENTS.md", "# Agents\n\nRead [a](docs/a.md) first.\n");
+  const project = registerContextHubProject(root);
+  const room = createMemoryServer({ root });
+  await new Promise((resolve) => room.server.listen(0, "127.0.0.1", resolve));
+  t.after(() => room.server.close());
+  const origin = `http://127.0.0.1:${room.server.address().port}`;
+  const response = await fetch(origin + "/api/context-hub/attention?projectId=" + encodeURIComponent(project.id));
+  const body = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(body));
+  const health = await (await fetch(origin + "/api/reports", { headers: { "x-context-room-project": room.projectId } })).json();
+  assert.ok(Array.isArray(health.doctor?.issues), JSON.stringify(health).slice(0, 500));
+  assert.doesNotMatch(JSON.stringify(health.doctor.issues), /startup_not_watched/);
+  assert.doesNotMatch(JSON.stringify(body.items), /startup_not_watched|not watched: AGENTS\.md/);
+});
+
 test("Context Hub rejects ambiguous project aliases but keeps exact project IDs deterministic", async (t) => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "context-hub-project-ambiguity-"));
   withHubHome(t, path.join(base, "hub"));
