@@ -7,6 +7,20 @@ function fixture() {
   return JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
 }
 
+// In the shared fixture, items 3 and 4 belong to one project: an accept on
+// item 3 opens item 4 without a page reload. (Leaving a project reloads the
+// page, so that open waits for the saves on purpose.)
+async function reachSameProjectPair(page) {
+  const bar = page.locator('#reviewFlowBar');
+  for (const step of [2, 3]) {
+    await expect(bar.locator('[data-review-flow="later"]')).toBeEnabled({ timeout: 30_000 });
+    await page.keyboard.press('l');
+    await expect(bar).toContainText(new RegExp('^' + step + ' of \\d+'), { timeout: 30_000 });
+  }
+  await expect(bar.locator('[data-review-flow="accept"]')).toBeEnabled({ timeout: 30_000 });
+  return bar;
+}
+
 // Only "Later" and "Stop" here: the fixture is shared, so this test must not decide any review.
 test('@smoke review flow walks pending files across projects and ends with a summary', async ({ page }) => {
   const data = fixture();
@@ -54,12 +68,9 @@ test('@smoke review flow accept opens the next file at once and keeps a failed s
   const start = page.locator('[data-review-flow-panel="start"]');
   await expect(start).toBeVisible({ timeout: 30_000 });
   await start.click();
-  const bar = page.locator('#reviewFlowBar');
-  await expect(bar).toContainText(/^1 of \d+/, { timeout: 30_000 });
-  const accept = bar.locator('[data-review-flow="accept"]');
-  await expect(accept).toBeEnabled({ timeout: 30_000 });
+  const bar = await reachSameProjectPair(page);
   await page.keyboard.press('a');
-  await expect(bar).toContainText(/^2 of \d+/, { timeout: 30_000 });
+  await expect(bar).toContainText(/^4 of \d+/, { timeout: 30_000 });
 
   // The save starts once the next file is shown; nothing has answered it yet.
   await expect.poll(() => held.length, { timeout: 30_000 }).toBe(1);
@@ -74,4 +85,74 @@ test('@smoke review flow accept opens the next file at once and keeps a failed s
   await expect(panel).toContainText('Review stopped', { timeout: 30_000 });
   await expect(panel).toContainText('1 not saved');
   await panel.locator('[data-review-flow-panel="close"]').click();
+});
+
+const REVIEW_FLOW_KEY = 'context-room:review-flow:v1';
+const flowResults = (page) => page.evaluate((key) => JSON.parse(window.sessionStorage.getItem(key) || '{}').results || {}, REVIEW_FLOW_KEY);
+
+// A page reloaded while a save is on its way (a project change reloads the
+// page too) cannot see the save end; nor can a page restored from the
+// back-forward cache. The next page reads the outcome back from the review
+// queue: the summary ends as saved or not saved, never "saving". The page is
+// put in that state directly, so nothing reaches the shared fixture.
+test('@smoke review flow saves cut by a reload end as saved or not saved, never saving', async ({ page }) => {
+  const data = fixture();
+  await page.goto(`${data.origin}/?hub=1&view=hub`);
+  const start = page.locator('[data-review-flow-panel="start"]');
+  await expect(start).toBeVisible({ timeout: 30_000 });
+  await start.click();
+  await reachSameProjectPair(page);
+  await page.evaluate((key) => {
+    const flow = JSON.parse(window.sessionStorage.getItem(key));
+    const [orphan, , recorded] = flow.items;
+    // One save with its outbox record, one "saving" left without any record.
+    flow.results[orphan.id] = 'saving';
+    flow.results[recorded.id] = 'saving';
+    window.sessionStorage.setItem(key, JSON.stringify(flow));
+    window.localStorage.setItem('context-room:review-flow-outbox:v1', JSON.stringify([{
+      requestId: 'cut-by-reload', flowStartedAt: flow.startedAt, itemId: recorded.id, projectId: recorded.projectId,
+      path: recorded.path, status: 'verified', expectedContentHash: recorded.currentHash, tab: window.sessionStorage.getItem('context-room:tab-id') || '', at: new Date().toISOString(),
+    }]));
+  }, REVIEW_FLOW_KEY);
+  await page.reload();
+
+  await expect.poll(async () => Object.values(await flowResults(page)).filter((result) => result !== 'later'), { timeout: 30_000 }).toEqual(['failed', 'failed']);
+  const failures = await page.evaluate((key) => JSON.parse(window.sessionStorage.getItem(key)).failures, REVIEW_FLOW_KEY);
+  expect(failures.map((failure) => failure.path).sort()).toEqual(['AGENTS.md', 'docs/runbook.md']);
+  expect(await page.evaluate(() => window.localStorage.getItem('context-room:review-flow-outbox:v1'))).toBeNull();
+});
+
+// A decision the queue had not started when the page went away is sent on
+// pagehide, base first, then review. Requests sent while a page unloads skip
+// Playwright routes, so the file changes first and the server refuses the
+// decision. The next page shows it as not saved instead of "saving".
+test('@smoke review flow decision sent on pagehide that does not land is visible after reopening', async ({ page }) => {
+  const data = fixture();
+  let holdOpen = false;
+  const hung = [];
+  await page.route(/\/api\/file(\/[a-z-]+)?\?/, (request) => (holdOpen ? hung.push(request) : request.fallback()));
+  await page.goto(`${data.origin}/?hub=1&view=hub`);
+  const start = page.locator('[data-review-flow-panel="start"]');
+  await expect(start).toBeVisible({ timeout: 30_000 });
+  await start.click();
+  await reachSameProjectPair(page);
+  // The next file never finishes opening, so the save never starts in the page.
+  holdOpen = true;
+  await page.keyboard.press('a');
+  await expect.poll(() => hung.length, { timeout: 30_000 }).toBeGreaterThan(0);
+  holdOpen = false;
+  const runbook = `${data.projects.beacon.root}/docs/runbook.md`;
+  const before = fs.readFileSync(runbook, 'utf8');
+  try {
+    fs.writeFileSync(runbook, `${before}\nWritten after the reviewer looked.\n`);
+    await page.goto('about:blank');
+    for (const request of hung.splice(0)) await request.abort().catch(() => {});
+    await page.goto(`${data.origin}/?hub=1&view=hub`);
+
+    await expect.poll(async () => Object.values(await flowResults(page)).filter((result) => result !== 'later'), { timeout: 30_000 }).toEqual(['failed']);
+    const failures = await page.evaluate((key) => JSON.parse(window.sessionStorage.getItem(key)).failures, REVIEW_FLOW_KEY);
+    expect(failures).toEqual([{ path: 'docs/runbook.md', message: 'a newer version is waiting' }]);
+  } finally {
+    fs.writeFileSync(runbook, before);
+  }
 });

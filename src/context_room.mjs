@@ -6404,7 +6404,7 @@ function gitIndexStateForReviewPath(root, relPath) {
   }
 }
 
-function gitIndexStatesForReviewPaths(root, relPaths, resources = null) {
+function gitIndexStatesForReviewPaths(root, relPaths, resources = null, { readContent = true } = {}) {
   const repositoryRoot = gitTopLevelRoot(root);
   const normalizedPaths = [...new Set(relPaths.map((relPath) => normalizeRelPath(relPath)).filter(Boolean))];
   if (!repositoryRoot) return new Map(normalizedPaths.map((relPath) => [relPath, null]));
@@ -6483,7 +6483,7 @@ function gitIndexStatesForReviewPaths(root, relPaths, resources = null) {
       const stagedAgainstHead = unmerged
         || Boolean(stageZero) !== Boolean(head)
         || Boolean(stageZero && head && (stageZero.mode !== head.mode || stageZero.oid !== head.oid));
-      const current = stageZero ? resources?.get(relPath) || readSharedWorkspaceResource(root, relPath) : null;
+      const current = stageZero && readContent ? resources?.get(relPath) || readSharedWorkspaceResource(root, relPath) : null;
       const currentBlobOid = current?.state === "present"
         ? createHash(objectFormat).update(`blob ${current.bytes.length}\0`).update(current.bytes).digest("hex")
         : "";
@@ -6530,57 +6530,16 @@ function withGitIndexStateScope(root, fn) {
   }
 }
 
+// Plain cases only: no conflict and the index equal to HEAD. The staged blob
+// equals HEAD there, so the match never reads the file content.
 function plainGitIndexStatesForReviewPaths(root, relPaths) {
-  const repositoryRoot = gitTopLevelRoot(root);
-  if (!repositoryRoot) return null;
-  const treePaths = new Map();
-  for (const relPath of relPaths) {
-    const normalized = normalizeRelPath(relPath);
-    if (normalized) treePaths.set(gitTreePathForRootRelative(root, normalized), normalized);
-  }
-  const keys = [...treePaths.keys()];
-  const entriesByPath = new Map([...treePaths.values()].map((relPath) => [relPath, []]));
-  const headByPath = new Map();
-  for (let start = 0; start < keys.length; start += GIT_INDEX_BATCH_CHUNK) {
-    const pathspecs = keys.slice(start, start + GIT_INDEX_BATCH_CHUNK).map(gitLiteralPathspec);
-    const options = { cwd: repositoryRoot, encoding: null, stdio: ["ignore", "pipe", "pipe"], maxBuffer: Math.max(1_000_000, pathspecs.length * 512) };
-    const indexOutput = execFileSync("git", ["ls-files", "--stage", "-z", "--", ...pathspecs], options);
-    for (const record of decodeGitUtf8(indexOutput, "git ls-files").split("\0").filter(Boolean)) {
-      const separator = record.indexOf("\t");
-      const match = /^(100644|100755) ([0-9a-f]{40,64}) ([0-3])$/.exec(separator >= 0 ? record.slice(0, separator) : "");
-      const relPath = treePaths.get(separator >= 0 ? record.slice(separator + 1) : "");
-      if (!match || !relPath) throw new Error("Git index returned an unexpected batch path entry");
-      entriesByPath.get(relPath).push({ mode: match[1], oid: match[2], stage: Number(match[3]) });
-    }
-    // An unborn HEAD fails here: the whole batch falls back to the exact check.
-    const headOutput = execFileSync("git", ["ls-tree", "-z", "HEAD", "--", ...pathspecs], options);
-    for (const record of decodeGitUtf8(headOutput, "git ls-tree").split("\0").filter(Boolean)) {
-      const separator = record.indexOf("\t");
-      const match = /^(100644|100755) blob ([0-9a-f]{40,64})$/.exec(separator >= 0 ? record.slice(0, separator) : "");
-      const relPath = treePaths.get(separator >= 0 ? record.slice(separator + 1) : "");
-      if (!relPath) throw new Error("Git tree returned an unexpected batch path entry");
-      if (match) headByPath.set(relPath, { mode: match[1], oid: match[2] });
-      else entriesByPath.set(relPath, null);
-    }
-  }
+  const paths = [...new Set(relPaths.map((relPath) => normalizeRelPath(relPath)).filter(Boolean))];
   const states = new Map();
-  for (const [relPath, entries] of entriesByPath) {
-    if (!entries) continue;
-    const head = headByPath.get(relPath) || null;
-    const stageZero = entries.length === 1 && entries[0].stage === 0 ? entries[0] : null;
-    if (entries.length > 1 || (entries.length === 1 && !stageZero)) continue;
-    if (Boolean(stageZero) !== Boolean(head)) continue;
-    if (stageZero && (stageZero.mode !== head.mode || stageZero.oid !== head.oid)) continue;
-    states.set(relPath, {
-      version: `git-index:${hashContent(JSON.stringify(entries))}`,
-      entries,
-      head,
-      stageZero,
-      // The staged blob equals HEAD here, so the match never reads this hash.
-      stagedContentHash: null,
-      stagedAgainstHead: false,
-      unmerged: false,
-    });
+  for (let start = 0; start < paths.length; start += GIT_INDEX_BATCH_CHUNK) {
+    const batch = gitIndexStatesForReviewPaths(root, paths.slice(start, start + GIT_INDEX_BATCH_CHUNK), null, { readContent: false });
+    for (const [relPath, indexState] of batch) {
+      if (indexState && !indexState.unmerged && !indexState.stagedAgainstHead) states.set(relPath, indexState);
+    }
   }
   return states;
 }
@@ -7734,10 +7693,14 @@ function readDocReviewBaseline(root, relPath, review = null) {
   return { path: baselinePath, content, contentHash: baselineHash, reviewHash: reviewContentHash(content) };
 }
 
-function writeDocReviewBaselineUnderLock(root, relPath, { note = "" } = {}) {
+function writeDocReviewBaselineUnderLock(root, relPath, { note = "", expectedContentHash = null } = {}) {
   assertDocReviewEvidenceLockHeld(root);
   const file = readReviewTrackedFile(root, relPath);
   const normalized = file.path;
+  // The base must be the version the reviewer saw, never a newer one written meanwhile.
+  if (expectedContentHash != null && hashContent(file.content) !== String(expectedContentHash)) {
+    throw sharedRequestError("The document changed before its review base was saved. Review the newer version.", 409, "review_revision_conflict");
+  }
   preflightDocReviewMutationPaths(root, normalized, { baseline: true });
   const resourceState = resourceStateForReviewFile(file);
   const resourceMode = resourceModeForReviewFile(root, normalized, file);
@@ -10702,7 +10665,7 @@ function currentReviewFor(root, reviews, relPath, content, resourceState = "pres
     const resourceMode = currentReviewResourceMode(root, relPath, resourceState);
     const gitIndexState = scopedGitIndexStateForReviewPath(root, reviews, relPath);
     const gitIndexVersion = gitIndexState?.version || null;
-    const resourceCurrent =reviewResourceIdentityMatches(review, resourceState, resourceVersion)
+    const resourceCurrent = reviewResourceIdentityMatches(review, resourceState, resourceVersion)
       && reviewResourceModeMatches(review, resourceMode, { root, relPath, resourceState })
       && gitIndexStateMatchesReviewedResource(gitIndexState, { contentHash, resourceState, resourceMode });
     const explicitCurrent = resourceCurrent && review.contentHash === contentHash;
@@ -25103,7 +25066,8 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
   }
   if (req.method === "POST" && url.pathname === "/api/docqa/review-baseline") {
     const body = await readJsonBody(req);
-    sendJson(res, 200, writeDocReviewBaseline(root, body.path, { note: body.note, expectedRootIdentity }));
+    if (body.expectedContentHash != null && typeof body.expectedContentHash !== "string") throw sharedRequestError("expectedContentHash must be a string", 400, "review_revision_required");
+    sendJson(res, 200, writeDocReviewBaseline(root, body.path, { note: body.note, expectedContentHash: body.expectedContentHash ?? null, expectedRootIdentity }));
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/file") {

@@ -9,6 +9,7 @@ import {
   buildDocQaReport,
   buildReadOnlyDocumentationReviewSnapshot,
   initializeContextRoomProject,
+  writeDocReviewBaseline,
   writeDocReviewDecision,
 } from "../src/context_room.mjs";
 
@@ -101,4 +102,25 @@ test("a reviewed file staged in Git keeps the same review result", (t) => {
   assert.deepEqual(before, ["docs/doc2.md"]);
   execFileSync("git", ["add", "docs/doc1.md"], { cwd: root, env: { ...process.env, ...gitEnv }, stdio: "ignore" });
   assert.deepEqual(queued(buildDocQaReport(root)), before);
+});
+
+// The review flow saves the review base after the next file opens, so the
+// agent may write again in between. The base must be the version the reviewer
+// saw (X1); a newer one (X2) is refused, so X1 -> X2 stays visible in review.
+test("a queued review base write refuses a version the reviewer never saw", (t) => {
+  const root = project(t, 1);
+  const rel = "docs/doc0.md";
+  const seen = fs.readFileSync(path.join(root, rel), "utf8");
+  const seenHash = buildDocQaReport(root).queue.find((item) => item.path === rel).currentHash;
+  fs.appendFileSync(path.join(root, rel), "\nWritten after the click.\n");
+  assert.throws(
+    () => writeDocReviewBaseline(root, rel, { note: "inline review applied", expectedContentHash: seenHash }),
+    (error) => error.statusCode === 409 && error.code === "review_revision_conflict",
+  );
+  const pending = buildDocQaReport(root).queue.find((item) => item.path === rel);
+  assert.ok(pending, "the file stays in review");
+  assert.notEqual(pending.currentHash, seenHash);
+  // The version seen still writes as before.
+  fs.writeFileSync(path.join(root, rel), seen);
+  assert.equal(writeDocReviewBaseline(root, rel, { expectedContentHash: seenHash }).path, rel);
 });
