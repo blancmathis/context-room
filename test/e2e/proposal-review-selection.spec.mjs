@@ -3128,3 +3128,39 @@ test("@smoke terminal action is in the viewport and keyboard-operable on mobile 
   await page.keyboard.press("Enter");
   await expect(page.getByRole("dialog", { name: /Put this proposal on main\?/ })).toBeVisible();
 });
+
+test("@smoke a blocked Shared proposal card opens the notice that says why", async ({ page }) => {
+  const { origin } = fixture();
+  await page.goto(origin + "/?hub=1&workspace=workspace-blocked-card-click&view=hub");
+  await waitForBoot(page);
+  const [proposal] = await replaceHubProposals(page, [{
+    id: "proposal:fixture:conflict-card",
+    branch: "proposal/demo/conflict-card",
+    title: "Conflicting proposal card",
+    reviewStatus: "ready",
+    hasConflict: true,
+  }]);
+  const card = page.locator('[data-context-room-review="' + proposal.id + '"]');
+  await expect(card).toBeEnabled();
+  await card.click();
+  await expect.poll(() => page.evaluate(() => ({ page: state.page, code: state.proposalOpenState?.code || "" })))
+    .toEqual({ page: "proposal", code: "shared-proposal-conflict" });
+});
+
+test("@smoke the project menu inspects that project when Explorer has no selection", async ({ page }) => {
+  const { origin, projects } = fixture();
+  await page.goto(origin + "/?hub=1&workspace=workspace-menu-inspection&view=hub");
+  await waitForBoot(page);
+  await page.evaluate((projectId) => {
+    const project = state.contextHub.projects.find((item) => item.id === projectId || item.worktrees?.some((worktree) => worktree.id === projectId));
+    if (!project) throw new Error("Missing project fixture");
+    state.activeProjectLocationId = "";
+    state.globalExplorerProjectKey = "";
+    const event = new MouseEvent("contextmenu", { clientX: 200, clientY: 200 });
+    Object.defineProperty(event, "target", { value: document.body });
+    openGlobalExplorerContextMenu(event, { scope: "project", kind: "project", path: "", projectKey: project.projectKey });
+  }, projects.atlas.id);
+  await page.locator("#explorerContextMenu").getByRole("menuitem", { name: "View startup environment" }).click();
+  await expect(page.locator("#contextHealth")).not.toContainText("Select a project in Explorer.");
+  await expect(page.locator("#contextHealth [data-global-inspection-provider]")).toHaveCount(1);
+});

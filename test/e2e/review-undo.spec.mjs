@@ -33,12 +33,29 @@ test('@smoke an acceptance can be undone from Recent decisions and the file goes
     await expect(panel).toBeVisible({ timeout: 30_000 });
     await panel.locator('summary').click();
     const row = panel.locator('li', { hasText: `Undo ${testInfo.project.name}` }).filter({ hasText: 'Accepted' });
+    // A finished review flow counted this acceptance; after the undo it must not.
+    await page.evaluate((title) => {
+      const receipt = state.reviewHistory.find((entry) => entry.projectTitle === title && entry.path === 'docs/README.md');
+      reviewFlow = {
+        startedAt: new Date().toISOString(), done: true, busy: false, index: 2, results: { undone: 'accepted', other: 'later' },
+        items: [
+          { id: 'undone', projectId: receipt.projectId, path: 'docs/README.md', review: { path: 'docs/README.md' }, lever: 'docs' },
+          { id: 'other', projectId: 'another-project', path: 'docs/README.md', review: { path: 'docs/README.md' }, lever: 'docs' },
+        ],
+      };
+      saveReviewFlow();
+      renderReviewFlowPanel();
+    }, `Undo ${testInfo.project.name}`);
+    await expect(page.locator('#reviewFlowPanel')).toContainText('1 accepted');
     await row.getByRole('button', { name: 'Undo this acceptance' }).click();
     const dialog = page.getByRole('dialog', { name: 'Undo this acceptance?' });
     await expect(dialog).toContainText('The file is not restored');
     await dialog.getByRole('button', { name: 'Undo acceptance' }).click();
     await expect(panel.locator('li', { hasText: `Undo ${testInfo.project.name}` }).first()).toContainText('Acceptance undone', { timeout: 30_000 });
     await expect(row.getByRole('button', { name: 'Undo this acceptance' })).toHaveCount(0);
+    // The file is back in review: the flow summary no longer counts it as accepted.
+    await expect(page.locator('#reviewFlowPanel')).toContainText('0 accepted · 0 changes requested · 1 later');
+    expect(await page.evaluate(() => reviewFlow.items.map((item) => item.id))).toEqual(['other']);
     expect(fs.readFileSync(path.join(root, 'docs', 'README.md'), 'utf8')).toContain('Accepted from the queue.');
   } finally {
     unregisterContextHubProject(root);
