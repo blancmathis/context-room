@@ -37,7 +37,16 @@ export function contextCost(effective, { root = "", home = os.homedir(), readFil
     return file ? readFile(file) : null;
   };
 
+  // One file is loaded once, however many resources (local file, managed Shared link) point at it.
+  const counted = new Set();
+  const realFile = (entry) => { const file = entry.resource?.metadata?.absolutePath || ""; try { return file ? fs.realpathSync(file) : ""; } catch { return file; } };
   for (const entry of effective?.instructions || []) {
+    const identity = realFile(entry);
+    if (identity && entry.application?.status === "active" && counted.has(identity)) {
+      entries[entry.resource.id] = { mode: "startup", startupTokens: 0, bytes: 0, note: "Same file as another resource: counted once." };
+      continue;
+    }
+    if (identity && entry.application?.status === "active") counted.add(identity);
     const content = text(entry);
     const cost = { mode: "startup", startupTokens: content == null ? null : tokens(content), bytes: content == null ? null : Buffer.byteLength(content) };
     // Claude Code loads @path imports too; their size is not counted here.

@@ -2856,6 +2856,15 @@ export function renderAgentCliHuman(command, payload) {
       ...destinations.map((item) => `  ${String(item.status || "").padEnd(10)} ${item.destination || item.id || ""}${item.message ? ` (${item.message})` : ""}`),
       ...warnings.map((item) => `Warning: ${item}`)].join("\n") + "\n";
   }
+  if (command === "context.effective") {
+    const cost = data.cost || {}, tokens = (value) => value == null ? "—" : `≈${value}`;
+    const row = (entry) => `  ${String(entry.application?.status || "").padEnd(9)} ${entry.resource?.locator || entry.resource?.id}${cost.entries?.[entry.resource?.id]?.startupTokens != null ? ` (${tokens(cost.entries[entry.resource.id].startupTokens)} tokens)` : ""}`;
+    return [`Effective context · ${data.coordinate?.provider || ""} · folder ${data.coordinate?.folder || "."}`,
+      `At startup: ${tokens(cost.startup?.tokens)} tokens, ${cost.startup?.resources ?? 0} resources · on demand: ${cost.onDemand?.resources ?? 0}`,
+      `Instructions (${(data.instructions || []).length})`, ...(data.instructions || []).map(row),
+      `Skills (${(data.skills || []).length})`, ...(data.skills || []).map(row),
+      `Hooks (${(data.hooks || []).length})`, ...(data.hooks || []).map(row)].join("\n") + "\n";
+  }
   if (command === "agent.instructions") return String(data.prompt || "") + "\n";
   if (command === "docs.map") return data.proposal
     ? `${data.proposal.changed ? data.proposal.dryRun ? "Would update" : `Proposed ${data.proposal.proposalId} for` : "Already current:"} ${data.proposal.target} (${data.documents} documents, ≈${data.estimatedTokens} tokens)\n`
