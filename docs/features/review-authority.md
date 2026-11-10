@@ -67,6 +67,15 @@ Each local file decision writes a signed receipt in the private review authority
 
 Undo is offered only for the latest decision on that file, within 30 days, for acceptances made in the file review or the Hub queue. It is refused when a newer decision exists, when the file, its mode, its Git index entry or its dependencies changed, or when a receipt or a kept baseline is missing or altered. Rejections, corrections, proposals, assets, Shared decisions and decisions made before receipts existed are not undoable. A bare "unverified" request to the local review route is refused. Retrying a request with the same request id returns its first result.
 
+## Trust the current versions
+
+A project with no accepted version yet can accept all its current files in one explicit human gesture: "Trust the current versions". It is never a default. The Hub offers it after "Add a project" and in the project's Documents card while no file has an accepted version. `project register` only reports the offer (`trustCurrentVersions`); agents cannot perform it.
+
+- The person first sees the exact list and count of files: present in the project, with no review entry, not an asset, and with staged Git content equal to the file. Files with different staged content stay in review.
+- The confirmation sends that exact list with each content hash. The route needs the owner-interface nonce, like any review decision. If any listed file changed, or a new file joined the list, nothing is written and the request fails with `trust_current_stale`.
+- The gesture accepts each file as it is now, with one shared baseline bundle, in one review transaction. It writes ONE signed receipt (`action: "trust-current"`) that lists each file, its content hash, its ledger key and the ledger value it replaced. The receipt index stays at version 1: the receipt becomes the head of every ledger key it covers.
+- "Undo this trust" removes every acceptance of that gesture at once and restores each ledger key, or its absence. Files are not changed. Undo is refused after 30 days, or when a newer decision covers any of the files, or when any entry differs from the receipt. A file edited after the gesture does not block undo: there is no earlier accepted version to restore.
+
 ## Terminal request binding
 
 The terminal UI requests a short-lived, one-use challenge bound to principal, review authority, action, repository, proposal branch, and exact head. The challenge is consumed before mutable terminal work begins. A retry requires a new challenge.

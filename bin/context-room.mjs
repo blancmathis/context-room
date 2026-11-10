@@ -950,7 +950,21 @@ if (command === "project") {
         process.exit(0);
       }
       const registered = registerCliProject({ root, title });
-      emitAgentFirstResult("project.register", { data: { effect: "reversible-local", registered } }, { format: agentFirstFormat });
+      // Offer only: trusting the current versions is a human gesture in the Hub (owner nonce).
+      let trustCurrentVersions = null;
+      try {
+        const offer = buildDocQaReport(registered?.root || root, { readOnly: true }).summary?.trustCurrent;
+        if (offer) {
+          trustCurrentVersions = {
+            offered: offer.offered === true,
+            count: offer.count || 0,
+            howTo: offer.offered
+              ? "No document has an accepted version yet. A person can accept the current versions in one undoable gesture: Hub > this project > Documents > Trust the current versions."
+              : "",
+          };
+        }
+      } catch {}
+      emitAgentFirstResult("project.register", { data: { effect: "reversible-local", registered, ...(trustCurrentVersions ? { trustCurrentVersions } : {}) } }, { format: agentFirstFormat });
       process.exit(0);
     }
     if (action === "import-codex") {

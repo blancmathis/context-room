@@ -498,6 +498,7 @@ export function remoteAcceptanceTimeouts(githubApp = {}) {
   };
 }
 const BACKGROUND_REPORT_INVALIDATING_PATHS = new Set([
+  "/api/context-hub/trust-current",
   "/api/startup-skills/create",
   "/api/startup-skills/delete",
   "/api/startup-skills/file",
@@ -8787,6 +8788,7 @@ function commitDocReviewReceiptUnderLock(root, receipt) {
     committedAt,
     undoOf: record.undoOf || null,
     blob: record.before?.baseline?.blob || null,
+    ...(Array.isArray(record.items) ? { count: record.items.length } : {}),
   };
   const cutoff = Date.now() - REVIEW_HISTORY_WINDOW_MS;
   const all = [...index.receipts, summary];
@@ -8794,7 +8796,8 @@ function commitDocReviewReceiptUnderLock(root, receipt) {
   const keptIds = new Set(kept.map((entry) => entry.id));
   store.writeJson(REVIEW_RECEIPT_INDEX_FILE, store.sign({
     version: 1,
-    heads: { ...index.heads, [record.target.ledgerKey]: record.id },
+    // A trust-current receipt (and its undo) is the latest decision for every file it covers.
+    heads: { ...index.heads, ...Object.fromEntries((record.target.ledgerKeys || [record.target.ledgerKey]).map((key) => [key, record.id])) },
     receipts: kept,
   }));
   // Committed. Pruning old receipts is best effort: a crash leaves orphans, never a live receipt.
@@ -8842,6 +8845,8 @@ function publicDocReviewReceipt(receipt, availability) {
     committedAt: receipt.committedAt,
     undoOf: receipt.undoOf || null,
     contentHash: receipt.revision?.contentHash || null,
+    ...(Array.isArray(receipt.items) ? { count: receipt.items.length } : {}),
+    ...(Array.isArray(receipt.target.ledgerKeys) && !receipt.items ? { count: receipt.target.ledgerKeys.length } : {}),
     undo: availability,
   };
 }
@@ -8872,6 +8877,10 @@ export function readDocReviewHistory(root = process.cwd(), { path: filterPath = 
     let receipt;
     try { receipt = loadDocReviewReceipt(store, index, entry.id); } catch { receipt = null; }
     if (!receipt) continue;
+    if (receipt.action === "trust-current") {
+      receipts.push(publicDocReviewReceipt(receipt, trustCurrentReceiptAvailability(index, receipt, { state, ledger })));
+      continue;
+    }
     let availability = docReviewReceiptAvailability(index, receipt, { state, ledger });
     if (availability.available) {
       try {
@@ -8916,6 +8925,7 @@ export function undoDocReviewAcceptance(root, { receiptId, requestId = null, exp
     const receipt = loadDocReviewReceipt(store, index, receiptId);
     if (!receipt) throw sharedRequestError("This review receipt is unknown or expired.", 404, "review_receipt_unknown");
     if (receipt.target.projectRoot !== resolvedRoot) throw sharedRequestError("This receipt belongs to another project location.", 409, "review_receipt_target_mismatch");
+    if (receipt.action === "trust-current") return undoTrustCurrentUnderLock(resolvedRoot, store, index, receipt, { requestId });
     const relPath = receipt.target.path;
     const state = readDocReviewState(resolvedRoot);
     const ledger = readGlobalReviewLedger(resolvedRoot);
@@ -8987,6 +8997,269 @@ export function undoDocReviewAcceptance(root, { receiptId, requestId = null, exp
     } catch {}
     return result;
   }, { expectedRootIdentity });
+}
+
+// "Trust the current versions": one explicit human gesture that accepts, exactly as they are now,
+// the documents of a project that has no accepted version yet. It is never a default. It writes
+// one signed receipt (action "trust-current") and can be undone as a whole.
+// Contract: docs/features/review-authority.md § Trust the current versions.
+const TRUST_CURRENT_MAX_FILES = 10_000;
+
+function reviewStateHasAcceptedVersion(reviewState) {
+  return Object.values(reviewState?.reviews || {}).some((entry) => entry && typeof entry === "object"
+    && (entry.status === "verified" || entry.acceptedVersion));
+}
+
+function trustCurrentQueueCandidates(reviewState, queue = []) {
+  return queue.filter((item) => item?.path
+    && item.resourceState === "present"
+    && !reviewState.reviews?.[item.path]
+    && !String(item.path).startsWith("~")
+    && !resolveExternalPath(item.path)
+    && !isDocumentAssetPath(item.path)
+    && !/[DU]/.test(String(item.gitStatus || "")));
+}
+
+function trustCurrentItemsRevision(items) {
+  return hashContent(JSON.stringify(items.map((item) => [item.path, item.contentHash])));
+}
+
+// Lists the exact files the gesture would accept. Read-only unless the review lock is held.
+function collectTrustCurrentCandidates(root, { readOnly }) {
+  const reviewState = readDocReviewState(root, { readOnly });
+  if (reviewState.authorityViolation) return { offered: false, reason: "review_evidence_untrusted", items: [], excluded: [], reviewState };
+  if (reviewStateHasAcceptedVersion(reviewState)) return { offered: false, reason: "has_accepted_versions", items: [], excluded: [], reviewState };
+  const report = buildDocQaReportUnderLock(root, { readOnly, reviewState });
+  const candidates = trustCurrentQueueCandidates(reviewState, report.queue);
+  const gitIndexStates = candidates.length ? gitIndexStatesForReviewPaths(root, candidates.map((item) => item.path)) : new Map();
+  const files = new Map();
+  const items = [];
+  const excluded = [];
+  for (const candidate of candidates) {
+    let file;
+    try { file = readReviewTrackedFile(root, candidate.path); } catch { file = null; }
+    if (!file || file.exists === false || typeof file.content !== "string" || file.path !== candidate.path) {
+      excluded.push({ path: candidate.path, reason: "unreadable" });
+      continue;
+    }
+    const contentHash = hashContent(file.content);
+    const resourceState = resourceStateForReviewFile(file);
+    const resourceMode = resourceModeForReviewFile(root, file.path, file);
+    if (!gitIndexStateMatchesReviewedResource(gitIndexStates.get(file.path), { contentHash, resourceState, resourceMode })) {
+      excluded.push({ path: file.path, reason: "staged_content_differs" });
+      continue;
+    }
+    files.set(file.path, file);
+    items.push({ path: file.path, contentHash });
+  }
+  items.sort((left, right) => left.path.localeCompare(right.path, "en"));
+  if (items.length > TRUST_CURRENT_MAX_FILES) {
+    return { offered: false, reason: "too_many_files", items: [], excluded, count: items.length, reviewState };
+  }
+  return {
+    offered: items.length > 0,
+    reason: items.length ? "" : "nothing_to_trust",
+    items,
+    excluded,
+    revision: trustCurrentItemsRevision(items),
+    files,
+    gitIndexStates,
+    reviewState,
+  };
+}
+
+function trustCurrentOfferSummary(reviewState, queue) {
+  if (reviewState?.authorityViolation || reviewStateHasAcceptedVersion(reviewState)) return { offered: false, count: 0 };
+  const count = trustCurrentQueueCandidates(reviewState, queue).length;
+  return { offered: count > 0, count };
+}
+
+export function previewTrustCurrentDocVersions(root = process.cwd(), { expectedRootIdentity = null } = {}) {
+  assertManagedProjectRootIdentity(root, expectedRootIdentity);
+  const resolvedRoot = safeRealPath(path.resolve(root));
+  const preview = collectTrustCurrentCandidates(resolvedRoot, { readOnly: true });
+  return {
+    offered: preview.offered,
+    reason: preview.reason,
+    count: preview.count ?? preview.items.length,
+    items: preview.items,
+    excluded: preview.excluded,
+    revision: preview.revision || null,
+  };
+}
+
+function normalizeTrustCurrentRequestItems(items) {
+  if (!Array.isArray(items) || !items.length) throw sharedRequestError("The exact list of files to trust is required.", 400, "trust_current_items_required");
+  if (items.length > TRUST_CURRENT_MAX_FILES) throw sharedRequestError("Too many files in one gesture.", 400, "trust_current_limit");
+  const byPath = new Map();
+  for (const entry of items) {
+    const relPath = typeof entry?.path === "string" ? entry.path : "";
+    const contentHash = typeof entry?.contentHash === "string" ? entry.contentHash : "";
+    if (!relPath || !/^[a-f0-9]{64}$/.test(contentHash) || (byPath.has(relPath) && byPath.get(relPath) !== contentHash)) {
+      throw sharedRequestError("The list of files to trust is invalid.", 400, "trust_current_items_invalid");
+    }
+    byPath.set(relPath, contentHash);
+  }
+  return byPath;
+}
+
+function trustCurrentEntryDigest(entry) {
+  return entry == null ? null : hashContent(JSON.stringify(entry));
+}
+
+export function trustCurrentDocVersions(root, { items, requestId = null, expectedRootIdentity = null } = {}) {
+  const requested = normalizeTrustCurrentRequestItems(items);
+  const result = withDocReviewEvidenceLock(root, () => {
+    const resolvedRoot = safeRealPath(path.resolve(root));
+    const store = docReviewReceiptStore(resolvedRoot);
+    const index = readDocReviewReceiptIndex(store);
+    if (requestId) {
+      const prior = index.receipts.find((entry) => entry.requestId === requestId);
+      if (prior) {
+        const replayed = loadDocReviewReceipt(store, index, prior.id);
+        if (!replayed || replayed.action !== "trust-current" || replayed.target.projectRoot !== resolvedRoot) {
+          throw sharedRequestError("This request was already used for another decision.", 409, "review_request_reused");
+        }
+        return { count: replayed.items.length, receipt: publicDocReviewReceipt(replayed, trustCurrentReceiptAvailability(index, replayed, { state: readDocReviewState(resolvedRoot), ledger: readGlobalReviewLedger(resolvedRoot) })), replayed: true };
+      }
+    }
+    const current = collectTrustCurrentCandidates(resolvedRoot, { readOnly: false });
+    if (!current.offered) {
+      const messages = {
+        has_accepted_versions: "This project already has accepted versions. Review its files one by one.",
+        nothing_to_trust: "No file is waiting for a first acceptance.",
+        review_evidence_untrusted: "Review evidence is not trusted. Nothing was trusted.",
+        too_many_files: "Too many files for one gesture.",
+      };
+      throw sharedRequestError(messages[current.reason] || "Trusting the current versions is not available here.", 409, "trust_current_unavailable", { reason: current.reason });
+    }
+    // The person confirmed one exact list. Any difference stops the whole gesture before a write.
+    const currentByPath = new Map(current.items.map((item) => [item.path, item.contentHash]));
+    const changed = [...requested].filter(([relPath, contentHash]) => currentByPath.get(relPath) !== contentHash).map(([relPath]) => relPath);
+    const added = [...currentByPath.keys()].filter((relPath) => !requested.has(relPath));
+    if (changed.length || added.length) {
+      throw sharedRequestError(
+        "Files changed since the list was shown. Nothing was trusted. Look at the new list.",
+        409,
+        "trust_current_stale",
+        { changed: changed.slice(0, 50), added: added.slice(0, 50), changedCount: changed.length, addedCount: added.length },
+      );
+    }
+    const state = current.reviewState;
+    const ledger = readGlobalReviewLedger(resolvedRoot);
+    if (ledger.authorityViolation) throw sharedRequestError("Review evidence is not trusted. Nothing was trusted.", 409, "review_receipt_integrity_invalid");
+    // Dependency versions as they will be once every listed file is accepted.
+    const simulated = { version: 2, reviews: { ...state.reviews } };
+    for (const item of current.items) simulated.reviews[item.path] = { status: "verified", contentHash: item.contentHash };
+    const dependencyState = buildAcceptedDependencyState(resolvedRoot, listMemoryFiles(resolvedRoot), simulated, { globalReviewLedger: ledger });
+    const ledgerKeys = new Map(current.items.map((item) => [item.path, globalReviewKeyFor(resolvedRoot, item.path)]));
+    const ledgerBefore = new Map(current.items.map((item) => {
+      const value = ledger.reviews[ledgerKeys.get(item.path)];
+      return [item.path, value == null ? null : JSON.parse(JSON.stringify(value))];
+    }));
+    const bundle = prepareDocReviewBaselineBundle(resolvedRoot, current.items.map((item) => current.files.get(item.path)));
+    const controlFiles = [path.join(resolvedRoot, DOCQA_REVIEW_STATE), globalReviewLedgerPath(resolvedRoot), bundle.absolutePath];
+    return withDocReviewControlRollback(resolvedRoot, controlFiles, "context-room-review-trust-rollback", () => {
+      const batchControl = { state, ledger, ledgerChanged: false, gitIndexStates: current.gitIndexStates, baselines: writePreparedDocReviewBaselineBundleUnderLock(resolvedRoot, bundle) };
+      for (const item of current.items) {
+        const file = current.files.get(item.path);
+        writeDocReviewDecisionUnderLock(resolvedRoot, item.path, {
+          status: "verified",
+          note: "Trusted as the current version (Trust the current versions).",
+          expectedContentHash: item.contentHash,
+          providedDependencyVersions: directDependencyVersions(parseDocMetadata(file.content || "", item.path), dependencyState.byId),
+          suppressEvent: true,
+        }, file, batchControl);
+      }
+      writeDocReviewState(resolvedRoot, batchControl.state);
+      if (batchControl.ledgerChanged) writeGlobalReviewLedger(resolvedRoot, batchControl.ledger);
+      const committed = commitDocReviewReceiptUnderLock(resolvedRoot, {
+        id: randomUUID(),
+        requestId: requestId || null,
+        action: "trust-current",
+        status: "verified",
+        source: "trust-current",
+        target: { projectRoot: resolvedRoot, rootIdentity: managedProjectRootIdentity(resolvedRoot), path: "", ledgerKey: null, ledgerKeys: [...ledgerKeys.values()] },
+        bundle: bundle.relPath,
+        items: current.items.map((item) => ({
+          path: item.path,
+          contentHash: item.contentHash,
+          ledgerKey: ledgerKeys.get(item.path),
+          beforeLedger: ledgerBefore.get(item.path),
+          afterDigest: trustCurrentEntryDigest(batchControl.state.reviews[item.path]),
+          afterLedgerDigest: trustCurrentEntryDigest(batchControl.ledger.reviews[ledgerKeys.get(item.path)] ?? null),
+        })),
+        undo: { eligible: true, reason: "" },
+      });
+      return { count: current.items.length, receipt: publicDocReviewReceipt(committed, { available: true, reason: "" }) };
+    });
+  }, { expectedRootIdentity });
+  if (!result.replayed) {
+    try {
+      appendContextRoomEvent("review.trust-current", { ...contextRoomEventIdentity(root), data: { count: result.count, receiptId: result.receipt.id } });
+    } catch {}
+  }
+  return result;
+}
+
+function trustCurrentReceiptAvailability(index, receipt, { state, ledger }) {
+  if (!receipt.undo?.eligible) return { available: false, reason: receipt.undo?.reason || "not_undoable" };
+  if (Date.now() - Date.parse(receipt.committedAt) > REVIEW_UNDO_WINDOW_MS) return { available: false, reason: "expired" };
+  for (const item of receipt.items || []) {
+    if (index.heads[item.ledgerKey] !== receipt.id
+      || trustCurrentEntryDigest(state?.reviews?.[item.path] ?? null) !== item.afterDigest
+      || trustCurrentEntryDigest(ledger?.reviews?.[item.ledgerKey] ?? null) !== item.afterLedgerDigest) {
+      return { available: false, reason: "superseded" };
+    }
+  }
+  return { available: true, reason: "" };
+}
+
+// Undo is all or nothing: every trusted file goes back to "no accepted version". Files edited
+// since the gesture do not block it, because no earlier accepted version has to be restored.
+function undoTrustCurrentUnderLock(resolvedRoot, store, index, receipt, { requestId = null } = {}) {
+  const state = readDocReviewState(resolvedRoot);
+  const ledger = readGlobalReviewLedger(resolvedRoot);
+  if (state.authorityViolation || ledger.authorityViolation) {
+    throw sharedRequestError("Review evidence is not trusted. Undo is closed.", 409, "review_receipt_integrity_invalid");
+  }
+  if (!Array.isArray(receipt.items) || !receipt.items.length || typeof receipt.bundle !== "string") {
+    throw sharedRequestError("This review receipt was changed outside Context Room.", 409, "review_receipt_integrity_invalid");
+  }
+  const availability = trustCurrentReceiptAvailability(index, receipt, { state, ledger });
+  if (!availability.available) throw docReviewUndoConflict(availability.reason);
+  const controlFiles = [path.join(resolvedRoot, DOCQA_REVIEW_STATE), globalReviewLedgerPath(resolvedRoot), path.join(resolvedRoot, receipt.bundle)];
+  const result = withDocReviewControlRollback(resolvedRoot, controlFiles, "context-room-review-undo-rollback", () => {
+    const reviews = { ...state.reviews };
+    const ledgerReviews = { ...ledger.reviews };
+    for (const item of receipt.items) {
+      delete reviews[item.path];
+      if (item.beforeLedger) ledgerReviews[item.ledgerKey] = item.beforeLedger;
+      else delete ledgerReviews[item.ledgerKey];
+    }
+    writeDocReviewState(resolvedRoot, { version: 2, reviews });
+    writeGlobalReviewLedger(resolvedRoot, { version: 2, reviews: ledgerReviews });
+    if (!Object.values(reviews).some((entry) => entry?.baselinePath === receipt.bundle || entry?.acceptedVersion?.baselinePath === receipt.bundle)) {
+      removeDocReviewControlFile(resolvedRoot, receipt.bundle);
+    }
+    const committed = commitDocReviewReceiptUnderLock(resolvedRoot, {
+      id: randomUUID(),
+      requestId: requestId || null,
+      action: "undo",
+      undoOf: receipt.id,
+      status: "unverified",
+      source: "undo",
+      target: receipt.target,
+      before: { entry: null, ledger: null, baseline: { path: receipt.bundle, exists: true, hash: null } },
+      after: { entry: null, ledger: null },
+      undo: { eligible: false, reason: "is_undo" },
+    });
+    return { path: "", count: receipt.items.length, undoOf: receipt.id, status: "unverified", receipt: publicDocReviewReceipt(committed, { available: false, reason: "is_undo" }) };
+  });
+  try {
+    appendContextRoomEvent("review.undo", { ...contextRoomEventIdentity(resolvedRoot), data: { undoOf: receipt.id, count: receipt.items.length } });
+  } catch {}
+  return result;
 }
 
 function gitFileAtRevision(root, revision, relPath) {
@@ -12551,6 +12824,9 @@ function buildDocQaReportUnderLock(root = process.cwd(), options = {}) {
       high: queue.filter((item) => item.issues.some((issue) => issue.severity === "high")).length,
       prompts: files.filter((file) => classifyDocPath(file.path).type === "prompt").length,
       canonical: queue.filter((item) => item.metadata.kind === "canonical").length,
+      // "Trust the current versions" is offered only while no file has an accepted version.
+      // The exact list (with the staged-content check) comes from /api/context-hub/trust-current.
+      trustCurrent: trustCurrentOfferSummary(reviewState, queue),
     },
     pendingPaths: queue.map((item) => item.path),
     reviewedPaths,
@@ -18296,6 +18572,7 @@ function isOwnerReviewAuthorityMutation(pathname = "", method = "GET") {
     "POST /api/review-gate",
     "POST /api/docqa/review",
     "POST /api/context-hub/review-undo",
+    "POST /api/context-hub/trust-current",
     "POST /api/docqa/local-proposal-decision",
     "POST /api/docqa/local-draft",
     "POST /api/docqa/local-draft-submit",
@@ -23802,6 +24079,34 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       requestId: typeof body.requestId === "string" && body.requestId ? body.requestId.slice(0, 100) : null,
       expectedRootIdentity: location.rootIdentity || managedProjectRootIdentity(location.root),
     });
+    invalidateBackgroundCaches(location.root, { explicit: true });
+    contextHubProjectSummaryCache.clear();
+    contextHubStateCache.clear();
+    await markContextHubSnapshotStaleAsync();
+    sendJson(res, 200, { ...result, projectId: location.id });
+    return;
+  }
+  if (url.pathname === "/api/context-hub/trust-current" && (req.method === "GET" || req.method === "POST")) {
+    // "Trust the current versions": GET shows the exact list; POST is the human gesture
+    // (owner nonce required, see isOwnerReviewAuthorityMutation). Agents only see the offer.
+    if (hostedSharedProvider) throw sharedRequestError("Trusting current versions is available only for local projects", 400, "trust_current_local_only");
+    const body = req.method === "POST" ? await readJsonBody(req, { maxBytes: 2_000_000 }) : null;
+    if (body) assertExactObjectKeys(body, ["projectId", "items", "requestId"], "Trust current versions");
+    const projectId = String((body ? body.projectId : url.searchParams.get("projectId")) || "");
+    const location = (await contextHubLocalLocationsAsync(root)).find((entry) => entry.id === projectId);
+    if (!location) throw sharedRequestError("This project location is not available.", 404, "trust_current_project_unavailable");
+    const expectedRootIdentity = location.rootIdentity || managedProjectRootIdentity(location.root);
+    if (!body) {
+      sendJson(res, 200, { ...previewTrustCurrentDocVersions(location.root, { expectedRootIdentity }), projectId: location.id });
+      return;
+    }
+    const result = trustCurrentDocVersions(location.root, {
+      items: body.items,
+      requestId: typeof body.requestId === "string" && body.requestId ? body.requestId.slice(0, 100) : null,
+      expectedRootIdentity,
+    });
+    // The project's own reports (Documents card, inspection) must show the new state at once.
+    invalidateBackgroundCaches(location.root, { explicit: true });
     contextHubProjectSummaryCache.clear();
     contextHubStateCache.clear();
     await markContextHubSnapshotStaleAsync();
