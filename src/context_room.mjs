@@ -260,6 +260,14 @@ const __filename = fileURLToPath(import.meta.url);
 const DEFAULT_PORT = 4317;
 const CONTEXT_ROOM_VERSION = String(JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version || "").trim();
 const MAX_FILE_BYTES = 750_000;
+// Review control files (review-state.json and review-ledger.json grow about 1 KB per accepted file;
+// a baseline bundle holds the full text, split into parts) get their own bound: every review write refuses to pass it, and every
+// rollback snapshot and undo accepts files up to it. See docs/features/review-authority.md.
+const MAX_REVIEW_CONTROL_FILE_BYTES = 8 * 1024 * 1024;
+// The journal keeps a base64 copy of up to three control files (state, ledger, bundle).
+const MAX_REVIEW_JOURNAL_BYTES = 4 * MAX_REVIEW_CONTROL_FILE_BYTES + 1024 * 1024;
+// A trust of many files splits its baseline bundle into parts of about this size (half the bound).
+const REVIEW_BASELINE_BUNDLE_PART_BYTES = 4 * 1024 * 1024;
 const MAX_VISUAL_ASSET_BYTES = 12_000_000;
 const MAX_JSON_REQUEST_BYTES = 2_097_152;
 const HOSTED_HTTP_HEADERS_TIMEOUT_MS = 10_000;
@@ -498,6 +506,7 @@ export function remoteAcceptanceTimeouts(githubApp = {}) {
   };
 }
 const BACKGROUND_REPORT_INVALIDATING_PATHS = new Set([
+  "/api/context-hub/trust-current",
   "/api/startup-skills/create",
   "/api/startup-skills/delete",
   "/api/startup-skills/file",
@@ -2015,9 +2024,12 @@ function startupSkillNamespaceFolders(abs, folderName, containmentRoot = null) {
 // around a write, because the cache would hide the change.
 let memorySettingsScope = null;
 
-export function withMemorySettingsScope(fn) {
+// `cacheWritable` also caches non-read-only lookups; use it only around reads that run under
+// the review lock with no settings write inside.
+export function withMemorySettingsScope(fn, { cacheWritable = false } = {}) {
   if (memorySettingsScope) return fn();
   memorySettingsScope = new Map();
+  memorySettingsScope.cacheWritable = cacheWritable;
   try {
     return fn();
   } finally {
@@ -2026,8 +2038,8 @@ export function withMemorySettingsScope(fn) {
 }
 
 export function effectiveMemoryWebappSettings(root = process.cwd(), { expectedRootIdentity = null, readOnly = false } = {}) {
-  if (!memorySettingsScope || !readOnly || expectedRootIdentity) return computeEffectiveMemoryWebappSettings(root, { expectedRootIdentity, readOnly });
-  const key = String(root);
+  if (!memorySettingsScope || (!readOnly && !memorySettingsScope.cacheWritable) || expectedRootIdentity) return computeEffectiveMemoryWebappSettings(root, { expectedRootIdentity, readOnly });
+  const key = `${readOnly ? "r" : "w"}:${root}`;
   if (!memorySettingsScope.has(key)) memorySettingsScope.set(key, computeEffectiveMemoryWebappSettings(root, { expectedRootIdentity, readOnly }));
   return memorySettingsScope.get(key);
 }
@@ -4564,7 +4576,7 @@ function anchoredRevisionFailure(error) {
   return ["EEXIST", "ELOOP", "ESTALE", "ENOENT", "ENOTDIR"].includes(error?.code);
 }
 
-function readDeletionFileSnapshot(abs, relPath, { budget = null, expectedParentRealPath = "", containmentRoot = "" } = {}) {
+function readDeletionFileSnapshot(abs, relPath, { budget = null, expectedParentRealPath = "", containmentRoot = "", maxBytes = null } = {}) {
   const resolved = path.resolve(abs);
   const cacheKey = resolved;
   if (budget?.byAbsolutePath.has(cacheKey)) {
@@ -4577,12 +4589,14 @@ function readDeletionFileSnapshot(abs, relPath, { budget = null, expectedParentR
     const beforeStats = fs.fstatSync(fd, { bigint: true });
     if (!beforeStats.isFile()) throw new Error(`Not a regular file: ${relPath}`);
     const before = deletionFileStats(beforeStats);
-    if (before.size > (isDocumentAssetPath(relPath) ? 20 * 1024 * 1024 : MAX_FILE_BYTES)) {
+    // Review control files keep their own bound on every reread, so a rollback can stage them.
+    const maximumBytes = maxBytes ?? reviewControlFileMaxBytes(abs) ?? (isDocumentAssetPath(relPath) ? 20 * 1024 * 1024 : MAX_FILE_BYTES);
+    if (before.size > maximumBytes) {
       throw deletionManifestError(
         `File too large for deletion preview: ${relPath}`,
         413,
         "delete_file_too_large",
-        { path: relPath, bytes: before.size, maximumBytes: MAX_FILE_BYTES },
+        { path: relPath, bytes: before.size, maximumBytes },
       );
     }
     if (budget && budget.fileCount + 1 > MAX_DELETE_MANIFEST_FILES) {
@@ -7181,6 +7195,10 @@ function assertDocReviewEvidenceLockHeld(root = process.cwd()) {
 function atomicWriteReviewControlFile(root, relPath, content) {
   assertDocReviewEvidenceLockHeld(root);
   const normalized = normalizeRelPath(relPath);
+  const bytes = Buffer.byteLength(content, "utf8");
+  if (bytes > MAX_REVIEW_CONTROL_FILE_BYTES) {
+    throw sharedRequestError("The review records of this project would grow past 8 MB. Nothing was written. Register a smaller folder, or review fewer files at once.", 413, "review_control_file_too_large", { path: normalized, bytes, maximumBytes: MAX_REVIEW_CONTROL_FILE_BYTES });
+  }
   const absolute = path.join(path.resolve(root), normalized);
   assertManagedProjectPath(root, absolute, normalized);
   const directory = path.dirname(absolute);
@@ -7638,31 +7656,75 @@ function writeDocReviewBaselineFile(root, relPath, content) {
   });
 }
 
-function prepareDocReviewBaselineBundle(root, files) {
+// A bundle is split into parts, each a complete version-1 bundle file under the control file
+// bound. Each entry names its own part (baselinePath), so readers need nothing new. One file is at
+// most MAX_FILE_BYTES, so even fully escaped it fits one part.
+function prepareDocReviewBaselineBundle(root, files, { partBytes = REVIEW_BASELINE_BUNDLE_PART_BYTES } = {}) {
   assertDocReviewEvidenceLockHeld(root);
   const entries = files.map((file) => {
     const normalized = normalizeRelPath(file.path);
     preflightDocReviewMutationPaths(root, normalized, { baseline: true });
     return [normalized, String(file.content || "")];
   }).sort(([left], [right]) => left.localeCompare(right, "en"));
-  const content = JSON.stringify({ version: 1, entries: Object.fromEntries(entries) }) + "\n";
-  const relPath = path.posix.join(DOCQA_REVIEW_BASELINE_BUNDLES, `${hashContent(content)}.json`);
-  const absolutePath = path.join(path.resolve(root), relPath);
-  assertManagedProjectPath(root, absolutePath, relPath);
-  return { entries, content, relPath, absolutePath };
+  const groups = [];
+  let group = null;
+  for (const entry of entries) {
+    const bytes = Buffer.byteLength(JSON.stringify(entry[0]), "utf8") + Buffer.byteLength(JSON.stringify(entry[1]), "utf8") + 2;
+    if (!group || (group.entries.length && group.bytes + bytes > partBytes)) groups.push(group = { entries: [], bytes: 32 });
+    group.entries.push(entry);
+    group.bytes += bytes;
+  }
+  const parts = groups.map((part) => {
+    const content = JSON.stringify({ version: 1, entries: Object.fromEntries(part.entries) }) + "\n";
+    const relPath = path.posix.join(DOCQA_REVIEW_BASELINE_BUNDLES, `${hashContent(content)}.json`);
+    const absolutePath = path.join(path.resolve(root), relPath);
+    assertManagedProjectPath(root, absolutePath, relPath);
+    return { entries: part.entries, content, relPath, absolutePath };
+  });
+  return { entries, parts };
 }
 
 function writePreparedDocReviewBaselineBundleUnderLock(root, prepared) {
   assertDocReviewEvidenceLockHeld(root);
-  atomicWriteReviewControlFile(root, prepared.relPath, prepared.content);
   const baselineAt = new Date().toISOString();
-  return new Map(prepared.entries.map(([filePath, content]) => [filePath, {
-    baselinePath: prepared.relPath,
-    baselineBundleKey: filePath,
-    baselineHash: hashContent(content),
-    baselineReviewHash: reviewContentHash(content),
-    baselineAt,
-  }]));
+  const baselines = new Map();
+  for (const part of prepared.parts) {
+    atomicWriteReviewControlFile(root, part.relPath, part.content);
+    for (const [filePath, content] of part.entries) {
+      baselines.set(filePath, {
+        baselinePath: part.relPath,
+        baselineBundleKey: filePath,
+        baselineHash: hashContent(content),
+        baselineReviewHash: reviewContentHash(content),
+        baselineAt,
+      });
+    }
+  }
+  return baselines;
+}
+
+function docReviewBaselineReferenced(reviews, relPath) {
+  return Object.values(reviews || {}).some((entry) => entry?.baselinePath === relPath || entry?.acceptedVersion?.baselinePath === relPath);
+}
+
+// The bundle parts a trust receipt names. Receipts written before the split name one `bundle`.
+function trustCurrentReceiptBundles(receipt) {
+  const bundles = Array.isArray(receipt?.bundles) ? receipt.bundles : [receipt?.bundle];
+  const prefix = DOCQA_REVIEW_BASELINE_BUNDLES + "/";
+  if (!bundles.length || bundles.some((bundle) => typeof bundle !== "string" || !bundle.startsWith(prefix) || normalizeRelPath(bundle) !== bundle)) return null;
+  return bundles;
+}
+
+// A bundle part is named by the hash of its content and never rewritten, so one parse serves
+// every entry it holds. The key keeps the file identity too, so a replaced file is parsed again.
+const docReviewBaselineBundleCache = new Map();
+function readDocReviewBaselineBundleCached(abs, stat) {
+  const key = `${abs}\0${stat.ino}\0${stat.size}\0${stat.mtimeMs}\0${stat.ctimeMs}`;
+  if (docReviewBaselineBundleCache.has(key)) return docReviewBaselineBundleCache.get(key);
+  const bundle = JSON.parse(fs.readFileSync(abs, "utf8"));
+  if (docReviewBaselineBundleCache.size >= 4) docReviewBaselineBundleCache.delete(docReviewBaselineBundleCache.keys().next().value);
+  docReviewBaselineBundleCache.set(key, bundle);
+  return bundle;
 }
 
 function readDocReviewBaseline(root, relPath, review = null) {
@@ -7675,14 +7737,16 @@ function readDocReviewBaseline(root, relPath, review = null) {
   if (pending) {
     if (!pending.snapshot?.exists) return null;
     content = Buffer.from(pending.snapshot.content).toString("utf8");
-  } else {
-    if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return null;
-    content = fs.readFileSync(abs, "utf8");
   }
   const baselineBundleKey = normalizeRelPath(review?.baselineBundleKey || "");
+  let stat = null;
+  if (!pending) {
+    if (!fs.existsSync(abs) || !(stat = fs.statSync(abs)).isFile()) return null;
+    if (!baselineBundleKey) content = fs.readFileSync(abs, "utf8");
+  }
   if (baselineBundleKey) {
     try {
-      const bundle = JSON.parse(content);
+      const bundle = pending ? JSON.parse(content) : readDocReviewBaselineBundleCached(abs, stat);
       if (bundle?.version !== 1 || !bundle.entries || typeof bundle.entries !== "object" || !Object.hasOwn(bundle.entries, baselineBundleKey)) return null;
       content = String(bundle.entries[baselineBundleKey]);
     } catch {
@@ -8538,6 +8602,17 @@ export function reviewLocalDocumentationProposal(root, id, options = {}) {
   }, { expectedRootIdentity: options.expectedRootIdentity || null });
 }
 
+function reviewControlFileMaxBytes(filePath) {
+  const resolved = path.resolve(filePath);
+  const parent = path.dirname(resolved);
+  const name = path.basename(resolved);
+  if (path.basename(parent) === CONFIG_DIR && [path.basename(DOCQA_REVIEW_STATE), path.basename(DOCQA_GLOBAL_REVIEW_LEDGER)].includes(name)) {
+    return MAX_REVIEW_CONTROL_FILE_BYTES;
+  }
+  if (parent.endsWith(path.join(...DOCQA_REVIEW_BASELINE_BUNDLES.split("/"))) && name.endsWith(".json")) return MAX_REVIEW_CONTROL_FILE_BYTES;
+  return null;
+}
+
 function snapshotRegularFile(filePath, { managedRoot = path.dirname(filePath) } = {}) {
   const resolved = path.resolve(filePath);
   const resolvedManagedRoot = path.resolve(managedRoot);
@@ -8565,6 +8640,7 @@ function snapshotRegularFile(filePath, { managedRoot = path.dirname(filePath) } 
     const file = readDeletionFileSnapshot(resolved, displayPath(resolved), {
       expectedParentRealPath: parentSnapshot?.parentRealPath || "",
       containmentRoot: resolvedManagedRoot,
+      maxBytes: reviewControlFileMaxBytes(resolved),
     });
     return {
       exists: true,
@@ -8624,6 +8700,7 @@ function restoreRegularFileSnapshot(filePath, snapshot, {
     current = readDeletionFileSnapshot(resolved, displayPath(resolved), {
       expectedParentRealPath: parentRealPath,
       containmentRoot: managedRoot,
+      maxBytes: reviewControlFileMaxBytes(resolved),
     });
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
@@ -8861,7 +8938,7 @@ function readDocReviewJournal(store) {
   if (cached?.modified === modified) return cached.value;
   let value;
   try {
-    const journal = store.readJson(REVIEW_JOURNAL_FILE);
+    const journal = store.readJson(REVIEW_JOURNAL_FILE, { maxBytes: MAX_REVIEW_JOURNAL_BYTES });
     if (!journal) value = null;
     else if (journal.version !== 1 || !Array.isArray(journal.files) || !store.verify(journal)) value = { invalid: true };
     else {
@@ -8985,6 +9062,7 @@ function commitDocReviewReceiptUnderLock(root, receipt) {
     committedAt,
     undoOf: record.undoOf || null,
     blob: record.before?.baseline?.blob || null,
+    ...(Array.isArray(record.items) ? { count: record.items.length } : {}),
   };
   const cutoff = Date.now() - REVIEW_HISTORY_WINDOW_MS;
   const all = [...index.receipts, summary];
@@ -8992,7 +9070,8 @@ function commitDocReviewReceiptUnderLock(root, receipt) {
   const keptIds = new Set(kept.map((entry) => entry.id));
   store.writeJson(REVIEW_RECEIPT_INDEX_FILE, store.sign({
     version: 1,
-    heads: { ...index.heads, [record.target.ledgerKey]: record.id },
+    // A trust-current receipt (and its undo) is the latest decision for every file it covers.
+    heads: { ...index.heads, ...Object.fromEntries((record.target.ledgerKeys || [record.target.ledgerKey]).map((key) => [key, record.id])) },
     receipts: kept,
   }));
   // Committed. Pruning old receipts is best effort: a crash leaves orphans, never a live receipt.
@@ -9040,6 +9119,8 @@ function publicDocReviewReceipt(receipt, availability) {
     committedAt: receipt.committedAt,
     undoOf: receipt.undoOf || null,
     contentHash: receipt.revision?.contentHash || null,
+    ...(Array.isArray(receipt.items) ? { count: receipt.items.length } : {}),
+    ...(Array.isArray(receipt.target.ledgerKeys) && !receipt.items ? { count: receipt.target.ledgerKeys.length } : {}),
     undo: availability,
   };
 }
@@ -9070,6 +9151,10 @@ export function readDocReviewHistory(root = process.cwd(), { path: filterPath = 
     let receipt;
     try { receipt = loadDocReviewReceipt(store, index, entry.id); } catch { receipt = null; }
     if (!receipt) continue;
+    if (receipt.action === "trust-current") {
+      receipts.push(publicDocReviewReceipt(receipt, trustCurrentReceiptAvailability(index, receipt, { state, ledger })));
+      continue;
+    }
     let availability = docReviewReceiptAvailability(index, receipt, { state, ledger });
     if (availability.available) {
       try {
@@ -9114,6 +9199,7 @@ export function undoDocReviewAcceptance(root, { receiptId, requestId = null, exp
     const receipt = loadDocReviewReceipt(store, index, receiptId);
     if (!receipt) throw sharedRequestError("This review receipt is unknown or expired.", 404, "review_receipt_unknown");
     if (receipt.target.projectRoot !== resolvedRoot) throw sharedRequestError("This receipt belongs to another project location.", 409, "review_receipt_target_mismatch");
+    if (receipt.action === "trust-current") return undoTrustCurrentUnderLock(resolvedRoot, store, index, receipt, { requestId });
     const relPath = receipt.target.path;
     const state = readDocReviewState(resolvedRoot);
     const ledger = readGlobalReviewLedger(resolvedRoot);
@@ -9185,6 +9271,294 @@ export function undoDocReviewAcceptance(root, { receiptId, requestId = null, exp
     } catch {}
     return result;
   }, { expectedRootIdentity });
+}
+
+// "Trust the current versions": one explicit human gesture that accepts, exactly as they are now,
+// the documents of a project that has no accepted version yet. It is never a default. It writes
+// one signed receipt (action "trust-current") and can be undone as a whole.
+// Contract: docs/features/review-authority.md § Trust the current versions.
+// Above this count the gesture is refused at the preview, before any heavy work: 5 000 files of
+// 15 KB take about 4 s to list and 10 s to trust, and the review state stays under its bound.
+const TRUST_CURRENT_MAX_FILES = 5_000;
+
+function reviewStateHasAcceptedVersion(reviewState) {
+  return Object.values(reviewState?.reviews || {}).some((entry) => entry && typeof entry === "object"
+    && (entry.status === "verified" || entry.acceptedVersion));
+}
+
+function trustCurrentQueueCandidates(reviewState, queue = []) {
+  return queue.filter((item) => item?.path
+    && item.resourceState === "present"
+    && !reviewState.reviews?.[item.path]
+    && !String(item.path).startsWith("~")
+    && !resolveExternalPath(item.path)
+    && !isDocumentAssetPath(item.path)
+    && !/[DU]/.test(String(item.gitStatus || "")));
+}
+
+function trustCurrentItemsRevision(items) {
+  return hashContent(JSON.stringify(items.map((item) => [item.path, item.contentHash])));
+}
+
+// Lists the exact files the gesture would accept. Read-only unless the review lock is held.
+function collectTrustCurrentCandidates(root, { readOnly }) {
+  const reviewState = readDocReviewState(root, { readOnly });
+  if (reviewState.authorityViolation) return { offered: false, reason: "review_evidence_untrusted", items: [], excluded: [], reviewState };
+  if (reviewStateHasAcceptedVersion(reviewState)) return { offered: false, reason: "has_accepted_versions", items: [], excluded: [], reviewState };
+  const report = buildDocQaReportUnderLock(root, { readOnly, reviewState });
+  // A location above this project (the Git top level) may already accept a file: never replace it.
+  const ledger = readGlobalReviewLedger(root, { readOnly });
+  const excluded = [];
+  const candidates = trustCurrentQueueCandidates(reviewState, report.queue).filter((item) => {
+    const entry = ledger.reviews?.[globalReviewKeyFor(root, item.path)];
+    if (!entry || typeof entry !== "object" || (entry.status !== "verified" && !entry.acceptedVersion)) return true;
+    excluded.push({ path: item.path, reason: "accepted_at_git_top_level" });
+    return false;
+  });
+  if (candidates.length > TRUST_CURRENT_MAX_FILES) {
+    return { offered: false, reason: "too_many_files", items: [], excluded, count: candidates.length, maxFiles: TRUST_CURRENT_MAX_FILES, reviewState };
+  }
+  const gitIndexStates = candidates.length ? gitIndexStatesForReviewPaths(root, candidates.map((item) => item.path)) : new Map();
+  const files = new Map();
+  const items = [];
+  const readFiles = readReviewTrackedFilesBatch(root, candidates.map((candidate) => candidate.path));
+  for (const candidate of candidates) {
+    const file = readFiles.get(candidate.path);
+    if (!file || file.exists === false || typeof file.content !== "string" || file.path !== candidate.path) {
+      excluded.push({ path: candidate.path, reason: "unreadable" });
+      continue;
+    }
+    const contentHash = hashContent(file.content);
+    const resourceState = resourceStateForReviewFile(file);
+    const resourceMode = resourceModeForReviewFile(root, file.path, file);
+    if (!gitIndexStateMatchesReviewedResource(gitIndexStates.get(file.path), { contentHash, resourceState, resourceMode })) {
+      excluded.push({ path: file.path, reason: "staged_content_differs" });
+      continue;
+    }
+    files.set(file.path, file);
+    items.push({ path: file.path, contentHash });
+  }
+  items.sort((left, right) => left.path.localeCompare(right.path, "en"));
+  return {
+    offered: items.length > 0,
+    reason: items.length ? "" : "nothing_to_trust",
+    items,
+    excluded,
+    revision: trustCurrentItemsRevision(items),
+    files,
+    gitIndexStates,
+    reviewState,
+  };
+}
+
+// A cheap hint for the report. It carries no count on purpose: the only count shown anywhere is
+// the exact list from previewTrustCurrentDocVersions (the same list the gesture accepts).
+function trustCurrentOfferSummary(reviewState, queue) {
+  if (reviewState?.authorityViolation || reviewStateHasAcceptedVersion(reviewState)) return { offered: false };
+  return { offered: trustCurrentQueueCandidates(reviewState, queue).length > 0 };
+}
+
+export function previewTrustCurrentDocVersions(root = process.cwd(), { expectedRootIdentity = null } = {}) {
+  assertManagedProjectRootIdentity(root, expectedRootIdentity);
+  const resolvedRoot = safeRealPath(path.resolve(root));
+  const preview = collectTrustCurrentCandidates(resolvedRoot, { readOnly: true });
+  return {
+    offered: preview.offered,
+    reason: preview.reason,
+    count: preview.count ?? preview.items.length,
+    ...(preview.maxFiles ? { maxFiles: preview.maxFiles } : {}),
+    items: preview.items,
+    excluded: preview.excluded,
+    revision: preview.revision || null,
+  };
+}
+
+function normalizeTrustCurrentRequestItems(items) {
+  if (!Array.isArray(items) || !items.length) throw sharedRequestError("The exact list of files to trust is required.", 400, "trust_current_items_required");
+  if (items.length > TRUST_CURRENT_MAX_FILES) throw sharedRequestError(`One trust takes at most ${TRUST_CURRENT_MAX_FILES} files. Register a smaller folder, or review the files one by one.`, 400, "trust_current_limit");
+  const byPath = new Map();
+  for (const entry of items) {
+    const relPath = typeof entry?.path === "string" ? entry.path : "";
+    const contentHash = typeof entry?.contentHash === "string" ? entry.contentHash : "";
+    if (!relPath || !/^[a-f0-9]{64}$/.test(contentHash) || (byPath.has(relPath) && byPath.get(relPath) !== contentHash)) {
+      throw sharedRequestError("The list of files to trust is invalid.", 400, "trust_current_items_invalid");
+    }
+    byPath.set(relPath, contentHash);
+  }
+  return byPath;
+}
+
+function trustCurrentEntryDigest(entry) {
+  return entry == null ? null : hashContent(JSON.stringify(entry));
+}
+
+export function trustCurrentDocVersions(root, { items, requestId = null, expectedRootIdentity = null } = {}) {
+  const requested = normalizeTrustCurrentRequestItems(items);
+  const result = withDocReviewEvidenceLock(root, () => {
+    const resolvedRoot = safeRealPath(path.resolve(root));
+    const store = docReviewReceiptStore(resolvedRoot);
+    const index = readDocReviewReceiptIndex(store);
+    if (requestId) {
+      const prior = index.receipts.find((entry) => entry.requestId === requestId);
+      if (prior) {
+        const replayed = loadDocReviewReceipt(store, index, prior.id);
+        if (!replayed || replayed.action !== "trust-current" || replayed.target.projectRoot !== resolvedRoot) {
+          throw sharedRequestError("This request was already used for another decision.", 409, "review_request_reused");
+        }
+        if (index.receipts.some((entry) => entry.action === "undo" && entry.undoOf === replayed.id)) {
+          throw sharedRequestError("This trust was undone. Nothing is accepted. Open the list again to trust the current versions.", 409, "trust_current_undone", { receiptId: replayed.id });
+        }
+        return { count: replayed.items.length, receipt: publicDocReviewReceipt(replayed, trustCurrentReceiptAvailability(index, replayed, { state: readDocReviewState(resolvedRoot), ledger: readGlobalReviewLedger(resolvedRoot) })), replayed: true };
+      }
+    }
+    const current = collectTrustCurrentCandidates(resolvedRoot, { readOnly: false });
+    if (!current.offered) {
+      const messages = {
+        has_accepted_versions: "This project already has accepted versions. Review its files one by one.",
+        nothing_to_trust: "No file is waiting for a first acceptance.",
+        review_evidence_untrusted: "Review evidence is not trusted. Nothing was trusted.",
+        too_many_files: `More than ${TRUST_CURRENT_MAX_FILES} files wait for a first acceptance: too many for one trust. Register a smaller folder, or review the files one by one.`,
+      };
+      throw sharedRequestError(messages[current.reason] || "Trusting the current versions is not available here.", 409, "trust_current_unavailable", { reason: current.reason });
+    }
+    // The person confirmed one exact list. Any difference stops the whole gesture before a write.
+    const currentByPath = new Map(current.items.map((item) => [item.path, item.contentHash]));
+    const changed = [...requested].filter(([relPath, contentHash]) => currentByPath.get(relPath) !== contentHash).map(([relPath]) => relPath);
+    const added = [...currentByPath.keys()].filter((relPath) => !requested.has(relPath));
+    if (changed.length || added.length) {
+      throw sharedRequestError(
+        "Files changed since the list was shown. Nothing was trusted. Look at the new list.",
+        409,
+        "trust_current_stale",
+        { changed: changed.slice(0, 50), added: added.slice(0, 50), changedCount: changed.length, addedCount: added.length },
+      );
+    }
+    const state = current.reviewState;
+    const ledger = readGlobalReviewLedger(resolvedRoot);
+    if (ledger.authorityViolation) throw sharedRequestError("Review evidence is not trusted. Nothing was trusted.", 409, "review_receipt_integrity_invalid");
+    // Dependency versions as they will be once every listed file is accepted.
+    const simulated = { version: 2, reviews: { ...state.reviews } };
+    for (const item of current.items) simulated.reviews[item.path] = { status: "verified", contentHash: item.contentHash };
+    const dependencyState = buildAcceptedDependencyState(resolvedRoot, listMemoryFiles(resolvedRoot), simulated, { globalReviewLedger: ledger });
+    const ledgerKeys = new Map(current.items.map((item) => [item.path, globalReviewKeyFor(resolvedRoot, item.path)]));
+    const ledgerBefore = new Map(current.items.map((item) => {
+      const value = ledger.reviews[ledgerKeys.get(item.path)];
+      return [item.path, value == null ? null : JSON.parse(JSON.stringify(value))];
+    }));
+    const bundle = prepareDocReviewBaselineBundle(resolvedRoot, current.items.map((item) => current.files.get(item.path)));
+    // A part left by an interrupted undo has the same name: drop it so the journal stays small.
+    for (const part of bundle.parts) {
+      if (fs.existsSync(part.absolutePath) && !docReviewBaselineReferenced(state.reviews, part.relPath)) removeDocReviewControlFile(resolvedRoot, part.relPath);
+    }
+    const controlFiles = [path.join(resolvedRoot, DOCQA_REVIEW_STATE), globalReviewLedgerPath(resolvedRoot), ...bundle.parts.map((part) => part.absolutePath)];
+    return withDocReviewControlRollback(resolvedRoot, controlFiles, "context-room-review-trust-rollback", () => {
+      const batchControl = { state, ledger, ledgerChanged: false, gitIndexStates: current.gitIndexStates, baselines: writePreparedDocReviewBaselineBundleUnderLock(resolvedRoot, bundle) };
+      for (const item of current.items) {
+        const file = current.files.get(item.path);
+        writeDocReviewDecisionUnderLock(resolvedRoot, item.path, {
+          status: "verified",
+          note: "Trusted as the current version (Trust the current versions).",
+          expectedContentHash: item.contentHash,
+          providedDependencyVersions: directDependencyVersions(parseDocMetadata(file.content || "", item.path), dependencyState.byId),
+          suppressEvent: true,
+        }, file, batchControl);
+      }
+      writeDocReviewState(resolvedRoot, batchControl.state);
+      if (batchControl.ledgerChanged) writeGlobalReviewLedger(resolvedRoot, batchControl.ledger);
+      const committed = commitDocReviewReceiptUnderLock(resolvedRoot, {
+        id: randomUUID(),
+        requestId: requestId || null,
+        action: "trust-current",
+        status: "verified",
+        source: "trust-current",
+        target: { projectRoot: resolvedRoot, rootIdentity: managedProjectRootIdentity(resolvedRoot), path: "", ledgerKey: null, ledgerKeys: [...ledgerKeys.values()] },
+        bundle: bundle.parts[0].relPath,
+        bundles: bundle.parts.map((part) => part.relPath),
+        items: current.items.map((item) => ({
+          path: item.path,
+          contentHash: item.contentHash,
+          ledgerKey: ledgerKeys.get(item.path),
+          beforeLedger: ledgerBefore.get(item.path),
+          afterDigest: trustCurrentEntryDigest(batchControl.state.reviews[item.path]),
+          afterLedgerDigest: trustCurrentEntryDigest(batchControl.ledger.reviews[ledgerKeys.get(item.path)] ?? null),
+        })),
+        undo: { eligible: true, reason: "" },
+      });
+      return { count: current.items.length, receipt: publicDocReviewReceipt(committed, { available: true, reason: "" }) };
+    });
+  }, { expectedRootIdentity });
+  if (!result.replayed) {
+    try {
+      appendContextRoomEvent("review.trust-current", { ...contextRoomEventIdentity(root), data: { count: result.count, receiptId: result.receipt.id } });
+    } catch {}
+  }
+  return result;
+}
+
+function trustCurrentReceiptAvailability(index, receipt, { state, ledger }) {
+  if (!receipt.undo?.eligible) return { available: false, reason: receipt.undo?.reason || "not_undoable" };
+  if (Date.now() - Date.parse(receipt.committedAt) > REVIEW_UNDO_WINDOW_MS) return { available: false, reason: "expired" };
+  for (const item of receipt.items || []) {
+    if (index.heads[item.ledgerKey] !== receipt.id
+      || trustCurrentEntryDigest(state?.reviews?.[item.path] ?? null) !== item.afterDigest
+      || trustCurrentEntryDigest(ledger?.reviews?.[item.ledgerKey] ?? null) !== item.afterLedgerDigest) {
+      return { available: false, reason: "superseded" };
+    }
+  }
+  return { available: true, reason: "" };
+}
+
+// Undo is all or nothing: every trusted file goes back to "no accepted version". Files edited
+// since the gesture do not block it, because no earlier accepted version has to be restored.
+function undoTrustCurrentUnderLock(resolvedRoot, store, index, receipt, { requestId = null } = {}) {
+  const state = readDocReviewState(resolvedRoot);
+  const ledger = readGlobalReviewLedger(resolvedRoot);
+  if (state.authorityViolation || ledger.authorityViolation) {
+    throw sharedRequestError("Review evidence is not trusted. Undo is closed.", 409, "review_receipt_integrity_invalid");
+  }
+  const bundles = trustCurrentReceiptBundles(receipt);
+  if (!Array.isArray(receipt.items) || !receipt.items.length || !bundles) {
+    throw sharedRequestError("This review receipt was changed outside Context Room.", 409, "review_receipt_integrity_invalid");
+  }
+  const availability = trustCurrentReceiptAvailability(index, receipt, { state, ledger });
+  if (!availability.available) throw docReviewUndoConflict(availability.reason);
+  // The bundle parts stay out of the journal: once no entry names them they are inert, and they
+  // are removed after the commit. Up to 10 000 files of text would not fit the journal bound.
+  const controlFiles = [path.join(resolvedRoot, DOCQA_REVIEW_STATE), globalReviewLedgerPath(resolvedRoot)];
+  const result = withDocReviewControlRollback(resolvedRoot, controlFiles, "context-room-review-undo-rollback", () => {
+    const reviews = { ...state.reviews };
+    const ledgerReviews = { ...ledger.reviews };
+    for (const item of receipt.items) {
+      delete reviews[item.path];
+      if (item.beforeLedger) ledgerReviews[item.ledgerKey] = item.beforeLedger;
+      else delete ledgerReviews[item.ledgerKey];
+    }
+    writeDocReviewState(resolvedRoot, { version: 2, reviews });
+    writeGlobalReviewLedger(resolvedRoot, { version: 2, reviews: ledgerReviews });
+    const committed = commitDocReviewReceiptUnderLock(resolvedRoot, {
+      id: randomUUID(),
+      requestId: requestId || null,
+      action: "undo",
+      undoOf: receipt.id,
+      status: "unverified",
+      source: "undo",
+      target: receipt.target,
+      before: { entry: null, ledger: null, baseline: { path: bundles[0], exists: true, hash: null } },
+      after: { entry: null, ledger: null },
+      undo: { eligible: false, reason: "is_undo" },
+    });
+    return { path: "", count: receipt.items.length, undoOf: receipt.id, status: "unverified", receipt: publicDocReviewReceipt(committed, { available: false, reason: "is_undo" }), reviews };
+  });
+  const { reviews } = result;
+  delete result.reviews;
+  for (const bundle of bundles) {
+    if (docReviewBaselineReferenced(reviews, bundle)) continue;
+    try { removeDocReviewControlFile(resolvedRoot, bundle); } catch {}
+  }
+  try {
+    appendContextRoomEvent("review.undo", { ...contextRoomEventIdentity(resolvedRoot), data: { undoOf: receipt.id, count: receipt.items.length } });
+  } catch {}
+  return result;
 }
 
 function gitFileAtRevision(root, revision, relPath) {
@@ -9886,7 +10260,7 @@ export function writeSharedProposalFileBatchDecision(root, input = {}, { expecte
         resolvedRoot,
         [...currentReviewFiles.values()].map((item) => item.file).filter((file) => !isDocumentAssetPath(file.path)),
       );
-      controlSnapshots = new Map([stateFile, ledgerFile, baselineBundle.absolutePath].map((filePath) => [filePath, snapshotRegularFile(filePath, {
+      controlSnapshots = new Map([stateFile, ledgerFile, ...baselineBundle.parts.map((part) => part.absolutePath)].map((filePath) => [filePath, snapshotRegularFile(filePath, {
         managedRoot: reviewRollbackManagedRoot(resolvedRoot, filePath),
       })]));
       batchControl.baselines = writePreparedDocReviewBaselineBundleUnderLock(resolvedRoot, baselineBundle);
@@ -10533,6 +10907,43 @@ function createRuntimeEventBus({ limit = 1_000 } = {}) {
       events.length = 0;
     },
   };
+}
+
+// Reads many review files with one settings read and one startup listing. Reading them one by
+// one re-lists the project for each file, which made a large trust preview quadratic.
+function readReviewTrackedFilesBatch(root, relPaths) {
+  return withMemorySettingsScope(() => {
+    let settings = null;
+    let startupKeys = null;
+    try {
+      settings = readMemoryWebappSettings(root);
+      startupKeys = new Set();
+      for (const file of listStartupContextFiles(root, settings)) {
+        if (!isExternalStartupContextReviewFile(root, file)) continue;
+        for (const key of [file.startupContext.displayPath || file.startupContext.explorerPath || "", file.startupContext.explorerPath || ""]) if (key) startupKeys.add(normalizeRelPath(key));
+      }
+      for (const folder of listStartupSkillFolders(root, settings)) {
+        for (const skillName of folder.skills || []) {
+          const file = readStartupSkillFile(root, folder.order, skillName, settings);
+          for (const key of [file.path || file.startupContext?.displayPath || "", file.startupContext?.explorerPath || ""]) if (key) startupKeys.add(normalizeRelPath(key));
+        }
+      }
+    } catch {
+      startupKeys = null;
+    }
+    return new Map(relPaths.map((relPath) => {
+      let file;
+      try {
+        const normalized = normalizeRelPath(relPath);
+        if (!startupKeys) file = readReviewTrackedFile(root, normalized);
+        else if (startupKeys.has(normalized)) file = readStartupContextReviewFile(root, normalized, settings) || readStartupSkillReviewFile(root, normalized, settings) || readMemoryFile(root, normalized);
+        else file = readMemoryFile(root, normalized);
+      } catch {
+        file = null;
+      }
+      return [relPath, file];
+    }));
+  }, { cacheWritable: true });
 }
 
 function readReviewTrackedFile(root, relPath) {
@@ -12757,6 +13168,9 @@ function buildDocQaReportUnderLock(root = process.cwd(), options = {}) {
       high: queue.filter((item) => item.issues.some((issue) => issue.severity === "high")).length,
       prompts: files.filter((file) => classifyDocPath(file.path).type === "prompt").length,
       canonical: queue.filter((item) => item.metadata.kind === "canonical").length,
+      // "Trust the current versions" is offered only while no file has an accepted version.
+      // The exact list (with the staged-content check) comes from /api/context-hub/trust-current.
+      trustCurrent: trustCurrentOfferSummary(reviewState, queue),
     },
     pendingPaths: queue.map((item) => item.path),
     reviewedPaths,
@@ -18609,6 +19023,7 @@ function isOwnerReviewAuthorityMutation(pathname = "", method = "GET") {
     "POST /api/review-gate",
     "POST /api/docqa/review",
     "POST /api/context-hub/review-undo",
+    "POST /api/context-hub/trust-current",
     "POST /api/docqa/local-proposal-decision",
     "POST /api/docqa/local-proposal-rebase",
     "POST /api/docqa/local-draft",
@@ -24116,6 +24531,34 @@ async function routeRequest(req, res, root, globalPreferencesPath = null, {
       requestId: typeof body.requestId === "string" && body.requestId ? body.requestId.slice(0, 100) : null,
       expectedRootIdentity: location.rootIdentity || managedProjectRootIdentity(location.root),
     });
+    invalidateBackgroundCaches(location.root, { explicit: true });
+    contextHubProjectSummaryCache.clear();
+    contextHubStateCache.clear();
+    await markContextHubSnapshotStaleAsync();
+    sendJson(res, 200, { ...result, projectId: location.id });
+    return;
+  }
+  if (url.pathname === "/api/context-hub/trust-current" && (req.method === "GET" || req.method === "POST")) {
+    // "Trust the current versions": GET shows the exact list; POST is the human gesture
+    // (owner nonce required, see isOwnerReviewAuthorityMutation). Agents only see the offer.
+    if (hostedSharedProvider) throw sharedRequestError("Trusting current versions is available only for local projects", 400, "trust_current_local_only");
+    const body = req.method === "POST" ? await readJsonBody(req, { maxBytes: 2_000_000 }) : null;
+    if (body) assertExactObjectKeys(body, ["projectId", "items", "requestId"], "Trust current versions");
+    const projectId = String((body ? body.projectId : url.searchParams.get("projectId")) || "");
+    const location = (await contextHubLocalLocationsAsync(root)).find((entry) => entry.id === projectId);
+    if (!location) throw sharedRequestError("This project location is not available.", 404, "trust_current_project_unavailable");
+    const expectedRootIdentity = location.rootIdentity || managedProjectRootIdentity(location.root);
+    if (!body) {
+      sendJson(res, 200, { ...previewTrustCurrentDocVersions(location.root, { expectedRootIdentity }), projectId: location.id });
+      return;
+    }
+    const result = trustCurrentDocVersions(location.root, {
+      items: body.items,
+      requestId: typeof body.requestId === "string" && body.requestId ? body.requestId.slice(0, 100) : null,
+      expectedRootIdentity,
+    });
+    // The project's own reports (Documents card, inspection) must show the new state at once.
+    invalidateBackgroundCaches(location.root, { explicit: true });
     contextHubProjectSummaryCache.clear();
     contextHubStateCache.clear();
     await markContextHubSnapshotStaleAsync();

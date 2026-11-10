@@ -61,9 +61,21 @@ test("@smoke an empty Hub offers Add a project and an existing folder appears in
     await expect(dialog).toHaveCount(0);
     await expect(page.getByRole("heading", { name: "Add your first project" })).toBeHidden();
     await expect(page.locator("#status")).toContainText("Added Existing Docs");
+    // D1: the new project has no accepted version, so the explicit gesture is offered with the exact list.
+    const trust = page.getByRole("dialog", { name: "Trust the current versions?" });
+    await expect(trust).toBeVisible();
+    await expect(trust.getByRole("list", { name: "1 file to trust" })).toContainText("docs/guide.md");
+    // One Enter or Space never accepts a whole project: the dialog opens on Cancel.
+    await expect(trust.getByRole("button", { name: "Cancel" })).toBeFocused();
+    await trust.getByRole("button", { name: "Trust 1 file" }).click();
+    await expect(trust).toHaveCount(0);
+    await expect(page.locator("#status")).toContainText("Trusted 1 current version");
     const files = page.locator("#explorerViewPanel");
     await expect(files.locator(".hl-select[aria-current=true]", { hasText: "Existing Docs" })).toBeVisible();
     await expect(files.getByRole("button", { name: "docs" }).first()).toBeVisible();
+    // F31: the Documents and Reviews columns agree once the versions are trusted.
+    await expect(files.locator(".hl-agent")).toContainText("1 tracked · all up to date", { timeout: 30_000 });
+    await expect(files.locator(".hl-agent")).toContainText("Nothing waiting");
     expect(errors).toEqual([]);
   } finally {
     await hub.close();

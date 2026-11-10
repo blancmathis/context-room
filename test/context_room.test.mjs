@@ -8178,7 +8178,7 @@ test("review queue groups removed files into a selectable human-confirmed batch"
   assert.match(html, /onConfirm: \(\{ checked \}\) => confirmDeletionReviewBatch/);
   assert.match(html, /These files are already absent\. This records that their removal was intentional; it does not delete files\./);
   assert.match(html, /if \(result\.docqa\) state\.docqa = result\.docqa;/);
-  assert.match(html, /backdrop\.querySelector\(checkboxRequired \? "\[data-confirm-checkbox\]" : "\[data-confirm-accept\]"\)\?\.focus\(\);/);
+  assert.match(html, /backdrop\.querySelector\(focusCancel \? "\[data-confirm-cancel\]" : checkboxRequired \? "\[data-confirm-checkbox\]" : "\[data-confirm-accept\]"\)\?\.focus\(\);/);
   assert.match(html, /if \(restoreFocus && returnFocus\?\.isConnected\) returnFocus\.focus\(\);/);
   assert.match(html, /appShell\?\.setAttribute\("inert", ""\)/);
   assert.match(html, /if \(event\.key !== "Tab"\) return;/);
