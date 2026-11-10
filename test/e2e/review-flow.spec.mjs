@@ -196,6 +196,118 @@ test('@smoke review flow pagehide sends the review even when the base never answ
   for (const request of hung.splice(0)) await request.abort().catch(() => {});
 });
 
+// A decision with a base that the queue has started (base on its way, review
+// not yet sent) loses nothing when the page goes away: pagehide sends its
+// review at once. The page's own fetch is wrapped, so nothing reaches the
+// shared fixture: the base never answers, as in a page that is gone.
+test('@smoke review flow pagehide sends the review of a decision whose base is on its way', async ({ page }) => {
+  const data = fixture();
+  await page.goto(`${data.origin}/?hub=1&view=hub`);
+  const start = page.locator('[data-review-flow-panel="start"]');
+  await expect(start).toBeVisible({ timeout: 30_000 });
+  await start.click();
+  const bar = await reachSameProjectPair(page);
+  await page.evaluate(() => {
+    window.__decisionCalls = [];
+    const realFetch = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const url = new URL(typeof input === 'string' ? input : input.url, window.location.href).pathname;
+      if (url === '/api/docqa/review-baseline' || url === '/api/docqa/review') {
+        window.__decisionCalls.push(url);
+        return url.endsWith('baseline') ? new Promise(() => {}) : Promise.reject(new TypeError('page gone'));
+      }
+      return realFetch(input, init);
+    };
+    state.externalChange = { source: 'review', path: state.selected, diskHash: state.savedHash, diskContent: state.saved + '\nAdded outside.\n', baseContent: state.saved, reviewDecisions: {} };
+    void decideReviewFlow('accept');
+  });
+  // The next file opens, then the queue sends the base, which never answers.
+  await expect(bar).toContainText(/^4 of \d+/, { timeout: 30_000 });
+  await expect.poll(() => page.evaluate(() => window.__decisionCalls), { timeout: 30_000 }).toEqual(['/api/docqa/review-baseline']);
+  await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+  await expect.poll(() => page.evaluate(() => window.__decisionCalls), { timeout: 5_000 }).toEqual(['/api/docqa/review-baseline', '/api/docqa/review']);
+  // A second pagehide (back-forward cache) sends nothing twice.
+  await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => window.__decisionCalls)).toHaveLength(2);
+});
+
+// Moving the flow to another project reloads the page. That load reads the
+// reports from the server cache: the full recompute (`?fresh=1`, 1 to 2 s on a
+// 500-file queue) is not sent for each project change.
+test('@smoke review flow project change reads cached reports, not a full recompute', async ({ page }) => {
+  const data = fixture();
+  const reports = [];
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === '/api/reports') reports.push(url.search);
+  });
+  await page.goto(`${data.origin}/?hub=1&view=hub`);
+  const start = page.locator('[data-review-flow-panel="start"]');
+  await expect(start).toBeVisible({ timeout: 30_000 });
+  await start.click();
+  const bar = page.locator('#reviewFlowBar');
+  for (const step of [2, 3]) {
+    await expect(bar.locator('[data-review-flow="later"]')).toBeEnabled({ timeout: 30_000 });
+    await page.keyboard.press('l');
+    await expect(bar).toContainText(new RegExp('^' + step + ' of \\d+'), { timeout: 30_000 });
+  }
+  await expect(bar.locator('[data-review-flow="later"]')).toBeEnabled({ timeout: 30_000 });
+  // WebKit has no requestIdleCallback: the reports read leaves after 120 ms.
+  await expect.poll(() => page.evaluate(() => !state.backgroundRefreshTimer && !state.backgroundRefreshPendingOptions && !state.reportsRefreshInFlight), { timeout: 15_000 }).toBe(true);
+  expect(reports.length).toBeGreaterThan(0);
+  expect(reports.filter((search) => search.includes('fresh=1'))).toEqual([]);
+  await bar.locator('[data-review-flow="stop"]').click();
+});
+
+// "Previous" goes back to the file just decided: the bar says what was
+// decided, and a new decision replaces it. The writes are answered here and
+// never reach the shared fixture.
+test('@smoke review flow previous shows the earlier decision and lets it change', async ({ page }) => {
+  const data = fixture();
+  const decisions = [];
+  for (const route of ['**/api/docqa/review', '**/api/docqa/review-baseline']) {
+    await page.route(route, async (request) => {
+      decisions.push(JSON.parse(request.request().postData() || '{}').status);
+      await request.fulfill({ json: { ok: true } });
+    });
+  }
+  await page.goto(`${data.origin}/?hub=1&view=hub`);
+  const start = page.locator('[data-review-flow-panel="start"]');
+  await expect(start).toBeVisible({ timeout: 30_000 });
+  await start.click();
+  const bar = await reachSameProjectPair(page);
+  await page.keyboard.press('a');
+  await expect(bar).toContainText(/^4 of \d+/, { timeout: 30_000 });
+  await expect.poll(async () => Object.values(await flowResults(page)), { timeout: 30_000 }).toContain('accepted');
+
+  const previous = bar.locator('[data-review-flow="previous"]');
+  await expect(previous).toBeEnabled();
+  expect((await previous.boundingBox()).height).toBeGreaterThanOrEqual(48);
+  await page.keyboard.press('p');
+  await expect(bar).toContainText(/^3 of \d+/, { timeout: 30_000 });
+  await expect(bar.locator('.review-flow-decided')).toContainText('You accepted this file.');
+  // "Next" moves on and keeps the decision.
+  await expect(bar.locator('[data-review-flow="later"]')).toContainText('Next');
+  await page.keyboard.press('l');
+  await expect(bar).toContainText(/^4 of \d+/, { timeout: 30_000 });
+  // Files 1 and 2 were left for later; file 3 keeps its acceptance.
+  expect(Object.values(await flowResults(page)).sort()).toEqual(['accepted', 'later', 'later']);
+
+  // Back twice, to file 2 left for later: Accept replaces "later".
+  await bar.locator('[data-review-flow="previous"]').click();
+  await expect(bar).toContainText(/^3 of \d+/, { timeout: 30_000 });
+  await bar.locator('[data-review-flow="previous"]').click();
+  await expect(bar).toContainText(/^2 of \d+/, { timeout: 30_000 });
+  await expect(bar.locator('[data-review-flow="accept"]')).toBeEnabled({ timeout: 30_000 });
+  await page.keyboard.press('a');
+  await expect(bar).toContainText(/^3 of \d+/, { timeout: 30_000 });
+  await expect.poll(async () => Object.values(await flowResults(page)).sort(), { timeout: 30_000 }).toEqual(['accepted', 'accepted', 'later']);
+  // The base request (first review) carries no status.
+  expect(decisions.filter(Boolean)).toEqual(['verified', 'verified']);
+  await bar.locator('[data-review-flow="stop"]').click();
+});
+
 // Coming back to the window (focus, page restore) reads the reports from the
 // server cache, which writes, the file watcher and its TTL keep current. The
 // full recompute (`?fresh=1`, 1 to 2 s on a 500-file queue) is not sent again.
@@ -211,7 +323,7 @@ test('@smoke review flow focus refreshes reports without a full recompute', asyn
   await expect(bar).toContainText(/^2 of \d+/, { timeout: 30_000 });
   await expect(bar.locator('[data-review-flow="later"]')).toBeEnabled({ timeout: 30_000 });
   // "Later" opened the next item in another project. That open queues its own
-  // full recompute (loadFiles), sent on an idle callback, or after 120 ms where
+  // reports read (loadFiles), sent on an idle callback, or after 120 ms where
   // requestIdleCallback is missing (WebKit). Let it leave before the focus rounds.
   await expect.poll(() => page.evaluate(() => !state.backgroundRefreshTimer && !state.backgroundRefreshPendingOptions && !state.reportsRefreshInFlight), { timeout: 15_000 }).toBe(true);
 
